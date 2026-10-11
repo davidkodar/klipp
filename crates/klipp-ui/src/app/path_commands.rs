@@ -294,6 +294,18 @@ impl crate::state::AppState {
                 let _ = self.begin_param_edit_at(addr, key);
             }
         }
+        // A clip's keyframe command on its placement or opacity lane, as
+        // the path edits it is (M4 step 12c).
+        if let Some(result) = self.lane_command(cmd) {
+            return match result {
+                Ok(changed) => Some(changed),
+                Err(why) => {
+                    tracing::warn!(%why, "lane edit refused");
+                    self.toast.show(why);
+                    Some(false)
+                }
+            };
+        }
         let result = match cmd {
             AppCommand::SetNodePositionAt { position, .. } if !position.0.is_finite() || !position.1.is_finite() => Err("Node positions must be finite".into()),
             AppCommand::BeginNodeLayoutEdit { root } => self.begin_node_layout_edit(*root).map(|()| false),
@@ -338,6 +350,211 @@ impl crate::state::AppState {
         }
     }
 
+    /// A clip's keyframe command on its placement or opacity lane (M4 step
+    /// 12c): the timeline's, the Video tab's, the curve editor's and the
+    /// shortcuts' `*VideoKeyframe` commands, and a key drag over such a
+    /// lane, applied by path on the clip's placement node, each one step
+    /// (a drag one step over its ticks). The lane's new keys are what the
+    /// old lane edit made of the keys the picture holds, in its order, so
+    /// a key moved or re-shaped keeps its place in the selection. `None`
+    /// for any other command, a matte's lane, or a clip without a
+    /// placement node: those keep the old route.
+    fn lane_command(&mut self, cmd: &AppCommand) -> Option<Result<bool, String>> {
+        use klipp_core::Keyframe;
+        use AppCommand as C;
+        let clip_id = match cmd {
+            C::AddVideoKeyframe { clip_id, .. }
+            | C::RemoveVideoKeyframe { clip_id, .. }
+            | C::MoveVideoKeyframe { clip_id, .. }
+            | C::SetVideoKeyframeInterpolation { clip_id, .. }
+            | C::SetVideoKeyframeTangent { clip_id, .. }
+            | C::ScaleVideoKeyframeTiming { clip_id, .. }
+            | C::InsertVideoKeyframeBump { clip_id, .. }
+            | C::ClearVideoParamKeyframes { clip_id, .. }
+            | C::CopyVideoKeyframes { clip_id, .. }
+            | C::PasteVideoKeyframes { clip_id, .. }
+            | C::ReverseVideoKeyframes { clip_id, .. }
+            | C::ApplyKenBurns { clip_id, .. }
+            | C::ClearTransformKeyframes { clip_id }
+            | C::BeginKeyframeDrag { clip_id, .. }
+            | C::EndKeyframeDrag { clip_id, .. } => *clip_id,
+            _ => return None,
+        };
+        let clip = self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id == clip_id)?.clone();
+        let addr = clip.placement_path()?;
+        let lane = |param: &klipp_core::VideoParam| crate::inspector::placement_by_path::lane_key(*param);
+        // The whole-lane ops: one batch, so one step.
+        let whole = |state: &mut Self, ops: Vec<GraphOp>, label: &str| Some(state.apply_path_ops(&ops, label).map(|()| true));
+        match cmd {
+            C::BeginKeyframeDrag { key, .. } => {
+                let k = drag_lane(key).and_then(|p| lane(&p))?;
+                return Some(self.begin_param_edit_at(&addr, &ParamKey::from(k)).map(|()| false));
+            }
+            C::EndKeyframeDrag { key, .. } => {
+                let k = drag_lane(key).and_then(|p| lane(&p))?;
+                self.end_param_edit_at(&addr, &ParamKey::from(k));
+                return Some(Ok(false));
+            }
+            C::ApplyKenBurns { start_scale, end_scale, start_pos_x, start_pos_y, end_pos_x, end_pos_y, .. } => {
+                let duration = clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64();
+                let ease = 0.42 * duration;
+                let pair = |a: f32, b: f32| {
+                    vec![
+                        Keyframe { time_secs: 0.0, value: a, interpolation: klipp_core::Interpolation::Bezier, tangent_out: (ease, 0.0), tangent_in: (0.0, 0.0) },
+                        Keyframe { time_secs: duration, value: b, interpolation: klipp_core::Interpolation::Bezier, tangent_out: (0.0, 0.0), tangent_in: (-ease, 0.0) },
+                    ]
+                };
+                let ops = vec![set_lane(&clip, &addr, "scale", pair(*start_scale, *end_scale)), set_lane(&clip, &addr, "pos_x", pair(*start_pos_x, *end_pos_x)), set_lane(&clip, &addr, "pos_y", pair(*start_pos_y, *end_pos_y))];
+                return whole(self, ops, "Apply Ken Burns");
+            }
+            C::ClearTransformKeyframes { .. } => {
+                let ops = ["scale", "pos_x", "pos_y", "rotation"].into_iter().map(|k| set_lane(&clip, &addr, k, Vec::new())).collect();
+                return whole(self, ops, "Clear Transform Keyframes");
+            }
+            _ => {}
+        }
+        let param = match cmd {
+            C::AddVideoKeyframe { param, .. }
+            | C::RemoveVideoKeyframe { param, .. }
+            | C::MoveVideoKeyframe { param, .. }
+            | C::SetVideoKeyframeInterpolation { param, .. }
+            | C::SetVideoKeyframeTangent { param, .. }
+            | C::ScaleVideoKeyframeTiming { param, .. }
+            | C::InsertVideoKeyframeBump { param, .. }
+            | C::ClearVideoParamKeyframes { param, .. }
+            | C::CopyVideoKeyframes { param, .. }
+            | C::PasteVideoKeyframes { param, .. }
+            | C::ReverseVideoKeyframes { param, .. } => *param,
+            _ => return None,
+        };
+        let key = lane(&param)?;
+        let mut keys = crate::inspector::placement_by_path::lane_keys(&clip, key);
+        let sort = |keys: &mut Vec<Keyframe>| keys.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+        let clip_dur = clip.duration().to_secs_f64();
+        let (keys, label) = match cmd {
+            // A key put on or taken off: the path's own key edits.
+            C::AddVideoKeyframe { time_secs, value, .. } => {
+                let k = klipp_core::keyframe::upserted(&keys, *time_secs, *value);
+                return Some(match serde_json::to_value(k) {
+                    Ok(keyframe) => self.path_command_result(&C::AddKeyAt { addr: addr.clone(), key: key.into(), keyframe }),
+                    Err(e) => Err(e.to_string()),
+                });
+            }
+            C::RemoveVideoKeyframe { time_secs, .. } => return Some(self.path_command_result(&C::RemoveKeyAt { addr: addr.clone(), key: key.into(), time_secs: *time_secs })),
+            C::CopyVideoKeyframes { .. } => {
+                self.keyframe_clipboard = Some(crate::state::KeyframeClipboard { keyframes: keys, source_duration_secs: clip_dur });
+                return Some(Ok(false));
+            }
+            C::MoveVideoKeyframe { index, new_time_secs, new_value, .. } => {
+                if let Some(kf) = keys.get_mut(*index) {
+                    kf.time_secs = *new_time_secs;
+                    kf.value = *new_value;
+                }
+                sort(&mut keys);
+                (keys, "Move Keyframe")
+            }
+            C::SetVideoKeyframeInterpolation { keyframe_index, interpolation, .. } => {
+                klipp_core::keyframe::set_interpolation_at(&mut keys, *keyframe_index, *interpolation);
+                (keys, "Set Keyframe Interpolation")
+            }
+            C::SetVideoKeyframeTangent { keyframe_index, tangent_in, tangent_out, .. } => {
+                if let Some(kf) = keys.get_mut(*keyframe_index) {
+                    if let Some(ti) = tangent_in {
+                        kf.tangent_in = *ti;
+                    }
+                    if let Some(to) = tangent_out {
+                        kf.tangent_out = *to;
+                    }
+                }
+                (keys, "Set Keyframe Tangent")
+            }
+            C::ScaleVideoKeyframeTiming { factor, .. } => {
+                for kf in keys.iter_mut() {
+                    kf.time_secs *= factor;
+                    kf.tangent_in.0 *= *factor;
+                    kf.tangent_out.0 *= *factor;
+                }
+                keys.retain(|kf| kf.time_secs >= 0.0 && kf.time_secs <= clip_dur);
+                sort(&mut keys);
+                (keys, "Scale Video Keyframe Timing")
+            }
+            C::InsertVideoKeyframeBump { center_time, bump_value, base_value, duration_secs, ramp_secs, .. } => {
+                let half = duration_secs / 2.0;
+                for (t, v) in [(center_time - half - ramp_secs, *base_value), (center_time - half, *bump_value), (center_time + half, *bump_value), (center_time + half + ramp_secs, *base_value)] {
+                    if t >= 0.0 && t <= clip_dur {
+                        keys.push(Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) });
+                    }
+                }
+                sort(&mut keys);
+                (keys, "Insert Video Keyframe Bump")
+            }
+            C::ClearVideoParamKeyframes { .. } => (Vec::new(), "Clear Keyframes"),
+            C::PasteVideoKeyframes { .. } => {
+                let Some(cb) = self.keyframe_clipboard.clone() else { return Some(Ok(false)) };
+                let scale = if cb.source_duration_secs > 0.0 { clip_dur / cb.source_duration_secs } else { 1.0 };
+                let mut pasted: Vec<Keyframe> = cb.keyframes.iter().map(|k| Keyframe { time_secs: k.time_secs * scale, ..k.clone() }).collect();
+                sort(&mut pasted);
+                (pasted, "Paste Video Keyframes")
+            }
+            C::ReverseVideoKeyframes { .. } => {
+                if keys.len() >= 2 {
+                    let max_time = keys.last().map_or(0.0, |k| k.time_secs);
+                    for kf in keys.iter_mut() {
+                        kf.time_secs = max_time - kf.time_secs;
+                        let (old_in, old_out) = (kf.tangent_in, kf.tangent_out);
+                        kf.tangent_in = (-old_out.0, old_out.1);
+                        kf.tangent_out = (-old_in.0, old_in.1);
+                    }
+                    keys.reverse();
+                    sort(&mut keys);
+                }
+                (keys, "Reverse Video Keyframes")
+            }
+            _ => return None,
+        };
+        let op = set_lane(&clip, &addr, key, keys);
+        // Inside an open drag of this lane (a key or a handle dragged), the
+        // tick is the drag's, written live.
+        if self.active_history().is_dragging(&drag_key(&addr, &ParamKey::from(key))) {
+            return Some(self.apply_live(op));
+        }
+        whole(self, vec![op], label)
+    }
+
+    /// The placement or opacity lane a keyframe command on one lane edits
+    /// (or a key drag over one names), by its node path and key.
+    fn lane_target(&self, cmd: &AppCommand) -> Option<(NodePath, ParamKey)> {
+        use AppCommand as C;
+        let (clip_id, param) = match cmd {
+            C::AddVideoKeyframe { clip_id, param, .. }
+            | C::RemoveVideoKeyframe { clip_id, param, .. }
+            | C::MoveVideoKeyframe { clip_id, param, .. }
+            | C::SetVideoKeyframeInterpolation { clip_id, param, .. }
+            | C::SetVideoKeyframeTangent { clip_id, param, .. } => (*clip_id, *param),
+            C::BeginKeyframeDrag { clip_id, key } | C::EndKeyframeDrag { clip_id, key } => (*clip_id, drag_lane(key)?),
+            _ => return None,
+        };
+        let key = crate::inspector::placement_by_path::lane_key(param)?;
+        let clip = self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id == clip_id)?;
+        Some((clip.placement_path()?, ParamKey::from(key)))
+    }
+
+    /// A path command applied as `path_command` applies it, its refusal
+    /// handed back rather than said, for `lane_command` to say once.
+    fn path_command_result(&mut self, cmd: &AppCommand) -> Result<bool, String> {
+        let (ops, label) = path_ops(cmd).ok_or("not a path edit")?;
+        self.apply_path_ops(&ops, label).map(|()| true)
+    }
+
+    /// One op written now, inside the open drag that will record it.
+    fn apply_live(&mut self, op: GraphOp) -> Result<bool, String> {
+        let graph_ops::GraphOpsOutcome { edit, .. } = graph_ops::graph_ops_edit(&self.sequences[self.active_sequence_idx], &[op]).map_err(|(_, why)| why)?;
+        if let EditCommand::PictureEdit { clip_id, edit, .. } = edit {
+            self.set_picture(clip_id, &edit.after);
+        }
+        Ok(true)
+    }
+
     /// Whether `cmd`, arriving while a path drag is open, closes it first.
     /// Only a command that can write the picture, the saved project or the
     /// history closes it, so that edit is its own step and never folded
@@ -349,6 +566,11 @@ impl crate::state::AppState {
     /// every command is named.
     pub(crate) fn closes_path_drag(&self, cmd: &AppCommand) -> bool {
         let Some(open) = self.active_history().pending_drag_key().filter(|k| k.starts_with(PATH_DRAG)) else { return false };
+        // A key moved or re-shaped on a placement or opacity lane, or that
+        // lane's drag opening or closing, is that lane's drag (M4 step 12c).
+        if let Some((addr, key)) = self.lane_target(cmd) {
+            return drag_key(&addr, &key) != open;
+        }
         match cmd {
             AppCommand::BeginNodeLayoutEdit { root } | AppCommand::EndNodeLayoutEdit { root } | AppCommand::AbandonNodeLayoutEdit { root } => layout_drag(*root) != open,
             AppCommand::SetNodePositionAt { addr, .. } => layout_drag(addr.root) != open,
@@ -890,6 +1112,105 @@ mod tests {
 
     fn run(state: &mut AppState, cmd: AppCommand) {
         assert_eq!(state.path_command(&cmd), Some(true), "{cmd:?} applied");
+    }
+
+    /// The placement or opacity lane `key`'s keys, as the picture holds them.
+    fn lane(state: &AppState, id: ClipId, key: &str) -> Vec<(f64, f32)> {
+        crate::inspector::placement_by_path::lane_keys(clip(state, id), key).iter().map(|k| (k.time_secs, k.value)).collect()
+    }
+
+    /// A clip with keys on its x position (0.5 s: 10, 1 s: 20, 1.5 s: 30)
+    /// and its opacity (0.5 s: 1, 1 s: 0.5), put there by path.
+    fn lane_keyed() -> (AppState, ClipId) {
+        use klipp_core::VideoParam as P;
+        let (mut s, id) = state(&[]);
+        for (param, t, v) in [(P::PositionX, 0.5, 10.0), (P::PositionX, 1.0, 20.0), (P::PositionX, 1.5, 30.0), (P::Opacity, 0.5, 1.0), (P::Opacity, 1.0, 0.5)] {
+            run(&mut s, AppCommand::AddVideoKeyframe { clip_id: id, param, time_secs: t, value: v });
+        }
+        (s, id)
+    }
+
+    /// Every keyframe command on a placement or opacity lane, as the
+    /// timeline, the Video tab, the curve editor and the shortcuts send it,
+    /// is applied by path on the placement node as one step, which undo
+    /// takes back exactly; the multi-lane ones (Ken Burns, clearing the
+    /// transform) too (M4 step 12c).
+    #[test]
+    fn a_lane_keyframe_command_is_one_path_step() {
+        use klipp_core::{Interpolation, VideoParam as P};
+        let (s0, id0) = lane_keyed();
+        assert_eq!(lane(&s0, id0, "pos_x"), vec![(0.5, 10.0), (1.0, 20.0), (1.5, 30.0)], "keyed by path");
+        type Cmd = fn(ClipId) -> AppCommand;
+        type Check = fn(&AppState, ClipId);
+        let families: [(&str, Cmd, Check); 11] = [
+            ("add", |id| AppCommand::AddVideoKeyframe { clip_id: id, param: P::PositionX, time_secs: 0.75, value: 15.0 }, |s, id| assert_eq!(lane(s, id, "pos_x").len(), 4)),
+            ("remove", |id| AppCommand::RemoveVideoKeyframe { clip_id: id, param: P::PositionX, time_secs: 1.0 }, |s, id| assert_eq!(lane(s, id, "pos_x"), vec![(0.5, 10.0), (1.5, 30.0)])),
+            ("move", |id| AppCommand::MoveVideoKeyframe { clip_id: id, param: P::PositionX, index: 0, new_time_secs: 1.2, new_value: 12.0 }, |s, id| assert_eq!(lane(s, id, "pos_x"), vec![(1.0, 20.0), (1.2, 12.0), (1.5, 30.0)])),
+            ("interpolation", |id| AppCommand::SetVideoKeyframeInterpolation { clip_id: id, param: P::PositionX, keyframe_index: 1, interpolation: Interpolation::Bezier }, |s, id| {
+                let keys = crate::inspector::placement_by_path::lane_keys(clip(s, id), "pos_x");
+                assert!(keys[0].interpolation == Interpolation::Bezier && keys[1].interpolation == Interpolation::Bezier && keys[1].tangent_out.0 > 0.0, "{keys:?}");
+            }),
+            ("tangent", |id| AppCommand::SetVideoKeyframeTangent { clip_id: id, param: P::PositionX, keyframe_index: 1, tangent_in: Some((-0.1, 2.0)), tangent_out: None }, |s, id| assert_eq!(crate::inspector::placement_by_path::lane_keys(clip(s, id), "pos_x")[1].tangent_in, (-0.1, 2.0))),
+            ("scale timing", |id| AppCommand::ScaleVideoKeyframeTiming { clip_id: id, param: P::PositionX, factor: 0.5 }, |s, id| assert_eq!(lane(s, id, "pos_x"), vec![(0.25, 10.0), (0.5, 20.0), (0.75, 30.0)])),
+            ("reverse", |id| AppCommand::ReverseVideoKeyframes { clip_id: id, param: P::PositionX }, |s, id| assert_eq!(lane(s, id, "pos_x"), vec![(0.0, 30.0), (0.5, 20.0), (1.0, 10.0)])),
+            ("bump", |id| AppCommand::InsertVideoKeyframeBump { clip_id: id, param: P::Opacity, center_time: 1.5, bump_value: 0.2, base_value: 1.0, duration_secs: 0.4, ramp_secs: 0.1 }, |s, id| assert_eq!(lane(s, id, "opacity").len(), 6)),
+            ("clear a lane", |id| AppCommand::ClearVideoParamKeyframes { clip_id: id, param: P::PositionX }, |s, id| assert!(lane(s, id, "pos_x").is_empty())),
+            ("Ken Burns", |id| AppCommand::ApplyKenBurns { clip_id: id, start_scale: 1.0, end_scale: 1.3, start_pos_x: 0.0, start_pos_y: 0.0, end_pos_x: 40.0, end_pos_y: 20.0 }, |s, id| {
+                assert_eq!(lane(s, id, "scale").iter().map(|k| k.1).collect::<Vec<_>>(), vec![1.0, 1.3]);
+                assert_eq!(lane(s, id, "pos_x").iter().map(|k| k.1).collect::<Vec<_>>(), vec![0.0, 40.0]);
+                assert_eq!(lane(s, id, "pos_y").iter().map(|k| k.1).collect::<Vec<_>>(), vec![0.0, 20.0]);
+            }),
+            ("clear the transform", |id| AppCommand::ClearTransformKeyframes { clip_id: id }, |s, id| {
+                assert!(lane(s, id, "pos_x").is_empty());
+                assert_eq!(lane(s, id, "opacity").len(), 2, "the opacity isn't the transform's");
+            }),
+        ];
+        for (name, cmd, check) in families {
+            let (mut s, id) = lane_keyed();
+            let (before, steps) = (picture(&s, id), s.active_history().undo_count());
+            assert_eq!(s.path_command(&cmd(id)), Some(true), "{name}: {:?}", s.toast.message_for_test());
+            check(&s, id);
+            assert_eq!(s.active_history().undo_count(), steps + 1, "{name}: one step");
+            undo(&mut s);
+            assert_eq!(picture(&s, id), before, "{name}: undo, as it was");
+        }
+    }
+
+    /// Copy then paste onto another lane: the keys, scaled to the clip's
+    /// length, in one step.
+    #[test]
+    fn copied_keys_paste_by_path_in_one_step() {
+        use klipp_core::VideoParam as P;
+        let (mut s, id) = lane_keyed();
+        assert_eq!(s.path_command(&AppCommand::CopyVideoKeyframes { clip_id: id, param: P::PositionX }), Some(false), "a copy writes nothing");
+        let (before, steps) = (picture(&s, id), s.active_history().undo_count());
+        run(&mut s, AppCommand::PasteVideoKeyframes { clip_id: id, param: P::PositionY });
+        assert_eq!(lane(&s, id, "pos_y"), lane(&s, id, "pos_x"));
+        assert_eq!(s.active_history().undo_count(), steps + 1);
+        undo(&mut s);
+        assert_eq!(picture(&s, id), before);
+    }
+
+    /// A key dragged on a placement lane, as the timeline brackets it: the
+    /// drag's ticks are one step, the key keeps its place in the lane's
+    /// order as the old lane edit kept it (so the selection follows it),
+    /// and undo takes the whole drag back.
+    #[test]
+    fn a_lane_key_drag_is_one_step_and_the_key_keeps_its_place() {
+        use klipp_core::VideoParam as P;
+        let (mut s, id) = lane_keyed();
+        let (before, steps) = (picture(&s, id), s.active_history().undo_count());
+        let key = format!("kf:video:{}:{:?}:{}", id.0, P::PositionX, 1);
+        assert_eq!(s.path_command(&AppCommand::BeginKeyframeDrag { key: key.clone(), clip_id: id }), Some(false));
+        for (t, v) in [(1.05, 21.0), (1.1, 22.0), (1.2, 24.0)] {
+            assert!(!s.closes_path_drag(&AppCommand::MoveVideoKeyframe { clip_id: id, param: P::PositionX, index: 1, new_time_secs: t, new_value: v }), "a tick of the lane's drag doesn't close it");
+            run(&mut s, AppCommand::MoveVideoKeyframe { clip_id: id, param: P::PositionX, index: 1, new_time_secs: t, new_value: v });
+            assert_eq!(lane(&s, id, "pos_x")[1], (t, v), "the dragged key stays the second");
+        }
+        assert_eq!(s.path_command(&AppCommand::EndKeyframeDrag { key, clip_id: id }), Some(false));
+        assert_eq!(s.active_history().undo_count(), steps + 1, "one step for the drag");
+        undo(&mut s);
+        assert_eq!(picture(&s, id), before);
     }
 
     /// A socket batch (the control bridge's `expand_control_commands`,
@@ -2360,4 +2681,28 @@ pub(super) enum GradeStructure {
     Group { nodes: Vec<klipp_nodes::NodeId>, group: klipp_nodes::NodeId },
     /// The compound `node` dissolved.
     Ungroup { node: klipp_nodes::NodeId },
+}
+
+/// The placement or opacity lane a key drag's key names, as the timeline
+/// and the curve editor key their video lanes' drags
+/// (`kf:video:<clip>:<param>:…`, `kf:vtangent:<clip>:<param>:…`).
+fn drag_lane(key: &str) -> Option<klipp_core::VideoParam> {
+    use klipp_core::VideoParam as P;
+    let mut parts = key.split(':');
+    if parts.next() != Some("kf") || !matches!(parts.next(), Some("video" | "vtangent")) {
+        return None;
+    }
+    let _clip = parts.next()?;
+    let named = parts.next()?;
+    [P::Opacity, P::PositionX, P::PositionY, P::Scale, P::Rotation, P::TiltX, P::TiltY, P::MatteFeather, P::MatteChoke].into_iter().find(|p| format!("{p:?}") == named)
+}
+
+/// The op that sets the placement or opacity lane `key` of `clip` to
+/// `keys` whole, the lane's modifier stack kept: none left takes the lane
+/// off.
+fn set_lane(clip: &klipp_timeline::Clip, addr: &NodePath, key: &str, keys: Vec<klipp_core::Keyframe>) -> GraphOp {
+    let modifiers = crate::inspector::placement_by_path::lane_anim(clip, key).and_then(|a| a.modifiers);
+    let keys: Vec<serde_json::Value> = keys.iter().filter_map(|k| serde_json::to_value(k).ok()).collect();
+    let anim = (!keys.is_empty() || modifiers.is_some()).then_some(klipp_graph_format::Animation { keys, modifiers });
+    GraphOp::SetAnim { path: addr.clone(), key: key.into(), anim }
 }

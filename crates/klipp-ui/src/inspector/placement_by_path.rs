@@ -101,13 +101,27 @@ pub fn placement(clip: &Clip) -> crate::inspector::video_tab::TransformParams {
     t
 }
 
-/// The clip's keys on a placement or opacity `key`, as its picture holds
-/// them.
-fn keys(clip: &Clip, key: &str) -> Vec<klipp_core::Keyframe> {
-    let Ok(lifted) = clip.picture_v2() else { return Vec::new() };
+/// The clip's animation of a placement or opacity `key`, as its picture
+/// holds it: its keys and its modifier stack.
+pub fn lane_anim(clip: &Clip, key: &str) -> Option<klipp_graph_format::Animation> {
+    let lifted = clip.picture_v2().ok()?;
     let p = &lifted.picture;
-    let anim = if key == "opacity" { p.opacity_anim.as_ref() } else { p.placement_anim.get(&ParamKey::from(key)) };
-    anim.map(|a| a.keys.iter().filter_map(|k| serde_json::from_value(k.clone()).ok()).collect()).unwrap_or_default()
+    if key == "opacity" { p.opacity_anim.clone() } else { p.placement_anim.get(&ParamKey::from(key)).cloned() }
+}
+
+/// The clip's keys on a placement or opacity `key`, as its picture holds
+/// them, in time order (M4 step 12c: what the lanes read).
+pub fn lane_keys(clip: &Clip, key: &str) -> Vec<klipp_core::Keyframe> {
+    lane_anim(clip, key).map(|a| a.keys.iter().filter_map(|k| serde_json::from_value(k.clone()).ok()).collect()).unwrap_or_default()
+}
+
+/// The clip's keys on the placement or opacity lane `param` names, as its
+/// picture holds them; a matte's lane, as the clip holds it.
+pub fn param_keys(clip: &Clip, param: VideoParam) -> Vec<klipp_core::Keyframe> {
+    match lane_key(param) {
+        Some(key) => lane_keys(clip, key),
+        None => clip.video_param_keyframes(param).to_vec(),
+    }
 }
 
 /// The clip's opacity as the picture holds it, as the card shows it.
@@ -159,7 +173,7 @@ pub fn by_path(cmds: Vec<AppCommand>, clip: &Clip) -> Vec<AppCommand> {
             AppCommand::AddVideoKeyframe { clip_id, param, time_secs, value } if *clip_id == clip.id && lane_key(*param).is_some() => {
                 // A key already there keeps its time and curve shape, as
                 // the lane's own upsert keeps them.
-                let key = klipp_core::keyframe::upserted(&keys(clip, lane_key(*param).unwrap_or_default()), *time_secs, *value);
+                let key = klipp_core::keyframe::upserted(&lane_keys(clip, lane_key(*param).unwrap_or_default()), *time_secs, *value);
                 match serde_json::to_value(key) {
                     Ok(keyframe) => out.push(AppCommand::AddKeyAt { addr: addr.clone(), key: lane_key(*param).unwrap_or_default().into(), keyframe }),
                     Err(_) => out.push(cmd),

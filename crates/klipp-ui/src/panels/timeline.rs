@@ -2117,23 +2117,15 @@ impl TimelinePanel {
                                     .find(|c| c.id == ctx_menu.clip_id)
                                     .map(|clip| {
                                         let empty_kfs: Vec<klipp_core::Keyframe> = Vec::new();
+                                        // The placement and opacity lanes as the picture holds them (M4 step 12c).
+                                        let video_lane: Vec<klipp_core::Keyframe> = match &ctx_menu.param_kind { crate::state::KeyframeParamKind::Video(p) => crate::inspector::placement_by_path::param_keys(clip, *p), _ => Vec::new() };
                                         let kfs: &[klipp_core::Keyframe] = match &ctx_menu.param_kind {
                                             crate::state::KeyframeParamKind::Audio(p) => match p {
                                                 klipp_core::AudioParam::Volume => &clip.volume_keyframes,
                                                 klipp_core::AudioParam::Pan => &clip.pan_keyframes,
                                                 klipp_core::AudioParam::Gain => &clip.gain_keyframes,
                                             },
-                                            crate::state::KeyframeParamKind::Video(p) => match p {
-                                                klipp_core::VideoParam::Opacity => clip.opacity_keyframes(),
-                                                klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes(),
-                                                klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes(),
-                                                klipp_core::VideoParam::Scale => clip.transform_scale_keyframes(),
-                                                klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes(),
-                                                klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes(),
-                                                klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes(),
-                                                klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
-                                                klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
-                                            },
+                                            crate::state::KeyframeParamKind::Video(_) => &video_lane,
                                             crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id),
                                             crate::state::KeyframeParamKind::Node { .. } => &[],
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
@@ -2209,23 +2201,15 @@ impl TimelinePanel {
                                     .find(|c| c.id == ctx_menu.clip_id)
                                     .map(|clip| {
                                         let empty_kfs: Vec<klipp_core::Keyframe> = Vec::new();
+                                        // The placement and opacity lanes as the picture holds them (M4 step 12c).
+                                        let video_lane: Vec<klipp_core::Keyframe> = match &ctx_menu.param_kind { crate::state::KeyframeParamKind::Video(p) => crate::inspector::placement_by_path::param_keys(clip, *p), _ => Vec::new() };
                                         let kfs: &[klipp_core::Keyframe] = match &ctx_menu.param_kind {
                                             crate::state::KeyframeParamKind::Audio(p) => match p {
                                                 klipp_core::AudioParam::Volume => &clip.volume_keyframes,
                                                 klipp_core::AudioParam::Pan => &clip.pan_keyframes,
                                                 klipp_core::AudioParam::Gain => &clip.gain_keyframes,
                                             },
-                                            crate::state::KeyframeParamKind::Video(p) => match p {
-                                                klipp_core::VideoParam::Opacity => clip.opacity_keyframes(),
-                                                klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes(),
-                                                klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes(),
-                                                klipp_core::VideoParam::Scale => clip.transform_scale_keyframes(),
-                                                klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes(),
-                                                klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes(),
-                                                klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes(),
-                                                klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
-                                                klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
-                                            },
+                                            crate::state::KeyframeParamKind::Video(_) => &video_lane,
                                             crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id),
                                             crate::state::KeyframeParamKind::Node { .. } => &[],
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
@@ -2280,23 +2264,15 @@ impl TimelinePanel {
                                 .flat_map(|t| t.clips.iter())
                                 .find(|c| c.id == ctx_menu.clip_id)
                                 .and_then(|clip| {
+                                    // The placement and opacity lanes as the picture holds them (M4 step 12c).
+                                    let video_lane: Vec<klipp_core::Keyframe> = match &ctx_menu.param_kind { crate::state::KeyframeParamKind::Video(p) => crate::inspector::placement_by_path::param_keys(clip, *p), _ => Vec::new() };
                                     let kfs: &[klipp_core::Keyframe] = match &ctx_menu.param_kind {
                                         crate::state::KeyframeParamKind::Audio(p) => match p {
                                             klipp_core::AudioParam::Volume => &clip.volume_keyframes,
                                             klipp_core::AudioParam::Pan => &clip.pan_keyframes,
                                             klipp_core::AudioParam::Gain => &clip.gain_keyframes,
                                         },
-                                        crate::state::KeyframeParamKind::Video(p) => match p {
-                                            klipp_core::VideoParam::Opacity => clip.opacity_keyframes(),
-                                            klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes(),
-                                            klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes(),
-                                            klipp_core::VideoParam::Scale => clip.transform_scale_keyframes(),
-                                            klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes(),
-                                            klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes(),
-                                            klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes(),
-                                            klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
-                                            klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
-                                        },
+                                        crate::state::KeyframeParamKind::Video(_) => &video_lane,
                                         crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id),
                                             crate::state::KeyframeParamKind::Node { .. } => &[],
                                         crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
@@ -2370,17 +2346,8 @@ impl TimelinePanel {
                                                 klipp_core::AudioParam::Pan => clip.pan_keyframes.clone(),
                                                 klipp_core::AudioParam::Gain => clip.gain_keyframes.clone(),
                                             },
-                                            crate::state::KeyframeParamKind::Video(p) => match p {
-                                                klipp_core::VideoParam::Opacity => clip.opacity_keyframes().to_vec(),
-                                                klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes().to_vec(),
-                                                klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes().to_vec(),
-                                                klipp_core::VideoParam::Scale => clip.transform_scale_keyframes().to_vec(),
-                                                klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes().to_vec(),
-                                                klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes().to_vec(),
-                                                klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes().to_vec(),
-                                                klipp_core::VideoParam::MatteFeather => clip.matte_feather_keyframes.clone(),
-                                                klipp_core::VideoParam::MatteChoke => clip.matte_choke_keyframes.clone(),
-                                            },
+                                            // The lane as the picture holds it (M4 step 12c).
+                                            crate::state::KeyframeParamKind::Video(p) => crate::inspector::placement_by_path::param_keys(clip, *p),
                                             crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id).to_vec(),
                                             crate::state::KeyframeParamKind::Node { path, key } => clip.node_key_state(path, key).map(|s| s.keys).unwrap_or_default(),
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
@@ -2510,23 +2477,15 @@ impl TimelinePanel {
                                 .map(|clip| {
                                     let clip_dur = clip.duration().to_secs_f64();
                                     let empty_kfs: Vec<klipp_core::Keyframe> = Vec::new();
+                                    // The placement and opacity lanes as the picture holds them (M4 step 12c).
+                                    let video_lane: Vec<klipp_core::Keyframe> = match &ctx_menu.param_kind { crate::state::KeyframeParamKind::Video(p) => crate::inspector::placement_by_path::param_keys(clip, *p), _ => Vec::new() };
                                     let kfs: &[klipp_core::Keyframe] = match &ctx_menu.param_kind {
                                         crate::state::KeyframeParamKind::Audio(p) => match p {
                                             klipp_core::AudioParam::Volume => &clip.volume_keyframes,
                                             klipp_core::AudioParam::Pan => &clip.pan_keyframes,
                                             klipp_core::AudioParam::Gain => &clip.gain_keyframes,
                                         },
-                                        crate::state::KeyframeParamKind::Video(p) => match p {
-                                            klipp_core::VideoParam::Opacity => clip.opacity_keyframes(),
-                                            klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes(),
-                                            klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes(),
-                                            klipp_core::VideoParam::Scale => clip.transform_scale_keyframes(),
-                                            klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes(),
-                                            klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes(),
-                                            klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes(),
-                                            klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
-                                            klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
-                                        },
+                                        crate::state::KeyframeParamKind::Video(_) => &video_lane,
                                         crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id),
                                             crate::state::KeyframeParamKind::Node { .. } => &[],
                                         crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
@@ -2631,23 +2590,15 @@ impl TimelinePanel {
                                         let clip_dur = clip.duration().to_secs_f64();
                                         let playhead_rel = (state.playhead_smooth_secs - clip_start).clamp(0.0, clip_dur);
                                         let empty_kfs: Vec<klipp_core::Keyframe> = Vec::new();
+                                        // The placement and opacity lanes as the picture holds them (M4 step 12c).
+                                        let video_lane: Vec<klipp_core::Keyframe> = match &ctx_menu.param_kind { crate::state::KeyframeParamKind::Video(p) => crate::inspector::placement_by_path::param_keys(clip, *p), _ => Vec::new() };
                                         let kfs: &[klipp_core::Keyframe] = match &ctx_menu.param_kind {
                                             crate::state::KeyframeParamKind::Audio(p) => match p {
                                                 klipp_core::AudioParam::Volume => &clip.volume_keyframes,
                                                 klipp_core::AudioParam::Pan => &clip.pan_keyframes,
                                                 klipp_core::AudioParam::Gain => &clip.gain_keyframes,
                                             },
-                                            crate::state::KeyframeParamKind::Video(p) => match p {
-                                                klipp_core::VideoParam::Opacity => clip.opacity_keyframes(),
-                                                klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes(),
-                                                klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes(),
-                                                klipp_core::VideoParam::Scale => clip.transform_scale_keyframes(),
-                                                klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes(),
-                                                klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes(),
-                                                klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes(),
-                                                klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
-                                                klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
-                                            },
+                                            crate::state::KeyframeParamKind::Video(_) => &video_lane,
                                             crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id),
                                             crate::state::KeyframeParamKind::Node { .. } => &[],
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
@@ -5688,15 +5639,14 @@ impl TimelinePanel {
 
         // FX badge — show if clip has non-Transform effects applied
         if clip_rect.width() > 40.0 {
-            // Any effect but the clip's two properties (its placement's
-            // Transform and its opacity's entry, M3 step 13).
-            let has_fx = !clip.ofx_effects().is_empty() || {
-                let on = |i: usize| clip.builtin_effects_enabled().get(i).copied().unwrap_or(true);
-                let fx = clip.builtin_effects();
-                let placement = (0..fx.len()).find(|i| matches!(fx[*i], klipp_effects::BuiltinEffect::Transform { .. }) && on(*i));
-                let opacity = (0..fx.len()).rev().find(|i| matches!(fx[*i], klipp_effects::BuiltinEffect::Opacity { .. }) && on(*i));
-                (0..fx.len()).any(|i| Some(i) != placement && Some(i) != opacity)
-            };
+            // Any effect but the clip's two properties (its placement and
+            // its opacity, M3 step 13), as the picture holds them: a node
+            // of the clip's chain other than its ends, its grade, its
+            // display step and its placement (M4 step 12c).
+            let has_fx = clip.picture_v2().is_ok_and(|p| {
+                use klipp_graph_format::lifted::types as lt;
+                p.picture.graph.nodes.iter().any(|n| !matches!(n.type_id.as_str(), lt::SOURCE | lt::OUTPUT | lt::GROUP | lt::SCENE_TO_DISPLAY | lt::PLACEMENT))
+            });
             if has_fx {
                 let fx_font = egui::FontId::proportional(10.0);
                 let fx_galley = painter.layout_no_wrap(
@@ -12048,12 +11998,9 @@ impl TimelinePanel {
             let clip = &state.sequence().tracks[track_idx].clips[clip_index];
             // The clip's placement and opacity as the renderer reads them
             // (M3 step 4), and the lane's keys.
-            let (sval, kfs) = (clip.video_param_value(vrb_param), clip.video_param_keyframes(vrb_param).to_vec());
-            let any_kf = !clip.opacity_keyframes().is_empty()
-                || !clip.transform_pos_x_keyframes().is_empty()
-                || !clip.transform_pos_y_keyframes().is_empty()
-                || !clip.transform_scale_keyframes().is_empty()
-                || !clip.transform_rotation_keyframes().is_empty();
+            let (sval, kfs) = (clip.video_param_value(vrb_param), crate::inspector::placement_by_path::param_keys(clip, vrb_param));
+            // Any placement or opacity lane keyed, as the picture holds them.
+            let any_kf = ["opacity", "pos_x", "pos_y", "scale", "rotation"].iter().any(|k| !crate::inspector::placement_by_path::lane_keys(clip, k).is_empty());
             (
                 clip.kind.is_gap(),
                 sval, kfs, any_kf,
@@ -15547,7 +15494,7 @@ impl TimelinePanel {
                             let clip_dur_secs = clip.duration().to_secs_f64();
 
                             // Read keyframes for the dragged video parameter
-                            let (vrb_static_val, vrb_keyframes) = (clip.video_param_value(drag_vbh.param), clip.video_param_keyframes(drag_vbh.param));
+                            let (vrb_static_val, vrb_keyframes) = (clip.video_param_value(drag_vbh.param), crate::inspector::placement_by_path::param_keys(clip, drag_vbh.param));
 
                             // Compute auto-scale Y axis (same as rendering)
                             let mut vrb_val_min = vrb_static_val;
@@ -15775,17 +15722,8 @@ impl TimelinePanel {
                                 if (new_time - clip_dur_secs).abs() < snap_thresh_secs { new_time = clip_dur_secs; }
 
                                 // Snap to other keyframes
-                                let keyframes = match drag_kf.param {
-                                    klipp_core::VideoParam::Opacity => clip.opacity_keyframes(),
-                                    klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes(),
-                                    klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes(),
-                                    klipp_core::VideoParam::Scale => clip.transform_scale_keyframes(),
-                                    klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes(),
-                                    klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes(),
-                                    klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes(),
-                                    klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
-                                    klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
-                                };
+                                // The lane as the picture holds it (M4 step 12c).
+                                let keyframes = crate::inspector::placement_by_path::param_keys(clip, drag_kf.param);
                                 for (ki, kf) in keyframes.iter().enumerate() {
                                     if ki != drag_kf.keyframe_index && (kf.time_secs - new_time).abs() < snap_thresh_secs {
                                         new_time = kf.time_secs;
