@@ -57,6 +57,16 @@ impl EffectEntry {
         }
     }
 
+    /// Whether this is an OFX plug-in that declared it reads frames at
+    /// other times: the render path's own test (`OfxPluginInfo::temporal`),
+    /// never a guess from its name.
+    pub fn is_temporal(&self, ofx_plugins: &[klipp_plugin::OfxPluginInfo]) -> bool {
+        match &self.source {
+            EffectSource::Ofx(id) => ofx_plugins.iter().any(|p| &p.name == id && p.temporal),
+            _ => false,
+        }
+    }
+
     /// Whether this effect has a GPU implementation that runs on the
     /// video preview path. Drives the on-thumbnail GPU/CPU badge and the
     /// "GPU only" filter pill.
