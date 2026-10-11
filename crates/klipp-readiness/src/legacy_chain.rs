@@ -185,6 +185,8 @@ fn given(route: Route, gpu: bool, at: Entry) -> Result<Vec<f32>, String> {
 }
 
 pub fn run(report: &mut Report) {
+    // Step 11's deleted loop stays gone.
+    report.case("the legacy loop stays gone", [key(Entry::Clip, None, Obligation::OldStageGone)], || crate::old_stage::gone(Family::LegacyChain));
     // Saved and opened: its strength and switch kept.
     report.case("equalize saved and opened", [key(Entry::Clip, None, Obligation::Saved)], || {
         let s = placed(Entry::Clip, Some((0.7, false)))?;
@@ -211,14 +213,20 @@ pub fn run(report: &mut Report) {
             });
             report.case(&format!("equalize {route:?} on {at:?} switched off"), [key(at, Some(route), Obligation::DisabledIsIdentity)], || {
                 let want = given(route, true, at)?;
-                draws(route, true, placed(at, Some((1.0, false)))?, &want)
+                let mut s = Session::new(route, true, placed(at, Some((1.0, false)))?, Arc::new(Still));
+                let got = s.frame(10);
+                // Passed over as asked, and said so: a bypass, never shown.
+                got.declined_as(Some("bypassed"))?;
+                let tolerance = if got.display_only() { 1.0 / 255.0 } else { LINEAR_TOLERANCE };
+                let off = got.off(&want);
+                if off > tolerance {
+                    return Err(format!("{off} from the picture it was given"));
+                }
+                Ok(())
             });
         }
         // Its render failing: the frame as it was, declined by name, which
-        // an export refuses. Export's route only for now: the viewer's GPU
-        // stack still draws equalize through the legacy loop, which step 11
-        // deletes, and the viewer's case lands with it.
-        if route == Route::Export {
+        // an export refuses and the viewer shows.
         report.case(&format!("equalize {route:?} failing its run"), [key(Entry::Clip, Some(route), Obligation::Outcome(Outcome::RenderFailed))], || {
             let _fault = klipp_nodes::fault::fail("equalize");
             let mut s = Session::new(route, true, placed(Entry::Clip, Some((1.0, true)))?, Arc::new(Still));
@@ -231,7 +239,6 @@ pub fn run(report: &mut Report) {
             }
             Ok(())
         });
-        }
         // At strength 0 it passes its input on (light above white too).
         report.case(&format!("equalize {route:?} at strength 0"), [key(Entry::Clip, Some(route), Obligation::Outcome(Outcome::Bypass))], || {
             draws(route, true, placed(Entry::Clip, Some((0.0, true)))?, &picture())

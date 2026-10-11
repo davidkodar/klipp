@@ -2121,6 +2121,7 @@ impl Renderer {
         transforms: &HashMap<ClipId, ResolvedTransform>,
         stats: &mut RenderStats,
     ) -> Result<(), &'static str> {
+        self.note_switched_off(c);
         let clip_time = eval_clip_time(c, time);
         let (mut fx, _) = clip_effects(c, time, fps, transforms.get(&c.id).copied(), self.pins.get(&c.id).copied());
         self.authored_colours(&mut fx);
@@ -3964,6 +3965,7 @@ impl Renderer {
         if opacity <= 0.001 {
             return below;
         }
+        self.note_switched_off(clip);
         let clip_time = eval_clip_time(clip, time);
         let before = if opacity < 0.999 { Some(below.clone()) } else { None };
         let below = Arc::new(below);
