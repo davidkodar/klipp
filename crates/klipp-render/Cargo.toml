@@ -26,6 +26,8 @@ rayon          = { workspace = true }
 thiserror      = { workspace = true }
 # An analysis an export runs is kept as its asset's JSON (M4 step 9).
 serde_json     = { workspace = true }
+# The shared offline pixel-check routes write PNG references.
+image          = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 klipp-document = { workspace = true }
@@ -39,8 +41,6 @@ klipp-media    = { workspace = true }
 klipp-nodes    = { workspace = true }
 serial_test    = "3"
 serde_json     = { workspace = true }
-# The real-project pixel check writes its frames as PNG (#1089).
-image          = { version = "0.25", default-features = false, features = ["png"] }
 
 # Its tests guard the reference it records: run them with the crate's.
 [[example]]

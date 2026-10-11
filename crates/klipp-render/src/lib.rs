@@ -57,6 +57,7 @@ pub mod export_job;
 mod frame_source;
 pub mod gif_filter;
 pub mod pre_analysis;
+pub mod pixel_check;
 
 pub use audio_mixdown::AudioMixdown;
 pub use clip_decoder::{detect_gpu, GpuVendor, RenderDecoder};

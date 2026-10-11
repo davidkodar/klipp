@@ -44,6 +44,12 @@ pub fn export_renderer(snapshot: &SequenceSnapshot, label: &str) -> Renderer {
     if timeline.tracks.iter().flat_map(|t| &t.clips).any(|c| c.has_enabled_plugins()) {
         ofx.discover_plugins();
     }
+    export_renderer_with_host(snapshot, label, ofx)
+}
+
+/// The same delivery setup with an explicitly prepared plug-in host. This lets
+/// checks use only their fixtures without discovering the user's plug-ins.
+pub fn export_renderer_with_host(snapshot: &SequenceSnapshot, label: &str, ofx: klipp_plugin::OfxHost) -> Renderer {
     let mut renderer = Renderer::new(ofx, klipp_title::TitleRenderer::new());
     renderer.set_working_colorspace(snapshot.working_colorspace);
     renderer.set_grade_encoding(snapshot.grade_encoding);
