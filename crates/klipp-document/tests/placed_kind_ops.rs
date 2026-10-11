@@ -398,7 +398,7 @@ fn plugin(name: &str) -> klipp_plugin::AppliedEffect {
 }
 
 fn plugins(c: &Clip) -> Vec<(String, bool)> {
-    test_clip::plugins(&c).iter().map(|e| (e.plugin_name.clone(), e.enabled)).collect()
+    test_clip::plugins(c).iter().map(|e| (e.plugin_name.clone(), e.enabled)).collect()
 }
 
 /// The OFX list's edits go through the picture and come back as the list
