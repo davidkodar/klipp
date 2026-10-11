@@ -32,8 +32,10 @@ pub fn generate(root: &Path) -> Result<BTreeMap<String, String>, String> {
                 path: root.join("media").join(name),
                 kind: MediaItemKind::File,
                 resolution: Resolution {
-                    width: if audio { 0 } else { 640 },
-                    height: if audio { 0 } else { 360 },
+                    // Audio uses the model's placeholder dimensions. Zero
+                    // dimensions are normalized by the project loader.
+                    width: if audio { 1920 } else { 640 },
+                    height: if audio { 1080 } else { 360 },
                 },
                 video_codec: if audio { "" } else { "ffv1" }.into(),
                 audio_codec: if audio { "pcm_s16le" } else { "" }.into(),

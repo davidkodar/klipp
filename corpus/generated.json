@@ -75,9 +75,9 @@
   ],
   "audio_pcm_sha256": "25ec0de904f78fb75286fe944652f10de08d8d02a517eeee9b923e78f93468eb",
   "project_sha256": {
-    "edit/media/manifest.json": "d4a2ce474a9337dc77184c989f0b5d94e2bf3ec7a734e331227de19e29ef5fdf",
+    "edit/media/manifest.json": "9537fa916df1d9f919ac0988251aad89c6927bcb9a32331b54594ab28e839e74",
     "edit/project.json": "a33bf491cb6a03658873d5a2a0c56f7c8e4e6af0bebbd73b458c8a60aaa08da5",
-    "effects/media/manifest.json": "d9b2ab7f0f15849aa70df655f8e160b085dee77149214e045a9101a929036252",
+    "effects/media/manifest.json": "65d2b3faa27a5e70a98073c4653faa5a5d1a6b4feb957650b4352d9cdb4f67f7",
     "effects/project.json": "e88a5b4d7c12a6fcf7ea2f56cf1c843513694f6be4e81383f49edc0a51d8cd6e"
   }
 }

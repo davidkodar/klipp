@@ -18,3 +18,13 @@ cases automatically; FFmpeg and FFprobe are required, with no silent skips.
 The current cases cover a cut with an independent audio track, blur/sharpen and
 a disabled effect. These are input reproducibility checks, not rendered-pixel
 references or proof of coverage of the remaining execution families.
+
+`scripts/corpus.sh open` generates and verifies the inputs, then checks that
+strict loading changes no project file, file size or modification time. This
+checks the loader; it does not drive the application's inspectors.
+
+`scripts/corpus.sh reopen` saves each loaded project to a fresh copy, loads and
+saves it again, and reports the first changed JSON path. Only save-owned stamps,
+equivalent relative file paths and media-pool ordering are normalized. Authored
+values, creation time and active-sequence state remain checked. Both commands
+run every declared case and never update the input references.

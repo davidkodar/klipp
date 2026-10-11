@@ -1,4 +1,5 @@
 //! Reproducible media and project inputs for the saved-project pixel checkpoint.
+mod checks;
 mod media;
 mod projects;
 
@@ -104,8 +105,9 @@ fn compare(expected: &Manifest, actual: &Manifest) -> Result<(), String> {
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
-    if args.next().as_deref() != Some("generate") {
-        return Err("usage: klipp-corpus generate [--out DIRECTORY] [--record REASON]".into());
+    let mode = args.next().unwrap_or_default();
+    if !matches!(mode.as_str(), "generate" | "open" | "reopen") {
+        return Err("usage: klipp-corpus generate|open|reopen [--out DIRECTORY] [--record REASON (generate only)]".into());
     }
     let mut out = repository().join("target/klipp-corpus/generated");
     let mut reason = None;
@@ -121,6 +123,11 @@ fn run() -> Result<(), String> {
             }
             _ => return Err(format!("unknown argument: {arg}")),
         }
+    }
+    if reason.is_some() && mode != "generate" {
+        return Err(
+            "--record is only valid with generate; open/reopen never update references".into(),
+        );
     }
     let manifest_path = repository().join("corpus/generated.json");
     // Fail before generation when the committed contract is absent or malformed.
@@ -155,6 +162,18 @@ fn run() -> Result<(), String> {
             actual.cases.len(),
             actual.video_frames.len()
         );
+    }
+    if mode != "generate" {
+        for case in projects::CASES {
+            let project = directory.join("projects").join(format!("{case}.klipp"));
+            match mode.as_str() {
+                "open" => checks::open(&project),
+                "reopen" => checks::reopen(&project, &directory.join("reopened").join(case)),
+                _ => unreachable!(),
+            }
+            .map_err(|e| format!("{case}: {e}"))?;
+            println!("PASS {mode}: {case}");
+        }
     }
     Ok(())
 }
