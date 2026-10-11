@@ -54,6 +54,9 @@ pub struct ExportJob {
     pub render_stage: Arc<std::sync::Mutex<String>>,
     /// Loudness normalization result (set during run() if normalization enabled).
     pub loudness_result: Arc<std::sync::Mutex<Option<String>>>,
+    /// Runs an analysis the export needs and hasn't got (M4 step 9).
+    /// `None`: a missing analysis refuses the export.
+    pub analyser: Option<crate::Analyser>,
 }
 
 impl ExportJob {
@@ -106,6 +109,14 @@ impl ExportJob {
             self.snapshot.audio_tracks.len(),
             self.snapshot.duration_frames,
         );
+
+        // Every analysis the range reads, ready before the first frame:
+        // a clip is never written without the correction it shows.
+        let needs = crate::pre_analysis::needs(&self.snapshot);
+        if !needs.is_empty() {
+            let mut store = klipp_analysis::assets::CacheStore::default();
+            crate::pre_analysis::ensure(&needs, &mut store, self.analyser.as_ref(), &self.cancel, &|s| Self::set_stage(&self.render_stage, s))?;
+        }
 
         Self::set_stage(&self.render_stage, "Initializing\u{2026}");
 
@@ -869,6 +880,7 @@ mod tests {
             render_stage: Arc::new(std::sync::Mutex::new(String::new())),
             loudness_result: Arc::new(std::sync::Mutex::new(None)),
             total_frames: 100,
+            analyser: None,
         };
 
         let result = job.run();

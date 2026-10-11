@@ -99,6 +99,7 @@ fn export_job_empty_sequence() {
         render_stage: Arc::new(std::sync::Mutex::new(String::new())),
         loudness_result: Arc::new(std::sync::Mutex::new(None)),
         total_frames: 5,
+        analyser: None,
     };
 
     // Export should succeed (all black frames)
@@ -151,6 +152,7 @@ fn export_job_cancellation_immediate() {
         render_stage: Arc::new(std::sync::Mutex::new(String::new())),
         loudness_result: Arc::new(std::sync::Mutex::new(None)),
         total_frames: 100,
+        analyser: None,
     };
 
     let result = job.run();
@@ -197,6 +199,7 @@ fn export_job_cancellation_midway() {
         render_stage: Arc::new(std::sync::Mutex::new(String::new())),
         loudness_result: Arc::new(std::sync::Mutex::new(None)),
         total_frames: 1000,
+        analyser: None,
     };
 
     // Run on a thread, cancel after some progress
@@ -265,6 +268,7 @@ fn export_job_progress_advances() {
         render_stage: Arc::new(std::sync::Mutex::new(String::new())),
         loudness_result: Arc::new(std::sync::Mutex::new(None)),
         total_frames: total,
+        analyser: None,
     };
 
     job.run().unwrap();
@@ -335,6 +339,7 @@ fn export_real_media_h264() {
         render_stage: Arc::new(std::sync::Mutex::new(String::new())),
         loudness_result: Arc::new(std::sync::Mutex::new(None)),
         total_frames: 30,
+        analyser: None,
     };
 
     job.run().unwrap();
@@ -407,6 +412,7 @@ fn export_real_media_with_color_grade() {
         render_stage: Arc::new(std::sync::Mutex::new(String::new())),
         loudness_result: Arc::new(std::sync::Mutex::new(None)),
         total_frames: 15,
+        analyser: None,
     };
 
     job.run().unwrap();
@@ -458,6 +464,7 @@ fn export_with_title_and_gap() {
         render_stage: Arc::new(std::sync::Mutex::new(String::new())),
         loudness_result: Arc::new(std::sync::Mutex::new(None)),
         total_frames: 48,
+        analyser: None,
     };
 
     job.run().unwrap();
@@ -532,6 +539,7 @@ fn export_with_keyframed_opacity() {
         render_stage: Arc::new(std::sync::Mutex::new(String::new())),
         loudness_result: Arc::new(std::sync::Mutex::new(None)),
         total_frames: 24,
+        analyser: None,
     };
 
     job.run().unwrap();
@@ -601,6 +609,7 @@ fn export_mp4_with_embedded_subtitle_stream() {
         render_stage: Arc::new(std::sync::Mutex::new(String::new())),
         loudness_result: Arc::new(std::sync::Mutex::new(None)),
         total_frames: 48,
+        analyser: None,
     };
 
     job.run().unwrap();
@@ -670,6 +679,7 @@ fn export_without_embed_has_no_subtitle_stream() {
         render_stage: Arc::new(std::sync::Mutex::new(String::new())),
         loudness_result: Arc::new(std::sync::Mutex::new(None)),
         total_frames: 24,
+        analyser: None,
     };
 
     job.run().unwrap();

@@ -594,6 +594,48 @@ const RANSAC_ITERATIONS: u32 = 500;
 const RANSAC_INLIER_THRESHOLD: f64 = 3.0;
 const RANSAC_MIN_INLIERS: usize = 10;
 
+/// A whole file's rolling-shutter motion (M4 step 9): for every frame,
+/// the homographies to the frame before and after it, as
+/// [`estimate_motion`] fits them; identity where a fit fails (or at the
+/// file's ends), as the render took a failed estimate.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RollingShutterData {
+    pub motion: Vec<(Homography, Homography)>,
+    pub fps: f64,
+}
+
+/// Analyse a whole file's rolling-shutter motion, `frame_count` frames at
+/// `fps`, decoding each once (`decode_frame` takes seconds from the file's
+/// start). `progress` is called with 0.0..1.0 and returns false to cancel.
+pub fn analyze_clip(
+    fps: f64,
+    frame_count: usize,
+    decode_frame: &mut dyn FnMut(f64) -> Option<(Vec<u8>, u32, u32)>,
+    progress: &dyn Fn(f32) -> bool,
+) -> Result<RollingShutterData, String> {
+    if frame_count < 3 {
+        return Err("need at least 3 frames".to_string());
+    }
+    if fps <= 0.0 {
+        return Err("frame rate must be positive".to_string());
+    }
+    let identity = Homography::identity();
+    let mut decode = |f: usize| decode_frame(f as f64 / fps).ok_or_else(|| format!("failed to decode frame {f}"));
+    let mut motion = vec![(identity, identity); frame_count];
+    let (mut prev, mut curr) = (decode(0)?, decode(1)?);
+    for f in 1..frame_count - 1 {
+        let next = decode(f + 1)?;
+        if let Some(m) = estimate_motion(&prev.0, prev.1, prev.2, &curr.0, curr.1, curr.2, &next.0, next.1, next.2) {
+            motion[f] = m;
+        }
+        prev = std::mem::replace(&mut curr, next);
+        if !progress((f + 2) as f32 / frame_count as f32) {
+            return Err("cancelled".to_string());
+        }
+    }
+    Ok(RollingShutterData { motion, fps })
+}
+
 /// Full motion estimation pipeline for one frame.
 /// Returns (H_prev_to_curr, H_curr_to_next) or None if estimation fails.
 #[allow(clippy::too_many_arguments)]
@@ -876,5 +918,31 @@ mod tests {
         assert!(cache.get(1, 200).is_none());
         assert!(cache.get(2, 100).is_none());
         assert!(cache.get(3, 300).is_none());
+    }
+}
+
+#[cfg(test)]
+mod analyze_clip_tests {
+    use super::*;
+
+    /// One motion pair a frame, the file's ends identity (they have no
+    /// frame on one side); fewer than three frames is refused.
+    #[test]
+    fn a_whole_file_gets_one_motion_pair_a_frame() {
+        let mut decode = |t: f64| {
+            let n = (t * 24.0).round() as u8;
+            let rgba: Vec<u8> = (0..64 * 32).flat_map(|i| {
+                let v = (((i % 64) as u8).wrapping_mul(37) ^ ((i / 64) as u8).wrapping_mul(11)).wrapping_add(n);
+                [v, v, v, 255]
+            }).collect();
+            Some((rgba, 64, 32))
+        };
+        let data = analyze_clip(24.0, 6, &mut decode, &|_| true).unwrap();
+        assert_eq!(data.motion.len(), 6);
+        let identity = |h: &Homography| h.h == Homography::identity().h;
+        assert!(identity(&data.motion[0].0) && identity(&data.motion[0].1), "the first frame");
+        assert!(identity(&data.motion[5].0) && identity(&data.motion[5].1), "the last frame");
+        assert!(analyze_clip(24.0, 2, &mut decode, &|_| true).is_err());
+        assert_eq!(analyze_clip(24.0, 6, &mut decode, &|_| false).unwrap_err(), "cancelled");
     }
 }

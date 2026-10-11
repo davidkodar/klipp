@@ -315,12 +315,6 @@ impl FrameSource for ExportFrameSource<'_> {
         stream.next.as_ref().map(|d| source_frame(d, to_working, w, h))
     }
 
-    fn motion_frame(&mut self, clip: &Clip, source_secs: f64, max_width: u32) -> Option<(Vec<u8>, u32, u32)> {
-        let ClipKind::Media { media_id } = &clip.kind else { return None };
-        let file = self.media.get(media_id)?;
-        crate::clip_decoder::decode_frame_at_size(&file.path, source_secs.max(0.0), max_width)
-    }
-
     /// Frames at other times, for OFX plugins that read them.
     ///
     /// Export had no implementation and took the trait's `None`, which
@@ -355,6 +349,13 @@ impl FrameSource for ExportFrameSource<'_> {
         Some(Box::new(move |t: f64| {
             reader.borrow_mut().decode_at((source_in + t).max(0.0))
         }))
+    }
+
+    /// The original file's analysis key, at the analysis width and the
+    /// media's rate (M4 step 9).
+    fn analysis_key(&mut self, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
+        let ClipKind::Media { media_id } = &clip.kind else { return None };
+        media_analysis_key(self.media.get(media_id)?, kind)
     }
 
     /// The whole media, from its start to its duration.
@@ -673,34 +674,6 @@ mod temporal_frames_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The shared reader has to give the same pixels as the helper it
-    /// replaced, or this swapped a slow path for a subtly different
-    /// one. Stride is the thing that goes wrong: ffmpeg pads each row
-    /// to its own linesize, and a copy that assumes otherwise skews the
-    /// picture rather than failing.
-    #[test]
-    fn the_shared_reader_matches_the_helper_it_replaced() {
-        let dir = std::env::temp_dir().join(format!("klipp-tf-eq-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let Some(path) = test_clip_file(&dir) else {
-            eprintln!("skipping: ffmpeg unavailable");
-            return;
-        };
-
-        let mut reader =
-            klipp_media::frame_reader::SeekableFrameReader::open_rgba(&path).expect("reader opens");
-        for t in [0.0f64, 0.5, 1.25, 2.0] {
-            let (theirs, tw, th) =
-                crate::clip_decoder::decode_frame_at_size(&path, t, u32::MAX).expect("old helper");
-            let (ours, ow, oh) = reader.decode_at(t).expect("shared reader");
-            assert_eq!((ow, oh), (tw, th), "size differs at t={t}");
-            assert_eq!(ours.len(), theirs.len(), "length differs at t={t}");
-            assert_eq!(ours, theirs, "pixels differ at t={t}");
-        }
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     /// Export's provider is colour-managed now, so the display-
     /// referred fallback has to be exactly the old swscale path — a
     /// colour-managed reader that quietly changed ordinary footage
@@ -817,4 +790,12 @@ mod temporal_frames_tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// The key of `kind`'s analysis of `file`: the original file's, at the
+/// analysis width and the media's rate (M4 step 9). `None` when its rate
+/// or size isn't known.
+pub fn media_analysis_key(file: &crate::MediaFile, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
+    // The viewer's formula (`asset_key`): both read one asset.
+    klipp_analysis::assets::key_at(kind, &file.path, file.resolution?, file.fps?)
 }

@@ -102,6 +102,7 @@ fn authored_masked_word_stagger_and_exit_survive_project_export() {
         render_stage: Default::default(),
         loudness_result: Default::default(),
         total_frames: frames,
+        analyser: None,
     }
     .run()
     .unwrap();

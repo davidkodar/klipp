@@ -14,7 +14,7 @@ pub struct Match {
 
 /// A 3×3 projective transform of the plane, `h[2][2]` normalised to 1
 /// when fitted.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct Homography {
     pub h: [[f64; 3]; 3],
 }

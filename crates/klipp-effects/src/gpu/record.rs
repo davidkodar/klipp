@@ -696,8 +696,9 @@ impl GpuEffectsPipeline {
             // denoise runs at the head of the clip's pipeline before the
             // grade, and a Frei0r plug-in has no GPU surface.
             BuiltinEffect::SpeedRamp { .. } | BuiltinEffect::TemporalDenoise { .. } | BuiltinEffect::Frei0r { .. } => Recorded::Identity,
-            // The motion data comes from `prepare_temporal_effects`, uploaded
-            // before the run; without it the frame passes through.
+            // The motion data is the node's analysis for the frame, uploaded
+            // before it records (M4 step 9); without it the frame passes
+            // through.
             BuiltinEffect::RollingShutterCorrection { strength, .. } => {
                 let Some(rows) = self.rsc_row_buf.as_ref().filter(|_| *strength >= f32::EPSILON && self.has_rsc_data()) else {
                     return Some(Recorded::Identity);

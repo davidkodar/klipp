@@ -17,6 +17,10 @@ use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams, NodePos};
 use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind, Transition};
 use klipp_timeline::test_clip::{self, TestClip};
 
+// An analysis effect's analysis, as its media's asset (M4 step 9).
+#[path = "support/analysis_assets.rs"]
+mod analysis;
+
 const W: u32 = 32;
 const H: u32 = 18;
 
@@ -126,13 +130,25 @@ impl FrameSource for Flat {
     fn frame(&mut self, clip: &Clip, _source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
         self.0.get(&clip.id).map(|f| SourceFrame { pixels: f(), width, height, pts: None })
     }
+
+    /// Every media clip's analyses, under the one stand-in key: what a
+    /// renderer given a store by [`render_analysed`] finds.
+    fn analysis_key(&mut self, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
+        analysis::key(clip, kind)
+    }
 }
 
 /// Render at `t` with CPU paths and with the GPU where available.
 fn render(seq: &Sequence, t: f64, src: &mut Flat) -> [Vec<f32>; 2] {
+    render_analysed(seq, t, src, Vec::new())
+}
+
+/// [`render`], each renderer holding `analyses` for the media clips.
+fn render_analysed(seq: &Sequence, t: f64, src: &mut Flat, analyses: Vec<(klipp_analysis::assets::AssetKind, serde_json::Value)>) -> [Vec<f32>; 2] {
     [false, true].map(|gpu| {
         let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
         r.set_gpu_enabled(gpu);
+        r.set_asset_store(analysis::store(analyses.clone()));
         r.render(seq, tc(t), W, H, src, RenderOptions::default())
     })
 }
@@ -1857,23 +1873,13 @@ fn a_scope_tap_returns_the_input_a_qualifier_reads() {
 /// is simply told to use none.
 #[test]
 fn a_stabilised_clip_is_stabilised_with_or_without_the_gpu() {
-    use klipp_effects::homography::Homography;
-    use klipp_effects::stabilization::SmoothedTrajectory;
     let mut c = media(0.0, 2.0);
     c = TestClip::of(c).effects(vec![BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.0, zoom: false }]).build();
-    // Every frame's correction a shift of 3.5 px to the left.
-    let shift = Homography { h: [[1.0, 0.0, 3.5], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
-    c.smoothed_trajectory = Some(SmoothedTrajectory {
-        smoothed: Vec::new(),
-        corrections: vec![shift; 48],
-        smoothing_window_secs: 1.0,
-        raw_jitter_px: 1.0,
-        smoothed_jitter_px: 0.1,
-    });
     let mut plain = c.clone();
     plain.set_effect_list(Vec::new(), plain.builtin_effects_enabled().to_vec());
     let mut src = Flat::default().ramp(&c).ramp(&plain);
-    let [cpu, gpu] = render(&sequence(vec![vec![c]]), 0.5, &mut src);
+    // Every frame's correction a shift of 3.5 px to the left.
+    let [cpu, gpu] = render_analysed(&sequence(vec![vec![c]]), 0.5, &mut src, vec![analysis::stabilised_by(3.5, 0.0, 48)]);
     let [unwarped, _] = render(&sequence(vec![vec![plain]]), 0.5, &mut src);
     let moved = cpu.iter().zip(&unwarped).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
     assert!(moved > 0.1, "the CPU render was not stabilised (largest change {moved})");
@@ -1889,23 +1895,14 @@ fn a_stabilised_clip_is_stabilised_with_or_without_the_gpu() {
 /// by the motion data of the clip rendered just below it.
 #[test]
 fn an_adjustment_layers_stabilisation_does_not_borrow_the_clip_below() {
-    use klipp_effects::homography::Homography;
-    use klipp_effects::stabilization::SmoothedTrajectory;
     let mut c = media(0.0, 2.0);
     c = TestClip::of(c).effects(vec![BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.0, zoom: false }]).build();
-    let shift = Homography { h: [[1.0, 0.0, 3.5], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
-    c.smoothed_trajectory = Some(SmoothedTrajectory {
-        smoothed: Vec::new(),
-        corrections: vec![shift; 48],
-        smoothing_window_secs: 1.0,
-        raw_jitter_px: 1.0,
-        smoothed_jitter_px: 0.1,
-    });
     let mut adj = clip(ClipKind::AdjustmentLayer, 0.0, 2.0);
     adj = TestClip::of(adj).effects(test_clip::effects(&c)).build();
     let mut src = Flat::default().ramp(&c);
-    let alone = render(&sequence(vec![vec![c.clone()]]), 0.5, &mut src);
-    let under = render(&sequence(vec![vec![adj], vec![c]]), 0.5, &mut src);
+    let shift = || vec![analysis::stabilised_by(3.5, 0.0, 48)];
+    let alone = render_analysed(&sequence(vec![vec![c.clone()]]), 0.5, &mut src, shift());
+    let under = render_analysed(&sequence(vec![vec![adj], vec![c]]), 0.5, &mut src, shift());
     for (arm, (a, u)) in ["CPU", "GPU"].iter().zip(alone.iter().zip(&under)) {
         let worst = a.iter().zip(u).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
         assert!(worst < 2e-3, "{arm}: the adjustment layer stabilised by the clip below's motion, by {worst}");

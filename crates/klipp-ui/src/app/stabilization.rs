@@ -22,16 +22,11 @@ impl KlippApp {
                     .and_then(|c| {
                         let item = self.state.media_pool.get(&c.media_id()?)?;
                         let fps = item.fps.as_f64();
-                        let frames = (item.duration.to_secs_f64() * fps).round() as usize;
-                        // The window the effect is set to, so the gains
-                        // that come back match what the user sees.
-                        let window = c.builtin_effects().iter().find_map(|e| match e {
-                            klipp_effects::BuiltinEffect::Deflicker { window_secs, .. } => Some(*window_secs as f64),
-                            _ => None,
-                        }).unwrap_or(1.0);
-                        Some((item.path.clone(), fps, frames, window))
+                        let frames = klipp_analysis::assets::frames_of(item.duration.to_secs_f64(), fps);
+                        let key = klipp_analysis::assets::asset_key(klipp_analysis::assets::AssetKind::Deflicker, item);
+                        Some((item.path.clone(), fps, frames, key))
                     });
-                let Some((path, fps, frame_count, window)) = found else { return true };
+                let Some((path, fps, frame_count, key)) = found else { return true };
                 if frame_count < 2 {
                     self.state.toast.show("Deflicker needs a clip of at least two frames");
                     return true;
@@ -40,78 +35,31 @@ impl KlippApp {
                 self.state.deflicker_in_progress.insert(clip_id);
                 self.state.deflicker_progress.insert(clip_id, 0.0);
                 let event_tx = self.proxy_event_tx.clone();
-                let sequence = self.sequence.clone();
                 std::thread::spawn(move || {
-                    // A 480-wide proxy: the measurement is a mean over
-                    // the frame, and it does not get more true at 4K.
-                    let mut decoder = match klipp_engine::SequentialFrameDecoder::open(&path, 480) {
-                        Ok(d) => d,
-                        Err(e) => {
-                            let _ = event_tx.send(AppEvent::DeflickerFailed { clip_id, error: format!("decoder open: {e}") });
-                            return;
-                        }
-                    };
-                    let mut luma = Vec::with_capacity(frame_count);
-                    let mut last_sent = 0.0f32;
-                    loop {
-                        match decoder.next_frame() {
-                            Ok(Some((rgba, w, h))) => {
-                                luma.push(klipp_effects::deflicker::frame_luma(&rgba, w, h));
-                                let p = (luma.len() as f32 / frame_count.max(1) as f32).min(1.0);
-                                // One event per percent, not per frame:
-                                // a 4-minute clip is 6000 frames and the
-                                // UI does not need 6000 redraws.
-                                if p - last_sent >= 0.01 {
-                                    last_sent = p;
-                                    let _ = event_tx.send(AppEvent::DeflickerProgress { clip_id, progress: p });
-                                }
-                            }
-                            Ok(None) => break,
-                            Err(e) => {
-                                let _ = event_tx.send(AppEvent::DeflickerFailed { clip_id, error: e });
-                                return;
-                            }
-                        }
-                    }
-                    if luma.len() < 2 {
-                        let _ = event_tx.send(AppEvent::DeflickerFailed { clip_id, error: "the clip decoded fewer than two frames".into() });
+                    // The analyser an export runs too, kept as the file's
+                    // asset (M4 step 9): every clip of it reads it, from
+                    // here on and after a reopen, whichever made it; the
+                    // renderer and the inspector find it there.
+                    let Some(key) = key else {
+                        let _ = event_tx.send(AppEvent::DeflickerFailed { clip_id, error: "the media's file isn't there to analyse".into() });
                         return;
-                    }
-                    let data = klipp_effects::deflicker::DeflickerData { luma, fps };
-                    let gains = klipp_effects::deflicker::DeflickerGains::refresh(None, &data, window);
-                    if let Ok(mut seq) = sequence.write() {
-                        for track in seq.tracks.iter_mut() {
-                            for clip in track.clips.iter_mut() {
-                                if clip.id == clip_id {
-                                    clip.deflicker_data = Some(data.clone());
-                                    clip.deflicker_gains = Some(gains.clone());
-                                }
-                            }
+                    };
+                    let sent = std::cell::Cell::new(0.0f32);
+                    let progress = |p: f32| {
+                        // One event a percent, not one a frame: a
+                        // 4-minute clip is 6000 frames.
+                        if p - sent.get() >= 0.01 || p >= 1.0 {
+                            sent.set(p);
+                            let _ = event_tx.send(AppEvent::DeflickerProgress { clip_id, progress: p });
                         }
+                        true
+                    };
+                    if let Err(error) = klipp_engine::analyse_into(&mut klipp_analysis::assets::CacheStore::default(), key, &path, fps, frame_count, &progress) {
+                        let _ = event_tx.send(AppEvent::DeflickerFailed { clip_id, error });
+                        return;
                     }
                     let _ = event_tx.send(AppEvent::DeflickerComplete { clip_id });
                 });
-                true
-            }
-            AppCommand::RegainDeflicker { clip_id } => {
-                // A mean over a window, per frame — microseconds, so
-                // it is safe on every slider tick, as the stabilization
-                // re-smooth is.
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                if let Some(clip) = seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
-                    let window = clip.builtin_effects().iter().find_map(|e| match e {
-                        klipp_effects::BuiltinEffect::Deflicker { window_secs, .. } => Some(*window_secs as f64),
-                        _ => None,
-                    }).unwrap_or(1.0);
-                    if let Some(data) = clip.deflicker_data.as_ref() {
-                        clip.deflicker_gains = Some(klipp_effects::deflicker::DeflickerGains::refresh(
-                            clip.deflicker_gains.clone(),
-                            data,
-                            window,
-                        ));
-                    }
-                }
-                self.state.dirty = true;
                 true
             }
             AppCommand::AnalyzeStabilization { clip_id } => {
@@ -124,143 +72,40 @@ impl KlippApp {
                         let item = self.state.media_pool.get(&mid)?;
                         let fps = item.fps.as_f64();
                         let dur_secs = item.duration.to_secs_f64();
-                        let frame_count = (dur_secs * fps).round() as usize;
-                        // Pull the smoothing slider's current value off the effect
-                        // so the initial smooth uses what the user already set,
-                        // not a hardcoded 0.5.
-                        let smoothing = c.builtin_effects().iter().find_map(|e| {
-                            if let klipp_effects::BuiltinEffect::VideoStabilization { smoothing, .. } = e {
-                                Some(*smoothing as f64)
-                            } else {
-                                None
-                            }
-                        }).unwrap_or(0.5);
-                        Some((item.path.clone(), fps, dur_secs, frame_count, smoothing))
+                        let frame_count = klipp_analysis::assets::frames_of(dur_secs, fps);
+                        let key = klipp_analysis::assets::asset_key(klipp_analysis::assets::AssetKind::Stabilisation, item);
+                        Some((item.path.clone(), fps, frame_count, key))
                     });
 
-                if let Some((path, fps, duration_secs, frame_count, smoothing)) = clip_info {
+                if let Some((path, fps, frame_count, key)) = clip_info {
                     let clip_id = *clip_id;
                     self.state.stabilization_in_progress.insert(clip_id);
                     self.state.stabilization_progress.insert(clip_id, 0.0);
                     let event_tx = self.proxy_event_tx.clone();
-                    let sequence = self.sequence.clone();
 
                     std::thread::spawn(move || {
-                        // Pipelined decode + analyze. The decoder runs on a producer
-                        // thread, the analyzer (FAST-9 / match / RANSAC) runs here on
-                        // the consumer side. Frames flow over a small bounded channel
-                        // so the two halves overlap — wall time becomes ~max(decode,
-                        // analyze) × frames instead of (decode + analyze) × frames.
-                        //
-                        // Channel is sync_channel(3): tiny memory bound (~1.5 MB at
-                        // 480p), enough buffering to hide jitter.
-                        //
-                        // Producer exits cleanly when the consumer drops the receiver
-                        // (analyze_clip returns). No explicit cancel flag needed.
-                        let (frame_tx, frame_rx) = std::sync::mpsc::sync_channel::<(Vec<u8>, u32, u32)>(3);
-                        let path_for_producer = path.clone();
-                        let event_tx_open = event_tx.clone();
-                        // Why the walk stopped, if it stopped on an error.
-                        // The consumer sees only a closed channel, and would
-                        // otherwise report "failed to decode frame N" for a
-                        // packet the container could not read or a frame the
-                        // decoder could not.
-                        let decode_error = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
-                        let decode_error_producer = std::sync::Arc::clone(&decode_error);
-                        let producer = std::thread::Builder::new()
-                            .name("klipp-stab-decode".to_string())
-                            .spawn(move || -> std::time::Duration {
-                                let mut walker = match klipp_engine::SequentialFrameDecoder::open(&path_for_producer, 480) {
-                                    Ok(w) => w,
-                                    Err(e) => {
-                                        let _ = event_tx_open.send(AppEvent::StabilizationFailed { clip_id, error: format!("decoder open: {e}") });
-                                        return std::time::Duration::ZERO;
-                                    }
-                                };
-                                let mut decode_wall = std::time::Duration::ZERO;
-                                loop {
-                                    let t0 = std::time::Instant::now();
-                                    let frame = walker.next_frame();
-                                    decode_wall += t0.elapsed();
-                                    match frame {
-                                        Ok(Some(f)) => {
-                                            // send blocks if consumer is behind — that's
-                                            // exactly the backpressure we want.
-                                            if frame_tx.send(f).is_err() {
-                                                // Consumer dropped (analyze done/aborted).
-                                                break;
-                                            }
-                                        }
-                                        Ok(None) => break, // EOF
-                                        Err(e) => {
-                                            *decode_error_producer.lock().unwrap_or_else(|p| p.into_inner()) = Some(e);
-                                            break;
-                                        }
-                                    }
-                                }
-                                decode_wall
-                            });
-                        let producer = match producer {
-                            Ok(h) => h,
-                            Err(e) => {
-                                let _ = event_tx.send(AppEvent::StabilizationFailed { clip_id, error: format!("spawn producer: {e}") });
-                                return;
-                            }
+                        // The analyser an export runs too, kept as the
+                        // file's asset (M4 step 9): the renderer and the
+                        // inspector find it there, smoothed as each effect
+                        // is set, whichever made it.
+                        let Some(key) = key else {
+                            let _ = event_tx.send(AppEvent::StabilizationFailed { clip_id, error: "the media's file isn't there to analyse".into() });
+                            return;
                         };
-
-                        let analyze_start = std::time::Instant::now();
-                        let mut consumer_stall = std::time::Duration::ZERO;
-                        let mut decoded_frames = 0usize;
-                        let result = klipp_effects::stabilization::analyze_clip(
-                            fps,
-                            frame_count,
-                            &mut |_time_secs| {
-                                let t0 = std::time::Instant::now();
-                                let f = frame_rx.recv().ok();
-                                consumer_stall += t0.elapsed();
-                                if f.is_some() { decoded_frames += 1; }
-                                f
-                            },
-                            &|progress| {
-                                let _ = event_tx.send(AppEvent::StabilizationProgress { clip_id, progress });
-                                true // no cancel support yet
-                            },
-                        );
-                        // Drop receiver so the producer's next send() errors out and
-                        // it exits cleanly. (Implicit drop happens at scope end too,
-                        // but explicit makes the intent clear.)
-                        drop(frame_rx);
-                        let decode_wall = producer.join().unwrap_or(std::time::Duration::ZERO);
-                        let total = analyze_start.elapsed();
-                        let analysis_wall = total.saturating_sub(consumer_stall);
-                        tracing::info!(
-                            "Stabilization analyze (pipelined): {} frames in {:.2}s — decode {:.2}s, analysis {:.2}s, consumer stall {:.2}s ({:.0}% of total)",
-                            decoded_frames,
-                            total.as_secs_f64(),
-                            decode_wall.as_secs_f64(),
-                            analysis_wall.as_secs_f64(),
-                            consumer_stall.as_secs_f64(),
-                            100.0 * consumer_stall.as_secs_f64() / total.as_secs_f64().max(1e-6),
-                        );
-                        match result {
-                            Ok(data) => {
-                                let window_secs = (smoothing.clamp(0.0, 1.0) * duration_secs).max(0.05);
-                                let smoothed = klipp_effects::stabilization::smooth_trajectory(&data, window_secs);
-                                if let Ok(mut seq) = sequence.write() {
-                                    klipp_engine::seq_write_holder_set(klipp_engine::SeqWriteHolder::UiStabilizationComplete);
-                                    for track in &mut seq.tracks {
-                                        if let Some(clip) = track.find_clip_mut(clip_id) {
-                                            clip.stabilization_data = Some(data);
-                                            clip.smoothed_trajectory = Some(smoothed);
-                                            break;
-                                        }
-                                    }
-                                    klipp_engine::seq_write_holder_set(klipp_engine::SeqWriteHolder::None);
-                                }
+                        let sent = std::cell::Cell::new(0.0f32);
+                        let progress = |p: f32| {
+                            // One event a percent, not one a frame.
+                            if p - sent.get() >= 0.01 || p >= 1.0 {
+                                sent.set(p);
+                                let _ = event_tx.send(AppEvent::StabilizationProgress { clip_id, progress: p });
+                            }
+                            true
+                        };
+                        match klipp_engine::analyse_into(&mut klipp_analysis::assets::CacheStore::default(), key, &path, fps, frame_count, &progress) {
+                            Ok(_) => {
                                 let _ = event_tx.send(AppEvent::StabilizationComplete { clip_id });
                             }
-                            Err(e) => {
-                                let error = decode_error.lock().unwrap_or_else(|p| p.into_inner()).take().unwrap_or(e);
+                            Err(error) => {
                                 let _ = event_tx.send(AppEvent::StabilizationFailed { clip_id, error });
                             }
                         }
@@ -541,30 +386,6 @@ impl KlippApp {
                     n_pieces, cuts.len(),
                     if cuts.len() == 1 { "" } else { "s" }
                 ));
-                true
-            }
-            AppCommand::ResmoothStabilization { clip_id } => {
-                // Re-run gaussian smoothing on the existing baked trajectory using
-                // the current smoothing slider value. Microseconds — safe to call
-                // every slider tick.
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                if let Some(clip) = seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
-                    // Find the current smoothing value from the VideoStabilization effect.
-                    let smoothing = clip.builtin_effects().iter().find_map(|e| {
-                        if let klipp_effects::BuiltinEffect::VideoStabilization { smoothing, .. } = e {
-                            Some(*smoothing as f64)
-                        } else {
-                            None
-                        }
-                    }).unwrap_or(0.5);
-                    if let Some(data) = clip.stabilization_data.as_ref() {
-                        let duration_secs = data.frame_count as f64 / data.fps.max(1.0);
-                        let window_secs = (smoothing.clamp(0.0, 1.0) * duration_secs).max(0.05);
-                        let smoothed = klipp_effects::stabilization::smooth_trajectory(data, window_secs);
-                        clip.smoothed_trajectory = Some(smoothed);
-                    }
-                }
-                self.state.dirty = true;
                 true
             }
             AppCommand::ToggleTrackingMode => {
@@ -1007,6 +828,74 @@ impl KlippApp {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Starts the analyses the active sequence's effects need and haven't
+    /// got (M4 step 9): a Deflicker, Stabilisation or Rolling Shutter
+    /// effect on a clip whose file has no asset of its kind in the analysis
+    /// cache is analysed by itself, once a file, with no button to press. A found asset is kept
+    /// in `analyses`, by its key, for the inspector. Looks every two
+    /// seconds at most, and at once after an analysis completes.
+    pub(super) fn ensure_analyses(&mut self) {
+        use klipp_analysis::assets::{self, AssetKind};
+        const EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+        if self.state.analysis_checked.is_some_and(|t| t.elapsed() < EVERY) {
+            return;
+        }
+        self.state.analysis_checked = Some(std::time::Instant::now());
+        let Some(seq) = self.state.sequences.get(self.state.active_sequence_idx) else { return };
+        // Each key the sequence's clips use, once, and whether an analysis
+        // of it runs now (nothing to read until it ends).
+        let mut uses: Vec<(assets::AssetKey, AssetKind, klipp_core::ClipId, bool)> = Vec::new();
+        for clip in seq.tracks.iter().flat_map(|t| t.clips.iter()) {
+            for effect in clip.enabled_effects() {
+                let Some(kind) = klipp_compose::render::asset_kind(effect) else { continue };
+                let running = match kind {
+                    AssetKind::Deflicker => self.state.deflicker_in_progress.contains(&clip.id),
+                    AssetKind::Stabilisation => self.state.stabilization_in_progress.contains(&clip.id),
+                    AssetKind::RollingShutter => false,
+                };
+                let Some(item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)) else { continue };
+                // No key without the original: the inspector says so.
+                let Some(key) = assets::asset_key(kind, item) else {
+                    self.state.analysis_unavailable.insert((clip.id, kind));
+                    continue;
+                };
+                self.state.analysis_unavailable.remove(&(clip.id, kind));
+                match uses.iter_mut().find(|(k, ..)| *k == key) {
+                    Some(u) => u.3 |= running,
+                    None => uses.push((key, kind, clip.id, running)),
+                }
+            }
+        }
+        let cache = assets::CacheStore::default();
+        let keys: Vec<(assets::AssetKey, bool)> = uses.iter().map(|(k, _, _, running)| (k.clone(), !running)).collect();
+        let missing = self.state.keep_analyses(&cache, &keys);
+        for (key, kind, clip_id, _) in uses.into_iter().filter(|(k, ..)| missing.contains(k)) {
+            if !self.state.analysis_started.insert(key) {
+                continue;
+            }
+            let cmd = match kind {
+                AssetKind::Deflicker => AppCommand::AnalyzeDeflicker { clip_id },
+                AssetKind::Stabilisation => AppCommand::AnalyzeStabilization { clip_id },
+                AssetKind::RollingShutter => {
+                    // No progress of its own to show: the asset is all, and
+                    // the next look finds it.
+                    let Some(item) = self.state.sequences.get(self.state.active_sequence_idx).and_then(|s| s.all_clips().find(|c| c.id == clip_id)).and_then(|c| c.media_id()).and_then(|m| self.state.media_pool.get(&m)) else { continue };
+                    let (path, fps) = (item.path.clone(), item.fps.as_f64());
+                    let frames = assets::frames_of(item.duration.to_secs_f64(), fps);
+                    let key = assets::asset_key(kind, item).expect("keyed above");
+                    std::thread::spawn(move || {
+                        if let Err(e) = klipp_engine::analyse_into(&mut assets::CacheStore::default(), key, &path, fps, frames, &|_| true) {
+                            tracing::warn!("rolling-shutter analysis of {}: {e}", path.display());
+                        }
+                    });
+                    continue;
+                }
+            };
+            let mut refresh = false;
+            self.handle_stabilization_commands(&cmd, &mut refresh);
         }
     }
 }

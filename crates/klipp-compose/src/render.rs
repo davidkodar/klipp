@@ -152,14 +152,6 @@ pub trait FrameSource {
         None
     }
 
-    /// A small sRGB RGBA8 frame of `clip`'s media at `source_secs`, at most
-    /// `max_width` wide, for motion estimation (rolling-shutter
-    /// correction). Sources that cannot provide one return `None`, and the
-    /// correction is skipped.
-    fn motion_frame(&mut self, _clip: &Clip, _source_secs: f64, _max_width: u32) -> Option<(Vec<u8>, u32, u32)> {
-        None
-    }
-
     /// Frames of `clip`'s media for OFX plugins that read other times than
     /// the current one (retime, slit-scan, frame blend): a function from
     /// clip time to an sRGB RGBA8 frame. `None` (the default) runs those
@@ -199,6 +191,65 @@ pub trait FrameSource {
     /// (the default): the sequence's rate stands in.
     fn media_fps(&mut self, _clip: &Clip) -> Option<f64> {
         None
+    }
+
+    /// The key of `kind`'s analysis of `clip`'s media (M4 steps 8 and 9):
+    /// the original file's, whatever the source decodes. `None` (the
+    /// default) when it can't say: the clip's analysis nodes then have
+    /// none.
+    fn analysis_key(&mut self, _clip: &Clip, _kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
+        None
+    }
+}
+
+/// The analysis asset `effect` reads, if it reads one.
+pub fn asset_kind(effect: &BuiltinEffect) -> Option<klipp_analysis::assets::AssetKind> {
+    use klipp_analysis::assets::AssetKind;
+    match effect {
+        BuiltinEffect::Deflicker { .. } => Some(AssetKind::Deflicker),
+        BuiltinEffect::VideoStabilization { .. } => Some(AssetKind::Stabilisation),
+        BuiltinEffect::RollingShutterCorrection { .. } => Some(AssetKind::RollingShutter),
+        _ => None,
+    }
+}
+
+/// What an analysis effect's derivation depends on: its kind and the
+/// settings it takes.
+fn derivation_of(effect: &BuiltinEffect) -> Option<(klipp_analysis::assets::AssetKind, u64)> {
+    Some((asset_kind(effect)?, klipp_effects::node_analysis::derivation_params(effect)?))
+}
+
+/// What a read of an analysis asset found, kept by the asset's stamp.
+#[derive(Clone)]
+enum Kept {
+    Absent,
+    /// By another algorithm, or one whose data won't derive: owed again.
+    Stale,
+    Ready(Arc<klipp_effects::node_analysis::NodeAnalysis>),
+}
+
+/// One clip's analyses for a frame (M4 step 9), by the effect that reads
+/// each: ready, with its settings applied, or stale (never read). An
+/// effect with neither has no analysis.
+#[derive(Default)]
+pub struct ClipAnalysis {
+    found: Vec<((klipp_analysis::assets::AssetKind, u64), Option<klipp_nodes::frame_context::AnalysisBlob>)>,
+}
+
+impl klipp_nodes::frame_context::AnalysisInputs for ClipAnalysis {
+    fn lookup(&self, _node: NodeId, _schema: u32) -> klipp_nodes::frame_context::Analysis<'_> {
+        klipp_nodes::frame_context::Analysis::Absent
+    }
+
+    fn lookup_effect(&self, _node: NodeId, effect: &BuiltinEffect, schema: u32) -> klipp_nodes::frame_context::Analysis<'_> {
+        use klipp_nodes::frame_context::Analysis;
+        let Some(wanted) = derivation_of(effect) else { return Analysis::Absent };
+        match self.found.iter().find(|(k, _)| *k == wanted) {
+            None => Analysis::Absent,
+            Some((_, None)) => Analysis::Stale { found: 0 },
+            Some((_, Some(blob))) if blob.schema != schema => Analysis::Stale { found: blob.schema },
+            Some((_, Some(blob))) => Analysis::Ready(blob),
+        }
     }
 }
 
@@ -661,6 +712,14 @@ pub struct Renderer {
     /// A scene-referred clip's display step for the grade being run,
     /// spliced in after the grade and before `run_effects` (step 11c).
     run_display: Option<klipp_color::hdr::SceneToDisplay>,
+    /// Where analysis assets are kept (M4 step 8): the analysis cache.
+    assets: Box<dyn klipp_analysis::assets::AssetStore + Send>,
+    /// Analyses derived from their assets with an effect's settings, each
+    /// with the stamp of what was kept when it was read: kept while the
+    /// stamp and the settings hold. Bounded.
+    derived: HashMap<(klipp_analysis::assets::AssetKey, u64), (u64, Kept)>,
+    /// The clip being rendered and its analyses, for each of its runs.
+    clip_analysis: Option<(ClipId, ClipAnalysis)>,
     /// The source-boundary node for the grade being run (M4 step 6):
     /// spliced in straight after the Source, before the grade.
     run_source_node: Option<klipp_nodes::Node>,
@@ -702,8 +761,9 @@ pub struct Renderer {
     pins: HashMap<ClipId, klipp_timeline::surface::Quad>,
     working: WorkingColorspace,
     grade_encoding: klipp_core::GradeEncoding,
-    /// The motion data of the clip being rendered, for the CPU arm of
-    /// its stabilisation and rolling-shutter correction.
+    /// The frame's motion from its analyses, for the CPU kernels'
+    /// stabilisation and rolling-shutter correction while
+    /// `effects_analysed` runs them; otherwise none.
     motion: klipp_effects::MotionData,
     /// Why the GPU stack last declined a frame, so the log says it once.
     last_gpu_stack_decline: Option<&'static str>,
@@ -725,10 +785,6 @@ pub struct Renderer {
     /// rendering; see [`Self::gpu_export_declined_after_work`].
     gpu_export_declined_after_work: bool,
     global_lut: Option<GlobalLut>,
-    /// Rolling-shutter motion per (clip, source millisecond): estimating
-    /// it decodes three frames, and a paused viewer re-renders the same
-    /// frame many times.
-    rsc_motion: HashMap<(ClipId, i64), (klipp_effects::rolling_shutter::Homography, klipp_effects::rolling_shutter::Homography)>,
     /// The plug-in instances this renderer's non-pure nodes own (M4):
     /// one owner per renderer, so the viewer's and an export's never meet.
     instances: klipp_nodes::frame_context::PluginInstances,
@@ -811,9 +867,11 @@ impl Renderer {
             stack_work_started: false,
             gpu_export_declined_after_work: false,
             global_lut: None,
-            rsc_motion: HashMap::new(),
             instances: Default::default(),
             run_source_node: None,
+            assets: Box::new(klipp_analysis::assets::CacheStore::default()),
+            derived: HashMap::new(),
+            clip_analysis: None,
             inspect: Inspect::default(),
             found: Inspection::default(),
             hdr_peak: None,
@@ -1838,7 +1896,7 @@ impl Renderer {
                         // on the GPU with it, instead of a pass over the layer.
                         effects_done = self.splice_effects(c, &fx, time, fps, transforms, stats);
                         self.executor.request_output_on_gpu();
-                        let pixels = self.grade(c, GradeInput::Gpu(g), clip_time, fps, width, height, None);
+                        let pixels = self.grade_on_stack(c, GradeInput::Gpu(g), time, clip_time, fps, width, height, src);
                         stats.grade_ms += ms_since(t);
                         if effects_done && !self.finish_spliced() {
                             return Err("an effect could not be recorded");
@@ -1858,7 +1916,7 @@ impl Renderer {
                             unshare(p)
                         } else {
                             effects_done = self.splice_effects(c, &fx, time, fps, transforms, stats);
-                            let pixels = self.grade(c, GradeInput::Cpu(p), clip_time, fps, width, height, None);
+                            let pixels = self.grade_on_stack(c, GradeInput::Cpu(p), time, clip_time, fps, width, height, src);
                             if effects_done && !self.finish_spliced() {
                                 return Err("an effect could not be recorded");
                             }
@@ -2411,7 +2469,6 @@ impl Renderer {
         let (mut fx, opacity) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied());
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
-        self.prepare_temporal_effects(clip, &fx, time, fps, height, src);
         // The grade's result goes on into the effects on the GPU, with no
         // download and upload between them, when nothing in between needs
         // the picture on the CPU (#1089, M2 step 10).
@@ -2473,6 +2530,9 @@ impl Renderer {
         // The frame's declines before this clip's grade: a run graded again
         // gives back the first run's, and notes its own (step 10).
         let declines_before = self.found.declines.len();
+        // The clip's analyses for its runs this frame, from its media.
+        let analyses = self.analyses_of(clip, src);
+        self.clip_analysis = Some((clip.id, analyses));
         let mut pixels = self.grade_at_source(clip, input, time, clip_time, fps, width, height, src, source_pts, hdr);
         // Whether the grade's run took the display step, so it isn't run
         // twice: not when the run failed and gave back its input.
@@ -2571,7 +2631,7 @@ impl Renderer {
         // that still wants them on the CPU says so, and runs again.
         // The picture's already drawn: a plug-in's instance is lent to the
         // run, and no node of it reads the source.
-        let source_at = clip.source_in.to_secs_f64() + clip_time;
+        let source_at = clip.source_secs_at(clip_time, fps);
         let run = self.in_context(clip, clip_time, fps, source_at, None, &mut klipp_nodes::frame_context::NoSources, |r, ctx| {
             let spliced = std::mem::take(&mut r.spliced);
             let run = match r.executor.prime_chain_from_linear(&pixels, width, height) {
@@ -2776,7 +2836,7 @@ impl Renderer {
         // route: never by the kernels, which would make it one frame's.
         let frei0r = klipp_effects::has_frei0r(fx);
         if (!plan && !blended && !frei0r) || fx.is_empty() {
-            return self.effects(fx, pixels, clip_time, width, height);
+            return self.effects_analysed(clip, fx, pixels, clip_time, fps, width, height);
         }
         if !plan && frei0r {
             self.cpu_kernel_run();
@@ -2788,7 +2848,7 @@ impl Renderer {
                 self.plan_misses += 1;
                 self.cpu_fallback(clip);
                 if !blended && !frei0r {
-                    return self.effects(fx, back, clip_time, width, height);
+                    return self.effects_analysed(clip, fx, back, clip_time, fps, width, height);
                 }
                 self.cpu_kernel_run();
                 self.on_cpu_executor(|r| r.run_effects_plan(clip, fx, blends, back, clip_time, fps, width, height)).unwrap_or_else(|back| back)
@@ -2876,8 +2936,8 @@ impl Renderer {
         // this declines only a new such type nobody has moved there. The
         // analysis-driven ones (stabilisation, rolling shutter, deflicker)
         // take the plan route since step 12: their per-frame data reaches
-        // the executor (`prepare_temporal_effects`, `frame_inputs`). Read
-        // from the registry, so a new such type is covered.
+        // the executor as each node's analysis (M4 step 9). Read from the
+        // registry, so a new such type is covered.
         self.effects_can_run_on_gpu(fx) && !self.inspects_the_grade_of(clip)
     }
 
@@ -3045,111 +3105,19 @@ impl Renderer {
         klipp_color::hdr::SceneToDisplay { transfer: t, peak_nits: self.hdr_peak, luma: klipp_color::primaries::luminance_weights(self.working) }
     }
 
-    /// Drop the motion data of the clip rendered last, on the CPU side and
-    /// on the GPU pipeline.
-    fn forget_motion(&mut self) {
-        self.motion = klipp_effects::MotionData::default();
-        if let Some(gpu) = self.gpu.as_mut() {
-            gpu.clear_stabilization_homography();
-            gpu.clear_rsc_row_transforms();
-        }
-        self.executor.set_motion(&self.motion);
-    }
-
-    /// Work out the per-frame data the stabilisation and rolling-shutter
-    /// effects warp by: the stabilisation correction for this frame, and
-    /// the row transforms from motion between the neighbouring source
-    /// frames. Kept for the CPU arm (`effects`) and uploaded to the GPU
-    /// pipeline, so a chain stabilises the same on either (#698). What a
-    /// clip lacks is cleared on both, so no clip is warped by the data of
-    /// the one before it.
-    fn prepare_temporal_effects(
-        &mut self,
-        clip: &Clip,
-        fx: &[BuiltinEffect],
-        time: Timecode,
-        fps: f64,
-        height: u32,
-        src: &mut dyn FrameSource,
-    ) {
-        use klipp_effects::rolling_shutter::{compute_row_transforms, estimate_motion, Homography};
-        let stabilise = fx.iter().any(|e| matches!(e, BuiltinEffect::VideoStabilization { .. }));
-        let rsc = fx.iter().find_map(|e| match e {
-            BuiltinEffect::RollingShutterCorrection { strength, readout_ratio } if *strength > f32::EPSILON => {
-                Some((*strength, *readout_ratio))
-            }
-            _ => None,
-        });
-        self.motion = klipp_effects::MotionData::default();
-        if !stabilise && rsc.is_none() {
-            // The executor's effect nodes warp by the same data (M2 step
-            // 12): none, for a clip without these effects.
-            self.executor.set_motion(&self.motion);
-            return;
-        }
-        let clip_time = eval_clip_time(clip, time);
-        if stabilise {
-            if let Some(gpu) = self.gpu() {
-                gpu.clear_stabilization_homography();
-            }
-            if let Some(tr) = clip.smoothed_trajectory.as_ref().filter(|t| !t.corrections.is_empty()) {
-                let source_dur = (clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64()).max(0.001);
-                let idx = ((clip_time * tr.corrections.len() as f64 / source_dur).round() as usize).min(tr.corrections.len() - 1);
-                let h = &tr.corrections[idx].h;
-                let m = [
-                    h[0][0] as f32, h[0][1] as f32, h[0][2] as f32,
-                    h[1][0] as f32, h[1][1] as f32, h[1][2] as f32,
-                    h[2][0] as f32, h[2][1] as f32, h[2][2] as f32,
-                    0.0, 0.0, 0.0,
-                ];
-                if let Some(gpu) = self.gpu() {
-                    gpu.upload_stabilization_homography(&m);
-                }
-                self.motion.stabilization = Some(m);
-            }
-        }
-        if let Some((strength, readout)) = rsc {
-            if let Some(gpu) = self.gpu() {
-                gpu.clear_rsc_row_transforms();
-            }
-            let at = source_secs(clip, time, fps);
-            let key = (clip.id, (at * 1000.0).round() as i64);
-            let motion = match self.rsc_motion.get(&key) {
-                Some(m) => Some(*m),
-                None => {
-                    let dt = 1.0 / fps.max(1.0);
-                    let frames = (
-                        src.motion_frame(clip, (at - dt).max(0.0), 480),
-                        src.motion_frame(clip, at, 480),
-                        src.motion_frame(clip, at + dt, 480),
-                    );
-                    let m = match frames {
-                        (Some((p, pw, ph)), Some((c, cw, ch)), Some((n, nw, nh))) => {
-                            Some(estimate_motion(&p, pw, ph, &c, cw, ch, &n, nw, nh)
-                                .unwrap_or((Homography::identity(), Homography::identity())))
-                        }
-                        _ => None,
-                    };
-                    if let Some(m) = m {
-                        if self.rsc_motion.len() > 512 {
-                            self.rsc_motion.clear();
-                        }
-                        self.rsc_motion.insert(key, m);
-                    }
-                    m
-                }
-            };
-            if let Some((prev, next)) = motion {
-                let rows = compute_row_transforms(&prev, &next, height, readout, strength);
-                if let Some(gpu) = self.gpu() {
-                    gpu.upload_rsc_row_transforms(&rows);
-                }
-                self.motion.rsc_rows = Some(rows);
-            }
-        }
-        // The plan route's effect nodes run on the executor's own pipeline
-        // and CPU arm: they warp by the same data (M2 step 12).
-        self.executor.set_motion(&self.motion);
+    /// A layer's grade on the GPU stack in the clip's frame context, with
+    /// its analyses from its media, as on the CPU: an analysis effect
+    /// (a Deflicker) reads its asset here too, or declines, rather than
+    /// running at no strength. The stack takes no temporal effect, so no
+    /// source frames are lent.
+    #[allow(clippy::too_many_arguments)]
+    fn grade_on_stack(&mut self, clip: &Clip, input: GradeInput, time: Timecode, clip_time: f64, fps: f64, width: u32, height: u32, src: &mut dyn FrameSource) -> Vec<f32> {
+        let analyses = self.analyses_of(clip, src);
+        self.clip_analysis = Some((clip.id, analyses));
+        let at = source_secs(clip, time, fps);
+        let pixels = self.in_context(clip, clip_time, fps, at, None, &mut klipp_nodes::frame_context::NoSources, |r, ctx| r.grade(clip, input, clip_time, fps, width, height, Some(ctx)));
+        self.clip_analysis = None;
+        pixels
     }
 
     /// [`Self::grade`] in the clip's frame context (M4), with its
@@ -3235,6 +3203,10 @@ impl Renderer {
         // The OFX host, lent to the run's OFX nodes: a clone of the shared
         // host, so lending it borrows nothing of the renderer (M4 step 3).
         let ofx = crate::ofx_node::OfxNodes(std::sync::Arc::clone(&self.ofx));
+        // The clip's analyses, lent for the run.
+        let analysis = self.clip_analysis.take();
+        let none = ClipAnalysis::default();
+        let inputs = analysis.as_ref().filter(|(id, _)| *id == clip.id).map_or(&none, |(_, a)| a);
         let mut ctx = klipp_nodes::frame_context::FrameContext {
             clip: clip.id,
             frame: ((clip.timeline_in.to_secs_f64() + clip_time) * fps).round() as i64,
@@ -3245,13 +3217,67 @@ impl Renderer {
             source_secs,
             source_pts,
             sources,
-            analysis: &klipp_nodes::frame_context::NoAnalysis,
+            analysis: inputs,
             instances: &mut instances,
             ofx: Some(&ofx),
             source_at: &|t| clip.source_secs_at(t, fps),
         };
         let out = f(self, &mut ctx);
         self.instances = instances;
+        self.clip_analysis = analysis;
+        out
+    }
+
+    /// Keep analysis assets in `store` rather than the analysis cache.
+    pub fn set_asset_store(&mut self, store: Box<dyn klipp_analysis::assets::AssetStore + Send>) {
+        self.assets = store;
+        self.derived.clear();
+    }
+
+    /// `clip`'s analyses for this frame (M4 step 9): for each analysis
+    /// effect it runs, its asset found under the key `src` gives it,
+    /// derived with the effect's settings (kept while they hold), or stale.
+    fn analyses_of(&mut self, clip: &Clip, src: &mut dyn FrameSource) -> ClipAnalysis {
+        use klipp_analysis::assets::{lookup, Found};
+        let mut out = ClipAnalysis::default();
+        for effect in clip.enabled_effects() {
+            let (Some(kind), Some(params)) = (asset_kind(effect), klipp_effects::node_analysis::derivation_params(effect)) else { continue };
+            if out.found.iter().any(|(k, _)| *k == (kind, params)) {
+                continue;
+            }
+            let Some(key) = src.analysis_key(clip, kind) else { continue };
+            // What's kept, by its stamp: a frame costs a look at the file,
+            // never a read. The asset is read and parsed, and derived with
+            // the effect's settings, only when that stamp or the settings
+            // change; a stamp seen again is the same asset (#1321 review).
+            // None at the current algorithm keeps what was found under a
+            // stamp no asset has, until an analysis keeps one.
+            let stamp = self.assets.stamp(&key).unwrap_or(u64::MAX);
+            let kept = match self.derived.get(&(key.clone(), params)) {
+                Some((seen, kept)) if *seen == stamp => kept.clone(),
+                _ => {
+                    let kept = match lookup(self.assets.as_ref(), &key) {
+                        Found::Absent => Kept::Absent,
+                        Found::Stale { .. } => Kept::Stale,
+                        // One that won't derive (its shape changed without
+                        // its algorithm) reads as stale: owed again, never
+                        // drawn from.
+                        Found::Ready(raw) => klipp_effects::node_analysis::derive(effect, &raw).map_or(Kept::Stale, |d| Kept::Ready(Arc::new(d))),
+                    };
+                    if self.derived.len() > 64 {
+                        self.derived.clear();
+                    }
+                    self.derived.insert((key.clone(), params), (stamp, kept.clone()));
+                    kept
+                }
+            };
+            let blob = match kept {
+                Kept::Absent => continue,
+                Kept::Stale => None,
+                Kept::Ready(d) => Some(klipp_nodes::frame_context::AnalysisBlob { schema: klipp_nodes::frame_context::NODE_ANALYSIS_SCHEMA, data: d }),
+            };
+            out.found.push(((kind, params), blob));
+        }
         out
     }
 
@@ -3468,6 +3494,39 @@ impl Renderer {
     fn cpu_kernel_run(&mut self) {
         self.found.stats.effects_on_cpu_kernels += 1;
         EFFECTS_ON_CPU_KERNELS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// [`Self::effects`] for `clip`'s list, its analysis effects given
+    /// their analysis for the frame (M4 step 9): a deflicker's gain and the
+    /// frame's motion, read at the frame's source time from the clip's
+    /// analyses. The kernels take one motion for the list.
+    #[allow(clippy::too_many_arguments)]
+    fn effects_analysed(&mut self, clip: &Clip, fx: &[BuiltinEffect], pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
+        use klipp_nodes::frame_context::{Analysis, AnalysisInputs, NODE_ANALYSIS_SCHEMA};
+        let Some((_, analyses)) = self.clip_analysis.as_ref().filter(|(id, _)| *id == clip.id) else {
+            return self.effects(fx, pixels, clip_time, width, height);
+        };
+        let source_secs = clip.source_secs_at(clip_time, fps);
+        let mut motion = klipp_effects::MotionData::default();
+        let mut list = fx.to_vec();
+        for effect in &mut list {
+            let Analysis::Ready(blob) = analyses.lookup_effect(NodeId::nil(), effect, NODE_ANALYSIS_SCHEMA) else { continue };
+            let Some(a) = blob.data.downcast_ref::<klipp_effects::node_analysis::NodeAnalysis>() else { continue };
+            let at = a.at(effect, source_secs, height);
+            if let (BuiltinEffect::Deflicker { gain, .. }, Some(g)) = (&mut *effect, at.gain) {
+                *gain = g;
+            }
+            if at.motion.stabilization.is_some() {
+                motion.stabilization = at.motion.stabilization;
+            }
+            if at.motion.rsc_rows.is_some() {
+                motion.rsc_rows = at.motion.rsc_rows;
+            }
+        }
+        let kept = std::mem::replace(&mut self.motion, motion);
+        let out = self.effects(&list, pixels, clip_time, width, height);
+        self.motion = kept;
+        out
     }
 
     /// `fx` on `pixels` by the CPU kernels: a clip whose effects can't run
@@ -3822,10 +3881,8 @@ impl Renderer {
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
         // An adjustment layer has no footage of its own to analyse, so its
-        // stabilisation and rolling-shutter correction have no motion data
-        // and pass through, on both arms; they must not warp by the clip
-        // rendered before it (#698).
-        self.forget_motion();
+        // stabilisation and rolling-shutter correction have no analysis
+        // and pass through, on both arms (#698).
         // As a plan of its own, from its picture, when it can run on the
         // GPU (step 11d); else the CPU kernels.
         // A picture-truth layer's masked or mixed effects take the plan with
@@ -4219,10 +4276,9 @@ pub(crate) fn frame_inputs(
             *seed = (t * fps).round().max(0.0) as u32;
         }
         BuiltinEffect::Deflicker { gain, .. } => {
-            // The measured gain for this frame, at full weight — the effect
-            // applies `strength` itself, and doing it here as well would
-            // square it.
-            *gain = clip.deflicker_gains.as_ref().map(|g| klipp_effects::deflicker::gain_at(&g.gains, t, g.fps, 1.0)).unwrap_or(1.0);
+            // Its analysis gives the frame's gain (M4 step 9, at the
+            // effect's node or `effects_analysed`); none here.
+            *gain = 1.0;
         }
         // A pinned clip's first corner pin is on its surface.
         BuiltinEffect::CornerPin { tl, tr, br, bl } if pin.is_some() && !*pinned => {

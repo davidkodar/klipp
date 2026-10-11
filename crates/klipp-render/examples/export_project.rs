@@ -183,6 +183,7 @@ fn main() {
         render_stage: Default::default(),
         loudness_result: Default::default(),
         total_frames: frames,
+        analyser: None,
     };
     match job.run() {
         Ok(()) => {

@@ -99,6 +99,7 @@ fn export(media: &Path, source_in_frames: i64, out: &Path) -> Result<(), RenderE
         cancel: Arc::new(AtomicBool::new(false)), progress: Arc::new(AtomicU64::new(0)),
         hw_info: Default::default(), render_stage: Default::default(), loudness_result: Default::default(),
         total_frames: N as u64,
+        analyser: None,
     }
     .run()
 }

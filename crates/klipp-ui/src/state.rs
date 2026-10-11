@@ -1742,6 +1742,26 @@ pub struct AppState {
     pub deflicker_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
     pub stabilization_in_progress: std::collections::HashSet<klipp_core::ClipId>,
     pub stabilization_progress: std::collections::HashMap<klipp_core::ClipId, f32>,
+    /// The analyses found in the analysis cache (M4 step 9), each a
+    /// media file's, by its asset key: what `ensure_analyses` last found,
+    /// so the inspector reads them without the disk each frame. Keyed by
+    /// the media, not the clip: a trim, a split or a duplicate of a clip
+    /// finds the same analysis ([`AppState::analysis_of`]).
+    pub analyses: std::collections::HashMap<klipp_analysis::assets::AssetKey, std::sync::Arc<serde_json::Value>>,
+    /// The stamp each analysis `ensure_analyses` loaded had when it was
+    /// read: one whose stamp moves (analysed again, or gone from the
+    /// cache) is read again, and one no clip of the sequence uses is let
+    /// go. An analysis put in `analyses` by anything else has none.
+    pub analysis_stamps: std::collections::HashMap<klipp_analysis::assets::AssetKey, u64>,
+    /// When `ensure_analyses` last looked.
+    pub analysis_checked: Option<std::time::Instant>,
+    /// Analyses `ensure_analyses` started this session, by asset: started
+    /// once for a file however many clips read it, so one that fails
+    /// isn't started again on every look.
+    pub analysis_started: std::collections::HashSet<klipp_analysis::assets::AssetKey>,
+    /// Clips whose analysis can't be made: the media's original file isn't
+    /// there (a proxy alone), so the inspector says why rather than wait.
+    pub analysis_unavailable: std::collections::HashSet<(klipp_core::ClipId, klipp_analysis::assets::AssetKind)>,
 
     // Scene (shot-boundary) detection state
     pub scene_detect_in_progress: std::collections::HashSet<klipp_core::ClipId>,
@@ -3744,6 +3764,46 @@ impl AttributesClipboard {
 }
 
 impl AppState {
+    /// `kind`'s analysis of `clip`'s media as `ensure_analyses` found it
+    /// (M4 step 9): the file's, whichever clip of it asks.
+    pub fn analysis_of(&self, clip: &klipp_timeline::Clip, kind: klipp_analysis::assets::AssetKind) -> Option<&std::sync::Arc<serde_json::Value>> {
+        let item = self.media_pool.get(&clip.media_id()?)?;
+        self.analyses.get(&klipp_analysis::assets::asset_key(kind, item)?)
+    }
+
+    /// The analyses `used` (each asset key the sequence's clips use, and
+    /// whether to read it now) kept in step with `store` (M4 step 9): one
+    /// loaded here is read again when its stamp moves and let go when it's
+    /// gone or no clip uses it; one to read that isn't held is read when
+    /// ready. The keys to read that `store` has no ready asset for come
+    /// back, for an analysis to make. An analysis put in `analyses` by
+    /// anything else (it has no stamp) is left as it is.
+    pub fn keep_analyses(&mut self, store: &dyn klipp_analysis::assets::AssetStore, used: &[(klipp_analysis::assets::AssetKey, bool)]) -> Vec<klipp_analysis::assets::AssetKey> {
+        use klipp_analysis::assets::{lookup, Found};
+        let stale: Vec<_> = self.analysis_stamps.iter().filter(|(k, seen)| !used.iter().any(|(u, _)| u == *k) || store.stamp(k) != Some(**seen)).map(|(k, _)| k.clone()).collect();
+        for key in stale {
+            self.analyses.remove(&key);
+            self.analysis_stamps.remove(&key);
+        }
+        let mut missing = Vec::new();
+        for (key, read) in used {
+            if !read || self.analyses.contains_key(key) {
+                continue;
+            }
+            let stamp = store.stamp(key);
+            match lookup(store, key) {
+                Found::Ready(raw) => {
+                    if let Some(stamp) = stamp {
+                        self.analysis_stamps.insert(key.clone(), stamp);
+                    }
+                    self.analyses.insert(key.clone(), std::sync::Arc::new(raw));
+                }
+                _ => missing.push(key.clone()),
+            }
+        }
+        missing
+    }
+
     /// The explicit dock works in either workspace; Colour keeps its
     /// existing grade strip when the new dock is closed.
     pub fn graph_is_visible(&self) -> bool {
@@ -4034,6 +4094,11 @@ impl Default for AppState {
             deflicker_progress: std::collections::HashMap::new(),
             stabilization_in_progress: std::collections::HashSet::new(),
             stabilization_progress: std::collections::HashMap::new(),
+            analyses: Default::default(),
+            analysis_stamps: Default::default(),
+            analysis_checked: None,
+            analysis_started: Default::default(),
+            analysis_unavailable: Default::default(),
             scene_detect_in_progress: std::collections::HashSet::new(),
             scene_detect_progress: std::collections::HashMap::new(),
             scene_split_pending: std::collections::HashSet::new(),
@@ -4193,7 +4258,13 @@ impl Default for AppState {
             composition_templates: crate::parameterized_templates::CompositionTemplateStore::load_default(),
             title_template_dialog: None,
             effect_thumbnails: crate::browser::effect_thumbnails::ThumbnailRenderer::default(),
-            render_queue: klipp_export::RenderQueue::new(),
+            render_queue: {
+                // An export runs an analysis its clips need and haven't
+                // got the way the viewer's analyses do (M4 step 9).
+                let mut q = klipp_export::RenderQueue::new();
+                q.set_analyser(std::sync::Arc::new(klipp_engine::analyse_media));
+                q
+            },
             show_render_queue: false,
             filmstrip_generating: false,
             filmstrip_generate_start: std::time::Instant::now(),
@@ -5891,5 +5962,59 @@ mod log_format_undo_tests {
             assert!(state.thumbnail_cache.filmstrip(&media).is_some_and(|f| f.is_empty()), "undo {undo}: the old filmstrip is not shown");
             assert!(!state.filmstrip_in_progress.contains(&media), "undo {undo}: a new filmstrip may start");
         }
+    }
+}
+
+#[cfg(test)]
+mod keep_analyses_tests {
+    use super::*;
+    use klipp_analysis::assets::{store, AssetKey, AssetKind, CacheStore};
+
+    fn key(media: &str) -> AssetKey {
+        AssetKey { kind: AssetKind::Deflicker, media: media.into(), width: 480, height: 240, fps: (25, 1) }
+    }
+
+    fn luma(n: usize) -> serde_json::Value {
+        serde_json::to_value(klipp_effects::deflicker::DeflickerData { luma: vec![0.5; n], fps: 25.0 }).unwrap()
+    }
+
+    /// What's loaded follows the cache: read when ready, read again when
+    /// analysed again, let go when the asset is gone or no clip uses it;
+    /// one put there by anything else is left alone.
+    #[test]
+    fn the_analyses_follow_the_cache() {
+        let root = std::env::temp_dir().join(format!("klipp-keep-analyses-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let mut cache = CacheStore::at(root.clone());
+        let mut state = AppState::default();
+        let (a, b) = (key("a"), key("b"));
+        let lumas = |state: &AppState, k: &AssetKey| state.analyses.get(k).and_then(|v| v.get("luma")).and_then(|l| l.as_array()).map(|l| l.len());
+
+        // Not there yet: owed back, nothing held.
+        assert_eq!(state.keep_analyses(&cache, &[(a.clone(), true)]), vec![a.clone()]);
+        assert!(state.analyses.is_empty());
+
+        // Ready: read.
+        store(&mut cache, a.clone(), luma(10)).unwrap();
+        assert!(state.keep_analyses(&cache, &[(a.clone(), true)]).is_empty());
+        assert_eq!(lumas(&state, &a), Some(10));
+
+        // Analysed again (another length, so its stamp moves): read again.
+        store(&mut cache, a.clone(), luma(20)).unwrap();
+        state.keep_analyses(&cache, &[(a.clone(), true)]);
+        assert_eq!(lumas(&state, &a), Some(20), "the new analysis");
+
+        // Gone from the cache: let go, and owed again.
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(state.keep_analyses(&cache, &[(a.clone(), true)]), vec![a.clone()]);
+        assert!(!state.analyses.contains_key(&a) && !state.analysis_stamps.contains_key(&a));
+
+        // No clip uses it: let go. One put there by anything else stays.
+        store(&mut cache, a.clone(), luma(10)).unwrap();
+        state.keep_analyses(&cache, &[(a.clone(), true)]);
+        state.analyses.insert(b.clone(), std::sync::Arc::new(luma(5)));
+        state.keep_analyses(&cache, &[]);
+        assert!(!state.analyses.contains_key(&a), "unused: let go");
+        assert_eq!(lumas(&state, &b), Some(5), "not loaded here: kept");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -261,8 +261,7 @@ fn stack_drawn(ty: &EffectType, desc: &ParamDesc, pres: &Presentation, effect: &
         if !s.unapplied.is_empty() {
             return Err(format!("unapplied: {:?}", s.unapplied));
         }
-        let mut after = s.clip().clone();
-        super::parity_numeric::regain(&mut after);
+        let after = s.clip().clone();
         match super::parity_pixels::clip_edit_drawn_on(routes, size, &clip, &after) {
             Ok(()) => return Ok(()),
             Err(e) if e.starts_with("BLOCKED") => return Err(e),

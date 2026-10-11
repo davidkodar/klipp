@@ -46,7 +46,7 @@ fn a_blended_export_reads_the_next_frame_from_its_stream() {
         return;
     };
     let id = MediaId::new();
-    let media = HashMap::from([(id, MediaFile { path, log_format: None, source_rotation: 0, duration_secs: Some(2.0), fps: Some((FPS, 1)) })]);
+    let media = HashMap::from([(id, MediaFile { path, log_format: None, source_rotation: 0, duration_secs: Some(2.0), fps: Some((FPS, 1)), resolution: None })]);
     // Half speed: twenty timeline frames over ten media frames.
     let mut clip = klipp_timeline::Clip::media(id, tc(0), tc(20), tc(0), tc(10));
     clip.speed = 0.5;

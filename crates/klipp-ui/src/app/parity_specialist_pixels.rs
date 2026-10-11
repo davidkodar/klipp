@@ -3,8 +3,8 @@
 //! routes each declares: the frame changed, the CPU's within a level of
 //! the GPU's.
 //!
-//! - An analysis workflow (Deflicker, Stabilisation): "Analyse" clicked in
-//!   the inspector, its measurement landing as the app's drain lands it,
+//! - An analysis workflow (Deflicker, Stabilisation): its measurement
+//!   landing as the app's drain lands it, the file's analysis (M4 step 9),
 //!   must change the unmeasured clip's frame.
 //!   Stabilisation's layer is drawn on the CPU by the stack's temporal
 //!   gate (M4 step 9), as in the numeric family.
@@ -19,8 +19,8 @@
 
 use super::parity_manifest::{CoverageKey, Interaction, Manifest, Report, Surface};
 use super::parity_numeric::routes_for;
-use super::parity_pixels::{clip_edit_drawn_on, Routes, SMALL};
-use super::parity_specialists::{effect_type, number_right_of, type_into, Analysis, ANALYSES, VARIANT};
+use super::parity_pixels::{analysis_drawn_on, clip_edit_drawn_on, Routes, SMALL};
+use super::parity_specialists::{effect_type, measure, number_right_of, type_into, Analysis, ANALYSES, VARIANT};
 use super::parity_harness::fixture;
 use klipp_effects::BuiltinEffect;
 use klipp_timeline::test_clip;
@@ -35,29 +35,27 @@ fn analysis_key(a: &Analysis) -> CoverageKey {
     CoverageKey::new(effect_type(a.tag).desc.id, &format!("@workflow/{}", a.workflow), Surface::EffectsStack, VARIANT, Interaction::Pixels)
 }
 
-/// One analysis workflow's measurement, drawn: "Analyse" clicked, the
-/// measurement landing as the app's drain lands it, must change the frame
-/// and draw it alike on the CPU and the GPU.
+/// One analysis workflow's measurement, drawn: the measurement it starts
+/// by itself landing as the app's drain lands it, the file's analysis as
+/// the app holds it, drawn from that and nothing else, must change the
+/// frame and draw it alike on the CPU and the GPU.
 fn analysis_case(a: &Analysis, routes: Routes) -> Result<(), String> {
     let clip = fixture(&(effect_type(a.tag).sample)());
-    let clip_id = clip.id;
     let mut run = super::parity_harness::Run::new(clip.clone());
-    if !run.click_text("", a.analyse) {
-        return Err(format!("no {:?}", a.analyse));
-    }
-    // The worker's result, as the drain applies it.
-    let event = (a.complete)(clip_id);
-    let mut flat = run.state.sequences[0].clone();
-    let target = flat.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).ok_or("the clip")?;
-    (a.measured)(target);
-    if !super::proxies::apply_analysis_result(&mut run.state, Some(&flat), &event) {
+    // The worker's result, as the drain applies it, and the analysis it
+    // kept, as the app's next look finds it.
+    if !super::proxies::apply_analysis_result(&mut run.state, &(a.complete)(clip.id)) {
         return Err("the result wasn't applied".into());
     }
+    measure(&mut run.state, &clip, a);
     run.frame(Vec::new(), egui::Modifiers::NONE);
     if !run.unapplied.is_empty() {
         return Err(format!("unapplied: {:?}", run.unapplied));
     }
-    clip_edit_drawn_on(routes, SMALL, &clip, run.clip())
+    if run.state.analysis_of(run.clip(), a.kind).is_none() {
+        return Err("the measurement isn't held".into());
+    }
+    analysis_drawn_on(routes, SMALL, run.clip(), &run.state)
 }
 
 /// A real frei0r plug-in, registered beside the others (the registry is

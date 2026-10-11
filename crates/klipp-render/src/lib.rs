@@ -56,6 +56,7 @@ pub mod export_frames;
 pub mod export_job;
 mod frame_source;
 pub mod gif_filter;
+pub mod pre_analysis;
 
 pub use audio_mixdown::AudioMixdown;
 pub use clip_decoder::{detect_gpu, GpuVendor, RenderDecoder};
@@ -63,7 +64,8 @@ pub use encoder::Encoder;
 pub use export_job::{partial_path_for, ExportJob};
 /// The export's decoder of a snapshot's media, for tools that render
 /// frames as the export does (the real-project pixel check, #1089).
-pub use frame_source::ExportFrameSource;
+pub use frame_source::{media_analysis_key, ExportFrameSource};
+pub use pre_analysis::Analyser;
 pub use error::RenderError;
 pub use snapshot::{
     AudioClipSnapshot, AudioTrackSnapshot, MediaFile, SequenceSnapshot, SubtitleClipSnapshot,

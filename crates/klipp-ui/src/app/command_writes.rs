@@ -17,9 +17,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
     match cmd {
         // Write none of them: transport, a selection, the viewer and its
         // scopes, a panel, a dialog, a preference, a job whose result
-        // arrives later. RegainDeflicker and ResmoothStabilization
-        // recompute a clip's cached analysis from the parameter being
-        // dragged, as it goes, so a drag's step holds what they write.
+        // arrives later.
         AppCommand::SetSplitCompareNode { .. }
         | AppCommand::ShowPanel { .. }
         | AppCommand::ToggleGraphDock
@@ -233,10 +231,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::CancelStabilization { .. }
         | AppCommand::AnalyzeDeflicker { .. }
         | AppCommand::CancelDeflicker { .. }
-        | AppCommand::RegainDeflicker { .. }
         | AppCommand::DetectScenes { .. }
         | AppCommand::CancelSceneDetect { .. }
-        | AppCommand::ResmoothStabilization { .. }
         | AppCommand::TrackSurface { .. }
         | AppCommand::OpenSurfaceTool { .. }
         | AppCommand::SnapSurface { .. }

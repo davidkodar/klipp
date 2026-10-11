@@ -282,9 +282,20 @@ pub struct AnalysisBlob {
     pub data: Arc<dyn Any + Send + Sync>,
 }
 
+/// The schema an analysis node's blob is given at: its data an
+/// `Arc<klipp_effects::node_analysis::NodeAnalysis>`, its settings applied
+/// (M4 step 9). One found at another schema is stale.
+pub const NODE_ANALYSIS_SCHEMA: u32 = 1;
+
 /// The analyses a render's nodes read, by node id.
 pub trait AnalysisInputs {
     fn lookup(&self, node: NodeId, schema: u32) -> Analysis<'_>;
+    /// `node`'s analysis by the effect it runs: what an analysis node
+    /// reads. A provider keyed by the effect (its kind and the settings its
+    /// derivation takes) answers here; by default, by the node.
+    fn lookup_effect(&self, node: NodeId, _effect: &klipp_effects::BuiltinEffect, schema: u32) -> Analysis<'_> {
+        self.lookup(node, schema)
+    }
 }
 
 /// No analyses: every lookup is [`Analysis::Absent`].

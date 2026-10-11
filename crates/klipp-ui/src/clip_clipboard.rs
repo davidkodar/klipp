@@ -159,10 +159,6 @@ pub fn paste(seq: &Sequence, cb: &ClipboardContent, at: Timecode, mode: PasteMod
             group_id: None,
             magnetic_anchor: None,
             transform_link: None,
-            deflicker_data: None,
-            deflicker_gains: None,
-            stabilization_data: None,
-            smoothed_trajectory: None,
             track_points: Vec::new(),
             // The keys are in file time: a pasted copy keeps the track,
             // and a pinned copy pasted with its host follows the copy.

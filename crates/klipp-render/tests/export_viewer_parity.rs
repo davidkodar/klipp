@@ -106,6 +106,7 @@ fn export_video(video: VideoTimeline, out: &Path, tweak: impl FnOnce(&mut Export
         cancel: Arc::new(AtomicBool::new(false)), progress: Arc::new(AtomicU64::new(0)),
         hw_info: Default::default(), render_stage: Default::default(), loudness_result: Default::default(),
         total_frames: FRAMES,
+        analyser: None,
     }
     .run()
     .unwrap();

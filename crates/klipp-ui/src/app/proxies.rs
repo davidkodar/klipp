@@ -341,8 +341,7 @@ impl KlippApp {
                     self.state.deflicker_progress.insert(clip_id, progress);
                 }
                 done @ (AppEvent::DeflickerComplete { .. } | AppEvent::StabilizationComplete { .. }) => {
-                    let shared = self.sequence.read().ok();
-                    apply_analysis_result(&mut self.state, shared.as_deref(), &done);
+                    apply_analysis_result(&mut self.state, &done);
                 }
                 AppEvent::DeflickerFailed { clip_id, error } => {
                     self.state.deflicker_in_progress.remove(&clip_id);
@@ -568,57 +567,27 @@ pub(super) fn skim_file_is_complete(path: &Path, source_secs: f64) -> bool {
     complete
 }
 
-/// What a finished deflicker or stabilization analysis writes: the clip
-/// is no longer being measured, and what the worker wrote onto it in the
-/// engine's sequence (`flat`, when it could be read) is brought onto the
-/// document's copy. One place, so the drain and the inspector parity's
-/// result-during-a-drag case apply a result alike; the drain closes an
-/// open drag before it (`event_writes`). `false` for any other event.
-pub(super) fn apply_analysis_result(state: &mut crate::state::AppState, flat: Option<&klipp_timeline::Sequence>, event: &AppEvent) -> bool {
-    let seq = state.active_sequence_idx;
+/// What a finished deflicker or stabilization analysis does: the clip is
+/// no longer being measured, and the analysis, kept as its file's asset
+/// (M4 step 9), is looked up on the next frame (`ensure_analyses`). One
+/// place, so the drain and the inspector parity's result-during-a-drag
+/// case apply a result alike; the drain closes an open drag before it
+/// (`event_writes`). `false` for any other event.
+pub(super) fn apply_analysis_result(state: &mut crate::state::AppState, event: &AppEvent) -> bool {
     match *event {
         AppEvent::DeflickerComplete { clip_id } => {
             state.deflicker_in_progress.remove(&clip_id);
             state.deflicker_progress.remove(&clip_id);
-            if let Some(flat) = flat {
-                copy_back_analysis(&mut state.sequences[seq], flat, clip_id, |to, from| {
-                    to.deflicker_data = from.deflicker_data.clone();
-                    to.deflicker_gains = from.deflicker_gains.clone();
-                });
-            }
             state.toast.show("Deflicker analysis complete");
         }
         AppEvent::StabilizationComplete { clip_id } => {
             state.stabilization_in_progress.remove(&clip_id);
             state.stabilization_progress.remove(&clip_id);
-            if let Some(flat) = flat {
-                copy_back_analysis(&mut state.sequences[seq], flat, clip_id, |to, from| {
-                    to.stabilization_data = from.stabilization_data.clone();
-                    to.smoothed_trajectory = from.smoothed_trajectory.clone();
-                });
-            }
             state.toast.show("Stabilization analysis complete");
         }
         _ => return false,
     }
-    true
-}
-
-/// Copy what an analysis wrote onto `clip_id` in the engine's sequence
-/// onto the same clip in the document, found by its id. The engine's
-/// copy is flattened: a compound clip earlier on the track is its inner
-/// clips there, so a clip's place in it is not its place in the document,
-/// and copying by place wrote the results onto another shot (#999). A
-/// clip no longer in the document gets nothing.
-pub(super) fn copy_back_analysis(
-    doc: &mut klipp_timeline::Sequence,
-    flat: &klipp_timeline::Sequence,
-    clip_id: klipp_core::ClipId,
-    copy: impl FnOnce(&mut klipp_timeline::Clip, &klipp_timeline::Clip),
-) -> bool {
-    let Some(from) = flat.tracks.iter().find_map(|t| t.find_clip(clip_id)) else { return false };
-    let Some(to) = doc.tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) else { return false };
-    copy(to, from);
+    state.analysis_checked = None;
     true
 }
 
@@ -640,47 +609,5 @@ mod proxy_completeness_tests {
         assert!(transcode_is_complete(Some(590.0), 600.0), "two percent on a long clip");
         assert!(!transcode_is_complete(Some(60.0), 120.0), "half the clip is a cut-short generation");
         assert!(!transcode_is_complete(None, 120.0), "a file that does not probe is not one");
-    }
-}
-
-#[cfg(test)]
-mod copy_back_tests {
-    use super::copy_back_analysis;
-    use klipp_core::{MediaId, RationalTime};
-    use klipp_timeline::{Clip, Sequence, Track, TrackKind};
-
-    fn t(f: i64) -> RationalTime {
-        RationalTime::from_frames(f, 24)
-    }
-
-    /// A compound clip of two shots, then the analysed clip, on one
-    /// track: flattened, the analysed clip is third, in the document
-    /// second.
-    #[test]
-    fn analysis_lands_on_its_own_clip_after_a_compound() {
-        let mut inner = Sequence::new_default();
-        let mut it = Track::new("V1", TrackKind::Video);
-        it.clips = vec![Clip::media(MediaId::new(), t(0), t(24), t(0), t(24)), Clip::media(MediaId::new(), t(24), t(48), t(0), t(24))];
-        inner.tracks = vec![it];
-        let mut doc = Sequence::new_default();
-        let mut track = Track::new("V1", TrackKind::Video);
-        let analysed = Clip::media(MediaId::new(), t(48), t(96), t(0), t(48));
-        let id = analysed.id;
-        track.clips = vec![Clip::sequence(inner.id, t(0), t(48)), analysed];
-        doc.tracks = vec![track];
-
-        let mut flat = klipp_timeline::flatten::flatten_sequence(&doc, &[doc.clone(), inner]);
-        let at = flat.tracks[0].clips.iter().position(|c| c.id == id).unwrap();
-        assert_ne!(at, 1, "the fixture must put the clip at another place in the flat copy");
-        flat.tracks[0].clips[at].name = Some("analysed".into());
-
-        assert!(copy_back_analysis(&mut doc, &flat, id, |to, from| to.name = from.name.clone()));
-        assert_eq!(doc.tracks[0].clips[1].name.as_deref(), Some("analysed"));
-        assert_ne!(doc.tracks[0].clips[0].name.as_deref(), Some("analysed"), "the compound clip took the results");
-
-        // Gone from the document: nothing is written anywhere.
-        doc.tracks[0].clips.remove(1);
-        assert!(!copy_back_analysis(&mut doc, &flat, id, |to, from| to.name = from.name.clone()));
-        assert!(doc.tracks[0].clips.iter().all(|c| c.name.as_deref() != Some("analysed")));
     }
 }

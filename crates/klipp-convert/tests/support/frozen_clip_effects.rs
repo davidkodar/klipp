@@ -73,10 +73,9 @@ pub fn frame_inputs(
             *seed = (t * fps).round().max(0.0) as u32;
         }
         BuiltinEffect::Deflicker { gain, .. } => {
-            // The measured gain for this frame, at full weight — the effect
-            // applies `strength` itself, and doing it here as well would
-            // square it.
-            *gain = clip.deflicker_gains.as_ref().map(|g| klipp_effects::deflicker::gain_at(&g.gains, t, g.fps, 1.0)).unwrap_or(1.0);
+            // Its analysis gives the frame's gain (M4 step 9); none here,
+            // as the renderer's own copy says.
+            *gain = 1.0;
         }
         // A pinned clip's first corner pin is on its surface.
         BuiltinEffect::CornerPin { tl, tr, br, bl } if pin.is_some() && !*pinned => {

@@ -24,6 +24,9 @@ use klipp_timeline::test_clip::{self, TestClip};
 // is held to them where it was held to a live legacy render.
 #[path = "support/legacy_goldens.rs"]
 mod legacy_goldens;
+// An analysis effect's analysis, as its media's asset (M4 step 9).
+#[path = "support/analysis_assets.rs"]
+mod analysis;
 use legacy_goldens::{legacy_f32, matches_f32, scope, within_cpu_gpu_bar};
 
 const W: u32 = 96;
@@ -278,32 +281,22 @@ fn animated_effects_and_a_fixed_placement_from_the_picture_draw_the_legacy_frame
     assert!(now >= counted + 5 || !required(), "{counted} -> {now}");
 }
 
-/// Stabilisation reads motion data the renderer makes per frame and hands
-/// the plan's executor too (#1209, step 12): a graded clip with it takes
-/// the plan route and draws its correction as the legacy route does.
+/// Stabilisation reads its analysis, which reaches the plan's executor as
+/// its node's (#1209, step 12; M4 step 9): a graded clip with it takes the
+/// plan route and draws its correction as the legacy route does.
 #[test]
 fn a_graded_clip_with_stabilisation_keeps_its_correction() {
     let _goldens = scope("effects_follow_grade.a_graded_clip_with_stabilisation_keeps_its_correction");
-    use klipp_effects::homography::Homography;
-    use klipp_effects::stabilization::SmoothedTrajectory;
-    let mut seq = graded(vec![E::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }, E::Gamma { gamma: 1.2 }]);
-    let shift = Homography { h: [[1.0, 0.0, 3.5], [0.0, 1.0, -1.5], [0.0, 0.0, 1.0]] };
-    seq.tracks[0].clips[0].smoothed_trajectory = Some(SmoothedTrajectory {
-        smoothed: Vec::new(),
-        corrections: vec![shift; 96],
-        smoothing_window_secs: 1.0,
-        raw_jitter_px: 1.0,
-        smoothed_jitter_px: 0.1,
-    });
-    let (new, followed) = render(&seq, false);
-    let legacy = legacy_f32(|| render(&seq, true).0);
+    let seq = graded(vec![E::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }, E::Gamma { gamma: 1.2 }]);
+    let shifted = || analysed_by(renderer(false), vec![analysis::stabilised_by(3.5, -1.5, 96)]);
+    let (new, followed) = draw(&mut shifted(), &seq, 1.0, &mut Moving);
+    let legacy = legacy_f32(|| draw(&mut shifted(), &seq, 1.0, &mut Moving).0);
     assert!(matches_f32(&new, &legacy), "the correction is drawn on both routes");
     if gpu() {
-        assert_eq!(followed, 1, "a stabilised clip takes the plan route (step 12)");
+        assert!(followed, "a stabilised clip takes the plan route (step 12)");
     }
-    let mut still = seq.clone();
-    still.tracks[0].clips[0].smoothed_trajectory = None;
-    let uncorrected = legacy_f32(|| render(&still, true).0);
+    // The chart gives no analysis key: the clip without its analysis.
+    let uncorrected = legacy_f32(|| draw(&mut shifted(), &seq, 1.0, &mut Chart).0);
     assert!(legacy != uncorrected, "the case's correction moves the picture");
 }
 
@@ -345,33 +338,18 @@ fn temporal_effects_take_the_plan_route() {
 /// clip drawn next by the same renderer is the plain clip drawn alone.
 #[test]
 fn a_stabilised_clip_leaves_no_motion_for_the_next() {
-    use klipp_effects::homography::Homography;
-    use klipp_effects::stabilization::SmoothedTrajectory;
-    let mut seq = graded(vec![E::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }, E::Gamma { gamma: 1.2 }]);
-    let shift = Homography { h: [[1.0, 0.0, 3.5], [0.0, 1.0, -1.5], [0.0, 0.0, 1.0]] };
-    seq.tracks[0].clips[0].smoothed_trajectory = Some(SmoothedTrajectory {
-        smoothed: Vec::new(),
-        corrections: vec![shift; 96],
-        smoothing_window_secs: 1.0,
-        raw_jitter_px: 1.0,
-        smoothed_jitter_px: 0.1,
-    });
+    let seq = graded(vec![E::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }, E::Gamma { gamma: 1.2 }]);
     let plain = graded(vec![E::Gamma { gamma: 1.2 }]);
-    let draw = |r: &mut Renderer, s: &Sequence| r.render(s, tc(1.0), W, H, &mut Chart, RenderOptions::default());
-    let new = || {
-        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
-        r.set_gpu_enabled(true);
-        r
-    };
+    let new = || analysed_by(renderer(false), vec![analysis::stabilised_by(3.5, -1.5, 96)]);
     let mut r = new();
-    draw(&mut r, &seq);
-    let after = draw(&mut r, &plain);
-    let alone = draw(&mut new(), &plain);
+    r.render(&seq, tc(1.0), W, H, &mut Moving, RenderOptions::default());
+    let after = r.render(&plain, tc(1.0), W, H, &mut Chart, RenderOptions::default());
+    let alone = new().render(&plain, tc(1.0), W, H, &mut Chart, RenderOptions::default());
     assert!(after.iter().map(|v| v.to_bits()).eq(alone.iter().map(|v| v.to_bits())), "the plain clip isn't warped by the one before it");
 }
 
-/// The chart, with motion frames for rolling-shutter correction to
-/// measure: a blocky texture six pixels further right each frame.
+/// The chart, its media analysed: each media clip keyed to the analyses
+/// a renderer's store holds (`analysed_by`). The chart alone gives none.
 struct Moving;
 
 impl FrameSource for Moving {
@@ -379,57 +357,40 @@ impl FrameSource for Moving {
         Chart.frame(c, secs, w, h)
     }
 
-    fn motion_frame(&mut self, _c: &Clip, secs: f64, max_width: u32) -> Option<(Vec<u8>, u32, u32)> {
-        let (w, h) = (256u32, 144u32);
-        if w > max_width {
-            return None;
-        }
-        let n = (secs * 24.0).floor() as i64;
-        let mut v = Vec::with_capacity((w * h * 4) as usize);
-        for y in 0..h as i64 {
-            for x in 0..w as i64 {
-                let (bx, by) = ((x - 6 * n).div_euclid(8), y.div_euclid(8));
-                let g = ((bx * 7919 + by * 104_729).rem_euclid(251)) as u8;
-                v.extend_from_slice(&[g, g, g, 255]);
-            }
-        }
-        Some((v, w, h))
+    fn analysis_key(&mut self, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
+        analysis::key(clip, kind)
     }
 }
 
-/// The three analysis-driven effects on a graded clip, each with its
-/// analysis (a drifting trajectory, the moving source's motion, gains
-/// that change every frame), and the same clip without it.
-fn analysed() -> Vec<(&'static str, Sequence, Sequence)> {
+/// `r` holding `analyses`, for the clips a [`Moving`] source keys.
+fn analysed_by(mut r: Renderer, analyses: Vec<(klipp_analysis::assets::AssetKind, serde_json::Value)>) -> Renderer {
+    r.set_asset_store(analysis::store(analyses));
+    r
+}
+
+/// The analyses [`analysed`]'s clips read: a drifting trajectory, motion
+/// shearing the rows, light that flickers every frame.
+fn the_analyses() -> Vec<(klipp_analysis::assets::AssetKind, serde_json::Value)> {
     use klipp_effects::homography::Homography;
-    use klipp_effects::stabilization::SmoothedTrajectory;
-    let mut stab = graded(vec![E::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }, E::Gamma { gamma: 1.2 }]);
-    let bare_stab = stab.clone();
-    stab.tracks[0].clips[0].smoothed_trajectory = Some(SmoothedTrajectory {
-        smoothed: Vec::new(),
-        corrections: (0..48).map(|i| Homography { h: [[1.0, 0.0, 0.2 * i as f64 - 4.0], [0.0, 1.0, 2.5 - 0.1 * i as f64], [0.0, 0.0, 1.0]] }).collect(),
-        smoothing_window_secs: 1.0,
-        raw_jitter_px: 1.0,
-        smoothed_jitter_px: 0.1,
-    });
+    let drift: Vec<_> = (0..48).map(|i| Homography { h: [[1.0, 0.0, 0.2 * i as f64 - 4.0], [0.0, 1.0, 2.5 - 0.1 * i as f64], [0.0, 0.0, 1.0]] }).collect();
+    vec![analysis::stabilised(&drift), analysis::sheared(48), analysis::flickering(48)]
+}
+
+/// The three analysis-driven effects on a graded clip: each drawn from a
+/// [`Moving`] source with its analysis ([`the_analyses`]), and the same
+/// clip from the chart, without it.
+fn analysed() -> Vec<(&'static str, Sequence, Sequence)> {
+    let stab = graded(vec![E::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }, E::Gamma { gamma: 1.2 }]);
     let rsc = graded(vec![E::RollingShutterCorrection { strength: 1.0, readout_ratio: 0.9 }, E::Gamma { gamma: 1.2 }]);
-    let mut flicker = graded(vec![E::Deflicker { strength: 1.0, window_secs: 1.0, gain: 1.0 }, E::Gamma { gamma: 1.2 }]);
-    let bare_flicker = flicker.clone();
-    flicker.tracks[0].clips[0].deflicker_gains = Some(klipp_effects::deflicker::DeflickerGains {
-        gains: (0..48).map(|i| if i % 2 == 0 { 0.7 } else { 1.3 } + 0.004 * i as f32).collect(),
-        window_secs: 1.0,
-        fps: 24.0,
-    });
-    // Rolling-shutter correction's analysis is the source's motion: on
-    // the chart alone there is none.
-    vec![("stabilise", stab, bare_stab), ("rolling shutter", rsc.clone(), rsc), ("deflicker", flicker, bare_flicker)]
+    let flicker = graded(vec![E::Deflicker { strength: 1.0, window_secs: 1.0, gain: 1.0 }, E::Gamma { gamma: 1.2 }]);
+    vec![("stabilise", stab.clone(), stab), ("rolling shutter", rsc.clone(), rsc), ("deflicker", flicker.clone(), flicker)]
 }
 
 fn renderer(legacy: bool) -> Renderer {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
     assert!(!legacy, "the legacy route is gone (M2 step 11d): its frames are stored, never drawn");
-    r
+    analysed_by(r, the_analyses())
 }
 
 /// `seq` at `secs` on `r` from `src`: the frame and whether it took the
@@ -459,16 +420,50 @@ fn analysis_driven_effects_draw_the_same_on_the_plan_route() {
             let (a, followed) = draw(&mut plan, &seq, secs, &mut Moving);
             let b = legacy_f32(|| draw(legacy.get_or_insert_with(|| renderer(true)), &seq, secs, &mut Moving).0);
             assert_eq!(followed, on_gpu, "{name} at {secs}: the plan route when there is a GPU");
-            assert!(matches_f32(&a, &b), "{name} at {secs}: the plan route draws the legacy frame");
+            // The stored frames of the rolling shutter and the deflicker
+            // were drawn from analysis the legacy route measured or the
+            // clip held; their assets are their own, held to what they work
+            // out to (`analysis_driven_effects_draw_what_their_analysis_computes`).
+            // Their stored frames are still read, keeping the others' in order.
+            assert!(name != "stabilise" || matches_f32(&a, &b), "{name} at {secs}: the plan route draws the legacy frame");
             let (fresh, _) = draw(&mut renderer(false), &seq, secs, &mut Moving);
             assert_eq!(bits(&a), bits(&fresh), "{name} at {secs}: nothing left from the frames before");
-            let (uncorrected, _) = if name == "rolling shutter" { draw(&mut renderer(false), &bare, secs, &mut Chart) } else { draw(&mut renderer(false), &bare, secs, &mut Moving) };
+            let (uncorrected, _) = draw(&mut renderer(false), &bare, secs, &mut Chart);
             assert_ne!(bits(&a), bits(&uncorrected), "{name} at {secs}: the analysis moves the picture");
             frames.push(a);
         }
         if name != "rolling shutter" {
             // The source moves evenly, so its correction is the same at every frame.
             assert_ne!(bits(&frames[4]), bits(&frames[3]), "{name}: the seek back draws its own frame");
+        }
+    }
+}
+
+/// The deflicker and rolling-shutter clips draw what their analysis
+/// computes: the graded frame with no effects, through the effects' own
+/// kernels with the gain or rows worked out from the asset itself
+/// (`analysis::flicker_gain`, `analysis::shear_rows`). Their stored
+/// frames are held to this, never to whatever rendered.
+#[test]
+fn analysis_driven_effects_draw_what_their_analysis_computes() {
+    for (name, seq, _) in analysed().into_iter().filter(|(n, _, _)| *n != "stabilise") {
+        let clip = seq.tracks[0].clips[0].clone();
+        let mut graded_only = seq.clone();
+        strip_effects(&mut graded_only.tracks[0].clips[0]);
+        for secs in [0.5, 1.0, 1.5] {
+            let (with, _) = draw(&mut renderer(false), &seq, secs, &mut Moving);
+            let (without, _) = draw(&mut renderer(false), &graded_only, secs, &mut Moving);
+            let (mut effects, mut motion) = (clip.builtin_effects().to_vec(), klipp_effects::MotionData::default());
+            for e in &mut effects {
+                match e {
+                    E::Deflicker { gain, window_secs, .. } => *gain = analysis::flicker_gain(48, *window_secs as f64, secs),
+                    E::RollingShutterCorrection { strength, readout_ratio } => motion.rsc_rows = Some(analysis::shear_rows(H, *readout_ratio, *strength)),
+                    _ => {}
+                }
+            }
+            let want = klipp_effects::apply_effects_with_motion(&effects, without, W, H, secs, klipp_color::linear::luma_coefs(klipp_core::WorkingColorspace::Rec709Linear), &motion);
+            let worst = with.iter().zip(&want).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(with.len() == want.len() && worst < 2e-3, "{name} at {secs}: {worst} from what its analysis computes");
         }
     }
 }
@@ -483,19 +478,23 @@ fn analysis_arriving_mid_play_reaches_the_next_plan_frame() {
     let on_gpu = gpu();
     for (name, seq, bare) in analysed() {
         let mut r = renderer(false);
-        // Rolling shutter's analysis arriving is the source's motion
-        // becoming readable.
-        let before = if name == "rolling shutter" { draw(&mut r, &bare, 0.5, &mut Chart) } else { draw(&mut r, &bare, 0.5, &mut Moving) };
-        let (alone, _) = if name == "rolling shutter" { draw(&mut renderer(false), &bare, 0.5, &mut Chart) } else { draw(&mut renderer(false), &bare, 0.5, &mut Moving) };
+        // The analysis arriving is the clip's media gaining its key: the
+        // chart gives none, the moving source the store's.
+        let before = draw(&mut r, &bare, 0.5, &mut Chart);
+        let (alone, _) = draw(&mut renderer(false), &bare, 0.5, &mut Chart);
         assert_eq!(bits(&before.0), bits(&alone), "{name}: before the analysis, the clip uncorrected");
         let secs = 0.5 + 1.0 / 24.0;
         let (after, followed) = draw(&mut r, &seq, secs, &mut Moving);
         assert_eq!(followed, on_gpu, "{name}: the plan route");
         let want = legacy_f32(|| draw(&mut renderer(true), &seq, secs, &mut Moving).0);
+        // Only the stabilisation's asset is the analysis its stored frame
+        // was drawn from (see the plan-route test): the others are held to
+        // a fresh renderer's frame.
+        let want = if name != "stabilise" { draw(&mut renderer(false), &seq, secs, &mut Moving).0 } else { want };
         assert!(matches_f32(&after, &want), "{name}: the first frame after the analysis is corrected");
         // And the analysis going away (cleared, re-analysing) leaves none behind.
-        let (gone, _) = if name == "rolling shutter" { draw(&mut r, &bare, 1.0, &mut Chart) } else { draw(&mut r, &bare, 1.0, &mut Moving) };
-        let (plain, _) = if name == "rolling shutter" { draw(&mut renderer(false), &bare, 1.0, &mut Chart) } else { draw(&mut renderer(false), &bare, 1.0, &mut Moving) };
+        let (gone, _) = draw(&mut r, &bare, 1.0, &mut Chart);
+        let (plain, _) = draw(&mut renderer(false), &bare, 1.0, &mut Chart);
         assert_eq!(bits(&gone), bits(&plain), "{name}: no correction once the analysis is gone");
     }
 }
@@ -615,16 +614,13 @@ fn renderer_with_invert(legacy: bool) -> Renderer {
     let mut r = Renderer::new(host, klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
     assert!(!legacy, "the legacy route is gone (M2 step 11d): its frames are stored, never drawn");
-    r
+    analysed_by(r, the_analyses())
 }
 
 /// `seq`'s first clip with the built-in invert plug-in on.
 fn with_invert(mut seq: Sequence) -> Sequence {
-    seq.tracks[0].clips[0].set_ofx_effects(vec![klipp_plugin::AppliedEffect {
-        plugin_name: "com.klipp.test.Invert".into(),
-        enabled: true,
-        ..Default::default()
-    }]);
+    let c = seq.tracks[0].clips[0].clone();
+    seq.tracks[0].clips[0] = TestClip::of(c).plugin(klipp_plugin::AppliedEffect { plugin_name: "com.klipp.test.Invert".into(), enabled: true, ..Default::default() }).build();
     seq
 }
 
@@ -780,8 +776,10 @@ fn analysis_driven_effects_after_a_plugin_keep_their_correction() {
             return;
         }
         assert_eq!(after, 1, "{name}");
-        assert!(matches_f32(&new, &legacy), "{name}: the plan after the plug-in draws the legacy frame");
-        let (uncorrected, _) = if name == "rolling shutter" { run(false, &bare, &mut Chart) } else { run(false, &bare, &mut Moving) };
+        // Only the stabilisation's asset is the analysis its stored frame
+        // was drawn from (see the plan-route test).
+        assert!(name != "stabilise" || matches_f32(&new, &legacy), "{name}: the plan after the plug-in draws the legacy frame");
+        let (uncorrected, _) = run(false, &bare, &mut Chart);
         assert_ne!(bits(&new), bits(&uncorrected), "{name}: the analysis moves the picture");
     }
 }
@@ -918,4 +916,11 @@ fn a_soloed_scene_referred_clip_keeps_its_display_step() {
         assert!(within_cpu_gpu_bar(&shown, &want), "{name}: the soloed picture is displayed as the CPU renderer displays it");
         assert_eq!(found.stats.effects_inspected_apart, u32::from(on_gpu), "{name}: the effects run apart from the soloed grade");
     }
+}
+
+/// `c` with its built-in effects taken off, through its picture.
+fn strip_effects(c: &mut Clip) {
+    let n = klipp_timeline::test_clip::effects(c).len();
+    let edits: Vec<klipp_timeline::EffectEdit> = (0..n).rev().map(klipp_timeline::EffectEdit::Remove).collect();
+    c.apply_effect_edits(&edits).expect("plain effects").expect("taken off");
 }

@@ -38,6 +38,10 @@ use klipp_compose::{FrameSource, GpuPixels, LinearFrameProviderFn, RenderOptions
 use klipp_core::{ClipId, Keyframe, RationalTime, Timecode, TransitionAlignment, TransitionId, TransitionKind, WorkingColorspace};
 use klipp_effects::{BuiltinEffect, ColorFadeMode, SpillMethod};
 use klipp_nodes::params::MatteChannel;
+
+// An analysis effect's analysis, as its media's asset (M4 step 9).
+#[path = "support/analysis_assets.rs"]
+mod analysis;
 use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams, NodePos};
 use klipp_timeline::{Clip, ClipKind, GradeGroup, MatteBinding, Sequence, StencilSettings, TextBox, TitleData, Track, TrackKind, Transition};
 use klipp_timeline::test_clip::{self, TestClip};
@@ -81,25 +85,6 @@ fn pattern_at(seed: u8, n: i64) -> Vec<u8> {
                 v.push((still[i + c] as i16 + grain).clamp(0, 255) as u8);
             }
             v.push(255);
-        }
-    }
-    v
-}
-
-/// The size of the frames motion analysis reads: the corpus's own is too
-/// small for corner detection at the half size it works at.
-const MOTION_W: u32 = 256;
-const MOTION_H: u32 = 144;
-
-/// A blocky texture with corners everywhere, six pixels further right
-/// each frame: what rolling-shutter correction measures motion from.
-fn motion_texture(n: i64) -> Vec<u8> {
-    let mut v = Vec::with_capacity((MOTION_W * MOTION_H * 4) as usize);
-    for y in 0..MOTION_H as i64 {
-        for x in 0..MOTION_W as i64 {
-            let (bx, by) = ((x - 6 * n).div_euclid(8), y.div_euclid(8));
-            let g = ((bx * 7919 + by * 104_729).rem_euclid(251)) as u8;
-            v.extend_from_slice(&[g, g, g, 255]);
         }
     }
     v
@@ -223,13 +208,6 @@ impl FrameSource for Frames {
         self.frame(clip, next, width, height)
     }
 
-    fn motion_frame(&mut self, clip: &Clip, source_secs: f64, max_width: u32) -> Option<(Vec<u8>, u32, u32)> {
-        if !self.moving.contains(&clip.id) || MOTION_W > max_width {
-            return None;
-        }
-        Some((motion_texture(frame_no(source_secs)), MOTION_W, MOTION_H))
-    }
-
     fn temporal_frames_linear(&mut self, clip: &Clip, _working: WorkingColorspace) -> Option<LinearFrameProviderFn> {
         if !self.moving.contains(&clip.id) {
             return None;
@@ -237,6 +215,12 @@ impl FrameSource for Frames {
         let seed = *self.seeds.get(&clip.id)?;
         let source_in = clip.source_in.to_secs_f64();
         Some(Box::new(move |clip_secs| Some((linear_of(&pattern_at(seed, frame_no(source_in + clip_secs))), W, H))))
+    }
+
+    /// Every media clip's analyses, under the one stand-in key the
+    /// corpus' renderers hold them by ([`renderer`]).
+    fn analysis_key(&mut self, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
+        analysis::key(clip, kind)
     }
 }
 
@@ -470,8 +454,6 @@ fn moving(name: impl Into<String>, fx: Vec<BuiltinEffect>) -> (Case, Clip) {
 /// The effects that read other frames or an analysis of the clip, and
 /// sources that are not display video (#1024).
 fn temporal_cases() -> Vec<Case> {
-    use klipp_effects::homography::Homography;
-    use klipp_effects::stabilization::SmoothedTrajectory;
     let mut out = Vec::new();
 
     // Temporal noise reduction: the frame averaged with its neighbours
@@ -499,30 +481,16 @@ fn temporal_cases() -> Vec<Case> {
     case.declines = Some(vec![Path::Stack, Path::Export]);
     out.push(case);
 
-    // Stabilisation with its analysis: every frame corrected by a shift.
-    let (mut case, _) = moving("temporal/stabilisation", vec![BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }]);
-    let shift = Homography { h: [[1.0, 0.0, 3.5], [0.0, 1.0, -1.5], [0.0, 0.0, 1.0]] };
-    case.project[0].tracks[0].clips[0].smoothed_trajectory = Some(SmoothedTrajectory {
-        smoothed: Vec::new(),
-        corrections: vec![shift; 96],
-        smoothing_window_secs: 1.0,
-        raw_jitter_px: 1.0,
-        smoothed_jitter_px: 0.1,
-    });
-    out.push(case);
+    // Stabilisation with its analysis (`renderer`'s): every frame
+    // corrected by a shift.
+    out.push(moving("temporal/stabilisation", vec![BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true }]).0);
 
-    // Rolling-shutter correction, its motion measured from the moving
-    // picture's frames.
+    // Rolling-shutter correction, with the file's motion as its analysis.
     out.push(moving("temporal/rolling shutter", vec![BuiltinEffect::RollingShutterCorrection { strength: 1.0, readout_ratio: 0.9 }]).0);
 
-    // Deflicker with measured gains that move frame to frame.
+    // Deflicker, its analysis light that flickers frame to frame.
     let mut c = media(0.0, 4.0);
     c = TestClip::of(c).effects(vec![BuiltinEffect::Deflicker { strength: 1.0, window_secs: 1.0, gain: 1.0 }]).build();
-    c.deflicker_gains = Some(klipp_effects::deflicker::DeflickerGains {
-        gains: (0..96).map(|i| 1.0 + 0.2 * ((i as f32) * 0.7).sin()).collect(),
-        window_secs: 1.0,
-        fps: 24.0,
-    });
     let f = Frames::default().with(&c, 0);
     out.push(Case::new("temporal/deflicker gains", sequence(vec![track("V1", TrackKind::Video, vec![c])]), f));
 
@@ -1111,6 +1079,10 @@ fn renderer(gpu: bool, ws: WorkingColorspace) -> Renderer {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(gpu);
     r.set_working_colorspace(ws);
+    // The temporal cases' analyses: every frame shifted (3.5, -1.5),
+    // rows sheared by the picture moving between frames, light that
+    // flickers frame to frame.
+    r.set_asset_store(analysis::store(vec![analysis::stabilised_by(3.5, -1.5, 96), analysis::sheared(96), analysis::flickering(96)]));
     r
 }
 
@@ -1661,6 +1633,42 @@ fn every_effect_variant_is_in_the_corpus() {
     assert!(missing.is_empty(), "effects missing from the corpus: {missing:?}");
 }
 
+/// The deflicker and rolling-shutter cases draw what their analysis
+/// computes: the frame without the effect, through the effect's own kernel
+/// with the gain or rows worked out from the asset itself
+/// (`analysis::flicker_gain`, `analysis::shear_rows`). Their recorded
+/// frames are held to this, as #1386's were, never to whatever rendered.
+#[test]
+fn the_analysed_cases_draw_what_their_analysis_computes() {
+    let mut seen = 0;
+    for case in temporal_cases().into_iter().filter(|c| c.name == "temporal/deflicker gains" || c.name == "temporal/rolling shutter") {
+        seen += 1;
+        let clip = case.project[0].tracks[0].clips[0].clone();
+        let mut plain = case.project[0].clone();
+        strip_effects(&mut plain.tracks[0].clips[0]);
+        let mut r = renderer(false, case.working);
+        for &t in &case.times {
+            let with = r.render(&case.project[0], tc(t), W, H, &mut case.frames.clone(), case.opts);
+            let without = r.render(&plain, tc(t), W, H, &mut case.frames.clone(), case.opts);
+            let clip_time = t - clip.timeline_in.to_secs_f64();
+            let source_secs = clip.source_secs_at(clip_time, 24.0);
+            let (mut effects, mut motion) = (clip.builtin_effects().to_vec(), klipp_effects::MotionData::default());
+            for e in &mut effects {
+                match e {
+                    BuiltinEffect::Deflicker { gain, window_secs, .. } => *gain = analysis::flicker_gain(96, *window_secs as f64, source_secs),
+                    BuiltinEffect::RollingShutterCorrection { strength, readout_ratio } => motion.rsc_rows = Some(analysis::shear_rows(H, *readout_ratio, *strength)),
+                    _ => {}
+                }
+            }
+            let luma = klipp_color::linear::luma_coefs(case.working);
+            let want = klipp_effects::apply_effects_with_motion(&effects, without, W, H, clip_time, luma, &motion);
+            let worst = with.iter().zip(&want).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(with.len() == want.len() && worst < 1e-4, "{} @{t}: {worst} from what its analysis computes", case.name);
+        }
+    }
+    assert_eq!(seen, 2, "both analysed cases are in the corpus");
+}
+
 /// Each temporal case's effect does something on the CPU, so the paths
 /// agreeing is not agreement on doing nothing: without the effect (and
 /// its analysis), the frame comes out different (#1024).
@@ -1670,8 +1678,6 @@ fn the_temporal_effects_change_the_picture() {
         let mut plain = case.project[0].clone();
         for c in plain.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
             c.set_effect_list(Vec::new(), c.builtin_effects_enabled().to_vec());
-            c.smoothed_trajectory = None;
-            c.deflicker_gains = None;
         }
         let mut r = renderer(false, case.working);
         let t = case.times[0];
@@ -1740,4 +1746,11 @@ fn a_frei0r_plugin_draws_alike() {
         }
         None => eprintln!("frei0r: the stack declined"),
     }
+}
+
+/// `c` with its built-in effects taken off, through its picture.
+fn strip_effects(c: &mut Clip) {
+    let n = klipp_timeline::test_clip::effects(c).len();
+    let edits: Vec<klipp_timeline::EffectEdit> = (0..n).rev().map(klipp_timeline::EffectEdit::Remove).collect();
+    c.apply_effect_edits(&edits).expect("plain effects").expect("taken off");
 }
