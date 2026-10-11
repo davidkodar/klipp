@@ -1548,7 +1548,7 @@ impl Renderer {
         let blocker = |c: &Clip| -> Option<&'static str> {
             if c.has_enabled_plugins() {
                 Some("OFX plugin")
-            } else if klipp_effects::has_frei0r(c.builtin_effects()) {
+            } else if has_frei0r_node(c) {
                 // A frei0r plug-in runs as a node of the timeline render,
                 // with its instances (M4 step 5): the stack has no frei0r,
                 // and running the layer's effects here would leave it out.
@@ -3240,7 +3240,16 @@ impl Renderer {
     fn analyses_of(&mut self, clip: &Clip, src: &mut dyn FrameSource) -> ClipAnalysis {
         use klipp_analysis::assets::{lookup, Found};
         let mut out = ClipAnalysis::default();
-        for effect in clip.enabled_effects() {
+        // The analysis effects as the clip's picture holds them (M4 step
+        // 12a), not its v1 list.
+        let effects = match clip.picture_effects() {
+            Ok(effects) => effects,
+            Err(e) => {
+                tracing::warn!("clip {}: its analyses aren't read: {e}", clip.id.0);
+                return out;
+            }
+        };
+        for effect in effects.iter().filter(|e| e.enabled).map(|e| &e.effect) {
             let (Some(kind), Some(params)) = (asset_kind(effect), klipp_effects::node_analysis::derivation_params(effect)) else { continue };
             if out.found.iter().any(|(k, _)| *k == (kind, params)) {
                 continue;
@@ -4223,12 +4232,34 @@ fn has_active_effects(fx: &[BuiltinEffect]) -> bool {
 }
 
 /// A clip's built-in effects evaluated at `time`, with its opacity split
-/// out. Keyframes and modifier stacks applied, the transform replaced by
-/// the resolved one (own keyframes, link, focal point), disabled and
+/// out, read from its picture (M4 step 12a): each effect node's values
+/// with its keys and modifier stack, the transform replaced by the
+/// resolved one (own keyframes, link, focal point), switched-off and
 /// identity effects dropped, `Opacity` removed — it is a compositing
 /// weight, returned separately — and `SpeedRamp` removed, which acts on
-/// time, not pixels.
+/// time, not pixels. A clip whose picture can't be read is drawn from its
+/// list ([`list_effects`]), which is said.
 pub fn clip_effects(
+    clip: &Clip,
+    time: Timecode,
+    fps: f64,
+    resolved: Option<ResolvedTransform>,
+    pin: Option<klipp_timeline::surface::Quad>,
+) -> (Vec<BuiltinEffect>, f32) {
+    let from_picture = clip.picture_v2().and_then(|p| crate::resolve::resolve_effects_at(clip, &p.picture, time, fps, resolved, pin, 1.0));
+    match from_picture {
+        Ok(fx) => (fx, eval::evaluate_clip_opacity(clip, time, fps)),
+        Err(e) => {
+            tracing::warn!("clip {}: effects from its picture: {e}; its list stands in", clip.id.0);
+            list_effects(clip, time, fps, resolved, pin)
+        }
+    }
+}
+
+/// [`clip_effects`] from the clip's effect list rather than its picture:
+/// the stand-in for a picture that can't be read, until the lists go
+/// (step 12f).
+pub fn list_effects(
     clip: &Clip,
     time: Timecode,
     fps: f64,
@@ -4742,6 +4773,14 @@ pub fn frame_blends(clip: &Clip, time: Timecode) -> bool {
     blend && !clip.is_reversed() && clip.speed_at(eval_clip_time(clip, time)).abs() < 1.0 - 1e-6
 }
 
+/// Whether `clip`'s picture holds a frei0r plug-in node, on or off (M4
+/// steps 5 and 12a): the display stack has no frei0r arm, so it declines
+/// such a clip. A picture that can't be read is taken to hold one, so the
+/// stack declines it rather than leave a plug-in out.
+fn has_frei0r_node(clip: &Clip) -> bool {
+    clip.picture_effects().map_or(true, |effects| effects.iter().any(|e| matches!(e.effect, BuiltinEffect::Frei0r { .. })))
+}
+
 /// `clip`'s enabled OFX entries as a graph of their own (M4 step 3):
 /// Source, a node for each in list order, Output. A node's id is its
 /// clip's, its plug-in's and which of that plug-in's entries it is, so
@@ -4750,7 +4789,16 @@ pub fn frame_blends(clip: &Clip, time: Timecode) -> bool {
 /// own). `None` when none is on.
 fn ofx_graph(clip: &Clip) -> Option<klipp_nodes::NodeGraph> {
     use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams};
-    if !clip.ofx_effects().iter().any(|e| e.enabled) {
+    // The OFX entries as the clip's picture holds them (M4 step 12a), not
+    // its v1 list.
+    let entries: Vec<klipp_plugin::AppliedEffect> = match clip.picture_ofx() {
+        Ok(ofx) => ofx.into_iter().map(|o| o.entry).collect(),
+        Err(e) => {
+            tracing::error!("clip {}: its OFX plug-ins aren't read: {e}", clip.id.0);
+            return None;
+        }
+    };
+    if !entries.iter().any(|e| e.enabled) {
         return None;
     }
     // Apart from any id the clip's own graphs use: an OFX node's mark in
@@ -4763,7 +4811,7 @@ fn ofx_graph(clip: &Clip) -> Option<klipp_nodes::NodeGraph> {
     // Counted over every entry, on or off: switching one off moves no
     // other's slot.
     let mut seen: HashMap<&str, u32> = HashMap::new();
-    for e in clip.ofx_effects() {
+    for e in &entries {
         let nth = seen.entry(e.plugin_name.as_str()).or_insert(0);
         let k = (u128::from(name(&e.plugin_name)) << 32) | u128::from(*nth) | 1 << 31;
         *nth += 1;

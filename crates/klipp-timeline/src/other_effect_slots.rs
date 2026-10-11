@@ -23,7 +23,7 @@ use crate::{Clip, TrackEffects};
 /// ```
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct OfxEffects(Vec<AppliedEffect>);
+pub struct OfxEffects(pub(crate) Vec<AppliedEffect>);
 
 impl From<Vec<AppliedEffect>> for OfxEffects {
     fn from(effects: Vec<AppliedEffect>) -> Self {

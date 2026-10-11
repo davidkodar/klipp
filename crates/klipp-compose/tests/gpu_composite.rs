@@ -105,6 +105,32 @@ fn the_gpu_stack_declines_what_it_cannot_do_yet() {
     assert!(r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, hdr).is_none());
 }
 
+/// The stack asks the clip's picture whether it holds a frei0r plug-in,
+/// not its v1 list (M4 step 12a): a clip whose list the test cleared but
+/// whose picture keeps the plug-in is still declined. Read from the list,
+/// the stack would have taken it and left the plug-in out.
+#[test]
+fn the_stack_reads_the_frei0r_plug_in_from_the_picture() {
+    let frei0r = klipp_effects::BuiltinEffect::Frei0r { type_id: "frei0r:/x/invert0r.so:invert0r".into(), params: vec![] };
+    let (seq, mut src) = stack();
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(true);
+    if r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none() {
+        eprintln!("skipping: the GPU stack declined the plain stack (no usable GPU?)");
+        return;
+    }
+    let mut diverged = seq.clone();
+    let base = diverged.tracks.last_mut().and_then(|t| t.clips.first_mut()).expect("the base clip");
+    *base = klipp_timeline::test_clip::TestClip::of(base.clone()).effect(frei0r).build();
+    base.diverge_fields_for_test(|effects, enabled, _| {
+        effects.clear();
+        enabled.clear();
+    });
+    assert!(base.builtin_effects().is_empty(), "the list as the test left it");
+    assert!(r.render_display_u8_on_gpu(&diverged, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none(), "the picture's frei0r on the stack");
+    assert_eq!(r.last_decline(), Some("frei0r plug-in"));
+}
+
 /// The stack has no frei0r: a frame with a frei0r plug-in, on a clip or
 /// on an adjustment layer, is declined (counted, and said), so the
 /// timeline render, where the plug-in is a node, draws it. Run on the

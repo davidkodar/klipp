@@ -79,6 +79,15 @@ impl ClipPictureFields {
         &mut self.view
     }
 
+    /// The view, written without its guard, for a test that sets a
+    /// picture-truth clip's fields apart from its picture
+    /// ([`crate::Clip::diverge_fields_for_test`]).
+    #[cfg(any(test, feature = "test-clip"))]
+    pub(crate) fn view_unguarded(&mut self) -> &mut PictureView {
+        self.lifted = Lifted::default();
+        &mut self.view
+    }
+
     /// The picture-truth clip's picture, if this is one.
     pub(crate) fn truth(&self) -> Option<&Arc<LiftedPicture>> {
         self.truth.as_ref()

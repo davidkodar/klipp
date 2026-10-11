@@ -654,6 +654,22 @@ impl EffectsState {
     }
 }
 
+/// A clip whose fields say other than its picture, for a test (M4 step
+/// 12a): the clip made picture-truth on the picture it has, then its
+/// built-in list, their flags and its OFX list changed by `f` without its
+/// picture. A reader that reads the picture sees the picture as it was;
+/// one that reads the fields sees `f`'s. No edit makes such a clip.
+#[cfg(any(test, feature = "test-clip"))]
+impl Clip {
+    #[doc(hidden)]
+    pub fn diverge_fields_for_test(&mut self, f: impl FnOnce(&mut Vec<BuiltinEffect>, &mut Vec<bool>, &mut Vec<klipp_plugin::AppliedEffect>)) {
+        let picture = self.picture_v2().expect("the clip's picture");
+        self.picture.set_truth(Some(picture));
+        let view = self.picture.view_unguarded();
+        f(&mut view.effect_list.builtin_effects, &mut view.effect_list.builtin_effects_enabled, &mut view.effects.0);
+    }
+}
+
 /// Access by [`EffectId`] to what callers otherwise address by a place they
 /// computed: an effect's value, a parameter's keyframes and modifier stack.
 /// Each keys exactly as the saved form does (`"{index}:{param}"`,

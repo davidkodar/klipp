@@ -175,3 +175,19 @@ fn after_a_plug_in_a_fast_clip_reads_the_frame_it_shows() {
     assert_eq!(fast, draw_at(1.0, 50, 0), "source frame 50's gain");
     assert_ne!(fast, draw_at(1.0, 0, 25), "not source frame 25's (the clip time taken for source time)");
 }
+
+/// The analyses are found for the effects the clip's picture holds, not
+/// its v1 list (M4 step 12a): a clip whose list keeps its Deflicker on but
+/// whose picture has it off gets no analysis, so the frame is unchanged.
+/// Read from the list, its analysis would have been found and the frame
+/// deflickered.
+#[test]
+fn the_analyses_are_the_pictures_effects() {
+    let mut seq = sequence(50);
+    let c = seq.tracks[0].clips.first_mut().expect("the clip");
+    c.apply_effect_edits(&[klipp_timeline::EffectEdit::SetEnabled(0, false)]).expect("a list edit").expect("the picture takes it");
+    c.diverge_fields_for_test(|_, enabled, _| enabled[0] = true);
+    assert_eq!(c.builtin_effects_enabled(), [true], "the list as the test left it");
+    let drawn = draw(&seq, 0, pumping());
+    assert!(drawn.chunks_exact(4).all(|p| (p[0] - 0.4).abs() < 1e-6), "the picture's Deflicker is off: no analysis, the frame as it is");
+}

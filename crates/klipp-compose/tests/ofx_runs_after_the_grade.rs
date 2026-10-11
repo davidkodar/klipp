@@ -75,3 +75,20 @@ fn an_ofx_plugin_runs_after_the_grade() {
     // and then graded is another picture. That the plug-in ran at all:
     assert!(graded_only.iter().zip(&with).any(|(a, b)| a.abs_diff(*b) > 8), "the plug-in changed nothing");
 }
+
+/// The OFX node runs the plug-in the clip's picture holds, not its v1 list
+/// (M4 step 12a): a clip whose list the test cleared but whose picture
+/// keeps the inverting plug-in draws its graded frame inverted. Read from
+/// the list, it would draw it as graded.
+#[test]
+fn the_ofx_node_runs_the_pictures_plug_in() {
+    let graded_only = drawn(&graded(false));
+    let mut seq = graded(true);
+    let c = seq.tracks[0].clips.first_mut().expect("the clip");
+    c.diverge_fields_for_test(|_, _, ofx| ofx.clear());
+    assert!(c.ofx_effects().is_empty(), "the list as the test left it");
+    let with = drawn(&seq);
+    let after: Vec<u8> = graded_only.chunks_exact(4).flat_map(|p| [255 - p[0], 255 - p[1], 255 - p[2], p[3]]).collect();
+    let worst = with.iter().zip(&after).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+    assert!(worst <= 1, "the picture's plug-in didn't run: {worst} levels from the inverted graded frame");
+}
