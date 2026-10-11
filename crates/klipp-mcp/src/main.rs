@@ -2599,7 +2599,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               broadcast -23), captions/music (bool), cast [{name,role,described}], features [{title,description,rank}] \
               (rank 1 headline; plan segments reference titles), arc (e.g. hook/features/CTA), cta, brand_colors \
               [\"#rrggbb\",...] (first is title default), notes. type_styles: \
-              [{name,font?,bold?,size?,color?,fill?,backing?,full_frame?,x?,y?,align?,outline?,outline_color?,glow?,glow_color?,gradient?,animate?,animate_secs?,stagger?,enter?,exit?,loop_effect?}]. \
+              [{name,font?,bold?,size?,color?,fill?,backing?,full_frame?,x?,y?,align?,outline?,outline_color?,glow?,glow_color?,gradient?,animate?,animate_secs?,stagger?,enter?,exit?,loop_effect?,shadow?}] (shadow as on a title: {x?,y?,blur?,color?,opacity?}). \
               Title ops/plan titles select style by name and override its fields. Built-ins heading/callout/card can be \
               replaced. enter/exit use title motion objects; kind none disables. look: {name} preset \
               broadcast_neutral|web_punchy|film_soft|warm_interview|cool_tech|screencast, or \

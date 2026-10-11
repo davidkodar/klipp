@@ -29,11 +29,31 @@ fn strict_brief<'de, D: serde::Deserializer<'de>>(d: D) -> Result<klipp_timeline
     brief_from_value(serde_json::Value::deserialize(d)?).map_err(serde::de::Error::custom)
 }
 
-/// A brief from JSON, its type styles' motion held to the known fields:
-/// what `set_brief` reads, and what `update_brief` reads once merged.
+/// A type style's fields, as the style writes them: every one, the ones
+/// left out when empty included.
+fn type_style_fields() -> Vec<String> {
+    let motion = klipp_timeline::TitleMotionSpec { kind: "fade".into(), ..Default::default() };
+    let shadow = klipp_timeline::ShadowSpec { x: None, y: None, blur: None, color: None, opacity: None };
+    let full = klipp_timeline::TypeStyle { enter: Some(motion.clone()), exit: Some(motion), shadow: Some(shadow), ..Default::default() };
+    match serde_json::to_value(full) {
+        Ok(serde_json::Value::Object(fields)) => fields.keys().cloned().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// A brief from JSON, its type styles and their motion held to the known
+/// fields (a field the style doesn't keep is refused by name, never
+/// dropped): what `set_brief` reads, and what `update_brief` reads once
+/// merged.
 pub(crate) fn brief_from_value(value: serde_json::Value) -> Result<klipp_timeline::Brief, String> {
     if let Some(styles) = value.get("type_styles").and_then(serde_json::Value::as_array) {
+        let known = type_style_fields();
         for style in styles {
+            if let Some(fields) = style.as_object() {
+                if let Some(key) = fields.keys().find(|k| !known.contains(k)) {
+                    return Err(format!("unknown type style field {key:?}"));
+                }
+            }
             for side in ["enter", "exit"] {
                 if let Some(motion) = style.get(side) {
                     strict_motion_fields(motion)?;
@@ -1329,6 +1349,20 @@ mod tests {
                 "title": {"text": "Hi", "exit": {"kind": "fade", "durations_secs": 1.0}}}]}
         });
         assert!(serde_json::from_value::<Request>(plan).is_err());
+    }
+
+    /// #1567: a type style keeps its shadow, and a field it doesn't keep
+    /// is refused by name, never dropped.
+    #[test]
+    fn a_type_style_keeps_its_shadow_and_refuses_what_it_cant_keep() {
+        let brief = |style: serde_json::Value| serde_json::from_value::<Request>(json!({"method": "set_brief", "brief": {"type_styles": [style]}}));
+        let kept = brief(json!({"name": "chapter", "shadow": {"x": 0, "y": 4, "blur": 12, "opacity": 0.5}})).unwrap();
+        let super::ControlCommand::SetBrief { brief: b } = kept.command else { panic!("a set_brief") };
+        let shadow = b.type_styles[0].shadow.as_ref().expect("the shadow kept");
+        assert_eq!((shadow.y, shadow.blur, shadow.opacity), (Some(4.0), Some(12.0), Some(0.5)));
+        let err = brief(json!({"name": "chapter", "drop_shadow": true})).unwrap_err().to_string();
+        assert!(err.contains("drop_shadow"), "{err}");
+        assert!(brief(json!({"name": "chapter", "shadow": {"spread": 2}})).is_err(), "a shadow's own fields are held too");
     }
 
     /// The multicam requests as a client sends them: create with or

@@ -234,6 +234,9 @@ pub(crate) fn respond(
             for style in &brief.type_styles {
                 klipp_document::title_style::resolve_motion(style)
                     .map_err(|e| format!("type style {:?}: {e}", style.name))?;
+                if let Some(shadow) = &style.shadow {
+                    klipp_document::ops::type_style_shadow(shadow).map_err(|e| format!("type style {:?}: {e}", style.name))?;
+                }
             }
             if let Some(t) = brief.target_secs {
                 if !t.is_finite() || t <= 0.0 {

@@ -163,6 +163,29 @@ pub struct TypeStyle {
     pub stagger: Option<String>,
     #[serde(default)]
     pub loop_effect: Option<String>,
+    /// A drop shadow behind the words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<ShadowSpec>,
+}
+
+/// A drop shadow behind a title's text, what keeps bright words
+/// readable over a bright sky. `x` and `y` move it in pixels of a
+/// 1080-line frame (right and down for positive), `blur` softens it in
+/// the same pixels, `color` is `#rrggbb`, `opacity` 0 to 1. Left out,
+/// they are 0, 4, 8, black and 0.6.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShadowSpec {
+    #[serde(default)]
+    pub x: Option<f32>,
+    #[serde(default)]
+    pub y: Option<f32>,
+    #[serde(default)]
+    pub blur: Option<f32>,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub opacity: Option<f32>,
 }
 
 impl TypeStyle {

@@ -97,7 +97,7 @@ pub use clip_kind::{
     LayerFx, LegacyTextFx, FxMigration,
     TitleBackground, TitleData, TitleObject, TitleObjectContent, TitleObjectId, TitlePosition,
     TitleShadow, GeneratorData, ImageFit, ImageLayer};
-pub use brief::{Brief, CastMember, Feature, MotionAnchorSpec, TitleMotionSpec, TypeStyle};
+pub use brief::{Brief, CastMember, Feature, MotionAnchorSpec, ShadowSpec, TitleMotionSpec, TypeStyle};
 pub use edit_plan::{EditPlan, PlanBackground, PlanMusic, PlanPlacement, PlanSegment, PlanSfx, PlanTitle, PlanZoom};
 pub use marker::Marker;
 pub use klipp_core::MulticamSound;
