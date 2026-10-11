@@ -569,7 +569,7 @@ impl Clip {
         }
         let (record, _settled) = klipp_graph_lift::placed::edit(&lifted.picture, &ctx, &placed)?;
         let v1 = klipp_graph_lift::to_v1::clip(&serde_json::to_value(&record).map_err(|e| e.to_string())?)?;
-        let stored: Vec<crate::picture_v1::EffectJson> = serde_json::from_value(v1.get("effects").cloned().unwrap_or_default()).map_err(|e| format!("the edited plug-ins: {e}"))?;
+        let stored: Vec<crate::picture_v1::EffectJson> = serde_json::from_value(v1.get("effects").cloned().filter(|v| !v.is_null()).unwrap_or_else(|| serde_json::json!([]))).map_err(|e| format!("the edited plug-ins: {e}"))?;
         let before = self.picture.clone();
         self.set_ofx_effects(stored.iter().map(|e| e.to_effect()).collect());
         Ok(PictureEdit { before, after: self.picture.clone() })
@@ -579,7 +579,8 @@ impl Clip {
     /// holds them: each entry under its node's id, in slot order.
     fn write_list_from_record(&mut self, record: &klipp_graph_format::ClipRecordV2) -> Result<(), String> {
         let v1 = klipp_graph_lift::to_v1::clip(&serde_json::to_value(record).map_err(|e| e.to_string())?)?;
-        let field = |name: &str| v1.get(name).cloned().unwrap_or_default();
+        // A list the record left empty is written as nothing at all.
+        let field = |name: &str| v1.get(name).cloned().filter(|v| !v.is_null()).unwrap_or_else(|| serde_json::json!([]));
         let effects: Vec<BuiltinEffect> = serde_json::from_value(field("builtin_effects")).map_err(|e| format!("the edited list: {e}"))?;
         let enabled: Vec<bool> = serde_json::from_value(field("builtin_effects_enabled")).unwrap_or_default();
         let keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>> = serde_json::from_value(field("effect_keyframes")).unwrap_or_default();

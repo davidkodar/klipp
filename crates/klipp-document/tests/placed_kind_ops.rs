@@ -470,3 +470,16 @@ fn a_moved_plugins_node_is_named_by_its_new_place() {
     assert_eq!(c.effect_node_at(true, 0), Some(a_before), "B now has the first place's name");
     assert_eq!(c.effect_slot_of_node(a_after), Some((true, 1)), "the place finds it");
 }
+
+/// The last entry taken off leaves an empty list, for the built-in effects
+/// and the plug-ins alike: the record writes an empty list as nothing,
+/// which reads back as none.
+#[test]
+fn the_last_entry_taken_off_leaves_an_empty_list() {
+    use klipp_timeline::OfxEdit;
+    let mut c = with_plugins(clip(vec![blur()], vec![true]), vec![plugin("org.example.A")]);
+    c.apply_effect_edits(&[EffectEdit::Remove(0)]).expect("a list edit").expect("the picture takes it");
+    assert!(test_clip::effects(&c).is_empty(), "no built-in effects");
+    c.apply_ofx_edits(&[OfxEdit::Remove(0)]).expect("the plug-in comes off");
+    assert!(test_clip::plugins(&c).is_empty(), "no plug-ins");
+}
