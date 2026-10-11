@@ -39,6 +39,7 @@ pub mod params;
 pub mod defaults;
 pub mod executor;
 pub mod decline;
+pub mod fault;
 pub mod frame_context;
 pub mod frei0r_node;
 pub mod plugin;

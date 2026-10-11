@@ -25,5 +25,10 @@ tracing-subscriber = { workspace = true }
 # existed has to keep its picture, and that is only checkable as JSON.
 serde_json = { workspace = true }
 
+[features]
+# A test-only fault on a built-in effect's run (`fault`): turned on only
+# by dev-dependencies and the readiness crate.
+fault-hook = []
+
 [lints]
 workspace = true

@@ -22,8 +22,10 @@ pub mod fixtures;
 pub mod format;
 mod frame_blend;
 mod ofx;
+pub mod old_stage;
 pub mod route;
 pub mod rules;
+pub mod saved;
 mod temporal_denoise;
 
 use std::collections::{BTreeMap, BTreeSet};

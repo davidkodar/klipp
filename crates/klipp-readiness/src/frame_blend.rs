@@ -160,6 +160,20 @@ fn declines(route: Route, scene: (Arc<Scene>, Clip), source: Ramp, frame: i64, l
 
 pub fn run(report: &mut Report) {
     let whole = || Ramp { missing: vec![], large: vec![], step: None };
+    // The renderer's own frame blend is gone (step 7).
+    report.case("blend: the old stage is gone", [key(None, Obligation::OldStageGone)], || crate::old_stage::gone(Family::FrameBlend));
+    // A save and a strict reload keep the clip's blend: its Speed Ramp in
+    // blend mode, its speed, its speed curve.
+    report.case("blend: saved and reloaded", [key(None, Obligation::Saved)], || {
+        let (scene, clip) = scene(50, 100, Run::Ramped(0.25, 0.75), 1);
+        let back = crate::saved::round_trip(&scene.sequence, &scene.pool)?;
+        let got = back.tracks.first().and_then(|t| t.clips.first()).ok_or("no clip came back")?;
+        let ramp = |c: &Clip| c.picture_effects().map(|fx| fx.into_iter().map(|e| (e.effect, e.enabled)).collect::<Vec<_>>());
+        if ramp(got)? != ramp(&clip)? || got.speed != clip.speed || got.speed_keyframes != clip.speed_keyframes {
+            return Err(format!("the blend came back as {:?} at {} ({:?})", ramp(got)?, got.speed, got.speed_keyframes));
+        }
+        Ok(())
+    });
     for route in [Route::Viewer, Route::Export] {
         let at = |o| [key(Some(route), o)];
         // At half speed, every other frame falls halfway between two media
@@ -200,6 +214,13 @@ pub fn run(report: &mut Report) {
         });
         report.case(&format!("blend {route:?}: blend mode 0"), at(Obligation::Outcome(Outcome::Bypass)), || {
             holds(route, true, scene(50, 100, Run::At(0.5), 0), whole(), &[1, 41], 0)
+        });
+        // A blend whose run fails shows the frame it read, unblended, and
+        // says so; an export refuses it.
+        report.case(&format!("blend {route:?}: its render failed"), at(Obligation::Outcome(Outcome::RenderFailed)), || {
+            let _fault = klipp_nodes::fault::fail("speed_ramp");
+            holds(route, true, scene(50, 100, Run::At(0.5), 1), whole(), &[41], 0)?;
+            declines(route, scene(50, 100, Run::At(0.5), 1), whole(), 41, Some("render failed"))
         });
         report.case(&format!("blend {route:?}: no next frame"), at(Obligation::Outcome(Outcome::NeighbourMissing)), || {
             // Frame 41 at half speed shows media frame 70, between 70 and 71.

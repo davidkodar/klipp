@@ -3824,6 +3824,11 @@ impl GraphExecutor {
         // A clip's effects record into the chain; ones not recorded yet
         // are counted breaks (`ChainStats::effect_breaks`).
         if let NodeKind::Effect | NodeKind::EffectSegment = kind {
+            // A faulted effect (a test's, `fault`) is the CPU arm's, which
+            // declines it.
+            if params.effects.iter().any(crate::fault::faults) {
+                return None;
+            }
             // An analysis node's motion goes up just before it records, and
             // a warp without an analysis clears it, so it passes the frame
             // through; a second in the run would overwrite the first before
@@ -4421,6 +4426,12 @@ impl GraphExecutor {
         ctx.sources.for_node(node_id, budget);
         let mut out = input.to_vec();
         for effect in effects {
+            // A faulted effect (a test's, `fault`): left out, declined as a
+            // render that failed.
+            if crate::fault::faults(effect) {
+                self.decline(node_id, NodeKind::Effect, crate::DeclineOutcome::RenderFailed, crate::decline::effect_name(effect), "its render failed", "a fault set by a test".into());
+                continue;
+            }
             // The frame blend (M4 step 7): the frame shown mixed toward the
             // media's next one by where the source time falls between their
             // presentation times. Without either time, or with no next
@@ -4623,6 +4634,16 @@ impl GraphExecutor {
                 // warp without one passes the frame through.
                 let at = self.run_analysis.get(&node_id).cloned();
                 let fx = with_gain(&params.effects, at.as_ref());
+                // A faulted effect (a test's, `fault`) is left out, its node
+                // declined as a render that failed.
+                let faulted: Vec<String> = fx.iter().filter(|e| crate::fault::faults(e)).map(crate::decline::effect_name).collect();
+                for name in faulted {
+                    self.decline(node_id, *kind, crate::DeclineOutcome::RenderFailed, name, "its render failed", "a fault set by a test".into());
+                }
+                let fx: std::borrow::Cow<[klipp_effects::BuiltinEffect]> = match fx.iter().any(crate::fault::faults) {
+                    true => std::borrow::Cow::Owned(fx.iter().filter(|e| !crate::fault::faults(e)).cloned().collect()),
+                    false => fx,
+                };
                 let fx = fx.as_ref();
                 let motion = at.map(|a| a.motion).unwrap_or_default();
                 let luma = klipp_color::linear::luma_coefs(self.working_colorspace);

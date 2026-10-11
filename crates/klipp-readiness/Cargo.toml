@@ -26,7 +26,7 @@ klipp-core = { path = "../klipp-core" }
 klipp-effects = { path = "../klipp-effects" }
 klipp-graph-format = { workspace = true }
 klipp-media = { path = "../klipp-media" }
-klipp-nodes = { path = "../klipp-nodes" }
+klipp-nodes = { path = "../klipp-nodes", features = ["fault-hook"] }
 klipp-project = { path = "../klipp-project" }
 klipp-timeline = { path = "../klipp-timeline" }
 serde_json = { workspace = true }
