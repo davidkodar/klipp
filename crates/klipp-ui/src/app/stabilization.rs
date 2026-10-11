@@ -1009,8 +1009,10 @@ mod analysis_tests {
         // The op control's klipp_graph "add" makes: a legacy effect node
         // holding the registry's sample Deflicker, after the blur.
         let deflicker = (klipp_effects::registry::effect_type("deflicker").expect("deflicker").sample)();
+        // The type an effect node of the picture has, the blur's.
+        let type_id = state.sequences[state.active_sequence_idx].all_clips().next().unwrap().picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.id == blur).unwrap().type_id.clone();
         let node: klipp_graph_format::Node = serde_json::from_value(serde_json::json!({
-            "id": uuid::Uuid::new_v4(), "type_id": klipp_graph_format::types::LEGACY_EFFECT, "label": "",
+            "id": uuid::Uuid::new_v4(), "type_id": type_id, "label": "",
             "legacy": { "payload": serde_json::to_value(&deflicker).unwrap() },
         }))
         .unwrap();
