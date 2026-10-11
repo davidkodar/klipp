@@ -627,6 +627,18 @@ pub struct EffectsState {
 }
 
 impl EffectsState {
+    /// A state as the clip's own picture holds it (M4 step 12b-0): each
+    /// effect under the id its node has there.
+    pub(crate) fn of_picture(
+        effects: Vec<BuiltinEffect>,
+        enabled: Vec<bool>,
+        ids: Vec<EffectId>,
+        keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
+        modifiers: Vec<(ParamId, klipp_core::ModifierStack)>,
+    ) -> Self {
+        Self { effects, enabled, ids, keyframes, modifiers }
+    }
+
     /// A state from values taken elsewhere (a copied clip's effects, to
     /// paste), with fresh ids: the entries are new to the clip it lands on.
     /// `modifiers` keeps only effect-targeted stacks.

@@ -161,6 +161,26 @@ fn listed(clip: &Clip) -> (Vec<BuiltinEffect>, Vec<bool>) {
     (effects, on)
 }
 
+/// The clip's OFX plug-ins, as its list holds them.
+pub fn plugins(clip: &Clip) -> Vec<klipp_plugin::AppliedEffect> {
+    clip.ofx_effects().to_vec()
+}
+
+/// The clip's effect keys by `"{slot}:{param}"`, as its list holds them,
+/// orphans (a slot past the list) included.
+pub fn effect_keys(clip: &Clip) -> std::collections::HashMap<String, Vec<Keyframe>> {
+    clip.effect_keyframes().clone()
+}
+
+/// Keys on the list place `slot`'s `param`, written to the clip's list
+/// form: the way to make an orphan (a slot past the list), which no node
+/// holds and only that form can.
+pub fn orphan_keys(clip: &mut Clip, slot: usize, param: &str, keys: Vec<Keyframe>) {
+    clip.edit_effect_keyframes(|k| {
+        k.insert(format!("{slot}:{param}"), keys);
+    });
+}
+
 /// The clip's built-in effects, in list order, as its picture holds them.
 pub fn effects(clip: &Clip) -> Vec<BuiltinEffect> {
     listed(clip).0

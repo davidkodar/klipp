@@ -31,6 +31,8 @@ serde_json = { workspace = true }
 [dev-dependencies]
 klipp-timeline = { workspace = true, features = ["test-clip"] }
 klipp-graph-format = { workspace = true }
+klipp-plugin = { workspace = true }
+uuid = { workspace = true }
 
 [lints]
 workspace = true

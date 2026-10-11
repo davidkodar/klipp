@@ -224,7 +224,7 @@ fn stored_effect_ids(picture: &klipp_graph_format::lifted::ClipPicture, len: usi
 }
 
 /// The kind's `type` as the file writes it, as far as the lift reads it.
-fn lift_kind_tag(kind: &crate::ClipKind) -> &'static str {
+pub(crate) fn lift_kind_tag(kind: &crate::ClipKind) -> &'static str {
     use crate::ClipKind as K;
     match kind {
         K::Media { .. } => "media",
