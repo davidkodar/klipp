@@ -165,6 +165,7 @@ pub fn paste(seq: &Sequence, cb: &ClipboardContent, at: Timecode, mode: PasteMod
             surfaces: clip.surfaces.clone(),
             surface_pin: clip.surface_pin.map(|p| klipp_timeline::SurfacePin { host: new_ids.get(&p.host).copied().unwrap_or(p.host), ..p }),
             precomp: None,
+            baked_own: None,
             ..clip.clone()
         };
         // A grade group is the sequence's: in another sequence the clip

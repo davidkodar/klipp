@@ -269,6 +269,7 @@ impl KlippApp {
                     name: None,
                     colour_label: 0,
                     precomp: None,
+                    baked_own: None,
                 };
                 let clip_id = clip.id;
                 let rest = title_rest_time(&clip, fps_rate);
@@ -617,6 +618,7 @@ impl KlippApp {
             name: None,
             colour_label: 0,
             precomp: None,
+            baked_own: None,
         };
         self.state.sequences[seq_idx].tracks[track_idx]
             .clips

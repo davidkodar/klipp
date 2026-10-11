@@ -1828,6 +1828,7 @@ pub(super) fn duplicate_after(clip: &klipp_timeline::Clip) -> klipp_timeline::Cl
         name: clip.name.clone(),
         colour_label: clip.colour_label,
         precomp: None,
+        baked_own: None,
     };
     new_clip.set_grade(clip.grade().clone());
     // A picture-truth clip's picture (its masks, mixes)

@@ -1,26 +1,42 @@
-//! Render-path decisions over today's clip storage. Keep their individual
-//! meanings when the storage changes; a raw entry is not an active effect.
+//! Render-path decisions over the clip's picture (M4 step 12f). Keep their
+//! individual meanings; a raw entry is not an active effect.
 use crate::{Clip, TransformLinkTarget};
 use klipp_core::{ClipId, Keyframe, ParamId};
 use klipp_effects::{BuiltinEffect, FocalRef};
 
 impl Clip {
+    /// The clip's built-in entries in list order as its picture's nodes
+    /// hold them, each with whether it's on (M4 step 12f): a plain effect
+    /// from its map, a kind the clip places itself from its stored entry.
+    fn picture_entries(&self) -> Vec<(BuiltinEffect, bool)> {
+        let Ok(lifted) = self.picture_v2() else { return Vec::new() };
+        (0..)
+            .map_while(|i| self.effect_node_at(false, i))
+            .filter_map(|id| {
+                let node = lifted.picture.graph.nodes.iter().find(|n| n.id == id)?;
+                let effect = serde_json::from_value(klipp_graph_lift::effect_params::entry_of(node).ok()?).ok()?;
+                Some((effect, node.enabled))
+            })
+            .collect()
+    }
+
     /// Any raw built-in entry, including disabled and identity entries.
     pub fn has_effect_entries(&self) -> bool {
-        !self.builtin_effects().is_empty()
+        self.effect_node_at(false, 0).is_some()
     }
 
     /// Any raw OFX entry. Render gates that ignore disabled plug-ins must
     /// continue to use [`Self::has_enabled_plugins`] instead.
     pub fn has_plugin_entries(&self) -> bool {
-        !self.ofx_effects().is_empty()
+        self.effect_node_at(true, 0).is_some()
     }
 
     /// Whether the viewer's GPU display stack can draw the raw list,
     /// disabled entries included: not with a frei0r entry, which runs as a
     /// node on the CPU timeline render (M4 step 5).
     pub fn effect_chain_gpu_capable(&self) -> bool {
-        !klipp_effects::has_frei0r(self.builtin_effects())
+        let effects: Vec<BuiltinEffect> = self.picture_entries().into_iter().map(|(e, _)| e).collect();
+        !klipp_effects::has_frei0r(&effects)
     }
 
     pub fn grade_is_identity(&self) -> bool {
@@ -42,33 +58,28 @@ impl Clip {
     /// its history again (M4 step 5).
     pub fn frames_cacheable(&self) -> bool {
         self.needs_grade_or_builtin_processing()
-            && !self.builtin_effects().iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::Frei0r { type_id, .. } if klipp_effects::frei0r_effect::keeps_history(type_id)))
+            && !self.picture_entries().iter().any(|(e, _)| matches!(e, klipp_effects::BuiltinEffect::Frei0r { type_id, .. } if klipp_effects::frei0r_effect::keeps_history(type_id)))
     }
 
-    /// A modifier entry counts even when its stack is empty or targets audio.
+    /// Any modifier stack the clip's picture holds: on its placement and
+    /// opacity, on an effect's parameter, or on its sound.
     pub fn has_param_modifiers(&self) -> bool {
-        // A picture-truth clip's placement and opacity stacks are its
-        // picture's (`truth_lane`).
-        let truth = [ParamId::Opacity, ParamId::PositionX, ParamId::PositionY, ParamId::Scale, ParamId::Rotation].iter().any(|p| self.truth_lane(p).is_some_and(|(_, m)| !m.is_empty()));
-        truth || !self.param_modifiers().is_empty()
+        let lanes = [ParamId::Opacity, ParamId::PositionX, ParamId::PositionY, ParamId::Scale, ParamId::Rotation].iter().any(|p| self.truth_lane(p).is_some_and(|(_, m)| !m.is_empty()));
+        // A stack with a modifier in it: an empty one changes nothing.
+        let stacked = |m: &Option<serde_json::Value>| m.as_ref().and_then(|m| m.get("modifiers")).and_then(serde_json::Value::as_array).is_some_and(|m| !m.is_empty());
+        let effects = self.picture_v2().is_ok_and(|l| l.picture.graph.nodes.iter().any(|n| n.anim.values().any(|a| stacked(&a.modifiers))));
+        lanes || effects || !self.sound_modifiers().is_empty()
     }
 
     /// The seven clip tracks used by direct-present and title-overlay gates.
     /// A single constant key counts; audio, effect, speed and matte keys do not.
     pub fn has_render_keyframes(&self) -> bool {
-        if let Some(tracks) = self.truth_tracks() {
-            return tracks.iter().any(|k| !k.is_empty());
-        }
-        !self.opacity_keyframes().is_empty()
-            || self
-                .transform_keyframe_tracks()
-                .iter()
-                .any(|k| !k.is_empty())
+        self.render_tracks().is_some_and(|tracks| tracks.iter().any(|k| !k.is_empty()))
     }
 
-    /// A picture-truth clip's seven render tracks as its picture holds them
-    /// (opacity, then the six transform tracks); `None` for any other clip.
-    fn truth_tracks(&self) -> Option<Vec<Vec<Keyframe>>> {
+    /// The clip's seven render tracks as its picture holds them: opacity,
+    /// then the six transform tracks.
+    fn render_tracks(&self) -> Option<Vec<Vec<Keyframe>>> {
         let lane = |p: ParamId| self.truth_lane(&p).map(|(k, _)| k).unwrap_or_default();
         let [tilt_x, tilt_y] = self.truth_tilt_keys()?;
         Some(vec![lane(ParamId::Opacity), lane(ParamId::PositionX), lane(ParamId::PositionY), lane(ParamId::Scale), lane(ParamId::Rotation), tilt_x, tilt_y])
@@ -81,10 +92,7 @@ impl Clip {
     }
 
     pub fn has_tilt_keyframes(&self) -> bool {
-        if let Some(tilt) = self.truth_tilt_keys() {
-            return tilt.iter().any(|k| !k.is_empty());
-        }
-        !self.transform_tilt_x_keyframes().is_empty() || !self.transform_tilt_y_keyframes().is_empty()
+        self.truth_tilt_keys().is_some_and(|tilt| tilt.iter().any(|k| !k.is_empty()))
     }
 
     /// Playback's speed-ramp gate; separate from the picture-present tracks.
@@ -94,28 +102,12 @@ impl Clip {
 
     /// The shutter gate needs changing neighbouring values, not merely keys.
     pub fn has_changing_transform_keys(&self) -> bool {
-        if let Some(tracks) = self.truth_tracks() {
-            return tracks[1..].iter().any(|k| k.windows(2).any(|w| (w[0].value - w[1].value).abs() > 1e-6));
-        }
-        self.transform_keyframe_tracks()
-            .iter()
-            .any(|k| k.windows(2).any(|w| (w[0].value - w[1].value).abs() > 1e-6))
-    }
-
-    fn transform_keyframe_tracks(&self) -> [&[Keyframe]; 6] {
-        [
-            self.transform_pos_x_keyframes(),
-            self.transform_pos_y_keyframes(),
-            self.transform_scale_keyframes(),
-            self.transform_rotation_keyframes(),
-            self.transform_tilt_x_keyframes(),
-            self.transform_tilt_y_keyframes(),
-        ]
+        self.render_tracks().is_some_and(|tracks| tracks[1..].iter().any(|k| k.windows(2).any(|w| (w[0].value - w[1].value).abs() > 1e-6)))
     }
 
     /// `sits_unmoved` considers raw placement entries, even disabled ones.
     pub fn has_nonidentity_placement_entries(&self) -> bool {
-        self.builtin_effects().iter().any(|e| {
+        self.picture_entries().iter().any(|(e, _)| {
             matches!(
                 e,
                 BuiltinEffect::Transform { .. } | BuiltinEffect::CornerPin { .. }
@@ -126,20 +118,12 @@ impl Clip {
     /// An enabled SpeedRamp requesting frame blending. The caller
     /// separately checks playback direction and speed at the current time.
     pub fn has_frame_blend_entry(&self) -> bool {
-        self.builtin_effects().iter().enumerate().any(|(i, e)| {
-            self.builtin_effects_enabled().get(i).copied().unwrap_or(true)
-                && matches!(
-                    e,
-                    BuiltinEffect::SpeedRamp { blend_mode: 1, .. }
-                )
-        })
+        self.picture_entries().iter().any(|(e, on)| *on && matches!(e, BuiltinEffect::SpeedRamp { blend_mode: 1, .. }))
     }
 
     /// Whether an enabled plug-in matches a render-path requirement.
     pub fn has_enabled_plugin_matching(&self, predicate: impl Fn(&str) -> bool) -> bool {
-        self.ofx_effects()
-            .iter()
-            .any(|e| e.enabled && predicate(&e.plugin_name))
+        self.picture_ofx().is_ok_and(|ofx| ofx.iter().any(|p| p.entry.enabled && predicate(&p.entry.plugin_name)))
     }
 
     /// Clips needed by this picture's transform link or focal references.
@@ -153,14 +137,11 @@ impl Clip {
                 TransformLinkTarget::Tracker { clip_id, .. } => refs.push(*clip_id),
             }
         }
-        for e in self.builtin_effects() {
-            if let BuiltinEffect::Transform {
-                focal_ref: Some(f), ..
-            } = e
-            {
+        for (e, _) in self.picture_entries() {
+            if let BuiltinEffect::Transform { focal_ref: Some(f), .. } = e {
                 match f {
-                    FocalRef::Glyph { title_clip_id, .. } => refs.push(ClipId(*title_clip_id)),
-                    FocalRef::Tracker { clip_id, .. } => refs.push(ClipId(*clip_id)),
+                    FocalRef::Glyph { title_clip_id, .. } => refs.push(ClipId(title_clip_id)),
+                    FocalRef::Tracker { clip_id, .. } => refs.push(ClipId(clip_id)),
                 }
             }
         }
@@ -429,11 +410,21 @@ mod tests {
                 param_name: "radius".into(),
             },
         ] {
-            let mut c = clip();
-            assert!(!c.has_param_modifiers());
-            c.edit_param_modifiers(|v| v.insert(target, ModifierStack::default()));
-            assert!(c.has_param_modifiers(), "an empty stack is still an entry");
-            assert!(c.has_animation());
+            // An empty stack changes nothing, and the picture keeps none, so
+            // on a picture parameter it leaves the clip static (M4 step 12f);
+            // a sound modifier, held beside the picture, is still an entry.
+            let sound = matches!(target, ParamId::Volume | ParamId::Pan | ParamId::Gain);
+            let real = ModifierStack { modifiers: vec![klipp_core::Modifier::Oscillate { amplitude: 1.0, frequency: 1.0, phase: 0.0, waveform: Default::default(), blend: Default::default(), enabled: true }] };
+            // A blur for an effect's stack to be on: one on no effect
+            // animates nothing. The blur itself animates nothing.
+            let with_target = || TestClip::of(clip()).effect(BuiltinEffect::GaussianBlur { radius: 2.0 }).build();
+            for (stack, counts) in [(ModifierStack::default(), sound), (real, true)] {
+                let mut c = with_target();
+                assert!(!c.has_param_modifiers());
+                c.edit_param_modifiers(|v| v.insert(target.clone(), stack));
+                assert_eq!(c.has_param_modifiers(), counts, "{target:?}, {} stack", if counts { "a counted" } else { "an empty" });
+                assert_eq!(c.has_animation(), counts);
+            }
         }
     }
 

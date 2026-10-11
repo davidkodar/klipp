@@ -951,6 +951,20 @@ impl Clip {
         result
     }
 
+    /// `base` with `picture` as its picture (M4 step 12f): what a blade's
+    /// halves are made from. Until the v1 view goes, a picture-truth
+    /// `base` takes `picture` as its truth, and any other keeps the fields
+    /// it was made with, which its maker cut the same way.
+    pub fn from_picture(base: &Clip, picture: klipp_graph_format::lifted::ClipPicture) -> Clip {
+        let mut clip = base.clone();
+        if let Some(truth) = base.picture.truth() {
+            let mut lifted = (**truth).clone();
+            lifted.picture = picture;
+            clip.picture.set_truth(Some(std::sync::Arc::new(lifted)));
+        }
+        clip
+    }
+
     /// Take `source`'s picture-truth picture, if it has one, for this clip
     /// made from it field by field (a split's half, a lifted range's piece,
     /// a duplicate): its picture is `source`'s, settled against its own

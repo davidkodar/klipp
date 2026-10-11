@@ -524,6 +524,7 @@ impl KlippApp {
                 name: clip.name.clone(),
                 colour_label: clip.colour_label,
                 precomp: None,
+                baked_own: None,
             };
             right_clip.set_grade(clip.grade().clone());
             // A picture-truth clip's picture (its masks, mixes) goes with
@@ -668,6 +669,7 @@ impl KlippApp {
                 name: clip.name.clone(),
                 colour_label: clip.colour_label,
                 precomp: None,
+                baked_own: None,
             };
             right_clip.set_grade(clip.grade().clone());
             // A picture-truth clip's picture (its masks, mixes) goes with

@@ -298,6 +298,16 @@ fn scene_sound(clip: &Clip, scene: &Sequence, carrier: &Controls) -> Vec<Track> 
     out
 }
 
+/// The built-in effect at list place `i` of `clip`, as its picture's node
+/// holds it.
+fn entry_at(clip: &Clip, i: usize) -> Option<klipp_effects::BuiltinEffect> {
+    let id = clip.effect_node_at(false, i)?;
+    let lifted = clip.picture_v2().ok()?;
+    let mut n = lifted.picture.graph.nodes.iter().find(|n| n.id == id)?.clone();
+    klipp_graph_lift::effect_params::into_memory(&mut n).ok()?;
+    klipp_graph_lift::effect_params::effect_of(&n).ok()
+}
+
 /// `clip` plays with `picture`'s sound settings — the ones the mixer
 /// reads from a linked pair's picture: the levels, the fades, the
 /// channel layout, and the automation and modifiers on them.
@@ -318,7 +328,7 @@ fn take_sound_settings(clip: &mut Clip, picture: &Clip) {
     // clip doesn't carry (#1074).
     let effect = |id: &klipp_core::ParamId| matches!(id, klipp_core::ParamId::Effect { .. });
     clip.edit_param_modifiers(|v| v.retain(|id, _| effect(id)));
-    clip.edit_param_modifiers(|v| v.extend(picture.picture.view().param_modifiers.0.iter().filter(|(id, _)| !effect(id)).map(|(id, m)| (id.clone(), m.clone()))));
+    clip.edit_param_modifiers(|v| v.extend(picture.sound_modifiers().iter().map(|(id, m)| (id.clone(), m.clone()))));
 }
 
 /// Sound automation is written in seconds from the clip's start; a slice
@@ -366,16 +376,23 @@ fn reidentify(seq: &mut Sequence, ids: &HashMap<ClipId, ClipId>) {
             if let Some(pin) = &mut c.surface_pin {
                 pin.host = renamed(pin.host);
             }
-            let ids: Vec<crate::EffectId> = c.effect_entries().map(|(id, _, _)| id).collect();
-            for id in ids {
-                c.edit_effect(id, |e| {
-                    if let klipp_effects::BuiltinEffect::Transform { focal_ref: Some(f), .. } = e {
-                        match f {
-                            klipp_effects::FocalRef::Glyph { title_clip_id, .. } => *title_clip_id = renamed(ClipId(*title_clip_id)).0,
-                            klipp_effects::FocalRef::Tracker { clip_id, .. } => *clip_id = renamed(ClipId(*clip_id)).0,
-                        }
+            // A Transform's focal point names a clip: it follows the rename,
+            // an entry edit through the clip's picture (M4 step 12f).
+            let edits: Vec<(usize, klipp_effects::BuiltinEffect)> = (0..)
+                .map_while(|i| c.effect_node_at(false, i).map(|_| i))
+                .filter_map(|i| {
+                    let mut e = entry_at(c, i)?;
+                    let klipp_effects::BuiltinEffect::Transform { focal_ref: Some(f), .. } = &mut e else { return None };
+                    match f {
+                        klipp_effects::FocalRef::Glyph { title_clip_id, .. } => *title_clip_id = renamed(ClipId(*title_clip_id)).0,
+                        klipp_effects::FocalRef::Tracker { clip_id, .. } => *clip_id = renamed(ClipId(*clip_id)).0,
                     }
-                });
+                    Some((i, e))
+                })
+                .collect();
+            let updates: Vec<crate::EffectEdit> = edits.iter().map(|(i, e)| crate::EffectEdit::Update(*i, e)).collect();
+            if let Some(Err(why)) = c.apply_effect_edits(&updates) {
+                tracing::warn!("clip {:?}: a focal point's clip renamed: {why}", c.id);
             }
         }
         for tr in &mut track.transitions {
@@ -699,7 +716,7 @@ mod tests {
         assert_eq!(animation(a), animation(own), "the clip's own animation stays on its own effect");
         let order: Vec<_> = a.picture.view().node_graph.0.topo_sort().unwrap().into_iter().filter(|id| [own_node, group_node, track_node].contains(id)).collect();
         assert_eq!(order, vec![own_node, group_node, track_node], "own grade, then the group's, then the track's");
-        assert!(flat.tracks[0].clips[1].builtin_effects().is_empty() && flat.tracks[0].clips[1].picture.view().own_effects.is_none(), "an adjustment layer takes nothing");
+        assert!(flat.tracks[0].clips[1].builtin_effects().is_empty() && flat.tracks[0].clips[1].baked_own.is_none(), "an adjustment layer takes nothing");
         let chain: Vec<&str> = flat.tracks[1].clips[0].audio_effects.iter().map(|e| e.effect_type.as_str()).collect();
         assert_eq!(chain, vec!["eq", "compressor"], "the clip's chain, then the track's");
 

@@ -463,6 +463,7 @@ mod tests {
             name: None,
             colour_label: 0,
             precomp: None,
+            baked_own: None,
         }
     }
 

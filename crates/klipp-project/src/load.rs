@@ -956,6 +956,7 @@ fn load_sequence_from_json(
                     name: c.name.clone(),
                     colour_label: c.colour_label,
                     precomp: None,
+                    baked_own: None,
                 };
                 // Titles saved with the old whole-title or
                 // per-character animation get the layer model; the

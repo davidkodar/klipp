@@ -168,7 +168,7 @@ pub fn clip_opacity(clip: &Clip, time: Timecode, fps: f64) -> f32 {
     let t = eval_clip_time(clip, time);
     let ctx = eval::eval_context(clip, time, fps);
     let enabled = |i: usize| clip.builtin_effects_enabled().get(i).copied().unwrap_or(true);
-    let own = clip.own_effects().map_or(clip.builtin_effects().len(), |o| o.builtin_effects.len());
+    let own = clip.baked_own.map_or(clip.builtin_effects().len(), |o| o.effects);
     let param = |i: usize, name: &str, v: f32| {
         let kfs = clip.effect_keyframes().get(&format!("{i}:{name}")).map(|v| v.as_slice()).unwrap_or(&[]);
         eval::eval_effect_with_modifiers(kfs, clip.param_modifiers(), i, name, t, v, &ctx)

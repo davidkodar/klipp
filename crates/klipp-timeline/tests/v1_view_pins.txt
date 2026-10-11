@@ -10,8 +10,8 @@
 # Clip::diverge_fields_for_test reaches the view to set a clip's lists apart
 # from its picture, and the two tests that do so read the list back. All go
 # in 12f with the lists.
-builtin_effects 122
-builtin_effects_enabled 43
+builtin_effects 114
+builtin_effects_enabled 40
 ClipPictureFields 18
 ClipPictureParts 14
 delift 39
@@ -32,9 +32,9 @@ edit_transform_tilt_x_keyframes 3
 edit_transform_tilt_y_keyframes 4
 edit_video_effects 9
 edit_video_param_keyframes 25
-effect_entries 21
+effect_entries 20
 effect_id_at 37
-effect_id_list 14
+effect_id_list 12
 effect_keyframes 50
 effect_param_keyframes 2
 effects_state 5
@@ -44,13 +44,13 @@ LEGACY_EFFECT 82
 LEGACY_OFX 42
 move_builtin_effect 15
 move_effect 10
-ofx_effects 37
-opacity_keyframes 28
-own_effects 4
+ofx_effects 34
+opacity_keyframes 27
+own_effects 1
 ParamId::Effect 49
-param_modifiers 59
+param_modifiers 58
 PictureView 16
-push_effect 82
+push_effect 81
 refresh_effect_ids 3
 remove_builtin_effect 11
 remove_effect 10
@@ -59,24 +59,24 @@ remove_effect_modifiers 5
 replace_effect 16
 restore_effect_keyframes 3
 restore_effects_state 6
-set_effect_enabled 24
+set_effect_enabled 23
 set_effect_list 49
-set_effect_list_with_ids 8
+set_effect_list_with_ids 7
 set_effects 8
 # Raised from 11: #1534's OFX node tests set their plug-ins through the
 # list; they move to TestClip with the OFX arm.
 set_ofx_effects 18
-set_own_effects 2
+set_own_effects 1
 set_video_effect_list 16
 to_v1 50
-transform_pos_x_keyframes 16
-transform_pos_y_keyframes 14
-transform_rotation_keyframes 11
-transform_scale_keyframes 23
-transform_tilt_x_keyframes 11
-transform_tilt_y_keyframes 12
+transform_pos_x_keyframes 15
+transform_pos_y_keyframes 13
+transform_rotation_keyframes 10
+transform_scale_keyframes 22
+transform_tilt_x_keyframes 9
+transform_tilt_y_keyframes 10
 unlift 27
-video_effects 17
+video_effects 16
 video_effects_enabled 8
 video_param_keyframes 8
 video_param_value 16

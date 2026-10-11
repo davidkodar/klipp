@@ -580,22 +580,22 @@ pub fn evaluate_clip_opacity(
     let t = (time - clip.timeline_in).to_secs_f64().max(0.0);
     let ctx = eval_context(clip, time, fps);
     let enabled = |i: usize| clip.builtin_effects_enabled().get(i).copied().unwrap_or(true);
-    let own = clip.own_effects().map_or(clip.builtin_effects().len(), |o| o.builtin_effects.len());
+    let own = clip.baked_own.map_or(clip.builtin_effects().len(), |o| o.effects);
     let param = |i: usize, name: &str, v: f32| {
         let kfs = clip.effect_keyframes().get(&format!("{i}:{name}")).map(|v| v.as_slice()).unwrap_or(&[]);
         eval_effect_with_modifiers(kfs, clip.param_modifiers(), i, name, t, v, &ctx)
     };
     let opacities = || clip.builtin_effects().iter().enumerate().filter(|(i, e)| enabled(*i) && matches!(e, BuiltinEffect::Opacity { .. }));
     let anchor = opacities().filter(|(i, _)| *i < own).map(|(i, _)| i).next_back();
-    // A picture-truth clip's opacity is its picture's, where its opacity
-    // edits land: its value and its lane, times every other Opacity. Its
-    // modifier stack is the one on `opacity_anim`; the fields' Opacity
-    // stack is the view's and deliberately not read.
-    // A picture-truth clip only: an ordinary clip's render copy with its
-    // track's effects baked on lifts the track's Opacity as its anchor,
-    // where the clip's own (before `own`) is. 12f's count of the clip's own
-    // effects (`baked_own`) lets every clip take this branch.
-    if let (true, Some((keys, modifiers)), Ok(lifted)) = (clip.is_picture_truth(), clip.truth_lane(&klipp_core::ParamId::Opacity), clip.picture_v2()) {
+    // The clip's opacity is its picture's, where its opacity edits land:
+    // its value and its lane, times every other Opacity. Its modifier stack
+    // is the one on `opacity_anim`. Every clip but a render copy whose
+    // track's effects, baked on after its own (`baked_own`, M4 step 12f),
+    // hold an enabled Opacity: its lift would take the track's as its
+    // anchor, where the clip's own is, so it reads the list. A
+    // picture-truth clip's opacity is its picture's either way.
+    let listed_track_opacity = opacities().any(|(i, _)| i >= own);
+    if let (true, Some((keys, modifiers)), Ok(lifted)) = (clip.is_picture_truth() || !listed_track_opacity, clip.truth_lane(&klipp_core::ParamId::Opacity), clip.picture_v2()) {
         let opacity = eval_with_modifiers(&keys, &modifiers, &klipp_core::ParamId::Opacity, t, lifted.picture.opacity, &ctx);
         let mut others = 1.0f32;
         for (i, effect) in opacities() {
