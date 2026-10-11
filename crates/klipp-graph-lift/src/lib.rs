@@ -17,6 +17,7 @@ pub mod ids;
 pub mod journal;
 pub mod lift;
 pub mod load_rewrites;
+pub mod names;
 pub mod old_fields;
 pub mod ops;
 pub mod paths;

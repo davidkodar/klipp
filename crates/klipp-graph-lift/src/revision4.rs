@@ -334,7 +334,7 @@ pub fn truth_picture(clip: &str, mut p: ClipPicture, declared: &mut Vec<Declared
     let fixed = p.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::PLACEMENT).and_then(|n| n.legacy.as_ref()).map(|l| l.payload.clone());
     if let Some(t) = fixed {
         let num = |k: &str| t.get(k).and_then(Value::as_f64).map(|x| x as f32);
-        let aspect = crate::lift::aspect(num("scale_x"), num("scale_y"));
+        let aspect = crate::names::aspect(num("scale_x"), num("scale_y"));
         if p.placement.aspect.is_none() {
             p.placement.aspect = aspect;
         }

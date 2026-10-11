@@ -323,11 +323,11 @@ fn key_of(v: &Value) -> Result<klipp_core::Keyframe, String> {
 
 /// Whether `effect` is an entry graph ops write: a plain effect node, not
 /// one of the four the clip places itself. The writers route by it, with
-/// the conversion's own rule (`to_v2::effect_node_type`), so they and the
+/// the conversion's own rule (`names::effect_node_type`), so they and the
 /// refusal here can't disagree.
 pub fn takes_picture_ops(effect: &klipp_effects::BuiltinEffect) -> bool {
     let tag = serde_json::to_value(effect).ok().and_then(|v| v.get("type").and_then(Value::as_str).map(str::to_owned)).unwrap_or_default();
-    klipp_graph_lift::to_v2::effect_node_type(&tag) == types::LEGACY_EFFECT
+    klipp_graph_lift::names::effect_node_type(&tag) == types::LEGACY_EFFECT
 }
 
 /// An edit of a clip's built-in effect list as today's commands name it:
@@ -861,7 +861,7 @@ impl Clip {
                         "pos_y" => *position_y = v,
                         // The width; the height keeps the aspect under it.
                         "scale" => {
-                            let aspect = klipp_graph_lift::lift::aspect(Some(*scale_x), Some(*scale_y)).unwrap_or(1.0);
+                            let aspect = klipp_graph_lift::names::aspect(Some(*scale_x), Some(*scale_y)).unwrap_or(1.0);
                             (*scale_x, *scale_y) = (v, v * aspect);
                         }
                         "scale_y" => *scale_y = v,
@@ -942,7 +942,7 @@ impl Clip {
                 // A keyframe alias's value is the field it stands for (a
                 // ChromaKey's `spill` is its `soft_edge`), as in the lift's
                 // own writer.
-                let key = &klipp_graph_format::ParamKey::from(klipp_graph_lift::lift::anim_key(&tag, key.as_str()));
+                let key = &klipp_graph_format::ParamKey::from(klipp_graph_lift::names::anim_key(&tag, key.as_str()));
                 params.insert(key.clone(), ep::held(&tag, key, &stored(value)?));
                 let effect = ep::effect(&tag, &params).map_err(|_| format!("{key} doesn't take {value:?}"))?;
                 let id = id_at(self, i)?;
@@ -999,7 +999,7 @@ impl Clip {
                 let n = node(post, named).ok_or("the effect's node")?;
                 let id = id_at(self, index(order, named)?)?;
                 // Read under the key the op stored it under (an alias's own).
-                let stored = klipp_graph_lift::lift::anim_key(tag_of(n), key.as_str());
+                let stored = klipp_graph_lift::names::anim_key(tag_of(n), key.as_str());
                 self.write_anim(id, tag_of(n), stored, n.anim.get(&klipp_graph_format::ParamKey::from(stored)))?;
             }
             _ => return Err("not an effect edit".into()),
@@ -1011,7 +1011,7 @@ impl Clip {
     /// modifier stack, each taken off when absent. Keyed by the name the
     /// effect animates it under (a ChromaKey's `soft_edge` as `spill`).
     fn write_anim(&mut self, id: crate::EffectId, tag: &str, key: &str, anim: Option<&klipp_graph_format::Animation>) -> Result<(), String> {
-        let name = klipp_graph_lift::lift::keyframe_name(tag, key);
+        let name = klipp_graph_lift::names::keyframe_name(tag, key);
         let keys = anim.map(|a| a.keys.iter().map(key_of).collect::<Result<Vec<_>, _>>()).transpose()?.unwrap_or_default();
         if keys.is_empty() {
             self.remove_effect_keyframes(id, name);
@@ -1369,7 +1369,7 @@ mod keyframe_alias_tests {
     /// key.
     #[test]
     fn an_edit_by_a_keyframe_alias_reaches_the_stored_animation() {
-        for (tag, alias, stored) in klipp_graph_lift::lift::KEYFRAME_ALIASES {
+        for (tag, alias, stored) in klipp_graph_lift::names::KEYFRAME_ALIASES {
             let (mut c, path) = clip(tag);
             let add = |name: &str, t: f64, v: f32| GraphOp::AddKeyAt { path: path.clone(), key: name.into(), keyframe: key(t, v) };
             c.apply_picture_ops(&[add(alias, 0.5, 0.2)]).unwrap();

@@ -1,4 +1,5 @@
-use crate::lift::{auto_placement_index, lift_clip, ClipKind, LiftCtx, DRAWS_OUTSIDE, KEYFRAME_ALIASES};
+use crate::lift::{auto_placement_index, lift_clip, ClipKind, LiftCtx, DRAWS_OUTSIDE};
+use crate::names::KEYFRAME_ALIASES;
 use crate::to_v2::clip_to_v2;
 use klipp_graph_format::lifted::{types as lt, ClipPicture, LiftNote};
 use klipp_graph_format::{types, Graph, Node, ParamValue};
@@ -341,8 +342,8 @@ fn a_vertical_scale_apart_from_the_width_is_kept() {
     assert!(!notes.iter().any(|n| matches!(n, LiftNote::DroppedField { field, .. } if field == "scale_y")), "{notes:?}");
     let (p, _) = lift(clip(json!({"builtin_effects": [tf(1.0)]})), ClipKind::Media);
     assert_eq!((p.placement.scale, p.placement.aspect), (Some(1.0), None));
-    assert_eq!(crate::lift::aspect(Some(0.0), Some(0.5)), None, "a width of 0 has no aspect");
-    assert_eq!(crate::lift::aspect(Some(2.0), Some(0.5)), Some(0.25));
+    assert_eq!(crate::names::aspect(Some(0.0), Some(0.5)), None, "a width of 0 has no aspect");
+    assert_eq!(crate::names::aspect(Some(2.0), Some(0.5)), Some(0.25));
 }
 
 /// Odd edges an old grade graph keeps get today's reading, each with its

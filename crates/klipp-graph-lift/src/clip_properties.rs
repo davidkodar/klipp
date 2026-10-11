@@ -73,7 +73,7 @@ pub fn apply(picture: &mut ClipPicture, op: &GraphOp) -> Result<(), String> {
             // The width; the height keeps the aspect under it.
             "scale" => p.scale = Some(v),
             // The height, kept as the aspect against the width (#1406).
-            "scale_y" => p.aspect = crate::lift::aspect(p.scale.or(Some(1.0)), Some(v)),
+            "scale_y" => p.aspect = crate::names::aspect(p.scale.or(Some(1.0)), Some(v)),
             "rotation" => p.rotation = Some(v),
             "anchor_x" => p.anchor_x = Some(v),
             "anchor_y" => p.anchor_y = Some(v),

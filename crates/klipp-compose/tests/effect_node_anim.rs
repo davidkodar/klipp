@@ -130,7 +130,7 @@ fn every_keyframable_parameter_resolves_from_its_node() {
 /// lift's table included.
 #[test]
 fn aliased_keys_land_on_their_field() {
-    for (tag, from, to) in klipp_graph_lift::lift::KEYFRAME_ALIASES {
+    for (tag, from, to) in klipp_graph_lift::names::KEYFRAME_ALIASES {
         let ty = klipp_effects::registry::effect_types().find(|t| t.tag == tag).expect("the alias names a registered effect");
         let sample = (ty.sample)();
         let v = values(&sample).into_iter().find(|(n, _)| *n == from).expect("animate asks for the alias").1;

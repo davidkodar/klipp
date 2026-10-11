@@ -2,8 +2,7 @@
 
 use klipp_graph_format::{Node, ParamValue, types};
 use klipp_graph_format::path::{Root, TrackPart};
-use klipp_graph_format::lifted::Stage;
-use klipp_graph_lift::{paths::Documents, to_v2, lift, splice};
+use klipp_graph_lift::{paths::Documents, to_v2, splice};
 use klipp_effects::registry::{NodeTypeDesc, ParamKind};
 use klipp_timeline::Sequence;
 use serde_json::{json, Value};
@@ -15,18 +14,15 @@ pub(crate) fn documents(seq: &Sequence, root: Root) -> Result<Documents, String>
             let c = seq.tracks.iter().flat_map(|t| &t.clips).find(|c| c.id.0 == clip).ok_or("no such clip on this sequence's tracks")?;
             docs.clips.insert(clip, c.picture_v2()?.picture.clone());
         }
+        // A sequence's own grades, lifted as the editor lifts them (with
+        // their corrections' mix and mask channel, #1321).
         Root::TimelineGrade { sequence } => {
-            if sequence != seq.id.0 { return Err("no such active sequence".into()); }
-            let raw = json!({"id":sequence,"timeline_graph":seq.timeline_grade()});
-            let graph = to_v2::timeline_to_v2(raw.as_object().unwrap()).map_err(|e| e.to_string())?.ok_or("this sequence has no timeline grade")?;
-            docs.timeline.insert(sequence, lift::lift_grade_only(&graph, false)?);
+            let grade = seq.root_grade(root)?.ok_or("this sequence has no timeline grade")?;
+            docs.timeline.insert(sequence, seq.lift_root_grade(root, grade)?);
         }
         Root::GroupStage { group, stage } => {
-            let group_data = seq.grade_groups.iter().find(|g| g.id.0 == group).ok_or("no such grade group")?;
-            let raw = serde_json::to_value(group_data).map_err(|e| e.to_string())?;
-            let (pre, post) = to_v2::stages_to_v2(raw.as_object().ok_or("a grade group must be an object")?).map_err(|e| e.to_string())?;
-            let graph = match stage { Stage::Pre => pre, Stage::Post => post }.ok_or("this group has no such stage")?;
-            docs.stages.insert((group, stage), splice::stage_body(&graph)?);
+            let grade = seq.root_grade(root)?.ok_or("this group has no such stage")?;
+            docs.stages.insert((group, stage), seq.lift_root_grade(root, grade)?);
         }
         Root::Track { track, part } => {
             let track_data = seq.tracks.iter().find(|t| t.id.0 == track).ok_or("no such track")?;

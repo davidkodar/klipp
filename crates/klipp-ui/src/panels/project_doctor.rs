@@ -763,7 +763,7 @@ mod tests {
         let effects = |s: &AppState| test_clip::effects(s.sequences[0].all_clips().find(|c| c.id == id).unwrap());
         // An effect put before it since the scan: the plug-in is now third.
         let first = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().effect_node_at(false, 0).unwrap();
-        let node: klipp_graph_format::Node = serde_json::from_value(serde_json::json!({ "id": uuid::Uuid::new_v4(), "type_id": klipp_graph_lift::to_v2::effect_node_type("sharpen"), "legacy": { "payload": E::Sharpen { amount: 0.5 } } })).unwrap();
+        let node: klipp_graph_format::Node = serde_json::from_value(serde_json::json!({ "id": uuid::Uuid::new_v4(), "type_id": klipp_graph_lift::names::effect_node_type("sharpen"), "legacy": { "payload": E::Sharpen { amount: 0.5 } } })).unwrap();
         let add = AppCommand::AddNodeAt { after: klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: id.0 }, [first]), node: Box::new(node) };
         assert!(state.path_command(&add).is_some());
         let steps = state.active_history().undo_count();
