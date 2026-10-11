@@ -279,7 +279,9 @@ impl Clip {
             // the old end would otherwise be the new entry's animation, or
             // collide with the last slot's as that slot moves up (M4 step
             // 12b).
-            c.remap_effect_slots(|i| Some(if i >= at { i + 1 } else { i }));
+            // A key on `usize::MAX` names no slot and stays put (an insert
+            // before the end refuses one, above).
+            c.remap_effect_slots(|i| Some(if i >= at && i != usize::MAX { i + 1 } else { i }));
             Some(id)
         })
     }
