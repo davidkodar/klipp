@@ -633,8 +633,11 @@ fn scan_project(state: &AppState) -> Vec<Finding> {
     if let Some(seq) = active {
         for track in &seq.tracks {
             for clip in &track.clips {
-                for (effect_index, fx) in clip.builtin_effects().iter().enumerate() {
-                    if let klipp_effects::BuiltinEffect::Frei0r { type_id, .. } = fx {
+                // The clip's effects as its picture holds them (M4 step
+                // 12b), each with its node, so the fix removes it by path.
+                let Ok(effects) = clip.picture_effects() else { continue };
+                for (effect_index, fx) in effects.iter().enumerate() {
+                    if let klipp_effects::BuiltinEffect::Frei0r { type_id, .. } = &fx.effect {
                         if installed_frei0r.contains(type_id) {
                             continue;
                         }
@@ -654,7 +657,7 @@ fn scan_project(state: &AppState) -> Vec<Finding> {
                                 action: FixAction::RemoveBuiltinEffectFromClip {
                                     clip_id: clip.id,
                                     effect_index,
-                                    node: clip.effect_node_at(false, effect_index),
+                                    node: Some(fx.node),
                                 },
                             }],
                         });

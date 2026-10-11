@@ -365,7 +365,6 @@ fn plain_edits_keep_orphans_orphans() {
 /// command's or the assistant's AddNode), onto an orphan's slot: the
 /// orphan must stay one. The route writes the fields directly today.
 #[test]
-#[ignore = "12b: apply_picture_ops still writes fields directly (orphans exposed)"]
 fn a_direct_graph_op_add_keeps_an_orphan_an_orphan() {
     let mut c = clip(vec![blur(), E::Gamma { gamma: 1.1 }, E::Vibrance { amount: 0.2 }], vec![true; 3]);
     test_clip::orphan_keys(&mut c, 3, "radius", vec![key(0.0, 1.0), key(1.0, 9.0)]);
@@ -379,7 +378,6 @@ fn a_direct_graph_op_add_keeps_an_orphan_an_orphan() {
 /// The same on a picture-truth clip, whose plain edits stay on the graph
 /// ops: the orphan must stay one there too, with the mix kept.
 #[test]
-#[ignore = "12b: a picture-truth clip's plain edits still write fields directly (orphans exposed); with the mix/mask merge-back"]
 fn a_picture_truth_clips_plain_add_keeps_an_orphan_an_orphan() {
     let mut c = clip(vec![blur(), E::Gamma { gamma: 1.1 }, E::Vibrance { amount: 0.2 }], vec![true; 3]);
     test_clip::orphan_keys(&mut c, 3, "radius", vec![key(0.0, 1.0), key(1.0, 9.0)]);
