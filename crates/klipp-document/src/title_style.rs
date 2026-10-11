@@ -87,7 +87,7 @@ fn parse_motion(
         return Ok(None);
     }
     let kind = motion_kind_as(&spec.kind, exit)?;
-    let mut m = Motion::new(kind);
+    let mut m = if exit { Motion::exit(kind) } else { Motion::new(kind) };
     if kind == MotionKind::Typewriter && spec.stagger.is_none() {
         m = m.stagger(StaggerUnit::Char, 0.04);
     }

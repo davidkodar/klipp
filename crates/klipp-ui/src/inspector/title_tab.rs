@@ -664,12 +664,13 @@ fn motion_row(
     if let Some(p) = pick {
         // The preset whole (its easing, timing and stagger), keeping the
         // delay the slot had.
+        // An exit takes its kind's exit easing for a preset's default one.
         let delay = slot.map(|m| m.delay_secs);
         *slot = p.map(|mut m| {
             if let Some(d) = delay {
                 m.delay_secs = d;
             }
-            m
+            if dir == Direction::Exit { m.as_exit() } else { m }
         });
         changed = true;
     }
