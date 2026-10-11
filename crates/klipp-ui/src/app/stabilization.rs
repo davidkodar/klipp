@@ -879,6 +879,8 @@ impl KlippApp {
                 // A window track's edit, pushed and synced once the
                 // sequence is let go.
                 let mut window_edit: Option<(EditCommand, usize)> = None;
+                // The position lanes a transform target lays down.
+                let mut position_lanes: Option<Vec<(&str, Vec<klipp_core::Keyframe>)>> = None;
 
                 let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                 if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
@@ -888,29 +890,14 @@ impl KlippApp {
 
                         match target {
                             klipp_core::TrackTarget::TransformPosition => {
-                                clip.edit_transform_pos_x_keyframes(|v| v.clear());
-                                clip.edit_transform_pos_y_keyframes(|v| v.clear());
-                                for (i, &(nx, ny)) in positions.iter().enumerate() {
-                                    let frame_idx = start_frame + i;
-                                    let t = frame_idx as f64 / fps;
-                                    let pos_x = (nx - 0.5) as f32;
-                                    let pos_y = (ny - 0.5) as f32;
-                                    clip.edit_transform_pos_x_keyframes(|v| v.push(klipp_core::Keyframe {
-                                        time_secs: t,
-                                        value: pos_x,
-                                        interpolation: klipp_core::Interpolation::Linear,
-                                        tangent_in: (0.0, 0.0),
-                                        tangent_out: (0.0, 0.0),
-                                    }));
-                                    clip.edit_transform_pos_y_keyframes(|v| v.push(klipp_core::Keyframe {
-                                        time_secs: t,
-                                        value: pos_y,
-                                        interpolation: klipp_core::Interpolation::Linear,
-                                        tangent_in: (0.0, 0.0),
-                                        tangent_out: (0.0, 0.0),
-                                    }));
-                                }
-                                self.state.toast.show("Generated transform keyframes from tracker");
+                                // The position lanes, laid by path once the
+                                // sequence is let go (M4 step 12c).
+                                let key = |t: f64, value: f32| klipp_core::Keyframe { time_secs: t, value, interpolation: klipp_core::Interpolation::Linear, tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) };
+                                let at = |i: usize| (start_frame + i) as f64 / fps;
+                                position_lanes = Some(vec![
+                                    ("pos_x", positions.iter().enumerate().map(|(i, &(nx, _))| key(at(i), (nx - 0.5) as f32)).collect()),
+                                    ("pos_y", positions.iter().enumerate().map(|(i, &(_, ny))| key(at(i), (ny - 0.5) as f32)).collect()),
+                                ]);
                             }
                             klipp_core::TrackTarget::MaskCenter { node_id, mask_index } if !tp.corners.is_empty() => {
                                 // A window track in perspective (#238): the
@@ -996,6 +983,15 @@ impl KlippApp {
                                 });
                             }
                         }
+                    }
+                }
+                if let Some(lanes) = position_lanes {
+                    match self.state.set_lanes(clip_id, &lanes, "Keyframes From Tracker") {
+                        Ok(()) => {
+                            self.sync_sequence_to_engine();
+                            self.state.toast.show("Generated transform keyframes from tracker");
+                        }
+                        Err(why) => self.state.toast.show(why),
                     }
                 }
                 if let Some((edit, frames)) = window_edit {

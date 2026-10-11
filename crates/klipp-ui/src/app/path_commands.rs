@@ -539,6 +539,17 @@ impl crate::state::AppState {
         Some((clip.placement_path()?, ParamKey::from(key)))
     }
 
+    /// Whole placement or opacity lanes of `clip_id` set as one step (M4
+    /// step 12c): for a writer that lays a lane's keys down itself (a
+    /// motion preset, a tracker's positions). Each `(key, keys)` replaces
+    /// that lane, its modifier stack kept.
+    pub(super) fn set_lanes(&mut self, clip_id: ClipId, lanes: &[(&str, Vec<klipp_core::Keyframe>)], label: &str) -> Result<(), String> {
+        let clip = self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id == clip_id).ok_or("no such clip")?;
+        let addr = clip.placement_path().ok_or("this clip has no placement to key")?;
+        let ops: Vec<GraphOp> = lanes.iter().map(|(key, keys)| set_lane(clip, &addr, key, keys.clone())).collect();
+        self.apply_path_ops(&ops, label)
+    }
+
     /// A path command applied as `path_command` applies it, its refusal
     /// handed back rather than said, for `lane_command` to say once.
     fn path_command_result(&mut self, cmd: &AppCommand) -> Result<bool, String> {

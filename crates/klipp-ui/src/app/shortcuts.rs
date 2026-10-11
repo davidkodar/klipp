@@ -1016,7 +1016,9 @@ impl KlippApp {
                                 }
                             } else {
                                 let param = self.state.video_rubber_band_param;
-                                let keyframes = clip.video_param_keyframes(param);
+                                // The lane as the picture holds it (M4 step 12c).
+                                let lane = crate::inspector::placement_by_path::param_keys(clip, param);
+                                let keyframes = &lane[..];
                                 keys_in_frame = crate::inspector::keyframe_selection::state(keyframes, clip_time_secs, tolerance).keys_in_frame;
                                         let existing = crate::inspector::keyframe_selection::nearest(keyframes, clip_time_secs, tolerance).map(|i| &keyframes[i]);
                                 if let Some(kf) = existing {
@@ -1215,6 +1217,8 @@ pub(super) fn keyframe_jump(state: &crate::state::AppState, forward: bool) -> Op
     let (clip, track_kind) = seq.tracks.iter().find_map(|t| t.clips.iter().find(|c| c.id == clip_id).map(|c| (c, t.kind)))?;
     let empty: Vec<klipp_core::Keyframe> = Vec::new();
     let node_keys: Vec<klipp_core::Keyframe>;
+    // The video rubber band's lane as the picture holds it (M4 step 12c).
+    let video_lane = crate::inspector::placement_by_path::param_keys(clip, state.video_rubber_band_param);
     let keyframes: &[klipp_core::Keyframe] = match &state.curve_editor_track {
         Some((on, path, key)) if *on == clip_id && state.show_curve_editor => {
             node_keys = clip.node_key_state(path, key).map(|s| s.keys).unwrap_or_default();
@@ -1228,17 +1232,7 @@ pub(super) fn keyframe_jump(state: &crate::state::AppState, forward: bool) -> Op
             },
             crate::state::RubberBandParam::EffectParam { effect_index, param_name } => clip.audio_effect_keyframes.get(&format!("{effect_index}:{param_name}")).unwrap_or(&empty),
         },
-        _ => match state.video_rubber_band_param {
-            klipp_core::VideoParam::Opacity => clip.opacity_keyframes(),
-            klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes(),
-            klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes(),
-            klipp_core::VideoParam::Scale => clip.transform_scale_keyframes(),
-            klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes(),
-            klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes(),
-            klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes(),
-            klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
-            klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
-        },
+        _ => &video_lane,
     };
     let clip_time_secs = state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64();
     let around = crate::inspector::keyframe_selection::state(keyframes, clip_time_secs, crate::inspector::keyframe_selection::frame_tolerance(seq));
@@ -1264,17 +1258,8 @@ pub(super) fn remove_selected_keyframe(state: &crate::state::AppState, sk: &crat
             kfs.get(sk.keyframe_index).map(|kf| kf.time_secs)
         }
         crate::state::KeyframeParamKind::Video(param) => {
-            let kfs = match param {
-                klipp_core::VideoParam::Opacity => clip.opacity_keyframes(),
-                klipp_core::VideoParam::PositionX => clip.transform_pos_x_keyframes(),
-                klipp_core::VideoParam::PositionY => clip.transform_pos_y_keyframes(),
-                klipp_core::VideoParam::Scale => clip.transform_scale_keyframes(),
-                klipp_core::VideoParam::Rotation => clip.transform_rotation_keyframes(),
-                klipp_core::VideoParam::TiltX => clip.transform_tilt_x_keyframes(),
-                klipp_core::VideoParam::TiltY => clip.transform_tilt_y_keyframes(),
-                klipp_core::VideoParam::MatteFeather => &clip.matte_feather_keyframes,
-                klipp_core::VideoParam::MatteChoke => &clip.matte_choke_keyframes,
-            };
+            // The lane as the picture holds it (M4 step 12c).
+            let kfs = crate::inspector::placement_by_path::param_keys(clip, *param);
             kfs.get(sk.keyframe_index).map(|kf| kf.time_secs)
         }
         crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
