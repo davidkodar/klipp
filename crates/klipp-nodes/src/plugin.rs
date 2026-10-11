@@ -238,12 +238,14 @@ mod tests {
         fn frames_needed(&mut self, _: &HashMap<String, OfxValue>, time: f64) -> Vec<f64> {
             if self.plugin == "temporal" { vec![time - 1.0, time + 1.0, time + 2500.0] } else { vec![] }
         }
-        fn render(&mut self, _: &HashMap<String, OfxValue>, rgba8: &[u8], _: u32, _: u32, _: f64, _: f64, frames: &[(f64, EncodedFrame)]) -> Result<Vec<u8>, Refusal> {
+        fn render(&mut self, params: &HashMap<String, OfxValue>, rgba8: &[u8], _: u32, _: u32, _: f64, _: f64, frames: &[(f64, EncodedFrame)]) -> Result<Vec<u8>, Refusal> {
             self.renders += 1;
             self.handed.lock().unwrap().extend(frames.iter().map(|(t, _)| *t));
             self.read.lock().unwrap().extend(frames.iter().map(|(_, f)| f.source_secs));
             match self.plugin.as_str() {
                 "failing" => Err(Refusal::Failed(3)),
+                // `mode` 1 passes the picture through, as the fixture's does.
+                "channels" if params.get("mode") == Some(&OfxValue::Int(1)) => Ok(rgba8.to_vec()),
                 "channels" => Ok(rgba8.chunks_exact(4).flat_map(|p| [p[2], 255 - p[0], p[1], p[3]]).collect()),
                 _ => Ok(rgba8.iter().map(|_| self.renders as u8).collect()),
             }
@@ -396,6 +398,25 @@ mod tests {
         framed(Some(&host), &mut instances, ClipId::new(), 29, &|t| 1.0 + t, |ctx| run_ofx(NodeId::new_v4(), &entry("temporal"), &picture(), 4, 2, WorkingColorspace::Rec709Linear, 1.0, Some(ctx))).unwrap();
         let handed = host.handed.lock().unwrap().clone();
         assert!(handed.contains(&28.0) && handed.contains(&30.0), "{handed:?}");
+    }
+
+    /// A value edited between frames reaches the instance the node keeps:
+    /// the next frame renders with it, and one taken back out renders with
+    /// the plug-in's default again, with no new instance made.
+    #[test]
+    fn an_edited_value_reaches_the_kept_instance() {
+        let host = Double::default();
+        let mut instances = PluginInstances::default();
+        let (node, clip) = (NodeId::new_v4(), ClipId::new());
+        let passthrough = OfxNodeParams { values: [("mode".to_string(), OfxValue::Int(1))].into(), ..entry("channels") };
+        let mut run = |frame, e: &OfxNodeParams| framed(Some(&host), &mut instances, clip, frame, &|t| 1.0 + t, |ctx| run_ofx(node, e, &picture(), 4, 2, WorkingColorspace::Rec709Linear, 1.0, Some(ctx))).unwrap();
+        let swapped = run(50, &entry("channels"));
+        assert_ne!(swapped, picture(), "the default swaps the channels");
+        let through = run(51, &passthrough);
+        let round_trip = klipp_effects::srgb_u8_to_linear_f32_rgba(&klipp_effects::linear_f32_rgba_to_srgb_u8(&picture()));
+        assert_eq!(through, round_trip, "the edited value, on the next frame");
+        assert_eq!(run(52, &entry("channels")), swapped, "the value taken out: the default again");
+        assert_eq!(*host.made.lock().unwrap(), 1, "one instance, kept through the edits");
     }
 
     /// A node keeps its instance across frames; another node, or the same
