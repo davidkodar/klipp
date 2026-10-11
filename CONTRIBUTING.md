@@ -237,9 +237,9 @@ cargo install cargo-audit cargo-deny cargo-outdated cargo-udeps cargo-nextest to
 scripts/install-hooks.sh     # once, after cloning
 ```
 
-Deterministic saved-project inputs are generated with `scripts/corpus.sh generate`.
-See [the corpus instructions](corpus/README.md) for the input checks and deliberate
-reference updates.
+Run the generated saved-project checks with `scripts/corpus.sh all`.
+See [the corpus instructions](corpus/README.md) for prerequisites, coverage and
+deliberate input or pixel-reference updates.
 
 After that every `git push` runs the authorship check, clippy with
 `-D warnings`, a rustdoc pass, and the tests the change can reach (see

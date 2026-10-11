@@ -6,16 +6,24 @@ license.workspace = true
 publish = false
 
 [dependencies]
+klipp-analysis = { workspace = true }
+klipp-compose = { workspace = true }
 klipp-core = { path = "../klipp-core" }
 klipp-effects = { path = "../klipp-effects" }
+klipp-engine = { workspace = true }
+klipp-frei0r = { workspace = true }
 klipp-graph-lift = { workspace = true }
 klipp-media = { path = "../klipp-media" }
+klipp-nodes = { workspace = true }
+klipp-plugin = { workspace = true }
 klipp-project = { path = "../klipp-project" }
+klipp-render = { workspace = true }
 klipp-timeline = { path = "../klipp-timeline" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 uuid = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [lints]
 workspace = true

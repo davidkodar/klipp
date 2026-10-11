@@ -530,17 +530,26 @@ pub fn differ(a: &Path, b: &Path) -> Result<(i32, usize), String> {
     if x.dimensions() != y.dimensions() {
         return Err("sizes differ".into());
     }
-    let mut worst = 0;
-    let mut over = 0;
-    for (i, (p, q)) in x.as_raw().iter().zip(y.as_raw()).enumerate() {
-        if i % 4 == 3 {
-            continue;
-        }
-        let d = (*p as i32 - *q as i32).abs();
+    Ok(sample_difference(
+        x.as_raw()
+            .iter()
+            .zip(y.as_raw())
+            .enumerate()
+            .filter(|(i, _)| i % 4 != 3)
+            .map(|(_, (&p, &q))| (p, q)),
+    ))
+}
+
+/// Maximum sample difference and how many exceed one 8-bit level. Callers
+/// choose their channels and verify dimensions before pairing samples.
+pub fn sample_difference(samples: impl IntoIterator<Item = (u8, u8)>) -> (i32, usize) {
+    let (mut worst, mut over) = (0, 0);
+    for (p, q) in samples {
+        let d = (p as i32 - q as i32).abs();
         worst = worst.max(d);
         over += usize::from(d > 1);
     }
-    Ok((worst, over))
+    (worst, over)
 }
 
 /// An export frame drawn through the display transform (`-export.png`)
