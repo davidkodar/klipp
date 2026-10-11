@@ -113,6 +113,9 @@ fn furthest_played(graded: bool, goal: f64) -> f64 {
     let _ = cmd.send(AppCommand::Pause);
     let _ = cmd.send(AppCommand::Quit);
     let _ = thread.join();
+    // A decode thread still in ffmpeg's teardown at exit crashes the
+    // process (CUDA's context destroyed under it).
+    klipp_engine::video_decoder::wait_for_decode_threads(std::time::Duration::from_secs(10));
     furthest
 }
 

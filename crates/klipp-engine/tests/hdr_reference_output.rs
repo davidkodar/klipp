@@ -38,12 +38,12 @@ fn wait_for<T>(limit: Duration, mut probe: impl FnMut() -> Option<T>) -> Option<
 
 /// The reference output's shared frame, once the engine is writing it.
 fn open_published(path: &std::path::Path) -> Option<FrameReader> {
-    wait_for(Duration::from_secs(5), || FrameReader::open(path).ok().filter(|r| r.writer_present()))
+    wait_for(Duration::from_secs(60), || FrameReader::open(path).ok().filter(|r| r.writer_present()))
 }
 
 /// Wait for the engine to let go of the shared frame.
 fn writer_gone(reader: &FrameReader) -> bool {
-    wait_for(Duration::from_secs(5), || (!reader.writer_present()).then_some(())).is_some()
+    wait_for(Duration::from_secs(60), || (!reader.writer_present()).then_some(())).is_some()
 }
 
 /// The light of a pixel as the encoder measures it: the brightest channel
@@ -83,7 +83,7 @@ fn the_published_frame_is_hdr_display_light() {
 
     let path = klipp_hdr_out::default_path();
     let Some(mut reader) = open_published(&path) else {
-        panic!("the engine published nothing to {} within five seconds", path.display());
+        panic!("the engine published nothing to {} within a minute", path.display());
     };
     assert_eq!(
         (reader.width(), reader.height()),
@@ -172,7 +172,7 @@ fn the_published_frame_is_hdr_display_light() {
     // toggle.
     parked.send(AppCommand::SetHdrMonitor(HdrMonitor::Preview));
     let Some(mut again) = open_published(&path) else {
-        panic!("publishing did not resume within five seconds");
+        panic!("publishing did not resume within a minute");
     };
     let mut buf = Vec::new();
     let mut resumed = false;

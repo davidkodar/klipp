@@ -30,6 +30,10 @@
 //!   picture through the encoder's display transform (`-export`).
 //!
 //! `index.json` names the projects and counts each path's frames.
+//! `declines.txt` lists, sorted, every node that didn't draw what it shows
+//! in a `cpu` or `gpu` frame (`<project #>/<sequence #>/<frame>-<path> clip
+//! <id> node <id>: <plug-in>: <reason> (<outcome>)`); compare fails when the
+//! set differs from the recording's, as it fails on a picture.
 //!
 //! The copy resolves stored paths as the original does: a relative media,
 //! proxy, LUT or texture path is made absolute against the original
@@ -247,6 +251,25 @@ struct Rendered {
     /// Export frames whose picture didn't fill the output even at the
     /// export size chosen for it, so went the letterbox way (on the CPU).
     export_letterboxed: usize,
+    /// The nodes that didn't draw what they show, one line per decline
+    /// per frame ([`decline_line`]), as the CPU and GPU renders found them.
+    declines: Vec<String>,
+}
+
+/// A frame's decline as `declines.txt` holds it: the frame (`frame`, its
+/// sequence and render: `0/12-gpu`), the clip and node, the outcome and the
+/// reason in plain words. Never its detail (`why`), which can name the
+/// scratch copy's path.
+fn decline_line(frame: &str, d: &klipp_nodes::Decline) -> String {
+    let clip = d.clip.map_or_else(|| "-".to_string(), |c| c.0.to_string());
+    format!("{frame} clip {clip} node {}: {} ({})", d.node, d.plain(), d.outcome.label())
+}
+
+/// The lines only the recording has, and those only this run has.
+fn declines_differ(recorded: &str, now: &str) -> (Vec<String>, Vec<String>) {
+    let set = |t: &str| t.lines().filter(|l| !l.is_empty()).map(str::to_string).collect::<std::collections::BTreeSet<_>>();
+    let (r, n) = (set(recorded), set(now));
+    (r.difference(&n).cloned().collect(), n.difference(&r).cloned().collect())
 }
 
 impl Rendered {
@@ -302,6 +325,7 @@ fn render_project(dir: &Path, out: &Path, scratch: &Path) -> Result<Rendered, St
                     let (linear, found) = r.render_inspected(&snapshot.video.sequence, time, WIDTH, h, &mut source, klipp_compose::RenderOptions::default(), klipp_compose::Inspect::default());
                     done.plan_clips += found.stats.plan_clips();
                     done.plan_fallbacks += found.stats.effects_fallback_lists;
+                    done.declines.extend(found.declines.iter().map(|d| decline_line(&format!("{si}/{f}-{name}"), d)));
                     if gpu {
                         done.gpu_cpu_kernels += found.stats.effects_on_cpu_kernels;
                     }
@@ -693,6 +717,7 @@ fn run_in(args: &[String], scratch: &Path) -> i32 {
     let (mut stack_drawn, mut stack_declined, mut export_gpu, mut export_cpu, mut export_letterboxed) = (0, 0, 0, 0, 0);
     let (mut plan_clips, mut plan_fallbacks, mut gpu_cpu_kernels) = (0u32, 0u32, 0u32);
     let mut index = Vec::new();
+    let mut declines = Vec::new();
     for (i, dir) in list.iter().enumerate() {
         let r = match render_project(dir, &out.join(format!("{i}")), scratch) {
             Ok(r) => {
@@ -724,6 +749,7 @@ fn run_in(args: &[String], scratch: &Path) -> i32 {
         export_gpu += r.export_gpu;
         export_cpu += r.export_cpu;
         export_letterboxed += r.export_letterboxed;
+        declines.extend(r.declines.iter().map(|l| format!("{i}/{l}")));
         index.push(json!({
             "project": i, "path": dir, "grade_on_gpu": r.grade_on_gpu, "frames": r.frames, "flat": r.flat, "offline": r.offline, "missing": r.missing, "covered": r.covered(),
             "stack": r.stack, "stack_declined": r.stack_declined, "export_gpu": r.export_gpu, "export_cpu": r.export_cpu, "export_letterboxed": r.export_letterboxed,
@@ -732,6 +758,14 @@ fn run_in(args: &[String], scratch: &Path) -> i32 {
     let text = serde_json::to_string_pretty(&json!({ "projects": index, "failed": failed })).unwrap_or_default();
     if let Err(e) = std::fs::create_dir_all(&out).and_then(|()| std::fs::write(out.join("index.json"), text)) {
         eprintln!("pixel_check: writing index.json: {e}");
+        return 1;
+    }
+    // Sorted, one line each: the same frames with the same declines read
+    // back the same, whatever order the renders ran in.
+    declines.sort();
+    let declines_text: String = declines.iter().map(|l| format!("{l}\n")).collect();
+    if let Err(e) = std::fs::write(out.join("declines.txt"), &declines_text) {
+        eprintln!("pixel_check: writing declines.txt: {e}");
         return 1;
     }
     println!(
@@ -807,6 +841,27 @@ fn run_in(args: &[String], scratch: &Path) -> i32 {
         }
         if different + missing > 0 {
             code = 1;
+        }
+        // The same pictures drawn with other declines are not the same
+        // frames: a node that stopped drawing, or started, fails the check.
+        match std::fs::read_to_string(rec.join("declines.txt")) {
+            Ok(recorded) => {
+                let (gone, new) = declines_differ(&recorded, &declines_text);
+                println!("declines: {} recorded, {} now; {} only recorded, {} only now", recorded.lines().count(), declines.len(), gone.len(), new.len());
+                for l in gone.iter().take(10) {
+                    println!("  only recorded: {l}");
+                }
+                for l in new.iter().take(10) {
+                    println!("  only now: {l}");
+                }
+                if !gone.is_empty() || !new.is_empty() {
+                    code = 1;
+                }
+            }
+            Err(_) => {
+                println!("declines: the recording has no declines.txt: record it again with this build");
+                code = 1;
+            }
         }
     }
     code
@@ -929,6 +984,51 @@ mod tests {
 
     fn args(v: &[&Path]) -> Vec<String> {
         v.iter().map(|p| p.display().to_string()).collect()
+    }
+
+    /// A declined frame's line names its frame, clip, node, plug-in,
+    /// reason and outcome, never the detail; and a set that changed either
+    /// way is a difference.
+    #[test]
+    fn a_decline_is_a_line_and_a_changed_set_differs() {
+        let clip = klipp_core::ClipId::new();
+        let node = uuid::Uuid::new_v4();
+        let d = klipp_nodes::Decline {
+            clip: Some(clip),
+            node,
+            kind: klipp_nodes::NodeKind::Frei0r,
+            outcome: klipp_nodes::DeclineOutcome::Unsupported,
+            name: "Delay0r".into(),
+            reason: "needs a frame size under 2048".into(),
+            why: "/tmp/klipp-pixel-check-1/x".into(),
+        };
+        let line = decline_line("0/12-gpu", &d);
+        assert_eq!(line, format!("0/12-gpu clip {} node {node}: frei0r Delay0r: needs a frame size under 2048 (unsupported)", clip.0));
+        assert!(!line.contains("/tmp"), "the detail stays out: {line}");
+        let a = format!("{line}\n");
+        assert_eq!(declines_differ(&a, &a), (vec![], vec![]));
+        assert_eq!(declines_differ(&a, ""), (vec![line.clone()], vec![]), "a decline gone");
+        assert_eq!(declines_differ("", &a), (vec![], vec![line]), "a decline new");
+    }
+
+    /// record writes declines.txt beside index.json, and compare fails on
+    /// a recording whose declines differ from the frames drawn now.
+    #[test]
+    fn compare_fails_on_a_changed_decline_set() {
+        let root = std::env::temp_dir().join(format!("klipp-pixel-check-test-declines-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let Some(here) = relative_project(&root, "here", false) else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let list = root.join("list.txt");
+        std::fs::write(&list, format!("{}\n", here.display())).unwrap();
+        assert_eq!(run_in(&args(&[Path::new("record"), &list, &root.join("rec")]), &root), 0);
+        let recorded = std::fs::read_to_string(root.join("rec/declines.txt")).expect("record writes declines.txt");
+        assert_eq!(run_in(&args(&[Path::new("compare"), &list, &root.join("rec"), &root.join("cmp")]), &root), 0, "the same declines pass");
+        std::fs::write(root.join("rec/declines.txt"), format!("{recorded}0/0/0-gpu clip - node {}: Gone: plug-in missing (plug-in missing)\n", uuid::Uuid::nil())).unwrap();
+        assert_eq!(run_in(&args(&[Path::new("compare"), &list, &root.join("rec"), &root.join("cmp2")]), &root), 1, "a changed set fails");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A project that fails in compare fails the check, even with the

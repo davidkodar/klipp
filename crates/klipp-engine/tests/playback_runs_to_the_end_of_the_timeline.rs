@@ -98,6 +98,9 @@ impl Drop for Engine {
         let _ = self.cmd.send(AppCommand::Quit);
         if let Some(t) = self.thread.take() {
             let _ = t.join();
+            // A decode thread still in ffmpeg's teardown at exit crashes the
+            // process (CUDA's context destroyed under it).
+            klipp_engine::video_decoder::wait_for_decode_threads(std::time::Duration::from_secs(10));
         }
     }
 }
@@ -285,7 +288,9 @@ fn an_end_card_after_a_shot_played_to_its_files_end_is_reached() {
     let seq = sequence(vec![track("Text 1", TrackKind::Text, vec![card]), track("V1", TrackKind::Video, vec![shot(id, 0, n, fps)])], fps);
     let e = Engine::start(seq, pool_of(id, &src, fps));
 
-    let (moves, stopped) = e.play_from(1.0, fps, Duration::from_secs(5));
+    // A minute as the bound, as the other cases have: playback stopping
+    // ends the wait, and a loaded machine is slower, not wrong.
+    let (moves, stopped) = e.play_from(1.0, fps, Duration::from_secs(60));
     let reached = furthest(&moves);
     assert!(reached > end - 0.1, "playback reached only {reached:.2} s of the end card running to {end:.2} s");
     assert!(stopped, "playback did not stop at the end card's end");

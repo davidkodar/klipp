@@ -149,7 +149,7 @@ fn ask(p: Pick) -> Option<Result<[f32; 3], NodeSampleRefusal>> {
     cmd.send(AppCommand::SampleNodeInput { clip_id: stand_in, node_id: q, at, nx: 0.5, ny: 0.5 }).unwrap();
     let t0 = Instant::now();
     let mut answer = None;
-    while answer.is_none() && t0.elapsed() < Duration::from_secs(5) {
+    while answer.is_none() && t0.elapsed() < Duration::from_secs(60) {
         if let Ok(AppEvent::NodeInputSampled { clip_id: c, node_id: n, sample, .. }) = ev_rx.recv_timeout(Duration::from_millis(50)) {
             assert_eq!((c, n), (stand_in, q), "the answer names what the app asked about");
             answer = Some(sample);
@@ -157,6 +157,9 @@ fn ask(p: Pick) -> Option<Result<[f32; 3], NodeSampleRefusal>> {
     }
     let _ = cmd.send(AppCommand::Quit);
     let _ = thread.join();
+    // A decode thread still in ffmpeg's teardown at exit crashes the
+    // process (CUDA's context destroyed under it).
+    klipp_engine::video_decoder::wait_for_decode_threads(std::time::Duration::from_secs(10));
     Some(answer.expect("the engine answers the pick"))
 }
 

@@ -15,10 +15,7 @@ edit_ofx_effect 7
 edit_ofx_effects 6
 edit_opacity_keyframes 29
 edit_param_modifiers 32
-# 4 of these are masked_effect_off_grade.rs keying a picture-truth clip through
-# the v1 lane: the renderer doesn't read a picture-truth clip's placement_anim
-# yet (step 12a must), so a picture-op lane wouldn't move it.
-edit_transform_pos_x_keyframes 15
+edit_transform_pos_x_keyframes 11
 edit_transform_pos_y_keyframes 11
 edit_transform_rotation_keyframes 7
 edit_transform_scale_keyframes 11

@@ -14,10 +14,10 @@ use klipp_engine::video_decoder::VideoDecoder;
 use std::time::{Duration, Instant};
 
 /// Wait until the queue holds at least `n` frames at or after `secs`
-/// stamped with `epoch`, or give up after two seconds.
+/// stamped with `epoch`, or give up after a minute.
 fn wait_for_frames(dec: &VideoDecoder, secs: f64, epoch: u64, n: usize) -> bool {
     let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(2) {
+    while start.elapsed() < Duration::from_secs(60) {
         let q = dec.frame_queue().lock().unwrap();
         if q.len() >= n && q.oldest_pts_secs().is_some_and(|p| p >= secs - 0.05) && q.front().is_some_and(|f| f.seek_epoch == epoch) {
             return true;

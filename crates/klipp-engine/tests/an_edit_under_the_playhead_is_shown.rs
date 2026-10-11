@@ -110,6 +110,9 @@ impl Drop for Engine {
         let _ = self.cmd.send(AppCommand::Quit);
         if let Some(t) = self.thread.take() {
             let _ = t.join();
+            // A decode thread still in ffmpeg's teardown at exit crashes the
+            // process (CUDA's context destroyed under it).
+            klipp_engine::video_decoder::wait_for_decode_threads(std::time::Duration::from_secs(10));
         }
     }
 }
