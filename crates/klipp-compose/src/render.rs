@@ -5305,7 +5305,17 @@ mod clip_sources_tests {
 
     fn clip() -> Clip {
         let tc = |s| Timecode::from_secs_f64(s, 24);
-        Clip { source_in: tc(2.0), source_out: tc(3.0), ..Clip::gap(tc(0.0), tc(1.0)) }
+        Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(1.0), tc(2.0), tc(3.0))
+    }
+
+    /// A clip with no media (a title, a generator) has no source: an empty
+    /// range, so a node asking for another frame falls back.
+    #[test]
+    fn a_clip_without_media_has_an_empty_range() {
+        let tc = |s| Timecode::from_secs_f64(s, 24);
+        let c = Clip::gap(tc(0.0), tc(1.0));
+        let mut src = Readers::default();
+        assert_eq!(ClipSources::new(&mut src, &c, WorkingColorspace::Rec709Linear).bounds(), (0.0, 0.0));
     }
 
     /// Each contract from its own reader, asked from the source in-point,

@@ -164,8 +164,17 @@ fn clip_of(item: &klipp_media::MediaItem, at: i64, frames: i64, from: i64, speed
     let covered = (frames as f64 * speed.abs()).round() as i64;
     let mut c = Clip::media(item.id, tc(at), tc(at + frames), tc(from), tc(from + covered));
     c.speed = speed;
-    c.set_effect_list(vec![effect], vec![on]);
-    c
+    // Through the clip's picture; a case that can't place it fails (the
+    // cases run caught).
+    let mut edits = vec![klipp_timeline::EffectEdit::Add(&effect)];
+    if !on {
+        edits.push(klipp_timeline::EffectEdit::SetEnabled(0, false));
+    }
+    match c.apply_effect_edits(&edits) {
+        Some(Ok(_)) => c,
+        Some(Err(why)) => panic!("{effect:?} couldn't be placed: {why}"),
+        None => panic!("{effect:?} couldn't be placed through the picture"),
+    }
 }
 
 /// A scene of `clips` on one track, their media in `items`.

@@ -119,7 +119,8 @@ pub(crate) fn parameter(node: &Node, key: &str, value: &Value) -> Result<ParamVa
 /// other node or key.
 fn frei0r_payload(node: &Node, key: &str, value: &Value) -> Result<Option<Value>, String> {
     use klipp_effects::BuiltinEffect;
-    if node.type_id.as_str() != types::LEGACY_EFFECT || klipp_graph_lift::effect_params::tag(node) != Some("frei0r") || !matches!(key, "type_id" | "params") {
+    // Only an effect entry's payload is tagged with its type.
+    if klipp_graph_lift::effect_params::tag(node) != Some("frei0r") || !matches!(key, "type_id" | "params") {
         return Ok(None);
     }
     let entry = klipp_graph_lift::effect_params::entry_of(node)?;
