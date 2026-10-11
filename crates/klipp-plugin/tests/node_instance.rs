@@ -76,6 +76,11 @@ fn each_instance_is_its_own_and_dropping_it_destroys_it() {
     let pb = b.render(&HashMap::new(), &picture(30), W, H, 0.0, 1.0, Vec::new()).expect("rendered");
     assert_eq!(pa, picture(30), "the passthrough instance");
     assert_eq!(&pb[..4], &[50, 225, 40, 255], "the other swaps channels: B, 255 − R, G");
+    // Each render takes the values it's given, one left out going back to
+    // its default: an edit reaches an instance already made.
+    let pa = a.render(&HashMap::new(), &picture(30), W, H, 1.0, 1.0, Vec::new()).expect("rendered");
+    assert_eq!(&pa[..4], &[50, 225, 40, 255], "its value taken out: the default swaps");
+    assert_eq!(a.render(&passthrough, &picture(30), W, H, 2.0, 1.0, Vec::new()).expect("rendered"), picture(30), "the value set again");
     drop(a);
     assert_eq!(live(&trace), before + 1, "dropping one destroyed it");
     drop(b);
