@@ -118,6 +118,35 @@ impl Listen {
     }
 }
 
+/// One track for `add_music`, as a search result gives it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MusicPick {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub artist: String,
+    #[serde(default)]
+    pub track_id: String,
+    #[serde(default)]
+    pub download_url: String,
+    #[serde(default)]
+    pub preview_url: String,
+    #[serde(default)]
+    pub license: String,
+    #[serde(default)]
+    pub license_url: String,
+    #[serde(default)]
+    pub page_url: String,
+}
+
+impl ControlCommand {
+    /// Import one file: what the tools that make a file and bring it in
+    /// send.
+    pub fn import_one(path: String, analyze: bool) -> Self {
+        Self::ImportMedia { path, paths: Vec::new(), folder: None, analyze }
+    }
+}
+
 // One of these is deserialised per request off a socket, used, and
 // dropped. It is never stored in a collection and never on a hot path,
 // so the gap between the smallest variant and the largest costs one
@@ -205,8 +234,15 @@ pub enum ControlCommand {
     },
     /// Import a file into the media pool. Asynchronous: the app probes
     /// the file on a worker, so poll `list_media` for the result.
+    /// `paths`, a `folder` (its media files, not its subfolders) or both
+    /// import many at once, each answered on its own (#1587).
     ImportMedia {
+        #[serde(default)]
         path: String,
+        #[serde(default)]
+        paths: Vec<String>,
+        #[serde(default)]
+        folder: Option<String>,
         /// Queue automatic analysis when the file arrives (default true).
         #[serde(default = "default_analyze")]
         analyze: bool,
@@ -970,6 +1006,10 @@ pub enum ControlCommand {
         license_url: String,
         #[serde(default)]
         page_url: String,
+        /// Many at once, each as the fields above, each answered on its
+        /// own (#1587): a batch can't hold a download.
+        #[serde(default)]
+        tracks: Vec<MusicPick>,
     },
     /// The tempo and beat grid of a clip's sound: BPM, a confidence, and
     /// the beat times, for cutting to the music; and for music, its

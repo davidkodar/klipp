@@ -95,7 +95,7 @@ pub(crate) fn respond(
                 path: path.map(std::path::PathBuf::from),
                 dir: &dir,
             })?;
-            let mut v = handle(ctx, ControlCommand::ImportMedia { path: out.to_string_lossy().to_string(), analyze: true }, &mut None)?;
+            let mut v = handle(ctx, ControlCommand::import_one(out.to_string_lossy().to_string(), true), &mut None)?;
             let media_id = imported_id(ctx, &out).ok_or("the narration was made but did not reach the media pool")?;
             v["media_id"] = json!(media_id);
             v["path"] = json!(out);
@@ -170,7 +170,7 @@ pub(crate) fn respond(
             }
             let mut v = json!({ "path": out, "secs": secs, "target": target });
             if import.unwrap_or(true) {
-                handle(ctx, ControlCommand::ImportMedia { path: out.to_string_lossy().to_string(), analyze: true }, &mut None)?;
+                handle(ctx, ControlCommand::import_one(out.to_string_lossy().to_string(), true), &mut None)?;
                 v["media_id"] = json!(imported_id(ctx, &out));
                 v["next"] = json!("Recorded and imported; analyze reads it (the beat sheet finds the reveals), then place or plan with it.");
             } else {

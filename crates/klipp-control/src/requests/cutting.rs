@@ -138,22 +138,37 @@ pub(crate) fn respond(
             Ok(json!({ "text": text, "results": results, "next": "Hear candidates with listen (a count, or [track_id, …]): a sound's length and when it peaks say where it goes, the peak on the cut. Add one with add_music (it takes a sound effect just the same: pass title, artist, preview_url, license, license_url, page_url); it brings Freesound's 128 kbps preview MP3, not the original file. The credit is kept; honour the licence." }))
         }
 
-        ControlCommand::AddMusic { title, artist, track_id, download_url, preview_url, license, license_url, page_url } => {
+        ControlCommand::AddMusic { title, artist, track_id, download_url, preview_url, license, license_url, page_url, tracks } => {
             if in_batch {
-                return Err("add_music downloads and imports a file; send it on its own, not in a batch".into());
+                return Err("add_music downloads and imports a file; send it on its own, not in a batch (it takes many at once as tracks)".into());
             }
-            let track = klipp_audio_search::Track {
-                source: klipp_audio_search::Source::JamendoMusic,
-                id: track_id, title: title.clone(), artist: artist.clone(),
-                duration_secs: 0.0, license: license.clone(), license_url,
-                commercial_ok: true, preview_url, download_url, page_url, image_url: String::new(), tags: Vec::new(), pace: String::new(),
-            };
-            let path = klipp_audio_search::download_track(&track, &klipp_audio_search::download_dir())?;
-            let mut v = handle(ctx, ControlCommand::ImportMedia { path: path.to_string_lossy().to_string(), analyze: true }, &mut None)?;
-            v["text"] = json!(format!("Added \"{title}\" by {artist} ({license}) to the media pool. Place it on an audio track (place marks it music) and duck it under speech.", license = if license.is_empty() { "licence with the file".to_string() } else { license }));
-            v["attribution"] = json!(track.attribution());
-            v["next"] = json!("Place it on an audio track (place marks it music, or sfx for an effect) and duck it under any speech. The credit is saved beside the file for your export notes.");
-            Ok(v)
+            if tracks.is_empty() {
+                return add_one_track(ctx, MusicPick { title, artist, track_id, download_url, preview_url, license, license_url, page_url });
+            }
+            // Many at once (#1587): each downloaded and imported in turn,
+            // each answered on its own; one that fails doesn't stop the
+            // rest. Fifteen effects took fifteen calls.
+            let mut results = Vec::with_capacity(tracks.len());
+            let mut failed = 0;
+            for pick in tracks {
+                let title = pick.title.clone();
+                match add_one_track(ctx, pick) {
+                    Ok(v) => results.push(json!({ "title": title, "media_id": v["media_id"], "already_imported": v["already_imported"] == true, "job_id": v["job_id"], "attribution": v["attribution"] })),
+                    Err(why) => {
+                        failed += 1;
+                        results.push(json!({ "title": title, "error": why }));
+                    }
+                }
+            }
+            let done = results.len() - failed;
+            let text = if failed == 0 { format!("{done} track{} added to the media pool", if done == 1 { "" } else { "s" }) } else { format!("{done} of {} tracks added; {failed} could not be", results.len()) };
+            Ok(json!({
+                "text": text,
+                "added": done,
+                "failed": failed,
+                "results": results,
+                "next": "Place each on an audio track (place marks it music, or sfx for an effect) and duck it under any speech. The credits are saved beside the files for your export notes.",
+            }))
         }
 
         ControlCommand::Beats { media_id, target_secs, skip_intro, at_secs, track } => {
@@ -376,3 +391,20 @@ fn music_shape(v: &mut serde_json::Value, path: &std::path::Path, id: klipp_core
     Ok(())
 }
 
+/// Download one searched track and import it, its licence and credit
+/// kept beside the file.
+fn add_one_track(ctx: &ControlContext, pick: MusicPick) -> Result<serde_json::Value, String> {
+    let MusicPick { title, artist, track_id, download_url, preview_url, license, license_url, page_url } = pick;
+    let track = klipp_audio_search::Track {
+        source: klipp_audio_search::Source::JamendoMusic,
+        id: track_id, title: title.clone(), artist: artist.clone(),
+        duration_secs: 0.0, license: license.clone(), license_url,
+        commercial_ok: true, preview_url, download_url, page_url, image_url: String::new(), tags: Vec::new(), pace: String::new(),
+    };
+    let path = klipp_audio_search::download_track(&track, &klipp_audio_search::download_dir())?;
+    let mut v = handle(ctx, ControlCommand::import_one(path.to_string_lossy().to_string(), true), &mut None)?;
+    v["text"] = json!(format!("Added \"{title}\" by {artist} ({license}) to the media pool. Place it on an audio track (place marks it music) and duck it under speech.", license = if license.is_empty() { "licence with the file".to_string() } else { license }));
+    v["attribution"] = json!(track.attribution());
+    v["next"] = json!("Place it on an audio track (place marks it music, or sfx for an effect) and duck it under any speech. The credit is saved beside the file for your export notes.");
+    Ok(v)
+}

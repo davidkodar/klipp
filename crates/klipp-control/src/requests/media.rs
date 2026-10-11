@@ -99,7 +99,43 @@ pub(crate) fn respond(
             }))
         }
 
-        ControlCommand::ImportMedia { path, analyze } => {
+        ControlCommand::ImportMedia { path, paths, folder, analyze } => {
+            // Many files: each imported as one would be, each answered on
+            // its own, and a file that can't be doesn't stop the rest
+            // (#1587: 42 shots took a 42-entry batch).
+            if !paths.is_empty() || folder.is_some() {
+                let mut files: Vec<String> = (!path.is_empty()).then_some(path).into_iter().chain(paths).collect();
+                if let Some(dir) = folder {
+                    files.extend(media_in_folder(std::path::Path::new(&dir))?);
+                }
+                if files.is_empty() {
+                    return Err("no media file to import: the folder holds none".into());
+                }
+                let mut results = Vec::with_capacity(files.len());
+                let mut failed = 0;
+                for file in &files {
+                    match handle(ctx, ControlCommand::import_one(file.clone(), analyze), &mut None) {
+                        Ok(v) => results.push(json!({ "path": file, "media_id": v["media_id"], "already_imported": v["already_imported"] == true, "job_id": v["job_id"] })),
+                        Err(why) => {
+                            failed += 1;
+                            results.push(json!({ "path": file, "error": why }));
+                        }
+                    }
+                }
+                let done = files.len() - failed;
+                let text = if failed == 0 { format!("{done} file{} imported", if done == 1 { "" } else { "s" }) } else { format!("{done} of {} files imported; {failed} could not be", files.len()) };
+                return Ok(json!({
+                    "text": text,
+                    "imported": done,
+                    "failed": failed,
+                    "results": results,
+                    "analysis_requested": analyze,
+                    "next": "A result with no media_id is still probing: follow its job_id. Read transcript and shots only after analysis completes.",
+                }));
+            }
+            if path.is_empty() {
+                return Err("import_media needs a path, paths or a folder".into());
+            }
             let p = std::path::PathBuf::from(&path);
             if !p.exists() {
                 return Err(format!("file not found: {path}"));
@@ -288,4 +324,19 @@ pub(crate) fn respond(
 
         _ => Err("internal: a request was routed to the wrong area".into()),
     }
+}
+
+/// The media files directly in `dir`, by name: its subfolders and any
+/// other file (a list, a sidecar) left out.
+fn media_in_folder(dir: &std::path::Path) -> Result<Vec<String>, String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("can't read the folder {}: {e}", dir.display()))?;
+    let mut files: Vec<String> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && klipp_core::media_extensions::path_is_media(p))
+        .filter(|p| !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')))
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    files.sort();
+    Ok(files)
 }
