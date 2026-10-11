@@ -20,6 +20,9 @@ path = "src/lib.rs"
 klipp-convert = { path = "../klipp-convert" }
 # The routes the families' cases render through (`route`).
 klipp-compose = { path = "../klipp-compose" }
+crossbeam-channel = { workspace = true }
+klipp-render = { path = "../klipp-render" }
+klipp-engine = { path = "../klipp-engine" }
 klipp-analysis = { path = "../klipp-analysis" }
 klipp-plugin = { path = "../klipp-plugin" }
 klipp-title = { path = "../klipp-title" }

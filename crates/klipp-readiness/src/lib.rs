@@ -27,6 +27,7 @@ mod legacy_chain;
 mod ofx;
 pub mod old_stage;
 pub mod route;
+pub mod route2;
 pub mod rules;
 pub mod saved;
 mod temporal_denoise;
