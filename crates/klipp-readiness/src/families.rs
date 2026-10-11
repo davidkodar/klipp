@@ -102,6 +102,11 @@ pub const DELETED: &[(Family, &[&str])] = &[
     // the instance shared by name) and its temporal-plug-in name guess,
     // replaced by a node per plug-in with an instance of its own.
     (Family::Ofx, &["fn ofx(", "is_temporal_plugin"]),
+    // Step 4: the renderer's temporal-plug-in name guess (with step 3), and
+    // the OFX chain's temporal entry, whose plug-in was told the current
+    // frame for a neighbour it wasn't given; a temporal plug-in runs as a
+    // node, handed its own frames.
+    (Family::OfxTemporal, &["is_temporal_plugin", "fn apply_effects_chain_temporal(", "missing_is_missing"]),
     // Step 5: the effect chain's GPU veto on a chain with a frei0r plug-in,
     // replaced by a frei0r node of its own, a local CPU segment.
     (Family::Frei0r, &["chain_supports_gpu"]),
