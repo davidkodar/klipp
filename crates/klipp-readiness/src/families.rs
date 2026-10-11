@@ -105,4 +105,9 @@ pub const DELETED: &[(Family, &[&str])] = &[
     // the instance shared by name) and its temporal-plug-in name guess,
     // replaced by a node per plug-in with an instance of its own.
     (Family::Ofx, &["fn ofx(", "is_temporal_plugin"]),
+    // Step 9: a clip's analysis fields (an analysis is its media's asset
+    // now), and the renderer's own rolling-shutter measuring stage.
+    (Family::Deflicker, &["deflicker_data", "deflicker_gains"]),
+    (Family::Stabilisation, &[".stabilization_data", "stabilization_data:", "smoothed_trajectory"]),
+    (Family::RollingShutter, &["fn prepare_temporal_effects(", "fn motion_frame("]),
 ];

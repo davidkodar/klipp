@@ -140,6 +140,20 @@ fn declines(route: Route, scene: (Arc<Scene>, Clip), source: Ramp, frame: i64, l
 }
 
 pub fn run(report: &mut Report) {
+    // The renderer's pre-grade denoise stage is gone (step 6).
+    report.case("denoise: the old stage is gone", [key(None, Obligation::OldStageGone)], || crate::old_stage::gone(Family::TemporalDenoise));
+    // A save and a strict reload keep the clip's denoiser, its strength and
+    // threshold.
+    report.case("denoise: saved and reloaded", [key(None, Obligation::Saved)], || {
+        let (scene, clip) = scene(50, 150, 1.0, 0.7);
+        let back = crate::saved::round_trip(&scene.sequence, &scene.pool)?;
+        let got = back.tracks.first().and_then(|t| t.clips.first()).ok_or("no clip came back")?;
+        let fx = |c: &Clip| c.picture_effects().map(|fx| fx.into_iter().map(|e| (e.effect, e.enabled)).collect::<Vec<_>>());
+        if fx(got)? != fx(&clip)? {
+            return Err(format!("the denoiser came back as {:?}", fx(got)?));
+        }
+        Ok(())
+    });
     for route in [Route::Viewer, Route::Export] {
         let at = |o| [key(Some(route), o)];
         report.case(&format!("denoise {route:?}: a frame mid-clip"), at(Obligation::ExpectedPixels), || {
@@ -182,6 +196,13 @@ pub fn run(report: &mut Report) {
         });
         report.case(&format!("denoise {route:?}: a seek back"), at(Obligation::Time(TimeCase::BackwardSeek)), || {
             holds(route, true, scene(50, 150, 1.0, STRENGTH), Ramp::whole(), &[60, 61, 20, 21], STRENGTH)
+        });
+        // A denoiser whose run fails shows its frame as it is, and says so;
+        // an export refuses it.
+        report.case(&format!("denoise {route:?}: its render failed"), at(Obligation::Outcome(Outcome::RenderFailed)), || {
+            let _fault = klipp_nodes::fault::fail("temporal_denoise");
+            holds(route, true, scene(50, 150, 1.0, STRENGTH), Ramp::whole(), &[40], 0.0)?;
+            declines(route, scene(50, 150, 1.0, STRENGTH), Ramp::whole(), 40, Some("render failed"))
         });
         report.case(&format!("denoise {route:?}: at strength 0"), at(Obligation::Outcome(Outcome::Bypass)), || {
             holds(route, true, scene(50, 150, 1.0, 0.0), Ramp::whole(), &[40], 0.0)

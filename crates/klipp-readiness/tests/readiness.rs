@@ -61,32 +61,6 @@ fn every_family_is_registered_and_owes_something() {
 /// a symbol a family deleted (`families::DELETED`).
 #[test]
 fn old_stages_stay_gone() {
-    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-    let mut sources = Vec::new();
-    let mut dirs = vec![crates];
-    while let Some(dir) = dirs.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                // Not this crate (its list names them), nor build output.
-                if !path.ends_with("klipp-readiness") && !path.ends_with("target") {
-                    dirs.push(path);
-                }
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                sources.push(path);
-            }
-        }
-    }
-    let mut found = Vec::new();
-    for (family, symbols) in families::DELETED {
-        for path in &sources {
-            let text = std::fs::read_to_string(path).unwrap_or_default();
-            for symbol in *symbols {
-                if text.contains(symbol) {
-                    found.push(format!("{family:?}: {symbol} in {}", path.display()));
-                }
-            }
-        }
-    }
+    let found = klipp_readiness::old_stage::named_again();
     assert!(found.is_empty(), "deleted stages named again: {found:#?}");
 }

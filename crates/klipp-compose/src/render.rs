@@ -336,10 +336,12 @@ impl klipp_nodes::frame_context::SourceProvider for ClipSources<'_> {
     /// The reader's next frame, fitted to the render size as the frame
     /// shown was (ruling 10-09). Another transfer than the frame shown's,
     /// or no time, isn't a frame to blend toward.
-    fn next(&mut self, _source_secs: f64) -> klipp_nodes::frame_context::Neighbour<klipp_nodes::frame_context::LinearFrame> {
+    /// The frame after the one at `source_secs`: the node asks after the
+    /// frame it shows, which a blend reads half a media frame early.
+    fn next(&mut self, source_secs: f64) -> klipp_nodes::frame_context::Neighbour<klipp_nodes::frame_context::LinearFrame> {
         use klipp_nodes::frame_context::{LinearFrame, Missing, Neighbour};
-        let Some((at, hdr, width, height)) = self.current else { return Neighbour::Missing(Missing::Unavailable) };
-        let Some(next) = self.src.frame_after(self.clip, at, width, height) else { return Neighbour::Missing(Missing::Unavailable) };
+        let Some((_, hdr, width, height)) = self.current else { return Neighbour::Missing(Missing::Unavailable) };
+        let Some(next) = self.src.frame_after(self.clip, source_secs, width, height) else { return Neighbour::Missing(Missing::Unavailable) };
         let Some(pts) = next.pts else { return Neighbour::Missing(Missing::Unavailable) };
         let (rgba, next_hdr) = to_linear(next, width, height);
         if next_hdr != hdr {
