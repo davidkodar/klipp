@@ -3351,6 +3351,7 @@ dependencies = [
  "klipp-core",
  "klipp-effects",
  "klipp-engine",
+ "klipp-frei0r",
  "klipp-graph-format",
  "klipp-media",
  "klipp-nodes",
