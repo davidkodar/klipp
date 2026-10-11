@@ -3328,16 +3328,19 @@ dependencies = [
 name = "klipp-readiness"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "klipp-analysis",
  "klipp-compose",
  "klipp-convert",
  "klipp-core",
  "klipp-effects",
+ "klipp-engine",
  "klipp-graph-format",
  "klipp-media",
  "klipp-nodes",
  "klipp-plugin",
  "klipp-project",
+ "klipp-render",
  "klipp-timeline",
  "klipp-title",
  "serde_json",

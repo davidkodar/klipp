@@ -400,8 +400,25 @@ impl OfxHostRuntime {
                 paths.insert(0, PathBuf::from(p));
             }
         }
+        for p in extra_plugin_dirs().lock().map(|d| d.clone()).unwrap_or_default() {
+            paths.insert(0, p);
+        }
 
         self.discover_plugins_in(&paths)
+    }
+
+    /// Folders every later [`Self::discover_plugins`] in this process
+    /// searches first, as `OFX_PLUGIN_PATH` would: how a test reaches its
+    /// fixture plug-ins through the engine's and export's own discovery,
+    /// without changing the process's environment.
+    pub fn add_plugin_dirs(dirs: &[PathBuf]) {
+        if let Ok(mut d) = extra_plugin_dirs().lock() {
+            for dir in dirs {
+                if !d.contains(dir) {
+                    d.push(dir.clone());
+                }
+            }
+        }
     }
 
     /// Discover using only these directories, without consulting environment or
@@ -2254,6 +2271,12 @@ fn set_param_default_props(
 
 // Type alias for backward compatibility.
 pub type OfxHost = OfxHostRuntime;
+
+/// [`OfxHost::add_plugin_dirs`]' folders.
+fn extra_plugin_dirs() -> &'static std::sync::Mutex<Vec<PathBuf>> {
+    static DIRS: std::sync::OnceLock<std::sync::Mutex<Vec<PathBuf>>> = std::sync::OnceLock::new();
+    DIRS.get_or_init(Default::default)
+}
 
 #[cfg(test)]
 mod declared_type_tests {

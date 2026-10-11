@@ -13,7 +13,7 @@ fn crates() -> PathBuf {
 
 /// Where fixtures are built: the target folder, never the source tree or
 /// /tmp.
-fn scratch() -> PathBuf {
+pub fn scratch() -> PathBuf {
     let target = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(|| crates().join("../target"));
     let dir = target.join("readiness-fixtures");
     std::fs::create_dir_all(&dir).expect("the fixture folder");
