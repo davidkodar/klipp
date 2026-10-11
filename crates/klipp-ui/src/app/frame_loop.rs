@@ -480,7 +480,7 @@ impl KlippApp {
         }
         self.drain_proxy_progress();
         self.poll_render_queue();
-        self.ensure_analyses();
+        self.ensure_analyses(ctx);
         // Show filmstrip thumbnail preview only while waiting for a seek result
         if self.state.awaiting_seek_frame && !self.state.showing_thumbnail_preview {
             // A skim frame that has landed but not yet been uploaded sets

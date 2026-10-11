@@ -1755,10 +1755,19 @@ pub struct AppState {
     pub analysis_stamps: std::collections::HashMap<klipp_analysis::assets::AssetKey, u64>,
     /// When `ensure_analyses` last looked.
     pub analysis_checked: Option<std::time::Instant>,
-    /// Analyses `ensure_analyses` started this session, by asset: started
-    /// once for a file however many clips read it, so one that fails
-    /// isn't started again on every look.
-    pub analysis_started: std::collections::HashSet<klipp_analysis::assets::AssetKey>,
+    /// The sequence's revision when `ensure_analyses` last looked: an edit
+    /// since (an effect added by any path: the inspector, a graph op over
+    /// the control socket, an undo, a paste) is looked at on its own frame,
+    /// never left to a frame that may not come while the window is idle.
+    pub analysis_revision: Option<klipp_timeline::SequenceRevision>,
+    /// Analyses `ensure_analyses` started, by asset: one a file however
+    /// many clips read it. Each is let go once its run has ended and the
+    /// asset is there, so an asset gone later is made again; one that
+    /// ended without it is started again after [`ANALYSIS_RETRY`].
+    pub analysis_started: std::collections::HashMap<klipp_analysis::assets::AssetKey, StartedAnalysis>,
+    /// A rolling-shutter analysis's run, which sends no events: set when
+    /// its thread ends.
+    pub analysis_threads: std::collections::HashMap<klipp_analysis::assets::AssetKey, std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Clips whose analysis can't be made: the media's original file isn't
     /// there (a proxy alone), so the inspector says why rather than wait.
     pub analysis_unavailable: std::collections::HashSet<(klipp_core::ClipId, klipp_analysis::assets::AssetKind)>,
@@ -3849,6 +3858,58 @@ impl AppState {
         self.analyses.get(&klipp_analysis::assets::asset_key(kind, item)?)
     }
 
+    /// Whether `ensure_analyses` looks now, at `now` with the sequence at
+    /// `revision`; when it does, it's noted as having looked. Every
+    /// [`ANALYSIS_EVERY`] at most, at once after a completed analysis
+    /// clears `analysis_checked`, and after any edit of the sequence
+    /// within [`ANALYSIS_EDIT_GAP`]: a slider's drag doesn't read every
+    /// clip's picture each tick. An edit not looked at yet says how long
+    /// until it is, for the caller to ask for a frame then: an idle
+    /// window draws none of its own.
+    pub fn analysis_due(&mut self, revision: klipp_timeline::SequenceRevision, now: std::time::Instant) -> AnalysisDue {
+        let since = self.analysis_checked.map(|t| now.saturating_duration_since(t));
+        let wait = match since {
+            None => std::time::Duration::ZERO,
+            Some(since) if self.analysis_revision != Some(revision) => ANALYSIS_EDIT_GAP.saturating_sub(since),
+            Some(since) if since >= ANALYSIS_EVERY => std::time::Duration::ZERO,
+            Some(_) => return AnalysisDue::NotYet,
+        };
+        if !wait.is_zero() {
+            return AnalysisDue::After(wait);
+        }
+        self.analysis_checked = Some(now);
+        self.analysis_revision = Some(revision);
+        AnalysisDue::Now
+    }
+
+    /// Of `uses` (each key a clip of the sequence reads, its kind, a clip
+    /// of it, and whether its analysis runs now), the ones to start at
+    /// `now`: a key `missing` from the store that no run of it is making,
+    /// and that didn't end without its asset within [`ANALYSIS_RETRY`].
+    /// A started key whose run has ended is let go once its asset is
+    /// there, or once no clip reads it.
+    pub fn analyses_to_start(&mut self, uses: &[AnalysisUse], missing: &[klipp_analysis::assets::AssetKey], now: std::time::Instant) -> Vec<AnalysisUse> {
+        for (key, started) in self.analysis_started.iter_mut() {
+            let running = uses.iter().any(|u| u.key == *key && u.running);
+            if !running && started.ended.is_none() {
+                started.ended = Some(now);
+            }
+        }
+        self.analysis_started.retain(|key, started| started.ended.is_none() || (missing.contains(key) && uses.iter().any(|u| u.key == *key)));
+        let started = &self.analysis_started;
+        self.analysis_threads.retain(|key, _| started.contains_key(key));
+        let mut start = Vec::new();
+        for u in uses.iter().filter(|u| !u.running && missing.contains(&u.key)) {
+            let waiting = self.analysis_started.get(&u.key).is_some_and(|s| s.ended.is_none_or(|ended| now.duration_since(ended) < ANALYSIS_RETRY));
+            if waiting || start.iter().any(|s: &AnalysisUse| s.key == u.key) {
+                continue;
+            }
+            self.analysis_started.insert(u.key.clone(), StartedAnalysis { ended: None });
+            start.push(u.clone());
+        }
+        start
+    }
+
     /// The analyses `used` (each asset key the sequence's clips use, and
     /// whether to read it now) kept in step with `store` (M4 step 9): one
     /// loaded here is read again when its stamp moves and let go when it's
@@ -4175,7 +4236,9 @@ impl Default for AppState {
             analyses: Default::default(),
             analysis_stamps: Default::default(),
             analysis_checked: None,
+            analysis_revision: None,
             analysis_started: Default::default(),
+            analysis_threads: Default::default(),
             analysis_unavailable: Default::default(),
             scene_detect_in_progress: std::collections::HashSet::new(),
             scene_detect_progress: std::collections::HashMap::new(),
@@ -4874,6 +4937,42 @@ pub(crate) fn find_clip_cached<'a>(
     // searching for a non-existent id.
     cache.set(None);
     None
+}
+
+/// How often `ensure_analyses` looks with nothing edited.
+pub const ANALYSIS_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The least time between looks that follow edits.
+pub const ANALYSIS_EDIT_GAP: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Whether `ensure_analyses` looks now ([`AppState::analysis_due`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnalysisDue {
+    Now,
+    /// An edit is waiting to be looked at, after this long.
+    After(std::time::Duration),
+    /// Nothing new to look at yet.
+    NotYet,
+}
+
+/// How long an analysis that ended without its asset waits before it's
+/// started again: a file that can't be analysed isn't tried on every look.
+pub const ANALYSIS_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// An analysis `ensure_analyses` started: when its run ended, if it has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StartedAnalysis {
+    pub ended: Option<std::time::Instant>,
+}
+
+/// An analysis a clip of the sequence reads: its asset's key and kind, a
+/// clip that reads it, and whether a run of it is making it now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnalysisUse {
+    pub key: klipp_analysis::assets::AssetKey,
+    pub kind: klipp_analysis::assets::AssetKind,
+    pub clip: klipp_core::ClipId,
+    pub running: bool,
 }
 
 #[cfg(test)]

@@ -833,49 +833,27 @@ impl KlippApp {
 
     /// Starts the analyses the active sequence's effects need and haven't
     /// got (M4 step 9): a Deflicker, Stabilisation or Rolling Shutter
-    /// effect on a clip whose file has no asset of its kind in the analysis
-    /// cache is analysed by itself, once a file, with no button to press. A found asset is kept
-    /// in `analyses`, by its key, for the inspector. Looks every two
-    /// seconds at most, and at once after an analysis completes.
-    pub(super) fn ensure_analyses(&mut self) {
+    /// effect in a clip's picture whose file has no asset of its kind in
+    /// the analysis cache is analysed by itself, once a file, with no
+    /// button to press. A found asset is kept in `analyses`, by its key,
+    /// for the inspector. Looks every two seconds at most, at once after
+    /// an analysis completes, and soon after any edit of the sequence,
+    /// whichever path made it, with a frame asked for to look on.
+    pub(super) fn ensure_analyses(&mut self, ctx: &egui::Context) {
         use klipp_analysis::assets::{self, AssetKind};
-        const EVERY: std::time::Duration = std::time::Duration::from_secs(2);
-        if self.state.analysis_checked.is_some_and(|t| t.elapsed() < EVERY) {
-            return;
-        }
-        self.state.analysis_checked = Some(std::time::Instant::now());
-        let Some(seq) = self.state.sequences.get(self.state.active_sequence_idx) else { return };
-        // Each key the sequence's clips use, once, and whether an analysis
-        // of it runs now (nothing to read until it ends).
-        let mut uses: Vec<(assets::AssetKey, AssetKind, klipp_core::ClipId, bool)> = Vec::new();
-        for clip in seq.tracks.iter().flat_map(|t| t.clips.iter()) {
-            for effect in clip.enabled_effects() {
-                let Some(kind) = klipp_compose::render::asset_kind(effect) else { continue };
-                let running = match kind {
-                    AssetKind::Deflicker => self.state.deflicker_in_progress.contains(&clip.id),
-                    AssetKind::Stabilisation => self.state.stabilization_in_progress.contains(&clip.id),
-                    AssetKind::RollingShutter => false,
-                };
-                let Some(item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)) else { continue };
-                // No key without the original: the inspector says so.
-                let Some(key) = assets::asset_key(kind, item) else {
-                    self.state.analysis_unavailable.insert((clip.id, kind));
-                    continue;
-                };
-                self.state.analysis_unavailable.remove(&(clip.id, kind));
-                match uses.iter_mut().find(|(k, ..)| *k == key) {
-                    Some(u) => u.3 |= running,
-                    None => uses.push((key, kind, clip.id, running)),
-                }
+        match self.state.analysis_due(self.sequence.revision(), std::time::Instant::now()) {
+            crate::state::AnalysisDue::Now => {}
+            crate::state::AnalysisDue::After(wait) => {
+                ctx.request_repaint_after(wait);
+                return;
             }
+            crate::state::AnalysisDue::NotYet => return,
         }
+        let uses = analysis_uses(&mut self.state);
         let cache = assets::CacheStore::default();
-        let keys: Vec<(assets::AssetKey, bool)> = uses.iter().map(|(k, _, _, running)| (k.clone(), !running)).collect();
+        let keys: Vec<(assets::AssetKey, bool)> = uses.iter().map(|u| (u.key.clone(), !u.running)).collect();
         let missing = self.state.keep_analyses(&cache, &keys);
-        for (key, kind, clip_id, _) in uses.into_iter().filter(|(k, ..)| missing.contains(k)) {
-            if !self.state.analysis_started.insert(key) {
-                continue;
-            }
+        for crate::state::AnalysisUse { key, kind, clip: clip_id, .. } in self.state.analyses_to_start(&uses, &missing, std::time::Instant::now()) {
             let cmd = match kind {
                 AssetKind::Deflicker => AppCommand::AnalyzeDeflicker { clip_id },
                 AssetKind::Stabilisation => AppCommand::AnalyzeStabilization { clip_id },
@@ -885,11 +863,13 @@ impl KlippApp {
                     let Some(item) = self.state.sequences.get(self.state.active_sequence_idx).and_then(|s| s.all_clips().find(|c| c.id == clip_id)).and_then(|c| c.media_id()).and_then(|m| self.state.media_pool.get(&m)) else { continue };
                     let (path, fps) = (item.path.clone(), item.fps.as_f64());
                     let frames = assets::frames_of(item.duration.to_secs_f64(), fps);
-                    let key = assets::asset_key(kind, item).expect("keyed above");
+                    let ended = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    self.state.analysis_threads.insert(key.clone(), ended.clone());
                     std::thread::spawn(move || {
                         if let Err(e) = klipp_engine::analyse_into(&mut assets::CacheStore::default(), key, &path, fps, frames, &|_| true) {
                             tracing::warn!("rolling-shutter analysis of {}: {e}", path.display());
                         }
+                        ended.store(true, std::sync::atomic::Ordering::SeqCst);
                     });
                     continue;
                 }
@@ -897,5 +877,205 @@ impl KlippApp {
             let mut refresh = false;
             self.handle_stabilization_commands(&cmd, &mut refresh);
         }
+    }
+}
+
+/// Each analysis the active sequence's clips read, once a key: every
+/// enabled analysis effect in a clip's picture (what the renderer draws),
+/// with whether a run of it is making it now. A clip whose media has no
+/// original to analyse is noted in `analysis_unavailable` instead.
+pub(super) fn analysis_uses(state: &mut crate::state::AppState) -> Vec<crate::state::AnalysisUse> {
+    use klipp_analysis::assets::{self, AssetKind};
+    let mut uses: Vec<crate::state::AnalysisUse> = Vec::new();
+    let Some(seq) = state.sequences.get(state.active_sequence_idx) else { return uses };
+    for clip in seq.tracks.iter().flat_map(|t| t.clips.iter()) {
+        let effects = match clip.picture_effects() {
+            Ok(effects) => effects,
+            Err(e) => {
+                tracing::warn!("clip {}: its effects aren't read for analysis: {e}", clip.id.0);
+                continue;
+            }
+        };
+        for effect in effects.iter().filter(|e| e.enabled) {
+            let Some(kind) = klipp_compose::render::asset_kind(&effect.effect) else { continue };
+            let Some(item) = clip.media_id().and_then(|m| state.media_pool.get(&m)) else { continue };
+            // No key without the original: the inspector says so.
+            let Some(key) = assets::asset_key(kind, item) else {
+                state.analysis_unavailable.insert((clip.id, kind));
+                continue;
+            };
+            state.analysis_unavailable.remove(&(clip.id, kind));
+            let running = match kind {
+                AssetKind::Deflicker => state.deflicker_in_progress.contains(&clip.id),
+                AssetKind::Stabilisation => state.stabilization_in_progress.contains(&clip.id),
+                AssetKind::RollingShutter => state.analysis_threads.get(&key).is_some_and(|ended| !ended.load(std::sync::atomic::Ordering::SeqCst)),
+            };
+            match uses.iter_mut().find(|u| u.key == key) {
+                Some(u) => u.running |= running,
+                None => uses.push(crate::state::AnalysisUse { key, kind, clip: clip.id, running }),
+            }
+        }
+    }
+    uses
+}
+
+#[cfg(test)]
+mod analysis_tests {
+    use super::analysis_uses;
+    use crate::state::{AnalysisDue, AnalysisUse, AppState, ANALYSIS_EDIT_GAP, ANALYSIS_EVERY, ANALYSIS_RETRY};
+    use klipp_analysis::assets::{AssetKey, AssetKind};
+    use klipp_core::{ClipId, RationalTime};
+    use klipp_timeline::{Clip, EffectEdit};
+    use std::time::{Duration, Instant};
+
+    fn key() -> AssetKey {
+        AssetKey { kind: AssetKind::Deflicker, media: "a".into(), width: 480, height: 270, fps: (24, 1) }
+    }
+
+    /// A folder removed when dropped.
+    struct TempDir(std::path::PathBuf);
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A state whose media pool holds one item, its file there to key.
+    fn with_media() -> (TempDir, AppState) {
+        let dir = TempDir(std::env::temp_dir().join(format!("klipp-analysis-uses-{}-{}", std::process::id(), uuid::Uuid::new_v4())));
+        std::fs::create_dir_all(&dir.0).unwrap();
+        let path = dir.0.join("a.mp4");
+        std::fs::write(&path, b"not a video, a file to key").unwrap();
+        let mut item = klipp_media::MediaItem::synthetic_for_test(path, None);
+        item.fps = klipp_core::Fps::new(24, 1);
+        item.resolution = klipp_core::Resolution { width: 1920, height: 1080 };
+        let mut state = AppState::default();
+        state.media_pool.add(item);
+        (dir, state)
+    }
+
+    fn used(running: bool) -> AnalysisUse {
+        AnalysisUse { key: key(), kind: AssetKind::Deflicker, clip: ClipId::new(), running }
+    }
+
+    /// An edit is looked at soon, never left to the two-second look: one
+    /// within the edit gap of the last look waits out the gap and says so,
+    /// for a frame to be asked for then (a graph op over the socket is
+    /// followed by no frame while the window is idle); nothing edited
+    /// waits the whole interval.
+    #[test]
+    fn an_edit_is_looked_at_soon_with_a_frame_asked_for() {
+        let shared = klipp_timeline::SharedSequence::new(klipp_timeline::Sequence::new_default());
+        let mut state = AppState::default();
+        let now = Instant::now();
+        assert_eq!(state.analysis_due(shared.revision(), now), AnalysisDue::Now, "the first look");
+        assert_eq!(state.analysis_due(shared.revision(), now + Duration::from_millis(500)), AnalysisDue::NotYet, "nothing edited, within the interval");
+        shared.write().unwrap().name = "edited".into();
+        let edited = now + Duration::from_millis(600);
+        assert_eq!(state.analysis_due(shared.revision(), edited), AnalysisDue::Now, "an edit past the gap: at once");
+        shared.write().unwrap().name = "edited again".into();
+        let soon = edited + Duration::from_millis(100);
+        assert_eq!(state.analysis_due(shared.revision(), soon), AnalysisDue::After(ANALYSIS_EDIT_GAP - Duration::from_millis(100)), "within the gap: a frame asked for");
+        assert_eq!(state.analysis_due(shared.revision(), edited + ANALYSIS_EDIT_GAP), AnalysisDue::Now, "the gap out");
+        assert_eq!(state.analysis_due(shared.revision(), edited + ANALYSIS_EDIT_GAP + ANALYSIS_EVERY), AnalysisDue::Now, "and the interval after");
+    }
+
+    /// A Deflicker added over the control socket, as `drain_control_inbox`
+    /// applies a graph-op batch (the batch's edit built by
+    /// `graph_ops_edit`, applied forward to the document, the sequence
+    /// synced to the engine), is looked at on a frame asked for
+    /// for it though the last look was a moment before, and the look reads it
+    /// from the clip's picture. (d9's live check: the add landed 0.18 s
+    /// after other edits, and the idle window drew no frame for 116 s.)
+    #[test]
+    fn a_deflicker_added_over_the_socket_is_looked_at_on_its_frame() {
+        use klipp_graph_format::path::{NodePath, Root};
+        use klipp_graph_lift::ops::GraphOp;
+        let (_dir, mut state) = with_media();
+        let media = state.media_pool.all().next().unwrap().id;
+        let tc = |f| RationalTime::from_frames(f, 24);
+        let mut clip = Clip::media(media, tc(0), tc(24), tc(0), tc(24));
+        clip.apply_effect_edits(&[EffectEdit::Add(&klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 })]).expect("through the picture").unwrap();
+        let (clip_id, blur) = (clip.id, clip.picture_effects().unwrap()[0].node);
+        let seq = state.sequence_mut();
+        let v = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        seq.tracks[v].clips = vec![clip];
+        let shared = klipp_timeline::SharedSequence::new(state.sequences[state.active_sequence_idx].clone());
+        let queue = crossbeam_queue::ArrayQueue::new(8);
+        let t = Instant::now();
+        assert_eq!(state.analysis_due(shared.revision(), t), AnalysisDue::Now, "the look before the add");
+        assert!(analysis_uses(&mut state).is_empty(), "nothing to analyse yet");
+        // The op control's klipp_graph "add" makes: a legacy effect node
+        // holding the registry's sample Deflicker, after the blur.
+        let deflicker = (klipp_effects::registry::effect_type("deflicker").expect("deflicker").sample)();
+        // The type an effect node of the picture has, the blur's.
+        let type_id = state.sequences[state.active_sequence_idx].all_clips().next().unwrap().picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.id == blur).unwrap().type_id.clone();
+        let node: klipp_graph_format::Node = serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::new_v4(), "type_id": type_id, "label": "",
+            "legacy": { "payload": serde_json::to_value(&deflicker).unwrap() },
+        }))
+        .unwrap();
+        let op = GraphOp::AddNode { after: NodePath::new(Root::Clip { clip: clip_id.0 }, [blur]), node: Box::new(node) };
+        let outcome = crate::app::graph_ops::graph_ops_edit(&state.sequences[state.active_sequence_idx], &[op]).expect("the batch");
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active: state.active_sequence_idx, media_pool: &mut state.media_pool, fps: &mut state.fps };
+        let _ = view.apply_forward(&outcome.edit);
+        crate::app::engine_sync::sync_sequence(&state, &shared, &queue);
+        // 0.18 s after the last look: a frame asked for when the gap is
+        // out, and the look then.
+        let wait = match state.analysis_due(shared.revision(), t + Duration::from_millis(180)) {
+            AnalysisDue::After(wait) => wait,
+            other => panic!("the add isn't waited for: {other:?}"),
+        };
+        assert_eq!(state.analysis_due(shared.revision(), t + Duration::from_millis(180) + wait), AnalysisDue::Now, "the add is looked at on the frame asked for");
+        let uses = analysis_uses(&mut state);
+        assert_eq!(uses.iter().map(|u| (u.kind, u.clip)).collect::<Vec<_>>(), [(AssetKind::Deflicker, clip_id)], "read from the picture");
+    }
+
+    /// A run that ended without its asset is started again, once the
+    /// retry has passed; never while it runs, nor on every look.
+    #[test]
+    fn a_failed_run_is_started_again_after_the_retry() {
+        let mut state = AppState::default();
+        let t = Instant::now();
+        assert_eq!(state.analyses_to_start(&[used(false)], &[key()], t).len(), 1, "missing: started");
+        assert!(state.analyses_to_start(&[used(true)], &[], t + Duration::from_secs(1)).is_empty(), "running");
+        assert!(state.analyses_to_start(&[used(false)], &[key()], t + Duration::from_secs(2)).is_empty(), "ended without it: waits");
+        assert!(state.analyses_to_start(&[used(false)], &[key()], t + Duration::from_secs(2) + ANALYSIS_RETRY / 2).is_empty());
+        assert_eq!(state.analyses_to_start(&[used(false)], &[key()], t + Duration::from_secs(2) + ANALYSIS_RETRY).len(), 1, "started again");
+    }
+
+    /// A run that made its asset is let go: an asset gone later is made
+    /// again at once.
+    #[test]
+    fn an_asset_gone_later_is_made_again() {
+        let mut state = AppState::default();
+        let t = Instant::now();
+        assert_eq!(state.analyses_to_start(&[used(false)], &[key()], t).len(), 1);
+        assert!(state.analyses_to_start(&[used(false)], &[], t + Duration::from_secs(1)).is_empty(), "ended, the asset there");
+        assert!(state.analysis_started.is_empty(), "let go");
+        assert_eq!(state.analyses_to_start(&[used(false)], &[key()], t + Duration::from_secs(2)).len(), 1, "gone: made again");
+    }
+
+    /// The effects are read from the clip's picture, as the renderer reads
+    /// them: a Deflicker added through it is used, one switched off isn't.
+    #[test]
+    fn the_analyses_used_are_the_pictures() {
+        let (_dir, mut state) = with_media();
+        let media = state.media_pool.all().next().unwrap().id;
+        let tc = |f| RationalTime::from_frames(f, 24);
+        let deflicker = (klipp_effects::registry::effect_type("deflicker").expect("deflicker").sample)();
+        let mut on = Clip::media(media, tc(0), tc(24), tc(0), tc(24));
+        on.apply_effect_edits(&[EffectEdit::Add(&deflicker)]).expect("through the picture").unwrap();
+        let mut off = Clip::media(media, tc(24), tc(48), tc(0), tc(24));
+        off.apply_effect_edits(&[EffectEdit::Add(&deflicker), EffectEdit::SetEnabled(0, false)]).expect("through the picture").unwrap();
+        let (on_id, off_id) = (on.id, off.id);
+        let seq = state.sequence_mut();
+        let v = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        seq.tracks[v].clips = vec![on, off];
+        let uses = analysis_uses(&mut state);
+        assert_eq!(uses.len(), 1, "{uses:?}");
+        assert_eq!((uses[0].kind, uses[0].clip, uses[0].running), (AssetKind::Deflicker, on_id, false));
+        assert_ne!(uses[0].clip, off_id);
     }
 }
