@@ -1310,3 +1310,35 @@ fn a_graded_hdr_clip_with_effects_exports_as_the_viewer_shows_it() {
     let corner = |f: &[u8]| px(f, 4, 4).iter().sum::<i32>();
     assert!(corner(&g) < corner(&p), "the vignette darkens the corner: {} vs {}", corner(&g), corner(&p));
 }
+
+/// A real file's neighbours are native-sized even when the viewer is smaller.
+/// Both the first media frame and an interior one must actually be denoised.
+#[test]
+fn temporal_denoise_uses_native_neighbours_in_a_smaller_viewer() {
+    let _decoders = decoders_at_speed();
+    assert!(ffmpeg_ok(), "FFmpeg is required for the temporal size regression");
+    let id = MediaId::new();
+    // A larger 4:3 source is fitted into the 16:9 canvas. A same-aspect
+    // parked source intentionally keeps its decoded resolution in the viewer.
+    let coded = (W * 2, W * 3 / 2);
+    let level = "90+16*eq(mod(N,3),1)";
+    let path = rgb_source_sized("temporal-sized.mkv", coded, level, level, level);
+    let mut seq = Sequence::new_default();
+    seq.fps = Fps::new(FPS as u32, 1);
+    seq.resolution = Resolution { width: W, height: H };
+    let mut track = Track::new("V", TrackKind::Video);
+    track.clips.push(media_clip(id, 0, LEN, 0));
+    seq.tracks = vec![track];
+    let plain = Timeline { seq, files: HashMap::from([(id, path)]), coded: HashMap::from([(id, (coded.0, coded.1, 0))]) };
+    let mut denoised = plain.clone();
+    denoised.seq.tracks[0].clips[0] = TestClip::of(denoised.seq.tracks[0].clips[0].clone())
+        .effect(BuiltinEffect::TemporalDenoise { strength: 1.0, threshold: 0.15 }).build();
+    let baseline = Viewer::start(&plain);
+    let subject = Viewer::start(&denoised);
+    for (frame, brighter) in [(0, true), (1, false), (6, true)] {
+        let before = px(&baseline.frame_at(frame), W / 2, H / 2)[0];
+        let after = px(&subject.frame_at(frame), W / 2, H / 2)[0];
+        let change = if brighter { after - before } else { before - after };
+        assert!(change > 1, "frame {frame}: viewer did not use its neighbours ({before} -> {after})");
+    }
+}
