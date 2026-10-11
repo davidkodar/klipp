@@ -1181,15 +1181,18 @@ impl PlaybackEngine {
 }
 
 /// Disable stabilization in the comparison's render copy.
+/// Its stabilization nodes are found in, and switched off on, the clip's
+/// picture (M4 step 12d).
 fn disable_stabilization(c: &mut Clip) -> bool {
-    let ids: Vec<_> = c.effect_entries()
-        .filter(|(_, e, _)| matches!(e, klipp_effects::BuiltinEffect::VideoStabilization { .. }))
-        .map(|(id, _, _)| id)
+    use klipp_graph_format::{op::GraphOp, path::{NodePath, Root}};
+    let Ok(fx) = c.picture_effects() else { return false };
+    let clip = c.id.0;
+    let ops: Vec<_> = fx
+        .iter()
+        .filter(|e| matches!(e.effect, klipp_effects::BuiltinEffect::VideoStabilization { .. }))
+        .map(|e| GraphOp::SetEnabled { path: NodePath::new(Root::Clip { clip }, [e.node]), enabled: false })
         .collect();
-    for id in &ids {
-        c.set_effect_enabled(*id, false);
-    }
-    !ids.is_empty()
+    !ops.is_empty() && c.apply_picture_ops(&ops).is_ok()
 }
 
 /// The inspector's matte preview: the mask as a small grey tile.

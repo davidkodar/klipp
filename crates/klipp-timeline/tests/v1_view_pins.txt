@@ -10,7 +10,7 @@
 # Clip::diverge_fields_for_test reaches the view to set a clip's lists apart
 # from its picture, and the two tests that do so read the list back. All go
 # in 12f with the lists.
-builtin_effects 114
+builtin_effects 111
 builtin_effects_enabled 40
 ClipPictureFields 18
 ClipPictureParts 14
@@ -32,7 +32,7 @@ edit_transform_tilt_x_keyframes 3
 edit_transform_tilt_y_keyframes 4
 edit_video_effects 9
 edit_video_param_keyframes 25
-effect_entries 20
+effect_entries 19
 effect_id_at 37
 effect_id_list 12
 effect_keyframes 50
@@ -44,7 +44,7 @@ LEGACY_EFFECT 82
 LEGACY_OFX 42
 move_builtin_effect 15
 move_effect 10
-ofx_effects 34
+ofx_effects 31
 opacity_keyframes 27
 own_effects 1
 ParamId::Effect 49
@@ -59,10 +59,10 @@ remove_effect_modifiers 5
 replace_effect 16
 restore_effect_keyframes 3
 restore_effects_state 6
-set_effect_enabled 23
+set_effect_enabled 22
 set_effect_list 49
 set_effect_list_with_ids 7
-set_effects 8
+set_effects 6
 # Raised from 11: #1534's OFX node tests set their plug-ins through the
 # list; they move to TestClip with the OFX arm.
 set_ofx_effects 18

@@ -146,19 +146,21 @@ pub(crate) fn timeline_text(
             if let Some(g) = c.grade_group.and_then(|g| seq.grade_group(g)) {
                 let _ = write!(line, " in group \"{}\"", g.name);
             }
-            if !c.builtin_effects().is_empty() {
-                let names: Vec<String> = c
-                    .builtin_effects()
+            // Read from the clip's picture (M4 step 12d).
+            let effects = c.picture_effects().unwrap_or_default();
+            if !effects.is_empty() {
+                let names: Vec<String> = effects
                     .iter()
                     .map(|e| {
-                        let d = format!("{e:?}");
+                        let d = format!("{:?}", e.effect);
                         d.split(['{', '(', ' ']).next().unwrap_or("").to_string()
                     })
                     .collect();
                 let _ = write!(line, "  fx {}", names.join(","));
             }
-            if !c.ofx_effects().is_empty() {
-                let _ = write!(line, "  plugins {}", c.ofx_effects().len());
+            let plugins = c.picture_ofx().map_or(0, |o| o.len());
+            if plugins > 0 {
+                let _ = write!(line, "  plugins {plugins}");
             }
             if c.matte_source.is_some() {
                 line.push_str("  matted");
@@ -336,7 +338,7 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
         if !c.own_grade().is_identity() || c.grade_group.is_some() {
             v["graded"] = json!(true);
         }
-        let fx = c.builtin_effects().len() + c.ofx_effects().len();
+        let fx = c.picture_effects().map_or(0, |e| e.len()) + c.picture_ofx().map_or(0, |o| o.len());
         if fx > 0 {
             v["effects"] = json!(fx);
         }
