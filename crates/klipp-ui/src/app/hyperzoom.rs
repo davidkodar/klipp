@@ -18,35 +18,26 @@ pub(super) fn apply_hyperzoom_plan_to_clip(
         return;
     };
 
-    // Update or insert the Transform builtin so the anchor lands at
-    // the focal point. Other Transform fields keep their existing
-    // values when one is already present — the user might have a
-    // baseline rotation or perspective they want preserved.
-    find_or_push(
-        clip,
-        |e| matches!(e, klipp_effects::BuiltinEffect::Transform { .. }),
-        |e| {
-            if let klipp_effects::BuiltinEffect::Transform { anchor_x, anchor_y, .. } = e {
-                *anchor_x = anchor.0;
-                *anchor_y = anchor.1;
-            }
-        },
-        || klipp_effects::BuiltinEffect::Transform {
-            position_x: 0.0,
-            position_y: 0.0,
-            scale_x: 1.0,
-            scale_y: 1.0,
-            rotation: 0.0,
-            anchor_x: anchor.0,
-            anchor_y: anchor.1,
-            rotation_x: 0.0,
-            rotation_y: 0.0,
-            perspective: 0.0,
-            focal_ref: None,
-        },
-    );
-
-    clip.edit_transform_scale_keyframes(|v| *v = scale_kfs.to_vec());
+    // The anchor at the focal point and the planned zoom, by path on the
+    // clip's placement (M4 step 12c-5); its other values stay as they
+    // were set, a baseline rotation or perspective among them, and the
+    // zoom's modifier stack is kept.
+    let Some(at) = clip.placement_path() else {
+        tracing::warn!("apply_hyperzoom_plan_to_clip: clip {clip_id:?} has no placement");
+        return;
+    };
+    let float = |v: f32| klipp_graph_format::ParamValue::Float(v);
+    let key = klipp_graph_format::ParamKey::from;
+    let modifiers = clip.picture_v2().ok().and_then(|p| p.picture.placement_anim.get(&key("scale")).and_then(|a| a.modifiers.clone()));
+    let keys = scale_kfs.iter().filter_map(|k| serde_json::to_value(k).ok()).collect();
+    let ops = [
+        GraphOp::SetParam { path: at.clone(), key: key("anchor_x"), value: float(anchor.0) },
+        GraphOp::SetParam { path: at.clone(), key: key("anchor_y"), value: float(anchor.1) },
+        GraphOp::SetAnim { path: at, key: key("scale"), anim: Some(klipp_graph_format::Animation { keys, modifiers }) },
+    ];
+    if let Err(why) = clip.apply_picture_ops(&ops) {
+        tracing::warn!("hyperzoom: clip {clip_id:?}: the zoom plan: {why}");
+    }
 }
 
 /// Mirror of [`apply_hyperzoom_plan_to_clip`] for the radial-blur
@@ -263,22 +254,32 @@ pub(super) fn apply_focal_ref_to_clip_transform(
 }
 
 /// The first effect on `clip` that `kind` picks, edited by `edit`; with
-/// none, `fresh` appended. Its id either way.
+/// none, `fresh` appended: an entry edit through the clip's picture (M4
+/// step 12c-5), each entry read as its node holds it. A refusal is logged.
 fn find_or_push(
     clip: &mut klipp_timeline::Clip,
     kind: impl Fn(&klipp_effects::BuiltinEffect) -> bool,
     edit: impl FnOnce(&mut klipp_effects::BuiltinEffect),
     fresh: impl FnOnce() -> klipp_effects::BuiltinEffect,
-) -> klipp_timeline::EffectId {
-    let found = clip.effect_entries().find(|(_, e, _)| kind(e)).map(|(id, _, _)| id);
-    match found {
-        Some(id) => {
-            clip.edit_effect(id, |e| {
-                edit(e);
-            });
-            id
+) {
+    let entry_at = |clip: &klipp_timeline::Clip, i: usize| {
+        let id = clip.effect_node_at(false, i)?;
+        let lifted = clip.picture_v2().ok()?;
+        let node = lifted.picture.graph.nodes.iter().find(|n| n.id == id)?;
+        // A plain effect from its map; a kind the clip places itself (its
+        // Transform) from the entry its node stores.
+        serde_json::from_value(klipp_graph_lift::effect_params::entry_of(node).ok()?).ok()
+    };
+    let found = (0..).map_while(|i| clip.effect_node_at(false, i).map(|_| i)).find_map(|i| entry_at(clip, i).filter(|e| kind(e)).map(|e| (i, e)));
+    let made = match found {
+        Some((i, mut effect)) => {
+            edit(&mut effect);
+            clip.apply_effect_edits(&[klipp_timeline::EffectEdit::Update(i, &effect)])
         }
-        None => clip.push_effect(fresh()),
+        None => clip.apply_effect_edits(&[klipp_timeline::EffectEdit::Add(&fresh())]),
+    };
+    if let Some(Err(why)) = made {
+        tracing::warn!("hyperzoom: clip {:?}: {why}", clip.id);
     }
 }
 
