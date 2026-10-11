@@ -2997,6 +2997,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "klipp-corpus"
+version = "0.1.0"
+dependencies = [
+ "klipp-core",
+ "klipp-effects",
+ "klipp-graph-lift",
+ "klipp-media",
+ "klipp-project",
+ "klipp-timeline",
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
 name = "klipp-deepfilter"
 version = "0.5.6"
 dependencies = [

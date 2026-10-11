@@ -1,0 +1,21 @@
+[package]
+name = "klipp-corpus"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+publish = false
+
+[dependencies]
+klipp-core = { path = "../klipp-core" }
+klipp-effects = { path = "../klipp-effects" }
+klipp-graph-lift = { workspace = true }
+klipp-media = { path = "../klipp-media" }
+klipp-project = { path = "../klipp-project" }
+klipp-timeline = { path = "../klipp-timeline" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+uuid = { workspace = true }
+
+[lints]
+workspace = true
