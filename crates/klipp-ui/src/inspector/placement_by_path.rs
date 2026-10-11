@@ -157,7 +157,7 @@ pub fn by_path(cmds: Vec<AppCommand>, clip: &Clip) -> Vec<AppCommand> {
                     }
                     // A new width carries the height at the clip's aspect.
                     if key == "scale" {
-                        let aspect = klipp_graph_lift::lift::aspect(Some(old_scale), now.iter().find(|(k, _)| *k == "scale_y").map(|(_, h)| *h)).unwrap_or(1.0);
+                        let aspect = klipp_graph_lift::names::aspect(Some(old_scale), now.iter().find(|(k, _)| *k == "scale_y").map(|(_, h)| *h)).unwrap_or(1.0);
                         if let Some(h) = now.iter_mut().find(|(k, _)| *k == "scale_y") {
                             h.1 = v * aspect;
                         }

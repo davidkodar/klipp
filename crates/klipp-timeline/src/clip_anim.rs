@@ -338,7 +338,7 @@ impl Clip {
         self.picture_node(path, |n| {
             // An effect's keys and value by either of an alias's names (a
             // ChromaKey's `spill` is its `soft_edge`).
-            let stored = klipp_graph_format::ParamKey::from(klipp_graph_lift::lift::anim_key(klipp_graph_lift::effect_params::tag(n).unwrap_or(""), key.as_str()));
+            let stored = klipp_graph_format::ParamKey::from(klipp_graph_lift::names::anim_key(klipp_graph_lift::effect_params::tag(n).unwrap_or(""), key.as_str()));
             let keys = if matches!(n.type_id.as_str(), klipp_graph_format::types::LEGACY_NODE | klipp_graph_format::lifted::types::MERGE) {
                 let tracks: Option<klipp_nodes::NodeKeyframeTracks> = n.legacy.as_ref().and_then(|l| l.keyframes.clone()).and_then(|k| serde_json::from_value(k).ok());
                 tracks.and_then(|t| t.tracks.into_iter().find(|t| t.param_name == key.as_str())).map(|t| t.keyframes).unwrap_or_default()

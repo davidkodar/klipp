@@ -22,6 +22,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::ids::{entry_id, RootKind};
+use crate::names::{aspect, KEYFRAME_ALIASES};
 
 /// What the record alone doesn't say about the clip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,27 +67,6 @@ pub struct LiftCtx {
 
 /// The corrections a matte on port 1 gates (`graph.rs`'s `gateable`).
 const GATEABLE: [&str; 8] = ["Corrector", "ColorBalance", "Exposure", "Contrast", "Saturation", "ColorWheels", "ToneControls", "RGBCurves"];
-
-/// Effect keyframe names that animate a parameter of another name
-/// (`render.rs`: ChromaKey's `spill` drives `soft_edge`). Kept in step with
-/// the registry's keyframe aliases by a test.
-pub const KEYFRAME_ALIASES: [(&str, &str, &str); 1] = [("chroma_key", "spill", "soft_edge")];
-
-/// The keyframe name an effect asks for (`BuiltinEffect::animate`) of the
-/// parameter its node animates under `key`: the inverse of
-/// [`KEYFRAME_ALIASES`], so a ChromaKey node's `soft_edge` is read as
-/// `spill`. `tag` is the effect's saved tag (`"chroma_key"`).
-pub fn keyframe_name<'a>(tag: &str, key: &'a str) -> &'a str {
-    KEYFRAME_ALIASES.iter().find(|(t, _, to)| *t == tag && *to == key).map_or(key, |(_, from, _)| from)
-}
-
-/// The key a node's animation is stored under for the keyframe name `key`
-/// (`tag` the effect's saved tag): [`KEYFRAME_ALIASES`]' own, so a
-/// ChromaKey's `spill` is its `soft_edge`. Every other name is itself. An
-/// edit by path naming either reaches the one animation.
-pub fn anim_key<'a>(tag: &str, key: &'a str) -> &'a str {
-    KEYFRAME_ALIASES.iter().find(|(t, from, _)| *t == tag && *from == key).map_or(key, |(_, _, to)| to)
-}
 
 /// The effects that draw outside the picture, in the margin a transform
 /// leaves (`klipp_effects::draws_outside_the_picture`). Kept in step with
@@ -754,13 +734,6 @@ fn opacity(record: &ClipRecordV2, effects: &[&Node], notes: &mut Vec<LiftNote>, 
             }
         }
     }
-}
-
-/// A clip's aspect from its two scales (`PlacementProps::aspect`): `None`
-/// where they agree, or the width is 0 or absent.
-pub fn aspect(scale_x: Option<f32>, scale_y: Option<f32>) -> Option<f32> {
-    let (x, y) = (scale_x.unwrap_or(1.0), scale_y.or(scale_x).unwrap_or(1.0));
-    (x != 0.0 && y != x).then(|| y / x).filter(|a| a.is_finite())
 }
 
 /// The clip's placement values from its first enabled Transform (#1207),

@@ -103,7 +103,7 @@ pub fn evaluate_clip_own_transform(
         .find_map(|e| match e {
             klipp_effects::BuiltinEffect::Transform {
                 position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, ..
-            } => Some((*position_x, *position_y, *scale_x, klipp_graph_lift::lift::aspect(Some(*scale_x), Some(*scale_y)).unwrap_or(1.0), *rotation, *anchor_x, *anchor_y)),
+            } => Some((*position_x, *position_y, *scale_x, klipp_graph_lift::names::aspect(Some(*scale_x), Some(*scale_y)).unwrap_or(1.0), *rotation, *anchor_x, *anchor_y)),
             _ => None,
         })
         .unwrap_or((0.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5)));
@@ -664,7 +664,7 @@ pub fn resolve_effect_param(
 /// [`BuiltinEffect::animate`](klipp_effects::BuiltinEffect::animate) asks
 /// for. The node's `anim` is keyed by the parameter it drives, which the
 /// lift resolved through its aliases; reading it back goes through
-/// [`klipp_graph_lift::lift::keyframe_name`].
+/// [`klipp_graph_lift::names::keyframe_name`].
 #[derive(Clone, Debug, Default)]
 pub struct EffectNodeAnim(std::collections::BTreeMap<String, (Vec<klipp_core::Keyframe>, Option<klipp_core::ModifierStack>)>);
 
@@ -688,7 +688,7 @@ impl EffectNodeAnim {
                 .map(|m| serde_json::from_value(m.clone()))
                 .transpose()
                 .map_err(|e| format!("{key}'s modifiers: {e}"))?;
-            params.insert(klipp_graph_lift::lift::keyframe_name(tag, key.as_str()).to_owned(), (keys, stack));
+            params.insert(klipp_graph_lift::names::keyframe_name(tag, key.as_str()).to_owned(), (keys, stack));
         }
         Ok(Self(params))
     }

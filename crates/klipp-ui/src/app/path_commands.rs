@@ -134,7 +134,7 @@ impl KlippApp {
 fn animation_of(node: &Node, key: &ParamKey) -> Option<klipp_graph_format::Animation> {
     if !matches!(node.type_id.as_str(), klipp_graph_format::types::LEGACY_NODE | klipp_graph_format::lifted::types::MERGE) {
         // By either of an alias's names (a ChromaKey's `spill` is its `soft_edge`).
-        let stored = klipp_graph_lift::lift::anim_key(klipp_graph_lift::effect_params::tag(node).unwrap_or(""), key.as_str());
+        let stored = klipp_graph_lift::names::anim_key(klipp_graph_lift::effect_params::tag(node).unwrap_or(""), key.as_str());
         return node.anim.get(&ParamKey::from(stored)).cloned();
     }
     let tracks = node.legacy.as_ref()?.keyframes.as_ref()?.get("tracks")?.as_array()?;

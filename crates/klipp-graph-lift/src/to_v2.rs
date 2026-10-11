@@ -22,6 +22,7 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use crate::ids::{entry_id, RootKind};
+pub(crate) use crate::names::effect_node_type;
 
 /// Why a store can't be converted. The project stops, and is reported.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,20 +128,6 @@ fn legacy_node(id: NodeId, type_id: &str, enabled: bool, legacy: Legacy) -> Node
 /// The node type a built-in effect becomes, by its v1 `type` tag.
 fn effect_type(payload: &Value) -> &'static str {
     effect_node_type(payload.get("type").and_then(Value::as_str).unwrap_or(""))
-}
-
-/// The node type a built-in effect with saved tag `tag` becomes: its own
-/// for the four the clip places itself (opacity, transform, speed ramp,
-/// temporal denoise), `klipp.legacy.effect` for every other. The one rule
-/// the conversion and a clip's graph-op writers share.
-pub fn effect_node_type(tag: &str) -> &'static str {
-    match tag {
-        "opacity" => types::LEGACY_OPACITY,
-        "transform" => types::LEGACY_TRANSFORM,
-        "speed_ramp" => types::LEGACY_SPEED_RAMP,
-        "temporal_denoise" => types::LEGACY_TEMPORAL_DENOISE,
-        _ => types::LEGACY_EFFECT,
-    }
 }
 
 /// The kind of the first node with `id` in a v1 graph, or `""` when none

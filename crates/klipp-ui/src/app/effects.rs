@@ -761,7 +761,7 @@ fn effect_param_of(clip: &mut klipp_timeline::Clip, addr: &klipp_graph_format::p
     let len = clip.builtin_effects().len();
     let index = (0..len).find(|&i| clip.effect_id_at(i) == Some(id))?;
     let tag = serde_json::to_value(&clip.builtin_effects()[index]).ok()?.get("type")?.as_str()?.to_owned();
-    Some((id, klipp_graph_lift::lift::keyframe_name(&tag, key.as_str()).to_owned()))
+    Some((id, klipp_graph_lift::names::keyframe_name(&tag, key.as_str()).to_owned()))
 }
 
 fn with_modifiers<R>(clip: &mut klipp_timeline::Clip, param: &klipp_core::ParamId, create: bool, f: impl FnOnce(&mut klipp_core::ModifierStack) -> R) -> Option<R> {

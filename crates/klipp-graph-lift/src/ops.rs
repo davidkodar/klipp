@@ -234,7 +234,7 @@ fn set_param(n: &mut Node, key: &ParamKey, value: &ParamValue) -> Result<(), Str
         // A value named by a keyframe alias (a ChromaKey's `spill`) is the
         // field it stands for (`soft_edge`): set under the alias, it would
         // be a key no field reads, and the value would be lost.
-        let key = &ParamKey::from(crate::lift::anim_key(&tag, key.as_str()));
+        let key = &ParamKey::from(crate::names::anim_key(&tag, key.as_str()));
         let mut params = n.params.clone();
         params.insert(key.clone(), crate::effect_params::held(&tag, key, &v));
         let entry = crate::effect_params::from_params(&tag, &params)?;
@@ -372,11 +372,11 @@ fn apply_grade_anim(n: &mut Node, op: &GraphOp) -> Result<(), String> {
 
 /// The animation edits, the same on a graph and on a track's list. A key
 /// named by an effect's keyframe alias (a ChromaKey's `spill`) edits the
-/// animation it is stored under (`soft_edge`, [`crate::lift::anim_key`]):
+/// animation it is stored under (`soft_edge`, [`crate::names::anim_key`]):
 /// never a second one beside it, whose write would replace the first.
 fn apply_anim(n: &mut Node, op: &GraphOp) -> Result<(), String> {
     let tag = crate::effect_params::tag(n).unwrap_or("").to_owned();
-    let stored = |key: &ParamKey| ParamKey::from(crate::lift::anim_key(&tag, key.as_str()));
+    let stored = |key: &ParamKey| ParamKey::from(crate::names::anim_key(&tag, key.as_str()));
     match op {
         GraphOp::AddKeyAt { key, keyframe, .. } => {
             let key = &stored(key);

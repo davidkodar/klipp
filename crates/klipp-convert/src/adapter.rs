@@ -25,7 +25,8 @@ use klipp_graph_format::lifted::{types as lt, ClipPicture, PlacementProps};
 use klipp_graph_format::{ports, types, Animation, Graph, Node, NodeId, ParamValue, PortKey};
 use serde_json::{json, Map, Value};
 
-use crate::lift::{ClipKind, LiftCtx, KEYFRAME_ALIASES};
+use crate::lift::{ClipKind, LiftCtx};
+use klipp_graph_lift::names::KEYFRAME_ALIASES;
 
 /// Why a lifted picture is not one the lift makes.
 pub type Refusal = String;

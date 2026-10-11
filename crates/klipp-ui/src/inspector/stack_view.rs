@@ -190,7 +190,7 @@ fn effect_node(tag: &str, effect: &klipp_effects::BuiltinEffect) -> Option<Node>
     let payload = serde_json::to_value(effect).ok()?;
     serde_json::from_value(serde_json::json!({
         "id": uuid::Uuid::new_v4(),
-        "type_id": klipp_graph_lift::to_v2::effect_node_type(tag),
+        "type_id": klipp_graph_lift::names::effect_node_type(tag),
         "legacy": { "payload": payload },
     }))
     .ok()
@@ -512,7 +512,7 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
             // ("soft_edge"). Bind every row operation to that picture key,
             // but look up its presentation by the original descriptor.
             let params: Vec<_> = ty.desc.params.iter().map(|p| {
-                let key = klipp_graph_lift::lift::KEYFRAME_ALIASES.iter()
+                let key = klipp_graph_lift::names::KEYFRAME_ALIASES.iter()
                     .find(|(tag, from, _)| *tag == ty.tag && *from == p.key)
                     .map_or(p.key, |(_, _, to)| *to);
                 ParamDesc { key, ..*p }
@@ -522,7 +522,7 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
             .filter(|p| !(height_follows_width(ty.tag, clip) && p.key == "scale_y"))
             .collect();
             let presentation = |p: &ParamDesc| {
-                let original = klipp_graph_lift::lift::keyframe_name(ty.tag, p.key);
+                let original = klipp_graph_lift::names::keyframe_name(ty.tag, p.key);
                 ty.presentation(ty.desc.params.iter().find(|p| p.key == original).unwrap_or(p))
             };
             let stored = |p: &ParamDesc| effect_value(&entry, p);

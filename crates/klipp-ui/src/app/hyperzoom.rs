@@ -310,7 +310,7 @@ fn upsert_effect(
             let last = graph.edges.iter().find(|e| e.to == (graph.output, "in".into()))?.from.0;
             let node: klipp_graph_format::Node = serde_json::from_value(serde_json::json!({
                 "id": id,
-                "type_id": klipp_graph_lift::to_v2::effect_node_type(tag),
+                "type_id": klipp_graph_lift::names::effect_node_type(tag),
                 "legacy": { "payload": effect },
             }))
             .ok()?;
