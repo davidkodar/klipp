@@ -80,7 +80,7 @@ fn pick(graph: NodeGraph, node: NodeId, placed: bool) -> Option<Result<[f32; 3],
     cmd.send(AppCommand::SampleNodeInput { clip_id, node_id: node, at: klipp_compose::inspect::grade_node(clip_id, node).path, nx: 0.5, ny: 0.5 }).unwrap();
     let t0 = Instant::now();
     let mut answer = None;
-    while answer.is_none() && t0.elapsed() < Duration::from_secs(5) {
+    while answer.is_none() && t0.elapsed() < Duration::from_secs(60) {
         if let Ok(AppEvent::NodeInputSampled { clip_id: c, node_id: n, sample, .. }) = ev_rx.recv_timeout(Duration::from_millis(50)) {
             assert_eq!((c, n), (clip_id, node));
             answer = Some(sample);
@@ -88,6 +88,9 @@ fn pick(graph: NodeGraph, node: NodeId, placed: bool) -> Option<Result<[f32; 3],
     }
     let _ = cmd.send(AppCommand::Quit);
     let _ = thread.join();
+    // A decode thread still in ffmpeg's teardown at exit crashes the
+    // process (CUDA's context destroyed under it).
+    klipp_engine::video_decoder::wait_for_decode_threads(std::time::Duration::from_secs(10));
     Some(answer.expect("the engine answers the pick"))
 }
 

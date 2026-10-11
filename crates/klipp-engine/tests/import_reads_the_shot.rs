@@ -39,6 +39,9 @@ fn import(path: &Path) -> MediaLoadedPayload {
     };
     cmd.send(AppCommand::Quit).unwrap();
     let _ = thread.join();
+    // A decode thread still in ffmpeg's teardown at exit crashes the
+    // process (CUDA's context destroyed under it).
+    klipp_engine::video_decoder::wait_for_decode_threads(std::time::Duration::from_secs(10));
     payload
 }
 

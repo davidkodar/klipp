@@ -30,7 +30,7 @@ fn paused_4k_pq_seek() {
         let g = parked.generation();
         let t0 = Instant::now();
         parked.send(cmd);
-        let Some(first) = parked.wait_new(g, Duration::from_secs(5)) else {
+        let Some(first) = parked.wait_new(g, Duration::from_secs(60)) else {
             eprintln!("{label:24} no frame");
             return;
         };

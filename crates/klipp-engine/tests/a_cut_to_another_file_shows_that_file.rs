@@ -105,6 +105,9 @@ fn a_cut_to_another_file_shows_that_file_from_its_first_frame() {
     let _ = cmd.send(AppCommand::Pause);
     let _ = cmd.send(AppCommand::Quit);
     let _ = thread.join();
+    // A decode thread still in ffmpeg's teardown at exit crashes the
+    // process (CUDA's context destroyed under it).
+    klipp_engine::video_decoder::wait_for_decode_threads(std::time::Duration::from_secs(10));
 
     let before: Vec<f64> = seen.iter().filter(|s| s.0 < cut - 1e-6).map(|s| s.1).collect();
     let after: Vec<f64> = seen.iter().filter(|s| s.0 >= cut - 1e-6).map(|s| s.1).collect();

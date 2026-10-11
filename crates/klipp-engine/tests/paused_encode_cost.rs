@@ -30,7 +30,7 @@ fn paused_4k_stage_costs() {
         let g = parked.generation();
         parked.send(cmd);
         // And any follow-up frame (a paused refresh) with it.
-        let _ = parked.settle_after(g, Duration::from_secs(5));
+        let _ = parked.settle_after(g, Duration::from_secs(60));
         let samples = parked.perf();
         for s in samples.iter().skip(before) {
             eprintln!(

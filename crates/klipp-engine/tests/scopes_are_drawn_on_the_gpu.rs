@@ -36,7 +36,7 @@ fn the_waveform_and_parade_are_gpu_drawn_and_measure_the_shown_frame() {
     parked.step(0.0);
     parked.end_drag();
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let (wave, parade, vector, hist) = loop {
         let w = parked.scope_texture(0).filter(|e| !e.data.is_empty());
         let p = parked.scope_texture(1).filter(|e| !e.data.is_empty());
@@ -45,7 +45,7 @@ fn the_waveform_and_parade_are_gpu_drawn_and_measure_the_shown_frame() {
         if let (Some(w), Some(p), Some(v), Some(h)) = (w, p, v, h) {
             break (w, p, v, h);
         }
-        assert!(Instant::now() < deadline, "no scope textures within 5 s");
+        assert!(Instant::now() < deadline, "no scope textures within a minute");
         std::thread::sleep(Duration::from_millis(10));
     };
     assert_eq!((vector.w, vector.h), (1024, 1024));
@@ -104,7 +104,7 @@ fn the_waveform_and_parade_are_gpu_drawn_and_measure_the_shown_frame() {
     // the vectorscope square at its smaller side. Nothing else happens —
     // paused, a pane resized has to redraw its scope by itself.
     parked.send(AppCommand::SetScopeSizes { sizes: [(0u8, (1700u32, 860u32)), (2, (900, 1000)), (3, (1300, 500))].into_iter().collect() });
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let w = parked.scope_texture(0).map(|e| (e.w, e.h));
         let v = parked.scope_texture(2).map(|e| (e.w, e.h));

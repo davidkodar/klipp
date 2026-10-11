@@ -289,15 +289,8 @@ fn a_masked_effect_after_the_transform_under_the_shutter_is_blended_on_the_avera
         anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
     };
     let build = |blend| {
-        let mut c = media(vec![transform.clone()], blend, true);
-        // Through the v1 lane, as main's writers key today: the clip is
-        // picture-truth (its mask is set), and the renderer doesn't read a
-        // picture-truth clip's placement_anim, only the v1 lanes (eval.rs
-        // `transform_pos_x_keyframes`). A picture-op lane (TestClip's
-        // `.lane`) lands in placement_anim and the clip doesn't move. Step
-        // 12a must read the picture's animation.
-        c.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, -12.0));
-        c.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 2.0, 12.0));
+        // Keyed on the picture-truth clip's placement, which it draws (#1537).
+        let c = TestClip::of(media(vec![transform.clone()], blend, true)).lane("pos_x", 0.0, -12.0).lane("pos_x", 2.0, 12.0).build();
         let mut seq = sequence(vec![vec![c]]);
         seq.camera.shutter_deg = 180.0;
         seq.camera.shutter_samples = 8;
@@ -314,15 +307,8 @@ fn a_masked_effect_after_the_transform_under_the_shutter_is_blended_on_the_avera
 #[test]
 fn a_masked_effect_before_the_transform_under_the_shutter_smears_with_the_picture() {
     let build = |blend| {
-        let mut c = media(vec![], blend, true);
-        // Through the v1 lane, as main's writers key today: the clip is
-        // picture-truth (its mask is set), and the renderer doesn't read a
-        // picture-truth clip's placement_anim, only the v1 lanes (eval.rs
-        // `transform_pos_x_keyframes`). A picture-op lane (TestClip's
-        // `.lane`) lands in placement_anim and the clip doesn't move. Step
-        // 12a must read the picture's animation.
-        c.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 0.0, -12.0));
-        c.edit_transform_pos_x_keyframes(|v| klipp_core::keyframe::upsert_keyframe(v, 2.0, 12.0));
+        // Keyed on the picture-truth clip's placement, which it draws (#1537).
+        let c = TestClip::of(media(vec![], blend, true)).lane("pos_x", 0.0, -12.0).lane("pos_x", 2.0, 12.0).build();
         let mut seq = sequence(vec![vec![c]]);
         seq.camera.shutter_deg = 180.0;
         seq.camera.shutter_samples = 8;

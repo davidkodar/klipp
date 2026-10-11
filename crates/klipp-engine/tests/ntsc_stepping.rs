@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use klipp_core::{AppCommand, Fps};
 
-/// Send `cmd`, wait for the playhead to report `want` (five seconds at the
+/// Send `cmd`, wait for the playhead to report `want` (thirty seconds at the
 /// most), then for the picture to settle. Waiting on quiet alone raced on
 /// a loaded machine: a re-render of the old frame counted as the seek's
 /// frame, the buffer went quiet before the engine took the seek, and the

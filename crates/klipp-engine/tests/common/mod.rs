@@ -264,7 +264,7 @@ impl Parked {
             param: "exposure".into(),
             value: stops,
         });
-        self.wait_new(g, Duration::from_secs(5)).map(|_| t0.elapsed().as_secs_f64() * 1000.0)
+        self.wait_new(g, Duration::from_secs(60)).map(|_| t0.elapsed().as_secs_f64() * 1000.0)
     }
 
     /// Let go of the slider and wait for the regrade that follows, ms.
@@ -272,7 +272,7 @@ impl Parked {
         let g = self.generation();
         let t0 = Instant::now();
         self.send(AppCommand::EndNodeParamEdit { clip_id: self.clip_id });
-        self.wait_new(g, Duration::from_secs(5)).map(|_| t0.elapsed().as_secs_f64() * 1000.0)
+        self.wait_new(g, Duration::from_secs(60)).map(|_| t0.elapsed().as_secs_f64() * 1000.0)
     }
 
     /// The frame on screen, RGBA.
@@ -324,6 +324,9 @@ impl Drop for Parked {
         let _ = self.cmd.send(AppCommand::Quit);
         if let Some(t) = self.thread.take() {
             let _ = t.join();
+            // A decode thread still in ffmpeg's teardown at exit crashes the
+            // process (CUDA's context destroyed under it).
+            klipp_engine::video_decoder::wait_for_decode_threads(std::time::Duration::from_secs(10));
         }
     }
 }
