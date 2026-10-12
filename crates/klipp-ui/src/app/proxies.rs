@@ -74,6 +74,8 @@ impl KlippApp {
         let pid_clone = child_pid.clone();
         self.proxy_children.push(child_pid);
         std::thread::spawn(move || {
+            // At most a few transcodes at once (#1360).
+            let _slot = TRANSCODE_SLOTS.acquire();
             let _ = tx.send(AppEvent::ProxyGenerationStarted { media_id });
 
             // Helper: spawn ffmpeg with progress tracking, wait for result
@@ -527,6 +529,12 @@ impl KlippApp {
         }
     }
 }
+
+/// The skim and proxy transcodes running together: one per four cores,
+/// at least one. Each ffmpeg encode uses several cores and hundreds of
+/// megabytes; a project opened with dozens of new files started one each
+/// at once (#1360).
+pub(super) static TRANSCODE_SLOTS: std::sync::LazyLock<klipp_jobs::Slots> = std::sync::LazyLock::new(|| klipp_jobs::Slots::per_cores(4));
 
 /// `m:ss.s` for a source position in toasts.
 pub(super) fn format_profile_time(secs: f64) -> String {
