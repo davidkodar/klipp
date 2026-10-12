@@ -57,7 +57,9 @@ impl ToolbarPanel {
         if matches!(state.active_workspace, Workspace::Edit | Workspace::Color) {
             rx -= 96.0;
             let rect = egui::Rect::from_min_size(egui::pos2(rx, cy - 14.0), egui::vec2(92.0, 28.0));
-            if ui.put(rect, egui::Button::new(if state.graph_dock_open { "Close graph" } else { "Open graph" }).selected(state.graph_dock_open)).clicked() {
+            // "Nodes", the name the Colour page uses for the same graphs, lit while
+            // the dock is open (#1726).
+            if ui.put(rect, egui::Button::new("Nodes").selected(state.graph_dock_open)).on_hover_text("The clip's effects and grade as connected nodes").clicked() {
                 cmds.push(AppCommand::ToggleGraphDock);
             }
         }
@@ -1195,7 +1197,7 @@ impl ToolbarPanel {
             // Panels
             ui.label(egui::RichText::new("PANELS").size(10.0).color(egui::Color32::from_rgb(0x70, 0x70, 0x78)));
             let toggle_label = |active: bool, name: &str| if active { format!("\u{2714} {name}") } else { format!("  {name}") };
-            if ui.button(toggle_label(state.graph_dock_open, "Open graph")).clicked() { cmds.push(AppCommand::ToggleGraphDock); ui.close_menu(); }
+            if ui.button(toggle_label(state.graph_dock_open, "Nodes")).clicked() { cmds.push(AppCommand::ToggleGraphDock); ui.close_menu(); }
             if ui.add(egui::Button::new(toggle_label(state.show_inspector_panel, "Inspector")).shortcut_text(kb.display_for("toggle_inspector_panel"))).clicked() { cmds.push(AppCommand::ToggleInspectorPanel); ui.close_menu(); }
             if ui.add(egui::Button::new(toggle_label(state.show_browser_panel, "Browser")).shortcut_text(kb.display_for("toggle_browser_panel"))).clicked() { cmds.push(AppCommand::ToggleBrowserPanel); ui.close_menu(); }
             if ui.add(egui::Button::new(toggle_label(state.show_curve_editor, "Curve Editor")).shortcut_text(kb.display_for("toggle_keyframe_editor"))).clicked() { state.show_curve_editor = !state.show_curve_editor; ui.close_menu(); }
@@ -1477,7 +1479,7 @@ mod graph_menu_tests {
                         frame(&mut state, vec![button(at, false)]);
                         for _ in 0..3 { texts = frame(&mut state, Vec::new()).1; }
                     }
-                    let label = if menu || open { "Open graph" } else { "Close graph" };
+                    let label = "Nodes";
                     let at = texts.iter().rev().find(|(s, _)| s.trim_start_matches([' ', '✔']) == label).unwrap_or_else(|| panic!("{label}: {texts:?}")).1;
                     frame(&mut state, vec![egui::Event::PointerMoved(at), button(at, true)]);
                     let cmds = frame(&mut state, vec![button(at, false)]).0;

@@ -231,6 +231,26 @@ pub(crate) fn compute_layout(
     // how Resolve, Premiere, FCPX, and Avid all do it.
     let viewer_row_top = main_top;
     let viewer_row_bottom = h_resizer_rect.min.y;
+    // Outside Color, nodes placed below sit right under the viewers, the
+    // timeline under them: at the window's foot they were a viewer's
+    // length away from the picture they change. The space is the same,
+    // so the timeline only moves down by it. A zero-height toggle bar on
+    // the nodes' top edge carries the divider above them.
+    let nodes_under_viewer = show_nodes_bar && !in_color_ws && !show_scopes_bar;
+    let mut toggle_bar_rect = toggle_bar_rect;
+    let (mut h_resizer_rect, mut curve_editor_rect, mut audio_mixer_rect, mut timeline_rect) =
+        (h_resizer_rect, curve_editor_rect, audio_mixer_rect, timeline_rect);
+    if nodes_under_viewer {
+        let down = egui::vec2(0.0, nodes_h);
+        for r in [&mut h_resizer_rect, &mut curve_editor_rect, &mut audio_mixer_rect, &mut timeline_rect] {
+            *r = r.translate(down);
+        }
+        nodes_rect = egui::Rect::from_min_max(
+            egui::pos2(center_left, viewer_row_bottom + theme::RESIZER_THICKNESS),
+            egui::pos2(center_left + center_w, h_resizer_rect.min.y),
+        );
+        toggle_bar_rect = egui::Rect::from_min_size(nodes_rect.min, egui::vec2(center_w, 0.0));
+    }
     //
     // A single-viewer layout hands the whole row to whichever viewer
     // `viewer_mode` names and leaves the other with no width.

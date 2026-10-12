@@ -42,13 +42,29 @@ impl AppState {
         self.active_panel = Some(if in_grade { crate::state::PanelKind::NodeGraph } else { crate::state::PanelKind::PictureGraph });
     }
 
+    /// The top picture clip under the playhead: the first visible video
+    /// track's enabled clip there that has a picture (#1726).
+    fn picture_under_playhead(&self) -> Option<ClipId> {
+        let at = self.playhead;
+        self.sequence()
+            .tracks
+            .iter()
+            .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
+            .flat_map(|t| t.clips.iter())
+            .find(|c| c.enabled && c.timeline_in <= at && at < c.timeline_out && c.picture_v2().is_ok())
+            .map(|c| c.id)
+    }
+
     /// Follow clip selection and retain the longest surviving group path.
     /// Neither opening the dock nor repairing stale navigation edits a clip.
     pub(crate) fn repair_graph_dock(&mut self) {
         if !self.graph_dock_open { return; }
         let exists = |id| self.sequence().all_clips().any(|c| c.id == id);
         let current = self.graph_dock_root.and_then(|r| match r { Root::Clip { clip } => Some(ClipId(clip)), _ => None });
-        let clip_id = self.selected_clip.filter(|id| exists(*id)).or_else(|| current.filter(|id| exists(*id)));
+        // The selected clip, else the one the dock showed, else the top
+        // picture under the playhead, so an opened dock shows a graph
+        // rather than nothing (#1726).
+        let clip_id = self.selected_clip.filter(|id| exists(*id)).or_else(|| current.filter(|id| exists(*id))).or_else(|| self.picture_under_playhead());
         let root = clip_id.map(|clip| Root::Clip { clip: clip.0 });
         if root != self.graph_dock_root {
             self.graph_dock_root = root;
@@ -88,6 +104,44 @@ pub(super) fn reveals_card(state: &AppState, before: Option<&NodePath>) -> bool 
     crate::inspector::stack_view::node_at(&lifted.picture.graph, addr).and_then(klipp_graph_lift::effect_params::tag).is_some()
 }
 
+/// What the graph dock's header was clicked for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DockPick {
+    Picture,
+    Grade,
+    Place(crate::layout_state::NodeGraphPlacement),
+    Close,
+}
+
+/// The graph dock's header, a bar along the top of `rect`, and its
+/// height: laid out centred across the whole dock, the row sat in its
+/// middle with the body under it out of sight (#1726).
+fn dock_header(ui: &mut egui::Ui, rect: egui::Rect, in_grade: bool, has_grade: bool, placement: crate::layout_state::NodeGraphPlacement) -> (Option<DockPick>, f32) {
+    let mut pick = None;
+    let mut header_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(6.0, 4.0))).layout(egui::Layout::left_to_right(egui::Align::Min).with_main_wrap(true)));
+    {
+        let ui = &mut header_ui;
+        if ui.selectable_label(!in_grade, "Picture").clicked() {
+            pick = Some(DockPick::Picture);
+        }
+        if ui.add_enabled(has_grade, egui::Button::new("Grade").selected(in_grade)).clicked() {
+            pick = Some(DockPick::Grade);
+        }
+        // Space, not a separator: a separator takes the row's whole
+        // height, which in a wrapping row is the whole dock.
+        ui.add_space(12.0);
+        for (place, label) in [(crate::layout_state::NodeGraphPlacement::Below, "Below"), (crate::layout_state::NodeGraphPlacement::Right, "Right")] {
+            if ui.selectable_label(placement == place, label).clicked() {
+                pick = Some(DockPick::Place(place));
+            }
+        }
+        if ui.small_button("×").on_hover_text("Close nodes").clicked() {
+            pick = Some(DockPick::Close);
+        }
+    }
+    (pick, (header_ui.min_rect().bottom() + 4.0 - rect.top()).max(28.0))
+}
+
 impl KlippApp {
     pub(super) fn render_graph_dock(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, rect: egui::Rect, theme: &KlippTheme) {
         self.state.repair_graph_dock();
@@ -97,30 +151,26 @@ impl KlippApp {
         let grade = clip_id.and_then(|id| self.state.sequence().all_clips().find(|c| c.id == id)).and_then(|c| c.picture_v2().ok()).and_then(|p| p.picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::GROUP).and_then(|n| n.group.as_ref().map(|g| (n.id, g.graph.output))));
         let in_grade = grade.is_some_and(|(id, _)| self.state.graph_dock_path.first() == Some(&id));
         ui.painter().rect_filled(rect, 0.0, theme.bg_panel);
-        let mut header_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true)));
-        {
-            let ui = &mut header_ui;
-            if ui.selectable_label(!in_grade, "Picture").clicked() {
+        let (pick, header_height) = dock_header(ui, rect, in_grade, grade.is_some(), self.layout.node_graph_placement);
+        match pick {
+            Some(DockPick::Picture) => {
                 self.state.active_panel = Some(crate::state::PanelKind::PictureGraph);
                 if let Some(root) = root { cmds.push(AppCommand::SetGraphDockRoot { root }); }
             }
-            if ui.add_enabled(grade.is_some(), egui::Button::new("Grade").selected(in_grade)).clicked() {
+            Some(DockPick::Grade) => {
                 if let (Some(root), Some((group, output))) = (root, grade) {
                     self.state.active_panel = Some(crate::state::PanelKind::NodeGraph);
                     self.state.graph_descent_path.clear();
                     cmds.push(AppCommand::RevealGraph { path: NodePath::new(root, [group, output]), select: false });
                 }
             }
-            ui.separator();
-            for (placement, label) in [(crate::layout_state::NodeGraphPlacement::Below, "Below"), (crate::layout_state::NodeGraphPlacement::Right, "Right")] {
-                if ui.selectable_label(self.layout.node_graph_placement == placement, label).clicked() {
-                    self.layout.node_graph_placement = placement;
-                    self.layout_dirty = true;
-                }
+            Some(DockPick::Place(placement)) => {
+                self.layout.node_graph_placement = placement;
+                self.layout_dirty = true;
             }
-            if ui.small_button("×").on_hover_text("Close graph").clicked() { cmds.push(AppCommand::ToggleGraphDock); }
+            Some(DockPick::Close) => cmds.push(AppCommand::ToggleGraphDock),
+            None => {}
         }
-        let header_height = header_ui.min_rect().height().max(28.0);
         let body = egui::Rect::from_min_max(egui::pos2(rect.left(), rect.top() + header_height), rect.max);
         if !body.is_positive() { return; }
         if in_grade {
@@ -156,6 +206,52 @@ impl KlippApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dock's header is a bar along its top, whatever its height: it
+    /// sat in the middle of a tall dock, the body under it out of sight
+    /// (#1726).
+    #[test]
+    fn the_dock_header_is_a_bar_along_the_top() {
+        for height in [300.0, 900.0] {
+            let ctx = egui::Context::default();
+            let rect = egui::Rect::from_min_size(egui::pos2(40.0, 60.0), egui::vec2(480.0, height));
+            let mut texts = Vec::new();
+            let mut header_h = 0.0;
+            for _ in 0..2 {
+                let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 1000.0))), ..Default::default() }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        header_h = dock_header(ui, rect, false, true, crate::layout_state::NodeGraphPlacement::Right).1;
+                    });
+                });
+                texts = out.shapes.iter().filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.visual_bounding_rect())),
+                    _ => None,
+                }).collect::<Vec<_>>();
+            }
+            for label in ["Picture", "Grade", "Below", "Right"] {
+                let (_, r) = texts.iter().find(|(t, _)| t == label).unwrap_or_else(|| panic!("no {label} in {texts:?}"));
+                assert!(r.top() >= rect.top() && r.bottom() <= rect.top() + header_h, "{height}: {label} at {r:?}, header {header_h} from {}", rect.top());
+            }
+            assert!(header_h < 48.0, "{height}: the header is a bar, {header_h} tall");
+        }
+    }
+
+    /// With no clip selected, an opened dock shows the top picture under
+    /// the playhead, not nothing (#1726); off every clip it shows none.
+    #[test]
+    fn an_opened_dock_shows_the_picture_under_the_playhead() {
+        let (mut s, id, _) = state();
+        s.selected_clip = None;
+        s.graph_dock_root = None;
+        s.playhead = klipp_core::RationalTime::from_secs_f64(1.0, 25);
+        s.toggle_graph_dock();
+        assert_eq!(s.graph_dock_root, Some(Root::Clip { clip: id.0 }), "the clip under the playhead");
+        s.toggle_graph_dock();
+        s.graph_dock_root = None;
+        s.playhead = klipp_core::RationalTime::from_secs_f64(5.0, 25);
+        s.toggle_graph_dock();
+        assert_eq!(s.graph_dock_root, None, "no clip under the playhead");
+    }
 
     fn state() -> (AppState, ClipId, NodePath) {
         let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
@@ -375,7 +471,13 @@ mod tests {
                     let center = r.right_resizer_rect.left() - r.left_resizer_rect.right();
                     assert_eq!(r.nodes_on_right, placement == crate::layout_state::NodeGraphPlacement::Right && center >= 640.0);
                     if r.nodes_on_right { assert!(r.viewer_rect.right() <= r.nodes_rect.left()); }
-                    else { assert!(r.nodes_rect.top() >= r.timeline_rect.bottom()); }
+                    else if workspace == crate::state::Workspace::Edit {
+                        // Right under the viewers, the timeline under the nodes.
+                        assert!(r.nodes_rect.top() >= r.viewer_rect.bottom() + 1.0 && r.nodes_rect.top() - r.viewer_rect.bottom() < 12.0, "{width}: {r:?}");
+                        assert!(r.nodes_rect.bottom() <= r.timeline_rect.top() && r.timeline_rect.bottom() == r.statusbar_rect.top(), "{width}: {r:?}");
+                        assert!(r.nodes_rect.height() >= 59.0 && r.timeline_rect.height() >= crate::theme::TIMELINE_MIN_H - 0.5);
+                        assert_eq!(r.toggle_bar_rect.top(), r.nodes_rect.top());
+                    } else { assert!(r.nodes_rect.top() >= r.timeline_rect.bottom()); }
                 }
             }
         }
