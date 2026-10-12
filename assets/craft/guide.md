@@ -444,10 +444,11 @@ exist until the plan runs.
   paragraph's last line; `valign` (top, middle, bottom) sets the text up
   or down its box; `underline` the whole text. `runs` styles stretches
   of it, each `{text, occurrence?, bold?, italic?, underline?, color?,
-  size?, font?, weight?, axes?, features?}`: `text` is the words it
-  covers, the first time they appear unless `occurrence` counts on (1,
-  2, ...); `bold` and `italic` set its style together, one left out
-  being off. Runs may not overlap; words the title lacks are refused.
+  size?, font?, weight?, axes?, features?, ruby?}`: `text` is the words
+  it covers, the first time they appear unless `occurrence` counts on
+  (1, 2, ...); `bold` and `italic` set its style together, one left out
+  being off; `ruby` is a reading set small beside the words (furigana:
+  above them, or right of a vertical column). Runs may not overlap; words the title lacks are refused.
   Animators move part of the text unit by unit, over the entrance and
   exit: `animators` is a list (in place of any the text had, `[]`
   clears them), each a `preset` (`wave`, `random_fade_in`, `spin_in`)

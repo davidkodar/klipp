@@ -595,7 +595,7 @@ pub struct PathSpec {
 /// A styled stretch of a title's text (#1686): the words it covers, the
 /// `occurrence`th time they appear (the first by default), and how they
 /// differ from the rest. `bold` and `italic` set its style together, one
-/// left out being off.
+/// left out being off. `ruby` glosses the words with their reading.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RunSpec {
     pub text: String,
@@ -619,6 +619,10 @@ pub struct RunSpec {
     pub axes: Option<std::collections::BTreeMap<String, f32>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub features: Option<Vec<String>>,
+    /// A reading gloss (ruby, furigana) set small beside the words
+    /// (#1704).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ruby: Option<String>,
 }
 
 /// One editorial operation.
@@ -8592,6 +8596,7 @@ fn set_type(tb: &mut klipp_timeline::TextBox, t: &Typesetting) -> Result<(), Str
             run.font_weight = r.weight;
             run.font_axes = r.axes.iter().flatten().map(|(tag, v)| (tag.clone(), *v)).collect();
             run.features = r.features.clone().unwrap_or_default();
+            run.ruby = r.ruby.clone().filter(|g| !g.trim().is_empty());
             out.push(run);
         }
         out.sort_by_key(|r| r.start);
@@ -12739,7 +12744,7 @@ mod tests {
         let ops: Vec<Op> = serde_json::from_str(r##"[
             {"op":"title","text":"A quiet word, and a quiet end","at":{"secs":1.0},"secs":3.0,"align":"justify",
              "weight":300,"axes":{"wdth":80,"opsz":36},"features":["smcp","-liga","ss01=1"],"last_line":"center","valign":"top","underline":true,
-             "runs":[{"text":"quiet","occurrence":2,"bold":true,"italic":true,"color":"#ffcc00","weight":800,"axes":{"wght":800},"features":["onum"],"size":90,"font":"Inter","underline":false}]},
+             "runs":[{"text":"quiet","occurrence":2,"bold":true,"italic":true,"color":"#ffcc00","weight":800,"axes":{"wght":800},"features":["onum"],"size":90,"font":"Inter","underline":false,"ruby":"しずか"}]},
             {"op":"style","clip_id":{"track":0,"secs":2.0},"weight":600,"valign":"bottom","last_line":"justify","underline":false,"runs":[{"text":"word","underline":true}]}
         ]"##).unwrap();
         let plan = resolve(&seq, &pool, &ops).unwrap();
@@ -12754,6 +12759,7 @@ mod tests {
         assert_eq!(run.start, tb.text.rfind("quiet").unwrap(), "the second quiet");
         assert_eq!((run.font_style, run.color, run.font_weight, run.font_size), (Some(FontStyle::BoldItalic), Some([0xff, 0xcc, 0x00, 255]), Some(800), Some(90.0)));
         assert_eq!((run.font_axes.clone(), run.features.clone(), run.font_name.as_deref(), run.underline), (vec![("wght".to_string(), 800.0)], vec!["onum".to_string()], Some("Inter"), Some(false)));
+        assert_eq!(run.ruby.as_deref(), Some("しずか"), "its reading (#1704)");
 
         let mut seqs = vec![seq.clone()];
         let (mut p, mut fps) = (pool.clone(), seq.fps);
@@ -12767,7 +12773,7 @@ mod tests {
         assert_eq!((tb.font_weight, tb.vertical_align, tb.last_line, tb.underline), (Some(600), TextVerticalAlign::Bottom, LastLineAlign::Justify, false));
         assert_eq!(tb.features, ["smcp", "-liga", "ss01=1"], "what the restyle leaves out stays");
         let [run] = &tb.style_runs[..] else { panic!("the runs are replaced: {:?}", tb.style_runs) };
-        assert_eq!((&tb.text[run.start..run.end], run.underline, run.font_style), ("word", Some(true), None));
+        assert_eq!((&tb.text[run.start..run.end], run.underline, run.font_style, run.ruby.as_deref()), ("word", Some(true), None, None));
 
         // Refused, with the choices.
         let bad = |json: &str| resolve(&seq, &pool, &serde_json::from_str::<Vec<Op>>(json).unwrap()).unwrap_err();

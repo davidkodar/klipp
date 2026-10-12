@@ -13,15 +13,28 @@ use crate::shaping::{shape_horizontal, Face};
 pub(crate) const RUBY_SCALE: f32 = 0.5;
 
 /// Every run's gloss laid beside its text among `glyphs` (the text's,
-/// placed, in frame pixels from the block's top left): each gloss glyph
-/// carries its run's first byte, so it takes the run's colour. `run_px`
+/// placed, in frame pixels from the block's top left), runs side by side
+/// with one gloss sharing it: each gloss glyph carries its first run's
+/// first byte, so it takes that run's colour. `run_px`
 /// is a run's size in pixels. Runs without a gloss, or whose text drew
 /// no glyph, add none.
 pub(crate) fn lay(faces: &[Face], glyphs: &[GlyphPosition], runs: &[StyleRun], run_px: impl Fn(&StyleRun) -> f32, vertical: bool) -> Vec<GlyphPosition> {
     let mut out = Vec::new();
-    for run in runs {
-        let Some(gloss) = run.ruby.as_deref().filter(|g| !g.trim().is_empty()) else { continue };
-        let base: Vec<&GlyphPosition> = glyphs.iter().filter(|g| run.start <= g.byte_offset && g.byte_offset < run.end && g.width > 0 && g.height > 0).collect();
+    // Runs side by side with one gloss are one stretch it reads: a
+    // selection glossed across two runs, or a glossed word styled in
+    // part, is glossed once.
+    let mut sorted: Vec<&StyleRun> = runs.iter().filter(|r| r.ruby.as_deref().is_some_and(|g| !g.trim().is_empty())).collect();
+    sorted.sort_by_key(|r| r.start);
+    let mut spans: Vec<(&StyleRun, usize)> = Vec::new();
+    for run in sorted {
+        match spans.last_mut() {
+            Some((first, end)) if *end == run.start && first.ruby == run.ruby => *end = run.end,
+            _ => spans.push((run, run.end)),
+        }
+    }
+    for (run, end) in spans {
+        let Some(gloss) = run.ruby.as_deref() else { continue };
+        let base: Vec<&GlyphPosition> = glyphs.iter().filter(|g| run.start <= g.byte_offset && g.byte_offset < end && g.width > 0 && g.height > 0).collect();
         let Some(first) = base.first() else { continue };
         // The base on the first glyph's line (or column) alone, when the
         // run breaks across two.

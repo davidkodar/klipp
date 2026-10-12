@@ -591,6 +591,26 @@ mod tests {
         assert_eq!(plain.glyph_count, text.chars().count());
     }
 
+    /// A gloss set over a selection that crosses two runs is in each of
+    /// them, and drawn once over both, centred on all it reads; two runs
+    /// apart keep a gloss each.
+    #[test]
+    fn runs_side_by_side_with_one_gloss_share_it() {
+        let mut r = jp_renderer();
+        let text = "縦書の題";
+        let (one, two) = ("縦".len(), "縦書".len());
+        let glossed = |runs: Vec<klipp_timeline::StyleRun>| vertical_title(text, |tb| tb.style_runs = runs);
+        let run = |a, b, colour: [u8; 4]| klipp_timeline::StyleRun { ruby: Some("かき".into()), color: Some(colour), ..klipp_timeline::StyleRun::default_for_range(a, b) };
+        let shared = r.render_layout(&glossed(vec![run(0, one, [255, 0, 0, 255]), run(one, two, [0, 0, 255, 255])]), 1920, 1080);
+        let whole = r.render_layout(&glossed(vec![run(0, two, [255, 0, 0, 255])]), 1920, 1080);
+        let chars = text.chars().count();
+        assert_eq!(shared.glyph_count, chars + 2, "one gloss of two letters");
+        assert_eq!(shared.glyph_boxes, whole.glyph_boxes, "where one run's gloss would be");
+        // Apart, by a character between: a gloss each.
+        let apart = r.render_layout(&glossed(vec![run(0, one, [255, 0, 0, 255]), run(two, two + "の".len(), [0, 0, 255, 255])]), 1920, 1080);
+        assert_eq!(apart.glyph_count, chars + 4);
+    }
+
     /// #1704: a vertical drop cap stands at the top of the first column,
     /// as many columns wide as it is; the body starts below it in those
     /// columns and at the top in the ones after.
