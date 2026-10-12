@@ -3,6 +3,11 @@
 //! module here. Files that time themselves or change process-wide state
 //! stay their own binaries (the `[[test]]` list in Cargo.toml).
 
+// Each file declares the helpers it shares (`mod common;`, a `#[path]`
+// support module) as it did as a binary of its own, so they load once
+// per file here.
+#![allow(clippy::duplicate_mod)]
+
 #[path = "../a_live_drag_reaches.rs"]
 mod a_live_drag_reaches;
 #[path = "../cache_bytes_are_display_bytes.rs"]
