@@ -33,7 +33,7 @@ impl Case {
                 Self::Edit => {}
                 Self::Grade => clip.set_grade(NodeGraph::default()),
                 Self::Ofx => {
-                    let n = clip.ofx_effects().len();
+                    let n = clip.picture_ofx()?.len();
                     if n == 0 {
                         return Err("OFX witness has no plug-in".into());
                     }
@@ -43,8 +43,15 @@ impl Case {
                             .collect::<Vec<_>>(),
                     )?;
                 }
-                Self::Effects | Self::Frei0r | Self::Temporal | Self::Analysis => {
-                    let n = clip.builtin_effects().len();
+                Self::Temporal => {
+                    // This fixture installs exactly one temporal effect at
+                    // slot zero. It is a placed node, not a plain effect in
+                    // picture_effects(); the visible witness checks the edit.
+                    clip.apply_effect_edits(&[EffectEdit::SetEnabled(0, false)])
+                        .ok_or("witness could not bypass temporal denoise")??;
+                }
+                Self::Effects | Self::Frei0r | Self::Analysis => {
+                    let n = clip.picture_effects()?.len();
                     if n == 0 {
                         return Err(format!("{self}: witness has no effect"));
                     }
