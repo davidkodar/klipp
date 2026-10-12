@@ -1,4 +1,9 @@
-# Klipp
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/branding/klipp-refined/klipp-logo.svg">
+    <img src="assets/branding/klipp-refined/klipp-logo-light.svg" alt="Klipp" height="72">
+  </picture>
+</h1>
 
 **A native video editor for Linux.**
 
