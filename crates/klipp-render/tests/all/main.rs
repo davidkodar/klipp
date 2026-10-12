@@ -24,6 +24,8 @@ mod export_refuses_a_missing_analysis;
 mod frame_blend_reads_the_stream;
 #[path = "../hdr_export.rs"]
 mod hdr_export;
+#[path = "../keyer_op_matches_the_app.rs"]
+mod keyer_op_matches_the_app;
 #[path = "../layer_fx_goldens.rs"]
 mod layer_fx_goldens;
 #[path = "../odd_size_export.rs"]

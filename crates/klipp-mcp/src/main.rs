@@ -2110,7 +2110,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               bars round an upright phone shot in a wide frame filled with the picture, enlarged and \
               blurred: Resolve's blanking fill; more amount is softer and darker); amount 0-1. These are \
               effect kinds, e.g. {op: effect, clip_id: ID, kind: corners, amount: 0.4}; shadow and outer_glow \
-              use the same fields. Place the picture with compose to show the backdrop around it. clean_audio {clip_id, voice?, reduction_db?, wind?, hiss?, hum?, deess?} — clean a \
+              use the same fields. Place the picture with compose to show the backdrop around it. A key \
+              is kind chroma_key (green_screen, blue_screen) on one clip, the app's Chroma Key: color \
+              #rrggbb (green; blue for blue_screen), tolerance 0.2, softness 0.1, spill 0.6, each 0-1. clean_audio {clip_id, voice?, reduction_db?, wind?, hiss?, hum?, deess?} — clean a \
               clip's sound, each flag its tool: voice isolates dialogue from wind, traffic and room noise with the \
               Voice Isolation AI effect, the best cleanup where someone speaks (reduction_db 12 keeps the place, \
               default 24, 60 removes all it can; leave it off where nobody speaks, it would take the ambience); \
@@ -2326,7 +2328,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               bars round an upright phone shot in a wide frame filled with the picture, enlarged and \
               blurred: Resolve's blanking fill; more amount is softer and darker); amount 0-1. These are \
               effect kinds, e.g. {op: effect, clip_id: ID, kind: corners, amount: 0.4}; shadow and outer_glow \
-              use the same fields. Place the picture with compose to show the backdrop around it. clean_audio {clip_id, voice?, reduction_db?, wind?, hiss?, hum?, deess?} — clean a \
+              use the same fields. Place the picture with compose to show the backdrop around it. A key \
+              is kind chroma_key (green_screen, blue_screen) on one clip, the app's Chroma Key: color \
+              #rrggbb (green; blue for blue_screen), tolerance 0.2, softness 0.1, spill 0.6, each 0-1. clean_audio {clip_id, voice?, reduction_db?, wind?, hiss?, hum?, deess?} — clean a \
               clip's sound, each flag its tool: voice isolates dialogue from wind, traffic and room noise with the \
               Voice Isolation AI effect, the best cleanup where someone speaks (reduction_db 12 keeps the place, \
               default 24, 60 removes all it can; leave it off where nobody speaks, it would take the ambience); \
