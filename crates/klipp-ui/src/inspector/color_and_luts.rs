@@ -383,6 +383,7 @@ pub(crate) fn input_colour_space_combo(
         (LF::FLog, "Fuji F-Log"), (LF::DJIDLog, "DJI D-Log"),
         (LF::GoProFlat, "GoPro ProTune Flat"),
         (LF::AppleLog, "Apple Log"), (LF::LeicaLLog, "Leica L-Log"),
+        (LF::LeicaLLogBt709, "Leica L-Log, SL (Typ 601)"),
         (LF::RedLog3G10, "RED Log3G10"), (LF::BmdFilmGen5, "BMD Film Gen 5"),
         (LF::HLG, "HLG (BT.2100)"), (LF::PQ, "PQ (ST 2084)"),
     ];

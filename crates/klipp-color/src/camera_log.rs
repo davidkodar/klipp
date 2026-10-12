@@ -267,7 +267,7 @@ pub fn log_format_to_linear(c: f32, format: klipp_core::LogFormat) -> f32 {
         L::DJIDLog => dji_dlog_to_linear(c),
         L::GoProFlat => gopro_flat_to_linear(c),
         L::AppleLog => apple_log_to_linear(c),
-        L::LeicaLLog => leica_llog_to_linear(c),
+        L::LeicaLLog | L::LeicaLLogBt709 => leica_llog_to_linear(c),
         L::RedLog3G10 => red_log3g10_to_linear(c),
         L::BmdFilmGen5 => bmd_film_gen5_to_linear(c),
         L::HLG => hlg_to_linear(c),

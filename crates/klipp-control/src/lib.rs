@@ -757,7 +757,7 @@ mod tests {
             L::SLog2 => "SLog2", L::SLog3 => "SLog3", L::CanonLog => "CanonLog",
             L::CanonLog3 => "CanonLog3", L::VLog => "VLog", L::NLog => "NLog", L::FLog => "FLog",
             L::DJIDLog => "DJIDLog", L::GoProFlat => "GoProFlat", L::AppleLog => "AppleLog",
-            L::LeicaLLog => "LeicaLLog", L::RedLog3G10 => "RedLog3G10",
+            L::LeicaLLog => "LeicaLLog", L::LeicaLLogBt709 => "LeicaLLogBt709", L::RedLog3G10 => "RedLog3G10",
             L::BmdFilmGen5 => "BmdFilmGen5", L::HLG => "HLG", L::PQ => "PQ",
         }
     }
@@ -770,7 +770,7 @@ mod tests {
             assert_eq!(wire_name(f), *name);
             assert!(seen.insert(*name), "{name} listed twice");
         }
-        assert_eq!(seen.len(), 19, "wire_name has 19 arms; every one must be listed");
+        assert_eq!(seen.len(), 20, "wire_name has 20 arms; every one must be listed");
         assert!(parse_log_format("slog3").is_err(), "names are case-sensitive");
     }
 
