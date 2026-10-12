@@ -737,6 +737,9 @@ impl TitleRenderer {
             horizontal_align: h_align,
             vertical_align: VerticalAlign::Top,
             wrap_style: WrapStyle::Word,
+            // The layout spaces its own lines, by each line's tallest
+            // type: the box's spacing is a multiple of that (#1676).
+            line_height: tb.line_spacing,
             ..LayoutSettings::default()
         });
 
@@ -879,6 +882,7 @@ impl TitleRenderer {
                     horizontal_align: h_align,
                     vertical_align: VerticalAlign::Top,
                     wrap_style: WrapStyle::Word,
+                    line_height: tb.line_spacing,
                     ..LayoutSettings::default()
                 });
                 let col_glyphs = lay_pieces(&mut col_layout, &fonts, &resolved_text, &pieces_of(byte_offset, byte_offset + chunk.len()));
@@ -955,36 +959,28 @@ impl TitleRenderer {
 
         // ── Post-process glyph positions for tracking and line spacing ──
 
-        // Apply line spacing multiplier (shift lines after the first)
-        if tb.line_spacing != 1.0 {
-            let line_height_scale = crate::frame_scale(width, height);
-            let mut line_starts: Vec<(usize, f32)> = Vec::new();
-            let mut last_y: Option<f32> = None;
-            for (i, g) in glyphs_owned.iter().enumerate() {
-                let gy = g.y;
-                if last_y.is_none() || (gy - last_y.unwrap()).abs() > 1.0 {
-                    line_starts.push((i, gy));
-                    last_y = Some(gy);
-                }
-            }
-            if line_starts.len() > 1 {
-                let base_line_height = if line_starts.len() >= 2 {
-                    line_starts[1].1 - line_starts[0].1
-                } else {
-                    font_px
-                };
-                let _ = line_height_scale;
-                for line_idx in 1..line_starts.len() {
-                    let y_shift = base_line_height * (tb.line_spacing - 1.0) * line_idx as f32;
-                    let start = line_starts[line_idx].0;
-                    let end = if line_idx + 1 < line_starts.len() {
-                        line_starts[line_idx + 1].0
-                    } else {
-                        glyphs_owned.len()
-                    };
-                    for g in &mut glyphs_owned[start..end] {
-                        g.y += y_shift;
-                    }
+        let line_starts = if drop_cap_wrap_eligible || columns_active {
+            std::mem::take(&mut path_line_starts)
+        } else if vertical_active {
+            (0..glyphs_owned.len()).collect()
+        } else {
+            layout.lines().map_or(Vec::new(), |lines| lines.iter().map(|l| l.glyph_start).collect())
+        };
+        // The drop-cap wrap and the vertical stack set their own lines:
+        // each line after the first moves down by its place in the
+        // lines, a body line's height (a vertical character's) times
+        // the extra spacing. The other paths' layouts spaced theirs.
+        if tb.line_spacing != 1.0 && (drop_cap_wrap_eligible || vertical_active) {
+            let pitch = if vertical_active {
+                font_px * 1.2
+            } else {
+                let face = pieces_of(body_start, resolved_text.len()).first().map_or(0, |p| p.3);
+                fonts[face].horizontal_line_metrics(font_px).map_or(font_px * 1.2, |m| m.new_line_size)
+            };
+            for (line_idx, &start) in line_starts.iter().enumerate().skip(1) {
+                let end = line_starts.get(line_idx + 1).copied().unwrap_or(glyphs_owned.len());
+                for g in glyphs_owned.get_mut(start..end).unwrap_or_default() {
+                    g.y += pitch * (tb.line_spacing - 1.0) * line_idx as f32;
                 }
             }
         }
@@ -997,13 +993,6 @@ impl TitleRenderer {
             }
         }
         // A style run's own tracking and baseline offset (#1505).
-        let line_starts = if drop_cap_wrap_eligible || columns_active {
-            std::mem::take(&mut path_line_starts)
-        } else if vertical_active {
-            (0..glyphs_owned.len()).collect()
-        } else {
-            layout.lines().map_or(Vec::new(), |lines| lines.iter().map(|l| l.glyph_start).collect())
-        };
         apply_run_spacing(&mut glyphs_owned, &tb.style_runs, &line_starts, tb.tracking, scale);
 
         // Justified lines fill the box (#1506). Only fontdue's own
@@ -2607,6 +2596,9 @@ impl TitleRenderer {
             horizontal_align: h_align,
             vertical_align: VerticalAlign::Top,
             wrap_style: WrapStyle::Word,
+            // The layout spaces its own lines, by each line's tallest
+            // type: the box's spacing is a multiple of that (#1676).
+            line_height: tb.line_spacing,
             ..LayoutSettings::default()
         });
 
@@ -2629,34 +2621,6 @@ impl TitleRenderer {
         }
 
         let mut glyphs_owned: Vec<fontdue::layout::GlyphPosition> = glyphs.to_vec();
-
-        // Apply line spacing (same as render_layout)
-        if tb.line_spacing != 1.0 {
-            let mut line_starts: Vec<(usize, f32)> = Vec::new();
-            let mut last_y: Option<f32> = None;
-            for (i, g) in glyphs_owned.iter().enumerate() {
-                let gy = g.y;
-                if last_y.is_none() || (gy - last_y.unwrap()).abs() > 1.0 {
-                    line_starts.push((i, gy));
-                    last_y = Some(gy);
-                }
-            }
-            if line_starts.len() > 1 {
-                let base_line_height = line_starts[1].1 - line_starts[0].1;
-                for line_idx in 1..line_starts.len() {
-                    let y_shift = base_line_height * (tb.line_spacing - 1.0) * line_idx as f32;
-                    let start = line_starts[line_idx].0;
-                    let end = if line_idx + 1 < line_starts.len() {
-                        line_starts[line_idx + 1].0
-                    } else {
-                        glyphs_owned.len()
-                    };
-                    for g in &mut glyphs_owned[start..end] {
-                        g.y += y_shift;
-                    }
-                }
-            }
-        }
 
         // Apply tracking (same as render_layout)
         if tb.tracking != 0.0 {
@@ -9071,11 +9035,13 @@ mod box_alignment_tests {
             let cursor = fnv(r.compute_char_positions(&read, 640, 360).iter().flat_map(|p| [p.x.to_bits(), p.y.to_bits()]).flat_map(u32::to_le_bytes));
             hashes.push((pixels, cursor));
         }
-        // Taken on main at f26cf5792, before #1506.
+        // Taken on main at f26cf5792, before #1506; the third, at a
+        // line spacing of 1.3, again when the layout took over line
+        // spacing (#1676).
         let before = [
             (2089990751451958423, 15491691981405734563),
             (16810429097172737439, 12119957885803439428),
-            (2560225096274464296, 2722093848623605274),
+            (14579633377248752159, 17912027904950030411),
         ];
         assert_eq!(hashes, before, "a box saved before #1506 draws or lays out differently");
     }
