@@ -907,9 +907,14 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         }
         "klipp_export" => {
             let mut v = json!({ "method": "export", "path": arg_str(args, "path")? });
-            for key in ["width", "height", "crf"] {
+            for key in ["width", "height", "crf", "bit_depth", "bitrate_kbps"] {
                 if let Some(n) = args.get(key).and_then(|v| v.as_u64()) {
                     v[key] = json!(n);
+                }
+            }
+            for key in ["preset", "codec", "audio_codec"] {
+                if let Some(x) = args.get(key).and_then(|v| v.as_str()) {
+                    v[key] = json!(x);
                 }
             }
             if let Some(f) = args.get("fps").and_then(|v| v.as_f64()) {
@@ -2421,8 +2426,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                      "tool": { "type": "string" }, "args": { "type": "object" } }, "required": ["tool"] } } }),
              vec!["calls"]),
         tool("klipp_export",
-             "Render the active sequence to a file with Klipp's default export settings; \
-              the container comes from the extension (mp4, mov, mkv, webm). Refused when \
+             "Render the active sequence to a file: default settings, or an app export preset by name, \
+              codec (h264, hevc, prores...), bit_depth 10, bitrate_kbps; the container comes from the extension (mp4, mov, mkv, webm). Refused when \
               a clip's media is offline or the path is one of the project's media files. \
               Asynchronous: call klipp_export_status with wait true to wait for completion; then the \
               file is done. The path must be absolute.",
@@ -2433,7 +2438,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "crf": { "type": "integer", "description": "Quality, lower is better (default 23)" },
                  "target_lufs": { "type": "number", "description": "Loudness normalisation target, e.g. -14 for the web, -23 for broadcast; left out, the brief's" },
                  "true_peak_dbtp": { "type": "number", "description": "True-peak ceiling the normalised sound is held under, -10 to 0; -1 when left out, -2 for ATSC A/85" },
-                 "burn_captions": { "type": "boolean", "description": "Captions and titles burnt into the picture; on unless you say otherwise. The reply says which it was, so you know whether a sidecar subtitle file is needed." },
+                 "burn_captions": { "type": "boolean", "description": "Captions and titles burnt in (default on); the reply says which" },
+                 "preset": { "type": "string" }, "codec": { "type": "string" }, "audio_codec": { "type": "string" },
+                 "bit_depth": { "type": "integer" }, "bitrate_kbps": { "type": "integer" },
              }),
              vec!["path"]),
         tool("klipp_export_status",

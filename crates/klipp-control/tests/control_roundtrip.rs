@@ -1292,6 +1292,61 @@ fn a_batch_is_one_envelope_or_nothing_and_writes_answer_with_the_revision() {
     assert!(err["error"].as_str().is_some_and(|e| e.contains("the tracks are")), "{err}");
 }
 
+/// #1583: an export over the socket chooses its codec. A built-in preset
+/// by name gives its codecs and rate (fields beside it win); a codec, a
+/// bit depth and a bitrate are taken as asked; and what the container
+/// can't hold, or a rate a codec doesn't take, is refused before
+/// anything is sent.
+#[test]
+fn export_takes_a_preset_a_codec_and_a_bitrate() {
+    let mut h = harness();
+    let media = h.media_pool.write().unwrap().add(klipp_media::MediaItem::synthetic_for_test("/tmp/export-codec-fixture.mov".into(), None));
+    for c in h.sequence.write().unwrap().tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+        c.kind = klipp_timeline::ClipKind::Media { media_id: media };
+    }
+    let sent = |h: &mut Harness, req: serde_json::Value| -> (serde_json::Value, klipp_core::ExportSettings) {
+        let r = h.ok(req);
+        match h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(klipp_core::AppCommand::ExportSequence { settings }) => (r, settings),
+            other => panic!("expected ExportSequence, got {other:?}"),
+        }
+    };
+    use klipp_core::{ExportAudioCodec as A, ExportVideoCodec as V};
+
+    // A preset by name, case aside: a ProRes master in MOV, PCM sound.
+    let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-master.mov", "preset": "prores 422" }));
+    assert_eq!((s.video_codec, s.audio_codec), (V::ProRes422, A::Pcm24));
+    assert_eq!(r["export"]["preset"], "ProRes 422", "{r}");
+    // A field beside a preset wins.
+    let (_, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-web.mp4", "preset": "YouTube 1080p", "crf": 22 }));
+    assert_eq!((s.video_codec, s.crf, s.target_lufs), (V::H264, 22, Some(-14.0)));
+    // A codec, ten bits and a bitrate.
+    let (r, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-hevc.mp4", "codec": "hevc", "bit_depth": 10, "bitrate_kbps": 20000 }));
+    assert_eq!((s.video_codec, s.bit_depth, s.rate_control, s.video_bitrate_kbps), (V::H265, 10, klipp_core::RateControl::Vbr, Some(20000)));
+    assert_eq!((r["export"]["rate"].as_str(), r["export"]["bit_depth"].as_u64()), (Some("20000 kbps"), Some(10)), "{r}");
+    let (_, s) = sent(&mut h, json!({ "method": "export", "path": "/tmp/klipp-codec-hq.mov", "codec": "ProRes HQ", "audio_codec": "pcm24" }));
+    assert_eq!((s.video_codec, s.audio_codec), (V::ProRes422HQ, A::Pcm24));
+
+    // Refused, and nothing sent.
+    for (req, why) in [
+        (json!({ "path": "/tmp/k.mov", "preset": "YouTube 4K" }), "give a path ending .mp4"),
+        (json!({ "path": "/tmp/k.mp4", "preset": "Cinema" }), "the presets are"),
+        (json!({ "path": "/tmp/k.mp4", "codec": "prores" }), "cannot hold"),
+        (json!({ "path": "/tmp/k.mov", "codec": "prores", "bitrate_kbps": 50000 }), "rate of its own"),
+        (json!({ "path": "/tmp/k.mp4", "crf": 20, "bitrate_kbps": 8000 }), "not both"),
+        (json!({ "path": "/tmp/k.mov", "codec": "dnxhd_115", "bit_depth": 10 }), "8 bits"),
+        (json!({ "path": "/tmp/k.mp4", "codec": "mpeg2" }), "not a video codec"),
+        (json!({ "path": "/tmp/k.mp4", "audio_codec": "ac3" }), "not an audio codec"),
+    ] {
+        let mut req = req;
+        req["method"] = json!("export");
+        let reply = h.call(req.clone());
+        assert_eq!(reply["ok"], json!(false), "{req}: {reply}");
+        assert!(reply["error"].as_str().unwrap().contains(why), "{req}: {reply}");
+    }
+    assert!(h.cmd_rx.try_recv().is_err(), "a refused export sends nothing");
+}
+
 /// An export is refused where it would go wrong, and otherwise reaches
 /// the UI as the app's own export command; the queue reads back through
 /// the shared state.
