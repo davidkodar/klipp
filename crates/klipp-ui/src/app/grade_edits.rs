@@ -85,10 +85,8 @@ pub(super) fn paste_attributes_edits(
 
 impl crate::state::AppState {
     /// Save or switch a clip's grade version (`SaveGradeVersion`,
-    /// `SwitchGradeVersion`): whether the clip changed. A clip whose
-    /// picture holds a correction's mix or mask channel (M3 step 17a) is
-    /// refused, saying why: a version keeps the grade's fields, never
-    /// those, so it would come back without them.
+    /// `SwitchGradeVersion`): whether the clip changed. A version keeps its
+    /// corrections' mix and mask channel (M3 step 17a, #1322).
     pub(super) fn grade_version_command(&mut self, cmd: &AppCommand) -> bool {
         let clip_id = match cmd {
             AppCommand::SaveGradeVersion { clip_id, .. } | AppCommand::SwitchGradeVersion { clip_id, .. } => *clip_id,
@@ -96,13 +94,10 @@ impl crate::state::AppState {
         };
         let seq = &mut self.sequences[self.active_sequence_idx];
         let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) else { return false };
-        if clip.holds_grade_mix() {
-            self.toast.show("Grade versions don't keep a correction's mix or mask channel yet: set them back to whole and red first");
-            return false;
-        }
+        // A version keeps its corrections' mix and mask channel (#1322).
         match cmd {
             AppCommand::SaveGradeVersion { name, .. } => {
-                let version = klipp_timeline::GradeVersion::new(name.clone(), clip.grade().clone());
+                let version = klipp_timeline::GradeVersion::new(name.clone(), clip.grade_for_version());
                 let index = clip.edit_grade_versions(|vs| {
                     vs.push(version);
                     vs.len() - 1
@@ -111,17 +106,21 @@ impl crate::state::AppState {
             }
             AppCommand::SwitchGradeVersion { version_index, .. } => {
                 // Save current graph back to active version slot before switching
+                let Some(grade) = clip.grade_versions().get(*version_index).map(|v| v.grade().clone()) else { return false };
+                let before = clip.clone();
                 if let Some(active_idx) = clip.active_grade_version() {
                     if active_idx < clip.grade_versions().len() {
-                        let grade = clip.grade().clone();
+                        let grade = clip.grade_for_version();
                         clip.edit_grade_versions(|vs| vs[active_idx].set_grade(grade));
                     }
                 }
                 // Load the target version
-                if let Some(grade) = clip.grade_versions().get(*version_index).map(|v| v.grade().clone()) {
-                    clip.set_grade(grade);
-                    clip.set_active_grade_version(Some(*version_index));
+                if let Err(why) = clip.set_grade_from_version(grade) {
+                    *clip = before;
+                    self.toast.show(format!("That grade version can't be switched to: {why}"));
+                    return false;
                 }
+                clip.set_active_grade_version(Some(*version_index));
             }
             _ => {}
         }
@@ -348,10 +347,8 @@ mod grade_still_tests {
     }
 }
 
-/// M3 step 17a: grade versions don't keep a correction's mix or mask
-/// channel, so a clip holding one refuses to save or switch a version,
-/// saying why, with its picture and versions as they were; set back to
-/// whole and red, it saves one.
+/// M3 step 17a, #1322: a grade version keeps its corrections' mix and
+/// mask channel.
 #[cfg(test)]
 mod grade_versions_and_mix {
     use super::*;
@@ -379,21 +376,41 @@ mod grade_versions_and_mix {
         s.sequences[0].all_clips().find(|c| c.id == id).unwrap()
     }
 
+    /// The corrector's mix and mask channel, as the clip's picture holds them.
+    fn blend(s: &crate::state::AppState, id: klipp_core::ClipId, path: &NodePath) -> (Option<f32>, Option<klipp_graph_format::ParamValue>) {
+        let picture = clip(s, id).picture_v2().unwrap();
+        let group = picture.picture.graph.nodes.iter().find(|n| n.id == path.nodes[0]).unwrap();
+        let n = group.group.as_ref().unwrap().graph.nodes.iter().find(|n| n.id == path.nodes[1]).unwrap();
+        (n.mix, n.params.get(&klipp_graph_format::ParamKey::from("mask.channel")).cloned())
+    }
+
+    /// A grade version keeps its corrections' mix and mask channel
+    /// (#1322): saved with them, each switch brings back the version's
+    /// own (one with none clears the other's), and a saved and loaded
+    /// project's versions still hold them.
     #[test]
-    fn a_mixed_grade_refuses_to_save_or_switch_a_version() {
+    fn a_grade_version_keeps_its_corrections_mix_and_channel() {
         let (mut s, id, path) = state();
-        let (picture, versions) = (clip(&s, id).picture_v2().unwrap(), clip(&s, id).grade_versions().len());
-        for cmd in [AppCommand::SaveGradeVersion { clip_id: id, name: "A".into() }, AppCommand::SwitchGradeVersion { clip_id: id, version_index: 0 }] {
-            assert!(!s.grade_version_command(&cmd), "{cmd:?} is refused");
-            assert!(s.toast.message_for_test().is_some_and(|m| m.contains("set them back to whole and red")), "{:?}", s.toast.message_for_test());
-            assert_eq!(clip(&s, id).picture_v2().unwrap(), picture, "the picture as it was");
-            assert_eq!(clip(&s, id).grade_versions().len(), versions, "and its versions");
-        }
-        // Set back to whole and red, as the refusal says: saved.
-        let c = s.sequences[0].all_clips_mut().find(|c| c.id == id).unwrap();
-        c.apply_picture_ops(&[GraphOp::SetMix { path, mix: Some(1.0) }]).unwrap();
+        let alpha = Some(klipp_graph_format::ParamValue::Text("alpha".into()));
         assert!(s.grade_version_command(&AppCommand::SaveGradeVersion { clip_id: id, name: "A".into() }));
-        assert_eq!(clip(&s, id).grade_versions().len(), versions + 1);
+        let c = s.sequences[0].all_clips_mut().find(|c| c.id == id).unwrap();
+        c.apply_picture_ops(&[GraphOp::SetMix { path: path.clone(), mix: Some(0.75) }, GraphOp::SetMaskChannel { path: path.clone(), channel: Some("alpha".into()) }]).unwrap();
+        assert!(s.grade_version_command(&AppCommand::SaveGradeVersion { clip_id: id, name: "B".into() }));
+        let switch = |s: &mut crate::state::AppState, i: usize| assert!(s.grade_version_command(&AppCommand::SwitchGradeVersion { clip_id: id, version_index: i }), "{:?}", s.toast.message_for_test());
+        for round in ["in the app", "saved and loaded"] {
+            switch(&mut s, 0);
+            assert_eq!(blend(&s, id, &path), (Some(0.25), None), "{round}: A's mix, no channel");
+            switch(&mut s, 1);
+            assert_eq!(blend(&s, id, &path), (Some(0.75), alpha.clone()), "{round}: B's");
+            if round == "in the app" {
+                let dir = std::env::temp_dir().join(format!("klipp-grade-versions-{}", uuid::Uuid::new_v4()));
+                klipp_project::save_project(&dir, &s.sequences, &s.media_pool).unwrap();
+                let (sequences, ..) = klipp_project::load_project_strict(&dir).unwrap();
+                let _ = std::fs::remove_dir_all(&dir);
+                s.sequences = sequences;
+                assert_eq!(blend(&s, id, &path), (Some(0.75), alpha.clone()), "the clip as saved");
+            }
+        }
     }
 
     /// Copy Attributes notes a grade it can't carry whole, so its paste

@@ -111,9 +111,8 @@ impl Clip {
     }
 
     /// Whether the clip's picture holds a grade correction's mix or mask
-    /// channel (M3 step 17a), which only it keeps: its grade versions
-    /// don't, so saving or switching one is refused until they are
-    /// cleared.
+    /// channel (M3 step 17a), which only it keeps among the clip's fields:
+    /// a copy of the grade's attributes can't carry it.
     pub fn holds_grade_mix(&self) -> bool {
         self.picture.truth().is_some_and(|t| t.picture.grade_mix_used())
     }
@@ -142,6 +141,76 @@ impl Clip {
             }
         }
         std::borrow::Cow::Owned(run)
+    }
+
+    /// The clip's grade as a version keeps it: its fields, each
+    /// correction's mix and mask channel written in as its run setting
+    /// (`correction_blend`), which the fields alone don't hold (#1322).
+    pub fn grade_for_version(&self) -> klipp_nodes::NodeGraph {
+        self.grade_to_run().into_owned()
+    }
+
+    /// Version `n`'s corrections' mix and mask channel, as its grade holds
+    /// them as run settings (#1322): what the file keeps in its body.
+    pub fn version_blends(&self, n: usize) -> Vec<klipp_graph_lift::sequence_grade_mix::Blend> {
+        use crate::GradeAccess;
+        self.grade_versions().get(n).map(|v| crate::grade_roots::blends_of(v.grade())).unwrap_or_default()
+    }
+
+    /// Set version `n`'s corrections' mix and mask channel from `blends`,
+    /// as a loader reads them from its body (#1322).
+    pub fn set_version_blends(&mut self, n: usize, blends: &[klipp_graph_lift::sequence_grade_mix::Blend]) -> Result<(), String> {
+        use crate::GradeAccess;
+        let mut grade = self.grade_versions().get(n).map(|v| v.grade().clone()).ok_or_else(|| format!("no grade version {n}"))?;
+        crate::grade_roots::set_blends(&mut grade, blends)?;
+        self.edit_grade_versions(|vs| vs[n].set_grade(grade));
+        Ok(())
+    }
+
+    /// Put `grade`, a version's as [`Self::grade_for_version`] gives it,
+    /// in as the clip's grade (#1322): its fields without the run
+    /// settings, and each correction's mix and mask channel set in the
+    /// picture by path, those the picture held that `grade` doesn't
+    /// cleared. Refused, and nothing changed, for one inside a compound,
+    /// which the picture can't hold yet.
+    pub fn set_grade_from_version(&mut self, grade: klipp_nodes::NodeGraph) -> Result<(), String> {
+        use crate::GradeAccess;
+        use klipp_graph_format::path::{NodePath, Root};
+        use klipp_graph_lift::ops::GraphOp;
+        let blends = crate::grade_roots::blends_of(&grade);
+        if blends.iter().any(|b| !grade.nodes.iter().any(|n| n.id == b.node)) {
+            return Err("a correction inside a compound doesn't keep a mix or mask channel yet".into());
+        }
+        let mut fields = grade;
+        crate::grade_roots::set_blends(&mut fields, &[])?;
+        // The grade nodes the picture gives a mix or channel now.
+        let channel_key = klipp_graph_format::ParamKey::from("mask.channel");
+        let held: Vec<klipp_nodes::NodeId> = self
+            .picture
+            .truth()
+            .map(|t| t.picture.graph.nodes.iter().filter_map(|n| n.group.as_ref()).flat_map(|g| g.graph.nodes.iter()).filter(|n| n.mix.is_some() || n.params.contains_key(&channel_key)).map(|n| n.id).collect())
+            .unwrap_or_default();
+        self.set_grade(fields);
+        let kept: Vec<klipp_nodes::NodeId> = self.grade().nodes.iter().map(|n| n.id).collect();
+        let nodes: Vec<klipp_nodes::NodeId> = held.into_iter().chain(blends.iter().map(|b| b.node)).filter(|n| kept.contains(n)).collect();
+        if nodes.is_empty() {
+            return Ok(());
+        }
+        let picture = self.picture_v2()?;
+        let group = picture.picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::GROUP).map(|n| n.id).ok_or("the clip's picture has no grade group")?;
+        let mut ops = Vec::new();
+        let mut done = Vec::new();
+        for node in nodes {
+            if done.contains(&node) {
+                continue;
+            }
+            done.push(node);
+            let blend = blends.iter().find(|b| b.node == node);
+            let path = NodePath::new(Root::Clip { clip: self.id.0 }, [group, node]);
+            ops.push(GraphOp::SetMix { path: path.clone(), mix: blend.and_then(|b| b.mix) });
+            ops.push(GraphOp::SetMaskChannel { path, channel: blend.and_then(|b| b.channel.clone()) });
+        }
+        self.apply_picture_ops(&ops).map(|_| ())
     }
 
     /// The clip's picture lifted to revision 2, with its grade versions'

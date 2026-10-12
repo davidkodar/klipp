@@ -946,6 +946,10 @@ fn revision2_text(project: &ProjectJson, sequences: &[Sequence]) -> Result<Strin
     // them out, so they go into its stored body here.
     klipp_graph_lift::sequence_grade_mix::write_project(&mut v2, &|sid, root| sequences.iter().find(|s| s.id.0 == sid).map(|s| s.root_blends(root)).unwrap_or_default())
         .map_err(|e| format!("Saving would lose a sequence grade's mix ({e}), so it was not saved"))?;
+    // A clip grade version's too (#1322).
+    let version_blends = |cid: uuid::Uuid, n: usize| sequences.iter().flat_map(|s| s.all_clips()).find(|c| c.id.0 == cid).map(|c| c.version_blends(n)).unwrap_or_default();
+    klipp_graph_lift::sequence_grade_mix::write_versions(&mut v2, &version_blends)
+        .map_err(|e| format!("Saving would lose a grade version's mix ({e}), so it was not saved"))?;
     serde_json::to_string_pretty(&v2).map_err(|e| format!("Failed to serialize project: {e}"))
 }
 

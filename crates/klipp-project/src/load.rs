@@ -162,7 +162,12 @@ fn stored_pictures(v2: &serde_json::Value) -> HashMap<(String, String), klipp_ti
                 if klipp_graph_lift::effect_params::picture_into_memory(&mut picture).is_err() {
                     continue;
                 }
-                let versions: Option<Vec<_>> = all(clip.get("grade_versions")).iter().map(|v| v.get("graph_v2").map(portable)).collect();
+                // A version's mix and mask channel come off its body: the
+                // clip's versions keep them as run settings (#1322).
+                let versions: Option<Vec<_>> = all(clip.get("grade_versions"))
+                    .iter()
+                    .map(|v| v.get("graph_v2").map(portable).and_then(|mut b| klipp_graph_lift::sequence_grade_mix::take(&mut b).ok().map(|_| b)))
+                    .collect();
                 if let Some(versions) = versions {
                     let key = (seq.get("id").and_then(serde_json::Value::as_str).unwrap_or_default().to_string(), id.to_string());
                     if out.insert(key.clone(), klipp_timeline::LiftedPicture { picture, versions }).is_some() {
@@ -437,6 +442,12 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
     // has no place for, read from its stored body.
     let sequence_blends = match form {
         crate::FileForm::Revision2 => klipp_graph_lift::sequence_grade_mix::read_project(&value).map_err(|e| format!("This project's revision-2 file can't be read: {e}"))?,
+        #[cfg(feature = "v1-oracle")]
+        crate::FileForm::V1 => Vec::new(),
+    };
+    // A clip grade version's (#1322).
+    let version_blends = match form {
+        crate::FileForm::Revision2 => klipp_graph_lift::sequence_grade_mix::read_versions(&value).map_err(|e| format!("This project's revision-2 file can't be read: {e}"))?,
         #[cfg(feature = "v1-oracle")]
         crate::FileForm::V1 => Vec::new(),
     };
@@ -722,6 +733,10 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
 
     stored.retain(|(_, id), _| !rewritten.contains(id));
     adopt_stored_pictures(&mut sequences, stored, strict)?;
+    for (cid, n, blends) in version_blends {
+        let clip = sequences.iter_mut().flat_map(|s| s.all_clips_mut()).find(|c| c.id.0 == cid).ok_or_else(|| format!("This project's clip {cid} isn't read, so its grade version's mix can't be kept"))?;
+        clip.set_version_blends(n, &blends).map_err(|e| format!("This project's clip {cid} can't keep its grade version's mix: {e}"))?;
+    }
     for (sid, root, blends) in sequence_blends {
         let seq = sequences.iter_mut().find(|s| s.id.0 == sid).ok_or_else(|| format!("This project's sequence {sid} isn't read, so its grade's mix can't be kept"))?;
         seq.set_root_blends(root, &blends).map_err(|e| format!("This project's sequence {sid} can't keep its grade's mix: {e}"))?;

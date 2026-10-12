@@ -27,6 +27,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 klipp-graph-format = { workspace = true }
+# step_f_saves builds its clips with TestClip.
+klipp-timeline = { workspace = true, features = ["test-clip"] }
 
 [lints]
 workspace = true
