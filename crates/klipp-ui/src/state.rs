@@ -122,11 +122,21 @@ impl GradeNodeClipboard {
         target: &mut klipp_nodes::NodeGraph,
         position_offset: (f32, f32),
     ) -> usize {
+        self.merge_into_ids(target, position_offset).len()
+    }
+
+    /// [`Self::merge_into`], returning the new nodes' ids in the
+    /// clipboard's order, for the editor to select them (#1745).
+    pub fn merge_into_ids(
+        self,
+        target: &mut klipp_nodes::NodeGraph,
+        position_offset: (f32, f32),
+    ) -> Vec<klipp_nodes::NodeId> {
         use std::collections::HashMap;
         let remap: HashMap<klipp_nodes::NodeId, klipp_nodes::NodeId> = self.nodes.iter()
             .map(|n| (n.id, klipp_nodes::NodeId::new_v4()))
             .collect();
-        let count = self.nodes.len();
+        let ids: Vec<klipp_nodes::NodeId> = self.nodes.iter().map(|n| remap[&n.id]).collect();
         for node in self.nodes.into_iter() {
             let new_id = remap[&node.id];
             let mut new_node = node;
@@ -152,7 +162,7 @@ impl GradeNodeClipboard {
                 });
             }
         }
-        count
+        ids
     }
 }
 
@@ -1992,6 +2002,9 @@ pub struct AppState {
     /// remaps every Edge endpoint via the fresh-NodeId table built
     /// during paste. `None` means nothing has been copied yet.
     pub grade_node_clipboard: Option<GradeNodeClipboard>,
+    /// The picture canvas's copied nodes, as the picture holds them
+    /// (#1745). Empty: nothing copied.
+    pub picture_node_clipboard: Vec<klipp_graph_format::Node>,
     /// Stack of NodeIds representing the V2 canvas's descent path into
     /// nested compound subgraphs. Empty = editing the clip's root
     /// graph (the common case). Each entry is the id of a
@@ -4357,6 +4370,7 @@ impl Default for AppState {
             timeline_search_next: false,
             timeline_search_prev: false,
             grade_node_clipboard: None,
+            picture_node_clipboard: Vec::new(),
             graph_descent_path: Vec::new(),
             show_node_strip: false,
             use_node_graph_v2: true,

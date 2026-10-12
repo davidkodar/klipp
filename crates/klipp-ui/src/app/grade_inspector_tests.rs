@@ -1668,7 +1668,7 @@ fn a_focused_grade_canvas_keeps_its_keys_from_the_timeline() {
         let canvas: Vec<AppCommand> = h.frame(vec![event]).into_iter().filter(|c| !matches!(c, AppCommand::SetVisibleNodeThumbs { .. })).collect();
         let (grade_keys, transported) = with_key(&ctx, key, egui::Modifiers::NONE, |ctx| {
             let mut cmds = Vec::new();
-            ctx.input(|i| grade_node_keys(&mut state, &kb, i, true, &mut cmds));
+            ctx.input(|i| grade_node_keys(&mut state, &kb, i, &mut cmds));
             (cmds, transport.handle_keyboard(ctx, &state, &kb))
         });
         assert!(grade_keys.is_empty() && transported.is_empty(), "{key:?} reached the app: {grade_keys:?} {transported:?}");
@@ -1714,7 +1714,7 @@ fn the_grade_keys_act_on_the_open_level() {
     let press = |state: &mut AppState, key, mods| {
         with_key(&ctx, key, mods, |ctx| {
             let mut cmds = Vec::new();
-            ctx.input(|i| grade_node_keys(state, &kb, i, true, &mut cmds));
+            ctx.input(|i| grade_node_keys(state, &kb, i, &mut cmds));
             cmds
         })
     };
@@ -1760,4 +1760,150 @@ fn the_grade_keys_act_on_the_open_level() {
     let cmds = press(&mut state, egui::Key::R, reset);
     apply(&mut state, &cmds[0]);
     assert!(clip(&state, clip_id).grade().nodes.iter().find(|n| n.id == descent[0]).unwrap().params.compound_subgraph.is_some(), "the compound keeps its graph");
+}
+
+/// The grade canvas's commands applied as the colour page's dispatch
+/// applies them (#1745): the node editor's edits, node and note moves in
+/// the layout gesture, and the gesture itself.
+fn dispatch_canvas(state: &mut AppState, cmds: &[AppCommand]) {
+    for cmd in cmds {
+        state.before_dispatch(cmd);
+        if state.node_edit(cmd).is_some() || state.canvas_move(cmd).is_some() {
+            continue;
+        }
+        if let AppCommand::MoveStickyNote { clip_id, sticky_id, delta_x, delta_y } = cmd {
+            let record = !state.in_layout_gesture(*clip_id);
+            let path = state.graph_descent_path.clone();
+            super::colour::move_sticky_note(state, *clip_id, &path, *sticky_id, (*delta_x, *delta_y), record);
+            continue;
+        }
+        state.path_command(cmd);
+    }
+}
+
+/// A grade at depth 1 on a clip, the canvas on that level with its nodes
+/// spread out (and `place` moving them), and the three nodes.
+fn canvas_at_depth(place: impl Fn(usize) -> (f32, f32)) -> (AppState, ClipId, Vec<NodeId>, crate::panels::node_graph_v2::canvas_command_tests::Harness) {
+    let (mut state, clip_id, _) = graded(NodeKind::Corrector).unwrap();
+    let (grade, descent, ids) = at_depth(1);
+    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| *g = grade);
+    state.graph_descent_path = descent.clone();
+    state.selected_clip = Some(clip_id);
+    let mut level = level_of(clip(&state, clip_id).grade(), &descent).unwrap();
+    for (i, n) in level.nodes.iter().enumerate() {
+        let (x, y) = place(i);
+        level.node_positions.insert(n.id, klipp_nodes::NodePos { x, y });
+    }
+    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+        *super::KlippApp::resolve_graph_at_path_mut(g, &descent).unwrap() = level.clone();
+    });
+    let h = crate::panels::node_graph_v2::canvas_command_tests::Harness::on(level, clip_id);
+    (state, clip_id, ids, h)
+}
+
+/// Ctrl+D, Ctrl+C and Ctrl+V on the grade canvas, applied as the app
+/// applies them (#1745): inside a compound, a duplicate and a paste land
+/// in the compound, never at the grade's top, each one undo step, the
+/// new nodes selected; the paste's first node where it was asked for.
+#[test]
+fn grade_canvas_duplicates_copies_and_pastes_at_the_open_level() {
+    let (mut state, clip_id, ids, mut h) = canvas_at_depth(|i| ((i as f32 - 2.0) * 230.0, 0.0));
+    let level = |state: &AppState| level_of(clip(state, clip_id).grade(), &state.graph_descent_path.clone()).unwrap();
+    let top = clip(&state, clip_id).grade().nodes.len();
+    let before = level(&state).nodes.len();
+    h.set = [ids[0], ids[1]].into_iter().collect();
+    h.selected = Some(ids[1]);
+    h.settle();
+    h.mods = egui::Modifiers::COMMAND;
+    let sent = h.key(egui::Key::D);
+    let steps = state.active_history().undo_count();
+    dispatch_canvas(&mut state, &sent);
+    assert_eq!(level(&state).nodes.len(), before + 2, "two copies in the compound: {sent:?}");
+    assert_eq!(clip(&state, clip_id).grade().nodes.len(), top, "the top untouched");
+    assert_eq!(state.active_history().undo_count(), steps + 1, "one step");
+    assert_eq!(state.selected_node_ids.len(), 2);
+    assert!(state.selected_node_ids.iter().all(|id| !ids.contains(id)), "the copies are selected");
+
+    let sent = h.key(egui::Key::C);
+    dispatch_canvas(&mut state, &sent);
+    assert_eq!(state.grade_node_clipboard.as_ref().map(|c| c.nodes.len()), Some(2), "copied from the compound: {sent:?}");
+    let sent = h.key(egui::Key::V);
+    let Some(AppCommand::PasteNodes { position, .. }) = sent.iter().find(|c| matches!(c, AppCommand::PasteNodes { .. })).cloned() else { panic!("{sent:?}") };
+    dispatch_canvas(&mut state, &sent);
+    let now = level(&state);
+    assert_eq!(now.nodes.len(), before + 4);
+    assert_eq!(state.active_history().undo_count(), steps + 2, "the paste one more step");
+    let pasted: Vec<_> = state.selected_node_ids.iter().map(|id| now.node_positions[id]).collect();
+    let min = pasted.iter().fold((f32::INFINITY, f32::INFINITY), |m, p| (m.0.min(p.x), m.1.min(p.y)));
+    assert_eq!(min, position, "the paste lands where it was asked");
+}
+
+/// "Replace with…" swaps a node for one of another kind in its place:
+/// its id, wires and place kept, one undo step.
+#[test]
+fn replace_keeps_the_node_its_wires_and_its_place() {
+    let (mut state, clip_id, ids, mut h) = canvas_at_depth(|i| ((i as f32 - 2.0) * 230.0, 0.0));
+    let level = |state: &AppState| level_of(clip(state, clip_id).grade(), &state.graph_descent_path.clone()).unwrap();
+    let before = level(&state);
+    let (_, rect) = h.card(NodeKind::Saturation);
+    h.menu_item(rect.center(), "Replace with\u{2026}");
+    h.settle();
+    h.frame(vec![egui::Event::Text("Exposure".into())]);
+    let sent = h.key(egui::Key::Enter);
+    let steps = state.active_history().undo_count();
+    dispatch_canvas(&mut state, &sent);
+    let after = level(&state);
+    let node = after.nodes.iter().find(|n| n.id == ids[1]).expect("the id kept");
+    assert_eq!(node.kind, NodeKind::Exposure, "{sent:?}");
+    assert_eq!(after.edges, before.edges, "its wires kept");
+    assert_eq!(after.node_positions[&ids[1]], before.node_positions[&ids[1]], "its place kept");
+    assert_eq!(state.active_history().undo_count(), steps + 1);
+}
+
+/// The node menu's Align lines a selection's top edges up, one undo
+/// step for all of them.
+#[test]
+fn align_lines_a_selection_up_in_one_step() {
+    let (mut state, clip_id, ids, mut h) = canvas_at_depth(|i| ((i as f32 - 2.0) * 230.0, i as f32 * 40.0));
+    let level = |state: &AppState| level_of(clip(state, clip_id).grade(), &state.graph_descent_path.clone()).unwrap();
+    h.set = ids.iter().copied().collect();
+    h.selected = Some(ids[0]);
+    h.settle();
+    let (_, rect) = h.card(NodeKind::Contrast);
+    h.click(rect.center(), egui::PointerButton::Secondary);
+    h.settle();
+    h.click(h.text("Align \u{25B8}"), egui::PointerButton::Primary);
+    h.settle();
+    let sent = h.click(h.text("Top edges"), egui::PointerButton::Primary);
+    let steps = state.active_history().undo_count();
+    dispatch_canvas(&mut state, &sent);
+    let after = level(&state);
+    let tops: Vec<f32> = ids.iter().map(|id| after.node_positions[id].y).collect();
+    assert!(tops.iter().all(|y| *y == tops[0]), "{tops:?}: {sent:?}");
+    assert_eq!(state.active_history().undo_count(), steps + 1, "one step: {sent:?}");
+}
+
+/// A note dragged on the grade canvas is one undo step for the drag, as
+/// a node's drag is (#1745); it used to be a step a frame.
+#[test]
+fn a_grade_note_drag_is_one_step() {
+    let (mut state, clip_id, _, _) = canvas_at_depth(|i| ((i as f32 - 2.0) * 230.0, 0.0));
+    let note = klipp_nodes::NodeStickyNote { id: klipp_nodes::NodeStickyNoteId::new_v4(), pos: klipp_nodes::NodePos { x: -100.0, y: 300.0 }, width: 200.0, text: String::new(), color_rgba: u32::MAX };
+    let descent = state.graph_descent_path.clone();
+    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+        super::KlippApp::resolve_graph_at_path_mut(g, &descent).unwrap().sticky_notes.push(note.clone());
+    });
+    let mut h = crate::panels::node_graph_v2::canvas_command_tests::Harness::on(level_of(clip(&state, clip_id).grade(), &descent).unwrap(), clip_id);
+    let at = h.text("Click to edit\u{2026}");
+    let press = |at, pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    let steps = state.active_history().undo_count();
+    let mut sent = h.frame(vec![egui::Event::PointerMoved(at), press(at, true)]);
+    for step in [20.0, 40.0, 60.0] {
+        sent.extend(h.frame(vec![egui::Event::PointerMoved(at + egui::vec2(step, step))]));
+    }
+    sent.extend(h.frame(vec![press(at + egui::vec2(60.0, 60.0), false)]));
+    dispatch_canvas(&mut state, &sent);
+    let moved = level_of(clip(&state, clip_id).grade(), &descent).unwrap().sticky_notes[0].pos;
+    assert!(moved.x > note.pos.x + 10.0 && moved.y > note.pos.y + 10.0, "the note moved: {moved:?}: {sent:?}");
+    assert_eq!(state.active_history().undo_count(), steps + 1, "one step for the drag: {sent:?}");
 }

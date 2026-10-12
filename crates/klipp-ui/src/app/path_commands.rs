@@ -684,6 +684,10 @@ impl crate::state::AppState {
         match cmd {
             AppCommand::BeginNodeLayoutEdit { root } | AppCommand::EndNodeLayoutEdit { root } | AppCommand::AbandonNodeLayoutEdit { root } => layout_drag(self.layout_root(*root)) != open,
             AppCommand::SetNodePositionAt { addr, .. } => layout_drag(addr.root) != open,
+            // A node or a note dragged on the grade canvas is part of its
+            // layout gesture (#1745): the dispatch closed the gesture on
+            // each move, so a drag was a step a frame.
+            AppCommand::MoveNode { clip_id, .. } | AppCommand::MoveStickyNote { clip_id, .. } => layout_drag(self.layout_root(Root::Clip { clip: clip_id.0 })) != open,
             // A note moved on the picture canvas is part of its layout
             // gesture (#1743).
             AppCommand::SetAnnotationsAt { at, .. } => layout_drag(at.root) != open,
@@ -870,6 +874,12 @@ impl crate::state::AppState {
             Root::Clip { clip } => super::timeline_grade::GradeStandIn::of(seq, ClipId(clip)).map_or(root, |which| which.root(seq)),
             _ => root,
         }
+    }
+
+    /// Whether a layout gesture is open on the canvas `clip_id`'s grade
+    /// is edited through (#1745): an edit inside it is the gesture's step.
+    pub(super) fn in_layout_gesture(&self, clip_id: ClipId) -> bool {
+        self.active_history().is_dragging(&layout_drag(self.layout_root(Root::Clip { clip: clip_id.0 })))
     }
 
     fn begin_node_layout_edit(&mut self, root: Root) -> Result<(), String> {

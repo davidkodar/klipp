@@ -144,6 +144,17 @@ fn dock_header(ui: &mut egui::Ui, rect: egui::Rect, in_grade: bool, has_grade: b
 }
 
 impl KlippApp {
+    /// The node editor's recent add-menu picks into the preferences when
+    /// they changed, so the next session starts with them (#1745).
+    pub(super) fn keep_node_recents(&mut self) {
+        if self.node_graph_v2_panel.take_recents_changed() {
+            self.prefs.color.node_add_recents = self.node_graph_v2_panel.recent_kinds();
+            self.prefs_dirty = true;
+        }
+    }
+}
+
+impl KlippApp {
     pub(super) fn render_graph_dock(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, rect: egui::Rect, theme: &KlippTheme) {
         self.state.repair_graph_dock();
         self.refresh_node_thumbnails();
@@ -191,6 +202,7 @@ impl KlippApp {
                 Ok(updates) => cmds.extend(updates),
                 Err(why) => { ui.label(why); }
             }
+            self.keep_node_recents();
             self.state.graph_dock_path = level.nodes.clone();
             let before = self.state.selected_node_addr.take();
             self.state.selected_node_addr = self.state.selected_node_id.map(|node| NodePath::new(level.root, level.nodes.iter().copied().chain([node])));

@@ -17,7 +17,7 @@ impl KlippApp {
             KeyScope::CtrlOnly => return cmds,
             KeyScope::GradeCanvas => {
                 let kb = self.key_bindings.clone();
-                ctx.input(|i| grade_node_keys(&mut self.state, &kb, i, true, &mut cmds));
+                ctx.input(|i| grade_node_keys(&mut self.state, &kb, i, &mut cmds));
                 return cmds;
             }
             KeyScope::All => {}
@@ -481,7 +481,7 @@ impl KlippApp {
             }
             // [ / ], Alt+D, the printer lights and Ctrl+Shift+R: the
             // grade's keys, on the level the node canvas shows (#1742).
-            grade_node_keys(&mut self.state, &kb, i, false, cmds);
+            grade_node_keys(&mut self.state, &kb, i, cmds);
             // Copy / Copy Attributes / Copy Color Nodes
             //
             // Two distinct rebindable actions share defaults at Ctrl+C:
@@ -1240,13 +1240,12 @@ pub(super) fn remove_selected_keyframe(state: &crate::state::AppState, sk: &crat
 ///   command, so each is one undo step wherever the node is.
 /// - The printer lights.
 ///
-/// With the grade canvas focused (`canvas`), Ctrl+C and Ctrl+V copy and
-/// paste its nodes, which the clip's copy and paste step aside for.
+/// With the grade canvas focused, its own copy, paste and duplicate are
+/// the canvas's (#1745), which the clip's copy and paste step aside for.
 pub(super) fn grade_node_keys(
     state: &mut crate::state::AppState,
     kb: &crate::keybindings::KeyBindings,
     i: &egui::InputState,
-    canvas: bool,
     cmds: &mut Vec<AppCommand>,
 ) {
     let Some(clip_id) = state.selected_clip else { return };
@@ -1294,14 +1293,6 @@ pub(super) fn grade_node_keys(
     ] {
         if pressed {
             cmds.push(AppCommand::PrinterLight { channel, points });
-        }
-    }
-    if canvas {
-        if kb.is_action_pressed("copy_color_nodes", i) && !state.selected_node_ids.is_empty() {
-            cmds.push(AppCommand::CopyColorNodes { clip_id });
-        }
-        if kb.is_action_pressed("paste_color_nodes", i) && state.grade_node_clipboard.as_ref().is_some_and(|c| !c.nodes.is_empty()) {
-            cmds.push(AppCommand::PasteColorNodes { clip_id });
         }
     }
 }

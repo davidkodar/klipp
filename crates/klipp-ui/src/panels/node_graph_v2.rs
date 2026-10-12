@@ -380,6 +380,15 @@ pub struct NodeGraphV2Panel {
     /// with its halo, chip and Clear solo (#1743); the app sets it before
     /// each draw, as it hands the grade canvas its solo.
     pub picture_solo: Option<NodeId>,
+    /// The node the add menu replaces when it is open for "Replace
+    /// with…" (#1745): a pick swaps that node rather than adding one.
+    replace_target: Option<NodeId>,
+    /// Whether a node drag lands on the grid (#1745), toggled in the
+    /// toolbar.
+    pub snap_to_grid: bool,
+    /// The add menu's recent picks changed since the app last kept them
+    /// (#1745): it reads [`Self::recent_kinds`] and clears this.
+    recents_changed: bool,
 }
 
 impl Default for NodeGraphV2Panel {
@@ -432,6 +441,9 @@ impl Default for NodeGraphV2Panel {
             thumb_histograms: std::collections::HashMap::new(),
             grade_keys: true,
             picture_solo: None,
+            replace_target: None,
+            snap_to_grid: false,
+            recents_changed: false,
         }
     }
 }
@@ -504,6 +516,7 @@ impl NodeGraphV2Panel {
         if let Some(root) = self.picture_move_root.take() {
             self.drag_node = None;
             self.drag_frame = None;
+            self.drag_sticky = None;
             cmds.push(AppCommand::EndNodeLayoutEdit { root });
         }
         let previous_path = descent_path.clone();
@@ -516,6 +529,7 @@ impl NodeGraphV2Panel {
             self.grade_move_root = None;
             self.drag_node = None;
             self.drag_frame = None;
+            self.drag_sticky = None;
             cmds.push(AppCommand::AbandonNodeLayoutEdit { root });
         }
         let keys = self.grade_keys;
@@ -523,12 +537,13 @@ impl NodeGraphV2Panel {
             engine_node_thumbs, engine_node_thumbs_gen, deferred_drops, descent_path,
             breadcrumb_labels, grade_version_names, active_grade_version, clip_time_secs,
             port_snap_enabled, port_snap_radius_px, solo_node);
-        if self.grade_move_root.is_none() && updates.iter().any(|cmd| matches!(cmd, AppCommand::MoveNode { .. })) {
+        // A note's drag is the gesture's too, one step (#1745).
+        if self.grade_move_root.is_none() && updates.iter().any(|cmd| matches!(cmd, AppCommand::MoveNode { .. } | AppCommand::MoveStickyNote { .. })) {
             self.grade_move_root = Some(gesture);
             cmds.push(AppCommand::BeginNodeLayoutEdit { root: gesture });
         }
         cmds.extend(updates);
-        if self.drag_node.is_none() && self.drag_frame.is_none() {
+        if self.drag_node.is_none() && self.drag_frame.is_none() && self.drag_sticky.is_none() {
             if let Some(root) = self.grade_move_root.take() {
                 cmds.push(AppCommand::EndNodeLayoutEdit { root });
             }
@@ -731,6 +746,12 @@ impl NodeGraphV2Panel {
             .clicked()
         {
             cmds.push(AppCommand::AutoLayoutNodeGraph { clip_id });
+        }
+        if toolbar_ui.selectable_label(self.snap_to_grid, "Snap")
+            .on_hover_text("Node drags land on the grid")
+            .clicked()
+        {
+            self.snap_to_grid = !self.snap_to_grid;
         }
 
         toolbar_ui.add_space(6.0);
@@ -2472,7 +2493,9 @@ impl NodeGraphV2Panel {
         // 2` and silently returned. Gating here lets the menu's own
         // `clicked_elsewhere` close-detection handle outside-clicks.
         let menu_open = self.node_menu.is_some() || self.add_menu_open || self.frame_menu.is_some() || self.sticky_menu.is_some();
-        if primary_pressed && !menu_open {
+        // A press with Space held is the pan's, not a selection's (#1745).
+        let panning = ui.input(|i| i.key_down(egui::Key::Space));
+        if primary_pressed && !menu_open && !panning {
             if let Some(p) = pointer_pos {
                 if canvas_rect.contains(p) {
                     // Output port hit?
@@ -2689,11 +2712,19 @@ impl NodeGraphV2Panel {
         // one node or N: the cursor-derived delta is shared across
         // every member so they all translate in lockstep without
         // drift across many frames.
+        let snap = self.snap_to_grid;
         if let Some(ref mut dn) = self.drag_node {
             if let Some(p) = pointer_pos {
                 let g = to_graph(p);
-                let total_dx = g.x - dn.start_cursor_x;
-                let total_dy = g.y - dn.start_cursor_y;
+                let (mut total_dx, mut total_dy) = (g.x - dn.start_cursor_x, g.y - dn.start_cursor_y);
+                // On the grid (#1745): the grabbed node's corner lands on
+                // a grid line, the rest keep their places beside it. It
+                // started where it is now less what has been sent.
+                if let Some(start) = snap.then(|| dn.node_ids.first().and_then(|id| graph.positions().get(id))).flatten() {
+                    let (x0, y0) = (start.x - dn.emitted_dx, start.y - dn.emitted_dy);
+                    total_dx = ((x0 + total_dx) / GRID_SPACING).round() * GRID_SPACING - x0;
+                    total_dy = ((y0 + total_dy) / GRID_SPACING).round() * GRID_SPACING - y0;
+                }
                 let delta_x = total_dx - dn.emitted_dx;
                 let delta_y = total_dy - dn.emitted_dy;
                 if delta_x.abs() > 0.01 || delta_y.abs() > 0.01 {
@@ -2892,6 +2923,47 @@ impl NodeGraphV2Panel {
             }
         }
 
+        // Node editing keys (#1745): Ctrl+D duplicates the selection,
+        // Ctrl+C copies it, Ctrl+V pastes at the pointer, and Tab or
+        // Shift+A opens the add menu at the pointer, its search taking
+        // the keys. Same gate as Delete.
+        // Text being typed has the keys; a toolbar button that Tab has
+        // just focused does not: egui moves the focus on Tab before the
+        // canvas reads it, and the canvas's Tab is its quick add.
+        let ctx = ui.ctx().clone();
+        let focus = ctx.memory(|m| m.focused());
+        let typing = focus.is_some_and(|id| egui::TextEdit::load_state(&ctx, id).is_some());
+        if graph.keyboard_enabled() && !any_menu_open && !typing {
+            let (duplicate, copy, paste, quick_add) = ui.input(|i| {
+                let cmd = i.modifiers.command || i.modifiers.ctrl;
+                (
+                    cmd && i.key_pressed(egui::Key::D),
+                    (cmd && i.key_pressed(egui::Key::C)) || i.events.iter().any(|e| matches!(e, egui::Event::Copy)),
+                    (cmd && i.key_pressed(egui::Key::V)) || i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))),
+                    !cmd && !i.modifiers.alt
+                        && ((i.key_pressed(egui::Key::Tab) && !i.modifiers.shift) || (i.modifiers.shift && i.key_pressed(egui::Key::A))),
+                )
+            });
+            let picked = editable_selection(graph, *selected_node, selected_set);
+            if duplicate && !picked.is_empty() {
+                cmds.push(AppCommand::DuplicateNodes { clip_id, node_ids: picked.clone() });
+            }
+            if copy && !picked.is_empty() {
+                cmds.push(AppCommand::CopyNodes { clip_id, node_ids: picked });
+            }
+            let at = pointer_pos.filter(|p| canvas_rect.contains(*p)).unwrap_or(canvas_rect.center());
+            if paste {
+                let g = to_graph(at);
+                cmds.push(AppCommand::PasteNodes { clip_id, position: (g.x, g.y) });
+            }
+            if quick_add {
+                if let Some(id) = focus {
+                    ctx.memory_mut(|m| m.surrender_focus(id));
+                }
+                self.open_add_menu(at, to_graph(at), ctx.cumulative_pass_nr(), None);
+            }
+        }
+
         // View bookmarks (1..9 jump, Shift+1..9 set). Same gate as
         // Delete: no popup menu open, no text-input focus. Ctrl /
         // Alt / Cmd modifiers skip the binding so this won't collide
@@ -3030,15 +3102,8 @@ impl NodeGraphV2Panel {
                             self.node_menu = None;
                             self.sticky_menu = None;
                         } else {
-                            self.add_menu_open = true;
-                            self.add_menu_screen_pos = p;
-                            self.add_menu_graph_pos = to_graph(p);
                             // Each menu invocation is a fresh search.
-                            self.add_menu_search.clear();
-                            self.add_menu_opened_frame = frame_nr;
-                            self.node_menu = None;
-                            self.frame_menu = None;
-                            self.sticky_menu = None;
+                            self.open_add_menu(p, to_graph(p), frame_nr, None);
                         }
                     }
                 }
@@ -3575,8 +3640,9 @@ impl NodeGraphV2Panel {
         canvas_resp: &egui::Response,
     ) {
         // Pan: middle-mouse drag, OR primary drag while holding space.
-        let space_held = ui.input(|i| i.modifiers.shift && i.pointer.primary_down())
-            || ui.input(|i| i.key_down(egui::Key::Space));
+        // Shift is the selection's modifier, never a pan (#1745): a
+        // Shift-drag panned the canvas under the marquee it drew.
+        let space_held = ui.input(|i| i.key_down(egui::Key::Space));
         let middle_dragging = ui.input(|i| i.pointer.middle_down());
         let panning = middle_dragging || (space_held && canvas_resp.dragged());
 
@@ -3606,6 +3672,40 @@ impl NodeGraphV2Panel {
                 }
             }
         }
+    }
+
+    /// The add menu opened at `screen` (canvas point `graph`), a fresh
+    /// search; for "Replace with…" when `replace` names a node (#1745).
+    fn open_add_menu(&mut self, screen: egui::Pos2, graph: egui::Pos2, pass: u64, replace: Option<NodeId>) {
+        self.add_menu_open = true;
+        self.add_menu_screen_pos = screen;
+        self.add_menu_graph_pos = graph;
+        self.add_menu_search.clear();
+        self.add_menu_opened_frame = pass;
+        self.replace_target = replace;
+        self.node_menu = None;
+        self.frame_menu = None;
+        self.sticky_menu = None;
+    }
+
+    /// The add menu's recent picks, newest first, by kind (#1745): what
+    /// the app keeps across sessions.
+    pub fn recent_kinds(&self) -> Vec<String> {
+        self.add_menu_recents.iter().map(|k| (*k).to_owned()).collect()
+    }
+
+    /// The recent picks kept from an earlier session: those either
+    /// canvas's add menu still offers, in their order.
+    pub fn restore_recents(&mut self, kinds: &[String]) {
+        let offered = |kind: &str| -> Option<&'static str> {
+            model::grade_menu().iter().chain(picture::picture_menu()).flat_map(|(_, e)| e.iter()).map(|(_, k)| *k).find(|k| *k == kind)
+        };
+        self.add_menu_recents = kinds.iter().filter_map(|k| offered(k)).take(6).collect();
+    }
+
+    /// Whether the recent picks changed since the last call (#1745).
+    pub fn take_recents_changed(&mut self) -> bool {
+        std::mem::take(&mut self.recents_changed)
     }
 
     fn draw_add_menu(
@@ -3666,12 +3766,19 @@ impl NodeGraphV2Panel {
                     ui.set_max_width(260.0);
 
                     // ── Search field ─────────────────────────────
+                    let replacing = self.replace_target.is_some();
+                    if replacing {
+                        ui.label(egui::RichText::new("Replace with\u{2026}").strong().color(theme.text_primary));
+                    }
                     let search_resp = ui.add(
                         egui::TextEdit::singleline(&mut self.add_menu_search)
                             .id(search_id)
                             .hint_text("Search nodes…")
                             .desired_width(200.0),
                     );
+                    // Enter takes the first match, as a quick add's
+                    // typing expects (#1745).
+                    let enter = search_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     // Auto-focus on first frame the menu is shown so
                     // the user can start typing immediately. egui
                     // grabs focus exactly once per request_focus()
@@ -3689,6 +3796,14 @@ impl NodeGraphV2Panel {
                         if !in_search { return true; }
                         label.to_lowercase().contains(&q)
                     };
+                    if enter && in_search {
+                        chosen_kind = categories.iter().flat_map(|(_, e)| e.iter()).find(|(label, _)| matches(label)).map(|(_, k)| *k);
+                    }
+                    // Paste where the menu was opened (#1745).
+                    if !replacing && !in_search && add_menu_entry(ui, "Paste", theme) {
+                        cmds.push(AppCommand::PasteNodes { clip_id, position: (self.add_menu_graph_pos.x, self.add_menu_graph_pos.y) });
+                        close = true;
+                    }
 
                     egui::ScrollArea::vertical()
                         .id_salt(("ngv2_add_node_scroll", self.add_menu_opened_frame))
@@ -3830,12 +3945,16 @@ impl NodeGraphV2Panel {
             close = true;
         }
         if let Some(kind_str) = chosen_kind {
-            cmds.push(AppCommand::AddNode {
-                clip_id,
-                kind: kind_str.to_string(),
-                node_id: None,
-                position: (self.add_menu_graph_pos.x, self.add_menu_graph_pos.y),
-            });
+            match self.replace_target {
+                Some(node_id) => cmds.push(AppCommand::ReplaceNode { clip_id, node_id, kind: kind_str.to_string() }),
+                None => cmds.push(AppCommand::AddNode {
+                    clip_id,
+                    kind: kind_str.to_string(),
+                    node_id: None,
+                    position: (self.add_menu_graph_pos.x, self.add_menu_graph_pos.y),
+                }),
+            }
+            self.recents_changed = true;
             // Bump kind to the front of recents (dedupe + cap 6).
             // Storing the &'static str (not the display label) means
             // a future label rename doesn't poison the recents list.
@@ -3844,7 +3963,10 @@ impl NodeGraphV2Panel {
             self.add_menu_recents.truncate(6);
             close = true;
         }
-        if close { self.add_menu_open = false; }
+        if close {
+            self.add_menu_open = false;
+            self.replace_target = None;
+        }
     }
 
     fn draw_wireless_label_editor(
@@ -4303,6 +4425,66 @@ impl NodeGraphV2Panel {
                         }
                     }
                     let in_set = selected_set.contains(&node_id);
+                    // Editing the node, or the selection it is part of
+                    // (#1745): each also on a key (Ctrl+D, Ctrl+C, Tab
+                    // for the add menu).
+                    if !is_structural {
+                        ui.separator();
+                        let targets = if in_set && selected_set.len() > 1 {
+                            editable_selection(graph, Some(node_id), selected_set)
+                        } else {
+                            vec![node_id]
+                        };
+                        if ui.button("Duplicate").on_hover_text("Ctrl+D").clicked() {
+                            cmds.push(AppCommand::DuplicateNodes { clip_id, node_ids: targets.clone() });
+                            close = true;
+                        }
+                        if ui.button("Copy").on_hover_text("Ctrl+C").clicked() {
+                            cmds.push(AppCommand::CopyNodes { clip_id, node_ids: targets });
+                            close = true;
+                        }
+                        if !kind.is_group() && !is_passthrough_kind && ui.button("Reset to defaults").clicked() {
+                            cmds.push(AppCommand::ResetNode { clip_id, node_id });
+                            close = true;
+                        }
+                        if !kind.is_group() && ui.button("Replace with\u{2026}").clicked() {
+                            // Drawn from the next pass on: the add menu is
+                            // drawn before this one, so its search takes
+                            // the keys as it first shows.
+                            let pass = ui.ctx().cumulative_pass_nr() + 1;
+                            self.open_add_menu(pos, egui::Pos2::ZERO, pass, Some(node_id));
+                            close = true;
+                        }
+                        if ui.button("Show in Inspector").clicked() {
+                            *selected_node = Some(node_id);
+                            selected_set.clear();
+                            selected_set.insert(node_id);
+                            let tab = if graph.grade_tools() { "color" } else { "effects" };
+                            cmds.push(AppCommand::ShowPanel { workspace: None, inspector_tab: Some(tab.into()) });
+                            close = true;
+                        }
+                        // Align and spread a selection (#1745), one undo
+                        // step each, as a drag is.
+                        if in_set && selected_set.len() >= 2 {
+                            ui.menu_button("Align \u{25B8}", |ui| {
+                                for (label, how, least) in [
+                                    ("Left edges", Align::Left, 2), ("Centres across", Align::Centre, 2), ("Right edges", Align::Right, 2),
+                                    ("Top edges", Align::Top, 2), ("Middles down", Align::Middle, 2), ("Bottom edges", Align::Bottom, 2),
+                                    ("Spread across", Align::SpreadAcross, 3), ("Spread down", Align::SpreadDown, 3),
+                                ] {
+                                    if selected_set.len() >= least && ui.button(label).clicked() {
+                                        let ids: Vec<NodeId> = selected_set.iter().copied().collect();
+                                        for (node_id, delta_x, delta_y) in align_moves(graph, &ids, how) {
+                                            cmds.push(AppCommand::MoveNode { clip_id, node_id, delta_x, delta_y });
+                                        }
+                                        ui.close_menu();
+                                        close = true;
+                                    }
+                                }
+                            });
+                        }
+                        ui.separator();
+                    }
                     // Group-into-Compound: only offered when the
                     // right-clicked node is part of a multi-selection
                     // of 2+ nodes. Engine-side handler validates the
@@ -4482,6 +4664,58 @@ impl NodeGraphV2Panel {
         }
         if close { self.node_menu = None; }
     }
+}
+
+/// The selection the node editor's own edits act on (#1745): the set,
+/// else the primary, Source and Output left out, in the graph's order.
+fn editable_selection(graph: &impl CanvasGraph, primary: Option<NodeId>, set: &std::collections::HashSet<NodeId>) -> Vec<NodeId> {
+    graph.nodes().iter()
+        .filter(|n| (set.contains(&n.id()) || (set.is_empty() && primary == Some(n.id()))) && !n.kind().is_terminal())
+        .map(|n| n.id())
+        .collect()
+}
+
+/// How the node menu lines a selection up (#1745).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Align { Left, Centre, Right, Top, Middle, Bottom, SpreadAcross, SpreadDown }
+
+/// The moves that line `ids` up `how`, by each node's card: an edge or
+/// centre to the selection's extreme or mean, or the cards spread evenly
+/// between the first and the last. Nodes already in place are left out.
+fn align_moves(graph: &impl CanvasGraph, ids: &[NodeId], how: Align) -> Vec<(NodeId, f32, f32)> {
+    let mut at: Vec<(NodeId, NodePos)> = ids.iter().filter_map(|id| graph.positions().get(id).map(|p| (*id, *p))).collect();
+    if at.len() < 2 {
+        return Vec::new();
+    }
+    match how {
+        Align::SpreadAcross => at.sort_by(|a, b| a.1.x.total_cmp(&b.1.x)),
+        Align::SpreadDown => at.sort_by(|a, b| a.1.y.total_cmp(&b.1.y)),
+        _ => {}
+    }
+    let xs = at.iter().map(|(_, p)| p.x);
+    let ys = at.iter().map(|(_, p)| p.y);
+    let (min_x, max_x) = (xs.clone().fold(f32::INFINITY, f32::min), xs.fold(f32::NEG_INFINITY, f32::max));
+    let (min_y, max_y) = (ys.clone().fold(f32::INFINITY, f32::min), ys.fold(f32::NEG_INFINITY, f32::max));
+    let n = at.len() as f32;
+    let mean = |f: fn(&NodePos) -> f32| at.iter().map(|(_, p)| f(p)).sum::<f32>() / n;
+    let target = |p: &NodePos, i: usize| -> (f32, f32) {
+        let step = |lo: f32, hi: f32| lo + (hi - lo) * i as f32 / (n - 1.0);
+        match how {
+            Align::Left => (min_x, p.y),
+            Align::Right => (max_x, p.y),
+            Align::Centre => (mean(|p| p.x), p.y),
+            Align::Top => (p.x, min_y),
+            Align::Bottom => (p.x, max_y),
+            Align::Middle => (p.x, mean(|p| p.y)),
+            Align::SpreadAcross => (step(min_x, max_x), p.y),
+            Align::SpreadDown => (p.x, step(min_y, max_y)),
+        }
+    };
+    at.iter().enumerate().filter_map(|(i, (id, p))| {
+        let (x, y) = target(p, i);
+        let (dx, dy) = (x - p.x, y - p.y);
+        (dx.abs() > 0.01 || dy.abs() > 0.01).then_some((*id, dx, dy))
+    }).collect()
 }
 
 // ── Port position helpers ─────────────────────────────────────────
@@ -5159,6 +5393,8 @@ pub(crate) mod canvas_command_tests {
         texts: Vec<(String, egui::Pos2)>,
         cards: Vec<egui::Rect>,
         time: f64,
+        /// The keys held through the frames that follow.
+        pub(crate) mods: egui::Modifiers,
     }
     impl Harness {
         fn new() -> Self {
@@ -5171,7 +5407,7 @@ pub(crate) mod canvas_command_tests {
         }
         /// The canvas showing `graph` for `clip`.
         pub(crate) fn on(graph: NodeGraph, clip: ClipId) -> Self {
-            let mut h = Self { ctx: Default::default(), panel: NodeGraphV2Panel { last_fit_clip: Some(clip), zoom: 1.0, ..Default::default() }, graph, clip, selected: None, set: Default::default(), texts: Vec::new(), cards: Vec::new(), time: 0.0 };
+            let mut h = Self { ctx: Default::default(), panel: NodeGraphV2Panel { last_fit_clip: Some(clip), zoom: 1.0, ..Default::default() }, graph, clip, selected: None, set: Default::default(), texts: Vec::new(), cards: Vec::new(), time: 0.0, mods: egui::Modifiers::NONE };
             h.settle();
             h
         }
@@ -5180,7 +5416,7 @@ pub(crate) mod canvas_command_tests {
             let mut cmds = Vec::new();
             let out = self.ctx.run(egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))),
-                time: Some(self.time), events, ..Default::default()
+                time: Some(self.time), events, modifiers: self.mods, ..Default::default()
             }, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     cmds = self.panel.show(ui, &mut self.selected, &mut self.set, &mut self.graph, self.clip,
@@ -5221,6 +5457,13 @@ pub(crate) mod canvas_command_tests {
             self.panel.add_menu_graph_pos = graph_pos;
             self.panel.add_menu_search = search.into();
             self.settle();
+        }
+        pub(crate) fn has(&self, label: &str) -> bool {
+            self.texts.iter().any(|(s, _)| s == label)
+        }
+        /// One key pressed with the held keys (`mods`).
+        pub(crate) fn key(&mut self, key: egui::Key) -> Vec<AppCommand> {
+            self.frame(vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: self.mods }])
         }
         pub(crate) fn menu_item(&mut self, at: egui::Pos2, label: &str) -> Vec<AppCommand> {
             self.click(at, egui::PointerButton::Secondary);
@@ -5372,3 +5615,186 @@ mod thumbnail_request_tests {
         assert!(out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text() == "Low-res preview")));
     }
 }
+
+#[cfg(test)]
+mod editing_tests {
+    //! The node editor's own editing (#1745), on the grade canvas drawn
+    //! frame by frame: its keys, its menus, the pan and the grid.
+    use super::canvas_command_tests::Harness;
+    use super::*;
+    use klipp_nodes::NodeKind;
+
+    fn button(at: egui::Pos2, button: egui::PointerButton, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos: at, button, pressed, modifiers: egui::Modifiers::NONE }
+    }
+
+    /// A canvas whose Corrector is selected, the pointer over empty canvas.
+    fn canvas() -> (Harness, NodeId, egui::Pos2) {
+        let mut graph = NodeGraph::default();
+        graph.ensure_corrector();
+        for (i, node) in graph.nodes.iter().enumerate() {
+            graph.node_positions.insert(node.id, NodePos { x: (i as f32 - 1.0) * 230.0, y: 0.0 });
+        }
+        let clip = ClipId::new();
+        let mut h = Harness::on(graph, clip);
+        let (corrector, rect) = h.card(NodeKind::Corrector);
+        h.selected = Some(corrector);
+        h.set = [corrector].into_iter().collect();
+        let empty = rect.center() + egui::vec2(0.0, 200.0);
+        h.frame(vec![egui::Event::PointerMoved(empty)]);
+        (h, corrector, empty)
+    }
+
+    /// Ctrl+D duplicates the selection, Ctrl+C copies it and Ctrl+V
+    /// pastes at the pointer; Source and Output are never taken. With
+    /// no Ctrl they do nothing.
+    #[test]
+    fn ctrl_d_c_and_v_duplicate_copy_and_paste() {
+        let (mut h, corrector, _) = canvas();
+        let source = h.graph.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
+        h.set.insert(source);
+        h.mods = egui::Modifiers::COMMAND;
+        let sent = h.key(egui::Key::D);
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::DuplicateNodes { node_ids, .. } if *node_ids == [corrector])), "{sent:?}");
+        let sent = h.key(egui::Key::C);
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::CopyNodes { node_ids, .. } if *node_ids == [corrector])), "{sent:?}");
+        let sent = h.key(egui::Key::V);
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::PasteNodes { .. })), "{sent:?}");
+        h.mods = egui::Modifiers::NONE;
+        for key in [egui::Key::D, egui::Key::C, egui::Key::V] {
+            let sent = h.key(key);
+            assert!(!sent.iter().any(|c| matches!(c, AppCommand::DuplicateNodes { .. } | AppCommand::CopyNodes { .. } | AppCommand::PasteNodes { .. })), "{key:?}: {sent:?}");
+        }
+        // An unfocused canvas takes none of them.
+        h.panel.grade_keys = false;
+        h.mods = egui::Modifiers::COMMAND;
+        assert!(!h.key(egui::Key::D).iter().any(|c| matches!(c, AppCommand::DuplicateNodes { .. })));
+    }
+
+    /// Tab, or Shift+A, opens the add menu where the pointer is, its
+    /// search taking the keys: typed and Enter, the first match is added
+    /// there. The pick is a recent one, kept for the next session.
+    #[test]
+    fn tab_and_shift_a_open_the_add_menu_at_the_pointer() {
+        let (mut h, _, at) = canvas();
+        h.key(egui::Key::Tab);
+        assert!(h.panel.add_menu_open, "Tab opens the add menu");
+        assert_eq!(h.panel.add_menu_screen_pos, at, "at the pointer");
+        h.settle();
+        h.frame(vec![egui::Event::Text("satur".into())]);
+        let sent = h.key(egui::Key::Enter);
+        let graph_pos = h.panel.add_menu_graph_pos;
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::AddNode { kind, position, .. } if kind == "Saturation" && *position == (graph_pos.x, graph_pos.y))), "{sent:?}");
+        assert!(!h.panel.add_menu_open, "the pick closes it");
+        assert!(h.panel.take_recents_changed() && h.panel.recent_kinds() == ["Saturation"]);
+
+        h.mods = egui::Modifiers::SHIFT;
+        h.key(egui::Key::A);
+        assert!(h.panel.add_menu_open, "Shift+A opens it too");
+
+        // The next session's canvas starts with the pick as a recent one.
+        let mut next = NodeGraphV2Panel::default();
+        next.restore_recents(&h.panel.recent_kinds());
+        assert_eq!(next.recent_kinds(), ["Saturation"]);
+        next.restore_recents(&["no_such_kind".to_owned()]);
+        assert!(next.recent_kinds().is_empty(), "a kind no menu offers is dropped");
+    }
+
+    /// Shift+drag on empty canvas draws a marquee and never pans: it
+    /// panned under the marquee. Space+drag pans (the control).
+    #[test]
+    fn shift_drag_selects_without_panning() {
+        let (mut h, _, at) = canvas();
+        h.set.clear();
+        h.selected = None;
+        let pan = h.panel.pan;
+        h.mods = egui::Modifiers::SHIFT;
+        h.frame(vec![egui::Event::PointerMoved(at), button(at, egui::PointerButton::Primary, true)]);
+        for step in [30.0, 60.0, 90.0] {
+            h.frame(vec![egui::Event::PointerMoved(at + egui::vec2(step, -step * 2.0))]);
+        }
+        h.frame(vec![button(at + egui::vec2(90.0, -180.0), egui::PointerButton::Primary, false)]);
+        assert_eq!(h.panel.pan, pan, "Shift-drag did not pan");
+
+        h.mods = egui::Modifiers::NONE;
+        let space = |pressed| egui::Event::Key { key: egui::Key::Space, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
+        h.frame(vec![space(true), egui::Event::PointerMoved(at), button(at, egui::PointerButton::Primary, true)]);
+        for step in [30.0, 60.0] {
+            h.frame(vec![egui::Event::PointerMoved(at + egui::vec2(step, 0.0))]);
+        }
+        h.frame(vec![button(at + egui::vec2(60.0, 0.0), egui::PointerButton::Primary, false), space(false)]);
+        assert_ne!(h.panel.pan, pan, "Space-drag pans");
+    }
+
+    /// With Snap on, a dragged node lands on the grid; off, where it was
+    /// let go.
+    #[test]
+    fn snap_puts_a_dragged_node_on_the_grid() {
+        for snap in [true, false] {
+            let (mut h, corrector, _) = canvas();
+            if snap {
+                h.click(h.text("Snap"), egui::PointerButton::Primary);
+                assert!(h.panel.snap_to_grid);
+            }
+            let start = h.graph.node_positions[&corrector];
+            let (_, rect) = h.card(NodeKind::Corrector);
+            let at = rect.center();
+            let apply = |h: &mut Harness, cmds: Vec<AppCommand>| {
+                for c in cmds {
+                    if let AppCommand::MoveNode { node_id, delta_x, delta_y, .. } = c {
+                        let p = h.graph.node_positions.get_mut(&node_id).unwrap();
+                        p.x += delta_x;
+                        p.y += delta_y;
+                    }
+                }
+            };
+            let cmds = h.frame(vec![egui::Event::PointerMoved(at), button(at, egui::PointerButton::Primary, true)]);
+            apply(&mut h, cmds);
+            for step in [egui::vec2(20.0, 7.0), egui::vec2(41.0, 13.0)] {
+                let cmds = h.frame(vec![egui::Event::PointerMoved(at + step)]);
+                apply(&mut h, cmds);
+            }
+            let cmds = h.frame(vec![button(at + egui::vec2(41.0, 13.0), egui::PointerButton::Primary, false)]);
+            apply(&mut h, cmds);
+            let end = h.graph.node_positions[&corrector];
+            if snap {
+                assert_eq!((end.x % GRID_SPACING, end.y % GRID_SPACING), (0.0, 0.0), "{start:?} to {end:?}");
+            } else {
+                assert!((end.x - start.x - 41.0 / h.panel.zoom).abs() < 0.01, "{start:?} to {end:?}");
+            }
+        }
+    }
+
+    /// The node menu offers the node's editing, each sending its command:
+    /// Duplicate, Copy, Reset to defaults, Show in Inspector (which also
+    /// selects it); "Replace with…" opens the add menu for it, and a pick
+    /// there replaces rather than adds.
+    #[test]
+    fn the_node_menu_edits_the_node() {
+        let (mut h, corrector, _) = canvas();
+        let (_, rect) = h.card(NodeKind::Corrector);
+        let sent = h.menu_item(rect.center(), "Duplicate");
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::DuplicateNodes { node_ids, .. } if *node_ids == [corrector])), "{sent:?}");
+        h.settle();
+        let sent = h.menu_item(rect.center(), "Copy");
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::CopyNodes { .. })), "{sent:?}");
+        h.settle();
+        let sent = h.menu_item(rect.center(), "Reset to defaults");
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::ResetNode { node_id, .. } if *node_id == corrector)), "{sent:?}");
+        h.settle();
+        h.selected = None;
+        h.set.clear();
+        let sent = h.menu_item(rect.center(), "Show in Inspector");
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::ShowPanel { inspector_tab: Some(t), .. } if t == "color")), "{sent:?}");
+        assert_eq!(h.selected, Some(corrector));
+        h.settle();
+        h.menu_item(rect.center(), "Replace with\u{2026}");
+        h.settle();
+        assert!(h.panel.add_menu_open && h.has("Replace with\u{2026}"), "the add menu, for the replace");
+        h.frame(vec![egui::Event::Text("satur".into())]);
+        let sent = h.key(egui::Key::Enter);
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::ReplaceNode { node_id, kind, .. } if *node_id == corrector && kind == "Saturation")), "{sent:?}");
+        assert!(!sent.iter().any(|c| matches!(c, AppCommand::AddNode { .. })));
+    }
+}
+

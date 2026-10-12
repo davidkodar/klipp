@@ -1860,6 +1860,25 @@ pub enum AppCommand {
     /// with existing nodes — or with a previous paste — are impossible.
     /// No-op + toast when the clipboard is empty.
     PasteColorNodes { clip_id: ClipId },
+    /// The node editor's own edits of its selection (#1745), on the grade
+    /// level or picture level the canvas shows: copies of `node_ids` put
+    /// beside them, as one undo step.
+    DuplicateNodes { clip_id: ClipId, node_ids: Vec<uuid::Uuid> },
+    /// `node_ids` to the node editor's clipboard, from the level holding
+    /// them.
+    CopyNodes { clip_id: ClipId, node_ids: Vec<uuid::Uuid> },
+    /// The node editor's clipboard into the level the canvas shows, its
+    /// first node at `position` (canvas units), as one undo step.
+    PasteNodes { clip_id: ClipId, position: (f32, f32) },
+    /// A node swapped for a new node of `kind` in its place: its wires
+    /// and its place kept, as one undo step.
+    ReplaceNode { clip_id: ClipId, node_id: uuid::Uuid, kind: String },
+    /// The picture canvas's copy (#1745): the nodes as the picture holds
+    /// them, kept for a paste.
+    CopyPictureNodes { nodes: Vec<klipp_graph_format::Node> },
+    /// The picture canvas's paste: the kept nodes, fresh ids, after the
+    /// node `after` names, the first at `position`.
+    PastePictureNodes { after: klipp_graph_format::path::NodePath, position: (f32, f32) },
     RenameNode { clip_id: ClipId, node_id: uuid::Uuid, label: String },
     /// The LUT file a LUT node applies (#892); `None` takes it off. One
     /// undo step.
