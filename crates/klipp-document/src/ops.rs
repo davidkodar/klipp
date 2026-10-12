@@ -1628,13 +1628,16 @@ pub enum Op {
     /// A clip's own name and colour on the timeline (#920): `name` is
     /// what the timeline shows in place of its media's (blank gives the
     /// media's back), `colour` one of none, red, orange, yellow, green,
-    /// blue or purple. Give one or both.
+    /// blue or purple; `flag` where its grade stands (#899): none, needs
+    /// work, review or approved. Give any of them.
     Label {
         clip_id: ClipRef,
         #[serde(default)]
         name: Option<String>,
         #[serde(default)]
         colour: Option<String>,
+        #[serde(default)]
+        flag: Option<String>,
     },
     /// Motion blur on everything that moves: `shutter_deg` is how long
     /// the shutter stays open as a share of a frame (180 is the film
@@ -3680,10 +3683,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let where_ = if *depth == 0.0 { "on the screen, out of the camera's reach".to_string() } else { format!("at depth {depth:.2}") };
             Ok((format!("{} sits {where_}", clip_name(seq, pool, clip)), EditCommand::SetClipDepth { clip_id: clip.id, old: clip.depth, new: *depth }, vec![clip.id]))
         }
-        Op::Label { clip_id, name, colour } => {
+        Op::Label { clip_id, name, colour, flag } => {
             let (_, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            if name.is_none() && colour.is_none() {
-                return Err(refuse(i, "a label with neither name nor colour", "give name, colour or both"));
+            if name.is_none() && colour.is_none() && flag.is_none() {
+                return Err(refuse(i, "a label with neither name, colour nor flag", "give name, colour, flag or more"));
             }
             let old = clip.own_label();
             let mut new = old.clone();
@@ -3697,8 +3700,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 };
                 new.colour = label.to_u8();
             }
+            if let Some(flag) = flag {
+                new.flag = klipp_timeline::GradeFlag::parse(flag).ok_or_else(|| refuse(i, format!("the flag \"{flag}\""), "give none, needs work, review or approved"))?;
+            }
             if new == old {
-                return Err(refuse(i, format!("{} is already labelled so", clip_name(seq, pool, clip)), "give another name or colour"));
+                return Err(refuse(i, format!("{} is already labelled so", clip_name(seq, pool, clip)), "give another name, colour or flag"));
             }
             let before = clip_name(seq, pool, clip);
             let mut said = Vec::new();
@@ -3707,6 +3713,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             }
             if new.colour != old.colour {
                 said.push(format!("coloured {}", klipp_media::ColorLabel::from_u8(new.colour).label().to_lowercase()));
+            }
+            if new.flag != old.flag {
+                said.push(format!("flagged {}", new.flag.label().to_lowercase()));
             }
             Ok((format!("{before} {}", said.join(" and ")), EditCommand::SetClipLabels { description: "Label Clip", changes: vec![(clip.id, old, new)] }, vec![clip.id]))
         }
@@ -11766,15 +11775,27 @@ mod tests {
         assert_eq!((clip.name.as_deref(), clip.colour_label), (Some("Wide, take 3"), 4));
         // Described by its own name from then on.
         let named = view.sequences[0].clone();
-        let again = resolve(&named, &pool, &[Op::Label { clip_id: ClipRef::Id(a), name: Some(String::new()), colour: None }]).unwrap();
+        let again = resolve(&named, &pool, &[Op::Label { clip_id: ClipRef::Id(a), name: Some(String::new()), colour: None, flag: None }]).unwrap();
         assert!(again.steps[0].what.starts_with("\"Wide, take 3\"") && again.steps[0].what.contains("back to its media's name"), "{}", again.steps[0].what);
         view.apply_inverse(&plan.steps[0].edit);
         assert_eq!(view.sequences[0].tracks[0].clips[0].own_label(), klipp_timeline::ClipLabel::default());
 
-        let bad = |name: Option<&str>, colour: Option<&str>| resolve(&seq, &pool, &[Op::Label { clip_id: ClipRef::Id(a), name: name.map(str::to_string), colour: colour.map(str::to_string) }]).unwrap_err();
+        let bad = |name: Option<&str>, colour: Option<&str>| resolve(&seq, &pool, &[Op::Label { clip_id: ClipRef::Id(a), name: name.map(str::to_string), colour: colour.map(str::to_string), flag: None }]).unwrap_err();
         assert!(bad(None, None).why.contains("neither"));
         assert!(bad(None, Some("teal")).why.contains("teal"));
         assert!(bad(Some(""), Some("none")).why.contains("already"));
+
+        // Where its grade stands (#899): flagged by name, undone with it.
+        let ops: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"label","clip_id":"{}","flag":"needs work"}}]"#, a.0)).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        assert!(plan.steps[0].what.contains("flagged needs work"), "{}", plan.steps[0].what);
+        view.apply_forward(&plan.steps[0].edit);
+        assert_eq!(view.sequences[0].tracks[0].clips[0].grade_flag, klipp_timeline::GradeFlag::NeedsWork);
+        view.apply_inverse(&plan.steps[0].edit);
+        assert!(view.sequences[0].tracks[0].clips[0].grade_flag.is_none());
+        let flag = |f: &str| resolve(&seq, &pool, &[Op::Label { clip_id: ClipRef::Id(a), name: None, colour: None, flag: Some(f.into()) }]);
+        assert!(flag("Approved").is_ok());
+        assert!(flag("done-ish").unwrap_err().why.contains("done-ish"));
     }
 
     #[test]

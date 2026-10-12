@@ -468,6 +468,9 @@ pub struct ClipJson {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub colour_label: u8,
+    /// Where the clip's grade stands (#899).
+    #[serde(default, skip_serializing_if = "klipp_timeline::GradeFlag::is_none")]
+    pub grade_flag: klipp_timeline::GradeFlag,
 }
 
 /// Wire-format mirror of [`klipp_timeline::MatteBinding`]. The clip-id is
@@ -1039,6 +1042,7 @@ mod tests {
             surface_pin: None,
             name: None,
             colour_label: 0,
+            grade_flag: Default::default(),
         };
 
         let serialised = serde_json::to_string(&clip).expect("serialise clip");
@@ -1111,6 +1115,7 @@ mod tests {
             surface_pin: None,
             name: None,
             colour_label: 0,
+            grade_flag: Default::default(),
         };
         let serialised = serde_json::to_string(&clip).expect("serialise");
         assert!(!serialised.contains("audio_effect_keyframes"),
@@ -1307,6 +1312,7 @@ mod tests {
             surface_pin: None,
             name: None,
             colour_label: 0,
+            grade_flag: Default::default(),
         }
     }
 

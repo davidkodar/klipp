@@ -130,6 +130,10 @@ pub(crate) fn timeline_text(
             if c.colour_label != 0 {
                 let _ = write!(line, "  colour {}", klipp_media::ColorLabel::from_u8(c.colour_label).label().to_lowercase());
             }
+            // Where its grade stands (#899).
+            if !c.grade_flag.is_none() {
+                let _ = write!(line, "  flag {}", c.grade_flag.label().to_lowercase());
+            }
             if !c.enabled {
                 line.push_str("  DISABLED");
             }
@@ -296,6 +300,7 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
                 "speed": c.speed,
                 "own_name": c.name,
                 "colour": (c.colour_label != 0).then(|| klipp_media::ColorLabel::from_u8(c.colour_label).label().to_lowercase()),
+                "flag": (!c.grade_flag.is_none()).then(|| c.grade_flag.label().to_lowercase()),
                 "blend_mode": format!("{:?}", c.blend_mode),
                 "grade_is_identity": c.own_grade().is_identity(),
                 "grade_nodes": c.own_grade().nodes.len(),
@@ -325,6 +330,9 @@ pub(crate) fn list_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::Med
         }
         if c.colour_label != 0 {
             v["colour"] = json!(klipp_media::ColorLabel::from_u8(c.colour_label).label().to_lowercase());
+        }
+        if !c.grade_flag.is_none() {
+            v["flag"] = json!(c.grade_flag.label().to_lowercase());
         }
         if let Some(id) = c.media_id() {
             v["media_id"] = json!(id.0.to_string());

@@ -524,6 +524,7 @@ impl KlippApp {
                 surface_pin: clip.surface_pin,
                 name: clip.name.clone(),
                 colour_label: clip.colour_label,
+                grade_flag: Default::default(),
                 precomp: None,
                 baked_own: None,
             };
@@ -670,6 +671,7 @@ impl KlippApp {
                 surface_pin: clip.surface_pin,
                 name: clip.name.clone(),
                 colour_label: clip.colour_label,
+                grade_flag: Default::default(),
                 precomp: None,
                 baked_own: None,
             };

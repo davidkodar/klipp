@@ -682,6 +682,10 @@ impl KlippApp {
                     self.set_clip_labels(clip_ids, "Clip Colour", |label| klipp_timeline::ClipLabel { colour, ..label.clone() });
                     true
                 }
+                AppCommand::SetClipGradeFlags { clip_ids, flag } => {
+                    self.set_clip_labels(clip_ids, "Grade Flag", |label| klipp_timeline::ClipLabel { flag: *flag, ..label.clone() });
+                    true
+                }
                 AppCommand::SetClipRole { clip_id, role } => {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
@@ -1856,6 +1860,7 @@ pub(super) fn duplicate_after(clip: &klipp_timeline::Clip) -> klipp_timeline::Cl
         surface_pin: clip.surface_pin,
         name: clip.name.clone(),
         colour_label: clip.colour_label,
+        grade_flag: Default::default(),
         precomp: None,
         baked_own: None,
     };

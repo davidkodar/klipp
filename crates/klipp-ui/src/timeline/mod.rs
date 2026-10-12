@@ -630,6 +630,8 @@ mod menu_smoke_tests {
         time: f64,
         /// What the last frame asked the app to do.
         sent: Vec<AppCommand>,
+        /// The last frame's shapes.
+        shapes: Vec<egui::epaint::ClippedShape>,
     }
 
     impl Timeline {
@@ -644,7 +646,7 @@ mod menu_smoke_tests {
             state.sequences[0].tracks[v1].clips.push(Clip::media(media, zero, long, zero, long));
             let mut old = crate::panels::timeline::TimelinePanel::default();
             old.embedded = true;
-            Self { ctx: egui::Context::default(), state, panel: NewTimelinePanel::default(), old, time: 0.0, sent: Vec::new() }
+            Self { ctx: egui::Context::default(), state, panel: NewTimelinePanel::default(), old, time: 0.0, sent: Vec::new(), shapes: Vec::new() }
         }
 
         /// One frame with `events`: the text drawn, with where.
@@ -673,6 +675,7 @@ mod menu_smoke_tests {
                 }
             }
             self.sent = cmds;
+            self.shapes = out.shapes.clone();
             out.shapes
                 .iter()
                 .filter_map(|s| match &s.shape {
@@ -776,8 +779,43 @@ mod menu_smoke_tests {
         let drawn = timeline.frame(Vec::new());
         let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
         let menu = timeline.right_click(at);
-        let lacking = missing(&menu, &["Rename Clip", "Clip Colour", "Rhythm Edits", "Speed", "Make Subclip", "Select Same Source", "Cut", "Copy", "Paste at Playhead", "Paste Insert at Playhead", "Duplicate Clip"]);
+        let lacking = missing(&menu, &["Rename Clip", "Clip Colour", "Grade Flag", "Rhythm Edits", "Speed", "Make Subclip", "Select Same Source", "Cut", "Copy", "Paste at Playhead", "Paste Insert at Playhead", "Duplicate Clip"]);
         assert!(lacking.is_empty(), "the clip's menu lacks {lacking:?}; it shows {menu:?}");
+    }
+
+    /// On the Colour page's strip, a clip's menu flags where its grade
+    /// stands (#899): Grade Flag, then a flag, sends that flag for the
+    /// clip; a flagged clip shows a pennant in the flag's colour.
+    #[test]
+    fn the_colour_strip_flags_a_clips_grade() {
+        let mut timeline = Timeline::new();
+        timeline.state.show_color_panel = true;
+        let clip = timeline.state.sequences[0].all_clips().next().unwrap().id;
+        let drawn = timeline.frame(Vec::new());
+        let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn on the strip").1;
+        timeline.right_click(at);
+        let drawn = timeline.frame(Vec::new());
+        let item = drawn.iter().find(|(t, _)| t == "Grade Flag").unwrap_or_else(|| panic!("a Grade Flag item: {drawn:?}")).1;
+        timeline.frame(vec![egui::Event::PointerMoved(item)]);
+        let drawn = timeline.frame(vec![egui::Event::PointerMoved(item)]);
+        let flag = drawn.iter().find(|(t, _)| t.ends_with("Needs Work")).unwrap_or_else(|| panic!("a Needs Work flag: {drawn:?}")).1;
+        let button = |pressed| egui::Event::PointerButton { pos: flag, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        timeline.frame(vec![egui::Event::PointerMoved(flag)]);
+        timeline.frame(vec![egui::Event::PointerMoved(flag), button(true)]);
+        timeline.frame(vec![button(false)]);
+        assert!(timeline.sent.iter().any(|c| matches!(c, AppCommand::SetClipGradeFlags { clip_ids, flag } if *clip_ids == vec![clip] && *flag == klipp_timeline::GradeFlag::NeedsWork)), "{:?}", timeline.sent);
+
+        // Flagged, the clip shows its pennant; unflagged, none.
+        let pennant = |t: &mut Timeline, flag: klipp_timeline::GradeFlag| {
+            let [r, g, b] = flag.rgb();
+            t.frame(Vec::new());
+            t.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Path(p) if p.closed && p.points.len() == 3 && p.fill == egui::Color32::from_rgb(r, g, b)))
+        };
+        assert!(!pennant(&mut timeline, klipp_timeline::GradeFlag::NeedsWork));
+        for c in timeline.state.sequences[0].all_clips_mut() {
+            c.grade_flag = klipp_timeline::GradeFlag::NeedsWork;
+        }
+        assert!(pennant(&mut timeline, klipp_timeline::GradeFlag::NeedsWork), "no pennant on the flagged clip");
     }
 
     /// A right-click on the cut between two clips opens the edit point's

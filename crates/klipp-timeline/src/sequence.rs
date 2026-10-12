@@ -1579,6 +1579,7 @@ impl Track {
             surface_pin: None,
             name: None,
             colour_label: 0,
+            grade_flag: crate::GradeFlag::None,
             precomp: None,
             baked_own: None,
         });
@@ -1886,6 +1887,7 @@ impl Track {
             surface_pin: clip.surface_pin,
             name: clip.name.clone(),
             colour_label: clip.colour_label,
+            grade_flag: crate::GradeFlag::None,
             precomp: None,
             baked_own: None,
         };
@@ -1959,6 +1961,7 @@ impl Track {
             surface_pin: clip.surface_pin,
             name: clip.name.clone(),
             colour_label: clip.colour_label,
+            grade_flag: crate::GradeFlag::None,
             precomp: None,
             baked_own: None,
         };
@@ -2486,6 +2489,10 @@ pub struct Clip {
     /// the colour the timeline gives it by track and role.
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub colour_label: u8,
+    /// Where the clip's grade stands (#899): the colourist's flag, apart
+    /// from its colour label, which says what the clip is.
+    #[serde(default, skip_serializing_if = "GradeFlag::is_none")]
+    pub grade_flag: GradeFlag,
     /// A precomposition's scene, resolved for rendering: the inner
     /// sequence with its compounds flattened, its own precompositions
     /// resolved, and every clip re-identified for this instance. Set by
@@ -2515,14 +2522,18 @@ fn listed_effects(clip: &Clip) -> usize {
     (0..).take_while(|i| clip.effect_node_at(false, *i).is_some()).count()
 }
 
-/// A clip's own name and colour label (#920), as one value: what a
-/// rename or a recolour changes, and what undo puts back.
+/// A clip's own name, colour label (#920) and grade flag (#899), as one
+/// value: what a rename, a recolour or a flag changes, and what undo puts
+/// back.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClipLabel {
     pub name: Option<String>,
     /// On the media pool's colour label scale; 0 is none.
     pub colour: u8,
+    pub flag: GradeFlag,
 }
+
+pub use klipp_core::GradeFlag;
 
 impl Clip {
     /// Whether any of the clip's plug-in effects is on (#995). A clip
@@ -2558,14 +2569,15 @@ impl Clip {
         self.timeline_out - self.timeline_in
     }
 
-    /// The clip's own name and colour label together (#920).
+    /// The clip's own name, colour label and grade flag together (#920).
     pub fn own_label(&self) -> ClipLabel {
-        ClipLabel { name: self.name.clone(), colour: self.colour_label }
+        ClipLabel { name: self.name.clone(), colour: self.colour_label, flag: self.grade_flag }
     }
 
     pub fn set_own_label(&mut self, label: &ClipLabel) {
         self.name = label.name.clone();
         self.colour_label = label.colour;
+        self.grade_flag = label.flag;
     }
 
     /// What the clip is called on the timeline (#920): its own name when
@@ -2914,6 +2926,7 @@ impl Clip {
             surface_pin: None,
             name: None,
             colour_label: 0,
+            grade_flag: crate::GradeFlag::None,
             precomp: None,
             baked_own: None,
         }
@@ -3027,6 +3040,7 @@ impl Clip {
             surface_pin: None,
             name: None,
             colour_label: 0,
+            grade_flag: crate::GradeFlag::None,
             precomp: None,
             baked_own: None,
         }
@@ -3129,6 +3143,7 @@ impl Clip {
             surface_pin: None,
             name: None,
             colour_label: 0,
+            grade_flag: crate::GradeFlag::None,
             precomp: None,
             baked_own: None,
         }
