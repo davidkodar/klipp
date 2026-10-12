@@ -266,6 +266,13 @@ opt-level = 1          # Minimal optimization — faster compile, still debuggab
 # binaries are several times smaller, so links and target folders shrink.
 debug = "line-tables-only"
 
+# The former dev profile, full debug info, for stepping through a test in
+# a debugger: `cargo test --profile dev-full-debug ...`. Its own folder
+# under target/, so switching to it doesn't rebuild the dev builds.
+[profile.dev-full-debug]
+inherits = "dev"
+debug = true
+
 [profile.dev.package."*"]
 opt-level = 3          # But optimize all dependencies fully even in dev
 
