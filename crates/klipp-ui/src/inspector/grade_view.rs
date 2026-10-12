@@ -43,6 +43,11 @@ pub(crate) fn v1_level<'a>(grade: &'a klipp_nodes::NodeGraph, descent: &[NodeId]
     descent.iter().try_fold(grade, |g, id| g.nodes.iter().find(|n| n.id == *id && n.kind == klipp_nodes::NodeKind::Compound)?.params.compound_subgraph.as_ref())
 }
 
+/// The nodes of `level` something is wired into the mask port of.
+fn masked(level: &klipp_graph_format::Graph) -> Vec<NodeId> {
+    level.edges.iter().filter(|e| e.to.1.as_str() == "mask").map(|e| e.to.0).collect()
+}
+
 /// A grade node's stored entry (its kind, its v1 params): what its rows
 /// read their values from.
 fn entry_of(node: &Node) -> serde_json::Value {
@@ -88,6 +93,8 @@ pub(crate) struct GradeSnapshot {
     v1: Vec<klipp_nodes::Node>,
     /// The node masks a tracker drives, as `(node, mask)`.
     tracked: Vec<(NodeId, usize)>,
+    /// The nodes something is wired into the mask port of.
+    masked: Vec<NodeId>,
     /// The Corrector the clip's first edit on the tabbed page makes, when
     /// its grade has no enabled one: drawn from its defaults, under the id
     /// it will take, and written nowhere until that edit.
@@ -202,6 +209,7 @@ impl GradeSnapshot {
             nodes,
             v1: grade.nodes.clone(),
             tracked: clip.track_points.iter().filter_map(|tp| tp.linked_mask).collect(),
+            masked: masked(body),
             pending,
             timeline_in_secs: clip.timeline_in.to_secs_f64(),
             rate: clip.timeline_in.rate,
@@ -230,6 +238,7 @@ impl GradeSnapshot {
             nodes,
             v1: grade.nodes.clone(),
             tracked: Vec::new(),
+            masked: masked(lifted),
             pending,
             timeline_in_secs: stand_in.timeline_in.to_secs_f64(),
             rate: stand_in.timeline_in.rate,
@@ -251,6 +260,18 @@ impl GradeSnapshot {
         let Some((_, lifted)) = self.nodes.iter().find(|(_, n)| n.id == node) else { return false };
         let addr = self.addr(node);
         crate::panels::node_inspector::node_header(ui, &v1.kind, v1.enabled, &v1.keyframes, node, self.clip, cmds, theme, frame);
+        // How much of its change the node keeps and, when something masks
+        // it, the channel it reads the mask by (#1348).
+        {
+            use klipp_graph_format::PortCatalog;
+            if klipp_timeline::RegistryCatalog.node_spec(lifted).is_some_and(|s| s.mixable) {
+                // "Node mix": a page may have a Mix of its own (the curves').
+                crate::inspector::stack_view::mix_row(ui, "Node mix", &addr, lifted.mix, false, cmds);
+            }
+            if self.masked.contains(&node) {
+                crate::inspector::stack_view::mask_channel_row(ui, lifted, &addr, false, cmds);
+            }
+        }
         // The widgets edit a copy and push the grade's own commands.
         let mut params = v1.params.clone();
         if let Some(p) = panel.as_deref_mut() {

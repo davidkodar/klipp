@@ -178,14 +178,15 @@ pub(super) fn primary_grade_page(entry: &CatalogEntry) -> Option<Surface> {
     [Surface::GradePerNode, Surface::GradeTabbedRight, Surface::GradeBottomTools].into_iter().find(|s| surfaces.contains(s))
 }
 
-/// These catalog capabilities have no inspector control in either view.
+/// These catalog capabilities have no parity case: no inspector control
+/// in either view, or (#1348) one tested outside the parity families.
 /// Keep the list narrow: a new port must receive an explicit decision.
 pub(super) fn entry_exclusion(entry: &CatalogEntry) -> Option<&'static str> {
     match &entry.value {
         CatalogValue::Port { port: "mask", desc } if desc.key == "channel" =>
-            Some("#1348: mask.channel is command-tested but neither inspector exposes it"),
+            Some("#1348: a masked card's Mask channel row (stack and grade page) is tested on its own; no parity case yet"),
         CatalogValue::Mix if entry.grade =>
-            Some("#1348: implicit grade-node mix is command-tested but neither inspector exposes it"),
+            Some("#1348: a grade node's Node mix row is tested on its own; no parity case yet"),
         CatalogValue::Parameter { .. } if entry.type_id == "klipp.grade.primaries_matrix" =>
             Some("#1351: PrimariesMatrix parameter controls have no reachable inspector route in either view"),
         CatalogValue::Enabled if entry.type_id == "klipp.grade.input_transform" =>
