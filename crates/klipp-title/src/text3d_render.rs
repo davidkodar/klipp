@@ -26,6 +26,138 @@ pub struct Glyph3d {
     /// A colour glyph (an emoji) as its bitmap: drawn flat on the front
     /// plane, turned with the text, without depth.
     pub sprite: Option<Sprite>,
+    /// Its place in the layout's glyphs, for its own motion (#1735).
+    pub unit: usize,
+    /// Where a text on a path stands it: turned and moved from where
+    /// `origin` puts it (#1735).
+    pub turn: Option<Turn>,
+}
+
+/// What a 3D text's layout leaves for its solids: its glyphs where they
+/// stand, its underline and strikethrough stripes as frame boxes
+/// `[x0, y0, x1, y1]`, and the frame column a write-on has reached
+/// (#1735).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Placed3d {
+    pub glyphs: Vec<Glyph3d>,
+    pub stripes: Vec<[f32; 4]>,
+    pub reveal: Option<f32>,
+}
+
+/// A glyph stood on a path (#1735): the point `from` of its outline at
+/// `origin` goes to `to`, the outline turned `angle` radians about it
+/// (clockwise, y down), as the flat glyph is placed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Turn {
+    pub from: [f32; 2],
+    pub to: [f32; 2],
+    pub angle: f32,
+}
+
+impl Turn {
+    pub fn apply(&self, p: [f32; 2]) -> [f32; 2] {
+        let (c, s) = (self.angle.cos(), self.angle.sin());
+        let (x, y) = (p[0] - self.from[0], p[1] - self.from[1]);
+        [self.to[0] + c * x - s * y, self.to[1] + s * x + c * y]
+    }
+}
+
+/// A glyph solid's own motion (#1735): scaled by `scale` and turned by
+/// `rotation` radians (clockwise, y down) about `anchor`, then moved by
+/// `offset`, and faded to `alpha`, as a flat glyph is posed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pose {
+    pub anchor: [f32; 3],
+    pub scale: f32,
+    pub rotation: f32,
+    pub offset: [f32; 2],
+    pub alpha: f32,
+}
+
+impl Default for Pose {
+    fn default() -> Self {
+        Pose { anchor: [0.0; 3], scale: 1.0, rotation: 0.0, offset: [0.0; 2], alpha: 1.0 }
+    }
+}
+
+impl Pose {
+    fn is_rest(&self) -> bool {
+        self.scale == 1.0 && self.rotation == 0.0 && self.offset == [0.0; 2]
+    }
+
+    fn point(&self, p: V3) -> V3 {
+        let (c, s) = (self.rotation.cos(), self.rotation.sin());
+        let a = self.anchor;
+        let (x, y) = ((p[0] - a[0]) * self.scale, (p[1] - a[1]) * self.scale);
+        [a[0] + c * x - s * y + self.offset[0], a[1] + s * x + c * y + self.offset[1], a[2] + (p[2] - a[2]) * self.scale]
+    }
+
+    fn normal(&self, n: V3) -> V3 {
+        let (c, s) = (self.rotation.cos(), self.rotation.sin());
+        [c * n[0] - s * n[1], s * n[0] + c * n[1], n[2]]
+    }
+
+    /// A posed point of the front plane back where it stood at rest.
+    fn back(&self, p: [f32; 2]) -> [f32; 2] {
+        let (c, s) = (self.rotation.cos(), self.rotation.sin());
+        let a = self.anchor;
+        let (x, y) = (p[0] - self.offset[0] - a[0], p[1] - self.offset[1] - a[1]);
+        let k = 1.0 / self.scale.max(1e-6);
+        [a[0] + (c * x + s * y) * k, a[1] + (-s * x + c * y) * k]
+    }
+
+    /// `mesh` posed.
+    pub fn mesh(&self, mesh: &GlyphMesh) -> GlyphMesh {
+        let face = |f: &crate::text3d_mesh::Face| crate::text3d_mesh::Face {
+            contours: f.contours.iter().map(|c| c.iter().map(|p| { let q = self.point([p[0], p[1], f.z]); [q[0], q[1]] }).collect()).collect(),
+            z: self.point([0.0, 0.0, f.z])[2],
+            normal: f.normal,
+        };
+        GlyphMesh {
+            front: face(&mesh.front),
+            back: face(&mesh.back),
+            tris: mesh.tris.iter().map(|t| crate::text3d_mesh::Tri { p: t.p.map(|p| self.point(p)), n: t.n.map(|n| self.normal(n)), part: t.part }).collect(),
+            front_bevel: mesh.front_bevel * self.scale,
+            back_bevel: mesh.back_bevel * self.scale,
+        }
+    }
+}
+
+/// The colours of a text's face as its flat self draws them, a frame of
+/// straight-alpha sRGB pixels (#1735): its gradient, pattern or texture
+/// and its runs' colours, laid on the solids' front faces.
+#[derive(Debug, Clone, Copy)]
+pub struct FaceTexture<'a> {
+    pub rgba: &'a [u8],
+    pub width: usize,
+    pub height: usize,
+}
+
+impl FaceTexture<'_> {
+    /// The face's colour at frame point `p`: the nearest pixel the flat
+    /// face paints within two pixels, where the solid's edge reaches a
+    /// little past the flat glyph's.
+    fn at(&self, p: [f32; 2]) -> Option<[u8; 3]> {
+        let (x, y) = (p[0].floor() as i64, p[1].floor() as i64);
+        for r in 0..=2i64 {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if dx.abs().max(dy.abs()) != r {
+                        continue;
+                    }
+                    let (u, v) = (x + dx, y + dy);
+                    if u < 0 || v < 0 || u >= self.width as i64 || v >= self.height as i64 {
+                        continue;
+                    }
+                    let k = (v as usize * self.width + u as usize) * 4;
+                    if self.rgba.get(k + 3).is_some_and(|&a| a > 0) {
+                        return Some([self.rgba[k], self.rgba[k + 1], self.rgba[k + 2]]);
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
 /// A bitmap on the text's front plane: its top left corner on the
@@ -51,6 +183,12 @@ pub struct Scene<'a> {
     pub face: [u8; 4],
     pub side: [u8; 4],
     pub bevel: [u8; 4],
+    /// Each mesh's own motion, in the meshes' order; empty for none
+    /// (#1735).
+    pub poses: &'a [Pose],
+    /// The front faces' colours, where the face is not one colour
+    /// (#1735).
+    pub texture: Option<FaceTexture<'a>>,
 }
 
 type V3 = [f32; 3];
@@ -85,6 +223,10 @@ fn apply(m: &[[f32; 3]; 3], v: V3) -> V3 {
 fn to_linear(c: u8) -> f32 {
     let c = c as f32 / 255.0;
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+fn lin_rgb(c: [u8; 3]) -> V3 {
+    c.map(to_linear)
 }
 
 fn to_srgb(v: f32) -> u8 {
@@ -199,6 +341,8 @@ struct Prepared {
     p_over_z: [V3; 3],
     base: V3,
     rows: (i32, i32),
+    /// Its glyph's fade (#1735).
+    alpha: f32,
 }
 
 /// A planar face ready to fill: its outline on the sample grid, its
@@ -211,6 +355,11 @@ struct PreparedFace<'a> {
     rows: (i32, i32),
     /// A sprite's bitmap, sampled where the plane is hit, unlit.
     sprite: Option<&'a Sprite>,
+    /// Its glyph's fade (#1735).
+    alpha: f32,
+    /// A front face coloured by the face texture: its glyph's pose, to
+    /// find where a point of it stood at rest (#1735).
+    textured: Option<Pose>,
 }
 
 /// The frame of `scene` at `width`×`height`, straight-alpha sRGB bytes,
@@ -231,6 +380,17 @@ pub fn render_boxed(scene: &Scene, width: u32, height: u32, ss: u32) -> (Vec<u8>
     let light = Light::of(t);
     let lin = |c: [u8; 4]| [to_linear(c[0]), to_linear(c[1]), to_linear(c[2])];
     let (face_c, side_c, bevel_c) = (lin(scene.face), lin(scene.side), lin(scene.bevel));
+    // Each glyph's solid where its own motion puts it (#1735); a glyph
+    // faded out is not drawn.
+    let pose_of = |i: usize| scene.poses.get(i).copied().unwrap_or_default();
+    let posed: Vec<GlyphMesh>;
+    let meshes: &[GlyphMesh] = if scene.poses.iter().any(|p| !p.is_rest()) {
+        posed = scene.meshes.iter().enumerate().map(|(i, m)| pose_of(i).mesh(m)).collect();
+        &posed
+    } else {
+        scene.meshes
+    };
+    let shown = || meshes.iter().enumerate().filter(|&(i, _)| pose_of(i).alpha > 0.001);
 
     // Where the solid lands on the frame: the box round every corner.
     let mut lo = [f32::MAX; 2];
@@ -243,7 +403,7 @@ pub fn render_boxed(scene: &Scene, width: u32, height: u32, ss: u32) -> (Vec<u8>
             hi = [hi[0].max(x), hi[1].max(y)];
         }
     };
-    for m in scene.meshes {
+    for (_, m) in shown() {
         for t in &m.tris {
             for p in t.p {
                 grow(view.camera(p));
@@ -276,7 +436,9 @@ pub fn render_boxed(scene: &Scene, width: u32, height: u32, ss: u32) -> (Vec<u8>
     // Every triangle and face on the sample grid.
     let mut tris: Vec<Prepared> = Vec::new();
     let mut faces: Vec<PreparedFace> = Vec::new();
-    for m in scene.meshes {
+    for (i, m) in shown() {
+        let pose = pose_of(i);
+        let alpha = pose.alpha.min(1.0);
         for tri in &m.tris {
             let cam = tri.p.map(|p| view.camera(p));
             let Some(s0) = view.screen(cam[0]) else { continue };
@@ -292,9 +454,10 @@ pub fn render_boxed(scene: &Scene, width: u32, height: u32, ss: u32) -> (Vec<u8>
                 p_over_z: [0, 1, 2].map(|k| [cam[k][0] / zs[k], cam[k][1] / zs[k], cam[k][2] / zs[k]]),
                 base: if tri.part == Part::Bevel { bevel_c } else { side_c },
                 rows,
+                alpha,
             });
         }
-        for f in [&m.front, &m.back] {
+        for (front, f) in [(true, &m.front), (false, &m.back)] {
             let mut edges = Vec::new();
             let (mut top, mut bottom) = (f32::MAX, f32::MIN);
             let mut whole = true;
@@ -321,6 +484,8 @@ pub fn render_boxed(scene: &Scene, width: u32, height: u32, ss: u32) -> (Vec<u8>
                 base: face_c,
                 rows: ((top.floor() as i32).max(0), (bottom.ceil() as i32).min(bh as i32)),
                 sprite: None,
+                alpha,
+                textured: (front && scene.texture.is_some()).then_some(pose),
             });
         }
     }
@@ -338,17 +503,20 @@ pub fn render_boxed(scene: &Scene, width: u32, height: u32, ss: u32) -> (Vec<u8>
             base: face_c,
             rows: ((top.floor() as i32).max(0), (bottom.ceil() as i32).min(bh as i32)),
             sprite: Some(sp),
+            alpha: 1.0,
+            textured: None,
         });
     }
 
     // The samples, a row band at a time: each band its own depth.
     const BAND: usize = 16;
-    let samples: Vec<(Vec<f32>, Vec<[f32; 3]>)> = (0..bh.div_ceil(BAND))
+    // Each sample's colour and its glyph's fade.
+    let samples: Vec<(Vec<f32>, Vec<[f32; 4]>)> = (0..bh.div_ceil(BAND))
         .into_par_iter()
         .map(|band| {
             let (r0, r1) = (band * BAND, ((band + 1) * BAND).min(bh));
             let mut depth = vec![f32::INFINITY; (r1 - r0) * bw];
-            let mut colour = vec![[0.0f32; 3]; (r1 - r0) * bw];
+            let mut colour = vec![[0.0f32; 4]; (r1 - r0) * bw];
             let view_dir = |p: V3| if focal.is_some() { norm([-p[0], -p[1], -p[2]]) } else { [0.0, 0.0, -1.0] };
             for tri in tris.iter().filter(|t| t.rows.0 < r1 as i32 && t.rows.1 >= r0 as i32) {
                 let [a, b, c] = tri.s;
@@ -378,7 +546,8 @@ pub fn render_boxed(scene: &Scene, width: u32, height: u32, ss: u32) -> (Vec<u8>
                         let mix = |v: [V3; 3]| [0, 1, 2].map(|d| (w0 * v[0][d] + w1 * v[1][d] + w2 * v[2][d]) * k);
                         let (n, p) = (mix(tri.n_over_z), mix(tri.p_over_z));
                         depth[i] = z;
-                        colour[i] = light.shade(tri.base, n, view_dir(p));
+                        let [r, g, b] = light.shade(tri.base, n, view_dir(p));
+                        colour[i] = [r, g, b, tri.alpha];
                     }
                 }
             }
@@ -429,11 +598,21 @@ pub fn render_boxed(scene: &Scene, width: u32, height: u32, ss: u32) -> (Vec<u8>
                                     continue;
                                 }
                                 depth[i] = z;
-                                colour[i] = [to_linear(sp.rgba[k]), to_linear(sp.rgba[k + 1]), to_linear(sp.rgba[k + 2])];
+                                colour[i] = [to_linear(sp.rgba[k]), to_linear(sp.rgba[k + 1]), to_linear(sp.rgba[k + 2]), f.alpha];
                                 continue;
                             }
                             depth[i] = z;
-                            colour[i] = light.shade(f.base, f.normal, view_dir(p));
+                            // A textured front face: the flat face's
+                            // colour where this point stood at rest.
+                            let base = match (f.textured, scene.texture) {
+                                (Some(pose), Some(tex)) => {
+                                    let o = view.object(p);
+                                    tex.at(pose.back([o[0], o[1]])).map_or(f.base, lin_rgb)
+                                }
+                                _ => f.base,
+                            };
+                            let [r, g, b] = light.shade(base, f.normal, view_dir(p));
+                            colour[i] = [r, g, b, f.alpha];
                         }
                     }
                 }
@@ -447,7 +626,8 @@ pub fn render_boxed(scene: &Scene, width: u32, height: u32, ss: u32) -> (Vec<u8>
     let ssu = ss as usize;
     for py in y0..y1 {
         for px in x0..x1 {
-            let (mut sum, mut n) = ([0.0f32; 3], 0usize);
+            // Weighted by each sample's fade: a faded glyph is thinner.
+            let (mut sum, mut n) = ([0.0f32; 3], 0.0f32);
             for sy in 0..ssu {
                 let row = (py - y0) * ssu + sy;
                 let (band, r) = (row / BAND, row % BAND);
@@ -456,15 +636,15 @@ pub fn render_boxed(scene: &Scene, width: u32, height: u32, ss: u32) -> (Vec<u8>
                     let i = r * bw + (px - x0) * ssu + sx;
                     if depth[i].is_finite() {
                         let c = colour[i];
-                        sum = [sum[0] + c[0], sum[1] + c[1], sum[2] + c[2]];
-                        n += 1;
+                        sum = [sum[0] + c[0] * c[3], sum[1] + c[1] * c[3], sum[2] + c[2] * c[3]];
+                        n += c[3];
                     }
                 }
             }
-            if n > 0 {
+            if n > 0.0 {
                 let o = (py * w + px) * 4;
-                let k = 1.0 / n as f32;
-                out[o..o + 4].copy_from_slice(&[to_srgb(sum[0] * k), to_srgb(sum[1] * k), to_srgb(sum[2] * k), ((n as f32 / (ssu * ssu) as f32) * 255.0).round() as u8]);
+                let k = 1.0 / n;
+                out[o..o + 4].copy_from_slice(&[to_srgb(sum[0] * k), to_srgb(sum[1] * k), to_srgb(sum[2] * k), ((n / (ssu * ssu) as f32) * 255.0).round() as u8]);
             }
         }
     }
@@ -488,7 +668,7 @@ mod tests {
         t.light.azimuth = light_azimuth;
         t.light.elevation = light_elevation;
         t.light.specular = 0.0;
-        let scene = Scene { meshes: &mesh, sprites: &[], settings: &t, pivot: [400.0, 300.0, 20.0], face: [200, 200, 200, 255], side: [200, 200, 200, 255], bevel: [200, 200, 200, 255] };
+        let scene = Scene { meshes: &mesh, sprites: &[], settings: &t, pivot: [400.0, 300.0, 20.0], face: [200, 200, 200, 255], side: [200, 200, 200, 255], bevel: [200, 200, 200, 255], poses: &[], texture: None };
         render(&scene, 800, 600, 2)
     }
 

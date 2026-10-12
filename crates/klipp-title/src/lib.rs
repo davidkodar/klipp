@@ -463,7 +463,7 @@ pub struct TitleRenderer {
     /// The glyphs the last layout of a 3D text placed (#1512): what
     /// `render_text_layer` builds the solids from. Filled while the
     /// layout's faces borrow the renderer, so behind a lock.
-    last_glyphs3d: std::sync::Mutex<Vec<crate::text3d_render::Glyph3d>>,
+    last_glyphs3d: std::sync::Mutex<crate::text3d_render::Placed3d>,
     /// The next `CachedRender::id`.
     next_cache_id: u64,
     /// The clip's length while rendering with `render_with_window`,
@@ -525,7 +525,7 @@ impl TitleRenderer {
             last_focus_blur: None,
             solid_point: None,
             last_units: None,
-            last_glyphs3d: std::sync::Mutex::new(Vec::new()),
+            last_glyphs3d: std::sync::Mutex::new(Default::default()),
             next_cache_id: 1,
             motion_window: None,
             loop_wave: None,
@@ -1115,8 +1115,9 @@ impl TitleRenderer {
         if let Some(text_path) = tb.text_path.as_ref().filter(|_| on_path) {
             let line = path_line;
             let lines = layout.lines().cloned().unwrap_or_default();
+            let keys: Vec<&str> = faces.keys.iter().map(|k| k.0.as_str()).collect();
             return self.render_layout_on_path(
-                &fonts, glyphs, &lines, title, text_path, line.as_ref(), time_secs, width, height, w, h, scale,
+                &fonts, &keys, glyphs, &lines, title, text_path, line.as_ref(), time_secs, width, height, w, h, scale,
             );
         }
 
@@ -1151,8 +1152,9 @@ impl TitleRenderer {
         if tb.three_d.as_ref().is_some_and(|t| t.enabled) {
             let placed = glyphs
                 .iter()
-                .filter(|g| g.width > 0 && g.height > 0)
-                .map(|g| {
+                .enumerate()
+                .filter(|(_, g)| g.width > 0 && g.height > 0)
+                .map(|(unit, g)| {
                     let face = &fonts[g.font_index];
                     let b = face.font.metrics_indexed(g.key.glyph_index, g.key.px).bounds;
                     let sprite = face.font.colour_glyph(g.key.glyph_index, g.key.px).map(|c| crate::text3d_render::Sprite {
@@ -1168,10 +1170,15 @@ impl TitleRenderer {
                         px: g.key.px,
                         origin: [g.x + offset_x - b.xmin, g.y + offset_y + b.height + b.ymin],
                         sprite,
+                        unit,
+                        turn: None,
                     }
                 })
                 .collect();
-            *self.last_glyphs3d.lock().unwrap_or_else(|e| e.into_inner()) = placed;
+            // A write-on reveals the solids up to where it reveals the
+            // flat text (#1735); the stripes are added where they are cut.
+            let reveal = (tb.write_on < 1.0).then(|| (((text_min_x + offset_x) + text_w * tb.write_on.clamp(0.0, 1.0)) as i32) as f32);
+            *self.last_glyphs3d.lock().unwrap_or_else(|e| e.into_inner()) = crate::text3d_render::Placed3d { glyphs: placed, stripes: Vec::new(), reveal };
         }
 
         // Compute the mask bounding box (padded for effects). When
@@ -1257,6 +1264,15 @@ impl TitleRenderer {
             }
         }
 
+        // A 3D text's stripes are solids of their own, kept here in frame
+        // pixels (#1735).
+        let three_d = tb.three_d.as_ref().is_some_and(|t| t.enabled);
+        let stripe3d = |x0: i32, x1: i32, y0: i32, y1: i32| {
+            if three_d && x1 > x0 && y1 > y0 {
+                let (ox, oy) = (mask_x0 as f32, mask_y0 as f32);
+                self.last_glyphs3d.lock().unwrap_or_else(|e| e.into_inner()).stripes.push([x0 as f32 + ox, y0 as f32 + oy, x1 as f32 + ox, y1 as f32 + oy]);
+            }
+        };
         // Underline / strikethrough: paint a horizontal stripe across
         // the text bounds inside the alpha mask. Thickness scales
         // with font_px so it stays proportional at any resolution;
@@ -1281,6 +1297,7 @@ impl TitleRenderer {
                     &mut alpha_mask, mask_w, mask_h,
                     line_x0, line_x1, stripe_top, stripe_top + stripe_thickness,
                 );
+                stripe3d(line_x0, line_x1, stripe_top, stripe_top + stripe_thickness);
             }
             if tb.underline && !run_underlines {
                 let line_y_centre = (text_min_y + offset_y) + text_h * 1.05;
@@ -1291,6 +1308,7 @@ impl TitleRenderer {
                     &mut alpha_mask, mask_w, mask_h,
                     line_x0, line_x1, stripe_top, stripe_top + stripe_thickness,
                 );
+                stripe3d(line_x0, line_x1, stripe_top, stripe_top + stripe_thickness);
             }
         }
 
@@ -1326,6 +1344,7 @@ impl TitleRenderer {
                 let line_y_centre = (line_top + offset_y) + (line_bottom - line_top) * 1.05;
                 let stripe_top = (line_y_centre.round() as i32 - mask_y0 as i32 - thickness / 2).max(0);
                 paint_alpha_mask_stripe(&mut alpha_mask, mask_w, mask_h, stripe_x0, stripe_x1, stripe_top, stripe_top + thickness);
+                stripe3d(stripe_x0, stripe_x1, stripe_top, stripe_top + thickness);
                 underline_fills.push(GlyphColorInfo {
                     mask_x: stripe_x0,
                     mask_y: stripe_top,
@@ -1405,6 +1424,7 @@ impl TitleRenderer {
     fn render_layout_on_path(
         &self,
         fonts: &[Face],
+        keys: &[&str],
         glyphs: &[fontdue::layout::GlyphPosition],
         lines: &[shaping::Line],
         title: &TitleData,
@@ -1457,6 +1477,9 @@ impl TitleRenderer {
         let mut text_max_y = f32::MIN;
         // A write-on reveals the text in its order along the path.
         let reveal = tb.write_on.clamp(0.0, 1.0) * length;
+        // A 3D text's glyphs, each stood where its flat self is (#1735).
+        let three_d = tb.three_d.as_ref().is_some_and(|t| t.enabled);
+        let mut placed3d = Vec::new();
 
         for (i, glyph) in glyphs.iter().enumerate() {
             if glyph.width == 0 || glyph.height == 0 {
@@ -1470,6 +1493,28 @@ impl TitleRenderer {
             let (_, coverage) = fonts[glyph.font_index].coverage(glyph.key);
             let gw = glyph.width;
             let gh = glyph.height;
+            if three_d {
+                let face = &fonts[glyph.font_index];
+                let b = face.font.metrics_indexed(glyph.key.glyph_index, glyph.key.px).bounds;
+                let from = [glyph.x + gw as f32 * 0.5, glyph.y + gh as f32 * 0.5];
+                // A colour glyph stays upright, centred where it stands.
+                let sprite = face.font.colour_glyph(glyph.key.glyph_index, glyph.key.px).map(|c| crate::text3d_render::Sprite {
+                    x: (px - c.width as f32 * 0.5).round(),
+                    y: (py - c.height as f32 * 0.5).round(),
+                    width: c.width,
+                    height: c.height,
+                    rgba: c.rgba.clone(),
+                });
+                placed3d.push(crate::text3d_render::Glyph3d {
+                    font: keys.get(glyph.font_index).copied().unwrap_or_default().to_string(),
+                    glyph: glyph.key.glyph_index,
+                    px: glyph.key.px,
+                    origin: [glyph.x - b.xmin, glyph.y + b.height + b.ymin],
+                    sprite,
+                    unit: i,
+                    turn: Some(crate::text3d_render::Turn { from, to: [px, py], angle: at.angle }),
+                });
+            }
             blit_rotated(
                 &mut alpha_mask, mask_w, mask_h,
                 &coverage, gw, gh,
@@ -1484,6 +1529,9 @@ impl TitleRenderer {
             text_min_y = text_min_y.min(py - radius);
             text_max_x = text_max_x.max(px + radius);
             text_max_y = text_max_y.max(py + radius);
+        }
+        if three_d {
+            *self.last_glyphs3d.lock().unwrap_or_else(|e| e.into_inner()) = crate::text3d_render::Placed3d { glyphs: placed3d, ..Default::default() };
         }
         let (center_x, center_y) = (centre[0], centre[1]);
 
@@ -2168,11 +2216,14 @@ impl TitleRenderer {
         // A motion that staggers by character, word or line poses each
         // glyph on its own from the resting render's glyph map — the
         // frame is the glyphs placed, on the GPU. A blur cannot be
-        // posed per glyph and is rastered.
+        // posed per glyph and is rastered; nor can a 3D text's glyphs,
+        // whose solids turn and scale in depth and are posed as they are
+        // drawn (#1735).
         let staggered: Option<&TitleObject> = if (any_motion_live || any_animating) && motion_pose.is_none() && single && !loops_need_raster {
             title.objects.iter().find(|o| o.visible).and_then(|o| match &o.content {
-                TitleObjectContent::TextBox(_)
-                    if o.fx().motion.enter.is_none_or(|m| !m.kind.blurs())
+                TitleObjectContent::TextBox(tb)
+                    if tb.three_d.as_ref().is_none_or(|t| !t.enabled)
+                        && o.fx().motion.enter.is_none_or(|m| !m.kind.blurs())
                         && o.fx().motion.exit.is_none_or(|m| !m.kind.blurs())
                         && !animators_raster(o) =>
                 {
@@ -2782,30 +2833,7 @@ impl TitleRenderer {
         let mut buf = Self::compose(&layout, title, width, height, gpu, time_secs);
         self.apply_texture_fill(&mut buf, &layout, title, width, height);
 
-        // Post-pass effects: applied to the fully-composed layer
-        // buffer so they pick up outline, shadow, glow, gradient,
-        // texture-fill, and any other decorative layer the user
-        // configured. Cheap; only run when the corresponding field
-        // is non-zero.
-        if let Some(tb) = title.primary_text() {
-            let scale = crate::frame_scale(width, height);
-            if tb.chromatic_aberration_px > 0.0 {
-                apply_chromatic_aberration(
-                    &mut buf, width, height,
-                    tb.chromatic_aberration_px * scale,
-                );
-            }
-            if tb.glitch_intensity > 0.0 {
-                let seed = time_secs.map_or(0u32, |t| {
-                    // Quantise to ~12 steps/sec so the glitch
-                    // pattern doesn't change every single frame
-                    // (looks like static noise) while still feeling
-                    // alive. 12 steps/s reads as TV-glitchy.
-                    (t * 12.0) as u32
-                });
-                apply_glitch(&mut buf, width, height, tb.glitch_intensity, seed);
-            }
-        }
+        post_effects(&mut buf, title, width, height, time_secs);
 
         self.last_units = (!layout.glyph_index.is_empty()).then(|| std::sync::Arc::new(UnitMap::from_layout(&layout, &buf, width, height)));
         buf
@@ -2815,32 +2843,151 @@ impl TitleRenderer {
     /// (#1512): laid out as the flat text is, each glyph's outline
     /// extruded and bevelled, the whole turned about the text's centre
     /// and lit. `None` for a text without 3D.
+    /// It keeps the rest of the text's look (#1735): the face's fill and
+    /// its runs' colours on the front faces, underline and strikethrough
+    /// as thin solids, a write-on revealing the solids, each glyph's own
+    /// motion posing its solid, a path standing each solid on it, and
+    /// the post effects on the drawn layer.
     fn render_text3d(&mut self, title: &TitleData, width: u32, height: u32, time_secs: Option<f32>, gpu: &mut Option<&mut dyn AlphaMaskProcessor>) -> Option<Vec<u8>> {
         let tb = title.primary_text()?;
         let settings = tb.three_d.as_ref().filter(|t| t.enabled)?.clone();
         let layout = self.render_layout_at_time(title, width, height, time_secs);
         let placed = std::mem::take(&mut *self.last_glyphs3d.lock().unwrap_or_else(|e| e.into_inner()));
         // Depths in ems of the text's size, as its size is drawn.
-        let em = tb.font_size * crate::frame_scale(width, height);
+        let scale = crate::frame_scale(width, height);
+        let em = tb.font_size * scale;
         let bevel = |b: &Option<klipp_timeline::Bevel>| b.map(|b| text3d_mesh::BevelPx { size: b.size * em, segments: b.segments, round: b.profile == klipp_timeline::BevelProfile::Round });
         let (front, back) = (bevel(&settings.front_bevel), bevel(&settings.back_bevel));
         let depth = settings.depth * em;
+        // An outline as the solid takes it: stood on its path, and cut
+        // where a write-on has reached.
+        let shaped = |raw: Vec<Vec<[f32; 2]>>, turn: Option<text3d_render::Turn>| -> Vec<text3d_mesh::Contour> {
+            let raw = raw.into_iter().map(|c| match turn {
+                Some(t) => c.into_iter().map(|p| t.apply(p)).collect(),
+                None => c,
+            });
+            match placed.reveal {
+                Some(x) => text3d_mesh::contours_of(raw.map(|c| text3d_mesh::clip_left_of(&c, x)).collect()),
+                None => text3d_mesh::contours_of(raw.collect()),
+            }
+        };
         // A colour glyph is a flat sprite on the front plane.
-        let sprites: Vec<text3d_render::Sprite> = placed.iter().filter_map(|g| g.sprite.clone()).collect();
-        let meshes: Vec<text3d_mesh::GlyphMesh> = placed
+        let sprites: Vec<text3d_render::Sprite> = placed.glyphs.iter().filter_map(|g| g.sprite.clone()).filter(|sp| placed.reveal.is_none_or(|x| sp.x < x)).collect();
+        // Each solid and the glyph whose motion it follows.
+        let mut solids: Vec<(text3d_mesh::GlyphMesh, Option<usize>)> = placed
+            .glyphs
             .iter()
             .filter(|g| g.sprite.is_none())
             .filter_map(|g| {
                 let font = self.font_cache.get(&g.font).unwrap_or(&self.fallback_font);
                 let contours = font.outline(g.glyph, g.px, g.origin, 0.2)?;
-                Some(text3d_mesh::extrude(&contours, depth, front, back, 25.0))
+                let contours = shaped(contours.into_iter().map(|c| c.points).collect(), g.turn);
+                (!contours.is_empty()).then(|| (text3d_mesh::extrude(&contours, depth, front, back, 25.0), Some(g.unit)))
             })
             .collect();
+        // The stripes, each cut into the stretches under its glyphs so
+        // each stretch moves with its glyph, as the flat stripe's pixels
+        // go with the glyph nearest them.
+        let boxes = &layout.glyph_boxes;
+        let inked: Vec<usize> = placed.glyphs.iter().map(|g| g.unit).filter(|&u| boxes.get(u).is_some_and(|b| b[2] > b[0])).collect();
+        for st in &placed.stripes {
+            let [x0, y0, x1, y1] = *st;
+            let mut under: Vec<(f32, usize)> = inked
+                .iter()
+                .filter(|&&u| {
+                    let b = boxes[u];
+                    (b[0] as f32) < x1 && (b[2] as f32) > x0 && ((b[1] + b[3]) as f32 * 0.5 - (y0 + y1) * 0.5).abs() < em * 1.5
+                })
+                .map(|&u| ((boxes[u][0] + boxes[u][2]) as f32 * 0.5, u))
+                .collect();
+            under.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let pieces: Vec<(f32, f32, Option<usize>)> = if under.is_empty() {
+                vec![(x0, x1, None)]
+            } else {
+                (0..under.len())
+                    .map(|k| {
+                        let a = if k == 0 { x0 } else { (under[k - 1].0 + under[k].0) * 0.5 };
+                        let b = if k + 1 == under.len() { x1 } else { (under[k].0 + under[k + 1].0) * 0.5 };
+                        (a.max(x0), b.min(x1), Some(under[k].1))
+                    })
+                    .collect()
+            };
+            for (a, b, unit) in pieces {
+                let contours = shaped(vec![vec![[a, y0], [b, y0], [b, y1], [a, y1]]], None);
+                if !contours.is_empty() {
+                    solids.push((text3d_mesh::extrude(&contours, depth, front, back, 25.0), unit));
+                }
+            }
+        }
+        let meshes: Vec<text3d_mesh::GlyphMesh> = solids.iter().map(|s| s.0.clone()).collect();
+        // Each glyph's own motion at this time, as the flat glyphs are
+        // posed: a staggered entrance or exit and the animators, each
+        // solid about its glyph's centre, half way into its depth.
+        let fx = title.primary_fx();
+        let poses: Vec<text3d_render::Pose> = match time_secs {
+            Some(t) if fx.motion.is_active() || fx.animators.iter().any(|a| a.enabled) => {
+                let units = UnitMap { x0: 0, y0: 0, w: 0, h: 0, index: Vec::new(), boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: 0, path: None };
+                let glyph = glyph_poses(&units, &fx.motion, &fx.animators, t, self.motion_window, em, (0.0, 0.0, 1.0), false);
+                solids
+                    .iter()
+                    .map(|(_, unit)| match unit.and_then(|u| glyph.get(u)) {
+                        Some(p) => text3d_render::Pose { anchor: [p.anchor.0, p.anchor.1, depth * 0.5], scale: p.scale, rotation: p.rotation, offset: [p.dx, p.dy], alpha: p.alpha.clamp(0.0, 1.0) },
+                        None => text3d_render::Pose::default(),
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
         let pivot = [(layout.text_left + layout.text_right) * 0.5, (layout.text_top + layout.text_bottom) * 0.5, depth * 0.5];
         let face = settings.face_color.unwrap_or(tb.color);
-        let scene = text3d_render::Scene { meshes: &meshes, sprites: &sprites, settings: &settings, pivot, face, side: settings.side_color, bevel: settings.bevel_color.unwrap_or(face) };
+        // A face that is not one colour: the flat face drawn alone, its
+        // colours laid on the front faces.
+        let texture = self.face_texture(title, face, width, height, time_secs);
+        let scene = text3d_render::Scene {
+            meshes: &meshes,
+            sprites: &sprites,
+            settings: &settings,
+            pivot,
+            face,
+            side: settings.side_color,
+            bevel: settings.bevel_color.unwrap_or(face),
+            poses: &poses,
+            texture: texture.as_ref().map(|rgba| text3d_render::FaceTexture { rgba, width: width as usize, height: height as usize }),
+        };
         let (solid, drawn) = text3d_render::render_boxed(&scene, width, height, 2);
-        Some(Self::dress_3d(solid, drawn, title, width, height, time_secs, gpu))
+        let mut buf = Self::dress_3d(solid, drawn, title, width, height, time_secs, gpu);
+        post_effects(&mut buf, title, width, height, time_secs);
+        Some(buf)
+    }
+
+    /// The face of a 3D text whose face is not one colour, as its flat
+    /// self draws it (#1735): its gradient, pattern or texture and its
+    /// runs' colours, without what goes round or behind it, unrevealed
+    /// and at rest. `None` for a face of one colour.
+    fn face_texture(&mut self, title: &TitleData, face: [u8; 4], width: u32, height: u32, time_secs: Option<f32>) -> Option<Vec<u8>> {
+        let tb = title.primary_text()?;
+        let filled = tb.gradient.as_ref().is_some_and(|g| g.enabled)
+            || (tb.pattern_fill_enabled && tb.pattern_fill.is_some())
+            || tb.texture_fill.as_ref().is_some_and(|t| t.enabled)
+            || tb.style_runs.iter().any(|r| r.color.is_some());
+        if !filled {
+            return None;
+        }
+        let mut flat = title.clone();
+        flat.background = TitleBackground::None;
+        for o in &mut flat.objects {
+            if let TitleObjectContent::TextBox(t) = &mut o.content {
+                o.fx = None;
+                t.three_d = None;
+                t.extrusion = None;
+                t.write_on = 1.0;
+                t.color = face;
+            }
+        }
+        let layout = self.render_layout_at_time(&flat, width, height, time_secs);
+        let mut buf = Self::compose(&layout, &flat, width, height, None, time_secs);
+        self.apply_texture_fill(&mut buf, &layout, &flat, width, height);
+        Some(buf)
     }
 
     /// A 3D text's solid dressed as a flat text's face is: its backing
@@ -3660,6 +3807,28 @@ fn generate_preset_texture(
 /// G from `(x, y)`, B from `(x + off, y)`; the new alpha is the max
 /// of the three sample alphas so the visible silhouette grows
 /// naturally instead of clipping. Out-of-bounds samples clamp.
+/// Post-pass effects: applied to the fully-composed layer buffer so
+/// they pick up outline, shadow, glow, gradient, texture-fill, and any
+/// other decorative layer the user configured, a 3D text's solid among
+/// them (#1735). Cheap; only run when the corresponding field is
+/// non-zero.
+fn post_effects(buf: &mut [u8], title: &TitleData, width: u32, height: u32, time_secs: Option<f32>) {
+    let Some(tb) = title.primary_text() else { return };
+    let scale = crate::frame_scale(width, height);
+    if tb.chromatic_aberration_px > 0.0 {
+        apply_chromatic_aberration(buf, width, height, tb.chromatic_aberration_px * scale);
+    }
+    if tb.glitch_intensity > 0.0 {
+        let seed = time_secs.map_or(0u32, |t| {
+            // Quantise to ~12 steps/sec so the glitch pattern doesn't
+            // change every single frame (looks like static noise) while
+            // still feeling alive. 12 steps/s reads as TV-glitchy.
+            (t * 12.0) as u32
+        });
+        apply_glitch(buf, width, height, tb.glitch_intensity, seed);
+    }
+}
+
 fn apply_chromatic_aberration(buf: &mut [u8], width: u32, height: u32, offset_px: f32) {
     let off = offset_px.round() as i32;
     if off == 0 || width == 0 || height == 0 {
