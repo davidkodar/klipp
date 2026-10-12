@@ -404,6 +404,7 @@ fn title_op(t: &PlanTitle, secs: f64, brand: Option<&str>, brief: Option<&Brief>
         loop_effect: look.loop_effect.clone(), glitch: None, chromatic: None, roll_shape: None, edge_fade: None,
         over_faces: false,
         shadow: look.shadow.clone(),
+        typeset: Default::default(),
     }
 }
 
