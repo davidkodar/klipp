@@ -128,7 +128,7 @@ pub(crate) fn resolve_for_grade(grade: &klipp_nodes::NodeGraph, tolerance: f64, 
                 keyframe["time_secs"] = serde_json::json!(stored[i].time_secs);
             }
         }
-        AppCommand::RemoveKeyAt { addr, key, time_secs } => {
+        AppCommand::RemoveKeyAt { addr, key, time_secs } | AppCommand::SetInterpKeyAt { addr, key, time_secs, .. } | AppCommand::EaseKeyAt { addr, key, time_secs, .. } => {
             let stored = keys(addr, key);
             if let Some(i) = nearest(&stored, *time_secs, tolerance) {
                 *time_secs = stored[i].time_secs;
@@ -211,8 +211,9 @@ fn resolve_with<'a>(
             let Some(c) = clip_for(*clip_id) else { return };
             (c.effect_param_keyframes(*effect_index, param_name), time_secs)
         }
-        // A key removed by path: the node's keys, by path and key.
-        RemoveKeyAt { addr, key, time_secs } => {
+        // A key removed, or its interpolation set, by path: the node's
+        // keys, by path and key.
+        RemoveKeyAt { addr, key, time_secs } | SetInterpKeyAt { addr, key, time_secs, .. } | EaseKeyAt { addr, key, time_secs, .. } => {
             let Some(c) = addr.root_clip().and_then(|id| clip_for(klipp_core::ClipId(id))) else { return };
             node_keys = c.node_key_state(addr, key).map(|s| s.keys).unwrap_or_default();
             (&node_keys, time_secs)

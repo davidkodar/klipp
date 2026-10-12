@@ -305,7 +305,7 @@ impl GradeSnapshot {
             }
             // The node's masks a tracker drives: Re-track and Untrack for them.
             p.tracked_masks = self.tracked.iter().filter(|(n, _)| *n == node).map(|(_, i)| *i).collect();
-            let drawn = p.grade_editor(ui, id, ty, &mut params, node, self.clip, cmds, theme, frame);
+            let drawn = p.grade_editor(ui, id, ty, &mut params, node, self.clip, cmds, theme, frame, Some(&v1.keyframes));
             p.tracked_masks.clear();
             if drawn {
                 done.push(id.to_owned());
@@ -377,11 +377,14 @@ impl GradeSnapshot {
         let rows = NodeRows { params: &in_band, presentation: &presentation, stored: &stored, keys: &keys };
         let mut done: Vec<String> = Vec::new();
         let clip = self.clip;
+        // The node's keys, for its editors' key strips: none for a pending
+        // Corrector, which a key couldn't land on.
+        let keyframes = self.v1.iter().find(|n| n.id == node).map(|n| &n.keyframes);
         let mut hook = |ui: &mut egui::Ui, id: &str, _: &ParamDesc, cmds: &mut Vec<AppCommand>| -> bool {
             if done.iter().any(|d| d == id) {
                 return true;
             }
-            let drawn = panel.grade_editor(ui, id, ty, params, node, clip, cmds, theme, frame);
+            let drawn = panel.grade_editor(ui, id, ty, params, node, clip, cmds, theme, frame, keyframes);
             if drawn {
                 done.push(id.to_owned());
             }

@@ -425,6 +425,10 @@ fn numeric_row(ui: &mut egui::Ui, ctx: &mut RowCtx, input: RowInput) -> RowOutco
         ctx.cmds.push(AppCommand::SetInterpKeyAt { addr: ctx.addr.clone(), key: key.clone(), time_secs: ctx.clip_time_secs, interpolation });
         outcome = RowOutcome::Keyed;
     }
+    if let Some(preset) = r.keyframe_ease_preset.filter(|_| keys.at_playhead) {
+        ctx.cmds.push(AppCommand::EaseKeyAt { addr: ctx.addr.clone(), key: key.clone(), time_secs: ctx.clip_time_secs, ease: preset.key_ease() });
+        outcome = RowOutcome::Keyed;
+    }
     if r.keyframe_nav_prev {
         if let Some(t) = keys.prev {
             seek(ctx, t);

@@ -1048,6 +1048,9 @@ pub enum AppCommand {
     /// Move the key at `time_secs` to `new_time_secs`, with `value`.
     MoveKeyAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey, time_secs: f64, new_time_secs: f64, value: f32 },
     SetInterpKeyAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey, time_secs: f64, interpolation: crate::keyframe::Interpolation },
+    /// Ease the key of `(addr, key)` at `time_secs` on a side
+    /// ([`crate::keyframe::ease_key`]): one undo step.
+    EaseKeyAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey, time_secs: f64, ease: crate::keyframe::KeyEase },
     /// Copy the keys of `(addr, key)` to the keyframe clipboard, with the
     /// length of the clip they are on, as a video track's copy does.
     CopyKeysAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey },
@@ -2106,6 +2109,8 @@ pub enum AppCommand {
     ClearKeyframes { clip_id: ClipId, node_id: uuid::Uuid, param: String },
     SetKeyframeInterpolation { clip_id: ClipId, node_id: uuid::Uuid, param: String, time_secs: f64, interpolation: crate::keyframe::Interpolation },
     SetKeyframeTangents { clip_id: ClipId, node_id: uuid::Uuid, param: String, time_secs: f64, tangent_in: (f64, f32), tangent_out: (f64, f32) },
+    /// Ease a grade node's key at `time_secs`, as `EaseKeyAt` does by path.
+    SetKeyframeEase { clip_id: ClipId, node_id: uuid::Uuid, param: String, time_secs: f64, ease: crate::keyframe::KeyEase },
     /// Trigger a grade refresh without changing any params (used after bulk preset apply).
     RefreshGrade,
     ToggleColorPanel,

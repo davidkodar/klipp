@@ -295,9 +295,10 @@ pub(super) fn surfaces(entry: &CatalogEntry) -> Result<BTreeSet<Surface>, String
     Ok(required)
 }
 
-/// Keyframing a grade track, a colour wheel's parts among them: no view
-/// does it today (no diamond on a wheel part, and the curve editor lists
-/// effect tracks only), and it's phase 4's "animation everywhere".
+/// Keyframing a grade track in the curve editor, or a grade specialist
+/// editor's values (the curves, the warper), which draw no diamond: no
+/// view does it today. A colour wheel's parts and the rails under it key
+/// by their diamonds (#891).
 const GRADE_KEYFRAMING: &str = "#891 (grade keyframing: phase 4)";
 
 /// Reviewed absent affordances stay obligations with explicit exclusions,
@@ -313,11 +314,6 @@ pub(super) fn key_exclusion(entry: &CatalogEntry, surface: Surface) -> Option<&'
             if matches!(presentation.widget, Widget::Toggle | Widget::Combo) =>
         {
             Some("#1318 (IC1: switch/choice diamonds follow-up)")
-        }
-        CatalogValue::Parameter { presentation, .. }
-            if matches!(presentation.widget, Widget::WheelPart(_)) || sat_bri_cell(entry) =>
-        {
-            Some(GRADE_KEYFRAMING)
         }
         // A grade specialist editor (curves, the warper) draws no diamond.
         CatalogValue::Parameter { presentation, .. }

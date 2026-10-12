@@ -303,7 +303,7 @@ impl NodeInspectorPanel {
             }
             ColorTab::Wheels if wide_layout => {
                 // Wide layout: combined wheels + sat/bri in unified columns
-                self.show_wheels_wide(ui, graph, clip_id, cmds, theme);
+                self.show_wheels_wide(ui, graph, clip_id, cmds, theme, frame);
             }
             _ => {
                 // The tab is its target's generated rows, the editors among
@@ -363,6 +363,7 @@ impl NodeInspectorPanel {
         clip_id: ClipId,
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
+        frame: FrameSelection,
     ) {
         // Prefer the Corrector (it carries both wheel + sat/bri
         // fields) over the legacy split-node pair. Auto-creating here
@@ -461,7 +462,9 @@ impl NodeInspectorPanel {
 
                 // Wheel
                 if let Some(wi) = wheels_idx {
-                    let params = &mut graph.nodes[wi].params;
+                    let node = &mut graph.nodes[wi];
+                    let keys = NodeKeys { tracks: &node.keyframes, frame };
+                    let params = &mut node.params;
                     let node_id = wheels_node_id.unwrap();
                     let (x_field, y_field, m_field) = match *prefix {
                         "lift" => (&mut params.lift_x, &mut params.lift_y, &mut params.lift_master),
@@ -472,8 +475,12 @@ impl NodeInspectorPanel {
                         "log_high" => (&mut params.log_high_x, &mut params.log_high_y, &mut params.log_high_master),
                         _ => (&mut params.offset_x, &mut params.offset_y, &mut params.offset_master),
                     };
-                    let mut offset = [x_field.unwrap_or(0.0), y_field.unwrap_or(0.0)];
-                    let mut master = m_field.unwrap_or(0.0);
+                    // The wheel's parts, keyed together (#891).
+                    let names = [format!("{prefix}_x"), format!("{prefix}_y"), format!("{prefix}_master")];
+                    let parts = [names[0].as_str(), names[1].as_str(), names[2].as_str()];
+                    let mut offset = [keys.shown(parts[0], x_field.unwrap_or(0.0)), keys.shown(parts[1], y_field.unwrap_or(0.0))];
+                    let mut master = keys.shown(parts[2], m_field.unwrap_or(0.0));
+                    let shown = [offset[0], offset[1], master];
                     let wheel_state = match *prefix {
                         "lift" => &mut self.lift_wheel,
                         "gamma" => &mut self.gamma_wheel,
@@ -486,50 +493,55 @@ impl NodeInspectorPanel {
                     #[cfg(any(test, feature = "row-recorder"))]
                     crate::widgets::row_recorder::control(col_ui.next_auto_id(), "colour_wheel", prefix, label, (offset, master));
                     let resp = color_wheel::color_wheel_sized(
-                        &mut col_ui, wheel_state, theme, label, &mut offset, &mut master, wheel_d, Some(cell_w),
+                        &mut col_ui, wheel_state, theme, label, &mut offset, &mut master, wheel_d, Some(cell_w), Some(keys.state(&parts)),
                     );
                     if resp.drag_started {
                         cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
                     }
                     if resp.changed {
-                        *x_field = Some(offset[0]);
-                        *y_field = Some(offset[1]);
-                        *m_field = Some(master);
                         // A click, a reset or a typed pill is one step;
-                        // a drag's step is its gesture's.
-                        if resp.dragging {
-                            push_wheel_cmds(cmds, clip_id, node_id, prefix, offset, master);
+                        // a drag's step is its gesture's. A keyed wheel's
+                        // edit is a key.
+                        let values = [offset[0], offset[1], master];
+                        if keys.keyed(&parts) {
+                            if resp.dragging {
+                                keys.key_values(cmds, clip_id, node_id, &parts, &values);
+                            } else {
+                                atomic_node_edit_batch(cmds, clip_id, |c| keys.key_values(c, clip_id, node_id, &parts, &values));
+                            }
                         } else {
-                            atomic_node_edit_batch(cmds, clip_id, |c| push_wheel_cmds(c, clip_id, node_id, prefix, offset, master));
+                            *x_field = Some(offset[0]);
+                            *y_field = Some(offset[1]);
+                            *m_field = Some(master);
+                            if resp.dragging {
+                                push_wheel_cmds(cmds, clip_id, node_id, prefix, offset, master);
+                            } else {
+                                atomic_node_edit_batch(cmds, clip_id, |c| push_wheel_cmds(c, clip_id, node_id, prefix, offset, master));
+                            }
                         }
                     }
                     // Released, the drag is one step; ended by Escape, taken back.
                     if let (_, Some(end)) = gesture_of(&mut col_ui, false, resp.drag_ended) {
                         cmds.push(end(clip_id));
                     }
+                    keys.strip_commands(cmds, clip_id, node_id, &parts, &shown, resp.key);
                 }
 
-                // Sat/Bri sliders painted manually below the wheel
+                // Sat/Bri sliders painted manually below the wheel, each
+                // with its key strip.
                 if let Some(si) = satbri_idx.filter(|_| !log_mode) {
-                    let params = &mut graph.nodes[si].params;
+                    let node = &mut graph.nodes[si];
+                    let keys = NodeKeys { tracks: &node.keyframes, frame };
+                    let params = &mut node.params;
                     let node_id = satbri_node_id.unwrap();
-                    let sat_name = format!("{prefix}_sat");
-                    let bri_name = format!("{prefix}_bri");
-                    let sat_field = match *prefix {
-                        "lift" => &mut params.lift_sat,
-                        "gamma" => &mut params.gamma_sat,
-                        "gain" => &mut params.gain_sat,
-                        _ => &mut params.offset_sat,
-                    };
-                    let bri_field = match *prefix {
-                        "lift" => &mut params.lift_bri,
-                        "gamma" => &mut params.gamma_bri,
-                        "gain" => &mut params.gain_bri,
-                        _ => &mut params.offset_bri,
+                    let (sat_field, bri_field) = match *prefix {
+                        "lift" => (&mut params.lift_sat, &mut params.lift_bri),
+                        "gamma" => (&mut params.gamma_sat, &mut params.gamma_bri),
+                        "gain" => (&mut params.gain_sat, &mut params.gain_bri),
+                        _ => (&mut params.offset_sat, &mut params.offset_bri),
                     };
 
                     let painter = col_ui.painter().clone();
-                    let _text_dim = theme.text_dim;
                     let accent = theme.accent;
                     let track_bg = theme.bg_raised;
                     let slider_h = 14.0;
@@ -542,123 +554,81 @@ impl NodeInspectorPanel {
                     let cursor_y = col_ui.cursor().min.y;
                     let cx = col_rect.min.x + margin;
 
-                    // -- Saturation --
-                    let sat_label_y = cursor_y + 4.0;
-                    painter.text(
-                        egui::pos2(col_rect.center().x, sat_label_y + label_h / 2.0),
-                        egui::Align2::CENTER_CENTER,
-                        "Saturation",
-                        egui::FontId::proportional(10.0),
-                        theme.text_dim,
-                    );
-                    let sat_track_y = sat_label_y + label_h + 2.0;
-                    let sat_track_rect = egui::Rect::from_min_size(
-                        egui::pos2(cx, sat_track_y + slider_h / 2.0 - 1.5),
-                        egui::vec2(track_draw_w, 4.0),
-                    );
-                    painter.rect_filled(sat_track_rect, 2.0, track_bg);
-                    let sat_hit = egui::Rect::from_min_size(egui::pos2(cx - 4.0, sat_track_y), egui::vec2(track_draw_w + 8.0, slider_h));
-                    let sat_resp = col_ui.allocate_rect(sat_hit, egui::Sense::click_and_drag());
-                    let mut s = sat_field.unwrap_or(0.0);
-                    #[cfg(any(test, feature = "row-recorder"))]
-                    {
-                        crate::widgets::row_recorder::next_parameter(&sat_name);
-                        crate::widgets::row_recorder::numeric(sat_resp.id, "wheel_slider", "Saturation", s, &(-1.0..=1.0), Some(0.0), None, Some(2), "", None);
-                    }
-                    if sat_resp.drag_started() {
-                        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
-                    }
-                    if let (_, Some(end)) = gesture_of(&mut col_ui, false, sat_resp.drag_stopped()) {
-                        cmds.push(end(clip_id));
-                    }
-                    if sat_resp.dragged() || sat_resp.clicked() {
-                        if let Some(pos) = sat_resp.interact_pointer_pos() {
-                            let t = ((pos.x - cx) / track_draw_w).clamp(0.0, 1.0);
-                            s = t * 2.0 - 1.0;
-                            *sat_field = Some(s);
-                            if sat_resp.dragged() {
-                                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: sat_name.clone(), value: s });
+                    let mut label_y = cursor_y + 4.0;
+                    for (title, field, name) in [("Saturation", sat_field, format!("{prefix}_sat")), ("Brightness", bri_field, format!("{prefix}_bri"))] {
+                        let title_rect = painter.text(
+                            egui::pos2(col_rect.center().x, label_y + label_h / 2.0),
+                            egui::Align2::CENTER_CENTER,
+                            title,
+                            egui::FontId::proportional(10.0),
+                            theme.text_dim,
+                        );
+                        let track_y = label_y + label_h + 2.0;
+                        let track_rect = egui::Rect::from_min_size(
+                            egui::pos2(cx, track_y + slider_h / 2.0 - 1.5),
+                            egui::vec2(track_draw_w, 4.0),
+                        );
+                        painter.rect_filled(track_rect, 2.0, track_bg);
+                        let hit = egui::Rect::from_min_size(egui::pos2(cx - 4.0, track_y), egui::vec2(track_draw_w + 8.0, slider_h));
+                        let resp = col_ui.allocate_rect(hit, egui::Sense::click_and_drag());
+                        let param = [name.as_str()];
+                        let keyed = keys.keyed(&param);
+                        let mut v = keys.shown(&name, field.unwrap_or(0.0));
+                        let shown = v;
+                        #[cfg(any(test, feature = "row-recorder"))]
+                        {
+                            crate::widgets::row_recorder::next_parameter(&name);
+                            crate::widgets::row_recorder::numeric(resp.id, "wheel_slider", title, v, &(-1.0..=1.0), Some(0.0), None, Some(2), "", None);
+                        }
+                        if resp.drag_started() {
+                            cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+                        }
+                        if let (_, Some(end)) = gesture_of(&mut col_ui, false, resp.drag_stopped()) {
+                            cmds.push(end(clip_id));
+                        }
+                        // One edit's commands: a key when keyed, else the
+                        // value; a drag's step is its gesture's, anything
+                        // else one step of its own.
+                        let mut write = |cmds: &mut Vec<AppCommand>, value: f32, dragged: bool| {
+                            let body = |c: &mut Vec<AppCommand>| if keyed {
+                                keys.key_values(c, clip_id, node_id, &param, &[value]);
                             } else {
-                                // A click is a step of its own, as a drag is.
-                                push_atomic_node_edit(cmds, clip_id, node_id, &sat_name, s);
+                                c.push(AppCommand::SetNodeParam { clip_id, node_id, param: name.clone(), value });
+                            };
+                            if !keyed {
+                                *field = Some(value);
+                            }
+                            if dragged { body(cmds) } else { atomic_node_edit_batch(cmds, clip_id, body) }
+                        };
+                        if resp.dragged() || resp.clicked() {
+                            if let Some(pos) = resp.interact_pointer_pos() {
+                                let t = ((pos.x - cx) / track_draw_w).clamp(0.0, 1.0);
+                                v = t * 2.0 - 1.0;
+                                write(cmds, v, resp.dragged());
                             }
                         }
-                    }
-                    if sat_resp.double_clicked() || sat_resp.secondary_clicked() {
-                        s = 0.0; *sat_field = Some(s);
-                        push_atomic_node_edit(cmds, clip_id, node_id, &sat_name, 0.0);
-                    }
-                    let sat_t = (s + 1.0) / 2.0;
-                    let sat_thumb_x = cx + sat_t * track_draw_w;
-                    painter.circle_filled(egui::pos2(sat_thumb_x, sat_track_y + slider_h / 2.0), 4.0, accent);
-                    let is_default = s.abs() < 0.005;
-                    let val_color = if is_default { theme.text_dim } else { accent };
-                    painter.text(
-                        egui::pos2(cx + track_draw_w + value_w - 2.0, sat_track_y + slider_h / 2.0),
-                        egui::Align2::RIGHT_CENTER,
-                        format!("{s:+.2}"),
-                        egui::FontId::monospace(10.0),
-                        val_color,
-                    );
-
-                    // -- Brightness --
-                    let bri_label_y = sat_track_y + slider_h + 4.0;
-                    painter.text(
-                        egui::pos2(col_rect.center().x, bri_label_y + label_h / 2.0),
-                        egui::Align2::CENTER_CENTER,
-                        "Brightness",
-                        egui::FontId::proportional(10.0),
-                        theme.text_dim,
-                    );
-                    let bri_track_y = bri_label_y + label_h + 2.0;
-                    let bri_track_rect = egui::Rect::from_min_size(
-                        egui::pos2(cx, bri_track_y + slider_h / 2.0 - 1.5),
-                        egui::vec2(track_draw_w, 4.0),
-                    );
-                    painter.rect_filled(bri_track_rect, 2.0, track_bg);
-                    let bri_hit = egui::Rect::from_min_size(egui::pos2(cx - 4.0, bri_track_y), egui::vec2(track_draw_w + 8.0, slider_h));
-                    let bri_resp = col_ui.allocate_rect(bri_hit, egui::Sense::click_and_drag());
-                    let mut b = bri_field.unwrap_or(0.0);
-                    #[cfg(any(test, feature = "row-recorder"))]
-                    {
-                        crate::widgets::row_recorder::next_parameter(&bri_name);
-                        crate::widgets::row_recorder::numeric(bri_resp.id, "wheel_slider", "Brightness", b, &(-1.0..=1.0), Some(0.0), None, Some(2), "", None);
-                    }
-                    if bri_resp.drag_started() {
-                        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
-                    }
-                    if let (_, Some(end)) = gesture_of(&mut col_ui, false, bri_resp.drag_stopped()) {
-                        cmds.push(end(clip_id));
-                    }
-                    if bri_resp.dragged() || bri_resp.clicked() {
-                        if let Some(pos) = bri_resp.interact_pointer_pos() {
-                            let t = ((pos.x - cx) / track_draw_w).clamp(0.0, 1.0);
-                            b = t * 2.0 - 1.0;
-                            *bri_field = Some(b);
-                            if bri_resp.dragged() {
-                                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: bri_name.clone(), value: b });
-                            } else {
-                                // A click is a step of its own, as a drag is.
-                                push_atomic_node_edit(cmds, clip_id, node_id, &bri_name, b);
-                            }
+                        if resp.double_clicked() || resp.secondary_clicked() {
+                            v = 0.0;
+                            write(cmds, 0.0, false);
                         }
+                        let thumb_x = cx + (v + 1.0) / 2.0 * track_draw_w;
+                        painter.circle_filled(egui::pos2(thumb_x, track_y + slider_h / 2.0), 4.0, accent);
+                        let val_color = if v.abs() < 0.005 { theme.text_dim } else { accent };
+                        painter.text(
+                            egui::pos2(cx + track_draw_w + value_w - 2.0, track_y + slider_h / 2.0),
+                            egui::Align2::RIGHT_CENTER,
+                            format!("{v:+.2}"),
+                            egui::FontId::monospace(10.0),
+                            val_color,
+                        );
+                        // The key strip right of the title, as a wheel's is,
+                        // so the rail keeps its length.
+                        let key_w = if keys.state(&param).has_any_keyframes { 36.0 } else { 16.0 };
+                        let strip_at = egui::Rect::from_min_size(egui::pos2(title_rect.right() + 2.0, title_rect.center().y - 9.0), egui::vec2(key_w, 18.0));
+                        let strip = col_ui.allocate_new_ui(egui::UiBuilder::new().max_rect(strip_at), |ui| crate::widgets::scrubby_param::key_strip(ui, keys.state(&param))).inner;
+                        keys.strip_commands(cmds, clip_id, node_id, &param, &[shown], strip);
+                        label_y = track_y + slider_h + 4.0;
                     }
-                    if bri_resp.double_clicked() || bri_resp.secondary_clicked() {
-                        b = 0.0; *bri_field = Some(b);
-                        push_atomic_node_edit(cmds, clip_id, node_id, &bri_name, 0.0);
-                    }
-                    let bri_t = (b + 1.0) / 2.0;
-                    let bri_thumb_x = cx + bri_t * track_draw_w;
-                    painter.circle_filled(egui::pos2(bri_thumb_x, bri_track_y + slider_h / 2.0), 4.0, accent);
-                    let is_default = b.abs() < 0.005;
-                    let val_color = if is_default { theme.text_dim } else { accent };
-                    painter.text(
-                        egui::pos2(cx + track_draw_w + value_w - 2.0, bri_track_y + slider_h / 2.0),
-                        egui::Align2::RIGHT_CENTER,
-                        format!("{b:+.2}"),
-                        egui::FontId::monospace(10.0),
-                        val_color,
-                    );
                 }
             }
         });
@@ -1532,7 +1502,8 @@ impl NodeInspectorPanel {
     /// editor a row names by `id`, drawn by the per-node layout's own
     /// widget, unchanged. The wheels (`"wheels"`, any wheel's part) are
     /// drawn as one block, with saturation and brightness under each where
-    /// the node's type has them. Whether it drew one.
+    /// the node's type has them, each keyable when `keys` (the node's
+    /// tracks) are given. Whether it drew one.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn grade_editor(
         &mut self,
@@ -1545,6 +1516,7 @@ impl NodeInspectorPanel {
         cmds: &mut Vec<AppCommand>,
         theme: &KlippTheme,
         frame: FrameSelection,
+        keys: Option<&klipp_nodes::NodeKeyframeTracks>,
     ) -> bool {
         match id {
             "wheels" => {
@@ -1560,7 +1532,7 @@ impl NodeInspectorPanel {
                     let wheel_d = (cell_w - 14.0).min(180.0);
                     let log_mode = params.wheels_log_mode.unwrap_or(false);
                     let with_sat_bri = ty.desc.params.iter().any(|p| p.key == "lift_sat");
-                    self.wheel_block(ui, params, log_mode, node_id, clip_id, cmds, theme, (columns, cell_w, wheel_d), with_sat_bri);
+                    self.wheel_block(ui, params, log_mode, node_id, clip_id, cmds, theme, (columns, cell_w, wheel_d), with_sat_bri, keys.map(|tracks| NodeKeys { tracks, frame }));
                 });
             }
             "curves" => {
@@ -1954,6 +1926,7 @@ impl NodeInspectorPanel {
         theme: &KlippTheme,
         (columns, cell_w, wheel_d): (usize, f32, f32),
         with_sat_bri: bool,
+        keys: Option<NodeKeys>,
     ) {
         // Keep each wheel's saturation/brightness controls in its
         // own cell. Log wheels have no per-wheel sat/bri fields.
@@ -1964,29 +1937,48 @@ impl NodeInspectorPanel {
             satbri: Option<(&mut Option<f32>, &mut Option<f32>)>,
             prefix: &str|
         {
+            // The wheel's parts, keyed together (#891): shown as their keys
+            // give them at the frame.
+            let names = [format!("{prefix}_x"), format!("{prefix}_y"), format!("{prefix}_master")];
+            let parts = [names[0].as_str(), names[1].as_str(), names[2].as_str()];
             let mut offset = [x.unwrap_or(0.0), y.unwrap_or(0.0)];
             let mut master = m.unwrap_or(0.0);
+            if let Some(k) = keys {
+                offset = [k.shown(parts[0], offset[0]), k.shown(parts[1], offset[1])];
+                master = k.shown(parts[2], master);
+            }
+            let shown = [offset[0], offset[1], master];
             #[cfg(any(test, feature = "row-recorder"))]
             crate::widgets::row_recorder::control(ui.next_auto_id(), "colour_wheel", prefix, label, (offset, master));
             let resp = color_wheel::color_wheel_sized(
-                ui, state, theme, label, &mut offset, &mut master, wheel_d, Some(cell_w),
+                ui, state, theme, label, &mut offset, &mut master, wheel_d, Some(cell_w), keys.map(|k| k.state(&parts)),
             );
             if resp.drag_started {
                 cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
             }
             if resp.changed {
-                *x = Some(offset[0]); *y = Some(offset[1]); *m = Some(master);
                 // A click, a reset or a typed pill is one step; a drag's
-                // step is its gesture's.
-                if resp.dragging {
-                    push_wheel_cmds(cmds, clip_id, node_id, prefix, offset, master);
-                } else {
-                    atomic_node_edit_batch(cmds, clip_id, |c| push_wheel_cmds(c, clip_id, node_id, prefix, offset, master));
+                // step is its gesture's. A keyed wheel's edit is a key.
+                let values = [offset[0], offset[1], master];
+                match keys.filter(|k| k.keyed(&parts)) {
+                    Some(k) if resp.dragging => k.key_values(cmds, clip_id, node_id, &parts, &values),
+                    Some(k) => atomic_node_edit_batch(cmds, clip_id, |c| k.key_values(c, clip_id, node_id, &parts, &values)),
+                    None => {
+                        *x = Some(offset[0]); *y = Some(offset[1]); *m = Some(master);
+                        if resp.dragging {
+                            push_wheel_cmds(cmds, clip_id, node_id, prefix, offset, master);
+                        } else {
+                            atomic_node_edit_batch(cmds, clip_id, |c| push_wheel_cmds(c, clip_id, node_id, prefix, offset, master));
+                        }
+                    }
                 }
             }
             // Released, the drag is one step; ended by Escape, taken back.
             if let (_, Some(end)) = gesture_of(ui, false, resp.drag_ended) {
                 cmds.push(end(clip_id));
+            }
+            if let Some(k) = keys {
+                k.strip_commands(cmds, clip_id, node_id, &parts, &shown, resp.key);
             }
 
             let Some((sat, bri)) = satbri else { return };
@@ -2009,7 +2001,9 @@ impl NodeInspectorPanel {
                 // and sat on the slider's right end.
                 const LETTER_W: f32 = 10.0;
                 const VALUE_W: f32 = 34.0;
-                let slider_w = (wheel_d - LETTER_W - VALUE_W - 6.0).max(28.0);
+                // A keyable slider's key strip: its diamond and arrows.
+                let key_w = if keys.is_some() { 36.0 } else { 0.0 };
+                let slider_w = (wheel_d - LETTER_W - VALUE_W - key_w - 6.0).max(28.0);
                 // `Slider` takes its length from `slider_width`,
                 // not from the rect `add_sized` gives it — left
                 // alone it draws the full available width and
@@ -2020,12 +2014,16 @@ impl NodeInspectorPanel {
                     ("S", sat, "sat", "Saturation"),
                     ("B", bri, "bri", "Brightness"),
                 ] {
-                    let mut v = field.unwrap_or(0.0);
+                    let param = format!("{prefix}_{suffix}");
+                    let mut v = keys.map_or(field.unwrap_or(0.0), |k| k.shown(&param, field.unwrap_or(0.0)));
+                    let shown = v;
+                    let keyed = keys.filter(|k| k.keyed(&[param.as_str()]));
                     #[cfg(any(test, feature = "row-recorder"))]
                     {
-                        crate::widgets::row_recorder::next_parameter(&format!("{prefix}_{suffix}"));
+                        crate::widgets::row_recorder::next_parameter(&param);
                         crate::widgets::row_recorder::numeric(ui.next_auto_id(), "wheel_slider", letter, v, &(-1.0..=1.0), None, None, Some(2), "", None);
                     }
+                    let mut strip = None;
                     let r = ui.horizontal(|ui| {
                         ui.add_sized(
                             [LETTER_W, 14.0],
@@ -2046,20 +2044,34 @@ impl NodeInspectorPanel {
                                     .color(theme.text_dim),
                             ),
                         );
+                        if let Some(k) = keys {
+                            let at = ui.allocate_exact_size(egui::vec2(key_w, 14.0), egui::Sense::hover()).0;
+                            strip = Some(ui.allocate_new_ui(egui::UiBuilder::new().max_rect(at.expand2(egui::vec2(0.0, 2.0))), |ui| crate::widgets::scrubby_param::key_strip(ui, k.state(&[param.as_str()]))).inner);
+                        }
                         r
                     }).inner;
                     if r.drag_started() {
                         cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
                     }
                     if r.changed() {
-                        *field = Some(v);
-                        let param = format!("{prefix}_{suffix}");
-                        if r.dragged() || r.drag_started() || r.drag_stopped() {
-                            cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param, value: v });
-                        } else {
-                            // A press on the rail is a step of its own.
-                            push_atomic_node_edit(cmds, clip_id, node_id, &param, v);
+                        let dragging = r.dragged() || r.drag_started() || r.drag_stopped();
+                        match keyed {
+                            // Keyed, what it shows is the animation: the edit is a key.
+                            Some(k) if dragging => k.key_values(cmds, clip_id, node_id, &[param.as_str()], &[v]),
+                            Some(k) => atomic_node_edit_batch(cmds, clip_id, |c| k.key_values(c, clip_id, node_id, &[param.as_str()], &[v])),
+                            None => {
+                                *field = Some(v);
+                                if dragging {
+                                    cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: param.clone(), value: v });
+                                } else {
+                                    // A press on the rail is a step of its own.
+                                    push_atomic_node_edit(cmds, clip_id, node_id, &param, v);
+                                }
+                            }
                         }
+                    }
+                    if let (Some(k), Some(strip)) = (keys, strip) {
+                        k.strip_commands(cmds, clip_id, node_id, &[param.as_str()], &[shown], strip);
                     }
                     // A right click or a double click puts it back to
                     // neutral, one step, as the wide layout's rails do. A
@@ -2071,8 +2083,13 @@ impl NodeInspectorPanel {
                             && (i.pointer.button_clicked(egui::PointerButton::Secondary) || i.pointer.button_double_clicked(egui::PointerButton::Primary))
                     });
                     if reset {
-                        *field = Some(0.0);
-                        push_atomic_node_edit(cmds, clip_id, node_id, &format!("{prefix}_{suffix}"), 0.0);
+                        match keyed {
+                            Some(k) => atomic_node_edit_batch(cmds, clip_id, |c| k.key_values(c, clip_id, node_id, &[param.as_str()], &[0.0])),
+                            None => {
+                                *field = Some(0.0);
+                                push_atomic_node_edit(cmds, clip_id, node_id, &param, 0.0);
+                            }
+                        }
                     }
                     if let (_, Some(end)) = gesture_of(ui, false, r.drag_stopped()) {
                         cmds.push(end(clip_id));
@@ -2241,7 +2258,7 @@ impl NodeInspectorPanel {
                 wheel_shape_sliders(ui, params, log_mode, node_id, cmds, clip_id, theme);
                 ui.add_space(4.0);
 
-                self.wheel_block(ui, params, log_mode, node_id, clip_id, cmds, theme, (columns, cell_w, wheel_d), true);
+                self.wheel_block(ui, params, log_mode, node_id, clip_id, cmds, theme, (columns, cell_w, wheel_d), true, Some(NodeKeys { tracks: keyframes, frame }));
             }
             NodeKind::WheelSatBri => {
                 let groups = [
@@ -4555,6 +4572,110 @@ fn atomic_node_edit_batch<F: FnOnce(&mut Vec<AppCommand>)>(
     cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
     body(cmds);
     cmds.push(AppCommand::EndNodeParamEdit { clip_id });
+}
+
+/// A grade node's keys as a control drawn at `frame` reads them: its
+/// tracks, by parameter (#891). A control over several parameters (a
+/// colour wheel's puck and master) keys them together.
+#[derive(Clone, Copy)]
+pub(crate) struct NodeKeys<'a> {
+    pub tracks: &'a klipp_nodes::NodeKeyframeTracks,
+    pub frame: FrameSelection,
+}
+
+impl NodeKeys<'_> {
+    fn of(&self, param: &str) -> &[klipp_core::Keyframe] {
+        self.tracks.tracks.iter().find(|t| t.param_name == param).map_or(&[], |t| &t.keyframes)
+    }
+
+    /// The parameters' keys together, by time: a key wherever any of them
+    /// has one (the first's, at a time two share).
+    fn union(&self, params: &[&str]) -> Vec<klipp_core::Keyframe> {
+        let mut all: Vec<klipp_core::Keyframe> = params.iter().flat_map(|p| self.of(p).iter().cloned()).collect();
+        all.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+        all.dedup_by(|b, a| (a.time_secs - b.time_secs).abs() < klipp_core::keyframe::KEYFRAME_TIME_EPSILON);
+        all
+    }
+
+    /// The control's key state at the frame.
+    fn state(&self, params: &[&str]) -> crate::widgets::scrubby_param::KeyframeState {
+        crate::inspector::keyframe_selection::state(&self.union(params), self.frame.time_secs, self.frame.tolerance)
+    }
+
+    /// Whether any of the parameters is keyed: an edit of the control is
+    /// then a key, since what it shows is the animation.
+    fn keyed(&self, params: &[&str]) -> bool {
+        params.iter().any(|p| !self.of(p).is_empty())
+    }
+
+    /// What `param` shows at the frame: its key there, or its keys' value
+    /// between them, else `stored`.
+    fn shown(&self, param: &str, stored: f32) -> f32 {
+        let keys = self.of(param);
+        if keys.is_empty() { stored } else { crate::inspector::keyframe_selection::editable_value(keys, self.frame.time_secs, stored, self.frame.tolerance) }
+    }
+
+    /// `param`'s own key in the frame, by its stored time.
+    fn own_key(&self, param: &str) -> Option<f64> {
+        let keys = self.of(param);
+        crate::inspector::keyframe_selection::nearest(keys, self.frame.time_secs, self.frame.tolerance).map(|i| keys[i].time_secs)
+    }
+
+    /// Where `param`'s key goes when the control keys it: its own key in
+    /// the frame, else the control's (another part's), else the frame's
+    /// time, so the parts' keys line up.
+    fn key_time(&self, param: &str, params: &[&str]) -> f64 {
+        let union = self.union(params);
+        let control = crate::inspector::keyframe_selection::nearest(&union, self.frame.time_secs, self.frame.tolerance).map(|i| union[i].time_secs);
+        self.own_key(param).or(control).unwrap_or(self.frame.time_secs)
+    }
+
+    /// The edit `values` (each parameter's new value) of a keyed control:
+    /// a key on each part at the control's key time.
+    fn key_values(&self, cmds: &mut Vec<AppCommand>, clip_id: ClipId, node_id: NodeId, params: &[&str], values: &[f32]) {
+        for (param, value) in params.iter().zip(values) {
+            cmds.push(AppCommand::AddKeyframe { clip_id, node_id, param: (*param).to_owned(), time_secs: self.key_time(param, params), value: *value });
+        }
+    }
+
+    /// What the control's key strip asked for, as commands: the diamond
+    /// adds a key on every part with the values shown (`values`), or takes
+    /// the parts' keys in the frame away, one step; an arrow seeks to the
+    /// control's key that way; the key menu sets the interpolation or the
+    /// ease of each part's key there, one step.
+    fn strip_commands(&self, cmds: &mut Vec<AppCommand>, clip_id: ClipId, node_id: NodeId, params: &[&str], values: &[f32], strip: crate::widgets::scrubby_param::KeyStrip) {
+        use crate::widgets::scrubby_param::KeyMenuPick;
+        let state = self.state(params);
+        if strip.toggled {
+            atomic_node_edit_batch(cmds, clip_id, |cmds| {
+                if state.has_keyframe_at_playhead {
+                    for param in params {
+                        if let Some(time_secs) = self.own_key(param) {
+                            cmds.push(AppCommand::RemoveKeyframe { clip_id, node_id, param: (*param).to_owned(), time_secs });
+                        }
+                    }
+                } else {
+                    self.key_values(cmds, clip_id, node_id, params, values);
+                }
+            });
+        }
+        let to = if strip.prev { state.prev_keyframe_time } else if strip.next { state.next_keyframe_time } else { None };
+        if let Some(t) = to {
+            cmds.push(self.frame.seek_to(t));
+        }
+        if let Some(pick) = strip.pick {
+            atomic_node_edit_batch(cmds, clip_id, |cmds| {
+                for param in params {
+                    let Some(time_secs) = self.own_key(param) else { continue };
+                    let param = (*param).to_owned();
+                    cmds.push(match pick {
+                        KeyMenuPick::Interpolation(interpolation) => AppCommand::SetKeyframeInterpolation { clip_id, node_id, param, time_secs, interpolation },
+                        KeyMenuPick::Ease(preset) => AppCommand::SetKeyframeEase { clip_id, node_id, param, time_secs, ease: preset.key_ease() },
+                    });
+                }
+            });
+        }
+    }
 }
 
 fn push_wheel_cmds(cmds: &mut Vec<AppCommand>, clip_id: ClipId, node_id: NodeId, prefix: &str, offset: [f32; 2], master: f32) {

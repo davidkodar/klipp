@@ -12,6 +12,8 @@ pub struct WheelResponse {
     /// A drag of the puck, the master or a pill is under way: a change
     /// outside one (a click, a reset, a typed pill) is a whole edit.
     pub dragging: bool,
+    /// What the wheel's key strip did, when it has one.
+    pub key: crate::widgets::scrubby_param::KeyStrip,
 }
 
 /// Renders a color wheel with puck, RGB readout, and master slider.
@@ -24,10 +26,14 @@ pub fn color_wheel(
     offset: &mut [f32; 2],
     master: &mut f32,
 ) -> WheelResponse {
-    color_wheel_sized(ui, state, theme, label, offset, master, 108.0, None)
+    color_wheel_sized(ui, state, theme, label, offset, master, 108.0, None, None)
 }
 
-/// Like `color_wheel` but with a custom diameter (in pixels).
+/// Like `color_wheel` but with a custom diameter (in pixels), and, when
+/// the wheel can be keyed, its key strip (the diamond and the arrows to
+/// the keys either side) beside its title: the wheel's keys are its
+/// parts' (puck and master) together, `keys` their state at the playhead.
+#[allow(clippy::too_many_arguments)]
 pub fn color_wheel_sized(
     ui: &mut egui::Ui,
     state: &mut ColorWheelState,
@@ -37,6 +43,7 @@ pub fn color_wheel_sized(
     master: &mut f32,
     wheel_diameter: f32,
     forced_width: Option<f32>,
+    keys: Option<crate::widgets::scrubby_param::KeyframeState>,
 ) -> WheelResponse {
     let mut changed = false;
     let mut drag_started = false;
@@ -74,6 +81,18 @@ pub fn color_wheel_sized(
         egui::FontId::proportional(10.0),
         text_accent,
     );
+
+    // ── Key strip, right of the title ──
+    let mut key = crate::widgets::scrubby_param::KeyStrip::default();
+    if let Some(ks) = keys {
+        let title_w = ui.fonts(|f| f.layout_no_wrap(label.to_owned(), egui::FontId::proportional(10.0), text_accent).size().x);
+        let strip_w = if ks.has_any_keyframes { 36.0 } else { 16.0 };
+        let left = center_x + title_w / 2.0 + 2.0;
+        let strip = egui::Rect::from_min_size(egui::pos2(left, full_rect.min.y + label_h / 2.0 - 9.0), egui::vec2(strip_w, 18.0));
+        key = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(strip).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
+            crate::widgets::scrubby_param::key_strip(ui, ks)
+        }).inner;
+    }
 
     // ── Wheel texture ──
     let wheel_top = full_rect.min.y + label_h;
@@ -414,6 +433,7 @@ pub fn color_wheel_sized(
         drag_started,
         drag_ended,
         dragging,
+        key,
     }
 }
 

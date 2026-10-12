@@ -64,6 +64,56 @@ pub fn set_interpolation_at(keyframes: &mut [Keyframe], index: usize, interpolat
     }
 }
 
+/// Which side of a key an ease slows, as a key menu offers it: the move
+/// arriving at the key ("Ease In"), the move leaving it ("Ease Out"), or
+/// both. Unlike [`Ease`], which shapes one move from rest to rest, this
+/// is said of a key, as a grading or compositing app's key menu says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyEase {
+    /// Slow into the key.
+    In,
+    /// Slow out of the key.
+    Out,
+    /// Slow into and out of the key.
+    Both,
+}
+
+/// How long an eased key's flat handle is, as a share of its segment: the
+/// standard ease's 0.42.
+const EASE_INFLUENCE: f64 = 0.42;
+
+/// Ease the key at `index` on `side`: each segment on that side becomes
+/// Bezier, the key's handle there flat (the move slows to rest at the key)
+/// and `EASE_INFLUENCE` of the segment long. The far key's handle is kept
+/// where the segment already was Bezier, else set where a straight line
+/// would put it, so the far end moves as it did. A side with no segment
+/// (the first key's In, the last key's Out) is left; an index past the
+/// end changes nothing.
+pub fn ease_key(kfs: &mut [Keyframe], index: usize, side: KeyEase) {
+    if index >= kfs.len() {
+        return;
+    }
+    if matches!(side, KeyEase::In | KeyEase::Both) && index > 0 {
+        let (a, b) = (index - 1, index);
+        let (d, v) = (kfs[b].time_secs - kfs[a].time_secs, kfs[b].value - kfs[a].value);
+        if kfs[a].interpolation != Interpolation::Bezier {
+            kfs[a].tangent_out = (d / 3.0, v / 3.0);
+        }
+        kfs[a].interpolation = Interpolation::Bezier;
+        kfs[b].tangent_in = (-d * EASE_INFLUENCE, 0.0);
+    }
+    if matches!(side, KeyEase::Out | KeyEase::Both) && index + 1 < kfs.len() {
+        let (a, b) = (index, index + 1);
+        let (d, v) = (kfs[b].time_secs - kfs[a].time_secs, kfs[b].value - kfs[a].value);
+        if kfs[a].interpolation != Interpolation::Bezier {
+            kfs[b].tangent_in = (-d / 3.0, -v / 3.0);
+        }
+        kfs[a].interpolation = Interpolation::Bezier;
+        kfs[a].tangent_out = (d * EASE_INFLUENCE, 0.0);
+    }
+}
+
 /// A single keyframe: a value at a specific time.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Keyframe {
@@ -342,6 +392,43 @@ mod tests {
             tangent_out: (0.0, 0.0),
             tangent_in: (0.0, 0.0),
         }
+    }
+
+    /// A key eased in slows to rest at it: the segment into it is Bezier,
+    /// the key's in-handle flat, the far key's out-handle where a straight
+    /// line puts it. A quarter of the way along, the move is past the
+    /// straight line's quarter (it left at speed); three quarters along it
+    /// is short of the line's (it is slowing). Eased out, the segment after
+    /// it does the opposite; the first key has no In and the last no Out.
+    #[test]
+    fn an_eased_key_slows_on_its_side() {
+        let line = || vec![kf_linear(0.0, 0.0), kf_linear(2.0, 1.0), kf_linear(4.0, 0.0)];
+        let mut keys = line();
+        ease_key(&mut keys, 1, KeyEase::In);
+        assert_eq!(keys[0].interpolation, Interpolation::Bezier);
+        assert_eq!(keys[1].interpolation, Interpolation::Linear, "the segment out of the key is the Out side's");
+        assert_eq!(keys[1].tangent_in, (-2.0 * 0.42, 0.0));
+        assert_eq!(keys[0].tangent_out, (2.0 / 3.0, 1.0 / 3.0));
+        assert!(evaluate(&keys, 0.5, 0.0) > 0.25, "{}", evaluate(&keys, 0.5, 0.0));
+        assert!(evaluate(&keys, 1.5, 0.0) > 0.75, "slowing late means arriving early: {}", evaluate(&keys, 1.5, 0.0));
+        assert!((evaluate(&keys, 3.0, 0.0) - 0.5).abs() < 1e-6, "the next segment is untouched");
+
+        let mut keys = line();
+        ease_key(&mut keys, 1, KeyEase::Out);
+        assert_eq!(keys[0].interpolation, Interpolation::Linear);
+        assert_eq!(keys[1].interpolation, Interpolation::Bezier);
+        assert_eq!(keys[1].tangent_out, (2.0 * 0.42, 0.0));
+        assert!(evaluate(&keys, 2.5, 0.0) > 0.75, "leaving slowly stays near the key: {}", evaluate(&keys, 2.5, 0.0));
+
+        let mut keys = line();
+        ease_key(&mut keys, 1, KeyEase::Both);
+        assert_eq!((keys[0].interpolation, keys[1].interpolation), (Interpolation::Bezier, Interpolation::Bezier));
+
+        let mut keys = line();
+        ease_key(&mut keys, 0, KeyEase::In);
+        ease_key(&mut keys, 2, KeyEase::Out);
+        ease_key(&mut keys, 3, KeyEase::Both);
+        assert_eq!(keys, line(), "no segment on that side, no change");
     }
 
     fn kf_linear(time: f64, value: f32) -> Keyframe {

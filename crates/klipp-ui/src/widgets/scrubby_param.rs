@@ -124,6 +124,90 @@ fn paint_diamond(ui: &egui::Ui, resp: &egui::Response, keyframe_state: Option<&K
     }
 }
 
+impl EasePreset {
+    /// The side of a key this preset slows, as a key edited by path takes it.
+    pub fn key_ease(self) -> klipp_core::KeyEase {
+        match self {
+            EasePreset::EaseIn => klipp_core::KeyEase::In,
+            EasePreset::EaseOut => klipp_core::KeyEase::Out,
+            EasePreset::EaseBoth => klipp_core::KeyEase::Both,
+        }
+    }
+}
+
+/// What a key's menu picked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyMenuPick {
+    Interpolation(klipp_core::Interpolation),
+    Ease(EasePreset),
+}
+
+/// A key's right-click menu, in the app's menu look: how the move leaves
+/// the key (Linear, the eases, a custom Bezier, a hold), the one in force
+/// shown selected. What was picked, closing the menu.
+pub fn key_menu(ui: &mut egui::Ui, current: Option<klipp_core::Interpolation>) -> Option<KeyMenuPick> {
+    use klipp_core::Interpolation;
+    super::menu::menu_body(ui, |ui| {
+        let mut pick = None;
+        if super::menu::menu_choice(ui, "Linear", "", current == Some(Interpolation::Linear)).clicked() {
+            pick = Some(KeyMenuPick::Interpolation(Interpolation::Linear));
+        }
+        for (label, preset) in [("Ease In", EasePreset::EaseIn), ("Ease Out", EasePreset::EaseOut), ("Ease Both", EasePreset::EaseBoth)] {
+            if super::menu::menu_item(ui, label, "").clicked() {
+                pick = Some(KeyMenuPick::Ease(preset));
+            }
+        }
+        if super::menu::menu_choice(ui, "Bezier (Custom)", "", current == Some(Interpolation::Bezier)).clicked() {
+            pick = Some(KeyMenuPick::Interpolation(Interpolation::Bezier));
+        }
+        if super::menu::menu_choice(ui, "Step (Hold)", "", current == Some(Interpolation::Step)).clicked() {
+            pick = Some(KeyMenuPick::Interpolation(Interpolation::Step));
+        }
+        if pick.is_some() {
+            ui.close_menu();
+        }
+        pick
+    })
+}
+
+/// What a key strip did this frame.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct KeyStrip {
+    /// The diamond was clicked: add a key at the playhead, or take it away.
+    pub toggled: bool,
+    pub prev: bool,
+    pub next: bool,
+    /// The key at the playhead's menu picked this.
+    pub pick: Option<KeyMenuPick>,
+}
+
+/// A control's key strip, as a number row's: the diamond, filled on a key
+/// at the playhead, with the previous and next key arrows either side once
+/// there are keys, and the key's menu on a right click of the diamond.
+/// Laid out right to left from where `ui` places it.
+pub fn key_strip(ui: &mut egui::Ui, ks: KeyframeState) -> KeyStrip {
+    let mut out = KeyStrip::default();
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        if ks.has_any_keyframes {
+            out.next = nav_arrow(ui, ks.next_keyframe_time.is_some(), Icon::CaretRight);
+        }
+        let diamond = ui.add(egui::Button::new("").frame(false).min_size(egui::vec2(16.0, 18.0)).sense(egui::Sense::click()));
+        paint_diamond(ui, &diamond, Some(&ks));
+        if diamond.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        out.toggled = diamond.clicked();
+        if ks.has_keyframe_at_playhead {
+            diamond.context_menu(|ui| out.pick = key_menu(ui, ks.current_interpolation));
+        }
+        if ks.has_any_keyframes {
+            out.prev = nav_arrow(ui, ks.prev_keyframe_time.is_some(), Icon::CaretLeft);
+        }
+    });
+    out
+}
+
 /// What a switch or choice row's key controls did this frame.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct KeyControls {
@@ -449,34 +533,10 @@ fn scrubby_row(
         // Right-click context menu on diamond for interpolation type
         if is_keyframeable && keyframe_state.as_ref().is_some_and(|ks| ks.has_keyframe_at_playhead) {
             let cur_interp = keyframe_state.as_ref().and_then(|ks| ks.current_interpolation);
-            diamond_btn_resp.clone().context_menu(|ui| {
-                ui.set_min_width(140.0);
-                let check = |active: bool| if active { "  * " } else { "    " };
-                let is_bezier = cur_interp == Some(klipp_core::Interpolation::Bezier);
-                if ui.button(format!("{}Linear", check(cur_interp == Some(klipp_core::Interpolation::Linear)))).clicked() {
-                    interp_changed = Some(klipp_core::Interpolation::Linear);
-                    ui.close_menu();
-                }
-                if ui.button(format!("{}Bezier (Custom)", check(is_bezier))).clicked() {
-                    interp_changed = Some(klipp_core::Interpolation::Bezier);
-                    ui.close_menu();
-                }
-                if ui.button(format!("{}Ease In", check(false))).clicked() {
-                    ease_preset = Some(EasePreset::EaseIn);
-                    ui.close_menu();
-                }
-                if ui.button(format!("{}Ease Out", check(false))).clicked() {
-                    ease_preset = Some(EasePreset::EaseOut);
-                    ui.close_menu();
-                }
-                if ui.button(format!("{}Ease Both", check(false))).clicked() {
-                    ease_preset = Some(EasePreset::EaseBoth);
-                    ui.close_menu();
-                }
-                if ui.button(format!("{}Step (Hold)", check(cur_interp == Some(klipp_core::Interpolation::Step)))).clicked() {
-                    interp_changed = Some(klipp_core::Interpolation::Step);
-                    ui.close_menu();
-                }
+            diamond_btn_resp.clone().context_menu(|ui| match key_menu(ui, cur_interp) {
+                Some(KeyMenuPick::Interpolation(i)) => interp_changed = Some(i),
+                Some(KeyMenuPick::Ease(e)) => ease_preset = Some(e),
+                None => {}
             });
         }
 
