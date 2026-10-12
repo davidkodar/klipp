@@ -200,6 +200,65 @@ pub enum Edge {
     Out,
 }
 
+/// How a title's text is set, for `title` and `style` (#1686): its
+/// weight, a variable font's axes, OpenType features, a justified
+/// paragraph's last line, its place up and down its box, an underline,
+/// and styled runs of it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Typeset {
+    /// 100 (thin) to 900 (black).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<u16>,
+    /// A variable font's axes by four-letter tag, in the axis's units:
+    /// `{"wdth": 80, "opsz": 36}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub axes: Option<std::collections::BTreeMap<String, f32>>,
+    /// OpenType features: "smcp" on, "-liga" off, "ss01=1" a value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub features: Option<Vec<String>>,
+    /// A justified paragraph's last line: left, center or justify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_line: Option<String>,
+    /// The text's place up and down its box: top, middle or bottom.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valign: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underline: Option<bool>,
+    /// Styled stretches of the text, in place of any it had; `[]` clears
+    /// them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runs: Option<Vec<RunSpec>>,
+}
+
+/// A styled stretch of a title's text (#1686): the words it covers, the
+/// `occurrence`th time they appear (the first by default), and how they
+/// differ from the rest. `bold` and `italic` set its style together, one
+/// left out being off.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RunSpec {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bold: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub italic: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underline: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub axes: Option<std::collections::BTreeMap<String, f32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub features: Option<Vec<String>>,
+}
+
 /// One editorial operation.
 // The `title` variant carries many optional style/motion fields, so it is
 // larger than the rest; ops are resolved one at a time, never held in bulk,
@@ -1028,6 +1087,10 @@ pub enum Op {
         roll_shape: Option<klipp_core::title_motion::RollShape>,
         #[serde(default)]
         edge_fade: Option<klipp_core::title_motion::EdgeFade>,
+        /// Weight, axes, features, last line, vertical place, underline
+        /// and runs (#1686).
+        #[serde(flatten)]
+        typeset: Typeset,
     },
     /// Create a title from scratch with any look and motion — the way to
     /// put a heading, a callout or a hero card on screen. `text` is the
@@ -1118,6 +1181,10 @@ pub enum Op {
         /// where they are put.
         #[serde(default)]
         over_faces: bool,
+        /// Weight, axes, features, last line, vertical place, underline
+        /// and runs (#1686).
+        #[serde(flatten)]
+        typeset: Typeset,
         #[serde(default)]
         shadow: Option<ShadowSpec>,
     },
@@ -1358,6 +1425,9 @@ struct Look {
     loop_effect: Option<String>,
     roll_shape: Option<klipp_core::title_motion::RollShape>,
     edge_fade: Option<klipp_core::title_motion::EdgeFade>,
+    /// Weight, axes, features, last line, vertical place, underline and
+    /// runs (#1686).
+    typeset: Typesetting,
 }
 
 /// A `style` op's motion fields, as `title` takes them.
@@ -2562,7 +2632,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let target = grade_target(seq, pool, fps, i, clip_id.as_ref(), on.as_ref(), "grade")?;
             grade_op(seq, pool, fps, i, target, op)
         }
-        Op::Style { clip_id, track, from, to, size, color, font, bold, align, x, y, backing, outline, full_frame, shadow, backing_color, outline_color, glow, glow_color, gradient, glitch, chromatic, animate, enter, exit, animate_secs, stagger, loop_effect, roll_shape, edge_fade } => {
+        Op::Style { clip_id, track, from, to, size, color, font, bold, align, x, y, backing, outline, full_frame, shadow, backing_color, outline_color, glow, glow_color, gradient, glitch, chromatic, animate, enter, exit, animate_secs, stagger, loop_effect, roll_shape, edge_fade, typeset } => {
+            if typeset.runs.is_some() && clip_id.is_none() {
+                return Err(refuse(i, "runs were given for a track", "name one clip with clip_id for runs: they are found in its words"));
+            }
             let col = |c: &Option<String>, what: &str| c.as_deref().map(|c| parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), format!("write {what} as #rrggbb or #rrggbbaa")))).transpose();
             let motion = MotionAsk { enter: enter.clone(), exit: exit.clone(), animate: animate.clone(), animate_secs: *animate_secs, stagger: stagger.clone() };
             let motion = (motion != MotionAsk::default()).then_some(motion);
@@ -2609,6 +2682,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 loop_effect: loop_effect.clone(),
                 roll_shape: *roll_shape,
                 edge_fade: *edge_fade,
+                typeset: typesetting(typeset, i)?,
             };
             let from = from.as_ref().map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
             let to = to.as_ref().map(|a| resolve_anchor(seq, fps, a, i)).transpose()?;
@@ -2616,7 +2690,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let ti = track.as_ref().map(|t| resolve_track(seq, t, i)).transpose()?;
             style(seq, pool, i, one.map(|(ti, _, c)| (ti, c)), ti, from, to, &look)
         }
-        Op::Title { text, at, style, secs, track, x, y, size, color, font, bold, align, backing, backing_color, full_frame, outline, outline_color, glow, glow_color, gradient, animate, enter, exit, animate_secs, stagger, loop_effect, glitch, chromatic, roll_shape, edge_fade, over_faces, shadow } => {
+        Op::Title { text, at, style, secs, track, x, y, size, color, font, bold, align, backing, backing_color, full_frame, outline, outline_color, glow, glow_color, gradient, animate, enter, exit, animate_secs, stagger, loop_effect, glitch, chromatic, roll_shape, edge_fade, over_faces, shadow, typeset } => {
             let at = resolve_anchor(seq, fps, at, i)?;
             // The look the style names fills what the op leaves out.
             let look = match style.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -2645,6 +2719,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 roll_shape: *roll_shape,
                 edge_fade: *edge_fade,
                 shadow: shadow.as_ref().or(look.shadow.as_ref()).map(|s| title_shadow(s, i)).transpose()?.flatten(),
+                typeset: typesetting(typeset, i)?,
             };
             // The title follows the style it was made in (#66).
             let followed = style.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| if look.name.is_empty() { s.to_string() } else { look.name.clone() });
@@ -6934,6 +7009,7 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look, secs: f64) -> Result<kli
     let first_centre = new.objects.iter().find(|o| matches!(o.content, TitleObjectContent::TextBox(_))).map(|o| (o.transform.center.x, o.transform.center.y));
     // Sizes keep their proportions: a lower third's role stays smaller than its name.
     let first_size = new.objects.iter().find_map(|o| match &o.content { TitleObjectContent::TextBox(tb) => Some(tb.font_size), _ => None }).unwrap_or(1.0).max(1.0);
+    let (mut runs_placed, mut runs_missing) = (false, None::<String>);
     for o in new.objects.iter_mut() {
         if let (Some((cx, cy)), true) = (first_centre, look.x.is_some() || look.y.is_some()) {
             let (dx, dy) = (look.x.map(|x| x - cx).unwrap_or(0.0), look.y.map(|y| y - cy).unwrap_or(0.0));
@@ -6961,6 +7037,12 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look, secs: f64) -> Result<kli
         }
         if let Some(a) = look.align {
             tb.alignment = a;
+        }
+        // Runs go on the first text that holds all their words.
+        let without_runs = Typesetting { runs: None, ..look.typeset.clone() };
+        set_type(tb, &without_runs)?;
+        if look.typeset.runs.is_some() && !runs_placed {
+            runs_placed = set_type(tb, &look.typeset).map_err(|e| runs_missing.get_or_insert(e).clone()).is_ok();
         }
         // The text's own fill and edge, not its layer stack.
         if let Some([top, bottom]) = look.gradient {
@@ -7025,6 +7107,9 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look, secs: f64) -> Result<kli
             }
         }
     }
+    if look.typeset.runs.is_some() && !runs_placed {
+        return Err(runs_missing.unwrap_or_else(|| "the title has no text for runs".into()));
+    }
     if let Some(color) = look.full_frame {
         new.background = TitleBackground::FullFrame { color };
     } else if let Some(color) = look.backing_color {
@@ -7056,7 +7141,7 @@ fn style(
     look: &Look,
 ) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     if *look == Look::default() {
-        return Err(refuse(i, "nothing to change", "give a look field (size, color, font, bold, align, x, y, backing, outline, shadow, glow, gradient, glitch, chromatic) or a motion (animate, enter, exit, loop)"));
+        return Err(refuse(i, "nothing to change", "give a look field (size, color, font, bold, align, x, y, backing, outline, shadow, glow, gradient, glitch, chromatic), a typesetting field (weight, axes, features, last_line, valign, underline, runs) or a motion (animate, enter, exit, loop)"));
     }
     for (name, v, lo, hi) in [
         ("size", look.size, 6.0, 1000.0),
@@ -7098,8 +7183,14 @@ fn style(
         if seq.tracks[*ti].locked {
             return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
         }
-        let new = restyle(old, look, secs(c.timeline_out - c.timeline_in))
-            .map_err(|e| refuse(i, format!("title motion for {}: {e}", clip_name(seq, pool, c)), "give a motion that fits the title's length"))?;
+        let new = restyle(old, look, secs(c.timeline_out - c.timeline_in)).map_err(|e| {
+            let name = clip_name(seq, pool, c);
+            if look.typeset.runs.is_some() && restyle(old, &Look { typeset: Typesetting { runs: None, ..look.typeset.clone() }, ..look.clone() }, secs(c.timeline_out - c.timeline_in)).is_ok() {
+                refuse(i, format!("{name}: {e}"), "give each run words of the title, once each")
+            } else {
+                refuse(i, format!("title motion for {name}: {e}"), "give a motion that fits the title's length")
+            }
+        })?;
         if new != *old {
             edits.push(EditCommand::EditTitle { clip_id: c.id, description: "Restyle Title", old_data: old.clone(), new_data: new });
             ids.push(c.id);
@@ -7239,6 +7330,174 @@ fn default_title_secs() -> f64 {
     3.0
 }
 
+/// A [`Typeset`] checked (#1686): what it sets on a text box, in the
+/// model's own terms. Runs are found in each box's text when applied.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Typesetting {
+    weight: Option<u16>,
+    axes: Option<Vec<klipp_timeline::FontAxis>>,
+    features: Option<Vec<String>>,
+    last_line: Option<klipp_timeline::LastLineAlign>,
+    valign: Option<klipp_timeline::TextVerticalAlign>,
+    underline: Option<bool>,
+    runs: Option<Vec<(RunSpec, Option<[u8; 4]>)>>,
+}
+
+fn check_weight(w: u16, i: usize) -> Result<u16, Refusal> {
+    if (100..=900).contains(&w) {
+        Ok(w)
+    } else {
+        Err(refuse(i, format!("weight {w} is out of range"), "give weight 100 (thin) to 900 (black): 400 regular, 700 bold"))
+    }
+}
+
+fn check_axes(axes: &std::collections::BTreeMap<String, f32>, i: usize) -> Result<Vec<klipp_timeline::FontAxis>, Refusal> {
+    axes.iter()
+        .map(|(tag, v)| {
+            if tag.len() != 4 || !tag.chars().all(|c| c.is_ascii_alphanumeric()) {
+                return Err(refuse(i, format!("\"{tag}\" is not a font axis"), "an axis is a four-letter tag such as wght, wdth, slnt or opsz"));
+            }
+            if !v.is_finite() {
+                return Err(refuse(i, format!("axis {tag} has no value"), "give each axis a number in its own units"));
+            }
+            Ok((tag.clone(), *v))
+        })
+        .collect()
+}
+
+/// OpenType features as the shaper reads them: a four-character tag,
+/// `-` before it to turn it off, `=` and a number after it for a value.
+fn check_features(features: &[String], i: usize) -> Result<Vec<String>, Refusal> {
+    features
+        .iter()
+        .map(|f| {
+            let f = f.trim();
+            let body = f.strip_prefix(['-', '+']).unwrap_or(f);
+            let (tag, value) = body.split_once('=').unwrap_or((body, "1"));
+            let ok = tag.len() == 4 && tag.chars().all(|c| c.is_ascii_alphanumeric()) && value.parse::<u32>().is_ok();
+            if ok {
+                Ok(f.to_string())
+            } else {
+                Err(refuse(i, format!("\"{f}\" is not an OpenType feature"), "write a four-letter tag to turn one on (smcp), -tag to turn it off (-liga), or tag=value (ss01=1)"))
+            }
+        })
+        .collect()
+}
+
+fn typesetting(t: &Typeset, i: usize) -> Result<Typesetting, Refusal> {
+    use klipp_timeline::{LastLineAlign, TextVerticalAlign};
+    let runs = t
+        .runs
+        .as_ref()
+        .map(|runs| {
+            runs.iter()
+                .map(|r| {
+                    if r.text.is_empty() {
+                        return Err(refuse(i, "a run has no text", "give each run the words it covers as text"));
+                    }
+                    if r.occurrence == Some(0) {
+                        return Err(refuse(i, "occurrence 0 is not a match", "count occurrences from 1, the first"));
+                    }
+                    if let Some(s) = r.size {
+                        if !s.is_finite() || !(4.0..=1000.0).contains(&s) {
+                            return Err(refuse(i, format!("a run's size {s} is out of range"), "give size between 4 and 1000"));
+                        }
+                    }
+                    r.weight.map(|w| check_weight(w, i)).transpose()?;
+                    r.axes.as_ref().map(|a| check_axes(a, i)).transpose()?;
+                    r.features.as_deref().map(|f| check_features(f, i)).transpose()?;
+                    let color = r.color.as_deref().map(|c| parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), "write a run's colour as #rrggbb or #rrggbbaa"))).transpose()?;
+                    Ok((r.clone(), color))
+                })
+                .collect::<Result<Vec<_>, Refusal>>()
+        })
+        .transpose()?;
+    Ok(Typesetting {
+        weight: t.weight.map(|w| check_weight(w, i)).transpose()?,
+        axes: t.axes.as_ref().map(|a| check_axes(a, i)).transpose()?,
+        features: t.features.as_deref().map(|f| check_features(f, i)).transpose()?,
+        last_line: t
+            .last_line
+            .as_deref()
+            .map(|a| match a.to_lowercase().as_str() {
+                "left" => Ok(LastLineAlign::Left),
+                "center" | "centre" => Ok(LastLineAlign::Center),
+                "justify" | "justified" => Ok(LastLineAlign::Justify),
+                other => Err(refuse(i, format!("\"{other}\" is not a last-line alignment"), "use left, center or justify (it applies when align is justify)")),
+            })
+            .transpose()?,
+        valign: t
+            .valign
+            .as_deref()
+            .map(|a| match a.to_lowercase().as_str() {
+                "top" => Ok(TextVerticalAlign::Top),
+                "middle" | "center" | "centre" => Ok(TextVerticalAlign::Middle),
+                "bottom" => Ok(TextVerticalAlign::Bottom),
+                other => Err(refuse(i, format!("\"{other}\" is not a vertical alignment"), "use top, middle or bottom")),
+            })
+            .transpose()?,
+        underline: t.underline,
+        runs,
+    })
+}
+
+/// `t` set on a text box: its runs found in the box's text, in place of
+/// the runs it had. An error says which run's words the text lacks, or
+/// which two runs overlap.
+fn set_type(tb: &mut klipp_timeline::TextBox, t: &Typesetting) -> Result<(), String> {
+    use klipp_timeline::{FontStyle, StyleRun};
+    if let Some(runs) = &t.runs {
+        let mut out: Vec<StyleRun> = Vec::new();
+        for (r, color) in runs {
+            let nth = r.occurrence.unwrap_or(1);
+            let Some((start, _)) = tb.text.match_indices(r.text.as_str()).nth(nth - 1) else {
+                return Err(format!("the text \"{}\" has no \"{}\"{}", tb.text, r.text, if nth > 1 { format!(" {nth} times") } else { String::new() }));
+            };
+            let mut run = StyleRun::default_for_range(start, start + r.text.len());
+            if r.bold.is_some() || r.italic.is_some() {
+                run.font_style = Some(match (r.bold.unwrap_or(false), r.italic.unwrap_or(false)) {
+                    (true, true) => FontStyle::BoldItalic,
+                    (true, false) => FontStyle::Bold,
+                    (false, true) => FontStyle::Italic,
+                    (false, false) => FontStyle::Regular,
+                });
+            }
+            run.underline = r.underline;
+            run.color = *color;
+            run.font_size = r.size;
+            run.font_name = r.font.clone();
+            run.font_weight = r.weight;
+            run.font_axes = r.axes.iter().flatten().map(|(tag, v)| (tag.clone(), *v)).collect();
+            run.features = r.features.clone().unwrap_or_default();
+            out.push(run);
+        }
+        out.sort_by_key(|r| r.start);
+        if let Some(w) = out.windows(2).find(|w| w[1].start < w[0].end) {
+            return Err(format!("the runs over \"{}\" and \"{}\" overlap", &tb.text[w[0].start..w[0].end], &tb.text[w[1].start..w[1].end]));
+        }
+        tb.style_runs = out;
+    }
+    if let Some(w) = t.weight {
+        tb.font_weight = Some(w);
+    }
+    if let Some(a) = &t.axes {
+        tb.font_axes = a.clone();
+    }
+    if let Some(f) = &t.features {
+        tb.features = f.clone();
+    }
+    if let Some(l) = t.last_line {
+        tb.last_line = l;
+    }
+    if let Some(v) = t.valign {
+        tb.vertical_align = v;
+    }
+    if let Some(u) = t.underline {
+        tb.underline = u;
+    }
+    Ok(())
+}
+
 struct TitleArgs<'a> {
     text: &'a str,
     secs: f64,
@@ -7265,6 +7524,7 @@ struct TitleArgs<'a> {
     roll_shape: Option<klipp_core::title_motion::RollShape>,
     edge_fade: Option<klipp_core::title_motion::EdgeFade>,
     shadow: Option<klipp_timeline::TitleShadow>,
+    typeset: Typesetting,
     /// Faces under the title's span: the words keep clear of them.
     keep_out: Vec<[f32; 4]>,
     /// The people under it, whole (#510): kept clear of too when some
@@ -7320,6 +7580,7 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
             other => return Err(refuse(i, format!("\"{other}\" is not an alignment"), "use left, center, right or justify")),
         };
     }
+    set_type(&mut tb, &a.typeset).map_err(|e| refuse(i, e, "give each run words of the title, once each"))?;
     if let Some(w) = a.outline {
         if !w.is_finite() || !(0.0..=40.0).contains(&w) {
             return Err(refuse(i, format!("outline {w} is out of range"), "give an outline width 0 to 40"));
@@ -8137,7 +8398,7 @@ mod tests {
             }
         }
         let (seq, pool, media, _, _) = fixture();
-        let op = |y: f32, full: Option<&str>| Op::Title { text: "Hello".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(y), size: Some(72.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: full.map(str::to_string), outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None };
+        let op = |y: f32, full: Option<&str>| Op::Title { text: "Hello".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(y), size: Some(72.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: full.map(str::to_string), outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None, typeset: Default::default() };
         let plan = resolve_with(&seq, &pool, &[op(0.12, None)], &Faces(media)).unwrap();
         assert!(plan.steps[0].what.contains("keep clear of a face"), "{}", plan.steps[0].what);
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
@@ -8179,7 +8440,7 @@ mod tests {
         }
         let (seq, pool, media, _, _) = fixture();
         // Asked for the middle of the frame, where the walker passes.
-        let op = Op::Title { text: "Hello".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(0.5), size: Some(60.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None };
+        let op = Op::Title { text: "Hello".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(0.5), size: Some(60.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None, typeset: Default::default() };
         let plan = resolve_with(&seq, &pool, std::slice::from_ref(&op), &Walker(media, false)).unwrap();
         assert!(plan.steps[0].what.contains("keep clear of the people in the shot"), "{}", plan.steps[0].what);
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
@@ -8198,7 +8459,7 @@ mod tests {
     fn a_title_rolls_as_credits_or_crawls_as_a_ticker() {
         let (seq, pool, _, _, _) = fixture();
         let looped = |name: &str| {
-            let op = Op::Title { text: "Director\nA Name".into(), at: Anchor::Secs(1.0), style: None, secs: 4.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: Some(name.into()), glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None };
+            let op = Op::Title { text: "Director\nA Name".into(), at: Anchor::Secs(1.0), style: None, secs: 4.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: Some(name.into()), glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None, typeset: Default::default() };
             let plan = resolve(&seq, &pool, &[op]).unwrap();
             let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
             let ClipKind::Title(td) = &clip.kind else { panic!() };
@@ -8227,7 +8488,7 @@ mod tests {
 
         let (mut seq, pool, _, _, _) = fixture();
         seq.resolution = klipp_core::Resolution { width: 2160, height: 3840 };
-        let op = Op::Title { text: "La Mata\nA sunny March day".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(0.06), size: Some(120.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None };
+        let op = Op::Title { text: "La Mata\nA sunny March day".into(), at: Anchor::Secs(1.0), style: None, secs: 2.0, track: None, x: Some(0.5), y: Some(0.06), size: Some(120.0), color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None, typeset: Default::default() };
         let plan = resolve(&seq, &pool, &[op]).unwrap();
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
         let ClipKind::Title(td) = &clip.kind else { panic!() };
@@ -8331,7 +8592,7 @@ mod tests {
             type_styles: vec![TypeStyle { name: "kicker".into(), size: Some(28.0), y: Some(0.12), color: Some("#ff6600".into()), animate: Some("drop".into()), ..Default::default() }],
             ..Default::default()
         });
-        let op = |style: Option<&str>, size: Option<f32>| Op::Title { text: "Now".into(), at: Anchor::Secs(1.0), style: style.map(str::to_string), secs: 2.0, track: None, x: None, y: None, size, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None };
+        let op = |style: Option<&str>, size: Option<f32>| Op::Title { text: "Now".into(), at: Anchor::Secs(1.0), style: style.map(str::to_string), secs: 2.0, track: None, x: None, y: None, size, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None, typeset: Default::default() };
         let plan = resolve(&seq, &pool, &[op(Some("kicker"), None)]).unwrap();
         let EditCommand::AddTitleClip { clip, .. } = &plan.steps[plan.steps.len() - 1].edit else { panic!("a title is a clip") };
         let ClipKind::Title(td) = &clip.kind else { panic!("a title") };
@@ -8359,7 +8620,7 @@ mod tests {
         let (mut seq, pool, _, _, _) = fixture();
         let spec = |y: f32, opacity: f32| ShadowSpec { x: Some(0.0), y: Some(y), blur: Some(12.0), color: None, opacity: Some(opacity) };
         seq.brief = Some(Brief { type_styles: vec![TypeStyle { name: "chapter".into(), shadow: Some(spec(4.0, 0.5)), ..Default::default() }], ..Default::default() });
-        let op = |shadow: Option<ShadowSpec>| Op::Title { text: "Now".into(), at: Anchor::Secs(1.0), style: Some("chapter".into()), secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow };
+        let op = |shadow: Option<ShadowSpec>| Op::Title { text: "Now".into(), at: Anchor::Secs(1.0), style: Some("chapter".into()), secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow, typeset: Default::default() };
         let shadows = |op: Op| {
             let plan = resolve(&seq, &pool, &[op]).unwrap();
             let EditCommand::AddTitleClip { clip, .. } = &plan.steps[plan.steps.len() - 1].edit else { panic!("a title is a clip") };
@@ -8380,7 +8641,7 @@ mod tests {
         let kicker = |size: f32, color: &str| TypeStyle { name: "kicker".into(), size: Some(size), color: Some(color.into()), y: Some(0.12), ..Default::default() };
         let old = Brief { type_styles: vec![kicker(28.0, "#ff6600")], ..Default::default() };
         seq.brief = Some(old.clone());
-        let op = |size: Option<f32>, at: f64| Op::Title { text: "Now".into(), at: Anchor::Secs(at), style: Some("kicker".into()), secs: 2.0, track: None, x: None, y: None, size, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None };
+        let op = |size: Option<f32>, at: f64| Op::Title { text: "Now".into(), at: Anchor::Secs(at), style: Some("kicker".into()), secs: 2.0, track: None, x: None, y: None, size, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow: None, typeset: Default::default() };
         // Two titles in the style; the second given its own size.
         let mut ids = Vec::new();
         for (size, at) in [(None, 1.0), (Some(40.0), 5.0)] {
@@ -10804,7 +11065,7 @@ mod tests {
         assert!(!fx.loops.is_empty(), "the pulse loop landed");
         assert!(matches!(td.background, klipp_timeline::TitleBackground::Color { .. }), "the backing panel landed");
         // Empty text is refused.
-        assert!(resolve(&seq, &pool, &[Op::Title { text: "  ".into(), at: Anchor::Secs(0.5), secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, style: None, over_faces: false, shadow: None }]).is_err());
+        assert!(resolve(&seq, &pool, &[Op::Title { text: "  ".into(), at: Anchor::Secs(0.5), secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, style: None, over_faces: false, shadow: None, typeset: Default::default() }]).is_err());
     }
 
     /// #237: clips put in a grade group; a look on its post-clip grade
@@ -11073,6 +11334,75 @@ mod tests {
         assert!(bad(r##"[{"op":"style","track":"video"}]"##).why.contains("nothing to change"));
         assert!(bad(r##"[{"op":"style","track":"video","color":"yellow"}]"##).why.contains("not a colour"));
         assert!(bad(r##"[{"op":"style","track":"video","size":40}]"##).why.contains("no title there"));
+    }
+
+    /// #1686: a title is set at a weight and a variable font's axes, with
+    /// OpenType features, justified with its last line placed, at the top
+    /// of its box, underlined, and with styled runs found by their words;
+    /// a restyle changes them in place, and bad input is refused with the
+    /// choices.
+    #[test]
+    fn titles_take_weight_axes_features_alignment_underline_and_runs() {
+        use klipp_timeline::{FontStyle, LastLineAlign, TextAlignment, TextVerticalAlign};
+        let (seq, pool, _, _, _) = fixture();
+        let text_box = |c: &Clip| {
+            let klipp_timeline::TitleObjectContent::TextBox(tb) = &c.title_data().unwrap().objects[0].content else { panic!("text") };
+            tb.clone()
+        };
+        let ops: Vec<Op> = serde_json::from_str(r##"[
+            {"op":"title","text":"A quiet word, and a quiet end","at":{"secs":1.0},"secs":3.0,"align":"justify",
+             "weight":300,"axes":{"wdth":80,"opsz":36},"features":["smcp","-liga","ss01=1"],"last_line":"center","valign":"top","underline":true,
+             "runs":[{"text":"quiet","occurrence":2,"bold":true,"italic":true,"color":"#ffcc00","weight":800,"axes":{"wght":800},"features":["onum"],"size":90,"font":"Inter","underline":false}]},
+            {"op":"style","clip_id":{"track":0,"secs":2.0},"weight":600,"valign":"bottom","last_line":"justify","underline":false,"runs":[{"text":"word","underline":true}]}
+        ]"##).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
+        let tb = text_box(clip);
+        assert_eq!(tb.alignment, TextAlignment::Justify);
+        assert_eq!((tb.font_weight, tb.font_axes.clone()), (Some(300), vec![("opsz".to_string(), 36.0), ("wdth".to_string(), 80.0)]));
+        assert_eq!(tb.features, ["smcp", "-liga", "ss01=1"]);
+        assert_eq!((tb.last_line, tb.vertical_align, tb.underline), (LastLineAlign::Center, TextVerticalAlign::Top, true));
+        let [run] = &tb.style_runs[..] else { panic!("{:?}", tb.style_runs) };
+        assert_eq!(&tb.text[run.start..run.end], "quiet");
+        assert_eq!(run.start, tb.text.rfind("quiet").unwrap(), "the second quiet");
+        assert_eq!((run.font_style, run.color, run.font_weight, run.font_size), (Some(FontStyle::BoldItalic), Some([0xff, 0xcc, 0x00, 255]), Some(800), Some(90.0)));
+        assert_eq!((run.font_axes.clone(), run.features.clone(), run.font_name.as_deref(), run.underline), (vec![("wght".to_string(), 800.0)], vec!["onum".to_string()], Some("Inter"), Some(false)));
+
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        for st in &plan.steps {
+            view.apply_forward(&st.edit);
+        }
+        let after = view.sequences[0].clone();
+        let restyled = after.tracks[0].clips.iter().find(|c| c.title_data().is_some()).unwrap();
+        let tb = text_box(restyled);
+        assert_eq!((tb.font_weight, tb.vertical_align, tb.last_line, tb.underline), (Some(600), TextVerticalAlign::Bottom, LastLineAlign::Justify, false));
+        assert_eq!(tb.features, ["smcp", "-liga", "ss01=1"], "what the restyle leaves out stays");
+        let [run] = &tb.style_runs[..] else { panic!("the runs are replaced: {:?}", tb.style_runs) };
+        assert_eq!((&tb.text[run.start..run.end], run.underline, run.font_style), ("word", Some(true), None));
+
+        // Refused, with the choices.
+        let bad = |json: &str| resolve(&seq, &pool, &serde_json::from_str::<Vec<Op>>(json).unwrap()).unwrap_err();
+        let title = |extra: &str| format!(r##"[{{"op":"title","text":"Hello there","at":{{"secs":1.0}},{extra}}}]"##);
+        for (extra, why, how) in [
+            (r#""weight":950"#, "weight 950 is out of range", "100 (thin) to 900 (black)"),
+            (r#""axes":{"width":80}"#, "\"width\" is not a font axis", "four-letter tag"),
+            (r#""features":["small-caps"]"#, "is not an OpenType feature", "-tag to turn it off"),
+            (r#""last_line":"right""#, "not a last-line alignment", "left, center or justify"),
+            (r#""valign":"centre-ish""#, "not a vertical alignment", "top, middle or bottom"),
+            (r#""runs":[{"text":"nowhere"}]"#, "has no \"nowhere\"", "words of the title"),
+            (r#""runs":[{"text":"Hello","occurrence":2}]"#, "no \"Hello\" 2 times", "words of the title"),
+            (r#""runs":[{"text":"Hello"},{"text":"llo t"}]"#, "overlap", "once each"),
+            (r#""runs":[{"text":"Hello","color":"gold"}]"#, "\"gold\" is not a colour", "#rrggbb"),
+        ] {
+            let r = bad(&title(extra));
+            assert!(r.why.contains(why) && r.hint.contains(how), "{extra}: {} / {}", r.why, r.hint);
+        }
+        let r = resolve_with(&seq, &pool, &serde_json::from_str::<Vec<Op>>(r##"[{"op":"captions"},{"op":"style","track":"subtitle","runs":[]}]"##).unwrap(), &Spoken).unwrap_err();
+        assert!(r.why.contains("runs were given for a track") && r.hint.contains("clip_id"), "{}", r.why);
+        let r = bad(r##"[{"op":"title","text":"Hello there","at":{"secs":1.0}},{"op":"style","clip_id":{"track":0,"secs":1.5},"runs":[{"text":"nope"}]}]"##);
+        assert!(r.why.contains("has no \"nope\""), "{}", r.why);
     }
 
     /// #509: a soft drop shadow on a new title, and on titles restyled,

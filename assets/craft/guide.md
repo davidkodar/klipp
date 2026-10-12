@@ -386,7 +386,7 @@ exist until the plan runs.
   `dip_to_white` mark a break. A stylised kind (`zoom`, `whip`,
   `glitch`, `film_burn`) is a style choice the brief has to ask for.
   Both clips need footage beyond the cut to overlap.
-- `style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, backing_color?, outline?, outline_color?, shadow?, glow?, glow_color?, gradient?, glitch?, chromatic?, animate?, animate_secs?, stagger?, enter?, exit?, loop?, roll_shape?, edge_fade?}`:
+- `style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, backing_color?, outline?, outline_color?, shadow?, glow?, glow_color?, gradient?, glitch?, chromatic?, animate?, animate_secs?, stagger?, enter?, exit?, loop?, roll_shape?, edge_fade?, weight?, axes?, features?, last_line?, valign?, underline?, runs?}`:
   the look and place of one title, or of every title on a track
   (`"subtitle"` for all the captions), between `from` and `to` when
   given (anchors, as `{"secs": 44.0}`). `size` is pixels of a 1080-line frame, `color` is `#rrggbb`,
@@ -405,7 +405,9 @@ exist until the plan runs.
   to change its glow, gradient or entrance. `glow`, `glitch` and
   `chromatic` 0 take them off; `outline_color` or `glow_color` alone
   recolours (or adds) one; the motion is fitted to each title's length;
-  `loop: "none"` stops a loop.
+  `loop: "none"` stops a loop. The typesetting fields restyle as `title`
+  takes them; `runs` replaces a title's runs (`[]` clears them) and needs
+  one `clip_id`, since its words are that title's.
 - `lower_third {name, role?, at, secs?, track?, side?, x?, y?}`: a name
   and a role bottom left in title-safe, four seconds unless you say
   otherwise, fading in and out, on a text track with room (one is made
@@ -416,7 +418,7 @@ exist until the plan runs.
   `side: "right"` sets it against the right edge, and `x` (that edge)
   and `y` (the name's line) place it, as fractions of the frame inside
   title-safe. A name under the wrong person is worse than none.
-- `title {text, at, secs?, style?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?, enter?, exit?, over_faces?, shadow?}`:
+- `title {text, at, secs?, style?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?, enter?, exit?, over_faces?, shadow?, weight?, axes?, features?, last_line?, valign?, underline?, runs?}`:
   a title from scratch: a heading, a callout or a hero card, on a text
   track (one is made on top if left out). `style` names a look, one of
   the brief's type styles or `heading`, `callout` or `card`, and its
@@ -431,6 +433,19 @@ exist until the plan runs.
   on a vertical frame as on a wide one, and the whole title is kept
   inside title-safe; a word too wide for the frame shrinks the line
   rather than breaking. Look at the frame all the same.
+  Typesetting: `weight` 100 (thin) to 900 (black), the family's nearest
+  face (400 regular, 700 bold); `axes` a variable font's axes by
+  four-letter tag, `{"wdth": 80, "opsz": 36}`; `features` OpenType
+  features, `"smcp"` small caps on, `"-liga"` ligatures off, `"ss01=1"`
+  a stylistic set (kerning and ligatures are on already); with `align:
+  "justify"`, `last_line` (left, center or justify) places each
+  paragraph's last line; `valign` (top, middle, bottom) sets the text up
+  or down its box; `underline` the whole text. `runs` styles stretches
+  of it, each `{text, occurrence?, bold?, italic?, underline?, color?,
+  size?, font?, weight?, axes?, features?}`: `text` is the words it
+  covers, the first time they appear unless `occurrence` counts on (1,
+  2, ...); `bold` and `italic` set its style together, one left out
+  being off. Runs may not overlap; words the title lacks are refused.
 - `set_text {clip_id, text}`: the words of a title or a caption; its
   look, place and timing stay. For the cue the transcript misheard and
   the name it cannot spell: read the captions once they are made
