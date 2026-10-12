@@ -159,3 +159,26 @@ klipp-ui/src/panels/timeline.rs
 klipp-ui/src/panels/viewer.rs
 klipp-ui/src/presets.rs
 klipp-ui/src/state.rs
+# Added with group G (the legacy payload, picture revision 5): files that
+# read or write the payload without the view's accessors.
+klipp-control/src/graph_masks.rs
+klipp-convert/tests/lift_load.rs
+klipp-convert/tests/paths.rs
+klipp-convert/tests/revision2.rs
+klipp-convert/tests/splice.rs
+klipp-effects/tests/mask_mix.rs
+klipp-graph-format/src/lifted.rs
+klipp-graph-lift/src/edit_planner.rs
+klipp-graph-lift/src/revision2.rs
+klipp-graph-lift/src/splice.rs
+klipp-graph-lift/src/structure.rs
+klipp-graph-lift/src/topology.rs
+klipp-graph-lift/tests/stack_view.rs
+klipp-ui/src/inspector/generated/mod.rs
+klipp-ui/src/inspector/grade_view.rs
+klipp-core/src/events.rs
+klipp-graph-format/src/op.rs
+klipp-ui/src/app/command_writes.rs
+klipp-ui/src/inspector/generated/adapters/frei0r.rs
+klipp-ui/src/inspector/generated/presets.rs
+klipp-ui/src/inspector/generated/row.rs
