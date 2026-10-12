@@ -4510,7 +4510,12 @@ impl PreferencesPanel {
             ui.add_space(14.0);
             ui.label(egui::RichText::new("About Klipp").strong().size(16.0).color(theme.text_primary));
         });
-        ui.add_space(4.0);
+        ui.add_space(12.0);
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            crate::widgets::wordmark::wordmark(ui, 36.0);
+        });
+        ui.add_space(8.0);
 
         // ── APPLICATION section ──
         Self::section_header(ui, "APPLICATION", theme);

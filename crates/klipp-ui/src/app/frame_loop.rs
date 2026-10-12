@@ -1463,10 +1463,10 @@ impl KlippApp {
                                 egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                                 egui::Color32::WHITE,
                             );
-                            ui.add_space(4.0);
+                            ui.add_space(12.0);
                         }
-                        ui.label(egui::RichText::new("Klipp").strong().size(16.0));
-                        ui.add_space(4.0);
+                        crate::widgets::wordmark::wordmark(ui, 40.0);
+                        ui.add_space(10.0);
                         let build = klipp_core::build_info::get();
                         ui.label(format!("Version {}", build.label()));
                         if let Some(at) = build.built_at {

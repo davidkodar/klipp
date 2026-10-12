@@ -23,3 +23,4 @@ pub mod timecode_edit;
 pub mod tooltip;
 pub mod vertical_slider;
 pub mod waveform;
+pub mod wordmark;
