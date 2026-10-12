@@ -19,6 +19,7 @@
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+mod child;
 mod foreground;
 mod job;
 mod pause;
@@ -27,6 +28,7 @@ mod slots;
 mod subprocess;
 mod thread_job;
 
+pub use child::ends_with_app;
 pub use foreground::ForegroundActivity;
 pub use job::{BackgroundJob, ChunkResult, JobId, JobPriority, ResourceClass};
 pub use pause::PauseToken;

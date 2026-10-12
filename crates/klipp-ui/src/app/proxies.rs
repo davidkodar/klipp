@@ -82,7 +82,8 @@ impl KlippApp {
             let run_ffmpeg = |args: &[&str], pid_ref: &Arc<std::sync::atomic::AtomicU32>,
                               ptx: &Sender<(MediaId, f32)>, dur: f64|
                 -> Result<(), String> {
-                let mut cmd = std::process::Command::new("ffmpeg");
+                // Ends with the app, killed or not (#1361).
+                let mut cmd = klipp_jobs::ends_with_app("ffmpeg");
                 cmd.arg("-i").arg(&source_path);
                 for a in args { cmd.arg(a); }
                 cmd.arg("-progress").arg("pipe:1")

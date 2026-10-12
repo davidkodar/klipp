@@ -819,7 +819,8 @@ impl KlippApp {
                     // failures from the log without guessing what was run.
                     tracing::debug!("ffmpeg [{label}] invoking: ffmpeg {}", full_args.join(" "));
 
-                    let mut child = std::process::Command::new("ffmpeg")
+                    // Ends with the app, killed or not (#1361).
+                    let mut child = klipp_jobs::ends_with_app("ffmpeg")
                         .args(&full_args)
                         .stdout(std::process::Stdio::piped())
                         .stderr(std::process::Stdio::piped())
