@@ -1,0 +1,91 @@
+//! Most of this crate's integration tests, built as one binary: one
+//! link instead of one per file. Each file stays where it was and is a
+//! module here. Files that time themselves or change process-wide state
+//! stay their own binaries (the `[[test]]` list in Cargo.toml).
+
+#[path = "../auto_move_save.rs"]
+mod auto_move_save;
+#[path = "../autosave_restore_paths.rs"]
+mod autosave_restore_paths;
+#[path = "../brief_round_trip.rs"]
+mod brief_round_trip;
+#[path = "../camera_keys_round_trip.rs"]
+mod camera_keys_round_trip;
+#[path = "../camera_round_trip.rs"]
+mod camera_round_trip;
+#[path = "../canvas_metadata.rs"]
+mod canvas_metadata;
+#[path = "../clip_label_round_trip.rs"]
+mod clip_label_round_trip;
+#[path = "../consolidate_integration.rs"]
+mod consolidate_integration;
+#[path = "../corner_pin_round_trip.rs"]
+mod corner_pin_round_trip;
+#[path = "../dangling_transition_heals.rs"]
+mod dangling_transition_heals;
+#[path = "../drop_frame_round_trip.rs"]
+mod drop_frame_round_trip;
+#[path = "../edit_plan_round_trip.rs"]
+mod edit_plan_round_trip;
+#[path = "../edit_planner_corpus.rs"]
+mod edit_planner_corpus;
+#[path = "../edits_survive_save_load.rs"]
+mod edits_survive_save_load;
+#[path = "../effect_list_round_trip.rs"]
+mod effect_list_round_trip;
+#[path = "../layer_fx_format.rs"]
+mod layer_fx_format;
+#[path = "../log_format_override.rs"]
+mod log_format_override;
+#[path = "../looks_each_saved.rs"]
+mod looks_each_saved;
+#[path = "../media_kind_round_trip.rs"]
+mod media_kind_round_trip;
+#[path = "../media_state_round_trip.rs"]
+mod media_state_round_trip;
+#[path = "../newer_format_refused.rs"]
+mod newer_format_refused;
+#[path = "../picture_cache_keys.rs"]
+mod picture_cache_keys;
+#[path = "../picture_ops_corpus.rs"]
+mod picture_ops_corpus;
+#[path = "../picture_truth_round_trip.rs"]
+mod picture_truth_round_trip;
+#[path = "../plugin_eye_round_trip.rs"]
+mod plugin_eye_round_trip;
+#[path = "../precomposition_round_trip.rs"]
+mod precomposition_round_trip;
+#[path = "../published_port_refused.rs"]
+mod published_port_refused;
+#[path = "../refused_clip_is_named.rs"]
+mod refused_clip_is_named;
+#[path = "../save_is_one_generation.rs"]
+mod save_is_one_generation;
+#[path = "../sequence_grade_mix.rs"]
+mod sequence_grade_mix;
+#[path = "../side_stores_kept.rs"]
+mod side_stores_kept;
+#[path = "../side_stores_revision2.rs"]
+mod side_stores_revision2;
+#[path = "../step_f_saves.rs"]
+mod step_f_saves;
+#[path = "../stored_lut_path.rs"]
+mod stored_lut_path;
+#[path = "../subtitle_source_round_trip.rs"]
+mod subtitle_source_round_trip;
+#[path = "../surface_round_trip.rs"]
+mod surface_round_trip;
+#[path = "../texture_fill_path.rs"]
+mod texture_fill_path;
+#[path = "../track_effects_round_trip.rs"]
+mod track_effects_round_trip;
+#[path = "../unknown_effect_refused.rs"]
+mod unknown_effect_refused;
+#[path = "../unknown_node_refused.rs"]
+mod unknown_node_refused;
+#[path = "../vector_path.rs"]
+mod vector_path;
+#[path = "../working_colorspace_round_trip.rs"]
+mod working_colorspace_round_trip;
+#[path = "../zero_mix_round_trip.rs"]
+mod zero_mix_round_trip;

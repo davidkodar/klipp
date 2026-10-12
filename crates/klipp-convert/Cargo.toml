@@ -4,6 +4,9 @@ version.workspace = true
 edition = "2021"
 license.workspace = true
 description = "The one-time conversion of Klipp projects to the node-graph format, and its dry run (#997)"
+# Tests are listed below: most share tests/all (one link); delete this
+# and the [[test]] entries to go back to one binary per file.
+autotests = false
 
 [[bin]]
 name = "klipp-convert"
@@ -32,3 +35,15 @@ klipp-nodes = { path = "../klipp-nodes" }
 klipp-project = { path = "../klipp-project", features = ["v1-oracle"] }
 klipp-timeline = { path = "../klipp-timeline" }
 klipp-compose = { path = "../klipp-compose" }
+
+[[test]]
+name = "all"
+path = "tests/all/main.rs"
+
+[[test]]
+name = "oracle_feature"
+path = "tests/oracle_feature.rs"
+
+[[test]]
+name = "real_saves"
+path = "tests/real_saves.rs"

@@ -1,0 +1,75 @@
+//! Most of this crate's integration tests, built as one binary: one
+//! link instead of one per file. Each file stays where it was and is a
+//! module here. Files that time themselves or change process-wide state
+//! stay their own binaries (the `[[test]]` list in Cargo.toml).
+
+#[path = "../corner_pin_keys.rs"]
+mod corner_pin_keys;
+#[path = "../disabled_transform.rs"]
+mod disabled_transform;
+#[path = "../effect_keyframes.rs"]
+mod effect_keyframes;
+#[path = "../effect_node_anim.rs"]
+mod effect_node_anim;
+#[path = "../effect_render_scale.rs"]
+mod effect_render_scale;
+#[path = "../export_another_aspect.rs"]
+mod export_another_aspect;
+#[path = "../export_gpu_path_agrees.rs"]
+mod export_gpu_path_agrees;
+#[path = "../gates_keyed_off_the_frame.rs"]
+mod gates_keyed_off_the_frame;
+#[path = "../golden_corpus.rs"]
+mod golden_corpus;
+#[path = "../gpu_composite.rs"]
+mod gpu_composite;
+#[path = "../grade_cpu_gpu_parity.rs"]
+mod grade_cpu_gpu_parity;
+#[path = "../grade_mix.rs"]
+mod grade_mix;
+#[path = "../grade_render_scale.rs"]
+mod grade_render_scale;
+#[path = "../inspect_by_path.rs"]
+mod inspect_by_path;
+#[path = "../legacy_route_gone.rs"]
+mod legacy_route_gone;
+#[path = "../masked_effects_render.rs"]
+mod masked_effects_render;
+#[path = "../masked_grade_seeded.rs"]
+mod masked_grade_seeded;
+#[path = "../ofx_runs_after_the_grade.rs"]
+mod ofx_runs_after_the_grade;
+#[path = "../opacity_multiplies.rs"]
+mod opacity_multiplies;
+#[path = "../published_producer_masks.rs"]
+mod published_producer_masks;
+#[path = "../render_counters.rs"]
+mod render_counters;
+#[path = "../render_path_selfcheck.rs"]
+mod render_path_selfcheck;
+#[path = "../render_rules.rs"]
+mod render_rules;
+#[path = "../resolve_parity.rs"]
+mod resolve_parity;
+#[path = "../resolved_placement.rs"]
+mod resolved_placement;
+#[path = "../scale_aspect.rs"]
+mod scale_aspect;
+#[path = "../speed_ramp_retime.rs"]
+mod speed_ramp_retime;
+#[path = "../stack_effects_plan.rs"]
+mod stack_effects_plan;
+#[path = "../surface_pin.rs"]
+mod surface_pin;
+#[path = "../temporal_denoise_at_the_source.rs"]
+mod temporal_denoise_at_the_source;
+#[path = "../temporal_denoise_gpu.rs"]
+mod temporal_denoise_gpu;
+#[path = "../temporal_reader_size.rs"]
+mod temporal_reader_size;
+#[path = "../truth_lanes_render.rs"]
+mod truth_lanes_render;
+#[path = "../vector_glow_parity.rs"]
+mod vector_glow_parity;
+#[path = "../wide_gamut_scene_export.rs"]
+mod wide_gamut_scene_export;
