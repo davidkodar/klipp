@@ -720,6 +720,9 @@ impl KlippApp {
 
                 self.state.project_path = Some(path.to_path_buf());
                 self.state.dirty = false;
+                // Fonts the titles name that are not installed (#1720).
+                let missing = self.state.missing_fonts(&crate::missing_fonts::installed);
+                self.state.missing_fonts_dialog = (!missing.is_empty()).then(|| crate::missing_fonts::MissingFontsDialog { fonts: missing, chosen: Default::default() });
                 self.state.selected_clip = None;
                 // Preserve existing thumbnail and last_saved when re-opening
                 let existing = self.prefs.general.recent_projects.iter()

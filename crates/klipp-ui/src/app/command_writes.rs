@@ -24,6 +24,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::LoadCreditsList { .. }
         | AppCommand::ToggleFavouriteFont { .. }
         | AppCommand::NoteRecentFont { .. }
+        | AppCommand::ShowMissingFonts { .. }
         | AppCommand::ToggleGraphDock
         | AppCommand::RevealGraph { .. }
         | AppCommand::SetGraphDockRoot { .. }
@@ -520,6 +521,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTitleObjectTransform { .. }
         | AppCommand::AddTitleObject { .. }
         | AppCommand::DeleteTitleObject { .. }
+        | AppCommand::ReplaceFont { .. }
         | AppCommand::DuplicateTitleObject { .. }
         | AppCommand::SetTitleObjectVisible { .. }
         | AppCommand::SetTitleObjectLocked { .. }

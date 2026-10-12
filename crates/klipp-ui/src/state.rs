@@ -2741,6 +2741,8 @@ pub struct AppState {
     pub recent_fonts: Vec<String>,
     /// The font picker's previews, each family in its own face.
     pub font_previews: crate::inspector::font_picker::FontPreviews,
+    /// The missing-fonts dialog, while it is open (#1720).
+    pub missing_fonts_dialog: Option<crate::missing_fonts::MissingFontsDialog>,
 
     /// Pending title data for styled title creation (consumed by CreateTitleClip handler)
     pub pending_title_data: Option<klipp_timeline::TitleData>,
@@ -4698,6 +4700,7 @@ impl Default for AppState {
             favourite_fonts: Vec::new(),
             recent_fonts: Vec::new(),
             font_previews: Default::default(),
+            missing_fonts_dialog: None,
             pending_title_data: None,
             focus_title_text: 0,
             pending_title_preview_clip: None,
