@@ -4141,7 +4141,7 @@ impl NodeGraphV2Panel {
             .fixed_pos(pos)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                menu_frame(ui, |ui| {
                     if ui.button("Insert node\u{2026}").on_hover_text("Tab over a wire").clicked() {
                         let pass = ui.ctx().cumulative_pass_nr() + 1;
                         self.open_add_menu(pos, at, pass, None);
@@ -4247,7 +4247,7 @@ impl NodeGraphV2Panel {
             .fixed_pos(pos)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                menu_frame(ui, |ui| {
                     if ui.button("Rename…").clicked() {
                         let initial = graph.frames().iter()
                             .find(|f| f.id == frame_id)
@@ -4407,7 +4407,7 @@ impl NodeGraphV2Panel {
             .fixed_pos(pos)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                menu_frame(ui, |ui| {
                     if ui.button("Edit text…").clicked() {
                         let initial = graph.sticky_notes().iter()
                             .find(|s| s.id == sticky_id)
@@ -4568,10 +4568,6 @@ impl NodeGraphV2Panel {
         solo_node: Option<NodeId>,
         descent: &[NodeId],
     ) {
-        if !graph.grade_tools() && kind.is_terminal() {
-            self.node_menu = None;
-            return;
-        }
         let pos = self.node_menu.map(|(_, p)| p).unwrap_or_default();
         let menu_id = ui.id().with(("ngv2_node_menu", node_id));
         let mut close = false;
@@ -4579,7 +4575,7 @@ impl NodeGraphV2Panel {
             .fixed_pos(pos)
             .order(egui::Order::Foreground)
             .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                menu_frame(ui, |ui| {
                     // Source / Output only get the wireless controls
                     // below — bypass / delete / group don't apply to
                     // them, so skip those entries entirely.
@@ -4589,6 +4585,36 @@ impl NodeGraphV2Panel {
                     // user confusion (Delete / Disconnect still
                     // appear).
                     let is_passthrough_kind = kind.is_reroute();
+                    // Source and Output have a menu too, as every node in
+                    // a node editor does: view, add next to it, inspect.
+                    if is_structural {
+                        if kind.is_source() {
+                            let viewed = solo_node == Some(node_id);
+                            if menu_item(ui, if viewed { "Back to finished picture" } else { "View in viewer" }, "1").clicked() {
+                                cmds.push(view_toggle(graph, clip_id, node_id, false, solo_node, descent));
+                                close = true;
+                            }
+                        } else if solo_node.is_some() && menu_item(ui, "Back to finished picture", "1").clicked() {
+                            cmds.push(AppCommand::SetNodeSolo { at: None });
+                            close = true;
+                        }
+                        let add = if kind.is_source() { "Add node after\u{2026}" } else { "Add node\u{2026}" };
+                        if menu_item(ui, add, "Tab").clicked() {
+                            // A node added in the picture goes after the
+                            // selected one, or at the chain's end.
+                            *selected_node = kind.is_source().then_some(node_id);
+                            selected_set.clear();
+                            selected_set.extend(*selected_node);
+                            let at = graph.positions().get(&node_id).map_or(egui::Pos2::ZERO, |p| egui::pos2(p.x + if kind.is_source() { 200.0 } else { -200.0 }, p.y + 110.0));
+                            self.open_add_menu(pos, at, ui.ctx().cumulative_pass_nr() + 1, None);
+                            close = true;
+                        }
+                        if ui.button("Show in Inspector").clicked() {
+                            cmds.push(AppCommand::ShowPanel { workspace: None, inspector_tab: Some("video".into()) });
+                            close = true;
+                        }
+                        ui.separator();
+                    }
                     if !is_structural && ui.button("Rename\u{2026}").clicked() {
                         let current = graph.nodes().iter().find(|n| n.id() == node_id).map(|n| n.label().to_owned()).unwrap_or_default();
                         self.node_rename_editor = Some((node_id, pos, current));
@@ -4611,8 +4637,8 @@ impl NodeGraphV2Panel {
                     // click clear from the same menu they set it in.
                     if !is_structural && !is_passthrough_kind {
                         let is_soloed = solo_node == Some(node_id);
-                        let label = if is_soloed { "Back to finished picture (1)" } else { "View in viewer (1)" };
-                        if ui.button(label).clicked() {
+                        let label = if is_soloed { "Back to finished picture" } else { "View in viewer" };
+                        if menu_item(ui, label, "1").clicked() {
                             let new_target = if is_soloed { None } else { Some(node_id) };
                             cmds.push(AppCommand::SetNodeSolo { at: new_target.and_then(|n| graph.thumbnail_output(clip_id, n, descent)) });
                             close = true;
@@ -4629,11 +4655,11 @@ impl NodeGraphV2Panel {
                         } else {
                             vec![node_id]
                         };
-                        if ui.button("Duplicate").on_hover_text("Ctrl+D").clicked() {
+                        if menu_item(ui, "Duplicate", "Ctrl+D").clicked() {
                             cmds.push(AppCommand::DuplicateNodes { clip_id, node_ids: targets.clone() });
                             close = true;
                         }
-                        if ui.button("Copy").on_hover_text("Ctrl+C").clicked() {
+                        if menu_item(ui, "Copy", "Ctrl+C").clicked() {
                             cmds.push(AppCommand::CopyNodes { clip_id, node_ids: targets });
                             close = true;
                         }
@@ -4812,7 +4838,7 @@ impl NodeGraphV2Panel {
                     } else {
                         "Delete".to_string()
                     };
-                    if !is_structural && ui.button(multi_label).clicked() {
+                    if !is_structural && menu_item(ui, &multi_label, "Del").clicked() {
                         if in_set {
                             // Right-click landed on one of the
                             // multi-selected nodes — delete the whole
@@ -4937,6 +4963,26 @@ fn align_moves(graph: &impl CanvasGraph, ids: &[NodeId], how: Align) -> Vec<(Nod
 /// short-circuit cleanly). Reroute nodes contribute their smaller
 /// 20×20 footprint rather than NODE_W×NODE_H so the bounds reflect
 /// what's actually painted.
+/// A context menu's frame and look, as menus are drawn across the app:
+/// rows the menu's full width, no box round each until hovered, the
+/// key on the right in a quiet colour.
+fn menu_frame<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
+    egui::Frame::popup(ui.style()).inner_margin(egui::Margin::symmetric(4.0, 4.0)).show(ui, |ui| {
+        let style = ui.style_mut();
+        style.spacing.button_padding = egui::vec2(10.0, 4.0);
+        style.spacing.item_spacing.y = 1.0;
+        style.visuals.button_frame = false;
+        style.wrap_mode = Some(egui::TextWrapMode::Extend);
+        ui.set_min_width(200.0);
+        ui.with_layout(egui::Layout::top_down_justified(egui::Align::Min), add).inner
+    })
+}
+
+/// A menu row with its key on the right.
+fn menu_item(ui: &mut egui::Ui, label: &str, key: &str) -> egui::Response {
+    ui.add(egui::Button::new(label).shortcut_text(key))
+}
+
 /// Where a node's view eye sits: the left of its header (#1763).
 fn view_eye_rect(node: egui::Rect, zoom: f32) -> egui::Rect {
     let size = (NODE_HEADER_H - 4.0) * zoom.max(0.6);
