@@ -102,3 +102,25 @@ fn the_keys_save_with_the_text_and_none_are_written_without_them() {
     let plain = serde_json::to_string(&TextBox::default()).unwrap();
     assert!(!plain.contains("_keyframes\":[]") && !plain.contains("tracking_keyframes"), "{plain}");
 }
+
+/// A colour keyed from red to blue passes through the blend of their
+/// light, not of their sRGB numbers: halfway it is the colour whose light
+/// is half of each, (188, 0, 188), and the text is drawn in it, the
+/// viewer's frame and the export's alike.
+#[test]
+fn a_colour_keyed_from_red_to_blue_blends_their_light() {
+    let base = TextBox { text: "COLOUR".into(), font_size: 90.0, color: [255, 0, 0, 255], ..Default::default() };
+    let mut colour_keys = klipp_timeline::ColourKeys::default();
+    colour_keys.set(0.0, [255, 0, 0, 255]);
+    colour_keys.set(2.0, [0, 0, 255, 255]);
+    let keyed = title(TextBox { color_keyframes: colour_keys, ..base.clone() });
+    let mut r = TitleRenderer::new();
+    for (t, colour) in [(0.0f32, [255u8, 0, 0, 255]), (1.0, [188, 0, 188, 255]), (2.0, [0, 0, 255, 255])] {
+        let export = r.render_with_window(&keyed, W, H, None, t, Some(4.0));
+        assert_eq!(viewer(&mut r, &keyed, t), export, "at t={t}");
+        let still = r.render_with_window(&title(TextBox { color: colour, ..base.clone() }), W, H, None, t, Some(4.0));
+        assert_eq!(export, still, "at t={t} the text is drawn in {colour:?}");
+        let solid = export.chunks_exact(4).find(|p| p[3] == 255).expect("a solid pixel");
+        assert_eq!(&solid[..3], &colour[..3], "at t={t}");
+    }
+}

@@ -112,6 +112,13 @@ pub const TEXT_SIZE: &str = "text.size";
 pub const TEXT_TRACKING: &str = "text.tracking";
 pub const TEXT_LINE_SPACING: &str = "text.line_spacing";
 
+// `TextBox.color_keyframes`: a channel each, in linear light 0..1.
+pub const TEXT_COLOR: &str = "text.color";
+pub const TEXT_COLOR_R: &str = "text.color.r";
+pub const TEXT_COLOR_G: &str = "text.color.g";
+pub const TEXT_COLOR_B: &str = "text.color.b";
+pub const TEXT_COLOR_A: &str = "text.color.a";
+
 // ── MotionBlur ──
 pub const MOTION_BLUR_SHUTTER_ANGLE: &str = "motion_blur.shutter_angle";
 

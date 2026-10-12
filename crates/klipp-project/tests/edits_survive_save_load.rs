@@ -369,3 +369,23 @@ fn a_texts_keyed_type_comes_back() {
     let ClipKind::Title(loaded) = &seqs[0].tracks[0].clips[0].kind else { panic!("not a title") };
     assert_eq!(loaded.primary_text(), Some(&tb));
 }
+
+/// #1511: a text's keyed colour comes back through a real save and a
+/// strict load, all four channels.
+#[test]
+fn a_texts_keyed_colour_comes_back() {
+    let mut keys = klipp_timeline::ColourKeys::default();
+    keys.set(0.0, [255, 0, 0, 255]);
+    keys.set(1.5, [20, 120, 255, 128]);
+    let tb = TextBox { text: "Colour".into(), color_keyframes: keys, ..TextBox::default() };
+    let mut seq = Sequence::new_default();
+    let mut c = Clip::gap(tc(0), tc(48));
+    c.kind = ClipKind::Title(TitleData::single_text(tb.clone()));
+    seq.tracks[0].clips = vec![c];
+    let dir = project_dir("keyed-colour");
+    save_project_with_color(&dir, &[seq], &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
+    let (seqs, ..) = klipp_project::load_project_strict(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let ClipKind::Title(loaded) = &seqs[0].tracks[0].clips[0].kind else { panic!("not a title") };
+    assert_eq!(loaded.primary_text(), Some(&tb));
+}

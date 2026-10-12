@@ -1898,7 +1898,7 @@ impl TitleRenderer {
                 }
                 // A roll travels the text as it is now (#1511).
                 let keyed;
-                let tb = if tb.has_type_keyframes() {
+                let tb = if tb.has_keyframes() {
                     keyed = tb.at(time_secs as f64);
                     &keyed
                 } else {
@@ -2022,9 +2022,9 @@ impl TitleRenderer {
             }
         });
         let any_outline_keyframes = title.objects.iter().any(|o| o.fx().outlines.iter().any(|ol| !ol.width_keyframes.is_empty()));
-        // A keyed size, tracking or spacing lays the text out afresh at
-        // each time (#1511).
-        let any_type_keyframes = title.objects.iter().any(|o| matches!(&o.content, TitleObjectContent::TextBox(tb) if tb.has_type_keyframes()));
+        // A keyed size, tracking, spacing or colour sets the text afresh
+        // at each time (#1511).
+        let any_type_keyframes = title.objects.iter().any(|o| matches!(&o.content, TitleObjectContent::TextBox(tb) if tb.has_keyframes()));
         let any_opacity_keyframes = title.objects.iter().any(|o| !o.opacity_keyframes.is_empty());
 
         // A shape or a picture with a live entrance, exit or loop is

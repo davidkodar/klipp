@@ -794,6 +794,10 @@ pub struct TextBox {
     pub tracking_keyframes: Vec<klipp_core::Keyframe>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub line_spacing_keyframes: Vec<klipp_core::Keyframe>,
+    /// The colour over the clip (#1511), a channel each; empty, `color`
+    /// holds. Written only when keyed.
+    #[serde(default, skip_serializing_if = "ColourKeys::is_empty")]
+    pub color_keyframes: ColourKeys,
     /// Write-on reveal: 0.0 = no text, 1.0 = all visible. Animation
     /// overrides this per frame for Typewriter; otherwise 1.0.
     #[serde(default = "default_one")]
@@ -1049,13 +1053,14 @@ impl TextBox {
         (max_chars * font_px * 0.55, lines * font_px * self.line_spacing.max(0.5) * 1.4)
     }
 
-    /// Whether the size, tracking or line spacing is keyed (#1511).
-    pub fn has_type_keyframes(&self) -> bool {
-        !self.font_size_keyframes.is_empty() || !self.tracking_keyframes.is_empty() || !self.line_spacing_keyframes.is_empty()
+    /// Whether the size, tracking, line spacing or colour is keyed
+    /// (#1511).
+    pub fn has_keyframes(&self) -> bool {
+        !self.font_size_keyframes.is_empty() || !self.tracking_keyframes.is_empty() || !self.line_spacing_keyframes.is_empty() || !self.color_keyframes.is_empty()
     }
 
-    /// The text at `time_secs` of its clip: its keyed size, tracking and
-    /// line spacing as they are then, its keys gone (#1511).
+    /// The text at `time_secs` of its clip: its keyed size, tracking,
+    /// line spacing and colour as they are then, its keys gone (#1511).
     pub fn at(&self, time_secs: f64) -> TextBox {
         let mut tb = self.clone();
         let key = |keys: &mut Vec<klipp_core::Keyframe>, value: &mut f32| {
@@ -1069,6 +1074,10 @@ impl TextBox {
         key(&mut tb.tracking_keyframes, &mut tracking);
         key(&mut tb.line_spacing_keyframes, &mut spacing);
         (tb.font_size, tb.tracking, tb.line_spacing) = (size.max(1.0), tracking, spacing.max(0.1));
+        if !tb.color_keyframes.is_empty() {
+            tb.color = tb.color_keyframes.at(time_secs, tb.color);
+            tb.color_keyframes = ColourKeys::default();
+        }
         tb
     }
 
@@ -1085,6 +1094,9 @@ impl TextBox {
             k::TEXT_TRACKING => return Some(&mut self.tracking_keyframes),
             k::TEXT_LINE_SPACING => return Some(&mut self.line_spacing_keyframes),
             _ => {}
+        }
+        if let Some(channel) = param_key.strip_prefix("text.color.") {
+            return self.color_keyframes.channel_mut(channel);
         }
         if param_key.starts_with("extrusion.") {
             self.extrusion.as_mut().and_then(|e| e.keyframes_mut_for(param_key))
@@ -1103,6 +1115,9 @@ impl TextBox {
             k::TEXT_TRACKING => return Some(&self.tracking_keyframes),
             k::TEXT_LINE_SPACING => return Some(&self.line_spacing_keyframes),
             _ => {}
+        }
+        if let Some(channel) = param_key.strip_prefix("text.color.") {
+            return self.color_keyframes.channel(channel);
         }
         if param_key.starts_with("extrusion.") {
             self.extrusion.as_ref().and_then(|e| e.keyframes_for(param_key))
@@ -1141,6 +1156,83 @@ impl TitleObject {
 }
 
 fn default_one_u8() -> u8 { 1 }
+
+/// A colour keyed over time (#1511): a keyframe track per channel, red,
+/// green and blue in linear light and alpha, each 0..1, so a change of
+/// colour blends as light does rather than through the muddier sRGB
+/// midpoints.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ColourKeys {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub r: Vec<klipp_core::Keyframe>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub g: Vec<klipp_core::Keyframe>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub b: Vec<klipp_core::Keyframe>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub a: Vec<klipp_core::Keyframe>,
+}
+
+impl ColourKeys {
+    pub fn is_empty(&self) -> bool {
+        self.r.is_empty() && self.g.is_empty() && self.b.is_empty() && self.a.is_empty()
+    }
+
+    /// The track of channel `r`, `g`, `b` or `a`.
+    pub fn channel(&self, name: &str) -> Option<&[klipp_core::Keyframe]> {
+        Some(match name { "r" => &self.r, "g" => &self.g, "b" => &self.b, "a" => &self.a, _ => return None })
+    }
+
+    pub fn channel_mut(&mut self, name: &str) -> Option<&mut Vec<klipp_core::Keyframe>> {
+        Some(match name { "r" => &mut self.r, "g" => &mut self.g, "b" => &mut self.b, "a" => &mut self.a, _ => return None })
+    }
+
+    /// `color`'s four channel values, as the tracks hold them.
+    pub fn values(color: [u8; 4]) -> [f32; 4] {
+        [srgb_to_linear(color[0]), srgb_to_linear(color[1]), srgb_to_linear(color[2]), color[3] as f32 / 255.0]
+    }
+
+    /// The colour at `time_secs`: each keyed channel as its track has
+    /// it then, the others `base`'s.
+    pub fn at(&self, time_secs: f64, base: [u8; 4]) -> [u8; 4] {
+        let v = Self::values(base);
+        let ch = |keys: &[klipp_core::Keyframe], v: f32| klipp_core::keyframe::evaluate(keys, time_secs, v).clamp(0.0, 1.0);
+        [
+            linear_to_srgb(ch(&self.r, v[0])),
+            linear_to_srgb(ch(&self.g, v[1])),
+            linear_to_srgb(ch(&self.b, v[2])),
+            (ch(&self.a, v[3]) * 255.0).round() as u8,
+        ]
+    }
+
+    /// Key `color` at `time_secs` on every channel.
+    pub fn set(&mut self, time_secs: f64, color: [u8; 4]) {
+        let v = Self::values(color);
+        for (keys, v) in [&mut self.r, &mut self.g, &mut self.b, &mut self.a].into_iter().zip(v) {
+            klipp_core::keyframe::upsert_keyframe(keys, time_secs, v);
+        }
+    }
+
+    /// Take the key within `tolerance` of `time_secs` from every channel.
+    pub fn remove(&mut self, time_secs: f64, tolerance: f64) {
+        for keys in [&mut self.r, &mut self.g, &mut self.b, &mut self.a] {
+            keys.retain(|k| (k.time_secs - time_secs).abs() > tolerance);
+        }
+    }
+}
+
+/// An sRGB byte in linear light, 0..1.
+fn srgb_to_linear(v: u8) -> f32 {
+    let c = v as f32 / 255.0;
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+/// Linear light, 0..1, as an sRGB byte.
+fn linear_to_srgb(v: f32) -> u8 {
+    let v = v.clamp(0.0, 1.0);
+    let c = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    (c * 255.0).round() as u8
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
 pub enum TextDirection {
@@ -1181,6 +1273,7 @@ impl Default for TextBox {
             font_size_keyframes: Vec::new(),
             tracking_keyframes: Vec::new(),
             line_spacing_keyframes: Vec::new(),
+            color_keyframes: ColourKeys::default(),
             write_on: 1.0,
             extrusion: None,
             text_path: None,
@@ -4154,5 +4247,37 @@ mod legacy_animation_migration_tests {
         let e = fx.motion.enter.unwrap();
         assert_eq!((e.kind, e.stagger, e.stagger_secs), (MotionKind::Rise, StaggerUnit::Char, 0.07));
         assert!(matches!(fx.loops[0], TitleLoop::Wave { rate_hz, .. } if rate_hz == 2.0));
+    }
+}
+
+#[cfg(test)]
+mod colour_key_tests {
+    use super::*;
+
+    /// A colour keyed whole keys each channel in linear light, blends
+    /// there, comes away whole, and its channels are the text's own
+    /// keyable params (#1511).
+    #[test]
+    fn a_colour_keys_and_blends_in_linear_light() {
+        let mut keys = ColourKeys::default();
+        keys.set(0.0, [255, 0, 0, 255]);
+        keys.set(2.0, [0, 0, 255, 51]);
+        assert_eq!(keys.r.len(), 2);
+        assert!((keys.b[1].value - 1.0).abs() < 1e-6 && (keys.a[1].value - 0.2).abs() < 1e-6);
+        assert_eq!(keys.at(1.0, [9, 9, 9, 9]), [188, 0, 188, 153], "half the light of each, half the alpha");
+        assert_eq!(keys.at(0.0, [9, 9, 9, 9]), [255, 0, 0, 255]);
+        for v in 0..=255u8 {
+            assert_eq!(linear_to_srgb(srgb_to_linear(v)), v);
+        }
+        let mut tb = TextBox { color_keyframes: keys.clone(), ..Default::default() };
+        assert!(tb.has_keyframes());
+        assert_eq!(tb.effect_keyframes_for(klipp_core::title_effect_keys::TEXT_COLOR_G), Some(&keys.g[..]));
+        assert!(tb.effect_keyframes_mut_for("text.color.x").is_none());
+        let at = tb.at(2.0);
+        assert_eq!((at.color, at.color_keyframes.is_empty()), ([0, 0, 255, 51], true));
+        tb.color_keyframes.remove(2.0 + 1e-4, 0.01);
+        assert!([&tb.color_keyframes.r, &tb.color_keyframes.g, &tb.color_keyframes.b, &tb.color_keyframes.a].iter().all(|k| k.len() == 1));
+        let json = serde_json::to_string(&TextBox::default()).unwrap();
+        assert!(!json.contains("color_keyframes"), "{json}");
     }
 }

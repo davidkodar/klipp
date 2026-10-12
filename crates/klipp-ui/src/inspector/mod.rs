@@ -1739,7 +1739,8 @@ fn show_title_pinned_core_textbox(
         } else if state.viewer_text_edit {
             (state.viewer_text_cursor_color.unwrap_or(tb.color), false)
         } else {
-            (tb.color, false)
+            // As it is at the playhead, keyed or not (#1511).
+            (tb.at(clip_time_secs).color, false)
         };
 
     // A selection's font, style, tracking and baseline offset, read
@@ -2079,6 +2080,7 @@ fn show_title_pinned_core_textbox(
     );
     let mut color_changed = false;
     let mut new_alpha_u8: Option<u8> = None;
+    let mut color_key_toggled = false;
     ui.horizontal(|ui| {
         // Larger swatch to match the reference (~44x28 px). egui's
         // default color_edit_button is tiny; bumping interact_size
@@ -2132,12 +2134,29 @@ fn show_title_pinned_core_textbox(
         if color_is_mixed {
             ui.label(egui::RichText::new("Mixed").size(10.0).color(theme.accent));
         }
+        // The whole text's colour is keyable on its layer, all four
+        // channels at once (#1511).
+        if size_target.is_some() {
+            let ks = title_object_keyframe_state(&tb.color_keyframes.r, clip_time_secs, keyframe_tolerance);
+            color_key_toggled = crate::widgets::scrubby_param::key_controls(ui, ks).toggled;
+        }
     });
     if let Some(a) = new_alpha_u8 {
         col = egui::Color32::from_rgba_premultiplied(col.r(), col.g(), col.b(), a);
         color_changed = true;
     }
-    if color_changed {
+    let keyed_colour = size_target.filter(|_| color_key_toggled || (color_changed && !tb.color_keyframes.is_empty()));
+    if let Some(oid) = keyed_colour {
+        let new_rgba = [col.r(), col.g(), col.b(), col.a()];
+        let at_key = keyframe_selection::nearest(&tb.color_keyframes.r, clip_time_secs, keyframe_tolerance).is_some();
+        cmds.push(AppCommand::SetTitleObjectColourKeyframe {
+            clip_id,
+            object_id: oid.0,
+            param_key: klipp_core::title_effect_keys::TEXT_COLOR.into(),
+            time_secs: clip_time_secs,
+            color: (!(color_key_toggled && at_key)).then_some(new_rgba),
+        });
+    } else if color_changed {
         let new_rgba = [col.r(), col.g(), col.b(), col.a()];
         if has_selection && sel_range.0 < sel_range.1 {
             cmds.push(AppCommand::ApplyTitleStyle {
