@@ -26,6 +26,7 @@ use klipp_nodes::{NodeFrameId, NodeGraph, NodeId, NodePos, NodeStickyNoteId};
 
 mod model;
 mod picture;
+pub(crate) use picture::node_name;
 use model::{CanvasGraph, CanvasKind, CanvasNode, GradeCanvas, MenuCategory, Palette};
 
 const NODE_W: f32 = 120.0;
@@ -536,7 +537,7 @@ impl NodeGraphV2Panel {
             ));
         } else {
             self.bookmark_toast = Some((
-                format!("Bookmark {} empty (Shift+{} to set)", slot + 1, slot + 1),
+                format!("Bookmark {} empty (Shift+{} to set, Alt+{} to jump)", slot + 1, slot + 1, slot + 1),
                 std::time::Instant::now(),
             ));
         }
@@ -1035,12 +1036,12 @@ impl NodeGraphV2Panel {
                 .inner_margin(egui::Margin::symmetric(4.0, 1.0))
                 .show(&mut toolbar_ui, |ui| {
                     ui.label(
-                        egui::RichText::new(format!("\u{1F3AF} SOLO: {label}"))
+                        egui::RichText::new(format!("Viewing: {label}"))
                             .small()
                             .color(theme.text_primary),
                     );
                     if ui.small_button("\u{2715}")
-                        .on_hover_text("Clear solo")
+                        .on_hover_text("Back to the finished picture (1)")
                         .clicked()
                     {
                         cmds.push(AppCommand::SetNodeSolo { at: None });
@@ -1888,6 +1889,7 @@ impl NodeGraphV2Panel {
             }
 
             let is_soloed = solo_node == Some(node_id);
+            let eye_hovered = hover_pointer.is_some_and(|p| rect.expand(4.0).contains(p));
 
             // Selection state: subtle amber halo + accent border.
             // The halo is two outer concentric strokes at decreasing
@@ -2552,6 +2554,9 @@ impl NodeGraphV2Panel {
                     }
                 }
             }
+            if !kind.is_reroute() {
+                draw_view_eye(&painter, rect, zoom, is_soloed, eye_hovered, theme);
+            }
         }
 
         // ── Node feedback (#1747) ──
@@ -2653,6 +2658,14 @@ impl NodeGraphV2Panel {
                         let mut node_hit = false;
                         for (node_id, rect, _, kind, _) in &node_rects {
                             if rect.contains(p) {
+                                // The eye on the header views the node in
+                                // the program viewer, or goes back to the
+                                // finished picture (#1763).
+                                if !kind.is_reroute() && view_eye_rect(*rect, zoom).expand(2.0).contains(p) {
+                                    cmds.push(view_toggle(graph, clip_id, *node_id, kind.is_output(), solo_node, &thumbnail_descent));
+                                    node_hit = true;
+                                    break;
+                                }
                                 if primary_double_clicked
                                     && kind.is_group()
                                 {
@@ -3087,7 +3100,8 @@ impl NodeGraphV2Panel {
             }
         }
 
-        // View bookmarks (1..9 jump, Shift+1..9 set). Same gate as
+        // View bookmarks (Alt+1..9 jump, Shift+1..9 set; 1 alone views
+        // the selected node, #1763). Same gate as
         // Delete: no popup menu open, no text-input focus. Ctrl /
         // Alt / Cmd modifiers skip the binding so this won't collide
         // with any global Ctrl+N or Alt+N shortcut. Empty slots emit
@@ -3103,8 +3117,19 @@ impl NodeGraphV2Panel {
             for (i, key) in NUM_KEYS.iter().enumerate() {
                 if !ui.input(|inp| inp.key_pressed(*key)) { continue; }
                 let mods = ui.input(|inp| inp.modifiers);
-                if mods.ctrl || mods.alt || mods.command { continue; }
-                if mods.shift { self.set_bookmark(i); } else { self.jump_bookmark(i); }
+                if mods.ctrl || mods.command { continue; }
+                // 1 views the selected node in the program viewer, or
+                // goes back to the finished picture (#1763), as node
+                // editors do; the view bookmarks jump on Alt.
+                if i == 0 && !mods.shift && !mods.alt {
+                    let viewed = (*selected_node).and_then(|n| graph.nodes().iter().find(|x| x.id() == n).map(|x| (n, x.kind().is_output(), x.kind().is_reroute())));
+                    cmds.push(match viewed {
+                        Some((n, output, false)) => view_toggle(graph, clip_id, n, output, solo_node, &thumbnail_descent),
+                        _ => AppCommand::SetNodeSolo { at: None },
+                    });
+                    continue;
+                }
+                if mods.shift { self.set_bookmark(i); } else if mods.alt { self.jump_bookmark(i); }
             }
             // M — toggle minimap. Bare key, same gate as bookmarks.
             if ui.input(|inp| inp.key_pressed(egui::Key::M)) {
@@ -4586,7 +4611,7 @@ impl NodeGraphV2Panel {
                     // click clear from the same menu they set it in.
                     if !is_structural && !is_passthrough_kind {
                         let is_soloed = solo_node == Some(node_id);
-                        let label = if is_soloed { "Clear solo" } else { "Solo this node" };
+                        let label = if is_soloed { "Back to finished picture (1)" } else { "View in viewer (1)" };
                         if ui.button(label).clicked() {
                             let new_target = if is_soloed { None } else { Some(node_id) };
                             cmds.push(AppCommand::SetNodeSolo { at: new_target.and_then(|n| graph.thumbnail_output(clip_id, n, descent)) });
@@ -4912,6 +4937,40 @@ fn align_moves(graph: &impl CanvasGraph, ids: &[NodeId], how: Align) -> Vec<(Nod
 /// short-circuit cleanly). Reroute nodes contribute their smaller
 /// 20×20 footprint rather than NODE_W×NODE_H so the bounds reflect
 /// what's actually painted.
+/// Where a node's view eye sits: the left of its header (#1763).
+fn view_eye_rect(node: egui::Rect, zoom: f32) -> egui::Rect {
+    let size = (NODE_HEADER_H - 4.0) * zoom.max(0.6);
+    egui::Rect::from_min_size(egui::pos2(node.min.x + 3.0 * zoom.max(0.6), node.min.y + 2.0 * zoom.max(0.6)), egui::vec2(size, size))
+}
+
+/// The command that views `node` in the program viewer, or goes back to
+/// the finished picture when it is the one viewed or the Output (#1763).
+fn view_toggle(graph: &impl CanvasGraph, clip_id: ClipId, node: NodeId, is_output: bool, viewed: Option<NodeId>, descent: &[NodeId]) -> AppCommand {
+    let back = is_output || viewed == Some(node);
+    AppCommand::SetNodeSolo { at: if back { None } else { graph.thumbnail_output(clip_id, node, descent) } }
+}
+
+/// The eye on a node's header: open and lit while the node is viewed,
+/// faint otherwise, shown while hovered (#1763).
+fn draw_view_eye(painter: &egui::Painter, node: egui::Rect, zoom: f32, viewed: bool, hovered: bool, theme: &KlippTheme) {
+    if !viewed && !hovered {
+        return;
+    }
+    let r = view_eye_rect(node, zoom);
+    let colour = if viewed { egui::Color32::from_rgb(0xff, 0xd5, 0x3a) } else { theme.text_dim };
+    let c = r.center();
+    let (w, h) = (r.width() * 0.5, r.height() * 0.3);
+    let lid = |sign: f32| -> Vec<egui::Pos2> { (0..=8).map(|i| { let t = i as f32 / 8.0; let x = -w + 2.0 * w * t; egui::pos2(c.x + x, c.y + sign * h * (1.0 - (x / w).powi(2))) }).collect() };
+    let stroke = egui::Stroke::new(1.2_f32, colour);
+    painter.add(egui::Shape::line(lid(-1.0), stroke));
+    painter.add(egui::Shape::line(lid(1.0), stroke));
+    if viewed {
+        painter.circle_filled(c, h * 0.9, colour);
+    } else {
+        painter.circle_stroke(c, h * 0.8, stroke);
+    }
+}
+
 fn graph_bounds(graph: &impl CanvasGraph) -> Option<egui::Rect> {
     let mut min_x = f32::INFINITY;
     let mut min_y = f32::INFINITY;

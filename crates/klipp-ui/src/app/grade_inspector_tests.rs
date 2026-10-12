@@ -1664,6 +1664,8 @@ fn a_focused_grade_canvas_keeps_its_keys_from_the_timeline() {
     let mut transport = crate::panels::transport::TransportBar::default();
     for key in [egui::Key::Delete, egui::Key::Backspace, egui::Key::L, egui::Key::M, egui::Key::F, egui::Key::Num1, egui::Key::J, egui::Key::K] {
         let event = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        h.selected = Some(node);
+        h.set = [node].into_iter().collect();
         // What the canvas did, its thumbnail requests aside.
         let canvas: Vec<AppCommand> = h.frame(vec![event]).into_iter().filter(|c| !matches!(c, AppCommand::SetVisibleNodeThumbs { .. })).collect();
         let (grade_keys, transported) = with_key(&ctx, key, egui::Modifiers::NONE, |ctx| {
@@ -1675,6 +1677,8 @@ fn a_focused_grade_canvas_keeps_its_keys_from_the_timeline() {
         match key {
             egui::Key::Delete => assert!(matches!(canvas.as_slice(), [AppCommand::RemoveNode { node_id, .. }] if *node_id == node), "{canvas:?}"),
             egui::Key::L => assert!(matches!(canvas.as_slice(), [AppCommand::AutoLayoutNodeGraph { .. }]), "{canvas:?}"),
+            // 1 views the selected node in the program viewer (#1763).
+            egui::Key::Num1 => assert!(matches!(canvas.as_slice(), [AppCommand::SetNodeSolo { at: Some(at) }] if at.path.node() == Some(node)), "{canvas:?}"),
             _ => assert!(!canvas.iter().any(|c| matches!(c, AppCommand::RemoveClip { .. })), "{key:?}: {canvas:?}"),
         }
     }

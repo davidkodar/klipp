@@ -2026,6 +2026,7 @@ impl ViewerPanel {
         self.handle_scope_cursor_input(ui, state, &frame);
         self.draw_scope_cursor(ui.painter(), state, &frame);
         self.draw_hdr_monitor(ui, state, theme, image_rect, cmds);
+        draw_viewed_node(ui, state, image_rect, cmds);
     }
 
     /// HDR monitoring: what the viewer shows for an HDR delivery, and the
@@ -7786,5 +7787,56 @@ mod transform_gizmo_tests {
         assert_eq!(gizmo_step(true, START, None, true, false), GizmoStep::Abandon, "pointer gone while held");
         assert_eq!(gizmo_step(false, START, None, true, false), GizmoStep::Abandon, "an armed press with the pointer gone is dropped");
         assert_eq!(gizmo_step(false, START, at(1.0), false, false), GizmoStep::Abandon, "an armed press whose release was missed is dropped");
+    }
+}
+
+/// While a node is viewed, the program viewer says so in its corner,
+/// with one click back to the finished picture (#1763): a node's output
+/// taken for the picture would mislead every judgement made on it.
+fn draw_viewed_node(ui: &mut egui::Ui, state: &AppState, image_rect: egui::Rect, cmds: &mut Vec<AppCommand>) {
+    let Some(name) = state.solo_node.and(state.viewed_node_name.as_deref()) else { return };
+    let text = format!("Viewing: {name}   \u{2715}");
+    let font = egui::FontId::proportional(12.0);
+    let galley = ui.painter().layout_no_wrap(text, font, egui::Color32::BLACK);
+    let chip = egui::Rect::from_min_size(image_rect.min + egui::vec2(8.0, 8.0), galley.size() + egui::vec2(16.0, 8.0));
+    let resp = ui.interact(chip, ui.id().with("viewed_node"), egui::Sense::click());
+    let yellow = egui::Color32::from_rgb(0xff, 0xd5, 0x3a);
+    ui.painter().rect_filled(chip, 4.0, if resp.hovered() { yellow } else { yellow.gamma_multiply(0.85) });
+    ui.painter().galley(chip.min + egui::vec2(8.0, 4.0), galley, egui::Color32::BLACK);
+    if resp.on_hover_text("Back to the finished picture (1)").clicked() {
+        cmds.push(AppCommand::SetNodeSolo { at: None });
+    }
+}
+
+#[cfg(test)]
+mod viewed_node_tests {
+    use super::*;
+
+    /// While a node is viewed the program viewer names it in its corner,
+    /// and a click there goes back to the finished picture (#1763); with
+    /// nothing viewed there is no chip.
+    #[test]
+    fn the_viewer_names_the_viewed_node_and_clicks_back() {
+        let ctx = egui::Context::default();
+        let mut state = AppState::default();
+        let image = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(640.0, 360.0));
+        let run = |state: &AppState, events: Vec<egui::Event>| {
+            let mut cmds = Vec::new();
+            let out = ctx.run(egui::RawInput { screen_rect: Some(image), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| draw_viewed_node(ui, state, image, &mut cmds));
+            });
+            let texts: Vec<String> = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some(t.galley.text().to_owned()), _ => None }).collect();
+            (texts, cmds)
+        };
+        let (texts, _) = run(&state, Vec::new());
+        assert!(!texts.iter().any(|t| t.starts_with("Viewing")), "nothing viewed, no chip: {texts:?}");
+        state.solo_node = Some(klipp_nodes::NodeId::new_v4());
+        state.viewed_node_name = Some("Film Grain".into());
+        let (texts, _) = run(&state, Vec::new());
+        assert!(texts.iter().any(|t| t.starts_with("Viewing: Film Grain")), "{texts:?}");
+        let at = egui::pos2(20.0, 16.0);
+        run(&state, vec![egui::Event::PointerMoved(at), egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
+        let (_, cmds) = run(&state, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
+        assert!(matches!(cmds.as_slice(), [AppCommand::SetNodeSolo { at: None }]), "{cmds:?}");
     }
 }
