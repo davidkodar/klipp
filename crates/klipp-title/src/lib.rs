@@ -1060,7 +1060,10 @@ impl TitleRenderer {
         // visible text bottom — the mask must extend that far down
         // or the underline gets clipped on the descender side.
         let max_pad = effect_padding(title, scale);
-        let underline_pad = if tb.underline {
+        // A style run's own underline (#1668) is drawn per line under
+        // the run's glyphs, in place of the box's single stripe.
+        let run_underlines = tb.style_runs.iter().any(|r| r.underline.is_some());
+        let underline_pad = if tb.underline || run_underlines {
             (text_h * 0.10).ceil() as i32 + (font_px * 0.06).ceil() as i32
         } else {
             0
@@ -1136,7 +1139,7 @@ impl TitleRenderer {
         // (covering the x-height midpoint for most fonts);
         // underline sits 10 % below the visible bottom (descender
         // territory) so it doesn't crash into descenders.
-        if tb.underline || tb.strikethrough {
+        if (tb.underline && !run_underlines) || tb.strikethrough {
             let stripe_thickness = (font_px * 0.06).max(1.0).round() as i32;
             let line_x0 = ((text_min_x + offset_x).floor() as i32 - mask_x0 as i32).max(0);
             let line_x1 = ((text_max_x + offset_x).ceil() as i32 - mask_x0 as i32)
@@ -1153,7 +1156,7 @@ impl TitleRenderer {
                     line_x0, line_x1, stripe_top, stripe_top + stripe_thickness,
                 );
             }
-            if tb.underline {
+            if tb.underline && !run_underlines {
                 let line_y_centre = (text_min_y + offset_y) + text_h * 1.05;
                 let stripe_top = (line_y_centre.round() as i32 - mask_y0 as i32
                     - stripe_thickness / 2)
@@ -1173,6 +1176,40 @@ impl TitleRenderer {
             Vec::new()
         };
 
+        // Run underlines (#1668): a stripe in the mask under each
+        // line's stretch of glyphs underlined, a run's own or else the
+        // box's, at the box underline's thickness for the run's size
+        // and its place below the line, filled in the run's colour.
+        let mut underline_fills: Vec<GlyphColorInfo> = Vec::new();
+        if run_underlines {
+            for (from, to) in underline_stretches(glyphs, &tb.style_runs, &line_starts, tb.underline) {
+                let line = line_of(&line_starts, from);
+                let (line_from, line_to) = (line_starts.get(line).copied().unwrap_or(0), line_starts.get(line + 1).copied().unwrap_or(glyphs.len()));
+                // Ink only: a space has none.
+                let inked = |range: &[fontdue::layout::GlyphPosition]| range.iter().filter(|g| g.width > 0).copied().collect::<Vec<_>>();
+                let line_glyphs = inked(&glyphs[line_from..line_to]);
+                let line_top = line_glyphs.iter().map(|g| g.y).fold(f32::MAX, f32::min);
+                let line_bottom = line_glyphs.iter().map(|g| g.y + g.height as f32).fold(f32::MIN, f32::max);
+                let stretch = inked(&glyphs[from..to]);
+                let x0 = stretch.iter().map(|g| g.x).fold(f32::MAX, f32::min);
+                let x1 = stretch.iter().map(|g| g.x + g.width as f32).fold(f32::MIN, f32::max);
+                let run = tb.style_runs.iter().find(|r| r.start <= glyphs[from].byte_offset && glyphs[from].byte_offset < r.end);
+                let thickness = (run.map_or(font_px, run_px) * 0.06).max(1.0).round() as i32;
+                let stripe_x0 = ((x0 + offset_x).floor() as i32 - mask_x0 as i32).max(0);
+                let stripe_x1 = ((x1 + offset_x).ceil() as i32 - mask_x0 as i32).min(mask_w as i32);
+                let line_y_centre = (line_top + offset_y) + (line_bottom - line_top) * 1.05;
+                let stripe_top = (line_y_centre.round() as i32 - mask_y0 as i32 - thickness / 2).max(0);
+                paint_alpha_mask_stripe(&mut alpha_mask, mask_w, mask_h, stripe_x0, stripe_x1, stripe_top, stripe_top + thickness);
+                underline_fills.push(GlyphColorInfo {
+                    mask_x: stripe_x0,
+                    mask_y: stripe_top,
+                    width: (stripe_x1 - stripe_x0).max(0) as usize,
+                    height: thickness as usize,
+                    color: resolved_colors.get(from).copied().unwrap_or(title.color()),
+                });
+            }
+        }
+
         // Apply write-on reveal
         if tb.write_on < 1.0 {
             let cutoff_x = ((text_min_x + offset_x) + text_w * tb.write_on.clamp(0.0, 1.0)) as i32;
@@ -1187,11 +1224,16 @@ impl TitleRenderer {
         }
 
         // Build per-glyph color info for rich text fill
-        let (glyph_colors, glyph_coverages) = if has_rich_text {
+        let (mut glyph_colors, mut glyph_coverages) = if has_rich_text {
             build_glyph_color_info(&fonts, glyphs, offset_x, offset_y, mask_x0, mask_y0, &resolved_colors)
         } else {
             (Vec::new(), Vec::new())
         };
+        // The rich fill draws each underline as a solid glyph of its own.
+        for fill in underline_fills {
+            glyph_coverages.push(vec![255; fill.width * fill.height]);
+            glyph_colors.push(fill);
+        }
 
         let glyph_boxes = glyphs
             .iter()
@@ -4151,6 +4193,41 @@ fn run_px_at(runs: &[klipp_timeline::StyleRun], i: usize, base_px: f32, scale: f
         .map_or(base_px, |pt| pt * scale)
 }
 
+/// The stretches of `glyphs` drawn underlined (#1668), as glyph index
+/// ranges: each glyph takes its style run's underline, or `boxed`, the
+/// box's, outside a run or where the run has none; a stretch ends at a
+/// line's end and where the run changes.
+fn underline_stretches(glyphs: &[fontdue::layout::GlyphPosition], runs: &[StyleRun], line_starts: &[usize], boxed: bool) -> Vec<(usize, usize)> {
+    let run_of = |g: &fontdue::layout::GlyphPosition| runs.iter().position(|r| r.start <= g.byte_offset && g.byte_offset < r.end);
+    let underlined = |run: Option<usize>| run.and_then(|r| runs[r].underline).unwrap_or(boxed);
+    let mut stretches: Vec<(usize, usize)> = Vec::new();
+    let mut open: Option<(usize, usize, Option<usize>)> = None;
+    for (i, g) in glyphs.iter().enumerate() {
+        let (line, run) = (line_of(line_starts, i), run_of(g));
+        if let Some((from, open_line, open_run)) = open {
+            if open_line == line && open_run == run {
+                continue;
+            }
+            stretches.push((from, i));
+            open = None;
+        }
+        if underlined(run) {
+            open = Some((i, line, run));
+        }
+    }
+    if let Some((from, _, _)) = open {
+        stretches.push((from, glyphs.len()));
+    }
+    // A stretch of spaces alone draws nothing.
+    stretches.retain(|&(from, to)| glyphs[from..to].iter().any(|g| g.width > 0));
+    stretches
+}
+
+/// The line glyph `i` is on, by where each line starts.
+fn line_of(line_starts: &[usize], i: usize) -> usize {
+    line_starts.partition_point(|&s| s <= i).saturating_sub(1)
+}
+
 /// fontdue's alignment for a text box's: a justified box is laid out
 /// from the left and [`justify_lines`] then spreads its lines (#1506).
 fn h_align_of(alignment: TextAlignment) -> HorizontalAlign {
@@ -5719,7 +5796,8 @@ pub struct GlyphCacheEntry {
 ///
 /// **Deliberately excluded** (visual fill, doesn't move glyphs):
 /// color, gradient, glow, outline, shadow, extrusion, motion blur,
-/// character animation, texture fill. A colour-only edit must NOT
+/// character animation, texture fill, underline (the box's and a
+/// style run's, #1668). A colour-only edit must NOT
 /// invalidate the cache or the picker recomputes wastefully on
 /// every colour-drag frame.
 pub fn glyph_layout_hash(td: &TitleData, frame_w: u32, frame_h: u32) -> u64 {
@@ -9769,5 +9847,152 @@ mod fallback_tests {
             (15456292890279627271, 16988677102251989457),
         ];
         assert_eq!(hashes, before, "text its face covers draws or lays out differently");
+    }
+}
+
+#[cfg(test)]
+mod run_underline_tests {
+    //! #1668: a style run's own underline is drawn under that run's
+    //! glyphs only; a box with none draws as before.
+    use super::*;
+    use klipp_timeline::{TextBox, TitlePosition};
+
+    const W: u32 = 1280;
+    const H: u32 = 720;
+
+    fn boxed(text: &str, adjust: impl FnOnce(&mut TextBox)) -> TitleData {
+        let mut tb = TextBox { text: text.to_string(), font_name: "Inter".into(), font_size: 48.0, alignment: TextAlignment::Center, ..Default::default() };
+        adjust(&mut tb);
+        let mut td = TitleData::single_text_fx(tb, LayerFx::default());
+        let o = td.objects.first_mut().unwrap();
+        o.transform.center = TitlePosition { x: 0.5, y: 0.5 };
+        o.transform.size = TitlePosition { x: 0.8, y: 0.9 };
+        td
+    }
+
+    fn fnv(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
+    }
+
+    const LONG: &str = "An underlined title long enough to wrap onto a second line and then a third line of words";
+
+    /// Boxes with no run underline: the box's underline and
+    /// strikethrough, with and without style runs.
+    fn without_run_underlines() -> Vec<TitleData> {
+        let runs = || vec![
+            StyleRun { font_size: Some(72.0), ..StyleRun::default_for_range(0, 5) },
+            StyleRun { color: Some([255, 40, 40, 255]), ..StyleRun::default_for_range(6, 11) },
+        ];
+        vec![
+            boxed("Hello world", |tb| tb.underline = true),
+            boxed(LONG, |tb| {
+                tb.underline = true;
+                tb.strikethrough = true;
+            }),
+            boxed("Hello world", |tb| {
+                tb.underline = true;
+                tb.style_runs = runs();
+            }),
+            boxed("Hello world", |tb| tb.style_runs = runs()),
+            boxed(LONG, |tb| {
+                tb.underline = true;
+                tb.alignment = TextAlignment::Left;
+                tb.drop_cap_scale = 3.0;
+            }),
+        ]
+    }
+
+    /// Taken on main before #1668: a box without run underlines draws
+    /// byte for byte as it did.
+    #[test]
+    fn boxes_without_run_underlines_draw_as_before() {
+        const BEFORE: [u64; 5] = [0xae7f_e880_8be2_206a, 0x3641_3dbc_c81a_b919, 0x429f_31d9_51d9_f8a9, 0x429f_31d9_51d9_f8a9, 0x1360_216f_dbf6_1906];
+        let mut r = TitleRenderer::new();
+        r.system_fallback = false;
+        for (i, td) in without_run_underlines().iter().enumerate() {
+            assert_eq!(fnv(&r.render(td, W, H)), BEFORE[i], "box {i} draws differently");
+        }
+    }
+
+    /// The pixels of `frame` drawn at all, and those drawn red, in the
+    /// columns `x0..x1` and the rows `y0..y1`.
+    fn drawn(frame: &[u8], (x0, x1): (i32, i32), (y0, y1): (i32, i32)) -> (usize, usize) {
+        let (mut any, mut red) = (0, 0);
+        for y in y0.max(0)..y1.min(H as i32) {
+            for x in x0.max(0)..x1.min(W as i32) {
+                let p = &frame[(y as usize * W as usize + x as usize) * 4..][..4];
+                if p[3] > 0 {
+                    any += 1;
+                    if p[0] > 200 && p[1] < 80 && p[2] < 80 {
+                        red += 1;
+                    }
+                }
+            }
+        }
+        (any, red)
+    }
+
+    /// The ink columns of the glyphs drawing `text[from..to]`, and the
+    /// bottom of their line's ink.
+    fn ink(layout: &TitleLayout, text: &str, from: usize, to: usize) -> ((i32, i32), i32) {
+        let chars: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+        let boxes: Vec<[i32; 4]> = layout.glyph_boxes.iter().enumerate().filter(|&(k, b)| (from..to).contains(&chars[k]) && b[2] > b[0]).map(|(_, b)| *b).collect();
+        let x0 = boxes.iter().map(|b| b[0]).min().unwrap();
+        let x1 = boxes.iter().map(|b| b[2]).max().unwrap();
+        let line_bottom = boxes.iter().map(|b| b[3]).max().unwrap();
+        ((x0, x1), line_bottom)
+    }
+
+    /// One red word in a box, underlined on its own: a red stripe
+    /// lies under the word, across it, and nothing is drawn under the
+    /// word before it. Turned off on that word in an underlined box,
+    /// the stripe lies under the other word and not under it.
+    #[test]
+    fn a_run_underline_lies_under_its_glyphs_only() {
+        let mut r = TitleRenderer::new();
+        r.system_fallback = false;
+        let run = |underline| vec![StyleRun { color: Some([255, 0, 0, 255]), underline: Some(underline), ..StyleRun::default_for_range(6, 11) }];
+        let td = boxed("Hello world", |tb| tb.style_runs = run(true));
+        let layout = r.render_layout(&td, W, H);
+        let frame = r.render(&td, W, H);
+        let (hello, bottom) = ink(&layout, "Hello world", 0, 5);
+        let (world, _) = ink(&layout, "Hello world", 6, 11);
+        let below = (bottom + 1, bottom + 12);
+        let (any, red) = drawn(&frame, world, below);
+        assert!(red > 0 && red == any, "under the word: {any} drawn, {red} red");
+        // The stripe spans the word: drawn in its first and last columns.
+        assert!(drawn(&frame, (world.0, world.0 + 2), below).1 > 0 && drawn(&frame, (world.1 - 2, world.1), below).1 > 0);
+        assert_eq!(drawn(&frame, (hello.0, hello.1), below).0, 0, "drawn under the word without an underline");
+        // Without the run's underline, nothing is drawn below the line.
+        let plain = r.render(&boxed("Hello world", |tb| tb.style_runs = vec![StyleRun { color: Some([255, 0, 0, 255]), ..StyleRun::default_for_range(6, 11) }]), W, H);
+        assert_eq!(drawn(&plain, (0, W as i32), below).0, 0);
+
+        let td = boxed("Hello world", |tb| {
+            tb.underline = true;
+            tb.style_runs = run(false);
+        });
+        let frame = r.render(&td, W, H);
+        assert!(drawn(&frame, hello, below).0 > 0, "the box's underline is not under the other word");
+        assert_eq!(drawn(&frame, world, below).0, 0, "drawn under the word with its underline off");
+    }
+
+    /// In a box of several lines, a word's underline lies under that
+    /// word on its own line, not at the foot of the box.
+    #[test]
+    fn a_run_underline_follows_its_line() {
+        let mut r = TitleRenderer::new();
+        r.system_fallback = false;
+        let td = boxed(LONG, |tb| {
+            tb.font_size = 96.0;
+            tb.style_runs = vec![StyleRun { underline: Some(true), ..StyleRun::default_for_range(3, 13) }];
+        });
+        let layout = r.render_layout(&td, W, H);
+        let frame = r.render(&td, W, H);
+        let (word, bottom) = ink(&layout, LONG, 3, 13);
+        assert!(layout.text_bottom as i32 > bottom + 40, "the text is one line");
+        // Under the word's line, whose descenders reach below the word.
+        assert!(drawn(&frame, word, (bottom + 1, bottom + 24)).0 > 0, "no underline under the word");
+        let (_, last) = ink(&layout, LONG, LONG.len() - 5, LONG.len());
+        assert_eq!(drawn(&frame, (0, W as i32), (last + 1, last + 24)).0, 0, "an underline at the foot of the box");
     }
 }
