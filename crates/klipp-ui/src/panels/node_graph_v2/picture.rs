@@ -69,6 +69,12 @@ fn structural_name(node: &Node) -> String {
         lt::GROUP_INPUT => "Input", lt::GROUP_OUTPUT => "Output", lt::GROUP_FRAME => "Frame",
         lt::PLACEMENT => "Placement", lt::SCENE_TO_DISPLAY => "Scene to Display",
         lt::TEMPORAL_DENOISE => "Temporal Denoise", lt::FRAME_BLEND => "Frame Blend",
+        // A plug-in by its own name ("com.example.Glow" is Glow), not
+        // the kind of entry it is (#1747).
+        klipp_graph_format::types::LEGACY_OFX => {
+            let name = node.legacy.as_ref().and_then(|l| l.payload.get("plugin_name")).and_then(|v| v.as_str());
+            return name.map_or_else(|| "Plug-in".to_owned(), readable_id);
+        }
         other => return readable_id(other),
     }
     .to_owned()
@@ -1466,7 +1472,16 @@ mod tests {
     /// of the clip asking for every node's thumbnail, as the engine asks.
     #[test]
     fn declined_and_unavailable_nodes_show_their_badge_and_reason() {
-        let mut d = Dock::new();
+        // Two plug-in effects, which the renderer doesn't inspect: one is
+        // also declined by the frame shown, as a missing plug-in is.
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let plugin = |name: &str| klipp_plugin::AppliedEffect { plugin_name: name.into(), enabled: true, ..Default::default() };
+        let c = TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0)))
+            .effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 })
+            .plugin(plugin("com.example.Missing"))
+            .plugin(plugin("com.example.Glow"))
+            .build();
+        let mut d = Dock::of(c);
         let c = d.clip();
         let graph = d.graph();
         let model = PictureCanvas::new(&graph, root(&c), None).unwrap();
@@ -1485,15 +1500,13 @@ mod tests {
         let (_, found) = renderer.render_inspected(&seq, t, 64, 36, &mut Grey, klipp_compose::RenderOptions::default(), inspect);
         let batch = klipp_engine::node_thumbnails::ThumbnailBatch::new(1, 0, klipp_engine::node_thumbnails::PreviewQuality::Viewer, klipp_timeline::SharedSequence::new(seq.clone()).revision(), &wanted, found.thumbs)
             .with_unavailable(&wanted, found.unavailable);
-        // On the CPU an inspected clip's effects run apart from its grade
-        // (#1274): the renderer has no preview of the blur, and says why.
-        let blur = effect(&d, "gaussian_blur");
-        let (no_preview, why) = batch.unavailable.iter().find(|(at, _)| at.path.node() == Some(blur)).map(|(at, why)| (at.path.node().unwrap(), why.clone())).expect("the renderer has no preview of the blur on the CPU");
+        let plugins: Vec<NodeId> = graph.nodes.iter().filter(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_OFX).map(|n| n.id).collect();
+        let (declined, no_preview) = (plugins[0], plugins[1]);
+        let why = batch.unavailable.iter().find(|(at, _)| at.path.node() == Some(no_preview)).map(|(_, why)| why.clone()).expect("the renderer has no preview of a plug-in");
         d.state.node_thumbs_unavailable = batch.unavailable.clone();
-        let declined = graph.nodes.iter().find(|n| n.type_id.as_str() == lt::SCENE_TO_DISPLAY || n.type_id.as_str() == lt::GROUP).unwrap().id;
         d.state.frame_declines.push(klipp_nodes::Decline {
-            clip: Some(c.id), node: declined, kind: NodeKind::Effect, outcome: klipp_nodes::DeclineOutcome::Unsupported,
-            name: "Gaussian Blur".into(), reason: "needs a frame size under 2048".into(), why: String::new(),
+            clip: Some(c.id), node: declined, kind: NodeKind::Ofx, outcome: klipp_nodes::DeclineOutcome::PluginMissing,
+            name: "Missing".into(), reason: "the plug-in isn't installed".into(), why: String::new(),
         });
         d.settle();
         let tooltip = |d: &mut Dock, node: NodeId| {
@@ -1504,8 +1517,9 @@ mod tests {
             d.texts.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>()
         };
         let texts = tooltip(&mut d, declined);
+        assert!(texts.iter().any(|t| t == "Missing") && texts.iter().any(|t| t == "Glow"), "plug-ins by their own names: {texts:?}");
         assert!(texts.iter().any(|t| t == "!"), "the declined badge: {texts:?}");
-        assert!(texts.iter().any(|t| t == "Declined: needs a frame size under 2048"), "its reason on hover: {texts:?}");
+        assert!(texts.iter().any(|t| t == "Declined: the plug-in isn't installed"), "its reason on hover: {texts:?}");
         let texts = tooltip(&mut d, no_preview);
         assert!(texts.iter().any(|t| t == "\u{2013}"), "the no-preview badge: {texts:?}");
         assert!(texts.iter().any(|t| *t == format!("No preview: {why}")), "the renderer's reason on hover: {texts:?}");
@@ -1513,8 +1527,8 @@ mod tests {
         // The control: with nothing reported there is no badge.
         d.state.frame_declines.clear();
         d.state.node_thumbs_unavailable.clear();
-        let texts = tooltip(&mut d, blur);
-        assert!(!texts.iter().any(|t| t == "!" || t.starts_with("Declined")), "{texts:?}");
+        let texts = tooltip(&mut d, declined);
+        assert!(!texts.iter().any(|t| t == "!" || t.starts_with("Declined") || t.starts_with("No preview")), "{texts:?}");
     }
 
     /// A wire the picture's rules refuse says why on the canvas, where it

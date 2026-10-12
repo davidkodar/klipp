@@ -42,7 +42,7 @@ effects_state 5
 insert_effect 10
 insert_effect_with_id 2
 LEGACY_EFFECT 82
-LEGACY_OFX 42
+LEGACY_OFX 44
 move_builtin_effect 15
 move_effect 10
 ofx_effects 31
@@ -86,6 +86,8 @@ video_param_value 16
 # Group G, the legacy payload (picture revision 5): pinned at its first
 # count. Each revision-5 row lowers its pins; the converter keeps the
 # last uses until the view and the payload are deleted together.
+# Raised for plug-in nodes named by their own plug-in on the picture
+# canvas (#1724), read from the payload's OFX identifier.
 # Raised for the node editor's Reset and Replace on the picture (#1745):
 # an effect node's defaults and a swapped effect are written through its
 # payload, as every picture effect edit is until revision 5's rows.
@@ -96,7 +98,7 @@ LegacyClipAnim 15
 MissingLegacy 5
 SetPayload 24
 SetPayloadAt 17
-legacy 165
+legacy 166
 legacy_flags 46
 LEGACY_NODE 54
 LEGACY_GRADE 24

@@ -8,12 +8,15 @@
 //! A field whose layer has gone (deleted since) or no longer holds what
 //! the field reads is not live: shown nowhere, set refused, never a panic.
 
-use crate::{TitleBackground, TitleData, TitleObjectContent, TitleObjectId};
+use crate::{TitleBackground, TitleData, TitleObjectContent, TitleObjectId, TitlePosition};
 use klipp_core::TitleFieldValue;
 use serde::{Deserialize, Serialize};
 
 /// How fast a title's motion may run against its template's.
 pub const SPEED_RANGE: std::ops::RangeInclusive<f32> = 0.25..=4.0;
+
+/// How big a title may be against its template's (#1724).
+pub const SIZE_RANGE: std::ops::RangeInclusive<f32> = 0.5..=2.0;
 
 /// One field a template keeps editable, and what the inspector calls it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -35,6 +38,21 @@ pub enum FieldKind {
     /// `factor`: the timings kept here are the template's, so the factor
     /// never compounds and 1.0 is always as made.
     Speed { factor: f32, base: Vec<LayerTiming> },
+    /// The whole title's size, as the template made it times `factor`
+    /// (#1724): each layer's place grown from `anchor` (a point of the
+    /// frame, 0..1), its box and its type grown with it. As with Speed,
+    /// the template's own places and sizes are kept here, so a factor
+    /// never compounds and 1.0 is always as made.
+    Size { factor: f32, anchor: TitlePosition, base: Vec<LayerSize> },
+}
+
+/// A layer's place, box and type size, as the template made them.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LayerSize {
+    pub object: TitleObjectId,
+    pub center: TitlePosition,
+    pub size: TitlePosition,
+    pub font_size: Option<f32>,
 }
 
 /// A layer's entrance and exit timing, as the template made them.
@@ -90,6 +108,26 @@ impl TitleData {
         out
     }
 
+    /// A Size field over every layer as it is now, grown from `anchor`
+    /// (#1724): what a template publishes to be made bigger or smaller
+    /// with one slider.
+    pub fn size_field(&self, anchor: TitlePosition) -> FieldKind {
+        let base = self
+            .objects
+            .iter()
+            .map(|o| LayerSize {
+                object: o.id,
+                center: o.transform.center,
+                size: o.transform.size,
+                font_size: match &o.content {
+                    TitleObjectContent::TextBox(tb) => Some(tb.font_size),
+                    _ => None,
+                },
+            })
+            .collect();
+        FieldKind::Size { factor: 1.0, anchor, base }
+    }
+
     /// Each layer's motion timing as it is now.
     fn timings(&self) -> Vec<LayerTiming> {
         self.objects
@@ -121,6 +159,7 @@ impl TitleData {
                 TitleBackground::None => None,
             },
             FieldKind::Speed { factor, base } => base.iter().any(|b| object(b.object).is_some()).then_some(TitleFieldValue::Speed(*factor)),
+            FieldKind::Size { factor, base, .. } => base.iter().any(|b| object(b.object).is_some()).then_some(TitleFieldValue::Size(*factor)),
         }
     }
 
@@ -192,6 +231,24 @@ impl TitleData {
                     }
                 }
                 if let FieldKind::Speed { factor: f, .. } = &mut self.published[index].kind {
+                    *f = factor;
+                }
+            }
+            (FieldKind::Size { anchor, base, .. }, TitleFieldValue::Size(f)) => {
+                let factor = f.clamp(*SIZE_RANGE.start(), *SIZE_RANGE.end());
+                for b in &base {
+                    if let Some(o) = self.objects.iter_mut().find(|o| o.id == b.object) {
+                        o.transform.center = TitlePosition {
+                            x: anchor.x + (b.center.x - anchor.x) * factor,
+                            y: anchor.y + (b.center.y - anchor.y) * factor,
+                        };
+                        o.transform.size = TitlePosition { x: b.size.x * factor, y: b.size.y * factor };
+                        if let (Some(font), TitleObjectContent::TextBox(tb)) = (b.font_size, &mut o.content) {
+                            tb.font_size = font * factor;
+                        }
+                    }
+                }
+                if let FieldKind::Size { factor: f, .. } = &mut self.published[index].kind {
                     *f = factor;
                 }
             }
@@ -316,4 +373,30 @@ mod tests {
         td.objects.retain(|o| o.id != name);
         assert!(td.live_fields().iter().all(|(_, f, _)| !matches!(f.kind, FieldKind::Speed { .. })));
     }
+
+    /// Size grows every layer from the anchor, its box and its type with
+    /// it, and any run of moves back to 1.0 is the template exactly
+    /// (#1724).
+    #[test]
+    fn size_grows_the_title_from_its_anchor_and_returns_exactly() {
+        let (mut td, name, role) = lower_third();
+        td.objects[1].transform.center = TitlePosition { x: 0.2, y: 0.9 };
+        let made = td.clone();
+        td.published = vec![PublishedField { label: "Size".into(), kind: td.size_field(TitlePosition { x: 0.1, y: 0.9 }) }];
+        td.set_field(0, &TitleFieldValue::Size(2.0)).unwrap();
+        let layer = |td: &TitleData, id| td.objects.iter().find(|o| o.id == id).unwrap().clone();
+        let r = layer(&td, role);
+        assert!((r.transform.center.x - 0.3).abs() < 1e-6 && (r.transform.center.y - 0.9).abs() < 1e-6, "{:?}", r.transform.center);
+        let TitleObjectContent::TextBox(tb) = &layer(&td, name).content else { unreachable!() };
+        assert_eq!(tb.font_size, 144.0);
+        assert_eq!(td.field_value(0), Some(TitleFieldValue::Size(2.0)));
+        for f in [0.7, 1.6, 9.0, 1.0] {
+            td.set_field(0, &TitleFieldValue::Size(f)).unwrap();
+        }
+        let mut back = td.clone();
+        back.published.clear();
+        assert_eq!(back, made, "1.0 is the template as made");
+        assert!(td.set_field(0, &TitleFieldValue::Speed(2.0)).is_err(), "a size takes no speed");
+    }
 }
+

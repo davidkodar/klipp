@@ -126,6 +126,8 @@ mod text_tool;
 mod title_handles;
 mod node_edits;
 #[cfg(test)]
+mod title_library_tests;
+#[cfg(test)]
 mod viewer_harness;
 mod poster_frames;
 mod links;

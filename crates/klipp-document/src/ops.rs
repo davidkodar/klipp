@@ -3101,6 +3101,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                     (Some(V::Text(_)), serde_json::Value::String(s)) => V::Text(s.clone()),
                     (Some(V::Colour(_)), serde_json::Value::String(s)) => V::Colour(parse_color(s).ok_or_else(|| refuse(i, format!("\"{s}\" is not a colour"), "write a colour as #rrggbb or #rrggbbaa"))?),
                     (Some(V::Speed(_)), serde_json::Value::Number(n)) => V::Speed(n.as_f64().unwrap_or(1.0) as f32),
+                    (Some(V::Size(_)), serde_json::Value::Number(n)) => V::Size(n.as_f64().unwrap_or(1.0) as f32),
                     _ => return Err(refuse(i, format!("\"{label}\" can't take {v}"), "give a text as words, a colour as #rrggbb, the speed as a number")),
                 };
                 td.set_field(index, &value).map_err(|e| refuse(i, e, "title_templates lists each template's fields"))?;

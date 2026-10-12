@@ -47,6 +47,44 @@ pub(crate) struct TitleTemplate {
     #[allow(dead_code)]
     pub preview_text: &'static str,
     pub create_data: fn() -> TitleData,
+    /// What it keeps editable once applied (#1724).
+    pub fields: Fields,
+}
+
+/// A built-in's published fields (#1724), simple first: each text by
+/// its name, in the order its text layers stack; the accent's colour,
+/// when it has one (the layer at `accent`); then Size, grown from
+/// `anchor` (a point of the frame), and Speed when anything moves.
+pub(crate) struct Fields {
+    pub names: &'static [&'static str],
+    pub accent: Option<usize>,
+    pub anchor: (f32, f32),
+}
+
+impl TitleTemplate {
+    /// The title the template makes, its layers named and its fields
+    /// published (#1724).
+    pub(crate) fn build(&self) -> TitleData {
+        publish((self.create_data)(), &self.fields)
+    }
+}
+
+fn publish(mut td: TitleData, fields: &Fields) -> TitleData {
+    use klipp_timeline::{FieldKind, PublishedField};
+    let texts: Vec<usize> = td.objects.iter().enumerate().filter(|(_, o)| matches!(o.content, TitleObjectContent::TextBox(_))).map(|(i, _)| i).collect();
+    let mut published = Vec::new();
+    for (&i, name) in texts.iter().zip(fields.names) {
+        td.objects[i].name = (*name).to_owned();
+        published.push(PublishedField { label: (*name).to_owned(), kind: FieldKind::Text { object: td.objects[i].id } });
+    }
+    if let Some(o) = fields.accent.and_then(|a| td.objects.get(a)) {
+        published.push(PublishedField { label: "Accent".into(), kind: FieldKind::Colour { object: o.id } });
+    }
+    let anchor = TitlePosition { x: fields.anchor.0, y: fields.anchor.1 };
+    published.push(PublishedField { label: "Size".into(), kind: td.size_field(anchor) });
+    published.extend(td.default_fields().into_iter().filter(|f| matches!(f.kind, FieldKind::Speed { .. })));
+    td.published = published;
+    td
 }
 
 /// A card in the browser: a built-in template or one the user saved.
@@ -72,9 +110,9 @@ impl<'a> Entry<'a> {
     }
 
     /// The title the template makes, marked as made from it (#1716).
-    fn data(&self) -> TitleData {
+    pub(crate) fn data(&self) -> TitleData {
         let mut data = match self {
-            Entry::Builtin(t) => (t.create_data)(),
+            Entry::Builtin(t) => t.build(),
             Entry::User(t) => t.data.clone(),
         };
         data.template = Some(self.list_key());
@@ -111,8 +149,10 @@ impl<'a> Entry<'a> {
 
 // ---------------------------------------------------------------------------
 // The curated set: every template designed on the bundled faces, placed
-// inside title-safe, and moved by the motion model. Twenty-six, one job
-// each; the user animates and restyles them from the Inspector.
+// inside title-safe, and moved by the motion model; backing shapes move
+// with their text. Each keeps a few fields editable once applied (#1724):
+// its texts, its accent, Size and Speed, so one drag and two sliders make
+// it the user's own. Everything else is restyled from the Inspector.
 // ---------------------------------------------------------------------------
 
 use crate::browser::title_previews::{TitlePreviews, REST_TIME};
@@ -240,6 +280,28 @@ fn enter(kind: MotionKind, secs: f32, easing: Easing) -> Motion {
 }
 fn fade_out(secs: f32) -> Motion {
     Motion::new(MotionKind::Fade).duration(secs).easing(Easing::InCubic)
+}
+
+/// A backing shape that moves with its text (#1724): a bar that sits
+/// still while the words slide in reads as pasted on.
+fn moving(mut layer: Layer, motion: TitleMotion) -> Layer {
+    layer.2.motion = motion;
+    layer
+}
+
+/// Shape `shape` sized to text `text`, padded (1080p pixels): the backing
+/// follows whatever is typed.
+fn fit(td: &mut TitleData, shape: usize, text: usize, pad: (f32, f32)) {
+    let target = td.objects[text].id;
+    if let TitleObjectContent::Shape(s) = &mut td.objects[shape].content {
+        s.fit = Some(klipp_timeline::ShapeFit { target, padding: TitlePosition { x: pad.0, y: pad.1 } });
+    }
+}
+
+/// A heavy outline that keeps a caption readable on any picture.
+fn outlined(mut t: Text, width: f32) -> Text {
+    t.fx.outlines.push(klipp_timeline::TextOutline { enabled: true, color: [0, 0, 0, 255], width, width_keyframes: Vec::new() });
+    t
 }
 
 // ── Lower thirds ──
@@ -539,32 +601,272 @@ fn ut_label() -> TitleData {
     ])
 }
 
-const TITLES: &[TitleTemplate] = &[
-    TitleTemplate { name: "Name Bar", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_name_bar },
-    TitleTemplate { name: "Clean Line", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_clean_line },
-    TitleTemplate { name: "Broadcast", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_broadcast },
-    TitleTemplate { name: "Documentary", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_documentary },
-    TitleTemplate { name: "Location", category: "Lower Thirds", preview_text: "[City, Country]", create_data: lt_location },
-    TitleTemplate { name: "Cinematic", category: "Openers", preview_text: "[Title]", create_data: op_cinematic },
-    TitleTemplate { name: "Impact", category: "Openers", preview_text: "[BIG TITLE]", create_data: op_impact },
-    TitleTemplate { name: "Editorial", category: "Openers", preview_text: "[Headline]", create_data: op_editorial },
-    TitleTemplate { name: "Minimal", category: "Openers", preview_text: "[Title]", create_data: op_minimal },
-    TitleTemplate { name: "Chapter", category: "Openers", preview_text: "[Chapter title]", create_data: op_chapter },
-    TitleTemplate { name: "Statement", category: "Openers", preview_text: "[BOLD STATEMENT]", create_data: op_statement },
-    TitleTemplate { name: "Quote", category: "Captions", preview_text: "[Quote]", create_data: cap_quote },
-    TitleTemplate { name: "Caption", category: "Captions", preview_text: "[Caption]", create_data: cap_caption },
-    TitleTemplate { name: "Subtitle", category: "Captions", preview_text: "[Subtitle]", create_data: cap_subtitle },
-    TitleTemplate { name: "Callout", category: "Captions", preview_text: "[Callout]", create_data: cap_callout },
-    TitleTemplate { name: "Credits Roll", category: "Credits", preview_text: "Director", create_data: cr_roll },
-    TitleTemplate { name: "End Card", category: "Credits", preview_text: "The End", create_data: cr_end_card },
-    TitleTemplate { name: "Cast", category: "Credits", preview_text: "[Name]", create_data: cr_cast },
-    TitleTemplate { name: "Hook", category: "Social", preview_text: "[HOOK LINE]", create_data: so_hook },
-    TitleTemplate { name: "Handle", category: "Social", preview_text: "@yourhandle", create_data: so_handle },
-    TitleTemplate { name: "Subscribe", category: "Social", preview_text: "Subscribe", create_data: so_subscribe },
-    TitleTemplate { name: "Slate", category: "Utility", preview_text: "PROJECT", create_data: ut_slate },
-    TitleTemplate { name: "Timecode", category: "Utility", preview_text: "00:00:00:00", create_data: ut_timecode },
-    TitleTemplate { name: "Watermark", category: "Utility", preview_text: "[Brand]", create_data: ut_watermark },
-    TitleTemplate { name: "Label", category: "Utility", preview_text: "[Label]", create_data: ut_label },
+
+// ── More lower thirds (#1724) ──
+fn lt_accent_block() -> TitleData {
+    let words = |d: f32| TitleMotion::both(enter(MotionKind::SlideRight, 0.55, Easing::OutQuint).distance(0.25).delay(d), fade_out(0.3));
+    layers(vec![
+        moving(rect(0.072, 0.85, 0.008, 0.105, ACCENT, 0.0),
+            TitleMotion::both(enter(MotionKind::MaskRise, 0.45, Easing::OutExpo), fade_out(0.3))),
+        text_at(moved(lifted(face("[Name]", GRO, FontStyle::Bold, 48.0, WHITE, TextAlignment::Left)), words(0.12)), 0.088, 0.822, 0.0),
+        text_at(moved(lifted(face("[Title or role]", GRO, FontStyle::Regular, 26.0, MUTED, TextAlignment::Left)), words(0.22)), 0.088, 0.878, 0.0),
+    ])
+}
+
+fn lt_pill() -> TitleData {
+    let mut td = layers(vec![
+        moving(rect(0.18, 0.835, 0.2, 0.07, WHITE, 30.0),
+            TitleMotion::both(enter(MotionKind::ScaleUp, 0.4, Easing::OutBack), fade_out(0.25))),
+        text_at(
+            moved(face("[Name]", GRO, FontStyle::Bold, 40.0, INK, TextAlignment::Left),
+                TitleMotion::both(enter(MotionKind::Fade, 0.3, Easing::OutCubic).delay(0.15), fade_out(0.25))),
+            0.08, 0.835, 0.0,
+        ),
+        text_at(
+            moved(lifted(face("[Title or role]", GRO, FontStyle::Regular, 26.0, WHITE, TextAlignment::Left)),
+                TitleMotion::both(enter(MotionKind::Rise, 0.45, Easing::OutCubic).distance(0.3).delay(0.3), fade_out(0.25))),
+            0.08, 0.905, 0.0,
+        ),
+    ]);
+    fit(&mut td, 0, 1, (30.0, 14.0));
+    td.objects[1].transform.size.x = 0.85;
+    td
+}
+
+fn lt_stacked() -> TitleData {
+    layers(vec![
+        moving(rect(0.13, 0.857, 0.1, 0.005, ACCENT, 0.0),
+            TitleMotion::both(enter(MotionKind::SlideRight, 0.5, Easing::OutExpo).distance(0.5).delay(0.2), fade_out(0.3))),
+        text_at(
+            moved(lifted(upper(face("[Name]", DISPLAY, FontStyle::Regular, 72.0, WHITE, TextAlignment::Left), 3.0)),
+                TitleMotion::both(enter(MotionKind::MaskRise, 0.55, Easing::OutExpo).stagger(StaggerUnit::Char, 0.02), fade_out(0.3))),
+            0.08, 0.81, 0.0,
+        ),
+        text_at(
+            moved(lifted(upper(face("[Title or role]", GRO, FontStyle::Bold, 20.0, MUTED, TextAlignment::Left), 4.0)),
+                TitleMotion::both(enter(MotionKind::Fade, 0.5, Easing::OutCubic).delay(0.4), fade_out(0.3))),
+            0.08, 0.89, 0.0,
+        ),
+    ])
+}
+
+// ── More openers and chapters (#1724) ──
+fn op_chapter_number() -> TitleData {
+    layers(vec![
+        text_at(
+            moved(lifted(face("01", DISPLAY, FontStyle::Regular, 200.0, ACCENT, TextAlignment::Center)),
+                TitleMotion::both(enter(MotionKind::MaskRise, 0.7, Easing::OutExpo), fade_out(0.4))),
+            0.5, 0.40, 0.5,
+        ),
+        text_at(
+            moved(lifted(upper(face("[Chapter title]", GRO, FontStyle::Bold, 44.0, WHITE, TextAlignment::Center), 8.0)),
+                TitleMotion::both(enter(MotionKind::Fade, 0.6, Easing::OutCubic).delay(0.45).stagger(StaggerUnit::Char, 0.015), fade_out(0.4))),
+            0.5, 0.60, 0.5,
+        ),
+    ])
+}
+
+fn op_title_card() -> TitleData {
+    layers(vec![
+        moving(rect(0.5, 0.5, 1.0, 1.0, [8, 8, 10, 170], 0.0),
+            TitleMotion::both(enter(MotionKind::Fade, 0.8, Easing::OutCubic), fade_out(0.8))),
+        text_at(
+            moved(face("[Title]", SERIF, FontStyle::Regular, 92.0, WHITE, TextAlignment::Center),
+                TitleMotion::both(enter(MotionKind::FocusIn, 1.1, Easing::OutCubic).delay(0.3), fade_out(0.6))),
+            0.5, 0.47, 0.5,
+        ),
+        text_at(
+            moved(upper(face("[Subtitle]", GRO, FontStyle::Regular, 24.0, MUTED, TextAlignment::Center), 8.0),
+                TitleMotion::both(enter(MotionKind::Fade, 0.8, Easing::OutCubic).delay(0.9), fade_out(0.6))),
+            0.5, 0.585, 0.5,
+        ),
+    ])
+}
+
+// ── More end cards and credits (#1724) ──
+fn cr_end_credits() -> TitleData {
+    let col = |text: &str, x: f32, anchor: f32, align: TextAlignment, colour: [u8; 4], style: FontStyle| text_at(
+        moved(lifted(face(text, GRO, style, 30.0, colour, align)),
+            TitleMotion::both(enter(MotionKind::Fade, 0.8, Easing::OutCubic).delay(0.6).stagger(StaggerUnit::Line, 0.12), fade_out(0.6))),
+        x, 0.62, anchor,
+    );
+    let mut roles = col("Directed by\nProduced by\nEdited by\nMusic by", 0.485, 1.0, TextAlignment::Right, MUTED, FontStyle::Regular);
+    let mut names = col("[Name]\n[Name]\n[Name]\n[Name]", 0.515, 0.0, TextAlignment::Left, WHITE, FontStyle::Bold);
+    for l in [&mut roles, &mut names] {
+        l.1.size.x = 0.45;
+        if let TitleObjectContent::TextBox(tb) = &mut l.0 {
+            tb.line_spacing = 1.35;
+        }
+    }
+    layers(vec![
+        text_at(
+            moved(lifted(upper(face("[Film title]", SERIF, FontStyle::Regular, 76.0, WHITE, TextAlignment::Center), 10.0)),
+                TitleMotion::both(enter(MotionKind::Fade, 1.2, Easing::InOutCubic), fade_out(0.8))),
+            0.5, 0.30, 0.5,
+        ),
+        roles,
+        names,
+    ])
+}
+
+fn cr_thanks() -> TitleData {
+    layers(vec![
+        text_at(
+            moved(lifted(face("Thanks for watching", GRO, FontStyle::Bold, 72.0, WHITE, TextAlignment::Center)),
+                TitleMotion::both(enter(MotionKind::Rise, 0.7, Easing::OutQuint).distance(0.3).stagger(StaggerUnit::Word, 0.08), fade_out(0.5))),
+            0.5, 0.46, 0.5,
+        ),
+        text_at(
+            moved(lifted(face("[@yourhandle \u{00b7} yoursite.com]", GRO, FontStyle::Regular, 30.0, MUTED, TextAlignment::Center)),
+                TitleMotion::both(enter(MotionKind::Fade, 0.6, Easing::OutCubic).delay(0.5), fade_out(0.5))),
+            0.5, 0.56, 0.5,
+        ),
+    ])
+}
+
+fn cr_up_next() -> TitleData {
+    let mut td = layers(vec![
+        moving(rect(0.12, 0.70, 0.1, 0.05, ACCENT, 4.0),
+            TitleMotion::both(enter(MotionKind::SlideRight, 0.4, Easing::OutExpo).distance(0.3), fade_out(0.3))),
+        text_at(
+            moved(upper(face("Up next", GRO, FontStyle::Bold, 22.0, WHITE, TextAlignment::Left), 4.0),
+                TitleMotion::both(enter(MotionKind::Fade, 0.3, Easing::OutCubic).delay(0.15), fade_out(0.3))),
+            0.08, 0.70, 0.0,
+        ),
+        text_at(
+            moved(lifted(face("[Next video title]", GRO, FontStyle::Bold, 58.0, WHITE, TextAlignment::Left)),
+                TitleMotion::both(enter(MotionKind::MaskRise, 0.55, Easing::OutExpo).delay(0.25).stagger(StaggerUnit::Word, 0.06), fade_out(0.3))),
+            0.08, 0.79, 0.0,
+        ),
+    ]);
+    fit(&mut td, 0, 1, (16.0, 8.0));
+    td
+}
+
+// ── More social, made for any frame shape (#1724) ──
+fn so_bold_caption() -> TitleData {
+    layers(vec![text_at(
+        moved(outlined(upper(face("[Say it big]", DISPLAY, FontStyle::Regular, 112.0, WHITE, TextAlignment::Center), 1.0), 6.0),
+            TitleMotion::both(enter(MotionKind::Pop, 0.35, Easing::OutBack).stagger(StaggerUnit::Word, 0.12), fade_out(0.2))),
+        0.5, 0.64, 0.5,
+    )])
+}
+
+fn so_highlight() -> TitleData {
+    let mut td = layers(vec![
+        moving(rect(0.5, 0.7, 0.4, 0.08, [255, 214, 10, 255], 10.0),
+            TitleMotion::both(enter(MotionKind::ScaleUp, 0.35, Easing::OutBack), fade_out(0.2))),
+        text_at(
+            moved(face("[Key words]", GRO, FontStyle::Bold, 52.0, INK, TextAlignment::Center),
+                TitleMotion::both(enter(MotionKind::Fade, 0.25, Easing::OutCubic).delay(0.12), fade_out(0.2))),
+            0.5, 0.7, 0.5,
+        ),
+    ]);
+    fit(&mut td, 0, 1, (26.0, 12.0));
+    td.objects[1].transform.size.x = 0.9;
+    td
+}
+
+fn so_question() -> TitleData {
+    layers(vec![
+        text_at(
+            moved(upper(face("Question", GRO, FontStyle::Bold, 24.0, [255, 214, 10, 255], TextAlignment::Center), 6.0),
+                TitleMotion::both(enter(MotionKind::Fade, 0.3, Easing::OutCubic), fade_out(0.25))),
+            0.5, 0.36, 0.5,
+        ),
+        text_at(
+            moved(lifted(face("[What would you do?]", GRO, FontStyle::Bold, 76.0, WHITE, TextAlignment::Center)),
+                TitleMotion::both(enter(MotionKind::Slam, 0.4, Easing::OutCubic).delay(0.15).stagger(StaggerUnit::Word, 0.07), fade_out(0.25))),
+            0.5, 0.48, 0.5,
+        ),
+    ])
+}
+
+fn so_tip() -> TitleData {
+    let mut td = layers(vec![
+        moving(rect(0.11, 0.16, 0.08, 0.06, [255, 214, 10, 255], 10.0),
+            TitleMotion::both(enter(MotionKind::ScaleUp, 0.35, Easing::OutBack), fade_out(0.25))),
+        text_at(
+            moved(upper(face("Tip", GRO, FontStyle::Bold, 24.0, INK, TextAlignment::Left), 3.0),
+                TitleMotion::both(enter(MotionKind::Fade, 0.25, Easing::OutCubic).delay(0.1), fade_out(0.25))),
+            0.08, 0.16, 0.0,
+        ),
+        text_at(
+            moved(lifted(face("[Your tip in a line]", GRO, FontStyle::Bold, 36.0, WHITE, TextAlignment::Left)),
+                TitleMotion::both(enter(MotionKind::SlideRight, 0.45, Easing::OutQuint).distance(0.2).delay(0.2), fade_out(0.25))),
+            0.08, 0.235, 0.0,
+        ),
+    ]);
+    fit(&mut td, 0, 1, (18.0, 8.0));
+    td
+}
+
+// ── Callout (#1724) ──
+fn cap_note() -> TitleData {
+    let mut td = layers(vec![
+        moving(rect(0.25, 0.16, 0.3, 0.1, [16, 16, 20, 225], 8.0),
+            TitleMotion::both(enter(MotionKind::Fade, 0.3, Easing::OutCubic), fade_out(0.25))),
+        moving(rect(0.105, 0.16, 0.005, 0.07, ACCENT, 0.0),
+            TitleMotion::both(enter(MotionKind::MaskRise, 0.35, Easing::OutExpo).delay(0.1), fade_out(0.25))),
+        text_at(
+            moved(face("[A note on screen]", GRO, FontStyle::Regular, 30.0, WHITE, TextAlignment::Left),
+                TitleMotion::both(enter(MotionKind::Fade, 0.35, Easing::OutCubic).delay(0.15), fade_out(0.25))),
+            0.12, 0.16, 0.0,
+        ),
+    ]);
+    fit(&mut td, 0, 2, (40.0, 22.0));
+    td
+}
+
+const fn f(names: &'static [&'static str], accent: Option<usize>, anchor: (f32, f32)) -> Fields {
+    Fields { names, accent, anchor }
+}
+
+/// Lower thirds grow from their left edge; centred titles from the
+/// middle of the frame.
+const LT: (f32, f32) = (0.08, 0.85);
+const MID: (f32, f32) = (0.5, 0.5);
+const NAME_ROLE: &[&str] = &["Name", "Role"];
+
+pub(crate) const TITLES: &[TitleTemplate] = &[
+    TitleTemplate { name: "Name Bar", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_name_bar, fields: f(NAME_ROLE, Some(0), LT) },
+    TitleTemplate { name: "Clean Line", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_clean_line, fields: f(NAME_ROLE, Some(0), LT) },
+    TitleTemplate { name: "Broadcast", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_broadcast, fields: f(NAME_ROLE, Some(0), LT) },
+    TitleTemplate { name: "Accent Block", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_accent_block, fields: f(NAME_ROLE, Some(0), LT) },
+    TitleTemplate { name: "Pill", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_pill, fields: f(NAME_ROLE, Some(0), LT) },
+    TitleTemplate { name: "Stacked", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_stacked, fields: f(NAME_ROLE, Some(0), LT) },
+    TitleTemplate { name: "Documentary", category: "Lower Thirds", preview_text: "[Name]", create_data: lt_documentary, fields: f(NAME_ROLE, None, LT) },
+    TitleTemplate { name: "Location", category: "Lower Thirds", preview_text: "[City, Country]", create_data: lt_location, fields: f(&["Place and time"], None, (0.06, 0.12)) },
+    TitleTemplate { name: "Cinematic", category: "Openers", preview_text: "[Title]", create_data: op_cinematic, fields: f(&["Title"], None, MID) },
+    TitleTemplate { name: "Impact", category: "Openers", preview_text: "[BIG TITLE]", create_data: op_impact, fields: f(&["Title"], None, MID) },
+    TitleTemplate { name: "Editorial", category: "Openers", preview_text: "[Headline]", create_data: op_editorial, fields: f(&["Headline", "Subtitle"], None, MID) },
+    TitleTemplate { name: "Title Card", category: "Openers", preview_text: "[Title]", create_data: op_title_card, fields: f(&["Title", "Subtitle"], None, MID) },
+    TitleTemplate { name: "Minimal", category: "Openers", preview_text: "[Title]", create_data: op_minimal, fields: f(&["Title"], None, MID) },
+    TitleTemplate { name: "Chapter", category: "Openers", preview_text: "[Chapter title]", create_data: op_chapter, fields: f(&["Chapter", "Chapter title"], None, MID) },
+    TitleTemplate { name: "Chapter Number", category: "Openers", preview_text: "[Chapter title]", create_data: op_chapter_number, fields: f(&["Number", "Chapter title"], Some(0), MID) },
+    TitleTemplate { name: "Statement", category: "Openers", preview_text: "[BOLD STATEMENT]", create_data: op_statement, fields: f(&["Statement"], Some(0), (0.08, 0.44)) },
+    TitleTemplate { name: "Quote", category: "Captions", preview_text: "[Quote]", create_data: cap_quote, fields: f(&["Quote", "Who said it"], None, MID) },
+    TitleTemplate { name: "Caption", category: "Captions", preview_text: "[Caption]", create_data: cap_caption, fields: f(&["Caption"], Some(0), (0.5, 0.885)) },
+    TitleTemplate { name: "Subtitle", category: "Captions", preview_text: "[Subtitle]", create_data: cap_subtitle, fields: f(&["Subtitle"], None, (0.5, 0.9)) },
+    TitleTemplate { name: "Callout", category: "Captions", preview_text: "[Callout]", create_data: cap_callout, fields: f(&["Callout"], Some(0), (0.8, 0.14)) },
+    TitleTemplate { name: "Note", category: "Captions", preview_text: "[A note on screen]", create_data: cap_note, fields: f(&["Note"], Some(1), (0.1, 0.16)) },
+    TitleTemplate { name: "Credits Roll", category: "Credits", preview_text: "Director", create_data: cr_roll, fields: f(&["Credits"], None, MID) },
+    TitleTemplate { name: "End Credits", category: "Credits", preview_text: "[Film title]", create_data: cr_end_credits, fields: f(&["Film title", "Roles", "Names"], None, MID) },
+    TitleTemplate { name: "End Card", category: "Credits", preview_text: "The End", create_data: cr_end_card, fields: f(&["Title"], None, MID) },
+    TitleTemplate { name: "Cast", category: "Credits", preview_text: "[Name]", create_data: cr_cast, fields: f(&["Role", "Name"], None, MID) },
+    TitleTemplate { name: "Thanks for Watching", category: "Credits", preview_text: "Thanks for watching", create_data: cr_thanks, fields: f(&["Title", "Where to find you"], None, MID) },
+    TitleTemplate { name: "Up Next", category: "Credits", preview_text: "[Next video title]", create_data: cr_up_next, fields: f(&["Label", "Next title"], Some(0), (0.08, 0.75)) },
+    TitleTemplate { name: "Hook", category: "Social", preview_text: "[HOOK LINE]", create_data: so_hook, fields: f(&["Hook"], None, (0.5, 0.45)) },
+    TitleTemplate { name: "Bold Caption", category: "Social", preview_text: "[Say it big]", create_data: so_bold_caption, fields: f(&["Caption"], None, (0.5, 0.64)) },
+    TitleTemplate { name: "Highlight", category: "Social", preview_text: "[Key words]", create_data: so_highlight, fields: f(&["Words"], Some(0), (0.5, 0.7)) },
+    TitleTemplate { name: "Question", category: "Social", preview_text: "[What would you do?]", create_data: so_question, fields: f(&["Label", "Question"], None, MID) },
+    TitleTemplate { name: "Tip", category: "Social", preview_text: "[Your tip in a line]", create_data: so_tip, fields: f(&["Label", "Tip"], Some(0), (0.08, 0.2)) },
+    TitleTemplate { name: "Handle", category: "Social", preview_text: "@yourhandle", create_data: so_handle, fields: f(&["Handle"], Some(0), (0.5, 0.9)) },
+    TitleTemplate { name: "Subscribe", category: "Social", preview_text: "Subscribe", create_data: so_subscribe, fields: f(&["Button"], Some(0), (0.5, 0.86)) },
+    TitleTemplate { name: "Slate", category: "Utility", preview_text: "PROJECT", create_data: ut_slate, fields: f(&["Slate"], None, MID) },
+    TitleTemplate { name: "Timecode", category: "Utility", preview_text: "00:00:00:00", create_data: ut_timecode, fields: f(&["Timecode"], None, (0.06, 0.93)) },
+    TitleTemplate { name: "Watermark", category: "Utility", preview_text: "[Brand]", create_data: ut_watermark, fields: f(&["Brand"], None, (0.94, 0.92)) },
+    TitleTemplate { name: "Label", category: "Utility", preview_text: "[Label]", create_data: ut_label, fields: f(&["Label"], Some(0), (0.14, 0.10)) },
 ];
 
 /// Ordered list of categories for display.
@@ -1166,7 +1468,7 @@ fn preview_data(title: &Entry, text: &str) -> TitleData {
 fn template_is_animated(title: &Entry) -> bool {
     let animated = |td: &TitleData| td.objects.iter().any(|o| o.fx().motion.is_active() || !o.fx().loops.is_empty());
     match title {
-        Entry::Builtin(t) => animated(&(t.create_data)()),
+        Entry::Builtin(t) => animated(&t.build()),
         Entry::User(t) => animated(&t.data),
     }
 }
@@ -1980,6 +2282,58 @@ mod tests {
             }
         }
     }
-}
 
+    /// Every built-in keeps its texts, by name, editable once applied,
+    /// with Size, its accent's colour when it has one, and Speed when it
+    /// moves (#1724): one drag and two sliders make it the user's own.
+    #[test]
+    fn every_template_publishes_its_texts_size_and_speed() {
+        use klipp_timeline::FieldKind;
+        for tpl in TITLES {
+            let td = Entry::Builtin(tpl).data();
+            let texts = td.objects.iter().filter(|o| matches!(o.content, TitleObjectContent::TextBox(_))).count();
+            assert_eq!(tpl.fields.names.len(), texts, "{}: a name for each text", tpl.name);
+            let fields: Vec<_> = td.live_fields();
+            assert_eq!(fields.iter().filter(|(_, f, _)| matches!(f.kind, FieldKind::Text { .. })).count(), texts, "{}", tpl.name);
+            for name in tpl.fields.names {
+                assert!(td.field_named(name).is_some(), "{}: no field {name}", tpl.name);
+            }
+            assert!(td.field_named("Size").is_some(), "{}: Size", tpl.name);
+            assert_eq!(td.field_named("Accent").is_some(), tpl.fields.accent.is_some(), "{}: the accent is live", tpl.name);
+            let moves = td.objects.iter().any(|o| o.fx().motion.is_active());
+            assert_eq!(td.field_named("Speed").is_some(), moves, "{}: Speed when it moves", tpl.name);
+            assert!(fields.len() <= texts + 3, "{}: simple first, {} fields", tpl.name, fields.len());
+        }
+    }
+
+    /// A backing shape moves with its text (#1724): every template whose
+    /// shape layer has motion draws it differently as it enters and at
+    /// rest, and draws it at rest.
+    #[test]
+    fn moving_backings_move_in_the_real_renderer() {
+        let mut r = klipp_title::TitleRenderer::new();
+        let mut checked = 0;
+        for tpl in TITLES {
+            let td = Entry::Builtin(tpl).data();
+            for o in td.objects.iter().filter(|o| matches!(o.content, TitleObjectContent::Shape(_)) && o.fx().motion.is_active()) {
+                let mut alone = td.clone();
+                alone.objects.retain(|x| x.id == o.id || matches!(&o.content, TitleObjectContent::Shape(s) if s.fit.is_some_and(|f| f.target == x.id)));
+                for x in &mut alone.objects {
+                    if x.id != o.id {
+                        // The text a backing fits keeps its place but isn't drawn.
+                        if let TitleObjectContent::TextBox(tb) = &mut x.content {
+                            tb.color[3] = 0;
+                        }
+                    }
+                }
+                let first = r.render_with_window(&alone, 320, 180, None, 0.0, Some(5.0));
+                let rest = r.render_with_window(&alone, 320, 180, None, 2.0, Some(5.0));
+                assert!(rest.chunks_exact(4).any(|p| p[3] > 8), "{}: its backing is drawn at rest", tpl.name);
+                assert_ne!(first, rest, "{}: its backing does not move", tpl.name);
+                checked += 1;
+            }
+        }
+        assert!(checked >= 8, "only {checked} moving backings");
+    }
+}
 

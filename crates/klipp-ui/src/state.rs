@@ -4984,6 +4984,7 @@ impl AppState {
             V::Text(_) => "Edit Title Text",
             V::Colour(_) => "Title Colour",
             V::Speed(_) => "Title Speed",
+            V::Size(_) => "Title Size",
         };
         let history = self.active_history_mut();
         if matches!(value, V::Text(_)) && history.try_coalesce_title_text(clip_id, &old, &edited) {
