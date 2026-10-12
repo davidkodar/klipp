@@ -2119,6 +2119,7 @@ impl TimelinePanel {
                                         let empty_kfs: Vec<klipp_core::Keyframe> = Vec::new();
                                         // The placement and opacity lanes as the picture holds them (M4 step 12c).
                                         let video_lane: Vec<klipp_core::Keyframe> = match &ctx_menu.param_kind { crate::state::KeyframeParamKind::Video(p) => crate::inspector::placement_by_path::param_keys(clip, *p), _ => Vec::new() };
+                                        let node_lane: Vec<klipp_core::Keyframe> = match &ctx_menu.param_kind { crate::state::KeyframeParamKind::Node { path, key } => clip.node_key_state(path, key).map(|s| s.keys).unwrap_or_default(), _ => Vec::new() };
                                         let kfs: &[klipp_core::Keyframe] = match &ctx_menu.param_kind {
                                             crate::state::KeyframeParamKind::Audio(p) => match p {
                                                 klipp_core::AudioParam::Volume => &clip.volume_keyframes,
@@ -2127,7 +2128,7 @@ impl TimelinePanel {
                                             },
                                             crate::state::KeyframeParamKind::Video(_) => &video_lane,
                                             crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id),
-                                            crate::state::KeyframeParamKind::Node { .. } => &[],
+                                            crate::state::KeyframeParamKind::Node { .. } => &node_lane,
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 clip.audio_effect_keyframes
                                                     .get(&format!("{effect_index}:{param_name}"))
@@ -2138,6 +2139,14 @@ impl TimelinePanel {
                                         !kfs.is_empty()
                                     })
                                     .unwrap_or(false);
+
+                                // A placed kind's keys (a Transform's) go through
+                                // the clip's effect list, which has no whole-lane
+                                // paste or reverse: those two aren't offered (#1400).
+                                let whole_lane = match &ctx_menu.param_kind {
+                                    crate::state::KeyframeParamKind::Node { path, .. } => !state.sequence().all_clips().find(|c| c.id == ctx_menu.clip_id).is_some_and(|c| crate::inspector::stack_view::is_placed_node(c, path)),
+                                    _ => true,
+                                };
 
                                 // Copy Keyframes (only if keyframes exist)
                                 if has_kfs
@@ -2155,7 +2164,8 @@ impl TimelinePanel {
                                                     param: *param,
                                                 });
                                             }
-                                            crate::state::KeyframeParamKind::Title { .. } | crate::state::KeyframeParamKind::Node { .. } => {}
+                                            crate::state::KeyframeParamKind::Node { path, key } => cmds.push(AppCommand::CopyKeysAt { addr: path.clone(), key: key.clone() }),
+                                            crate::state::KeyframeParamKind::Title { .. } => {}
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 cmds.push(AppCommand::CopyAudioEffectKeyframes {
                                                     clip_id: ctx_menu.clip_id,
@@ -2168,7 +2178,7 @@ impl TimelinePanel {
                                     }
 
                                 // Paste Keyframes (only if clipboard has data)
-                                if state.keyframe_clipboard.is_some()
+                                if state.keyframe_clipboard.is_some() && whole_lane
                                     && ui.add(egui::Button::new("  Paste Keyframes").frame(false)).clicked() {
                                         match &ctx_menu.param_kind {
                                             crate::state::KeyframeParamKind::Audio(param) => {
@@ -2183,7 +2193,8 @@ impl TimelinePanel {
                                                     param: *param,
                                                 });
                                             }
-                                            crate::state::KeyframeParamKind::Title { .. } | crate::state::KeyframeParamKind::Node { .. } => {}
+                                            crate::state::KeyframeParamKind::Node { path, key } => cmds.push(AppCommand::PasteKeysAt { addr: path.clone(), key: key.clone() }),
+                                            crate::state::KeyframeParamKind::Title { .. } => {}
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 cmds.push(AppCommand::PasteAudioEffectKeyframes {
                                                     clip_id: ctx_menu.clip_id,
@@ -2203,6 +2214,7 @@ impl TimelinePanel {
                                         let empty_kfs: Vec<klipp_core::Keyframe> = Vec::new();
                                         // The placement and opacity lanes as the picture holds them (M4 step 12c).
                                         let video_lane: Vec<klipp_core::Keyframe> = match &ctx_menu.param_kind { crate::state::KeyframeParamKind::Video(p) => crate::inspector::placement_by_path::param_keys(clip, *p), _ => Vec::new() };
+                                        let node_lane: Vec<klipp_core::Keyframe> = match &ctx_menu.param_kind { crate::state::KeyframeParamKind::Node { path, key } => clip.node_key_state(path, key).map(|s| s.keys).unwrap_or_default(), _ => Vec::new() };
                                         let kfs: &[klipp_core::Keyframe] = match &ctx_menu.param_kind {
                                             crate::state::KeyframeParamKind::Audio(p) => match p {
                                                 klipp_core::AudioParam::Volume => &clip.volume_keyframes,
@@ -2211,7 +2223,7 @@ impl TimelinePanel {
                                             },
                                             crate::state::KeyframeParamKind::Video(_) => &video_lane,
                                             crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id),
-                                            crate::state::KeyframeParamKind::Node { .. } => &[],
+                                            crate::state::KeyframeParamKind::Node { .. } => &node_lane,
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 clip.audio_effect_keyframes
                                                     .get(&format!("{effect_index}:{param_name}"))
@@ -2223,7 +2235,7 @@ impl TimelinePanel {
                                     })
                                     .unwrap_or(false);
 
-                                if has_enough
+                                if has_enough && whole_lane
                                     && ui.add(egui::Button::new("  Reverse Keyframes").frame(false)).clicked() {
                                         match &ctx_menu.param_kind {
                                             crate::state::KeyframeParamKind::Audio(param) => {
@@ -2238,7 +2250,8 @@ impl TimelinePanel {
                                                     param: *param,
                                                 });
                                             }
-                                            crate::state::KeyframeParamKind::Title { .. } | crate::state::KeyframeParamKind::Node { .. } => {}
+                                            crate::state::KeyframeParamKind::Node { path, key } => cmds.push(AppCommand::ReverseKeysAt { addr: path.clone(), key: key.clone() }),
+                                            crate::state::KeyframeParamKind::Title { .. } => {}
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 cmds.push(AppCommand::ReverseAudioEffectKeyframes {
                                                     clip_id: ctx_menu.clip_id,
@@ -2250,7 +2263,7 @@ impl TimelinePanel {
                                         close_menu = true;
                                     }
 
-                                if has_kfs || state.keyframe_clipboard.is_some() {
+                                if has_kfs || (state.keyframe_clipboard.is_some() && whole_lane) {
                                     ui.separator();
                                 }
                             }

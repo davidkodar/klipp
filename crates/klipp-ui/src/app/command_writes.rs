@@ -225,6 +225,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::Quit
         | AppCommand::CopyAudioKeyframes { .. }
         | AppCommand::CopyVideoKeyframes { .. }
+        | AppCommand::CopyKeysAt { .. }
         | AppCommand::BakeGradeToLut { .. }
         | AppCommand::SetBakeLutSize(..)
         | AppCommand::AnalyzeStabilization { .. }
@@ -266,6 +267,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ConnectMaskAt { .. }
         | AppCommand::SetMaskChannelAt { .. }
         | AppCommand::SetInterpKeyAt { .. }
+        | AppCommand::PasteKeysAt { .. }
+        | AppCommand::ReverseKeysAt { .. }
         | AppCommand::RequestWhiteBalanceSample { .. }
         | AppCommand::LoadMediaFile { .. }
         | AppCommand::ImportMedia { .. }
