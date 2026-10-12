@@ -863,7 +863,7 @@ impl Grade {
         // The old panel's number, as the colour dispatch writes
         // it (the history is its gesture's).
         if let AppCommand::SetNodeParam { node_id, param, value, .. } = &cmd {
-            let target = self.state.phantom_target(self.clip, *node_id);
+            let target = self.state.reserved_target(self.clip, *node_id);
             super::colour::write_node_param(&mut self.state, self.clip, &path, target, param, *value);
             return;
         }

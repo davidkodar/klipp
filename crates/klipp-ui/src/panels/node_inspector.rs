@@ -8,11 +8,6 @@ use crate::widgets::curves_editor::{self, CurveChannel};
 use klipp_core::{AppCommand, ClipId};
 use klipp_nodes::{NodeGraph, NodeId, NodeKind, NodeParams};
 
-// `ensure_corrector_node` now lives on `klipp_nodes::NodeGraph` as
-// `ensure_corrector` — called from both this module and the SetNode*
-// handlers in `app.rs` when a phantom-id dispatch materialises a real
-// Corrector.
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // NodeInspectorPanel — per-node parameter editor
 // ═══════════════════════════════════════════════════════════════════════════════

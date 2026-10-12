@@ -1075,6 +1075,14 @@ impl crate::state::AppState {
         seq.lift_root_grade(root, grade)
     }
 
+    /// `ops` applied as one step named `label`, the reserved Corrector
+    /// made first when the first of them edits it (#1527): what a sender
+    /// that sets several values at once (printer lights) sends.
+    pub(crate) fn apply_path_ops_making_pending(&mut self, ops: Vec<GraphOp>, label: &str) -> Result<(), String> {
+        let ops = self.with_pending_corrector(ops)?;
+        self.apply_path_ops(&ops, label)
+    }
+
     /// `ops` with the pending Corrector made first when the first of them
     /// edits it (M3 step 19): added in the grade where
     /// `NodeGraph::ensure_corrector` puts one, between the grade's output

@@ -171,15 +171,6 @@ pub struct Edge {
     pub to_port: u8,
 }
 
-/// Stable phantom NodeId used by the inspector when a tab is rendered
-/// against a clip that has no grade node yet. The real Corrector is
-/// materialised lazily on first slider touch (see app.rs handler for
-/// SetNodeParam et al.); until then, widgets read/write a scratch
-/// `NodeParams::default()` and dispatch their commands tagged with
-/// this id. Kept stable so re-dispatches inside one frame land on the
-/// same eventually-real node.
-pub const PHANTOM_CORRECTOR_ID: NodeId = Uuid::from_u128(0xC0DE_C0DE_C0DE_C0DE_C0DE_C0DE_C0DE_C0DE);
-
 impl NodeGraph {
     /// Find an existing Corrector, or splice a new one in before
     /// Output. Returns the Corrector's id either way. Used both by the

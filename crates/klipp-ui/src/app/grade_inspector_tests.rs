@@ -1004,10 +1004,10 @@ fn escape_or_a_still_click_on_the_first_edit_leaves_no_corrector() {
 /// step from the grade as it was. The node it wrote.
 fn editor_write(run: &mut Run, named: NodeId, write: impl FnOnce(&mut Node)) -> NodeId {
     let before = saved(&run.state, run.clip);
-    let target = run.state.phantom_target(run.clip, named);
+    let target = run.state.reserved_target(run.clip, named);
     assert_eq!(saved(&run.state, run.clip), before, "deciding the node changes nothing");
     let written = super::colour::edit_clip_graph(&mut run.state, run.clip, &[], true, |g| {
-        super::colour::make_phantom(g, target);
+        super::colour::make_reserved(g, target);
         if let Some(n) = g.nodes.iter_mut().find(|n| n.id == target.0) {
             write(n);
         }
@@ -1018,8 +1018,7 @@ fn editor_write(run: &mut Run, named: NodeId, write: impl FnOnce(&mut Node)) -> 
 
 /// An editor's own command on the reserved Corrector makes it under that
 /// id too (beside a disabled one: IC16), so the rows and the editors
-/// write one node; the old page's phantom still writes the first
-/// Corrector it finds, a disabled one included.
+/// write one node.
 #[test]
 fn an_editor_command_on_the_reserved_corrector_makes_that_node() {
     for disabled in [false, true] {
@@ -1030,25 +1029,19 @@ fn an_editor_command_on_the_reserved_corrector_makes_that_node() {
         assert_eq!(correctors(&run).iter().map(|n| n.id).collect::<Vec<_>>(), vec![reserved], "disabled {disabled}");
         assert_eq!(editor_write(&mut run, reserved, |_| {}), reserved, "a second write, the same node");
         assert_eq!(correctors(&run).len(), 1);
-
-        // The old page's phantom: the first Corrector, whatever its state.
-        let mut old = without_corrector(disabled);
-        let id = editor_write(&mut old, klipp_nodes::PHANTOM_CORRECTOR_ID, |_| {});
-        let n = clip(&old.state, old.clip).grade().nodes.iter().find(|n| n.id == id).cloned().unwrap();
-        assert_eq!((n.kind, n.enabled), (NodeKind::Corrector, !disabled), "old: into the disabled one when there is one");
     }
 }
 
 /// A bare editor command (no Begin/End around it, as the Hue-Sat
 /// eyedropper sends `SetNodeHueSatCurves`) on a Corrector that isn't made
 /// yet is one step with the node it makes: undoing it leaves the clip
-/// saved as it was, for the reserved id and the old phantom alike.
+/// saved as it was.
 #[test]
 fn undoing_a_bare_editor_command_takes_back_the_corrector_it_made() {
-    for (disabled, reserve) in [(false, true), (true, true), (false, false)] {
+    for disabled in [false, true] {
         let mut run = without_corrector(disabled);
         tabbed_on(&mut run, false, crate::state::ColorTab::HueSat, None, Vec::new());
-        let named = if reserve { run.state.pending_corrector.unwrap().1 } else { klipp_nodes::PHANTOM_CORRECTOR_ID };
+        let named = run.state.pending_corrector.unwrap().1;
         let before = saved(&run.state, run.clip);
         let made = editor_write(&mut run, named, |n| { n.params.huesat = Some(Default::default()); n.enabled = true; });
         assert!(clip(&run.state, run.clip).grade().nodes.iter().any(|n| n.id == made), "made");
@@ -1056,7 +1049,7 @@ fn undoing_a_bare_editor_command_takes_back_the_corrector_it_made() {
         let entry = run.state.active_history_mut().undo().unwrap();
         let crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, .. } = entry.command else { panic!("a graph step") };
         run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().set_grade(old_graph);
-        assert_eq!(saved(&run.state, run.clip), before, "disabled {disabled}, reserved {reserve}: as it was");
+        assert_eq!(saved(&run.state, run.clip), before, "disabled {disabled}: as it was");
     }
 }
 
@@ -1585,4 +1578,40 @@ fn a_masked_grade_node_s_page_picks_its_mask_channel() {
     assert_eq!(run.state.active_history().undo_count(), steps + 1, "one step");
     undo_once(&mut run.state);
     assert_eq!(saved(&run.state, clip_id), before, "undo takes it back");
+}
+
+/// Printer lights inside a compound with no Corrector, one or two deep,
+/// make its Corrector there, by path, holding the offset, in one undo step
+/// that undo takes back; none is made at the top. A second press moves
+/// that Corrector's offset on (#1527).
+#[test]
+fn printer_lights_inside_a_compound_make_its_corrector_there() {
+    for deep in [false, true] {
+        let mut run = Run::new(NodeKind::Corrector).unwrap();
+        let (grade, descent) = compounded(deep);
+        let top = grade.nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
+        run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(run.clip)).unwrap().edit_grade(|g| *g = grade);
+        run.state.selected_clip = Some(run.clip);
+        run.state.graph_descent_path = descent.clone();
+        let (before, steps) = (saved(&run.state, run.clip), run.state.active_history().undo_count());
+        let step = 0.0125;
+        let target = super::colour::printer_light_target(&mut run.state).expect("a target");
+        let reserved = run.state.pending_corrector.expect("a Corrector reserved in the compound").1;
+        assert_eq!(target.0.nodes.last(), Some(&reserved), "deep {deep}: the reserved Corrector");
+        let points = super::colour::apply_printer_light(&mut run.state, target, 0, 2, step).unwrap();
+        assert_eq!(points[0], 2, "deep {deep}: two red points");
+        let made = correctors_at(clip(&run.state, run.clip).grade(), &descent);
+        assert_eq!(made.iter().map(|n| n.id).collect::<Vec<_>>(), vec![reserved], "deep {deep}: made in the compound");
+        assert!(made[0].params.offset_x.is_some_and(|x| x != 0.0), "deep {deep}: holding the offset");
+        assert_eq!(correctors_at(clip(&run.state, run.clip).grade(), &[]).iter().map(|n| n.id).collect::<Vec<_>>(), vec![top], "deep {deep}: none made at the top");
+        assert_eq!(run.state.active_history().undo_count(), steps + 1, "deep {deep}: one step");
+        // Again: the Corrector made now takes it.
+        let target = super::colour::printer_light_target(&mut run.state).expect("a target");
+        assert_eq!(target.0.nodes.last(), Some(&reserved), "deep {deep}: the same node");
+        assert_eq!(super::colour::apply_printer_light(&mut run.state, target, 0, 1, step).unwrap()[0], 3, "deep {deep}: moved on");
+        assert_eq!(run.state.active_history().undo_count(), steps + 2);
+        undo_once(&mut run.state);
+        undo_once(&mut run.state);
+        assert_eq!(saved(&run.state, run.clip), before, "deep {deep}: undo, the clip as it was");
+    }
 }

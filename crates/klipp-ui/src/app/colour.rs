@@ -39,6 +39,30 @@ impl KlippApp {
         }
     }
 
+    /// Printer lights (#241): the offset of the grade the Colour workspace
+    /// shows moved `points` printer points on one channel, or all three
+    /// (`channel` 3), at the level drawn, inside a compound too (#1527).
+    /// The target is read through the stand-in for a sequence's own grade,
+    /// as the page reads it; the edit is made after it stands down.
+    fn printer_light(&mut self, channel: u8, points: i32, needs_refresh: &mut bool) {
+        if self.state.selected_clip.is_none() && !self.state.grade_timeline && self.state.grade_group_stage.is_none() && self.state.grade_track.is_none() {
+            self.state.toast.show("Select a clip to give it printer lights");
+            return;
+        }
+        let stood_in = self.stand_in_timeline_grade();
+        let target = printer_light_target(&mut self.state);
+        self.stand_down_timeline_grade(stood_in);
+        match target.ok_or_else(|| "this grade has nothing printer lights can move".to_string()).and_then(|t| apply_printer_light(&mut self.state, t, channel, points, self.prefs.color.printer_point)) {
+            Ok([r, g, b]) => {
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                *needs_refresh = true;
+                self.state.toast.show(format!("Printer lights R{r:+} G{g:+} B{b:+}"));
+            }
+            Err(why) => self.state.toast.show(format!("Printer lights: {why}")),
+        }
+    }
+
     /// The Colour toolbar's Track menu (#1408): see [`grade_track_menu`].
     pub(super) fn grade_track_controls(&mut self, ui: &mut egui::Ui, theme: &KlippTheme) {
         grade_track_menu(ui, &mut self.state, theme);
@@ -48,6 +72,10 @@ impl KlippApp {
         // Grade groups themselves are edits to the sequence, not to a
         // graph: never through a stand-in.
         if self.handle_grade_group_commands(cmd, needs_refresh) {
+            return true;
+        }
+        if let AppCommand::PrinterLight { channel, points } = cmd {
+            self.printer_light(*channel, *points, needs_refresh);
             return true;
         }
         // Whether the graded group's grades reach its members yet: the
@@ -1117,42 +1145,10 @@ impl KlippApp {
                 });
                 true
             }
-            AppCommand::PrinterLight { channel, points } => {
-                // The offset of the grade the wheels show: the clip's
-                // Corrector, else its wheels node, else a new Corrector.
-                let Some(clip_id) = self.state.selected_clip else {
-                    self.state.toast.show("Select a clip to give it printer lights");
-                    return true;
-                };
-                let seq = &self.state.sequences[self.state.active_sequence_idx];
-                let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) else { return true };
-                let graph = clip.grade();
-                let node = graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector && n.enabled)
-                    .or_else(|| graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::ColorWheels && n.enabled));
-                let (node_id, now) = match node {
-                    Some(n) => (n.id, (n.params.offset_x.unwrap_or(0.0), n.params.offset_y.unwrap_or(0.0), n.params.offset_master.unwrap_or(0.0))),
-                    None => (klipp_nodes::PHANTOM_CORRECTOR_ID, (0.0, 0.0, 0.0)),
-                };
-                let step = self.prefs.color.printer_point;
-                let which = (*channel < 3).then_some(*channel as usize);
-                let (x, y, m) = klipp_color::printer_light(now, which, *points, step);
-                let [r, g, b] = klipp_color::printer_points((x, y, m), step);
-                self.send_commands(vec![
-                    AppCommand::BeginNodeParamEdit { clip_id },
-                    AppCommand::SetNodeParam { clip_id, node_id, param: "offset_x".into(), value: x },
-                    AppCommand::SetNodeParam { clip_id, node_id, param: "offset_y".into(), value: y },
-                    AppCommand::SetNodeParam { clip_id, node_id, param: "offset_master".into(), value: m },
-                    AppCommand::EndNodeParamEdit { clip_id },
-                ]);
-                self.state.toast.show(format!("Printer lights R{r:+} G{g:+} B{b:+}"));
-                true
-            }
             AppCommand::SetNodeParam { clip_id, node_id, param, value } => {
-                // Lazy-create: if the inspector dispatched with the
-                // phantom Corrector id (no grade node existed on this
-                // clip when the widget rendered), materialise a real
-                // Corrector now and route the write to it.
-                let target = self.state.phantom_target(*clip_id, *node_id);
+                // An editor drawn before the level had a Corrector names
+                // the one it reserved: made now, in the same write.
+                let target = self.state.reserved_target(*clip_id, *node_id);
                 let node_id = &target.0;
                 // Update the UI-local sequence mirror — required so the UI's
                 // own scope-preview re-grade (runs on this thread) sees the
@@ -1257,19 +1253,19 @@ impl KlippApp {
                 false
             }
             AppCommand::SetNodeCurves { clip_id, node_id, curves } => {
-                let target = self.state.phantom_target(*clip_id, *node_id);
+                let target = self.state.reserved_target(*clip_id, *node_id);
                 let cmd = AppCommand::SetNodeCurves { clip_id: *clip_id, node_id: target.0, curves: curves.clone() };
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    make_phantom(graph, target);
+                    make_reserved(graph, target);
                     write_node_settings(graph, &cmd);
                 });
                 true
             }
             AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat } => {
-                let target = self.state.phantom_target(*clip_id, *node_id);
+                let target = self.state.reserved_target(*clip_id, *node_id);
                 let cmd = AppCommand::SetNodeHueSatCurves { clip_id: *clip_id, node_id: target.0, huesat: huesat.clone() };
                 self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    make_phantom(graph, target);
+                    make_reserved(graph, target);
                     write_node_settings(graph, &cmd);
                 });
                 true
@@ -3101,7 +3097,7 @@ pub(super) fn edit_clip_graph(
 /// on the node `target` names in the graph at `path` in `clip_id`'s grade, in place and
 /// with no step (a drag's gesture records one when it closes).
 ///
-/// `target` is the node as [`AppState::phantom_target`] decided it: made
+/// `target` is the node as [`AppState::reserved_target`] decided it: made
 /// here first when it must be, in the same write. A bare `SetNodeParam`
 /// records no step of its own, so that node is undone with the gesture
 /// around it, as the value is.
@@ -3111,7 +3107,7 @@ pub(super) fn write_node_param(state: &mut AppState, clip_id: klipp_core::ClipId
     if let Some(clip) = state.sequences[seq].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)) {
         clip.edit_grade(|root| {
             if let Ok(graph) = KlippApp::resolve_graph_at_path_mut(root, path) {
-                make_phantom(graph, target);
+                make_reserved(graph, target);
                 if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
                     node.params.apply_override(param, value);
                 }
@@ -3161,37 +3157,58 @@ impl crate::state::AppState {
     /// The node a grade command's `node_id` writes, and whether that node
     /// must be made first: an editor drawn before the clip had a Corrector
     /// names one that doesn't exist yet. Decides only, changing nothing:
-    /// the handler makes the node ([`make_phantom`]) inside the edit it
+    /// the handler makes the node ([`make_reserved`]) inside the edit it
     /// records, so undoing that edit takes the node back too.
     ///
-    /// - The old page's `PHANTOM_CORRECTOR_ID`: the grade's first
-    ///   Corrector, as `NodeGraph::ensure_corrector` finds it (a disabled
-    ///   one included), else a new one.
     /// - The id the generated tabbed page reserved for the clip
     ///   (`pending_corrector`, M3 step 19): that node, made enabled even
     ///   beside a disabled Corrector, so the edit shows and the page's
     ///   rows and editors write one node (IC16).
     /// - Any other id: itself.
-    pub(crate) fn phantom_target(&self, clip_id: klipp_core::ClipId, node_id: klipp_nodes::NodeId) -> (klipp_nodes::NodeId, bool) {
-        let reserved = self.pending_corrector == Some((clip_id, node_id));
-        if node_id != klipp_nodes::PHANTOM_CORRECTOR_ID && !reserved {
+    pub(crate) fn reserved_target(&self, clip_id: klipp_core::ClipId, node_id: klipp_nodes::NodeId) -> (klipp_nodes::NodeId, bool) {
+        if self.pending_corrector != Some((clip_id, node_id)) {
             return (node_id, false);
         }
         let Some(clip) = self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id == clip_id) else { return (node_id, false) };
-        let nodes = &clip.grade().nodes;
-        if reserved {
-            return (node_id, !nodes.iter().any(|n| n.id == node_id));
-        }
-        match nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector) {
-            Some(n) => (n.id, false),
-            None => (klipp_nodes::NodeId::new_v4(), true),
-        }
+        (node_id, !clip.grade().nodes.iter().any(|n| n.id == node_id))
     }
 }
 
-/// Make the Corrector [`crate::state::AppState::phantom_target`] said
+/// What printer lights move (#1527): on the selected clip's grade (or the
+/// stand-in standing for a sequence's own) at the level drawn, the node and
+/// the offset it holds now, as [`GradeSnapshot::printer_light_target`]
+/// gives them; the level's Corrector reserved when it has none.
+///
+/// [`GradeSnapshot::printer_light_target`]: crate::inspector::grade_view::GradeSnapshot::printer_light_target
+pub(super) fn printer_light_target(state: &mut crate::state::AppState) -> Option<(klipp_graph_format::path::NodePath, (f32, f32, f32))> {
+    let clip_id = state.selected_clip?;
+    let descent = state.graph_descent_path.clone();
+    let seq = &state.sequences[state.active_sequence_idx];
+    let snapshot = match GradeStandIn::of(seq, clip_id) {
+        Some(which) => crate::inspector::grade_view::snapshot_for_root(seq, clip_id, which.root(seq), &descent, &mut state.pending_corrector, &mut state.root_grade_start),
+        None => seq.all_clips().find(|c| c.id == clip_id).and_then(|c| crate::inspector::grade_view::snapshot_for(c, &descent, false, &mut state.pending_corrector)),
+    };
+    snapshot.and_then(|s| s.printer_light_target())
+}
+
+/// `target`'s offset moved `points` printer points on `channel` (3: all
+/// three), each `step` a point: the three values one path edit, the
+/// reserved Corrector made in it when that is the target (#1527). The
+/// points the offset stands at after.
+pub(super) fn apply_printer_light(state: &mut crate::state::AppState, (addr, now): (klipp_graph_format::path::NodePath, (f32, f32, f32)), channel: u8, points: i32, step: f32) -> Result<[i32; 3], String> {
+    let which = (channel < 3).then_some(channel as usize);
+    let (x, y, m) = klipp_color::printer_light(now, which, points, step);
+    let ops = [("offset_x", x), ("offset_y", y), ("offset_master", m)]
+        .into_iter()
+        .map(|(key, v)| klipp_graph_lift::ops::GraphOp::SetParam { path: addr.clone(), key: key.into(), value: klipp_graph_format::ParamValue::Float(v) })
+        .collect();
+    state.apply_path_ops_making_pending(ops, "Printer Lights")?;
+    Ok(klipp_color::printer_points((x, y, m), step))
+}
+
+/// Make the Corrector [`crate::state::AppState::reserved_target`] said
 /// must be made, in `graph`: the graph the command then writes.
-pub(super) fn make_phantom(graph: &mut klipp_nodes::NodeGraph, (id, make): (klipp_nodes::NodeId, bool)) {
+pub(super) fn make_reserved(graph: &mut klipp_nodes::NodeGraph, (id, make): (klipp_nodes::NodeId, bool)) {
     if make && !graph.nodes.iter().any(|n| n.id == id) {
         graph.insert_corrector(id);
     }
@@ -3397,3 +3414,4 @@ mod grade_track_menu_tests {
         assert_eq!((state.active_workspace, state.grade_track), (crate::state::Workspace::Color, Some(tid)));
     }
 }
+
