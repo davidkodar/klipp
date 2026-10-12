@@ -311,7 +311,7 @@ fn big_size(ui: &egui::Ui) -> egui::Vec2 {
 }
 
 /// A caption above a card section, in the tab's own voice.
-fn caption(ui: &mut egui::Ui, theme: &KlippTheme, text: &str) {
+pub(crate) fn caption(ui: &mut egui::Ui, theme: &KlippTheme, text: &str) {
     ui.label(egui::RichText::new(text).size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
 }
 
