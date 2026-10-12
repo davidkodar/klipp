@@ -544,6 +544,11 @@ pub struct Animator {
     pub selector: RangeSelector,
     #[serde(default)]
     pub props: AnimatorProps,
+    /// A second selector the first is limited to: a unit's weight is the
+    /// two weights multiplied, so a random order can play out inside
+    /// one word, the other words untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub within: Option<RangeSelector>,
 }
 
 fn animator_on() -> bool {
@@ -555,7 +560,7 @@ fn animator_is_on(b: &bool) -> bool {
 
 impl Default for Animator {
     fn default() -> Self {
-        Self { name: String::new(), enabled: true, selector: RangeSelector::default(), props: AnimatorProps::default() }
+        Self { name: String::new(), enabled: true, selector: RangeSelector::default(), props: AnimatorProps::default(), within: None }
     }
 }
 
@@ -871,13 +876,23 @@ impl Animator {
 /// `font_px`: one per glyph. The one evaluation both render paths use.
 pub fn animator_poses(animators: &[Animator], parents: &[char], font_px: f32, time_secs: f64) -> Vec<UnitPose> {
     let mut poses = vec![UnitPose::default(); parents.len()];
-    for a in animators.iter().filter(|a| a.enabled) {
-        let units = units_of(parents, a.selector.unit.stagger());
+    // Each glyph's weight under `selector`, by the unit it is in.
+    let weigh = |selector: &RangeSelector| -> Vec<f32> {
+        let units = units_of(parents, selector.unit.stagger());
         let n = units.iter().zip(parents).filter(|(_, c)| !c.is_whitespace()).map(|(u, _)| u + 1).max().unwrap_or(0);
-        let weights = a.selector.weights(n, time_secs);
-        for ((pose, &u), c) in poses.iter_mut().zip(&units).zip(parents) {
+        let weights = selector.weights(n, time_secs);
+        units.iter().map(|&u| weights.get(u).copied().unwrap_or(0.0)).collect()
+    };
+    for a in animators.iter().filter(|a| a.enabled) {
+        let mut weights = weigh(&a.selector);
+        if let Some(within) = &a.within {
+            for (w, l) in weights.iter_mut().zip(weigh(within)) {
+                *w *= l;
+            }
+        }
+        for ((pose, w), c) in poses.iter_mut().zip(weights).zip(parents) {
             if !c.is_whitespace() {
-                a.apply(weights.get(u).copied().unwrap_or(0.0), font_px, pose);
+                a.apply(w, font_px, pose);
             }
         }
     }
@@ -1804,6 +1819,27 @@ mod animator_tests {
         let off = Animator { enabled: false, ..turn };
         assert!(animator_poses(&[off], &parents, 40.0, 0.0).iter().all(UnitPose::is_rest));
         assert!(animator_poses(&[], &parents, 40.0, 0.0).iter().all(UnitPose::is_rest));
+    }
+
+    /// A limiting selector keeps an animator inside its range: a random
+    /// order over every letter plays out in the middle word alone.
+    #[test]
+    fn within_limits_the_selection() {
+        let parents: Vec<char> = "one MIDDLE two".chars().collect();
+        let a = Animator {
+            selector: RangeSelector { order: SelectOrder::Random { seed: 7 }, ..Default::default() },
+            within: Some(RangeSelector { start: 3.0 / 12.0, end: 9.0 / 12.0, ..Default::default() }),
+            props: AnimatorProps { rotation: 90.0, ..Default::default() },
+            ..Default::default()
+        };
+        let poses = animator_poses(std::slice::from_ref(&a), &parents, 40.0, 0.0);
+        for (c, p) in parents.iter().zip(&poses) {
+            let want = if c.is_uppercase() { 90.0 } else { 0.0 };
+            assert!((p.rotation - want).abs() < 1e-3, "{c:?}: {}", p.rotation);
+        }
+        let json = serde_json::to_string(&Animator::default()).unwrap();
+        assert!(!json.contains("within"), "{json}");
+        assert_eq!(serde_json::from_str::<Animator>(&serde_json::to_string(&a).unwrap()).unwrap(), a);
     }
 
     /// An animator saves its own fields only, and reads back the same.

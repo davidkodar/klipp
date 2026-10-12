@@ -203,6 +203,9 @@ pub struct GlyphPose {
     /// Rows `y0..y1` the glyph may paint; `None` for all.
     pub clip: Option<(i32, i32)>,
     pub moved: [i32; 4],
+    /// Turned clockwise by this many radians about `anchor`, scaled
+    /// first (an animator's, #1510); 0 for none.
+    pub rotation: f32,
 }
 
 impl GlyphPose {
@@ -213,7 +216,7 @@ impl GlyphPose {
             self.moved[0] as f32, self.moved[1] as f32, self.moved[2] as f32, self.moved[3] as f32,
             self.dx, self.dy, self.scale, self.alpha,
             self.anchor.0, self.anchor.1, c0, c1,
-            0.0, 0.0, 0.0, 0.0,
+            self.rotation, 0.0, 0.0, 0.0,
         ]
     }
 }
@@ -1141,7 +1144,8 @@ impl TitleRenderer {
         // resting render, so it needs to know which glyph a pixel is.
         let staggers = |m: Option<klipp_timeline::Motion>| m.is_some_and(|m| m.stagger != klipp_timeline::StaggerUnit::None);
         let fx = title.primary_fx();
-        let tag_glyphs = time_secs.is_none() && (staggers(fx.motion.enter) || staggers(fx.motion.exit));
+        let animates = fx.animators.iter().any(|a| a.enabled);
+        let tag_glyphs = time_secs.is_none() && (staggers(fx.motion.enter) || staggers(fx.motion.exit) || animates);
         let mut glyph_index = if tag_glyphs { vec![GLYPH_NONE; mask_w * mask_h] } else { Vec::new() };
 
         // Rasterize glyphs into alpha mask. When the textbox has a
@@ -1151,14 +1155,18 @@ impl TitleRenderer {
         // texture fill) consumes the resulting mask unmodified.
         let mut alpha_mask = vec![0u8; mask_w * mask_h];
         let mut colour_glyphs = Vec::new();
+        // Each posed glyph's coverage where an animator colours it.
+        let mut animated_fills: Vec<(GlyphColorInfo, Vec<u8>)> = Vec::new();
         match time_secs {
-            Some(t) if fx.motion.is_active() || self.loop_wave.is_some() => {
+            Some(t) if fx.motion.is_active() || self.loop_wave.is_some() || animates => {
                 rasterize_to_mask_motion(
                     &fonts, glyphs,
                     offset_x, offset_y,
                     &mut alpha_mask, mask_w, mask_h, mask_x0, mask_y0,
-                    &fx.motion, t, font_px, self.motion_window, self.loop_wave,
+                    &fx.motion, &fx.animators, t, font_px, self.motion_window, self.loop_wave,
                     &mut colour_glyphs,
+                    &mut animated_fills,
+                    &if animates { resolve_glyph_colors(title, glyphs, &tb.style_runs) } else { Vec::new() },
                 );
             }
             _ => {
@@ -1270,6 +1278,11 @@ impl TitleRenderer {
         } else {
             (Vec::new(), Vec::new())
         };
+        // Glyphs an animator colours fill in their posed colours, each
+        // over its posed coverage (#1510).
+        if !animated_fills.is_empty() {
+            (glyph_colors, glyph_coverages) = animated_fills.into_iter().unzip();
+        }
         // The rich fill draws each underline as a solid glyph of its own.
         for fill in underline_fills {
             glyph_coverages.push(vec![255; fill.width * fill.height]);
@@ -1934,6 +1947,12 @@ impl TitleRenderer {
             .collect();
         let loops_need_raster = poses.iter().any(|(_, p)| p.wave.is_some() || p.color.is_some() || p.text.is_some());
         let any_motion_live = title.objects.iter().any(|o| o.visible && motion_live(o));
+        // A layer's animators pose its glyphs one by one, from the
+        // resting render where they only move, turn, scale or fade it;
+        // a blur or a colour is rastered, for that layer alone (#1510).
+        let animates = |o: &TitleObject| o.visible && matches!(o.content, TitleObjectContent::TextBox(_)) && o.fx().animators.iter().any(|a| a.enabled);
+        let animators_raster = |o: &TitleObject| o.fx().animators.iter().any(|a| a.enabled && (a.props.blur != 0.0 || a.props.colour.is_some()));
+        let any_animating = title.objects.iter().any(animates);
         // One visible layer carrying the only pose: the cached resting
         // render, shifted and faded, is the frame.
         let visible = title.objects.iter().filter(|o| o.visible).count();
@@ -1948,7 +1967,7 @@ impl TitleRenderer {
         // frame at 4K for the whole of a half-second rise.
         // (opacity, dx, dy, scale, blur sigma, clip to the resting box)
         let mut motion_anchor = None;
-        let motion_pose: Option<(f32, f32, f32, f32, f32, bool)> = if any_motion_live && visible == 1 && !loops_need_raster {
+        let motion_pose: Option<(f32, f32, f32, f32, f32, bool)> = if any_motion_live && !any_animating && visible == 1 && !loops_need_raster {
             title.objects.iter().find(|o| o.visible).and_then(|o| {
                 let TitleObjectContent::TextBox(tb) = &o.content else { return None };
                 let fx = o.fx();
@@ -1971,11 +1990,12 @@ impl TitleRenderer {
         // glyph on its own from the resting render's glyph map — the
         // frame is the glyphs placed, on the GPU. A blur cannot be
         // posed per glyph and is rastered.
-        let staggered: Option<&TitleObject> = if any_motion_live && motion_pose.is_none() && visible == 1 && !loops_need_raster {
+        let staggered: Option<&TitleObject> = if (any_motion_live || any_animating) && motion_pose.is_none() && visible == 1 && !loops_need_raster {
             title.objects.iter().find(|o| o.visible).and_then(|o| match &o.content {
                 TitleObjectContent::TextBox(_)
                     if o.fx().motion.enter.is_none_or(|m| !m.kind.blurs())
-                        && o.fx().motion.exit.is_none_or(|m| !m.kind.blurs()) =>
+                        && o.fx().motion.exit.is_none_or(|m| !m.kind.blurs())
+                        && !animators_raster(o) =>
                 {
                     Some(o)
                 }
@@ -1985,7 +2005,8 @@ impl TitleRenderer {
             None
         };
         let any_path_motion = title.objects.iter().any(|o| o.visible && matches!(&o.content, TitleObjectContent::Shape(Shape {kind:ShapeKind::Path(p),..}) if !p.keyframes.is_empty() || p.trim.as_ref().is_some_and(|t|!t.keyframes.is_empty())));
-        let any_char_anim = (any_motion_live && motion_pose.is_none() && staggered.is_none()) || (!poses.is_empty() && translate_only.is_none());
+        let any_char_anim = (any_motion_live && motion_pose.is_none() && staggered.is_none()) || (!poses.is_empty() && translate_only.is_none())
+            || (any_animating && staggered.is_none());
 
         // Glitch is per-frame (deterministic seed bound to clip
         // time, but pattern shifts ~12 times/sec) so it bypasses
@@ -2089,7 +2110,7 @@ impl TitleRenderer {
                 if let Some(units) = sprite.units.clone().filter(|u| u.boxes.len() <= MAX_POSED_GLYPHS) {
                     let font_px = match &o.content { TitleObjectContent::TextBox(tb) => tb.font_size, _ => 72.0 } * scale;
                     let loop_pose = translate_only.as_ref().map(|p| (p.dx, p.dy, p.opacity)).unwrap_or((0.0, 0.0, 1.0));
-                    let poses = glyph_poses(&units, &o.fx().motion, time_secs, window, font_px, loop_pose, under.is_some());
+                    let poses = glyph_poses(&units, &o.fx().motion, &o.fx().animators, time_secs, window, font_px, loop_pose, under.is_some());
                     let rows = if under.is_some() {
                         (0, height)
                     } else {
@@ -3548,38 +3569,18 @@ pub const MAX_POSED_GLYPHS: usize = 256;
 /// Which unit each glyph belongs to for `unit`: the line, word or
 /// non-space character it is in, counted as `motion_units` counts them.
 pub fn units_of(parents: &[char], unit: klipp_timeline::StaggerUnit) -> Vec<usize> {
-    use klipp_timeline::StaggerUnit as U;
-    let mut out = Vec::with_capacity(parents.len());
-    let (mut line, mut word, mut ch) = (0usize, 0usize, 0usize);
-    let mut in_word = false;
-    for &c in parents {
-        if c == '\n' {
-            line += 1;
-            in_word = false;
-            out.push(match unit { U::None => 0, U::Line => line, U::Word => word.saturating_sub(1), U::Char => ch });
-            continue;
-        }
-        if c.is_whitespace() {
-            in_word = false;
-        } else if !in_word {
-            in_word = true;
-            word += 1;
-        }
-        out.push(match unit { U::None => 0, U::Line => line, U::Word => word.saturating_sub(1), U::Char => ch });
-        if !c.is_whitespace() {
-            ch += 1;
-        }
-    }
-    out
+    klipp_core::title_motion::units_of(parents, unit)
 }
 
 /// Every glyph's pose at `time_secs` for a staggered motion: the
 /// entrance and exit progress of the glyph's unit, the poses they
 /// give, and the loop's offset and fade on top — as the per-glyph
 /// rasteriser combines them.
+#[allow(clippy::too_many_arguments)]
 fn glyph_poses(
     units: &UnitMap,
     motion: &klipp_timeline::TitleMotion,
+    animators: &[klipp_timeline::Animator],
     time_secs: f32,
     window: Option<f32>,
     font_px: f32,
@@ -3590,6 +3591,8 @@ fn glyph_poses(
     let exit_units = units_of(&units.parents, motion.exit.map(|m| m.stagger).unwrap_or_default());
     let rest = (1.0, 0.0, 0.0, 1.0, 0.0, false);
     let pad = units.pad as f32;
+    // The animators' pose of each glyph, on top of the motion's (#1510).
+    let animated = klipp_core::title_motion::animator_poses(animators, &units.parents, font_px, time_secs as f64);
     units
         .boxes
         .iter()
@@ -3599,20 +3602,41 @@ fn glyph_poses(
             let (_, px) = motion.progress(time_secs, window, exit_units.get(g).copied().unwrap_or(0));
             let (a1, dx1, dy1, s1, _, c1) = motion.enter.map(|m| m.pose(pe, font_px)).unwrap_or(rest);
             let (a2, dx2, dy2, s2, _, c2) = motion.exit.map(|m| m.pose(px, font_px)).unwrap_or(rest);
-            let alpha = a1 * a2 * loop_pose.2;
-            let (dx, dy) = (dx1 + dx2 + loop_pose.0, dy1 + dy2 + loop_pose.1);
-            let scale = s1 * s2;
+            let mut alpha = a1 * a2 * loop_pose.2;
+            let (mut dx, mut dy) = (dx1 + dx2 + loop_pose.0, dy1 + dy2 + loop_pose.1);
+            let mut scale = s1 * s2;
+            let mut rotation = 0.0f32;
+            if let Some(a) = animated.get(g).filter(|a| !a.is_rest()) {
+                alpha *= a.alpha;
+                dx += a.dx;
+                dy += a.dy;
+                scale *= a.scale;
+                rotation = a.rotation.to_radians();
+            }
             let anchor = ((b[0] + b[2]) as f32 * 0.5, (b[1] + b[3]) as f32 * 0.5);
             let clip = (c1 || c2).then_some((b[1], b[3]));
             // The frame box the posed glyph, its effects round it
             // included, can touch.
             let grow = |v: i32, c: f32, sign: f32| c + (v as f32 + sign * pad - c) * scale;
-            let mut moved = [
-                (grow(b[0], anchor.0, -1.0) + dx).floor() as i32 - 1,
-                (grow(b[1], anchor.1, -1.0) + dy).floor() as i32 - 1,
-                (grow(b[2], anchor.0, 1.0) + dx).ceil() as i32 + 1,
-                (grow(b[3], anchor.1, 1.0) + dy).ceil() as i32 + 1,
-            ];
+            let mut moved = if rotation == 0.0 {
+                [
+                    (grow(b[0], anchor.0, -1.0) + dx).floor() as i32 - 1,
+                    (grow(b[1], anchor.1, -1.0) + dy).floor() as i32 - 1,
+                    (grow(b[2], anchor.0, 1.0) + dx).ceil() as i32 + 1,
+                    (grow(b[3], anchor.1, 1.0) + dy).ceil() as i32 + 1,
+                ]
+            } else {
+                // Turned: the box round the turned corners.
+                let (c, sn) = (rotation.cos(), rotation.sin());
+                let (hx, hy) = ((b[2] - b[0]) as f32 * 0.5 + pad, (b[3] - b[1]) as f32 * 0.5 + pad);
+                let (ex, ey) = ((hx * c).abs() + (hy * sn).abs(), (hx * sn).abs() + (hy * c).abs());
+                [
+                    (anchor.0 - ex * scale + dx).floor() as i32 - 1,
+                    (anchor.1 - ey * scale + dy).floor() as i32 - 1,
+                    (anchor.0 + ex * scale + dx).ceil() as i32 + 1,
+                    (anchor.1 + ey * scale + dy).ceil() as i32 + 1,
+                ]
+            };
             if let Some((y0, y1)) = clip {
                 moved[1] = moved[1].max(y0);
                 moved[3] = moved[3].min(y1);
@@ -3620,7 +3644,7 @@ fn glyph_poses(
             if b[2] <= b[0] || b[3] <= b[1] || (alpha <= 0.001 && !full_frame) {
                 moved = [0, 0, 0, 0];
             }
-            GlyphPose { dx, dy, scale, alpha, anchor, clip, moved }
+            GlyphPose { dx, dy, scale, alpha, anchor, clip, moved, rotation }
         })
         .collect()
 }
@@ -3660,8 +3684,14 @@ pub fn pose_sprite_glyphs(rest: &[u8], width: u32, height: u32, units: &UnitMap,
                 if xi < p.moved[0] || xi >= p.moved[2] || yi < p.moved[1] || yi >= p.moved[3] {
                     continue;
                 }
-                let fx = (x as f32 + 0.5 - p.dx - p.anchor.0) / p.scale + p.anchor.0 - 0.5;
-                let fy = (y as f32 + 0.5 - p.dy - p.anchor.1) / p.scale + p.anchor.1 - 0.5;
+                let (mut u, mut v) = (x as f32 + 0.5 - p.dx - p.anchor.0, y as f32 + 0.5 - p.dy - p.anchor.1);
+                if p.rotation != 0.0 {
+                    // Back through the turn, about the glyph's anchor.
+                    let (c, sn) = (p.rotation.cos(), p.rotation.sin());
+                    (u, v) = (u * c + v * sn, v * c - u * sn);
+                }
+                let fx = u / p.scale + p.anchor.0 - 0.5;
+                let fy = v / p.scale + p.anchor.1 - 0.5;
                 let (x0, yy0) = (fx.floor(), fy.floor());
                 let (tx, ty) = (fx - x0, fy - yy0);
                 let (x0, yy0) = (x0 as i64, yy0 as i64);
@@ -4623,6 +4653,18 @@ fn effect_padding(title: &TitleData, scale: f32) -> i32 {
     let tb = title.primary_text_or_default();
     let fx = title.primary_fx();
     let mut pad = 0i32;
+    // Room for what the animators do to a glyph at most (#1510): move
+    // it, grow it, turn it (a glyph's corner reaches about its size
+    // away) and blur it.
+    let font_px = tb.font_size * scale;
+    for a in fx.animators.iter().filter(|a| a.enabled) {
+        let p = &a.props;
+        let reach = (p.dx.abs() + p.dy.abs()) * font_px
+            + (p.scale - 1.0).max(0.0) * font_px
+            + if p.rotation != 0.0 { font_px * p.scale.max(1.0) } else { 0.0 }
+            + p.blur * font_px * 3.0;
+        pad = pad.max(reach.ceil() as i32 + 1);
+    }
     for (i, outline) in fx.outlines.iter().enumerate().filter(|(_, o)| o.enabled) {
         // Mirror the renderer's stack gate so we don't reserve padding
         // for layers that won't draw.
@@ -4956,14 +4998,22 @@ fn rasterize_to_mask_motion(
     mask_x0: usize,
     mask_y0: usize,
     motion: &klipp_timeline::TitleMotion,
+    animators: &[klipp_timeline::Animator],
     time_secs: f32,
     base_font_px: f32,
     window_secs: Option<f32>,
     wave: Option<(f32, f32)>,
     colour: &mut Vec<ColourGlyph>,
+    fills: &mut Vec<(GlyphColorInfo, Vec<u8>)>,
+    base_colours: &[[u8; 4]],
 ) {
     let enter_units = motion_units(glyphs, motion.enter.map(|m| m.stagger).unwrap_or_default());
     let exit_units = motion_units(glyphs, motion.exit.map(|m| m.stagger).unwrap_or_default());
+    // The animators' pose of each glyph (#1510); a colour one fills
+    // every glyph in its own posed colour.
+    let parents: Vec<char> = glyphs.iter().map(|g| g.parent).collect();
+    let animated = klipp_core::title_motion::animator_poses(animators, &parents, base_font_px, time_secs as f64);
+    let colours = animators.iter().any(|a| a.enabled && a.props.colour.is_some());
 
     for (i, glyph) in glyphs.iter().enumerate() {
         if glyph.width == 0 || glyph.height == 0 {
@@ -4974,7 +5024,8 @@ fn rasterize_to_mask_motion(
         let rest = (1.0, 0.0, 0.0, 1.0, 0.0, false);
         let (a1, dx1, dy1, s1, b1, c1) = motion.enter.map(|m| m.pose(pe, base_font_px)).unwrap_or(rest);
         let (a2, dx2, dy2, s2, b2, c2) = motion.exit.map(|m| m.pose(px, base_font_px)).unwrap_or(rest);
-        let alpha = a1 * a2;
+        let pose = animated.get(i).copied().unwrap_or_default();
+        let alpha = a1 * a2 * pose.alpha;
         if alpha <= 0.001 {
             continue;
         }
@@ -4982,10 +5033,10 @@ fn rasterize_to_mask_motion(
             Some((amp, rate)) => (time_secs * rate * std::f32::consts::TAU + i as f32 * 0.5).sin() * amp,
             None => 0.0,
         };
-        let dx = dx1 + dx2;
-        let dy = dy1 + dy2 + wave_dy;
-        let scale = s1 * s2;
-        let sigma = b1.max(b2);
+        let dx = dx1 + dx2 + pose.dx;
+        let dy = dy1 + dy2 + wave_dy + pose.dy;
+        let scale = s1 * s2 * pose.scale;
+        let sigma = b1.max(b2).max(pose.blur);
         let clip_to_rest = c1 || c2;
 
         let font = &fonts[glyph.font_index];
@@ -5004,6 +5055,12 @@ fn rasterize_to_mask_motion(
         } else {
             (coverage_base, base_w, base_h)
         };
+        let (coverage, raw_w, raw_h) = if pose.rotation != 0.0 {
+            rotate_coverage(&coverage, raw_w, raw_h, pose.rotation.to_radians())
+        } else {
+            (coverage, raw_w, raw_h)
+        };
+        let mut fill = colours.then(|| vec![0u8; raw_w * raw_h]);
 
         // The resting box, for the mask kinds.
         // The resting box, exactly the rows the resting rasteriser
@@ -5052,9 +5109,46 @@ fn rasterize_to_mask_motion(
                 }
                 let idx = my as usize * mask_w + mx as usize;
                 mask[idx] = mask[idx].max(scaled_cov);
+                if let Some(f) = fill.as_mut() {
+                    f[row * raw_w + col] = scaled_cov;
+                }
             }
         }
+        if let Some(f) = fill {
+            let base = base_colours.get(i).copied().unwrap_or([255, 255, 255, 255]);
+            let info = GlyphColorInfo { mask_x: gx - mask_x0 as i32, mask_y: gy - mask_y0 as i32, width: raw_w, height: raw_h, color: pose.colour_of(base) };
+            fills.push((info, f));
+        }
     }
+}
+
+/// A glyph's coverage turned clockwise by `radians` about its centre,
+/// in a bitmap as large as the turned box, sampled bilinearly; the
+/// turned bitmap shares the centre of the one it came from (#1510).
+fn rotate_coverage(cov: &[u8], w: usize, h: usize, radians: f32) -> (Vec<u8>, usize, usize) {
+    let (c, sn) = (radians.cos(), radians.sin());
+    let (hx, hy) = (w as f32 * 0.5, h as f32 * 0.5);
+    let ow = ((hx * c).abs() + (hy * sn).abs()).ceil() as usize * 2 + 2;
+    let oh = ((hx * sn).abs() + (hy * c).abs()).ceil() as usize * 2 + 2;
+    // Keep the centre on the same parity, so the turned glyph sits where
+    // the unturned one did.
+    let (ow, oh) = (ow + (ow + w) % 2, oh + (oh + h) % 2);
+    let at = |x: i64, y: i64| if x < 0 || y < 0 || x >= w as i64 || y >= h as i64 { 0.0 } else { cov[y as usize * w + x as usize] as f32 };
+    let mut out = vec![0u8; ow * oh];
+    let (ocx, ocy) = (ow as f32 * 0.5, oh as f32 * 0.5);
+    for y in 0..oh {
+        for x in 0..ow {
+            let (u, v) = (x as f32 + 0.5 - ocx, y as f32 + 0.5 - ocy);
+            // Back through the turn.
+            let (sx, sy) = (u * c + v * sn + hx - 0.5, v * c - u * sn + hy - 0.5);
+            let (x0, y0) = (sx.floor(), sy.floor());
+            let (tx, ty) = (sx - x0, sy - y0);
+            let (x0, y0) = (x0 as i64, y0 as i64);
+            let s = at(x0, y0) * (1.0 - tx) * (1.0 - ty) + at(x0 + 1, y0) * tx * (1.0 - ty) + at(x0, y0 + 1) * (1.0 - tx) * ty + at(x0 + 1, y0 + 1) * tx * ty;
+            out[y * ow + x] = s.round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    (out, ow, oh)
 }
 
 /// Draw an alpha mask onto an RGBA buffer using a given color and intensity.

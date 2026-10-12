@@ -959,7 +959,12 @@ impl LayerFx {
         // Note: check `inner_shadow.` before `shadow.` — the latter
         // would otherwise prefix-match the former.
         if let Some((idx, field)) = klipp_core::title_effect_keys::parse_animator_param_key(param_key) {
-            let selector = &mut self.animators.get_mut(idx)?.selector;
+            let a = self.animators.get_mut(idx)?;
+            // `within.start` and so on are the limiting selector's.
+            let (selector, field) = match field.strip_prefix("within.") {
+                Some(f) => (a.within.as_mut()?, f),
+                None => (&mut a.selector, field),
+            };
             match field {
                 "start" => Some(&mut selector.start_keyframes),
                 "end" => Some(&mut selector.end_keyframes),
@@ -1014,7 +1019,12 @@ impl LayerFx {
     /// Read-only mirror of `effect_keyframes_mut_for`.
     pub fn effect_keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
         if let Some((idx, field)) = klipp_core::title_effect_keys::parse_animator_param_key(param_key) {
-            let selector = &self.animators.get(idx)?.selector;
+            let a = self.animators.get(idx)?;
+            // `within.start` and so on are the limiting selector's.
+            let (selector, field) = match field.strip_prefix("within.") {
+                Some(f) => (a.within.as_ref()?, f),
+                None => (&a.selector, field),
+            };
             match field {
                 "start" => Some(&selector.start_keyframes),
                 "end" => Some(&selector.end_keyframes),
@@ -4381,6 +4391,11 @@ mod animator_key_tests {
         assert!(fx.animators[0].selector.start_keyframes.is_empty());
         assert_eq!(fx.effect_keyframes_for(&k(1, "offset")).map(<[_]>::len), Some(1));
         assert!(fx.effect_keyframes_for(&k(2, "start")).is_none() && fx.effect_keyframes_for(&k(0, "amount")).is_none());
+        // The limiting selector's range keys as `within.*`, once it has one.
+        assert!(fx.effect_keyframes_mut_for(&k(0, "within.start")).is_none());
+        fx.animators[0].within = Some(Default::default());
+        assert!(fx.effect_keyframes_mut_for(&k(0, "within.end")).is_some());
+        assert_eq!(fx.effect_keyframes_for(&k(0, "within.offset")).map(<[_]>::len), Some(0));
         assert!(!serde_json::to_string(&LayerFx::default()).unwrap().contains("animators"));
         assert!(LayerFx::default().is_default());
     }
