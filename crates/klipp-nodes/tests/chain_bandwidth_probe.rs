@@ -78,6 +78,30 @@ fn stack(kind: NodeKind, params: NodeParams, n: usize) -> NodeGraph {
     }
 }
 
+/// Whether a run's timing is the GPU's: its GPU is still up and the
+/// chain carried the run (#1158). A chain readback that times out marks
+/// the GPU lost and the run goes on on the CPU; a time taken then is the
+/// CPU's, never a GPU figure.
+fn ran_on_the_gpu(gpu_up: bool, stats: klipp_nodes::executor::ChainStats) -> bool {
+    gpu_up && stats.extends + stats.flushes > 0
+}
+
+/// The executor's GPU is attached and not marked lost.
+fn gpu_up(exec: &mut GraphExecutor) -> bool {
+    exec.gpu_pipeline_mut().is_some_and(|g| !g.is_device_lost())
+}
+
+/// A run the CPU carried, or one with no GPU, is never taken for a GPU
+/// timing (#1158).
+#[test]
+fn a_cpu_fallback_is_no_gpu_timing() {
+    use klipp_nodes::executor::ChainStats;
+    let gpu_run = ChainStats { extends: 9, flushes: 1, ..Default::default() };
+    assert!(ran_on_the_gpu(true, gpu_run));
+    assert!(!ran_on_the_gpu(false, gpu_run), "the GPU was lost (a readback timed out)");
+    assert!(!ran_on_the_gpu(true, ChainStats::default()), "the chain never ran");
+}
+
 #[test]
 fn chain_is_bandwidth_or_compute_bound() {
     let _ = tracing_subscriber::fmt().with_max_level(tracing::Level::DEBUG)
@@ -99,13 +123,32 @@ fn chain_is_bandwidth_or_compute_bound() {
         let mut prev = 0.0;
         for n in [2usize, 10] {
             let g = stack(kind, params.clone(), n);
-            let _ = exec.execute_linear(&frame, &g, W, H, 0.0, 0, None, None);
+            exec.execute_linear(&frame, &g, W, H, 0.0, 0, None, None).expect("the warm-up runs");
+            // The executor takes its GPU on its first run.
+            if !gpu_up(&mut exec) {
+                eprintln!("=== unavailable: no GPU, so no chain timing to report");
+                return;
+            }
+            // Only samples the GPU carried are timed.
             let mut best = f64::MAX;
+            let mut degraded = 0;
             for _ in 0..3 {
                 let t = std::time::Instant::now();
                 let r = exec.execute_linear(&frame, &g, W, H, 0.0, 0, None, None);
-                best = best.min(t.elapsed().as_secs_f64() * 1000.0);
-                assert!(r.is_ok());
+                let ms = t.elapsed().as_secs_f64() * 1000.0;
+                assert!(r.is_ok(), "{name}, {n} nodes: {:?}", r.err());
+                if ran_on_the_gpu(gpu_up(&mut exec), exec.last_run_chain_stats()) {
+                    best = best.min(ms);
+                } else {
+                    degraded += 1;
+                }
+            }
+            if best == f64::MAX {
+                eprintln!("=== degraded: {name} at {n} nodes fell back to the CPU in all {degraded} samples; no GPU timing reported");
+                break;
+            }
+            if degraded > 0 {
+                eprintln!("=== {name} at {n} nodes: {degraded} of 3 samples fell back to the CPU and were left out");
             }
             if n == 2 { prev = best; } else {
                 let per_node = (best - prev) / 8.0;
