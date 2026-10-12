@@ -12,6 +12,10 @@ fontdue = "0.9"
 # features. Pure Rust; both forbid unsafe code.
 harfrust = "=0.13.3"
 read-fonts = { version = "=0.43.3", default-features = false }
+# A variable font's instance outlines and advances (#1504): fontdue
+# draws only a face's default instance. Already in the lockfile;
+# forbids unsafe code.
+ttf-parser = { version = "=0.25.1", default-features = false, features = ["std", "variable-fonts", "gvar-alloc"] }
 rayon = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 tracing = { workspace = true }

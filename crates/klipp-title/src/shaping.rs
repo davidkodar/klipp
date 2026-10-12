@@ -18,13 +18,14 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::colour::{ColourBitmap, ColourBitmaps};
+use crate::variable::Instance;
 
 use fontdue::layout::{
     CharacterData, CoordinateSystem, GlyphPosition, GlyphRasterConfig, HorizontalAlign, Layout,
     LayoutSettings, TextStyle,
 };
 use fontdue::{Font, Metrics, OutlineBounds};
-use harfrust::{Direction, Feature, FontRef, ShapeOptions, ShaperData, UnicodeBuffer};
+use harfrust::{Direction, Feature, FontRef, ShapeOptions, ShaperData, ShaperInstance, UnicodeBuffer};
 
 /// Bumped whenever shaping changes where glyphs land, so a glyph cache
 /// laid out before does not match (#1501).
@@ -34,19 +35,43 @@ pub const SHAPING_VERSION: u32 = 1;
 /// and the bytes and shaping tables harfrust shapes with. `shaper` is
 /// `None` for a file harfrust cannot read; its text is set unshaped.
 /// `colour` holds the colour bitmaps of an emoji font (#1503).
+/// `instance` is a variable face's instance away from its default
+/// (#1504): shaped at its coordinates, its glyphs drawn there.
 pub(crate) struct LoadedFont {
     pub(crate) font: Font,
     data: Cow<'static, [u8]>,
     shaper: Option<ShaperData>,
     colour: Option<ColourBitmaps>,
+    instance: Option<(Instance, ShaperInstance)>,
 }
 
 impl LoadedFont {
     pub(crate) fn new(data: Cow<'static, [u8]>) -> Option<Self> {
+        Self::at(data, &[])
+    }
+
+    /// The font in `data` at `variations`, each an axis's tag and
+    /// value (#1504); its default instance for a static face, or for
+    /// variations that leave every axis at its default.
+    pub(crate) fn at(data: Cow<'static, [u8]>, variations: &[(String, f32)]) -> Option<Self> {
         let font = Font::from_bytes(&*data, fontdue::FontSettings::default()).ok()?;
         let shaper = FontRef::from_index(&data, 0).ok().map(|f| ShaperData::new(&f));
         let colour = ColourBitmaps::of(&data);
-        Some(Self { font, data, shaper, colour })
+        let instance = Instance::new(&data, variations).and_then(|i| {
+            let font = FontRef::from_index(&data, 0).ok()?;
+            let shaping = ShaperInstance::from_variations(&font, i.variations());
+            Some((i, shaping))
+        });
+        Some(Self { font, data, shaper, colour, instance })
+    }
+
+    /// The hash glyph keys carry for this font: fontdue's hash of its
+    /// file, and for an instance its coordinates' too (#1504).
+    pub(crate) fn hash(&self) -> usize {
+        match &self.instance {
+            Some((i, _)) => self.font.file_hash() ^ i.hash as usize,
+            None => self.font.file_hash(),
+        }
     }
 
     /// Glyph `gid` as a colour bitmap at `px`, for a glyph the font
@@ -58,6 +83,9 @@ impl LoadedFont {
     /// fontdue's metrics for glyph `gid` at `px`, with a colour glyph's
     /// box its bitmap's (#1503): fontdue sees no outline there.
     pub(crate) fn metrics_indexed(&self, gid: u16, px: f32) -> Metrics {
+        if let Some((i, _)) = &self.instance {
+            return i.glyph(&self.data, gid, px).0;
+        }
         let mut m = self.font.metrics_indexed(gid, px);
         if let Some(c) = self.colour_glyph(gid, px) {
             m.xmin = c.xmin as i32;
@@ -70,8 +98,11 @@ impl LoadedFont {
     }
 
     /// Glyph `gid`'s coverage at `px`: fontdue's raster of its outline,
-    /// or a colour glyph's alpha (#1503).
+    /// a colour glyph's alpha (#1503), or an instance's glyph (#1504).
     pub(crate) fn coverage_indexed(&self, gid: u16, px: f32) -> (Metrics, Vec<u8>) {
+        if let Some((i, _)) = &self.instance {
+            return (*i.glyph(&self.data, gid, px)).clone();
+        }
         match self.colour_glyph(gid, px) {
             Some(c) => (self.metrics_indexed(gid, px), c.rgba.chunks_exact(4).map(|p| p[3]).collect()),
             None => self.font.rasterize_indexed(gid, px),
@@ -97,7 +128,7 @@ impl Face<'_> {
     /// The coverage of the glyph `key` names, as fontdue's
     /// `rasterize_config` gives it, or a colour glyph's alpha (#1503).
     pub(crate) fn coverage(&self, key: GlyphRasterConfig) -> (Metrics, Vec<u8>) {
-        if self.font.colour.is_none() {
+        if self.font.colour.is_none() && self.font.instance.is_none() {
             return self.font.font.rasterize_config(key);
         }
         self.font.coverage_indexed(key.glyph_index, key.px)
@@ -273,7 +304,7 @@ fn set_run(face: &Face, piece: &Appended, from: usize, to: usize, baseline: f32,
         // A colour glyph's box is its bitmap's (#1503).
         let m = face.font.metrics_indexed(gid, px);
         GlyphPosition {
-            key: GlyphRasterConfig { glyph_index: gid, px, font_hash: font.file_hash() },
+            key: GlyphRasterConfig { glyph_index: gid, px, font_hash: face.font.hash() },
             font_index: piece.face,
             parent,
             x: (pen + dx + m.bounds.xmin).floor(),
@@ -288,7 +319,7 @@ fn set_run(face: &Face, piece: &Appended, from: usize, to: usize, baseline: f32,
     let Some(shaped) = shape(face, &piece.text[from..to]) else {
         for g in laid {
             out.push(place(g.key.glyph_index, g.byte_offset, *pen, 0.0, 0.0));
-            *pen += font.metrics_indexed(g.key.glyph_index, px).advance_width.ceil();
+            *pen += face.font.metrics_indexed(g.key.glyph_index, px).advance_width.ceil();
         }
         return;
     };
@@ -303,11 +334,12 @@ fn set_run(face: &Face, piece: &Appended, from: usize, to: usize, baseline: f32,
 
 /// `text` shaped left to right in `face`, with the shaper's default
 /// features (kern, liga, clig, calt, mark, mkmk among them) and the
-/// face's own; `None` for a font the shaper cannot read.
+/// face's own, at its instance (#1504); `None` for a font the shaper
+/// cannot read.
 fn shape(face: &Face, text: &str) -> Option<harfrust::GlyphBuffer> {
     let data = face.font.shaper.as_ref()?;
     let font = FontRef::from_index(&face.font.data, 0).ok()?;
-    let shaper = data.shaper(&font).build();
+    let shaper = data.shaper(&font).instance(face.font.instance.as_ref().map(|(_, s)| s)).build();
     let mut buffer = UnicodeBuffer::new();
     buffer.push_str(text);
     buffer.guess_segment_properties();

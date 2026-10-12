@@ -204,6 +204,37 @@ fn a_text_boxs_and_a_runs_features_come_back() {
     assert_eq!(loaded, &td, "the title did not round-trip whole");
 }
 
+/// A text box's and a style run's weight and variable-font axes
+/// (#1504) come back through a real save and a strict load; a box and
+/// a run that name neither write neither, and load as they were.
+#[test]
+fn a_text_boxs_and_a_runs_weight_and_axes_come_back() {
+    let mut seq = Sequence::new_default();
+    let run = klipp_timeline::StyleRun { font_weight: Some(300), font_axes: vec![("wdth".into(), 87.5)], ..klipp_timeline::StyleRun::default_for_range(0, 6) };
+    let plain_run = klipp_timeline::StyleRun { color: Some([1, 2, 3, 255]), ..klipp_timeline::StyleRun::default_for_range(7, 9) };
+    let set = TextBox { text: "office to".into(), font_weight: Some(650), font_axes: vec![("wght".into(), 650.0), ("opsz".into(), 24.0)], style_runs: vec![run, plain_run], ..TextBox::default() };
+    let mut td = TitleData::single_text(set);
+    td.add_object(TitleObjectContent::TextBox(TextBox { text: "Plain".into(), font_style: klipp_timeline::FontStyle::BoldItalic, ..TextBox::default() }), klipp_timeline::default_text_transform());
+    let mut c = Clip::gap(tc(0), tc(48));
+    c.kind = ClipKind::Title(td.clone());
+    seq.tracks[0].clips = vec![c];
+
+    let dir = project_dir("font-weight");
+    klipp_project::save_project(&dir, &[seq], &MediaPool::new()).unwrap();
+    let saved = std::fs::read_dir(&dir).unwrap().filter_map(|e| std::fs::read_to_string(e.unwrap().path()).ok()).collect::<String>();
+    let (seqs, ..) = klipp_project::load_project_strict(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let flat = saved.replace(char::is_whitespace, "");
+    assert!(flat.contains("\"font_weight\":650") && flat.contains("\"font_weight\":300") && flat.contains("\"wdth\""), "the weights and axes were not written");
+    assert!(!flat.contains("\"font_weight\":null") && !flat.contains("\"font_axes\":[]"), "a box or run without a weight or axes wrote them");
+    assert!(flat.contains("{\"color\":[1,2,3,255],\"end\":9,\"start\":7}"), "the plain run wrote more than its colour");
+    let ClipKind::Title(loaded) = &seqs[0].tracks[0].clips[0].kind else { panic!("not a title") };
+    let tb = loaded.primary_text().unwrap();
+    assert_eq!((tb.font_weight, tb.font_axes.clone()), (Some(650), vec![("wght".to_string(), 650.0), ("opsz".to_string(), 24.0)]));
+    assert_eq!((tb.style_runs[0].font_weight, tb.style_runs[0].font_axes.clone()), (Some(300), vec![("wdth".to_string(), 87.5)]));
+    assert_eq!(loaded, &td, "the title did not round-trip whole");
+}
+
 #[test]
 fn magnetic_roles_and_anchors_come_back() {
     let mut seq = Sequence::new_default();

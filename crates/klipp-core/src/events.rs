@@ -2496,6 +2496,9 @@ pub enum AppCommand {
     SetTitleLineSpacing { clip_id: ClipId, line_spacing: f32 },
     /// Toggle text underline rendering.
     SetTitleUnderline { clip_id: ClipId, underline: bool },
+    /// The weight the text box is set in, `None` for its style's, and
+    /// a variable font's axes, each a tag and a value (#1504).
+    SetTitleFontVariation { clip_id: ClipId, weight: Option<u16>, axes: Vec<(String, f32)> },
     /// Toggle text strikethrough rendering.
     SetTitleStrikethrough { clip_id: ClipId, strikethrough: bool },
     /// Soft-disable for the Pattern Fill subcard. `pattern_fill` is an
@@ -2576,7 +2579,8 @@ pub enum AppCommand {
     /// Set motion blur. `enabled=false` = disable.
     SetTitleMotionBlur { clip_id: ClipId, enabled: bool, shutter_angle: f32, samples: u8 },
     /// Apply a style property to a character range (rich text style runs).
-    /// `property`: "font_size", "color", "font_name", "font_style", "tracking", "baseline_offset"
+    /// `property`: "font_size", "color", "font_name", "font_style", "tracking", "baseline_offset",
+    /// "font_weight", "font_axes" (#1504)
     /// `value`: JSON-encoded value for the property ("font_name" takes
     /// the family as it is, #1505).
     ApplyTitleStyle {

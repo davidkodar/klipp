@@ -1830,6 +1830,10 @@ fn show_title_pinned_core_textbox(
     });
     ui.add_space(8.0);
 
+    // 2a. The family's weights, and a variable face's axes as sliders
+    //     (#1504); over a selection they set the selection's.
+    show_title_weight_row(ui, theme, clip_id, tb, &display_font, display_style, has_selection.then_some(sel_range).filter(|s| s.0 < s.1), cmds);
+
     // 3. B / I / U / S pill buttons (left) + L / C / R / J alignment
     //    pill buttons (right). Both groups share a consistent
     //    button height + inactive fill so the row reads as one
@@ -2095,6 +2099,123 @@ fn show_title_pinned_core_textbox(
 /// whether the selection mixes values: each run over `sel`'s value of
 /// the field, or the box's `base` where the run leaves it, as the size
 /// and colour of a selection are read (#1505).
+/// The weight row of the Title tab (#1504): a picker of the weights
+/// `family` has (the style's own, "By style", first), and a slider for
+/// each axis of its variable face. With `selection` the weight and
+/// axes set are the selection's, through `ApplyTitleStyle`; without,
+/// the text box's. Nothing for a family of one weight and no axes.
+#[allow(clippy::too_many_arguments)]
+fn show_title_weight_row(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    clip_id: klipp_core::ClipId,
+    tb: &klipp_timeline::TextBox,
+    family: &str,
+    style: klipp_timeline::FontStyle,
+    selection: Option<(usize, usize)>,
+    cmds: &mut Vec<AppCommand>,
+) {
+    use klipp_title::font_discovery::{discover_system_fonts, family_faces, weight_name};
+    let registry = discover_system_fonts();
+    let italic = matches!(style, klipp_timeline::FontStyle::Italic | klipp_timeline::FontStyle::BoldItalic);
+    let faces = family_faces(&registry, family);
+    let mut weights: Vec<u16> = faces.iter().filter(|f| f.italic == italic).map(|f| f.weight).collect();
+    if weights.is_empty() {
+        weights = faces.iter().map(|f| f.weight).collect();
+    }
+    weights.dedup();
+    let axes: Vec<klipp_title::variable::VariationAxis> = registry
+        .get(family)
+        .and_then(|infos| infos.iter().find(|i| !i.axes.is_empty() && i.italic == italic).or_else(|| infos.iter().find(|i| !i.axes.is_empty())))
+        .map(|i| i.axes.clone())
+        .unwrap_or_default();
+    if weights.len() < 2 && axes.is_empty() {
+        return;
+    }
+    let (weight, weight_mixed) = match selection {
+        Some(sel) => selection_run_value(tb, sel, |r| r.font_weight.map(Some), tb.font_weight),
+        None => (tb.font_weight, false),
+    };
+    let axis_value = |tag: &str| -> (Option<f32>, bool) {
+        let of = |list: &[klipp_timeline::FontAxis]| list.iter().rev().find(|(t, _)| t == tag).map(|(_, v)| *v);
+        match selection {
+            Some(sel) => selection_run_value(tb, sel, |r| of(&r.font_axes).map(Some), of(&tb.font_axes)),
+            None => (of(&tb.font_axes), false),
+        }
+    };
+    let set_weight = |cmds: &mut Vec<AppCommand>, w: Option<u16>| match selection {
+        // A run cannot go back to its style's weight once it names
+        // one; "By style" over a selection names the style's.
+        Some(sel) => cmds.push(AppCommand::ApplyTitleStyle {
+            clip_id,
+            range_start: sel.0,
+            range_end: sel.1,
+            property: "font_weight".into(),
+            value: w.unwrap_or(if matches!(style, klipp_timeline::FontStyle::Bold | klipp_timeline::FontStyle::BoldItalic) { 700 } else { 400 }).to_string(),
+        }),
+        None => cmds.push(AppCommand::SetTitleFontVariation { clip_id, weight: w, axes: tb.font_axes.clone() }),
+    };
+    let set_axis = |cmds: &mut Vec<AppCommand>, tag: &str, value: f32| match selection {
+        Some(sel) => cmds.push(AppCommand::ApplyTitleStyle {
+            clip_id,
+            range_start: sel.0,
+            range_end: sel.1,
+            property: "font_axes".into(),
+            value: serde_json::to_string(&[(tag, value)]).unwrap_or_default(),
+        }),
+        None => {
+            let mut axes: Vec<klipp_timeline::FontAxis> = tb.font_axes.iter().filter(|(t, _)| t != tag).cloned().collect();
+            axes.push((tag.to_string(), value));
+            cmds.push(AppCommand::SetTitleFontVariation { clip_id, weight: tb.font_weight, axes });
+        }
+    };
+    if weights.len() >= 2 || axes.iter().any(|a| a.tag == "wght") {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Weight").size(11.0).color(theme.text_secondary));
+            let label = |w: Option<u16>| w.map_or_else(|| "By style".to_string(), |w| format!("{} {w}", weight_name(w)));
+            let mut picked: Option<Option<u16>> = None;
+            egui::ComboBox::from_id_salt("title_pinned_weight")
+                .selected_text(if weight_mixed { "Mixed".to_string() } else { label(weight) })
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(weight.is_none(), label(None)).clicked() {
+                        picked = Some(None);
+                    }
+                    for &w in &weights {
+                        if ui.selectable_label(weight == Some(w), label(Some(w))).clicked() {
+                            picked = Some(Some(w));
+                        }
+                    }
+                });
+            if let Some(w) = picked {
+                set_weight(cmds, w);
+            }
+        });
+    }
+    for axis in &axes {
+        let (value, mixed) = axis_value(&axis.tag);
+        // The weight axis follows the weight named, else the axis's default.
+        let shown = value.or_else(|| (axis.tag == "wght").then(|| weight.map(f32::from)).flatten()).unwrap_or(axis.default);
+        let mut v = shown;
+        ui.horizontal(|ui| {
+            let name = match axis.tag.as_str() {
+                "wght" => "Weight axis",
+                "wdth" => "Width",
+                "slnt" => "Slant",
+                "ital" => "Italic",
+                "opsz" => "Optical size",
+                other => other,
+            };
+            if ui.add(egui::Slider::new(&mut v, axis.min..=axis.max).text(name)).changed() {
+                set_axis(cmds, &axis.tag, v);
+            }
+            if mixed {
+                ui.label(egui::RichText::new("Mixed").size(10.0).color(theme.accent));
+            }
+        });
+    }
+    ui.add_space(8.0);
+}
+
 fn selection_run_value<T: Clone + PartialEq>(
     tb: &klipp_timeline::TextBox,
     sel: (usize, usize),
