@@ -519,6 +519,10 @@ impl MediaItem {
         if make.contains("sony") || model.contains("fx") || model.contains("a7") || model.contains("venice") {
             return LogFormat::SLog3;
         }
+        // Leica's one log is L-Log (#1225).
+        if make.contains("leica") {
+            return LogFormat::LeicaLLog;
+        }
         if make.contains("panasonic") || model.contains("gh") || model.contains("s1") || model.contains("s5") {
             return LogFormat::VLog;
         }
@@ -1167,6 +1171,21 @@ mod tests {
             let item = ten_bit_hevc("", "", "HEVC Coding", trc);
             assert_eq!(item.detect_log_format(), LogFormat::SLog3, "{trc:?}");
         }
+    }
+
+    /// #1225: a 10-bit clip from a Leica camera is L-Log, Leica's only
+    /// log; 8-bit from it stays SDR.
+    #[test]
+    fn a_leica_clip_is_l_log() {
+        use klipp_core::LogFormat;
+        for model in ["LEICA SL2-S", "LEICA SL3", "LEICA Q3", "LEICA SL (Typ 601)"] {
+            let item = ten_bit_hevc("Leica Camera AG", model, "", None);
+            assert_eq!(item.detect_log_format(), LogFormat::LeicaLLog, "{model}");
+        }
+        let mut sdr = ten_bit_hevc("Leica Camera AG", "LEICA SL3", "", None);
+        sdr.bit_depth = Some(8);
+        sdr.pixel_format = Some("yuv420p".into());
+        assert_eq!(sdr.detect_log_format(), LogFormat::Srgb);
     }
 
     #[test]
