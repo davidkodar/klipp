@@ -2486,10 +2486,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               cancelled), progress 0 to 1, frames, stage, error, loudness result. With wait true, waits for job_id or all currently known jobs. Returns finished, succeeded and timed_out; failed or cancelled is not success. Timeout does not cancel renders.",
              json!({ "wait": { "type": "boolean" }, "job_id": { "type": "string" }, "timeout_ms": { "type": "integer", "description": "Maximum wait, default one hour" } }), vec![]),
         tool("klipp_export_subtitles",
-             "Write the subtitle clips (text clips if none) to an absolute path, as the extension says: .srt, .vtt, .ass, .ssa or .ttml (IMSC); format, if given, must match.",
+             "Write the subtitle clips (text clips if none) to an absolute path, as the extension says: .srt, .vtt, .ass, .ssa, .ttml (IMSC) or .scc (608); format, if given, must match.",
              json!({ "path": { "type": "string" }, "format": { "type": "string" } }), vec!["path"]),
         tool("klipp_import_subtitles",
-             "Read an .srt, .vtt, .ass, .ssa or TTML (.ttml, .dfxp, .xml, .itt) file (absolute path) onto a new subtitle track.",
+             "Read an .srt, .vtt, .ass, .ssa or TTML (.ttml, .dfxp, .xml, .itt) or .scc file (absolute path) onto a new subtitle track.",
              json!({ "path": { "type": "string" } }), vec!["path"]),
         tool("klipp_transcript",
              "What is said in a media file between two times, with when, in seconds of the \

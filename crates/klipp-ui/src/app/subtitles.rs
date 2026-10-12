@@ -247,6 +247,22 @@ mod cue_styling_tests {
         assert_eq!(back[2].placement.pos.map(|(x, y)| ((x * 100.0).round(), (y * 100.0).round())), Some((20.0, 50.0)));
     }
 
+    /// #1516: an SCC caption's styling and row come in as the app imports
+    /// them, and the SCC written from the clips reads back as the same.
+    #[test]
+    fn an_scc_caption_survives_import_and_export() {
+        // Pop-on: row 15 white, "Hi " then italic "there"; then row 2 "Top".
+        let scc = "Scenarist_SCC V1.0\n\n00:00:00;00\t9420 9420 94ae 94ae 9470 9470 c8e9 91ae 91ae f468 e5f2 e580 942f 942f\n\n00:00:02;00\t9420 9420 94ae 94ae 9152 9152 54ef 7080 942f 942f\n\n00:00:04;00\t942c 942c\n";
+        let subs = klipp_captions::scc::parse_scc(scc).unwrap();
+        assert_eq!(subs.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(), ["Hi there", "Top"]);
+        let clips: Vec<SubtitleEntry> = subs.iter().map(|s| cue_of(s.start_secs, s.end_secs, &title_of(s))).collect();
+        assert_eq!(clips[0].spans, subs[0].spans);
+        assert_eq!(title_of(&subs[1]).objects[0].transform.center.y, 0.12, "a caption on row 2 sits where a top cue does");
+        let back = klipp_captions::scc::parse_scc(&klipp_captions::scc::generate_scc(&clips)).unwrap();
+        assert_eq!(back.iter().map(|s| (&s.text, &s.spans, s.placement.align)).collect::<Vec<_>>(), subs.iter().map(|s| (&s.text, &s.spans, s.placement.align)).collect::<Vec<_>>());
+        assert!((back[1].end_secs - subs[1].end_secs).abs() < 1e-9);
+    }
+
     /// The styling burns in, through the title renderer the subtitle track
     /// is drawn by: an italic run draws other pixels than the same run
     /// upright, and a cue placed by `\pos` draws its text there.
