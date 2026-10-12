@@ -209,14 +209,19 @@ pub(crate) fn respond(
             if !p.is_absolute() {
                 return Err(format!("subtitle path must be absolute (got {path:?})"));
             }
-            let ext = subtitle_format(&p).ok_or_else(|| format!("{path:?} names no subtitle format; end it .srt, .vtt, .ass or .ssa"))?;
+            let ext = subtitle_format(&p).ok_or_else(|| format!("{path:?} names no subtitle format; end it .srt, .vtt, .ass, .ssa or .ttml"))?;
             if let Some(f) = format.as_deref() {
                 let want = f.trim().to_ascii_lowercase();
-                let want = if want == "webvtt" { "vtt".to_string() } else { want };
+                let want = match want.as_str() {
+                    "webvtt" => "vtt".to_string(),
+                    "imsc" => "ttml".to_string(),
+                    _ => want,
+                };
                 if !SUBTITLE_FORMATS.contains(&want.as_str()) {
-                    return Err(format!("{f:?} is not a subtitle format; give srt, vtt, ass or ssa"));
+                    return Err(format!("{f:?} is not a subtitle format; give srt, vtt, ass, ssa or ttml"));
                 }
-                if want != ext {
+                // TTML's extensions all write IMSC.
+                if ttml_family(&want) != ttml_family(ext) {
                     return Err(format!("the path ends .{ext} but the format asked for is {want}; end the path .{want}"));
                 }
             }
@@ -229,7 +234,7 @@ pub(crate) fn respond(
                 return Err(format!("subtitle path must be absolute (got {path:?})"));
             }
             if subtitle_format(&p).is_none() {
-                return Err(format!("{path:?} is not a subtitle file this reads; give an .srt, .vtt, .ass or .ssa"));
+                return Err(format!("{path:?} is not a subtitle file this reads; give an .srt, .vtt, .ass, .ssa, .ttml, .dfxp, .xml or .itt"));
             }
             if !p.is_file() {
                 return Err(format!("no file at {path:?}"));
@@ -636,8 +641,14 @@ fn sequence_credits(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPoo
         .collect()
 }
 
-/// The subtitle formats the sidecar reader and writers take, by extension.
-const SUBTITLE_FORMATS: &[&str] = &["srt", "vtt", "ass", "ssa"];
+/// The subtitle formats the sidecar reader and writers take, by extension:
+/// TTML's (#1516) read as the family and written as IMSC 1.1 Text.
+const SUBTITLE_FORMATS: &[&str] = &["srt", "vtt", "ass", "ssa", "ttml", "dfxp", "xml", "itt"];
+
+/// A format as the one it reads and writes as: TTML's extensions as `ttml`.
+fn ttml_family(f: &str) -> &str {
+    if matches!(f, "dfxp" | "xml" | "itt") { "ttml" } else { f }
+}
 
 /// The subtitle format a path's extension names, lowercase.
 fn subtitle_format(p: &std::path::Path) -> Option<&'static str> {

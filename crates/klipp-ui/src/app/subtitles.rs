@@ -222,6 +222,31 @@ mod cue_styling_tests {
         assert_eq!(cue_of(1.0, 2.0, &plain), SubtitleEntry { start_secs: 1.0, end_secs: 2.0, text: "Plain".into(), ..Default::default() }, "a plain cue writes as before");
     }
 
+    /// #1516: a TTML cue's styling and region come in as the app imports
+    /// them, and the IMSC written from the clips reads back as the same.
+    #[test]
+    fn a_ttml_cue_survives_import_and_imsc_export() {
+        let ttml = r##"<tt xmlns="http://www.w3.org/ns/ttml" xmlns:tts="http://www.w3.org/ns/ttml#styling">
+  <head><layout><region xml:id="top" tts:origin="10% 5%" tts:extent="80% 15%"/><region xml:id="side" tts:origin="5% 40%" tts:extent="30% 20%" tts:textAlign="left"/></layout></head>
+  <body><div>
+    <p begin="00:00:01.000" end="00:00:02.000">A <span tts:fontStyle="italic">quiet</span><br/>word</p>
+    <p begin="00:00:02.000" end="00:00:03.000" region="top">Up here</p>
+    <p begin="00:00:03.000" end="00:00:04.000" region="side"><span tts:color="#00ff00">Aside</span></p>
+  </div></body>
+</tt>"##;
+        let subs = klipp_captions::ttml::parse_ttml(ttml).unwrap();
+        let clips: Vec<SubtitleEntry> = subs.iter().map(|s| cue_of(s.start_secs, s.end_secs, &title_of(s))).collect();
+        assert_eq!(clips[0].spans, subs[0].spans);
+        assert_eq!(clips[0].text, "A quiet\nword");
+        assert_eq!(title_of(&subs[1]).objects[0].transform.center.y, 0.12, "the top band sits where a top cue does");
+        let back = klipp_captions::ttml::parse_ttml(&klipp_captions::ttml::generate_imsc(&clips, "")).unwrap();
+        for (a, b) in subs.iter().zip(&back) {
+            assert_eq!((a.start_secs, a.end_secs, &a.text, &a.spans), (b.start_secs, b.end_secs, &b.text, &b.spans));
+            assert_eq!(a.placement.align, b.placement.align, "{}", a.text);
+        }
+        assert_eq!(back[2].placement.pos.map(|(x, y)| ((x * 100.0).round(), (y * 100.0).round())), Some((20.0, 50.0)));
+    }
+
     /// The styling burns in, through the title renderer the subtitle track
     /// is drawn by: an italic run draws other pixels than the same run
     /// upright, and a cue placed by `\pos` draws its text there.

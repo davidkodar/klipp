@@ -2783,13 +2783,16 @@ impl KlippApp {
                 match std::fs::read_to_string(&path) {
                     Ok(content) => {
                         // Detect format by extension (case-insensitive). Unknown
-                        // extensions fall back to the SRT/VTT parser.
+                        // extensions fall back to the SRT/VTT parser; TTML,
+                        // DFXP, IMSC and iTT read as TTML (#1516).
                         let ext = path
                             .extension()
                             .and_then(|s| s.to_str())
                             .map(|s| s.to_ascii_lowercase())
                             .unwrap_or_default();
                         let is_ass = ext == "ass" || ext == "ssa";
+                        let is_ttml = matches!(ext.as_str(), "ttml" | "dfxp" | "xml" | "itt");
+                        let mut unreadable = None;
 
                         let seq = &mut self.state.sequences[self.state.active_sequence_idx];
                         let fps_rate = seq.fps.rate();
@@ -2889,7 +2892,14 @@ impl KlippApp {
                                 track.clips.push(clip);
                             }
                         } else {
-                            let subs = parse_srt_vtt(&content);
+                            let subs = if is_ttml {
+                                klipp_captions::ttml::parse_ttml(&content).unwrap_or_else(|e| {
+                                    unreadable = Some(e);
+                                    Vec::new()
+                                })
+                            } else {
+                                parse_srt_vtt(&content)
+                            };
                             imported_count = subs.len();
                             for sub in &subs {
                                 let timeline_in = klipp_core::RationalTime::from_secs_f64(sub.start_secs, fps_rate);
@@ -2925,7 +2935,7 @@ impl KlippApp {
                             // Remove the newly-created empty track and warn.
                             let tid = track.id;
                             let _ = seq.remove_track(tid);
-                            self.state.toast.show("No subtitles found in file".to_string());
+                            self.state.toast.show(unreadable.unwrap_or_else(|| "No subtitles found in file".to_string()));
                         } else {
                             track.sort_clips();
                             self.state.toast.show(format!(
@@ -3263,6 +3273,8 @@ impl KlippApp {
                 let content = match ext.as_str() {
                     "vtt" => generate_vtt(&subs),
                     "ass" | "ssa" => generate_ass(&subs),
+                    // IMSC 1.1 Text, in the brief's language (#1516).
+                    "ttml" | "dfxp" | "xml" | "itt" => klipp_captions::ttml::generate_imsc(&subs, seq.brief.as_ref().and_then(|b| b.language.as_deref()).unwrap_or("")),
                     _ => generate_srt(&subs),
                 };
                 match std::fs::write(&path, &content) {

@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod styled;
+pub mod ttml;
 pub use styled::{Placement, Span, SpanStyle};
 
 #[derive(Debug, Clone, Default, PartialEq)]

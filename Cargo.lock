@@ -2918,6 +2918,9 @@ dependencies = [
 [[package]]
 name = "klipp-captions"
 version = "0.1.0"
+dependencies = [
+ "roxmltree 0.20.0",
+]
 
 [[package]]
 name = "klipp-color"
