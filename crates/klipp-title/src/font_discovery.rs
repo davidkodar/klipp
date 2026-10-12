@@ -81,6 +81,14 @@ pub fn family_faces(registry: &FontRegistry, family: &str) -> Vec<FaceTraits> {
     out
 }
 
+/// Whether a title naming `family` draws in it (#1720): the default
+/// face (an empty name or "sans-serif"), a family that ships with the
+/// app, or one installed on this computer. Any other name draws in a
+/// fallback.
+pub fn font_installed(registry: &FontRegistry, family: &str) -> bool {
+    family.is_empty() || family == "sans-serif" || crate::bundled::BUNDLED.iter().any(|f| f.family == family) || registry.contains_key(family)
+}
+
 /// The name a weight goes by: "Thin" for 100 up to "Black" for 900,
 /// the nearest hundred for another.
 pub fn weight_name(weight: u16) -> &'static str {
@@ -571,5 +579,23 @@ mod tests {
         assert_eq!(family_feature_tags(&registry, "Inter", "Bold Italic").iter().filter(|t| t.starts_with("ss")).count(), 8);
         assert!(family_feature_tags(&registry, "No Such Family", "Regular").is_empty());
         assert!(face_feature_tags(b"not a font").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod installed_tests {
+    use super::*;
+
+    /// The default face, a bundled family and an installed one are
+    /// here; a name that is none of these is not (#1720).
+    #[test]
+    fn a_font_is_installed_when_it_draws_in_itself() {
+        let mut map = BTreeMap::new();
+        map.insert("Installed Sans".to_string(), Vec::new());
+        let registry: FontRegistry = Arc::new(map);
+        for f in ["", "sans-serif", "Inter", "Bebas Neue", "Installed Sans"] {
+            assert!(font_installed(&registry, f), "{f:?}");
+        }
+        assert!(!font_installed(&registry, "Gone Grotesk"));
     }
 }

@@ -1820,6 +1820,7 @@ fn show_title_pinned_core_textbox(
     } else {
         display_font.as_str()
     };
+    let mut missing_font: Option<String> = None;
     ui.horizontal(|ui| {
         let total = ui.available_width();
         let size_w = 70.0;
@@ -1832,6 +1833,11 @@ fn show_title_pinned_core_textbox(
         }).inner;
         if let Some(family) = choice.toggle_favourite {
             cmds.push(AppCommand::ToggleFavouriteFont { family });
+        }
+        // A font this computer lacks draws in a fallback: say so, with
+        // a way to replace it everywhere it is used (#1720).
+        if !font_is_mixed && !crate::missing_fonts::installed(&display_font) {
+            missing_font = Some(display_font.clone());
         }
         if let (Some(family), Some(weight)) = (&choice.family, choice.weight) {
             if !(has_selection && sel_range.0 < sel_range.1) {
@@ -1907,6 +1913,14 @@ fn show_title_pinned_core_textbox(
             ui.label(egui::RichText::new("Mixed").size(10.0).color(theme.accent));
         }
     });
+    if let Some(family) = missing_font {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(format!("\u{26a0} {family} is not installed: drawn in a fallback")).size(crate::theme::type_scale::CAPTION).color(theme.marker_warning));
+            if ui.small_button("Replace\u{2026}").on_hover_text("Pick a font for every title using this one").clicked() {
+                cmds.push(AppCommand::ShowMissingFonts { family: Some(family.clone()) });
+            }
+        });
+    }
     ui.add_space(8.0);
 
     // 2a. The family's weights, and a variable face's axes as sliders

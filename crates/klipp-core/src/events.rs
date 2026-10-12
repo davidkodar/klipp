@@ -2595,6 +2595,11 @@ pub enum AppCommand {
     ToggleFavouriteFont { family: String },
     /// A font family was just picked: first of the recent ones.
     NoteRecentFont { family: String },
+    /// Every title naming the font `from` set to `to`, one step a
+    /// sequence (#1720).
+    ReplaceFont { from: String, to: String },
+    /// Open the missing-fonts dialog: every missing font, or `family`'s.
+    ShowMissingFonts { family: Option<String> },
     /// Set write-on reveal progress (0.0-1.0).
     SetTitleWriteOn { clip_id: ClipId, write_on: f32 },
     /// Set line spacing multiplier.

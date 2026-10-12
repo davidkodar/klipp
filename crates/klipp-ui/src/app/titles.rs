@@ -206,6 +206,12 @@ impl KlippApp {
                 let (clip_id, rest) = add_title_clip(&mut self.state, *track_index, *timeline_in, *duration_frames);
                 self.sync_sequence_to_engine();
                 self.render_title_to_viewer(clip_id);
+                // A title placed from a template may name a font this
+                // computer lacks: say so, with a replacement (#1720).
+                let missing: Vec<_> = self.state.missing_fonts(&crate::missing_fonts::installed).into_iter().filter(|m| m.titles.iter().any(|t| t.clip == clip_id)).collect();
+                if !missing.is_empty() {
+                    self.state.missing_fonts_dialog = Some(crate::missing_fonts::MissingFontsDialog { fonts: missing, chosen: Default::default() });
+                }
                 if let Some(park) = rest.filter(|&t| t != self.state.playhead) {
                     let _ = self.cmd_tx.send(AppCommand::SeekTo(park));
                 }
@@ -718,6 +724,31 @@ impl KlippApp {
                 self.state.favourite_fonts = self.prefs.title.favourite_fonts.clone();
                 self.state.recent_fonts = self.prefs.title.recent_fonts.clone();
                 let _ = self.prefs.save();
+                true
+            }
+            AppCommand::ReplaceFont { from, to } => {
+                let changed = self.state.replace_font(from, to);
+                let active: Vec<_> = self.state.sequences[self.state.active_sequence_idx].all_clips().map(|c| c.id).collect();
+                for id in changed.iter().filter(|id| active.contains(id)) {
+                    self.render_title_to_viewer(*id);
+                }
+                if !changed.is_empty() {
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    self.state.toast.show(format!("{from} replaced with {to} in {} title{}", changed.len(), if changed.len() == 1 { "" } else { "s" }));
+                }
+                true
+            }
+            AppCommand::ShowMissingFonts { family } => {
+                let mut fonts = self.state.missing_fonts(&crate::missing_fonts::installed);
+                if let Some(f) = family {
+                    fonts.retain(|m| &m.family == f);
+                }
+                if fonts.is_empty() {
+                    self.state.toast.show("Every font the titles use is installed");
+                } else {
+                    self.state.missing_fonts_dialog = Some(crate::missing_fonts::MissingFontsDialog { fonts, chosen: Default::default() });
+                }
                 true
             }
             AppCommand::LoadCreditsList { path } => {
