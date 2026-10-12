@@ -717,6 +717,15 @@ pub fn show(
                 super::browser_search_field(ui, theme, search_query, "Search titles\u{2026}", state);
             });
         ui.add_space(6.0);
+        // Rolling credits from a list (#1514).
+        if *active_category == Some("Credits") {
+            egui::Frame::none().inner_margin(egui::Margin::symmetric(8.0, 0.0)).show(ui, |ui| {
+                if ui.button("Credits from a list\u{2026}").on_hover_text("Build rolling credits from a CSV or tab-separated list of roles and names").clicked() {
+                    state.credits_dialog = Some(Default::default());
+                }
+            });
+            ui.add_space(6.0);
+        }
 
         // ── Filter row: All / Built-in / User + Animated only + view toggle ──
         let scoped: Vec<&Entry> = entries

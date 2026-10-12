@@ -2487,6 +2487,9 @@ pub enum AppCommand {
     /// a template's text, colour or speed. `done` false while a drag is
     /// under way, shown at once and recorded as one step when it ends.
     SetTitleField { clip_id: ClipId, index: usize, value: TitleFieldValue, done: bool },
+    /// Read a credits list (#1514) from `path` into the open credits
+    /// dialog: what its Load button picked.
+    LoadCreditsList { path: std::path::PathBuf },
     /// Set write-on reveal progress (0.0-1.0).
     SetTitleWriteOn { clip_id: ClipId, write_on: f32 },
     /// Set line spacing multiplier.

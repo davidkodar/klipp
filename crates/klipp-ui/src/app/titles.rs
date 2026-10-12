@@ -718,6 +718,13 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::LoadCreditsList { path } => {
+                match std::fs::read_to_string(path) {
+                    Ok(text) => self.state.credits_dialog.get_or_insert_with(Default::default).text = text,
+                    Err(e) => self.state.toast.show(format!("Couldn't read {}: {e}", path.display())),
+                }
+                true
+            }
             AppCommand::SetTitleField { clip_id, index, value, done } => {
                 match self.state.set_title_field(*clip_id, *index, value, *done) {
                     Ok(()) => {
