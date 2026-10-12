@@ -16,7 +16,7 @@ fn card(fx: LayerFx) -> TitleData {
     let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: TitleBackground::None, style: None, published: Vec::new() };
     let mut xf = default_text_transform();
     xf.size = TitlePosition { x: 1.0 / 3.0, y: 1.0 / 3.0 };
-    let id = td.add_object(TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([40, 80, 200, 255]), stroke: None, fit: None }), xf);
+    let id = td.add_object(TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([40, 80, 200, 255]), gradient: None, stroke: None, fit: None }), xf);
     td.object_mut(id).unwrap().fx = Some(fx);
     td
 }

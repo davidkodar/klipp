@@ -7256,7 +7256,7 @@ mod fitted_backing_editor_tests {
         let target = title.objects[0].id;
         let fit = ShapeFit { target, padding: TitlePosition { x: 20.0, y: 12.0 } };
         let backing = title.add_object(TitleObjectContent::Shape(Shape {
-            kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fit: Some(fit), fill: Some([0, 0, 0, 255]), stroke: None,
+            kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fit: Some(fit), fill: Some([0, 0, 0, 255]), gradient: None, stroke: None,
         }), default_text_transform());
         let mut cache = None;
         let resolved = editor_title_geometry(&title, (960, 540), 0.0, &mut cache);
@@ -7290,7 +7290,7 @@ mod fitted_backing_editor_tests {
         ];
         let fit = ShapeFit { target, padding: TitlePosition { x: 20.0, y: 12.0 } };
         let backing = title.add_object(TitleObjectContent::Shape(Shape {
-            kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fit: Some(fit), fill: None, stroke: None,
+            kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fit: Some(fit), fill: None, gradient: None, stroke: None,
         }), default_text_transform());
         let mut cache = None;
         let first = editor_title_geometry(&title, (960, 540), 0.0, &mut cache);

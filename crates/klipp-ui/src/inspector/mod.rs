@@ -1,5 +1,6 @@
 pub(crate) mod keyframe_selection;
 mod vector_path;
+mod gradient_editor;
 pub mod letter_picker;
 pub mod tracker_picker;
 pub mod video_tab;
@@ -3296,26 +3297,16 @@ fn show_title_effects_group(
     if let Some(tb) = tb {
         // 10. Gradient Fill
         {
-            let cur = tb.gradient.as_ref().cloned().unwrap_or(klipp_timeline::TextGradient {
-                top_color: [255, 200, 50, 255], bottom_color: [255, 50, 50, 255], enabled: false,
-            });
+            let cur = tb.gradient.as_ref().cloned().unwrap_or(klipp_timeline::TextGradient::pair(
+                [255, 200, 50, 255], [255, 50, 50, 255], false,
+            ));
             let mut enabled = gradient_enabled;
-            let summary = if enabled { "Linear · 2 stops".to_string() } else { String::new() };
+            let summary = if enabled { gradient_summary(&cur) } else { String::new() };
             let cur_top = cur.top_color;
             let cur_bot = cur.bottom_color;
             inspector_subgroup_card(ui, "Gradient Fill", &mut enabled,
                 (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
-                let mut top_col = egui::Color32::from_rgba_premultiplied(cur_top[0], cur_top[1], cur_top[2], cur_top[3]);
-                let mut bot_col = egui::Color32::from_rgba_premultiplied(cur_bot[0], cur_bot[1], cur_bot[2], cur_bot[3]);
-                let top_changed = effect_color_row(ui, theme, "Top", &mut top_col, ("gradient_top", clip_id));
-                let bot_changed = effect_color_row(ui, theme, "Bottom", &mut bot_col, ("gradient_bot", clip_id));
-                if top_changed || bot_changed {
-                    cmds.push(AppCommand::SetTitleGradient {
-                        clip_id, enabled: true,
-                        top_color: [top_col.r(), top_col.g(), top_col.b(), top_col.a()],
-                        bottom_color: [bot_col.r(), bot_col.g(), bot_col.b(), bot_col.a()],
-                    });
-                }
+                gradient_editor::show(ui, clip_id, None, &cur, cmds);
             });
             if enabled != gradient_enabled {
                 cmds.push(AppCommand::SetTitleGradient {
@@ -3688,6 +3679,38 @@ fn title_empty_state(ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCo
     });
 }
 
+/// "Linear 45° · 3 stops": a gradient in a few words, for its card.
+fn gradient_summary(g: &klipp_timeline::TextGradient) -> String {
+    let n = g.stops().len();
+    match g.kind {
+        klipp_timeline::GradientKind::Linear { angle_deg: 0.0 } => format!("Linear · {n} stops"),
+        klipp_timeline::GradientKind::Linear { angle_deg } => format!("Linear {angle_deg:.0}° · {n} stops"),
+        klipp_timeline::GradientKind::Radial { .. } => format!("Radial · {n} stops"),
+    }
+}
+
+/// A shape's gradient fill (#1509): switched on, it fills the shape's
+/// box in place of its colour.
+fn shape_gradient(
+    ui: &mut egui::Ui,
+    clip_id: klipp_core::ClipId,
+    object_id: klipp_timeline::TitleObjectId,
+    shape: &klipp_timeline::Shape,
+    cmds: &mut Vec<AppCommand>,
+) {
+    let cur = shape.gradient.clone().unwrap_or_else(|| {
+        let base = shape.fill.unwrap_or([60, 60, 70, 255]);
+        klipp_timeline::TextGradient::pair(base, [base[0] / 2, base[1] / 2, base[2] / 2, base[3]], false)
+    });
+    let mut on = cur.enabled;
+    if ui.checkbox(&mut on, "Gradient fill").changed() {
+        cmds.push(AppCommand::SetTitleGradientStops { clip_id, object_id: Some(object_id.0), enabled: on, stops: cur.stops(), kind: cur.kind });
+    }
+    if on {
+        ui.push_id(("shape_gradient", object_id.0), |ui| gradient_editor::show(ui, clip_id, Some(object_id.0), &cur, cmds));
+    }
+}
+
 fn show_title_shape_editor(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
@@ -3699,7 +3722,7 @@ fn show_title_shape_editor(
     time: f64,
     tolerance: f64,
 ) {
-    if let klipp_timeline::ShapeKind::Path(path)=&shape.kind {vector_path::show(ui,clip_id,object_id,path,time,tolerance,cmds);return;}
+    if let klipp_timeline::ShapeKind::Path(path)=&shape.kind {shape_gradient(ui,clip_id,object_id,shape,cmds);vector_path::show(ui,clip_id,object_id,path,time,tolerance,cmds);return;}
     if ui.button("Start editable path").clicked() {cmds.push(AppCommand::SetTitleVectorPath{clip_id,object_id:object_id.0,path:klipp_timeline::VectorPath::default()});}
     ui.label(egui::RichText::new("Shape").strong().size(12.0));
     ui.add_space(6.0);
@@ -3754,6 +3777,8 @@ fn show_title_shape_editor(
             }
         });
     }
+
+    shape_gradient(ui, clip_id, object_id, shape, cmds);
 
     ui.add_space(8.0);
 

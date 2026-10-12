@@ -1574,7 +1574,31 @@ impl TitleRenderer {
             let alpha_mask = &*face_mask;
             if let Some(pattern) = tb.pattern_fill.as_ref().filter(|_| tb.pattern_fill_enabled) {
                 draw_pattern_fill(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, pattern, scale);
+            } else if let Some(gradient) = tb.gradient.as_ref().filter(|g| g.enabled && !g.is_pair()) {
+                // Stops at an angle or out from a centre, across the
+                // text block, mixed in linear light (#1509).
+                let ramp = klipp_core::fill_gradient::GradientRamp::new(&gradient.stops());
+                let (left, top) = (layout.text_left, layout.text_top);
+                let bw = (layout.text_right - left).max(1.0);
+                let bh = (layout.text_bottom - top).max(1.0);
+                for my in 0..mask_h {
+                    let py = mask_y0 + my;
+                    if py >= h { continue; }
+                    let v = (py as f32 + 0.5 - top) / bh;
+                    for mx in 0..mask_w {
+                        let cov = alpha_mask[my * mask_w + mx];
+                        if cov == 0 { continue; }
+                        let px = mask_x0 + mx;
+                        if px >= w { continue; }
+                        let u = (px as f32 + 0.5 - left) / bw;
+                        let c = ramp.at(gradient.kind.position_at(u, v, bw, bh));
+                        let alpha = (cov as u16 * c[3] as u16 / 255) as u8;
+                        blend_pixel(&mut buf, (py * w + px) * 4, &[c[0], c[1], c[2], alpha]);
+                    }
+                }
             } else if let Some(gradient) = tb.gradient.as_ref().filter(|g| g.enabled) {
+                // The two colours top to bottom, mixed in sRGB row by
+                // row as they always were.
                 let text_top = layout.text_top as i32;
                 let text_bot = layout.text_bottom as i32;
                 let text_height = (text_bot - text_top).max(1) as f32;
@@ -4392,8 +4416,10 @@ fn paint_shape_layer(
     time_secs: f32,
     gpu: Option<&mut dyn AlphaMaskProcessor>,
 ) {
+    // A gradient fills the shape's box in place of its colour (#1509).
+    let gradient = shape.gradient.as_ref().filter(|g| g.enabled).map(|g| (klipp_core::fill_gradient::GradientRamp::new(&g.stops()), g.kind));
     if let ShapeKind::Path(path) = &shape.kind {
-        vector_path::paint(buf, &path.at(time_secs as f64), transform, width, height, path.trim.as_ref().map(|t|t.at(time_secs as f64)), gpu);
+        vector_path::paint_filled(buf, &path.at(time_secs as f64), transform, width, height, path.trim.as_ref().map(|t|t.at(time_secs as f64)), gradient.as_ref(), gpu);
         return;
     }
     let w_f = width as f32;
@@ -4471,6 +4497,10 @@ fn paint_shape_layer(
                     };
                     let pixel_color = if in_stroke {
                         stroke.map(|s| s.color)
+                    } else if let Some((ramp, kind)) = &gradient {
+                        let (bw, bh) = ((2.0 * half_w).max(1.0), (2.0 * half_h).max(1.0));
+                        let (u, v) = ((px - (cx - half_w)) / bw, (py - (cy - half_h)) / bh);
+                        Some(ramp.at(kind.position_at(u, v, bw, bh)))
                     } else {
                         fill
                     };
@@ -6060,6 +6090,7 @@ mod tests {
                 kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 0.0 },
                 fit: None,
                 fill: Some([255, 0, 0, 255]),
+                gradient: None,
                 stroke: None,
             }),
             klipp_timeline::ObjectTransform {
@@ -6243,11 +6274,7 @@ mod tests {
     let tb = klipp_timeline::TextBox {
         text: "GRADIENT".to_string(),
         font_size: 100.0,
-        gradient: Some(klipp_timeline::TextGradient {
-            top_color: [255, 0, 0, 255],
-            bottom_color: [0, 0, 255, 255],
-            enabled: true,
-        }),
+        gradient: Some(klipp_timeline::TextGradient::pair([255, 0, 0, 255], [0, 0, 255, 255], true)),
         ..Default::default()
     };
     #[allow(unused_mut)]
@@ -10271,5 +10298,224 @@ mod font_weight_tests {
         for (name, td) in [("run weight", run_weight), ("run axes", run_axes)] {
             assert_ne!(hash(&no_runs_style), hash(&td), "{name}");
         }
+    }
+}
+
+#[cfg(test)]
+mod gradient_fill_tests {
+    //! #1509: text and shapes fill with gradients of any number of stops,
+    //! linear at an angle or radial, mixed in linear light; the old
+    //! two-colour pair draws as it did.
+    use super::*;
+    use klipp_core::fill_gradient::{mix_linear, GradientRamp};
+    use klipp_timeline::{GradientKind, GradientStop, ShapePreset, TextBox, TextGradient, TitlePosition, VectorPath};
+
+    const W: u32 = 640;
+    const H: u32 = 360;
+    const RED: [u8; 4] = [255, 0, 0, 255];
+    const GREEN: [u8; 4] = [0, 255, 0, 255];
+    const BLUE: [u8; 4] = [0, 0, 255, 255];
+
+    fn fnv(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
+    }
+
+    fn stops(list: &[(f32, [u8; 4])]) -> Vec<GradientStop> {
+        list.iter().map(|&(position, color)| GradientStop { position, color }).collect()
+    }
+
+    fn text(gradient: Option<TextGradient>, body: &str) -> TitleData {
+        let tb = TextBox { text: body.into(), font_size: 120.0, gradient, ..Default::default() };
+        TitleData::single_text_fx(tb, LayerFx::default())
+    }
+
+    /// A shape filling the box from a quarter to three quarters across
+    /// and down, unturned.
+    fn shape(kind: ShapeKind, gradient: Option<TextGradient>) -> TitleData {
+        let mut td = TitleData::default();
+        td.objects.clear();
+        td.add_object(
+            TitleObjectContent::Shape(Shape { kind, fill: Some([9, 9, 9, 255]), gradient, stroke: None, fit: None }),
+            klipp_timeline::ObjectTransform {
+                center: TitlePosition { x: 0.5, y: 0.5 },
+                size: TitlePosition { x: 0.5, y: 0.5 },
+                ..klipp_timeline::default_text_transform()
+            },
+        );
+        td
+    }
+
+    fn rect(gradient: TextGradient) -> TitleData {
+        shape(ShapeKind::Rectangle { corner_radius: 0.0 }, Some(gradient))
+    }
+
+    /// How far a sampled pixel may be from a stop's colour: its centre
+    /// is half a pixel from the stop, and in linear light the first
+    /// step away from a zero channel is a big one in sRGB.
+    const EDGE: u8 = 32;
+
+    fn px(buf: &[u8], x: u32, y: u32) -> [u8; 4] {
+        let i = ((y * W + x) * 4) as usize;
+        [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
+    }
+
+    /// The pixel whose centre is at `(u, v)` of the shape's box.
+    fn at(buf: &[u8], u: f32, v: f32) -> [u8; 4] {
+        let (bw, bh) = (W as f32 * 0.5, H as f32 * 0.5);
+        let x = (W as f32 * 0.25 + u * bw).min(W as f32 * 0.75 - 0.5);
+        let y = (H as f32 * 0.25 + v * bh).min(H as f32 * 0.75 - 0.5);
+        px(buf, x as u32, y as u32)
+    }
+
+    fn near(a: [u8; 4], b: [u8; 4], tol: u8, what: &str) {
+        assert!(a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= tol), "{what}: {a:?} is not {b:?}");
+    }
+
+    /// Taken on main before #1509: the two-colour pair, translucent,
+    /// switched off, and solid shape fills beside a text, draw byte for
+    /// byte as they did. Built from the saved form, as an old file has it.
+    #[test]
+    fn old_two_colour_gradients_draw_as_before() {
+        const BEFORE: [u64; 8] = [
+            0x4d8c_db0e_2a65_99ae, 0x560c_05b5_cf8b_48a0, 0xf17e_ab77_ad95_545a, 0x7500_53c7_7e64_92af,
+            0x410f_8ab4_0d83_ad58, 0x0a04_66db_ed53_3706, 0x434b_00d9_3b42_4aec, 0x0687_5e9a_360f_fd0e,
+        ];
+        let saved = |json: &str, body: &str| {
+            let g: Option<TextGradient> = serde_json::from_str(json).unwrap();
+            text(g, body)
+        };
+        let mut shapes = saved(r#"{"top_color":[255,200,50,255],"bottom_color":[20,50,255,200],"enabled":true}"#, "Over");
+        shapes.add_object(
+            TitleObjectContent::Shape(serde_json::from_str::<Shape>(r#"{"kind":{"Rectangle":{"corner_radius":12.0}},"fill":[200,40,40,220],"stroke":{"color":[255,255,255,255],"width":3.0}}"#).unwrap()),
+            klipp_timeline::ObjectTransform { center: TitlePosition { x: 0.3, y: 0.7 }, size: TitlePosition { x: 0.3, y: 0.2 }, rotation: 12.0, ..klipp_timeline::default_text_transform() },
+        );
+        let mut p = VectorPath::default();
+        p.pose.fill = [0.1, 0.8, 0.3, 0.9];
+        shapes.add_object(
+            TitleObjectContent::Shape(Shape { kind: ShapeKind::Path(p), fill: None, gradient: None, stroke: None, fit: None }),
+            klipp_timeline::ObjectTransform { center: TitlePosition { x: 0.7, y: 0.4 }, size: TitlePosition { x: 0.25, y: 0.3 }, ..klipp_timeline::default_text_transform() },
+        );
+        let cases = [
+            saved(r#"{"top_color":[255,0,0,255],"bottom_color":[0,0,255,255],"enabled":true}"#, "GRADIENT"),
+            saved(r#"{"top_color":[255,255,255,128],"bottom_color":[10,200,30,255]}"#, "Two lines\nof text"),
+            saved(r#"{"top_color":[255,0,0,255],"bottom_color":[0,0,255,255],"enabled":false}"#, "Off"),
+            shapes,
+        ];
+        let mut got = Vec::new();
+        for td in &cases {
+            for (w, h) in [(640, 360), (1920, 1080)] {
+                got.push(fnv(&TitleRenderer::new().render(td, w, h)));
+            }
+        }
+        assert_eq!(got, BEFORE);
+    }
+
+    #[test]
+    fn a_pair_saves_as_it_always_has() {
+        let json = r#"{"top_color":[255,0,0,255],"bottom_color":[0,0,255,255],"enabled":true}"#;
+        let g: TextGradient = serde_json::from_str(json).unwrap();
+        assert!(g.is_pair());
+        assert_eq!(serde_json::to_string(&g).unwrap(), json);
+        // Two stops at the ends, top to bottom, are the pair.
+        assert_eq!(TextGradient::with_stops(&stops(&[(1.0, BLUE), (0.0, RED)]), GradientKind::default(), true), g);
+    }
+
+    #[test]
+    fn three_stops_land_where_they_are_set_on_a_shape() {
+        let three = stops(&[(0.0, RED), (0.5, GREEN), (1.0, BLUE)]);
+        let fill = |angle_deg: f32| TitleRenderer::new().render(&rect(TextGradient::with_stops(&three, GradientKind::Linear { angle_deg }, true)), W, H);
+        // Top to bottom.
+        let down = fill(0.0);
+        near(at(&down, 0.3, 0.0), RED, EDGE, "0 deg, top");
+        near(at(&down, 0.7, 0.5), GREEN, EDGE, "0 deg, middle");
+        near(at(&down, 0.3, 1.0), BLUE, EDGE, "0 deg, bottom");
+        // Left to right.
+        let across = fill(90.0);
+        near(at(&across, 0.0, 0.8), RED, EDGE, "90 deg, left");
+        near(at(&across, 0.5, 0.2), GREEN, EDGE, "90 deg, middle");
+        near(at(&across, 1.0, 0.5), BLUE, EDGE, "90 deg, right");
+        // Corner to corner.
+        let diag = fill(45.0);
+        near(at(&diag, 0.0, 0.0), RED, EDGE, "45 deg, top left");
+        near(at(&diag, 0.5, 0.5), GREEN, EDGE, "45 deg, middle");
+        near(at(&diag, 1.0, 1.0), BLUE, EDGE, "45 deg, bottom right");
+        // The other corners are both half way.
+        assert_eq!(at(&diag, 1.0, 0.0)[1], at(&diag, 0.0, 1.0)[1]);
+    }
+
+    #[test]
+    fn a_radial_gradient_runs_from_the_centre_to_the_radius_on_a_shape() {
+        let g = TextGradient::with_stops(&stops(&[(0.0, RED), (1.0, BLUE)]), GradientKind::Radial { centre: [0.5, 0.5], radius: 0.3 }, true);
+        let boxed = TitleRenderer::new().render(&rect(g.clone()), W, H);
+        near(at(&boxed, 0.5, 0.5), RED, EDGE, "the centre");
+        near(at(&boxed, 0.8, 0.5), BLUE, EDGE, "the radius across");
+        near(at(&boxed, 0.5, 0.2), BLUE, EDGE, "the radius up");
+        near(at(&boxed, 0.95, 0.95), BLUE, 0, "past the radius");
+        // A path takes it over its own box, as the rectangle does.
+        let ellipse = VectorPath::preset(ShapePreset::Ellipse, [0.0, 1.0, 0.0, 1.0], [0.0; 4], 0.0);
+        let path = TitleRenderer::new().render(&shape(ShapeKind::Path(ellipse), Some(g)), W, H);
+        near(at(&path, 0.5, 0.5), RED, EDGE, "the ellipse's centre");
+        near(at(&path, 0.8, 0.5), BLUE, EDGE, "the ellipse at the radius");
+        assert_eq!(at(&path, 0.02, 0.02)[3], 0, "the ellipse leaves its box's corners");
+    }
+
+    #[test]
+    fn stops_meet_in_linear_light() {
+        let g = TextGradient::with_stops(&stops(&[(0.0, RED), (1.0, BLUE)]), GradientKind::Linear { angle_deg: 90.0 }, true);
+        let mid = at(&TitleRenderer::new().render(&rect(g), W, H), 0.5, 0.5);
+        // Half of each in linear light encodes as 188; an sRGB mix would be 128.
+        near(mid, [188, 0, 188, 255], 2, "red to blue, half way");
+        near(mid, mix_linear(RED, BLUE, 0.5), 2, "the linear-light mix");
+    }
+
+    /// Every opaque pixel of a text's face against its colour at the
+    /// point of the text block it is at, worked out here.
+    fn text_follows(g: &TextGradient, t_at: impl Fn(f32, f32, f32, f32) -> f32) -> usize {
+        let td = text(Some(g.clone()), "HHHHH\nHHHHH");
+        let mut r = TitleRenderer::new();
+        let layout = r.render_layout(&td, W, H);
+        let buf = r.render(&td, W, H);
+        let (bw, bh) = (layout.text_right - layout.text_left, layout.text_bottom - layout.text_top);
+        let ramp = GradientRamp::new(&g.stops());
+        let mut seen = 0;
+        for y in 0..H {
+            for x in 0..W {
+                let p = px(&buf, x, y);
+                if p[3] < 255 {
+                    continue;
+                }
+                let (u, v) = ((x as f32 + 0.5 - layout.text_left) / bw, (y as f32 + 0.5 - layout.text_top) / bh);
+                near(p, ramp.at(t_at(u, v, bw, bh).clamp(0.0, 1.0)), 1, &format!("({x}, {y})"));
+                seen += 1;
+            }
+        }
+        seen
+    }
+
+    #[test]
+    fn text_takes_stops_at_an_angle_and_radial() {
+        let three = stops(&[(0.0, RED), (0.5, GREEN), (1.0, BLUE)]);
+        let linear = |angle_deg| TextGradient::with_stops(&three, GradientKind::Linear { angle_deg }, true);
+        assert!(text_follows(&linear(0.0), |_, v, _, _| v) > 1000);
+        assert!(text_follows(&linear(90.0), |u, _, _, _| u) > 1000);
+        assert!(text_follows(&linear(45.0), |u, v, w, h| (u * w + v * h) / (w + h)) > 1000);
+        let radial = TextGradient::with_stops(&three, GradientKind::Radial { centre: [0.5, 0.5], radius: 0.5 }, true);
+        assert!(text_follows(&radial, |u, v, _, _| ((u - 0.5).powi(2) + (v - 0.5).powi(2)).sqrt() / 0.5) > 1000);
+        // Across the text, the stops' colours are all there, set in
+        // from the block's sides, where the letters' ink is.
+        let inset = TextGradient::with_stops(&stops(&[(0.15, RED), (0.5, GREEN), (0.85, BLUE)]), GradientKind::Linear { angle_deg: 90.0 }, true);
+        let buf = TitleRenderer::new().render(&text(Some(inset), "HHHHH\nHHHHH"), W, H);
+        for c in [RED, GREEN, BLUE] {
+            assert!(buf.chunks_exact(4).any(|p| p[3] == 255 && p.iter().zip(c).all(|(a, b)| a.abs_diff(b) <= EDGE)), "{c:?} is drawn");
+        }
+    }
+
+    #[test]
+    fn a_changed_stop_is_not_served_from_the_cache() {
+        let mut r = TitleRenderer::new();
+        let set = |mid: [u8; 4]| TextGradient::with_stops(&stops(&[(0.0, RED), (0.5, mid), (1.0, BLUE)]), GradientKind::Linear { angle_deg: 90.0 }, true);
+        let (a, b) = (set(GREEN), set([255, 255, 255, 255]));
+        assert_ne!(r.render(&text(Some(a.clone()), "HHHH"), W, H), r.render(&text(Some(b.clone()), "HHHH"), W, H));
+        assert_ne!(r.render(&rect(a), W, H), r.render(&rect(b), W, H));
     }
 }

@@ -476,6 +476,7 @@ pub fn terminal_card_composition() -> TitleData {
                 corner_radius: 24.0,
             },
             fill: Some([18, 17, 29, 244]),
+            gradient: None,
             stroke: Some(ShapeStroke {
                 color: [115, 92, 190, 180],
                 width: 2.0,
@@ -560,6 +561,7 @@ pub fn terminal_card_composition() -> TitleData {
         TitleObjectContent::Shape(Shape {
             kind: ShapeKind::Rectangle { corner_radius: 2.0 },
             fill: Some([184, 157, 255, 255]),
+            gradient: None,
             stroke: None,
             fit: None,
         }),

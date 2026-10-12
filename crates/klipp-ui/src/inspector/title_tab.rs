@@ -1364,7 +1364,7 @@ mod tests {
     /// of the stack's own motion or loops.
     #[test]
     fn a_shape_chip_is_the_shape_with_the_motion_on_it() {
-        let shape = TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 4.0 }, fill: Some([1, 2, 3, 255]), stroke: None, fit: None });
+        let shape = TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 4.0 }, fill: Some([1, 2, 3, 255]), gradient: None, stroke: None, fit: None });
         let fx = LayerFx { loops: vec![TitleLoop::Pulse { rate_hz: 1.0, min_opacity: 0.5 }], ..Default::default() };
         let rise = Motion::new(MotionKind::Rise).duration(0.3);
         let td = motion_chip_title(&ChipSubject::Layer(shape.clone()), &fx, Direction::Enter, Some(rise));

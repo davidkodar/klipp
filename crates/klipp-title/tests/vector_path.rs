@@ -7,6 +7,7 @@ fn title(path: VectorPath) -> TitleData {
         TitleObjectContent::Shape(Shape {
             kind: ShapeKind::Path(path),
             fill: None,
+            gradient: None,
             stroke: None,
             fit: None,
         }),

@@ -1066,7 +1066,7 @@ pub enum Op {
         #[serde(default)]
         glow_color: Option<String>,
         #[serde(default)]
-        gradient: Option<[String; 2]>,
+        gradient: Option<GradientSpec>,
         #[serde(default)]
         glitch: Option<f32>,
         #[serde(default)]
@@ -1150,7 +1150,7 @@ pub enum Op {
         #[serde(default)]
         glow_color: Option<String>,
         #[serde(default)]
-        gradient: Option<[String; 2]>,
+        gradient: Option<GradientSpec>,
         #[serde(default)]
         animate: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "strict_motion_spec")]
@@ -1361,6 +1361,72 @@ pub const OP_NAMES: &[&str] = &[
 
 pub use klipp_timeline::ShadowSpec;
 
+/// A title's `gradient`: `["#top", "#bottom"]`, as it always was, or
+/// any number of stops (#1509), `{"stops": [[0, "#rrggbb"], [0.5, ...],
+/// [1, ...]]}`, along `angle` (degrees: 0 top to bottom, the default, 90
+/// left to right) or out from a centre, `"radial": {"x", "y", "r"}` in
+/// fractions of the text block.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum GradientSpec {
+    Pair([String; 2]),
+    Stops(GradientStops),
+}
+
+/// The stops form of a [`GradientSpec`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GradientStops {
+    /// `[position 0..1, "#rrggbb"]`, two to sixteen.
+    pub stops: Vec<(f32, String)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radial: Option<RadialSpec>,
+}
+
+/// A radial gradient's centre and radius, in fractions of the box.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RadialSpec {
+    pub x: f32,
+    pub y: f32,
+    pub r: f32,
+}
+
+/// The gradient a spec asks for (#1509), or why it can't be.
+fn title_gradient(spec: &GradientSpec, i: usize) -> Result<klipp_timeline::TextGradient, Refusal> {
+    let colour = |c: &str| parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), "write the gradient colours as #rrggbb"));
+    let g = match spec {
+        GradientSpec::Pair([top, bottom]) => return Ok(klipp_timeline::TextGradient::pair(colour(top)?, colour(bottom)?, true)),
+        GradientSpec::Stops(g) => g,
+    };
+    if !(2..=klipp_timeline::MAX_GRADIENT_STOPS).contains(&g.stops.len()) {
+        return Err(refuse(i, format!("a gradient of {} stops", g.stops.len()), format!("give a gradient 2 to {} stops", klipp_timeline::MAX_GRADIENT_STOPS)));
+    }
+    let mut stops = Vec::with_capacity(g.stops.len());
+    for (position, c) in &g.stops {
+        if !position.is_finite() || !(0.0..=1.0).contains(position) {
+            return Err(refuse(i, format!("gradient stop at {position} is out of range"), "give each stop a position 0 to 1"));
+        }
+        stops.push(klipp_timeline::GradientStop { position: *position, color: colour(c)? });
+    }
+    let kind = match (g.angle, g.radial) {
+        (Some(_), Some(_)) => return Err(refuse(i, "a gradient both at an angle and radial", "give either angle or radial")),
+        (_, Some(RadialSpec { x, y, r })) => {
+            if ![x, y, r].iter().all(|v| v.is_finite()) || !(-1.0..=2.0).contains(&x) || !(-1.0..=2.0).contains(&y) || !(0.01..=2.0).contains(&r) {
+                return Err(refuse(i, format!("radial gradient at ({x}, {y}) of radius {r} is out of range"), "give the centre x and y -1 to 2 and the radius r 0.01 to 2, as fractions of the text"));
+            }
+            klipp_timeline::GradientKind::Radial { centre: [x, y], radius: r }
+        }
+        (angle, None) => match angle.unwrap_or(0.0) {
+            a if a.is_finite() && (-360.0..=360.0).contains(&a) => klipp_timeline::GradientKind::Linear { angle_deg: a },
+            a => return Err(refuse(i, format!("gradient angle {a} is out of range"), "give the angle -360 to 360 degrees")),
+        },
+    };
+    Ok(klipp_timeline::TextGradient::with_stops(&stops, kind, true))
+}
+
 /// The shadow a spec asks for, or `None` at opacity 0.
 fn title_shadow(spec: &ShadowSpec, i: usize) -> Result<Option<klipp_timeline::TitleShadow>, Refusal> {
     let range = |v: Option<f32>, default: f32, lo: f32, hi: f32, what: &str| match v {
@@ -1416,7 +1482,7 @@ struct Look {
     outline_color: Option<[u8; 4]>,
     glow: Option<f32>,
     glow_color: Option<[u8; 4]>,
-    gradient: Option<[[u8; 4]; 2]>,
+    gradient: Option<klipp_timeline::TextGradient>,
     glitch: Option<f32>,
     chromatic: Option<f32>,
     /// The motion asked for, fitted to each title's length when applied.
@@ -2521,7 +2587,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             if seq.tracks[ti].locked { return Err(refuse(i,"track is locked","unlock the title track")); }
             let old=clip.title_data().ok_or_else(||refuse(i,"vector_path needs a title clip","create a title first"))?;
             let mut new=old.clone();
-            let content=klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape {kind:klipp_timeline::ShapeKind::Path(path),fill:None,stroke:None,fit:None});
+            let content=klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape {kind:klipp_timeline::ShapeKind::Path(path),fill:None,gradient:None,stroke:None,fit:None});
             // A shape's box: where it was asked for; a new ready-made shape
             // is as wide as it is tall on screen, a line long and thin.
             let tall = seq.resolution.height as f32 / seq.resolution.width.max(1) as f32;
@@ -2672,10 +2738,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 outline_color: col(outline_color, "the outline colour")?,
                 glow: *glow,
                 glow_color: col(glow_color, "the glow colour")?,
-                gradient: gradient
-                    .as_ref()
-                    .map(|[top, bottom]| Ok::<_, Refusal>([col(&Some(top.clone()), "the gradient colours")?.unwrap_or_default(), col(&Some(bottom.clone()), "the gradient colours")?.unwrap_or_default()]))
-                    .transpose()?,
+                gradient: gradient.as_ref().map(|g| title_gradient(g, i)).transpose()?,
                 glitch: *glitch,
                 chromatic: *chromatic,
                 motion,
@@ -2714,7 +2777,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 color: color.as_deref().or(look.color.as_deref()), font: font.clone().or(look.font.clone()), bold: bold.or(look.bold), align: align.as_deref().or(look.align.as_deref()),
                 backing: backing.or(if backing_color.is_some() { None } else { look.backing }), backing_color: backing_color.as_deref(), full_frame: full_frame_color.as_deref(),
                 outline: outline.or(look.outline), outline_color: outline_color.as_deref().or(look.outline_color.as_deref()), glow: glow.or(look.glow), glow_color: glow_color.as_deref().or(look.glow_color.as_deref()),
-                gradient: gradient.as_ref().or(look.gradient.as_ref()), motion,
+                gradient: match gradient {
+                    Some(g) => Some(title_gradient(g, i)?),
+                    None => look.gradient.as_ref().map(|pair| title_gradient(&GradientSpec::Pair(pair.clone()), i)).transpose()?,
+                },
+                motion,
                 loop_effect: loop_effect.as_deref().or(look.loop_effect.as_deref()), glitch: *glitch, chromatic: *chromatic,
                 roll_shape: *roll_shape,
                 edge_fade: *edge_fade,
@@ -5766,7 +5833,7 @@ fn highlight(seq: &Sequence, fps: Fps, i: usize, at: Timecode, hold: f64, region
             // A ring is a capsule: corners rounded to half the shorter side.
             let radius = if kind.eq_ignore_ascii_case("ring") { (w.min(h) * 1080.0 * 0.5).max(1.0) } else { 12.0 };
             td.add_object(
-                TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: radius }, fit: None, fill: None, stroke: Some(ShapeStroke { color, width: stroke }) }),
+                TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: radius }, fit: None, fill: None, gradient: None, stroke: Some(ShapeStroke { color, width: stroke }) }),
                 boxed(x, y, w, h),
             );
         }
@@ -5776,7 +5843,7 @@ fn highlight(seq: &Sequence, fps: Fps, i: usize, at: Timecode, hold: f64, region
             let (x0, x1, y0, y1) = ((x - w / 2.0).clamp(0.0, 1.0), (x + w / 2.0).clamp(0.0, 1.0), (y - h / 2.0).clamp(0.0, 1.0), (y + h / 2.0).clamp(0.0, 1.0));
             let panel = |cx: f32, cy: f32, bw: f32, bh: f32, td: &mut TitleData| {
                 if bw > 0.001 && bh > 0.001 {
-                    td.add_object(TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fit: None, fill: Some(dim), stroke: None }), boxed(cx, cy, bw, bh));
+                    td.add_object(TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fit: None, fill: Some(dim), gradient: None, stroke: None }), boxed(cx, cy, bw, bh));
                 }
             };
             panel(0.5, y0 / 2.0, 1.0, y0, &mut td);
@@ -7003,7 +7070,7 @@ fn parse_color(c: &str) -> Option<[u8; 4]> {
 /// the title's length, which its motion is fitted to; an error is a
 /// motion that cannot fit it.
 fn restyle(td: &klipp_timeline::TitleData, look: &Look, secs: f64) -> Result<klipp_timeline::TitleData, String> {
-    use klipp_timeline::{FontStyle, TextGlow, TextGradient, TextOutline, TitleBackground, TitleObjectContent};
+    use klipp_timeline::{FontStyle, TextGlow, TextOutline, TitleBackground, TitleObjectContent};
     let motion = look.motion.as_ref().map(|m| m.fit(secs)).transpose()?;
     let mut new = td.clone();
     let first_centre = new.objects.iter().find(|o| matches!(o.content, TitleObjectContent::TextBox(_))).map(|o| (o.transform.center.x, o.transform.center.y));
@@ -7045,8 +7112,8 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look, secs: f64) -> Result<kli
             runs_placed = set_type(tb, &look.typeset).map_err(|e| runs_missing.get_or_insert(e).clone()).is_ok();
         }
         // The text's own fill and edge, not its layer stack.
-        if let Some([top, bottom]) = look.gradient {
-            tb.gradient = Some(TextGradient { top_color: top, bottom_color: bottom, enabled: true });
+        if let Some(g) = &look.gradient {
+            tb.gradient = Some(g.clone());
         }
         if let Some(g) = look.glitch {
             tb.glitch_intensity = g;
@@ -7516,7 +7583,7 @@ struct TitleArgs<'a> {
     outline_color: Option<&'a str>,
     glow: Option<f32>,
     glow_color: Option<&'a str>,
-    gradient: Option<&'a [String; 2]>,
+    gradient: Option<klipp_timeline::TextGradient>,
     motion: klipp_core::title_motion::TitleMotion,
     loop_effect: Option<&'a str>,
     glitch: Option<f32>,
@@ -7535,7 +7602,7 @@ struct TitleArgs<'a> {
 /// Build a styled, animated title from scratch and place it on a text
 /// track — the general-purpose sibling of `lower_third`/`captions`.
 fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
-    use klipp_timeline::{FontStyle, TextAlignment, TextBox, TextGlow, TextGradient, TextOutline, TitleBackground, TitleData};
+    use klipp_timeline::{FontStyle, TextAlignment, TextBox, TextGlow, TextOutline, TitleBackground, TitleData};
     let text = a.text.trim();
     if text.is_empty() {
         return Err(refuse(i, "a title needs some text", "give the words to show"));
@@ -7598,10 +7665,8 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
     if let Some(shadow) = a.shadow {
         fx.shadows = vec![shadow];
     }
-    if let Some(gr) = a.gradient {
-        let top = parse_color(&gr[0]).ok_or_else(|| refuse(i, format!("\"{}\" is not a colour", gr[0]), "write the gradient colours as #rrggbb"))?;
-        let bottom = parse_color(&gr[1]).ok_or_else(|| refuse(i, format!("\"{}\" is not a colour", gr[1]), "write the gradient colours as #rrggbb"))?;
-        tb.gradient = Some(TextGradient { top_color: top, bottom_color: bottom, enabled: true });
+    if let Some(g) = a.gradient {
+        tb.gradient = Some(g);
     }
     if let Some(gl) = a.glitch {
         if !gl.is_finite() || !(0.0..=1.0).contains(&gl) {
@@ -7997,7 +8062,7 @@ fn style_looks(ts: &klipp_timeline::TypeStyle) -> Vec<(&'static str, Look)> {
     add("glow", Look { glow: ts.glow, ..Default::default() });
     add("glow colour", Look { glow_color: col(&ts.glow_color), ..Default::default() });
     add("shadow", Look { shadow: ts.shadow.as_ref().and_then(|s| title_shadow(s, 0).ok()), ..Default::default() });
-    let gradient = ts.gradient.as_ref().and_then(|[a, b]| Some([parse_color(a)?, parse_color(b)?]));
+    let gradient = ts.gradient.as_ref().and_then(|[a, b]| Some(klipp_timeline::TextGradient::pair(parse_color(a)?, parse_color(b)?, true)));
     add("gradient", Look { gradient, ..Default::default() });
     let motion = MotionAsk { enter: ts.enter.clone(), exit: ts.exit.clone(), animate: ts.animate.clone(), animate_secs: ts.animate_secs, stagger: ts.stagger.clone() };
     add("motion", Look { motion: (motion != MotionAsk::default()).then_some(motion), ..Default::default() });
@@ -11446,6 +11511,58 @@ mod tests {
         assert!(shadows(&view).is_empty(), "opacity 0 takes it off");
     }
 
+    /// #1509: `title` and `style` take a gradient of any number of stops,
+    /// at an angle or radial, beside the two colours they always took.
+    #[test]
+    fn title_and_style_take_gradient_stops() {
+        use klipp_timeline::GradientKind;
+        let (seq, pool, _, _, _) = fixture();
+        let made: Vec<Op> = serde_json::from_str(r##"[{"op":"title","text":"Sand","at":{"secs":0.5},"secs":3.0,
+            "gradient":{"stops":[[0,"#ff0000"],[0.5,"#00ff00"],[1,"#0000ff"]],"angle":45}}]"##).unwrap();
+        let plan = resolve(&seq, &pool, &made).unwrap();
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
+        let id = clip.id;
+        let ClipKind::Title(td) = &clip.kind else { panic!("a title") };
+        let g = td.primary_text().and_then(|tb| tb.gradient.clone()).expect("a gradient");
+        assert_eq!(g.kind, GradientKind::Linear { angle_deg: 45.0 });
+        let stops: Vec<_> = g.stops().iter().map(|s| (s.position, s.color)).collect();
+        assert_eq!(stops, [(0.0, [255, 0, 0, 255]), (0.5, [0, 255, 0, 255]), (1.0, [0, 0, 255, 255])]);
+        assert_eq!((g.top_color, g.bottom_color), ([255, 0, 0, 255], [0, 0, 255, 255]), "the ends are the pair's colours");
+
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        let after_title = view.sequences[0].clone();
+        let style = |gradient: &str| serde_json::from_str::<Vec<Op>>(&format!(r##"[{{"op":"style","clip_id":"{}","gradient":{gradient}}}]"##, id.0));
+        let ops = style(r##"{"stops":[[0,"#ffffff"],[1,"#000000"]],"radial":{"x":0.5,"y":0.4,"r":0.6}}"##).unwrap();
+        let plan = resolve(&after_title, &pool, &ops).unwrap();
+        let EditCommand::EditTitle { new_data, .. } = &plan.steps[0].edit else { panic!("an edit in place") };
+        let g = new_data.primary_text().and_then(|tb| tb.gradient.clone()).expect("a gradient");
+        assert_eq!(g.kind, GradientKind::Radial { centre: [0.5, 0.4], radius: 0.6 });
+        assert_eq!((g.top_color, g.bottom_color, g.stops.len()), ([255; 4], [0, 0, 0, 255], 0), "two stops at the ends are the pair");
+        // The two colours still restyle as they did.
+        let ops = style(r##"["#ffffff","#000080"]"##).unwrap();
+        let plan = resolve(&after_title, &pool, &ops).unwrap();
+        let EditCommand::EditTitle { new_data, .. } = &plan.steps[0].edit else { panic!("an edit in place") };
+        let g = new_data.primary_text().and_then(|tb| tb.gradient.clone()).expect("a gradient");
+        assert!(g.is_pair() && g.top_color == [255; 4] && g.bottom_color == [0, 0, 0x80, 255]);
+
+        // Refused: one stop, a stop past the end, a bad colour, both an
+        // angle and a centre, a radius of nothing; a field it does not know.
+        for bad in [
+            r##"{"stops":[[0,"#ffffff"]]}"##,
+            r##"{"stops":[[0,"#ffffff"],[1.5,"#000000"]]}"##,
+            r##"{"stops":[[0,"#ffffff"],[1,"black-ish"]]}"##,
+            r##"{"stops":[[0,"#ffffff"],[1,"#000000"]],"angle":30,"radial":{"x":0.5,"y":0.5,"r":0.5}}"##,
+            r##"{"stops":[[0,"#ffffff"],[1,"#000000"]],"radial":{"x":0.5,"y":0.5,"r":0}}"##,
+        ] {
+            assert!(resolve(&after_title, &pool, &style(bad).unwrap()).is_err(), "{bad}");
+        }
+        assert!(style(r##"{"stops":[[0,"#ffffff"],[1,"#000000"]],"spin":3}"##).is_err());
+    }
+
     /// #509: everything `title` takes for a look or a motion restyles a
     /// title in place, keeping its id, so nothing has to be remade.
     #[test]
@@ -11512,7 +11629,7 @@ mod tests {
         assert_eq!(restyle(&td, &same_place, 3.0).unwrap(), td, "nothing to change, nothing changed");
         // The text's own fields land alone, with no layer stack asked for
         // (the first fix put them inside the stack's branch).
-        let alone = restyle(&td, &Look { gradient: Some([[255; 4], [0, 0, 0, 255]]), ..Default::default() }, 3.0).unwrap();
+        let alone = restyle(&td, &Look { gradient: Some(klipp_timeline::TextGradient::pair([255; 4], [0, 0, 0, 255], true)), ..Default::default() }, 3.0).unwrap();
         let klipp_timeline::TitleObjectContent::TextBox(tb) = &alone.objects[0].content else { panic!("text") };
         assert!(tb.gradient.is_some(), "a gradient alone is applied");
         assert!(alone.objects[0].fx.is_none(), "and makes no layer stack");

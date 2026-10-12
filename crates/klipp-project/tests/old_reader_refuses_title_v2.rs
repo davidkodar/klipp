@@ -195,7 +195,7 @@ fn the_reader_from_before_still_reads_a_title_without_one() {
     assert!(matches!(serde_json::from_value::<before::ClipKindJson>(kind), Ok(before::ClipKindJson::Title { .. })));
 
     let path = VectorPath { trim: None, ..Default::default() };
-    let shape = TitleObjectContent::Shape(Shape { kind: ShapeKind::Path(path), fill: None, stroke: Some(ShapeStroke { color: [255; 4], width: 2.0 }), fit: None });
+    let shape = TitleObjectContent::Shape(Shape { kind: ShapeKind::Path(path), fill: None, gradient: None, stroke: Some(ShapeStroke { color: [255; 4], width: 2.0 }), fit: None });
     let kind = saved_clip_kind(vec![(shape, LayerFx::default())]);
     assert_eq!(kind["type"], "vector_title");
     assert!(matches!(serde_json::from_value::<before::ClipKindJson>(kind), Ok(before::ClipKindJson::VectorTitle { .. })));

@@ -78,6 +78,7 @@ fn curved_connector_and_device_outline_draw_pause_and_retract() {
         TitleObjectContent::Shape(Shape {
             kind: ShapeKind::Path(p),
             fill: None,
+            gradient: None,
             stroke: None,
             fit: None,
         }),

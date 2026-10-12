@@ -1,5 +1,6 @@
 //! Resolution-adaptive cubic rasterization. Closed contours use even-odd
 //! fill; open contours are stroke-only. Strokes have round caps and joins.
+use klipp_core::fill_gradient::{GradientKind, GradientRamp};
 use klipp_timeline::{ObjectTransform, PathPose, TrimRange};
 fn midpoint(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
     [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
@@ -73,6 +74,26 @@ pub(crate) fn contours(
         })
         .collect()
 }
+/// Where a frame pixel falls in the object's box, as box fractions
+/// (`contours`' mapping, undone), and the box's size in pixels.
+fn box_fractions(transform: &ObjectTransform, width: u32, height: u32) -> (impl Fn(f32, f32) -> (f32, f32), [f32; 2]) {
+    let size = [
+        (transform.size.x * width as f32).max(1.0),
+        (transform.size.y * height as f32).max(1.0),
+    ];
+    let anchor = [transform.anchor_norm.x, transform.anchor_norm.y];
+    let pivot = [
+        transform.center.x * width as f32 + (anchor[0] - 0.5) * size[0],
+        transform.center.y * height as f32 + (anchor[1] - 0.5) * size[1],
+    ];
+    let (sin, cos) = transform.rotation.to_radians().sin_cos();
+    let unmap = move |x: f32, y: f32| {
+        let (dx, dy) = (x - pivot[0], y - pivot[1]);
+        ((cos * dx + sin * dy) / size[0] + anchor[0], (cos * dy - sin * dx) / size[1] + anchor[1])
+    };
+    (unmap, size)
+}
+#[cfg(test)]
 pub(crate) fn paint(
     buf: &mut [u8],
     pose: &PathPose,
@@ -82,13 +103,30 @@ pub(crate) fn paint(
     trim: Option<TrimRange>,
     gpu: Option<&mut dyn super::AlphaMaskProcessor>,
 ) {
+    paint_filled(buf, pose, transform, width, height, trim, None, gpu)
+}
+/// [`paint`], with the fill taken from a gradient over the object's box
+/// in place of the pose's fill colour when one is given (#1509).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn paint_filled(
+    buf: &mut [u8],
+    pose: &PathPose,
+    transform: &ObjectTransform,
+    width: u32,
+    height: u32,
+    trim: Option<TrimRange>,
+    gradient: Option<&(GradientRamp, GradientKind)>,
+    gpu: Option<&mut dyn super::AlphaMaskProcessor>,
+) {
     if width == 0 || height == 0 {
         return;
     }
     let empty = trim.is_some_and(|r| r.end <= r.start);
-    if pose.fill[3] <= 0.0 && (pose.stroke_width <= 0.0 || pose.stroke[3] <= 0.0 || empty) {
+    let fill_alpha = if gradient.is_some() { 1.0 } else { pose.fill[3] };
+    if fill_alpha <= 0.0 && (pose.stroke_width <= 0.0 || pose.stroke[3] <= 0.0 || empty) {
         return;
     }
+    let (unmap, box_size) = box_fractions(transform, width, height);
     let mut contours = contours(pose, transform, width, height);
     let half = pose.stroke_width * crate::frame_scale(width, height) * 0.5;
     let glow_radius = pose
@@ -206,14 +244,24 @@ pub(crate) fn paint(
         }
     }
     for (i, (f, s)) in fill.into_iter().zip(stroke).enumerate() {
-        let fa = f.count_ones() as f32 * 0.25 * pose.fill[3];
+        let fill_colour = match gradient {
+            Some((ramp, kind)) if f != 0 => {
+                let (u, v) = unmap(
+                    (x0 + i as u32 % width) as f32 + 0.5,
+                    (y0 + i as u32 / width) as f32 + 0.5,
+                );
+                ramp.at(kind.position_at(u, v, box_size[0], box_size[1])).map(|c| c as f32 / 255.0)
+            }
+            _ => pose.fill,
+        };
+        let fa = f.count_ones() as f32 * 0.25 * fill_colour[3];
         let sa = s.count_ones() as f32 * 0.25 * pose.stroke[3];
-        let overlap = (f & s).count_ones() as f32 * 0.25 * pose.fill[3] * pose.stroke[3];
+        let overlap = (f & s).count_ones() as f32 * 0.25 * fill_colour[3] * pose.stroke[3];
         let alpha = fa + sa - overlap;
         if alpha > 0.0 {
             let mut src = [0; 4];
             for c in 0..3 {
-                src[c] = ((pose.fill[c] * (fa - overlap) + pose.stroke[c] * sa) / alpha * 255.0)
+                src[c] = ((fill_colour[c] * (fa - overlap) + pose.stroke[c] * sa) / alpha * 255.0)
                     .round() as u8;
             }
             src[3] = (alpha * 255.0).round() as u8;

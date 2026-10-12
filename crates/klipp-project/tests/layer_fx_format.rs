@@ -32,7 +32,7 @@ fn text() -> TitleObjectContent {
     TitleObjectContent::TextBox(TextBox { text: "Layer".into(), ..Default::default() })
 }
 fn rectangle() -> TitleObjectContent {
-    TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: 8.0 }, fill: Some([40, 60, 90, 255]), stroke: None, fit: None })
+    TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: 8.0 }, fill: Some([40, 60, 90, 255]), gradient: None, stroke: None, fit: None })
 }
 fn image() -> TitleObjectContent {
     TitleObjectContent::Image(ImageLayer { path: "/nonexistent/logo.png".into(), fit: Default::default() })
@@ -42,7 +42,7 @@ fn path(trim: bool) -> TitleObjectContent {
     if trim {
         p.trim = Some(PathTrim { range: TrimRange { start: 0.0, end: 0.5, offset: 0.0 }, keyframes: vec![] });
     }
-    TitleObjectContent::Shape(Shape { kind: ShapeKind::Path(p), fill: None, stroke: Some(ShapeStroke { color: [255; 4], width: 3.0 }), fit: None })
+    TitleObjectContent::Shape(Shape { kind: ShapeKind::Path(p), fill: None, gradient: None, stroke: Some(ShapeStroke { color: [255; 4], width: 3.0 }), fit: None })
 }
 
 fn project_with(objects: Vec<(TitleObjectContent, LayerFx)>) -> Sequence {
@@ -187,4 +187,33 @@ fn nothing_renders_from_the_old_place() {
     assert_eq!(td.glows().len(), 1, "the accessors the renderer uses see the glow on the object");
     let TitleObjectContent::TextBox(inner) = &td.objects[0].content else { unreachable!() };
     assert!(inner.legacy_fx.is_default(), "and nothing stays behind");
+}
+
+/// #1509: a gradient of more stops at an angle on a text, a radial one
+/// on a shape, and the old two colours beside them, through a real save
+/// and a strict load; the two colours are written as they always were.
+#[test]
+fn gradient_stops_round_trip() {
+    let stop = |position: f32, color: [u8; 4]| GradientStop { position, color };
+    let three = TextGradient::with_stops(&[stop(0.0, [255, 0, 0, 255]), stop(0.4, [0, 255, 0, 200]), stop(1.0, [0, 0, 255, 255])], GradientKind::Linear { angle_deg: 45.0 }, true);
+    let radial = TextGradient::with_stops(&[stop(0.0, [255; 4]), stop(1.0, [10, 20, 30, 0])], GradientKind::Radial { centre: [0.3, 0.6], radius: 0.7 }, false);
+    let pair = TextGradient::pair([1, 2, 3, 255], [4, 5, 6, 255], true);
+    let with = |g: &TextGradient| TitleObjectContent::TextBox(TextBox { text: "Fill".into(), gradient: Some(g.clone()), ..Default::default() });
+    let shape = TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fill: None, gradient: Some(radial.clone()), stroke: None, fit: None });
+    let seq = project_with(vec![(with(&three), LayerFx::default()), (shape, LayerFx::default()), (with(&pair), LayerFx::default())]);
+    let dir = scratch("gradient_stops");
+    klipp_project::save_project(&dir, std::slice::from_ref(&seq), &MediaPool::new()).unwrap();
+    let written = kind_of(&dir);
+    let objects = &written["title_data"]["objects"];
+    assert_eq!(objects[2]["content"]["TextBox"]["gradient"], serde_json::json!({"top_color": [1, 2, 3, 255], "bottom_color": [4, 5, 6, 255], "enabled": true}), "the pair as it was");
+    assert_eq!(objects[0]["content"]["TextBox"]["gradient"]["stops"].as_array().map(Vec::len), Some(3));
+    let (sequences, ..) = klipp_project::load_project_strict(&dir).expect("a strict reload");
+    let ClipKind::Title(td) = &sequences[0].tracks[0].clips[0].kind else { panic!("a title") };
+    let ClipKind::Title(saved) = &seq.tracks[0].clips[0].kind else { unreachable!() };
+    assert_eq!(td.objects, saved.objects);
+    let TitleObjectContent::TextBox(tb) = &td.objects[0].content else { panic!("text") };
+    assert_eq!(tb.gradient.as_ref(), Some(&three));
+    let TitleObjectContent::Shape(s) = &td.objects[1].content else { panic!("a shape") };
+    assert_eq!(s.gradient.as_ref(), Some(&radial));
+    let _ = std::fs::remove_dir_all(&dir);
 }

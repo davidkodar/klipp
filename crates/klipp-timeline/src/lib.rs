@@ -107,6 +107,7 @@ pub use brief::{Brief, CastMember, Feature, MotionAnchorSpec, ShadowSpec, TitleM
 pub use edit_plan::{EditPlan, PlanBackground, PlanMusic, PlanPlacement, PlanSegment, PlanSfx, PlanTitle, PlanZoom};
 pub use marker::Marker;
 pub use klipp_core::MulticamSound;
+pub use klipp_core::fill_gradient::{GradientKind, GradientStop, MAX_GRADIENT_STOPS};
 pub use sequence::{
     effective_timeline_duration_for_keyframes, one_frame, speed_at_keyframes, speed_integral_keyframes,
     AnchorAlignment, BakedOwn, Camera, CaptionStyle, ChannelConfig, Clip, ClipLabel, ClipMarker, ClipRole, FadeCurve, GradeVersion, LinkMode,

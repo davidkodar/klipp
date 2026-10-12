@@ -29,6 +29,7 @@ fn a_saved_vector_morph_renders_in_the_export() {
         TitleObjectContent::Shape(Shape {
             kind: ShapeKind::Path(p),
             fill: None,
+            gradient: None,
             stroke: None,
             fit: None,
         }),

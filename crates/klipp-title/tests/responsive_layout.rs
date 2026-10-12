@@ -37,7 +37,7 @@ fn with_backing(text: &str) -> TitleData {
     let target = td.objects[0].id;
     td.add_object(TitleObjectContent::Shape(Shape {
         kind: ShapeKind::Rectangle { corner_radius: 0.0 },
-        fill: Some([255, 0, 0, 255]), stroke: None,
+        fill: Some([255, 0, 0, 255]), gradient: None, stroke: None,
         fit: Some(ShapeFit { target, padding: TitlePosition { x: 20.0, y: 12.0 } }),
     }), default_text_transform());
     // Backing precedes text: bounds must not depend on paint order.

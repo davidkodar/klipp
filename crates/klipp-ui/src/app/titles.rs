@@ -1275,6 +1275,7 @@ impl KlippApp {
                                     )),
                                     fit: None,
                                     fill: None,
+                                    gradient: None,
                                     stroke: None,
                                 }),
                                 1 => klipp_timeline::TitleObjectContent::Shape(
@@ -1284,6 +1285,7 @@ impl KlippApp {
                                         },
                                         fit: None,
                                         fill: Some([60, 60, 70, 220]),
+                                        gradient: None,
                                         stroke: None,
                                     },
                                 ),
@@ -2013,11 +2015,18 @@ impl KlippApp {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                tb.gradient = Some(klipp_timeline::TextGradient {
-                                    top_color: *top_color,
-                                    bottom_color: *bottom_color,
-                                    enabled: *enabled,
-                                });
+                                // The ends of a gradient of more stops
+                                // (#1509) are the pair's colours.
+                                let mut g = tb.gradient.take().unwrap_or_else(|| klipp_timeline::TextGradient::pair(*top_color, *bottom_color, *enabled));
+                                g.enabled = *enabled;
+                                g.top_color = *top_color;
+                                g.bottom_color = *bottom_color;
+                                if g.stops.len() >= 2 {
+                                    let last = g.stops.len() - 1;
+                                    g.stops[0].color = *top_color;
+                                    g.stops[last].color = *bottom_color;
+                                }
+                                tb.gradient = Some(g);
                             }
                         }
                     }
@@ -2027,6 +2036,61 @@ impl KlippApp {
                 self.sync_sequence_to_engine();
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleGradientStops { clip_id, object_id, enabled, stops, kind } => {
+                if stops.len() < 2 || stops.len() > klipp_timeline::MAX_GRADIENT_STOPS {
+                    return true;
+                }
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                let gradient = klipp_timeline::TextGradient::with_stops(stops, *kind, *enabled);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            match object_id {
+                                None => {
+                                    if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                        tb.gradient = Some(gradient.clone());
+                                    }
+                                }
+                                Some(id) => {
+                                    if let Some(o) = td.object_mut(klipp_timeline::TitleObjectId(*id)) {
+                                        if let klipp_timeline::TitleObjectContent::Shape(s) = &mut o.content {
+                                            s.gradient = Some(gradient.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // A stop dragged along the bar is one step (#1509).
+                if !self.state.active_history().is_dragging(&format!("gradient:{}", clip_id.0)) {
+                    if let Some(old) = old { self.push_title_undo(*clip_id, "Title Gradient", old); }
+                }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::BeginTitleGradientDrag { clip_id } => {
+                if let Some(data) = self.snapshot_title(*clip_id) {
+                    self.state.active_history_mut().begin_drag(format!("gradient:{}", clip_id.0), crate::history::HistoryEntry {
+                        command: crate::history::EditCommand::EditTitle { clip_id: *clip_id, description: "Title Gradient", old_data: data.clone(), new_data: data },
+                    });
+                }
+                true
+            }
+            AppCommand::EndTitleGradientDrag { clip_id } => {
+                if self.state.active_history().is_dragging(&format!("gradient:{}", clip_id.0)) {
+                    if let Some(data) = self.snapshot_title(*clip_id) {
+                        self.state.active_history_mut().end_drag(crate::history::HistoryEntry {
+                            command: crate::history::EditCommand::EditTitle { clip_id: *clip_id, description: "Title Gradient", old_data: data.clone(), new_data: data },
+                        });
+                    }
+                }
                 true
             }
             AppCommand::SetTitlePattern { clip_id, pattern_kind, color_a, color_b, size } => {
@@ -3243,6 +3307,7 @@ pub(super) fn title_edit_clip_id(cmd: &AppCommand) -> Option<klipp_core::ClipId>
         | C::SetTitleBackground { clip_id, .. }
         | C::SetTitleShadow { clip_id, .. }
         | C::SetTitleGradient { clip_id, .. }
+        | C::SetTitleGradientStops { clip_id, .. }
         | C::AddTitleObjectOpacityKeyframe { clip_id, .. }
         | C::RemoveTitleObjectOpacityKeyframe { clip_id, .. }
         | C::AddTitleObjectPositionKeyframe { clip_id, .. }

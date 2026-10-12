@@ -51,6 +51,7 @@ pub mod snap;
 pub mod shot;
 pub mod logging;
 pub mod field;
+pub mod fill_gradient;
 pub mod smart_bin;
 pub mod sync;
 pub mod media_marker;
