@@ -196,6 +196,9 @@ struct Appended {
     px: f32,
     face: usize,
     chars: usize,
+    /// A line break this layout put in where a line breaks by its
+    /// shaped width (#1693); not the text's, and drawn as nothing.
+    synthetic: bool,
 }
 
 /// fontdue's `Layout`, with each line set in shaped glyphs. Text is
@@ -208,7 +211,11 @@ pub(crate) struct ShapedLayout {
     inner: Layout,
     settings: LayoutSettings,
     appended: Vec<Appended>,
+    /// The pieces asked for, `(start, end, px, face)`, in order.
+    pieces: Vec<(usize, usize, f32, usize)>,
     glyphs: Vec<GlyphPosition>,
+    /// Whether each glyph reads right to left (#1693), for the caret.
+    glyph_rtl: Vec<bool>,
     lines: Vec<Line>,
     /// The source text the pieces are of, for the bidi algorithm.
     source: String,
@@ -232,7 +239,9 @@ impl ShapedLayout {
             inner: Layout::new(CoordinateSystem::PositiveYDown),
             settings: LayoutSettings::default(),
             appended: Vec::new(),
+            pieces: Vec::new(),
             glyphs: Vec::new(),
+            glyph_rtl: Vec::new(),
             lines: Vec::new(),
             source: String::new(),
             rtl: false,
@@ -247,8 +256,9 @@ impl ShapedLayout {
 
     pub(crate) fn reset(&mut self, settings: &LayoutSettings) {
         self.settings = *settings;
-        self.inner.reset(settings);
+        self.inner.reset(&Self::unwrapped(settings));
         self.appended.clear();
+        self.pieces.clear();
         self.glyphs.clear();
         self.lines.clear();
     }
@@ -259,18 +269,104 @@ impl ShapedLayout {
         if start >= end {
             return;
         }
-        let piece = &text[start..end];
-        let fonts: Vec<&Font> = faces.iter().map(|f| &**f).collect();
-        self.inner.append(&fonts, &TextStyle::new(piece, px, face));
         if self.source != text {
             self.source = text.to_string();
         }
-        self.appended.push(Appended { base: start, end, text: piece.to_string(), px, face, chars: piece.chars().count() });
+        self.pieces.push((start, end, px, face));
+        self.relayout(faces);
         self.shape(faces);
+    }
+
+    /// fontdue's settings with no width to wrap at: this layout breaks
+    /// the lines itself, and gives fontdue the breaks (#1693).
+    fn unwrapped(settings: &LayoutSettings) -> LayoutSettings {
+        LayoutSettings { max_width: None, ..*settings }
+    }
+
+    /// Lay every piece again in fontdue, a line break put in wherever a
+    /// line breaks by its shaped width (#1693): fontdue's own rule, at
+    /// fontdue's own break opportunities, with each character's advance
+    /// the shaper's. Text whose shaped advances are fontdue's breaks
+    /// where fontdue broke it, and fontdue still sets each line's height
+    /// and baseline.
+    fn relayout(&mut self, faces: &[Face]) {
+        let starts = self.shaped_breaks(faces);
+        self.inner.reset(&Self::unwrapped(&self.settings));
+        self.appended.clear();
+        let fonts: Vec<&Font> = faces.iter().map(|f| &**f).collect();
+        let source = std::mem::take(&mut self.source);
+        let mut next_break = starts.iter().peekable();
+        for &(start, end, px, face) in &self.pieces {
+            let mut from = start;
+            loop {
+                // A break inside the piece, or at its start.
+                while next_break.peek().is_some_and(|&&b| b < from) {
+                    next_break.next();
+                }
+                let cut = next_break.peek().map(|&&b| b).filter(|&b| b < end).unwrap_or(end);
+                if cut == from && cut < end {
+                    self.inner.append(&fonts, &TextStyle::new("\n", px, face));
+                    self.appended.push(Appended { base: from, end: from, text: "\n".into(), px, face, chars: 1, synthetic: true });
+                    next_break.next();
+                    continue;
+                }
+                let piece = &source[from..cut];
+                self.inner.append(&fonts, &TextStyle::new(piece, px, face));
+                self.appended.push(Appended { base: from, end: cut, text: piece.to_string(), px, face, chars: piece.chars().count(), synthetic: false });
+                if cut >= end {
+                    break;
+                }
+                from = cut;
+            }
+        }
+        self.source = source;
+    }
+
+    /// Where lines start that fontdue's soft breaks would start, the
+    /// pieces measured shaped: the source byte of each line's first
+    /// character, past the first line, other than after a hard break.
+    fn shaped_breaks(&self, faces: &[Face]) -> Vec<usize> {
+        use klipp_linebreak::{LinebreakData, Linebreaker, LINEBREAK_NONE};
+        let Some(max_width) = self.settings.max_width else { return Vec::new() };
+        let mask = LinebreakData::from_mask(self.settings.wrap_style == fontdue::layout::WrapStyle::Word, self.settings.wrap_hard_breaks, true);
+        let mut breaker = Linebreaker::new();
+        let (mut current, mut start, mut prev, mut at_pos, mut at_idx) = (0.0f32, 0.0f32, LINEBREAK_NONE, 0.0f32, 0usize);
+        let mut bytes: Vec<usize> = Vec::new();
+        let mut starts = Vec::new();
+        for &(a, b, px, face) in &self.pieces {
+            let advances = shaped_advances(&faces[face], &self.source[a..b], px);
+            for ((i, c), advance) in self.source[a..b].char_indices().zip(advances) {
+                let linebreak = breaker.next(c).mask(mask);
+                if linebreak >= prev {
+                    prev = linebreak;
+                    at_pos = current;
+                    at_idx = bytes.len().saturating_sub(1);
+                }
+                if linebreak.is_hard() || current - start + advance > max_width {
+                    prev = LINEBREAK_NONE;
+                    if !linebreak.is_hard() {
+                        starts.push(at_idx + 1);
+                    }
+                    start = at_pos;
+                }
+                bytes.push(a + i);
+                current += advance;
+            }
+        }
+        // As source bytes: where the character a line starts with is.
+        let end = self.pieces.last().map_or(0, |p| p.1);
+        let mut out: Vec<usize> = starts.into_iter().map(|g| bytes.get(g).copied().unwrap_or(end)).collect();
+        out.dedup();
+        out
     }
 
     pub(crate) fn glyphs(&self) -> &Vec<GlyphPosition> {
         &self.glyphs
+    }
+
+    /// Whether each of [`Self::glyphs`] reads right to left (#1693).
+    pub(crate) fn glyph_rtl(&self) -> &[bool] {
+        &self.glyph_rtl
     }
 
     /// The lines laid, `None` before any glyph is.
@@ -288,6 +384,7 @@ impl ShapedLayout {
     /// aligned in the box by its shaped width as fontdue aligns it.
     fn shape(&mut self, faces: &[Face]) {
         self.glyphs.clear();
+        self.glyph_rtl.clear();
         self.lines.clear();
         let laid = self.inner.glyphs();
         let Some(lines) = self.inner.lines() else { return };
@@ -323,6 +420,11 @@ impl ShapedLayout {
             let mut segments: Vec<Segment> = Vec::new();
             while idx < end {
                 if laid[idx].char_data.is_control() {
+                    // A break this layout put in is not the text's.
+                    if self.appended[owner[idx]].synthetic {
+                        idx += 1;
+                        continue;
+                    }
                     let level = levels.as_ref().map_or(0, |(_, p)| *p);
                     segments.push(Segment { from: idx, to: idx + 1, level, control: true });
                     idx += 1;
@@ -354,12 +456,14 @@ impl ShapedLayout {
                     g.x = pen.floor();
                     g.byte_offset += piece.base;
                     self.glyphs.push(g);
+                    self.glyph_rtl.push(s.level % 2 == 1);
                     continue;
                 }
                 let from = laid[s.from].byte_offset;
                 let to = laid[s.to - 1].byte_offset + laid[s.to - 1].parent.len_utf8();
                 let face = &faces[piece.face];
                 set_run(face, piece, from, to, s.level % 2 == 1, line.baseline_y, &mut pen, &laid[s.from..s.to], &mut self.glyphs);
+                self.glyph_rtl.resize(self.glyphs.len(), s.level % 2 == 1);
             }
             let x = self.settings.x + ((max_width - pen) * align).floor();
             for g in &mut self.glyphs[first..] {
@@ -438,6 +542,55 @@ fn shape(face: &Face, text: &str, rtl: bool) -> Option<harfrust::GlyphBuffer> {
 fn real_script(c: char) -> Option<unicode_script::Script> {
     use unicode_script::{Script, UnicodeScript};
     Some(c.script()).filter(|s| !matches!(s, Script::Common | Script::Inherited | Script::Unknown))
+}
+
+/// Each character's advance in `text` set at `px` in `face`, as a line
+/// sets it (#1693): the shaper's, each glyph's rounded up as the line
+/// rounds it and given to the character its cluster starts at, the
+/// rest of a cluster nothing; a line break's nothing. Unshaped, the
+/// face's own advance, rounded up as fontdue rounds it. Script by
+/// script, left to right: the width is the same either way.
+fn shaped_advances(face: &Face, text: &str, px: f32) -> Vec<f32> {
+    let scale = face.font.font.scale_factor(px);
+    let mut out = vec![0.0f32; text.chars().count()];
+    let index: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+    let at = |byte: usize| index.partition_point(|&i| i < byte);
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut script = None;
+    for (i, c) in text.char_indices() {
+        let s = real_script(c);
+        match runs.last_mut() {
+            Some((_, e)) if s.is_none() || script.is_none() || s == script => *e = i + c.len_utf8(),
+            _ => runs.push((i, i + c.len_utf8())),
+        }
+        script = s.or(script);
+    }
+    for (a, b) in runs {
+        let run = &text[a..b];
+        match shape(face, run, false) {
+            Some(shaped) => {
+                for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
+                    if let Some(k) = out.get_mut(at(a + info.cluster as usize)) {
+                        *k += (scale * pos.x_advance as f32).ceil();
+                    }
+                }
+            }
+            None => {
+                for (i, c) in run.char_indices() {
+                    if !c.is_control() {
+                        out[at(a + i)] = face.font.metrics_indexed(face.font.font.lookup_glyph_index(c), px).advance_width.ceil();
+                    }
+                }
+            }
+        }
+    }
+    // A line break has no width.
+    for (k, c) in text.chars().enumerate() {
+        if c.is_control() {
+            out[k] = 0.0;
+        }
+    }
+    out
 }
 
 /// The order `segments` are drawn in, left to right: the Unicode bidi
@@ -618,4 +771,94 @@ mod tests {
         let virama = deva.font.lookup_glyph_index('्');
         assert!(glyphs.iter().all(|g| g.key.glyph_index != virama), "the conjunct forms after the brackets");
     }
+
+    /// #1693: lines break by their shaped widths. A line that fits only
+    /// once kerned stays one line, where fontdue alone, measuring it
+    /// unkerned, wrapped it; a line wider than the box even kerned wraps.
+    #[test]
+    fn a_line_that_fits_kerned_stays_whole_and_one_too_wide_wraps() {
+        let latin = latin();
+        let faces = [Face::new(&latin, &[])];
+        let text = "AVAVAVAVAV AWAWAWAW";
+        let unkerned: f32 = text.chars().map(|c| latin.font.metrics_indexed(latin.font.lookup_glyph_index(c), 48.0).advance_width.ceil()).sum();
+        let kerned: f32 = shaped_advances(&faces[0], text, 48.0).iter().sum();
+        assert!(kerned + 8.0 < unkerned, "the pairs kern: {kerned} vs {unkerned}");
+        let lines_at = |width: f32| {
+            let mut l = ShapedLayout::new();
+            l.reset(&LayoutSettings { max_width: Some(width), ..LayoutSettings::default() });
+            l.append(&faces, text, (0, text.len(), 48.0, 0));
+            (l.lines().map_or(0, |v| v.len()), l.glyphs().len())
+        };
+        let between = (kerned + unkerned) / 2.0;
+        assert_eq!(lines_at(between), (1, text.chars().count()), "fits kerned: one line, every glyph");
+        let mut fontdue_alone = Layout::new(CoordinateSystem::PositiveYDown);
+        fontdue_alone.reset(&LayoutSettings { max_width: Some(between), ..LayoutSettings::default() });
+        fontdue_alone.append(&[&latin.font], &TextStyle::new(text, 48.0, 0));
+        assert_eq!(fontdue_alone.lines().map_or(0, |v| v.len()), 2, "fontdue alone wraps it");
+        assert_eq!(lines_at(kerned - 4.0), (2, text.chars().count()), "too wide even kerned: it wraps, no glyph lost or added");
+        // Unkerned text breaks where fontdue breaks it.
+        let plain = "one two three four five six seven eight nine ten";
+        for width in [120.0f32, 200.0, 333.0] {
+            let mut l = ShapedLayout::new();
+            l.reset(&LayoutSettings { max_width: Some(width), ..LayoutSettings::default() });
+            l.append(&faces, plain, (0, plain.len(), 30.0, 0));
+            let mut f = Layout::new(CoordinateSystem::PositiveYDown);
+            f.reset(&LayoutSettings { max_width: Some(width), ..LayoutSettings::default() });
+            f.append(&[&latin.font], &TextStyle::new(plain, 30.0, 0));
+            let ours: Vec<(usize, f32)> = l.lines().unwrap().iter().map(|line| (l.glyphs()[line.glyph_start].byte_offset, line.baseline)).collect();
+            let theirs: Vec<(usize, f32)> = f.lines().unwrap().iter().map(|line| (f.glyphs()[line.glyph_start].byte_offset, line.baseline_y)).collect();
+            assert_eq!(ours, theirs, "at {width} px the lines start and sit where fontdue's do");
+        }
+    }
+
+
+    /// #1693: the in-place editor's caret reads right to left where the
+    /// text does. A Hebrew word's characters are marked right to left,
+    /// each one's start its right edge; after the word is its left edge;
+    /// a Latin word beside it reads left to right.
+    #[test]
+    fn the_caret_sits_at_a_right_to_left_characters_reading_edge() {
+        let mut r = crate::TitleRenderer::new();
+        r.system_fallback = false;
+        let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fonts/NotoSansHebrew-subset.ttf"));
+        let traits = crate::variable::face_traits(&std::fs::read(&path).unwrap()).unwrap();
+        let info = crate::font_discovery::FontInfo { family: "Hebrew Test".into(), style: "Regular".into(), path, weight: traits.weight, italic: traits.italic, axes: traits.axes };
+        r.font_registry = Arc::new([("Hebrew Test".to_string(), vec![info])].into_iter().collect());
+        let title = |text: &str| {
+            let tb = klipp_timeline::TextBox { text: text.into(), font_size: 80.0, font_name: "Hebrew Test".into(), text_direction: klipp_timeline::TextDirection::Rtl, ..Default::default() };
+            klipp_timeline::TitleData::single_text_fx(tb, klipp_timeline::LayerFx::default())
+        };
+        let at = r.compute_char_positions(&title("שלום"), 1280, 720);
+        assert_eq!(at.len(), 5, "four letters and the end");
+        assert!(at[..4].iter().all(|p| p.rtl), "each letter reads right to left");
+        // The caret before each letter, at its right edge, steps left.
+        let caret: Vec<f32> = at[..4].iter().map(|p| p.x + p.advance).collect();
+        assert!(caret.windows(2).all(|w| w[0] > w[1]), "the caret walks right to left: {caret:?}");
+        assert!((at[4].x - at[3].x).abs() < 0.01, "after the word: the last letter's left edge");
+        let at = r.compute_char_positions(&title("abc שלום"), 1280, 720);
+        assert!(!at[0].rtl && !at[1].rtl && at[4].rtl, "Latin reads left to right, the Hebrew right to left");
+    }
+
+
+    /// #1693: a drop cap follows the box's direction. Right to left, the
+    /// cap stands at the box's right and the body beside it wraps on its
+    /// left; left to right, as before, the cap at the left.
+    #[test]
+    fn a_drop_cap_stands_at_the_start_of_a_right_to_left_box() {
+        let hebrew = font("NotoSansHebrew-subset.ttf");
+        let faces = [Face::new(&hebrew, &[])];
+        let text = "שלום עולם שלום עולם שלום עולם שלום עולם שלום עולם שלום עולם";
+        let cap_end = text.chars().next().unwrap().len_utf8();
+        let lay = |rtl: bool| crate::layout_drop_cap_wrap(&faces, text, cap_end, (150.0, 0), 40.0, |from| vec![(from, text.len(), 40.0, 0)], 600.0, rtl).0;
+        let rtl = lay(true);
+        let cap = rtl.iter().find(|g| g.byte_offset == 0).unwrap();
+        assert!((cap.x + cap.width as f32 - 600.0).abs() < 40.0, "the cap at the box's right: {} + {}", cap.x, cap.width);
+        let cap_bottom = cap.y + cap.height as f32;
+        let beside: Vec<_> = rtl.iter().filter(|g| g.byte_offset > 0 && g.width > 0 && g.y + (g.height as f32) < cap_bottom).collect();
+        assert!(!beside.is_empty() && beside.iter().all(|g| g.x + g.width as f32 <= cap.x), "the body beside the cap is left of it");
+        let ltr = lay(false);
+        let cap = ltr.iter().find(|g| g.byte_offset == 0).unwrap();
+        assert!(cap.x < 20.0, "left to right, the cap at the left: {}", cap.x);
+    }
+
 }

@@ -1530,7 +1530,9 @@ impl ViewerPanel {
                 }
                 let left = to_screen(cp.x, cp.y).x;
                 let right = to_screen(cp.x + cp.advance, cp.y).x;
-                for (edge, idx) in [(left, cp.char_index), (right, cp.char_index + 1)] {
+                // A right-to-left character's start is its right edge (#1693).
+                let (before, after) = if cp.rtl { (right, left) } else { (left, right) };
+                for (edge, idx) in [(before, cp.char_index), (after, cp.char_index + 1)] {
                     let d = (p.x - edge).abs();
                     if best.is_none_or(|(bd, _)| d < bd) {
                         best = Some((d, idx));
@@ -1618,10 +1620,12 @@ impl ViewerPanel {
         }
         let caret = {
             let c = state.viewer_text_cursor;
+            // Before a character, at its reading start: its right edge
+            // when it reads right to left (#1693).
             if let Some(cp) = positions.iter().find(|cp| cp.char_index == c) {
-                Some((cp.x, cp.y, cp.height))
+                Some((if cp.rtl { cp.x + cp.advance } else { cp.x }, cp.y, cp.height))
             } else {
-                positions.last().map(|l| (l.x + l.advance, l.y, l.height))
+                positions.last().map(|l| (if l.rtl { l.x } else { l.x + l.advance }, l.y, l.height))
             }
         };
         if let Some((x, y, h)) = caret {
@@ -6854,6 +6858,7 @@ mod text_editor_tests {
                 y,
                 advance,
                 height,
+                rtl: false,
             });
         }
         // End-of-text position
@@ -6865,6 +6870,7 @@ mod text_editor_tests {
             y,
             advance: 0.0,
             height,
+            rtl: false,
         });
         positions
     }
@@ -6921,6 +6927,7 @@ mod text_editor_tests {
             y: 50.0,
             advance: 0.0,
             height: 30.0,
+            rtl: false,
         });
         // Second line: "World" at y=90
         for (i, (bi, _)) in "World".char_indices().enumerate() {
@@ -6931,6 +6938,7 @@ mod text_editor_tests {
                 y: 90.0,
                 advance: 20.0,
                 height: 30.0,
+                rtl: false,
             });
         }
         // End of text
@@ -6941,6 +6949,7 @@ mod text_editor_tests {
             y: 90.0,
             advance: 0.0,
             height: 30.0,
+            rtl: false,
         });
 
         // Click on first line
