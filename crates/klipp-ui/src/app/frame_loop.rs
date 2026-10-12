@@ -1442,54 +1442,13 @@ impl KlippApp {
 
         // About dialog
         if self.state.show_about_dialog {
-            let mut open = true;
-            egui::Window::new("About Klipp")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .open(&mut open)
-                .show(ctx, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(8.0);
-                        if let Some(tex) = self.toolbar.logo_texture.as_ref() {
-                            let logo_size = 64.0;
-                            let (rect, _) = ui.allocate_exact_size(
-                                egui::vec2(logo_size, logo_size),
-                                egui::Sense::hover(),
-                            );
-                            ui.painter().image(
-                                tex.id(),
-                                rect,
-                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                egui::Color32::WHITE,
-                            );
-                            ui.add_space(12.0);
-                        }
-                        crate::widgets::wordmark::wordmark(ui, 40.0);
-                        ui.add_space(10.0);
-                        let build = klipp_core::build_info::get();
-                        ui.label(format!("Version {}", build.label()));
-                        if let Some(at) = build.built_at {
-                            ui.label(format!("Built {}", klipp_core::build_info::format_utc(at)));
-                        }
-                        if ui.button("Check for updates…").clicked() {
-                            self.state.show_about_dialog = false;
-                            self.updates.open();
-                        }
-                        ui.label("Free, open-source NLE for Linux");
-                        ui.add_space(8.0);
-                        ui.label("Built with:");
-                        ui.label("Rust \u{00b7} egui \u{00b7} libmpv2");
-                        ui.add_space(8.0);
-                        ui.label("github.com/davidkodar/klipp");
-                        ui.add_space(8.0);
-                        if ui.button("Close").clicked() {
-                            self.state.show_about_dialog = false;
-                        }
-                    });
-                });
-            if !open {
-                self.state.show_about_dialog = false;
+            match crate::panels::about::show(ctx, &self.theme) {
+                crate::panels::about::AboutAction::Close => self.state.show_about_dialog = false,
+                crate::panels::about::AboutAction::CheckForUpdates => {
+                    self.state.show_about_dialog = false;
+                    self.updates.open();
+                }
+                crate::panels::about::AboutAction::None => {}
             }
         }
 
