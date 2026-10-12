@@ -836,6 +836,10 @@ pub struct TextBox {
     /// 3D extrusion (pseudo-depth).
     #[serde(default)]
     pub extrusion: Option<TextExtrusion>,
+    /// Real 3D (#1512): the letters as solids, bevelled, turned and lit.
+    /// Drawn in place of `extrusion` when both are set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub three_d: Option<crate::Text3d>,
     /// Text follows a geometric path (arc / circle / wave).
     #[serde(default)]
     pub text_path: Option<TextPath>,
@@ -1115,6 +1119,7 @@ impl TextBox {
     pub fn has_keyframes(&self) -> bool {
         !self.font_size_keyframes.is_empty() || !self.tracking_keyframes.is_empty() || !self.line_spacing_keyframes.is_empty() || !self.color_keyframes.is_empty()
             || self.gradient.as_ref().is_some_and(TextGradient::has_keyframes)
+            || self.three_d.as_ref().is_some_and(|t| !t.keys.is_empty())
     }
 
     /// The text at `time_secs` of its clip: its keyed size, tracking,
@@ -1138,6 +1143,9 @@ impl TextBox {
         }
         if let Some(g) = tb.gradient.as_mut().filter(|g| g.has_keyframes()) {
             *g = g.at(time_secs);
+        }
+        if let Some(t) = tb.three_d.as_mut().filter(|t| !t.keys.is_empty()) {
+            *t = t.at(time_secs);
         }
         tb
     }
@@ -1164,6 +1172,9 @@ impl TextBox {
         }
         if let Some(channel) = param_key.strip_prefix("text.color.") {
             return self.color_keyframes.channel_mut(channel);
+        }
+        if let Some(name) = param_key.strip_prefix("text3d.") {
+            return self.three_d.as_mut()?.keys.get_mut(name);
         }
         if let Some((i, channel)) = k::parse_gradient_stop_key(param_key) {
             let g = self.gradient.as_mut()?;
@@ -1201,6 +1212,9 @@ impl TextBox {
         }
         if let Some(channel) = param_key.strip_prefix("text.color.") {
             return self.color_keyframes.channel(channel);
+        }
+        if let Some(name) = param_key.strip_prefix("text3d.") {
+            return self.three_d.as_ref()?.keys.get(name);
         }
         if let Some((i, channel)) = k::parse_gradient_stop_key(param_key) {
             let g = self.gradient.as_ref()?;
@@ -1369,6 +1383,7 @@ impl Default for TextBox {
             color_keyframes: ColourKeys::default(),
             write_on: 1.0,
             extrusion: None,
+            three_d: None,
             text_path: None,
             char_animation: None,
             texture_fill: None,
