@@ -246,6 +246,56 @@ impl Sequence {
         self.set_root_grade(root, Some(after.clone()))?;
         Ok((before, after))
     }
+
+    /// Apply `ops`, all on track `track`'s effect list (`Root::Track` with
+    /// `TrackPart::Effects`), as one edit (#1214): the list lifted as its
+    /// paths address it, the ops applied there with the registry's checks,
+    /// and the result lowered to the track's own list. The track's effects
+    /// before and after, for the edit's undo and redo. A track's effects
+    /// keep no keyframes, so a key op is refused; nothing is stored when
+    /// any op is refused.
+    pub fn apply_track_effect_ops(&mut self, ops: &[GraphOp]) -> Result<(crate::TrackEffects, crate::TrackEffects), String> {
+        let root = ops.first().ok_or("an empty batch has no edit")?.path().root;
+        let Root::Track { track, part: TrackPart::Effects } = root else { return Err("not a track's effects".into()) };
+        if ops.iter().any(|op| op.path().root != root) {
+            return Err("a batch edits one picture".into());
+        }
+        if ops.iter().any(|op| matches!(op, GraphOp::AddKeyAt { .. } | GraphOp::RemoveKeyAt { .. } | GraphOp::SetAnim { .. })) {
+            return Err("a track's effects keep no keyframes".into());
+        }
+        // Each effect's values in its map, as a clip's picture holds them
+        // while it's edited, and back in its entry to be lowered (M3-2).
+        let (mut nodes, _) = self.lift_track_parts(track)?;
+        for n in &mut nodes {
+            klipp_graph_lift::effect_params::into_memory(n)?;
+        }
+        let mut docs = klipp_graph_lift::paths::Documents::default();
+        docs.track_effects.insert(track, nodes);
+        klipp_graph_lift::ops::apply_batch_with_catalog(&mut docs, ops, &crate::RegistryCatalog)?;
+        let mut nodes = docs.track_effects.remove(&track).ok_or("the edit lost the track's effects")?;
+        for n in &mut nodes {
+            klipp_graph_lift::effect_params::into_stored(n)?;
+        }
+        // Lowered as a stored track's list is (`unlift`): a chain of them.
+        let fields = match nodes.last().map(|n| n.id) {
+            Some(last) => {
+                let edges = nodes.windows(2).map(|w| klipp_graph_format::Edge { from: (w[0].id, "out".into()), to: (w[1].id, "in".into()) }).collect();
+                klipp_graph_lift::to_v1::track(&Graph { nodes, edges, output: last, ..Graph::empty() })?
+            }
+            None => serde_json::json!({}),
+        };
+        let t = self.tracks.iter_mut().find(|t| t.id.0 == track).ok_or("no such track")?;
+        let before = t.effects.clone();
+        let mut v = serde_json::to_value(&t.effects).map_err(|e| e.to_string())?;
+        let o = v.as_object_mut().ok_or("a track's effects must be an object")?;
+        o.remove("video");
+        o.remove("video_enabled");
+        for (k, val) in fields.as_object().into_iter().flatten().filter(|(k, _)| matches!(k.as_str(), "video" | "video_enabled")) {
+            o.insert(k.clone(), val.clone());
+        }
+        t.effects = serde_json::from_value(v).map_err(|e| e.to_string())?;
+        Ok((before, t.effects.clone()))
+    }
 }
 
 /// A grade node of a lifted picture as the node a grade run takes (M4 step

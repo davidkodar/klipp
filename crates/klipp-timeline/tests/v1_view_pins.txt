@@ -69,7 +69,8 @@ set_effects 6
 set_ofx_effects 17
 set_own_effects 1
 set_video_effect_list 16
-to_v1 50
+# +1 (#1214): a track's effect list edited by path is lowered to its stored v1 list, as unlift lowers it.
+to_v1 51
 transform_pos_x_keyframes 15
 transform_pos_y_keyframes 13
 transform_rotation_keyframes 10
