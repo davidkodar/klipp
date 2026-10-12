@@ -1586,10 +1586,23 @@ impl Renderer {
         out: DisplayDelivery<'_>,
     ) -> Option<(Option<Vec<u8>>, RenderStats)> {
         let t0 = Instant::now();
+        // An ACES or BT.2020 project's display encode writes bytes, not
+        // the viewer's texture (#1279).
+        if self.working != WorkingColorspace::Rec709Linear && out.texture.is_some() {
+            return self.gpu_stack_declines("a wide working space's display encode to the viewer's texture");
+        }
         let mut stats = self.composite_on_gpu(seq, time, width, height, src, opts)?;
         let t = Instant::now();
         let gpu = self.executor.gpu_pipeline_or_init()?;
-        let Some(bytes) = gpu.encode_chain_to_display(true, width, height, None, false, None, out.texture, out.bytes) else {
+        // The project's own display transform, as `display_transform_ws`
+        // ends it: BT.709 sRGB, the ACES Rec.709 output transform, or
+        // BT.2020's basis change and gamut compression.
+        let encoded = match self.working {
+            WorkingColorspace::Rec709Linear => gpu.encode_chain_to_display(true, width, height, None, false, None, out.texture, out.bytes),
+            WorkingColorspace::AcesCG => gpu.encode_chain_to_aces_rec709_u8(true, width, height, &klipp_color::aces::aces_rec709_gpu_data(1024)).map(Some),
+            WorkingColorspace::Bt2020Linear => gpu.encode_chain_to_bt2020_display_u8(true, width, height, &klipp_color::gamut::bt2020_to_bt709_gpu_data()).map(Some),
+        };
+        let Some(bytes) = encoded else {
             return self.gpu_stack_declines("the display encode failed");
         };
         stats.composite_ms += ms_since(t);
@@ -1617,9 +1630,6 @@ impl Renderer {
         }
         if opts.hdr_peak_nits.is_some() {
             return self.gpu_stack_declines("HDR delivery");
-        }
-        if self.working != WorkingColorspace::Rec709Linear {
-            return self.gpu_stack_declines("working space is not Rec.709");
         }
         let i = &self.inspect;
         if i.ungraded || i.thumbs.is_some() || i.scope_tap.is_some() || i.matte_view.is_some() || i.solo.is_some() || i.matte_of.is_some() || i.only.is_some() {
@@ -1730,8 +1740,13 @@ impl Renderer {
         self.executor.set_working_colorspace(self.working);
         self.executor.set_render_scale(self.px_scale);
         let luma = klipp_color::linear::luma_coefs(self.working);
+        // Titles and generators are authored in BT.709: placed into the
+        // working space as `authored_to_working` puts them there (#1279).
+        let to_working = klipp_color::primaries::working_space_conversion_matrix(WorkingColorspace::Rec709Linear, self.working)
+            .unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
         if !self.executor.gpu_pipeline_or_init().is_some_and(|g| {
             g.set_luma_coefs(luma);
+            g.set_authored_to_working(to_working);
             g.stack_begin(width, height, n_slots)
         }) {
             return self.gpu_stack_declines("the GPU stack would not start");
