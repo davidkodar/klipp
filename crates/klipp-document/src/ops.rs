@@ -4762,11 +4762,16 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
         "halation" | "film_halation" => E::FilmHalation { threshold: 0.75, radius: a * 30.0 + 10.0, intensity: a, hue: 0.05 },
         "light_rays" | "god_rays" => E::LightRays { center_x: 0.5, center_y: 0.35, threshold: 0.7, samples: 48, decay: 0.95, intensity: a },
         "lens_flare" => E::LensFlare { position_x: 0.7, position_y: 0.3, brightness: a, flare_size: 1.0, ghost_count: 4, ghost_intensity: a * 0.5, chromatic_aberration: 0.3 },
-        "anamorphic" | "anamorphic_streak" | "streak" => E::AnamorphicStreak { threshold: 0.75, length: a, intensity: a, tint: 0.6 },
+        // Length is in canvas pixels (0 to 200, 80 by default): the default
+        // amount gives a streak about that long (#1189).
+        "anamorphic" | "anamorphic_streak" | "streak" => E::AnamorphicStreak { threshold: 0.75, length: a * 200.0, intensity: a, tint: 0.6 },
         "light_wrap" => E::LightWrap { width: a * 20.0, intensity: a, softness: 0.5 },
         "blur" => E::GaussianBlur { radius: a * 20.0 },
-        "radial_blur" | "zoom_blur" => E::RadialBlur { center_x: 0.5, center_y: 0.5, amount: a * 0.3, samples: 24, mode: 0 },
-        "spin_blur" => E::RadialBlur { center_x: 0.5, center_y: 0.5, amount: a * 0.3, samples: 24, mode: 1 },
+        // The blur's amount runs 0 to 50 (10 by default): squared, the
+        // default amount gives about the default blur and the full amount
+        // the most (#1189).
+        "radial_blur" | "zoom_blur" => E::RadialBlur { center_x: 0.5, center_y: 0.5, amount: a * a * 50.0, samples: 24, mode: 0 },
+        "spin_blur" => E::RadialBlur { center_x: 0.5, center_y: 0.5, amount: a * a * 50.0, samples: 24, mode: 1 },
         "directional_blur" | "motion_blur" => E::DirectionalBlur { angle: 0.0, distance: a * 40.0, samples: 24 },
         "sharpen" => E::Sharpen { amount: a },
         "chromatic_aberration" | "rgb_split" | "fringe" => E::ChromaticAberration { red_shift: a * 8.0, blue_shift: -a * 8.0, center_x: 0.5, center_y: 0.5 },
@@ -12025,5 +12030,32 @@ mod effects_edit_tests {
         clip = klipp_timeline::test_clip::TestClip::of(clip).effect(E::Opacity { value: 0.5 }).build();
         let placed = effects_edit(&clip, |_| false, Some((E::Sharpen { amount: 0.5 }, Place::Last))).unwrap();
         assert!(matches!(placed, EditCommand::PictureEdit { .. }), "after a placed kind: {placed:?}");
+    }
+}
+
+#[cfg(test)]
+mod effect_scale_tests {
+    use super::named_picture_effect;
+    use klipp_effects::BuiltinEffect as E;
+
+    /// #1189: at the default amount the streak and the radial and spin
+    /// blurs are about the catalog's defaults (a streak of tens of pixels,
+    /// a blur near 10), and the full amount reaches the top of each range.
+    #[test]
+    fn the_streak_and_radial_blurs_show_at_the_default_amount() {
+        let streak = |amount| match named_picture_effect("anamorphic", amount).unwrap().0 {
+            E::AnamorphicStreak { length, .. } => length,
+            other => panic!("{other:?}"),
+        };
+        assert!((40.0..=120.0).contains(&streak(None)), "{}", streak(None));
+        assert_eq!(streak(Some(1.0)), 200.0);
+        for kind in ["radial_blur", "spin_blur"] {
+            let blur = |amount| match named_picture_effect(kind, amount).unwrap().0 {
+                E::RadialBlur { amount, .. } => amount,
+                other => panic!("{other:?}"),
+            };
+            assert!((5.0..=20.0).contains(&blur(None)), "{kind}: {}", blur(None));
+            assert_eq!(blur(Some(1.0)), 50.0, "{kind}");
+        }
     }
 }
