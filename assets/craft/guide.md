@@ -242,7 +242,7 @@ exist until the plan runs.
   two words) is the gap between them: the frame goes black instead.
   An entrance or exit is `{kind, duration_secs?, delay_secs?, easing?,
   stagger?, stagger_secs?, distance?, scale?, anchor?}`: `duration_secs`
-  up to 5 (0.6 when left out); `delay_secs` after the title starts for an
+  up to 3600 (0.6 when left out); `delay_secs` after the title starts for an
   entrance, before it ends for an exit; `easing` one of linear,
   out_cubic, out_quint, out_expo, out_back, out_bounce, in_out_cubic or
   in_cubic; `stagger` by char, word or line, `stagger_secs` apart;

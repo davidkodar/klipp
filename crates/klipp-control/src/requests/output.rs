@@ -77,7 +77,7 @@ pub(crate) fn respond(
                 settings.fps = Some(fps_from_f64(f));
             }
             if let Some(c) = crf {
-                settings.crf = c;
+                set_crf(&mut settings, c);
             }
             match bit_depth {
                 None => {}
@@ -556,6 +556,13 @@ fn apply_export_preset(settings: &mut klipp_core::ExportSettings, name: &str) ->
     Ok(p.name.clone())
 }
 
+/// Encode at quality `crf`: a crf given beside a preset that encodes to a
+/// bitrate turns its rate control to crf, or the crf would go unused.
+fn set_crf(settings: &mut klipp_core::ExportSettings, crf: u32) {
+    settings.crf = crf;
+    settings.rate_control = klipp_core::RateControl::Crf;
+}
+
 /// A video codec by the name an agent gives it (#1583).
 fn video_codec_named(name: &str) -> Result<klipp_core::ExportVideoCodec, String> {
     use klipp_core::ExportVideoCodec as V;
@@ -611,6 +618,14 @@ fn sequence_credits(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPoo
 #[cfg(test)]
 mod credits_tests {
     use super::{credits_path, sequence_credits};
+
+    /// #1607 review: crf beside a bitrate preset encodes at that crf.
+    #[test]
+    fn a_crf_turns_the_rate_control_to_crf() {
+        let mut s = klipp_core::ExportSettings { rate_control: klipp_core::RateControl::Vbr, video_bitrate_kbps: Some(8000), ..Default::default() };
+        super::set_crf(&mut s, 20);
+        assert_eq!((s.crf, s.rate_control), (20, klipp_core::RateControl::Crf));
+    }
 
     /// #1582: the credits are those of the files the sequence uses, each
     /// once, not every download in the shared library; a disabled clip
