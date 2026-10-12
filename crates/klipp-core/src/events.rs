@@ -2563,6 +2563,9 @@ pub enum AppCommand {
     SetTitleColumns { clip_id: ClipId, columns: u8 },
     /// Toggle vertical (CJK-style) character stacking.
     SetTitleVerticalLayout { clip_id: ClipId, vertical: bool },
+    /// Set vertical text's columns from the left (`true`) or, as
+    /// Japanese and Chinese are set, from the right (#1507).
+    SetTitleVerticalColumnsLtr { clip_id: ClipId, left_to_right: bool },
     /// Set text direction (0 = Ltr, 1 = Rtl).
     SetTitleDirection { clip_id: ClipId, direction: u8 },
     /// Set 3D text extrusion. `enabled=false` = disable.

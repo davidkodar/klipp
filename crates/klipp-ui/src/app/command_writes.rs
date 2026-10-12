@@ -558,6 +558,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTitleNeonPreset { .. }
         | AppCommand::SetTitleColumns { .. }
         | AppCommand::SetTitleVerticalLayout { .. }
+        | AppCommand::SetTitleVerticalColumnsLtr { .. }
         | AppCommand::SetTitleDirection { .. }
         | AppCommand::SetTitleExtrusion { .. }
         | AppCommand::SetTitleTextPath { .. }

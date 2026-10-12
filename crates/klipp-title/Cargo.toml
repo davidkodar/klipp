@@ -22,6 +22,9 @@ ttf-parser = { version = "=0.25.1", default-features = false, features = ["std",
 # unicode-bidi has one block, a slice cast of a repr(transparent) type.
 unicode-bidi = "=0.3.18"
 unicode-script = "=0.5.8"
+# Which characters stand upright in vertical text and which turn
+# sideways (UAX #50) (#1507). MIT or Apache-2.0; forbids unsafe code.
+unicode-vo = "=0.1.0"
 rayon = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 tracing = { workspace = true }
