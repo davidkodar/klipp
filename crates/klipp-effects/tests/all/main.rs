@@ -1,0 +1,67 @@
+//! Most of this crate's integration tests, built as one binary: one
+//! link instead of one per file. Each file stays where it was and is a
+//! module here. Files that time themselves or change process-wide state
+//! stay their own binaries (the `[[test]]` list in Cargo.toml).
+
+#[path = "../burn_and_whip_look.rs"]
+mod burn_and_whip_look;
+#[path = "../contrast_pivot_parity.rs"]
+mod contrast_pivot_parity;
+#[path = "../corner_pin.rs"]
+mod corner_pin;
+#[path = "../cpu_gpu_effect_parity.rs"]
+mod cpu_gpu_effect_parity;
+#[path = "../cpu_gpu_transition_parity.rs"]
+mod cpu_gpu_transition_parity;
+#[path = "../crop_feather.rs"]
+mod crop_feather;
+#[path = "../display_to_texture.rs"]
+mod display_to_texture;
+#[path = "../effect_definitions.rs"]
+mod effect_definitions;
+#[path = "../effects_hdr_behaviour.rs"]
+mod effects_hdr_behaviour;
+#[path = "../equalize_and_huesat_share_nothing.rs"]
+mod equalize_and_huesat_share_nothing;
+#[path = "../frame_upload_count.rs"]
+mod frame_upload_count;
+#[path = "../gpu_pipelines_build.rs"]
+mod gpu_pipelines_build;
+#[path = "../gpu_scopes.rs"]
+mod gpu_scopes;
+#[path = "../gpu_stack_parity.rs"]
+mod gpu_stack_parity;
+#[path = "../luma_key_gpu_parity.rs"]
+mod luma_key_gpu_parity;
+#[path = "../lut_node_cpu_gpu_parity.rs"]
+mod lut_node_cpu_gpu_parity;
+#[path = "../mask_gpu_parity.rs"]
+mod mask_gpu_parity;
+#[path = "../mask_mix.rs"]
+mod mask_mix;
+#[path = "../mixable_types.rs"]
+mod mixable_types;
+#[path = "../motion_warp_parity.rs"]
+mod motion_warp_parity;
+#[path = "../parity_coverage.rs"]
+mod parity_coverage;
+#[path = "../presentation.rs"]
+mod presentation;
+#[path = "../recorded_effects.rs"]
+mod recorded_effects;
+#[path = "../registry_coverage.rs"]
+mod registry_coverage;
+#[path = "../render_faults_1020.rs"]
+mod render_faults_1020;
+#[path = "../render_scale_units.rs"]
+mod render_scale_units;
+#[path = "../scopes_from_display_on_gpu.rs"]
+mod scopes_from_display_on_gpu;
+#[path = "../soft_clip_gpu_parity.rs"]
+mod soft_clip_gpu_parity;
+#[path = "../wgsl_camera_log_parity.rs"]
+mod wgsl_camera_log_parity;
+#[path = "../wgsl_yuv_levels.rs"]
+mod wgsl_yuv_levels;
+#[path = "../window_mix.rs"]
+mod window_mix;

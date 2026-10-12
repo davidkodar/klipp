@@ -3,6 +3,9 @@ name = "klipp-project"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+# Tests are listed below: most share tests/all (one link); delete this
+# and the [[test]] entries to go back to one binary per file.
+autotests = false
 
 [dependencies]
 klipp-core = { workspace = true }
@@ -36,3 +39,23 @@ workspace = true
 # `cargo test` unifies features, so the app crates' own tests see it on,
 # which is harmless. Removed once the conversion has run and been verified.
 v1-oracle = []
+
+[[test]]
+name = "all"
+path = "tests/all/main.rs"
+
+[[test]]
+name = "half_converted_refused"
+path = "tests/half_converted_refused.rs"
+
+[[test]]
+name = "json_floats"
+path = "tests/json_floats.rs"
+
+[[test]]
+name = "made_media_is_adopted"
+path = "tests/made_media_is_adopted.rs"
+
+[[test]]
+name = "old_reader_refuses_title_v2"
+path = "tests/old_reader_refuses_title_v2.rs"

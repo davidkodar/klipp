@@ -4,6 +4,9 @@ version.workspace = true
 edition = "2021"
 license.workspace = true
 description = "One definition of how a timeline frame is rendered, shared by the viewer and export"
+# Tests are listed below: most share tests/all (one link); delete this
+# and the [[test]] entries to go back to one binary per file.
+autotests = false
 
 [dependencies]
 klipp-core        = { workspace = true }
@@ -33,3 +36,27 @@ serde_json = { workspace = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all/main.rs"
+
+[[test]]
+name = "analysis_nodes_read_the_source_frame"
+path = "tests/analysis_nodes_read_the_source_frame.rs"
+
+[[test]]
+name = "effects_follow_grade"
+path = "tests/effects_follow_grade.rs"
+
+[[test]]
+name = "masked_effect_off_grade"
+path = "tests/masked_effect_off_grade.rs"
+
+[[test]]
+name = "native_effect_order"
+path = "tests/native_effect_order.rs"
+
+[[test]]
+name = "plan_lifts_once"
+path = "tests/plan_lifts_once.rs"

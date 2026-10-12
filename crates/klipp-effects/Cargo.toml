@@ -3,6 +3,9 @@ name = "klipp-effects"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+# Tests are listed below: most share tests/all (one link); delete this
+# and the [[test]] entries to go back to one binary per file.
+autotests = false
 
 [dependencies]
 klipp-load-lock = { workspace = true }
@@ -52,3 +55,31 @@ naga = { version = "22", features = ["wgsl-in"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all/main.rs"
+
+[[test]]
+name = "effect_chain_cost"
+path = "tests/effect_chain_cost.rs"
+
+[[test]]
+name = "gpu_scopes_look"
+path = "tests/gpu_scopes_look.rs"
+
+[[test]]
+name = "layer_gpu_parity"
+path = "tests/layer_gpu_parity.rs"
+
+[[test]]
+name = "library_load_lock"
+path = "tests/library_load_lock.rs"
+
+[[test]]
+name = "pixel_access_goes_through_pack"
+path = "tests/pixel_access_goes_through_pack.rs"
+
+[[test]]
+name = "shared_device_pressure"
+path = "tests/shared_device_pressure.rs"

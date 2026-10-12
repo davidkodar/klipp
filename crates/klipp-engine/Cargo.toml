@@ -3,6 +3,9 @@ name = "klipp-engine"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+# Tests are listed below: most share tests/all (one link); delete this
+# and the [[test]] entries to go back to one binary per file.
+autotests = false
 
 [dependencies]
 klipp-core = { workspace = true }
@@ -46,3 +49,115 @@ kamadak-exif = "0.6"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all/main.rs"
+
+[[test]]
+name = "a_cut_to_another_file_shows_that_file"
+path = "tests/a_cut_to_another_file_shows_that_file.rs"
+
+[[test]]
+name = "a_graded_compound_plays_through"
+path = "tests/a_graded_compound_plays_through.rs"
+
+[[test]]
+name = "a_speed_ramp_steps_and_redraws"
+path = "tests/a_speed_ramp_steps_and_redraws.rs"
+
+[[test]]
+name = "a_step_forward_keeps_the_read_ahead"
+path = "tests/a_step_forward_keeps_the_read_ahead.rs"
+
+[[test]]
+name = "aces_gpu_matches_cpu"
+path = "tests/aces_gpu_matches_cpu.rs"
+
+[[test]]
+name = "an_edit_under_the_playhead_is_shown"
+path = "tests/an_edit_under_the_playhead_is_shown.rs"
+
+[[test]]
+name = "bt2020_gamut_gpu_matches_cpu"
+path = "tests/bt2020_gamut_gpu_matches_cpu.rs"
+
+[[test]]
+name = "fast_paths_match_renderer"
+path = "tests/fast_paths_match_renderer.rs"
+
+[[test]]
+name = "frame_gpu_roundtrip"
+path = "tests/frame_gpu_roundtrip.rs"
+
+[[test]]
+name = "gpu_viewer_samples_linear"
+path = "tests/gpu_viewer_samples_linear.rs"
+
+[[test]]
+name = "gpu_yuv420_matches_cpu"
+path = "tests/gpu_yuv420_matches_cpu.rs"
+
+[[test]]
+name = "hdr_monitor_gpu_matches_cpu"
+path = "tests/hdr_monitor_gpu_matches_cpu.rs"
+
+[[test]]
+name = "hdr_reference_output"
+path = "tests/hdr_reference_output.rs"
+
+[[test]]
+name = "import_reads_the_shot"
+path = "tests/import_reads_the_shot.rs"
+
+[[test]]
+name = "ntsc_stepping"
+path = "tests/ntsc_stepping.rs"
+
+[[test]]
+name = "paused_seek_perf"
+path = "tests/paused_seek_perf.rs"
+
+[[test]]
+name = "playback_runs_to_the_end_of_the_timeline"
+path = "tests/playback_runs_to_the_end_of_the_timeline.rs"
+
+[[test]]
+name = "pregrade_made_once"
+path = "tests/pregrade_made_once.rs"
+
+[[test]]
+name = "qualifier_pick_reads_node_input"
+path = "tests/qualifier_pick_reads_node_input.rs"
+
+[[test]]
+name = "scopes_are_drawn_on_the_gpu"
+path = "tests/scopes_are_drawn_on_the_gpu.rs"
+
+[[test]]
+name = "scopes_while_playing_zero_copy"
+path = "tests/scopes_while_playing_zero_copy.rs"
+
+[[test]]
+name = "seek_epoch"
+path = "tests/seek_epoch.rs"
+
+[[test]]
+name = "sequence_grade_pick"
+path = "tests/sequence_grade_pick.rs"
+
+[[test]]
+name = "skim_frames_come_from_a_decoder_that_stays_open"
+path = "tests/skim_frames_come_from_a_decoder_that_stays_open.rs"
+
+[[test]]
+name = "sw_decode_scene_referred"
+path = "tests/sw_decode_scene_referred.rs"
+
+[[test]]
+name = "the_shot_after_a_gap_is_taken_over_warm"
+path = "tests/the_shot_after_a_gap_is_taken_over_warm.rs"
+
+[[test]]
+name = "viewer_matches_export"
+path = "tests/viewer_matches_export.rs"

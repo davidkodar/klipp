@@ -3,6 +3,9 @@ name = "klipp-render"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+# Tests are listed below: most share tests/all (one link); delete this
+# and the [[test]] entries to go back to one binary per file.
+autotests = false
 
 [dependencies]
 klipp-core        = { workspace = true }
@@ -49,3 +52,43 @@ test = true
 
 [lints]
 workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all/main.rs"
+
+[[test]]
+name = "audio_crossfade"
+path = "tests/audio_crossfade.rs"
+
+[[test]]
+name = "export_audio_lands_where_the_timeline_says"
+path = "tests/export_audio_lands_where_the_timeline_says.rs"
+
+[[test]]
+name = "export_holds_a_still"
+path = "tests/export_holds_a_still.rs"
+
+[[test]]
+name = "export_stops_on_a_broken_source"
+path = "tests/export_stops_on_a_broken_source.rs"
+
+[[test]]
+name = "export_viewer_parity"
+path = "tests/export_viewer_parity.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+[[test]]
+name = "tenbit_convert_probe"
+path = "tests/tenbit_convert_probe.rs"
+
+[[test]]
+name = "trim_path_export"
+path = "tests/trim_path_export.rs"
+
+[[test]]
+name = "vector_path_export"
+path = "tests/vector_path_export.rs"

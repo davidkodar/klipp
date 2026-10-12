@@ -3,6 +3,9 @@ name = "klipp-nodes"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+# Tests are listed below: most share tests/all (one link); delete this
+# and the [[test]] entries to go back to one binary per file.
+autotests = false
 
 [dependencies]
 klipp-color = { workspace = true }
@@ -32,3 +35,43 @@ fault-hook = []
 
 [lints]
 workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all/main.rs"
+
+[[test]]
+name = "chain_bandwidth_probe"
+path = "tests/chain_bandwidth_probe.rs"
+
+[[test]]
+name = "composite_cost"
+path = "tests/composite_cost.rs"
+
+[[test]]
+name = "effect_chain_cost"
+path = "tests/effect_chain_cost.rs"
+
+[[test]]
+name = "frei0r_node"
+path = "tests/frei0r_node.rs"
+
+[[test]]
+name = "masked_effect_cost"
+path = "tests/masked_effect_cost.rs"
+
+[[test]]
+name = "masked_effect_matrix"
+path = "tests/masked_effect_matrix.rs"
+
+[[test]]
+name = "plan_cache"
+path = "tests/plan_cache.rs"
+
+[[test]]
+name = "secondary_cost"
+path = "tests/secondary_cost.rs"
+
+[[test]]
+name = "secondary_gpu_parity"
+path = "tests/secondary_gpu_parity.rs"
