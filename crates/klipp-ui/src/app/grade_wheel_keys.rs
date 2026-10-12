@@ -280,3 +280,34 @@ fn a_grade_row_key_menu_eases_its_key() {
         one_step_undone(&mut g, &before).unwrap_or_else(|e| panic!("{page:?}: {e}"));
     }
 }
+
+/// What the control socket sends for a key (`set_node_param` with `at`):
+/// a node gesture holding the key and its ease lands as the key, eased,
+/// one undo step, as the Colour page's own key does.
+#[test]
+fn a_socket_key_is_one_undo_step() {
+    use klipp_core::AppCommand as C;
+    let mut g = corrector(Page::Tabbed(ColorTab::Wheels));
+    g.drawn();
+    let before = g.picture();
+    let (clip_id, node_id) = (g.clip, g.node);
+    for cmd in [
+        C::BeginNodeParamEdit { clip_id },
+        C::AddKeyframe { clip_id, node_id, param: "exposure".into(), time_secs: 0.25, value: 0.0 },
+        C::EndNodeParamEdit { clip_id },
+        C::BeginNodeParamEdit { clip_id },
+        C::AddKeyframe { clip_id, node_id, param: "exposure".into(), time_secs: 1.0, value: 1.0 },
+        C::SetKeyframeEase { clip_id, node_id, param: "exposure".into(), time_secs: 1.0, ease: KeyEase::In },
+        C::EndNodeParamEdit { clip_id },
+    ] {
+        g.apply(cmd);
+    }
+    let mut want = vec![key(0.25, 0.0), key(1.0, 1.0)];
+    klipp_core::keyframe::ease_key(&mut want, 1, KeyEase::In);
+    assert_eq!(keys_of(&g, "exposure"), want);
+    assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+    assert_eq!(g.state.active_history().undo_count(), 2, "one step per key");
+    g.step(false).unwrap();
+    g.step(false).unwrap();
+    assert_eq!(g.picture(), before);
+}

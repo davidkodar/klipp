@@ -3129,3 +3129,52 @@ fn subtitles_import_over_the_socket_and_export_in_the_format_asked() {
     assert!(h.cmd_rx.try_recv().is_err(), "a refused call sends nothing");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A grade parameter keyed over the socket (#891): `at` (timeline
+/// seconds) keys it at the clip's own time, in one envelope bracketed as
+/// one undo step, its interpolation or ease set on that key; `remove`
+/// takes the key away; a time off the clip, or a shape Klipp doesn't
+/// know, is refused and sends nothing. Without `at` it sets the value, as
+/// before.
+#[test]
+fn set_node_param_keys_a_grade_value_at_a_time() {
+    use klipp_core::AppCommand as C;
+    let mut h = harness();
+    let (clip, node) = (h.ids.clip_a.clone(), h.ids.corrector_a.clone());
+    let drain = |h: &mut Harness| -> Vec<C> { std::iter::from_fn(|| h.cmd_rx.try_recv().ok()).collect() };
+    drain(&mut h);
+
+    let reply = h.ok(json!({ "method": "set_node_param", "clip_id": clip, "node_id": node, "param": "exposure", "value": 1.5, "at": 1.5, "interpolation": "ease_in" }));
+    assert_eq!(reply["key"]["clip_secs"], json!(1.5), "{reply}");
+    let sent = drain(&mut h);
+    assert!(matches!(sent.as_slice(), [
+        C::BeginNodeParamEdit { .. },
+        C::AddKeyframe { param, time_secs, value, .. },
+        C::SetKeyframeEase { ease: klipp_core::KeyEase::In, .. },
+        C::EndNodeParamEdit { .. },
+    ] if param == "exposure" && (*time_secs - 1.5).abs() < 1e-9 && (*value - 1.5).abs() < 1e-6), "{sent:?}");
+    assert_eq!(h.envelopes.lock().unwrap().last().copied(), Some((false, 4)), "one envelope, one step");
+
+    h.ok(json!({ "method": "set_node_param", "clip_id": clip, "node_id": node, "param": "exposure", "value": 0.0, "at": 0.5, "interpolation": "hold" }));
+    let sent = drain(&mut h);
+    assert!(sent.iter().any(|c| matches!(c, C::SetKeyframeInterpolation { interpolation: klipp_core::Interpolation::Step, .. })), "{sent:?}");
+
+    h.ok(json!({ "method": "set_node_param", "clip_id": clip, "node_id": node, "param": "exposure", "at": 1.5, "remove": true }));
+    let sent = drain(&mut h);
+    assert!(matches!(sent.as_slice(), [C::BeginNodeParamEdit { .. }, C::RemoveKeyframe { time_secs, .. }, C::EndNodeParamEdit { .. }] if (*time_secs - 1.5).abs() < 1e-9), "{sent:?}");
+
+    for (req, says) in [
+        (json!({ "method": "set_node_param", "clip_id": clip, "node_id": node, "param": "exposure", "value": 1.0, "at": 9.0 }), "off the clip"),
+        (json!({ "method": "set_node_param", "clip_id": clip, "node_id": node, "param": "exposure", "value": 1.0, "at": 1.0, "interpolation": "wobbly" }), "no interpolation"),
+        (json!({ "method": "set_node_param", "clip_id": clip, "node_id": node, "param": "exposure", "remove": true }), "give at"),
+    ] {
+        let reply = h.call(req);
+        assert_eq!(reply["ok"], json!(false), "{reply}");
+        assert!(reply["error"].as_str().unwrap_or_default().contains(says), "{reply}");
+        assert!(drain(&mut h).is_empty(), "a refusal sent something");
+    }
+
+    // Without `at`: the value, as before.
+    h.ok(json!({ "method": "set_node_param", "clip_id": clip, "node_id": node, "param": "exposure", "value": 0.25 }));
+    assert!(matches!(drain(&mut h).as_slice(), [C::SetNodeParam { value, .. }] if (*value - 0.25).abs() < 1e-6));
+}
