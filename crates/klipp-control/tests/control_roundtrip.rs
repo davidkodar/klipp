@@ -2620,7 +2620,8 @@ fn mix_loudness_finds_the_hit_over_the_bed() {
 /// #503: a music track's sections and a fit to a length. A 120 BPM click
 /// over a tone, quiet, then loud for two phrases, then quiet: the read
 /// names the loud stretch, and a fit to 32 s gives place ops that put
-/// the fitted track on the timeline, its start and end kept.
+/// the fitted track on the timeline, its start and end kept, and a
+/// crossfade on the join (#1575).
 #[test]
 fn beats_reads_music_sections_and_fits_a_track_to_a_length() {
     let mut h = harness();
@@ -2654,13 +2655,16 @@ fn beats_reads_music_sections_and_fits_a_track_to_a_length() {
     assert!(sections.iter().any(|s| s["kind"] == "peak" && (s["start_secs"].as_f64().unwrap() - 16.0).abs() < 1.0), "the loud phrases are the peak: {r}");
     assert!((r["fit"]["length_secs"].as_f64().unwrap() - 32.0).abs() <= 2.0, "within a bar of the target: {r}");
     let ops = r["ops"].as_array().unwrap();
-    assert_eq!(ops.len(), 2, "{r}");
+    assert_eq!(ops.len(), 3, "{r}");
     assert_eq!(ops[0]["source_in"], json!(0.0), "it starts as it did: {r}");
-    // The ops apply as they are: two clips of the track, back to back.
+    assert!(ops[2]["op"] == "transition" && ops[2]["clip_id"] == "@0", "the join crossfaded, on the first clip: {r}");
+    // The ops apply as they are: two clips of the track, back to back,
+    // crossfaded where they meet.
     let v = h.ok(json!({ "method": "apply", "ops": r["ops"] }));
     assert_eq!(v["applied"], json!(true), "{v}");
-    let placed = h.edits_seen.lock().unwrap().len();
-    assert_eq!(placed, 2, "two clips placed: {v}");
+    let edits = h.edits_seen.lock().unwrap().clone();
+    assert_eq!(edits.len(), 3, "two clips placed and a crossfade: {v}");
+    assert!(format!("{v}").contains("Crossfade of 0.25 s"), "an audio track's transition is a crossfade: {v}");
     std::fs::remove_dir_all(&dir).ok();
 }
 

@@ -2120,7 +2120,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               it on its track, secs long (0.5 default), centred on the cut. kind is cross_dissolve \
               (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \
               or a stylised one (zoom, whip, glitch, film_burn) a piece asks for by its style, \
-              never by default. Both clips need footage beyond the cut to overlap.\n\
+              never by default. Both clips need footage beyond the cut to overlap. On an audio \
+              track it is a constant-power crossfade whatever the kind: two touching music \
+              clips (a bed spliced from sections) blend instead of cutting.\n\
               style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?, full_frame?, shadow?} \
               — the look and place of one title, or of every title on a track (\"subtitle\" for \
               all the captions), between from and to when given: size in pixels of a 1080-line \
@@ -2337,7 +2339,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               it on its track, secs long (0.5 default), centred on the cut. kind is cross_dissolve \
               (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \
               or a stylised one (zoom, whip, glitch, film_burn) a piece asks for by its style, \
-              never by default. Both clips need footage beyond the cut to overlap.\n\
+              never by default. Both clips need footage beyond the cut to overlap. On an audio \
+              track it is a constant-power crossfade whatever the kind: two touching music \
+              clips (a bed spliced from sections) blend instead of cutting.\n\
               style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?, full_frame?, shadow?} \
               — the look and place of one title, or of every title on a track (\"subtitle\" for \
               all the captions), between from and to when given: size in pixels of a 1080-line \
