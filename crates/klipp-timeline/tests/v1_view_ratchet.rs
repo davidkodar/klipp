@@ -167,7 +167,6 @@ fn in_string(line: &str, at: usize) -> bool {
     quotes % 2 == 1
 }
 
-/// How often `name` occurs in `line` as `form`.
 /// Whether a line is read for uses: not a comment, and not a module's
 /// declaration (`mod unlift;`, `#[path = "../unlift.rs"]`), which names a
 /// file, not the view: a crate whose tests are one binary declares each
@@ -178,6 +177,7 @@ fn read(line: &str) -> bool {
     !l.starts_with("//") && !declares
 }
 
+/// How often `name` occurs in `line` as `form`.
 fn count(line: &str, name: &str, form: Form) -> usize {
     line.match_indices(name)
         .filter(|(at, _)| {
