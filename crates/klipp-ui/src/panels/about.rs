@@ -373,13 +373,16 @@ fn close_button(ui: &mut egui::Ui, hero: Rect, theme: &KlippTheme) -> bool {
         painter.rect_filled(r, 6.0, theme.bg_hover);
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let c = if resp.hovered() { theme.text_primary } else { theme.text_dim };
+    let c = if resp.hovered() { theme.text_primary } else { theme.text_secondary };
     let d = 4.5;
     let m = r.center();
     painter.line_segment([pos2(m.x - d, m.y - d), pos2(m.x + d, m.y + d)], Stroke::new(1.5_f32, c));
     painter.line_segment([pos2(m.x - d, m.y + d), pos2(m.x + d, m.y - d)], Stroke::new(1.5_f32, c));
     resp.clicked()
 }
+
+/// The width of the facts' label column.
+const LABEL_W: f32 = 68.0;
 
 /// The facts and the ways onward.
 fn body(ui: &mut egui::Ui, theme: &KlippTheme) -> Option<AboutAction> {
@@ -389,7 +392,13 @@ fn body(ui: &mut egui::Ui, theme: &KlippTheme) -> Option<AboutAction> {
         ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
         let row = |ui: &mut egui::Ui, label: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
             ui.horizontal(|ui| {
-                ui.add_sized([92.0, 22.0], egui::Label::new(egui::RichText::new(label).size(12.0).color(theme.text_dim)).selectable(false));
+                // A narrow column read from the left: the values sit close
+                // to their labels. The labels in the secondary colour, not
+                // the dim one, which reads below 4.5:1 on the panel.
+                ui.allocate_ui_with_layout(vec2(LABEL_W, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.set_min_width(LABEL_W);
+                    ui.add(egui::Label::new(egui::RichText::new(label).size(12.0).color(theme.text_secondary)).selectable(false));
+                });
                 add(ui);
             });
             ui.add_space(4.0);
@@ -445,8 +454,8 @@ fn body(ui: &mut egui::Ui, theme: &KlippTheme) -> Option<AboutAction> {
         ui.add_space(14.0);
         ui.label(
             egui::RichText::new("Klipp is Swedish for “cut”. Built with Rust, egui, wgpu and FFmpeg.")
-                .size(11.5)
-                .color(theme.text_dim),
+                .size(12.0)
+                .color(theme.text_secondary),
         );
     });
     action
@@ -508,6 +517,43 @@ mod tests {
                 let _ = ctx.run(input, |ctx| {
                     assert_eq!(show(ctx, &theme), AboutAction::None);
                 });
+            }
+        }
+    }
+
+    /// The facts' labels and the footer read at 4.5:1 or better on the
+    /// panel, in the dark theme and the light one: in the dim colour they
+    /// read at 3.4:1 on the dark panel.
+    #[test]
+    fn the_small_text_reads_on_the_panel() {
+        fn lum(c: Color32) -> f64 {
+            let f = |v: u8| { let x = v as f64 / 255.0; if x <= 0.03928 { x / 12.92 } else { ((x + 0.055) / 1.055).powf(2.4) } };
+            0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
+        }
+        let ratio = |a: Color32, b: Color32| { let (x, y) = (lum(a), lum(b)); (x.max(y) + 0.05) / (x.min(y) + 0.05) };
+        let themes = [
+            (true, KlippTheme::default()),
+            (false, KlippTheme::from(crate::theme::parse_builtin(crate::theme::BUILTIN_LIGHT).unwrap())),
+        ];
+        for (dark, theme) in themes {
+            let ctx = egui::Context::default();
+            ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+            let mut texts = Vec::new();
+            for frame in 0..3 {
+                let input = egui::RawInput { time: Some(frame as f64 * 0.4), ..Default::default() };
+                let out = ctx.run(input, |ctx| { let _ = show(ctx, &theme); });
+                texts = out.shapes.iter().filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.galley.job.sections.first().map(|s| s.format.color).unwrap_or(t.fallback_color))),
+                    _ => None,
+                }).collect::<Vec<_>>();
+            }
+            for want in ["Version", "Built", "Licence", "Source", "Klipp is Swedish"] {
+                let Some((_, colour)) = texts.iter().find(|(t, _)| t.starts_with(want)) else {
+                    assert!(want == "Built", "{want} not drawn: {texts:?}");
+                    continue;
+                };
+                let r = ratio(*colour, theme.bg_panel);
+                assert!(r >= 4.5, "dark {dark}: {want} at {r:.2}:1");
             }
         }
     }
