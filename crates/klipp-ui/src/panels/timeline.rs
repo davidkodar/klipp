@@ -7320,6 +7320,26 @@ impl TimelinePanel {
                 );
                 return;
             }
+            // On the Colour page, the clip graded (#899): its frame with
+            // its grade, the one picture repeated along it.
+            if state.show_color_panel {
+                if let Some(graded) = state.graded_thumbs.texture(clip.id) {
+                    let [w, h] = graded.size();
+                    let tile_w = (strip_rect.height() * w as f32 / (h as f32).max(1.0)).max(1.0);
+                    let clip_painter = painter.with_clip_rect(strip_rect.intersect(*content_rect));
+                    let first = (((content_rect.left() - strip_rect.left()) / tile_w).floor().max(0.0)) as usize;
+                    let last = ((strip_rect.width() / tile_w).ceil() as usize).max(1);
+                    for i in first..last {
+                        let x = strip_rect.left() + i as f32 * tile_w;
+                        if x > content_rect.right() {
+                            break;
+                        }
+                        let tile = egui::Rect::from_min_size(egui::pos2(x, strip_rect.top()), egui::vec2(tile_w, strip_rect.height()));
+                        clip_painter.image(graded.id(), tile, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), filmstrip_tint);
+                    }
+                    return;
+                }
+            }
             let mut drew_filmstrip = false;
             if let Some(filmstrip) = clip.media_id().and_then(|mid| state.filmstrip_textures.get(&mid)) {
                 if !filmstrip.is_empty() {

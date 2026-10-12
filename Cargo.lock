@@ -3547,6 +3547,7 @@ dependencies = [
  "klipp-nodes",
  "klipp-plugin",
  "klipp-project",
+ "klipp-render",
  "klipp-timeline",
  "klipp-title",
  "klipp-transitions",
