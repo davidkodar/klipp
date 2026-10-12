@@ -52,6 +52,7 @@ pub(crate) fn path_ops(cmd: &AppCommand) -> Option<(Vec<GraphOp>, &'static str)>
         AppCommand::SetMaskChannelAt { addr, channel } => (vec![GraphOp::SetMaskChannel { path: addr.clone(), channel: channel.clone() }], "Set Mask Channel"),
         AppCommand::AddKeyAt { addr, key, keyframe } => (vec![GraphOp::AddKeyAt { path: addr.clone(), key: key.clone(), keyframe: keyframe.clone() }], "Add Keyframe"),
         AppCommand::RemoveKeyAt { addr, key, time_secs } => (vec![GraphOp::RemoveKeyAt { path: addr.clone(), key: key.clone(), time_secs: *time_secs }], "Remove Keyframe"),
+        AppCommand::SetAnnotationsAt { at, frames, sticky_notes, label } => (vec![GraphOp::SetAnnotations { path: at.clone(), frames: frames.clone(), sticky_notes: sticky_notes.clone() }], label),
         _ => return None,
     })
 }
@@ -683,6 +684,9 @@ impl crate::state::AppState {
         match cmd {
             AppCommand::BeginNodeLayoutEdit { root } | AppCommand::EndNodeLayoutEdit { root } | AppCommand::AbandonNodeLayoutEdit { root } => layout_drag(self.layout_root(*root)) != open,
             AppCommand::SetNodePositionAt { addr, .. } => layout_drag(addr.root) != open,
+            // A note moved on the picture canvas is part of its layout
+            // gesture (#1743).
+            AppCommand::SetAnnotationsAt { at, .. } => layout_drag(at.root) != open,
             AppCommand::BeginParamEditAt { addr, key } | AppCommand::EndParamEditAt { addr, key } | AppCommand::AbandonParamEditAt { addr, key } => drag_key(addr, key) != open,
             // An edit of the dragged parameter, its value or its keys, is
             // part of the drag; of any of the node's, in a drag over them all.
@@ -763,7 +767,8 @@ impl crate::state::AppState {
             Some(i) if ops.len() > 1 => format!("{label}: op {i}: {why}"),
             _ => format!("{label}: {why}"),
         };
-        if let [GraphOp::SetNodeMeta { path, label: None, position: Some(_) }] = ops {
+        // A node, or a note (#1743), placed inside an open layout gesture.
+        if let [GraphOp::SetNodeMeta { path, label: None, position: Some(_) } | GraphOp::SetAnnotations { path, .. }] = ops {
             if self.active_history().is_dragging(&layout_drag(path.root)) {
                 let graph_ops::GraphOpsOutcome { edit, .. } = graph_ops::graph_ops_edit(&self.sequences[self.active_sequence_idx], ops).map_err(refused)?;
                 if let EditCommand::PictureEdit { clip_id, edit, .. } = edit { self.set_picture(clip_id, &edit.after); }

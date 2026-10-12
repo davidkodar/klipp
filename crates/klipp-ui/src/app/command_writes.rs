@@ -265,6 +265,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::EndNodeLayoutEdit { .. }
         | AppCommand::AbandonNodeLayoutEdit { .. }
         | AppCommand::SetNodePositionAt { .. }
+        | AppCommand::SetAnnotationsAt { .. }
         | AppCommand::GraphOps { .. }
         | AppCommand::AddNodeAt { .. }
         | AppCommand::RemoveNodeAt { .. }

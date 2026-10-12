@@ -163,6 +163,23 @@ impl<'a> PictureCanvas<'a> {
     fn output(&self, node: NodeId) -> Option<NodeOutput> {
         Some(NodeOutput { path: self.path(node), port: self.port(node, 0, true)? })
     }
+
+    /// The level's frames and notes, as `edit` leaves them, set whole as
+    /// one step named `label` (#1743): the command names the level by its
+    /// output node. `None` when `edit` changed nothing.
+    fn annotate(&self, label: &'static str, edit: impl FnOnce(&mut Vec<NodeFrame>, &mut Vec<NodeStickyNote>)) -> Option<AppCommand> {
+        let (mut frames, mut notes) = (self.frames.clone(), self.notes.clone());
+        edit(&mut frames, &mut notes);
+        if frames == self.frames && notes == self.notes {
+            return None;
+        }
+        Some(AppCommand::SetAnnotationsAt {
+            at: self.path(self.graph.output),
+            frames: frames.iter().map(|f| serde_json::to_value(f).ok()).collect::<Option<_>>()?,
+            sticky_notes: notes.iter().map(|n| serde_json::to_value(n).ok()).collect::<Option<_>>()?,
+            label,
+        })
+    }
 }
 
 /// The last effect on the primary picture chain, otherwise its display
@@ -262,6 +279,17 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
     fn grade_tools(&self) -> bool { false }
     fn keyboard_enabled(&self) -> bool { self.keyboard_enabled }
     fn thumbnail_output(&self, _: klipp_core::ClipId, node: NodeId, _: &[NodeId]) -> Option<NodeOutput> { self.output(node) }
+    fn refusal(&self, command: &AppCommand) -> Option<String> {
+        let AppCommand::AddNode { kind, .. } = command else { return None };
+        if crate::inspector::stack_view::new_effect_node(kind).is_none() {
+            return Some(format!("{kind} can't be added to a picture"));
+        }
+        self.after.is_none().then(|| if self.level.nodes.is_empty() {
+            "This picture has no chain to add an effect to".to_owned()
+        } else {
+            "Effects go on the clip's picture chain, not inside this group: go up to Clip to add one".to_owned()
+        })
+    }
     fn command(&self, command: AppCommand) -> Option<AppCommand> {
         let single = |op, label: &str| Some(AppCommand::GraphOps { ops: vec![op], label: label.into() });
         match command {
@@ -288,14 +316,45 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
                 Some(AppCommand::GraphOps { ops: vec![GraphOp::AddNode { after: self.path(self.after?), node: Box::new(node) },
                     GraphOp::SetNodeMeta { path, label: None, position: Some(serde_json::json!({"x":position.0,"y":position.1})) }], label: "Add effect".into() })
             }
+            // Frames and notes (#1743): the level's lists, set whole.
+            AppCommand::CreateNodeFrame { node_ids, label, color_rgba, .. } => self.annotate("Add frame", |frames, _| {
+                let contained: std::collections::BTreeSet<NodeId> = node_ids.into_iter().filter(|id| self.nodes.iter().any(|n| n.node.id == *id)).collect();
+                if !contained.is_empty() {
+                    frames.push(NodeFrame { id: klipp_nodes::NodeFrameId::new_v4(), label, description: String::new(), color_rgba, contained_node_ids: contained });
+                }
+            }),
+            AppCommand::RenameNodeFrame { frame_id, label, .. } => self.annotate("Rename frame", |frames, _| {
+                if let Some(f) = frames.iter_mut().find(|f| f.id == frame_id) { f.label = label; }
+            }),
+            AppCommand::SetNodeFrameDescription { frame_id, description, .. } => self.annotate("Edit frame description", |frames, _| {
+                if let Some(f) = frames.iter_mut().find(|f| f.id == frame_id) { f.description = description; }
+            }),
+            AppCommand::RecolorNodeFrame { frame_id, color_rgba, .. } => self.annotate("Recolour frame", |frames, _| {
+                if let Some(f) = frames.iter_mut().find(|f| f.id == frame_id) { f.color_rgba = color_rgba; }
+            }),
+            AppCommand::DeleteNodeFrame { frame_id, .. } => self.annotate("Delete frame", |frames, _| frames.retain(|f| f.id != frame_id)),
+            AppCommand::CreateStickyNote { x, y, .. } => self.annotate("Add note", |_, notes| {
+                notes.push(NodeStickyNote { id: klipp_nodes::NodeStickyNoteId::new_v4(), pos: NodePos { x, y }, width: 200.0, text: String::new(), color_rgba: crate::app::STICKY_DEFAULT_COLOR_RGBA });
+            }),
+            AppCommand::SetStickyNoteText { sticky_id, text, .. } => self.annotate("Edit note", |_, notes| {
+                if let Some(n) = notes.iter_mut().find(|n| n.id == sticky_id) { n.text = text; }
+            }),
+            AppCommand::MoveStickyNote { sticky_id, delta_x, delta_y, .. } => self.annotate(MOVE_NOTE, |_, notes| {
+                if let Some(n) = notes.iter_mut().find(|n| n.id == sticky_id) { n.pos.x += delta_x; n.pos.y += delta_y; }
+            }),
+            AppCommand::DeleteStickyNote { sticky_id, .. } => self.annotate("Delete note", |_, notes| notes.retain(|n| n.id != sticky_id)),
             AppCommand::SetNodeSolo { at } => Some(AppCommand::SetNodeSolo { at: match at { Some(at) => Some(self.output(at.path.node()?)?), None => None } }),
             AppCommand::SetVisibleNodeThumbs { request, clip_id, at } => Some(AppCommand::SetVisibleNodeThumbs { request, clip_id, at: at.iter().filter_map(|at| self.output(at.path.node()?)).collect() }),
-            // Grade-only clipboard, versions and annotations have no picture
-            // writer yet. The workspace integration hides those actions.
+            // Grade-only clipboard and versions have no picture writer
+            // yet. The workspace integration hides those actions.
             _ => None,
         }
     }
 }
+
+/// The step a note dragged on the picture canvas makes: its moves go
+/// into the canvas's layout gesture, one step for the drag (#1743).
+pub(super) const MOVE_NOTE: &str = "Move note";
 
 fn picture_menu() -> &'static [MenuCategory] {
     static MENU: std::sync::OnceLock<Vec<MenuCategory>> = std::sync::OnceLock::new();
@@ -512,7 +571,7 @@ mod tests {
         };
         let mut texts = Vec::new();
         for _ in 0..3 { texts = frame(Vec::new()).1; }
-        assert!(!texts.iter().any(|(s, _)| s.contains("Note") || s.contains("Save version")), "grade-only tools aren't offered");
+        assert!(!texts.iter().any(|(s, _)| s.contains("Save version")), "grade-only tools aren't offered");
         let at = texts.iter().find(|(s, _)| s == &label).unwrap().1;
         let button = |at, button, pressed| egui::Event::PointerButton { pos: at, button, pressed, modifiers: egui::Modifiers::NONE };
         frame(vec![egui::Event::PointerMoved(at), button(at, egui::PointerButton::Secondary, true)]);
@@ -794,5 +853,239 @@ mod tests {
         }
         assert!(clips > 18 && nodes > clips);
         eprintln!("18 projects: {clips} clips, {nodes} canvas nodes, all named edges retained");
+    }
+
+    /// The graph dock drawn frame by frame on a clip in an app state, each
+    /// command it sends applied as the app applies it (#1743).
+    struct Dock {
+        ctx: egui::Context,
+        panel: super::super::NodeGraphV2Panel,
+        state: crate::state::AppState,
+        clip: klipp_core::ClipId,
+        selected: Option<NodeId>,
+        set: std::collections::HashSet<NodeId>,
+        time: f64,
+        texts: Vec<(String, egui::Pos2)>,
+        sent: Vec<AppCommand>,
+    }
+
+    impl Dock {
+        fn new() -> Self {
+            let c = clip();
+            let mut state = crate::state::AppState::default();
+            state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(c.clone());
+            state.selected_clip = Some(c.id);
+            let mut d = Self { ctx: Default::default(), panel: Default::default(), state, clip: c.id, selected: None, set: Default::default(), time: 0.0, texts: Vec::new(), sent: Vec::new() };
+            d.settle();
+            d
+        }
+        fn clip(&self) -> Clip {
+            self.state.sequences[0].all_clips().find(|c| c.id == self.clip).unwrap().clone()
+        }
+        fn graph(&self) -> Graph {
+            self.clip().picture_v2().unwrap().picture.graph.clone()
+        }
+        fn frame(&mut self, events: Vec<egui::Event>) {
+            self.time += 0.05;
+            let c = self.clip();
+            let mut level = root(&c);
+            // As the graph dock hands it the engine's solo.
+            self.panel.picture_solo = self.state.solo_node;
+            let mut cmds = Vec::new();
+            let (panel, selected, set) = (&mut self.panel, &mut self.selected, &mut self.set);
+            let out = self.ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 700.0))), time: Some(self.time), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    cmds = panel.show_picture(ui, &c, &mut level, selected, set, &crate::theme::KlippTheme::default(), 0.0, true, &Default::default(), 0, &mut Vec::new()).unwrap();
+                });
+            });
+            self.texts = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)), _ => None,
+            }).collect();
+            for cmd in cmds.into_iter().filter(|c| !matches!(c, AppCommand::SetVisibleNodeThumbs { .. })) {
+                // The solo the app mirrors for the canvas, as its colour
+                // dispatch does.
+                if let AppCommand::SetNodeSolo { at } = &cmd {
+                    self.state.solo_node = at.as_ref().and_then(|a| a.path.node());
+                } else {
+                    self.state.before_dispatch(&cmd);
+                    assert!(self.state.path_command(&cmd).is_some(), "{cmd:?} unhandled");
+                    assert_eq!(self.state.toast.message_for_test(), None, "{cmd:?} refused");
+                }
+                self.sent.push(cmd);
+            }
+        }
+        fn settle(&mut self) { for _ in 0..3 { self.frame(Vec::new()); } }
+        fn at(&self, text: &str) -> egui::Pos2 {
+            self.texts.iter().rev().find(|(s, _)| s.contains(text)).unwrap_or_else(|| panic!("no {text:?}: {:?}", self.texts)).1
+        }
+        fn button(at: egui::Pos2, button: egui::PointerButton, pressed: bool) -> egui::Event {
+            egui::Event::PointerButton { pos: at, button, pressed, modifiers: egui::Modifiers::NONE }
+        }
+        fn click(&mut self, at: egui::Pos2, button: egui::PointerButton) {
+            self.frame(vec![egui::Event::PointerMoved(at), Self::button(at, button, true)]);
+            self.frame(vec![Self::button(at, button, false)]);
+            self.settle();
+        }
+        fn menu(&mut self, on: &str, item: &str) {
+            let at = self.at(on);
+            self.click(at, egui::PointerButton::Secondary);
+            let at = self.at(item);
+            self.click(at, egui::PointerButton::Primary);
+        }
+        fn steps(&self) -> usize { self.state.active_history().undo_count() }
+        fn notes(&self) -> Vec<NodeStickyNote> {
+            self.graph().ui.sticky_notes.iter().map(|v| serde_json::from_value(v.clone()).unwrap()).collect()
+        }
+        fn frames(&self) -> Vec<NodeFrame> {
+            self.graph().ui.frames.iter().map(|v| serde_json::from_value(v.clone()).unwrap()).collect()
+        }
+    }
+
+    /// Notes and frames edit on the picture as on the grade (#1743), each
+    /// edit one undo step: a note added from the toolbar, dragged (one
+    /// step for the drag) and deleted from its menu; a frame made round
+    /// two nodes, renamed and deleted from its menu. Undo takes the last
+    /// edit back.
+    #[test]
+    fn notes_and_frames_edit_on_the_picture_one_step_each() {
+        let mut d = Dock::new();
+        // The view panned up off the nodes, so the note, made at its
+        // centre, sits clear of them.
+        let from = egui::pos2(600.0, 650.0);
+        d.frame(vec![egui::Event::PointerMoved(from), Dock::button(from, egui::PointerButton::Middle, true)]);
+        d.frame(vec![egui::Event::PointerMoved(from - egui::vec2(0.0, 400.0))]);
+        d.frame(vec![Dock::button(from - egui::vec2(0.0, 400.0), egui::PointerButton::Middle, false)]);
+        d.settle();
+        let at = d.at("Note");
+        d.click(at, egui::PointerButton::Primary);
+        assert_eq!(d.notes().len(), 1, "a note added: {:?}", d.sent);
+        assert_eq!(d.steps(), 1);
+
+        let before = d.notes()[0].pos;
+        let at = d.at("Click to edit");
+        d.frame(vec![egui::Event::PointerMoved(at), Dock::button(at, egui::PointerButton::Primary, true)]);
+        for step in [20.0, 40.0, 60.0] {
+            d.frame(vec![egui::Event::PointerMoved(at + egui::vec2(step, step / 2.0))]);
+        }
+        d.frame(vec![Dock::button(at + egui::vec2(60.0, 30.0), egui::PointerButton::Primary, false)]);
+        d.settle();
+        let moved = d.notes()[0].pos;
+        assert!((moved.x - before.x - 60.0 / d.panel.zoom).abs() < 0.5 && (moved.y - before.y - 30.0 / d.panel.zoom).abs() < 0.5, "{before:?} to {moved:?}: {:?}", d.sent);
+        assert_eq!(d.steps(), 2, "the drag is one step");
+
+        d.menu("Click to edit", "Delete note");
+        assert!(d.notes().is_empty());
+        assert_eq!(d.steps(), 3);
+
+        let at = d.at("Fit");
+        d.click(at, egui::PointerButton::Primary);
+        let graph = d.graph();
+        let blur = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+        let grade = graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP).unwrap().id;
+        d.set = [blur, grade].into_iter().collect();
+        d.selected = Some(blur);
+        d.settle();
+        let blur_label = PictureCanvas::new(&graph, root(&d.clip()), None).unwrap().nodes.iter().find(|n| n.id() == blur).unwrap().label.clone();
+        d.menu(&blur_label, "Frame 2");
+        assert_eq!(d.frames().len(), 1, "a frame made: {:?}", d.sent);
+        assert_eq!(d.frames()[0].contained_node_ids, [blur, grade].into_iter().collect());
+        assert_eq!(d.steps(), 4);
+
+        d.menu("\u{2014}", "Rename");
+        d.frame(vec![egui::Event::Text("Look".into())]);
+        d.frame(vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        d.settle();
+        assert_eq!(d.frames()[0].label, "Look", "{:?}", d.sent);
+        assert_eq!(d.steps(), 5);
+
+        d.menu("Look", "Delete frame");
+        assert!(d.frames().is_empty());
+        assert_eq!(d.steps(), 6);
+
+        let mut command = d.state.active_history_mut().undo().unwrap().command;
+        while let crate::history::EditCommand::Named { edit, .. } = command { command = *edit; }
+        let crate::history::EditCommand::PictureEdit { edit, .. } = command else { panic!("a picture step") };
+        d.state.sequences[0].all_clips_mut().find(|c| c.id == d.clip).unwrap().restore_picture(&edit.before);
+        assert_eq!(d.frames().len(), 1, "undo brings the frame back");
+    }
+
+    /// A node soloed from its menu shows as soloed on the picture canvas,
+    /// its chip in the toolbar, and the chip's ✕ clears it (#1743). The
+    /// control: handed no solo, as the dock used to, it shows none.
+    #[test]
+    fn solo_shows_and_clears_on_the_picture() {
+        let mut d = Dock::new();
+        let graph = d.graph();
+        let model = PictureCanvas::new(&graph, root(&d.clip()), None).unwrap();
+        let blur = model.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n.node) == Some("gaussian_blur")).unwrap();
+        let label = blur.label.clone();
+        let id = blur.id();
+        d.menu(&label, "Solo this node");
+        assert_eq!(d.state.solo_node, Some(id), "{:?}", d.sent);
+        assert!(d.texts.iter().any(|(s, _)| s.contains(&format!("SOLO: {label}"))), "the chip: {:?}", d.texts);
+
+        d.state.solo_node = None;
+        d.settle();
+        assert!(!d.texts.iter().any(|(s, _)| s.contains("SOLO")), "no solo, no chip");
+        d.state.solo_node = Some(id);
+        d.settle();
+        let at = d.at("\u{2715}");
+        d.click(at, egui::PointerButton::Primary);
+        assert_eq!(d.state.solo_node, None, "the chip's ✕ clears it: {:?}", d.sent);
+        assert!(!d.texts.iter().any(|(s, _)| s.contains("SOLO")));
+    }
+
+    /// An effect picked where the picture has nowhere to put it (inside
+    /// the grade group) says why on the canvas instead of doing nothing;
+    /// at the clip's level the same pick lands (#1743).
+    #[test]
+    fn an_add_lands_or_says_why() {
+        let c = clip();
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let grade = graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP).unwrap().id;
+        let inside = NodePath::new(root(&c).root, [grade]);
+        let add = AppCommand::AddNode { clip_id: c.id, kind: "gaussian_blur".into(), node_id: None, position: (0.0, 0.0) };
+        let canvas = PictureCanvas::new(&graph, inside, None).unwrap();
+        assert!(canvas.command(add.clone()).is_none());
+        assert!(canvas.refusal(&add).is_some_and(|why| why.contains("not inside this group")), "{:?}", canvas.refusal(&add));
+        let canvas = PictureCanvas::new(&graph, root(&c), None).unwrap();
+        assert!(canvas.command(add.clone()).is_some(), "at the clip's level it lands");
+        assert_eq!(canvas.refusal(&add), None);
+
+        // Through the canvas: the pick in the add menu shows the reason.
+        let mut panel = super::super::NodeGraphV2Panel::default();
+        let ctx = egui::Context::default();
+        let mut level = NodePath::new(root(&c).root, [grade]);
+        let (mut selected, mut set) = (None, Default::default());
+        let mut texts = Vec::new();
+        for i in 0..6 {
+            if i == 3 {
+                panel.add_menu_open = true;
+                panel.add_menu_screen_pos = egui::pos2(100.0, 100.0);
+                panel.add_menu_search = "Gaussian".into();
+            }
+            let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 700.0))), time: Some(i as f64 * 0.05), ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    panel.show_picture(ui, &c, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, true, &Default::default(), 0, &mut Vec::new()).unwrap();
+                });
+            });
+            texts = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)), _ => None,
+            }).collect::<Vec<_>>();
+        }
+        let at = texts.iter().rev().find(|(s, _)| s.contains("Gaussian")).unwrap_or_else(|| panic!("{texts:?}")).1;
+        let mut cmds = Vec::new();
+        for (i, events) in [vec![egui::Event::PointerMoved(at), egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }], vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }], vec![], vec![]].into_iter().enumerate() {
+            let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 700.0))), time: Some(1.0 + i as f64 * 0.05), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    cmds.extend(panel.show_picture(ui, &c, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, true, &Default::default(), 0, &mut Vec::new()).unwrap());
+                });
+            });
+            texts = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos)), _ => None,
+            }).collect::<Vec<_>>();
+        }
+        assert!(!cmds.iter().any(|c| matches!(c, AppCommand::GraphOps { .. })), "{cmds:?}");
+        assert!(texts.iter().any(|(s, _)| s.contains("not inside this group")), "the reason shown: {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>());
     }
 }

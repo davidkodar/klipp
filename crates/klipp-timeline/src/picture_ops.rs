@@ -58,6 +58,7 @@ fn path_of(op: &GraphOp) -> &klipp_graph_format::path::NodePath {
         | GraphOp::SetMaskChannel { path, .. }
         | GraphOp::MoveAfter { path, .. }
         | GraphOp::SetNodeMeta { path, .. }
+        | GraphOp::SetAnnotations { path, .. }
         | GraphOp::AddKeyAt { path, .. }
         | GraphOp::RemoveKeyAt { path, .. }
         | GraphOp::SetAnim { path, .. }
@@ -108,7 +109,7 @@ fn picture_only(p: &ClipPicture, op: &GraphOp) -> bool {
         _ if path.nodes.len() != 1 => false,
         _ if beside => true,
         // Root canvas metadata has no legacy field representation.
-        GraphOp::SetNodeMeta { .. } | GraphOp::AddNodeBeside { .. } => true,
+        GraphOp::SetNodeMeta { .. } | GraphOp::SetAnnotations { .. } | GraphOp::AddNodeBeside { .. } => true,
         GraphOp::SetMix { .. } | GraphOp::SetMaskChannel { .. } => first.type_id.as_str() == types::LEGACY_EFFECT,
         GraphOp::Connect { to_port, .. } => first.type_id.as_str() == types::LEGACY_EFFECT && to_port.as_str() == "mask",
         GraphOp::Disconnect { port, .. } => first.type_id.as_str() == types::LEGACY_EFFECT && port.as_str() == "mask",
@@ -187,7 +188,7 @@ fn target(p: &ClipPicture, op: &GraphOp) -> Result<Target, String> {
             entry(first)?;
             Ok(Target::Effect)
         }
-        GraphOp::SetNodeMeta { .. } => Err("an effect's name and place aren't kept until effects become nodes".into()),
+        GraphOp::SetNodeMeta { .. } | GraphOp::SetAnnotations { .. } => Err("an effect's name and place aren't kept until effects become nodes".into()),
         GraphOp::AddNodeBeside { .. } => Err("a node beside the clip's own chain waits for clips whose picture is stored as their revision-2 picture".into()),
         GraphOp::SetMix { .. } => Err("an effect's mix isn't kept until effects become nodes".into()),
         _ => Err("an effect in the clip's chain has nothing to wire".into()),
