@@ -59,3 +59,7 @@ path = "tests/made_media_is_adopted.rs"
 [[test]]
 name = "old_reader_refuses_title_v2"
 path = "tests/old_reader_refuses_title_v2.rs"
+
+[[test]]
+name = "every_test_file_runs"
+path = "tests/every_test_file_runs.rs"
