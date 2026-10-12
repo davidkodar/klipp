@@ -25,6 +25,10 @@ pub enum ParamId {
         addr: klipp_graph_format::path::NodePath,
         key: klipp_graph_format::ParamKey,
     },
+    /// The height's own scale lane, keyed apart from the width's (#1471).
+    /// Last, so the variants before it keep their places in the render
+    /// cache's canonical bytes.
+    ScaleY,
 }
 
 /// How a modifier combines with the base value.
@@ -297,6 +301,7 @@ impl ParamId {
             ParamId::PositionX => "position_x".into(),
             ParamId::PositionY => "position_y".into(),
             ParamId::Scale => "scale".into(),
+            ParamId::ScaleY => "scale_y".into(),
             ParamId::Rotation => "rotation".into(),
             ParamId::Volume => "volume".into(),
             ParamId::Pan => "pan".into(),
@@ -321,6 +326,7 @@ impl ParamId {
             "position_x" => Some(ParamId::PositionX),
             "position_y" => Some(ParamId::PositionY),
             "scale" => Some(ParamId::Scale),
+            "scale_y" => Some(ParamId::ScaleY),
             "rotation" => Some(ParamId::Rotation),
             "volume" => Some(ParamId::Volume),
             "pan" => Some(ParamId::Pan),
@@ -346,6 +352,7 @@ impl ParamId {
             ParamId::PositionX => "Position X".into(),
             ParamId::PositionY => "Position Y".into(),
             ParamId::Scale => "Scale".into(),
+            ParamId::ScaleY => "Scale Y".into(),
             ParamId::Rotation => "Rotation".into(),
             ParamId::Volume => "Volume".into(),
             ParamId::Pan => "Pan".into(),

@@ -117,9 +117,13 @@ pub fn evaluate_clip_own_transform(
     let py = lane(klipp_core::ParamId::PositionY, clip.transform_pos_y_keyframes(), tdef.1);
     let sc = lane(klipp_core::ParamId::Scale, clip.transform_scale_keyframes(), tdef.2);
     let ro = lane(klipp_core::ParamId::Rotation, clip.transform_rotation_keyframes(), tdef.4);
-    // The scale lane keys the width; the height keeps the clip's aspect
-    // under it (#1406), so a width keyed to 0 gives a height of 0.
-    (px, py, sc, sc * tdef.3, ro, tdef.5, tdef.6)
+    // The scale lane keys the width. The height is its own lane where it
+    // has keys (#1471); else it keeps the clip's aspect under the width
+    // (#1406), so a width keyed to 0 gives a height of 0.
+    let follows = sc * tdef.3;
+    let own = clip.truth_lane(&klipp_core::ParamId::ScaleY).map_or_else(|| !clip.transform_scale_y_keyframes().is_empty(), |(keys, _)| !keys.is_empty());
+    let sy = if own { lane(klipp_core::ParamId::ScaleY, clip.transform_scale_y_keyframes(), follows) } else { follows };
+    (px, py, sc, sy, ro, tdef.5, tdef.6)
 }
 
 /// Placement and its focal anchor come from the first enabled Transform.

@@ -216,9 +216,16 @@ fn effect_node(tag: &str, effect: &klipp_effects::BuiltinEffect) -> Option<Node>
 /// Whether a Transform card's Scale Y follows its Scale X: under keys on
 /// the clip's scale, which key the width with the height at the clip's
 /// aspect (#1406), so a static Scale Y there would disagree with the
-/// picture.
+/// picture. Not when the height has keys of its own (#1471).
 pub(crate) fn height_follows_width(tag: &str, clip: &Clip) -> bool {
-    tag == "transform" && !clip.transform_scale_keyframes().is_empty()
+    tag == "transform" && !clip.transform_scale_keyframes().is_empty() && !height_keyed_apart(tag, clip)
+}
+
+/// Whether the clip's height is keyed apart from its width, on its own
+/// lane (#1471): the Video tab's Scale Y row keys it, and a Transform
+/// card's static Scale Y would disagree with the picture.
+pub(crate) fn height_keyed_apart(tag: &str, clip: &Clip) -> bool {
+    tag == "transform" && !crate::inspector::placement_by_path::lane_keys(clip, "scale_y").is_empty()
 }
 
 /// The four kinds the clip places itself (a transform, an opacity, a
@@ -589,8 +596,9 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
                 ParamDesc { key, ..*p }
             })
             // Under keys on the clip's scale, its height follows the width
-            // at the clip's aspect (#1406): no Scale Y of its own to edit.
-            .filter(|p| !(height_follows_width(ty.tag, clip) && p.key == "scale_y"))
+            // at the clip's aspect (#1406), or its own keys (#1471): no
+            // static Scale Y to edit.
+            .filter(|p| !((height_follows_width(ty.tag, clip) || height_keyed_apart(ty.tag, clip)) && p.key == "scale_y"))
             .collect();
             let presentation = |p: &ParamDesc| {
                 let original = klipp_graph_lift::names::keyframe_name(ty.tag, p.key);
@@ -639,6 +647,9 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
                 if height_follows_width(ty.tag, clip) {
                     ui.label(egui::RichText::new("Scale Y follows Scale X's keys, at the clip's aspect").small().color(theme.text_dim))
                         .on_hover_text("The clip's scale is keyed: its height keeps its aspect against the width.");
+                } else if height_keyed_apart(ty.tag, clip) {
+                    ui.label(egui::RichText::new("Scale Y has keys of its own").small().color(theme.text_dim))
+                        .on_hover_text("The clip's height is keyed apart from its width, on the Video tab's Scale Y row.");
                 }
             });
             if placed {

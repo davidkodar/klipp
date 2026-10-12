@@ -1484,6 +1484,7 @@ impl Track {
                 transform_pos_x_keyframes: (Vec::new()).into(),
                 transform_pos_y_keyframes: (Vec::new()).into(),
                 transform_scale_keyframes: (Vec::new()).into(),
+                transform_scale_y_keyframes: (Vec::new()).into(),
                 transform_rotation_keyframes: (Vec::new()).into(),
                 transform_tilt_x_keyframes: (Vec::new()).into(),
                 transform_tilt_y_keyframes: (Vec::new()).into(),
@@ -1719,6 +1720,7 @@ impl Track {
         let (pos_x_a, pos_x_b) = split_kfs(clip.transform_pos_x_keyframes());
         let (pos_y_a, pos_y_b) = split_kfs(clip.transform_pos_y_keyframes());
         let (scale_a, scale_b) = split_kfs(clip.transform_scale_keyframes());
+        let (scale_y_a, scale_y_b) = split_kfs(clip.transform_scale_y_keyframes());
         let (rot_a, rot_b) = split_kfs(clip.transform_rotation_keyframes());
         let (tilt_x_a, tilt_x_b) = split_kfs(clip.transform_tilt_x_keyframes());
         let (tilt_y_a, tilt_y_b) = split_kfs(clip.transform_tilt_y_keyframes());
@@ -1786,6 +1788,7 @@ impl Track {
                 transform_pos_x_keyframes: (pos_x_a).into(),
                 transform_pos_y_keyframes: (pos_y_a).into(),
                 transform_scale_keyframes: (scale_a).into(),
+                transform_scale_y_keyframes: (scale_y_a).into(),
                 transform_rotation_keyframes: (rot_a).into(),
                 transform_tilt_x_keyframes: (tilt_x_a).into(),
                 transform_tilt_y_keyframes: (tilt_y_a).into(),
@@ -1860,6 +1863,7 @@ impl Track {
                 transform_pos_x_keyframes: (pos_x_b).into(),
                 transform_pos_y_keyframes: (pos_y_b).into(),
                 transform_scale_keyframes: (scale_b).into(),
+                transform_scale_y_keyframes: (scale_y_b).into(),
                 transform_rotation_keyframes: (rot_b).into(),
                 transform_tilt_x_keyframes: (tilt_x_b).into(),
                 transform_tilt_y_keyframes: (tilt_y_b).into(),
@@ -2815,6 +2819,7 @@ impl Clip {
                 transform_pos_x_keyframes: (Vec::new()).into(),
                 transform_pos_y_keyframes: (Vec::new()).into(),
                 transform_scale_keyframes: (Vec::new()).into(),
+                transform_scale_y_keyframes: (Vec::new()).into(),
                 transform_rotation_keyframes: (Vec::new()).into(),
                 transform_tilt_x_keyframes: (Vec::new()).into(),
                 transform_tilt_y_keyframes: (Vec::new()).into(),
@@ -2927,6 +2932,7 @@ impl Clip {
                 transform_pos_x_keyframes: (Vec::new()).into(),
                 transform_pos_y_keyframes: (Vec::new()).into(),
                 transform_scale_keyframes: (Vec::new()).into(),
+                transform_scale_y_keyframes: (Vec::new()).into(),
                 transform_rotation_keyframes: (Vec::new()).into(),
                 transform_tilt_x_keyframes: (Vec::new()).into(),
                 transform_tilt_y_keyframes: (Vec::new()).into(),
@@ -3028,6 +3034,7 @@ impl Clip {
                 transform_pos_x_keyframes: (Vec::new()).into(),
                 transform_pos_y_keyframes: (Vec::new()).into(),
                 transform_scale_keyframes: (Vec::new()).into(),
+                transform_scale_y_keyframes: (Vec::new()).into(),
                 transform_rotation_keyframes: (Vec::new()).into(),
                 transform_tilt_x_keyframes: (Vec::new()).into(),
                 transform_tilt_y_keyframes: (Vec::new()).into(),

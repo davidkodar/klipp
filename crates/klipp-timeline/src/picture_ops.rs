@@ -1060,6 +1060,7 @@ impl Clip {
             "pos_x" => P::PositionX,
             "pos_y" => P::PositionY,
             "scale" => P::Scale,
+            "scale_y" => P::ScaleY,
             "rotation" => P::Rotation,
             "tilt_x" => P::TiltX,
             "tilt_y" => P::TiltY,

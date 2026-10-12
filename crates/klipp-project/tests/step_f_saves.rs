@@ -70,6 +70,27 @@ fn an_uneven_scale_is_saved_as_its_aspect() {
     assert_eq!(back.picture_v2().unwrap().picture.placement.aspect, Some(0.5));
 }
 
+/// #1471: a height keyed apart from the width is stored as a lane of its
+/// own beside the width's, and comes back as that lane.
+#[test]
+fn a_height_keyed_apart_is_saved_as_its_own_lane() {
+    use klipp_timeline::test_clip::TestClip;
+    let scaled = || TestClip::of(clip()).effect(transform(1.0, 0.5)).lane("scale", 0.0, 0.5).lane("scale", 2.0, 1.5);
+    let c = scaled().lane("scale_y", 0.0, 0.25).lane("scale_y", 2.0, 0.75).build();
+    let lane = |c: &Clip, key: &str| c.picture_v2().unwrap().picture.placement_anim.get(&klipp_graph_format::ParamKey::from(key)).cloned();
+    let height = lane(&c, "scale_y").expect("a height lane");
+    let (back, stored) = saved("1471", c);
+    let values = |lane: &str| stored["placement_anim"][lane]["keys"].as_array().unwrap_or_else(|| panic!("no {lane} lane: {}", stored["placement_anim"])).iter().map(|k| k["value"].as_f64().unwrap()).collect::<Vec<_>>();
+    assert_eq!(values("scale"), [0.5, 1.5]);
+    assert_eq!(values("scale_y"), [0.25, 0.75]);
+    assert_eq!(lane(&back, "scale_y"), Some(height), "the height's keys come back");
+
+    // A height with no lane of its own stores none.
+    let (back, stored) = saved("1471-none", scaled().build());
+    assert!(stored["placement_anim"].get("scale_y").is_none(), "{}", stored["placement_anim"]);
+    assert_eq!(lane(&back, "scale_y"), None);
+}
+
 /// #1386: an earlier enabled Opacity is stored on, with its own keys, and
 /// the anchor's value is the clip's opacity.
 #[test]

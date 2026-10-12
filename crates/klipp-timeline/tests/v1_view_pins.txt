@@ -28,6 +28,7 @@ edit_transform_pos_x_keyframes 10
 edit_transform_pos_y_keyframes 10
 edit_transform_rotation_keyframes 6
 edit_transform_scale_keyframes 9
+edit_transform_scale_y_keyframes 4
 edit_transform_tilt_x_keyframes 3
 edit_transform_tilt_y_keyframes 4
 edit_video_effects 9
@@ -73,6 +74,7 @@ transform_pos_x_keyframes 15
 transform_pos_y_keyframes 13
 transform_rotation_keyframes 10
 transform_scale_keyframes 22
+transform_scale_y_keyframes 9
 transform_tilt_x_keyframes 9
 transform_tilt_y_keyframes 10
 unlift 27

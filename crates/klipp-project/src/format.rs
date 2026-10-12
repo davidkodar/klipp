@@ -372,6 +372,10 @@ pub struct ClipJson {
     pub transform_pos_y_keyframes: Option<Vec<klipp_core::Keyframe>>,
     #[serde(default)]
     pub transform_scale_keyframes: Option<Vec<klipp_core::Keyframe>>,
+    /// The height's scale keyed apart from the width's (#1471); absent
+    /// for a height that follows the width at the clip's aspect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform_scale_y_keyframes: Option<Vec<klipp_core::Keyframe>>,
     #[serde(default)]
     pub transform_rotation_keyframes: Option<Vec<klipp_core::Keyframe>>,
     /// 3D tilt tracks; absent for a flat picture, which is every clip
@@ -1003,7 +1007,7 @@ mod tests {
             volume_keyframes: None, pan_keyframes: None, gain_keyframes: None,
             opacity_keyframes: None,
             transform_pos_x_keyframes: None, transform_pos_y_keyframes: None,
-            transform_scale_keyframes: None, transform_rotation_keyframes: None, transform_tilt_x_keyframes: None, transform_tilt_y_keyframes: None,
+            transform_scale_keyframes: None, transform_scale_y_keyframes: None, transform_rotation_keyframes: None, transform_tilt_x_keyframes: None, transform_tilt_y_keyframes: None,
             matte_feather_keyframes: None, matte_choke_keyframes: None,
             clip_markers: None,
             effect_keyframes: None,
@@ -1077,7 +1081,7 @@ mod tests {
             volume_keyframes: None, pan_keyframes: None, gain_keyframes: None,
             opacity_keyframes: None,
             transform_pos_x_keyframes: None, transform_pos_y_keyframes: None,
-            transform_scale_keyframes: None, transform_rotation_keyframes: None, transform_tilt_x_keyframes: None, transform_tilt_y_keyframes: None,
+            transform_scale_keyframes: None, transform_scale_y_keyframes: None, transform_rotation_keyframes: None, transform_tilt_x_keyframes: None, transform_tilt_y_keyframes: None,
             matte_feather_keyframes: None, matte_choke_keyframes: None,
             clip_markers: None,
             effect_keyframes: None,
@@ -1274,7 +1278,7 @@ mod tests {
             volume_keyframes: None, pan_keyframes: None, gain_keyframes: None,
             opacity_keyframes: None,
             transform_pos_x_keyframes: None, transform_pos_y_keyframes: None,
-            transform_scale_keyframes: None, transform_rotation_keyframes: None, transform_tilt_x_keyframes: None, transform_tilt_y_keyframes: None,
+            transform_scale_keyframes: None, transform_scale_y_keyframes: None, transform_rotation_keyframes: None, transform_tilt_x_keyframes: None, transform_tilt_y_keyframes: None,
             matte_feather_keyframes: None, matte_choke_keyframes: None,
             clip_markers: None, effect_keyframes: None,
             role: None, param_modifiers: None,

@@ -4,9 +4,9 @@
 //! never in the node's own parameters.
 //!
 //! The keys are the lift's own names (`placement` in `lift.rs`): `pos_x`,
-//! `pos_y`, `scale`, `rotation`, `anchor_x`, `anchor_y`, `tilt_x`,
-//! `tilt_y`, `perspective`, and `opacity`. All but the anchor and the
-//! perspective are animated.
+//! `pos_y`, `scale`, `scale_y`, `rotation`, `anchor_x`, `anchor_y`,
+//! `tilt_x`, `tilt_y`, `perspective`, and `opacity`. All but the anchor
+//! and the perspective are animated.
 
 use klipp_graph_format::lifted::{types as lt, ClipPicture};
 use klipp_graph_format::op::GraphOp;
@@ -25,7 +25,8 @@ pub fn is_property(key: &ParamKey) -> bool {
 }
 
 /// Whether `key` takes keyframes: the opacity, and the placement values a
-/// clip keys (`PLACEMENT_ANIM_KEYS`; its height follows the width's lane).
+/// clip keys (`PLACEMENT_ANIM_KEYS`; its height follows the width's lane
+/// unless it has a lane of its own, #1471).
 pub fn is_animated(key: &ParamKey) -> bool {
     key.as_str() == OPACITY || klipp_graph_format::lifted::PLACEMENT_ANIM_KEYS.contains(&key.as_str())
 }

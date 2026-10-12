@@ -71,22 +71,22 @@ impl Clip {
         lanes || effects || !self.sound_modifiers().is_empty()
     }
 
-    /// The seven clip tracks used by direct-present and title-overlay gates.
+    /// The eight clip tracks used by direct-present and title-overlay gates.
     /// A single constant key counts; audio, effect, speed and matte keys do not.
     pub fn has_render_keyframes(&self) -> bool {
         self.render_tracks().is_some_and(|tracks| tracks.iter().any(|k| !k.is_empty()))
     }
 
-    /// The clip's seven render tracks as its picture holds them: opacity,
-    /// then the six transform tracks.
+    /// The clip's eight render tracks as its picture holds them: opacity,
+    /// then the seven transform tracks (the height's own, #1471, among them).
     fn render_tracks(&self) -> Option<Vec<Vec<Keyframe>>> {
         let lane = |p: ParamId| self.truth_lane(&p).map(|(k, _)| k).unwrap_or_default();
         let [tilt_x, tilt_y] = self.truth_tilt_keys()?;
-        Some(vec![lane(ParamId::Opacity), lane(ParamId::PositionX), lane(ParamId::PositionY), lane(ParamId::Scale), lane(ParamId::Rotation), tilt_x, tilt_y])
+        Some(vec![lane(ParamId::Opacity), lane(ParamId::PositionX), lane(ParamId::PositionY), lane(ParamId::Scale), lane(ParamId::ScaleY), lane(ParamId::Rotation), tilt_x, tilt_y])
     }
 
     /// Existing picture-present animation decision: any modifier or one of
-    /// the seven render keyframe tracks, without evaluating their values.
+    /// the eight render keyframe tracks, without evaluating their values.
     pub fn has_animation(&self) -> bool {
         self.has_param_modifiers() || self.has_render_keyframes()
     }
@@ -331,13 +331,20 @@ mod tests {
     #[test]
     fn animation_gates_pin_each_included_and_excluded_track() {
         type Track = fn(&mut Clip) -> &mut Vec<Keyframe>;
-        let tracks: [(&str, Track, bool, bool, bool); 13] = [
+        let tracks: [(&str, Track, bool, bool, bool); 14] = [
             ("opacity", |c| &mut c.picture.view_mut().opacity_keyframes.0, true, false, false),
             ("x", |c| &mut c.picture.view_mut().transform_pos_x_keyframes.0, true, false, true),
             ("y", |c| &mut c.picture.view_mut().transform_pos_y_keyframes.0, true, false, true),
             (
                 "scale",
                 |c| &mut c.picture.view_mut().transform_scale_keyframes.0,
+                true,
+                false,
+                true,
+            ),
+            (
+                "scale y",
+                |c| &mut c.picture.view_mut().transform_scale_y_keyframes.0,
                 true,
                 false,
                 true,

@@ -164,6 +164,10 @@ pub(crate) struct PictureView {
     pub(crate) transform_pos_y_keyframes: crate::Keyframes,
     #[serde(default)]
     pub(crate) transform_scale_keyframes: crate::Keyframes,
+    /// The height's scale keyed apart from the width's (#1471). Empty for
+    /// a height that follows the width at the clip's aspect.
+    #[serde(default, skip_serializing_if = "crate::Keyframes::is_empty")]
+    pub(crate) transform_scale_y_keyframes: crate::Keyframes,
     #[serde(default)]
     pub(crate) transform_rotation_keyframes: crate::Keyframes,
     /// Tilt about the picture's horizontal axis, in degrees, in

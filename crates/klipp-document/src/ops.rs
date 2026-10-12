@@ -5407,6 +5407,9 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
     new_state.transform_pos_x_keyframes = px;
     new_state.transform_pos_y_keyframes = py;
     new_state.transform_scale_keyframes = sk;
+    // The scale keys both axes: a height keyed apart (#1471) would
+    // stretch the picture the poses keep even.
+    new_state.transform_scale_y_keyframes = Vec::new();
     new_state.transform_rotation_keyframes = rk;
     new_state.opacity_keyframes = ok;
     let poses_text: Vec<String> = sorted
@@ -5466,6 +5469,8 @@ fn pan(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, keys:
     let eases: Vec<_> = sorted.iter().map(|k| k.ease).collect();
     ease_tracks(&mut [&mut sk, &mut px, &mut py], &eases);
     new_state.transform_scale_keyframes = sk;
+    // The height follows the width's keys again (#1471).
+    new_state.transform_scale_y_keyframes = Vec::new();
     new_state.transform_pos_x_keyframes = px;
     new_state.transform_pos_y_keyframes = py;
     let poses: Vec<String> = sorted.iter().map(|k| format!("{:.2}s {:.2}x@{:.2},{:.2}", k.secs, k.scale, k.x, k.y)).collect();
@@ -5670,6 +5675,8 @@ fn zoom(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, (fro
     klipp_core::keyframe::upsert_keyframe(&mut scale_kfs, dur, to);
     klipp_core::keyframe::ease_into(&mut scale_kfs, 1, ease);
     new_state.transform_scale_keyframes = scale_kfs;
+    // The height follows the width's keys again (#1471).
+    new_state.transform_scale_y_keyframes = Vec::new();
     // A push toward (x, y), as reframe measures it, at each end's own
     // scale: the position grows with the room the zoom makes, so the
     // picture's edge never shows on the way.

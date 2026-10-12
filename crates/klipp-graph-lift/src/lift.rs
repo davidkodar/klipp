@@ -779,6 +779,8 @@ fn placement(record: &ClipRecordV2, transforms: &[&Node]) -> (PlacementProps, BT
         ("pos_x", "transform_pos_x_keyframes", Some("position_x")),
         ("pos_y", "transform_pos_y_keyframes", Some("position_y")),
         ("scale", "transform_scale_keyframes", Some("scale")),
+        // The height keyed apart from the width (#1471).
+        ("scale_y", "transform_scale_y_keyframes", None),
         ("rotation", "transform_rotation_keyframes", Some("rotation")),
         ("tilt_x", "transform_tilt_x_keyframes", None),
         ("tilt_y", "transform_tilt_y_keyframes", None),

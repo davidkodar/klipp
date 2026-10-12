@@ -3665,8 +3665,9 @@ impl CopiedEffect {
     }
 }
 
-/// The placement and opacity lanes a paste carries.
-const LANES: [&str; 5] = ["pos_x", "pos_y", "scale", "rotation", "opacity"];
+/// The placement and opacity lanes a paste carries: the height's own
+/// (#1471) with the width's, so a pasted scale is the one copied.
+const LANES: [&str; 6] = ["pos_x", "pos_y", "scale", "scale_y", "rotation", "opacity"];
 
 /// `clip`'s placement and opacity lanes as its picture holds them.
 fn placement_anims(clip: &klipp_timeline::Clip) -> std::collections::BTreeMap<&'static str, klipp_graph_format::Animation> {

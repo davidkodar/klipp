@@ -42,6 +42,7 @@ pub struct KeyframeSnapshot {
     pub transform_pos_x_keyframes: Vec<Keyframe>,
     pub transform_pos_y_keyframes: Vec<Keyframe>,
     pub transform_scale_keyframes: Vec<Keyframe>,
+    pub transform_scale_y_keyframes: Vec<Keyframe>,
     pub transform_rotation_keyframes: Vec<Keyframe>,
     pub transform_tilt_x_keyframes: Vec<Keyframe>,
     pub transform_tilt_y_keyframes: Vec<Keyframe>,
@@ -61,6 +62,7 @@ impl KeyframeSnapshot {
             transform_pos_x_keyframes: Vec::new(),
             transform_pos_y_keyframes: Vec::new(),
             transform_scale_keyframes: Vec::new(),
+            transform_scale_y_keyframes: Vec::new(),
             transform_rotation_keyframes: Vec::new(),
             transform_tilt_x_keyframes: Vec::new(),
             transform_tilt_y_keyframes: Vec::new(),
@@ -80,6 +82,7 @@ impl KeyframeSnapshot {
             transform_pos_x_keyframes: clip.transform_pos_x_keyframes().to_vec(),
             transform_pos_y_keyframes: clip.transform_pos_y_keyframes().to_vec(),
             transform_scale_keyframes: clip.transform_scale_keyframes().to_vec(),
+            transform_scale_y_keyframes: clip.transform_scale_y_keyframes().to_vec(),
             transform_rotation_keyframes: clip.transform_rotation_keyframes().to_vec(),
             transform_tilt_x_keyframes: clip.transform_tilt_x_keyframes().to_vec(),
             transform_tilt_y_keyframes: clip.transform_tilt_y_keyframes().to_vec(),
@@ -98,6 +101,7 @@ impl KeyframeSnapshot {
         clip.edit_transform_pos_x_keyframes(|v| *v = self.transform_pos_x_keyframes.clone());
         clip.edit_transform_pos_y_keyframes(|v| *v = self.transform_pos_y_keyframes.clone());
         clip.edit_transform_scale_keyframes(|v| *v = self.transform_scale_keyframes.clone());
+        clip.edit_transform_scale_y_keyframes(|v| *v = self.transform_scale_y_keyframes.clone());
         clip.edit_transform_rotation_keyframes(|v| *v = self.transform_rotation_keyframes.clone());
         clip.edit_transform_tilt_x_keyframes(|v| *v = self.transform_tilt_x_keyframes.clone());
         clip.edit_transform_tilt_y_keyframes(|v| *v = self.transform_tilt_y_keyframes.clone());
