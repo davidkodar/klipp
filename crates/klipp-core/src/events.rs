@@ -2613,6 +2613,9 @@ pub enum AppCommand {
     /// doing while on screen (blink, pulse, shake, wave, colour
     /// cycle, scroll, crawl, counter).
     SetTitleLoops { clip_id: ClipId, loops: Vec<crate::title_motion::TitleLoop> },
+    /// The targeted text layer's animators (#1510), all of them: a preset
+    /// added, one removed or one edited is one step.
+    SetTitleAnimators { clip_id: ClipId, animators: Vec<crate::title_motion::Animator> },
     /// Set the targeted title layer's edge fade: how it fades out
     /// towards the frame's edges, by where it is on screen (#592).
     SetTitleEdgeFade { clip_id: ClipId, edge_fade: crate::title_motion::EdgeFade },

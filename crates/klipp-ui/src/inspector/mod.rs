@@ -15,6 +15,7 @@ pub mod stack_view;
 pub mod info_tab;
 pub mod modifier_ui;
 pub mod title_tab;
+pub mod title_animators;
 
 use crate::icons::Icon;
 use crate::layout_state::InspectorTab;
@@ -1509,7 +1510,7 @@ fn handle_text_key_edit(
     cmds: &mut Vec<AppCommand>,
     clip_id: klipp_core::ClipId,
     target_oid: Option<klipp_timeline::TitleObjectId>,
-    param_key: &'static str,
+    param_key: &str,
     value: f32,
     keyframes: &[klipp_core::Keyframe],
     clip_time_secs: f64,
@@ -5016,6 +5017,9 @@ fn show_title_editor(
         // measures it for a roll.
         let travel = title_tab::Travel::new(state.sequence().resolution, tb.loop_extent(tb.font_size), clip_secs);
         title_tab::show_motion_card(ui, theme, clip_id, &title_tab::ChipSubject::Text(tb.clone()), fx, travel, chips, cmds);
+        ui.add_space(8.0);
+        // Part of the text, unit by unit (#1510).
+        title_animators::show_animators(ui, theme, clip_id, target_oid, fx, clip_secs, clip_time_secs, keyframe_tolerance, cmds);
         ui.add_space(10.0);
         title_tab::show_style_card(ui, theme, clip_id, tb, fx, chips, cmds);
         ui.add_space(10.0);
