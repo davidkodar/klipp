@@ -12,6 +12,7 @@ pub mod effects_tab;
 pub mod generated;
 pub mod grade_view;
 pub mod stack_view;
+pub(crate) mod side_matte;
 pub mod info_tab;
 pub mod modifier_ui;
 pub mod title_tab;

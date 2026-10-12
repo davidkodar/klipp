@@ -62,6 +62,8 @@ mod resolve_parity;
 mod resolved_placement;
 #[path = "../scale_aspect.rs"]
 mod scale_aspect;
+#[path = "../side_mattes_render.rs"]
+mod side_mattes_render;
 #[path = "../speed_ramp_retime.rs"]
 mod speed_ramp_retime;
 #[path = "../stack_effects_plan.rs"]
