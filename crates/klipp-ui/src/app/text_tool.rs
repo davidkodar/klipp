@@ -72,112 +72,7 @@ pub(super) fn create_title_in_viewer(
 mod tests {
     use super::*;
 
-    /// The real program viewer in an egui frame, its commands applied to
-    /// the state as the app applies them: the Text tool's through
-    /// [`create_title_in_viewer`], the in-place editor's text and its end
-    /// as the title handlers do.
-    struct Viewer {
-        ctx: egui::Context,
-        panel: ViewerPanel,
-        state: AppState,
-        theme: KlippTheme,
-        clock: f64,
-        sent: Vec<AppCommand>,
-    }
-
-    impl Viewer {
-        fn new() -> Self {
-            // Paused on an empty timeline: the viewer shows a frame to
-            // draw on.
-            let state = AppState { playback: klipp_engine::PlaybackState::Paused, active_tool: Tool::Text, ..Default::default() };
-            let mut v = Self { ctx: egui::Context::default(), panel: ViewerPanel::default(), state, theme: KlippTheme::default(), clock: 0.0, sent: Vec::new() };
-            v.frame(Vec::new());
-            v
-        }
-
-        fn frame(&mut self, events: Vec<egui::Event>) {
-            self.clock += 0.05;
-            let input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))),
-                time: Some(self.clock),
-                events,
-                ..Default::default()
-            };
-            let mut cmds = Vec::new();
-            let (panel, state, theme) = (&mut self.panel, &mut self.state, &self.theme);
-            let _ = self.ctx.run(input, |ctx| {
-                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| cmds = panel.show(ui, state, theme));
-            });
-            for cmd in cmds {
-                self.apply(&cmd);
-                self.sent.push(cmd);
-            }
-        }
-
-        fn apply(&mut self, cmd: &AppCommand) {
-            let state = &mut self.state;
-            match cmd {
-                AppCommand::CreateTitleInViewer { x, y, box_size } => {
-                    create_title_in_viewer(state, *x, *y, *box_size, 5.0).expect("a title");
-                }
-                AppCommand::SetTitleObjectText { clip_id, object_id, text } => {
-                    let clip = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(*clip_id)).unwrap();
-                    let klipp_timeline::ClipKind::Title(td) = &mut clip.kind else { panic!("a title") };
-                    let Some(klipp_timeline::TitleObject { content: klipp_timeline::TitleObjectContent::TextBox(tb), .. }) =
-                        td.object_mut(klipp_timeline::TitleObjectId(*object_id))
-                    else {
-                        panic!("its text layer")
-                    };
-                    tb.text = text.clone();
-                }
-                AppCommand::EndTitleEdit => {
-                    state.viewer_text_edit = false;
-                    state.viewer_text_edit_clip = None;
-                    state.viewer_text_edit_object = None;
-                }
-                _ => {}
-            }
-        }
-
-        fn image_rect(&self) -> egui::Rect {
-            self.state.viewer_image_rect.expect("the viewer laid the picture out")
-        }
-
-        fn press(&mut self, at: egui::Pos2) {
-            self.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
-        }
-
-        fn release(&mut self, at: egui::Pos2) {
-            self.frame(vec![egui::Event::PointerMoved(at), button(at, false)]);
-            self.frame(Vec::new());
-            self.frame(Vec::new());
-        }
-
-        fn click(&mut self, at: egui::Pos2) {
-            self.press(at);
-            self.release(at);
-        }
-
-        fn drag(&mut self, from: egui::Pos2, to: egui::Pos2) {
-            self.press(from);
-            for i in 1..=4 {
-                self.frame(vec![egui::Event::PointerMoved(from + (to - from) * (i as f32 / 4.0))]);
-            }
-            self.release(to);
-        }
-
-        fn titles(&self) -> Vec<&klipp_timeline::Clip> {
-            self.state.sequences[0].all_clips().filter(|c| c.title_data().is_some()).collect()
-        }
-
-        fn layer(&self, clip: &klipp_timeline::Clip) -> klipp_timeline::TitleObject {
-            clip.title_data().unwrap().objects[0].clone()
-        }
-    }
-
-    fn button(pos: egui::Pos2, pressed: bool) -> egui::Event {
-        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }
-    }
+    use super::super::viewer_harness::Viewer;
 
     fn text(td: &klipp_timeline::TitleData) -> String {
         match &td.objects[0].content {
@@ -249,6 +144,34 @@ mod tests {
         v.click(r.max - egui::vec2(10.0, 10.0));
         assert_eq!(v.titles().len(), 2, "the next click makes another title");
         assert!(v.titles().iter().any(|c| c.id == clip_id));
+    }
+
+    /// A Text-tool click on a title's text at the playhead edits that
+    /// title in place, with no new title; a click beside it still makes
+    /// one (#1714).
+    #[test]
+    fn a_click_on_a_titles_text_edits_it() {
+        let mut v = Viewer::new();
+        let r = v.image_rect();
+        let at = r.min + egui::vec2(r.width() * 0.3, r.height() * 0.4);
+        v.click(at);
+        let first = v.titles()[0].id;
+        v.click(r.max - egui::vec2(10.0, 10.0));
+        assert!(!v.state.viewer_text_edit, "editing ended");
+        v.state.selected_clip = None;
+        v.click(at);
+        assert_eq!(v.titles().len(), 1, "no new title: {:?}", v.sent);
+        assert!(v.state.viewer_text_edit && v.state.viewer_text_edit_clip == Some(first), "the title is edited");
+        assert_eq!(v.state.selected_clip, Some(first));
+        assert_eq!(v.state.viewer_text_edit_buffer, "Title");
+        v.frame(Vec::new());
+        v.frame(vec![egui::Event::Text("!".into())]);
+        v.frame(Vec::new());
+        assert_eq!(text(v.titles()[0].title_data().unwrap()), "Title!", "typing goes on at its end");
+
+        v.click(r.max - egui::vec2(10.0, 10.0));
+        v.click(r.min + egui::vec2(r.width() * 0.8, r.height() * 0.8));
+        assert_eq!(v.titles().len(), 2, "beside the text, a new title");
     }
 
     /// The title is one undo step: undone, the clip and the text track

@@ -522,6 +522,9 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTitleShapeFit { .. }
         | AppCommand::SetTitleObjectText { .. }
         | AppCommand::SetTitleObjectTransformAndFont { .. }
+        | AppCommand::BeginTitleObjectDrag { .. }
+        | AppCommand::EndTitleObjectDrag { .. }
+        | AppCommand::SetTitleArcStart { .. }
         | AppCommand::SetTitleBackground { .. }
         | AppCommand::SetTitleShadow { .. }
         | AppCommand::SetTitleShadows { .. }
