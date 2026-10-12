@@ -3,6 +3,11 @@
 //! module here. Files that time themselves or change process-wide state
 //! stay their own binaries (the `[[test]]` list in Cargo.toml).
 
+// Each file declares the helpers it shares (`mod common;`, a `#[path]`
+// support module) as it did as a binary of its own, so they load once
+// per file here.
+#![allow(clippy::duplicate_mod)]
+
 #[path = "../clip_sources_reads_the_media.rs"]
 mod clip_sources_reads_the_media;
 #[path = "../export_audio_plays_the_whole_source.rs"]
