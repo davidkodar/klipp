@@ -76,7 +76,7 @@ pub use klipp_core::text3d;
 pub use klipp_core::text3d::{Bevel, BevelProfile, Camera3d, Light3d, Text3d, Text3dKeys};
 pub use credits::{credit_rows, credits_title, parse_credits, CreditLine, CreditsLayout, CreditsStyle};
 pub use title_template_file::{read_templates, template_dir, TemplateFile, TEMPLATE_EXTENSION};
-pub use title_fields::{FieldKind, LayerTiming, PublishedField, Timing, SPEED_RANGE as TITLE_SPEED_RANGE};
+pub use title_fields::{FieldKind, LayerSize, LayerTiming, PublishedField, Timing, SIZE_RANGE as TITLE_SIZE_RANGE, SPEED_RANGE as TITLE_SPEED_RANGE};
 pub mod crossfade;
 pub mod flatten;
 pub mod insert_edit;

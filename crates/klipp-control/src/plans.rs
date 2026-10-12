@@ -62,6 +62,7 @@ pub(crate) fn title_templates(dir: Option<&std::path::Path>) -> serde_json::Valu
                     V::Text(s) => json!({ "label": f.label, "kind": "text", "value": s }),
                     V::Colour([r, g, b, a]) => json!({ "label": f.label, "kind": "colour", "value": format!("#{r:02x}{g:02x}{b:02x}{a:02x}") }),
                     V::Speed(x) => json!({ "label": f.label, "kind": "speed", "value": x }),
+                    V::Size(x) => json!({ "label": f.label, "kind": "size", "value": x }),
                 })
                 .collect();
             json!({ "name": t.name, "category": t.category, "fields": fields })

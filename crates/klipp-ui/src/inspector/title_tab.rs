@@ -794,6 +794,21 @@ pub fn template_fields(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_cor
                     set(V::Speed(v), true);
                 }
             }
+            V::Size(f) => {
+                let mut v = f;
+                let r = ui.add(
+                    egui::Slider::new(&mut v, klipp_timeline::TITLE_SIZE_RANGE)
+                        .text(field.label.as_str())
+                        .suffix("\u{00d7}")
+                        .fixed_decimals(2),
+                );
+                // As Speed: shown as it goes, one step when it ends.
+                if r.changed() {
+                    set(V::Size(v), !r.dragged());
+                } else if r.drag_stopped() {
+                    set(V::Size(v), true);
+                }
+            }
         }
         ui.add_space(4.0);
     }

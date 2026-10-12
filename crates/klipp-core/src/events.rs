@@ -997,6 +997,9 @@ pub enum TitleFieldValue {
     /// How fast the title's motion runs against the template's: 1.0 as
     /// made, 2.0 twice as fast.
     Speed(f32),
+    /// How big the title is against the template's (#1724): 1.0 as made,
+    /// 2.0 twice the size, grown from the template's anchor.
+    Size(f32),
 }
 
 #[derive(Debug, Clone)]
