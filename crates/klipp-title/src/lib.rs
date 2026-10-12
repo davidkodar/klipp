@@ -6642,6 +6642,56 @@ mod tests {
         assert_eq!(off.mask_h, plain.mask_h, "drop_cap_scale<1.0 should disable");
     }
 
+    /// #1674: every line of a drop-cap box sits inside the box. The
+    /// box is the width its alignment sets from the anchor: from it
+    /// rightwards for Left, about it for Center, leftwards for Right.
+    /// Left wraps beside the cap: the lines beside it start past the
+    /// cap and keep to the width left beside it, the lines under it
+    /// start back under the cap at the box's full width.
+    #[test]
+    fn drop_cap_lines_stay_inside_the_box() {
+        use klipp_timeline::{TextAlignment, TitlePosition};
+        const TEXT: &str = "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor \
+                            incididunt ut labore et dolore magna aliqua ut enim ad minim veniam quis nostrud \
+                            exercitation WWWWWWWWWW ullamco laboris nisi ut aliquip ex ea commodo consequat";
+        let mut renderer = TitleRenderer::new();
+        renderer.system_fallback = false;
+        for (alignment, anchor) in [(TextAlignment::Left, 0.2), (TextAlignment::Center, 0.5), (TextAlignment::Right, 0.8)] {
+            for family in ["Inter", "Bebas Neue"] {
+                let tb = klipp_timeline::TextBox { text: TEXT.to_string(), font_name: family.into(), font_size: 48.0, alignment, drop_cap_scale: 3.0, ..Default::default() };
+                let mut td = klipp_timeline::TitleData::single_text_fx(tb, klipp_timeline::LayerFx::default());
+                let o = td.objects.first_mut().unwrap();
+                o.transform.center = TitlePosition { x: anchor, y: 0.5 };
+                o.transform.size = TitlePosition { x: 0.55, y: 0.9 };
+                let layout = renderer.render_layout(&td, 1920, 1080);
+                let (box_w, anchor_x) = (0.55 * 1920.0, anchor * 1920.0);
+                let (left, right) = match alignment {
+                    TextAlignment::Left => (anchor_x, anchor_x + box_w),
+                    TextAlignment::Center => (anchor_x - box_w * 0.5, anchor_x + box_w * 0.5),
+                    _ => (anchor_x - box_w, anchor_x),
+                };
+                let ink: Vec<_> = layout.glyph_boxes.iter().zip(&layout.glyph_parents).filter(|(_, c)| !c.is_whitespace()).map(|(b, _)| *b).collect();
+                assert!(ink.len() > 100, "{alignment:?} {family}: {} glyphs", ink.len());
+                for b in &ink {
+                    // A glyph's ink may reach a pixel or two past its advance.
+                    assert!(b[0] as f32 >= left - 3.0 && b[2] as f32 <= right + 3.0, "{alignment:?} {family}: a glyph at {b:?} is outside {left}..{right}");
+                }
+                if alignment != TextAlignment::Left {
+                    continue;
+                }
+                let cap = ink[0];
+                let beside: Vec<_> = ink[1..].iter().filter(|b| b[1] < cap[3]).collect();
+                let under: Vec<_> = ink[1..].iter().filter(|b| b[1] > cap[3]).collect();
+                assert!(!beside.is_empty() && !under.is_empty(), "{family}: {} beside, {} under", beside.len(), under.len());
+                assert!(beside.iter().all(|b| b[0] > cap[2]), "{family}: a line beside the cap starts on it");
+                let under_left = under.iter().map(|b| b[0]).min().unwrap();
+                let under_right = under.iter().map(|b| b[2]).max().unwrap();
+                assert!(under_left < cap[2], "{family}: the lines under the cap start at {under_left}, not under it");
+                assert!(under_right as f32 > right - (cap[2] - cap[0]) as f32, "{family}: the lines under the cap end at {under_right}, short of the full width");
+            }
+        }
+    }
+
     /// ColorCycle must change the rendered colour over time even
     /// without char_animation present — pins the contract that
     /// title-level hue rotation actually flows through render_with_time.
