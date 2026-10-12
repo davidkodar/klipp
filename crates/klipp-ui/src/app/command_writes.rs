@@ -507,6 +507,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTitleObjectTransform { .. }
         | AppCommand::AddTitleObject { .. }
         | AppCommand::DeleteTitleObject { .. }
+        | AppCommand::DuplicateTitleObject { .. }
         | AppCommand::SetTitleObjectVisible { .. }
         | AppCommand::SetTitleObjectLocked { .. }
         | AppCommand::SetTitleObjectOpacity { .. }
