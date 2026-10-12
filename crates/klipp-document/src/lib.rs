@@ -24,6 +24,7 @@ pub mod apply;
 pub mod blade;
 pub mod control;
 pub mod edit_plan;
+pub mod find;
 pub mod history;
 pub mod generators;
 pub mod ops;

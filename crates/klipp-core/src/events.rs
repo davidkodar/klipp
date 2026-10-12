@@ -2312,6 +2312,20 @@ pub enum AppCommand {
     /// from (or following its style) this title's look, each keeping its
     /// own words, as one undo step (#1716).
     UpdateTitlesLike { clip_id: ClipId },
+    /// Put `replace` in place of `find` in the titles' text (#1717): in
+    /// the active sequence, or every sequence with `project`; the
+    /// subtitles too with `subtitles`; every match, or only `only`
+    /// (a title, its text layer, and the match's bytes). One undo step
+    /// in each sequence changed.
+    ReplaceInTitles {
+        find: String,
+        replace: String,
+        match_case: bool,
+        whole_word: bool,
+        subtitles: bool,
+        project: bool,
+        only: Option<(ClipId, u32, usize, usize)>,
+    },
     SetTitleAlignment { clip_id: ClipId, alignment: u8 },  // 0=Left, 1=Center, 2=Right, 3=Justify
     /// Where a justified text box's paragraph ends (#1506):
     /// 0=Left, 1=Center, 2=Justify.
