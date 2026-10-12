@@ -725,6 +725,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetClipDepth { .. }
         | AppCommand::RenameClips { .. }
         | AppCommand::SetClipColourLabels { .. }
+        | AppCommand::SetClipGradeFlags { .. }
         | AppCommand::CreateGradeGroup { .. }
         | AppCommand::SetClipsGradeGroup { .. }
         | AppCommand::RenameGradeGroup { .. }

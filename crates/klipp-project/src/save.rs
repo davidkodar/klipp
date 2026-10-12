@@ -538,6 +538,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         surface_pin: c.surface_pin,
                         name: c.name.clone(),
                         colour_label: c.colour_label,
+                        grade_flag: c.grade_flag,
                     }
                 }).collect(),
             }

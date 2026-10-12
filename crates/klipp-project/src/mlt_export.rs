@@ -463,6 +463,7 @@ mod tests {
             surface_pin: None,
             name: None,
             colour_label: 0,
+            grade_flag: klipp_timeline::GradeFlag::None,
             precomp: None,
             baked_own: None,
         }

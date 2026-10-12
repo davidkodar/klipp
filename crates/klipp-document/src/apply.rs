@@ -1790,11 +1790,12 @@ mod grade_group_tests {
         let mut fps = sequences[0].fps;
         let mut view = DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
 
-        let named = klipp_timeline::ClipLabel { name: Some("Wide, take 3".into()), colour: 4 };
+        let named = klipp_timeline::ClipLabel { name: Some("Wide, take 3".into()), colour: 4, flag: klipp_timeline::GradeFlag::Approved };
         let edit = EditCommand::SetClipLabels { description: "Rename Clip", changes: vec![(clip_id, klipp_timeline::ClipLabel::default(), named.clone())] };
         let label = |view: &DocumentView| view.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap().own_label();
         view.apply_forward(&edit);
         assert_eq!(label(&view), named);
+        assert_eq!(view.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap().grade_flag, klipp_timeline::GradeFlag::Approved, "the grade flag (#899) goes with the label");
         assert_eq!(view.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap().label("a.mov"), "Wide, take 3");
         view.apply_inverse(&edit);
         assert_eq!(label(&view), klipp_timeline::ClipLabel::default());

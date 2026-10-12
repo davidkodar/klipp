@@ -3244,6 +3244,8 @@ pub enum AppCommand {
     /// scale (0 none, then red, orange, yellow, green, blue, purple).
     /// One undo step.
     SetClipColourLabels { clip_ids: Vec<ClipId>, label: u8 },
+    /// Flag where each clip's grade stands (#899), one undo step.
+    SetClipGradeFlags { clip_ids: Vec<ClipId>, flag: crate::GradeFlag },
     /// A new grade group named `name`, with `clip_ids` in it (#237). One
     /// undo step.
     CreateGradeGroup { name: String, clip_ids: Vec<ClipId> },

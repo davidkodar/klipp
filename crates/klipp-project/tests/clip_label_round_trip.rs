@@ -18,14 +18,19 @@ fn a_clip_s_name_and_colour_come_back_with_the_project() {
     let mut named = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Generator(solid.clone()), ..klipp_timeline::Clip::gap(tc(0.0), tc(2.0)) };
     named.name = Some("Opening card".into());
     named.colour_label = 5;
+    named.grade_flag = klipp_timeline::GradeFlag::Review;
     let plain = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Generator(solid), ..klipp_timeline::Clip::gap(tc(2.0), tc(4.0)) };
     seq.tracks[0].clips = vec![named, plain];
     save_project(&dir, &[seq], &MediaPool::new()).unwrap();
     let (sequences, ..) = load_project(&dir).unwrap();
     let labels: Vec<(Option<String>, u8)> = sequences[0].tracks[0].clips.iter().map(|c| (c.name.clone(), c.colour_label)).collect();
     assert_eq!(labels, vec![(Some("Opening card".into()), 5), (None, 0)]);
+    // Its grade flag (#899) too, and only a flagged clip writes one.
+    let flags: Vec<klipp_timeline::GradeFlag> = sequences[0].tracks[0].clips.iter().map(|c| c.grade_flag).collect();
+    assert_eq!(flags, vec![klipp_timeline::GradeFlag::Review, klipp_timeline::GradeFlag::None]);
     let written = std::fs::read_to_string(dir.join("project.json")).unwrap();
     assert_eq!(written.matches("\"colour_label\"").count(), 1, "only the coloured clip writes a colour");
     assert_eq!(written.matches("\"Opening card\"").count(), 1);
+    assert_eq!(written.matches("\"grade_flag\"").count(), 1, "only the flagged clip writes a flag");
     let _ = std::fs::remove_dir_all(&dir);
 }

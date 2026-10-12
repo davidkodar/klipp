@@ -971,6 +971,7 @@ fn load_sequence_from_json(
                     surface_pin: c.surface_pin,
                     name: c.name.clone(),
                     colour_label: c.colour_label,
+                    grade_flag: c.grade_flag,
                     precomp: None,
                     baked_own: None,
                 };

@@ -5664,6 +5664,17 @@ impl TimelinePanel {
             egui::Stroke::new(border_width, border_color),
         );
 
+        // The grade flag (#899): a pennant in its colour at the clip's
+        // bottom right, where a colourist scans the strip for it.
+        if !clip.grade_flag.is_none() && clip_rect.width() > 16.0 && clip_rect.height() > 14.0 {
+            let [r, g, b] = clip.grade_flag.rgb();
+            let colour = egui::Color32::from_rgb(r, g, b);
+            let foot = egui::pos2(clip_rect.right() - 12.0, clip_rect.bottom() - 3.0);
+            let top = foot - egui::vec2(0.0, 10.0);
+            painter.line_segment([foot, top], egui::Stroke::new(1.5_f32, colour));
+            painter.add(egui::Shape::convex_polygon(vec![top, top + egui::vec2(7.0, 2.5), top + egui::vec2(0.0, 5.0)], colour, egui::Stroke::new(0.5_f32, egui::Color32::from_black_alpha(160))));
+        }
+
         // FX badge — show if clip has non-Transform effects applied
         if clip_rect.width() > 40.0 {
             // Any effect but the clip's two properties (its placement and
@@ -8212,10 +8223,10 @@ impl TimelinePanel {
                 } else {
                     vec![clip_id]
                 };
-                let (own_name, own_colour) = state.sequence().find_clip(clip_id)
+                let (own_name, own_colour, own_flag) = state.sequence().find_clip(clip_id)
                     .map(|(ti, ci)| {
                         let c = &state.sequence().tracks[ti].clips[ci];
-                        (c.name.clone().unwrap_or_default(), c.colour_label)
+                        (c.name.clone().unwrap_or_default(), c.colour_label, c.grade_flag)
                     })
                     .unwrap_or_default();
                 if ui.button("Rename Clip\u{2026}").clicked() {
@@ -8277,6 +8288,20 @@ impl TimelinePanel {
                             ui.close_menu();
                         }
                     }
+                });
+                // Where the grade stands (#899): a colourist's flag.
+                ui.menu_button("Grade Flag", |ui| {
+                    crate::widgets::menu::menu_body(ui, |ui| {
+                        for flag in klipp_timeline::GradeFlag::ALL {
+                            let [r, g, b] = flag.rgb();
+                            let text = if flag.is_none() { flag.label().to_string() } else { format!("\u{2691} {}", flag.label()) };
+                            let row = ui.add(egui::Button::new(egui::RichText::new(text).color(if flag.is_none() { ui.visuals().text_color() } else { egui::Color32::from_rgb(r, g, b) })).selected(own_flag == flag));
+                            if row.clicked() {
+                                cmds.push(AppCommand::SetClipGradeFlags { clip_ids: targets.clone(), flag });
+                                ui.close_menu();
+                            }
+                        }
+                    })
                 });
                 ui.separator();
 

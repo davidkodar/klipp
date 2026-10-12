@@ -397,6 +397,7 @@ impl NewInspectorPanel {
                             surface_pin: None,
                             name: None,
                             colour_label: 0,
+                            grade_flag: Default::default(),
                             precomp: None,
                             baked_own: None,
                         };
