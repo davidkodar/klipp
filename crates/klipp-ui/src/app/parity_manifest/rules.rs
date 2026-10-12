@@ -187,10 +187,6 @@ pub(super) fn entry_exclusion(entry: &CatalogEntry) -> Option<&'static str> {
             Some("#1348: a masked card's Mask channel row (stack and grade page) is tested on its own; no parity case yet"),
         CatalogValue::Mix if entry.grade =>
             Some("#1348: a grade node's Node mix row is tested on its own; no parity case yet"),
-        CatalogValue::Parameter { .. } if entry.type_id == "klipp.grade.primaries_matrix" =>
-            Some("#1351: PrimariesMatrix parameter controls have no reachable inspector route in either view"),
-        CatalogValue::Enabled if entry.type_id == "klipp.grade.input_transform" =>
-            Some("#1351: InputTransform selection reaches camera encoding before the bypass header in both views"),
         _ => None,
     }
 }
@@ -252,7 +248,7 @@ pub(super) fn surfaces(entry: &CatalogEntry) -> Result<BTreeSet<Surface>, String
                     required.insert(GradeBottomTools);
                 }
                 // Only their bypass entry remains after the parameter exclusions.
-                PrimariesMatrix | MaskCutout | Reroute => {
+                MaskCutout | Reroute => {
                     if matches!(entry.value, CatalogValue::Enabled) {
                         required.extend([GradeTabbedRight, GradeBottomTools]);
                     } else {

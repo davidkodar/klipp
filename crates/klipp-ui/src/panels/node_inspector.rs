@@ -208,10 +208,12 @@ impl NodeInspectorPanel {
 
         // The InputTransform node is the input colour space, not a grade:
         // the tabs below would show Corrector sliders for it.
-        let idt_selected = selected_node
+        // Under its header, so it can be switched off like any node (#1351).
+        let idt = selected_node
             .and_then(|id| graph.nodes.iter().find(|n| n.id == id))
-            .is_some_and(|n| n.kind == NodeKind::InputTransform);
-        if idt_selected {
+            .filter(|n| n.kind == NodeKind::InputTransform);
+        if let Some(n) = idt {
+            node_header(ui, &n.kind, n.enabled, &n.keyframes, n.id, clip_id, &mut cmds, theme, frame);
             self.show_input_colour_space(ui, clip_id, &mut cmds, theme);
             return cmds;
         }

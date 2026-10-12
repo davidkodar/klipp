@@ -1065,16 +1065,19 @@ mod tests {
         assert!(surfaces.contains(&Surface::GradeBottomTools));
         assert!(!surfaces.contains(&Surface::GradeTabbedRight));
         assert!(!surfaces.contains(&Surface::GradePerNode));
-        for (ty, param) in [
-            ("klipp.grade.primaries_matrix", "primaries_from"),
-            ("klipp.grade.input_transform", "@enabled"),
+        // Reachable since #1351: a PrimariesMatrix's From and To on its
+        // own page, an InputTransform's bypass in its header on the
+        // tabbed page's route.
+        for (ty, param, surface) in [
+            ("klipp.grade.primaries_matrix", "primaries_from", Surface::GradePerNode),
+            ("klipp.grade.input_transform", "@enabled", Surface::GradeTabbedRight),
         ] {
             let entry = entries
                 .iter()
                 .find(|e| e.type_id == ty && e.parameter == param)
                 .unwrap();
-            assert!(rules::surfaces(entry).unwrap().is_empty());
-            assert!(rules::entry_exclusion(entry).unwrap().contains("#1351"));
+            assert!(rules::surfaces(entry).unwrap().contains(&surface), "{ty} {param}");
+            assert!(rules::entry_exclusion(entry).is_none(), "{ty} {param}");
         }
     }
 
