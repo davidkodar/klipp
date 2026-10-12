@@ -96,23 +96,20 @@ impl KlippApp {
                             })
                     })
                     .unwrap_or((self.state.playhead, fps_rate * 5));
-                let timeline_out = timeline_in.rescale_to(fps_rate) + klipp_core::RationalTime::from_frames(duration_frames as i64, fps_rate);
-                // A text track with room for the whole span, else a
-                // new one on top.
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                let free = seq.tracks.iter().position(|t| {
-                    t.kind == klipp_timeline::TrackKind::Text
-                        && !t.clips.iter().any(|c| c.timeline_in < timeline_out && c.timeline_out > timeline_in)
-                });
-                let track_index = match free {
-                    Some(i) => i,
-                    None => {
-                        let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Text).count() + 1;
-                        seq.tracks.insert(0, klipp_timeline::Track::new(&format!("Text {n}"), klipp_timeline::TrackKind::Text));
-                        0
-                    }
-                };
+                let track_index = free_text_track(&mut self.state, timeline_in, duration_frames);
                 self.handle_title_lifecycle(&AppCommand::CreateTitleClip { track_index, timeline_in, duration_frames }, _needs_refresh)
+            }
+            AppCommand::CreateTitleInViewer { x, y, box_size } => {
+                // The Text tool's title (#1713): made, recorded and put
+                // into in-place editing by the same code a test drives.
+                let Some(clip_id) = super::text_tool::create_title_in_viewer(
+                    &mut self.state, *x, *y, *box_size, self.prefs.title.default_duration_secs,
+                ) else {
+                    return true;
+                };
+                self.sync_sequence_to_engine();
+                self.render_title_to_viewer(clip_id);
+                true
             }
             AppCommand::InsertCompositionTemplate { template_id } => {
                 let Some(template) = self
@@ -206,95 +203,8 @@ impl KlippApp {
                 true
             }
             AppCommand::CreateTitleClip { track_index, timeline_in, duration_frames } => {
-                let ti = *track_index;
-                // Check if this track was just created (it's a fresh text track with no clips)
-                let created_track = self.state.sequences[self.state.active_sequence_idx].tracks
-                    .get(ti)
-                    .is_some_and(|t| t.kind == klipp_timeline::TrackKind::Text && t.clips.is_empty());
-                let fps_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
-                let timeline_in = timeline_in.rescale_to(fps_rate);
-                let duration = klipp_core::RationalTime::from_frames(*duration_frames as i64, fps_rate);
-                let timeline_out = timeline_in + duration;
-                let title_data = self.state.pending_title_data.take()
-                    .unwrap_or_default();
-                let clip = klipp_timeline::Clip {
-                    id: klipp_core::ClipId::new(),
-                    kind: klipp_timeline::ClipKind::Title(title_data),
-                    timeline_in,
-                    timeline_out,
-                    source_in: klipp_core::RationalTime::from_frames(0, fps_rate),
-                    source_out: duration,
-                    picture: Default::default(),
-                    linked_clip_id: None,
-                    linked_title_asset_id: None,
-                    group_id: None,
-                    grade_group: None,
-                    magnetic_anchor: None,
-                    gain: 1.0,
-                    volume: 1.0,
-                    pan: 0.0,
-                    fade_in_secs: 0.0,
-                    fade_out_secs: 0.0,
-                    fade_in_curve: klipp_timeline::FadeCurve::default(),
-                    fade_out_curve: klipp_timeline::FadeCurve::default(),
-                    channel_config: klipp_timeline::ChannelConfig::default(),
-                    volume_keyframes: Vec::new(),
-                    pan_keyframes: Vec::new(),
-                    gain_keyframes: Vec::new(),
-                    matte_feather_keyframes: Vec::new(),
-                    matte_choke_keyframes: Vec::new(),
-                    clip_markers: Vec::new(),
-                    role: klipp_core::ClipRole::default(),
-                    speed: 1.0,
-                    speed_keyframes: Vec::new(),
-                    keep_pitch: false,
-                    source_rotation: 0,
-                    enabled: true,
-                    solo: false,
-                    blend_mode: klipp_core::BlendMode::Normal,
-                    depth: 1.0,
-                    matte_source: None,
-                    matte_stencil: None,
-                    consumed_as_matte: false,
-                    transform_link: None,
-                    multicam_group: None,
-                    multicam_angle: 0,
-                    multicam_cuts: Vec::new(),
-                    multicam_sound: Default::default(),
-                    audio_effects: Vec::new(),
-                    audio_effect_keyframes: std::collections::HashMap::new(),
-                    track_points: Vec::new(),
-                    surfaces: Vec::new(),
-                    surface_pin: None,
-                    name: None,
-                    colour_label: 0,
-                    precomp: None,
-                    baked_own: None,
-                };
-                let clip_id = clip.id;
-                let rest = title_rest_time(&clip, fps_rate);
-                if let Some(track) = self.state.sequences[self.state.active_sequence_idx].tracks.get_mut(ti) {
-                    track.clips.push(clip.clone());
-                    track.clips.sort_by_key(|c| c.timeline_in.value);
-                }
-                self.state.active_history_mut().push(crate::history::HistoryEntry {
-                    command: crate::history::EditCommand::AddTitleClip {
-                        clip,
-                        track_index: ti,
-                        created_track,
-                    },
-                });
+                let (clip_id, rest) = add_title_clip(&mut self.state, *track_index, *timeline_in, *duration_frames);
                 self.sync_sequence_to_engine();
-                self.state.dirty = true;
-                // The new title is the selection, the inspector opens on
-                // its text, and the playhead goes where the title rests so
-                // the viewer shows it: past its entrance if it has one,
-                // else its first frame. A title made at the playhead with
-                // no entrance leaves the playhead where it was.
-                self.state.selected_clip = Some(clip_id);
-                self.state.selected_clips = vec![clip_id];
-                self.state.selected_title_object = None;
-                self.state.focus_title_text = 3;
                 self.render_title_to_viewer(clip_id);
                 if let Some(park) = rest.filter(|&t| t != self.state.playhead) {
                     let _ = self.cmd_tx.send(AppCommand::SeekTo(park));
@@ -3677,6 +3587,128 @@ pub(crate) fn apply_title_preset(tb: &mut klipp_timeline::TextBox, fx: &mut klip
         }
         _ => {}
     }
+}
+
+/// A text track at `timeline_in` with room for `duration_frames`, else a
+/// new one on top: where a title made at the playhead goes, from the
+/// title button or the Text tool (#1713).
+pub(super) fn free_text_track(state: &mut AppState, timeline_in: klipp_core::Timecode, duration_frames: u32) -> usize {
+    let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
+    let timeline_out = timeline_in.rescale_to(fps_rate) + klipp_core::RationalTime::from_frames(duration_frames as i64, fps_rate);
+    let seq = &mut state.sequences[state.active_sequence_idx];
+    let free = seq.tracks.iter().position(|t| {
+        t.kind == klipp_timeline::TrackKind::Text
+            && !t.clips.iter().any(|c| c.timeline_in < timeline_out && c.timeline_out > timeline_in)
+    });
+    match free {
+        Some(i) => i,
+        None => {
+            let n = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Text).count() + 1;
+            seq.tracks.insert(0, klipp_timeline::Track::new(&format!("Text {n}"), klipp_timeline::TrackKind::Text));
+            0
+        }
+    }
+}
+
+/// A title clip of `state.pending_title_data` (else the default title) on
+/// track `track_index`, recorded as one undo step and selected. Returns
+/// the clip and where it rests, for the caller to park the playhead; the
+/// engine sync and the overlay raster are the caller's too.
+pub(super) fn add_title_clip(
+    state: &mut AppState,
+    track_index: usize,
+    timeline_in: klipp_core::Timecode,
+    duration_frames: u32,
+) -> (klipp_core::ClipId, Option<klipp_core::RationalTime>) {
+    let ti = track_index;
+    // Check if this track was just created (it's a fresh text track with no clips)
+    let created_track = state.sequences[state.active_sequence_idx].tracks
+        .get(ti)
+        .is_some_and(|t| t.kind == klipp_timeline::TrackKind::Text && t.clips.is_empty());
+    let fps_rate = state.sequences[state.active_sequence_idx].fps.rate();
+    let timeline_in = timeline_in.rescale_to(fps_rate);
+    let duration = klipp_core::RationalTime::from_frames(duration_frames as i64, fps_rate);
+    let timeline_out = timeline_in + duration;
+    let title_data = state.pending_title_data.take()
+        .unwrap_or_default();
+    let clip = klipp_timeline::Clip {
+        id: klipp_core::ClipId::new(),
+        kind: klipp_timeline::ClipKind::Title(title_data),
+        timeline_in,
+        timeline_out,
+        source_in: klipp_core::RationalTime::from_frames(0, fps_rate),
+        source_out: duration,
+        picture: Default::default(),
+        linked_clip_id: None,
+        linked_title_asset_id: None,
+        group_id: None,
+        grade_group: None,
+        magnetic_anchor: None,
+        gain: 1.0,
+        volume: 1.0,
+        pan: 0.0,
+        fade_in_secs: 0.0,
+        fade_out_secs: 0.0,
+        fade_in_curve: klipp_timeline::FadeCurve::default(),
+        fade_out_curve: klipp_timeline::FadeCurve::default(),
+        channel_config: klipp_timeline::ChannelConfig::default(),
+        volume_keyframes: Vec::new(),
+        pan_keyframes: Vec::new(),
+        gain_keyframes: Vec::new(),
+        matte_feather_keyframes: Vec::new(),
+        matte_choke_keyframes: Vec::new(),
+        clip_markers: Vec::new(),
+        role: klipp_core::ClipRole::default(),
+        speed: 1.0,
+        speed_keyframes: Vec::new(),
+        keep_pitch: false,
+        source_rotation: 0,
+        enabled: true,
+        solo: false,
+        blend_mode: klipp_core::BlendMode::Normal,
+        depth: 1.0,
+        matte_source: None,
+        matte_stencil: None,
+        consumed_as_matte: false,
+        transform_link: None,
+        multicam_group: None,
+        multicam_angle: 0,
+        multicam_cuts: Vec::new(),
+        multicam_sound: Default::default(),
+        audio_effects: Vec::new(),
+        audio_effect_keyframes: std::collections::HashMap::new(),
+        track_points: Vec::new(),
+        surfaces: Vec::new(),
+        surface_pin: None,
+        name: None,
+        colour_label: 0,
+        precomp: None,
+        baked_own: None,
+    };
+    let clip_id = clip.id;
+    let rest = title_rest_time(&clip, fps_rate);
+    if let Some(track) = state.sequences[state.active_sequence_idx].tracks.get_mut(ti) {
+        track.clips.push(clip.clone());
+        track.clips.sort_by_key(|c| c.timeline_in.value);
+    }
+    state.active_history_mut().push(crate::history::HistoryEntry {
+        command: crate::history::EditCommand::AddTitleClip {
+            clip,
+            track_index: ti,
+            created_track,
+        },
+    });
+    state.dirty = true;
+    // The new title is the selection, the inspector opens on
+    // its text, and the playhead goes where the title rests so
+    // the viewer shows it: past its entrance if it has one,
+    // else its first frame. A title made at the playhead with
+    // no entrance leaves the playhead where it was.
+    state.selected_clip = Some(clip_id);
+    state.selected_clips = vec![clip_id];
+    state.selected_title_object = None;
+    state.focus_title_text = 3;
+    (clip_id, rest)
 }
 
 /// Where a title clip shows at rest: past its entrance when a layer has

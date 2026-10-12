@@ -39,6 +39,8 @@ pub(crate) const PREMIERE: &[(&str, &[&str])] = &[
     ("blade_tool", &["C"]),
     // Ripple Edit (B) and Rolling Edit (N), which Klipp's one trim tool covers.
     ("trim_tool", &["B", "N"]),
+    // Type Tool (#1713).
+    ("text_tool", &["T"]),
     ("insert_edit", &[","]),
     ("overwrite_edit", &["."]),
     ("lift_edit", &[";"]),

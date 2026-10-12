@@ -30,6 +30,10 @@ fn opaque_for_outline(c: egui::Color32) -> egui::Color32 {
 /// outer edge, and the picture belongs inside the bezel.
 const SURFACE_DROP_INSET: f32 = 0.015;
 
+/// The smallest box, in screen points either way, the Text tool takes a
+/// drag for (#1713); a smaller one is a click where it started.
+const TEXT_TOOL_MIN_BOX: f32 = 8.0;
+
 /// Map a normalised `(0..1, 0..1)` clip-space point to the image
 /// rect's pixel coordinates. The viewer paints frame content into
 /// `image_rect`; gizmos that store positions in clip-space (focal
@@ -1459,6 +1463,74 @@ impl ViewerPanel {
         }
     }
 
+    /// The Text tool (#1713): a click on the picture starts a title
+    /// there, a drag draws its text box. The points go to the frame
+    /// through [`viewer_screen_to_norm`] on the image rect, as the
+    /// title-object editor reads its drags, so the box lands where it was
+    /// drawn at any zoom or pan. A drag smaller than
+    /// [`TEXT_TOOL_MIN_BOX`] either way is taken as a click where it
+    /// started.
+    fn handle_text_tool(
+        &mut self,
+        ui: &mut egui::Ui,
+        theme: &KlippTheme,
+        frame: &ViewerFrameState,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let image_rect = frame.image_rect;
+        let area = image_rect.intersect(frame.viewer_rect);
+        if !area.is_positive() {
+            return;
+        }
+        let id = ui.id().with("text_tool");
+        let resp = ui.interact(area, id, egui::Sense::click_and_drag());
+        if resp.hovered() || resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+        }
+        // Where the drag began: egui forgets the press as the button
+        // comes up, and the box is wanted on that frame.
+        if resp.drag_started() {
+            if let Some(origin) = ui.input(|i| i.pointer.press_origin()) {
+                ui.data_mut(|d| d.insert_temp(id, origin));
+            }
+        }
+        let origin: Option<egui::Pos2> = ui.data(|d| d.get_temp(id));
+        let pointer = ui.input(|i| i.pointer.latest_pos());
+        let point = |p: egui::Pos2| {
+            let (x, y) = viewer_screen_to_norm(image_rect, p);
+            AppCommand::CreateTitleInViewer { x, y, box_size: None }
+        };
+        if resp.drag_stopped() {
+            ui.data_mut(|d| d.remove::<egui::Pos2>(id));
+            if let (Some(a), Some(b)) = (origin, pointer) {
+                let drawn = egui::Rect::from_two_pos(a, b);
+                if drawn.width() >= TEXT_TOOL_MIN_BOX && drawn.height() >= TEXT_TOOL_MIN_BOX {
+                    let (x0, y0) = viewer_screen_to_norm(image_rect, drawn.min);
+                    let (x1, y1) = viewer_screen_to_norm(image_rect, drawn.max);
+                    cmds.push(AppCommand::CreateTitleInViewer {
+                        x: (x0 + x1) * 0.5,
+                        y: (y0 + y1) * 0.5,
+                        box_size: Some((x1 - x0, y1 - y0)),
+                    });
+                } else {
+                    cmds.push(point(a));
+                }
+            }
+        } else if resp.dragged() {
+            if let (Some(a), Some(b)) = (origin, pointer) {
+                ui.painter_at(frame.viewer_rect).rect_stroke(
+                    egui::Rect::from_two_pos(a, b),
+                    0.0,
+                    egui::Stroke::new(1.5_f32, theme.accent),
+                );
+            }
+        } else if resp.clicked() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                cmds.push(point(p));
+            }
+        }
+    }
+
     /// Editing text on the render itself. The engine's overlay is the
     /// text; an invisible `TextEdit` handles the keys, the clipboard
     /// and undo; the caret and the selection are drawn from the
@@ -1556,6 +1628,11 @@ impl ViewerPanel {
         }
         if hit.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+        }
+        // A title the Text tool has just made: all of its text, so the
+        // first key typed replaces the placeholder (#1713).
+        if std::mem::take(&mut state.viewer_text_edit_select_all) {
+            set_range = Some((0, state.viewer_text_edit_buffer.chars().count()));
         }
         if let Some((a, b)) = set_range {
             let len = state.viewer_text_edit_buffer.chars().count();
@@ -1745,6 +1822,22 @@ impl ViewerPanel {
         self.handle_text_edit_exit(ui, state, cmds);
         self.draw_text_edit_widget(ui, state, theme, &frame, cmds);
 
+        // ── The Text tool (#1713) ──
+        // Armed, it has the picture to itself: the transform and
+        // title-object handles below stand down, so a click or a drag on
+        // the picture is the tool's. While a title is being typed into,
+        // the in-place editor has the clicks: one outside it ends the
+        // editing, and the next makes another title.
+        let text_tool = state.active_tool == klipp_core::Tool::Text && !state.show_color_panel;
+        if text_tool
+            && !state.viewer_text_edit
+            && state.surface_tool.is_none()
+            && state.eyedropper_mode == crate::state::EyedropperMode::None
+            && !state.has_modal_open()
+        {
+            self.handle_text_tool(ui, theme, &frame, cmds);
+        }
+
         // ── On-screen transform controls ──
         // Suppress transform controls during text edit mode, and in the
         // Colour workspace.
@@ -1769,6 +1862,7 @@ impl ViewerPanel {
         } else if state.show_transform_controls
             && !state.show_color_panel
             && !state.viewer_text_edit
+            && !text_tool
             && !title_object_active
             && state.eyedropper_mode == crate::state::EyedropperMode::None
             && !state.has_modal_open()
@@ -1794,6 +1888,7 @@ impl ViewerPanel {
         // visually distinct from the clip-level transform handles.
         // Suppressed during text-edit mode and other modal flows.
         if !state.viewer_text_edit
+            && !text_tool
             && state.eyedropper_mode == crate::state::EyedropperMode::None
             && !state.has_modal_open()
         {

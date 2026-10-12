@@ -241,6 +241,7 @@ pub enum EditTool {
     Blade,
     Range,
     Zoom,
+    Text,
 }
 
 #[cfg(test)]

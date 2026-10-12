@@ -699,6 +699,11 @@ impl KlippApp {
                 tracing::debug!("Trim tool");
                 cmds.push(AppCommand::SetActiveTool(Tool::Trim));
             }
+            // Y — Text tool: a click or a drag in the viewer makes a
+            // title there (#1713)
+            if kb.is_action_pressed("text_tool", i) {
+                cmds.push(AppCommand::SetActiveTool(Tool::Text));
+            }
             // X — Set range to clip at playhead / Alt+X — Clear range
             // Clearing the range used to live in here as an Alt branch
             // as well as in its own clear_in_out handler, so Alt+X ran
@@ -873,7 +878,8 @@ impl KlippApp {
                 } else if self.state.selected_clip.is_some() || !self.state.selected_clips.is_empty() {
                     self.state.selected_clips.clear();
                     cmds.push(AppCommand::SelectClip(None));
-                } else if self.state.active_tool == Tool::Range {
+                } else if matches!(self.state.active_tool, Tool::Range | Tool::Text) {
+                    // Esc puts the Range and Text tools down (#1713).
                     cmds.push(AppCommand::SetActiveTool(Tool::Select));
                 }
                 self.state.ruler_press_origin = None;

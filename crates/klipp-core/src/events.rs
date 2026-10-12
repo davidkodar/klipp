@@ -2266,6 +2266,11 @@ pub enum AppCommand {
     /// clip is selected, the inspector opens on its text, the playhead
     /// parks where the title is at rest.
     AddTitleAtPlayhead { over_clip: Option<ClipId> },
+    /// The Text tool's click or drag in the viewer (#1713): a title on a
+    /// free text track at the playhead, its text layer centred at `x`, `y`
+    /// (fractions of the frame), sized `box_size` when a box was drawn, and
+    /// its text edited in place at once.
+    CreateTitleInViewer { x: f32, y: f32, box_size: Option<(f32, f32)> },
     /// Insert a saved composition template as a precomposition clip at the
     /// current playhead. The app resolves the template metadata and records
     /// the resulting clip through the normal edit history.
@@ -3864,6 +3869,10 @@ pub enum Tool {
     /// (junction). Shift+drag on clip body triggers Slide. Alt/Alt+Shift
     /// modifiers continue to work in Tool::Select for power-user access.
     Trim,
+    /// Text tool (#1713): a click in the viewer starts a title at that
+    /// point, a drag draws its text box, and typing goes straight into
+    /// it. The timeline treats it as Select.
+    Text,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
