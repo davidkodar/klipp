@@ -1110,14 +1110,25 @@ impl TitleRenderer {
             }
         }
 
+        let text_glyphs = glyphs_owned.len();
+        // A list's markers (#1721), on the lines fontdue's layout laid.
+        let plain_lines = !drop_cap_wrap_eligible && !columns_active && !vertical_active && !on_path;
+        let markers = match layout.lines().filter(|_| plain_lines) {
+            Some(lines) => {
+                let piece_at = |b: usize| pieces_of(b, b + resolved_text[b..].chars().next().map_or(1, char::len_utf8)).first().map(|p| (p.2, p.3));
+                list_markers(&tb, &fonts, &resolved_text, lines, &glyphs_owned, piece_at, scale, box_w)
+            }
+            None => Vec::new(),
+        };
+        let marker_pad = (!markers.is_empty()).then(|| (tb.paragraph.indent_start.max(0.0) * scale, tb.text_direction == TextDirection::Rtl));
         // Ruby (#1704): each run's gloss beside its text, laid after the
         // text's glyphs and drawn with them; the text's lines and
         // underlines are its own glyphs', the first `text_glyphs`.
-        let text_glyphs = glyphs_owned.len();
         if !on_path && tb.style_runs.iter().any(|r| r.ruby.is_some()) {
             let gloss = ruby::lay(&fonts, &glyphs_owned, &tb.style_runs, run_px, vertical_active);
             glyphs_owned.extend(gloss);
         }
+        glyphs_owned.extend(markers);
         let glyphs = &glyphs_owned;
 
         // ── Text on path: rasterize per-glyph with rotation ──
@@ -1151,7 +1162,7 @@ impl TitleRenderer {
         // `text_offset_y`).
         let anchor_x = title.position().x * width as f32;
         let offset_x = text_offset_x(alignment, anchor_x, text_w, text_min_x, box_w)
-            + indent_shift(alignment, layout.lines().filter(|_| !drop_cap_wrap_eligible && !columns_active && !vertical_active));
+            + indent_shift(alignment, layout.lines().filter(|_| !drop_cap_wrap_eligible && !columns_active && !vertical_active), marker_pad);
         // Baseline shift is authored in 1080p reference pixels and
         // scales with the frame so a +20 px offset on a 1080p edit
         // looks the same on a 4K master. Positive shifts text DOWN.
@@ -3371,11 +3382,25 @@ impl TitleRenderer {
         } else {
             Vec::new()
         };
+        // A list's markers (same as render_layout, #1721): not the
+        // text's, but where its box sits.
+        let markers = match layout.lines().filter(|_| tb.text_path.is_none()) {
+            Some(lines) => {
+                let piece_at = |b: usize| {
+                    let to = b + resolved_text[b..].chars().next().map_or(1, char::len_utf8);
+                    faces.split(&resolved_text, set_pieces(&tb.style_runs, &faces.of_run, b, to, font_px, run_px)).first().map(|p| (p.2, p.3))
+                };
+                list_markers(&tb, &fonts, &resolved_text, lines, &glyphs_owned, piece_at, scale, box_w)
+            }
+            None => Vec::new(),
+        };
+        let marker_pad = (!markers.is_empty()).then(|| (tb.paragraph.indent_start.max(0.0) * scale, tb.text_direction == TextDirection::Rtl));
+
         let mut text_min_x = f32::MAX;
         let mut text_min_y = f32::MAX;
         let mut text_max_x = f32::MIN;
         let mut text_max_y = f32::MIN;
-        for g in glyphs_owned.iter().chain(&gloss) {
+        for g in glyphs_owned.iter().chain(&gloss).chain(&markers) {
             text_min_x = text_min_x.min(g.x);
             text_min_y = text_min_y.min(g.y);
             text_max_x = text_max_x.max(g.x + g.width as f32);
@@ -3387,7 +3412,7 @@ impl TitleRenderer {
         // Mirrors render_layout's offset calc — kept in lockstep so
         // cursor hit-testing matches the rendered glyph positions.
         let anchor_x = title.position().x * width as f32;
-        let offset_x = text_offset_x(tb.alignment, anchor_x, text_w, text_min_x, box_w) + indent_shift(tb.alignment, layout.lines());
+        let offset_x = text_offset_x(tb.alignment, anchor_x, text_w, text_min_x, box_w) + indent_shift(tb.alignment, layout.lines(), marker_pad);
         // Baseline shift is authored in 1080p reference pixels and
         // scales with the frame so a +20 px offset on a 1080p edit
         // looks the same on a 4K master. Positive shifts text DOWN.
@@ -5325,8 +5350,10 @@ fn line_of(line_starts: &[usize], i: usize) -> usize {
 /// A text box's paragraph settings in frame pixels (#1721).
 fn paragraphs_px(tb: &klipp_timeline::TextBox, scale: f32) -> shaping::Paragraphs {
     let p = &tb.paragraph;
+    // A list's items are set past their markers.
+    let list = p.list.as_ref().map_or(0.0, |l| l.indent.max(0.0));
     shaping::Paragraphs {
-        start: p.indent_start.max(0.0) * scale,
+        start: (p.indent_start.max(0.0) + list) * scale,
         end: p.indent_end.max(0.0) * scale,
         first: p.indent_first.max(-p.indent_start.max(0.0)) * scale,
         before: p.space_before.max(0.0) * scale,
@@ -5378,16 +5405,73 @@ fn text_offset_x(alignment: TextAlignment, anchor_x: f32, text_w: f32, text_min_
 /// line has moves too, so the least indent is put back — from the left
 /// for left-aligned text, from the right for right-aligned, half their
 /// difference for centred. Justified text is set in the box already.
-fn indent_shift(alignment: TextAlignment, lines: Option<&Vec<shaping::Line>>) -> f32 {
+///
+/// A list's markers, at the start indent, count as a line there.
+fn indent_shift(alignment: TextAlignment, lines: Option<&Vec<shaping::Line>>, marker: Option<(f32, bool)>) -> f32 {
     let Some(lines) = lines.filter(|l| !l.is_empty()) else { return 0.0 };
-    let left = lines.iter().map(|l| l.left).fold(f32::MAX, f32::min);
-    let right = lines.iter().map(|l| l.right).fold(f32::MAX, f32::min);
+    let mut left = lines.iter().map(|l| l.left).fold(f32::MAX, f32::min);
+    let mut right = lines.iter().map(|l| l.right).fold(f32::MAX, f32::min);
+    match marker {
+        Some((pad, false)) => left = left.min(pad),
+        Some((pad, true)) => right = right.min(pad),
+        None => {}
+    }
     match alignment {
         TextAlignment::Left => left,
         TextAlignment::Right => -right,
         TextAlignment::Center => (left - right) * 0.5,
         TextAlignment::Justify => 0.0,
     }
+}
+
+/// A list's markers (#1721): before each paragraph that has text, its
+/// label laid in the face and at the size of the paragraph's first
+/// character (`piece_at(byte)`), at the start indent on the paragraph's
+/// first line's baseline — on the right in right-to-left text. Each
+/// glyph takes the byte offset of that first character, so the marker
+/// is drawn in its colour. A face without the bullet draws "-".
+#[allow(clippy::too_many_arguments)]
+fn list_markers(
+    tb: &klipp_timeline::TextBox,
+    fonts: &[shaping::Face],
+    text: &str,
+    lines: &[shaping::Line],
+    glyphs: &[fontdue::layout::GlyphPosition],
+    piece_at: impl Fn(usize) -> Option<(f32, usize)>,
+    scale: f32,
+    box_w: f32,
+) -> Vec<fontdue::layout::GlyphPosition> {
+    let Some(list) = tb.paragraph.list.as_ref() else { return Vec::new() };
+    let rtl = tb.text_direction == TextDirection::Rtl;
+    let start = tb.paragraph.indent_start.max(0.0) * scale;
+    let mut out = Vec::new();
+    let mut item = 0usize;
+    for line in lines.iter().filter(|l| l.starts_paragraph) {
+        let end = (line.glyph_end + 1).min(glyphs.len());
+        let Some(first) = glyphs.get(line.glyph_start..end).and_then(|g| g.iter().filter(|g| !g.parent.is_whitespace() && !g.parent.is_control()).map(|g| g.byte_offset).min()) else { continue };
+        let Some((px, face)) = text.get(first..).and_then(|_| piece_at(first)) else { continue };
+        let Some(f) = fonts.get(face) else { continue };
+        let mut label = list.marker.label(item);
+        item += 1;
+        if label.chars().any(|c| f.lookup_glyph_index(c) == 0) {
+            label = "-".into();
+        }
+        let mut lay = ShapedLayout::new();
+        lay.reset(&LayoutSettings { x: 0.0, y: 0.0, max_width: None, ..LayoutSettings::default() });
+        lay.append(fonts, &label, (0, label.len(), px, face));
+        let Some(base) = lay.lines().and_then(|l| l.first()).map(|l| l.baseline) else { continue };
+        let laid = lay.glyphs();
+        let width = laid.iter().map(|g| g.x + g.width as f32).fold(0.0f32, f32::max);
+        let dx = if rtl { box_w - start - width } else { start };
+        for g in laid {
+            let mut g = *g;
+            g.x += dx;
+            g.y += line.baseline - base;
+            g.byte_offset = first;
+            out.push(g);
+        }
+    }
+    out
 }
 
 /// How far laid-out text moves down the frame: its block's top to the

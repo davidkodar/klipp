@@ -4959,6 +4959,48 @@ fn show_title_editor(
             handle_text_key_edit(cmds, clip_id, target_oid, key, v, keys(key), clip_time_secs, keyframe_tolerance, (&resp).into(),
                 |value| AppCommand::SetTitleParagraph { clip_id, key: key.into(), value });
         }
+        // Its paragraphs as a list (#1721).
+        {
+            use klipp_timeline::{ListMarker, NumberStyle};
+            let (style, indent) = match para.list.as_ref() {
+                None => (0u8, keyed.as_ref().map_or(60.0, |tb| (tb.font_size * 1.5).round())),
+                Some(l) => (
+                    match &l.marker {
+                        ListMarker::Bullet { .. } => 1,
+                        ListMarker::Numbered { style: NumberStyle::Arabic, .. } => 2,
+                        ListMarker::Numbered { style: NumberStyle::LowerAlpha, .. } => 3,
+                        ListMarker::Numbered { style: NumberStyle::UpperAlpha, .. } => 4,
+                        ListMarker::Numbered { style: NumberStyle::LowerRoman, .. } => 5,
+                        ListMarker::Numbered { style: NumberStyle::UpperRoman, .. } => 6,
+                    },
+                    l.indent,
+                ),
+            };
+            let styles = ["None", "Bullets", "1. 2. 3.", "a. b. c.", "A. B. C.", "i. ii. iii.", "I. II. III."];
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("List").size(11.0).color(theme.text_secondary));
+                egui::ComboBox::from_id_salt(("title_list", clip_id)).selected_text(styles[style as usize % styles.len()]).width(110.0).show_ui(ui, |ui| {
+                    for (v, name) in styles.iter().enumerate() {
+                        if ui.selectable_label(style as usize == v, *name).clicked() && style as usize != v {
+                            cmds.push(AppCommand::SetTitleList { clip_id, style: v as u8, indent });
+                        }
+                    }
+                });
+                if style != 0 {
+                    let mut i = indent;
+                    let resp = ui.add(egui::DragValue::new(&mut i).range(0.0..=2000.0).speed(0.5).fixed_decimals(0).prefix("indent ").suffix(" px"));
+                    if resp.drag_started() {
+                        cmds.push(AppCommand::BeginTitleObjectDrag { clip_id });
+                    }
+                    if resp.changed() && i != indent {
+                        cmds.push(AppCommand::SetTitleList { clip_id, style, indent: i });
+                    }
+                    if resp.drag_stopped() {
+                        cmds.push(AppCommand::EndTitleObjectDrag { clip_id });
+                    }
+                }
+            });
+        }
         // Its tab stops (#1721): where a tab in the text moves what follows.
         let tabs: Vec<(f32, u8)> = para
             .tabs
@@ -8407,6 +8449,7 @@ mod selection_underline_tests {
         tb.paragraph.indent_first = -36.0;
         tb.paragraph.indent_start = 36.0;
         tb.paragraph.tabs = vec![klipp_timeline::TabStop { at: 240.0, align: klipp_timeline::TabAlign::Decimal }];
+        tb.paragraph.list = Some(klipp_timeline::ListStyle { marker: klipp_timeline::ListMarker::Numbered { style: klipp_timeline::NumberStyle::LowerRoman, start: 1, suffix: ".".into() }, indent: 48.0 });
         let td = klipp_timeline::TitleData::single_text(tb);
         let clip = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(klipp_core::Timecode::zero(), klipp_core::Timecode { value: 48, rate: 24 }) };
         let state = AppState::default();
@@ -8430,7 +8473,7 @@ mod selection_underline_tests {
         frame(Vec::new());
         let (_, texts) = frame(Vec::new());
         let has = |label: &str| texts.iter().any(|(t, _)| t == label);
-        for label in ["Space before", "Space after", "Indent", "End indent", "First line", "Tab stops", "240 px", "Decimal"] {
+        for label in ["Space before", "Space after", "Indent", "End indent", "First line", "Tab stops", "240 px", "Decimal", "List", "i. ii. iii.", "indent 48 px"] {
             assert!(has(label), "no {label} in {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>());
         }
         assert!(texts.iter().any(|(t, _)| t.contains("-36")), "the hanging first line shows");

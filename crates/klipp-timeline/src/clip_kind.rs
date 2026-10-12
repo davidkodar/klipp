@@ -2575,6 +2575,91 @@ pub struct Paragraph {
     /// falls every two ems.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tabs: Vec<TabStop>,
+    /// Each paragraph as an item of a list (#1721): its marker at the
+    /// start indent, its text `indent` past it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list: Option<ListStyle>,
+}
+
+/// A list's look (#1721): the marker before each paragraph that has
+/// text, and how far past the start indent the items' text starts, in
+/// pixels at 1080p; the marker hangs in that space.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ListStyle {
+    pub marker: ListMarker,
+    pub indent: f32,
+}
+
+/// What marks a list's items.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ListMarker {
+    /// The same mark before each item: "•", "–", "■"…
+    Bullet { mark: String },
+    /// Items counted from `start`, in `style`, `suffix` after the count:
+    /// "1.", "a)", "iv."
+    Numbered { style: NumberStyle, start: u32, suffix: String },
+}
+
+/// How a numbered list counts.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum NumberStyle {
+    /// 1, 2, 3
+    #[default]
+    Arabic,
+    /// a, b, … z, aa
+    LowerAlpha,
+    /// A, B, … Z, AA
+    UpperAlpha,
+    /// i, ii, iii, iv
+    LowerRoman,
+    /// I, II, III, IV
+    UpperRoman,
+}
+
+impl ListMarker {
+    /// The marker of the item `n` from 0.
+    pub fn label(&self, n: usize) -> String {
+        match self {
+            ListMarker::Bullet { mark } => mark.clone(),
+            ListMarker::Numbered { style, start, suffix } => format!("{}{suffix}", style.count(*start as usize + n)),
+        }
+    }
+}
+
+impl NumberStyle {
+    /// `n` (from 1) counted in this style; 0 is "0" in any of them.
+    pub fn count(self, n: usize) -> String {
+        let alpha = |mut n: usize, a: u8| {
+            let mut s = Vec::new();
+            while n > 0 {
+                n -= 1;
+                s.push(a + (n % 26) as u8);
+                n /= 26;
+            }
+            s.reverse();
+            String::from_utf8(s).unwrap_or_default()
+        };
+        let roman = |mut n: usize| {
+            let mut s = String::new();
+            for (v, r) in [(1000, "m"), (900, "cm"), (500, "d"), (400, "cd"), (100, "c"), (90, "xc"), (50, "l"), (40, "xl"), (10, "x"), (9, "ix"), (5, "v"), (4, "iv"), (1, "i")] {
+                while n >= v {
+                    s.push_str(r);
+                    n -= v;
+                }
+            }
+            s
+        };
+        if n == 0 {
+            return "0".into();
+        }
+        match self {
+            NumberStyle::Arabic => n.to_string(),
+            NumberStyle::LowerAlpha => alpha(n, b'a'),
+            NumberStyle::UpperAlpha => alpha(n, b'A'),
+            NumberStyle::LowerRoman => roman(n),
+            NumberStyle::UpperRoman => roman(n).to_uppercase(),
+        }
+    }
 }
 
 /// A tab stop (#1721): `at` pixels at 1080p from the start indent, and
@@ -2615,6 +2700,7 @@ impl Paragraph {
             indent_end: key(&self.indent_end_keyframes, self.indent_end).max(0.0),
             indent_first: key(&self.indent_first_keyframes, self.indent_first).max(-start),
             tabs: self.tabs.clone(),
+            list: self.list.clone(),
             ..Paragraph::default()
         }
     }
