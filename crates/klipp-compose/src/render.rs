@@ -71,10 +71,11 @@ pub enum SourcePixels {
     /// Display-referred linear RGBA f32, straight alpha, in the working
     /// space: ordinary video.
     Linear(Arc<Vec<f32>>),
-    /// Scene-referred packed 10-bit codes (PQ, HLG, camera log), as the
-    /// decoders produce them. Graded scene-linear, tone-mapped after.
+    /// Scene-referred codes (PQ, HLG, camera log), as the decoders
+    /// produce them: 10-bit, or 16-bit for a deeper source (#1226).
+    /// Graded scene-linear, tone-mapped after.
     SceneReferred {
-        codes: Arc<Vec<u32>>,
+        codes: Arc<klipp_color::hdr::SceneCodes>,
         transfer: klipp_color::hdr::HdrTransfer,
         /// Source primaries → working space.
         source_to_working: [[f32; 3]; 3],
@@ -102,7 +103,7 @@ enum GradeInput {
     Cpu(Arc<Vec<f32>>),
     Gpu(Arc<dyn GpuPixels>),
     Scene {
-        codes: Arc<Vec<u32>>,
+        codes: Arc<klipp_color::hdr::SceneCodes>,
         transfer: klipp_color::hdr::HdrTransfer,
         source_to_working: [[f32; 3]; 3],
     },
@@ -113,9 +114,7 @@ impl GradeInput {
         match self {
             GradeInput::Cpu(p) => Arc::clone(p),
             GradeInput::Gpu(g) => g.read(),
-            GradeInput::Scene { codes, transfer, source_to_working } => {
-                Arc::new(klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(codes, *transfer, *source_to_working))
-            }
+            GradeInput::Scene { codes, transfer, source_to_working } => Arc::new(codes.to_scene_linear_rgba(*transfer, *source_to_working)),
         }
     }
 }
@@ -1460,6 +1459,7 @@ impl Renderer {
                 GradeInput::Gpu(g) => g.seed(&mut self.executor, width, height),
                 GradeInput::Scene { codes, transfer, source_to_working } => {
                     self.allow_gpu
+                        && gpu_seed_codes(codes)
                         && self.executor.prime_chain_from_hdr10_codes(
                             codes,
                             width,
@@ -3443,6 +3443,7 @@ impl Renderer {
             // while the same frame is regraded.
             GradeInput::Scene { codes, transfer, source_to_working }
                 if self.allow_gpu
+                    && gpu_seed_codes(codes)
                     && self.executor.prime_chain_from_hdr10_codes(
                         codes,
                         width,
@@ -4898,11 +4899,24 @@ fn split_above_white(px: &mut [f32]) -> Option<Vec<f32>> {
     Some(over)
 }
 
+/// Whether the GPU bridge can seed a chain from these codes: 10-bit ones.
+/// A deeper source's 16-bit codes are converted on the CPU, and
+/// composited there, until the bridge takes them (#1226); said once,
+/// not every frame.
+fn gpu_seed_codes(codes: &klipp_color::hdr::SceneCodes) -> bool {
+    static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let packed = codes.packed10().is_some();
+    if !packed && !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::info!("a source deeper than 10 bits is graded on the CPU at its full precision: the GPU bridge takes 10-bit codes");
+    }
+    packed
+}
+
 fn to_linear(f: SourceFrame, width: u32, height: u32) -> (Arc<Vec<f32>>, Option<klipp_color::hdr::HdrTransfer>) {
     match f.pixels {
         SourcePixels::Linear(p) => (fit(p, f.width, f.height, width, height), None),
         SourcePixels::SceneReferred { codes, transfer, source_to_working } => {
-            let p = klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(&codes, transfer, source_to_working);
+            let p = codes.to_scene_linear_rgba(transfer, source_to_working);
             (fit(Arc::new(p), f.width, f.height, width, height), Some(transfer))
         }
         SourcePixels::Gpu(g) => (fit(g.read(), f.width, f.height, width, height), None),

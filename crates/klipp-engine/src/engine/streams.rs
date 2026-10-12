@@ -33,7 +33,7 @@ pub(crate) struct HeldFrame {
     /// `Held::Srgb8` as linear light, once asked for.
     linear: OnceLock<Arc<Vec<f32>>>,
     /// `Held::Hdr` codes on the CPU, once asked for.
-    codes: OnceLock<Arc<Vec<u32>>>,
+    codes: OnceLock<Arc<klipp_color::hdr::SceneCodes>>,
     /// The caches' own record of this frame, when it came from them —
     /// carrying the ungraded picture they already made.
     pregrade: Option<super::Pregrade>,
@@ -169,7 +169,7 @@ impl HeldFrame {
         })
     }
 
-    fn cpu_codes(&self, h: &HdrInput) -> Arc<Vec<u32>> {
+    fn cpu_codes(&self, h: &HdrInput) -> Arc<klipp_color::hdr::SceneCodes> {
         Arc::clone(self.codes.get_or_init(|| h.cpu_codes()))
     }
 

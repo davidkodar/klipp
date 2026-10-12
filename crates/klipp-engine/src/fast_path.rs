@@ -25,7 +25,7 @@ pub enum GpuSeed<'a> {
     /// The same codes in memory — a parked frame. Uploaded once and kept
     /// by the executor while the same frame is regraded.
     SceneCodes {
-        codes: &'a std::sync::Arc<Vec<u32>>,
+        codes: &'a std::sync::Arc<klipp_color::hdr::SceneCodes>,
         transfer: HdrTransfer,
         source_to_working: [[f32; 3]; 3],
     },

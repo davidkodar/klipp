@@ -161,10 +161,11 @@ pub struct RenderDecoder {
 }
 
 /// A scene-referred source frame (PQ, HLG, camera log) as the viewer's
-/// grade reads it: packed 10-bit code values in the source primaries.
+/// grade reads it: code values in the source primaries, 10-bit or, for
+/// a deeper source, 16-bit (#1226).
 #[derive(Clone)]
 pub struct SceneReferredFrame {
-    pub codes: std::sync::Arc<Vec<u32>>,
+    pub codes: std::sync::Arc<klipp_color::hdr::SceneCodes>,
     pub transfer: klipp_color::hdr::HdrTransfer,
     /// Source primaries → the grade's working space.
     pub source_to_working: [[f32; 3]; 3],

@@ -51,6 +51,12 @@ fn pq_to_nits(e: f64) -> f64 {
 /// codes, neutral chroma, tagged limited range BT.709 unless `tags` says
 /// otherwise. `None` when ffmpeg is unavailable.
 fn make_clip(name: &str, bands: [u16; 4], tags: &[&str]) -> Option<PathBuf> {
+    make_clip_as(name, "yuv422p10le", bands, 512, tags)
+}
+
+/// [`make_clip`] in another 4:2:2 pixel format: `bands` and the neutral
+/// `chroma` are codes at its depth.
+fn make_clip_as(name: &str, pix_fmt: &str, bands: [u16; 4], chroma: u16, tags: &[&str]) -> Option<PathBuf> {
     let dir = std::env::temp_dir().join(format!("klipp-sw-scene-{}", std::process::id()));
     std::fs::create_dir_all(&dir).ok()?;
     let raw = dir.join(format!("{name}.yuv"));
@@ -64,7 +70,7 @@ fn make_clip(name: &str, bands: [u16; 4], tags: &[&str]) -> Option<PathBuf> {
         }
         for _plane in 0..2 {
             for _ in 0..(W / 2) * H {
-                bytes.extend_from_slice(&512u16.to_le_bytes());
+                bytes.extend_from_slice(&chroma.to_le_bytes());
             }
         }
     }
@@ -73,9 +79,9 @@ fn make_clip(name: &str, bands: [u16; 4], tags: &[&str]) -> Option<PathBuf> {
     // Same tags on input and output: tagging only the output makes ffmpeg
     // insert a range/matrix conversion and the codes stop being exact.
     let mut args: Vec<&str> = vec!["-nostdin", "-y", "-loglevel", "error",
-        "-f", "rawvideo", "-pix_fmt", "yuv422p10le", "-s", &size, "-r", "25"];
+        "-f", "rawvideo", "-pix_fmt", pix_fmt, "-s", &size, "-r", "25"];
     args.extend_from_slice(tags);
-    args.extend_from_slice(&["-i", raw.to_str()?, "-c:v", "ffv1", "-pix_fmt", "yuv422p10le"]);
+    args.extend_from_slice(&["-i", raw.to_str()?, "-c:v", "ffv1", "-pix_fmt", pix_fmt]);
     args.extend_from_slice(tags);
     args.push(out.to_str()?);
     let ok = std::process::Command::new("ffmpeg").args(&args).status().ok()?.success();
@@ -90,11 +96,23 @@ const TAGS_709: &[&str] = &["-color_range", "tv", "-colorspace", "bt709", "-colo
 /// file whose format the user picked. Every test here registers the same
 /// map, so running them in parallel is harmless.
 fn slog3_clip() -> Option<&'static Path> {
-    static CLIP: OnceLock<Option<PathBuf>> = OnceLock::new();
-    let clip = CLIP.get_or_init(|| make_clip("slog3", SLOG3_BANDS, TAGS_709)).as_deref()?;
-    klipp_engine::video_decoder::set_media_log_formats([(clip.to_path_buf(), LogFormat::SLog3)]);
-    Some(clip)
+    Some(slog3_clips()?.0)
 }
+
+/// The 10-bit S-Log3 clip and the 12-bit one, both registered as S-Log3
+/// in one map whichever test asks first.
+fn slog3_clips() -> Option<(&'static Path, &'static Path)> {
+    static CLIPS: OnceLock<Option<(PathBuf, PathBuf)>> = OnceLock::new();
+    let (ten, twelve) = CLIPS
+        .get_or_init(|| Some((make_clip("slog3", SLOG3_BANDS, TAGS_709)?, make_clip_as("slog3-12", "yuv422p12le", SLOG3_12_BANDS, 2048, TAGS_709)?)))
+        .as_ref()?;
+    klipp_engine::video_decoder::set_media_log_formats([(ten.clone(), LogFormat::SLog3), (twelve.clone(), LogFormat::SLog3)]);
+    Some((ten, twelve))
+}
+
+/// 12-bit codes a quarter, a half and three quarters of a 10-bit code off
+/// S-Log3's 10-bit 95, 420, 598 and 1000.
+const SLOG3_12_BANDS: [u16; 4] = [381, 1681, 2394, 4001];
 
 fn band_px(rgba: &[u8], width: u32, band: u32) -> [u8; 3] {
     let i = (((H / 2) * width + band * BAND + BAND / 2) * 4) as usize;
@@ -166,6 +184,7 @@ fn slog3_through_the_software_decoder_carries_codes_to_the_grade() {
     let hdr = frame.hdr.as_ref().expect("S-Log3 must reach the grade as codes, not display RGB");
     assert_eq!(hdr.transfer, klipp_color::hdr::HdrTransfer::Log(ColorTransfer::SLog3));
     let codes = hdr.cpu_codes();
+    let codes = codes.packed10().expect("a 10-bit source gives 10-bit codes");
     for (band, code) in SLOG3_BANDS.iter().enumerate() {
         let i = ((H / 2) * frame.width + band as u32 * BAND + BAND / 2) as usize;
         let c = *code as u32;
@@ -176,3 +195,37 @@ fn slog3_through_the_software_decoder_carries_codes_to_the_grade() {
         assert!((got - want).abs() < 2e-3, "band {band}: preview {got}, expected {want}");
     }
 }
+
+/// #1226: a 12-bit S-Log3 clip reaches the grade at its own precision:
+/// 16-bit codes, each band's scene-linear the published curve at the
+/// band's 12-bit code (a quarter of a 10-bit code between them), not at
+/// the 10-bit code it was rounded to.
+#[test]
+fn a_twelve_bit_clip_keeps_its_precision_to_the_grade() {
+    let bands = SLOG3_12_BANDS;
+    let Some((_, clip)) = slog3_clips() else {
+        eprintln!("skipping: ffmpeg unavailable");
+        return;
+    };
+    let dec = klipp_engine::video_decoder::VideoDecoder::open(clip, 0).unwrap();
+    dec.resume();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let frame = loop {
+        if let Some(f) = dec.frame_queue().lock().unwrap().pop() {
+            break f;
+        }
+        assert!(std::time::Instant::now() < deadline, "no frame decoded");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    let hdr = frame.hdr.as_ref().expect("S-Log3 must reach the grade as codes");
+    assert!(matches!(*hdr.cpu_codes(), klipp_color::hdr::SceneCodes::Deep16(_)), "a 12-bit source gives 16-bit codes");
+    let linear = hdr.scene_linear();
+    for (band, code) in bands.iter().enumerate() {
+        let i = ((H / 2) * frame.width + band as u32 * BAND + BAND / 2) as usize;
+        let want = slog3_to_linear(*code as f64 / 4.0);
+        let got = linear[i * 4 + 1] as f64;
+        // 0.05 % of the value: the 10-bit rounding it had was ~0.2 %.
+        assert!((got - want).abs() <= want.abs().max(1e-3) * 5e-4, "band {band} (12-bit {code}): {got}, the curve says {want}");
+    }
+}
+

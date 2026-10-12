@@ -268,7 +268,7 @@ impl SourceColour {
             cs.primaries,
             klipp_core::WorkingColorspace::Rec709Linear,
         );
-        Some(klipp_color::hdr::hdr10_codes_to_display_srgb8(&codes, transfer, m))
+        Some(codes.to_display_srgb8(transfer, m))
     }
 }
 
@@ -299,7 +299,7 @@ impl SourceColour {
         let yuv = crate::yuv_samples::read_yuv_samples(frame)?;
         let codes = klipp_color::hdr::yuv_to_hdr_codes(&yuv.samples(), dst_w, dst_h, 0, ids);
         let m = klipp_color::camera_log::primaries_to_working_matrix(cs.primaries, working);
-        Some(klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(&codes, transfer, m))
+        Some(codes.to_scene_linear_rgba(transfer, m))
     }
 }
 

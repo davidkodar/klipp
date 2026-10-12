@@ -235,7 +235,7 @@ fn a_scene_referred_source_of_another_size_is_still_refused() {
             let (w, h) = (9, 16);
             Some(SourceFrame {
                 pixels: SourcePixels::SceneReferred {
-                    codes: Arc::new(vec![klipp_color::hdr::pack_rgb10(512, 512, 512); (w * h) as usize]),
+                    codes: Arc::new(klipp_color::hdr::SceneCodes::Packed10(vec![klipp_color::hdr::pack_rgb10(512, 512, 512); (w * h) as usize])),
                     transfer: klipp_color::hdr::HdrTransfer::Pq,
                     source_to_working: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
                 },

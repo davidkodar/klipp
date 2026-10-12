@@ -291,7 +291,7 @@ pub(crate) unsafe fn scene_referred_sw_frame(
     let yuv = klipp_media::yuv_samples::read_yuv_samples(frame)?;
     let codes = klipp_color::hdr::yuv_to_hdr_codes(&yuv.samples(), dst_w, dst_h, rotation, ids);
     let (source_to_working, _) = primaries_matrix_for_source(source_cs);
-    let mut display = klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(&codes, transfer, source_to_working);
+    let mut display = codes.to_scene_linear_rgba(transfer, source_to_working);
     klipp_color::hdr::apply_hdr_display_tonemap(&mut display, transfer);
     Some((
         display,
@@ -1956,7 +1956,7 @@ unsafe fn download_hw_frame(
                         klipp_color::hdr::apply_hdr_display_tonemap(&mut display, transfer);
                         PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
                         let hdr = crate::types::HdrInput {
-                            codes: crate::types::HdrCodes::Cpu(Arc::new(codes)),
+                            codes: crate::types::HdrCodes::Cpu(Arc::new(klipp_color::hdr::SceneCodes::Packed10(codes))),
                             transfer,
                             source_to_working,
                             width: out_w,
@@ -2078,7 +2078,7 @@ unsafe fn download_hw_frame(
                         klipp_color::hdr::apply_hdr_display_tonemap(&mut display, transfer);
                         PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
                         let hdr = crate::types::HdrInput {
-                            codes: crate::types::HdrCodes::Cpu(Arc::new(codes)),
+                            codes: crate::types::HdrCodes::Cpu(Arc::new(klipp_color::hdr::SceneCodes::Packed10(codes))),
                             transfer,
                             source_to_working,
                             width: out_w,

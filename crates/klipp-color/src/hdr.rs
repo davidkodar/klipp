@@ -559,6 +559,109 @@ pub fn hdr_code_lut(transfer: HdrTransfer) -> Vec<f32> {
         .collect()
 }
 
+/// Every 16-bit code value → scene-linear, for sources deeper than 10
+/// bits (#1226): 65 536 entries, made once per curve and kept, so a deep
+/// frame's unpack is a table read as a 10-bit one is.
+pub fn hdr_code_lut16(transfer: HdrTransfer) -> std::sync::Arc<Vec<f32>> {
+    static LUTS: std::sync::Mutex<Vec<(HdrTransfer, std::sync::Arc<Vec<f32>>)>> = std::sync::Mutex::new(Vec::new());
+    let mut luts = LUTS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, lut)) = luts.iter().find(|(t, _)| *t == transfer) {
+        return lut.clone();
+    }
+    let lut = std::sync::Arc::new((0..65_536u32).map(|i| hdr_code_to_scene_linear(i as f32 / 65_535.0, transfer)).collect::<Vec<f32>>());
+    luts.push((transfer, lut.clone()));
+    lut
+}
+
+/// A scene-referred frame's code values in the source's primaries: three
+/// 10-bit codes a pixel for sources up to 10 bits, three 16-bit codes a
+/// pixel for deeper ones, so a 12- or 16-bit source keeps its precision
+/// up to the curve (#1226).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SceneCodes {
+    /// [`pack_rgb10`] codes.
+    Packed10(Vec<u32>),
+    /// [`pack_rgb16`] codes.
+    Deep16(Vec<u64>),
+}
+
+impl SceneCodes {
+    /// Pixels.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Packed10(c) => c.len(),
+            Self::Deep16(c) => c.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Bytes held.
+    pub fn byte_len(&self) -> usize {
+        match self {
+            Self::Packed10(c) => c.len() * 4,
+            Self::Deep16(c) => c.len() * 8,
+        }
+    }
+
+    /// The 10-bit codes, the form the GPU bridge takes; `None` for deep
+    /// ones, which convert on the CPU.
+    pub fn packed10(&self) -> Option<&[u32]> {
+        match self {
+            Self::Packed10(c) => Some(c),
+            Self::Deep16(_) => None,
+        }
+    }
+
+    /// Scene-linear RGBA f32 in the working space: see
+    /// [`hdr10_codes_to_scene_linear_rgba`].
+    pub fn to_scene_linear_rgba(&self, transfer: HdrTransfer, source_to_working: [[f32; 3]; 3]) -> Vec<f32> {
+        match self {
+            Self::Packed10(c) => hdr10_codes_to_scene_linear_rgba(c, transfer, source_to_working),
+            Self::Deep16(c) => hdr16_codes_to_scene_linear_rgba(c, transfer, source_to_working),
+        }
+    }
+
+    /// As the viewer shows them ungraded: see
+    /// [`hdr10_codes_to_display_srgb8`].
+    pub fn to_display_srgb8(&self, transfer: HdrTransfer, source_to_display: [[f32; 3]; 3]) -> Vec<u8> {
+        let mut linear = self.to_scene_linear_rgba(transfer, source_to_display);
+        apply_hdr_display_tonemap(&mut linear, transfer);
+        display_linear_to_srgb8(&linear)
+    }
+}
+
+/// Pack three 16-bit code values into one `u64`: R in bits 0-15, G in
+/// 16-31, B in 32-47.
+pub fn pack_rgb16(r: u16, g: u16, b: u16) -> u64 {
+    r as u64 | (g as u64) << 16 | (b as u64) << 32
+}
+
+/// Inverse of [`pack_rgb16`].
+pub fn unpack_rgb16(p: u64) -> [u16; 3] {
+    [p as u16, (p >> 16) as u16, (p >> 32) as u16]
+}
+
+/// [`hdr10_codes_to_scene_linear_rgba`] for 16-bit codes, through
+/// [`hdr_code_lut16`].
+pub fn hdr16_codes_to_scene_linear_rgba(packed: &[u64], transfer: HdrTransfer, source_to_working: [[f32; 3]; 3]) -> Vec<f32> {
+    use rayon::prelude::*;
+    let lut = hdr_code_lut16(transfer);
+    let m = source_to_working;
+    let mut out = vec![0.0_f32; packed.len() * 4];
+    out.par_chunks_exact_mut(4).zip(packed.par_iter()).for_each(|(dst, &p)| {
+        let [r, g, b] = unpack_rgb16(p);
+        let (r, g, b) = (lut[r as usize], lut[g as usize], lut[b as usize]);
+        dst[0] = m[0][0] * r + m[0][1] * g + m[0][2] * b;
+        dst[1] = m[1][0] * r + m[1][1] * g + m[1][2] * b;
+        dst[2] = m[2][0] * r + m[2][1] * g + m[2][2] * b;
+        dst[3] = 1.0;
+    });
+    out
+}
+
 /// Pack three 10-bit code values into one `u32`: R in bits 0-9, G in
 /// 10-19, B in 20-29, bits 30-31 zero. The layout the P010 shader writes.
 pub fn pack_rgb10(r: u32, g: u32, b: u32) -> u32 {
@@ -750,15 +853,16 @@ pub fn chroma_taps(s: usize, shift: u32, extent: usize, axis: ChromaAxis) -> (us
 /// [`hdr10_codes_to_scene_linear_rgba`] and [`apply_hdr_display_tonemap`].
 ///
 /// `color_ids` is `[range, matrix, transfer, primaries]` as in
-/// `klipp_core::color_ids`. Sources deeper than 10 bits are quantised to 10
-/// bits, as the codes the grade reads are 10-bit.
+/// `klipp_core::color_ids`. A source of up to 10 bits gives 10-bit codes,
+/// as the shaders write them; a deeper one 16-bit codes, so its precision
+/// reaches the curve rather than being rounded to 10 bits (#1226).
 pub fn yuv_to_hdr_codes(
     s: &YuvSamples,
     dst_w: u32,
     dst_h: u32,
     rotation: u32,
     color_ids: [u32; 4],
-) -> Vec<u32> {
+) -> SceneCodes {
     use klipp_core::color_ids as ids;
     use rayon::prelude::*;
 
@@ -789,32 +893,44 @@ pub fn yuv_to_hdr_codes(
         }
     };
 
-    let mut out = vec![0u32; (dst_w as usize) * (dst_h as usize)];
-    out.par_chunks_mut(dst_w.max(1) as usize).enumerate().for_each(|(dy, row)| {
-        let dy = dy as u32;
-        for (dx, px) in row.iter_mut().enumerate() {
-            let dx = dx as u32;
-            let (sx, sy) = match rotation {
-                90 => (dy * src_w / dst_h, (dst_w - 1 - dx) * src_h / dst_w),
-                180 => ((dst_w - 1 - dx) * src_w / dst_w, (dst_h - 1 - dy) * src_h / dst_h),
-                270 => ((dst_h - 1 - dy) * src_w / dst_h, dx * src_h / dst_w),
-                _ => (dx * src_w / dst_w, dy * src_h / dst_h),
-            };
-            let (sx, sy) = (sx.min(src_w - 1) as usize, sy.min(src_h - 1) as usize);
-            let (cu, cv) = s.chroma_at(sx, sy);
-            let rgb = to_rgb(normalise(s.y[sy * src_w as usize + sx] as f32, cu, cv));
-            let code = rgb.map(|c| {
-                let signal = if is_log && range != ids::COLOR_RANGE_FULL {
-                    (64.0 + c * 876.0) / 1023.0
-                } else {
-                    c
-                };
-                (signal.clamp(0.0, 1.0) * 1023.0 + 0.5) as u32
-            });
-            *px = pack_rgb10(code[0], code[1], code[2]);
-        }
-    });
-    out
+    // The signal, 0 to 1, a destination pixel takes.
+    let signal_at = |dx: u32, dy: u32| -> [f32; 3] {
+        let (sx, sy) = match rotation {
+            90 => (dy * src_w / dst_h, (dst_w - 1 - dx) * src_h / dst_w),
+            180 => ((dst_w - 1 - dx) * src_w / dst_w, (dst_h - 1 - dy) * src_h / dst_h),
+            270 => ((dst_h - 1 - dy) * src_w / dst_h, dx * src_h / dst_w),
+            _ => (dx * src_w / dst_w, dy * src_h / dst_h),
+        };
+        let (sx, sy) = (sx.min(src_w - 1) as usize, sy.min(src_h - 1) as usize);
+        let (cu, cv) = s.chroma_at(sx, sy);
+        let rgb = to_rgb(normalise(s.y[sy * src_w as usize + sx] as f32, cu, cv));
+        rgb.map(|c| {
+            let signal = if is_log && range != ids::COLOR_RANGE_FULL { (64.0 + c * 876.0) / 1023.0 } else { c };
+            signal.clamp(0.0, 1.0)
+        })
+    };
+
+    let row_len = dst_w.max(1) as usize;
+    let pixels = (dst_w as usize) * (dst_h as usize);
+    if s.bit_depth <= 10 {
+        let mut out = vec![0u32; pixels];
+        out.par_chunks_mut(row_len).enumerate().for_each(|(dy, row)| {
+            for (dx, px) in row.iter_mut().enumerate() {
+                let code = signal_at(dx as u32, dy as u32).map(|c| (c * 1023.0 + 0.5) as u32);
+                *px = pack_rgb10(code[0], code[1], code[2]);
+            }
+        });
+        SceneCodes::Packed10(out)
+    } else {
+        let mut out = vec![0u64; pixels];
+        out.par_chunks_mut(row_len).enumerate().for_each(|(dy, row)| {
+            for (dx, px) in row.iter_mut().enumerate() {
+                let code = signal_at(dx as u32, dy as u32).map(|c| (c * 65_535.0 + 0.5) as u16);
+                *px = pack_rgb16(code[0], code[1], code[2]);
+            }
+        });
+        SceneCodes::Deep16(out)
+    }
 }
 
 #[cfg(test)]
@@ -1200,6 +1316,136 @@ mod chroma_siting_tests {
         };
         for x in 0..4 {
             assert_eq!(s.chroma_at(x, 0), (u[x] as f32, v[x] as f32), "x={x} must be exact");
+        }
+    }
+}
+
+#[cfg(test)]
+mod deep_code_tests {
+    use super::*;
+    use klipp_core::color_ids as ids;
+
+    const SLOG3: [u32; 4] = [ids::COLOR_RANGE_LIMITED, ids::MATRIX_BT709, ids::TRANSFER_SLOG3, 0];
+    const IDENTITY: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+    /// A one-row ramp of `n` consecutive luma codes from `from` at
+    /// `depth` bits, chroma neutral (4:4:4).
+    fn ramp(from: u16, n: usize, depth: u32) -> (Vec<u16>, Vec<u16>) {
+        let y: Vec<u16> = (0..n).map(|i| from + i as u16).collect();
+        (y, vec![1u16 << (depth - 1); n])
+    }
+
+    fn samples<'a>(y: &'a [u16], c: &'a [u16], depth: u32) -> YuvSamples<'a> {
+        YuvSamples { y, u: c, v: c, width: y.len() as u32, height: 1, chroma_shift_w: 0, chroma_shift_h: 0, bit_depth: depth }
+    }
+
+    /// The 10-bit codes as they were made before #1226, kept verbatim:
+    /// the reference a 10-bit source must still match exactly.
+    fn codes_before_1226(s: &YuvSamples, color_ids: [u32; 4]) -> Vec<u32> {
+        let [range, _, transfer, _] = color_ids;
+        let is_log = transfer >= ids::FIRST_CAMERA_LOG;
+        let max = ((1u32 << s.bit_depth) - 1) as f32;
+        (0..s.width as usize)
+            .map(|sx| {
+                let (cu, cv) = s.chroma_at(sx, 0);
+                let (y, u, v) = if range == ids::COLOR_RANGE_FULL {
+                    (s.y[sx] as f32 / max, (cu - max * 0.5 - 0.5) / max, (cv - max * 0.5 - 0.5) / max)
+                } else {
+                    let scale = (max + 1.0) / 256.0;
+                    ((s.y[sx] as f32 - 16.0 * scale) / (219.0 * scale), (cu - 128.0 * scale) / (224.0 * scale), (cv - 128.0 * scale) / (224.0 * scale))
+                };
+                let rgb = [y + 1.5748 * v, y - 0.1873 * u - 0.4681 * v, y + 1.8556 * u];
+                let code = rgb.map(|c| {
+                    let signal = if is_log && range != ids::COLOR_RANGE_FULL { (64.0 + c * 876.0) / 1023.0 } else { c };
+                    (signal.clamp(0.0, 1.0) * 1023.0 + 0.5) as u32
+                });
+                pack_rgb10(code[0], code[1], code[2])
+            })
+            .collect()
+    }
+
+    /// #1226: an 8- or 10-bit source keeps its 10-bit codes, byte for
+    /// byte, and the frame they make is the one they made.
+    #[test]
+    fn a_ten_bit_source_is_unchanged() {
+        for depth in [8u32, 10] {
+            let max = (1u16 << depth) - 1;
+            let (y, c) = ramp(0, max as usize + 1, depth);
+            let s = samples(&y, &c, depth);
+            let codes = yuv_to_hdr_codes(&s, s.width, 1, 0, SLOG3);
+            let want = codes_before_1226(&s, SLOG3);
+            assert_eq!(codes, SceneCodes::Packed10(want.clone()), "{depth}-bit codes");
+            let t = HdrTransfer::Log(klipp_core::ColorTransfer::SLog3);
+            assert_eq!(codes.to_scene_linear_rgba(t, IDENTITY), hdr10_codes_to_scene_linear_rgba(&want, t, IDENTITY), "{depth}-bit frame");
+        }
+    }
+
+    /// #1226: a 12- and a 16-bit gradient of 200 consecutive codes keep
+    /// every step to scene-linear, each within its own precision of the
+    /// curve at the exact signal; a three-stop push shows 200 distinct
+    /// steps where 10-bit codes held a quarter of them or fewer.
+    #[test]
+    fn a_deep_source_keeps_its_steps() {
+        let t = HdrTransfer::Log(klipp_core::ColorTransfer::SLog3);
+        for depth in [12u32, 16] {
+            let scale = (1u32 << (depth - 8)) as f32;
+            // Around middle grey: S-Log3's 10-bit code 420, at this depth.
+            let from = ((420.0 - 64.0) / 876.0 * 219.0 * scale + 16.0 * scale) as u16;
+            let (y, c) = ramp(from, 200, depth);
+            let s = samples(&y, &c, depth);
+            let codes = yuv_to_hdr_codes(&s, s.width, 1, 0, SLOG3);
+            assert!(matches!(codes, SceneCodes::Deep16(_)), "{depth}-bit: 16-bit codes");
+            let linear = codes.to_scene_linear_rgba(t, IDENTITY);
+            for (i, &code) in y.iter().enumerate() {
+                let luma = (code as f32 - 16.0 * scale) / (219.0 * scale);
+                let exact = hdr_code_to_scene_linear((64.0 + luma * 876.0) / 1023.0, t);
+                let got = linear[i * 4 + 1];
+                // Half a 16-bit code of signal, through S-Log3's slope
+                // (~9 relative per unit of signal): 0.007 %; 10-bit
+                // rounding is up to 0.44 %.
+                assert!((got - exact).abs() <= exact.abs() * 2e-4, "{depth}-bit code {code}: {got}, the curve says {exact}");
+            }
+            let pushed: std::collections::BTreeSet<u32> = linear.chunks_exact(4).map(|p| (p[1] * 8.0).to_bits()).collect();
+            assert_eq!(pushed.len(), 200, "{depth}-bit: every step survives a three-stop push");
+            let ten: std::collections::BTreeSet<u32> = codes_before_1226(&s, SLOG3).into_iter().collect();
+            assert!(ten.len() <= 200 / 4 + 1, "the 10-bit codes it used to get held {} steps", ten.len());
+        }
+    }
+
+    /// The 16-bit table is made once a curve and handed out after.
+    #[test]
+    fn the_deep_table_is_made_once() {
+        let t = HdrTransfer::Pq;
+        let (a, b) = (hdr_code_lut16(t), hdr_code_lut16(t));
+        assert!(std::sync::Arc::ptr_eq(&a, &b));
+        assert_eq!(a.len(), 65_536);
+        assert_eq!(unpack_rgb16(pack_rgb16(1, 40_000, 65_535)), [1, 40_000, 65_535]);
+    }
+
+    /// What a 4K frame costs to code and unpack, 10-bit against 16-bit:
+    /// run with `--ignored --nocapture` to read it.
+    #[test]
+    #[ignore]
+    fn deep_frame_cost_at_4k() {
+        let (w, h) = (3840u32, 2160u32);
+        let t = HdrTransfer::Log(klipp_core::ColorTransfer::SLog3);
+        for depth in [10u32, 12] {
+            let n = (w * h) as usize;
+            let y: Vec<u16> = (0..n).map(|i| (i % (1 << depth)) as u16).collect();
+            let c = vec![1u16 << (depth - 1); n / 2];
+            let s = YuvSamples { y: &y, u: &c, v: &c, width: w, height: h, chroma_shift_w: 1, chroma_shift_h: 0, bit_depth: depth };
+            let _ = hdr_code_lut16(t);
+            let mut best = (f64::MAX, f64::MAX);
+            for _ in 0..5 {
+                let t0 = std::time::Instant::now();
+                let codes = yuv_to_hdr_codes(&s, w, h, 0, SLOG3);
+                let t1 = std::time::Instant::now();
+                let linear = codes.to_scene_linear_rgba(t, IDENTITY);
+                let t2 = std::time::Instant::now();
+                std::hint::black_box(linear);
+                best = (best.0.min((t1 - t0).as_secs_f64() * 1e3), best.1.min((t2 - t1).as_secs_f64() * 1e3));
+            }
+            eprintln!("{depth}-bit 4K: codes {:.1} ms, unpack to scene-linear {:.1} ms", best.0, best.1);
         }
     }
 }

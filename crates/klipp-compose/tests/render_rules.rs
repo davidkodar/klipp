@@ -118,7 +118,7 @@ impl Flat {
     fn scene(mut self, c: &Clip, transfer: klipp_color::hdr::HdrTransfer, code: u32) -> Self {
         let packed = klipp_color::hdr::pack_rgb10(code, code, code);
         self.0.insert(c.id, Box::new(move || SourcePixels::SceneReferred {
-            codes: Arc::new(vec![packed; (W * H) as usize]),
+            codes: Arc::new(klipp_color::hdr::SceneCodes::Packed10(vec![packed; (W * H) as usize])),
             transfer,
             source_to_working: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         }));
