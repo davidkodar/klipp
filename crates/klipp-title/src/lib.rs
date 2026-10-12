@@ -1573,13 +1573,7 @@ impl TitleRenderer {
         // where the buffer leaves this function.
         let mut buf = vec![0f32; w * h * 4];
 
-        // Fill background if requested
-        if let TitleBackground::FullFrame { color } = &title.background {
-            let fill = [color[0] as f32, color[1] as f32, color[2] as f32, color[3] as f32];
-            for pixel in buf.chunks_exact_mut(4) {
-                pixel.copy_from_slice(&fill);
-            }
-        }
+        fill_full_frame(&mut buf, title);
 
         if layout.glyph_count == 0 || layout.mask_w == 0 || layout.mask_h == 0 {
             return to_bytes(&buf);
@@ -1592,20 +1586,7 @@ impl TitleRenderer {
         let mask_y0 = layout.mask_y0 as usize;
         let alpha_mask = &layout.alpha_mask;
 
-        // Draw background box if Color variant
-        if let TitleBackground::Color { color, padding } = &title.background {
-            let pad = padding * scale;
-            let bx0 = ((layout.text_left - pad) as i32).max(0) as usize;
-            let by0 = ((layout.text_top - pad) as i32).max(0) as usize;
-            let bx1 = ((layout.text_right + pad) as i32).min(width as i32) as usize;
-            let by1 = ((layout.text_bottom + pad) as i32).min(height as i32) as usize;
-            for row in by0..by1 {
-                for col in bx0..bx1 {
-                    let idx = (row * w + col) * 4;
-                    blend_pixel(&mut buf, idx, color);
-                }
-            }
-        }
+        paint_backing(&mut buf, title, [layout.text_left, layout.text_top, layout.text_right, layout.text_bottom], width, height, scale);
 
         // Determine if GPU acceleration should be used (> 250K pixels in mask)
         let use_gpu = gpu.is_some() && (mask_w * mask_h > 250_000);
@@ -2713,7 +2694,10 @@ impl TitleRenderer {
     ) -> Vec<u8> {
         // Real 3D text (#1512): the glyphs as solids, drawn in place of
         // the flat face (and of any older extrusion).
-        if let Some(buf) = self.render_text3d(title, width, height, time_secs) {
+        // The GPU goes to the 3D path when it draws, as it does to the
+        // flat face's stack.
+        let mut gpu = gpu;
+        if let Some(buf) = self.render_text3d(title, width, height, time_secs, &mut gpu) {
             self.last_units = None;
             return buf;
         }
@@ -2754,7 +2738,7 @@ impl TitleRenderer {
     /// (#1512): laid out as the flat text is, each glyph's outline
     /// extruded and bevelled, the whole turned about the text's centre
     /// and lit. `None` for a text without 3D.
-    fn render_text3d(&mut self, title: &TitleData, width: u32, height: u32, time_secs: Option<f32>) -> Option<Vec<u8>> {
+    fn render_text3d(&mut self, title: &TitleData, width: u32, height: u32, time_secs: Option<f32>, gpu: &mut Option<&mut dyn AlphaMaskProcessor>) -> Option<Vec<u8>> {
         let tb = title.primary_text()?;
         let settings = tb.three_d.as_ref().filter(|t| t.enabled)?.clone();
         let layout = self.render_layout_at_time(title, width, height, time_secs);
@@ -2778,7 +2762,85 @@ impl TitleRenderer {
         let pivot = [(layout.text_left + layout.text_right) * 0.5, (layout.text_top + layout.text_bottom) * 0.5, depth * 0.5];
         let face = settings.face_color.unwrap_or(tb.color);
         let scene = text3d_render::Scene { meshes: &meshes, sprites: &sprites, settings: &settings, pivot, face, side: settings.side_color, bevel: settings.bevel_color.unwrap_or(face) };
-        Some(text3d_render::render(&scene, width, height, 2))
+        let (solid, drawn) = text3d_render::render_boxed(&scene, width, height, 2);
+        Some(Self::dress_3d(solid, drawn, title, width, height, time_secs, gpu))
+    }
+
+    /// A 3D text's solid dressed as a flat text's face is: its backing
+    /// or full-frame card behind, its layer's glows, drop shadows and
+    /// outlines round it and its inner shadows inside, all from the
+    /// solid's own coverage, as they come from the glyphs' for a flat
+    /// text (#1512).
+    /// `drawn` is the box the solid is drawn in; only round it, out as
+    /// far as the stack reaches, is the work done.
+    fn dress_3d(solid: Vec<u8>, drawn: Option<[usize; 4]>, title: &TitleData, width: u32, height: u32, time_secs: Option<f32>, gpu: &mut Option<&mut dyn AlphaMaskProcessor>) -> Vec<u8> {
+        let fx = title.primary_fx();
+        let stacked = fx.glows.iter().any(|g| g.enabled) || fx.shadows.iter().any(|s| s.enabled) || fx.outlines.iter().any(|o| o.enabled) || fx.inner_shadows.iter().any(|s| s.enabled);
+        // Nothing round it or behind it: the solid is the layer.
+        if !stacked && matches!(title.background, TitleBackground::None) {
+            return solid;
+        }
+        let (w, h) = (width as usize, height as usize);
+        let scale = crate::frame_scale(width, height);
+        let full_frame = matches!(title.background, TitleBackground::FullFrame { .. });
+        let Some([x0, y0, x1, y1]) = drawn else {
+            if !full_frame {
+                return solid;
+            }
+            let mut buf = vec![0f32; w * h * 4];
+            fill_full_frame(&mut buf, title);
+            return to_bytes(&buf);
+        };
+        // The solid's coverage, with room round it for what the stack
+        // and a backing panel draw there.
+        let backing_pad = match title.background {
+            TitleBackground::Color { padding, .. } => (padding * scale).ceil().max(0.0) as usize,
+            _ => 0,
+        };
+        let pad = (effect_padding(title, scale).max(0) as usize).max(backing_pad) + 2;
+        let (mx0, my0, mx1, my1) = (x0.saturating_sub(pad), y0.saturating_sub(pad), (x1 + pad).min(w), (y1 + pad).min(h));
+        // The region worked on: the whole frame under a full-frame card,
+        // else just round the solid. Its own buffer, its own coordinates.
+        let (rx0, ry0, rx1, ry1) = if full_frame { (0, 0, w, h) } else { (mx0, my0, mx1, my1) };
+        let (rw, rh) = (rx1 - rx0, ry1 - ry0);
+        let mut buf = vec![0f32; rw * rh * 4];
+        fill_full_frame(&mut buf, title);
+        let (mw, mh) = (mx1 - mx0, my1 - my0);
+        let mut mask = vec![0u8; mw * mh];
+        let (mut bx0, mut by0, mut bx1, mut by1) = (usize::MAX, usize::MAX, 0usize, 0usize);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let a = solid[(y * w + x) * 4 + 3];
+                if a > 0 {
+                    mask[(y - my0) * mw + (x - mx0)] = a;
+                    (bx0, by0, bx1, by1) = (bx0.min(x), by0.min(y), bx1.max(x + 1), by1.max(y + 1));
+                }
+            }
+        }
+        if bx1 > bx0 {
+            let local = |v: usize, o: usize| (v - o) as f32;
+            paint_backing(&mut buf, title, [local(bx0, rx0), local(by0, ry0), local(bx1, rx0), local(by1, ry0)], rw as u32, rh as u32, scale);
+        }
+        let t = time_secs.map(|t| t as f64).unwrap_or(0.0);
+        // The GPU for a mask large enough to be worth it, as `compose`.
+        let use_gpu = gpu.is_some() && mw * mh > 250_000;
+        stack_behind(&mut buf, &mask, mw, mh, mx0 - rx0, my0 - ry0, rw, rh, fx, scale, t, i32::MAX, use_gpu, gpu);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let p = &solid[(y * w + x) * 4..][..4];
+                if p[3] > 0 {
+                    blend_pixel(&mut buf, ((y - ry0) * rw + (x - rx0)) * 4, &[p[0], p[1], p[2], p[3]]);
+                }
+            }
+        }
+        stack_inside(&mut buf, &mask, mw, mh, mx0 - rx0, my0 - ry0, rw, rh, fx, scale, t, use_gpu, gpu);
+        // The region back into the frame.
+        let mut out = solid;
+        let bytes = to_bytes(&buf);
+        for y in 0..rh {
+            out[((y + ry0) * w + rx0) * 4..((y + ry0) * w + rx1) * 4].copy_from_slice(&bytes[y * rw * 4..(y + 1) * rw * 4]);
+        }
+        out
     }
 
     /// Look up a cached rasterised buffer for the given title +
@@ -6248,6 +6310,36 @@ fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
 /// layer and lossy for five: a backing panel, a shadow, a glow, an
 /// outline and the glyphs each read back what the last one had rounded.
 /// The working buffer, rounded once, where it leaves the compositor.
+/// A full-frame card's colour over the whole of `buf`, when the title
+/// has one.
+fn fill_full_frame(buf: &mut [f32], title: &TitleData) {
+    if let TitleBackground::FullFrame { color } = &title.background {
+        let fill = [color[0] as f32, color[1] as f32, color[2] as f32, color[3] as f32];
+        for pixel in buf.chunks_exact_mut(4) {
+            pixel.copy_from_slice(&fill);
+        }
+    }
+}
+
+/// A backing panel round `bounds` (left, top, right, bottom in frame
+/// pixels), padded by its padding at `scale`, when the title has one.
+fn paint_backing(buf: &mut [f32], title: &TitleData, bounds: [f32; 4], width: u32, height: u32, scale: f32) {
+    if let TitleBackground::Color { color, padding } = &title.background {
+        let w = width as usize;
+        let pad = padding * scale;
+        let bx0 = ((bounds[0] - pad) as i32).max(0) as usize;
+        let by0 = ((bounds[1] - pad) as i32).max(0) as usize;
+        let bx1 = ((bounds[2] + pad) as i32).min(width as i32) as usize;
+        let by1 = ((bounds[3] + pad) as i32).min(height as i32) as usize;
+        for row in by0..by1 {
+            for col in bx0..bx1 {
+                let idx = (row * w + col) * 4;
+                blend_pixel(buf, idx, color);
+            }
+        }
+    }
+}
+
 fn to_bytes(buf: &[f32]) -> Vec<u8> {
     buf.iter().map(|v| v.round().clamp(0.0, 255.0) as u8).collect()
 }
