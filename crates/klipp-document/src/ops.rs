@@ -5644,7 +5644,7 @@ fn highlight(seq: &Sequence, fps: Fps, i: usize, at: Timecode, hold: f64, region
     if !stroke.is_finite() || !(1.0..=40.0).contains(&stroke) {
         return Err(refuse(i, format!("stroke {stroke} is out of range"), "give a stroke width 1 to 40"));
     }
-    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None };
+    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None, published: Vec::new() };
     let boxed = |cx: f32, cy: f32, bw: f32, bh: f32| ObjectTransform { center: TitlePosition { x: cx, y: cy }, size: TitlePosition { x: bw, y: bh }, ..klipp_timeline::default_text_transform() };
     match kind.to_lowercase().as_str() {
         "box" | "ring" => {
@@ -7159,6 +7159,7 @@ fn lower_third_title(name: &str, role: Option<&str>, place: LowerThirdPlace) -> 
         animation_type: Default::default(),
         background: klipp_timeline::TitleBackground::None,
         style: None,
+        published: Vec::new(),
     };
     let name_box = TextBox {
         text: name.to_string(),

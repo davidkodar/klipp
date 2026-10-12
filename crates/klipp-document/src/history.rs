@@ -1092,6 +1092,19 @@ impl CommandHistory {
 
     /// Mark the moment of an "Edit Title Text" push so the next
     /// keystroke within the coalesce window can merge into it.
+    /// Fold `new` into the last step when it is a title edit of `clip_id`
+    /// named `description`: a run of steps of one control (a colour
+    /// picked as it's dragged) kept as the one step. Whether it did.
+    pub fn amend_last_title(&mut self, clip_id: ClipId, description: &str, new: &klipp_timeline::TitleData) -> bool {
+        match self.undo_stack.back_mut().map(|e| &mut e.command) {
+            Some(EditCommand::EditTitle { clip_id: c, description: d, new_data, .. }) if *c == clip_id && *d == description => {
+                *new_data = new.clone();
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn note_title_text_edit(&mut self, clip_id: ClipId) {
         self.last_title_text_edit = Some((clip_id, Instant::now()));
     }

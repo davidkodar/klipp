@@ -419,13 +419,27 @@ impl NewInspectorPanel {
                                     left: 12.0, right: 12.0, top: 0.0, bottom: 0.0,
                                 })
                                 .show(ui, |ui| {
-                                    inspector_scope_banner(
-                                        ui,
-                                        theme,
-                                        "TEXT LAYER",
-                                        "These controls affect the selected text layer. Use CLIP VIDEO for the whole title clip.",
-                                    );
-                                    show_title_editor(ui, theme, clip, state, &mut cmds, &mut self.title_chips);
+                                    let full = |ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, chips: &mut title_tab::TitleChips| {
+                                        inspector_scope_banner(
+                                            ui,
+                                            theme,
+                                            "TEXT LAYER",
+                                            "These controls affect the selected text layer. Use CLIP VIDEO for the whole title clip.",
+                                        );
+                                        show_title_editor(ui, theme, clip, state, cmds, chips);
+                                    };
+                                    // A template's fields first, the rest
+                                    // folded away (#1139): simple first.
+                                    let td = clip.title_data().expect("a title");
+                                    if title_tab::template_fields(ui, theme, clip.id, td, &mut cmds) {
+                                        ui.add_space(4.0);
+                                        egui::CollapsingHeader::new("All settings")
+                                            .id_salt(("title_all_settings", clip.id))
+                                            .default_open(false)
+                                            .show(ui, |ui| full(ui, &mut cmds, &mut self.title_chips));
+                                    } else {
+                                        full(ui, &mut cmds, &mut self.title_chips);
+                                    }
                                 });
                         }
                         _ => title_empty_state(ui, theme, &mut cmds),

@@ -189,7 +189,9 @@ fn write_template(path: &Path, template: &UserTitleTemplate) -> Result<(), Strin
 /// inspector and the timeline open.
 #[derive(Debug, Clone)]
 pub enum TemplateDialog {
-    Save { data: Box<TitleData>, name: String, category: String },
+    /// `fields`: what may stay editable once the template is applied
+    /// (#1139), each ticked or not.
+    Save { data: Box<TitleData>, name: String, category: String, fields: Vec<(klipp_timeline::PublishedField, bool)> },
     Rename { from: String, name: String },
     Delete { name: String },
 }
@@ -199,8 +201,16 @@ impl TemplateDialog {
     pub fn save(data: TitleData) -> Self {
         let text = data.primary_text().map(|tb| tb.text.trim().to_string()).unwrap_or_default();
         let name = if text.is_empty() || text.chars().count() > 40 { "My Title".to_string() } else { text };
-        Self::Save { data: Box::new(data), name, category: "Lower Thirds".to_string() }
+        let fields = data.default_fields().into_iter().map(|f| (f, true)).collect();
+        Self::Save { data: Box::new(data), name, category: "Lower Thirds".to_string(), fields }
     }
+}
+
+/// `data` as a template keeps it (#1139): with `fields`, those ticked, as
+/// what stays editable once it's applied.
+pub fn with_published(mut data: TitleData, fields: &[(klipp_timeline::PublishedField, bool)]) -> TitleData {
+    data.published = fields.iter().filter(|(_, on)| *on).map(|(f, _)| f.clone()).collect();
+    data
 }
 
 /// Draw the open dialog, if any, and apply it on confirm.
@@ -223,7 +233,7 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) {
         .show(ctx, |ui| {
             ui.set_min_width(280.0);
             let confirm = match dialog {
-                TemplateDialog::Save { data, name, category } => {
+                TemplateDialog::Save { data, name, category, fields } => {
                     ui.horizontal(|ui| {
                         ui.label("Name:");
                         ui.text_edit_singleline(name).request_focus();
@@ -241,9 +251,16 @@ pub fn show_dialog(ctx: &egui::Context, state: &mut crate::state::AppState) {
                     if store.get(name.trim()).is_some() {
                         ui.label(egui::RichText::new("Replaces the template of this name.").small().weak());
                     }
+                    if !fields.is_empty() {
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new("What stays editable").strong());
+                        for (field, on) in fields.iter_mut() {
+                            ui.checkbox(on, field.label.as_str());
+                        }
+                    }
                     ui.add_space(8.0);
                     let go = dialog_buttons(ui, "Save", !name.trim().is_empty(), &mut close);
-                    go.then(|| store.save(name, category, (**data).clone()).map(|_| format!("Saved title template \"{}\"", name.trim())))
+                    go.then(|| store.save(name, category, with_published((**data).clone(), fields)).map(|_| format!("Saved title template \"{}\"", name.trim())))
                 }
                 TemplateDialog::Rename { from, name } => {
                     ui.horizontal(|ui| {
@@ -345,6 +362,24 @@ mod tests {
         let names: Vec<_> = reloaded.templates().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["C"]);
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A template keeps what stays editable (#1139): the fields ticked in
+    /// the save dialog, the unticked left out, through its file.
+    #[test]
+    fn a_template_keeps_its_ticked_fields_through_its_file() {
+        let dir = scratch();
+        let mut store = TitleTemplateStore::load(Some(dir.clone()));
+        let data = title("Jane Doe");
+        let TemplateDialog::Save { fields, .. } = TemplateDialog::save(data.clone()) else { panic!("a save dialog") };
+        assert_eq!(fields.iter().map(|(f, on)| (f.label.as_str(), *on)).collect::<Vec<_>>(), [("Text 1", true), ("Text 1 colour", true)], "ticked by default");
+        let mut fields = fields;
+        fields[1].1 = false;
+        store.save("Guest", "Lower Thirds", with_published(data, &fields)).unwrap();
+        let reloaded = TitleTemplateStore::load(Some(dir.clone()));
+        let kept = &reloaded.get("Guest").unwrap().data.published;
+        assert_eq!(kept.iter().map(|f| f.label.as_str()).collect::<Vec<_>>(), ["Text 1"], "the unticked one left out");
         std::fs::remove_dir_all(dir).ok();
     }
 

@@ -490,6 +490,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::DetachTitleAsset { .. }
         | AppCommand::RenameTitleAsset { .. }
         | AppCommand::UpdateTitleData { .. }
+        | AppCommand::SetTitleField { .. }
         | AppCommand::RevertTitleToStyle { .. }
         | AppCommand::SetTitleAlignment { .. }
         | AppCommand::SetTitleLastLine { .. }

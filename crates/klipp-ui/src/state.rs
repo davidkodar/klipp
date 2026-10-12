@@ -1928,6 +1928,12 @@ pub struct AppState {
     /// The video track whose own grade the Colour workspace grades, when
     /// it grades one (#1408): after each of its clips' own grades.
     pub grade_track: Option<klipp_core::TrackId>,
+    /// A title field's drag under way (#1139): the title as it found it,
+    /// recorded as one step when it ends.
+    pub title_field_before: Option<(klipp_core::ClipId, klipp_timeline::TitleData)>,
+    /// The last title colour field edited, and when: picked colours close
+    /// together are one step (#1139).
+    pub title_colour_edit: Option<(klipp_core::ClipId, usize, std::time::Instant)>,
     /// Where color tools are docked: Right (inspector) or Bottom (below viewer).
     pub color_tools_position: ColorToolsPosition,
     /// Selected node in the node graph (shared between canvas and inspector).
@@ -4309,6 +4315,8 @@ impl Default for AppState {
             grade_timeline: false,
             grade_group_stage: None,
             grade_track: None,
+            title_field_before: None,
+            title_colour_edit: None,
             color_tools_position: ColorToolsPosition::Right,
             selected_node_id: None,
             selected_node_ids: std::collections::HashSet::new(),
@@ -4869,6 +4877,58 @@ impl AppState {
         self.graph_descent_path.clear();
         self.selected_node_id = None;
         self.selected_node_ids.clear();
+    }
+
+    /// Set published field `index` of title `clip_id` (#1139), one undo
+    /// step per change: a drag's steps (`done` false) shown at once and
+    /// recorded as one when it ends, typed text joined as the title's text
+    /// is, and colours picked close together on one field joined too. A
+    /// field whose layer is gone is refused with nothing changed.
+    pub fn set_title_field(&mut self, clip_id: klipp_core::ClipId, index: usize, value: &klipp_core::TitleFieldValue, done: bool) -> Result<(), String> {
+        use klipp_core::TitleFieldValue as V;
+        let seq = self.active_sequence_idx;
+        let clip = self.sequences[seq].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).ok_or("the title is gone")?;
+        let klipp_timeline::ClipKind::Title(td) = &mut clip.kind else { return Err("that clip isn't a title".into()) };
+        let now = td.clone();
+        let mut edited = now.clone();
+        edited.set_field(index, value)?;
+        *td = edited.clone();
+        self.dirty = true;
+        // The title as the gesture found it, kept from its first step.
+        let old = match self.title_field_before.take() {
+            Some((c, before)) if c == clip_id => before,
+            _ => now,
+        };
+        if !done {
+            self.title_field_before = Some((clip_id, old));
+            return Ok(());
+        }
+        if old == edited {
+            return Ok(());
+        }
+        let description = match value {
+            V::Text(_) => "Edit Title Text",
+            V::Colour(_) => "Title Colour",
+            V::Speed(_) => "Title Speed",
+        };
+        let history = self.active_history_mut();
+        if matches!(value, V::Text(_)) && history.try_coalesce_title_text(clip_id, &old, &edited) {
+            return Ok(());
+        }
+        let recent = self.title_colour_edit.is_some_and(|(c, i, at)| c == clip_id && i == index && at.elapsed() < std::time::Duration::from_millis(1500));
+        if matches!(value, V::Colour(_)) {
+            self.title_colour_edit = Some((clip_id, index, std::time::Instant::now()));
+            if recent && self.active_history_mut().amend_last_title(clip_id, description, &edited) {
+                return Ok(());
+            }
+        }
+        self.active_history_mut().push(crate::history::HistoryEntry {
+            command: crate::history::EditCommand::EditTitle { clip_id, description, old_data: old, new_data: edited },
+        });
+        if matches!(value, V::Text(_)) {
+            self.active_history_mut().note_title_text_edit(clip_id);
+        }
+        Ok(())
     }
 
     /// The track header's Grade in Colour (#1408): the Colour workspace,
