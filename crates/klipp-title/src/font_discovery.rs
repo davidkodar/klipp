@@ -25,6 +25,7 @@
 //!    therefore start the scan as the very first thing in `main()` and let it
 //!    run in parallel with the rest of init.
 
+use crate::variable::{face_traits, FaceTraits, VariationAxis};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -37,6 +38,63 @@ pub struct FontInfo {
     pub family: String,
     pub style: String, // "Regular", "Bold", "Italic", "Bold Italic", etc.
     pub path: PathBuf,
+    /// The face's weight, 100 to 900, from its OS/2 table (#1504).
+    #[serde(default = "regular_weight")]
+    pub weight: u16,
+    /// Whether the face is italic or oblique (#1504).
+    #[serde(default)]
+    pub italic: bool,
+    /// A variable face's axes; empty for a static face (#1504).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub axes: Vec<VariationAxis>,
+}
+
+fn regular_weight() -> u16 {
+    400
+}
+
+impl FontInfo {
+    /// The face's weight, slope and axes, for
+    /// [`nearest_face`](crate::variable::nearest_face).
+    pub fn traits(&self) -> FaceTraits {
+        FaceTraits { weight: self.weight, italic: self.italic, axes: self.axes.clone() }
+    }
+}
+
+/// The faces of `family` in `registry`, one per weight and slope, in
+/// weight order with the upright before the italic (#1504): what the
+/// font picker offers. A variable face's weight axis offers the
+/// standard weights in its range, each named by its weight.
+pub fn family_faces(registry: &FontRegistry, family: &str) -> Vec<FaceTraits> {
+    let mut out: Vec<FaceTraits> = Vec::new();
+    for info in registry.get(family).into_iter().flatten() {
+        let traits = info.traits();
+        let (lo, hi) = traits.weights();
+        let weights: Vec<u16> = if lo == hi { vec![traits.weight] } else { (1..=9).map(|k| k * 100).filter(|w| (lo..=hi).contains(w)).collect() };
+        for weight in weights {
+            if !out.iter().any(|f| f.weight == weight && f.italic == traits.italic) {
+                out.push(FaceTraits { weight, ..traits.clone() });
+            }
+        }
+    }
+    out.sort_by_key(|f| (f.weight, f.italic));
+    out
+}
+
+/// The name a weight goes by: "Thin" for 100 up to "Black" for 900,
+/// the nearest hundred for another.
+pub fn weight_name(weight: u16) -> &'static str {
+    match (weight + 50) / 100 {
+        0 | 1 => "Thin",
+        2 => "Extra Light",
+        3 => "Light",
+        4 => "Regular",
+        5 => "Medium",
+        6 => "Semi Bold",
+        7 => "Bold",
+        8 => "Extra Bold",
+        _ => "Black",
+    }
 }
 
 /// A shared, immutable registry of discovered fonts grouped by family.
@@ -170,10 +228,14 @@ fn run_scan_and_publish() {
             let entry = fonts.entry(family.to_string()).or_default();
             for style in styles {
                 if !entry.iter().any(|i| i.style == style) {
+                    let traits = crate::bundled::lookup(family, style).and_then(face_traits);
                     entry.push(FontInfo {
                         family: family.to_string(),
                         style: style.to_string(),
                         path: PathBuf::from(format!("bundled://{family}/{style}")),
+                        weight: traits.as_ref().map_or(400, |t| t.weight),
+                        italic: traits.as_ref().is_some_and(|t| t.italic),
+                        axes: traits.map(|t| t.axes).unwrap_or_default(),
                     });
                 }
             }
@@ -231,11 +293,15 @@ fn parse_font_info(path: &Path) -> Option<FontInfo> {
 
     let filename = path.file_stem()?.to_string_lossy().to_string();
     let (family, style) = parse_font_name(&filename);
+    let traits = face_traits(&data);
 
     Some(FontInfo {
         family,
         style,
         path: path.to_path_buf(),
+        weight: traits.as_ref().map_or(400, |t| t.weight),
+        italic: traits.as_ref().is_some_and(|t| t.italic),
+        axes: traits.map(|t| t.axes).unwrap_or_default(),
     })
 }
 
@@ -265,7 +331,8 @@ struct DirSig {
     mtime_secs: Option<u64>,
 }
 
-const CACHE_SCHEMA_VERSION: u32 = 1;
+/// 2: each face's weight, slope and axes (#1504).
+const CACHE_SCHEMA_VERSION: u32 = 2;
 
 fn cache_path() -> Option<PathBuf> {
     let base = dirs::cache_dir()?.join("klipp");

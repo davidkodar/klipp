@@ -35,6 +35,7 @@
 mod colour;
 mod fallback;
 mod shaping;
+pub mod variable;
 mod vector_path;
 use fontdue::layout::{HorizontalAlign, LayoutSettings, VerticalAlign, WrapStyle};
 use fontdue::Font;
@@ -570,19 +571,71 @@ impl TitleRenderer {
         key
     }
 
+    /// Ensure the face a text box or a style run names is loaded
+    /// (#1504). Naming no weight and no axes, its family in `style`, as
+    /// [`Self::ensure_font_loaded`] loads it. Else the family's face
+    /// nearest the weight (`style`'s, 700 or 400, when none is named)
+    /// in `style`'s slope, picked as CSS picks one, at the axes named,
+    /// with a variable face's weight axis at the weight named. The
+    /// faces that ship with the app are a bundled family's only faces.
+    /// Returns the cache key.
+    fn ensure_face_loaded(&mut self, family: &str, style: FontStyle, weight: Option<u16>, axes: &[klipp_timeline::FontAxis]) -> String {
+        if weight.is_none() && axes.is_empty() {
+            return self.ensure_font_loaded(family, style);
+        }
+        let key = format!("{}::{weight:?}::{axes:?}", Self::cache_key(family, style));
+        if family == "sans-serif" || family.is_empty() || self.font_cache.contains_key(&key) {
+            return key;
+        }
+        let bold = matches!(style, FontStyle::Bold | FontStyle::BoldItalic);
+        let italic = matches!(style, FontStyle::Italic | FontStyle::BoldItalic);
+        let wanted = weight.unwrap_or(if bold { 700 } else { 400 });
+        let unread = || variable::FaceTraits { weight: 400, italic: false, axes: Vec::new() };
+        let bundled: Vec<&'static [u8]> = bundled::BUNDLED.iter().filter(|f| f.family == family).map(|f| f.bytes).collect();
+        let picked = if !bundled.is_empty() {
+            let traits: Vec<_> = bundled.iter().map(|b| variable::face_traits(b).unwrap_or_else(unread)).collect();
+            variable::nearest_face(&traits, wanted, italic).map(|i| (std::borrow::Cow::Borrowed(bundled[i]), traits[i].clone()))
+        } else if let Some(infos) = self.font_registry.get(family) {
+            let traits: Vec<_> = infos.iter().map(|i| i.traits()).collect();
+            variable::nearest_face(&traits, wanted, italic)
+                .and_then(|i| std::fs::read(&infos[i].path).ok().map(|data| (std::borrow::Cow::Owned(data), traits[i].clone())))
+        } else {
+            None
+        };
+        if let Some((data, traits)) = picked {
+            // The axes named win over the weight's.
+            let mut variations: Vec<klipp_timeline::FontAxis> = Vec::new();
+            if let Some(w) = weight.filter(|_| traits.axes.iter().any(|a| a.tag == "wght")) {
+                variations.push(("wght".into(), w as f32));
+            }
+            variations.extend(axes.iter().cloned());
+            if let Some(font) = LoadedFont::at(data, &variations) {
+                self.font_cache.insert(key.clone(), font);
+            }
+        }
+        key
+    }
+
     /// The faces a text box is set in (#1505): its own font first, then
     /// each other family and style its style runs name, every one
     /// loaded and resolved as the box's own font is. A run with its own
     /// OpenType features is a face of its own, shaped with the box's
-    /// features and then its (#1501).
+    /// features and then its (#1501). A run's weight is its own, else
+    /// the box's unless the run's style is bold where the box's is not
+    /// or the other way round; its axes are set on top of the box's
+    /// (#1504).
     fn run_faces(&mut self, tb: &klipp_timeline::TextBox) -> RunFaces {
-        let mut keys = vec![(self.ensure_font_loaded(&tb.font_name, tb.font_style), tb.features.clone())];
+        let mut keys = vec![(self.ensure_face_loaded(&tb.font_name, tb.font_style, tb.font_weight, &tb.font_axes), tb.features.clone())];
+        let bold = |s: FontStyle| matches!(s, FontStyle::Bold | FontStyle::BoldItalic);
         let of_run = tb.style_runs.iter().map(|run| {
-            if run.font_name.is_none() && run.font_style.is_none() && run.features.is_empty() {
+            if run.font_name.is_none() && run.font_style.is_none() && run.font_weight.is_none() && run.font_axes.is_empty() && run.features.is_empty() {
                 return 0;
             }
             let family = run.font_name.as_deref().unwrap_or(&tb.font_name);
-            let font = self.ensure_font_loaded(family, run.font_style.unwrap_or(tb.font_style));
+            let style = run.font_style.unwrap_or(tb.font_style);
+            let weight = run.font_weight.or(tb.font_weight.filter(|_| bold(style) == bold(tb.font_style)));
+            let axes: Vec<klipp_timeline::FontAxis> = tb.font_axes.iter().chain(&run.font_axes).cloned().collect();
+            let font = self.ensure_face_loaded(family, style, weight, &axes);
             let key = (font, tb.features.iter().chain(&run.features).cloned().collect());
             keys.iter().position(|k| *k == key).unwrap_or_else(|| {
                 keys.push(key);
@@ -5752,6 +5805,7 @@ pub struct GlyphCacheEntry {
 /// * `style_runs[*]` — `start`, `end`, `font_name`, `font_size`,
 ///   `font_style`, `tracking` and `baseline_offset` (each moves the
 ///   run's glyphs, #1505), and `features` (#1501); not its colour
+/// * `font_weight` and `font_axes`, the box's and each run's (#1504)
 /// * `features`, the box's OpenType features, and [`SHAPING_VERSION`],
 ///   so positions laid out before shaping changed do not match (#1501)
 /// * [`FALLBACK_VERSION`], so positions laid out before the fallback
@@ -5787,6 +5841,8 @@ fn layout_hash_with(td: &TitleData, frame_w: u32, frame_h: u32, fallback_version
     tb.line_spacing.to_bits().hash(&mut h);
     tb.baseline_shift.to_bits().hash(&mut h);
     tb.features.hash(&mut h);
+    tb.font_weight.hash(&mut h);
+    tb.font_axes.iter().for_each(|(tag, v)| (tag, v.to_bits()).hash(&mut h));
     SHAPING_VERSION.hash(&mut h);
     fallback_version.hash(&mut h);
 
@@ -5799,6 +5855,8 @@ fn layout_hash_with(td: &TitleData, frame_w: u32, frame_h: u32, fallback_version
         run.tracking.map(f32::to_bits).hash(&mut h);
         run.baseline_offset.map(f32::to_bits).hash(&mut h);
         run.features.hash(&mut h);
+        run.font_weight.hash(&mut h);
+        run.font_axes.iter().for_each(|(tag, v)| (tag, v.to_bits()).hash(&mut h));
     }
 
     let pos = td.position();
@@ -7082,8 +7140,8 @@ mod tests {
         text: "Hello World".to_string(),
         font_size: 72.0,
         style_runs: vec![
-                    StyleRun { start: 0, end: 5, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None },
-                    StyleRun { start: 6, end: 11, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None },
+                    StyleRun { start: 0, end: 5, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new() },
+                    StyleRun { start: 6, end: 11, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new() },
                 ],
         ..Default::default()
     };
@@ -7136,9 +7194,9 @@ mod tests {
         text: text.to_string(),
         font_size: 72.0,
         style_runs: vec![
-                    StyleRun { start: 0, end: 3, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None }, // ABC
-                    StyleRun { start: 3, end: 7, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None },  // DEFG
-                    StyleRun { start: 7, end: 10, font_size: Some(72.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None }, // HIJ
+                    StyleRun { start: 0, end: 3, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new() }, // ABC
+                    StyleRun { start: 3, end: 7, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new() },  // DEFG
+                    StyleRun { start: 7, end: 10, font_size: Some(72.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new() }, // HIJ
                 ],
         ..Default::default()
     };
@@ -8711,6 +8769,8 @@ mod tests {
                     baseline_offset: None,
                     features: Vec::new(),
                     underline: None,
+                    font_weight: None,
+                    font_axes: Vec::new(),
                 });
             })
         });
@@ -9982,5 +10042,218 @@ mod run_underline_tests {
         assert!(drawn(&frame, word, (bottom + 1, bottom + 24)).0 > 0, "no underline under the word");
         let (_, last) = ink(&layout, LONG, LONG.len() - 5, LONG.len());
         assert_eq!(drawn(&frame, (0, W as i32), (last + 1, last + 24)).0, 0, "an underline at the foot of the box");
+    }
+}
+
+#[cfg(test)]
+mod font_weight_tests {
+    //! #1504: a text box or a style run names a weight, 100 to 900, and
+    //! a variable font's axes; boxes that name neither draw as before.
+    use super::*;
+    use klipp_timeline::{TextBox, TitlePosition};
+
+    const W: u32 = 1280;
+    const H: u32 = 720;
+    const SENTENCE: &str = "the quick brown fox jumps";
+
+    fn boxed(family: &str, style: FontStyle, adjust: impl FnOnce(&mut TextBox)) -> TitleData {
+        let mut tb = TextBox { text: SENTENCE.to_string(), font_name: family.into(), font_style: style, font_size: 48.0, alignment: TextAlignment::Left, ..Default::default() };
+        adjust(&mut tb);
+        let mut td = TitleData::single_text_fx(tb, LayerFx::default());
+        let o = td.objects.first_mut().unwrap();
+        o.transform.center = TitlePosition { x: 0.5, y: 0.5 };
+        o.transform.size = TitlePosition { x: 0.8, y: 0.9 };
+        td
+    }
+
+    fn fnv(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
+    }
+
+    fn run(start: usize, end: usize, adjust: impl FnOnce(&mut StyleRun)) -> StyleRun {
+        let mut run = StyleRun::default_for_range(start, end);
+        adjust(&mut run);
+        run
+    }
+
+    /// Boxes that name only a family and a `FontStyle`, in the bundled
+    /// families, with and without style runs.
+    fn style_only() -> Vec<TitleData> {
+        vec![
+            boxed("Inter", FontStyle::Regular, |_| {}),
+            boxed("Inter", FontStyle::Bold, |_| {}),
+            boxed("Inter", FontStyle::Italic, |_| {}),
+            boxed("Inter", FontStyle::BoldItalic, |_| {}),
+            boxed("Bebas Neue", FontStyle::Bold, |_| {}),
+            boxed("sans-serif", FontStyle::Regular, |_| {}),
+            boxed("Libre Baskerville", FontStyle::Bold, |tb| {
+                tb.style_runs = vec![
+                    run(4, 9, |r| r.font_style = Some(FontStyle::Italic)),
+                    run(10, 15, |r| { r.font_name = Some("JetBrains Mono".into()); r.font_style = Some(FontStyle::BoldItalic) }),
+                    run(20, 25, |r| { r.font_name = Some("Inter".into()); r.color = Some([255, 0, 0, 255]) }),
+                ];
+            }),
+        ]
+    }
+
+    /// Taken before #1504: a box that names no weight and no axes
+    /// draws byte for byte as it did.
+    #[test]
+    fn boxes_naming_only_a_style_draw_as_before() {
+        const BEFORE: [u64; 7] = [0x3d54_7a04_d592_8137, 0x91d0_ae45_91a3_267f, 0xf90e_c3ac_7866_a010, 0xd7f2_9a99_8b42_ba13, 0x027f_d4c1_efec_eef3, 0x6dbb_0ff9_f7ed_f289, 0x8773_dd0f_4e73_31d6];
+        let mut r = TitleRenderer::new();
+        r.system_fallback = false;
+        for (i, td) in style_only().iter().enumerate() {
+            assert_eq!(fnv(&r.render(td, W, H)), BEFORE[i], "box {i} draws differently");
+        }
+    }
+
+    /// The mask's pixels inside glyph `i`'s box.
+    fn ink(layout: &TitleLayout, i: usize) -> Vec<u8> {
+        let b = layout.glyph_boxes[i];
+        let (x0, y0) = (layout.mask_x0 as i32, layout.mask_y0 as i32);
+        let mut out = Vec::new();
+        for y in b[1]..b[3] {
+            for x in b[0]..b[2] {
+                out.push(layout.alpha_mask[((y - y0) * layout.mask_w as i32 + (x - x0)) as usize]);
+            }
+        }
+        out
+    }
+
+    /// Glyph `i` was drawn as the bundled `family` `style` face draws
+    /// its character: its box that bitmap's size, its pixels at least
+    /// the bitmap's (a kerned neighbour's ink may reach in).
+    fn drawn_in(layout: &TitleLayout, i: usize, family: &str, style: &str) -> bool {
+        let font = fontdue::Font::from_bytes(bundled::lookup(family, style).unwrap(), fontdue::FontSettings::default()).unwrap();
+        let (m, bitmap) = font.rasterize(layout.glyph_parents[i], 48.0 * layout.scale);
+        let b = layout.glyph_boxes[i];
+        (b[2] - b[0], b[3] - b[1]) == (m.width as i32, m.height as i32) && ink(layout, i).iter().zip(&bitmap).all(|(i, c)| i >= c)
+    }
+
+    /// A box naming a weight draws in the family's face nearest it, as
+    /// CSS picks one: Inter ships 400 and 700, so 650 and 900 draw in
+    /// Bold and 100 and 450 in Regular, italic in the italics; each
+    /// draws exactly as the box set in that face by its style does.
+    #[test]
+    fn a_weight_draws_the_familys_nearest_face() {
+        let mut r = TitleRenderer::new();
+        r.system_fallback = false;
+        let by_style = |r: &mut TitleRenderer, style| r.render(&boxed("Inter", style, |_| {}), W, H);
+        let by_weight = |r: &mut TitleRenderer, style, w| r.render(&boxed("Inter", style, |tb| tb.font_weight = Some(w)), W, H);
+        let (regular, bold, bold_italic) = (by_style(&mut r, FontStyle::Regular), by_style(&mut r, FontStyle::Bold), by_style(&mut r, FontStyle::BoldItalic));
+        assert_ne!(regular, bold);
+        for w in [650, 700, 900] {
+            assert!(by_weight(&mut r, FontStyle::Regular, w) == bold, "{w} does not draw in Inter Bold");
+        }
+        for w in [100, 400, 450] {
+            assert!(by_weight(&mut r, FontStyle::Bold, w) == regular, "{w} does not draw in Inter Regular");
+        }
+        assert!(by_weight(&mut r, FontStyle::Italic, 800) == bold_italic, "an italic 800 does not draw in Inter Bold Italic");
+        let layout = r.render_layout(&boxed("Inter", FontStyle::Regular, |tb| tb.font_weight = Some(700)), W, H);
+        for i in (0..SENTENCE.len()).filter(|&i| SENTENCE.as_bytes()[i] != b' ') {
+            assert!(drawn_in(&layout, i, "Inter", "Bold"), "{:?} is not in Inter Bold", layout.glyph_parents[i]);
+        }
+    }
+
+    /// A run's weight draws its glyphs in that face; a run that sets
+    /// italic alone keeps the box's weight, one that sets bold does not.
+    #[test]
+    fn a_runs_weight_draws_its_glyphs_in_that_face() {
+        let mut r = TitleRenderer::new();
+        r.system_fallback = false;
+        let layout = r.render_layout(&boxed("Inter", FontStyle::Regular, |tb| tb.style_runs = vec![run(10, 15, |r| r.font_weight = Some(800))]), W, H);
+        for i in 10..15 {
+            assert!(drawn_in(&layout, i, "Inter", "Bold"), "{:?} is not in Inter Bold", layout.glyph_parents[i]);
+        }
+        assert!(drawn_in(&layout, 4, "Inter", "Regular"));
+        let layout = r.render_layout(&boxed("Inter", FontStyle::Regular, |tb| {
+            tb.font_weight = Some(700);
+            tb.style_runs = vec![run(10, 15, |r| r.font_style = Some(FontStyle::Italic)), run(20, 25, |r| r.font_style = Some(FontStyle::Bold))];
+        }), W, H);
+        for i in 10..15 {
+            assert!(drawn_in(&layout, i, "Inter", "Bold Italic"), "{:?} is not in Inter Bold Italic", layout.glyph_parents[i]);
+        }
+        for i in 20..25 {
+            assert!(drawn_in(&layout, i, "Inter", "Bold"), "{:?} is not in Inter Bold", layout.glyph_parents[i]);
+        }
+        assert!(drawn_in(&layout, 4, "Inter", "Bold"));
+    }
+
+    const VARIABLE: &str = "Inter Variable Test";
+
+    /// A renderer whose only system family is a subset of Inter's
+    /// variable font (weight 100 to 900, optical size 14 to 32).
+    fn with_variable_family() -> TitleRenderer {
+        let mut r = TitleRenderer::new();
+        r.system_fallback = false;
+        let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fonts/InterVariable-subset.ttf"));
+        let traits = variable::face_traits(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(traits.axes.iter().any(|a| a.tag == "wght" && a.min == 100.0 && a.max == 900.0));
+        let info = font_discovery::FontInfo { family: VARIABLE.into(), style: "Regular".into(), path, weight: traits.weight, italic: traits.italic, axes: traits.axes };
+        r.font_registry = std::sync::Arc::new([(VARIABLE.to_string(), vec![info])].into_iter().collect());
+        r
+    }
+
+    fn at_axes(axes: &[(&str, f32)]) -> TitleData {
+        boxed(VARIABLE, FontStyle::Regular, |tb| tb.font_axes = axes.iter().map(|&(t, v)| (t.to_string(), v)).collect())
+    }
+
+    /// The ink drawn, summed.
+    fn ink_sum(layout: &TitleLayout) -> u64 {
+        layout.alpha_mask.iter().map(|&a| a as u64).sum()
+    }
+
+    /// A variable face's weight axis shapes and draws its instance: the
+    /// heavier the wider the line and the more ink, 650 between 600 and
+    /// 700; a weight named on the box sets the axis, and an axis left at
+    /// its default draws as the face does unset.
+    #[test]
+    fn a_variable_faces_weight_axis_draws_its_instance() {
+        let mut r = with_variable_family();
+        let unset = r.render_layout(&at_axes(&[]), W, H);
+        let at = |r: &mut TitleRenderer, w: f32| r.render_layout(&at_axes(&[("wght", w)]), W, H);
+        let (regular, semibold, between, bold) = (at(&mut r, 400.0), at(&mut r, 600.0), at(&mut r, 650.0), at(&mut r, 700.0));
+        assert_eq!((regular.alpha_mask.clone(), regular.glyph_boxes.clone()), (unset.alpha_mask.clone(), unset.glyph_boxes.clone()), "the default instance draws differently");
+        let last = SENTENCE.len() - 1;
+        let right = |l: &TitleLayout| l.glyph_boxes[last][2];
+        assert!(right(&regular) < right(&semibold) && right(&semibold) < right(&between) && right(&between) < right(&bold), "the advances do not widen with the weight");
+        assert!(ink_sum(&regular) < ink_sum(&semibold) && ink_sum(&semibold) < ink_sum(&between) && ink_sum(&between) < ink_sum(&bold), "the ink does not grow with the weight");
+        let by_weight = r.render(&boxed(VARIABLE, FontStyle::Regular, |tb| tb.font_weight = Some(650)), W, H);
+        assert!(by_weight == r.render(&at_axes(&[("wght", 650.0)]), W, H), "a weight of 650 is not the weight axis at 650");
+        // Another axis than the weight's draws differently too.
+        assert_ne!(r.render(&at_axes(&[("opsz", 32.0)]), W, H), r.render(&at_axes(&[]), W, H));
+    }
+
+    /// A run's axes are set on top of the box's: a word in a box at
+    /// weight 400 drawn at 800 is drawn as the box at 800 draws it.
+    #[test]
+    fn a_runs_axes_draw_its_glyphs_at_them() {
+        let mut r = with_variable_family();
+        let td = boxed(VARIABLE, FontStyle::Regular, |tb| tb.style_runs = vec![run(10, 15, |r| r.font_axes = vec![("wght".into(), 800.0)])]);
+        let mixed = r.render_layout(&td, W, H);
+        let heavy = r.render_layout(&at_axes(&[("wght", 800.0)]), W, H);
+        let light = r.render_layout(&at_axes(&[]), W, H);
+        for i in 10..15 {
+            assert_eq!(ink(&mixed, i), ink(&heavy, i), "{:?} is not at weight 800", mixed.glyph_parents[i]);
+        }
+        assert_eq!(ink(&mixed, 4), ink(&light, 4));
+    }
+
+    #[test]
+    fn glyph_hash_changes_on_weight_and_axes() {
+        let plain = boxed("Inter", FontStyle::Regular, |_| {});
+        let hash = |td: &TitleData| glyph_layout_hash(td, W, H);
+        let weighted = boxed("Inter", FontStyle::Regular, |tb| tb.font_weight = Some(700));
+        let axes = boxed("Inter", FontStyle::Regular, |tb| tb.font_axes = vec![("wght".into(), 700.0)]);
+        let run_weight = boxed("Inter", FontStyle::Regular, |tb| tb.style_runs = vec![run(0, 3, |r| r.font_weight = Some(300))]);
+        let run_axes = boxed("Inter", FontStyle::Regular, |tb| tb.style_runs = vec![run(0, 3, |r| r.font_axes = vec![("wdth".into(), 80.0)])]);
+        let no_runs_style = boxed("Inter", FontStyle::Regular, |tb| tb.style_runs = vec![run(0, 3, |_| {})]);
+        for (name, td) in [("weight", weighted), ("axes", axes)] {
+            assert_ne!(hash(&plain), hash(&td), "{name}");
+        }
+        for (name, td) in [("run weight", run_weight), ("run axes", run_axes)] {
+            assert_ne!(hash(&no_runs_style), hash(&td), "{name}");
+        }
     }
 }

@@ -130,7 +130,7 @@ fn style_signature(subject: &ChipSubject, fx: &LayerFx) -> u64 {
         }
     };
     tb.font_name.hash(&mut h);
-    format!("{:?}", tb.font_style).hash(&mut h);
+    format!("{:?}{:?}{:?}", tb.font_style, tb.font_weight, tb.font_axes).hash(&mut h);
     tb.color.hash(&mut h);
     format!("{:?}{:?}{:?}{:?}{:?}", fx.outlines, fx.shadows, fx.glows, tb.gradient, fx.inner_shadows).hash(&mut h);
     format!("{:?}{:?}{:?}", tb.extrusion, tb.pattern_fill, tb.texture_fill).hash(&mut h);

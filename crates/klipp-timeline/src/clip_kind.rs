@@ -37,6 +37,15 @@ pub struct StyleRun {
     /// export (#1515), and drawn under the run's glyphs (#1668).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub underline: Option<bool>,
+    /// The weight this run is set in, 100 to 900 (#1504); if None, the
+    /// text box's, unless the run's `font_style` makes it bold or not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_weight: Option<u16>,
+    /// A variable font's axes for this run, each set on top of the
+    /// text box's own (#1504). Empty (the default, left unwritten) sets
+    /// none of its own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub font_axes: Vec<FontAxis>,
 }
 
 impl StyleRun {
@@ -53,6 +62,8 @@ impl StyleRun {
             baseline_offset: None,
             features: Vec::new(),
             underline: None,
+            font_weight: None,
+            font_axes: Vec::new(),
         }
     }
 
@@ -66,6 +77,8 @@ impl StyleRun {
             && self.baseline_offset.is_none()
             && self.features.is_empty()
             && self.underline.is_none()
+            && self.font_weight.is_none()
+            && self.font_axes.is_empty()
     }
 
     /// Returns true if two runs have identical style fields (ignoring range).
@@ -78,6 +91,8 @@ impl StyleRun {
             && self.baseline_offset == other.baseline_offset
             && self.features == other.features
             && self.underline == other.underline
+            && self.font_weight == other.font_weight
+            && self.font_axes == other.font_axes
     }
 }
 
@@ -889,7 +904,24 @@ pub struct TextBox {
     /// Empty (the default) is left unwritten.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub features: Vec<String>,
+    /// The weight the text is set in, 100 (thin) to 900 (black), when
+    /// the box names one (#1504): the family's face nearest it, picked
+    /// as CSS picks one, with a variable face's weight axis set to it.
+    /// `None` (the default, left unwritten) sets the weight by
+    /// `font_style` alone, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_weight: Option<u16>,
+    /// A variable font's axes the text is set at (#1504): "wght",
+    /// "wdth", "slnt", "opsz" or any other the face has, each in the
+    /// axis's own units. Empty (the default, left unwritten) sets the
+    /// face's default instance.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub font_axes: Vec<FontAxis>,
 }
+
+/// One axis of a variable font set to a value (#1504): the axis's
+/// four-letter tag and its value in the axis's own units.
+pub type FontAxis = (String, f32);
 
 fn is_default<T: Default + PartialEq>(v: &T) -> bool {
     *v == T::default()
@@ -1121,6 +1153,8 @@ impl Default for TextBox {
             last_line: LastLineAlign::Left,
             vertical_align: TextVerticalAlign::Middle,
             features: Vec::new(),
+            font_weight: None,
+            font_axes: Vec::new(),
         }
     }
 }

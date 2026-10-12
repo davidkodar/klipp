@@ -853,6 +853,26 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitleFontVariation { clip_id, weight, axes } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                tb.font_weight = *weight;
+                                tb.font_axes = axes.clone();
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Font Weight", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetTitleStrikethrough { clip_id, strikethrough } => {
                 let old = self.snapshot_title(*clip_id);
                 let target_oid = self.title_text_target_id(*clip_id);
@@ -3404,7 +3424,9 @@ pub(super) fn title_rest_time(clip: &klipp_timeline::Clip, fps_rate: u32) -> Opt
 /// One property of a title's style run, as `ApplyTitleStyle` names it,
 /// set from its value as the inspector writes it: `color` a JSON RGBA,
 /// `font_style` a JSON `FontStyle`, `font_name` the family itself, and
-/// `font_size`, `tracking` and `baseline_offset` numbers (#1505). A
+/// `font_size`, `tracking` and `baseline_offset` numbers (#1505);
+/// `font_weight` a number, and `font_axes` a JSON list of axes, each
+/// a tag and a value, set on the run's own axes tag by tag (#1504). A
 /// value that does not read leaves the run as it was.
 fn set_run_property(run: &mut klipp_timeline::StyleRun, prop: &str, val: &str) {
     match prop {
@@ -3436,6 +3458,21 @@ fn set_run_property(run: &mut klipp_timeline::StyleRun, prop: &str, val: &str) {
         "baseline_offset" => {
             if let Ok(b) = val.parse::<f32>() {
                 run.baseline_offset = Some(b);
+            }
+        }
+        "font_weight" => {
+            if let Ok(w) = val.parse::<u16>() {
+                run.font_weight = Some(w.clamp(1, 1000));
+            }
+        }
+        "font_axes" => {
+            if let Ok(axes) = serde_json::from_str::<Vec<klipp_timeline::FontAxis>>(val) {
+                for (tag, value) in axes {
+                    match run.font_axes.iter_mut().find(|(t, _)| *t == tag) {
+                        Some(axis) => axis.1 = value,
+                        None => run.font_axes.push((tag, value)),
+                    }
+                }
             }
         }
         _ => {}
@@ -3517,11 +3554,16 @@ mod style_run_property_tests {
         set_run_property(&mut run, "baseline_offset", "-8");
         set_run_property(&mut run, "font_size", "64");
         set_run_property(&mut run, "color", "[1,2,3,4]");
+        set_run_property(&mut run, "font_weight", "650");
+        set_run_property(&mut run, "font_axes", r#"[["wght",650.0],["wdth",80.0]]"#);
+        set_run_property(&mut run, "font_axes", r#"[["wdth",90.0]]"#);
+        assert_eq!(run.font_weight, Some(650));
+        assert_eq!(run.font_axes, [("wght".to_string(), 650.0), ("wdth".to_string(), 90.0)], "an axis is set over the run's own, tag by tag");
         assert_eq!(run.font_name.as_deref(), Some("Libre Baskerville"));
         assert_eq!(run.font_style, Some(FontStyle::BoldItalic));
         assert_eq!((run.tracking, run.baseline_offset, run.font_size, run.color), (Some(12.5), Some(-8.0), Some(64.0), Some([1, 2, 3, 4])));
         let before = run.clone();
-        for prop in ["font_name", "font_style", "tracking", "baseline_offset"] {
+        for prop in ["font_name", "font_style", "tracking", "baseline_offset", "font_weight", "font_axes"] {
             set_run_property(&mut run, prop, "");
         }
         assert_eq!(run, before);
