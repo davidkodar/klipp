@@ -780,10 +780,10 @@ pub enum Op {
         #[serde(default = "default_duck_bridge")]
         bridge_secs: f64,
     },
-    /// A saved title template (#1139), by `name`, at `at` for `secs`, its
-    /// published `fields` set by label: a text as its words, a colour as
-    /// #rrggbb, the speed as a number (1 as made). title_templates lists
-    /// the templates and their fields.
+    /// A title template, built-in (#1724) or saved (#1139), by `name`, at
+    /// `at` for `secs`, its published `fields` set by label: a text as its
+    /// words, a colour as #rrggbb, the speed and size as numbers (1 as
+    /// made). title_templates lists the templates and their fields.
     Template {
         name: String,
         at: Anchor,
@@ -3091,7 +3091,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::Template { name, at, secs: held, track, fields, data } => {
             use klipp_core::TitleFieldValue as V;
             let at = resolve_anchor(seq, fps, at, i)?;
-            let mut td = data.as_deref().cloned().ok_or_else(|| refuse(i, format!("there is no title template \"{name}\""), "title_templates lists the templates saved"))?;
+            let mut td = data.as_deref().cloned().ok_or_else(|| refuse(i, format!("there is no title template \"{name}\""), "title_templates lists the built-in and saved templates"))?;
             for (label, v) in fields {
                 let Some(index) = td.field_named(label) else {
                     let labels: Vec<String> = td.live_fields().into_iter().map(|(_, f, _)| f.label.clone()).collect();
@@ -3102,15 +3102,18 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                     (Some(V::Colour(_)), serde_json::Value::String(s)) => V::Colour(parse_color(s).ok_or_else(|| refuse(i, format!("\"{s}\" is not a colour"), "write a colour as #rrggbb or #rrggbbaa"))?),
                     (Some(V::Speed(_)), serde_json::Value::Number(n)) => V::Speed(n.as_f64().unwrap_or(1.0) as f32),
                     (Some(V::Size(_)), serde_json::Value::Number(n)) => V::Size(n.as_f64().unwrap_or(1.0) as f32),
-                    _ => return Err(refuse(i, format!("\"{label}\" can't take {v}"), "give a text as words, a colour as #rrggbb, the speed as a number")),
+                    _ => return Err(refuse(i, format!("\"{label}\" can't take {v}"), "give a text as words, a colour as #rrggbb, the speed and size as numbers")),
                 };
                 td.set_field(index, &value).map_err(|e| refuse(i, e, "title_templates lists each template's fields"))?;
             }
             if !held.is_finite() || *held < 0.2 {
                 return Err(refuse(i, format!("{held} s is too short"), "hold it at least a fraction of a second"));
             }
-            // Made from the template, as the titles browser names it (#1716).
-            td.template = Some(format!("user:{name}"));
+            // Made from the template, as the titles browser names it
+            // (#1716): the socket marks a built-in or a saved one.
+            if td.template.is_none() {
+                td.template = Some(format!("user:{name}"));
+            }
             place_title(seq, fps, i, at, *held, track.as_ref(), td, &format!("template \"{name}\""), "")
         }
         Op::LowerThird { name, role, at, secs: hold, track, side, x, y } => {

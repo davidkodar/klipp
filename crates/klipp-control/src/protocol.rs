@@ -900,8 +900,8 @@ pub enum ControlCommand {
     /// The font families titles can be set in: bundled with Klipp, and
     /// installed on this machine (#738).
     Fonts,
-    /// The saved title templates, each with the fields it keeps editable
-    /// (#1139): what a `template` op places and sets.
+    /// The title templates, built-in (#1724) and saved (#1139), each with
+    /// the fields it keeps editable: what a `template` op places and sets.
     TitleTemplates,
     /// The node types the registry describes, with their ports and
     /// parameters, optionally of one category (#1086).
