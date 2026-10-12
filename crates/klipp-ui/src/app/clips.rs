@@ -1774,6 +1774,7 @@ pub(super) fn duplicate_after(clip: &klipp_timeline::Clip) -> klipp_timeline::Cl
             transform_pos_x_keyframes: clip.transform_pos_x_keyframes().to_vec(),
             transform_pos_y_keyframes: clip.transform_pos_y_keyframes().to_vec(),
             transform_scale_keyframes: clip.transform_scale_keyframes().to_vec(),
+            transform_scale_y_keyframes: clip.transform_scale_y_keyframes().to_vec(),
             transform_rotation_keyframes: clip.transform_rotation_keyframes().to_vec(),
             transform_tilt_x_keyframes: clip.transform_tilt_x_keyframes().to_vec(),
             transform_tilt_y_keyframes: clip.transform_tilt_y_keyframes().to_vec(),

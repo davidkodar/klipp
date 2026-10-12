@@ -42,6 +42,8 @@ pub struct ClipPictureV1 {
     pub transform_pos_y_keyframes: Option<Vec<klipp_core::Keyframe>>,
     #[serde(default)]
     pub transform_scale_keyframes: Option<Vec<klipp_core::Keyframe>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform_scale_y_keyframes: Option<Vec<klipp_core::Keyframe>>,
     #[serde(default)]
     pub transform_rotation_keyframes: Option<Vec<klipp_core::Keyframe>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -81,6 +83,7 @@ impl ClipPictureV1 {
             transform_pos_x_keyframes: lane(c.transform_pos_x_keyframes()),
             transform_pos_y_keyframes: lane(c.transform_pos_y_keyframes()),
             transform_scale_keyframes: lane(c.transform_scale_keyframes()),
+            transform_scale_y_keyframes: lane(c.transform_scale_y_keyframes()),
             transform_rotation_keyframes: lane(c.transform_rotation_keyframes()),
             transform_tilt_x_keyframes: lane(c.transform_tilt_x_keyframes()),
             transform_tilt_y_keyframes: lane(c.transform_tilt_y_keyframes()),

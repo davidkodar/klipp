@@ -2634,6 +2634,7 @@ impl TimelinePanel {
                                                     klipp_core::VideoParam::PositionX => 0.0,
                                                     klipp_core::VideoParam::PositionY => 0.0,
                                                     klipp_core::VideoParam::Scale => 1.0,
+                                                    klipp_core::VideoParam::ScaleY => crate::inspector::video_tab::get_transform(clip).scale_y,
                                                     klipp_core::VideoParam::Rotation => 0.0,
                                                     klipp_core::VideoParam::TiltX => crate::inspector::video_tab::get_transform(clip).rotation_x,
                                                     klipp_core::VideoParam::TiltY => crate::inspector::video_tab::get_transform(clip).rotation_y,
@@ -2675,7 +2676,7 @@ impl TimelinePanel {
                                             klipp_core::VideoParam::Opacity => (base_val + 0.2).min(1.0),
                                             klipp_core::VideoParam::PositionX => base_val + 0.05,
                                             klipp_core::VideoParam::PositionY => base_val + 0.05,
-                                            klipp_core::VideoParam::Scale => (base_val * 1.2).max(base_val + 0.1),
+                                            klipp_core::VideoParam::Scale | klipp_core::VideoParam::ScaleY => (base_val * 1.2).max(base_val + 0.1),
                                             klipp_core::VideoParam::Rotation => base_val + 15.0,
                                             klipp_core::VideoParam::TiltX | klipp_core::VideoParam::TiltY => (base_val + 10.0).min(80.0),
                                             klipp_core::VideoParam::MatteFeather => (base_val + 5.0).min(50.0),
@@ -12074,7 +12075,7 @@ impl TimelinePanel {
                         egui::Color32::from_rgba_unmultiplied(110, 240, 220, 250),
                         egui::Color32::from_rgba_unmultiplied(100, 220, 200, 200),
                     ),
-                    klipp_core::VideoParam::Scale => (
+                    klipp_core::VideoParam::Scale | klipp_core::VideoParam::ScaleY => (
                         egui::Color32::from_rgba_unmultiplied(140, 160, 255, 220),
                         egui::Color32::from_rgba_unmultiplied(120, 140, 230, 140),
                         egui::Color32::from_rgba_unmultiplied(160, 180, 255, 250),
@@ -12116,6 +12117,7 @@ impl TimelinePanel {
                     klipp_core::VideoParam::PositionX => "PosX",
                     klipp_core::VideoParam::PositionY => "PosY",
                     klipp_core::VideoParam::Scale => "Scl",
+                    klipp_core::VideoParam::ScaleY => "SclY",
                     klipp_core::VideoParam::Rotation => "Rot",
                     klipp_core::VideoParam::TiltX => "TltX",
                     klipp_core::VideoParam::TiltY => "TltY",
@@ -12132,7 +12134,7 @@ impl TimelinePanel {
                     let vrb_pill_bg = match vrb_param {
                         klipp_core::VideoParam::Opacity => egui::Color32::from_rgba_unmultiplied(80, 180, 255, 100),
                         klipp_core::VideoParam::PositionX | klipp_core::VideoParam::PositionY => egui::Color32::from_rgba_unmultiplied(100, 220, 200, 100),
-                        klipp_core::VideoParam::Scale => egui::Color32::from_rgba_unmultiplied(140, 160, 255, 100),
+                        klipp_core::VideoParam::Scale | klipp_core::VideoParam::ScaleY => egui::Color32::from_rgba_unmultiplied(140, 160, 255, 100),
                         klipp_core::VideoParam::Rotation => egui::Color32::from_rgba_unmultiplied(180, 130, 255, 100),
                         klipp_core::VideoParam::TiltX | klipp_core::VideoParam::TiltY => egui::Color32::from_rgba_unmultiplied(230, 140, 210, 100),
                         // Matte feather/choke share a teal tint matching the
@@ -12164,11 +12166,13 @@ impl TimelinePanel {
                                     // exception not the norm). Cycling
                                     // back to Opacity keeps the gesture
                                     // intuitive.
-                                    // Tilt, like the matte, is reached from the
-                                    // inspector's keyframe button rather than
-                                    // the cycle most clips never need it in.
+                                    // Tilt and the height's own scale, like the
+                                    // matte, are reached from the inspector's
+                                    // keyframe button rather than the cycle
+                                    // most clips never need them in.
                                     klipp_core::VideoParam::MatteFeather
                                     | klipp_core::VideoParam::MatteChoke
+                                    | klipp_core::VideoParam::ScaleY
                                     | klipp_core::VideoParam::TiltX
                                     | klipp_core::VideoParam::TiltY => klipp_core::VideoParam::Opacity,
                                 };
@@ -12282,6 +12286,7 @@ impl TimelinePanel {
                                     klipp_core::VideoParam::PositionX => format!("X:{:.0}", kf.value),
                                     klipp_core::VideoParam::PositionY => format!("Y:{:.0}", kf.value),
                                     klipp_core::VideoParam::Scale => format!("{:.2}x", kf.value),
+                                    klipp_core::VideoParam::ScaleY => format!("H:{:.2}x", kf.value),
                                     klipp_core::VideoParam::Rotation => format!("{:.1}\u{00B0}", kf.value),
                                     klipp_core::VideoParam::TiltX => format!("TX:{:.1}\u{00B0}", kf.value),
                                     klipp_core::VideoParam::TiltY => format!("TY:{:.1}\u{00B0}", kf.value),
@@ -15774,6 +15779,7 @@ impl TimelinePanel {
                                     klipp_core::VideoParam::PositionX => format!("X:{:.0}", new_value),
                                     klipp_core::VideoParam::PositionY => format!("Y:{:.0}", new_value),
                                     klipp_core::VideoParam::Scale => format!("{:.2}x", new_value),
+                                    klipp_core::VideoParam::ScaleY => format!("H:{:.2}x", new_value),
                                     klipp_core::VideoParam::Rotation => format!("{:.1}°", new_value),
                                     klipp_core::VideoParam::TiltX => format!("TX:{:.1}°", new_value),
                                     klipp_core::VideoParam::TiltY => format!("TY:{:.1}°", new_value),

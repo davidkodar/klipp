@@ -23,6 +23,8 @@ pub struct ClipPicture {
     pub transform_pos_y_keyframes: Option<Vec<Keyframe>>,
     #[serde(default)]
     pub transform_scale_keyframes: Option<Vec<Keyframe>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform_scale_y_keyframes: Option<Vec<Keyframe>>,
     #[serde(default)]
     pub transform_rotation_keyframes: Option<Vec<Keyframe>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

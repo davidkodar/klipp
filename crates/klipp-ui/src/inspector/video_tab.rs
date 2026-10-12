@@ -266,6 +266,12 @@ fn show_clip_video(
     let pos_y_ks = keyframe_state(&lane(clip, "pos_y"), clip_time_secs, keyframe_tolerance);
     let scale_ks = keyframe_state(&lane(clip, "scale"), clip_time_secs, keyframe_tolerance);
     let rot_ks = keyframe_state(&lane(clip, "rotation"), clip_time_secs, keyframe_tolerance);
+    // The height: on a lane of its own where it has keys (#1471), else the
+    // width at the clip's aspect. Its row shows where the clip scales
+    // unevenly or its scale is keyed, so a height can be keyed apart.
+    let mut scale_y_val = crate::inspector::keyframe_selection::editable_value(&lane(clip, "scale_y"), clip_time_secs, keep_aspect(&transform, scale_val), keyframe_tolerance);
+    let scale_y_ks = keyframe_state(&lane(clip, "scale_y"), clip_time_secs, keyframe_tolerance);
+    let shows_scale_y = transform.scale_y != transform.scale_x || !lane(clip, "scale").is_empty() || !lane(clip, "scale_y").is_empty();
     let mut tilt_x = crate::inspector::keyframe_selection::editable_value(&lane(clip, "tilt_x"), clip_time_secs, transform.rotation_x, keyframe_tolerance);
     let mut tilt_y = crate::inspector::keyframe_selection::editable_value(&lane(clip, "tilt_y"), clip_time_secs, transform.rotation_y, keyframe_tolerance);
     let tilt_x_ks = keyframe_state(&lane(clip, "tilt_x"), clip_time_secs, keyframe_tolerance);
@@ -286,6 +292,7 @@ fn show_clip_video(
         r_px: ScrubbyParamResponse,
         r_py: ScrubbyParamResponse,
         r_sc: ScrubbyParamResponse,
+        r_sy: ScrubbyParamResponse,
         r_ro: ScrubbyParamResponse,
         r_tx: ScrubbyParamResponse,
         r_ty: ScrubbyParamResponse,
@@ -294,6 +301,7 @@ fn show_clip_video(
         pos_x: f32,
         pos_y: f32,
         scale_val: f32,
+        scale_y_val: f32,
         rotation: f32,
         tilt_x: f32,
         tilt_y: f32,
@@ -322,6 +330,7 @@ fn show_clip_video(
         let mut r_px_out: Option<ScrubbyParamResponse> = None;
         let mut r_py_out: Option<ScrubbyParamResponse> = None;
         let mut r_sc_out: Option<ScrubbyParamResponse> = None;
+        let mut r_sy_out: Option<ScrubbyParamResponse> = None;
         let mut r_ro_out: Option<ScrubbyParamResponse> = None;
         let mut r_tx_out: Option<ScrubbyParamResponse> = None;
         let mut r_ty_out: Option<ScrubbyParamResponse> = None;
@@ -396,6 +405,9 @@ fn show_clip_video(
                 r_px_out = Some(scrubby_param_row(ui, "Position X", &mut pos_x, -2000.0..=2000.0, 0.0, 1.0, 0, " px", Some(pos_x_ks)));
                 r_py_out = Some(scrubby_param_row(ui, "Position Y", &mut pos_y, -2000.0..=2000.0, 0.0, 1.0, 0, " px", Some(pos_y_ks)));
                 r_sc_out = Some(scrubby_param_row(ui, "Scale", &mut scale_val, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", Some(scale_ks)));
+                if shows_scale_y {
+                    r_sy_out = Some(scrubby_param_row(ui, "Scale Y", &mut scale_y_val, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", Some(scale_y_ks)));
+                }
                 r_ro_out = Some(scrubby_param_row(ui, "Rotation", &mut rotation, -360.0..=360.0, 0.0, 0.5, 1, " \u{00b0}", Some(rot_ks)));
                 // Tilt out of the picture's plane: the top leans away for
                 // positive X, the right edge swings away for positive Y.
@@ -471,6 +483,7 @@ fn show_clip_video(
             r_px: r_px_out.unwrap_or_else(noop_response),
             r_py: r_py_out.unwrap_or_else(noop_response),
             r_sc: r_sc_out.unwrap_or_else(noop_response),
+            r_sy: r_sy_out.unwrap_or_else(noop_response),
             r_ro: r_ro_out.unwrap_or_else(noop_response),
             r_tx: r_tx_out.unwrap_or_else(noop_response),
             r_ty: r_ty_out.unwrap_or_else(noop_response),
@@ -479,6 +492,7 @@ fn show_clip_video(
             pos_x,
             pos_y,
             scale_val,
+            scale_y_val,
             rotation,
             tilt_x,
             tilt_y,
@@ -488,7 +502,7 @@ fn show_clip_video(
         }
     };
 
-    let TransformResults { r_px, r_py, r_sc, r_ro, r_tx, r_ty, r_pe, r_op, pos_x, pos_y, scale_val, rotation, tilt_x, tilt_y, persp, opacity, reset_clicked } = results;
+    let TransformResults { r_px, r_py, r_sc, r_sy, r_ro, r_tx, r_ty, r_pe, r_op, pos_x, pos_y, scale_val, scale_y_val, rotation, tilt_x, tilt_y, persp, opacity, reset_clicked } = results;
     let tilt_started = r_tx.drag_started || r_ty.drag_started || r_pe.drag_started;
     let tilt_changed = r_tx.changed || r_ty.changed || r_pe.changed;
     let tilt_stopped = r_tx.drag_stopped || r_ty.drag_stopped || r_pe.drag_stopped;
@@ -499,9 +513,9 @@ fn show_clip_video(
         emit_opacity(cmds, clip, clip_id, 1.0);
     }
 
-    let transform_started = r_px.drag_started || r_py.drag_started || r_sc.drag_started || r_ro.drag_started || tilt_started;
-    let transform_changed = r_px.changed || r_py.changed || r_sc.changed || r_ro.changed || tilt_changed;
-    let transform_stopped = r_px.drag_stopped || r_py.drag_stopped || r_sc.drag_stopped || r_ro.drag_stopped || tilt_stopped;
+    let transform_started = r_px.drag_started || r_py.drag_started || r_sc.drag_started || r_sy.drag_started || r_ro.drag_started || tilt_started;
+    let transform_changed = r_px.changed || r_py.changed || r_sc.changed || r_sy.changed || r_ro.changed || tilt_changed;
+    let transform_stopped = r_px.drag_stopped || r_py.drag_stopped || r_sc.drag_stopped || r_sy.drag_stopped || r_ro.drag_stopped || tilt_stopped;
     let transform_added = egui::Id::new(&transform_drag_key).with("added_by_drag");
     let transform_escaped = transform_stopped
         && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
@@ -535,6 +549,7 @@ fn show_clip_video(
         if r_px.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::PositionX)); }
         else if r_py.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::PositionY)); }
         else if r_sc.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::Scale)); }
+        else if r_sy.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::ScaleY)); }
         else if r_ro.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::Rotation)); }
         else if r_tx.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::TiltX)); }
         else if r_ty.drag_started { cmds.push(AppCommand::SetVideoRubberBandParam(VideoParam::TiltY)); }
@@ -551,7 +566,9 @@ fn show_clip_video(
         t.position_x = pos_x;
         t.position_y = pos_y;
         t.scale_x = scale_val;
-        t.scale_y = keep_aspect(&transform, scale_val);
+        // A height set apart from the width is written with the width the
+        // row shows, so their aspect is the one shown (#1471).
+        t.scale_y = if r_sy.changed { scale_y_val } else { keep_aspect(&transform, scale_val) };
         t.rotation = rotation;
         t.rotation_x = tilt_x;
         t.rotation_y = tilt_y;
@@ -575,6 +592,9 @@ fn show_clip_video(
         }
         if r_sc.changed && !lane(clip, "scale").is_empty() {
             cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::Scale, time_secs: clip_time_secs, value: scale_val });
+        }
+        if r_sy.changed && !lane(clip, "scale_y").is_empty() {
+            cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::ScaleY, time_secs: clip_time_secs, value: scale_y_val });
         }
         if r_ro.changed && !lane(clip, "rotation").is_empty() {
             cmds.push(AppCommand::AddVideoKeyframe { clip_id, param: VideoParam::Rotation, time_secs: clip_time_secs, value: rotation });
@@ -754,8 +774,9 @@ fn show_clip_video(
         }
     }
 
-    // ── Keyframe toggle/nav for Tilt X and Tilt Y ──
+    // ── Keyframe toggle/nav for Scale Y, Tilt X and Tilt Y ──
     let seek = (clip_timeline_in_secs, clip_rate);
+    keyframe_controls(cmds, &r_sy, &lane(clip, "scale_y"), &scale_y_ks, VideoParam::ScaleY, scale_y_val, clip_id, clip_time_secs, seek, keyframe_tolerance);
     keyframe_controls(cmds, &r_tx, &lane(clip, "tilt_x"), &tilt_x_ks, VideoParam::TiltX, tilt_x, clip_id, clip_time_secs, seek, keyframe_tolerance);
     keyframe_controls(cmds, &r_ty, &lane(clip, "tilt_y"), &tilt_y_ks, VideoParam::TiltY, tilt_y, clip_id, clip_time_secs, seek, keyframe_tolerance);
 
@@ -4531,6 +4552,22 @@ mod tilt_tests {
         assert!(!flat.contains("Perspective"), "a flat card has no perspective to set");
         let tilted = drawn_text(&clip_with(TransformParams { rotation_x: 15.0, ..Default::default() }.to_builtin_effect()));
         assert!(tilted.contains("Perspective"), "a tilted card offers its perspective:\n{tilted}");
+    }
+
+    /// The Scale Y row (#1471): not on an evenly scaled clip with no keys,
+    /// where Scale is both axes; on an unevenly scaled one, under keys on
+    /// the scale, where the height can be keyed apart, and on a clip whose
+    /// height has keys of its own.
+    #[test]
+    fn the_inspector_shows_scale_y_where_the_height_can_be_keyed_apart() {
+        let even = clip_with(TransformParams::default().to_builtin_effect());
+        assert!(!drawn_text(&even).contains("Scale Y"), "an even clip has one scale");
+        let uneven = clip_with(TransformParams { scale_y: 0.5, ..Default::default() }.to_builtin_effect());
+        assert!(drawn_text(&uneven).contains("Scale Y"), "an uneven clip shows its height");
+        for lane in ["scale", "scale_y"] {
+            let keyed = TestClip::of(even.clone()).lane(lane, 0.0, 1.5).build();
+            assert!(drawn_text(&keyed).contains("Scale Y"), "keys on {lane}: the height can be keyed apart");
+        }
     }
 
     #[test]

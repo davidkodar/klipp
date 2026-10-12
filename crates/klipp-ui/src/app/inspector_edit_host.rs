@@ -371,8 +371,10 @@ impl InspectorEditHost<'_> {
                             let duration = clip.source_out.to_secs_f64() - clip.source_in.to_secs_f64();
                             let ease_t = 0.42 * duration;
 
-                            // Clear existing transform keyframes
+                            // Clear existing transform keyframes; the
+                            // height follows the width's again (#1471).
                             clip.edit_transform_scale_keyframes(|v| v.clear());
+                            clip.edit_transform_scale_y_keyframes(|v| v.clear());
                             clip.edit_transform_pos_x_keyframes(|v| v.clear());
                             clip.edit_transform_pos_y_keyframes(|v| v.clear());
 
@@ -440,6 +442,7 @@ impl InspectorEditHost<'_> {
                     for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                         if let Some(clip) = track.find_clip_mut(*clip_id) {
                             clip.edit_transform_scale_keyframes(|v| v.clear());
+                            clip.edit_transform_scale_y_keyframes(|v| v.clear());
                             clip.edit_transform_pos_x_keyframes(|v| v.clear());
                             clip.edit_transform_pos_y_keyframes(|v| v.clear());
                             clip.edit_transform_rotation_keyframes(|v| v.clear());
@@ -474,6 +477,7 @@ impl InspectorEditHost<'_> {
                                 klipp_core::VideoParam::PositionX => clip.edit_transform_pos_x_keyframes(|v| v.clear()),
                                 klipp_core::VideoParam::PositionY => clip.edit_transform_pos_y_keyframes(|v| v.clear()),
                                 klipp_core::VideoParam::Scale => clip.edit_transform_scale_keyframes(|v| v.clear()),
+                                klipp_core::VideoParam::ScaleY => clip.edit_transform_scale_y_keyframes(|v| v.clear()),
                                 klipp_core::VideoParam::Rotation => clip.edit_transform_rotation_keyframes(|v| v.clear()),
                                 klipp_core::VideoParam::TiltX => clip.edit_transform_tilt_x_keyframes(|v| v.clear()),
                                 klipp_core::VideoParam::TiltY => clip.edit_transform_tilt_y_keyframes(|v| v.clear()),

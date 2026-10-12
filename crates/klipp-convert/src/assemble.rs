@@ -120,7 +120,7 @@ fn same(what: String, back: Value, original: Value) -> Result<(), String> {
 
 /// Picture fields a written file holds differently, removed from both
 /// sides before the rest of the project is compared byte for byte.
-const CLIP_PICTURE: [&str; 13] = [
+const CLIP_PICTURE: [&str; 14] = [
     "node_graph",
     "effects",
     "builtin_effects",
@@ -130,6 +130,7 @@ const CLIP_PICTURE: [&str; 13] = [
     "transform_pos_x_keyframes",
     "transform_pos_y_keyframes",
     "transform_scale_keyframes",
+    "transform_scale_y_keyframes",
     "transform_rotation_keyframes",
     "transform_tilt_x_keyframes",
     "transform_tilt_y_keyframes",

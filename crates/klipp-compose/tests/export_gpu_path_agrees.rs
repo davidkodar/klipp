@@ -586,6 +586,32 @@ fn the_stack_takes_what_the_single_clip_path_refuses() {
     }
 }
 
+/// A clip whose height is keyed apart from its width (#1471): halfway
+/// between its keys the width's lane gives 1 and the height's 0.5, so
+/// the picture fills the frame's width and the middle half of its rows.
+/// The renderer draws it so, and the stack draws what the renderer does.
+#[test]
+fn a_height_keyed_apart_agrees_with_the_renderer() {
+    let c = TestClip::of(graded(0.0, 1.0, 0.5)).lane("scale", 0.0, 0.5).lane("scale", 1.0, 1.5).lane("scale_y", 0.0, 0.25).lane("scale_y", 1.0, 0.75).build();
+    let seq = sequence(vec![vec![c.clone()]]);
+    let mut src = Flat::default().with(&c, [200, 200, 200]);
+    let want = cpu_luma(&seq, 0.5, &mut src);
+    let at = |x: u32, y: u32| want[(y * W + x) as usize];
+    // Bars above and below the middle half; the picture edge to edge in it.
+    for (x, y) in [(W / 2, 1), (W / 2, H - 2)] {
+        assert!(at(x, y) <= 17, "({x}, {y}) is {}: no bar where the height's lane leaves one", at(x, y));
+    }
+    for (x, y) in [(0, H / 2), (W / 2, H / 2), (W - 1, H / 2)] {
+        assert!(at(x, y) > 100, "({x}, {y}) is {}: no picture where the width's lane puts it", at(x, y));
+    }
+    let Some(planes) = gpu_planes(&seq, 0.5, &mut src.clone_for_gpu()) else {
+        eprintln!("skipping the GPU half: the stack declined (no usable GPU?)");
+        return;
+    };
+    let worst = planes[..want.len()].iter().zip(&want).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
+    assert!(worst <= 1, "the stack's luma differs from the renderer by {worst} levels");
+}
+
 /// A composite with the timeline's LUT over it: the LUT runs on the
 /// stack's accumulator, on the same side of the premultiply as the
 /// renderer puts it.

@@ -75,6 +75,8 @@ const SYMBOLS: &[(&str, Form)] = &[
     ("edit_transform_pos_y_keyframes", Form::Method),
     ("transform_scale_keyframes", Form::Method),
     ("edit_transform_scale_keyframes", Form::Method),
+    ("transform_scale_y_keyframes", Form::Method),
+    ("edit_transform_scale_y_keyframes", Form::Method),
     ("transform_rotation_keyframes", Form::Method),
     ("edit_transform_rotation_keyframes", Form::Method),
     ("transform_tilt_x_keyframes", Form::Method),

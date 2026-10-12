@@ -48,7 +48,7 @@ pub enum Store {
 }
 
 /// The clip fields a converted clip record takes, besides its modifiers.
-pub const CLIP_FIELDS: [&str; 12] = [
+pub const CLIP_FIELDS: [&str; 13] = [
     "node_graph",
     "effects",
     "builtin_effects",
@@ -58,6 +58,7 @@ pub const CLIP_FIELDS: [&str; 12] = [
     "transform_pos_x_keyframes",
     "transform_pos_y_keyframes",
     "transform_scale_keyframes",
+    "transform_scale_y_keyframes",
     "transform_rotation_keyframes",
     "transform_tilt_x_keyframes",
     "transform_tilt_y_keyframes",

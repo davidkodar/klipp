@@ -35,6 +35,7 @@ pub fn lane_key(param: VideoParam) -> Option<&'static str> {
         VideoParam::PositionX => "pos_x",
         VideoParam::PositionY => "pos_y",
         VideoParam::Scale => "scale",
+        VideoParam::ScaleY => "scale_y",
         VideoParam::Rotation => "rotation",
         VideoParam::TiltX => "tilt_x",
         VideoParam::TiltY => "tilt_y",

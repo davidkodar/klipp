@@ -124,3 +124,28 @@ fn a_width_of_zero_resets_the_aspect_and_keys_through_zero_keep_it() {
     assert_eq!(p.placement.aspect, Some(0.5), "keyed through 0, the aspect holds");
     assert_eq!(p.placement_anim[&ParamKey::from("scale")].keys.len(), 3);
 }
+
+/// The height takes keys of its own (#1471): they land on the clip's
+/// height lane, the picture holds them beside the width's, and the last
+/// one taken off leaves the height following the width again.
+#[test]
+fn the_height_takes_keys_of_its_own() {
+    let half = E::Transform { position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 0.5, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+    let mut c = clip(vec![half], vec![true]);
+    let path = c.placement_path().unwrap();
+    let key = |t: f64, v: f32| serde_json::to_value(Keyframe { time_secs: t, value: v, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).unwrap();
+    c.apply_picture_ops(&[
+        GraphOp::AddKeyAt { path: path.clone(), key: "scale_y".into(), keyframe: key(0.0, 0.25) },
+        GraphOp::AddKeyAt { path: path.clone(), key: "scale_y".into(), keyframe: key(2.0, 0.75) },
+    ])
+    .unwrap();
+    let p = c.picture_v2().unwrap().picture.clone();
+    let values: Vec<f64> = p.placement_anim[&ParamKey::from("scale_y")].keys.iter().map(|k| k["value"].as_f64().unwrap()).collect();
+    assert_eq!(values, [0.25, 0.75]);
+    assert!(!p.placement_anim.contains_key(&ParamKey::from("scale")), "the width's lane is its own");
+    assert_eq!(p.placement.aspect, Some(0.5), "the aspect stays for when the lane goes");
+    for t in [0.0, 2.0] {
+        c.apply_picture_ops(&[GraphOp::RemoveKeyAt { path: path.clone(), key: "scale_y".into(), time_secs: t }]).unwrap();
+    }
+    assert!(!c.picture_v2().unwrap().picture.placement_anim.contains_key(&ParamKey::from("scale_y")));
+}

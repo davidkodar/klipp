@@ -132,6 +132,7 @@ lanes! {
     transform_pos_x_keyframes, edit_transform_pos_x_keyframes;
     transform_pos_y_keyframes, edit_transform_pos_y_keyframes;
     transform_scale_keyframes, edit_transform_scale_keyframes;
+    transform_scale_y_keyframes, edit_transform_scale_y_keyframes;
     transform_rotation_keyframes, edit_transform_rotation_keyframes;
     transform_tilt_x_keyframes, edit_transform_tilt_x_keyframes;
     transform_tilt_y_keyframes, edit_transform_tilt_y_keyframes;
@@ -181,6 +182,7 @@ impl Clip {
             ParamId::PositionX => key("pos_x"),
             ParamId::PositionY => key("pos_y"),
             ParamId::Scale => key("scale"),
+            ParamId::ScaleY => key("scale_y"),
             ParamId::Rotation => key("rotation"),
             _ => return None,
         };
@@ -223,6 +225,7 @@ impl Clip {
             P::PositionX => &self.picture.view().transform_pos_x_keyframes.0,
             P::PositionY => &self.picture.view().transform_pos_y_keyframes.0,
             P::Scale => &self.picture.view().transform_scale_keyframes.0,
+            P::ScaleY => &self.picture.view().transform_scale_y_keyframes.0,
             P::Rotation => &self.picture.view().transform_rotation_keyframes.0,
             P::TiltX => &self.picture.view().transform_tilt_x_keyframes.0,
             P::TiltY => &self.picture.view().transform_tilt_y_keyframes.0,
@@ -244,7 +247,7 @@ impl Clip {
             _ => {}
         }
         let Ok(lifted) = self.picture_v2() else {
-            return if param == P::Opacity || param == P::Scale { 1.0 } else { 0.0 };
+            return if matches!(param, P::Opacity | P::Scale | P::ScaleY) { 1.0 } else { 0.0 };
         };
         let (p, opacity) = (&lifted.picture.placement, lifted.picture.opacity);
         match param {
@@ -252,6 +255,8 @@ impl Clip {
             P::PositionX => p.pos_x.unwrap_or(0.0),
             P::PositionY => p.pos_y.unwrap_or(0.0),
             P::Scale => p.scale.unwrap_or(1.0),
+            // The height where nothing keys it: the width at the aspect.
+            P::ScaleY => p.scale.unwrap_or(1.0) * p.aspect.unwrap_or(1.0),
             P::Rotation => p.rotation.unwrap_or(0.0),
             P::TiltX => p.tilt_x.unwrap_or(0.0),
             P::TiltY => p.tilt_y.unwrap_or(0.0),
@@ -273,6 +278,7 @@ impl Clip {
                     P::PositionX => &mut view.transform_pos_x_keyframes.0,
                     P::PositionY => &mut view.transform_pos_y_keyframes.0,
                     P::Scale => &mut view.transform_scale_keyframes.0,
+                    P::ScaleY => &mut view.transform_scale_y_keyframes.0,
                     P::Rotation => &mut view.transform_rotation_keyframes.0,
                     P::TiltX => &mut view.transform_tilt_x_keyframes.0,
                     P::TiltY | P::MatteFeather | P::MatteChoke => &mut view.transform_tilt_y_keyframes.0,

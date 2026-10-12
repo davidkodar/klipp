@@ -38,6 +38,10 @@ pub enum VideoParam {
     /// Tilt in perspective about its vertical axis, degrees
     /// (`Clip::transform_tilt_y_keyframes`).
     TiltY,
+    /// The height's scale keyed apart from the width's
+    /// (`Clip::transform_scale_y_keyframes`, #1471); with no keys the
+    /// height follows `Scale` at the clip's aspect.
+    ScaleY,
 }
 
 /// HDR transfer characteristic for export. Writes matching color-space tags

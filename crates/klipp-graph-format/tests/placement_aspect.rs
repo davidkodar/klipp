@@ -22,6 +22,16 @@ fn a_placement_keeps_its_aspect() {
 fn a_placement_lane_this_reader_doesnt_draw_is_refused() {
     let lane = json!({ "keys": [] });
     assert!(serde_json::from_value::<ClipPicture>(picture(json!({}), json!({ "scale": lane }))).is_ok(), "a lane it draws reads");
-    let err = serde_json::from_value::<ClipPicture>(picture(json!({}), json!({ "scale_y": lane }))).expect_err("a height keyed apart is refused");
+    let err = serde_json::from_value::<ClipPicture>(picture(json!({}), json!({ "skew": lane }))).expect_err("a lane it doesn't draw is refused");
     assert!(err.to_string().contains("unsupported placement animation"), "{err}");
+}
+
+#[test]
+fn a_height_keyed_apart_from_the_width_reads() {
+    // The height's own lane (#1471), kept beside the width's.
+    let lane = |v: f64| json!({ "keys": [{ "time_secs": 0.0, "value": v }] });
+    let p: ClipPicture = serde_json::from_value(picture(json!({}), json!({ "scale": lane(1.0), "scale_y": lane(0.5) }))).expect("a height lane reads");
+    assert_eq!(p.placement_anim.keys().map(|k| k.as_str()).collect::<Vec<_>>(), ["scale", "scale_y"]);
+    let back: ClipPicture = serde_json::from_value(serde_json::to_value(&p).unwrap()).unwrap();
+    assert_eq!(back, p, "written back as it was read");
 }

@@ -2032,6 +2032,44 @@ mod tests {
         assert_eq!((p.scale, p.aspect), (Some(0.8), None));
     }
 
+    /// The card's Scale Y keys go to the clip's height lane by path, apart
+    /// from the width's (#1471): the renderer draws the height from them,
+    /// one undo takes a key back, and with none left the height follows
+    /// the width at the aspect again.
+    #[test]
+    fn a_height_key_by_path_lands_on_its_own_lane() {
+        let c = TestClip::of(fixture(&[])).effect(E::Transform { position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 0.5, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None }).build();
+        let id = c.id;
+        let mut s = with(&[c]);
+        let height = |s: &AppState, t: f64| {
+            let c = clip(s, id);
+            let x = klipp_compose::eval::evaluate_clip_own_transform(c, t, &klipp_compose::eval::eval_context(c, c.timeline_in, 24.0));
+            (x.2, x.3)
+        };
+        for (t, v) in [(0.0, 0.25), (1.0, 0.75)] {
+            let c = clip(&s, id).clone();
+            let cmds = crate::inspector::placement_by_path::by_path(vec![AppCommand::AddVideoKeyframe { clip_id: id, param: klipp_core::VideoParam::ScaleY, time_secs: t, value: v }], &c);
+            assert!(matches!(&cmds[..], [AppCommand::AddKeyAt { key, .. }] if key.as_str() == "scale_y"), "{cmds:?}");
+            for cmd in cmds {
+                run(&mut s, cmd);
+            }
+        }
+        let c = clip(&s, id);
+        assert_eq!(crate::inspector::placement_by_path::lane_keys(c, "scale_y").len(), 2);
+        assert!(crate::inspector::placement_by_path::lane_keys(c, "scale").is_empty(), "the width's lane is its own");
+        assert_eq!(height(&s, 0.5), (1.0, 0.5));
+        assert_eq!(height(&s, 0.25), (1.0, 0.375), "between the keys, the height's");
+        undo(&mut s);
+        assert_eq!(crate::inspector::placement_by_path::lane_keys(clip(&s, id), "scale_y").len(), 1, "one undo, one key");
+        let c = clip(&s, id).clone();
+        let cmds = crate::inspector::placement_by_path::by_path(vec![AppCommand::RemoveVideoKeyframe { clip_id: id, param: klipp_core::VideoParam::ScaleY, time_secs: 0.0 }], &c);
+        for cmd in cmds {
+            run(&mut s, cmd);
+        }
+        assert!(crate::inspector::placement_by_path::lane_keys(clip(&s, id), "scale_y").is_empty());
+        assert_eq!(height(&s, 0.25), (1.0, 0.5), "the width at the aspect again");
+    }
+
     /// A key put by path where one already is keeps that key's time and
     /// curve shape, as the lanes' own upsert does: the card's placement
     /// and opacity keys, field-backed and on a picture-truth clip, and the
@@ -2900,7 +2938,7 @@ fn drag_lane(key: &str) -> Option<klipp_core::VideoParam> {
     }
     let _clip = parts.next()?;
     let named = parts.next()?;
-    [P::Opacity, P::PositionX, P::PositionY, P::Scale, P::Rotation, P::TiltX, P::TiltY, P::MatteFeather, P::MatteChoke].into_iter().find(|p| format!("{p:?}") == named)
+    [P::Opacity, P::PositionX, P::PositionY, P::Scale, P::ScaleY, P::Rotation, P::TiltX, P::TiltY, P::MatteFeather, P::MatteChoke].into_iter().find(|p| format!("{p:?}") == named)
 }
 
 /// The op that sets the placement or opacity lane `key` of `clip` to

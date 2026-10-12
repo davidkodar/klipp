@@ -476,11 +476,12 @@ pub struct LegacyClipAnim {
 
 impl LegacyClipAnim {
     /// The clip fields this record may hold.
-    pub const FIELDS: [&'static str; 7] = [
+    pub const FIELDS: [&'static str; 8] = [
         "opacity_keyframes",
         "transform_pos_x_keyframes",
         "transform_pos_y_keyframes",
         "transform_scale_keyframes",
+        "transform_scale_y_keyframes",
         "transform_rotation_keyframes",
         "transform_tilt_x_keyframes",
         "transform_tilt_y_keyframes",

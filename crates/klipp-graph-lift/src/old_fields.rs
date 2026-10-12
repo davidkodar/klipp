@@ -24,7 +24,7 @@ pub const V2_FIELD: &str = "graph_v2";
 
 /// The clip fields that hold picture data in today's model, left out of a
 /// converted file because old builds would read them.
-const CLIP_PICTURE_FIELDS: [&str; 10] = [
+const CLIP_PICTURE_FIELDS: [&str; 11] = [
     "builtin_effects_enabled",
     "effect_keyframes",
     "node_graph",
@@ -32,6 +32,7 @@ const CLIP_PICTURE_FIELDS: [&str; 10] = [
     "transform_pos_x_keyframes",
     "transform_pos_y_keyframes",
     "transform_scale_keyframes",
+    "transform_scale_y_keyframes",
     "transform_rotation_keyframes",
     "transform_tilt_x_keyframes",
     "transform_tilt_y_keyframes",

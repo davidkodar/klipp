@@ -163,6 +163,7 @@ impl KlippApp {
             transform_pos_x_keyframes: Vec<klipp_core::Keyframe>,
             transform_pos_y_keyframes: Vec<klipp_core::Keyframe>,
             transform_scale_keyframes: Vec<klipp_core::Keyframe>,
+            transform_scale_y_keyframes: Vec<klipp_core::Keyframe>,
             transform_rotation_keyframes: Vec<klipp_core::Keyframe>,
             param_modifiers:
                 std::collections::HashMap<klipp_core::ParamId, klipp_core::ModifierStack>,
@@ -202,6 +203,7 @@ impl KlippApp {
                                 transform_pos_x_keyframes: c.transform_pos_x_keyframes().to_vec(),
                                 transform_pos_y_keyframes: c.transform_pos_y_keyframes().to_vec(),
                                 transform_scale_keyframes: c.transform_scale_keyframes().to_vec(),
+                                transform_scale_y_keyframes: c.transform_scale_y_keyframes().to_vec(),
                                 transform_rotation_keyframes: c
                                     .transform_rotation_keyframes()
                                     .to_vec(),
@@ -361,6 +363,7 @@ impl KlippApp {
             || !snap.transform_pos_x_keyframes.is_empty()
             || !snap.transform_pos_y_keyframes.is_empty()
             || !snap.transform_scale_keyframes.is_empty()
+            || !snap.transform_scale_y_keyframes.is_empty()
             || !snap.transform_rotation_keyframes.is_empty()
             || !snap.effect_keyframes.is_empty()
             || !snap.param_modifiers.is_empty();
@@ -394,6 +397,7 @@ impl KlippApp {
                     transform_pos_x_keyframes: snap.transform_pos_x_keyframes,
                     transform_pos_y_keyframes: snap.transform_pos_y_keyframes,
                     transform_scale_keyframes: snap.transform_scale_keyframes,
+                    transform_scale_y_keyframes: snap.transform_scale_y_keyframes,
                     transform_rotation_keyframes: snap.transform_rotation_keyframes,
                     param_modifiers: snap.param_modifiers,
                     ..Default::default()

@@ -1043,6 +1043,29 @@ fn a_portrait_clip_is_pillarboxed_in_the_viewer_and_the_export_alike() {
     }
 }
 
+/// A clip whose height is keyed apart from its width (#1471): its width
+/// keyed 0.8 to 1.2 and its height 0.3 to 0.5 over its two seconds. At
+/// the frames checked the width nearly fills the frame and the height
+/// leaves bars above and below, in the viewer and the export alike; a
+/// height that followed the width would leave none.
+#[test]
+fn a_height_keyed_apart_is_drawn_alike_in_the_viewer_and_the_export() {
+    let _decoders = decoders_at_speed();
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let mut t = one_clip_timeline("height.mkv", (W, H), 0);
+    let c = &mut t.seq.tracks[0].clips[0];
+    *c = TestClip::of(c.clone()).lane("scale", 0.0, 0.8).lane("scale", 2.0, 1.2).lane("scale_y", 0.0, 0.3).lane("scale_y", 2.0, 0.5).build();
+    fits_alike(&t, &[
+        ("top bar", W / 2, H / 5, Expect::Bar),
+        ("bottom bar", W / 2, H - H / 5, Expect::Bar),
+        ("left", W / 8, H / 2, Expect::Red),
+        ("right", W - W / 8, H / 2, Expect::Blue),
+    ]);
+}
+
 /// A picture wider than the sequence is letterboxed by both.
 #[test]
 fn a_wide_clip_is_letterboxed_in_the_viewer_and_the_export_alike() {
