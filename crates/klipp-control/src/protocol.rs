@@ -757,6 +757,23 @@ pub enum ControlCommand {
         /// out, they are, which is what the app's own export does.
         #[serde(default)]
         burn_captions: Option<bool>,
+        /// One of the app's built-in export presets, by name ("ProRes 422",
+        /// "YouTube 4K", ...) or id: its codecs, size, quality and
+        /// loudness, under any field given here as well (#1583). The
+        /// path's extension must be the preset's container.
+        #[serde(default)]
+        preset: Option<String>,
+        /// The video codec: h264, hevc, prores, prores_hq, prores_4444,
+        /// dnxhd_115, dnxhd_145, av1 or vp9; the container must hold it.
+        #[serde(default)]
+        codec: Option<String>,
+        /// The audio codec: aac, mp3, flac, opus, pcm16 or pcm24.
+        #[serde(default)]
+        audio_codec: Option<String>,
+        /// A target video bitrate in kbps instead of `crf` (VBR). ProRes
+        /// and DNxHD have rates of their own.
+        #[serde(default)]
+        bitrate_kbps: Option<u32>,
     },
     /// Every render job the app knows: status, progress, result.
     ExportStatus {

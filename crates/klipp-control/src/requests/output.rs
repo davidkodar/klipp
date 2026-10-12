@@ -12,7 +12,7 @@ pub(crate) fn respond(
     let mut send = sender!(ctx, collect);
 
     match cmd {
-        ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions } => {
+        ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions, preset, codec, audio_codec, bitrate_kbps } => {
             let out = std::path::PathBuf::from(&path);
             if !out.is_absolute() {
                 return Err(format!("export path must be absolute (got {path:?})"));
@@ -45,11 +45,12 @@ pub(crate) fn respond(
             let credits = sequence_credits(&seq, &pool);
             drop(pool);
             drop(seq);
+            // Size: as asked, else the preset's, else the brief's.
             let (width, height) = match (width, height, brief.as_ref()) {
-                (None, None, Some(b)) => (b.width, b.height),
+                (None, None, Some(b)) if preset.is_none() => (b.width, b.height),
                 _ => (width, height),
             };
-            let target_lufs = target_lufs.or(brief.as_ref().and_then(|b| b.loudness_lufs));
+            let brief_lufs = brief.as_ref().and_then(|b| b.loudness_lufs);
             let format = match out.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
                 Some("mp4") | None => klipp_core::ExportFormat::Mp4,
                 Some("mov") => klipp_core::ExportFormat::Mov,
@@ -60,6 +61,11 @@ pub(crate) fn respond(
             let mut settings = klipp_core::ExportSettings { output_path: out.clone(), format, ..Default::default() };
             // The default H.264 and AAC do not go in WebM.
             settings.fit_codecs_to_format();
+            // A preset first, so every field given beside it wins (#1583).
+            let preset_name = match preset.as_deref() {
+                Some(name) => Some(apply_export_preset(&mut settings, name)?),
+                None => None,
+            };
             if let (Some(w), Some(h)) = (width, height) {
                 let most = klipp_core::ExportSettings::MAX_SIDE;
                 if w > most || h > most || w < 2 || h < 2 {
@@ -78,8 +84,38 @@ pub(crate) fn respond(
                 Some(d @ (8 | 10)) => settings.bit_depth = d,
                 Some(d) => return Err(format!("bit_depth {d} is not a depth; give 8 or 10")),
             }
-            if target_lufs.is_some() {
-                settings.target_lufs = target_lufs;
+            if let Some(name) = codec.as_deref() {
+                settings.video_codec = video_codec_named(name)?;
+            }
+            if let Some(name) = audio_codec.as_deref() {
+                settings.audio_codec = audio_codec_named(name)?;
+            }
+            use klipp_core::ExportVideoCodec as V;
+            let fixed_rate = matches!(settings.video_codec, V::ProRes422 | V::ProRes422HQ | V::ProRes4444 | V::DNxHD115 | V::DNxHD145);
+            if let Some(kbps) = bitrate_kbps {
+                if crf.is_some() {
+                    return Err("give crf (a quality) or bitrate_kbps (a rate), not both".into());
+                }
+                if fixed_rate {
+                    return Err(format!("{} has a rate of its own; leave bitrate_kbps out", settings.video_codec.label()));
+                }
+                if !(100..=500_000).contains(&kbps) {
+                    return Err(format!("{kbps} kbps is not a video bitrate; give 100 to 500000"));
+                }
+                settings.rate_control = klipp_core::RateControl::Vbr;
+                settings.video_bitrate_kbps = Some(kbps);
+            }
+            if settings.bit_depth == 10 && !matches!(settings.video_codec, V::H264 | V::H265 | V::ProRes422 | V::ProRes422HQ | V::ProRes4444) {
+                return Err(format!("{} is written at 8 bits; bit_depth 10 needs h264, hevc or ProRes", settings.video_codec.label()));
+            }
+            if let Some(problem) = settings.container_problem() {
+                return Err(problem);
+            }
+            // Loudness: as asked, else the preset's, else the brief's.
+            match target_lufs {
+                Some(l) => settings.target_lufs = Some(l),
+                None if preset_name.is_none() && brief_lufs.is_some() => settings.target_lufs = brief_lufs,
+                None => {}
             }
             if let Some(ceiling) = true_peak_dbtp {
                 if !ceiling.is_finite() || !(-10.0..=0.0).contains(&ceiling) {
@@ -106,6 +142,12 @@ pub(crate) fn respond(
                 // software encode that is always 8-bit), so said.
                 "video_codec": settings.video_codec.label(),
                 "audio_codec": settings.audio_codec.label(),
+                "preset": preset_name,
+                "rate": match (settings.rate_control, settings.video_bitrate_kbps) {
+                    (klipp_core::RateControl::Crf, _) | (_, None) => format!("crf {}", settings.crf),
+                    (_, Some(kbps)) => format!("{kbps} kbps"),
+                },
+                "bit_depth": if settings.bit_depth == 10 { 10 } else { 8 },
             });
             let burnt = said["captions_and_titles_burnt_in"].as_bool().unwrap_or(true);
             let known_jobs: std::collections::HashSet<String> = ctx.shared.exports.lock().unwrap_or_else(|e| e.into_inner())
@@ -483,6 +525,66 @@ pub(crate) fn respond(
 
         _ => Err("internal: a request was routed to the wrong area".into()),
     }
+}
+
+/// The built-in export preset `name` (its name, case aside, or its id)
+/// applied to `settings`: its codecs, size, rate, quality and loudness.
+/// The container comes from the path, so it must be the preset's
+/// (#1583). Returns the preset's name, for the reply.
+fn apply_export_preset(settings: &mut klipp_core::ExportSettings, name: &str) -> Result<String, String> {
+    let presets = klipp_core::builtin_presets();
+    let wanted = name.trim().to_lowercase();
+    let Some(p) = presets.iter().find(|p| p.name.to_lowercase() == wanted || p.id == name.trim()) else {
+        let names: Vec<&str> = presets.iter().map(|p| p.name.as_str()).collect();
+        return Err(format!("no export preset {name:?}; the presets are {}", names.join(", ")));
+    };
+    let s = &p.settings;
+    if s.format != settings.format {
+        return Err(format!("the preset {:?} writes .{}; give a path ending .{}", p.name, s.format.extension(), s.format.extension()));
+    }
+    settings.video_codec = s.video_codec;
+    settings.resolution = s.resolution;
+    settings.fps = s.fps;
+    settings.crf = s.crf;
+    settings.preset = s.preset;
+    settings.audio_codec = s.audio_codec;
+    settings.audio_bitrate_kbps = s.audio_bitrate_kbps;
+    settings.video_bitrate_kbps = s.video_bitrate_kbps;
+    settings.rate_control = s.rate_control;
+    settings.target_lufs = s.target_lufs;
+    settings.true_peak_dbtp = s.true_peak_dbtp;
+    Ok(p.name.clone())
+}
+
+/// A video codec by the name an agent gives it (#1583).
+fn video_codec_named(name: &str) -> Result<klipp_core::ExportVideoCodec, String> {
+    use klipp_core::ExportVideoCodec as V;
+    Ok(match name.trim().to_lowercase().replace(['.', ' ', '-'], "_").as_str() {
+        "h264" | "h_264" | "avc" => V::H264,
+        "hevc" | "h265" | "h_265" => V::H265,
+        "prores" | "prores_422" => V::ProRes422,
+        "prores_hq" | "prores_422_hq" => V::ProRes422HQ,
+        "prores_4444" => V::ProRes4444,
+        "dnxhd" | "dnxhd_115" => V::DNxHD115,
+        "dnxhd_145" => V::DNxHD145,
+        "av1" => V::Av1,
+        "vp9" => V::Vp9,
+        _ => return Err(format!("{name:?} is not a video codec; give h264, hevc, prores, prores_hq, prores_4444, dnxhd_115, dnxhd_145, av1 or vp9")),
+    })
+}
+
+/// An audio codec by the name an agent gives it (#1583).
+fn audio_codec_named(name: &str) -> Result<klipp_core::ExportAudioCodec, String> {
+    use klipp_core::ExportAudioCodec as A;
+    Ok(match name.trim().to_lowercase().as_str() {
+        "aac" => A::Aac,
+        "mp3" => A::Mp3,
+        "flac" => A::Flac,
+        "opus" => A::Opus,
+        "pcm" | "pcm16" | "wav" => A::Pcm16,
+        "pcm24" => A::Pcm24,
+        _ => return Err(format!("{name:?} is not an audio codec; give aac, mp3, flac, opus, pcm16 or pcm24")),
+    })
 }
 
 /// The credits list's file, beside the export: `film.mp4` gets
