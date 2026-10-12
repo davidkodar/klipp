@@ -959,10 +959,7 @@ fn a_sequence_grade_s_structure_edits_are_one_step_by_path_at_any_depth() {
             let seq = &mut run.state.sequences[0];
             let root = w.root(seq);
             seq.set_root_grade(root, Some(grade)).unwrap();
-            let stand_in = match w {
-                GradeStandIn::Timeline => seq.timeline_grade_clip_id(),
-                GradeStandIn::Group(g, stage) => seq.grade_group(g).unwrap().stage_clip_id(stage),
-            };
+            let stand_in = w.id(seq).unwrap();
             let d = descent.clone();
             check_structure_edits(
                 &mut run,
@@ -1124,7 +1121,13 @@ fn sequence_grades(stored: bool) -> (Run, Vec<GradeStandIn>) {
     }
     let g = group.id;
     seq.grade_groups.push(group);
-    (run, vec![GradeStandIn::Timeline, GradeStandIn::Group(g, klipp_timeline::GradeStage::Pre), GradeStandIn::Group(g, klipp_timeline::GradeStage::Post)])
+    // A video track's own grade too (#1408).
+    let track = seq.tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+    if stored {
+        track.effects.grade_slot().set(Some(NodeGraph::default()));
+    }
+    let t = track.id;
+    (run, vec![GradeStandIn::Timeline, GradeStandIn::Group(g, klipp_timeline::GradeStage::Pre), GradeStandIn::Group(g, klipp_timeline::GradeStage::Post), GradeStandIn::Track(t)])
 }
 
 /// One frame of a sequence grade's tab `on`, as the app draws it (M3 step
@@ -1272,7 +1275,7 @@ fn escape_on_a_sequence_grade_s_drag_takes_it_back() {
 
 /// A correction's mix and mask channel on the timeline grade and on a
 /// group's stages land on the node as its run setting, one step each,
-/// and undo takes them off (#1321).
+/// and undo takes them off (#1321); a track's grade refuses them (#1408).
 #[test]
 fn a_mix_and_channel_edit_on_a_sequence_grade_lands() {
     use klipp_effects::mask_mix::MaskChannel;
@@ -1283,6 +1286,15 @@ fn a_mix_and_channel_edit_on_a_sequence_grade_lands() {
         let node = seq.root_grade(root).unwrap().unwrap().nodes.iter().find(|n| n.kind == NodeKind::Corrector).unwrap().id;
         let blend = |run: &Run| run.state.sequences[0].root_grade(root).unwrap().unwrap().nodes.iter().find(|n| n.id == node).unwrap().params.correction_blend;
         let addr = klipp_graph_format::path::NodePath::new(root, [node]);
+        // A track's grade has no stored form for them: refused, nothing
+        // changed, no step (#1408).
+        if matches!(w, GradeStandIn::Track(_)) {
+            let steps = run.state.active_history().undo_count();
+            assert_eq!(run.state.path_command(&AppCommand::SetMixAt { addr: addr.clone(), mix: Some(0.5) }), Some(false), "{w:?}");
+            assert_eq!(run.state.path_command(&AppCommand::SetMaskChannelAt { addr, channel: Some("alpha".into()) }), Some(false), "{w:?}");
+            assert_eq!((blend(&run), run.state.active_history().undo_count()), (None, steps), "{w:?}: nothing changed");
+            continue;
+        }
         assert_eq!(run.state.path_command(&AppCommand::SetMixAt { addr: addr.clone(), mix: Some(0.5) }), Some(true), "{w:?}: {:?}", run.state.toast.message_for_test());
         assert_eq!(run.state.path_command(&AppCommand::SetMaskChannelAt { addr, channel: Some("alpha".into()) }), Some(true), "{w:?}");
         assert_eq!(blend(&run), Some(klipp_nodes::params::EffectBlend { mix: 0.5, channel: MaskChannel::Alpha }), "{w:?}");
@@ -1469,10 +1481,7 @@ fn a_canvas_node_drag_is_one_step_by_path_at_any_depth() {
             let level = spread(level_of(&grade, &descent).unwrap());
             *crate::app::KlippApp::resolve_graph_at_path_mut(&mut grade, &descent).unwrap() = level;
             seq.set_root_grade(root, Some(grade)).unwrap();
-            let stand_in = match w {
-                GradeStandIn::Timeline => seq.timeline_grade_clip_id(),
-                GradeStandIn::Group(g, stage) => seq.grade_group(g).unwrap().stage_clip_id(stage),
-            };
+            let stand_in = w.id(seq).unwrap();
             run.state.graph_descent_path = descent.clone();
             let at = |run: &Run| level_of(run.state.sequences[0].root_grade(root).unwrap().unwrap(), &descent).unwrap().node_positions[&ids[1]];
             let (before, stored_before, steps) = (at(&run), stored(&run, w), run.state.active_history().undo_count());
@@ -1522,10 +1531,7 @@ fn auto_layout_is_one_step_by_path_at_any_depth() {
             let seq = &mut run.state.sequences[0];
             let root = w.root(seq);
             seq.set_root_grade(root, Some(grade)).unwrap();
-            let stand_in = match w {
-                GradeStandIn::Timeline => seq.timeline_grade_clip_id(),
-                GradeStandIn::Group(g, stage) => seq.grade_group(g).unwrap().stage_clip_id(stage),
-            };
+            let stand_in = w.id(seq).unwrap();
             run.state.graph_descent_path = descent.clone();
             let level = |run: &Run| level_of(run.state.sequences[0].root_grade(root).unwrap().unwrap(), &descent).unwrap();
             let want = { let mut l = level(&run); l.node_positions = klipp_nodes::auto_layout(&l); positions(&l) };

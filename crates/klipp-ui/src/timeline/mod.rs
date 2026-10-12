@@ -715,6 +715,38 @@ mod menu_smoke_tests {
         }
     }
 
+    /// A video track header's Track Effects menu offers Grade in Colour,
+    /// and a click on it sends the track's command (#1408); an audio
+    /// track's doesn't offer it.
+    #[test]
+    fn a_video_track_headers_effects_menu_grades_it_in_colour() {
+        let mut timeline = Timeline::new();
+        for kind in [TrackKind::Video, TrackKind::Audio] {
+            let track_id = timeline.state.sequences[0].tracks.iter().find(|t| t.kind == kind).unwrap().id;
+            let at = timeline.header(kind);
+            timeline.right_click(at);
+            // Hovering Track Effects opens it.
+            let drawn = timeline.frame(Vec::new());
+            let effects = drawn.iter().find(|(t, _)| t.starts_with("Track Effects")).unwrap_or_else(|| panic!("{kind:?}: a Track Effects item")).1;
+            timeline.frame(vec![egui::Event::PointerMoved(effects)]);
+            let drawn = timeline.frame(vec![egui::Event::PointerMoved(effects)]);
+            let item = drawn.iter().find(|(t, _)| t == "Grade in Colour").map(|(_, p)| *p);
+            match kind {
+                TrackKind::Video => {
+                    let at = item.unwrap_or_else(|| panic!("the video track's Track Effects offers Grade in Colour: {drawn:?}"));
+                    let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+                    timeline.frame(vec![egui::Event::PointerMoved(at)]);
+                    timeline.frame(vec![egui::Event::PointerMoved(at), button(true)]);
+                    timeline.frame(vec![button(false)]);
+                    assert!(timeline.sent.iter().any(|c| matches!(c, AppCommand::GradeTrackInColour { track_id: t } if *t == track_id)), "{:?}", timeline.sent);
+                }
+                _ => assert!(item.is_none(), "an audio track has no grade to grade"),
+            }
+            timeline.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+            timeline.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        }
+    }
+
     /// Controls once drawn only by the timeline the app no longer shows
     /// (#912): the ripple switch is on the drawn toolbar, and the ruler
     /// opens its menu on a right-click.

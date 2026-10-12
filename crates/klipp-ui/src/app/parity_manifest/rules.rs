@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 /// A track's grade is graded nowhere in the app, so it has no generated or
 /// old route to compare: the `NonClipGrade` surface's track variant.
-pub(super) const TRACK_GRADE_EXCLUSION: &str = "#1408 (a track's grade has no inspector surface yet; nothing to compare or delete)";
+pub(super) const TRACK_GRADE_EXCLUSION: &str = "#1408 (a track's grade is graded through its stand-in as the sequence's grades are, tested on its own; no parity fixture yet)";
 
 /// A grade row's track in the curve editor: grade keyframing isn't M3's.
 pub(super) const GRADE_CURVE_EXCLUSION: &str = "#891 (grade keyframing: phase 4; the curve editor lists effect tracks only)";

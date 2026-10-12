@@ -59,8 +59,9 @@ fn set_root_grade(seq: &mut klipp_timeline::Sequence, root: klipp_graph_format::
 }
 
 /// A graph edit lands on the clip it names, or, under the sequence's
-/// timeline-grade id, on the timeline grade, or under a grade group
-/// stage's id, on that stage: the Colour workspace edits those through
+/// timeline-grade id, on the timeline grade, under a grade group stage's
+/// id, on that stage, or under a track's grade id, on that track's grade
+/// (#1408): the Colour workspace edits those through
 /// the same node commands as a clip's grade.
 fn set_node_graph(seq: &mut klipp_timeline::Sequence, clip_id: ClipId, graph: &klipp_nodes::NodeGraph) {
     for track in &mut seq.tracks {
@@ -78,6 +79,13 @@ fn set_node_graph(seq: &mut klipp_timeline::Sequence, clip_id: ClipId, graph: &k
     if let Some((group, stage)) = seq.grade_group_stage_of(clip_id) {
         if let Some(g) = seq.grade_groups.iter_mut().find(|g| g.id == group) {
             g.stage_slot(stage).set(Some(graph.clone()));
+        }
+        return;
+    }
+    // A track's grade, under its track's editing id (#1408).
+    if let Some(track) = seq.track_grade_of(clip_id) {
+        if let Some(t) = seq.tracks.iter_mut().find(|t| t.id == track) {
+            t.effects.grade_slot().set(Some(graph.clone()));
         }
     }
 }

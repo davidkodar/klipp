@@ -8744,7 +8744,7 @@ impl PlaybackEngine {
                         (Some(tap), Some(m)) => on_frame(m).map(|()| (m.id, klipp_compose::inspect::InspectAt::out(NodePath::new(Root::GroupStage { group, stage }, [tap])))),
                     }
                 }
-                Root::Track { .. } => why("a track's grade can't be sampled yet: it has no inspector (#1408)"),
+                Root::Track { .. } => why("a track's grade can't be sampled yet: pick on a clip's own grade instead"),
             }
         };
         let (inspected, tap) = match found {
