@@ -546,6 +546,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTitleLineSpacing { .. }
         | AppCommand::SetTitleUnderline { .. }
         | AppCommand::SetTitleFontVariation { .. }
+        | AppCommand::SetTitleFeatures { .. }
         | AppCommand::SetTitleStrikethrough { .. }
         | AppCommand::SetTitlePatternEnabled { .. }
         | AppCommand::ApplyTitlePreset { .. }

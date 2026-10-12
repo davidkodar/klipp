@@ -16,6 +16,7 @@ pub mod info_tab;
 pub mod modifier_ui;
 pub mod title_tab;
 pub mod title_animators;
+mod title_features;
 
 use crate::icons::Icon;
 use crate::layout_state::InspectorTab;
@@ -1768,6 +1769,12 @@ fn show_title_pinned_core_textbox(
     } else {
         (0.0, false)
     };
+    // And its underline (#1710).
+    let (display_underline, underline_is_mixed) = if from_runs {
+        selection_run_value(tb, sel_range, |r| r.underline, tb.underline)
+    } else {
+        (tb.underline, false)
+    };
 
     // 1. Editable textarea — primary edit path. Wrapped in a Frame
     //    so the textarea reads as a pill matching the size / % / X / Y
@@ -1906,11 +1913,15 @@ fn show_title_pinned_core_textbox(
     //     (#1504); over a selection they set the selection's.
     show_title_weight_row(ui, theme, clip_id, tb, &display_font, display_style, has_selection.then_some(sel_range).filter(|s| s.0 < s.1), cmds);
 
+    // 2b. OpenType features (#1710): the selection's, or the box's.
+    title_features::show_title_features_row(ui, theme, clip_id, tb, &display_font, display_style, has_selection.then_some(sel_range).filter(|s| s.0 < s.1), cmds);
+
     // 3. B / I / U / S pill buttons (left) + L / C / R / J alignment
     //    pill buttons (right). Both groups share a consistent
     //    button height + inactive fill so the row reads as one
     //    coordinated control strip.
-    //    Over a selection B and I set the selection's style (#1505).
+    //    Over a selection B and I set the selection's style (#1505),
+    //    and U its underline (#1710).
     let is_bold = matches!(
         display_style,
         klipp_timeline::FontStyle::Bold | klipp_timeline::FontStyle::BoldItalic
@@ -1953,8 +1964,19 @@ fn show_title_pinned_core_textbox(
         if pill_toggle_button(ui, theme, "I", is_italic, |r| r.italics().size(13.0)).clicked() {
             set_style(cmds, is_bold, !is_italic);
         }
-        if pill_toggle_button(ui, theme, "U", tb.underline, |r| r.underline().size(13.0)).clicked() {
-            cmds.push(AppCommand::SetTitleUnderline { clip_id, underline: !tb.underline });
+        if pill_toggle_button(ui, theme, "U", display_underline && !underline_is_mixed, |r| r.underline().size(13.0)).clicked() {
+            if has_selection && sel_range.0 < sel_range.1 {
+                // A mixed selection is underlined throughout.
+                cmds.push(AppCommand::ApplyTitleStyle {
+                    clip_id,
+                    range_start: sel_range.0,
+                    range_end: sel_range.1,
+                    property: "underline".into(),
+                    value: (underline_is_mixed || !display_underline).to_string(),
+                });
+            } else {
+                cmds.push(AppCommand::SetTitleUnderline { clip_id, underline: !tb.underline });
+            }
         }
         if pill_toggle_button(ui, theme, "S", tb.strikethrough, |r| r.strikethrough().size(13.0))
             .clicked()
@@ -1997,6 +2019,9 @@ fn show_title_pinned_core_textbox(
         ui.horizontal(|ui| {
             if style_is_mixed {
                 ui.label(egui::RichText::new("Mixed style").size(10.0).color(theme.accent));
+            }
+            if underline_is_mixed {
+                ui.label(egui::RichText::new("Mixed underline").size(10.0).color(theme.accent));
             }
             let mut tracking = display_tracking;
             if ui.add(egui::DragValue::new(&mut tracking).range(-10.0..=50.0).speed(0.2).suffix(" px").prefix("Tracking: ").fixed_decimals(1)).changed() {
@@ -2185,10 +2210,6 @@ fn show_title_pinned_core_textbox(
     show_title_position_block(ui, theme, clip_id, td, state, cmds, clip_time_secs);
 }
 
-/// The value a text selection shows for one style-run field, and
-/// whether the selection mixes values: each run over `sel`'s value of
-/// the field, or the box's `base` where the run leaves it, as the size
-/// and colour of a selection are read (#1505).
 /// The weight row of the Title tab (#1504): a picker of the weights
 /// `family` has (the style's own, "By style", first), and a slider for
 /// each axis of its variable face. With `selection` the weight and
@@ -2306,6 +2327,10 @@ fn show_title_weight_row(
     ui.add_space(8.0);
 }
 
+/// The value a text selection shows for one style-run field, and
+/// whether the selection mixes values: each run over `sel`'s value of
+/// the field, or the box's `base` where the run leaves it, as the size
+/// and colour of a selection are read (#1505).
 fn selection_run_value<T: Clone + PartialEq>(
     tb: &klipp_timeline::TextBox,
     sel: (usize, usize),
@@ -8401,6 +8426,69 @@ fn show_clip_name_row(
         }
     });
     ui.add_space(2.0);
+}
+
+#[cfg(test)]
+mod selection_underline_tests {
+    use super::*;
+
+    /// One frame of the Title tab's pinned block for `td`, with text
+    /// `sel` selected in the viewer: the commands it pushed and the
+    /// texts it drew, by their centres.
+    fn frame(ctx: &egui::Context, td: &klipp_timeline::TitleData, sel: (usize, usize), events: Vec<egui::Event>) -> (Vec<AppCommand>, Vec<(String, egui::Pos2)>) {
+        let state = AppState { viewer_text_edit: true, viewer_text_selection: Some(sel), ..Default::default() };
+        let tb = td.primary_text().unwrap();
+        let mut cmds = Vec::new();
+        let out = ctx.run(
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 2000.0))), events, ..Default::default() },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    show_title_pinned_core_textbox(ui, &KlippTheme::default(), klipp_core::ClipId(uuid::Uuid::nil()), td, &state, &mut cmds, tb, 0.0);
+                });
+            },
+        );
+        let texts = out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+            _ => None,
+        }).collect();
+        (cmds, texts)
+    }
+
+    /// A click on the text `label`: what the press and the release
+    /// pushed, and the texts drawn before it.
+    fn click(ctx: &egui::Context, td: &klipp_timeline::TitleData, sel: (usize, usize), label: &str) -> (Vec<AppCommand>, Vec<String>) {
+        let texts = frame(ctx, td, sel, Vec::new()).1;
+        let pos = texts.iter().find(|(t, _)| t == label).map(|(_, p)| *p).unwrap_or_else(|| panic!("{label} is drawn"));
+        let button = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut cmds = frame(ctx, td, sel, vec![egui::Event::PointerMoved(pos), button(true)]).0;
+        cmds.extend(frame(ctx, td, sel, vec![button(false)]).0);
+        (cmds, texts.into_iter().map(|(t, _)| t).collect())
+    }
+
+    /// #1710: over a selection U underlines the selection's run, in one
+    /// command, and a selection part underlined reads as mixed and is
+    /// underlined throughout; the box's underline is left alone.
+    #[test]
+    fn u_over_a_selection_underlines_its_run_in_one_step() {
+        let ctx = egui::Context::default();
+        let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Title text".into(), font_name: "Inter".into(), ..Default::default() });
+        let (cmds, texts) = click(&ctx, &td, (0, 5), "U");
+        match &cmds[..] {
+            [AppCommand::ApplyTitleStyle { range_start: 0, range_end: 5, property, value, .. }] => assert_eq!((property.as_str(), value.as_str()), ("underline", "true")),
+            other => panic!("one command, the run's underline: {other:?}"),
+        }
+        assert!(texts.iter().any(|t| t == "Small caps"), "the features row is in the block");
+        let tb = td.primary_text_mut().unwrap();
+        let mut first = klipp_timeline::StyleRun::default_for_range(0, 3);
+        first.underline = Some(true);
+        tb.style_runs = vec![first, klipp_timeline::StyleRun::default_for_range(3, 5)];
+        let (cmds, texts) = click(&ctx, &td, (0, 5), "U");
+        assert!(texts.iter().any(|t| t == "Mixed underline"), "{texts:?}");
+        assert!(matches!(&cmds[..], [AppCommand::ApplyTitleStyle { property, value, .. }] if property == "underline" && value == "true"), "{cmds:?}");
+        td.primary_text_mut().unwrap().style_runs[1].underline = Some(true);
+        let (cmds, _) = click(&ctx, &td, (0, 5), "U");
+        assert!(matches!(&cmds[..], [AppCommand::ApplyTitleStyle { property, value, .. }] if property == "underline" && value == "false"), "{cmds:?}");
+    }
 }
 
 #[cfg(test)]
