@@ -46,6 +46,11 @@ pub struct StyleRun {
     /// none of its own.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub font_axes: Vec<FontAxis>,
+    /// A reading gloss (ruby, furigana) set small beside the run's text:
+    /// above it in a horizontal box, to its right in a vertical one
+    /// (#1704). None (the default, left unwritten) for none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ruby: Option<String>,
 }
 
 impl StyleRun {
@@ -64,6 +69,7 @@ impl StyleRun {
             underline: None,
             font_weight: None,
             font_axes: Vec::new(),
+            ruby: None,
         }
     }
 
@@ -79,6 +85,7 @@ impl StyleRun {
             && self.underline.is_none()
             && self.font_weight.is_none()
             && self.font_axes.is_empty()
+            && self.ruby.is_none()
     }
 
     /// Returns true if two runs have identical style fields (ignoring range).
@@ -93,6 +100,7 @@ impl StyleRun {
             && self.underline == other.underline
             && self.font_weight == other.font_weight
             && self.font_axes == other.font_axes
+            && self.ruby == other.ruby
     }
 }
 

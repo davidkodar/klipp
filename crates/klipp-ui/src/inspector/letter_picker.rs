@@ -425,7 +425,7 @@ mod tests {
     // ────────────────── hit_test_glyphs ──────────────────
 
     fn fake_position(char_index: usize, x: f32, y: f32, advance: f32, height: f32) -> CharPosition {
-        CharPosition { char_index, byte_offset: char_index, x, y, advance, height, rtl: false }
+        CharPosition { char_index, byte_offset: char_index, x, y, advance, height, rtl: false, vertical: false }
     }
 
     /// Identity frame_to_screen (frame px == screen px) for

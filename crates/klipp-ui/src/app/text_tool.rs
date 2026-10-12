@@ -229,4 +229,42 @@ mod tests {
         assert!(pressed);
         assert!(include_str!("shortcuts.rs").contains("cmds.push(AppCommand::SetActiveTool(Tool::Text))"));
     }
+
+    /// #1704: in vertical text a click puts the caret down the column
+    /// under the pointer, before or after the character by which half
+    /// of its cell it falls in, and the caret lies across the column.
+    #[test]
+    fn a_click_in_vertical_text_puts_the_caret_down_its_column() {
+        let mut v = Viewer::new();
+        let r = v.image_rect();
+        v.click(r.center());
+        let clip_id = v.titles()[0].id;
+        let text = "Hello\nWorld";
+        let clip = v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap();
+        let klipp_timeline::ClipKind::Title(td) = &mut clip.kind else { panic!("a title") };
+        let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut td.objects[0].content else { panic!("its text") };
+        tb.text = text.into();
+        tb.vertical_layout = true;
+        let mut single = klipp_timeline::TitleData::single_text(tb.clone());
+        single.objects[0].transform = td.objects[0].transform.clone();
+        v.state.viewer_text_edit_buffer = text.into();
+        let (w, h) = (v.state.sequences[0].resolution.width, v.state.sequences[0].resolution.height);
+        // The positions the app gives the editor.
+        v.state.viewer_char_positions = klipp_title::TitleRenderer::new().compute_char_positions(&single, w, h);
+        v.frame(Vec::new());
+        let at = v.state.viewer_char_positions.clone();
+        assert!(at.len() == text.chars().count() + 1 && at.iter().all(|p| p.vertical), "{at:?}");
+        let to_screen = |x: f32, y: f32| r.min + egui::vec2(x / w as f32 * r.width(), y / h as f32 * r.height());
+        for (ci, down, want) in [(8usize, 0.2f32, 8usize), (8, 0.8, 9), (1, 0.2, 1), (3, 0.8, 4)] {
+            let cp = &at[ci];
+            v.click(to_screen(cp.x + cp.height * 0.5, cp.y + cp.advance * down));
+            assert!(v.state.viewer_text_edit, "still editing");
+            assert_eq!(v.state.viewer_text_cursor, want, "a click {down} down character {ci}'s cell");
+        }
+        // The caret before 'r' lies across its column at the cell's top.
+        let [a, b] = crate::panels::viewer::caret_ends(&at, 8).unwrap();
+        assert_eq!((a, b), ((at[8].x, at[8].y), (at[8].x + at[8].height, at[8].y)));
+        // The columns: "World" left of "Hello".
+        assert!(at[6].x + at[6].height <= at[0].x + 1.0);
+    }
 }
