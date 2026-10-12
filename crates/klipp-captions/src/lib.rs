@@ -3,10 +3,18 @@
 //! read and write them too (#1516).
 #![forbid(unsafe_code)]
 
+pub mod styled;
+pub use styled::{Placement, Span, SpanStyle};
+
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SubtitleEntry {
     pub start_secs: f64,
     pub end_secs: f64,
     pub text: String,
+    /// The text's styled runs (#1515); empty for plain text.
+    pub spans: Vec<Span>,
+    /// Where the cue sits, when its file says.
+    pub placement: Placement,
 }
 
 /// A single Dialogue line from an ASS/SSA file.
@@ -18,6 +26,10 @@ pub struct AssSubtitleEntry {
     pub text: String,
     /// Name of the V4+ style this dialogue references (empty if none).
     pub style_name: String,
+    /// The text's styled runs from its override tags (#1515).
+    pub spans: Vec<Span>,
+    /// Its `\pos` and `\an`, when it has them.
+    pub placement: Placement,
 }
 
 /// A [V4+ Styles] entry — just the fields we actually wire into TitleData.
@@ -48,6 +60,8 @@ pub fn parse_ass(content: &str) -> (Vec<AssSubtitleEntry>, std::collections::Has
     let mut section = Section::None;
     let mut styles_fmt: Vec<String> = Vec::new();
     let mut events_fmt: Vec<String> = Vec::new();
+    // The frame `\pos` is given over: the script's, else ASS's default.
+    let mut play_res = (384.0f32, 288.0f32);
 
     for raw in content.lines() {
         let line = raw.trim_start_matches('\u{feff}').trim();
@@ -71,6 +85,13 @@ pub fn parse_ass(content: &str) -> (Vec<AssSubtitleEntry>, std::collections::Has
         let Some(colon) = line.find(':') else { continue; };
         let key = line[..colon].trim();
         let value = line[colon + 1..].trim();
+        if section != Section::Styles && section != Section::Events {
+            if key.eq_ignore_ascii_case("PlayResX") {
+                play_res.0 = value.parse().unwrap_or(play_res.0);
+            } else if key.eq_ignore_ascii_case("PlayResY") {
+                play_res.1 = value.parse().unwrap_or(play_res.1);
+            }
+        }
         match section {
             Section::Styles => {
                 if key.eq_ignore_ascii_case("Format") {
@@ -137,13 +158,15 @@ pub fn parse_ass(content: &str) -> (Vec<AssSubtitleEntry>, std::collections::Has
                             _ => {}
                         }
                     }
-                    let text = strip_ass_override_tags(&text_raw);
+                    let (text, spans, placement) = styled::parse_ass_text(&text_raw, play_res);
                     if !text.is_empty() && end_s > start_s {
                         entries.push(AssSubtitleEntry {
                             start_secs: start_s,
                             end_secs: end_s,
                             text,
                             style_name,
+                            spans,
+                            placement,
                         });
                     }
                 }
@@ -259,12 +282,10 @@ pub fn parse_srt_vtt(content: &str) -> Vec<SubtitleEntry> {
                         i += 1;
                     }
                     let text = text_lines.join("\n");
-                    // Strip HTML tags (SRT allows <i>, <b>, etc.)
-                    let text = text.replace("<i>", "").replace("</i>", "")
-                        .replace("<b>", "").replace("</b>", "")
-                        .replace("<u>", "").replace("</u>", "");
+                    // Its tags as styled runs (#1515).
+                    let (text, spans) = styled::parse_markup(&text);
                     if !text.is_empty() {
-                        subs.push(SubtitleEntry { start_secs: s, end_secs: e, text });
+                        subs.push(SubtitleEntry { start_secs: s, end_secs: e, text, spans, placement: Placement::default() });
                     }
                     continue;
                 }
@@ -301,7 +322,7 @@ pub fn generate_srt(subs: &[SubtitleEntry]) -> String {
     for (i, sub) in subs.iter().enumerate() {
         out.push_str(&format!("{}\n", i + 1));
         out.push_str(&format!("{} --> {}\n", format_srt_time(sub.start_secs), format_srt_time(sub.end_secs)));
-        out.push_str(&sub.text);
+        out.push_str(&styled::srt_markup(&sub.text, &sub.spans));
         out.push_str("\n\n");
     }
     out
@@ -318,9 +339,10 @@ pub fn format_srt_time(secs: f64) -> String {
 /// Generate WebVTT format string from subtitle entries.
 pub fn generate_vtt(subs: &[SubtitleEntry]) -> String {
     let mut out = String::from("WEBVTT\n\n");
+    out.push_str(&styled::vtt_colour_classes(subs.iter().flat_map(|s| s.spans.iter().filter_map(|sp| sp.style.color))));
     for sub in subs {
         out.push_str(&format!("{} --> {}\n", format_vtt_time(sub.start_secs), format_vtt_time(sub.end_secs)));
-        out.push_str(&sub.text);
+        out.push_str(&styled::vtt_markup(&sub.text, &sub.spans));
         out.push_str("\n\n");
     }
     out
@@ -365,11 +387,9 @@ Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n");
 MarginL, MarginR, MarginV, Effect, Text\n");
 
     for sub in subs {
-        // Escape text: \n → \N, strip { } style overrides
-        let text = sub.text
-            .replace('\n', "\\N")
-            .replace('{', "(")
-            .replace('}', ")");
+        // \n → \N, the text's own braces → parentheses, its styling and
+        // placement as override blocks (#1515).
+        let text = styled::ass_markup(&sub.text, &sub.spans, sub.placement, (1920.0, 1080.0));
         out.push_str(&format!(
             "Dialogue: 0,{},{},Default,,0,0,0,,{}\n",
             format_ass_time(sub.start_secs),
@@ -522,7 +542,7 @@ This is valid
         let subs = vec![SubtitleEntry {
             start_secs: 1.0,
             end_secs: 4.0,
-            text: "Hello".to_string(),
+            text: "Hello".to_string(), ..Default::default()
         }];
         let output = generate_srt(&subs);
         assert!(output.starts_with("1\n"));
@@ -533,9 +553,9 @@ This is valid
     #[test]
     fn generate_srt_multiple_entries_sequential_numbering() {
         let subs = vec![
-            SubtitleEntry { start_secs: 1.0, end_secs: 4.0, text: "First".to_string() },
-            SubtitleEntry { start_secs: 5.0, end_secs: 8.0, text: "Second".to_string() },
-            SubtitleEntry { start_secs: 10.0, end_secs: 12.0, text: "Third".to_string() },
+            SubtitleEntry { start_secs: 1.0, end_secs: 4.0, text: "First".to_string(), ..Default::default() },
+            SubtitleEntry { start_secs: 5.0, end_secs: 8.0, text: "Second".to_string(), ..Default::default() },
+            SubtitleEntry { start_secs: 10.0, end_secs: 12.0, text: "Third".to_string(), ..Default::default() },
         ];
         let output = generate_srt(&subs);
         assert!(output.contains("1\n00:00:01,000 --> 00:00:04,000\nFirst"));
@@ -584,7 +604,7 @@ This is valid
         let subs = vec![SubtitleEntry {
             start_secs: 1.0,
             end_secs: 4.0,
-            text: "Hello".to_string(),
+            text: "Hello".to_string(), ..Default::default()
         }];
         let output = generate_ass(&subs);
         assert!(output.contains("[Script Info]"));
@@ -601,7 +621,7 @@ This is valid
         let subs = vec![SubtitleEntry {
             start_secs: 0.0,
             end_secs: 2.0,
-            text: "Line one\nLine two".to_string(),
+            text: "Line one\nLine two".to_string(), ..Default::default()
         }];
         let output = generate_ass(&subs);
         assert!(output.contains("Line one\\NLine two"));
@@ -612,7 +632,7 @@ This is valid
         let subs = vec![SubtitleEntry {
             start_secs: 0.0,
             end_secs: 2.0,
-            text: "{bold} text".to_string(),
+            text: "{bold} text".to_string(), ..Default::default()
         }];
         let output = generate_ass(&subs);
         assert!(output.contains("(bold) text"));
@@ -623,8 +643,8 @@ This is valid
     #[test]
     fn roundtrip_generate_then_parse() {
         let original = vec![
-            SubtitleEntry { start_secs: 1.5, end_secs: 3.0, text: "First cue".to_string() },
-            SubtitleEntry { start_secs: 5.0, end_secs: 7.25, text: "Second cue".to_string() },
+            SubtitleEntry { start_secs: 1.5, end_secs: 3.0, text: "First cue".to_string(), ..Default::default() },
+            SubtitleEntry { start_secs: 5.0, end_secs: 7.25, text: "Second cue".to_string(), ..Default::default() },
         ];
         let srt = generate_srt(&original);
         let parsed = parse_srt_vtt(&srt);
@@ -775,9 +795,9 @@ mod same_bytes_tests {
     #[test]
     fn the_formats_are_the_bytes_the_app_wrote() {
         let subs = vec![
-            SubtitleEntry { start_secs: 0.0, end_secs: 1.5, text: "Hello".into() },
-            SubtitleEntry { start_secs: 61.25, end_secs: 63.999, text: "Two\nlines {with braces}".into() },
-            SubtitleEntry { start_secs: 3725.04, end_secs: 3727.5, text: "Late, <i>tagged</i>".into() },
+            SubtitleEntry { start_secs: 0.0, end_secs: 1.5, text: "Hello".into(), ..Default::default() },
+            SubtitleEntry { start_secs: 61.25, end_secs: 63.999, text: "Two\nlines {with braces}".into(), ..Default::default() },
+            SubtitleEntry { start_secs: 3725.04, end_secs: 3727.5, text: "Late, <i>tagged</i>".into(), ..Default::default() },
         ];
         let srt = generate_srt(&subs);
         assert_eq!(srt, "1\n00:00:00,000 --> 00:00:01,500\nHello\n\n2\n00:01:01,250 --> 00:01:03,999\nTwo\nlines {with braces}\n\n3\n01:02:05,039 --> 01:02:07,500\nLate, <i>tagged</i>\n\n");
@@ -792,5 +812,63 @@ mod same_bytes_tests {
         let (events, styles) = parse_ass(&ass);
         assert_eq!(events.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), ["Hello", "Two\nlines (with braces)", "Late, <i>tagged</i>"]);
         assert!(styles.contains_key("Default"));
+    }
+}
+
+#[cfg(test)]
+mod inline_styling_tests {
+    use super::*;
+
+    fn styled(spans: &[Span], i: usize) -> SpanStyle {
+        spans.iter().find(|s| s.start <= i && i < s.end).map(|s| s.style).unwrap_or_default()
+    }
+
+    /// #1515: an SRT cue's italics, bold, underline and colour come in as
+    /// styled runs of its text and go back out as the same tags.
+    #[test]
+    fn an_srt_keeps_its_inline_styling_both_ways() {
+        let srt = "1\n00:00:01,000 --> 00:00:03,000\nShe said <i>no</i>, <b>twice</b>.\n<u>Under</u> <font color=\"#ffcc00\">gold</font>\n\n";
+        let subs = parse_srt_vtt(srt);
+        let s = &subs[0];
+        assert_eq!(s.text, "She said no, twice.\nUnder gold");
+        let at = |w: &str| styled(&s.spans, s.text.find(w).unwrap());
+        assert!(at("no").italic && !at("no").bold);
+        assert!(at("twice").bold);
+        assert!(at("Under").underline);
+        assert_eq!(at("gold").color, Some([0xff, 0xcc, 0x00]));
+        assert!(at("She").is_plain());
+        let back = parse_srt_vtt(&generate_srt(&subs));
+        assert_eq!(back, subs, "written and read again: the same cue");
+    }
+
+    /// WebVTT's colour classes and voice tags: a colour class is a styled
+    /// run, written back with a STYLE block naming it; the voice tag goes.
+    #[test]
+    fn a_vtt_keeps_its_colour_and_drops_its_voice_tag() {
+        let vtt = "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<v Ana>Look, <c.yellow>there</c>!</v>\n\n";
+        let subs = parse_srt_vtt(vtt);
+        assert_eq!(subs[0].text, "Look, there!");
+        assert_eq!(styled(&subs[0].spans, 6).color, Some([255, 255, 0]));
+        let out = generate_vtt(&subs);
+        assert!(out.contains("::cue(.colorffff00)"), "{out}");
+        assert_eq!(parse_srt_vtt(&out), subs);
+    }
+
+    /// An ASS line's `\pos` and `\an` are its placement, as a fraction of
+    /// the script's frame, and its `\i` and `\c` styled runs; written back
+    /// over the export's 1920x1080 frame, they read the same.
+    #[test]
+    fn an_ass_line_keeps_its_position_and_styling() {
+        let ass = "[Script Info]\nPlayResX: 1280\nPlayResY: 720\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an8\\pos(640,72)}Top {\\i1}lean{\\i0} {\\c&H0000FF&}red{\\c}\\Nnext {\\clip(0,0,10,10)}clip\n";
+        let (events, _) = parse_ass(ass);
+        let e = &events[0];
+        assert_eq!(e.text, "Top lean red\nnext clip");
+        assert_eq!(e.placement, Placement { pos: Some((0.5, 0.1)), align: Some(8) });
+        assert!(styled(&e.spans, 4).italic, "lean");
+        assert_eq!(styled(&e.spans, 9).color, Some([255, 0, 0]), "red, from BGR");
+        assert!(styled(&e.spans, e.text.find("clip").unwrap()).is_plain(), "\\clip is no colour");
+        let sub = SubtitleEntry { start_secs: e.start_secs, end_secs: e.end_secs, text: e.text.clone(), spans: e.spans.clone(), placement: e.placement };
+        let (again, _) = parse_ass(&generate_ass(&[sub]));
+        assert_eq!((again[0].text.as_str(), again[0].placement, &again[0].spans), (e.text.as_str(), e.placement, &e.spans));
     }
 }

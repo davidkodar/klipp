@@ -2873,10 +2873,10 @@ impl KlippApp {
                                 if let Some(o) = outline { fx.outlines.push(o); }
                                 if let Some(s) = shadow { fx.shadows.push(s); }
                                 tb.ass_style_name = if entry.style_name.is_empty() { None } else { Some(entry.style_name.clone()) };
+                                // Its override tags' styling and placement (#1515).
+                                cue_style_runs(&mut tb, &entry.spans);
                                 let mut title_data = klipp_timeline::TitleData::single_text_fx(tb, fx);
-                                if let Some(o) = title_data.objects.first_mut() {
-                                    o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.88 };
-                                }
+                                place_cue(&mut title_data, entry.placement);
                                 let clip = klipp_timeline::Clip {
                                     id: klipp_core::ClipId::new(),
                                     kind: klipp_timeline::ClipKind::Title(title_data),
@@ -2895,19 +2895,19 @@ impl KlippApp {
                                 let timeline_in = klipp_core::RationalTime::from_secs_f64(sub.start_secs, fps_rate);
                                 let timeline_out = klipp_core::RationalTime::from_secs_f64(sub.end_secs, fps_rate);
                                 let dur = timeline_out - timeline_in;
-                                let tb = klipp_timeline::TextBox {
+                                let mut tb = klipp_timeline::TextBox {
                                     text: sub.text.clone(),
                                     font_size: 32.0,
                                     font_name: String::new(),
                                     alignment: klipp_timeline::TextAlignment::Center,
                                     ..Default::default()
                                 };
+                                // Its tags' italics, bold, underline and colour (#1515).
+                                cue_style_runs(&mut tb, &sub.spans);
                                 let mut fx = klipp_timeline::LayerFx::default();
                                 fx.outlines.push(klipp_timeline::TextOutline { color: [0, 0, 0, 200], width: 2.0, enabled: true, width_keyframes: Vec::new() });
                                 let mut title_data = klipp_timeline::TitleData::single_text_fx(tb, fx);
-                                if let Some(o) = title_data.objects.first_mut() {
-                                    o.transform.center = klipp_timeline::TitlePosition { x: 0.5, y: 0.88 };
-                                }
+                                place_cue(&mut title_data, sub.placement);
                                 let clip = klipp_timeline::Clip {
                                     id: klipp_core::ClipId::new(),
                                     kind: klipp_timeline::ClipKind::Title(title_data),
@@ -3250,11 +3250,8 @@ impl KlippApp {
                     }
                     for clip in &track.clips {
                         if let Some(td) = clip.title_data() {
-                            subs.push(SubtitleEntry {
-                                start_secs: clip.timeline_in.to_secs_f64(),
-                                end_secs: clip.timeline_out.to_secs_f64(),
-                                text: td.text().clone(),
-                            });
+                            // With its inline styling and placement (#1515).
+                            subs.push(cue_of(clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64(), td));
                         }
                     }
                 }
