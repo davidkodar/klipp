@@ -827,6 +827,26 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitleParagraph { clip_id, key, value } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                let value = if value.is_finite() { value.clamp(-2000.0, 2000.0) } else { 0.0 };
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(v) = target_textbox_mut(td, target_oid).and_then(|tb| tb.paragraph.value_mut_for(key)) {
+                                *v = value;
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Paragraph", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetTitleLastLine { clip_id, last_line } => {
                 let old = self.snapshot_title(*clip_id);
                 let target_oid = self.title_text_target_id(*clip_id);

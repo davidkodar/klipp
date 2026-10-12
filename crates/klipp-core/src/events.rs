@@ -2610,6 +2610,9 @@ pub enum AppCommand {
     SetTitleWriteOn { clip_id: ClipId, write_on: f32 },
     /// Set line spacing multiplier.
     SetTitleLineSpacing { clip_id: ClipId, line_spacing: f32 },
+    /// One of a text box's paragraph settings (#1721), by its key
+    /// (`title_effect_keys::TEXT_SPACE_BEFORE` and on), in pixels at 1080p.
+    SetTitleParagraph { clip_id: ClipId, key: String, value: f32 },
     /// Toggle text underline rendering.
     SetTitleUnderline { clip_id: ClipId, underline: bool },
     /// The weight the text box is set in, `None` for its style's, and
