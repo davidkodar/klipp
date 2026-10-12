@@ -60,16 +60,33 @@ fn placement(state: &AppState, clip: &Clip) -> Option<klipp_graph_lift::stack_vi
 #[allow(clippy::too_many_arguments)]
 fn draw_stack(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip, graph: &Graph, view: &StackView, cmds: &mut Vec<AppCommand>, clip_time_secs: f64) {
     let order = movable(view);
+    // The node picked in the picture graph: its card outlined, and
+    // scrolled into view once each time the pick changes (#1347).
+    let selected = state.selected_node_addr.as_ref().filter(|a| a.root_clip() == Some(clip.id.0));
+    let revealed_id = egui::Id::new("stack_view_revealed");
+    let reveal = selected.filter(|a| ui.data(|d| d.get_temp::<NodePath>(revealed_id)).as_ref() != Some(*a));
+    ui.data_mut(|d| match selected {
+        Some(a) => d.insert_temp(revealed_id, a.clone()),
+        None => d.remove::<NodePath>(revealed_id),
+    });
     for item in &view.items {
         match item {
             Item::Header(section) => header(ui, theme, *section),
             Item::Node(row) => {
-                row_card(ui, theme, state, clip, graph, row, cmds, clip_time_secs);
-                if let Some(i) = order.iter().position(|r| r.addr == row.addr) {
-                    reorder_buttons(ui, view, &order, i, cmds);
-                }
-                if let Some(p) = &row.placement {
-                    placement_controls(ui, clip, view, row, p, cmds);
+                let card = ui.scope(|ui| {
+                    row_card(ui, theme, state, clip, graph, row, cmds, clip_time_secs);
+                    if let Some(i) = order.iter().position(|r| r.addr == row.addr) {
+                        reorder_buttons(ui, view, &order, i, cmds);
+                    }
+                    if let Some(p) = &row.placement {
+                        placement_controls(ui, clip, view, row, p, cmds);
+                    }
+                });
+                if selected == Some(&row.addr) {
+                    ui.painter().rect_stroke(card.response.rect.expand(2.0), 3.0, egui::Stroke::new(1.0_f32, theme.accent));
+                    if reveal == Some(&row.addr) {
+                        card.response.scroll_to_me(Some(egui::Align::Center));
+                    }
                 }
                 ui.add_space(4.0);
             }

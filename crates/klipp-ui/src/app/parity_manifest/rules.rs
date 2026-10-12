@@ -15,8 +15,10 @@ pub(super) const TRACK_GRADE_EXCLUSION: &str = "#1408 (a track's grade has no in
 /// A grade row's track in the curve editor: grade keyframing isn't M3's.
 pub(super) const GRADE_CURVE_EXCLUSION: &str = "#891 (grade keyframing: phase 4; the curve editor lists effect tracks only)";
 
+/// A picture-graph pick reveals the effect's own card in the Effects
+/// tab (#1347): the graph has no inspector of its own to compare.
 pub(super) const GRAPH_INSPECTOR_EXCLUSION: &str =
-    "#1347: picture-graph selection does not reveal an effect inspector in either view";
+    "#1347: a picture-graph pick reveals the effect's card on the EffectsStack surface; there is no second inspector";
 
 /// Obligations no catalog parameter carries, named here so no family can
 /// define them away: a representative per kind, not one per row.

@@ -79,6 +79,15 @@ impl AppState {
     }
 }
 
+/// Whether the picture graph's selection, changed from `before`, names an
+/// effect node of the clip, whose card the inspector reveals (#1347).
+pub(super) fn reveals_card(state: &AppState, before: Option<&NodePath>) -> bool {
+    let Some(addr) = state.selected_node_addr.as_ref().filter(|a| Some(*a) != before) else { return false };
+    let Some(clip) = addr.root_clip().and_then(|id| state.sequence().all_clips().find(|c| c.id.0 == id)) else { return false };
+    let Ok(lifted) = clip.picture_v2() else { return false };
+    crate::inspector::stack_view::node_at(&lifted.picture.graph, addr).and_then(klipp_graph_lift::effect_params::tag).is_some()
+}
+
 impl KlippApp {
     pub(super) fn render_graph_dock(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, rect: egui::Rect, theme: &KlippTheme) {
         self.state.repair_graph_dock();
@@ -131,7 +140,14 @@ impl KlippApp {
                 Err(why) => { ui.label(why); }
             }
             self.state.graph_dock_path = level.nodes.clone();
+            let before = self.state.selected_node_addr.take();
             self.state.selected_node_addr = self.state.selected_node_id.map(|node| NodePath::new(level.root, level.nodes.iter().copied().chain([node])));
+            // An effect node picked: its card, on the Effects tab, which
+            // scrolls it into view (#1347). Layout only, never the document.
+            if reveals_card(&self.state, before.as_ref()) {
+                self.layout.active_inspector_tab = crate::layout_state::InspectorTab::Effects;
+                self.set_inspector_visible(true);
+            }
             crate::state::note_active_panel(&mut self.state, crate::state::PanelKind::PictureGraph, ui.ctx(), body);
         });
     }
@@ -152,6 +168,84 @@ mod tests {
         state.sequences[0].tracks[0].clips.push(clip);
         state.selected_clip = Some(id);
         (state, id, path)
+    }
+
+    /// A state holding a clip with ten blurs, and their nodes' paths.
+    fn blurred() -> (AppState, klipp_timeline::Clip, Vec<NodePath>) {
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let clip = klipp_timeline::test_clip::TestClip::of(klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0)))
+            .effects((0..10).map(|i| klipp_effects::BuiltinEffect::GaussianBlur { radius: i as f32 + 1.0 }))
+            .build();
+        let lifted = clip.picture_v2().unwrap();
+        let graph = &lifted.picture.graph;
+        let blurs = graph.nodes.iter().filter(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT).map(|n| NodePath::new(Root::Clip { clip: clip.id.0 }, [n.id])).collect::<Vec<_>>();
+        assert_eq!(blurs.len(), 10);
+        let mut state = AppState::default();
+        state.sequences[0].tracks[0].clips.push(clip.clone());
+        state.selected_clip = Some(clip.id);
+        (state, clip, blurs)
+    }
+
+    /// Picking an effect node in the picture graph reveals its card, by
+    /// the node's full path; the same pick again, a node that isn't an
+    /// effect, or no pick reveals nothing (#1347).
+    #[test]
+    fn picking_an_effect_node_reveals_its_card() {
+        let (mut s, clip, blurs) = blurred();
+        s.selected_node_addr = Some(blurs[3].clone());
+        assert!(reveals_card(&s, None), "an effect picked");
+        assert!(reveals_card(&s, Some(&blurs[0])), "another effect picked");
+        assert!(!reveals_card(&s, Some(&blurs[3])), "the same pick, again");
+        let lifted = clip.picture_v2().unwrap();
+        let graph = &lifted.picture.graph;
+        let source = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n).is_none()).unwrap();
+        s.selected_node_addr = Some(NodePath::new(Root::Clip { clip: clip.id.0 }, [source.id]));
+        assert!(!reveals_card(&s, None), "{} isn't an effect", source.type_id.as_str());
+        s.selected_node_addr = None;
+        assert!(!reveals_card(&s, Some(&blurs[3])), "nothing picked");
+    }
+
+    /// The picked effect's card scrolls into view in the Effects tab's
+    /// stack, once for each pick, and the document is left alone: no
+    /// command, no step (#1347).
+    #[test]
+    fn the_picked_card_scrolls_into_view_once_without_an_edit() {
+        let (mut s, clip, blurs) = blurred();
+        let ctx = egui::Context::default();
+        let mut clock = 0.0;
+        let mut frame = |s: &AppState, scroll: Option<f32>| {
+            clock += 0.1;
+            let mut cmds = Vec::new();
+            let mut offset = 0.0;
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 600.0))), time: Some(clock), ..Default::default() };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut area = egui::ScrollArea::vertical().id_salt("stack").max_height(160.0).animated(false);
+                    if let Some(y) = scroll {
+                        area = area.vertical_scroll_offset(y);
+                    }
+                    offset = area.show(ui, |ui| crate::inspector::stack_view::show(ui, &KlippTheme::default(), s, &clip, &mut cmds, 0.0)).state.offset.y;
+                });
+            });
+            assert!(cmds.is_empty(), "drawing the stack sent {cmds:?}");
+            offset
+        };
+        for _ in 0..3 {
+            assert_eq!(frame(&s, None), 0.0, "nothing picked: the top");
+        }
+        s.selected_node_addr = Some(blurs[9].clone());
+        let mut offset = 0.0;
+        for _ in 0..3 {
+            offset = frame(&s, None);
+        }
+        assert!(offset > 100.0, "the last blur's card scrolled to: {offset}");
+        // Scrolled back by hand: the same pick doesn't pull it down again.
+        frame(&s, Some(0.0));
+        for _ in 0..2 {
+            assert_eq!(frame(&s, None), 0.0, "revealed once per pick");
+        }
+        assert_eq!(s.active_history().undo_count(), 0, "no step");
+        assert!(!s.dirty, "the document untouched");
     }
 
     fn nested_grade() -> (AppState, ClipId, Vec<klipp_nodes::NodeId>) {
