@@ -71,7 +71,7 @@ fn parse_motion(
     spec: &klipp_timeline::TitleMotionSpec,
     exit: bool,
 ) -> Result<Option<klipp_core::title_motion::Motion>, String> {
-    use klipp_core::title_motion::{Easing, Motion, MotionKind, StaggerUnit};
+    use klipp_core::title_motion::{Motion, MotionKind, StaggerUnit};
     if spec.kind.eq_ignore_ascii_case("none") {
         if spec.duration_secs.is_some()
             || spec.delay_secs.is_some()
@@ -168,15 +168,31 @@ fn parse_motion(
         m.stagger_secs = v;
     }
     if let Some(v) = &spec.easing {
-        m.easing = match v.to_lowercase().as_str() {
-            "linear" => Easing::Linear, "out_cubic" => Easing::OutCubic,
-            "out_quint" => Easing::OutQuint, "out_expo" => Easing::OutExpo,
-            "out_back" => Easing::OutBack, "out_bounce" => Easing::OutBounce,
-            "in_out_cubic" => Easing::InOutCubic, "in_cubic" => Easing::InCubic,
-            _ => return Err(format!("{v:?} is not an easing; use linear, out_cubic, out_quint, out_expo, out_back, out_bounce, in_out_cubic or in_cubic")),
-        };
+        m.easing = easing(v)?;
     }
     Ok(Some(m))
+}
+
+/// An easing by name, or a curve of its own as `cubic-bezier(x1, y1,
+/// x2, y2)` (#1511): the handles' times within 0..1.
+fn easing(v: &str) -> Result<klipp_core::title_motion::Easing, String> {
+    use klipp_core::title_motion::Easing;
+    let lower = v.trim().to_lowercase();
+    if let Some(args) = lower.strip_prefix("cubic-bezier(").and_then(|r| r.strip_suffix(')')) {
+        let n: Vec<f32> = args.split(',').map(|a| a.trim().parse::<f32>()).collect::<Result<_, _>>().map_err(|_| format!("{v:?}: cubic-bezier takes four numbers"))?;
+        let [x1, y1, x2, y2] = n[..] else { return Err(format!("{v:?}: cubic-bezier takes four numbers")) };
+        if !(0.0..=1.0).contains(&x1) || !(0.0..=1.0).contains(&x2) || !n.iter().all(|a| a.is_finite()) {
+            return Err(format!("{v:?}: the handles' times (first and third numbers) must be within 0 and 1"));
+        }
+        return Ok(Easing::Custom(klipp_core::title_motion::CubicBezier::new(x1, y1, x2, y2)));
+    }
+    Ok(match lower.as_str() {
+        "linear" => Easing::Linear, "out_cubic" => Easing::OutCubic,
+        "out_quint" => Easing::OutQuint, "out_expo" => Easing::OutExpo,
+        "out_back" => Easing::OutBack, "out_bounce" => Easing::OutBounce,
+        "in_out_cubic" => Easing::InOutCubic, "in_cubic" => Easing::InCubic,
+        _ => return Err(format!("{v:?} is not an easing; use linear, out_cubic, out_quint, out_expo, out_back, out_bounce, in_out_cubic, in_cubic or cubic-bezier(x1, y1, x2, y2)")),
+    })
 }
 
 /// Check entrance syntax and legacy values before style inheritance. Nested
