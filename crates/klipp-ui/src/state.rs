@@ -2217,6 +2217,9 @@ pub struct AppState {
     /// `update()` only when the engine's `node_thumbs_gen` advances.
     pub node_thumbs: std::collections::HashMap<klipp_compose::InspectAt, Vec<u8>>,
     pub node_thumbs_gen: u64,
+    /// The asked-for node previews the render couldn't make, and why
+    /// (#1747), from the same batch as `node_thumbs`.
+    pub node_thumbs_unavailable: std::collections::HashMap<klipp_compose::InspectAt, String>,
     pub(crate) node_thumbnail_state: crate::app::node_thumbnails::ThumbnailState,
 
     /// Project-level reusable colour grades. Persisted to
@@ -4455,6 +4458,7 @@ impl Default for AppState {
             color_match_reference_clip: None,
             node_thumbs: std::collections::HashMap::new(),
             node_thumbs_gen: 0,
+            node_thumbs_unavailable: Default::default(),
             node_thumbnail_state: Default::default(),
             looks: Vec::new(),
             viewer_overlays: ViewerOverlays::default(),

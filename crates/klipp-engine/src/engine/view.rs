@@ -798,7 +798,8 @@ impl PlaybackEngine {
             let batch = crate::node_thumbnails::ThumbnailBatch::new(
                 self.thumbnail_request, crate::node_thumbnails::frame_index(self.playhead, snapshot.fps), crate::node_thumbnails::PreviewQuality::Viewer,
                 revision, &self.thumbnail_priority, std::mem::take(&mut found.thumbs),
-            );
+            )
+            .with_unavailable(&self.thumbnail_priority, std::mem::take(&mut found.unavailable));
             self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).publish_node_thumbnails(batch);
         }
         // A frame a node didn't draw as asked isn't kept: shown again from

@@ -39,6 +39,9 @@ pub struct ThumbnailBatch {
     pub quality: PreviewQuality,
     pub revision: SequenceRevision,
     pub images: HashMap<NodeOutput, Vec<u8>>,
+    /// The asked-for previews the render couldn't make, and why (#1747):
+    /// the node editor marks those nodes and gives the reason.
+    pub unavailable: HashMap<NodeOutput, String>,
 }
 
 impl ThumbnailBatch {
@@ -56,7 +59,14 @@ impl ThumbnailBatch {
             let bytes = found.remove(at)?;
             (bytes.len() == BYTES_PER_THUMB).then(|| (at.clone(), bytes))
         }).collect();
-        Self { request, frame, quality, revision, images }
+        Self { request, frame, quality, revision, images, unavailable: HashMap::new() }
+    }
+
+    /// The batch, with the render's reasons for the previews it asked for
+    /// and couldn't make (#1747); any other reason is not this batch's.
+    pub fn with_unavailable(mut self, wanted: &[NodeOutput], unavailable: Vec<(NodeOutput, String)>) -> Self {
+        self.unavailable = unavailable.into_iter().filter(|(at, _)| wanted.contains(at) && !self.images.contains_key(at)).collect();
+        self
     }
 
     pub fn matches(&self, request: u64, frame: i64, revision: SequenceRevision) -> bool {
@@ -173,4 +183,20 @@ mod tests {
         assert!(fb.node_thumbnail_batch.as_ref().unwrap().images.is_empty());
         assert!(fb.node_thumbs_gen > generation);
     }
+
+    /// A batch keeps the render's reasons only for previews it asked for
+    /// and didn't get (#1747).
+    #[test]
+    fn a_batch_keeps_why_each_asked_for_preview_is_missing() {
+        let (drawn, missing, other) = (at(1, 2), at(1, 3), at(1, 4));
+        let found = HashMap::from([(drawn.clone(), vec![0; BYTES_PER_THUMB])]);
+        let batch = ThumbnailBatch::new(1, frame(), PreviewQuality::Viewer, revision(), &[drawn.clone(), missing.clone()], found)
+            .with_unavailable(&[drawn.clone(), missing.clone()], vec![
+                (missing.clone(), "a matte's thumbnail isn't drawn yet".into()),
+                (other.clone(), "not asked for".into()),
+                (drawn.clone(), "drawn after all".into()),
+            ]);
+        assert_eq!(batch.unavailable, HashMap::from([(missing, "a matte's thumbnail isn't drawn yet".to_owned())]));
+    }
 }
+

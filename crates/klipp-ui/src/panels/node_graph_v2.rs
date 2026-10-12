@@ -192,6 +192,34 @@ struct DragSticky {
 /// looking", not a property of the grade. In-memory only; the full
 /// canvas state (pan + zoom) is captured at set-time and re-applied
 /// verbatim on jump.
+/// What a node did on the frame shown, when it isn't what was asked
+/// (#1747): the canvas marks it with a badge and gives `reason` on hover.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeFeedback {
+    pub kind: FeedbackKind,
+    pub reason: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeedbackKind {
+    /// It failed: its picture is not the one asked for.
+    Failed,
+    /// It didn't run as asked (a plug-in missing, a frame it can't take)
+    /// and the picture went on without it, or with what it had.
+    Declined,
+    /// It ran, but its preview couldn't be made.
+    NoPreview,
+}
+
+impl FeedbackKind {
+    fn glyph(self) -> &'static str {
+        match self { Self::Failed => "\u{2715}", Self::Declined => "!", Self::NoPreview => "\u{2013}" }
+    }
+    fn word(self) -> &'static str {
+        match self { Self::Failed => "Failed", Self::Declined => "Declined", Self::NoPreview => "No preview" }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ViewBookmark {
     pan: egui::Vec2,
@@ -408,6 +436,9 @@ pub struct NodeGraphV2Panel {
     /// The wire a lone dragged node is over, which it goes into when let
     /// go (#1744).
     drop_wire: Option<WireRef>,
+    /// How the nodes on the canvas fared on the frame shown (#1747), by
+    /// node: the app sets it before each draw.
+    pub node_feedback: std::collections::HashMap<NodeId, NodeFeedback>,
 }
 
 impl Default for NodeGraphV2Panel {
@@ -467,6 +498,7 @@ impl Default for NodeGraphV2Panel {
             insert_wire: None,
             wire_from: None,
             drop_wire: None,
+            node_feedback: Default::default(),
         }
     }
 }
@@ -620,6 +652,20 @@ impl NodeGraphV2Panel {
         let updates = self.show_canvas(ui, selected_node, selected_set, &graph, clip.id, theme,
             engine_node_thumbs, engine_node_thumbs_gen, deferred_drops, &mut level.nodes, &labels, None, None,
             clip_time_secs, false, 0.0, self.picture_solo);
+        // A batch the picture's rules refuse (a wire its chain can't take,
+        // a node where none can go) says why here, where it was asked
+        // for, and is not sent (#1747): the app's toast said it far away.
+        let mut updates = updates;
+        updates.retain(|cmd| {
+            let AppCommand::GraphOps { ops, label } = cmd else { return true };
+            match clip.clone().apply_picture_ops(ops) {
+                Ok(_) => true,
+                Err(why) => {
+                    self.bookmark_toast = Some((format!("{label}: {why}"), std::time::Instant::now()));
+                    false
+                }
+            }
+        });
         // A click without movement must not create an undo entry. Begin
         // only when the first position update is about to be dispatched:
         // a node's, or a note's (#1743).
@@ -2505,6 +2551,28 @@ impl NodeGraphV2Panel {
                         );
                     }
                 }
+            }
+        }
+
+        // ── Node feedback (#1747) ──
+        // A node that failed, declined or has no preview: a badge on its
+        // header, the reason on hover. The hover is registered only near
+        // the node, as the port tooltips are, so a parked cursor costs
+        // nothing.
+        for (node_id, rect, _, _, _) in node_rects.iter().copied() {
+            let Some(feedback) = self.node_feedback.get(&node_id) else { continue };
+            let size = (14.0 * zoom).max(10.0);
+            let badge = egui::Rect::from_min_size(egui::pos2(rect.max.x - size - 3.0 * zoom, rect.min.y + 2.0 * zoom), egui::vec2(size, size));
+            let colour = match feedback.kind {
+                FeedbackKind::Failed => theme.marker_error,
+                FeedbackKind::Declined => theme.marker_warning,
+                FeedbackKind::NoPreview => theme.text_dim,
+            };
+            painter.circle_filled(badge.center(), size * 0.5, colour);
+            painter.text(badge.center(), egui::Align2::CENTER_CENTER, feedback.kind.glyph(), egui::FontId::proportional(size * 0.7), theme.bg_deep);
+            if hover_pointer.is_some_and(|p| rect.expand(4.0).contains(p)) {
+                let tip = format!("{}: {}", feedback.kind.word(), feedback.reason);
+                ui.interact(badge.union(rect), ui.id().with(("ngv2_node_feedback", node_id)), egui::Sense::hover()).on_hover_text(tip);
             }
         }
 

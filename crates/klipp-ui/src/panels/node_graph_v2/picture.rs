@@ -19,6 +19,11 @@ pub(super) struct PictureNode<'a> {
     inputs: Vec<PortSpec>,
     outputs: Vec<PortSpec>,
     input_links: Vec<Option<String>>,
+    /// The ports in words (#1747), as the canvas names them.
+    input_words: Vec<String>,
+    output_words: Vec<String>,
+    /// The node's kind in words when no description names it.
+    kind_words: String,
 }
 
 pub(super) struct PictureCanvas<'a> {
@@ -58,14 +63,51 @@ fn description(node: &Node, native: Option<&klipp_nodes::Node>) -> Option<&'stat
         .or_else(|| klipp_effects::registry::effect_types().map(|t| &t.desc).find(|d| d.id == node.type_id.as_str()))
 }
 
-fn structural_name(node: &Node) -> &str {
+fn structural_name(node: &Node) -> String {
     match node.type_id.as_str() {
         lt::SOURCE => "Source", lt::OUTPUT => "Output", lt::GROUP => "Grade",
         lt::GROUP_INPUT => "Input", lt::GROUP_OUTPUT => "Output", lt::GROUP_FRAME => "Frame",
         lt::PLACEMENT => "Placement", lt::SCENE_TO_DISPLAY => "Scene to Display",
         lt::TEMPORAL_DENOISE => "Temporal Denoise", lt::FRAME_BLEND => "Frame Blend",
-        _ => node.type_id.as_str(),
+        other => return readable_id(other),
     }
+    .to_owned()
+}
+
+/// A type id or key no description names, in words (#1747): its last
+/// part ("klipp.fx.film_burn" → "Film burn"), separators as spaces,
+/// the first letter capital.
+fn readable_id(id: &str) -> String {
+    let last = id.rsplit(['.', ':', '/']).find(|s| !s.is_empty()).unwrap_or(id);
+    let spaced = last.replace(['_', '-'], " ");
+    let mut chars = spaced.trim().chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => id.to_owned(),
+    }
+}
+
+/// A port's key in words (#1747): "in" is Input, "mask" Mask, "fg"
+/// Foreground; "r", "g" and "b" are colours on a node that splits or
+/// combines them, letters elsewhere; numbered keys count from one.
+fn port_words(key: &str, rgb: bool) -> String {
+    let named = match key {
+        "in" => "Input", "out" => "Output", "mask" => "Mask", "matte" => "Matte",
+        "pregrade" => "Before the grade", "fg" => "Foreground", "bg" => "Background",
+        "ref" => "Reference", "frame" => "Frame", "a" => "A",
+        "r" if rgb => "Red", "g" if rgb => "Green", "b" if rgb => "Blue",
+        "b" => "B",
+        _ => "",
+    };
+    if !named.is_empty() {
+        return named.to_owned();
+    }
+    for (prefix, word) in [("in", "Input"), ("p", "Port")] {
+        if let Some(n) = key.strip_prefix(prefix).and_then(|n| n.parse::<u32>().ok()) {
+            return format!("{word} {}", n + 1);
+        }
+    }
+    readable_id(key)
 }
 
 impl<'a> PictureCanvas<'a> {
@@ -124,11 +166,13 @@ impl<'a> PictureCanvas<'a> {
             if inputs.len() > u8::MAX as usize || outputs.len() > u8::MAX as usize {
                 return Err(format!("{} has more ports than this canvas can display", node.type_id));
             }
-            let label = if node.label.is_empty() {
-                desc.map(|d| d.name).unwrap_or_else(|| structural_name(node)).to_owned()
-            } else { node.label.clone() };
+            let kind_words = desc.map_or_else(|| structural_name(node), |d| d.name.to_owned());
+            let label = if node.label.is_empty() { kind_words.clone() } else { node.label.clone() };
             let input_links = inputs.iter().map(|p| node.wireless.input_links.get(&PortKey::from(p.key.as_str())).cloned()).collect();
-            nodes.push(PictureNode { node, label, desc, native, inputs, outputs, input_links });
+            let rgb = native.as_ref().is_some_and(|n| matches!(n.kind, NodeKind::RGBSplitter | NodeKind::RGBCombiner));
+            let input_words = inputs.iter().map(|p| port_words(&p.key, rgb)).collect();
+            let output_words = outputs.iter().map(|p| port_words(&p.key, rgb)).collect();
+            nodes.push(PictureNode { node, label, desc, native, inputs, outputs, input_links, input_words, output_words, kind_words });
         }
         let port = |id, key: &PortKey, output| -> Option<u8> {
             let n = nodes.iter().find(|n| n.node.id == id)?;
@@ -272,14 +316,14 @@ impl CanvasKind for &PictureNode<'_> {
         if self.is_source() { "▶" } else if self.is_output() { "⏏" } else if self.is_group() { "⊞" }
         else { self.native.as_ref().map_or("F", |n| n.kind.glyph()) }
     }
-    fn display_name(&self) -> &str { self.desc.map(|d| d.name).unwrap_or_else(|| structural_name(self.node)) }
+    fn display_name(&self) -> &str { &self.kind_words }
     fn inputs(self) -> &'static [PortDesc] { self.desc.map_or(&[], |d| d.inputs) }
     fn outputs(self) -> &'static [PortDesc] { self.desc.map_or(&[], |d| d.outputs) }
     fn output_port_count(&self) -> u8 { self.outputs.len() as u8 }
     fn input_port_role(&self, port: u8) -> PortRole { role(self.inputs.get(port as usize)) }
     fn output_port_role(&self, port: u8) -> PortRole { role(self.outputs.get(port as usize)) }
-    fn input_port_label(&self, port: u8) -> &str { self.inputs.get(port as usize).map_or("", |p| p.key.as_str()) }
-    fn output_port_label(&self, port: u8) -> &str { self.outputs.get(port as usize).map_or("", |p| p.key.as_str()) }
+    fn input_port_label(&self, port: u8) -> &str { self.input_words.get(port as usize).map_or("", String::as_str) }
+    fn output_port_label(&self, port: u8) -> &str { self.output_words.get(port as usize).map_or("", String::as_str) }
 }
 
 fn role(port: Option<&PortSpec>) -> PortRole {
@@ -563,7 +607,10 @@ mod tests {
         assert_eq!(model.edges.len(), graph.edges.len());
         let n = model.nodes.iter().find(|n| n.id() == id).unwrap();
         assert!(n.outputs.iter().any(|p| p.key == "custom_output"));
-        assert_eq!(n.label(), "ofx:an-unavailable-plugin");
+        // In words, not as its type id and keys (#1747).
+        assert_eq!(n.label(), "An unavailable plugin");
+        let out = n.outputs.iter().position(|p| p.key == "custom_output").unwrap() as u8;
+        assert_eq!(n.kind().output_port_label(out), "Custom output");
     }
 
     #[test]
@@ -988,8 +1035,10 @@ mod tests {
             self.time += 0.05;
             let c = self.clip();
             let mut level = root(&c);
-            // As the graph dock hands it the engine's solo.
+            // As the graph dock hands it the engine's solo, and how the
+            // nodes fared on the frame shown.
             self.panel.picture_solo = self.state.solo_node;
+            self.panel.node_feedback = self.state.node_feedback(self.clip);
             let mut cmds = Vec::new();
             let (panel, selected, set) = (&mut self.panel, &mut self.selected, &mut self.set);
             let out = self.ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 700.0))), time: Some(self.time), events, modifiers: self.mods, ..Default::default() }, |ctx| {
@@ -1363,6 +1412,84 @@ mod tests {
         d.drag(out_port(&d, sharpen), in_port(&d, s2d, 0));
         assert_eq!(d.steps(), 1, "nothing made");
         assert!(d.panel.bookmark_toast.as_ref().is_some_and(|(t, _)| t.contains("loop")), "{:?}", d.panel.bookmark_toast);
+    }
+
+    /// A node the frame shown declined and one whose preview the renderer
+    /// couldn't make each carry a badge, and the reason on hover (#1747).
+    /// The preview's reason is the renderer's own, from an inspected render
+    /// of the clip asking for every node's thumbnail, as the engine asks.
+    #[test]
+    fn declined_and_unavailable_nodes_show_their_badge_and_reason() {
+        let mut d = Dock::new();
+        let c = d.clip();
+        let graph = d.graph();
+        let model = PictureCanvas::new(&graph, root(&c), None).unwrap();
+        let wanted: Vec<_> = model.nodes.iter().filter_map(|n| model.output(n.id())).collect();
+        let seq = d.state.sequence().baked_for_render().into_owned();
+        let mut renderer = klipp_compose::Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        renderer.set_gpu_enabled(false);
+        let inspect = klipp_compose::Inspect { clip: Some(c.id), only: Some(c.id), thumbs: Some(wanted.iter().cloned().collect()), ..Default::default() };
+        let t = klipp_core::RationalTime::from_secs_f64(1.0, 25);
+        struct Grey;
+        impl klipp_compose::FrameSource for Grey {
+            fn frame(&mut self, _: &Clip, _: f64, w: u32, h: u32) -> Option<klipp_compose::SourceFrame> {
+                Some(klipp_compose::SourceFrame { pixels: klipp_compose::SourcePixels::Linear(std::sync::Arc::new([0.18, 0.18, 0.18, 1.0].repeat((w * h) as usize))), width: w, height: h, pts: None })
+            }
+        }
+        let (_, found) = renderer.render_inspected(&seq, t, 64, 36, &mut Grey, klipp_compose::RenderOptions::default(), inspect);
+        let batch = klipp_engine::node_thumbnails::ThumbnailBatch::new(1, 0, klipp_engine::node_thumbnails::PreviewQuality::Viewer, klipp_timeline::SharedSequence::new(seq.clone()).revision(), &wanted, found.thumbs)
+            .with_unavailable(&wanted, found.unavailable);
+        let placement = graph.nodes.iter().find(|n| n.type_id.as_str() == lt::PLACEMENT).unwrap().id;
+        let (no_preview, why) = batch.unavailable.iter().find(|(at, _)| at.path.node() == Some(placement)).map(|(at, why)| (at.path.node().unwrap(), why.clone())).expect("the renderer has no preview of the placement");
+        d.state.node_thumbs_unavailable = batch.unavailable.clone();
+        let blur = effect(&d, "gaussian_blur");
+        d.state.frame_declines.push(klipp_nodes::Decline {
+            clip: Some(c.id), node: blur, kind: NodeKind::Effect, outcome: klipp_nodes::DeclineOutcome::Unsupported,
+            name: "Gaussian Blur".into(), reason: "needs a frame size under 2048".into(), why: String::new(),
+        });
+        d.settle();
+        let tooltip = |d: &mut Dock, node: NodeId| {
+            let at = card_of(d, node).center();
+            for _ in 0..12 {
+                d.frame(vec![egui::Event::PointerMoved(at)]);
+            }
+            d.texts.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>()
+        };
+        let texts = tooltip(&mut d, blur);
+        assert!(texts.iter().any(|t| t == "!"), "the declined badge: {texts:?}");
+        assert!(texts.iter().any(|t| t == "Declined: needs a frame size under 2048"), "its reason on hover: {texts:?}");
+        let texts = tooltip(&mut d, no_preview);
+        assert!(texts.iter().any(|t| t == "\u{2013}"), "the no-preview badge: {texts:?}");
+        assert!(texts.iter().any(|t| *t == format!("No preview: {why}")), "the renderer's reason on hover: {texts:?}");
+
+        // The control: with nothing reported there is no badge.
+        d.state.frame_declines.clear();
+        d.state.node_thumbs_unavailable.clear();
+        let texts = tooltip(&mut d, blur);
+        assert!(!texts.iter().any(|t| t == "!" || t.starts_with("Declined")), "{texts:?}");
+    }
+
+    /// A wire the picture's rules refuse says why on the canvas, where it
+    /// was dropped, and nothing is sent or changed (#1747): lifting the
+    /// wire into an effect and dropping it on the next node's input
+    /// would leave that effect fed by nothing.
+    #[test]
+    fn a_refused_picture_reconnect_says_why_on_the_canvas() {
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let c = TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0)))
+            .effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 })
+            .effect(klipp_effects::BuiltinEffect::Sharpen { amount: 0.5 })
+            .build();
+        let mut d = Dock::of(c);
+        let before = d.graph();
+        let sharpen = effect(&d, "sharpen");
+        let placement = before.nodes.iter().find(|n| n.type_id.as_str() == lt::PLACEMENT).unwrap().id;
+        d.drag(in_port(&d, sharpen, 0), in_port(&d, placement, 0));
+        let toast = d.panel.bookmark_toast.as_ref().map(|(t, _)| t.clone());
+        assert!(toast.as_deref().is_some_and(|t| t.starts_with("Reconnect wire: ")), "said on the canvas: {toast:?}: {:?}", d.sent);
+        assert!(!d.sent.iter().any(|c| matches!(c, AppCommand::GraphOps { .. })), "nothing sent: {:?}", d.sent);
+        assert_eq!(d.graph(), before, "nothing changed");
+        assert_eq!(d.steps(), 0);
     }
 }
 
