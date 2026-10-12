@@ -2026,9 +2026,7 @@ impl Renderer {
                     // the stack declines the others before any layer.
                     SourcePixels::SceneReferred { codes, transfer, source_to_working } => {
                         let t = Instant::now();
-                        // Deeper than 10 bits, its codes don't fit the GPU's
-                        // decode (#1226): decoded on the CPU as another size is.
-                        let input = if other_size || codes.len() != (width as usize) * (height as usize) || codes.packed10().is_none() {
+                        let input = if other_size || codes.len() != (width as usize) * (height as usize) {
                             // Decoded and fitted on the CPU, as the CPU
                             // composite fits it (`to_linear`); graded and
                             // displayed on the GPU from there.
