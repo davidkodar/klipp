@@ -485,7 +485,9 @@ const DROP_MIN_SECS: f64 = 3.0;
 /// The stretches of a mix, metered as [`mix_loudness`] rows `step` apart,
 /// whose short-term loudness sits more than [`DROP_UNDER_LU`] under the
 /// piece's median for at least [`DROP_MIN_SECS`]: `(from, to, lufs,
-/// median)`, `lufs` the stretch's median. A row whose three-second
+/// median)`, `lufs` the stretch's median. `from` is where the first quiet
+/// row's three-second window starts, where the sound went quiet, not the
+/// row's own time (#1598). A row whose three-second
 /// window `excused` (a fade, speech: a quiet moment meant as one), that
 /// is silence (-60 LUFS or under, a deliberate pause), or whose window
 /// starts before the piece does, is never part of one.
@@ -507,10 +509,10 @@ pub(crate) fn loudness_drops(rows: &[(f64, f32, f32)], step: f64, excused: &dyn 
             continue;
         }
         if let (Some(first), Some(last)) = (run.first(), run.last()) {
-            let (from, to) = (first.0, last.0 + step);
-            if to - from >= DROP_MIN_SECS - 1e-6 {
+            let to = last.0 + step;
+            if to - first.0 >= DROP_MIN_SECS - 1e-6 {
                 if let Some(lufs) = median(run.iter().map(|r| r.1).collect()) {
-                    drops.push((from, to, lufs, piece));
+                    drops.push(((first.0 + step - 3.0).max(0.0), to, lufs, piece));
                 }
             }
         }
@@ -705,7 +707,9 @@ mod loudness_drop_tests {
         let drops = loudness_drops(&rows(&levels), 1.0, &none);
         assert_eq!(drops.len(), 1, "{drops:?}");
         let (from, to, lufs, median) = drops[0];
-        assert_eq!((from, to, lufs, median), (12.0, 18.0, -22.0, -11.0));
+        // The rows from 12 s read quiet; the first one's window, and the
+        // quiet, starts 3 s before it ends, at 10 s (#1598).
+        assert_eq!((from, to, lufs, median), (10.0, 18.0, -22.0, -11.0));
 
         // Two seconds down is a moment, not a section.
         let mut short = vec![-11.0f32; 30];
