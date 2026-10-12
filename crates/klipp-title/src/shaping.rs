@@ -13,6 +13,15 @@
 //! Text the shaper changes nothing in (no kerning pair, no ligature, no
 //! feature) lays out exactly as fontdue alone laid it out: each glyph's
 //! advance is rounded up and its box placed as fontdue's layout does.
+//!
+//! Mixed-direction text and complex scripts (#1502): each line fontdue
+//! broke, in the text's logical order, is cut into runs of one face, one
+//! bidi level and one script; the runs are put in visual order by the
+//! Unicode bidi algorithm, the paragraph's base direction the text
+//! box's; and each is shaped in its own direction and script, so Arabic
+//! joins, Indic scripts reorder and form conjuncts, and a Hebrew line's
+//! English words and numbers read in their own order. Text with no
+//! right-to-left letters in a left-to-right box is set as before.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -29,7 +38,7 @@ use harfrust::{Direction, Feature, FontRef, ShapeOptions, ShaperData, ShaperInst
 
 /// Bumped whenever shaping changes where glyphs land, so a glyph cache
 /// laid out before does not match (#1501).
-pub const SHAPING_VERSION: u32 = 1;
+pub const SHAPING_VERSION: u32 = 2;
 
 /// A font loaded for titles: fontdue's face for metrics and drawing,
 /// and the bytes and shaping tables harfrust shapes with. `shaper` is
@@ -172,6 +181,8 @@ pub(crate) struct Line {
 /// has (fontdue lays one glyph per character).
 struct Appended {
     base: usize,
+    /// Where the piece ends in the source text.
+    end: usize,
     text: String,
     px: f32,
     face: usize,
@@ -190,6 +201,20 @@ pub(crate) struct ShapedLayout {
     appended: Vec<Appended>,
     glyphs: Vec<GlyphPosition>,
     lines: Vec<Line>,
+    /// The source text the pieces are of, for the bidi algorithm.
+    source: String,
+    /// Whether a paragraph's base direction is right to left (#1502).
+    rtl: bool,
+}
+
+/// A run of one line's characters set together: fontdue's glyphs
+/// `from..to` of one piece, at one bidi level, in one script; or a
+/// control character alone.
+struct Segment {
+    from: usize,
+    to: usize,
+    level: u8,
+    control: bool,
 }
 
 impl ShapedLayout {
@@ -200,7 +225,15 @@ impl ShapedLayout {
             appended: Vec::new(),
             glyphs: Vec::new(),
             lines: Vec::new(),
+            source: String::new(),
+            rtl: false,
         }
+    }
+
+    /// Set every paragraph's base direction: right to left when `rtl`
+    /// (#1502). Kept across a reset.
+    pub(crate) fn set_rtl(&mut self, rtl: bool) {
+        self.rtl = rtl;
     }
 
     pub(crate) fn reset(&mut self, settings: &LayoutSettings) {
@@ -220,7 +253,10 @@ impl ShapedLayout {
         let piece = &text[start..end];
         let fonts: Vec<&Font> = faces.iter().map(|f| &**f).collect();
         self.inner.append(&fonts, &TextStyle::new(piece, px, face));
-        self.appended.push(Appended { base: start, text: piece.to_string(), px, face, chars: piece.chars().count() });
+        if self.source != text {
+            self.source = text.to_string();
+        }
+        self.appended.push(Appended { base: start, end, text: piece.to_string(), px, face, chars: piece.chars().count() });
         self.shape(faces);
     }
 
@@ -254,32 +290,67 @@ impl ShapedLayout {
             (_, HorizontalAlign::Right) => 1.0,
         };
         let max_width = self.settings.max_width.unwrap_or(f32::MAX);
+        // The bidi algorithm, when a paragraph is right to left or holds
+        // right-to-left letters; else every character is at level 0.
+        let base = if self.rtl { unicode_bidi::Level::rtl() } else { unicode_bidi::Level::ltr() };
+        let right_to_left = |c: char| {
+            use unicode_bidi::BidiClass::*;
+            matches!(unicode_bidi::bidi_class(c), R | AL | RLE | RLO | RLI)
+        };
+        let bidi = (self.rtl || self.appended.iter().any(|a| a.text.chars().any(right_to_left)))
+            .then(|| unicode_bidi::BidiInfo::new(&self.source, Some(base)));
+        let source_at = |j: usize| self.appended[owner[j]].base + laid[j].byte_offset;
         let mut idx = 0;
         for line in lines {
-            let first = self.glyphs.len();
-            let mut pen = 0.0f32;
-            while idx <= line.glyph_end && idx < laid.len() {
-                let k = owner[idx];
-                let piece = &self.appended[k];
+            let end = (line.glyph_end + 1).min(laid.len());
+            // The line's levels, its trailing spaces at the paragraph's.
+            let levels = bidi.as_ref().filter(|_| idx < end).and_then(|b| {
+                let start = source_at(idx);
+                let stop = self.appended[owner[end - 1]].end.min(source_at(end - 1) + laid[end - 1].parent.len_utf8());
+                let para = b.paragraphs.iter().find(|p| p.range.contains(&start))?;
+                Some((b.reordered_levels(para, start..stop.max(start + 1)), para.level.number()))
+            });
+            let level_at = |j: usize| levels.as_ref().map_or(0, |(l, _)| l.get(source_at(j)).map_or(0, |l| l.number()));
+            let mut segments: Vec<Segment> = Vec::new();
+            while idx < end {
                 if laid[idx].char_data.is_control() {
-                    // fontdue gives a control character no size and no
-                    // advance; it stays where the pen is.
-                    let mut g = laid[idx];
-                    g.x = pen.floor();
-                    g.byte_offset += piece.base;
-                    self.glyphs.push(g);
+                    let level = levels.as_ref().map_or(0, |(_, p)| *p);
+                    segments.push(Segment { from: idx, to: idx + 1, level, control: true });
                     idx += 1;
                     continue;
                 }
+                let (k, level) = (owner[idx], level_at(idx));
+                let mut script = real_script(laid[idx].parent);
                 let mut next = idx + 1;
-                while next <= line.glyph_end && next < laid.len() && owner[next] == k && !laid[next].char_data.is_control() {
+                while next < end && owner[next] == k && !laid[next].char_data.is_control() && level_at(next) == level {
+                    match (script, real_script(laid[next].parent)) {
+                        (Some(a), Some(b)) if a != b => break,
+                        (None, b) => script = b,
+                        _ => {}
+                    }
                     next += 1;
                 }
-                let from = laid[idx].byte_offset;
-                let to = laid[next - 1].byte_offset + laid[next - 1].parent.len_utf8();
-                let face = &faces[piece.face];
-                set_run(face, piece, from, to, line.baseline_y, &mut pen, &laid[idx..next], &mut self.glyphs);
+                segments.push(Segment { from: idx, to: next, level, control: false });
                 idx = next;
+            }
+            let first = self.glyphs.len();
+            let mut pen = 0.0f32;
+            for s in visual_order(&segments) {
+                let s = &segments[s];
+                let piece = &self.appended[owner[s.from]];
+                if s.control {
+                    // fontdue gives a control character no size and no
+                    // advance; it stays where the pen is.
+                    let mut g = laid[s.from];
+                    g.x = pen.floor();
+                    g.byte_offset += piece.base;
+                    self.glyphs.push(g);
+                    continue;
+                }
+                let from = laid[s.from].byte_offset;
+                let to = laid[s.to - 1].byte_offset + laid[s.to - 1].parent.len_utf8();
+                let face = &faces[piece.face];
+                set_run(face, piece, from, to, s.level % 2 == 1, line.baseline_y, &mut pen, &laid[s.from..s.to], &mut self.glyphs);
             }
             let x = self.settings.x + ((max_width - pen) * align).floor();
             for g in &mut self.glyphs[first..] {
@@ -290,12 +361,13 @@ impl ShapedLayout {
     }
 }
 
-/// Shape `piece.text[from..to]` in `face` and push its glyphs, the pen
-/// starting at `pen` on a line whose baseline is at `baseline`. A face
-/// the shaper cannot read sets the characters fontdue laid (`laid`)
-/// one by one, unshaped.
+/// Shape `piece.text[from..to]` in `face`, right to left when `rtl`, and
+/// push its glyphs left to right, the pen starting at `pen` on a line
+/// whose baseline is at `baseline`. A face the shaper cannot read sets
+/// the characters fontdue laid (`laid`) one by one, unshaped, reversed
+/// for right to left.
 #[allow(clippy::too_many_arguments)]
-fn set_run(face: &Face, piece: &Appended, from: usize, to: usize, baseline: f32, pen: &mut f32, laid: &[GlyphPosition], out: &mut Vec<GlyphPosition>) {
+fn set_run(face: &Face, piece: &Appended, from: usize, to: usize, rtl: bool, baseline: f32, pen: &mut f32, laid: &[GlyphPosition], out: &mut Vec<GlyphPosition>) {
     let px = piece.px;
     let font: &Font = face;
     let scale = font.scale_factor(px);
@@ -316,8 +388,9 @@ fn set_run(face: &Face, piece: &Appended, from: usize, to: usize, baseline: f32,
             user_data: (),
         }
     };
-    let Some(shaped) = shape(face, &piece.text[from..to]) else {
-        for g in laid {
+    let Some(shaped) = shape(face, &piece.text[from..to], rtl) else {
+        let in_order: Box<dyn Iterator<Item = &GlyphPosition>> = if rtl { Box::new(laid.iter().rev()) } else { Box::new(laid.iter()) };
+        for g in in_order {
             out.push(place(g.key.glyph_index, g.byte_offset, *pen, 0.0, 0.0));
             *pen += face.font.metrics_indexed(g.key.glyph_index, px).advance_width.ceil();
         }
@@ -332,17 +405,165 @@ fn set_run(face: &Face, piece: &Appended, from: usize, to: usize, baseline: f32,
     }
 }
 
-/// `text` shaped left to right in `face`, with the shaper's default
-/// features (kern, liga, clig, calt, mark, mkmk among them) and the
-/// face's own, at its instance (#1504); `None` for a font the shaper
-/// cannot read.
-fn shape(face: &Face, text: &str) -> Option<harfrust::GlyphBuffer> {
+/// `text` shaped in `face`, left to right or right to left, in its
+/// script (#1502), with the shaper's default features (kern, liga,
+/// clig, calt, mark, mkmk among them) and the face's own, at its
+/// instance (#1504); its glyphs in visual order, left to right. `None`
+/// for a font the shaper cannot read.
+fn shape(face: &Face, text: &str, rtl: bool) -> Option<harfrust::GlyphBuffer> {
     let data = face.font.shaper.as_ref()?;
     let font = FontRef::from_index(&face.font.data, 0).ok()?;
     let shaper = data.shaper(&font).instance(face.font.instance.as_ref().map(|(_, s)| s)).build();
     let mut buffer = UnicodeBuffer::new();
     buffer.push_str(text);
+    // The script and language from the text, which is of one script;
+    // the direction the bidi algorithm gave it.
     buffer.guess_segment_properties();
-    buffer.set_direction(Direction::LeftToRight);
+    buffer.set_direction(if rtl { Direction::RightToLeft } else { Direction::LeftToRight });
     Some(shaper.shape(buffer, ShapeOptions::new().features(&face.features)))
+}
+
+/// `c`'s script, `None` for the characters every script shares
+/// (spaces, punctuation, digits, combining marks), which take the
+/// script of the run they are in.
+fn real_script(c: char) -> Option<unicode_script::Script> {
+    use unicode_script::{Script, UnicodeScript};
+    Some(c.script()).filter(|s| !matches!(s, Script::Common | Script::Inherited | Script::Unknown))
+}
+
+/// The order `segments` are drawn in, left to right: the Unicode bidi
+/// algorithm's rule L2, every run at a level or higher reversed, from
+/// the highest level down to the lowest odd one.
+fn visual_order(segments: &[Segment]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..segments.len()).collect();
+    let max = segments.iter().map(|s| s.level).max().unwrap_or(0);
+    let Some(lowest_odd) = segments.iter().map(|s| s.level).filter(|l| l % 2 == 1).min() else { return order };
+    for level in (lowest_odd..=max).rev() {
+        let mut i = 0;
+        while i < order.len() {
+            if segments[order[i]].level < level {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < order.len() && segments[order[i]].level >= level {
+                i += 1;
+            }
+            order[start..i].reverse();
+        }
+    }
+    order
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn font(name: &str) -> LoadedFont {
+        let path = format!("{}/tests/fonts/{name}", env!("CARGO_MANIFEST_DIR"));
+        LoadedFont::new(Cow::Owned(std::fs::read(path).unwrap())).unwrap()
+    }
+
+    fn latin() -> LoadedFont {
+        LoadedFont::new(Cow::Borrowed(include_bytes!("../assets/NotoSans-Regular.ttf"))).unwrap()
+    }
+
+    /// `text` laid on one line, each `(start, end, face)` piece in its face.
+    fn lay(faces: &[Face], text: &str, pieces: &[(usize, usize, usize)], rtl: bool) -> Vec<GlyphPosition> {
+        let mut l = ShapedLayout::new();
+        l.reset(&LayoutSettings::default());
+        l.set_rtl(rtl);
+        for &(a, b, face) in pieces {
+            l.append(faces, text, (a, b, 48.0, face));
+        }
+        l.glyphs().clone()
+    }
+
+    fn x_of(glyphs: &[GlyphPosition], text: &str, c: char) -> f32 {
+        let at = text.find(c).unwrap();
+        glyphs.iter().find(|g| g.byte_offset == at).unwrap_or_else(|| panic!("no glyph for {c}")).x
+    }
+
+    /// #1502: an Arabic word's letters take their joined forms, not their
+    /// isolated ones, and read right to left; lam before alef takes its
+    /// lam-alef form.
+    #[test]
+    fn arabic_letters_join_and_read_right_to_left() {
+        let arabic = font("NotoSansArabic-subset.ttf");
+        let faces = [Face::new(&arabic, &[])];
+        let word = "سلام";
+        let glyphs = lay(&faces, word, &[(0, word.len(), 0)], false);
+        let isolated: Vec<u16> = word.chars().map(|c| arabic.font.lookup_glyph_index(c)).collect();
+        let joined = glyphs.iter().filter(|g| !isolated.contains(&g.key.glyph_index)).count();
+        assert!(joined >= 3, "the joining letters take other forms: {:?} vs {isolated:?}", glyphs.iter().map(|g| g.key.glyph_index).collect::<Vec<_>>());
+        let xs: Vec<f32> = word.chars().map(|c| x_of(&glyphs, word, c)).collect();
+        assert!(xs.windows(2).all(|w| w[0] > w[1]), "each letter left of the one before it: {xs:?}");
+        let lam_alef = "لا";
+        let glyphs = lay(&faces, lam_alef, &[(0, lam_alef.len(), 0)], false);
+        let lam = arabic.font.lookup_glyph_index('ل');
+        assert!(!glyphs.is_empty() && glyphs.iter().all(|g| g.key.glyph_index != lam), "lam takes its form before alef: {:?}", glyphs.iter().map(|g| g.key.glyph_index).collect::<Vec<_>>());
+    }
+
+    /// #1502: Devanagari forms a conjunct and reorders a vowel sign that
+    /// is written before the consonant it follows.
+    #[test]
+    fn devanagari_forms_conjuncts_and_reorders() {
+        let deva = font("NotoSansDevanagari-subset.ttf");
+        let faces = [Face::new(&deva, &[])];
+        let ksha = "क्ष";
+        let glyphs = lay(&faces, ksha, &[(0, ksha.len(), 0)], false);
+        let virama = deva.font.lookup_glyph_index('्');
+        assert!(glyphs.len() < 3 && glyphs.iter().all(|g| g.key.glyph_index != virama), "one conjunct, no visible virama: {:?}", glyphs.iter().map(|g| g.key.glyph_index).collect::<Vec<_>>());
+        let ki = "कि";
+        let glyphs = lay(&faces, ki, &[(0, ki.len(), 0)], false);
+        let i_sign = deva.font.lookup_glyph_index('ि');
+        let sign = glyphs.iter().find(|g| g.key.glyph_index != deva.font.lookup_glyph_index('क')).unwrap();
+        let ka = glyphs.iter().find(|g| g.key.glyph_index == deva.font.lookup_glyph_index('क')).unwrap();
+        assert!(sign.x < ka.x, "the i sign ({} as {i_sign}) left of ka: {} vs {}", sign.key.glyph_index, sign.x, ka.x);
+    }
+
+    /// #1502: a Hebrew line with English and a number reads in its own
+    /// order. In a right-to-left paragraph the English and the number
+    /// after it are one left-to-right run (a number takes the direction
+    /// of the letters before it), left of the Hebrew, which reads right
+    /// to left. In a left-to-right paragraph the Hebrew comes first,
+    /// still right to left inside.
+    #[test]
+    fn a_mixed_hebrew_english_line_reads_in_order() {
+        let (hebrew, latin) = (font("NotoSansHebrew-subset.ttf"), latin());
+        let faces = [Face::new(&hebrew, &[]), Face::new(&latin, &[])];
+        let text = "שלום world 123";
+        let split = "שלום".len();
+        let pieces = [(0, split, 0), (split, text.len(), 1)];
+        let glyphs = lay(&faces, text, &pieces, true);
+        let x = |c| x_of(&glyphs, text, c);
+        assert!(x('w') < x('o') && x('o') < x('d') && x('d') < x('1') && x('1') < x('2') && x('2') < x('3'), "the English and its number, left to right");
+        assert!(x('3') < x('ם') && x('ם') < x('ו') && x('ו') < x('ל') && x('ל') < x('ש'), "then the Hebrew, right to left");
+        // A number after Hebrew alone is its own run, still left to right.
+        let short = "שלום 123";
+        let glyphs = lay(&faces, short, &[(0, split, 0), (split, short.len(), 1)], true);
+        let x = |c| x_of(&glyphs, short, c);
+        assert!(x('1') < x('2') && x('2') < x('3') && x('3') < x('ם') && x('ש') > x('ל'), "the number reads left to right, left of the Hebrew");
+        let glyphs = lay(&faces, text, &pieces, false);
+        let x = |c| x_of(&glyphs, text, c);
+        assert!(x('ם') < x('ש') && x('ש') < x('w') && x('d') < x('1'), "Hebrew first, right to left inside, then the rest");
+    }
+
+    /// Text with no right-to-left letters in a left-to-right box lays as
+    /// it did, and mixing scripts in one face's piece shapes each in its
+    /// own: a Devanagari conjunct after Latin letters still forms.
+    #[test]
+    fn left_to_right_text_is_set_as_before_and_scripts_shape_apart() {
+        let latin = latin();
+        let faces = [Face::new(&latin, &[])];
+        let text = "Ward (fi) 12";
+        let a = lay(&faces, text, &[(0, text.len(), 0)], false);
+        assert!(a.windows(2).all(|w| w[0].x <= w[1].x && w[0].byte_offset < w[1].byte_offset), "in order");
+        let deva = font("NotoSansDevanagari-subset.ttf");
+        let faces = [Face::new(&deva, &[])];
+        let text = "() क्ष";
+        let glyphs = lay(&faces, text, &[(0, text.len(), 0)], false);
+        let virama = deva.font.lookup_glyph_index('्');
+        assert!(glyphs.iter().all(|g| g.key.glyph_index != virama), "the conjunct forms after the brackets");
+    }
 }
