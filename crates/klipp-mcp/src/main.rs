@@ -1056,7 +1056,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false),
             "detail": args.get("detail").and_then(|v| v.as_bool()).unwrap_or(false),
         }),
-        "klipp_check" => json!({ "method": "check", "color": args.get("color").and_then(|v| v.as_bool()).unwrap_or(false) }),
+        "klipp_check" => json!({ "method": "check", "color": args.get("color").and_then(|v| v.as_bool()).unwrap_or(false), "loudness": args.get("loudness").and_then(|v| v.as_bool()).unwrap_or(false) }),
         "klipp_rename_sequence" => json!({ "method": "rename_sequence", "name": arg_str(args, "name")? }),
         "klipp_add_marker" => {
             let mut v = json!({ "method": "add_marker", "at_secs": args.get("at_secs").and_then(|v| v.as_f64()).ok_or("missing required argument: at_secs")? });
@@ -2652,8 +2652,11 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               not jump cuts. With plans: missing brief features or under-three-second coverage, approved plans unbuilt \
               or drifted. Findings give location, cause and remedy. Before klipp_export, fix errors and assess \
               warnings. color true additionally renders one frame per top-track shot to measure clipping, crushed \
-              blacks, dullness, excess saturation and skin-line deviations; slower.",
-             json!({ "color": { "type": "boolean", "description": "also measure a frame of every shot through the scopes for grade faults (slower)" } }), vec![]),
+              blacks, dullness, excess saturation and skin-line deviations; slower. loudness true additionally \
+              meters the mix a second apart and warns on a stretch of 3 s or more over 8 LU under the rest \
+              (not a fade, speech or silence); slower.",
+             json!({ "color": { "type": "boolean", "description": "also measure a frame of every shot through the scopes for grade faults (slower)" },
+                     "loudness": { "type": "boolean", "description": "also meter the mix for sections well under the rest (slower)" } }), vec![]),
         tool("klipp_rename_sequence",
              "Name the active sequence: what the timeline is called in the app and in the \
               project file. A new project's sequence has a default or inherited name until \

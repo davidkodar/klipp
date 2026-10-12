@@ -315,7 +315,7 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::Check { color } => {
+        ControlCommand::Check { color, loudness } => {
             if in_batch {
                 return read_in_batch("check");
             }
@@ -327,6 +327,17 @@ pub(crate) fn respond(
                 let mut report = klipp_document::qc::check(&seq, &pool, &AnalysedTranscripts);
                 let lut = ctx.shared.project.lock().ok().and_then(|p| p.global_lut.clone());
                 klipp_document::qc::note_missing_global_lut(&mut report, lut.as_deref());
+                if loudness {
+                    note_loudness_drops(&mut report, &seq, &pool);
+                } else {
+                    report.findings.push(klipp_document::qc::Finding {
+                        severity: klipp_document::qc::Severity::Note,
+                        rule: "loudness_unmetered",
+                        at_secs: None,
+                        what: "the mix was not metered for stretches that drop well under the rest".into(),
+                        hint: "check loudness: true meters the mix for section drops before export".into(),
+                    });
+                }
                 // Each detected shot of each picture clip, read on its own
                 // — a clip holding a cut, or a long walk through changing
                 // light, is several shots, and one median across them all
@@ -564,4 +575,41 @@ pub(crate) fn respond(
 
         _ => Err("internal: a request was routed to the wrong area".into()),
     }
+}
+
+/// A stretch of the mix well under the rest of the piece (#1584): a
+/// spliced bed left one section 10 LU down and nothing warned, since the
+/// check read only the integrated target. Metered a second apart as the
+/// export mixes it; a fade over the stretch, or speech in it, makes it a
+/// quiet moment meant as one. Asked for (`loudness`), as it mixes the
+/// whole piece's sound.
+fn note_loudness_drops(report: &mut klipp_document::qc::Report, seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool) {
+    const STEP: f64 = 1.0;
+    let Ok(snapshot) = klipp_render::SequenceSnapshot::from_sequence(seq, pool, &klipp_core::ExportSettings::default(), None, false, klipp_core::WorkingColorspace::Rec709Linear) else { return };
+    let end = snapshot.end_frame() as f64 / snapshot.fps.max(1.0);
+    if end < 2.0 * STEP + 3.0 || snapshot.audio_tracks.iter().all(|t| t.clips.is_empty()) {
+        return;
+    }
+    let Ok(rows) = mix_loudness(&snapshot, 0.0, end, STEP) else { return };
+    let excused = |a: f64, b: f64| {
+        let over = |x: f64, y: f64| x < b && y > a;
+        seq.tracks.iter().filter(|t| !t.muted).flat_map(|t| t.clips.iter()).filter(|c| c.enabled).any(|c| {
+            let (i, o) = (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64());
+            (c.fade_in_secs > 0.0 && over(i, i + f64::from(c.fade_in_secs)))
+                || (c.fade_out_secs > 0.0 && over(o - f64::from(c.fade_out_secs), o))
+                || (matches!(c.role, klipp_core::ClipRole::Dialogue | klipp_core::ClipRole::Voiceover) && c.media_id().and_then(|id| pool.get(&id)).is_some_and(|m| m.has_audio) && over(i, o))
+        })
+    };
+    for (from, to, lufs, median) in loudness_drops(&rows, STEP, &excused) {
+        report.findings.push(klipp_document::qc::Finding {
+            severity: klipp_document::qc::Severity::Warning,
+            rule: "loudness_drop",
+            at_secs: Some(from),
+            what: format!("the mix drops to {lufs:.0} LUFS short-term from {from:.1} to {to:.1} s, {:.0} LU under the rest of the piece ({median:.0})", median - lufs),
+            hint: "Bring that stretch up (audio sets the quiet clip's level), or splice the bed past it; mix_loudness shows the mix second by second".into(),
+        });
+        report.warnings += 1;
+    }
+    // The worst first, then by time, as the check orders the rest.
+    report.findings.sort_by(|a, b| a.severity.cmp(&b.severity).then(a.at_secs.unwrap_or(-1.0).total_cmp(&b.at_secs.unwrap_or(-1.0))));
 }

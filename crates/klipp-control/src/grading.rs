@@ -469,6 +469,49 @@ pub(crate) fn mix_loudness(snapshot: &klipp_render::SequenceSnapshot, from: f64,
     Ok(rows)
 }
 
+/// How far under the piece's median short-term loudness a stretch of the
+/// mix sits before `check` says so (#1584), and how long it must last: a
+/// spliced bed left 10 LU down for a section went unremarked.
+const DROP_UNDER_LU: f32 = 8.0;
+const DROP_MIN_SECS: f64 = 3.0;
+
+/// The stretches of a mix, metered as [`mix_loudness`] rows `step` apart,
+/// whose short-term loudness sits more than [`DROP_UNDER_LU`] under the
+/// piece's median for at least [`DROP_MIN_SECS`]: `(from, to, lufs,
+/// median)`, `lufs` the stretch's median. A row whose three-second
+/// window `excused` (a fade, speech: a quiet moment meant as one), that
+/// is silence (-60 LUFS or under, a deliberate pause), or whose window
+/// starts before the piece does, is never part of one.
+pub(crate) fn loudness_drops(rows: &[(f64, f32, f32)], step: f64, excused: &dyn Fn(f64, f64) -> bool) -> Vec<(f64, f64, f32, f32)> {
+    let median = |mut v: Vec<f32>| -> Option<f32> {
+        v.sort_by(f32::total_cmp);
+        v.get(v.len() / 2).copied()
+    };
+    let Some(piece) = median(rows.iter().map(|r| r.1).filter(|v| v.is_finite() && *v > -70.0).collect()) else { return Vec::new() };
+    let quiet = |&(t, short, _): &(f64, f32, f32)| {
+        let (a, b) = (t + step - 3.0, t + step);
+        a >= 0.0 && short > -60.0 && short < piece - DROP_UNDER_LU && !excused(a, b)
+    };
+    let mut drops = Vec::new();
+    let mut run: Vec<&(f64, f32, f32)> = Vec::new();
+    for row in rows.iter().chain(std::iter::once(&(f64::INFINITY, f32::NAN, f32::NAN))) {
+        if row.0.is_finite() && quiet(row) {
+            run.push(row);
+            continue;
+        }
+        if let (Some(first), Some(last)) = (run.first(), run.last()) {
+            let (from, to) = (first.0, last.0 + step);
+            if to - from >= DROP_MIN_SECS - 1e-6 {
+                if let Some(lufs) = median(run.iter().map(|r| r.1).collect()) {
+                    drops.push((from, to, lufs, piece));
+                }
+            }
+        }
+        run.clear();
+    }
+    drops
+}
+
 /// The level an effect is set to so it sits `over_db` above the loudest
 /// sound already heard under it (#792): files a dozen decibels apart, all
 /// set to the same volume, left one whoosh shouting over the intro and
@@ -597,4 +640,46 @@ pub(crate) fn corrector_now(clip: &klipp_timeline::Clip) -> klipp_color::measure
         s.saturation = n.params.saturation.unwrap_or(1.0);
     }
     s
+}
+
+#[cfg(test)]
+mod loudness_drop_tests {
+    use super::loudness_drops;
+
+    /// #1584: a spliced bed left a section about 10 LU under the rest,
+    /// and nothing said so. Metered a second apart: loud, then six
+    /// seconds 11 LU down, then loud again, is one stretch; a dip of two
+    /// seconds, 6 LU down, silence, a faded stretch and the meter's first
+    /// seconds are none.
+    #[test]
+    fn a_section_well_under_the_rest_is_a_drop() {
+        let rows = |levels: &[f32]| -> Vec<(f64, f32, f32)> { levels.iter().enumerate().map(|(i, &l)| (i as f64, l, l + 2.0)).collect() };
+        let none = |_: f64, _: f64| false;
+        let mut levels = vec![-11.0f32; 30];
+        levels[12..18].fill(-22.0);
+        let drops = loudness_drops(&rows(&levels), 1.0, &none);
+        assert_eq!(drops.len(), 1, "{drops:?}");
+        let (from, to, lufs, median) = drops[0];
+        assert_eq!((from, to, lufs, median), (12.0, 18.0, -22.0, -11.0));
+
+        // Two seconds down is a moment, not a section.
+        let mut short = vec![-11.0f32; 30];
+        short[12..14].fill(-22.0);
+        assert!(loudness_drops(&rows(&short), 1.0, &none).is_empty());
+        // Six under is a change of level, not a hole.
+        let mut mild = vec![-11.0f32; 30];
+        mild[12..18].fill(-17.0);
+        assert!(loudness_drops(&rows(&mild), 1.0, &none).is_empty());
+        // Silence is a pause.
+        let mut pause = vec![-11.0f32; 30];
+        pause[12..18].fill(-70.0);
+        assert!(loudness_drops(&rows(&pause), 1.0, &none).is_empty());
+        // A fade there is meant.
+        let faded = |a: f64, b: f64| a < 18.0 && b > 12.0;
+        assert!(loudness_drops(&rows(&levels), 1.0, &faded).is_empty());
+        // The meter's first seconds hold less than its window.
+        let mut start = vec![-11.0f32; 30];
+        start[0..2].fill(-30.0);
+        assert!(loudness_drops(&rows(&start), 1.0, &none).is_empty());
+    }
 }

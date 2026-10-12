@@ -1105,10 +1105,14 @@ pub enum ControlCommand {
     /// would put it right. Changes nothing. With `color`, it also
     /// measures a frame of each shot for blown highlights, crushed
     /// blacks, over-saturation and skin off the skin-tone line — slower,
-    /// since it renders frames.
+    /// since it renders frames. With `loudness`, it also meters the mix
+    /// for stretches well under the rest of the piece — slower, since it
+    /// mixes the whole piece's sound.
     Check {
         #[serde(default)]
         color: bool,
+        #[serde(default)]
+        loudness: bool,
     },
     /// Save the project: to `path` (a `.klipp` folder, made if needed),
     /// or where it was last saved when `path` is left out. Refused for a

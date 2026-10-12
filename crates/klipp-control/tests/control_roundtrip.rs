@@ -2668,6 +2668,59 @@ fn beats_reads_music_sections_and_fits_a_track_to_a_length() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// #1584: a music bed with a section left 11 dB under the rest is a
+/// loudness_drop warning where the section is, when the check is asked
+/// to meter the mix; faded out there, it is a quiet moment meant as one
+/// and nothing is said. A plain check doesn't meter, and says how to.
+#[test]
+fn check_warns_on_a_section_well_under_the_rest() {
+    let mut h = harness();
+    let dir = std::env::temp_dir().join(format!("klipp-loudness-drop-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("bed.wav");
+    let made = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+               "aevalsrc='0.5*sin(2*PI*440*t)*if(between(t\\,12\\,20)\\,0.28\\,1)':s=48000:d=30",
+               "-ac", "2"])
+        .arg(&wav)
+        .status();
+    if !made.is_ok_and(|s| s.success()) {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let mut item = klipp_media::MediaItem::synthetic_for_test(wav.clone(), None);
+    item.has_audio = true;
+    item.video_codec = String::new();
+    item.duration = klipp_core::RationalTime::from_secs_f64(30.0, 30);
+    let media = h.media_pool.write().unwrap().add(item);
+    let time = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 30);
+    let bed = |fade_out: f32| {
+        let mut c = klipp_timeline::Clip::media(media, time(0.0), time(20.0), time(0.0), time(20.0));
+        c.role = klipp_core::ClipRole::Music;
+        c.fade_out_secs = fade_out;
+        let mut track = klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio);
+        track.clips = vec![c];
+        track
+    };
+    h.sequence.write().unwrap().tracks = vec![klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video), bed(0.0)];
+    let drops = |r: &serde_json::Value| r["findings"].as_array().unwrap().iter().filter(|f| f["rule"] == "loudness_drop").cloned().collect::<Vec<_>>();
+    let plain = h.ok(json!({ "method": "check" }));
+    assert!(drops(&plain).is_empty(), "a plain check doesn't mix the piece: {plain}");
+    assert!(plain["findings"].as_array().unwrap().iter().any(|f| f["rule"] == "loudness_unmetered" && f["hint"].as_str().unwrap().contains("loudness: true")), "{plain}");
+    let r = h.ok(json!({ "method": "check", "loudness": true }));
+    let found = drops(&r);
+    assert_eq!(found.len(), 1, "{r}");
+    let at = found[0]["at_secs"].as_f64().unwrap();
+    assert!((12.0..=15.0).contains(&at), "the drop is where the quiet section is: {r}");
+    assert!(found[0]["what"].as_str().unwrap().contains("LU under the rest"), "{r}");
+
+    // Faded out over the quiet section, it is meant.
+    h.sequence.write().unwrap().tracks[1] = bed(8.0);
+    let r = h.ok(json!({ "method": "check", "loudness": true }));
+    assert!(drops(&r).is_empty(), "a fade there is meant: {r}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn add_node_refuses_an_unknown_kind_and_names_the_node_it_adds() {
     let mut h = harness();
