@@ -484,3 +484,17 @@ fn a_scaling_motion_takes_an_anchor() {
     assert!(exit(json!({"kind": "grow", "anchor": {"x": 1.5, "y": 0.5}})).is_err(), "outside the box");
     assert!(exit(json!({"kind": "grow", "anchor": "middle"})).is_err(), "not a name it knows");
 }
+
+/// #1511: an easing can be a curve of its own, written as CSS writes it;
+/// a handle's time outside the motion is refused.
+#[test]
+fn an_easing_can_be_a_cubic_bezier() {
+    let seq = apply(Sequence::new_default(), json!({"enter":{"kind":"slide_left","duration_secs":0.6,"easing":"cubic-bezier(0.2, 1.4, 0.5, 1)"}}));
+    assert_eq!(motion(&seq).enter.map(|m| m.easing), Some(Easing::Custom(klipp_core::title_motion::CubicBezier::new(0.2, 1.4, 0.5, 1.0))));
+    for bad in ["cubic-bezier(1.2, 0, 0.5, 1)", "cubic-bezier(0.2, 1)", "cubic-bezier(a, b, c, d)"] {
+        let mut seq = Sequence::new_default();
+        seq.tracks[0].clips.push(klipp_timeline::Clip::gap(klipp_core::Timecode::from_secs_f64(0.0, 24), klipp_core::Timecode::from_secs_f64(4.0, 24)));
+        let op: Op = serde_json::from_value(json!({"op":"title", "text":"x", "at":{"secs":0}, "secs":4, "enter":{"kind":"slide_left","easing":bad}})).unwrap();
+        assert!(ops::resolve(&seq, &MediaPool::new(), &[op]).is_err(), "{bad} refused");
+    }
+}

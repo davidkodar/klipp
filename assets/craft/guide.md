@@ -244,8 +244,9 @@ exist until the plan runs.
   stagger?, stagger_secs?, distance?, scale?, anchor?}`: `duration_secs`
   up to 3600 (0.6 when left out); `delay_secs` after the title starts for an
   entrance, before it ends for an exit; `easing` one of linear,
-  out_cubic, out_quint, out_expo, out_back, out_bounce, in_out_cubic or
-  in_cubic; `stagger` by char, word or line, `stagger_secs` apart;
+  out_cubic, out_quint, out_expo, out_back, out_bounce, in_out_cubic,
+  in_cubic, or a curve of its own as `cubic-bezier(x1, y1, x2, y2)` (CSS's
+  handles: x is time within 0..1, a y above 1 overshoots); `stagger` by char, word or line, `stagger_secs` apart;
   `distance` (font sizes) for rise, drop and the slides only; `scale`
   for grow, shrink, scale_up and scale_down only.
 - `volume {clip_id, keys: [{at, db}]}`: a clip's volume drawn by hand,
@@ -469,6 +470,11 @@ exist until the plan runs.
   (the default), `start` or `end` on the cut; `every_clip` uses each
   clip's start. A cut where a copy would overlap a clip already there is
   skipped and counted in the reply; one undo step.
+- `template {name, at, secs?, track?, fields?}`: a saved title template
+  by `name`, at `at` for `secs`, on a text track (one is made on top if
+  none fits). `fields` sets its published fields by label: a text as its
+  words, a colour as #rrggbb, the speed as a number (1 as made).
+  `klipp_title_templates` lists the templates and their fields.
 - `join {clip_id, side?}`: a split undone later, or a scene cut found
   where the shot did not change: the clip and the piece of the same shot
   on its `side` ("next", the default, or "previous") made one again, its

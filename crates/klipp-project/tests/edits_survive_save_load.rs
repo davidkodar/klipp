@@ -295,3 +295,22 @@ fn a_grade_group_comes_back() {
     let none = round_trip("no-grade-group", Sequence::new_default());
     assert!(none.grade_groups.is_empty());
 }
+
+/// #1511: a motion eased by a curve of its own comes back through a real
+/// save and a strict load, handles and all, beside a named easing.
+#[test]
+fn a_motions_own_easing_curve_comes_back() {
+    use klipp_timeline::{CubicBezier, Easing, LayerFx, Motion, MotionKind, TitleMotion};
+    let curve = Easing::Custom(CubicBezier::new(0.15, 1.4, 0.4, 0.95));
+    let motion = TitleMotion::both(Motion::new(MotionKind::SlideLeft).easing(curve), Motion::new(MotionKind::Fade).easing(Easing::InCubic));
+    let mut seq = Sequence::new_default();
+    let mut c = Clip::gap(tc(0), tc(48));
+    c.kind = ClipKind::Title(TitleData::single_text_fx(TextBox { text: "Curve".into(), ..TextBox::default() }, LayerFx { motion, ..Default::default() }));
+    seq.tracks[0].clips = vec![c];
+    let dir = project_dir("custom-easing");
+    save_project_with_color(&dir, &[seq], &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
+    let (seqs, ..) = klipp_project::load_project_strict(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let ClipKind::Title(loaded) = &seqs[0].tracks[0].clips[0].kind else { panic!("not a title") };
+    assert_eq!(loaded.primary_fx().motion, motion);
+}

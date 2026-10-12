@@ -702,8 +702,22 @@ fn motion_row(
                                 changed = true;
                             }
                         }
+                        // A curve of its own, shaped below (#1511).
+                        let custom = matches!(m.easing, Easing::Custom(_));
+                        if ui.selectable_label(custom, "Custom\u{2026}").clicked() && !custom {
+                            m.easing = Easing::Custom(Default::default());
+                            changed = true;
+                        }
                     });
             });
+            if let Easing::Custom(curve) = &mut m.easing {
+                ui.horizontal(|ui| {
+                    ui.add_space(36.0);
+                    if crate::widgets::easing_curve::easing_curve(ui, theme, curve).changed() {
+                        changed = true;
+                    }
+                });
+            }
             ui.horizontal(|ui| {
                 ui.add_space(36.0);
                 egui::ComboBox::from_id_salt(("title_motion_stagger", dir.label()))

@@ -315,3 +315,49 @@ fn a_soft_focus_band_blurs_the_roll_away_from_the_band() {
         }
     }
 }
+
+/// A slide eased by a curve of its own (#1511) travels as the curve
+/// says: its offset at each moment is the travel left by the curve's
+/// progress, and the placed resting render (what the viewer's GPU
+/// draws) is the frame rendered whole (what an export draws).
+#[test]
+fn a_custom_curve_shapes_a_slide_the_same_placed_or_rendered() {
+    use klipp_timeline::CubicBezier;
+    let curve = CubicBezier::new(0.1, 0.9, 0.2, 1.0);
+    let td = title(TitleMotion::enter(Motion::new(MotionKind::SlideLeft).duration(1.0).distance(3.0).easing(Easing::Custom(curve))));
+    let (w, h) = (1280u32, 720u32);
+    let mut r = TitleRenderer::new();
+    let mut offsets = Vec::new();
+    for t in [0.1f32, 0.25, 0.4, 0.6] {
+        let want = r.render_with_window(&td, w, h, None, t, Some(4.0));
+        let klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, .. } = r.frame_with_window(&td, w, h, None, t, Some(4.0)) else {
+            panic!("at t={t} an unstaggered slide is the resting render placed");
+        };
+        let p = curve.apply(t);
+        assert_eq!(dy, 0);
+        assert!((opacity - p).abs() < 1e-4, "at t={t} the slide fades in with the curve: {opacity} vs {p}");
+        offsets.push((dx, 1.0 - p));
+        let mut got = vec![0u8; want.len()];
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                let (sx, sy) = (x - dx, y);
+                if sx < 0 || sx >= w as i32 {
+                    continue;
+                }
+                let d = ((y * w as i32 + x) * 4) as usize;
+                let so = ((sy * w as i32 + sx) * 4) as usize;
+                got[d..d + 4].copy_from_slice(&sprite.pixels[so..so + 4]);
+                got[d + 3] = ((got[d + 3] as f32) * opacity).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+        let off = got.iter().zip(&want).filter(|(a, b)| a.abs_diff(**b) > 1).count();
+        assert_eq!(off, 0, "at t={t} the placed slide differs from the rendered one");
+    }
+    // Each offset is the travel left by the curve, one whole travel
+    // for all of them (the first moment gives it), to the pixel.
+    let travel = offsets[0].0 as f32 / offsets[0].1;
+    assert!(travel > 100.0, "{offsets:?}");
+    for &(dx, left) in &offsets {
+        assert!((dx as f32 - travel * left).abs() <= 1.5, "offset {dx} vs {} left of {travel}: {offsets:?}", travel * left);
+    }
+}

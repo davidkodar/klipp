@@ -1289,7 +1289,7 @@ pub const OP_NAMES: &[&str] = &[
     "slip", "slide", "pin", "role", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "highlight",
     "ramp", "grade_group", "remove_grade_group", "look", "qualify", "retime", "replace", "track_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
-    "strobe", "set_length", "over_edits",
+    "strobe", "set_length", "over_edits", "template",
 ];
 
 pub use klipp_timeline::ShadowSpec;

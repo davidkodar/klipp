@@ -5,7 +5,8 @@
 use serde::{Deserialize, Serialize};
 
 /// Easing for title motion: how progress 0..1 is shaped in time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// A named curve saves as its name, a custom one as its four handles.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub enum Easing {
     Linear,
     #[default]
@@ -18,6 +19,74 @@ pub enum Easing {
     InCubic,
     /// Lands and bounces a few times before settling.
     OutBounce,
+    /// A curve of its own (#1511).
+    Custom(CubicBezier),
+}
+
+/// A cubic Bézier easing from (0, 0) to (1, 1) through two handles, as
+/// CSS `cubic-bezier(x1, y1, x2, y2)` draws it: x is time, y progress.
+/// The handles' times are kept within 0..1, so each time has one
+/// progress; their progress is free, so a curve can overshoot.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CubicBezier {
+    pub x1: f32,
+    pub y1: f32,
+    pub x2: f32,
+    pub y2: f32,
+}
+
+impl Default for CubicBezier {
+    /// The curve the default named easing draws, near enough to start
+    /// shaping from.
+    fn default() -> Self {
+        Self { x1: 0.33, y1: 1.0, x2: 0.68, y2: 1.0 }
+    }
+}
+
+impl CubicBezier {
+    pub fn new(x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
+        Self { x1: x1.clamp(0.0, 1.0), y1, x2: x2.clamp(0.0, 1.0), y2 }
+    }
+
+    /// The progress at time `t` in 0..1: the curve's parameter for that
+    /// time found by Newton's method, by bisection where that stalls.
+    pub fn apply(self, t: f32) -> f32 {
+        let t = t.clamp(0.0, 1.0);
+        let (x1, x2) = (self.x1.clamp(0.0, 1.0) as f64, self.x2.clamp(0.0, 1.0) as f64);
+        let (y1, y2) = (self.y1 as f64, self.y2 as f64);
+        let at = |a: f64, b: f64, u: f64| 3.0 * a * u * (1.0 - u) * (1.0 - u) + 3.0 * b * u * u * (1.0 - u) + u * u * u;
+        let slope = |a: f64, b: f64, u: f64| 3.0 * a * (1.0 - u) * (1.0 - u) + 6.0 * (b - a) * u * (1.0 - u) + 3.0 * (1.0 - b) * u * u;
+        let x = t as f64;
+        let mut u = x;
+        let mut solved = false;
+        for _ in 0..8 {
+            let err = at(x1, x2, u) - x;
+            if err.abs() < 1e-7 {
+                solved = true;
+                break;
+            }
+            let d = slope(x1, x2, u);
+            if d.abs() < 1e-6 {
+                break;
+            }
+            u = (u - err / d).clamp(0.0, 1.0);
+        }
+        if !solved {
+            // The curve's time rises with its parameter, as the handles'
+            // times are within 0..1: halve the range to the time.
+            let (mut lo, mut hi) = (0.0f64, 1.0f64);
+            u = x;
+            for _ in 0..60 {
+                let v = at(x1, x2, u);
+                if (v - x).abs() < 1e-7 {
+                    break;
+                }
+                if v < x { lo = u } else { hi = u }
+                u = (lo + hi) * 0.5;
+            }
+        }
+        at(y1, y2, u) as f32
+    }
 }
 
 impl Easing {
@@ -51,6 +120,7 @@ impl Easing {
                     n1 * t * t + 0.984375
                 }
             }
+            Easing::Custom(curve) => curve.apply(t),
         }
     }
 
@@ -69,6 +139,7 @@ impl Easing {
             Easing::InOutCubic => "Ease in and out",
             Easing::InCubic => "Ease in",
             Easing::OutBounce => "Bounce",
+            Easing::Custom(_) => "Custom",
         }
     }
 }
@@ -1189,5 +1260,50 @@ mod exit_easing_tests {
         }
         assert_eq!(Motion::exit(MotionKind::Pop).easing, Easing::InCubic, "a pop's exit doesn't overshoot past gone");
         assert_eq!(Motion::new(MotionKind::Rise).easing(Easing::OutBack).as_exit().easing, Easing::OutBack, "a chosen easing is kept");
+    }
+}
+
+#[cfg(test)]
+mod custom_easing_tests {
+    use super::*;
+
+    /// A curve of its own draws as CSS draws the same handles: straight
+    /// handles are linear, `ease` is CSS's, and the ends are rest and
+    /// arrival (#1511).
+    #[test]
+    fn a_custom_curve_draws_as_css_draws_it() {
+        let linear = CubicBezier::new(0.0, 0.0, 1.0, 1.0);
+        let ease = CubicBezier::new(0.25, 0.1, 0.25, 1.0);
+        for i in 0..=20 {
+            let t = i as f32 / 20.0;
+            assert!((linear.apply(t) - t).abs() < 1e-5, "linear at {t}");
+        }
+        // CSS `ease` at the half: 0.8024033877399112.
+        assert!((ease.apply(0.5) - 0.802_403_4).abs() < 1e-4, "{}", ease.apply(0.5));
+        for c in [ease, CubicBezier::new(0.0, 1.0, 1.0, 0.0), CubicBezier::new(1.0, 0.0, 0.0, 1.0)] {
+            assert_eq!((c.apply(0.0), c.apply(1.0)), (0.0, 1.0), "{c:?}");
+        }
+        // Steep handles still give one progress per time, rising.
+        let steep = CubicBezier::new(1.0, 0.0, 0.0, 1.0);
+        let ps: Vec<f32> = (0..=40).map(|i| steep.apply(i as f32 / 40.0)).collect();
+        assert!(ps.windows(2).all(|p| p[1] >= p[0] - 1e-5), "{ps:?}");
+        // A handle above arrival overshoots it.
+        let over = Easing::Custom(CubicBezier::new(0.3, 1.6, 0.6, 1.0));
+        assert!((0..=20).any(|i| over.apply(i as f32 / 20.0) > 1.05));
+        // Handles' times are kept within the motion.
+        let c = CubicBezier::new(-1.0, 0.5, 2.0, 0.5);
+        assert_eq!((c.x1, c.x2), (0.0, 1.0));
+    }
+
+    /// A named easing saves as its name, as before; a curve of its own
+    /// saves as its handles and reads back the same.
+    #[test]
+    fn named_easings_save_as_before_and_a_curve_as_its_handles() {
+        assert_eq!(serde_json::to_string(&Easing::OutCubic).unwrap(), "\"OutCubic\"");
+        assert_eq!(serde_json::from_str::<Easing>("\"InOutCubic\"").unwrap(), Easing::InOutCubic);
+        let custom = Easing::Custom(CubicBezier::new(0.2, 1.3, 0.5, 1.0));
+        let json = serde_json::to_string(&custom).unwrap();
+        assert_eq!(json, r#"{"Custom":{"x1":0.2,"y1":1.3,"x2":0.5,"y2":1.0}}"#);
+        assert_eq!(serde_json::from_str::<Easing>(&json).unwrap(), custom);
     }
 }
