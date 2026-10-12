@@ -105,6 +105,8 @@ const EFFECTS: &[(&str, Cover)] = &[
     ("SpeedRamp", Exempt("not a picture pass: the engine blends frames for it in the frame queue, and both chain arms pass through")),
     ("Frei0r", Exempt("CPU-only plugins: frei0r 1.x has no GPU surface; a frei0r node runs on the CPU between the GPU nodes around it (M4 step 5)")),
     ("CornerPin", Case("CornerPin")),
+    ("Lut3D", Case("Lut3D")),
+    ("ColourSpaceTransform", Case("ColourSpaceTransform")),
 ];
 
 const SHADERS: &[(&str, Cover)] = &[
@@ -155,6 +157,7 @@ const SHADERS: &[(&str, Cover)] = &[
     ("SHADER_LUT3D", Test(EFFECT_PARITY, "the_lut_matches_between_cpu_and_gpu")),
     ("SHADER_INVERT", EVERY_EFFECT),
     ("SHADER_POSTERIZE", EVERY_EFFECT),
+    ("SHADER_CST", Case("ColourSpaceTransform")),
     ("SHADER_MOSAIC", EVERY_EFFECT),
     ("SHADER_EDGE_DETECT", EVERY_EFFECT),
     ("SHADER_CHANNEL_MIXER", EVERY_EFFECT),

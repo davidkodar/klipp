@@ -6,11 +6,43 @@
 //! with an effect the GPU cannot run. Each case here renders one effect
 //! both ways on the same frame and compares the display bytes.
 
+use std::sync::Arc;
+
+use klipp_effects::colour_transform::{CstTables, LutTable, Prepared, CURVE_SAMPLES};
 use klipp_effects::gpu::GpuEffectsPipeline;
 use klipp_effects::{apply_effects, linear_f32_rgba_to_srgb_u8, BuiltinEffect, ColorFadeMode, SpillMethod};
 
 const W: u32 = 160;
 const H: u32 = 90;
+
+/// A coarse look, as a LUT file gives one once read (#1746): a curve on
+/// red, a lift on blue, between primaries other than the working space's.
+fn look_lut() -> LutTable {
+    let n = 9;
+    let mut data = Vec::with_capacity(n * n * n * 3);
+    for b in 0..n {
+        for g in 0..n {
+            for r in 0..n {
+                let [r, g, b] = [r, g, b].map(|i| i as f32 / (n - 1) as f32);
+                data.extend_from_slice(&[r.powf(0.8) * 0.95, g * 0.9 + 0.05 * b, b * 0.85 + 0.1]);
+            }
+        }
+    }
+    let m = [[0.9, 0.08, 0.02], [0.03, 0.95, 0.02], [0.01, 0.04, 0.95]];
+    LutTable { size: n, data, pre: Some(m), post: None }
+}
+
+/// A log-like curve's linear values at the table's codes.
+fn log_curve() -> Vec<f32> {
+    (0..CURVE_SAMPLES).map(|i| (2f32.powf(i as f32 / (CURVE_SAMPLES - 1) as f32 * 10.0) - 1.0) / 64.0).collect()
+}
+
+/// A colour-space transform, read through the curve or written through
+/// it, with a gamut matrix.
+fn transform(decode: bool, encode: bool) -> CstTables {
+    let m = [[1.2, -0.15, -0.05], [-0.08, 1.1, -0.02], [0.0, -0.1, 1.1]];
+    CstTables { matrix: Some(m), decode: decode.then(log_curve), encode: encode.then(log_curve) }
+}
 
 /// Gradients, hard edges, saturated patches, a near-white highlight and a
 /// near-black shadow: something for every kind of effect to act on.
@@ -113,6 +145,14 @@ fn cases() -> Vec<(&'static str, BuiltinEffect)> {
         ("Deflicker half", Deflicker { strength: 0.5, window_secs: 1.0, gain: 0.82 }),
         ("Letterbox", Letterbox { aspect_ratio: 2.39, bar_color: 0, opacity: 1.0 }),
         ("ChromaticAberration", ChromaticAberration { red_shift: 3.0, blue_shift: -3.0, center_x: 0.5, center_y: 0.5 }),
+        ("Lut3D", Lut3D { path: "look.cube".into(), opacity: 0.8, tetrahedral: true, prepared: Some(Prepared(Arc::new(look_lut()))) }),
+        ("Lut3D trilinear", Lut3D { path: "look.cube".into(), opacity: 1.0, tetrahedral: false, prepared: Some(Prepared(Arc::new(look_lut()))) }),
+        ("ColourSpaceTransform", ColourSpaceTransform {
+            input_gamut: 5, input_curve: 2, output_gamut: 1, output_curve: 0, prepared: Some(Prepared(Arc::new(transform(true, false)))),
+        }),
+        ("ColourSpaceTransform to a curve", ColourSpaceTransform {
+            input_gamut: 0, input_curve: 0, output_gamut: 9, output_curve: 4, prepared: Some(Prepared(Arc::new(transform(false, true)))),
+        }),
     ]
 }
 

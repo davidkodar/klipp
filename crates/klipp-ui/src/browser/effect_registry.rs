@@ -624,6 +624,26 @@ impl EffectRegistry {
                 grouping: "Colour".into(),
             },
             EffectEntry {
+                name: "3D LUT".into(),
+                category: EffectCategory::Color,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Lut3D {
+                    path: String::new(), opacity: 1.0, tetrahedral: true, prepared: None,
+                }),
+                source_label: "Built-in",
+                description: "A .cube, .3dl or .csp look over the picture".into(),
+                grouping: "Colour".into(),
+            },
+            EffectEntry {
+                name: "Colour Space Transform".into(),
+                category: EffectCategory::Color,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::ColourSpaceTransform {
+                    input_gamut: 0, input_curve: 0, output_gamut: 0, output_curve: 0, prepared: None,
+                }),
+                source_label: "Built-in",
+                description: "The picture from one gamut and curve to another".into(),
+                grouping: "Colour".into(),
+            },
+            EffectEntry {
                 name: "Letterbox".into(),
                 category: EffectCategory::Stylize,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Letterbox {

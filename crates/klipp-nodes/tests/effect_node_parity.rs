@@ -32,6 +32,11 @@ const EXEMPT: &[(&str, &str)] = &[
     ("rolling_shutter_correction", "analysis-driven: a legacy node in the plan, step 12 (spec F)"),
     ("video_stabilization", "analysis-driven: a legacy node in the plan, step 12 (spec F)"),
     ("deflicker", "analysis-driven: a legacy node in the plan, step 12 (spec F)"),
+    // Their samples have nothing prepared and pass the picture; prepared,
+    // they're held to their kernels in klipp-effects' cpu_gpu_effect_parity
+    // and klipp-compose's colour_effects_render.
+    ("lut_3d", "reads a file the renderer prepares (#1746)"),
+    ("colour_space_transform", "takes tables the renderer prepares (#1746)"),
 ];
 
 /// A2's one named exemption: Equalize builds its histogram from a
@@ -125,7 +130,7 @@ fn mean_change(a: &[f32], b: &[f32]) -> f32 {
 fn every_effect_node_matches_the_legacy_chain_on_the_cpu() {
     let (cases, exempt) = cases();
     assert_eq!(cases.len() / 2 + exempt, effect_types().count(), "covered + exempt is every type");
-    assert_eq!(effect_types().count(), 54, "the registry's size the spec counts");
+    assert_eq!(effect_types().count(), 56, "the registry's size the spec counts");
     let mut unchanged = Vec::new();
     for (tag, effect) in &cases {
         let mut ex = GraphExecutor::new_cpu_only();

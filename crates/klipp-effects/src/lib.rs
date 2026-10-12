@@ -45,6 +45,7 @@ pub use cpu_transition::render_transition_linear;
 pub use cpu::{apply_3d_lut, apply_3d_lut_bracketed, equalize_cdf, EQUALIZE_CDF_LEN};
 pub mod color_fade;
 pub mod color_wgsl;
+pub mod colour_transform;
 pub mod composite;
 pub mod corner_pin;
 pub mod frei0r_effect;
@@ -804,6 +805,39 @@ pub enum BuiltinEffect {
     /// picture as it is. Runs before the clip's transform, with the
     /// picture, so it scales and moves with the layer.
     CornerPin { tl: [f32; 2], tr: [f32; 2], br: [f32; 2], bl: [f32; 2] },
+
+    /// A 3D LUT file over the picture, as the grade's Lut3D node applies
+    /// it: looked up on the picture's sRGB encoding, between the primaries
+    /// the file is tagged with, mixed by `opacity` in linear light.
+    /// `prepared` is the file read for the working space, written by the
+    /// renderer before each run and never saved; with none the picture
+    /// passes, and the renderer declines the node with its reason
+    /// ([`colour_transform`]).
+    #[serde(rename = "lut_3d")]
+    Lut3D {
+        /// The `.cube`, `.3dl` or `.csp` file.
+        path: String,
+        opacity: f32,
+        /// Tetrahedral interpolation rather than trilinear.
+        tetrahedral: bool,
+        #[serde(skip)]
+        prepared: Option<colour_transform::Prepared<colour_transform::LutTable>>,
+    },
+
+    /// The picture from one gamut and curve to another
+    /// ([`colour_transform::GAMUTS`], [`colour_transform::CURVES`]): read
+    /// through the input curve, converted between the gamuts, written
+    /// through the output curve. `prepared` is the matrix and curve
+    /// tables for the working space, written by the renderer before each
+    /// run and never saved.
+    ColourSpaceTransform {
+        input_gamut: u32,
+        input_curve: u32,
+        output_gamut: u32,
+        output_curve: u32,
+        #[serde(skip)]
+        prepared: Option<colour_transform::Prepared<colour_transform::CstTables>>,
+    },
 }
 
 /// sRGB → linear-light (IEC 61966-2-1). Scalar helper mirroring
@@ -984,6 +1018,20 @@ fn apply_chain(
                 Some(rows) if *strength >= f32::EPSILON && !rows.is_empty() => cpu::rolling_shutter(&frame, width, height, rows),
                 _ => frame,
             },
+            BuiltinEffect::Lut3D { prepared, opacity, tetrahedral, .. } => {
+                let mut frame = frame;
+                if let Some(lut) = prepared {
+                    colour_transform::apply_lut(&mut frame, lut, *opacity, *tetrahedral);
+                }
+                frame
+            }
+            BuiltinEffect::ColourSpaceTransform { prepared, .. } => {
+                let mut frame = frame;
+                if let Some(t) = prepared {
+                    colour_transform::apply_cst(&mut frame, t);
+                }
+                frame
+            }
             e => cpu::apply(e, frame, width, height, luma),
         };
         i += 1;
@@ -1097,6 +1145,10 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
                 && rotation_y.abs() < f32::EPSILON
         }
         BuiltinEffect::CornerPin { tl, tr, br, bl } => corner_pin::is_still(&[*tl, *tr, *br, *bl]),
+        BuiltinEffect::Lut3D { opacity, .. } => *opacity <= 0.0,
+        BuiltinEffect::ColourSpaceTransform { input_gamut, input_curve, output_gamut, output_curve, .. } => {
+            input_gamut == output_gamut && *input_curve == 0 && *output_curve == 0
+        }
         // Effects whose visual contribution depends on data (chroma
         // key, bloom, glow, light rays, vignette etc.) — be
         // conservative and never claim identity. False positives

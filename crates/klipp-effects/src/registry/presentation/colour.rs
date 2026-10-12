@@ -14,6 +14,8 @@ const COLOR_FADE: &str = "klipp.fx.color_fade";
 const MIXER: &str = "klipp.fx.channel_mixer";
 const HSV: &str = "klipp.fx.hsv_adjust";
 const LEVELS: &str = "klipp.fx.levels";
+const LUT: &str = "klipp.fx.lut_3d";
+const CST: &str = "klipp.fx.colour_space_transform";
 
 pub(super) static PARAMS: &[ParamEntry] = &[
     at(OPACITY, "value", P::scrub(0.005, 2)),
@@ -45,6 +47,15 @@ pub(super) static PARAMS: &[ParamEntry] = &[
     at(LEVELS, "out_black", P::scrub(0.005, 3).label("Out Black")),
     at(LEVELS, "out_white", P::scrub(0.005, 3).label("Out White")),
     at("klipp.fx.equalize", "strength", P::scrub(0.005, 2)),
+    at(LUT, "path", P::shown_as(Widget::Custom("effect_lut_file"))),
+    at(LUT, "opacity", P::scrub(0.005, 2)),
+    at(LUT, "tetrahedral", P::shown_as(Widget::Toggle)),
+    at(LUT, "prepared", P::hidden()),
+    at(CST, "input_gamut", P::shown_as(Widget::Combo).group("Input")),
+    at(CST, "input_curve", P::shown_as(Widget::Combo).group("Input")),
+    at(CST, "output_gamut", P::shown_as(Widget::Combo).group("Output")),
+    at(CST, "output_curve", P::shown_as(Widget::Combo).group("Output")),
+    at(CST, "prepared", P::hidden()),
 ];
 
 pub(super) static TYPES: &[TypeEntry] = &[TypeEntry { type_id: COLOR_FADE, pres: TypePresentation { notice: None, extra_ui: Some("color_fade") } }];

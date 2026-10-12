@@ -972,7 +972,7 @@ fn picture(r: &mut Rng, samples: &[Value]) -> Value {
 fn generated_project(dir: &Path, seed: u64, n: usize) {
     use klipp_timeline::ClipKind as K;
     let mut r = Rng(0x9E37_79B9_7F4A_7C15 ^ (seed + 1));
-    let samples: Vec<Value> = klipp_effects::registry::effect_types().map(|t| v1_entry(serde_json::to_value((t.sample)()).unwrap())).collect();
+    let samples: Vec<Value> = klipp_effects::registry::effect_types().filter(|t| in_v1(t)).map(|t| v1_entry(serde_json::to_value((t.sample)()).unwrap())).collect();
     let mut seq = Sequence::new_default();
     let tc = |s: f64| Timecode::from_secs_f64(s, 24);
     for i in 0..n {
@@ -1026,7 +1026,7 @@ fn loop_free(mut g: Value) -> Value {
 fn generated_spliced_project(dir: &Path, seed: u64, n: usize) {
     generated_project(dir, seed, n);
     let mut r = Rng(0x51CE_D00D ^ (seed + 7));
-    let samples: Vec<Value> = klipp_effects::registry::effect_types().map(|t| v1_entry(serde_json::to_value((t.sample)()).unwrap())).collect();
+    let samples: Vec<Value> = klipp_effects::registry::effect_types().filter(|t| in_v1(t)).map(|t| v1_entry(serde_json::to_value((t.sample)()).unwrap())).collect();
     let path = dir.join("project.json");
     let mut project: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     let seq = &mut project["sequences"][0];
@@ -1542,4 +1542,10 @@ fn the_runs_render_check_holds_the_written_copy_to_the_original() {
     assert!(report.converted.is_empty() && report.stopped.len() == 1, "{report:?}");
     assert!(!dir.with_file_name("Film.klipp.klipp-convert").exists(), "rolled back");
     let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Whether a v1 file could hold `t`'s type: one the frozen reader knows
+/// (types made since, #1746, never were in one).
+fn in_v1(t: &klipp_effects::registry::EffectType) -> bool {
+    serde_json::from_value::<klipp_convert::v1::effects::BuiltinEffect>(v1_entry(serde_json::to_value((t.sample)()).unwrap())).is_ok()
 }

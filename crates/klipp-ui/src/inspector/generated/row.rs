@@ -625,7 +625,9 @@ fn combo_row(ui: &mut egui::Ui, ctx: &mut RowCtx, input: RowInput) -> RowOutcome
     let stepped = ui
         .horizontal(|ui| {
             ui.label(label);
-            egui::ComboBox::from_id_salt((ctx.addr.clone(), desc.key)).selected_text(names[index]).show_ui(ui, |ui| {
+            // Every item shown at once, as far as the window allows: a long
+            // list (a transform's camera curves) isn't cut to a scroll.
+            egui::ComboBox::from_id_salt((ctx.addr.clone(), desc.key)).selected_text(names[index]).height(f32::INFINITY).show_ui(ui, |ui| {
                 for (i, name) in names.iter().enumerate() {
                     ui.selectable_value(&mut chosen, i, *name);
                 }

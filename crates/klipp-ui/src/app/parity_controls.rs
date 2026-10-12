@@ -114,6 +114,21 @@ impl Stack {
         Ok(())
     }
 
+    /// Click `text` on the row labelled `row`: a menu's shown item where
+    /// another menu on the card shows the same (a transform's input and
+    /// output gamuts, #1746).
+    pub(super) fn click_in_row(&mut self, row: &str, text: &str) -> Result<(), String> {
+        self.frame(Vec::new());
+        let drawn = self.frame(Vec::new());
+        let y = drawn.iter().find(|(t, _)| t == row).map(|(_, p)| p.y).ok_or_else(|| format!("{row:?} isn't drawn"))?;
+        let at = drawn.iter().filter(|(t, _)| t == text).min_by(|a, b| (a.1.y - y).abs().total_cmp(&(b.1.y - y).abs())).map(|(_, p)| *p).ok_or_else(|| format!("{text:?} isn't drawn"))?;
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        self.frame(vec![egui::Event::PointerMoved(at), button(true)]);
+        self.frame(vec![egui::Event::PointerMoved(at), button(false)]);
+        self.frame(Vec::new());
+        Ok(())
+    }
+
     /// Undo (or redo) one step, through the document as the app does.
     pub(super) fn step(&mut self, forward: bool) -> Result<(), String> {
         // The undo or redo passes the dispatch boundary first, as the app's
@@ -163,7 +178,7 @@ fn shown_index(desc: &ParamDesc, value: &Value) -> Option<usize> {
 /// The type's sample with every condition `pres` names met, so its row
 /// shows and is editable, and the fixture's name.
 fn shown_fixture(ty: &EffectType, pres: &Presentation) -> Result<(BuiltinEffect, &'static str), String> {
-    let mut effect = (ty.sample)();
+    let mut effect = super::parity_numeric::acting_sample(ty);
     let mut variant = "sample";
     for Cond::ParamIs { key, value } in [pres.visible_if, pres.enabled_if].into_iter().flatten() {
         let desc = ty.desc.params.iter().find(|p| p.key == key).ok_or_else(|| format!("its condition names {key:?}, not a parameter"))?;
@@ -410,7 +425,7 @@ pub(super) fn run(report: &mut Report) {
                             let from = (i + 1) % labels.len();
                             let start = with_field(&effect, desc, stored_choice(desc, &was, from))?;
                             edit_case(&start, desc, stored_choice(desc, &was, i), |s| {
-                                s.click(labels[from])?;
+                                s.click_in_row(label, labels[from])?;
                                 s.click(item)
                             })
                         });

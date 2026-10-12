@@ -438,10 +438,18 @@ fn effect_cases() -> Vec<Case> {
         .collect()
 }
 
-/// Variants covered elsewhere for now, with the reason. None: the
-/// temporal effects are in [`temporal_cases`], and a frei0r plug-in in
+/// Variants covered elsewhere for now, with the reason. The temporal
+/// effects are in [`temporal_cases`], and a frei0r plug-in in
 /// [`frei0r_case`] when one is installed.
-const EFFECTS_IN_A_LATER_BATCH: &[&str] = &[];
+const EFFECTS_IN_A_LATER_BATCH: &[&str] = &[
+    // A LUT file and the transform's tables, prepared by the renderer
+    // (#1746): drawn on every path against their kernels in
+    // `colour_effects_render.rs`, and viewer against export in klipp-engine's
+    // `viewer_matches_export.rs`. Their stored frames come with the next
+    // recording on main.
+    "Lut3D",
+    "ColourSpaceTransform",
+];
 
 /// One moving, grainy clip carrying `fx` (#1024).
 fn moving(name: impl Into<String>, fx: Vec<BuiltinEffect>) -> (Case, Clip) {

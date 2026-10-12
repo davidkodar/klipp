@@ -31,6 +31,8 @@ pub enum DeclineOutcome {
     Unsupported,
     /// The plug-in failed: no instance, or its render failed.
     RenderFailed,
+    /// A file the node reads (a LUT's) couldn't be read.
+    FileMissing,
 }
 
 impl DeclineOutcome {
@@ -48,6 +50,7 @@ impl DeclineOutcome {
             Self::PluginMissing => "plug-in missing",
             Self::Unsupported => "unsupported",
             Self::RenderFailed => "render failed",
+            Self::FileMissing => "file missing",
         }
     }
 }

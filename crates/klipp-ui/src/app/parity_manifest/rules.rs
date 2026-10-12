@@ -545,7 +545,8 @@ fn specialist(id: &str) -> Result<Vec<Interaction>, String> {
         // An image picked, cleared, or the picker cancelled; a missing file
         // is the LUT's case, which reads it the same way.
         "matte_file" | "plate_file" => vec![FileSelect, FileClear, FileCancel, UndoRedo, Pixels],
-        "lut_file" => vec![
+        // The 3D LUT effect's file (#1746), as the grade's LUT node's.
+        "lut_file" | "effect_lut_file" => vec![
             FileSelect,
             FileClear,
             FileCancel,

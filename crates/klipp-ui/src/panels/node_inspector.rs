@@ -4279,7 +4279,7 @@ fn lut_colorspace_dropdown(
 
 /// The bundled LUT library under `dir` (#892): each category folder, by
 /// its name, with its LUT files, sorted. Folders with none are left out.
-fn bundled_luts(dir: &std::path::Path) -> Vec<(String, Vec<std::path::PathBuf>)> {
+pub(crate) fn bundled_luts(dir: &std::path::Path) -> Vec<(String, Vec<std::path::PathBuf>)> {
     let is_lut = |p: &std::path::Path| p.extension().is_some_and(|e| e == "cube" || e == "3dl" || e == "csp");
     let mut out: Vec<(String, Vec<std::path::PathBuf>)> = std::fs::read_dir(dir)
         .into_iter()

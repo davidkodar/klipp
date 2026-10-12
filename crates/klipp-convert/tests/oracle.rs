@@ -98,9 +98,11 @@ fn grade_graph(r: &mut Rng) -> Value {
     g
 }
 
-/// The built-in effects the registry describes, as v1 saves them.
+/// The built-in effects the registry describes, as v1 saves them: those
+/// a v1 file can hold (types made since, #1746, never were in one).
 fn effect_payloads() -> Vec<Value> {
     klipp_effects::registry::effect_types()
+        .filter(|t| in_v1(t))
         .map(|t| {
             let mut v = serde_json::to_value((t.sample)()).expect("an effect serialises");
             // A v1 Speed Ramp carries the fields picture revision 4 drops
@@ -458,4 +460,9 @@ fn two_sources_into_one_port_keep_their_order() {
 fn a_track_with_audio_effects_round_trips_its_picture() {
     let t = json!({ "id": "00000000-0000-4000-8000-000000000077", "name": "A1", "effects": { "video": [], "audio": [{"type": "gain", "db": 3.0}] } });
     check_track(&t).unwrap();
+}
+
+/// Whether the frozen v1 reader knows `t`'s type.
+fn in_v1(t: &klipp_effects::registry::EffectType) -> bool {
+    serde_json::from_value::<klipp_convert::v1::effects::BuiltinEffect>(serde_json::to_value((t.sample)()).unwrap()).is_ok() || t.tag == "speed_ramp"
 }

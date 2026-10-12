@@ -108,10 +108,12 @@ pub(super) fn effect_type(tag: &str) -> &'static EffectType {
 }
 
 /// Every specialist entry this family covers, required on the effects
-/// stack: the analysis effects' workflows and the frei0r plug-in editor.
+/// stack: the analysis effects' workflows, the frei0r plug-in editor and
+/// the 3D LUT effect's file.
 pub(super) fn require(manifest: &mut Manifest) {
     require_analyses(manifest);
     require_frei0r(manifest);
+    require_lut_file(manifest);
 }
 
 fn require_analyses(manifest: &mut Manifest) {
@@ -558,6 +560,153 @@ pub(super) fn run(report: &mut Report) {
         report.family(a.tag, |report| run_analysis(report, a));
     }
     report.family("frei0r", run_frei0r);
+    report.family("3D LUT file", run_lut_file);
+}
+
+/// The 3D LUT effect's file editor (#1746): the catalog entry its custom
+/// widget draws.
+pub(super) fn lut_file_entries() -> Vec<super::parity_manifest::CatalogEntry> {
+    catalog().into_iter().filter(|e| matches!(e.value, CatalogValue::Parameter { presentation, .. } if presentation.widget == klipp_effects::registry::presentation::Widget::Custom("effect_lut_file"))).collect()
+}
+
+fn require_lut_file(manifest: &mut Manifest) {
+    for entry in lut_file_entries() {
+        manifest.require_fixture(&entry, Surface::EffectsStack, VARIANT);
+    }
+}
+
+/// A clip with a 3D LUT effect reading `path`.
+pub(super) fn lut_clip(path: &str) -> klipp_timeline::Clip {
+    fixture(&BuiltinEffect::Lut3D { path: path.into(), opacity: 1.0, tetrahedral: true, prepared: None })
+}
+
+/// The LUT effect's stored file.
+fn lut_path_of(run: &Run) -> Option<String> {
+    test_clip::effects(run.clip()).iter().find_map(|e| match e {
+        BuiltinEffect::Lut3D { path, .. } => Some(path.clone()),
+        _ => None,
+    })
+}
+
+/// One edit of the file from `start`, `drive`n through the editor: the
+/// file stored is `want`, in one step, undone and redone exactly.
+fn lut_file_edit(start: &klipp_timeline::Clip, want: &str, drive: impl FnOnce(&mut Run) -> Result<(), String>) -> Result<(), String> {
+    let mut new = one(start, |_| {});
+    let before = new.clip().picture_v2()?;
+    drive(&mut new)?;
+    if lut_path_of(&new).as_deref() != Some(want) {
+        return Err(format!("stored {:?}, want {want:?}", lut_path_of(&new)));
+    }
+    holds(&new, 1, &[])?;
+    let after = new.clip().picture_v2()?;
+    if !new.step(false) || new.clip().picture_v2()? != before {
+        return Err("undo doesn't give back the picture before".into());
+    }
+    if !new.step(true) || new.clip().picture_v2()? != after {
+        return Err("redo doesn't give back the picture after".into());
+    }
+    Ok(())
+}
+
+/// The first bundled look: its category, its name and its file.
+pub(super) fn first_bundled_look() -> Option<(String, String, std::path::PathBuf)> {
+    let dir = klipp_core::assets::bundled_luts_dir()?;
+    crate::panels::node_inspector::bundled_luts(dir).into_iter().find_map(|(category, files)| {
+        let file = files.into_iter().next()?;
+        Some((category, file.file_stem()?.to_string_lossy().into_owned(), file))
+    })
+}
+
+/// The 3D LUT effect's file editor's cases: opened, a file missing, Browse
+/// dismissed and answered, a bundled look picked and drawn, cleared.
+fn run_lut_file(report: &mut Report) {
+    let entries = lut_file_entries();
+    if entries.is_empty() {
+        report.case("3D LUT file", [], || Err("no catalog entry draws the LUT file editor".into()));
+        return;
+    }
+    let key = |interaction| entries.iter().map(|e| CoverageKey::new(e.type_id, &e.parameter, Surface::EffectsStack, VARIANT, interaction)).collect::<Vec<_>>();
+    let gone = "/nonexistent/klipp-parity/look.cube";
+    let library = klipp_core::assets::bundled_luts_dir();
+    let portable = |p: &std::path::Path| klipp_core::assets::portable_lut_path(p, library);
+
+    report.case("3D LUT file opened", key(Interaction::OpenWithoutWrite), || {
+        let mut new = one(&lut_clip(gone), |_| {});
+        let before = new.clip().picture_v2()?;
+        let drawn = new.frame(Vec::new(), egui::Modifiers::NONE);
+        if !drawn.iter().any(|(t, _)| t == "look") {
+            return Err("the file isn't named".into());
+        }
+        holds(&new, 0, &[])?;
+        if new.clip().picture_v2()? != before {
+            return Err("opening it wrote the picture".into());
+        }
+        Ok(())
+    });
+    // A file this machine doesn't have: named, said, nothing written.
+    report.case("3D LUT file missing", key(Interaction::MissingAsset), || {
+        let mut new = one(&lut_clip(gone), |_| {});
+        let drawn = new.frame(Vec::new(), egui::Modifiers::NONE);
+        if !drawn.iter().any(|(t, _)| t == "\u{26a0} LUT file not found") {
+            return Err("the missing file isn't said".into());
+        }
+        holds(&new, 0, &[])
+    });
+    report.case("3D LUT file browse cancelled", key(Interaction::FileCancel), || {
+        let mut new = one(&lut_clip(gone), |_| {});
+        let before = new.clip().picture_v2()?;
+        let mut clicked = false;
+        let asked = crate::file_dialog::cancelling(|| clicked = new.click_last("Browse\u{2026}"));
+        if !clicked || asked != 1 {
+            return Err(format!("Browse clicked {clicked}, asked for {asked} pickers"));
+        }
+        holds(&new, 0, &[])?;
+        if new.clip().picture_v2()? != before {
+            return Err("a dismissed Browse wrote".into());
+        }
+        Ok(())
+    });
+    report.case("3D LUT file browsed", [key(Interaction::FileSelect), key(Interaction::UndoRedo)].concat(), || {
+        let (_, _, file) = first_bundled_look().ok_or("no bundled look to browse to")?;
+        lut_file_edit(&lut_clip(gone), &portable(&file), |r| {
+            let mut clicked = false;
+            let (asked, cmds) = crate::file_dialog::answering(Some(file.clone()), || clicked = r.click_last("Browse\u{2026}"));
+            if !clicked || asked != 1 {
+                return Err(format!("Browse clicked {clicked}, asked for {asked} pickers"));
+            }
+            for cmd in cmds {
+                r.apply(cmd);
+            }
+            Ok(())
+        })
+    });
+    report.case("3D LUT file picked from the bundled looks", [key(Interaction::FileSelect), key(Interaction::UndoRedo)].concat(), || {
+        let (category, name, file) = first_bundled_look().ok_or("no bundled look to pick")?;
+        lut_file_edit(&lut_clip(""), &portable(&file), |r| {
+            for text in ["Bundled", category.as_str(), name.as_str()] {
+                if !r.click_last(text) {
+                    return Err(format!("{text:?} isn't drawn"));
+                }
+            }
+            Ok(())
+        })
+    });
+    report.case("3D LUT file cleared", [key(Interaction::FileClear), key(Interaction::UndoRedo)].concat(), || {
+        lut_file_edit(&lut_clip(gone), "", |r| if r.click_last("Clear") { Ok(()) } else { Err("no Clear".into()) })
+    });
+}
+
+/// The 3D LUT file editor's required keys, but Pixels (the picture
+/// oracle's).
+#[test]
+fn the_lut_effects_file_edits_as_expected() {
+    let mut report = Report::default();
+    report.family("3D LUT file", run_lut_file);
+    report.family_result().unwrap();
+    let mut manifest = Manifest::default();
+    require_lut_file(&mut manifest);
+    let missing: Vec<_> = manifest.required.iter().filter(|k| !matches!(k.interaction, Interaction::Pixels) && !report.passed.contains(k)).collect();
+    assert!(!manifest.required.is_empty() && missing.is_empty(), "required and not earned: {missing:#?}");
 }
 
 /// The frei0r editor's required keys, but Pixels (the picture oracle's).

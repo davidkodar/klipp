@@ -268,6 +268,15 @@ fn tries(p: &klipp_effects::registry::ParamDesc) -> Vec<f32> {
 /// `t`'s settings to try through its saved form: every number at once,
 /// then one parameter at a time, strongest first; the sample last.
 fn effect_tries(t: &klipp_effects::registry::EffectType) -> Vec<klipp_effects::BuiltinEffect> {
+    // A LUT reads a file and a transform converts between named spaces:
+    // not numbers to turn up (#1746).
+    match t.tag {
+        "lut_3d" => return vec![klipp_effects::BuiltinEffect::Lut3D { path: rotating_lut().to_string_lossy().into_owned(), opacity: 1.0, tetrahedral: true, prepared: None }],
+        "colour_space_transform" => {
+            return vec![klipp_effects::BuiltinEffect::ColourSpaceTransform { input_gamut: 2, input_curve: 1, output_gamut: 1, output_curve: 0, prepared: None }];
+        }
+        _ => {}
+    }
     let mut out = Vec::new();
     // Every number at once, at 80% of its range: an effect that needs two
     // settings together (a shadow's distance and its opacity) acts.

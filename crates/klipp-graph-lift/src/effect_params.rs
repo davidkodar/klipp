@@ -619,7 +619,7 @@ mod tests {
             assert_eq!(from_params(t.tag, &map).unwrap(), moved, "{} moved", t.tag);
             n += 1;
         }
-        assert_eq!(n, 54, "every described effect");
+        assert_eq!(n, 56, "every described effect");
     }
 
     /// A frei0r plug-in is stored as `klipp.frei0r` (picture revision 4):
