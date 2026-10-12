@@ -1450,7 +1450,7 @@ fn a_canvas_node_drag_is_one_step_by_path_at_any_depth() {
         run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
             *g = grade;
             let level = spread(level_of(g, &descent).unwrap());
-            *crate::app::KlippApp::resolve_graph_at_path_mut(g, &descent).unwrap() = level;
+            *super::KlippApp::resolve_graph_at_path_mut(g, &descent).unwrap() = level;
         });
         run.state.graph_descent_path = descent.clone();
         let at = |run: &Run| level_of(clip(&run.state, clip_id).grade(), &descent).unwrap().node_positions[&ids[1]];
@@ -1614,4 +1614,150 @@ fn printer_lights_inside_a_compound_make_its_corrector_there() {
         undo_once(&mut run.state);
         assert_eq!(saved(&run.state, run.clip), before, "deep {deep}: undo, the clip as it was");
     }
+}
+
+/// One key pressed with `mods` held, run through `f` inside an egui frame.
+fn with_key<R>(ctx: &egui::Context, key: egui::Key, mods: egui::Modifiers, f: impl FnOnce(&egui::Context) -> R) -> R {
+    let event = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: mods };
+    let (mut f, mut out) = (Some(f), None);
+    let _ = ctx.run(egui::RawInput { events: vec![event], modifiers: mods, ..Default::default() }, |ctx| out = f.take().map(|f| f(ctx)));
+    out.unwrap()
+}
+
+/// With the grade canvas focused, each of its keys does only its own
+/// action (#1742): the app's shortcuts run only the Ctrl combinations
+/// and the grade's keys, which take none of these; the transport's J, K
+/// and L stand aside; and the canvas does its thing (Delete takes the
+/// node, L lays the graph out). Delete used to remove the clip too.
+#[test]
+fn a_focused_grade_canvas_keeps_its_keys_from_the_timeline() {
+    use super::shortcuts::{grade_node_keys, key_scope, KeyScope};
+    use crate::panels::node_graph_v2::canvas_command_tests::Harness;
+    use crate::state::PanelKind;
+    let (mut state, clip_id, node) = graded(NodeKind::Saturation).unwrap();
+    state.selected_clip = Some(clip_id);
+    state.playback = klipp_engine::PlaybackState::Paused;
+
+    // Which shortcuts run, by the focus.
+    for (panel, editing, scope) in [
+        (Some(PanelKind::NodeGraph), false, KeyScope::GradeCanvas),
+        (Some(PanelKind::PictureGraph), false, KeyScope::CtrlOnly),
+        (Some(PanelKind::Timeline), false, KeyScope::All),
+        (None, false, KeyScope::All),
+        (Some(PanelKind::NodeGraph), true, KeyScope::CtrlOnly),
+    ] {
+        state.active_panel = panel;
+        assert_eq!(key_scope(&state, editing), scope, "{panel:?}, typing {editing}");
+    }
+    state.active_panel = Some(PanelKind::NodeGraph);
+
+    let mut grade = clip(&state, clip_id).grade().clone();
+    for (i, n) in grade.nodes.iter().enumerate() {
+        grade.node_positions.insert(n.id, klipp_nodes::NodePos { x: (i as f32 - 1.0) * 230.0, y: 0.0 });
+    }
+    let mut h = Harness::on(grade, clip_id);
+    h.selected = Some(node);
+    h.set = [node].into_iter().collect();
+    h.settle();
+    let kb = crate::keybindings::KeyBindings::defaults();
+    let ctx = egui::Context::default();
+    let mut transport = crate::panels::transport::TransportBar::default();
+    for key in [egui::Key::Delete, egui::Key::Backspace, egui::Key::L, egui::Key::M, egui::Key::F, egui::Key::Num1, egui::Key::J, egui::Key::K] {
+        let event = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        // What the canvas did, its thumbnail requests aside.
+        let canvas: Vec<AppCommand> = h.frame(vec![event]).into_iter().filter(|c| !matches!(c, AppCommand::SetVisibleNodeThumbs { .. })).collect();
+        let (grade_keys, transported) = with_key(&ctx, key, egui::Modifiers::NONE, |ctx| {
+            let mut cmds = Vec::new();
+            ctx.input(|i| grade_node_keys(&mut state, &kb, i, true, &mut cmds));
+            (cmds, transport.handle_keyboard(ctx, &state, &kb))
+        });
+        assert!(grade_keys.is_empty() && transported.is_empty(), "{key:?} reached the app: {grade_keys:?} {transported:?}");
+        match key {
+            egui::Key::Delete => assert!(matches!(canvas.as_slice(), [AppCommand::RemoveNode { node_id, .. }] if *node_id == node), "{canvas:?}"),
+            egui::Key::L => assert!(matches!(canvas.as_slice(), [AppCommand::AutoLayoutNodeGraph { .. }]), "{canvas:?}"),
+            _ => assert!(!canvas.iter().any(|c| matches!(c, AppCommand::RemoveClip { .. })), "{key:?}: {canvas:?}"),
+        }
+    }
+
+    // Controls: unfocused, the canvas takes no Delete; and with the
+    // timeline focused the transport's L plays.
+    let mut h = Harness::on(clip(&state, clip_id).grade().clone(), clip_id);
+    h.panel.grade_keys = false;
+    h.selected = Some(node);
+    h.set = [node].into_iter().collect();
+    h.settle();
+    let delete = egui::Event::Key { key: egui::Key::Delete, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+    assert!(!h.frame(vec![delete]).iter().any(|c| matches!(c, AppCommand::RemoveNode { .. })), "an unfocused canvas leaves Delete alone");
+    state.active_panel = Some(PanelKind::Timeline);
+    let played = with_key(&egui::Context::default(), egui::Key::L, egui::Modifiers::NONE, |ctx| crate::panels::transport::TransportBar::default().handle_keyboard(ctx, &state, &kb));
+    assert!(played.iter().any(|c| matches!(c, AppCommand::Play)), "{played:?}");
+}
+
+/// The grade's keys act on the level the canvas shows (#1742): `[` and
+/// `]` step through a compound's nodes, not the grade's top; Alt+D and
+/// Ctrl+Shift+R bypass and reset a node inside it, each one undo step as
+/// the app applies it; and a reset keeps what a node is (a compound its
+/// nodes).
+#[test]
+fn the_grade_keys_act_on_the_open_level() {
+    use super::colour::{edit_clip_graph, graph_path_for, write_node_settings};
+    use super::shortcuts::grade_node_keys;
+    let (mut state, clip_id, _) = graded(NodeKind::Corrector).unwrap();
+    let (grade, descent, ids) = at_depth(1);
+    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| *g = grade);
+    state.graph_descent_path = descent.clone();
+    state.selected_clip = Some(clip_id);
+    state.active_panel = Some(crate::state::PanelKind::NodeGraph);
+    state.selected_node_id = Some(ids[0]);
+    let kb = crate::keybindings::KeyBindings::defaults();
+    let ctx = egui::Context::default();
+    let press = |state: &mut AppState, key, mods| {
+        with_key(&ctx, key, mods, |ctx| {
+            let mut cmds = Vec::new();
+            ctx.input(|i| grade_node_keys(state, &kb, i, true, &mut cmds));
+            cmds
+        })
+    };
+    assert!(press(&mut state, egui::Key::CloseBracket, egui::Modifiers::NONE).is_empty());
+    assert_eq!(state.selected_node_id, Some(ids[1]), "] steps to the compound's next node");
+    press(&mut state, egui::Key::OpenBracket, egui::Modifiers::NONE);
+    press(&mut state, egui::Key::OpenBracket, egui::Modifiers::NONE);
+    assert_eq!(state.selected_node_id, Some(ids[2]), "[ wraps round the compound's nodes");
+    assert_eq!(state.selected_node_ids.len(), 1);
+
+    // The app's handling of the commands: the level holding the node,
+    // edited and recorded.
+    let apply = |state: &mut AppState, cmd: &AppCommand| {
+        let (AppCommand::ToggleNodeEnabled { node_id, .. } | AppCommand::ResetNode { node_id, .. }) = cmd else { panic!("{cmd:?}") };
+        let path = graph_path_for(clip(state, clip_id).grade(), &[*node_id], &state.graph_descent_path).expect("its level");
+        assert_eq!(edit_clip_graph(state, clip_id, &path, true, |g| { write_node_settings(g, cmd); }), Some(Ok(())));
+    };
+    let inner = |state: &AppState, id: NodeId| level_of(clip(state, clip_id).grade(), &descent).unwrap().nodes.into_iter().find(|n| n.id == id).unwrap();
+
+    let alt = egui::Modifiers { alt: true, ..Default::default() };
+    let cmds = press(&mut state, egui::Key::D, alt);
+    assert!(matches!(cmds.as_slice(), [AppCommand::ToggleNodeEnabled { node_id, .. }] if *node_id == ids[2]), "{cmds:?}");
+    let steps = state.active_history().undo_count();
+    apply(&mut state, &cmds[0]);
+    assert!(!inner(&state, ids[2]).enabled, "bypassed in the compound");
+    assert!(clip(&state, clip_id).grade().nodes.iter().all(|n| n.enabled), "the top untouched");
+    assert_eq!(state.active_history().undo_count(), steps + 1, "one step");
+
+    state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+        let level = super::KlippApp::resolve_graph_at_path_mut(g, &descent).unwrap();
+        level.nodes.iter_mut().find(|n| n.id == ids[2]).unwrap().params.contrast = Some(1.4);
+    });
+    let reset = egui::Modifiers { ctrl: true, shift: true, command: true, ..Default::default() };
+    let cmds = press(&mut state, egui::Key::R, reset);
+    assert!(matches!(cmds.as_slice(), [AppCommand::ResetNode { node_id, .. }] if *node_id == ids[2]), "{cmds:?}");
+    apply(&mut state, &cmds[0]);
+    assert_eq!(inner(&state, ids[2]).params.contrast, None, "reset in the compound");
+    assert_eq!(state.active_history().undo_count(), steps + 2, "one step");
+
+    // A compound reset keeps its nodes.
+    state.graph_descent_path.clear();
+    state.selected_node_id = Some(descent[0]);
+    let cmds = press(&mut state, egui::Key::R, reset);
+    apply(&mut state, &cmds[0]);
+    assert!(clip(&state, clip_id).grade().nodes.iter().find(|n| n.id == descent[0]).unwrap().params.compound_subgraph.is_some(), "the compound keeps its graph");
 }

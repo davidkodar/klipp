@@ -368,6 +368,11 @@ pub struct NodeGraphV2Panel {
     /// Cheap to recompute (~20 K samples per node) but caching
     /// avoids the work for nodes we paint every frame anyway.
     thumb_histograms: std::collections::HashMap<NodeOutput, (u64, [u32; 64])>,
+    /// Whether the grade canvas takes its single keys (Delete, F, L, M,
+    /// the digits): the colour page sets it while the canvas is the
+    /// focused panel (#1742). On by default, as a canvas drawn alone has
+    /// them.
+    pub grade_keys: bool,
 }
 
 impl Default for NodeGraphV2Panel {
@@ -418,6 +423,7 @@ impl Default for NodeGraphV2Panel {
             show_thumb_histogram: false,
             thumb_clipping_overlays: std::collections::HashMap::new(),
             thumb_histograms: std::collections::HashMap::new(),
+            grade_keys: true,
         }
     }
 }
@@ -504,7 +510,8 @@ impl NodeGraphV2Panel {
             self.drag_frame = None;
             cmds.push(AppCommand::AbandonNodeLayoutEdit { root });
         }
-        let updates = self.show_canvas(ui, selected_node, selected_set, &GradeCanvas(graph), clip_id, theme,
+        let keys = self.grade_keys;
+        let updates = self.show_canvas(ui, selected_node, selected_set, &GradeCanvas(graph, keys), clip_id, theme,
             engine_node_thumbs, engine_node_thumbs_gen, deferred_drops, descent_path,
             breadcrumb_labels, grade_version_names, active_grade_version, clip_time_secs,
             port_snap_enabled, port_snap_radius_px, solo_node);
@@ -5094,7 +5101,7 @@ mod add_menu_tests {
     fn the_grade_add_menu_lists_the_same_entries() {
         use super::model::CanvasGraph;
         let graph = klipp_nodes::NodeGraph::default();
-        let model = super::model::GradeCanvas(&graph);
+        let model = super::model::GradeCanvas(&graph, true);
         let actual: Vec<_> = model.add_menu().iter().map(|(label, entries)| (*label, entries.as_slice())).collect();
         assert_eq!(actual, super::ADD_MENU_CATEGORIES);
     }

@@ -1783,6 +1783,10 @@ pub enum AppCommand {
     SetNodeInputLink { clip_id: ClipId, node_id: uuid::Uuid, port: u8, label: Option<String> },
     MoveNode { clip_id: ClipId, node_id: uuid::Uuid, delta_x: f32, delta_y: f32 },
     ToggleNodeEnabled { clip_id: ClipId, node_id: uuid::Uuid },
+    /// A grade node's settings back to their defaults, wherever in the
+    /// grade it is (#1742). What it is stays: its effect, plug-in, LUT or
+    /// matte file, and a group's nodes.
+    ResetNode { clip_id: ClipId, node_id: uuid::Uuid },
     /// Auto-layout the clip's node graph — recompute every node's
     /// position using a hierarchical layered layout. Pushed as a
     /// single undoable batch (one entry on the history stack

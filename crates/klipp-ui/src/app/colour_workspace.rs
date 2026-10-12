@@ -781,6 +781,9 @@ impl KlippApp {
                         // user isn't stuck on a blank canvas.
                         let path = self.state.graph_descent_path.clone();
                         let panel_rect = ui.max_rect();
+                        // The canvas's single keys are its own only while
+                        // it has the focus (#1742).
+                        self.node_graph_v2_panel.grade_keys = self.state.active_panel == Some(crate::state::PanelKind::NodeGraph);
                         let cmds = clip.edit_grade(|root| {
                             let resolved = Self::resolve_graph_at_path_mut(root, &path);
                             let graph = match resolved {

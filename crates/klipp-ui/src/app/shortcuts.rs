@@ -13,10 +13,14 @@ impl KlippApp {
         // Ctrl+ shortcuts still work (standard convention: Ctrl combos always fire).
         let text_editing = ctx.wants_keyboard_input() || self.state.editing_timecode || self.state.viewer_text_edit;
         self.shortcuts_ctrl_global(ctx, &mut cmds);
-        if text_editing || self.state.active_panel == Some(crate::state::PanelKind::PictureGraph) {
-            // The picture canvas owns its editing keys. Timeline and grade
-            // shortcuts must not operate on the selected clip behind it.
-            return cmds;
+        match key_scope(&self.state, text_editing) {
+            KeyScope::CtrlOnly => return cmds,
+            KeyScope::GradeCanvas => {
+                let kb = self.key_bindings.clone();
+                ctx.input(|i| grade_node_keys(&mut self.state, &kb, i, true, &mut cmds));
+                return cmds;
+            }
+            KeyScope::All => {}
         }
         // A trim amount being typed for the selected edit points takes the
         // keys until Enter or Escape: its digits are not angle switches,
@@ -160,7 +164,7 @@ impl KlippApp {
             }
 
             // Group selected clips
-            if self.state.active_panel != Some(crate::state::PanelKind::PictureGraph) && kb.is_action_pressed("group_clips", i) {
+            if !self.state.node_canvas_focused() && kb.is_action_pressed("group_clips", i) {
                 let mut ids = self.state.selected_clips.clone();
                 if let Some(primary) = self.state.selected_clip {
                     if !ids.contains(&primary) {
@@ -172,7 +176,7 @@ impl KlippApp {
                 }
             }
             // Ungroup
-            if self.state.active_panel != Some(crate::state::PanelKind::PictureGraph) && kb.is_action_pressed("ungroup_clips", i) {
+            if !self.state.node_canvas_focused() && kb.is_action_pressed("ungroup_clips", i) {
                 if let Some(primary) = self.state.selected_clip {
                     let gid = self.state.sequences[self.state.active_sequence_idx].tracks.iter()
                         .flat_map(|t| t.clips.iter())
@@ -475,85 +479,9 @@ impl KlippApp {
                     cmds.push(AppCommand::TrimEditPoints { frames: 10 });
                 }
             }
-            // [ / ] — navigate color nodes
-            if kb.is_action_pressed("prev_color_node", i) || kb.is_action_pressed("next_color_node", i) {
-                let forward = kb.is_action_pressed("next_color_node", i);
-                if let Some(clip_id) = self.state.selected_clip {
-                    let seq = &self.state.sequences[self.state.active_sequence_idx];
-                    if let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) {
-                        let nodes = &clip.grade().nodes;
-                        if !nodes.is_empty() {
-                            let current_idx = self.state.selected_node_id
-                                .and_then(|sel| nodes.iter().position(|n| n.id == sel));
-                            let next_idx = match current_idx {
-                                Some(idx) => {
-                                    if forward {
-                                        (idx + 1) % nodes.len()
-                                    } else {
-                                        (idx + nodes.len() - 1) % nodes.len()
-                                    }
-                                }
-                                None => 0,
-                            };
-                            // Single-select cycle: drop any multi-set
-                            // accumulated from shift-click / box-select
-                            // and replace it with just the new primary.
-                            // Matches every-NLE keyboard-cycle behaviour.
-                            let new_id = nodes[next_idx].id;
-                            self.state.selected_node_id = Some(new_id);
-                            self.state.selected_node_ids.clear();
-                            self.state.selected_node_ids.insert(new_id);
-                        }
-                    }
-                }
-            }
-            // Alt+D — toggle bypass on selected node
-            if kb.is_action_pressed("toggle_node_bypass", i) {
-                if let Some(node_id) = self.state.selected_node_id {
-                    if let Some(clip_id) = self.state.selected_clip {
-                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                        if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
-                            clip.edit_grade(|graph| {
-                                if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                                    node.enabled = !node.enabled;
-                                }
-                            });
-                        }
-                        self.sync_sequence_to_engine();
-                    }
-                }
-            }
-            // Printer lights (#241): a channel's offset up or down a point.
-            for (pressed, channel, points) in [
-                (kb.is_action_pressed("printer_red_up", i), 0u8, 1),
-                (kb.is_action_pressed("printer_red_down", i), 0, -1),
-                (kb.is_action_pressed("printer_green_up", i), 1, 1),
-                (kb.is_action_pressed("printer_green_down", i), 1, -1),
-                (kb.is_action_pressed("printer_blue_up", i), 2, 1),
-                (kb.is_action_pressed("printer_blue_down", i), 2, -1),
-                (kb.is_action_pressed("printer_master_up", i), 3, 1),
-                (kb.is_action_pressed("printer_master_down", i), 3, -1),
-            ] {
-                if pressed {
-                    cmds.push(AppCommand::PrinterLight { channel, points });
-                }
-            }
-            // Ctrl+Shift+R — reset current color node to defaults
-            if kb.is_action_pressed("reset_current_node", i) {
-                if let Some(node_id) = self.state.selected_node_id {
-                    if let Some(clip_id) = self.state.selected_clip {
-                        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                        if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
-                            clip.edit_grade(|graph| {
-                                if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == node_id) {
-                                    node.params = klipp_nodes::NodeParams::default();
-                                }
-                            });
-                        }
-                        self.sync_sequence_to_engine();
-                    }
-                }
-            }
+            // [ / ], Alt+D, the printer lights and Ctrl+Shift+R: the
+            // grade's keys, on the level the node canvas shows (#1742).
+            grade_node_keys(&mut self.state, &kb, i, false, cmds);
             // Copy / Copy Attributes / Copy Color Nodes
             //
             // Two distinct rebindable actions share defaults at Ctrl+C:
@@ -1301,4 +1229,111 @@ pub(super) fn remove_selected_keyframe(state: &crate::state::AppState, sk: &crat
     // A placed kind's key (a Temporal Denoise's) goes through the clip's
     // effect list, as its card takes one off (#1419).
     Some(crate::inspector::stack_view::route_placed(clip, vec![cmd])).filter(|c| !c.is_empty())
+}
+
+/// The grade's keys (#1742), acting on the level of the grade the node
+/// canvas shows (`graph_descent_path`), not only its top:
+///
+/// - `[` / `]` select the level's previous or next node, Source and
+///   Output passed over.
+/// - Alt+D bypasses the selected node and Ctrl+Shift+R resets it, by
+///   command, so each is one undo step wherever the node is.
+/// - The printer lights.
+///
+/// With the grade canvas focused (`canvas`), Ctrl+C and Ctrl+V copy and
+/// paste its nodes, which the clip's copy and paste step aside for.
+pub(super) fn grade_node_keys(
+    state: &mut crate::state::AppState,
+    kb: &crate::keybindings::KeyBindings,
+    i: &egui::InputState,
+    canvas: bool,
+    cmds: &mut Vec<AppCommand>,
+) {
+    let Some(clip_id) = state.selected_clip else { return };
+    if kb.is_action_pressed("prev_color_node", i) || kb.is_action_pressed("next_color_node", i) {
+        let forward = kb.is_action_pressed("next_color_node", i);
+        let level: Vec<klipp_nodes::NodeId> = state
+            .sequence()
+            .all_clips()
+            .find(|c| c.id == clip_id)
+            .and_then(|c| grade_level(c.grade(), &state.graph_descent_path))
+            .map(|g| g.nodes.iter().filter(|n| !matches!(n.kind, klipp_nodes::NodeKind::Source | klipp_nodes::NodeKind::Output)).map(|n| n.id).collect())
+            .unwrap_or_default();
+        if !level.is_empty() {
+            let at = state.selected_node_id.and_then(|sel| level.iter().position(|id| *id == sel));
+            let next = match at {
+                Some(at) if forward => (at + 1) % level.len(),
+                Some(at) => (at + level.len() - 1) % level.len(),
+                None if forward => 0,
+                None => level.len() - 1,
+            };
+            // One node selected, as a keyboard step through a list is.
+            state.selected_node_id = Some(level[next]);
+            state.selected_node_ids.clear();
+            state.selected_node_ids.insert(level[next]);
+        }
+    }
+    if let Some(node_id) = state.selected_node_id {
+        if kb.is_action_pressed("toggle_node_bypass", i) {
+            cmds.push(AppCommand::ToggleNodeEnabled { clip_id, node_id });
+        }
+        if kb.is_action_pressed("reset_current_node", i) {
+            cmds.push(AppCommand::ResetNode { clip_id, node_id });
+        }
+    }
+    // Printer lights (#241): a channel's offset up or down a point.
+    for (pressed, channel, points) in [
+        (kb.is_action_pressed("printer_red_up", i), 0u8, 1),
+        (kb.is_action_pressed("printer_red_down", i), 0, -1),
+        (kb.is_action_pressed("printer_green_up", i), 1, 1),
+        (kb.is_action_pressed("printer_green_down", i), 1, -1),
+        (kb.is_action_pressed("printer_blue_up", i), 2, 1),
+        (kb.is_action_pressed("printer_blue_down", i), 2, -1),
+        (kb.is_action_pressed("printer_master_up", i), 3, 1),
+        (kb.is_action_pressed("printer_master_down", i), 3, -1),
+    ] {
+        if pressed {
+            cmds.push(AppCommand::PrinterLight { channel, points });
+        }
+    }
+    if canvas {
+        if kb.is_action_pressed("copy_color_nodes", i) && !state.selected_node_ids.is_empty() {
+            cmds.push(AppCommand::CopyColorNodes { clip_id });
+        }
+        if kb.is_action_pressed("paste_color_nodes", i) && state.grade_node_clipboard.as_ref().is_some_and(|c| !c.nodes.is_empty()) {
+            cmds.push(AppCommand::PasteColorNodes { clip_id });
+        }
+    }
+}
+
+/// The graph at `path` in a grade: each step a compound's own graph.
+pub(super) fn grade_level<'a>(root: &'a klipp_nodes::NodeGraph, path: &[klipp_nodes::NodeId]) -> Option<&'a klipp_nodes::NodeGraph> {
+    path.iter().try_fold(root, |g, id| g.nodes.iter().find(|n| n.id == *id)?.params.compound_subgraph.as_ref())
+}
+
+/// Which of the app's own shortcuts a frame's keys run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum KeyScope {
+    /// Every one: nothing else has the keys.
+    All,
+    /// The Ctrl combinations only: text is being typed, or the picture
+    /// canvas has the keys.
+    CtrlOnly,
+    /// The Ctrl combinations and the grade's keys: the grade canvas has
+    /// the keys.
+    GradeCanvas,
+}
+
+/// The shortcuts that run under `state`'s focus (#1742). A node canvas
+/// owns its single keys: Delete, F, L, M and the digits are its, and the
+/// timeline's shortcuts must not act on the clip behind it (Delete removed
+/// the clip as well as the nodes). The grade canvas keeps the grade's own
+/// keys, on the level it shows.
+pub(super) fn key_scope(state: &crate::state::AppState, text_editing: bool) -> KeyScope {
+    match state.active_panel {
+        _ if text_editing => KeyScope::CtrlOnly,
+        Some(crate::state::PanelKind::NodeGraph) => KeyScope::GradeCanvas,
+        Some(crate::state::PanelKind::PictureGraph) => KeyScope::CtrlOnly,
+        _ => KeyScope::All,
+    }
 }

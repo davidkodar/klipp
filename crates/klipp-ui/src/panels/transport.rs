@@ -565,8 +565,11 @@ impl TransportBar {
                 let dur = state.sequence_duration();
                 cmds.push(route_for_viewer(AppCommand::SeekTo(dur), state));
             }
+            // J, K and L are a node canvas's while it has the keys: L lays
+            // its nodes out (#1742). Space and the arrows still play.
+            let shuttle_keys = !text_editing && !state.node_canvas_focused();
             // K held: J and L step a frame, and held on, play slowly (#921).
-            let k_held = !text_editing && kb.is_action_down("shuttle_pause", i);
+            let k_held = shuttle_keys && kb.is_action_down("shuttle_pause", i);
             // Dynamic trimming (#914): J or L with an edit point selected,
             // on the program, plays from its cut; K then commits the trim.
             let arms_trim = state.viewer_mode != ViewerMode::Source
@@ -574,11 +577,11 @@ impl TransportBar {
                 && state.dynamic_trim.is_none()
                 && focus_playback != PlaybackState::Playing;
             let jl = kb.is_action_pressed("shuttle_reverse", i) || kb.is_action_pressed("shuttle_forward", i);
-            if !text_editing && jl && arms_trim {
+            if shuttle_keys && jl && arms_trim {
                 cmds.push(AppCommand::BeginDynamicTrim);
             }
             // J — reverse, normal speed first, then faster
-            if !text_editing && kb.is_action_pressed("shuttle_reverse", i) {
+            if shuttle_keys && kb.is_action_pressed("shuttle_reverse", i) {
                 if k_held {
                     self.start_slow(false, &mut cmds, state);
                 } else {
@@ -591,7 +594,7 @@ impl TransportBar {
                 }
             }
             // K — pause, reset speed
-            if !text_editing && kb.is_action_pressed("shuttle_pause", i) {
+            if shuttle_keys && kb.is_action_pressed("shuttle_pause", i) {
                 cmds.push(route_for_viewer(AppCommand::SetSpeed(1.0), state));
                 cmds.push(route_for_viewer(AppCommand::Pause, state));
                 if state.dynamic_trim.is_some() {
@@ -599,7 +602,7 @@ impl TransportBar {
                 }
             }
             // L — forward, normal speed first, then faster
-            if !text_editing && kb.is_action_pressed("shuttle_forward", i) {
+            if shuttle_keys && kb.is_action_pressed("shuttle_forward", i) {
                 if k_held {
                     self.start_slow(true, &mut cmds, state);
                 } else {
