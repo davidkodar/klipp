@@ -2507,6 +2507,14 @@ impl KlippApp {
             match event {
                 klipp_export::RenderQueueEvent::Complete { id, output_path } => {
                     tracing::info!("Render job {} complete: {}", id, output_path.display());
+                    // The credits of what it played, beside the file, now
+                    // that there is one (#1604).
+                    let heard = self.state.render_queue.jobs.iter().find(|j| j.id == id).map(|j| j.heard_media.clone()).unwrap_or_default();
+                    match klipp_audio_search::write_credits(&output_path, &heard) {
+                        Ok(Some((file, count))) => tracing::info!("credits for {count} file(s) written to {}", file.display()),
+                        Ok(None) => {}
+                        Err(e) => tracing::warn!("the credits list beside {} could not be written: {e}", output_path.display()),
+                    }
                     // #63 Tier-1: open output folder if the pref is enabled.
                     if self.prefs.export.open_folder_after_export {
                         if let Some(parent) = output_path.parent() {

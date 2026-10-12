@@ -641,6 +641,25 @@ impl SequenceSnapshot {
     pub fn end_frame(&self) -> u64 {
         self.export_range.map(|(_, e)| e).unwrap_or(self.duration_frames)
     }
+
+    /// The media files whose sound the export plays, each once, in track
+    /// order: clips inside the exported range, on tracks that are heard
+    /// (not muted; only the soloed ones when any is), nested sequences'
+    /// clips with them, as the mixdown takes them. What the export owes
+    /// credit for (#1604).
+    pub fn heard_media(&self) -> Vec<PathBuf> {
+        let any_solo = self.audio_tracks.iter().any(|t| t.solo);
+        let (start, end) = (self.start_frame(), self.end_frame());
+        let mut seen = std::collections::HashSet::new();
+        self.audio_tracks
+            .iter()
+            .filter(|t| !t.muted && (!any_solo || t.solo))
+            .flat_map(|t| t.clips.iter())
+            .filter(|c| c.timeline_start_frame < end && c.timeline_end_frame > start)
+            .filter(|c| seen.insert(c.path.clone()))
+            .map(|c| c.path.clone())
+            .collect()
+    }
 }
 
 /// Maximum nesting depth for compound clips to prevent infinite recursion.
@@ -938,6 +957,44 @@ mod tests {
             bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable,
             odt: klipp_core::OdtChoice::MatchViewer,
             mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS }
+    }
+
+    /// #1604: what an export credits is the sound it plays: each file
+    /// once, the clips inside its range, on heard tracks only (not a
+    /// muted one, and only the soloed one when there is one).
+    #[test]
+    fn heard_media_is_what_the_export_plays() {
+        let ids: Vec<MediaId> = (0..4).map(|_| MediaId::new()).collect();
+        let mut pool = MediaPool::new();
+        for (id, name) in ids.iter().zip(["a", "b", "c", "d"]) {
+            pool.add(make_media_item(*id, &format!("/media/{name}.wav")));
+        }
+        let at = |id: MediaId, from: i64, to: i64| Clip::media(id, make_rational(from * 24, 24), make_rational(to * 24, 24), make_rational(0, 24), make_rational((to - from) * 24, 24));
+        let mut seq = make_sequence();
+        seq.tracks.retain(|t| t.kind != TrackKind::Audio);
+        let mut a1 = Track::new("A1", TrackKind::Audio);
+        a1.clips = vec![at(ids[0], 0, 2), at(ids[1], 4, 6), at(ids[0], 6, 8)];
+        let mut a2 = Track::new("A2", TrackKind::Audio);
+        a2.muted = true;
+        a2.clips = vec![at(ids[2], 0, 8)];
+        seq.tracks.extend([a1, a2]);
+        let heard = |seq: &Sequence, ranged: bool| -> Vec<String> {
+            SequenceSnapshot::from_sequence(seq, &pool, &make_settings(), None, ranged, klipp_core::WorkingColorspace::Rec709Linear)
+                .unwrap()
+                .heard_media()
+                .iter()
+                .map(|p| p.file_stem().unwrap().to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(heard(&seq, false), ["a", "b"], "each once, the muted track's not at all");
+        seq.in_point = Some(make_rational(3 * 24, 24));
+        seq.out_point = Some(make_rational(5 * 24, 24));
+        assert_eq!(heard(&seq, true), ["b"], "only what plays in the range");
+        let mut a3 = Track::new("A3", TrackKind::Audio);
+        a3.solo = true;
+        a3.clips = vec![at(ids[3], 0, 8)];
+        seq.tracks.push(a3);
+        assert_eq!(heard(&seq, false), ["d"], "a soloed track is all that is heard");
     }
 
     /// The export dialog's frame-rate override has to change how many

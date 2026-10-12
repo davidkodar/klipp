@@ -40,8 +40,9 @@ pub(crate) fn respond(
             }
             // What the export does not say for itself, the brief says.
             let brief = seq.brief.clone();
-            // The credits of what this sequence uses, and nothing else the
-            // shared download library holds (#1582).
+            // Whether what this sequence uses has credits (#1582): the list
+            // itself is written when the export completes, of what it
+            // played (#1604).
             let credits = sequence_credits(&seq, &pool);
             drop(pool);
             drop(seq);
@@ -155,11 +156,10 @@ pub(crate) fn respond(
             let mut v = send(AppCommand::ExportSequence { settings })?;
             v["export"] = said;
             if !credits.is_empty() {
-                let file = credits_path(&out);
-                match std::fs::write(&file, klipp_audio_search::credits_text(&credits)) {
-                    Ok(()) => v["credits"] = json!({ "path": file, "count": credits.len() }),
-                    Err(e) => v["credits"] = json!({ "error": format!("the credits list could not be written to {}: {e}", file.display()) }),
-                }
+                v["credits"] = json!({
+                    "path": klipp_audio_search::credits_path(&out),
+                    "when": "written when the export completes: the credits of what it plays, in its range, on heard tracks",
+                });
             }
             if v["applied"] != true {
                 v["next"] = json!("Export submission is still queued for the UI. Resolve its operation_id with operation_status before looking for a render job.");
@@ -594,12 +594,6 @@ fn audio_codec_named(name: &str) -> Result<klipp_core::ExportAudioCodec, String>
     })
 }
 
-/// The credits list's file, beside the export: `film.mp4` gets
-/// `film.credits.txt`.
-fn credits_path(out: &std::path::Path) -> std::path::PathBuf {
-    out.with_extension("credits.txt")
-}
-
 /// The credit of each downloaded file the sequence's enabled clips use,
 /// each file once: what its export owes credit for. A file with no credit
 /// beside it (the person's own footage) has none.
@@ -617,7 +611,7 @@ fn sequence_credits(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPoo
 
 #[cfg(test)]
 mod credits_tests {
-    use super::{credits_path, sequence_credits};
+    use super::sequence_credits;
 
     /// #1607 review: crf beside a bitrate preset encodes at that crf.
     #[test]
@@ -661,7 +655,6 @@ mod credits_tests {
         let mut titles: Vec<String> = sequence_credits(&seq, &pool).into_iter().map(|c| c.title).collect();
         titles.sort();
         assert_eq!(titles, ["riser", "whoosh"]);
-        assert_eq!(credits_path(std::path::Path::new("/out/film.mp4")), std::path::Path::new("/out/film.credits.txt"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
