@@ -2383,6 +2383,9 @@ pub enum AppCommand {
     /// Where a text box's text sits up and down the box (#1506):
     /// 0=Top, 1=Middle, 2=Bottom.
     SetTitleVerticalAlign { clip_id: ClipId, vertical_align: u8 },
+    /// How a text box's text meets the box when it is too long (#1722):
+    /// 0=Wrap, 1=Shrink (no smaller than `min_size`), 2=Grow.
+    SetTitleFit { clip_id: ClipId, fit: u8, min_size: f32 },
     SetTitlePosition { clip_id: ClipId, x: f32, y: f32 },
     /// Replace one Title-object's transform wholesale. Used by the
     /// on-canvas editor (drag-to-move, drag handle-resize, drag

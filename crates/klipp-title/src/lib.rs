@@ -865,7 +865,12 @@ impl TitleRenderer {
         let fonts = self.fonts_of(&faces.keys);
         let (box_w, box_h) = text_box_extent(title, width, height);
         let face_at = |i: usize| -> &Font { &fonts[faces.drawn(&tb.style_runs, &resolved_text, i)] };
-        let fit = fit_block_ratio(face_at, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), box_w, box_h, tb.line_spacing);
+        let shaped_widest = |ratio: f32| {
+            let run_px = |run: &StyleRun| run.font_size.unwrap_or(tb.font_size) * scale * case_scale * ratio;
+            let pieces = faces.split(&resolved_text, set_pieces(&tb.style_runs, &faces.of_run, 0, resolved_text.len(), font_px * ratio, run_px));
+            shaping::widest_typed_line(&fonts, &resolved_text, &pieces)
+        };
+        let fit = box_fit_ratio(&tb, face_at, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), shaped_widest, box_w, box_h);
         let font_px = font_px * fit;
         // The text from one byte to another, cut where its style runs
         // begin and end, each piece at its run's size and face (#1505).
@@ -3086,7 +3091,12 @@ impl TitleRenderer {
         let font_px = tb.font_size * scale * case_scale;
         let (box_w, box_h) = text_box_extent(title, width, height);
         let face_at = |i: usize| -> &Font { &fonts[faces.drawn(&tb.style_runs, &resolved_text, i)] };
-        let fit = fit_block_ratio(face_at, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), box_w, box_h, tb.line_spacing);
+        let shaped_widest = |ratio: f32| {
+            let run_px = |run: &StyleRun| run.font_size.unwrap_or(tb.font_size) * scale * case_scale * ratio;
+            let pieces = faces.split(&resolved_text, set_pieces(&tb.style_runs, &faces.of_run, 0, resolved_text.len(), font_px * ratio, run_px));
+            shaping::widest_typed_line(&fonts, &resolved_text, &pieces)
+        };
+        let fit = box_fit_ratio(&tb, face_at, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), shaped_widest, box_w, box_h);
         let font_px = font_px * fit;
         let run_px = |run: &StyleRun| run.font_size.unwrap_or(tb.font_size) * scale * case_scale * fit;
 
@@ -4637,13 +4647,7 @@ fn fit_block_ratio<'f>(font_at: impl Fn(usize) -> &'f Font, text: &str, px_at: i
     // A big title set on the lines its author gave reads better than one
     // the box broke: when keeping each line whole costs no more than a
     // 15% of the size, keep them whole.
-    let mut widest_line = 0.0f32;
-    let mut offset = 0usize;
-    for line in text.split('\n') {
-        let w: f32 = line.char_indices().map(|(i, c)| font_at(offset + i).metrics(c, px_at(offset + i)).advance_width).sum();
-        widest_line = widest_line.max(w);
-        offset += line.len() + 1;
-    }
+    let widest_line = widest_line(&font_at, text, &px_at);
     if widest_line * ratio > max_width {
         let whole = max_width / widest_line * 0.98;
         if whole >= ratio * 0.85 && wrapped_height(&font_at, text, |i| px_at(i) * whole, max_width, line_spacing) <= max_height {
@@ -4651,6 +4655,66 @@ fn fit_block_ratio<'f>(font_at: impl Fn(usize) -> &'f Font, text: &str, px_at: i
         }
     }
     ratio
+}
+
+/// The widest of the lines `text` was typed on, at `px_at`, each
+/// character in its own face.
+fn widest_line<'f>(font_at: impl Fn(usize) -> &'f Font, text: &str, px_at: impl Fn(usize) -> f32) -> f32 {
+    let mut widest = 0.0f32;
+    let mut offset = 0usize;
+    for line in text.split('\n') {
+        let w: f32 = line.char_indices().map(|(i, c)| font_at(offset + i).metrics(c, px_at(offset + i)).advance_width).sum();
+        widest = widest.max(w);
+        offset += line.len() + 1;
+    }
+    widest
+}
+
+/// How much to scale a text box's type for its box, by the box's fit
+/// (#1722): [`fit_block_ratio`] for `Wrap`; for `Grow` only what its
+/// widest word needs, the lines then taking the height they take; for
+/// `Shrink` its typed lines whole, smaller until the widest fits the
+/// width and the lines the height, held at the box's minimum size.
+///
+/// `shaped_widest(ratio)` is the widest typed line shaped at `ratio`, as
+/// the layout measures it: each advance is rounded up, so it is measured
+/// at each size tried rather than scaled.
+fn box_fit_ratio<'f>(
+    tb: &klipp_timeline::TextBox,
+    font_at: impl Fn(usize) -> &'f Font,
+    text: &str,
+    px_at: impl Fn(usize) -> f32,
+    shaped_widest: impl Fn(f32) -> f32,
+    max_width: f32,
+    max_height: f32,
+) -> f32 {
+    match tb.fit {
+        klipp_timeline::TextFit::Wrap => fit_block_ratio(font_at, text, px_at, max_width, max_height, tb.line_spacing),
+        klipp_timeline::TextFit::Grow => fit_ratio(font_at, text, px_at, max_width),
+        klipp_timeline::TextFit::Shrink { min_size } => {
+            let floor = if tb.font_size > 0.0 && min_size.is_finite() { (min_size / tb.font_size).clamp(0.0, 1.0) } else { 1.0 };
+            let mut ratio = 1.0f32;
+            if max_width > 0.0 {
+                for _ in 0..30 {
+                    let widest = shaped_widest(ratio);
+                    if widest <= max_width || ratio <= floor {
+                        break;
+                    }
+                    // A little under the box, as `fit_ratio` leaves it.
+                    ratio *= (max_width / widest * 0.99).min(0.99);
+                }
+            }
+            if max_height > 0.0 && max_width > 0.0 {
+                for _ in 0..60 {
+                    if ratio <= floor || wrapped_height(&font_at, text, |i| px_at(i) * ratio, max_width, tb.line_spacing) <= max_height {
+                        break;
+                    }
+                    ratio *= 0.96;
+                }
+            }
+            ratio.max(floor)
+        }
+    }
 }
 
 /// How tall `text` is laid out at `px_at`, wrapped between words at

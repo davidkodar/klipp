@@ -40,3 +40,5 @@ mod reverse_export;
 mod temporal_export_size;
 #[path = "../title_authoring_export.rs"]
 mod title_authoring_export;
+#[path = "../title_fit_export.rs"]
+mod title_fit_export;

@@ -222,6 +222,17 @@ pub struct Typeset {
     /// The text's place up and down its box: top, middle or bottom.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valign: Option<String>,
+    /// How a text too long for its box meets it (#1722): "wrap" (between
+    /// words, smaller until it is no taller than the box), "shrink" (on
+    /// its typed lines, smaller until they fit, not below `min_size`) or
+    /// "grow" (wrapped at its size, the box and a backing fitted to it
+    /// growing with the lines).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fit: Option<String>,
+    /// The smallest a shrinking text is set, in the units of `size`;
+    /// 24 when not given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_size: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub underline: Option<bool>,
     /// Styled stretches of the text, in place of any it had; `[]` clears
@@ -7497,7 +7508,7 @@ fn style(
     look: &Look,
 ) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     if *look == Look::default() {
-        return Err(refuse(i, "nothing to change", "give a look field (size, color, font, bold, align, x, y, backing, outline, shadow, glow, gradient, glitch, chromatic), a typesetting field (weight, axes, features, last_line, valign, underline, runs), a motion (animate, enter, exit, loop, animators, keys), on_path, blend, mask or three_d"));
+        return Err(refuse(i, "nothing to change", "give a look field (size, color, font, bold, align, x, y, backing, outline, shadow, glow, gradient, glitch, chromatic), a typesetting field (weight, axes, features, last_line, valign, fit, underline, runs), a motion (animate, enter, exit, loop, animators, keys), on_path, blend, mask or three_d"));
     }
     for (name, v, lo, hi) in [
         ("size", look.size, 6.0, 1000.0),
@@ -7696,6 +7707,7 @@ struct Typesetting {
     features: Option<Vec<String>>,
     last_line: Option<klipp_timeline::LastLineAlign>,
     valign: Option<klipp_timeline::TextVerticalAlign>,
+    fit: Option<klipp_timeline::TextFit>,
     underline: Option<bool>,
     runs: Option<Vec<(RunSpec, Option<[u8; 4]>)>>,
     /// Animators in place of the text's; `Some(vec![])` clears them.
@@ -8278,6 +8290,30 @@ fn check_features(features: &[String], i: usize) -> Result<Vec<String>, Refusal>
         .collect()
 }
 
+/// A [`Typeset`]'s fit and minimum size, checked: a minimum is only
+/// for a shrinking text.
+fn text_fit(t: &Typeset, i: usize) -> Result<Option<klipp_timeline::TextFit>, Refusal> {
+    use klipp_timeline::TextFit;
+    if let Some(m) = t.min_size {
+        if !m.is_finite() || !(4.0..=1000.0).contains(&m) {
+            return Err(refuse(i, format!("min_size {m} is out of range"), "give min_size between 4 and 1000"));
+        }
+    }
+    let Some(fit) = t.fit.as_deref() else {
+        return match t.min_size {
+            Some(_) => Err(refuse(i, "min_size without a fit", "min_size is for fit \"shrink\"; give both")),
+            None => Ok(None),
+        };
+    };
+    match fit.to_lowercase().as_str() {
+        "wrap" | "grow" if t.min_size.is_some() => Err(refuse(i, format!("min_size with fit \"{fit}\""), "min_size is for fit \"shrink\"")),
+        "wrap" => Ok(Some(TextFit::Wrap)),
+        "grow" => Ok(Some(TextFit::Grow)),
+        "shrink" => Ok(Some(TextFit::Shrink { min_size: t.min_size.unwrap_or(24.0) })),
+        other => Err(refuse(i, format!("\"{other}\" is not a fit"), "use wrap, shrink or grow")),
+    }
+}
+
 fn typesetting(t: &Typeset, i: usize) -> Result<Typesetting, Refusal> {
     use klipp_timeline::{LastLineAlign, TextVerticalAlign};
     let (animators, keys, on_path) = motion_extras(t, i)?;
@@ -8331,6 +8367,7 @@ fn typesetting(t: &Typeset, i: usize) -> Result<Typesetting, Refusal> {
                 other => Err(refuse(i, format!("\"{other}\" is not a vertical alignment"), "use top, middle or bottom")),
             })
             .transpose()?,
+        fit: text_fit(t, i)?,
         underline: t.underline,
         runs,
         animators,
@@ -8392,6 +8429,9 @@ fn set_type(tb: &mut klipp_timeline::TextBox, t: &Typesetting) -> Result<(), Str
     }
     if let Some(v) = t.valign {
         tb.vertical_align = v;
+    }
+    if let Some(f) = t.fit {
+        tb.fit = f;
     }
     if let Some(u) = t.underline {
         tb.underline = u;
@@ -12330,6 +12370,49 @@ mod tests {
         assert!(bad(r##"[{"op":"style","track":"video"}]"##).why.contains("nothing to change"));
         assert!(bad(r##"[{"op":"style","track":"video","color":"yellow"}]"##).why.contains("not a colour"));
         assert!(bad(r##"[{"op":"style","track":"video","size":40}]"##).why.contains("no title there"));
+    }
+
+    /// #1722: a title's box is set to shrink to fit, down to a minimum,
+    /// and restyled to grow; a minimum without shrinking, or a fit that
+    /// is not one, is refused with the choices.
+    #[test]
+    fn a_titles_box_fit_is_set_and_restyled() {
+        use klipp_timeline::TextFit;
+        let (seq, pool, _, _, _) = fixture();
+        let fit_of = |c: &Clip| {
+            let klipp_timeline::TitleObjectContent::TextBox(tb) = &c.title_data().unwrap().objects[0].content else { panic!("text") };
+            tb.fit
+        };
+        let ops: Vec<Op> = serde_json::from_str(r##"[
+            {"op":"title","text":"Dr. Elizabeth Montgomery-Smith","at":{"secs":1.0},"secs":3.0,"fit":"shrink","min_size":30},
+            {"op":"title","text":"Ana","at":{"secs":5.0},"secs":2.0,"fit":"Shrink"},
+            {"op":"style","clip_id":{"track":0,"secs":2.0},"fit":"grow"}
+        ]"##).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
+        assert_eq!(fit_of(clip), TextFit::Shrink { min_size: 30.0 });
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[1].edit else { panic!() };
+        assert_eq!(fit_of(clip), TextFit::Shrink { min_size: 24.0 }, "24 when no minimum is given");
+        let mut seqs = vec![seq.clone()];
+        let (mut p, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        for st in &plan.steps {
+            view.apply_forward(&st.edit);
+        }
+        let restyled = view.sequences[0].tracks[0].clips.iter().find(|c| c.title_data().is_some()).unwrap();
+        assert_eq!(fit_of(restyled), TextFit::Grow);
+
+        let bad = |json: &str| resolve(&seq, &pool, &serde_json::from_str::<Vec<Op>>(json).unwrap()).unwrap_err();
+        let title = |extra: &str| format!(r##"[{{"op":"title","text":"Hello there","at":{{"secs":1.0}},{extra}}}]"##);
+        for (extra, why, how) in [
+            (r#""fit":"squeeze""#, "\"squeeze\" is not a fit", "wrap, shrink or grow"),
+            (r#""min_size":20"#, "min_size without a fit", "give both"),
+            (r#""fit":"grow","min_size":20"#, "min_size with fit", "is for fit \"shrink\""),
+            (r#""fit":"shrink","min_size":2"#, "min_size 2 is out of range", "between 4 and 1000"),
+        ] {
+            let r = bad(&title(extra));
+            assert!(r.why.contains(why) && r.hint.contains(how), "{extra}: {} / {}", r.why, r.hint);
+        }
     }
 
     /// #1686: a title is set at a weight and a variable font's axes, with

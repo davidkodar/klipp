@@ -2110,6 +2110,44 @@ fn show_title_pinned_core_textbox(
             });
         }
     });
+    ui.add_space(4.0);
+
+    // 3c. What a text too long for its box does (#1722): wraps and sets
+    //     smaller, keeps its line and shrinks to a minimum, or grows the
+    //     box (and a backing fitted to it).
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let (cur, min) = match tb.fit {
+            klipp_timeline::TextFit::Wrap => (0u8, 24.0),
+            klipp_timeline::TextFit::Shrink { min_size } => (1, min_size),
+            klipp_timeline::TextFit::Grow => (2, 24.0),
+        };
+        ui.label(egui::RichText::new("Fit").size(10.0).color(theme.text_secondary));
+        for (val, label, tip) in [
+            (0u8, "Wrap", "Long text wraps onto more lines, set smaller if it would be taller than the box."),
+            (1u8, "Shrink", "Long text keeps its lines and is set smaller to fit the box, down to the minimum size."),
+            (2u8, "Grow", "Long text wraps at its size and the box grows with it; a backing fitted to the text grows too."),
+        ] {
+            if pill_toggle_button(ui, theme, label, cur == val, |r| r.size(11.0)).on_hover_text(tip).clicked() && cur != val {
+                cmds.push(AppCommand::SetTitleFit { clip_id, fit: val, min_size: min });
+            }
+        }
+        if cur == 1 {
+            let mut m = min;
+            let resp = ui
+                .add(egui::DragValue::new(&mut m).range(4.0..=1000.0).speed(0.5).fixed_decimals(0).prefix("min "))
+                .on_hover_text("The smallest the text is set, in the same units as its size");
+            if resp.drag_started() {
+                cmds.push(AppCommand::BeginTitleObjectDrag { clip_id });
+            }
+            if resp.changed() && m != min {
+                cmds.push(AppCommand::SetTitleFit { clip_id, fit: 1, min_size: m });
+            }
+            if resp.drag_stopped() {
+                cmds.push(AppCommand::EndTitleObjectDrag { clip_id });
+            }
+        }
+    });
     ui.add_space(8.0);
 
     // 4. Color swatch + opacity slider + % display in one row.
@@ -8284,6 +8322,22 @@ mod selection_underline_tests {
         let mut cmds = frame(ctx, td, sel, vec![egui::Event::PointerMoved(pos), button(true)]).0;
         cmds.extend(frame(ctx, td, sel, vec![button(false)]).0);
         (cmds, texts.into_iter().map(|(t, _)| t).collect())
+    }
+
+    /// #1722: the box's fit is a row of its own: Shrink and Grow each set
+    /// it in one command, and a shrinking box shows its minimum size.
+    #[test]
+    fn the_fit_row_sets_the_boxs_fit() {
+        let ctx = egui::Context::default();
+        let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Title text".into(), font_name: "Inter".into(), ..Default::default() });
+        let (cmds, texts) = click(&ctx, &td, (0, 0), "Shrink");
+        assert!(matches!(cmds[..], [AppCommand::SetTitleFit { fit: 1, min_size, .. }] if min_size == 24.0), "{cmds:?}");
+        assert!(texts.iter().any(|t| t == "Wrap") && texts.iter().any(|t| t == "Grow"), "the row is drawn");
+        assert!(!texts.iter().any(|t| t.starts_with("min ")), "no minimum while it wraps");
+        td.primary_text_mut().unwrap().fit = klipp_timeline::TextFit::Shrink { min_size: 30.0 };
+        let (cmds, texts) = click(&ctx, &td, (0, 0), "Grow");
+        assert!(matches!(cmds[..], [AppCommand::SetTitleFit { fit: 2, .. }]), "{cmds:?}");
+        assert!(texts.iter().any(|t| t == "min 30"), "a shrinking box shows its minimum: {texts:?}");
     }
 
     /// #1710: over a selection U underlines the selection's run, in one

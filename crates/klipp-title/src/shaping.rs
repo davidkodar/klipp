@@ -605,6 +605,25 @@ fn shaped_advances(face: &Face, text: &str, px: f32) -> Vec<f32> {
     out
 }
 
+/// The widest of the lines `source` was typed on, set as `pieces`
+/// (`(start, end, px, face)` byte ranges of it): each character's shaped
+/// advance, as the layout measures a line where it breaks one (#1722).
+pub(crate) fn widest_typed_line(faces: &[Face], source: &str, pieces: &[(usize, usize, f32, usize)]) -> f32 {
+    let (mut widest, mut line) = (0.0f32, 0.0f32);
+    for &(a, b, px, face) in pieces {
+        let Some(f) = faces.get(face) else { continue };
+        for (c, advance) in source[a..b].chars().zip(shaped_advances(f, &source[a..b], px)) {
+            if c == '\n' {
+                line = 0.0;
+            } else {
+                line += advance;
+                widest = widest.max(line);
+            }
+        }
+    }
+    widest
+}
+
 /// The order `segments` are drawn in, left to right: the Unicode bidi
 /// algorithm's rule L2, every run at a level or higher reversed, from
 /// the highest level down to the lowest odd one.
