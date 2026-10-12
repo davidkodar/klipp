@@ -21,6 +21,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         AppCommand::SetSplitCompareNode { .. }
         | AppCommand::ShowPanel { .. }
         | AppCommand::GradeTrackInColour { .. }
+        | AppCommand::LoadCreditsList { .. }
         | AppCommand::ToggleGraphDock
         | AppCommand::RevealGraph { .. }
         | AppCommand::SetGraphDockRoot { .. }
