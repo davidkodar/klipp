@@ -168,6 +168,16 @@ fn in_string(line: &str, at: usize) -> bool {
 }
 
 /// How often `name` occurs in `line` as `form`.
+/// Whether a line is read for uses: not a comment, and not a module's
+/// declaration (`mod unlift;`, `#[path = "../unlift.rs"]`), which names a
+/// file, not the view: a crate whose tests are one binary declares each
+/// file so (#1611).
+fn read(line: &str) -> bool {
+    let l = line.trim();
+    let declares = l.starts_with("#[path = ") || l.strip_prefix("mod ").and_then(|m| m.strip_suffix(';')).is_some_and(|m| m.chars().all(ident));
+    !l.starts_with("//") && !declares
+}
+
 fn count(line: &str, name: &str, form: Form) -> usize {
     line.match_indices(name)
         .filter(|(at, _)| {
@@ -198,7 +208,7 @@ fn users() -> std::collections::BTreeSet<String> {
         .filter(|f| !f.ends_with(me))
         .filter(|f| {
             let text = std::fs::read_to_string(f).unwrap_or_default();
-            text.lines().filter(|l| !l.trim_start().starts_with("//")).any(|line| SYMBOLS.iter().any(|(name, form)| count(line, name, *form) > 0))
+            text.lines().filter(|l| read(l)).any(|line| SYMBOLS.iter().any(|(name, form)| count(line, name, *form) > 0))
         })
         .filter_map(|f| f.strip_prefix(crates).ok().map(|p| p.to_string_lossy().into_owned()))
         .collect()
@@ -235,7 +245,7 @@ fn counts() -> BTreeMap<&'static str, usize> {
     let me = file!().rsplit('/').next().unwrap_or_default();
     for file in files.iter().filter(|f| !f.ends_with(me)) {
         let text = std::fs::read_to_string(file).unwrap_or_default();
-        for line in text.lines().filter(|l| !l.trim_start().starts_with("//")) {
+        for line in text.lines().filter(|l| read(l)) {
             for (name, form) in SYMBOLS {
                 *out.get_mut(name).unwrap() += count(line, name, *form);
             }
@@ -277,6 +287,17 @@ fn a_gone_symbol_stays_gone() {
     let now = counts();
     let back: Vec<_> = GONE.iter().filter(|n| now.get(*n).is_some_and(|c| *c > 0)).collect();
     assert!(back.is_empty(), "gone, and used again: {back:?}");
+}
+
+/// A module's declaration names a file, not a use; a call on a line
+/// that starts like one still counts.
+#[test]
+fn a_module_declaration_is_not_read() {
+    assert!(!read("mod unlift;"));
+    assert!(!read("    #[path = \"../unlift.rs\"]"));
+    assert!(!read("// unlift(x)"));
+    assert!(read("let p = unlift(x);"));
+    assert!(read("mod tests { fn f() { unlift(x); } }"));
 }
 
 #[test]

@@ -2735,17 +2735,27 @@ mod tests {
         let blur = || E::GaussianBlur { radius: 3.0 };
         let c = fixture(&[blur(), blur()]);
         let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        let nodes = effects(&with(std::slice::from_ref(&c)), c.id);
+        // Each blur's lane laid down by path, as the picture holds it.
         let seeded = |lanes: [Vec<klipp_core::Keyframe>; 2]| {
             let mut s = with(std::slice::from_ref(&c));
             let clip = s.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
-            for (i, keys) in lanes.into_iter().enumerate() {
-                let id = test_clip::effect_id(clip, i);
-                clip.edit_effect_keyframes_of(id, "radius", |v| *v = keys);
+            let ops: Vec<GraphOp> = lanes
+                .iter()
+                .zip(&nodes)
+                .filter(|(keys, _)| !keys.is_empty())
+                .map(|(keys, node)| GraphOp::SetAnim {
+                    path: at(c.id, &[*node]),
+                    key: "radius".into(),
+                    anim: Some(klipp_graph_format::Animation { keys: keys.iter().map(|k| serde_json::to_value(k).unwrap()).collect(), modifiers: None }),
+                })
+                .collect();
+            if !ops.is_empty() {
+                clip.apply_picture_ops(&ops).unwrap();
             }
             s
         };
         let mut s = seeded([vec![key(0.0, 2.0), key(1.0, 9.0), key(1.5, 4.0)], Vec::new()]);
-        let nodes = effects(&s, c.id);
         let (first, second) = (at(c.id, &[nodes[0]]), at(c.id, &[nodes[1]]));
         let reversed = vec![key(0.0, 4.0), key(0.5, 9.0), key(1.5, 2.0)];
 
