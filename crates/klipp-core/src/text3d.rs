@@ -1,10 +1,10 @@
 //! Real 3D text (#1512): a text's letters as solid shapes, extruded to
 //! a depth with a bevel on their front and back edges, turned in three
 //! dimensions under a perspective camera and lit from a direction.
-//! Separate from [`crate::TextExtrusion`], the older stacked-copy look,
+//! Separate from `TextExtrusion`, the older stacked-copy look,
 //! which stays as it is; a layer with both draws this one.
 
-use klipp_core::Keyframe;
+use crate::keyframe::Keyframe;
 use serde::{Deserialize, Serialize};
 
 /// The cross-section of a bevel: a straight chamfer or a quarter round.
@@ -243,7 +243,7 @@ impl Text3d {
     pub fn at(&self, time_secs: f64) -> Text3d {
         let mut t = self.clone();
         let k = std::mem::take(&mut t.keys);
-        let at = |keys: &[Keyframe], v: f32| klipp_core::keyframe::evaluate(keys, time_secs, v);
+        let at = |keys: &[Keyframe], v: f32| crate::keyframe::evaluate(keys, time_secs, v);
         t.depth = at(&k.depth, t.depth).max(0.0);
         if !k.bevel.is_empty() {
             for b in [&mut t.front_bevel, &mut t.back_bevel].into_iter().flatten() {
@@ -259,12 +259,65 @@ impl Text3d {
     }
 }
 
+/// The looks by name, as the Title tab and edit operations name them.
+pub const LOOKS: [&str; 3] = ["block", "bevelled", "chrome"];
+
+impl Text3d {
+    /// The look `name` laid on these settings: depth, bevels, light and
+    /// colours set, the turn, camera and keys kept. `None` for a name
+    /// that is not one of [`LOOKS`].
+    pub fn with_look(&self, name: &str) -> Option<Text3d> {
+        let mut t = self.clone();
+        t.enabled = true;
+        t.light = Light3d { azimuth: t.light.azimuth, elevation: t.light.elevation, ..Light3d::default() };
+        match name {
+            // A deep slab, square edged, its walls a shade of its face.
+            "block" => {
+                t.depth = 0.35;
+                (t.front_bevel, t.back_bevel) = (None, None);
+                t.side_color = [70, 70, 80, 255];
+                t.face_color = None;
+                t.bevel_color = None;
+            }
+            // A rounded bevel catching the light round each letter.
+            "bevelled" => {
+                t.depth = 0.25;
+                t.front_bevel = Some(Bevel { size: 0.03, segments: 4, profile: BevelProfile::Round });
+                t.back_bevel = None;
+                t.side_color = [90, 90, 100, 255];
+                t.face_color = None;
+                t.bevel_color = None;
+            }
+            // Polished metal: a bright face, a hard highlight, dark walls.
+            "chrome" => {
+                t.depth = 0.2;
+                t.front_bevel = Some(Bevel { size: 0.04, segments: 5, profile: BevelProfile::Round });
+                t.back_bevel = Some(Bevel { size: 0.02, segments: 2, profile: BevelProfile::Round });
+                t.face_color = Some([205, 210, 220, 255]);
+                t.bevel_color = Some([240, 242, 246, 255]);
+                t.side_color = [45, 48, 56, 255];
+                t.light.specular = 0.9;
+                t.light.shininess = 64.0;
+                t.light.ambient = 0.2;
+            }
+            _ => return None,
+        }
+        Some(t)
+    }
+
+    /// Which of [`LOOKS`] these settings are, if one: what the Title
+    /// tab marks as chosen.
+    pub fn look(&self) -> Option<&'static str> {
+        LOOKS.into_iter().find(|n| self.with_look(n).as_ref() == Some(self))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn key(t: f64, v: f32) -> Keyframe {
-        Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+        Keyframe { time_secs: t, value: v, interpolation: crate::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
     }
 
     /// Keyed values are as they are at a time; the keys go once read.
@@ -286,18 +339,22 @@ mod tests {
         assert!(t.keys.get("roll").is_none());
     }
 
-    /// The text's 3D keys are its own keyable params, as `text3d.*`,
-    /// and make the text keyed.
+    /// A look sets depth, bevels, light and colours and keeps the turn,
+    /// the camera and the keys; it reads back as itself.
     #[test]
-    fn a_3d_texts_keys_are_text_params() {
-        let mut tb = crate::TextBox { three_d: Some(Text3d::default()), ..Default::default() };
-        assert!(!tb.has_keyframes());
-        tb.effect_keyframes_mut_for("text3d.rotate_y").unwrap().push(key(0.0, 15.0));
-        assert!(tb.has_keyframes());
-        assert_eq!(tb.effect_keyframes_for("text3d.rotate_y").map(<[_]>::len), Some(1));
-        assert!(tb.effect_keyframes_for("text3d.spin").is_none());
-        assert_eq!(tb.at(0.0).three_d.unwrap().rotation[1], 15.0);
-        assert!(crate::TextBox::default().effect_keyframes_for("text3d.depth").is_none(), "no 3D, no keys");
+    fn a_look_keeps_the_turn_and_the_keys() {
+        let mut t = Text3d { rotation: [0.0, 25.0, 0.0], ..Default::default() };
+        t.keys.rotate_y = vec![key(0.0, 0.0)];
+        t.camera.fov = 50.0;
+        for name in LOOKS {
+            let l = t.with_look(name).unwrap();
+            assert_eq!((l.rotation, l.camera.fov, l.keys.rotate_y.len(), l.enabled), ([0.0, 25.0, 0.0], 50.0, 1, true), "{name}");
+            assert_eq!(l.look(), Some(name));
+        }
+        assert_eq!(t.with_look("block").unwrap().front_bevel, None);
+        assert!(t.with_look("chrome").unwrap().light.specular > 0.5);
+        assert!(t.with_look("marble").is_none());
+        assert_eq!(Text3d { depth: 0.31, ..t.with_look("block").unwrap() }.look(), None, "changed, it is no look");
     }
 
     /// A 3D text saves its own fields, reads back the same, and reads

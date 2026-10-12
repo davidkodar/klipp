@@ -4666,3 +4666,26 @@ mod gradient_key_tests {
         assert!(plain.stop_keyframes.is_empty());
     }
 }
+
+#[cfg(test)]
+mod text3d_key_tests {
+    use crate::Text3d;
+
+    fn key(t: f64, v: f32) -> klipp_core::Keyframe {
+        klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+    }
+
+    /// The text's 3D keys are its own keyable params, as `text3d.*`,
+    /// and make the text keyed.
+    #[test]
+    fn a_3d_texts_keys_are_text_params() {
+        let mut tb = crate::TextBox { three_d: Some(Text3d::default()), ..Default::default() };
+        assert!(!tb.has_keyframes());
+        tb.effect_keyframes_mut_for("text3d.rotate_y").unwrap().push(key(0.0, 15.0));
+        assert!(tb.has_keyframes());
+        assert_eq!(tb.effect_keyframes_for("text3d.rotate_y").map(<[_]>::len), Some(1));
+        assert!(tb.effect_keyframes_for("text3d.spin").is_none());
+        assert_eq!(tb.at(0.0).three_d.unwrap().rotation[1], 15.0);
+        assert!(crate::TextBox::default().effect_keyframes_for("text3d.depth").is_none(), "no 3D, no keys");
+    }
+}

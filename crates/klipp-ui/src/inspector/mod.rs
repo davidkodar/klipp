@@ -16,6 +16,7 @@ pub mod info_tab;
 pub mod modifier_ui;
 pub mod title_tab;
 pub mod title_animators;
+pub mod title_text3d;
 mod title_features;
 
 use crate::icons::Icon;
@@ -5363,10 +5364,15 @@ fn show_title_editor(
     {
         let status = crate::widgets::inspector_group::GroupStatus {
             count: None,
-            active: td.extrusion().is_some_and(|e| e.enabled) || td.primary_text().is_some_and(|tb| tb.chromatic_aberration_px != 0.0 || tb.glitch_intensity != 0.0) || td.primary_fx().motion_blur.as_ref().is_some_and(|m| m.enabled) || td.objects.iter().any(|o| o.transform.rotation != 0.0),
+            active: td.extrusion().is_some_and(|e| e.enabled) || td.primary_text().is_some_and(|tb| tb.three_d.as_ref().is_some_and(|t| t.enabled)) || td.primary_text().is_some_and(|tb| tb.chromatic_aberration_px != 0.0 || tb.glitch_intensity != 0.0) || td.primary_fx().motion_blur.as_ref().is_some_and(|m| m.enabled) || td.objects.iter().any(|o| o.transform.rotation != 0.0),
         };
         if title_group_is_open(ui, theme, clip_id, "3D & Distortion", status) {
             ui.add_space(6.0);
+    // Real 3D first (#1512): the older extrusion below it.
+    if let Some(tb) = tb_target {
+        title_text3d::show(ui, theme, clip_id, target_oid, tb, clip_time_secs, keyframe_tolerance, cmds);
+        ui.add_space(8.0);
+    }
     // 3D Extrusion (pseudo-depth)
     let has_ext = td.extrusion().is_some();
     let ext = td.extrusion().unwrap_or(klipp_timeline::TextExtrusion {
