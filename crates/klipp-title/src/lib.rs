@@ -7,7 +7,7 @@
 //! compositing over a video frame.
 //!
 //! Layout runs through `fontdue` (pure-Rust TTF/OTF rasteriser), each
-//! line shaped with OpenType by `harfrust` ([`shaping`], #1501), so the
+//! line shaped with OpenType by `harfrust` (`shaping`, #1501), so the
 //! crate has no C dependency. System font discovery is in
 //! [`font_discovery`] and is cached at startup via
 //! `~/.cache/klipp/font_registry.json`.
@@ -26,13 +26,21 @@
 //! An embedded Noto Sans Regular (OFL) is linked in so titles always
 //! render, even when the user's system has no matching font. It's
 //! picked automatically when the requested font can't be resolved.
+//!
+//! A character the face lacks falls back on its own (#1503): it is
+//! drawn from the first system font that has it (`fallback`), else
+//! from the embedded face or a bundled family. Colour emoji in CBDT
+//! bitmap fonts draw in their colours (`colour`).
 
+mod colour;
+mod fallback;
 mod shaping;
 mod vector_path;
 use fontdue::layout::{HorizontalAlign, LayoutSettings, VerticalAlign, WrapStyle};
 use fontdue::Font;
 use shaping::{Face, LoadedFont, ShapedLayout};
 pub use shaping::SHAPING_VERSION;
+pub use fallback::FALLBACK_VERSION;
 use klipp_timeline::{LayerFx, TitleObject};
 use klipp_timeline::{
     FontStyle, ImageFit, ImageLayer, LastLineAlign, ObjectTransform, Shape, ShapeKind, StyleRun,
@@ -104,6 +112,9 @@ pub struct TitleLayout {
     pub glyph_parents: Vec<char>,
     /// The padding the mask carries round the text for its effects.
     pub pad: i32,
+    /// The colour glyphs (emoji) drawn, in their own colours over the
+    /// text fill (#1503); their coverage is in the mask too.
+    pub colour_glyphs: Vec<ColourGlyph>,
 }
 
 /// No glyph: the value of `glyph_index` where nothing was painted.
@@ -212,6 +223,17 @@ impl GlyphPose {
 pub struct RestingRender {
     pub pixels: Vec<u8>,
     pub units: Option<std::sync::Arc<UnitMap>>,
+}
+
+/// A colour glyph of a [`TitleLayout`] (#1503): its box's top-left in
+/// frame pixels, its size, and its straight (not premultiplied) RGBA.
+#[derive(Debug, Clone)]
+pub struct ColourGlyph {
+    pub x: i32,
+    pub y: i32,
+    pub width: usize,
+    pub height: usize,
+    pub rgba: std::sync::Arc<Vec<u8>>,
 }
 
 /// Color and position info for a single glyph in rich text mode.
@@ -433,6 +455,13 @@ pub struct TitleRenderer {
     /// Decoded image layers by path; `None` for a file that would
     /// not open, so it is not retried every frame.
     image_cache: HashMap<String, Option<std::sync::Arc<DecodedImage>>>,
+    /// Whether a character a face lacks is looked for in the system's
+    /// fonts before the ones that ship with the app (#1503); off in
+    /// tests that must draw the same on every machine.
+    system_fallback: bool,
+    /// The font that draws a character for a font that lacks it, by
+    /// (font key, character, as emoji), from [`Self::fallback_key`].
+    fallback_keys: HashMap<(String, char, bool), Option<String>>,
 }
 
 const RENDER_CACHE_CAP: usize = 4;
@@ -467,6 +496,8 @@ impl TitleRenderer {
             loop_focus: HashMap::new(),
             defer_layer_fades: false,
             image_cache: HashMap::new(),
+            system_fallback: true,
+            fallback_keys: HashMap::new(),
         }
     }
 
@@ -558,7 +589,86 @@ impl TitleRenderer {
                 keys.len() - 1
             })
         }).collect();
-        RunFaces { keys, of_run }
+        RunFaces { keys, of_run, fallback: HashMap::new() }
+    }
+
+    /// Give each character of `text` whose face lacks it the face that
+    /// draws it instead (#1503): the first in the chain the face's
+    /// [`Self::fallback_key`] walks. The fallback face is shaped with
+    /// the features of the face it stands in for. A control character,
+    /// and one that joins the character before it, takes no face of its
+    /// own. Text its faces cover changes nothing.
+    fn fall_back(&mut self, faces: &mut RunFaces, runs: &[StyleRun], text: &str) {
+        let mut chars = text.char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
+            if c.is_control() || fallback::joins_previous(c) {
+                continue;
+            }
+            let face = faces.at(runs, i);
+            if faces.fallback.contains_key(&(face, c)) || self.face_has(&faces.keys[face].0, c) {
+                continue;
+            }
+            let emoji = fallback::wants_emoji(c, chars.peek().map(|&(_, n)| n));
+            let Some(key) = self.fallback_key(&faces.keys[face].0, c, emoji) else { continue };
+            let entry = (key, faces.keys[face].1.clone());
+            let index = faces.keys.iter().position(|k| *k == entry).unwrap_or_else(|| {
+                faces.keys.push(entry);
+                faces.keys.len() - 1
+            });
+            faces.fallback.insert((face, c), index);
+        }
+    }
+
+    /// Whether the font loaded as `key` (the embedded fallback for a
+    /// key that did not load) has a glyph for `c`.
+    fn face_has(&self, key: &str, c: char) -> bool {
+        self.font_cache.get(key).unwrap_or(&self.fallback_font).font.lookup_glyph_index(c) != 0
+    }
+
+    /// The cache key of the font that draws `c` for the font `key`,
+    /// which lacks it (#1503): the first system font that has it (an
+    /// emoji font first when `emoji`), else the embedded Noto Sans,
+    /// else the first bundled family's Regular that has it; `None` when
+    /// no face does, and the face draws its missing glyph. Kept per
+    /// font and character.
+    fn fallback_key(&mut self, key: &str, c: char, emoji: bool) -> Option<String> {
+        let cache_key = (key.to_string(), c, emoji);
+        if let Some(found) = self.fallback_keys.get(&cache_key) {
+            return found.clone();
+        }
+        let mut found = None;
+        if self.system_fallback {
+            if let Some(path) = fallback::system_font_for(c, emoji) {
+                let k = format!("fallback::{}", path.display());
+                if !self.font_cache.contains_key(&k) {
+                    if let Some(font) = std::fs::read(&path).ok().and_then(|data| LoadedFont::new(std::borrow::Cow::Owned(data))) {
+                        self.font_cache.insert(k.clone(), font);
+                    }
+                }
+                if self.font_cache.contains_key(&k) && self.face_has(&k, c) {
+                    found = Some(k);
+                }
+            }
+        }
+        if found.is_none() {
+            // The embedded face: a key never loaded into the cache.
+            let embedded = Self::cache_key("sans-serif", FontStyle::Regular);
+            if self.face_has(&embedded, c) {
+                found = Some(embedded);
+            }
+        }
+        if found.is_none() {
+            for f in bundled::BUNDLED.iter().filter(|f| f.style == "Regular") {
+                let k = self.ensure_font_loaded(f.family, FontStyle::Regular);
+                if self.font_cache.contains_key(&k) && self.face_has(&k, c) {
+                    found = Some(k);
+                    break;
+                }
+            }
+        }
+        let found = found.filter(|k| k != key);
+        self.fallback_keys.insert(cache_key, found.clone());
+        found
     }
 
     /// The faces for `keys`, each its loaded font (the fallback font
@@ -602,8 +712,7 @@ impl TitleRenderer {
 
         // Resolve the fonts: the box's own, then every other face its
         // style runs name (#1505), each loaded into the cache if needed.
-        let faces = self.run_faces(&tb);
-        let fonts = self.fonts_of(&faces.keys);
+        let mut faces = self.run_faces(&tb);
 
         // Scale font size to the frame's short side (72pt at 1080p).
         // SmallCaps renders at 80 % of the configured size so the
@@ -647,14 +756,18 @@ impl TitleRenderer {
         if tb.text_direction == TextDirection::Rtl {
             resolved_text = resolved_text.chars().rev().collect();
         }
+        // A character its face lacks is drawn from a face that has it,
+        // measured and laid in that face (#1503).
+        self.fall_back(&mut faces, &tb.style_runs, &resolved_text);
+        let fonts = self.fonts_of(&faces.keys);
         let (box_w, box_h) = text_box_extent(title, width, height);
-        let face_at = |i: usize| -> &Font { &fonts[faces.at(&tb.style_runs, i)] };
+        let face_at = |i: usize| -> &Font { &fonts[faces.drawn(&tb.style_runs, &resolved_text, i)] };
         let fit = fit_block_ratio(face_at, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), box_w, box_h, tb.line_spacing);
         let font_px = font_px * fit;
         // The text from one byte to another, cut where its style runs
         // begin and end, each piece at its run's size and face (#1505).
         let run_px = |run: &StyleRun| run.font_size.unwrap_or(tb.font_size) * scale * case_scale * fit;
-        let pieces_of = |from: usize, to: usize| set_pieces(&tb.style_runs, &faces.of_run, from, to, font_px, run_px);
+        let pieces_of = |from: usize, to: usize| faces.split(&resolved_text, set_pieces(&tb.style_runs, &faces.of_run, from, to, font_px, run_px));
 
         // Drop cap: when `drop_cap_scale >= 1.0` we enlarge the first
         // character. The straightforward "drop initial" path appends
@@ -671,8 +784,9 @@ impl TitleRenderer {
         let body_start = drop_cap_byte_end;
         let drop_cap_wrap_eligible = drop_cap_active
             && tb.alignment == TextAlignment::Left;
-        // The cap is set in the face of the run over it, if any (#1505).
-        let cap_face = faces.at(&tb.style_runs, 0);
+        // The cap is set in the face of the run over it, if any (#1505),
+        // or the face it falls back to (#1503).
+        let cap_face = faces.drawn(&tb.style_runs, &resolved_text, 0);
 
         // Every glyph's byte offset indexes `resolved_text`: each piece
         // is laid as its byte range of it.
@@ -835,6 +949,7 @@ impl TitleRenderer {
                 glyph_boxes: Vec::new(),
                 glyph_parents: Vec::new(),
                 pad: 0,
+                colour_glyphs: Vec::new(),
             };
         }
 
@@ -975,6 +1090,7 @@ impl TitleRenderer {
                 glyph_boxes: Vec::new(),
                 glyph_parents: Vec::new(),
                 pad: max_pad,
+                colour_glyphs: Vec::new(),
             };
         }
         // A staggered motion poses each glyph on its own from the
@@ -990,6 +1106,7 @@ impl TitleRenderer {
         // rest of the pipeline (compose, outline, shadow, glow,
         // texture fill) consumes the resulting mask unmodified.
         let mut alpha_mask = vec![0u8; mask_w * mask_h];
+        let mut colour_glyphs = Vec::new();
         match time_secs {
             Some(t) if fx.motion.is_active() || self.loop_wave.is_some() => {
                 rasterize_to_mask_motion(
@@ -997,6 +1114,7 @@ impl TitleRenderer {
                     offset_x, offset_y,
                     &mut alpha_mask, mask_w, mask_h, mask_x0, mask_y0,
                     &fx.motion, t, font_px, self.motion_window, self.loop_wave,
+                    &mut colour_glyphs,
                 );
             }
             _ => {
@@ -1005,6 +1123,7 @@ impl TitleRenderer {
                     offset_x, offset_y,
                     &mut alpha_mask, mask_w, mask_h, mask_x0, mask_y0,
                     if tag_glyphs { Some(&mut glyph_index) } else { None },
+                    &mut colour_glyphs,
                 );
             }
         }
@@ -1099,6 +1218,7 @@ impl TitleRenderer {
             glyph_boxes,
             glyph_parents: glyphs.iter().map(|g| g.parent).collect(),
             pad: max_pad,
+            colour_glyphs,
         }
     }
 
@@ -1161,7 +1281,7 @@ impl TitleRenderer {
             let (px, py, angle) = path_point(text_path, t, total_advance, center_x, center_y);
 
             // Rasterize this glyph into a small buffer
-            let (_, coverage) = fonts[glyph.font_index].rasterize_config(glyph.key);
+            let (_, coverage) = fonts[glyph.font_index].coverage(glyph.key);
             let gw = glyph.width;
             let gh = glyph.height;
 
@@ -1224,6 +1344,7 @@ impl TitleRenderer {
                 glyph_boxes: Vec::new(),
                 glyph_parents: Vec::new(),
                 pad: 0,
+                colour_glyphs: Vec::new(),
             };
         }
 
@@ -1256,6 +1377,7 @@ impl TitleRenderer {
             glyph_boxes: Vec::new(),
             glyph_parents: Vec::new(),
             pad: 0,
+            colour_glyphs: Vec::new(),
         }
     }
 
@@ -1355,6 +1477,16 @@ impl TitleRenderer {
                 tb.color
             };
 
+            // A colour glyph's pixels are its own colours, not the
+            // fill's: the fill draws round them (#1503).
+            let face_mask: std::borrow::Cow<[u8]> = if layout.colour_glyphs.is_empty() {
+                std::borrow::Cow::Borrowed(alpha_mask)
+            } else {
+                let mut m = alpha_mask.clone();
+                colour_pixels(layout, |i, _, _, c| m[i] = m[i].saturating_sub(c[3]));
+                std::borrow::Cow::Owned(m)
+            };
+            let alpha_mask = &*face_mask;
             if let Some(pattern) = tb.pattern_fill.as_ref().filter(|_| tb.pattern_fill_enabled) {
                 draw_pattern_fill(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, pattern, scale);
             } else if let Some(gradient) = tb.gradient.as_ref().filter(|g| g.enabled) {
@@ -1389,6 +1521,12 @@ impl TitleRenderer {
             } else {
                 draw_mask_to_buf(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &face_color, 1.0);
             }
+            // The colour glyphs in their colours (#1503).
+            colour_pixels(layout, |_, px, py, c| {
+                if px < w && py < h {
+                    blend_pixel(&mut buf, (py * w + px) * 4, &c);
+                }
+            });
         }
 
         // 6. What the stack puts inside the face: inner shadows.
@@ -2398,8 +2536,10 @@ impl TitleRenderer {
             klipp_timeline::TextCase::Lowercase => tb.text.to_lowercase(),
         };
 
-        // Same fonts + layout as render_layout
-        let faces = self.run_faces(&tb);
+        // Same fonts + layout as render_layout, falling back as it
+        // does (#1503).
+        let mut faces = self.run_faces(&tb);
+        self.fall_back(&mut faces, &tb.style_runs, &resolved_text);
         let fonts = self.fonts_of(&faces.keys);
 
         let scale = crate::frame_scale(width, height);
@@ -2409,7 +2549,7 @@ impl TitleRenderer {
         };
         let font_px = tb.font_size * scale * case_scale;
         let (box_w, box_h) = text_box_extent(title, width, height);
-        let face_at = |i: usize| -> &Font { &fonts[faces.at(&tb.style_runs, i)] };
+        let face_at = |i: usize| -> &Font { &fonts[faces.drawn(&tb.style_runs, &resolved_text, i)] };
         let fit = fit_block_ratio(face_at, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), box_w, box_h, tb.line_spacing);
         let font_px = font_px * fit;
         let run_px = |run: &StyleRun| run.font_size.unwrap_or(tb.font_size) * scale * case_scale * fit;
@@ -2429,7 +2569,7 @@ impl TitleRenderer {
         });
 
         // Each glyph's byte offset indexes `resolved_text`.
-        for piece in set_pieces(&tb.style_runs, &faces.of_run, 0, resolved_text.len(), font_px, run_px) {
+        for piece in faces.split(&resolved_text, set_pieces(&tb.style_runs, &faces.of_run, 0, resolved_text.len(), font_px, run_px)) {
             layout.append(&fonts, &resolved_text, piece);
         }
 
@@ -3857,10 +3997,13 @@ fn wrapped_height<'f>(font_at: impl Fn(usize) -> &'f Font, text: &str, px_at: im
 
 /// The faces a text box is set in, from [`TitleRenderer::run_faces`]:
 /// cache keys and OpenType features (#1501), the box's own first, and
-/// the index into them of each style run's face (#1505).
+/// the index into them of each style run's face (#1505). `fallback`
+/// holds, for a face and a character it lacks, the face that draws
+/// that character instead (#1503), from [`TitleRenderer::fall_back`].
 struct RunFaces {
     keys: Vec<(String, Vec<String>)>,
     of_run: Vec<usize>,
+    fallback: HashMap<(usize, char), usize>,
 }
 
 impl RunFaces {
@@ -3868,6 +4011,62 @@ impl RunFaces {
     /// the box's own.
     fn at(&self, runs: &[StyleRun], i: usize) -> usize {
         run_index_at(runs, i).map_or(0, |ri| self.of_run[ri])
+    }
+
+    /// The face that draws the character at byte `i` of `text`: the
+    /// face it is set in ([`Self::at`]), or the face it falls back to
+    /// (#1503). A character that joins the one before it (a variation
+    /// selector, a joiner) is drawn in that one's face when it fell back.
+    fn drawn(&self, runs: &[StyleRun], text: &str, i: usize) -> usize {
+        let face = self.at(runs, i);
+        if self.fallback.is_empty() {
+            return face;
+        }
+        let Some(c) = text.get(i..).and_then(|t| t.chars().next()) else { return face };
+        if fallback::joins_previous(c) {
+            if let Some(prev) = text[..i].chars().next_back() {
+                let p = i - prev.len_utf8();
+                let drawn = self.drawn(runs, text, p);
+                if drawn != self.at(runs, p) {
+                    return drawn;
+                }
+            }
+        }
+        self.fallback.get(&(face, c)).copied().unwrap_or(face)
+    }
+
+    /// `pieces` of `text`, each cut where the face that draws its
+    /// characters changes (#1503), so a character its face lacks is
+    /// laid and shaped in the face it falls back to. Text its faces
+    /// cover keeps its pieces as they were.
+    fn split(&self, text: &str, pieces: Vec<Piece>) -> Vec<Piece> {
+        if self.fallback.is_empty() {
+            return pieces;
+        }
+        let mut out = Vec::with_capacity(pieces.len());
+        for (start, end, px, face) in pieces {
+            let mut from = start;
+            let mut current = face;
+            let mut prev: Option<usize> = None;
+            for (j, c) in text[start..end].char_indices() {
+                let drawn = match prev {
+                    Some(p) if fallback::joins_previous(c) => p,
+                    _ => self.fallback.get(&(face, c)).copied().unwrap_or(face),
+                };
+                prev = Some(drawn);
+                if drawn != current {
+                    if start + j > from {
+                        out.push((from, start + j, px, current));
+                    }
+                    from = start + j;
+                    current = drawn;
+                }
+            }
+            if end > from {
+                out.push((from, end, px, current));
+            }
+        }
+        out
     }
 }
 
@@ -4440,6 +4639,35 @@ fn resolve_glyph_colors(
         .collect()
 }
 
+/// Each pixel of `layout`'s colour glyphs inside its mask (#1503): the
+/// mask index, the frame pixel's x and y, and the glyph's colour there,
+/// its alpha no more than the mask's coverage (a write-on, a fade, a
+/// posed glyph's own alpha).
+fn colour_pixels(layout: &TitleLayout, mut f: impl FnMut(usize, usize, usize, [u8; 4])) {
+    let (mask_w, mask_h) = (layout.mask_w as i32, layout.mask_h as i32);
+    let (mask_x0, mask_y0) = (layout.mask_x0 as i32, layout.mask_y0 as i32);
+    for g in &layout.colour_glyphs {
+        for row in 0..g.height {
+            let my = g.y + row as i32 - mask_y0;
+            if my < 0 || my >= mask_h {
+                continue;
+            }
+            for col in 0..g.width {
+                let mx = g.x + col as i32 - mask_x0;
+                if mx < 0 || mx >= mask_w {
+                    continue;
+                }
+                let i = my as usize * mask_w as usize + mx as usize;
+                let p = &g.rgba[(row * g.width + col) * 4..][..4];
+                let a = p[3].min(layout.alpha_mask[i]);
+                if a > 0 {
+                    f(i, (mask_x0 + mx) as usize, (mask_y0 + my) as usize, [p[0], p[1], p[2], a]);
+                }
+            }
+        }
+    }
+}
+
 /// Build per-glyph color info and coverage bitmaps for rich text fill rendering.
 /// This is used in the compose phase to draw each glyph with its own color.
 fn build_glyph_color_info(
@@ -4455,10 +4683,11 @@ fn build_glyph_color_info(
     let mut coverages = Vec::with_capacity(glyphs.len());
 
     for (i, glyph) in glyphs.iter().enumerate() {
-        if glyph.width == 0 || glyph.height == 0 {
+        // A colour glyph draws in its own colours (#1503).
+        if glyph.width == 0 || glyph.height == 0 || fonts[glyph.font_index].colour_glyph(glyph.key.glyph_index, glyph.key.px).is_some() {
             continue;
         }
-        let (_, coverage) = fonts[glyph.font_index].rasterize_config(glyph.key);
+        let (_, coverage) = fonts[glyph.font_index].coverage(glyph.key);
         let gx = (glyph.x + offset_x) as i32 - mask_x0 as i32;
         let gy = (glyph.y + offset_y) as i32 - mask_y0 as i32;
         let color = if i < resolved_colors.len() {
@@ -4494,15 +4723,20 @@ fn rasterize_to_mask(
     mask_x0: usize,
     mask_y0: usize,
     mut index: Option<&mut [u16]>,
+    colour: &mut Vec<ColourGlyph>,
 ) {
     for (gi, glyph) in glyphs.iter().enumerate() {
         if glyph.width == 0 || glyph.height == 0 {
             continue;
         }
-        let (_, coverage) = fonts[glyph.font_index].rasterize_config(glyph.key);
+        let (_, coverage) = fonts[glyph.font_index].coverage(glyph.key);
 
         let gx = (glyph.x + offset_x) as i32;
         let gy = (glyph.y + offset_y) as i32;
+        // A colour glyph's colours, for `compose` to draw (#1503).
+        if let Some(c) = fonts[glyph.font_index].colour_glyph(glyph.key.glyph_index, glyph.key.px) {
+            colour.push(ColourGlyph { x: gx, y: gy, width: c.width, height: c.height, rgba: c.rgba.clone() });
+        }
 
         for row in 0..glyph.height {
             let py = gy + row as i32;
@@ -4583,6 +4817,7 @@ fn rasterize_to_mask_motion(
     base_font_px: f32,
     window_secs: Option<f32>,
     wave: Option<(f32, f32)>,
+    colour: &mut Vec<ColourGlyph>,
 ) {
     let enter_units = motion_units(glyphs, motion.enter.map(|m| m.stagger).unwrap_or_default());
     let exit_units = motion_units(glyphs, motion.exit.map(|m| m.stagger).unwrap_or_default());
@@ -4615,10 +4850,10 @@ fn rasterize_to_mask_motion(
             let scaled_px = (base_font_px * scale).max(1.0);
             // The shaped glyph (a ligature, a feature's form), not its
             // first character's (#1501).
-            let (m, cov) = font.rasterize_indexed(glyph.key.glyph_index, scaled_px);
+            let (m, cov) = font.coverage_indexed(glyph.key.glyph_index, scaled_px);
             (cov, m.width, m.height)
         } else {
-            let (_, cov) = font.rasterize_config(glyph.key);
+            let (_, cov) = font.coverage(glyph.key);
             (cov.to_vec(), glyph.width, glyph.height)
         };
         let (coverage, raw_w, raw_h) = if sigma > 0.05 {
@@ -4641,6 +4876,13 @@ fn rasterize_to_mask_motion(
         let base_y = (glyph.y + offset_y + dy) as i32;
         let gx = base_x - (raw_w as i32 - glyph.width as i32) / 2;
         let gy = base_y - (raw_h as i32 - glyph.height as i32) / 2;
+        // A colour glyph's colours at its pose, unblurred: `compose`
+        // draws them only as far as the posed coverage reaches (#1503).
+        let colour_px = if (scale - 1.0).abs() > 0.001 { (base_font_px * scale).max(1.0) } else { glyph.key.px };
+        if let Some(c) = font.colour_glyph(glyph.key.glyph_index, colour_px) {
+            let (cx, cy) = (base_x - (base_w as i32 - glyph.width as i32) / 2, base_y - (base_h as i32 - glyph.height as i32) / 2);
+            colour.push(ColourGlyph { x: cx, y: cy, width: c.width, height: c.height, rgba: c.rgba.clone() });
+        }
 
         for row in 0..raw_h {
             let py = gy + row as i32;
@@ -5470,6 +5712,8 @@ pub struct GlyphCacheEntry {
 ///   run's glyphs, #1505), and `features` (#1501); not its colour
 /// * `features`, the box's OpenType features, and [`SHAPING_VERSION`],
 ///   so positions laid out before shaping changed do not match (#1501)
+/// * [`FALLBACK_VERSION`], so positions laid out before the fallback
+///   chain changed which face draws a character do not match (#1503)
 /// * `position()` — the title's frame-relative offset
 /// * `frame_w`, `frame_h` — render resolution
 ///
@@ -5479,6 +5723,11 @@ pub struct GlyphCacheEntry {
 /// invalidate the cache or the picker recomputes wastefully on
 /// every colour-drag frame.
 pub fn glyph_layout_hash(td: &TitleData, frame_w: u32, frame_h: u32) -> u64 {
+    layout_hash_with(td, frame_w, frame_h, FALLBACK_VERSION)
+}
+
+/// [`glyph_layout_hash`] with the fallback chain at `fallback_version`.
+fn layout_hash_with(td: &TitleData, frame_w: u32, frame_h: u32, fallback_version: u32) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
 
@@ -5496,6 +5745,7 @@ pub fn glyph_layout_hash(td: &TitleData, frame_w: u32, frame_h: u32) -> u64 {
     tb.baseline_shift.to_bits().hash(&mut h);
     tb.features.hash(&mut h);
     SHAPING_VERSION.hash(&mut h);
+    fallback_version.hash(&mut h);
 
     for run in &tb.style_runs {
         run.start.hash(&mut h);
@@ -9220,5 +9470,254 @@ mod shaping_tests {
         on_run.primary_text_mut().unwrap().style_runs[0].features = vec!["-liga".into()];
         assert_ne!(glyph_layout_hash(&on_box, W, H), plain);
         assert_ne!(glyph_layout_hash(&on_run, W, H), plain);
+    }
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    //! #1503: a character the face lacks is drawn from a face in the
+    //! fallback chain that has it; colour emoji draw in colour.
+    use super::*;
+    use klipp_timeline::{TextBox, TitlePosition};
+
+    fn boxed(text: &str, family: &str, alignment: TextAlignment, adjust: impl FnOnce(&mut TextBox)) -> TitleData {
+        let mut tb = TextBox { text: text.to_string(), font_name: family.into(), font_size: 48.0, alignment, ..Default::default() };
+        adjust(&mut tb);
+        let mut td = TitleData::single_text_fx(tb, LayerFx::default());
+        let o = td.objects.first_mut().unwrap();
+        o.transform.center = TitlePosition { x: 0.5, y: 0.5 };
+        o.transform.size = TitlePosition { x: 0.6, y: 0.9 };
+        td
+    }
+
+    fn fnv(bytes: impl IntoIterator<Item = u8>) -> u64 {
+        bytes.into_iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
+    }
+
+    const W: u32 = 1920;
+    const H: u32 = 1080;
+
+    /// A renderer whose chain is the faces that ship with the app only,
+    /// so a test draws the same on every machine.
+    fn bundled_only() -> TitleRenderer {
+        let mut r = TitleRenderer::new();
+        r.system_fallback = false;
+        r
+    }
+
+    fn font(bytes: &'static [u8]) -> fontdue::Font {
+        fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).unwrap()
+    }
+
+    /// The first glyph drawing `c`.
+    fn glyph_of(layout: &TitleLayout, c: char) -> usize {
+        layout.glyph_parents.iter().position(|&p| p == c).unwrap_or_else(|| panic!("no glyph draws {c:?}"))
+    }
+
+    /// The glyph drawing `c` was drawn as `font` draws it at `px`: its
+    /// box is that bitmap's size and its pixels hold that bitmap.
+    fn drawn_in(layout: &TitleLayout, c: char, font: &fontdue::Font, px: f32) -> bool {
+        let b = layout.glyph_boxes[glyph_of(layout, c)];
+        let (m, bitmap) = font.rasterize(c, px);
+        if (b[2] - b[0], b[3] - b[1]) != (m.width as i32, m.height as i32) {
+            return false;
+        }
+        let (x0, y0) = (layout.mask_x0 as i32, layout.mask_y0 as i32);
+        let mut i = 0;
+        for y in b[1]..b[3] {
+            for x in b[0]..b[2] {
+                if layout.alpha_mask[((y - y0) * layout.mask_w as i32 + (x - x0)) as usize] < bitmap[i] {
+                    return false;
+                }
+                i += 1;
+            }
+        }
+        true
+    }
+
+    /// Bebas Neue has no Cyrillic "Ж", no arrow and no box-drawing
+    /// cross. The "Ж" draws from the embedded Noto Sans; the arrow,
+    /// which Noto Sans lacks too, from the first bundled family with
+    /// it, Inter; the cross, which Inter lacks as well, from JetBrains
+    /// Mono. "Ж" does not draw as Bebas Neue's missing glyph. The letters round them still
+    /// draw in Bebas Neue, in the plain box, a drop cap, columns and a
+    /// justified box, and from a style run set in Bebas Neue.
+    #[test]
+    fn a_character_the_face_lacks_draws_from_a_fallback() {
+        let bebas = font(bundled::lookup("Bebas Neue", "Regular").unwrap());
+        let noto = font(EMBEDDED_FONT);
+        let mono = font(bundled::lookup("JetBrains Mono", "Regular").unwrap());
+        let inter = font(bundled::lookup("Inter", "Regular").unwrap());
+        assert!(bebas.lookup_glyph_index('Ж') == 0 && bebas.lookup_glyph_index('┼') == 0 && noto.lookup_glyph_index('┼') == 0);
+        assert!(inter.lookup_glyph_index('┼') == 0 && bebas.lookup_glyph_index('→') == 0 && noto.lookup_glyph_index('→') == 0);
+        let (missing, _) = bebas.rasterize_indexed(0, 48.0);
+        let mut r = bundled_only();
+        let plain = r.render_layout(&boxed("SALE Ж AT ┼ END", "Bebas Neue", TextAlignment::Center, |_| {}), W, H);
+        assert!(drawn_in(&plain, 'Ж', &noto, 48.0), "Ж is not Noto Sans's");
+        assert!(drawn_in(&plain, '┼', &mono, 48.0), "the cross is not JetBrains Mono's");
+        let b = plain.glyph_boxes[glyph_of(&plain, 'Ж')];
+        assert_ne!((b[2] - b[0], b[3] - b[1]), (missing.width as i32, missing.height as i32), "Ж drew as the missing glyph");
+        assert!(drawn_in(&plain, 'S', &bebas, 48.0) && drawn_in(&plain, 'N', &bebas, 48.0));
+
+        const TEXT: &str = "ЖAR → ┼ SALE NOW ON EVERY Ж LINE AND MORE WORDS TO WRAP ONTO ANOTHER LINE AND THEN A THIRD LINE AND A FOURTH ONE TOO";
+        let boxes = [
+            (boxed(TEXT, "Bebas Neue", TextAlignment::Left, |tb| tb.drop_cap_scale = 3.0), 144.0),
+            (boxed(TEXT, "Bebas Neue", TextAlignment::Center, |tb| tb.drop_cap_scale = 3.0), 144.0),
+            (boxed(TEXT, "Bebas Neue", TextAlignment::Left, |tb| tb.columns = 2), 48.0),
+            (boxed(TEXT, "Bebas Neue", TextAlignment::Justify, |_| {}), 48.0),
+            (boxed(TEXT, "Inter", TextAlignment::Left, |tb| tb.style_runs = vec![StyleRun { font_name: Some("Bebas Neue".into()), ..StyleRun::default_for_range(0, 4) }]), 48.0),
+        ];
+        for (i, (td, cap_px)) in boxes.iter().enumerate() {
+            let layout = r.render_layout(td, W, H);
+            assert!(drawn_in(&layout, 'Ж', &noto, *cap_px), "box {i}: the first Ж is not Noto Sans's");
+            assert!(drawn_in(&layout, '→', &inter, 48.0), "box {i}: the arrow is not Inter's");
+            assert!(drawn_in(&layout, '┼', &mono, 48.0), "box {i}: the cross is not JetBrains Mono's");
+            assert!(drawn_in(&layout, 'W', if i == 4 { &inter } else { &bebas }, 48.0), "box {i}: W is not in its face");
+        }
+    }
+
+    /// The cursor stays within a pixel of each letter across a
+    /// character drawn from a fallback face, and on the lines after it.
+    #[test]
+    fn the_cursor_follows_fallback_glyphs() {
+        const TEXT: &str = "SALE Ж AT → END OF THE ЖЖ SEASON AND SOME MORE WORDS SO THE TEXT WRAPS";
+        let mut r = bundled_only();
+        for alignment in [TextAlignment::Left, TextAlignment::Center, TextAlignment::Justify] {
+            let td = boxed(TEXT, "Bebas Neue", alignment, |_| {});
+            let layout = r.render_layout(&td, W, H);
+            let positions = r.compute_char_positions(&td, W, H);
+            assert_eq!(layout.glyph_count, TEXT.chars().count());
+            for (k, (b, c)) in layout.glyph_boxes.iter().zip(&layout.glyph_parents).enumerate() {
+                let p = &positions[k];
+                assert_eq!(p.char_index, k);
+                if *c != ' ' {
+                    assert!((p.x - b[0] as f32).abs() <= 1.0 && (p.y - b[1] as f32).abs() <= 1.0, "{c:?} drawn at {b:?}, cursor at {}, {}", p.x, p.y);
+                }
+            }
+        }
+    }
+
+    /// A Latin-only face with Chinese characters and an emoji: the
+    /// Chinese draw from a system font that has them, in its glyphs.
+    /// Skips where the system has no font with them.
+    #[test]
+    fn cjk_draws_from_a_system_font() {
+        let Some(path) = fallback::system_font_for('漢', false) else {
+            eprintln!("skipped: no system font has 漢");
+            return;
+        };
+        let cjk = LoadedFont::new(std::borrow::Cow::Owned(std::fs::read(&path).unwrap())).unwrap();
+        let mut r = TitleRenderer::new();
+        let layout = r.render_layout(&boxed("TOKYO 漢字 🌈 NIGHTS", "Bebas Neue", TextAlignment::Center, |_| {}), W, H);
+        assert!(drawn_in(&layout, '漢', &cjk.font, 48.0), "漢 is not {}'s", path.display());
+        assert!(drawn_in(&layout, '字', &cjk.font, 48.0));
+    }
+
+    /// A colour emoji draws in its colours: a rainbow in a Latin-only
+    /// face, from the system's colour emoji font, has pixels of at
+    /// least three distinct hues. Skips where the system has no emoji
+    /// font drawn as colour bitmaps (CBDT).
+    #[test]
+    fn a_colour_emoji_draws_in_colour() {
+        let colour = fallback::system_font_for('🌈', true).and_then(|path| {
+            let font = LoadedFont::new(std::borrow::Cow::Owned(std::fs::read(&path).ok()?))?;
+            let gid = font.font.lookup_glyph_index('🌈');
+            font.colour_glyph(gid, 48.0).is_some().then_some(path)
+        });
+        let Some(path) = colour else {
+            eprintln!("skipped: no system emoji font with colour bitmaps (CBDT) has 🌈");
+            return;
+        };
+        let mut r = TitleRenderer::new();
+        let td = boxed("RAIN 🌈 BOW", "Bebas Neue", TextAlignment::Center, |_| {});
+        let layout = r.render_layout(&td, W, H);
+        assert_eq!(layout.colour_glyphs.len(), 1, "🌈 from {} is not a colour glyph", path.display());
+        let b = layout.glyph_boxes[glyph_of(&layout, '🌈')];
+        assert!(b[2] - b[0] > 30 && b[3] - b[1] > 30, "🌈 is {b:?}");
+        // Pixels in the box with a clear colour, by 30-degree hue.
+        let hues = |frame: &[u8]| {
+            let mut hues = [0usize; 12];
+            for y in b[1]..b[3] {
+                for x in b[0]..b[2] {
+                    let p = &frame[((y as u32 * W + x as u32) * 4) as usize..][..4];
+                    let (max, min) = (p[0].max(p[1]).max(p[2]) as f32, p[0].min(p[1]).min(p[2]) as f32);
+                    if p[3] < 200 || max - min < 0.3 * max {
+                        continue;
+                    }
+                    let (r_, g, b_) = (p[0] as f32, p[1] as f32, p[2] as f32);
+                    let hue = if max == r_ {
+                        60.0 * ((g - b_) / (max - min)).rem_euclid(6.0)
+                    } else if max == g {
+                        60.0 * ((b_ - r_) / (max - min) + 2.0)
+                    } else {
+                        60.0 * ((r_ - g) / (max - min) + 4.0)
+                    };
+                    hues[(hue / 30.0) as usize % 12] += 1;
+                }
+            }
+            hues
+        };
+        let frame = r.render(&td, W, H);
+        let at_rest = hues(&frame);
+        assert!(at_rest.iter().filter(|&&n| n >= 20).count() >= 3, "🌈 drew in too few hues: {at_rest:?}");
+        // The letters round it keep the text colour.
+        let s = layout.glyph_boxes[0];
+        let p = &frame[((((s[1] + s[3]) / 2) as u32 * W + ((s[0] + s[2]) / 2) as u32) * 4) as usize..][..4];
+        assert!(p[0] == p[1] && p[1] == p[2], "R is not the text colour: {p:?}");
+        // A staggered soft rise is rastered glyph by glyph; once the
+        // rainbow has arrived, while the letters after it still rise,
+        // it draws in its colours as at rest.
+        let mut rising = td.clone();
+        rising.objects[0].fx_mut().motion.enter = Some(klipp_timeline::Motion { stagger: klipp_timeline::StaggerUnit::Char, ..klipp_timeline::Motion::new(klipp_core::title_motion::MotionKind::SoftRise) });
+        let frame = r.render_with_time(&rising, W, H, None, 0.85);
+        assert_eq!(hues(&frame), at_rest, "🌈 drew differently while the letters after it rose");
+    }
+
+    /// The glyph cache's hash reads the fallback chain's version, so
+    /// positions laid out with another chain do not match.
+    #[test]
+    fn the_glyph_cache_hash_reads_the_fallback_chain() {
+        let td = boxed("SALE Ж", "Bebas Neue", TextAlignment::Left, |_| {});
+        assert_eq!(glyph_layout_hash(&td, W, H), layout_hash_with(&td, W, H, FALLBACK_VERSION));
+        assert_ne!(layout_hash_with(&td, W, H, FALLBACK_VERSION), layout_hash_with(&td, W, H, FALLBACK_VERSION + 1));
+    }
+
+    /// Text each face has every character of, drawn and laid out for the
+    /// cursor byte for byte as before fallback: each bundled family and
+    /// the embedded face, a run in another face, a drop cap, columns,
+    /// vertical and justified, at 640x360.
+    #[test]
+    fn text_the_face_covers_draws_as_before() {
+        const LATIN: &str = "Café déjà vu — naïve “quotes” 1234 €£½ and ÅÖßñ\nsome more words wrap onto a further line here";
+        let boxes = [
+            boxed("Café déjà vu — naïve “quotes” 1234 €£½ ΩΣЖж→★✓", "Inter", TextAlignment::Center, |_| {}),
+            boxed("CAFÉ DÉJÀ VU — NAÏVE “QUOTES” 1234 €£½ ÅÖÑ Ω", "Bebas Neue", TextAlignment::Left, |_| {}),
+            boxed(LATIN, "Libre Baskerville", TextAlignment::Justify, |tb| tb.tracking = 2.0),
+            boxed("Café déjà vu → ΣЖж ┼░ ✓", "JetBrains Mono", TextAlignment::Right, |_| {}),
+            boxed("Café déjà vu — naïve ΩΣЖж ₹ ₿", "sans-serif", TextAlignment::Center, |_| {}),
+            boxed(LATIN, "Inter", TextAlignment::Left, |tb| tb.style_runs = vec![StyleRun { font_name: Some("JetBrains Mono".into()), font_size: Some(64.0), ..StyleRun::default_for_range(6, 13) }]),
+            boxed(LATIN, "Inter", TextAlignment::Left, |tb| tb.drop_cap_scale = 3.0),
+            boxed(LATIN, "Libre Baskerville", TextAlignment::Center, |tb| tb.columns = 2),
+            boxed("Ωé", "Inter", TextAlignment::Center, |tb| tb.vertical_layout = true),
+        ];
+        let mut r = TitleRenderer::new();
+        let hashes: Vec<(u64, u64)> = boxes.iter().map(|td| {
+            let pixels = fnv(r.render(td, 640, 360));
+            let cursor = fnv(r.compute_char_positions(td, 640, 360).iter().flat_map(|p| [p.x.to_bits(), p.y.to_bits()]).flat_map(u32::to_le_bytes));
+            (pixels, cursor)
+        }).collect();
+        // Taken on main at ee722dcb6, before #1503.
+        let before = [
+            (12362235235435922744, 11758040230992881638),
+            (11429411338127416158, 14383662946162571450),
+            (3569128012378324932, 2346819359444522047),
+            (11565043810062183343, 1917150523641949634),
+            (9098010272575383407, 179561844797826116),
+            (3193317923789182864, 14796392279787328656),
+            (17543495563288601848, 15058820355971908112),
+            (1948305321527838988, 11067866960264763338),
+            (15456292890279627271, 16988677102251989457),
+        ];
+        assert_eq!(hashes, before, "text its face covers draws or lays out differently");
     }
 }

@@ -194,7 +194,7 @@ fn run_scan_and_publish() {
     );
 }
 
-fn font_directories() -> Vec<String> {
+pub(crate) fn font_directories() -> Vec<String> {
     let home = std::env::var("HOME").unwrap_or_default();
     vec![
         "/usr/share/fonts".to_string(),

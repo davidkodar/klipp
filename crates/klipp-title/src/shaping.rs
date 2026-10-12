@@ -15,12 +15,15 @@
 //! advance is rounded up and its box placed as fontdue's layout does.
 
 use std::borrow::Cow;
+use std::sync::Arc;
+
+use crate::colour::{ColourBitmap, ColourBitmaps};
 
 use fontdue::layout::{
     CharacterData, CoordinateSystem, GlyphPosition, GlyphRasterConfig, HorizontalAlign, Layout,
     LayoutSettings, TextStyle,
 };
-use fontdue::Font;
+use fontdue::{Font, Metrics, OutlineBounds};
 use harfrust::{Direction, Feature, FontRef, ShapeOptions, ShaperData, UnicodeBuffer};
 
 /// Bumped whenever shaping changes where glyphs land, so a glyph cache
@@ -30,17 +33,49 @@ pub const SHAPING_VERSION: u32 = 1;
 /// A font loaded for titles: fontdue's face for metrics and drawing,
 /// and the bytes and shaping tables harfrust shapes with. `shaper` is
 /// `None` for a file harfrust cannot read; its text is set unshaped.
+/// `colour` holds the colour bitmaps of an emoji font (#1503).
 pub(crate) struct LoadedFont {
     pub(crate) font: Font,
     data: Cow<'static, [u8]>,
     shaper: Option<ShaperData>,
+    colour: Option<ColourBitmaps>,
 }
 
 impl LoadedFont {
     pub(crate) fn new(data: Cow<'static, [u8]>) -> Option<Self> {
         let font = Font::from_bytes(&*data, fontdue::FontSettings::default()).ok()?;
         let shaper = FontRef::from_index(&data, 0).ok().map(|f| ShaperData::new(&f));
-        Some(Self { font, data, shaper })
+        let colour = ColourBitmaps::of(&data);
+        Some(Self { font, data, shaper, colour })
+    }
+
+    /// Glyph `gid` as a colour bitmap at `px`, for a glyph the font
+    /// draws in colour (#1503).
+    pub(crate) fn colour_glyph(&self, gid: u16, px: f32) -> Option<Arc<ColourBitmap>> {
+        self.colour.as_ref()?.glyph(&self.data, gid, px)
+    }
+
+    /// fontdue's metrics for glyph `gid` at `px`, with a colour glyph's
+    /// box its bitmap's (#1503): fontdue sees no outline there.
+    pub(crate) fn metrics_indexed(&self, gid: u16, px: f32) -> Metrics {
+        let mut m = self.font.metrics_indexed(gid, px);
+        if let Some(c) = self.colour_glyph(gid, px) {
+            m.xmin = c.xmin as i32;
+            m.ymin = c.ymin as i32;
+            m.width = c.width;
+            m.height = c.height;
+            m.bounds = OutlineBounds { xmin: c.xmin, ymin: c.ymin, width: c.width as f32, height: c.height as f32 };
+        }
+        m
+    }
+
+    /// Glyph `gid`'s coverage at `px`: fontdue's raster of its outline,
+    /// or a colour glyph's alpha (#1503).
+    pub(crate) fn coverage_indexed(&self, gid: u16, px: f32) -> (Metrics, Vec<u8>) {
+        match self.colour_glyph(gid, px) {
+            Some(c) => (self.metrics_indexed(gid, px), c.rgba.chunks_exact(4).map(|p| p[3]).collect()),
+            None => self.font.rasterize_indexed(gid, px),
+        }
     }
 }
 
@@ -55,6 +90,27 @@ pub(crate) struct Face<'a> {
 impl<'a> Face<'a> {
     pub(crate) fn new(font: &'a LoadedFont, features: &[String]) -> Self {
         Self { font, features: parse_features(features) }
+    }
+}
+
+impl Face<'_> {
+    /// The coverage of the glyph `key` names, as fontdue's
+    /// `rasterize_config` gives it, or a colour glyph's alpha (#1503).
+    pub(crate) fn coverage(&self, key: GlyphRasterConfig) -> (Metrics, Vec<u8>) {
+        if self.font.colour.is_none() {
+            return self.font.font.rasterize_config(key);
+        }
+        self.font.coverage_indexed(key.glyph_index, key.px)
+    }
+
+    /// [`LoadedFont::coverage_indexed`].
+    pub(crate) fn coverage_indexed(&self, gid: u16, px: f32) -> (Metrics, Vec<u8>) {
+        self.font.coverage_indexed(gid, px)
+    }
+
+    /// [`LoadedFont::colour_glyph`].
+    pub(crate) fn colour_glyph(&self, gid: u16, px: f32) -> Option<Arc<ColourBitmap>> {
+        self.font.colour_glyph(gid, px)
     }
 }
 
@@ -214,7 +270,8 @@ fn set_run(face: &Face, piece: &Appended, from: usize, to: usize, baseline: f32,
     let scale = font.scale_factor(px);
     let place = |gid: u16, byte: usize, pen: f32, dx: f32, dy: f32| {
         let parent = piece.text[byte..].chars().next().unwrap_or(' ');
-        let m = font.metrics_indexed(gid, px);
+        // A colour glyph's box is its bitmap's (#1503).
+        let m = face.font.metrics_indexed(gid, px);
         GlyphPosition {
             key: GlyphRasterConfig { glyph_index: gid, px, font_hash: font.file_hash() },
             font_index: piece.face,
