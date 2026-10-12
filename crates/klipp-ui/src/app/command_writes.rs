@@ -576,6 +576,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTitleParagraph { .. }
         | AppCommand::SetTitleTabStops { .. }
         | AppCommand::SetTitleList { .. }
+        | AppCommand::SetTitleMinLastWords { .. }
         | AppCommand::SetTitleUnderline { .. }
         | AppCommand::SetTitleFontVariation { .. }
         | AppCommand::SetTitleFeatures { .. }

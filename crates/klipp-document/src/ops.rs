@@ -406,6 +406,10 @@ pub struct ParagraphSpec {
     /// Each paragraph an item of a list, or `{"style": "none"}` for none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub list: Option<ListSpec>,
+    /// The fewest words a wrapped paragraph's last line may have, 0 to
+    /// 6; 0 and 1 leave the lines as they break.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_last_words: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space_before: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -8411,6 +8415,9 @@ fn check_features(features: &[String], i: usize) -> Result<Vec<String>, Refusal>
 /// A [`ParagraphSpec`] checked (#1721): spacing and indents 0 to 2000
 /// px, a first line -2000 to 2000.
 fn paragraph_spec(p: &ParagraphSpec, i: usize) -> Result<ParagraphSpec, Refusal> {
+    if let Some(n) = p.min_last_words.filter(|&n| n > 6) {
+        return Err(refuse(i, format!("min_last_words {n} is out of range"), "give min_last_words from 0 to 6"));
+    }
     for (v, lo, what) in [(p.space_before, 0.0, "space_before"), (p.space_after, 0.0, "space_after"), (p.indent, 0.0, "indent"), (p.indent_end, 0.0, "indent_end"), (p.first_indent, -2000.0, "first_indent")] {
         if let Some(v) = v {
             if !v.is_finite() || !(lo..=2000.0).contains(&v) {
@@ -8639,6 +8646,9 @@ fn set_type(tb: &mut klipp_timeline::TextBox, t: &Typesetting) -> Result<(), Str
     }
     if let Some(p) = &t.paragraph {
         let q = &mut tb.paragraph;
+        if let Some(n) = p.min_last_words {
+            q.min_last_words = n;
+        }
         for (v, field) in [(p.space_before, &mut q.space_before), (p.space_after, &mut q.space_after), (p.indent, &mut q.indent_start), (p.indent_end, &mut q.indent_end), (p.first_indent, &mut q.indent_first)] {
             if let Some(v) = v {
                 *field = v;
@@ -12605,7 +12615,7 @@ mod tests {
         };
         let ops: Vec<Op> = serde_json::from_str(r##"[
             {"op":"title","text":"One\nTwo","at":{"secs":1.0},"secs":3.0,
-             "paragraph":{"space_after":18,"indent":40,"first_indent":-40},
+             "paragraph":{"space_after":18,"indent":40,"first_indent":-40,"min_last_words":2},
              "keys":{"first_indent":[{"at":0.0,"value":-40},{"at":1.0,"value":0}]}},
             {"op":"style","clip_id":{"track":0,"secs":2.0},"paragraph":{"space_before":6}}
         ]"##).unwrap();
@@ -12614,6 +12624,7 @@ mod tests {
         let p = para(clip);
         assert_eq!((p.space_after, p.indent_start, p.indent_first, p.space_before), (18.0, 40.0, -40.0, 0.0));
         assert_eq!(p.indent_first_keyframes.len(), 2);
+        assert_eq!(p.min_last_words, 2);
         assert_eq!(p.at(0.5).indent_first, -20.0);
         let mut seqs = vec![seq.clone()];
         let (mut pl, mut fps) = (pool.clone(), seq.fps);
@@ -12629,6 +12640,8 @@ mod tests {
         let r = bad(r##"[{"op":"title","text":"Hi","at":{"secs":1.0},"paragraph":{"indent":-5}}]"##);
         assert!(r.why.contains("paragraph indent -5 is out of range") && r.hint.contains("from 0 to 2000"), "{} / {}", r.why, r.hint);
         assert!(serde_json::from_str::<Vec<Op>>(r##"[{"op":"title","text":"Hi","at":{"secs":1.0},"paragraph":{"leading":5}}]"##).is_err(), "an unknown paragraph field");
+        let r = bad(r##"[{"op":"title","text":"Hi","at":{"secs":1.0},"paragraph":{"min_last_words":9}}]"##);
+        assert!(r.why.contains("min_last_words 9 is out of range"), "{}", r.why);
     }
 
     /// #1721: a run of a title is set as a superscript or subscript by

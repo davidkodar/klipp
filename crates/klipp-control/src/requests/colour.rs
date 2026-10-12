@@ -915,7 +915,7 @@ pub(crate) fn respond(
             send(AppCommand::ConnectNodes { clip_id: clip, from, from_port, to, to_port })
         }
 
-        ControlCommand::SetNodeParam { clip_id: c, node_id, param, value, at, interpolation, remove } => {
+        ControlCommand::SetNodeParam { clip_id: c, node_id, param, value } => {
             let clip = existing_clip_id(ctx, &c)?;
             let node_id = existing_node_id(ctx, clip, &node_id, "node_id")?;
             // A name the params do not carry would be dropped by
@@ -930,27 +930,7 @@ pub(crate) fn respond(
                      qual_hue_center, luma_key_low.",
                 ));
             }
-            let Some(at) = at else {
-                if remove || interpolation.is_some() {
-                    return Err("remove and interpolation are a key's: give at, the key's time in seconds on the timeline".into());
-                }
-                let value = value.ok_or("missing value: the number to set")?;
-                return send(AppCommand::SetNodeParam { clip_id: clip, node_id, param, value });
-            };
-            let key = node_key(ctx, clip, node_id, &param, at, value, interpolation.as_deref(), remove)?;
-            if in_batch {
-                // Into the batch's one step, in order.
-                for c in key.commands {
-                    send(c)?;
-                }
-                return Ok(json!({ "queued": true }));
-            }
-            crate::envelope::send_envelope(ctx, key.commands, false).map(|mut reply| {
-                if let Some(o) = reply.as_object_mut() {
-                    o.insert("key".into(), key.reply);
-                }
-                reply
-            })
+            send(AppCommand::SetNodeParam { clip_id: clip, node_id, param, value })
         }
 
         ControlCommand::ToggleNodeEnabled { clip_id: c, node_id } => {
@@ -1155,57 +1135,4 @@ reference:   {}",
 
         _ => Err("internal: a request was routed to the wrong area".into()),
     }
-}
-
-/// A grade parameter's key as the socket writes it (#891): its commands,
-/// one undo step, and what the reply says of it.
-struct NodeKey {
-    commands: Vec<AppCommand>,
-    reply: serde_json::Value,
-}
-
-/// The commands that key `param` of `node_id` on `clip` at `at` seconds
-/// on the timeline: a key with `value` (its interpolation set when one is
-/// named), or the key there taken away. The time is the clip's own, as
-/// keys are kept; a time off the clip is refused.
-#[allow(clippy::too_many_arguments)]
-fn node_key(ctx: &ControlContext, clip: klipp_core::ClipId, node_id: uuid::Uuid, param: &str, at: f64, value: Option<f32>, interpolation: Option<&str>, remove: bool) -> Result<NodeKey, String> {
-    use klipp_core::{Interpolation, KeyEase};
-    if !at.is_finite() {
-        return Err("at must be a number of seconds".into());
-    }
-    let (start, end) = {
-        let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-        let c = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip).ok_or("no such clip")?;
-        (c.timeline_in.to_secs_f64(), c.timeline_in.to_secs_f64() + c.duration().to_secs_f64())
-    };
-    if at < start - 1e-6 || at > end + 1e-6 {
-        return Err(format!("at {at} s is off the clip, which runs {start:.3} to {end:.3} s on the timeline"));
-    }
-    let time_secs = (at - start).max(0.0);
-    let param = param.to_string();
-    let mut commands = vec![AppCommand::BeginNodeParamEdit { clip_id: clip }];
-    if remove {
-        commands.push(AppCommand::RemoveKeyframe { clip_id: clip, node_id, param: param.clone(), time_secs });
-    } else {
-        let value = value.ok_or("missing value: the number to key")?;
-        commands.push(AppCommand::AddKeyframe { clip_id: clip, node_id, param: param.clone(), time_secs, value });
-        let shape = match interpolation {
-            None => None,
-            Some("linear") => Some(Ok(Interpolation::Linear)),
-            Some("hold") => Some(Ok(Interpolation::Step)),
-            Some("bezier") => Some(Ok(Interpolation::Bezier)),
-            Some("ease_in") => Some(Err(KeyEase::In)),
-            Some("ease_out") => Some(Err(KeyEase::Out)),
-            Some("ease_both") => Some(Err(KeyEase::Both)),
-            Some(other) => return Err(format!("no interpolation {other:?}: linear, ease_in, ease_out, ease_both, bezier or hold")),
-        };
-        match shape {
-            Some(Ok(interpolation)) => commands.push(AppCommand::SetKeyframeInterpolation { clip_id: clip, node_id, param: param.clone(), time_secs, interpolation }),
-            Some(Err(ease)) => commands.push(AppCommand::SetKeyframeEase { clip_id: clip, node_id, param: param.clone(), time_secs, ease }),
-            None => {}
-        }
-    }
-    commands.push(AppCommand::EndNodeParamEdit { clip_id: clip });
-    Ok(NodeKey { commands, reply: json!({ "param": param, "clip_secs": time_secs, "removed": remove }) })
 }
