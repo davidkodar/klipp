@@ -85,6 +85,20 @@ pub(crate) fn respond(
             send(AppCommand::RenameSequence { sequence_idx: usize::MAX, new_name: name })
         }
 
+        ControlCommand::SwitchSequence { index, sequence_id } => {
+            let project = ctx.shared.project.lock().map_err(|_| "project status lock poisoned")?;
+            let found = match (index, sequence_id.as_deref()) {
+                (Some(i), None) => (i < project.sequences.len()).then_some(i),
+                (None, Some(id)) => project.sequences.iter().position(|s| s.id == id),
+                _ => return Err("give the sequence's index or its sequence_id, one of them".into()),
+            };
+            let Some(sequence_idx) = found else {
+                return Err(format!("no such sequence; the project has {}", project.sequences.len()));
+            };
+            drop(project);
+            send(AppCommand::SetActiveSequence { sequence_idx })
+        }
+
         ControlCommand::AppendClip { media_id, track } => {
             let id = klipp_core::MediaId(parse_uuid(&media_id, "media_id")?);
             match track {

@@ -2466,6 +2466,7 @@ impl KlippApp {
             project.redo = self.state.active_history().redo_label().map(str::to_owned);
             project.undo_depth = self.state.active_history().undo_count();
             project.redo_depth = self.state.active_history().redo_count();
+            (project.sequences, project.active_sequence) = self.state.sequence_summaries();
         }
         // And where the user is, so a frame read can put the playhead back.
         // Not while a seek is on its way: the playhead has not reached it

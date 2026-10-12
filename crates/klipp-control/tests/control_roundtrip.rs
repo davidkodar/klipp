@@ -26,6 +26,8 @@ struct Harness {
     cmd_rx: crossbeam_channel::Receiver<klipp_core::AppCommand>,
     /// Every envelope the stand-in UI took: (batch, command count).
     envelopes: Arc<Mutex<Vec<(bool, usize)>>>,
+    /// Every command the stand-in UI took, in order.
+    sent: Arc<Mutex<Vec<klipp_core::AppCommand>>>,
     edits_seen: Arc<Mutex<Vec<klipp_document::history::EditCommand>>>,
     shared: Arc<klipp_core::ControlShared>,
     media_pool: Arc<RwLock<klipp_media::MediaPool>>,
@@ -106,6 +108,7 @@ fn harness() -> Harness {
     let (env_tx, env_rx) = crossbeam_channel::unbounded::<klipp_document::control::ControlEnvelope>();
     let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded::<klipp_core::AppCommand>();
     let envelopes: Arc<Mutex<Vec<(bool, usize)>>> = Arc::new(Mutex::new(Vec::new()));
+    let sent: Arc<Mutex<Vec<klipp_core::AppCommand>>> = Arc::new(Mutex::new(Vec::new()));
     let edits_seen: Arc<Mutex<Vec<klipp_document::history::EditCommand>>> = Arc::new(Mutex::new(Vec::new()));
     let ack_delay_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let commit_change = Arc::new(std::sync::atomic::AtomicU8::new(0));
@@ -115,6 +118,7 @@ fn harness() -> Harness {
     let sequence = Arc::new(klipp_timeline::SharedSequence::new(sequence));
     {
         let (envelopes, shared, edits_seen) = (Arc::clone(&envelopes), Arc::clone(&shared), Arc::clone(&edits_seen));
+        let sent = Arc::clone(&sent);
         let media_pool = media_pool.clone();
         let delay = Arc::clone(&ack_delay_ms);
         let sequence = Arc::clone(&sequence);
@@ -148,6 +152,7 @@ fn harness() -> Harness {
                 });
                 if refused.is_none() {
                     for c in env.commands {
+                        sent.lock().unwrap().push(c.clone());
                         if let klipp_core::AppCommand::GraphOps { ops, .. } = &c {
                             // Stand-in app thread: use the production clip adapter;
                             // the UI's own tests cover envelope exclusivity/undo dispatch.
@@ -246,7 +251,7 @@ fn harness() -> Harness {
         match UnixStream::connect(&sock) {
             Ok(stream) => {
                 let reader = BufReader::new(stream.try_clone().expect("clone"));
-                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, edits_seen, shared, media_pool, sequence, log, socket: sock, next_id: 0, ack_delay_ms, commit_change, ids };
+                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, sent, edits_seen, shared, media_pool, sequence, log, socket: sock, next_id: 0, ack_delay_ms, commit_change, ids };
             }
             Err(e) => {
                 last_err = Some(e);
@@ -3035,4 +3040,43 @@ fn an_effect_op_on_a_clip_with_track_effects_keeps_its_effects_node_ids() {
         view.apply_inverse(&edits[0]);
     }
     assert_eq!(ids(&sequences), vec![blur], "and its undo leaves the Blur as it was");
+}
+
+/// `status` lists every sequence, the open one marked, and
+/// `switch_sequence` opens another by index or id, as its tab does (M3
+/// step 18): a client can reach each sequence's clips.
+#[test]
+fn status_lists_the_sequences_and_switch_sequence_opens_one() {
+    let mut h = harness();
+    {
+        let mut p = h.shared.project.lock().unwrap();
+        p.sequences = vec![
+            klipp_core::SequenceSummary { id: "a".into(), name: "Main".into(), clips: 3 },
+            klipp_core::SequenceSummary { id: "b".into(), name: "Social cut".into(), clips: 1 },
+        ];
+        p.active_sequence = 0;
+    }
+    let status = h.ok(json!({"method": "status"}));
+    assert_eq!(status["sequences"], json!([
+        {"index": 0, "id": "a", "name": "Main", "clips": 3, "active": true},
+        {"index": 1, "id": "b", "name": "Social cut", "clips": 1, "active": false},
+    ]));
+    h.ok(json!({"method": "switch_sequence", "index": 1}));
+    h.ok(json!({"method": "switch_sequence", "sequence_id": "a"}));
+    let switched: Vec<usize> = h.sent.lock().unwrap().iter().filter_map(|c| match c {
+        klipp_core::AppCommand::SetActiveSequence { sequence_idx } => Some(*sequence_idx),
+        _ => None,
+    }).collect();
+    assert_eq!(switched, [1, 0]);
+    for (bad, why) in [
+        (json!({"method": "switch_sequence", "index": 2}), "no such sequence"),
+        (json!({"method": "switch_sequence", "sequence_id": "c"}), "no such sequence"),
+        (json!({"method": "switch_sequence"}), "index or its sequence_id"),
+        (json!({"method": "switch_sequence", "index": 0, "sequence_id": "a"}), "index or its sequence_id"),
+    ] {
+        let reply = h.call(bad.clone());
+        assert_eq!(reply["ok"], json!(false), "{bad}");
+        assert!(reply["error"].as_str().unwrap_or_default().contains(why), "{bad}: {}", reply["error"]);
+    }
+    assert_eq!(h.sent.lock().unwrap().len(), 2, "a refused switch sends nothing");
 }

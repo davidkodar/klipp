@@ -120,6 +120,7 @@ impl KlippApp {
                     project.redo = self.state.active_history().redo_label().map(str::to_owned);
                     project.undo_depth = self.state.active_history().undo_count();
                     project.redo_depth = self.state.active_history().redo_count();
+                    (project.sequences, project.active_sequence) = self.state.sequence_summaries();
                     if self.state.dirty && !was_dirty && refused.is_none() {
                         project.changed_by = Some("edits".into());
                     }
