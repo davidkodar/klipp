@@ -92,8 +92,8 @@ fn parse_motion(
         m = m.stagger(StaggerUnit::Char, 0.04);
     }
     if let Some(v) = spec.duration_secs {
-        if !v.is_finite() || v <= 0.0 || v > 5.0 {
-            return Err("motion duration_secs must be finite, greater than 0 and at most 5".into());
+        if !v.is_finite() || v <= 0.0 || v > klipp_core::title_motion::MAX_DURATION_SECS {
+            return Err(format!("motion duration_secs must be finite, greater than 0 and at most {} seconds", klipp_core::title_motion::MAX_DURATION_SECS));
         }
         m.duration_secs = v;
     }
@@ -247,7 +247,7 @@ pub(crate) fn inherit_motion(
         // Legacy timing-only overrides still edit the inherited entrance;
         // they must not silently turn a nested style's motion off.
         if !inherited.kind.eq_ignore_ascii_case("none") {
-            inherited.duration_secs = animate_secs.map(|v| v.clamp(0.05, 5.0)).or(inherited.duration_secs);
+            inherited.duration_secs = animate_secs.map(|v| v.clamp(0.05, klipp_core::title_motion::MAX_DURATION_SECS)).or(inherited.duration_secs);
             inherited.stagger = stagger.map(str::to_string).or(inherited.stagger.take());
             if stagger.is_some_and(|s| s.eq_ignore_ascii_case("none")) {
                 inherited.stagger_secs = None;
@@ -286,7 +286,7 @@ impl MotionFields {
         } else if let Some(a) = &style.animate {
             let kind = motion_kind(a)?;
             let mut m =
-                Motion::new(kind).duration(style.animate_secs.unwrap_or(0.6).clamp(0.05, 5.0));
+                Motion::new(kind).duration(style.animate_secs.unwrap_or(0.6).clamp(0.05, klipp_core::title_motion::MAX_DURATION_SECS));
             if let Some(s) = &style.stagger {
                 m = m.stagger(stagger_unit(s)?, 0.05);
             } else if kind == MotionKind::Typewriter {
@@ -321,8 +321,8 @@ pub(crate) fn effective_motion(
 ) -> Result<klipp_core::title_motion::TitleMotion, String> {
     check_motion_overrides(enter, animate, animate_secs, stagger)?;
     if let Some(v) = animate_secs {
-        if !(0.0 < v && v <= 5.0) {
-            return Err(format!("animate_secs must be greater than 0 and at most 5 seconds; got {v}"));
+        if !(0.0 < v && v <= klipp_core::title_motion::MAX_DURATION_SECS as f64) {
+            return Err(format!("animate_secs must be greater than 0 and at most {} seconds; got {v}", klipp_core::title_motion::MAX_DURATION_SECS));
         }
     }
     let motion = inherit_motion(
@@ -354,6 +354,18 @@ mod tests {
         let style = TypeStyle::default();
         let err = effective_motion(&style, None, None, Some("rise"), Some(0.0), None, 2.0).unwrap_err();
         assert!(err.contains("greater than 0"), "{err}");
+    }
+
+    /// #1585: an exit or an entrance may run longer than 5 s: an 8 s grow
+    /// out of a 10 s title is kept as asked; past an hour is refused.
+    #[test]
+    fn a_motion_may_run_longer_than_five_seconds() {
+        let style = TypeStyle::default();
+        let spec = |secs: f32| klipp_timeline::TitleMotionSpec { kind: "grow".into(), duration_secs: Some(secs), ..Default::default() };
+        let m = effective_motion(&style, Some(&spec(8.0)), Some(&spec(8.0)), None, None, None, 10.0).unwrap();
+        assert_eq!((m.enter.map(|m| m.duration_secs), m.exit.map(|m| m.duration_secs)), (Some(8.0), Some(8.0)));
+        assert_eq!(effective_motion(&style, None, None, Some("rise"), Some(7.5), None, 10.0).unwrap().enter.map(|m| m.duration_secs), Some(7.5));
+        assert!(effective_motion(&style, None, Some(&spec(3601.0)), None, None, None, 10.0).is_err());
     }
 
     #[test]

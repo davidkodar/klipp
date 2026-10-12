@@ -623,7 +623,7 @@ fn motion_row(
     if let Some(m) = slot.as_mut() {
         ui.horizontal(|ui| {
             ui.add_space(58.0 + 8.0);
-            if ui.add(egui::DragValue::new(&mut m.duration_secs).range(0.05..=5.0).speed(0.02).prefix("Duration ").suffix(" s").fixed_decimals(2)).changed() {
+            if ui.add(egui::DragValue::new(&mut m.duration_secs).range(0.05..=klipp_core::title_motion::MAX_DURATION_SECS).speed(0.02).prefix("Duration ").suffix(" s").fixed_decimals(2)).changed() {
                 changed = true;
             }
         });

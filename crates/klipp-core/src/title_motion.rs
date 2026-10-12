@@ -283,6 +283,11 @@ pub enum MotionAnchor {
     Solid,
 }
 
+/// The longest a motion's one unit may take, in seconds: an hour, as
+/// long as its delay may be, so a slow push into the words can run a
+/// title's whole length (#1585). One longer than its title plays in part.
+pub const MAX_DURATION_SECS: f32 = 3600.0;
+
 /// One motion: an entrance or an exit.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Motion {

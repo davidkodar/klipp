@@ -429,7 +429,7 @@ fn approval_discloses_partial_motion_and_ignored_legacy_overrides() {
 
 #[test]
 fn stored_legacy_timing_keeps_clamping_and_approval_includes_implicit_stagger() {
-    for (secs, expected) in [(8.0,5.0),(0.0,0.05),(-1.0,0.05),(0.01,0.05)] {
+    for (secs, expected) in [(8.0,8.0),(7200.0,3600.0),(0.0,0.05),(-1.0,0.05),(0.01,0.05)] {
         let style: klipp_timeline::TypeStyle=serde_json::from_value(json!({"name":"stored","animate":"rise","animate_secs":secs})).unwrap();
         assert_eq!(klipp_document::title_style::resolve_motion(&style).unwrap().enter.unwrap().duration_secs,expected);
     }
