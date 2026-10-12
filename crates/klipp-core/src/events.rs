@@ -2308,6 +2308,10 @@ pub enum AppCommand {
     UpdateTitleData { clip_id: ClipId, text: String, font_size: f32, font_name: String, font_style: u8, color: [u8; 4] },
     /// Give a title every field of the brief style it follows again (#66).
     RevertTitleToStyle { clip_id: ClipId },
+    /// Give every other title made from the template this title was made
+    /// from (or following its style) this title's look, each keeping its
+    /// own words, as one undo step (#1716).
+    UpdateTitlesLike { clip_id: ClipId },
     SetTitleAlignment { clip_id: ClipId, alignment: u8 },  // 0=Left, 1=Center, 2=Right, 3=Justify
     /// Where a justified text box's paragraph ends (#1506):
     /// 0=Left, 1=Center, 2=Justify.
