@@ -667,6 +667,41 @@ impl TitleRenderer {
     /// the box's unless the run's style is bold where the box's is not
     /// or the other way round; its axes are set on top of the box's
     /// (#1504).
+    /// `tb` with its superscript and subscript runs set as the layout
+    /// sets any run (#1721): in the run's face's `sups` or `subs` where it
+    /// has the feature; else at 62% of the run's size, raised a third of
+    /// that size or lowered a seventh.
+    fn with_scripts(&self, mut tb: klipp_timeline::TextBox) -> klipp_timeline::TextBox {
+        if tb.style_runs.iter().all(|r| r.script.is_none()) {
+            return tb;
+        }
+        let (family, base_style, base_size) = (tb.font_name.clone(), tb.font_style, tb.font_size);
+        for run in tb.style_runs.iter_mut() {
+            let Some(script) = run.script else { continue };
+            let style = match run.font_style.unwrap_or(base_style) {
+                FontStyle::Regular => "Regular",
+                FontStyle::Bold => "Bold",
+                FontStyle::Italic => "Italic",
+                FontStyle::BoldItalic => "Bold Italic",
+            };
+            let (feature, rise) = match script {
+                klipp_timeline::Script::Superscript => ("sups", 0.33),
+                klipp_timeline::Script::Subscript => ("subs", -0.14),
+            };
+            let tags = font_discovery::family_feature_tags(&self.font_registry, run.font_name.as_deref().unwrap_or(&family), style);
+            if tags.iter().any(|t| t == feature) {
+                if !run.features.iter().any(|f| f == feature) {
+                    run.features.push(feature.into());
+                }
+            } else {
+                let size = run.font_size.unwrap_or(base_size);
+                run.font_size = Some(size * 0.62);
+                run.baseline_offset = Some(run.baseline_offset.unwrap_or(0.0) + size * rise);
+            }
+        }
+        tb
+    }
+
     fn run_faces(&mut self, tb: &klipp_timeline::TextBox) -> RunFaces {
         let mut keys = vec![(self.ensure_face_loaded(&tb.font_name, tb.font_style, tb.font_weight, &tb.font_axes), tb.features.clone())];
         let bold = |s: FontStyle| matches!(s, FontStyle::Bold | FontStyle::BoldItalic);
@@ -802,7 +837,7 @@ impl TitleRenderer {
         // up-front. A follow-up commit teaches the renderer to walk
         // every object in `title.objects` for proper multi-layer
         // titles.
-        let tb = title.primary_text_or_default();
+        let tb = self.with_scripts(title.primary_text_or_default());
         let w = width as usize;
         let h = height as usize;
         // A text on a drawn path follows the path its layer resolved, or,
@@ -3269,7 +3304,7 @@ impl TitleRenderer {
     /// algorithm as `render_layout`. Returns positions in frame pixel coordinates.
     /// Used by the viewer for cursor placement and click hit-testing.
     pub fn compute_char_positions(&mut self, title: &TitleData, width: u32, height: u32) -> Vec<CharPosition> {
-        let tb = title.primary_text_or_default();
+        let tb = self.with_scripts(title.primary_text_or_default());
         if tb.text.is_empty() {
             return Vec::new();
         }
@@ -8489,8 +8524,8 @@ mod tests {
         text: "Hello World".to_string(),
         font_size: 72.0,
         style_runs: vec![
-                    StyleRun { start: 0, end: 5, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new(), ruby: None },
-                    StyleRun { start: 6, end: 11, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new(), ruby: None },
+                    StyleRun { start: 0, end: 5, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new(), ruby: None, script: None },
+                    StyleRun { start: 6, end: 11, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new(), ruby: None, script: None },
                 ],
         ..Default::default()
     };
@@ -8543,9 +8578,9 @@ mod tests {
         text: text.to_string(),
         font_size: 72.0,
         style_runs: vec![
-                    StyleRun { start: 0, end: 3, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new(), ruby: None }, // ABC
-                    StyleRun { start: 3, end: 7, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new(), ruby: None },  // DEFG
-                    StyleRun { start: 7, end: 10, font_size: Some(72.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new(), ruby: None }, // HIJ
+                    StyleRun { start: 0, end: 3, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new(), ruby: None, script: None }, // ABC
+                    StyleRun { start: 3, end: 7, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new(), ruby: None, script: None },  // DEFG
+                    StyleRun { start: 7, end: 10, font_size: Some(72.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new(), ruby: None, script: None }, // HIJ
                 ],
         ..Default::default()
     };
@@ -10121,6 +10156,7 @@ mod tests {
                     font_weight: None,
                     font_axes: Vec::new(),
                     ruby: None,
+                    script: None,
                 });
             })
         });

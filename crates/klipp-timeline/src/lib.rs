@@ -101,7 +101,7 @@ pub use clip_kind::{
     adjust_style_runs_for_text_change, apply_style_to_range, default_text_transform,
     CharAnimation, CharEntrance, ClipKind, ColourKeys, FontAxis, FontStyle, InnerShadow, LastLineAlign, MotionBlur, ObjectTransform,
     Shape, ShapeFit, ShapeKind, ShapeStroke, StyleRun, TextAlignment, TextBox, TextCase, TextDirection,
-    PathTextAlign, TextExtrusion, TextGlow, TextGradient, TextOutline, TextPattern, ListMarker, ListStyle, NumberStyle, Paragraph, TabAlign, TabStop, TextPath, TextFit, TextVerticalAlign, TextureFill,
+    PathTextAlign, TextExtrusion, TextGlow, TextGradient, TextOutline, TextPattern, ListMarker, ListStyle, NumberStyle, Paragraph, Script, TabAlign, TabStop, TextPath, TextFit, TextVerticalAlign, TextureFill,
     TexturePresetId, TextureSource, TextureTileMode, TitleAnimationType,
     TitleAsset,
     LayerFx, LayerMask, LegacyTextFx, FxMigration,

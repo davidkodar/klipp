@@ -2007,6 +2007,26 @@ fn show_title_pinned_core_textbox(
                 strikethrough: !tb.strikethrough,
             });
         }
+        // Superscript and subscript, for a selection (#1721): on the run
+        // the selection starts in, a second press takes it off.
+        if has_selection && sel_range.0 < sel_range.1 {
+            let script = tb.style_runs.iter().find(|r| r.start <= sel_range.0 && sel_range.0 < r.end).and_then(|r| r.script);
+            for (label, which, tip, value) in [
+                ("x\u{00b2}", klipp_timeline::Script::Superscript, "Superscript", "superscript"),
+                ("x\u{2082}", klipp_timeline::Script::Subscript, "Subscript", "subscript"),
+            ] {
+                let on = script == Some(which);
+                if pill_toggle_button(ui, theme, label, on, |r| r.size(12.0)).on_hover_text(tip).clicked() {
+                    cmds.push(AppCommand::ApplyTitleStyle {
+                        clip_id,
+                        range_start: sel_range.0,
+                        range_end: sel_range.1,
+                        property: "script".into(),
+                        value: if on { "none".into() } else { value.into() },
+                    });
+                }
+            }
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             let cur = match tb.alignment {
@@ -8461,6 +8481,23 @@ mod selection_underline_tests {
         let mut cmds = frame(ctx, td, sel, vec![egui::Event::PointerMoved(pos), button(true)]).0;
         cmds.extend(frame(ctx, td, sel, vec![button(false)]).0);
         (cmds, texts.into_iter().map(|(t, _)| t).collect())
+    }
+
+    /// #1721: with text selected, x² sets it as a superscript in one
+    /// command and, on a superscript, takes it off; with none selected
+    /// neither button shows.
+    #[test]
+    fn superscript_and_subscript_set_a_selections_run() {
+        let ctx = egui::Context::default();
+        let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "mc2 and H2O".into(), font_name: "Inter".into(), ..Default::default() });
+        let (cmds, texts) = click(&ctx, &td, (2, 3), "x\u{00b2}");
+        assert!(matches!(&cmds[..], [AppCommand::ApplyTitleStyle { range_start: 2, range_end: 3, property, value, .. }] if property == "script" && value == "superscript"), "{cmds:?}");
+        assert!(texts.iter().any(|t| t == "x\u{2082}"), "and subscript beside it");
+        td.primary_text_mut().unwrap().style_runs.push(klipp_timeline::StyleRun { script: Some(klipp_timeline::Script::Superscript), ..klipp_timeline::StyleRun::default_for_range(2, 3) });
+        let (cmds, _) = click(&ctx, &td, (2, 3), "x\u{00b2}");
+        assert!(matches!(&cmds[..], [AppCommand::ApplyTitleStyle { value, .. }] if value == "none"), "a second press takes it off: {cmds:?}");
+        let texts = frame(&ctx, &td, (0, 0), Vec::new()).1;
+        assert!(!texts.iter().any(|(t, _)| t == "x\u{00b2}"), "no selection, no button");
     }
 
     /// #1721: the Typography group has the paragraph rows, each showing

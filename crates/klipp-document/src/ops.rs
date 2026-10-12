@@ -623,6 +623,18 @@ pub struct RunSpec {
     /// (#1704).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ruby: Option<String>,
+    /// "superscript" or "subscript" (#1721): set small, high or low.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+}
+
+/// A run's `script`, checked (#1721).
+fn run_script(s: &str, i: usize) -> Result<klipp_timeline::Script, Refusal> {
+    match s.to_lowercase().as_str() {
+        "superscript" | "super" | "sup" => Ok(klipp_timeline::Script::Superscript),
+        "subscript" | "sub" => Ok(klipp_timeline::Script::Subscript),
+        other => Err(refuse(i, format!("\"{other}\" is not a script"), "use superscript or subscript")),
+    }
 }
 
 /// One editorial operation.
@@ -8523,6 +8535,7 @@ fn typesetting(t: &Typeset, i: usize) -> Result<Typesetting, Refusal> {
                     r.weight.map(|w| check_weight(w, i)).transpose()?;
                     r.axes.as_ref().map(|a| check_axes(a, i)).transpose()?;
                     r.features.as_deref().map(|f| check_features(f, i)).transpose()?;
+                    r.script.as_deref().map(|s| run_script(s, i)).transpose()?;
                     let color = r.color.as_deref().map(|c| parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), "write a run's colour as #rrggbb or #rrggbbaa"))).transpose()?;
                     Ok((r.clone(), color))
                 })
@@ -8597,6 +8610,7 @@ fn set_type(tb: &mut klipp_timeline::TextBox, t: &Typesetting) -> Result<(), Str
             run.font_axes = r.axes.iter().flatten().map(|(tag, v)| (tag.clone(), *v)).collect();
             run.features = r.features.clone().unwrap_or_default();
             run.ruby = r.ruby.clone().filter(|g| !g.trim().is_empty());
+            run.script = r.script.as_deref().and_then(|s| run_script(s, 0).ok());
             out.push(run);
         }
         out.sort_by_key(|r| r.start);
@@ -12615,6 +12629,24 @@ mod tests {
         let r = bad(r##"[{"op":"title","text":"Hi","at":{"secs":1.0},"paragraph":{"indent":-5}}]"##);
         assert!(r.why.contains("paragraph indent -5 is out of range") && r.hint.contains("from 0 to 2000"), "{} / {}", r.why, r.hint);
         assert!(serde_json::from_str::<Vec<Op>>(r##"[{"op":"title","text":"Hi","at":{"secs":1.0},"paragraph":{"leading":5}}]"##).is_err(), "an unknown paragraph field");
+    }
+
+    /// #1721: a run of a title is set as a superscript or subscript by
+    /// its words; one that is neither is refused.
+    #[test]
+    fn a_titles_run_is_a_superscript_or_subscript() {
+        use klipp_timeline::Script;
+        let (seq, pool, _, _, _) = fixture();
+        let ops: Vec<Op> = serde_json::from_str(r##"[
+            {"op":"title","text":"E = mc2 and H2O","at":{"secs":1.0},"secs":3.0,
+             "runs":[{"text":"2","script":"superscript"},{"text":"2","occurrence":2,"script":"sub"}]}
+        ]"##).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
+        let klipp_timeline::TitleObjectContent::TextBox(tb) = &clip.title_data().unwrap().objects[0].content else { panic!("text") };
+        assert_eq!(tb.style_runs.iter().map(|r| (r.start, r.script)).collect::<Vec<_>>(), vec![(6, Some(Script::Superscript)), (13, Some(Script::Subscript))]);
+        let r = resolve(&seq, &pool, &serde_json::from_str::<Vec<Op>>(r##"[{"op":"title","text":"x2","at":{"secs":1.0},"runs":[{"text":"2","script":"upper"}]}]"##).unwrap()).unwrap_err();
+        assert!(r.why.contains("\"upper\" is not a script") && r.hint.contains("superscript or subscript"), "{}", r.why);
     }
 
     /// #1721: a title's tab stops are set in order, an alignment left
