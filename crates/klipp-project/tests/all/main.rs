@@ -70,6 +70,8 @@ mod published_port_refused;
 mod refused_clip_is_named;
 #[path = "../save_is_one_generation.rs"]
 mod save_is_one_generation;
+#[path = "../grade_version_mix.rs"]
+mod grade_version_mix;
 #[path = "../sequence_grade_mix.rs"]
 mod sequence_grade_mix;
 #[path = "../side_stores_kept.rs"]
