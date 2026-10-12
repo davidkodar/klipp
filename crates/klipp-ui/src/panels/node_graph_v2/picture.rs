@@ -431,6 +431,58 @@ mod tests {
         assert_eq!(*c.picture_v2().unwrap(), before);
     }
 
+    /// Every node of a clip's picture is on the canvas, in a wide strip
+    /// and in a tall narrow dock (#1726: the dock showed none).
+    #[test]
+    fn a_picture_graph_is_framed_in_any_dock() {
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let c = TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0)))
+            .effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 })
+            .effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 })
+            .effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 4.0 })
+            .build();
+        let ctx = egui::Context::default();
+        let mut panel = super::super::NodeGraphV2Panel::default();
+        let mut level = root(&c);
+        let (mut selected, mut set, mut time) = (None, Default::default(), 0.0);
+        let picture = c.picture_v2().unwrap();
+        let model = PictureCanvas::new(&picture.picture.graph, root(&c), None).unwrap();
+        let labels: Vec<String> = model.nodes.iter().map(|n| n.label.clone()).collect();
+        // First a small graph (a title's), then the clip's own.
+        let small = TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))).build();
+        let mut small_level = root(&small);
+        for _ in 0..3 {
+            time += 0.05;
+            let _ = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(460.0, 900.0))), time: Some(time), ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    panel.show_picture(ui, &small, &mut small_level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, true, &Default::default(), 0, &mut Vec::new()).unwrap();
+                });
+            });
+        }
+        // As the app draws it: a dock rect inside a whole window.
+        let window = egui::vec2(1900.0, 1100.0);
+        for dock in [egui::Rect::from_min_size(egui::pos2(300.0, 700.0), egui::vec2(1300.0, 260.0)), egui::Rect::from_min_size(egui::pos2(1100.0, 60.0), egui::vec2(420.0, 900.0))] {
+            let mut texts = Vec::new();
+            for _ in 0..3 {
+                time += 0.05;
+                let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, window)), time: Some(time), ..Default::default() }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        crate::ui_util::allocate_clipped_ui(ui, dock, |ui| {
+                            panel.show_picture(ui, &c, &mut level, &mut selected, &mut set, &crate::theme::KlippTheme::default(), 0.0, true, &Default::default(), 0, &mut Vec::new()).unwrap();
+                        });
+                    });
+                });
+                texts = out.shapes.iter().filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)), _ => None,
+                }).collect::<Vec<_>>();
+            }
+            for label in labels.iter().filter(|l| !l.is_empty()) {
+                let at = texts.iter().find(|(s, _)| s == label).map(|t| t.1);
+                assert!(at.is_some_and(|p| dock.contains(p)), "{dock:?}: {label} at {at:?}, zoom {}", panel.zoom);
+            }
+        }
+    }
+
     /// Use the real canvas's context menu, then the normal path handler
     /// and history: an effect's bypass changes the clip and undoes once.
     #[test]

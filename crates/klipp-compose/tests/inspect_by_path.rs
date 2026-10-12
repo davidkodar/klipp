@@ -395,3 +395,44 @@ fn a_node_inside_a_compound_is_inspected_by_its_path() {
         assert_ne!(soloed[0], soloed[1], "gpu {gpu}: each depth shows its own node");
     }
 }
+
+/// The picture's own nodes answer their thumbnails by their paths in the
+/// picture, as the Nodes dock asks (#1726): the Source the clip's source,
+/// the grade group the graded picture, an effect the picture after it
+/// (on the GPU, where the effects run in the grade's plan). Placement is
+/// unavailable, with why: it is applied when the layers are put together.
+#[test]
+fn the_pictures_own_nodes_answer_their_thumbnails() {
+    let (seq, id, _) = sequence(exposure(1.0, NodeId::new_v4()), None);
+    let mut seq = seq;
+    let clip = seq.tracks[0].clips.iter_mut().find(|c| c.id == id).unwrap();
+    *clip = TestClip::of(clip.clone()).effect(klipp_effects::BuiltinEffect::Gamma { gamma: 1.6 }).build();
+    let clip = seq.tracks[0].clips.iter().find(|c| c.id == id).unwrap();
+    let picture = clip.picture_v2().unwrap();
+    let of = |t: &str| picture.picture.graph.nodes.iter().find(|n| n.type_id.as_str() == t).unwrap().id;
+    let at = |n| InspectAt::out(NodePath::new(Root::Clip { clip: id.0 }, [n]));
+    let effect = picture.picture.graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gamma")).unwrap().id;
+    let (source, grade, gamma, placement) = (
+        at(of(klipp_graph_format::lifted::types::SOURCE)),
+        at(klipp_graph_lift::ids::entry_id(klipp_graph_lift::ids::RootKind::Clip, id.0, "grade", 0)),
+        at(effect),
+        at(of(klipp_graph_format::lifted::types::PLACEMENT)),
+    );
+    let run_source = clip.grade().nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
+    for gpu in [false, true] {
+        let thumbs = [source.clone(), grade.clone(), gamma.clone(), placement.clone(), klipp_compose::inspect::grade_node(id, run_source)].into_iter().collect();
+        let (_, found) = draw(&seq, gpu, Inspect { clip: Some(id), only: Some(id), thumbs: Some(thumbs), ..Default::default() });
+        let unavailable = |a: &InspectAt| found.unavailable.iter().find(|(x, _)| x == a).map(|(_, why)| why.clone());
+        let (s, g) = (found.thumbs.get(&source), found.thumbs.get(&grade));
+        assert!(s.is_some() && g.is_some(), "gpu {gpu}: {:?}", found.unavailable);
+        assert_eq!(s, found.thumbs.get(&klipp_compose::inspect::grade_node(id, run_source)), "gpu {gpu}: the Source is the grade's source");
+        assert_ne!(s, g, "gpu {gpu}: the grade group shows the graded picture");
+        assert!(unavailable(&placement).is_some_and(|w| w.contains("layers")), "gpu {gpu}: {:?}", found.unavailable);
+        match found.thumbs.get(&gamma) {
+            Some(e) => assert_ne!(Some(e), g, "gpu {gpu}: the effect shows the picture after it"),
+            // On the CPU the effects of an inspected clip run apart from
+            // its grade (#1274): unavailable then, and said, never blank.
+            None => assert!(unavailable(&gamma).is_some(), "gpu {gpu}: {:?}", found.unavailable),
+        }
+    }
+}
