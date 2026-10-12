@@ -3,6 +3,7 @@
 //! read and write them too (#1516).
 #![forbid(unsafe_code)]
 
+pub mod scc;
 pub mod styled;
 pub mod ttml;
 pub use styled::{Placement, Span, SpanStyle};

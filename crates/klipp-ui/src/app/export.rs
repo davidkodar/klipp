@@ -2784,7 +2784,8 @@ impl KlippApp {
                     Ok(content) => {
                         // Detect format by extension (case-insensitive). Unknown
                         // extensions fall back to the SRT/VTT parser; TTML,
-                        // DFXP, IMSC and iTT read as TTML (#1516).
+                        // DFXP, IMSC and iTT read as TTML, and SCC as CEA-608
+                        // (#1516).
                         let ext = path
                             .extension()
                             .and_then(|s| s.to_str())
@@ -2892,8 +2893,15 @@ impl KlippApp {
                                 track.clips.push(clip);
                             }
                         } else {
-                            let subs = if is_ttml {
-                                klipp_captions::ttml::parse_ttml(&content).unwrap_or_else(|e| {
+                            let read = if is_ttml {
+                                Some(klipp_captions::ttml::parse_ttml(&content))
+                            } else if ext == "scc" {
+                                Some(klipp_captions::scc::parse_scc(&content))
+                            } else {
+                                None
+                            };
+                            let subs = if let Some(read) = read {
+                                read.unwrap_or_else(|e| {
                                     unreadable = Some(e);
                                     Vec::new()
                                 })
@@ -3275,6 +3283,8 @@ impl KlippApp {
                     "ass" | "ssa" => generate_ass(&subs),
                     // IMSC 1.1 Text, in the brief's language (#1516).
                     "ttml" | "dfxp" | "xml" | "itt" => klipp_captions::ttml::generate_imsc(&subs, seq.brief.as_ref().and_then(|b| b.language.as_deref()).unwrap_or("")),
+                    // CEA-608 pop-on captions on CC1 (#1516).
+                    "scc" => klipp_captions::scc::generate_scc(&subs),
                     _ => generate_srt(&subs),
                 };
                 match std::fs::write(&path, &content) {

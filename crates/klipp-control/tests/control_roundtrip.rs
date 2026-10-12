@@ -3109,7 +3109,7 @@ fn subtitles_import_over_the_socket_and_export_in_the_format_asked() {
     h.ok(json!({ "method": "export_subtitles", "path": out.to_str().unwrap(), "format": "WebVTT" }));
     assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(klipp_core::AppCommand::ExportSubtitles { .. })));
     // TTML's extensions are one format, IMSC by another name.
-    for (path, format) in [("out.ttml", "imsc"), ("out.dfxp", "ttml"), ("out.itt", "IMSC")] {
+    for (path, format) in [("out.ttml", "imsc"), ("out.dfxp", "ttml"), ("out.itt", "IMSC"), ("out.scc", "scc")] {
         h.ok(json!({ "method": "export_subtitles", "path": dir.join(path).to_str().unwrap(), "format": format }));
         assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(klipp_core::AppCommand::ExportSubtitles { .. })), "{path}");
     }
@@ -3117,7 +3117,7 @@ fn subtitles_import_over_the_socket_and_export_in_the_format_asked() {
     std::fs::write(&ttml, "<tt xmlns=\"http://www.w3.org/ns/ttml\"><body><div><p begin=\"0s\" end=\"1s\">Hello</p></div></body></tt>").unwrap();
     h.ok(json!({ "method": "import_subtitles", "path": ttml.to_str().unwrap() }));
     assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(klipp_core::AppCommand::ImportSubtitles { .. })));
-    for (path, format, why) in [("out.ttml", Some("srt"), "ends .ttml"), ("out.srt", Some("vtt"), "ends .srt"), ("out.txt", None, "names no subtitle format"), ("out.srt", Some("scc"), "not a subtitle format")] {
+    for (path, format, why) in [("out.ttml", Some("srt"), "ends .ttml"), ("out.srt", Some("vtt"), "ends .srt"), ("out.txt", None, "names no subtitle format"), ("out.srt", Some("sub"), "not a subtitle format"), ("out.scc", Some("ttml"), "ends .scc")] {
         let mut req = json!({ "method": "export_subtitles", "path": dir.join(path).to_str().unwrap() });
         if let Some(f) = format {
             req["format"] = json!(f);
