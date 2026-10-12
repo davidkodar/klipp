@@ -23,16 +23,24 @@ const FPS: u32 = 24;
 const N: i64 = 48;
 
 /// 48 frames at 24 fps, frame n a flat grey of 20 + 4n, intra-only.
+///
+/// Written once per process (#1700): the tests run at the same time in
+/// one scratch directory, and `ffmpeg -y` truncating the file while
+/// another test decodes it gave that test `Unavailable` frames.
 fn ramp() -> Option<PathBuf> {
-    let path = klipp_testing::scratch::scratch_file("klipp-clip-sources", "ramp.mkv");
-    let ok = std::process::Command::new("ffmpeg")
-        .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i"])
-        .arg(format!("color=c=black:s={W}x{H}:r={FPS}:d=2,geq=lum='20+4*N':cb=128:cr=128"))
-        .args(["-c:v", "ffv1", "-pix_fmt", "yuv420p"])
-        .arg(&path)
-        .status()
-        .is_ok_and(|s| s.success());
-    ok.then_some(path)
+    static RAMP: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    RAMP.get_or_init(|| {
+        let path = klipp_testing::scratch::scratch_file("klipp-clip-sources", "ramp.mkv");
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i"])
+            .arg(format!("color=c=black:s={W}x{H}:r={FPS}:d=2,geq=lum='20+4*N':cb=128:cr=128"))
+            .args(["-c:v", "ffv1", "-pix_fmt", "yuv420p"])
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success());
+        ok.then_some(path)
+    })
+    .clone()
 }
 
 fn tc(frames: i64) -> RationalTime {
