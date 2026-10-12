@@ -1291,9 +1291,7 @@ impl KlippApp {
                 if let Some(parent) = path.parent() {
                     #[cfg(target_os = "linux")]
                     {
-                        let _ = std::process::Command::new("xdg-open")
-                            .arg(parent)
-                            .spawn();
+                        let _ = crate::ui_util::open_external(parent);
                     }
                 }
                 true
@@ -1333,9 +1331,9 @@ impl KlippApp {
                 #[cfg(target_os = "linux")]
                 {
                     let spawn_result = if app.trim().is_empty() {
-                        std::process::Command::new("xdg-open").arg(&path).spawn()
+                        crate::ui_util::open_external(&path)
                     } else {
-                        std::process::Command::new(app).arg(&path).spawn()
+                        crate::ui_util::spawn_reaped(std::process::Command::new(app).arg(&path)).map(|_| ())
                     };
                     match spawn_result {
                         Ok(_) => self.state.toast.show(format!("Opened in external app: {filename}")),

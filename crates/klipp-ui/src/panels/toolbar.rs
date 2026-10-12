@@ -1289,9 +1289,9 @@ impl ToolbarPanel {
                 let local_docs = std::path::Path::new("docs/book/index.html");
                 if local_docs.exists() {
                     let abs = std::fs::canonicalize(local_docs).unwrap_or_default();
-                    let _ = std::process::Command::new("xdg-open").arg(format!("file://{}", abs.display())).spawn();
+                    let _ = crate::ui_util::open_external(format!("file://{}", abs.display()));
                 } else {
-                    let _ = std::process::Command::new("xdg-open").arg("https://github.com/davidkodar/klipp").spawn();
+                    let _ = crate::ui_util::open_external("https://github.com/davidkodar/klipp");
                 }
                 ui.close_menu();
             }
@@ -1303,11 +1303,11 @@ impl ToolbarPanel {
             ui.separator();
             if ui.button("Report a Bug...").clicked() {
                 // Open GitHub issues page
-                let _ = std::process::Command::new("xdg-open").arg("https://github.com/davidkodar/klipp/issues").spawn();
+                let _ = crate::ui_util::open_external("https://github.com/davidkodar/klipp/issues");
                 ui.close_menu();
             }
             if ui.button("Release Notes").clicked() {
-                let _ = std::process::Command::new("xdg-open").arg("https://github.com/davidkodar/klipp/releases").spawn();
+                let _ = crate::ui_util::open_external("https://github.com/davidkodar/klipp/releases");
                 ui.close_menu();
             }
             ui.separator();

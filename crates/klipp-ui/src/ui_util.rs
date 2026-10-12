@@ -90,6 +90,27 @@ pub fn decode_png_or_fallback(bytes: &[u8]) -> egui::ColorImage {
     }
 }
 
+/// Open `target` (a URL, a file or a folder) in the desktop's default
+/// application, through `xdg-open`. Errors only when it could not start.
+pub fn open_external(target: impl AsRef<std::ffi::OsStr>) -> std::io::Result<()> {
+    spawn_reaped(std::process::Command::new("xdg-open").arg(target)).map(|_| ())
+}
+
+/// Start `cmd` with a null stdin and wait for it on a short-lived thread,
+/// so it never shares the terminal the app was started from (#1767) and
+/// never lingers as a zombie once it exits (#1785). Returns its pid.
+pub fn spawn_reaped(cmd: &mut std::process::Command) -> std::io::Result<u32> {
+    let mut child = cmd.stdin(std::process::Stdio::null()).spawn()?;
+    let pid = child.id();
+    let reaper = std::thread::Builder::new().name("reap-child".into()).spawn(move || {
+        let _ = child.wait();
+    });
+    if let Err(e) = reaper {
+        tracing::warn!("could not start a thread to reap pid {pid}: {e}");
+    }
+    Ok(pid)
+}
+
 #[cfg(test)]
 mod tests {
     /// #822: names are cut by characters, so a multi-byte letter at the
@@ -174,5 +195,38 @@ mod tests {
         // Spot-check the red pixel.
         assert_eq!(img.pixels[0].r(), 255);
         assert_eq!(img.pixels[0].g(), 0);
+    }
+
+    /// A process's state letter from /proc, or None once it is gone.
+    #[cfg(target_os = "linux")]
+    fn proc_state(pid: u32) -> Option<char> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        stat.rsplit(") ").next()?.chars().next()
+    }
+
+    /// A child started through `spawn_reaped` is gone after it exits,
+    /// where one spawned and dropped stays behind as a zombie (#1785).
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[allow(clippy::zombie_processes, reason = "the control leaves a zombie on purpose")]
+    fn a_finished_child_is_reaped() {
+        let settle = |pid: u32, want_gone: bool| {
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let state = proc_state(pid);
+                if (want_gone && state.is_none()) || (!want_gone && state == Some('Z')) || std::time::Instant::now() > until {
+                    return state;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        let pid = spawn_reaped(&mut std::process::Command::new("true")).unwrap();
+        assert_eq!(settle(pid, true), None, "reaped child still listed");
+
+        // The control: spawned and dropped, it stays a zombie.
+        let dropped = std::process::Command::new("true").spawn().unwrap();
+        let pid = dropped.id();
+        drop(dropped);
+        assert_eq!(settle(pid, false), Some('Z'), "the control should be a zombie");
     }
 }
