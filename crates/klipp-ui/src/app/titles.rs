@@ -1416,6 +1416,12 @@ impl KlippApp {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
                             td.objects.retain(|o| o.id != target);
+                            // A layer it masked is no longer masked (#1513).
+                            for o in &mut td.objects {
+                                if o.mask.is_some_and(|m| m.source == target) {
+                                    o.mask = None;
+                                }
+                            }
                         }
                     }
                 }
@@ -1475,6 +1481,47 @@ impl KlippApp {
                     }
                 }
                 if let Some(old) = old { self.push_title_undo(*clip_id, "Layer Opacity", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleObjectBlend { clip_id, object_id, blend } => {
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                o.blend = *blend;
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Layer Blend", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleObjectMask { clip_id, object_id, mask } => {
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                let old = self.snapshot_title(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(o) = td.object_mut(target) {
+                                // A layer never masks itself (#1513).
+                                o.mask = mask
+                                    .filter(|(source, _)| *source != *object_id)
+                                    .map(|(source, kind)| klipp_timeline::LayerMask { source: klipp_timeline::TitleObjectId(source), kind });
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Layer Mask", old); }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
                 let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);

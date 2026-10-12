@@ -505,6 +505,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTitleObjectOpacity { .. }
         | AppCommand::AddTitleObjectOpacityKeyframe { .. }
         | AppCommand::RemoveTitleObjectOpacityKeyframe { .. }
+        | AppCommand::SetTitleObjectBlend { .. }
+        | AppCommand::SetTitleObjectMask { .. }
         | AppCommand::RenameTitleObject { .. }
         | AppCommand::ReorderTitleObjects { .. }
         | AppCommand::BeginTitlePathDrag { .. }

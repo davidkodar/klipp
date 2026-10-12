@@ -2354,6 +2354,11 @@ pub enum AppCommand {
     SetTitleObjectOpacity { clip_id: ClipId, object_id: u32, opacity: f32 },
     AddTitleObjectOpacityKeyframe { clip_id: ClipId, object_id: u32, time_secs: f64, value: f32 },
     RemoveTitleObjectOpacityKeyframe { clip_id: ClipId, object_id: u32, time_secs: f64 },
+    /// How a layer blends with the layers below it in its title (#1513).
+    SetTitleObjectBlend { clip_id: ClipId, object_id: u32, blend: crate::BlendMode },
+    /// Mask a layer with another layer of its title, by the source's
+    /// id and what of it masks; `None` takes the mask off (#1513).
+    SetTitleObjectMask { clip_id: ClipId, object_id: u32, mask: Option<(u32, crate::layer_mask::LayerMaskKind)> },
     /// Rename the layer-list label for an object.
     RenameTitleObject { clip_id: ClipId, object_id: u32, name: String },
     /// Reorder objects in the stack. `new_order` is the full list

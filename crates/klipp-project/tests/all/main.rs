@@ -76,6 +76,8 @@ mod grade_version_mix;
 mod track_grade_save;
 #[path = "../title_template_fields.rs"]
 mod title_template_fields;
+#[path = "../title_blend_mask_format.rs"]
+mod title_blend_mask_format;
 #[path = "../sequence_grade_mix.rs"]
 mod sequence_grade_mix;
 #[path = "../side_stores_kept.rs"]

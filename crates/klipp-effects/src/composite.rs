@@ -138,7 +138,7 @@ fn blend_chunk(dst: &mut [u8], src: &[u8], opacity: f32, mode: BlendMode) {
 }
 
 #[inline]
-fn overlay_ch(base: f32, blend: f32) -> f32 {
+pub(crate) fn overlay_ch(base: f32, blend: f32) -> f32 {
     if base < 0.5 {
         2.0 * base * blend
     } else {
@@ -147,7 +147,7 @@ fn overlay_ch(base: f32, blend: f32) -> f32 {
 }
 
 #[inline]
-fn soft_light_ch(base: f32, blend: f32) -> f32 {
+pub(crate) fn soft_light_ch(base: f32, blend: f32) -> f32 {
     if blend < 0.5 {
         base - (1.0 - 2.0 * blend) * base * (1.0 - base)
     } else {
@@ -161,12 +161,12 @@ fn soft_light_ch(base: f32, blend: f32) -> f32 {
 }
 
 #[inline]
-fn dodge_ch(base: f32, blend: f32) -> f32 {
+pub(crate) fn dodge_ch(base: f32, blend: f32) -> f32 {
     if blend >= 1.0 { 1.0 } else { (base / (1.0 - blend)).min(1.0) }
 }
 
 #[inline]
-fn burn_ch(base: f32, blend: f32) -> f32 {
+pub(crate) fn burn_ch(base: f32, blend: f32) -> f32 {
     if blend <= 0.0 { 0.0 } else { (1.0 - (1.0 - base) / blend).max(0.0) }
 }
 

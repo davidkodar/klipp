@@ -469,6 +469,31 @@ pub struct TitleObject {
     /// stack and is written as such.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fx: Option<LayerFx>,
+    /// How the layer mixes with the layers below it in the title
+    /// (#1513). Normal is the plain "over" every title has always had.
+    #[serde(default = "normal_blend", skip_serializing_if = "is_normal_blend")]
+    pub blend: klipp_core::BlendMode,
+    /// Another layer of the title whose alpha or brightness is how much
+    /// of this one shows (#1513). The source is a matte while any shown
+    /// layer uses it: it masks and is not drawn itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<LayerMask>,
+}
+
+fn normal_blend() -> klipp_core::BlendMode {
+    klipp_core::BlendMode::Normal
+}
+fn is_normal_blend(b: &klipp_core::BlendMode) -> bool {
+    *b == klipp_core::BlendMode::Normal
+}
+
+/// A layer's mask: which layer of the same title masks it, and how
+/// (#1513).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LayerMask {
+    pub source: TitleObjectId,
+    #[serde(default)]
+    pub kind: klipp_core::layer_mask::LayerMaskKind,
 }
 
 /// What every object can carry, because it is the object that moves
@@ -1635,6 +1660,8 @@ impl TitleData {
             opacity_keyframes: Vec::new(),
             content,
             fx: Some(fx),
+            blend: klipp_core::BlendMode::Normal,
+            mask: None,
         });
         id
     }
@@ -1647,6 +1674,30 @@ impl TitleData {
 
     pub fn object_mut(&mut self, id: TitleObjectId) -> Option<&mut TitleObject> {
         self.objects.iter_mut().find(|o| o.id == id)
+    }
+
+    /// The layer that masks `obj` and how, when its mask names another
+    /// layer of this title (#1513). A mask naming the layer itself or a
+    /// deleted one masks nothing.
+    pub fn mask_of(&self, obj: &TitleObject) -> Option<(&TitleObject, klipp_core::layer_mask::LayerMaskKind)> {
+        let mask = obj.mask?;
+        if mask.source == obj.id {
+            return None;
+        }
+        self.object(mask.source).map(|src| (src, mask.kind))
+    }
+
+    /// Whether `id` is a matte: a shown layer is masked by it, so it
+    /// masks and is not drawn itself (#1513).
+    pub fn is_matte(&self, id: TitleObjectId) -> bool {
+        self.objects.iter().any(|o| o.visible && self.mask_of(o).is_some_and(|(src, _)| src.id == id))
+    }
+
+    /// Whether a shown layer blends other than "over" or is masked: the
+    /// title is then its layers mixed, not each laid on the last
+    /// (#1513).
+    pub fn mixes_layers(&self) -> bool {
+        self.objects.iter().any(|o| o.visible && (o.blend != klipp_core::BlendMode::Normal || self.mask_of(o).is_some()))
     }
 
     /// First TextBox object on the stack, or `None` if the title is

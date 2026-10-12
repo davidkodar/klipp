@@ -44,7 +44,7 @@ use fontdue::Font;
 use shaping::{Face, LoadedFont, ShapedLayout};
 pub use shaping::SHAPING_VERSION;
 pub use fallback::FALLBACK_VERSION;
-use klipp_timeline::{LayerFx, TitleObject};
+use klipp_timeline::{LayerFx, TitleObject, TitleObjectId};
 use klipp_timeline::{
     FontStyle, ImageFit, ImageLayer, LastLineAlign, ObjectTransform, Shape, ShapeKind, StyleRun,
     TextAlignment, TextDirection, TextPath, TextPattern, TextVerticalAlign, TitleBackground, TitleData,
@@ -368,13 +368,21 @@ pub enum TitleFrame {
 /// words alone (its fill goes under them when the sprite is placed);
 /// any other title as it is.
 pub fn resting_title(title: &TitleData) -> std::borrow::Cow<'_, TitleData> {
-    if matches!(title.background, TitleBackground::FullFrame { .. }) {
+    if card_goes_under(title) {
         let mut words = title.clone();
         words.background = TitleBackground::None;
         std::borrow::Cow::Owned(words)
     } else {
         std::borrow::Cow::Borrowed(title)
     }
+}
+
+/// Whether a full-frame card's fill is laid under the sprite when it is
+/// placed rather than drawn into it. Not for a title whose layers mix
+/// (#1513): a layer that multiplies or screens mixes with the fill
+/// below it, so the fill is part of the render.
+fn card_goes_under(title: &TitleData) -> bool {
+    matches!(title.background, TitleBackground::FullFrame { .. }) && !title.mixes_layers()
 }
 
 /// The columns of `rows` of a frame-sized RGBA8 buffer that carry any
@@ -466,6 +474,10 @@ pub struct TitleRenderer {
     /// The resting render of a one-layer title leaves its fade to the
     /// placement, which knows where the layer has moved to.
     defer_layer_fades: bool,
+    /// The one layer `render_inner` draws while it makes a matte: the
+    /// mask source alone, shown or not, at the masked layer's time
+    /// (#1513).
+    matte_only: Option<TitleObjectId>,
     /// Decoded image layers by path; `None` for a file that would
     /// not open, so it is not retried every frame.
     image_cache: HashMap<String, Option<std::sync::Arc<DecodedImage>>>,
@@ -510,6 +522,7 @@ impl TitleRenderer {
             bound_path: None,
             loop_focus: HashMap::new(),
             defer_layer_fades: false,
+            matte_only: None,
             image_cache: HashMap::new(),
             system_fallback: true,
             fallback_keys: HashMap::new(),
@@ -2045,8 +2058,12 @@ impl TitleRenderer {
         // One visible layer carrying the only pose: the cached resting
         // render, shifted and faded, is the frame.
         let visible = title.objects.iter().filter(|o| o.visible).count();
+        // A title whose layers blend or mask is posed only at rest: a
+        // pose on its render would move the mixed picture, matte and
+        // all, and not the one layer (#1513). It is rastered instead.
+        let single = visible == 1 && !title.mixes_layers();
         let translate_only = match poses.as_slice() {
-            [(_, p)] => (!loops_need_raster && visible == 1).then(|| p.clone()),
+            [(_, p)] => (!loops_need_raster && single).then(|| p.clone()),
             _ => None,
         };
         // An entrance or exit that moves, fades or scales the whole
@@ -2056,7 +2073,7 @@ impl TitleRenderer {
         // frame at 4K for the whole of a half-second rise.
         // (opacity, dx, dy, scale, blur sigma, clip to the resting box)
         let mut motion_anchor = None;
-        let motion_pose: Option<(f32, f32, f32, f32, f32, bool)> = if any_motion_live && !any_animating && visible == 1 && !loops_need_raster {
+        let motion_pose: Option<(f32, f32, f32, f32, f32, bool)> = if any_motion_live && !any_animating && single && !loops_need_raster {
             title.objects.iter().find(|o| o.visible).and_then(|o| {
                 let TitleObjectContent::TextBox(tb) = &o.content else { return None };
                 let fx = o.fx();
@@ -2079,7 +2096,7 @@ impl TitleRenderer {
         // glyph on its own from the resting render's glyph map — the
         // frame is the glyphs placed, on the GPU. A blur cannot be
         // posed per glyph and is rastered.
-        let staggered: Option<&TitleObject> = if (any_motion_live || any_animating) && motion_pose.is_none() && visible == 1 && !loops_need_raster {
+        let staggered: Option<&TitleObject> = if (any_motion_live || any_animating) && motion_pose.is_none() && single && !loops_need_raster {
             title.objects.iter().find(|o| o.visible).and_then(|o| match &o.content {
                 TitleObjectContent::TextBox(_)
                     if o.fx().motion.enter.is_none_or(|m| !m.kind.blurs())
@@ -2204,7 +2221,7 @@ impl TitleRenderer {
             // the words move, and one resting render serves the card
             // moving and at rest.
             let under = match &title.background {
-                TitleBackground::FullFrame { color } => Some(*color),
+                TitleBackground::FullFrame { color } if card_goes_under(title) => Some(*color),
                 _ => None,
             };
             let sprite = self.resting_sprite(&resting_title(title), width, height, gpu.take());
@@ -2267,8 +2284,8 @@ impl TitleRenderer {
             // the resting render where it stands, since none moves here —
             // both poses above come only for one visible layer.
             let scale_px = crate::frame_scale(width, height);
-            debug_assert!(visible == 1 || (dx == 0 && dy == 0 && (scale - 1.0).abs() < 1e-6), "a title of several layers placed with a move would carry its baked fades with it");
-            let shape = if visible == 1 {
+            debug_assert!(single || (dx == 0 && dy == 0 && (scale - 1.0).abs() < 1e-6), "a title of several layers placed with a move would carry its baked fades with it");
+            let shape = if single {
                 title.objects.iter().find(|o| o.visible).and_then(|o| ScreenFade::new(o.fx().edge_fade, translate_only.as_ref().and_then(|p| p.focus)))
             } else {
                 None
@@ -2380,9 +2397,11 @@ impl TitleRenderer {
         let mut gpu_for_first_text = gpu;
         let pixel_count = (width as usize) * (height as usize);
         let mut buf = vec![0u8; pixel_count * 4];
+        // A matte is its source layer alone: no fill, no backing (#1513).
+        let matte_only = self.matte_only;
         // Title-level background fill (legacy field — will move to a
         // Shape object once on-canvas editing lands).
-        if let TitleBackground::FullFrame { color } = &title.background {
+        if let (TitleBackground::FullFrame { color }, None) = (&title.background, matte_only) {
             for pixel in buf.chunks_exact_mut(4) {
                 pixel.copy_from_slice(color);
             }
@@ -2391,16 +2410,31 @@ impl TitleRenderer {
         // Until something is painted, `buf` is empty (unless a full
         // frame background filled it): the first text layer is the
         // buffer, no blend needed.
-        let mut buf_untouched = !matches!(title.background, TitleBackground::FullFrame { .. });
+        let mut buf_untouched = matte_only.is_some() || !matches!(title.background, TitleBackground::FullFrame { .. });
         // A colour backing is a box round the words, so it is the text
         // layer that knows where it goes: the first text box carries it.
         // Dropped from every layer, as it was, it was never painted.
-        let mut backing = matches!(title.background, TitleBackground::Color { .. }).then(|| title.background.clone());
+        let mut backing = (matches!(title.background, TitleBackground::Color { .. }) && matte_only.is_none()).then(|| title.background.clone());
         for obj in &title.objects {
-            if !obj.visible {
-                continue;
-            }
-            let first_layer = buf_untouched;
+            // A layer that blends or is masked is drawn on its own and
+            // then mixed with what is below it (#1513); a matte is drawn
+            // only into the mask it makes.
+            let mixed = match matte_only {
+                Some(id) => {
+                    if obj.id != id {
+                        continue;
+                    }
+                    false
+                }
+                None => {
+                    if !obj.visible || title.is_matte(obj.id) {
+                        continue;
+                    }
+                    obj.blend != klipp_core::BlendMode::Normal || title.mask_of(obj).is_some()
+                }
+            };
+            let below = mixed.then(|| std::mem::replace(&mut buf, vec![0u8; pixel_count * 4]));
+            let first_layer = buf_untouched || mixed;
             buf_untouched = false;
             let opacity = time_secs
                 .map(|t| obj.evaluated_opacity(t as f64))
@@ -2481,13 +2515,19 @@ impl TitleRenderer {
                     }
                 }
                 TitleObjectContent::Shape(shape) => {
-                    let Some(transform) = self.shape_transform(title, obj, shape, time_secs, width, height) else { continue };
+                    let Some(transform) = self.shape_transform(title, obj, shape, time_secs, width, height) else {
+                        // Nothing to draw: what was below stays.
+                        if let Some(below) = below {
+                            buf = below;
+                        }
+                        continue;
+                    };
                     effective_transform = transform;
                     let fx = obj.fx();
                     if !fx.is_default() {
                         // The layer, then its stack and its pose on it.
                         let mut layer = vec![0u8; (width as usize) * (height as usize) * 4];
-                        paint_shape_layer(&mut layer, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0), None);
+                        paint_shape_layer(&mut layer, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0), None, mixed);
                         let mut layer = self.dress_layer(layer, fx, width, height, time_secs, window, &mut None);
                         self.fade_layer(obj, &mut layer, width, height);
                         if (opacity - 1.0).abs() >= 0.001 {
@@ -2495,14 +2535,14 @@ impl TitleRenderer {
                         }
                         over_blend(&mut buf, &layer);
                     } else if (opacity - 1.0).abs() < 0.001 {
-                        paint_shape_layer(&mut buf, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0), gpu_for_first_text.as_mut().map(|g| &mut **g as &mut dyn AlphaMaskProcessor));
+                        paint_shape_layer(&mut buf, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0), gpu_for_first_text.as_mut().map(|g| &mut **g as &mut dyn AlphaMaskProcessor), mixed);
                     } else {
                         // Render the shape into a fresh transparent
                         // layer, scale its alpha, then over-blend —
                         // matches the per-object opacity behaviour
                         // for TextBox layers.
                         let mut layer = vec![0u8; (width as usize) * (height as usize) * 4];
-                        paint_shape_layer(&mut layer, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0), gpu_for_first_text.as_mut().map(|g| &mut **g as &mut dyn AlphaMaskProcessor));
+                        paint_shape_layer(&mut layer, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0), gpu_for_first_text.as_mut().map(|g| &mut **g as &mut dyn AlphaMaskProcessor), mixed);
                         scale_layer_alpha(&mut layer, opacity);
                         over_blend(&mut buf, &layer);
                     }
@@ -2521,6 +2561,15 @@ impl TitleRenderer {
                         over_blend(&mut buf, &layer);
                     }
                 }
+            }
+            if let Some(mut below) = below {
+                let mut layer = std::mem::take(&mut buf);
+                if let Some((src, kind)) = title.mask_of(obj) {
+                    let matte = self.matte_layer(title, src.id, width, height, time_secs);
+                    apply_layer_mask(&mut layer, &matte, kind);
+                }
+                blend_layer_mode(&mut below, &layer, obj.blend);
+                buf = below;
             }
         }
         buf
@@ -2551,6 +2600,18 @@ impl TitleRenderer {
         let pose = path.at(time_secs.unwrap_or(0.0) as f64);
         let (closed, points) = vector_path::contours(&pose, &transform, width, height).into_iter().nth(contour)?;
         text_on_path::PathLine::new(points, closed)
+    }
+
+    /// The layer `id` of `title` drawn alone, at `time_secs`, as the
+    /// mask of another layer (#1513): shown or hidden, its own blend and
+    /// mask left out.
+    fn matte_layer(&mut self, title: &TitleData, id: TitleObjectId, width: u32, height: u32, time_secs: Option<f32>) -> Vec<u8> {
+        let units = self.last_units.take();
+        let outer = self.matte_only.replace(id);
+        let matte = self.render_inner(title, width, height, None, time_secs);
+        self.matte_only = outer;
+        self.last_units = units;
+        matte
     }
 
     /// Resolve a backing's normalized rectangle using the same text bounds
@@ -2739,7 +2800,7 @@ impl TitleRenderer {
         match self.cache_lookup(title, width, height) {
             Some(hit) => hit,
             None => {
-                self.defer_layer_fades = title.objects.iter().filter(|o| o.visible).count() == 1;
+                self.defer_layer_fades = title.objects.iter().filter(|o| o.visible).count() == 1 && !title.mixes_layers();
                 let buf = self.render_inner(title, width, height, gpu, None);
                 self.defer_layer_fades = false;
                 let rows = alpha_rows(&buf, width, height);
@@ -4092,6 +4153,65 @@ fn over_blend_chunk(dst: &mut [u8], src: &[u8]) {
     }
 }
 
+/// sRGB code to linear light, for the 256 codes.
+fn srgb_decode_lut() -> &'static [f32; 256] {
+    static LUT: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
+    LUT.get_or_init(|| std::array::from_fn(|i| srgb_u8_to_linear(i as u8)))
+}
+
+/// Lay `src` on `dst` with `mode` (#1513), both straight-alpha sRGB
+/// RGBA8. Normal is `over_blend`, as every layer has always been laid.
+/// The other modes mix in linear light, as the clip compositor's do:
+/// each channel is the mode's mix where there is something below and
+/// the layer's own colour where there is not, then laid over what is
+/// below, premultiplied, and encoded back.
+fn blend_layer_mode(dst: &mut [u8], src: &[u8], mode: klipp_core::BlendMode) {
+    use rayon::prelude::*;
+    if mode == klipp_core::BlendMode::Normal {
+        over_blend(dst, src);
+        return;
+    }
+    debug_assert_eq!(dst.len(), src.len());
+    let lut = srgb_decode_lut();
+    dst.par_chunks_mut(4 * 4096).zip(src.par_chunks(4 * 4096)).for_each(|(dc, sc)| {
+        for (d, s) in dc.chunks_exact_mut(4).zip(sc.chunks_exact(4)) {
+            let sa = s[3] as f32 / 255.0;
+            if sa <= 0.0 {
+                continue;
+            }
+            let da = d[3] as f32 / 255.0;
+            let out_a = sa + da * (1.0 - sa);
+            for i in 0..3 {
+                let (cb, cs) = (lut[d[i] as usize], lut[s[i] as usize]);
+                let mixed = (1.0 - da) * cs + da * mode.blend_channel(cb, cs).clamp(0.0, 1.0);
+                let co = mixed * sa + cb * da * (1.0 - sa);
+                d[i] = (linear_to_srgb_f(co / out_a) * 255.0).round().clamp(0.0, 255.0) as u8;
+            }
+            d[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
+        }
+    });
+}
+
+/// Scale `layer`'s alpha by the mask `kind` reads from `matte` (#1513),
+/// both straight-alpha sRGB RGBA8 of the frame. A luma mask weighs the
+/// matte's colour in linear light by Rec.709's row, the primaries a
+/// title is authored in.
+fn apply_layer_mask(layer: &mut [u8], matte: &[u8], kind: klipp_timeline::LayerMaskKind) {
+    use rayon::prelude::*;
+    debug_assert_eq!(layer.len(), matte.len());
+    let lut = srgb_decode_lut();
+    layer.par_chunks_mut(4 * 4096).zip(matte.par_chunks(4 * 4096)).for_each(|(lc, mc)| {
+        for (l, m) in lc.chunks_exact_mut(4).zip(mc.chunks_exact(4)) {
+            if l[3] == 0 {
+                continue;
+            }
+            let luma = 0.2126 * lut[m[0] as usize] + 0.7152 * lut[m[1] as usize] + 0.0722 * lut[m[2] as usize];
+            let v = kind.value(luma, m[3] as f32 / 255.0);
+            l[3] = (l[3] as f32 * v).round().clamp(0.0, 255.0) as u8;
+        }
+    });
+}
+
 /// An image layer's pixels, straight-alpha RGBA.
 pub struct DecodedImage {
     pub w: usize,
@@ -4598,6 +4718,10 @@ fn text_box_extent(title: &TitleData, width: u32, height: u32) -> (f32, f32) {
 /// `transform.center` and `transform.size` are normalised 0..1
 /// frame-relative coords, mapped to a pixel rect on the frame and
 /// turned by `rotation` about the anchor, then filled and stroked.
+/// `straight` lays each pixel over what is there in straight alpha,
+/// for a layer drawn alone to be blended or masked (#1513); without
+/// it a rectangle or an ellipse mixes its colour with the pixel's as
+/// it always has, which darkens a translucent fill over nothing.
 fn paint_shape_layer(
     buf: &mut [u8],
     shape: &Shape,
@@ -4606,6 +4730,7 @@ fn paint_shape_layer(
     height: u32,
     time_secs: f32,
     gpu: Option<&mut dyn AlphaMaskProcessor>,
+    straight: bool,
 ) {
     // A gradient fills the shape's box in place of its colour (#1509).
     let gradient = shape.gradient.as_ref().filter(|g| g.enabled).map(|g| (klipp_core::fill_gradient::GradientRamp::new(&g.stops()), g.kind));
@@ -4708,8 +4833,15 @@ fn paint_shape_layer(
                         for i in 0..3 {
                             let sc = one[i] as f32;
                             let dc = tmp[i] as f32;
-                            buf[idx + i] = (sc * sa + dc * inv_sa)
-                                .round().clamp(0.0, 255.0) as u8;
+                            buf[idx + i] = if straight {
+                                // A layer drawn alone to be mixed keeps
+                                // its fill's colour where it is
+                                // translucent (#1513).
+                                if out_a > 0.0 { (sc * sa + dc * da * inv_sa) / out_a } else { 0.0 }
+                            } else {
+                                sc * sa + dc * inv_sa
+                            }
+                            .round().clamp(0.0, 255.0) as u8;
                         }
                         buf[idx + 3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
                     }

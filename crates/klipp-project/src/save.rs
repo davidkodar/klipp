@@ -572,10 +572,11 @@ fn clip_kind_to_json(kind: &ClipKind, project_dir: &Path) -> ClipKindJson {
         ClipKind::Media { media_id } => ClipKindJson::Media {
             media_id: media_id.to_string(),
         },
-        // A layer with a stack of its own is the newest thing a title
-        // can carry, and takes the newest tag; a path without one keeps
-        // its tag; a title with neither keeps the oldest.
-        ClipKind::Title(data) if data.objects.iter().any(|o| !o.fx().is_default()) => {
+        // A layer with a stack of its own, a blend or a mask (#1513) is
+        // the newest thing a title can carry, and takes the newest tag; a
+        // path without one keeps its tag; a title with neither keeps the
+        // oldest.
+        ClipKind::Title(data) if data.objects.iter().any(|o| !o.fx().is_default() || o.blend != klipp_core::BlendMode::Normal || o.mask.is_some()) => {
             ClipKindJson::TitleV2 { title_data: title_data_for_file(data, project_dir) }
         }
         ClipKind::Title(data) if data.objects.iter().any(|o| matches!(&o.content,klipp_timeline::TitleObjectContent::Shape(shape) if matches!(shape.kind,klipp_timeline::ShapeKind::Path(_)))) => {

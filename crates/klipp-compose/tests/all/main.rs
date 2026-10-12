@@ -72,6 +72,8 @@ mod temporal_denoise_at_the_source;
 mod temporal_denoise_gpu;
 #[path = "../temporal_reader_size.rs"]
 mod temporal_reader_size;
+#[path = "../title_blend_mask_stack.rs"]
+mod title_blend_mask_stack;
 #[path = "../truth_lanes_render.rs"]
 mod truth_lanes_render;
 #[path = "../vector_glow_parity.rs"]
