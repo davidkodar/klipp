@@ -280,6 +280,9 @@ pub struct CharPosition {
     pub advance: f32,
     /// Line height in frame pixels.
     pub height: f32,
+    /// The character reads right to left (#1693): the caret before it
+    /// is at its right edge, after it at its left.
+    pub rtl: bool,
 }
 
 /// One entry in `TitleRenderer`'s rasterized-frame cache. Keyed by
@@ -992,6 +995,7 @@ impl TitleRenderer {
                 font_px,
                 |from| pieces_of(from, resolved_text.len()),
                 text_box_extent(title, width, height).0,
+                tb.text_direction == TextDirection::Rtl,
             );
         } else if drop_cap_active {
             // "Drop initial" path: cap as the head segment.
@@ -2989,6 +2993,7 @@ impl TitleRenderer {
                 y: title.position().y * height as f32,
                 advance: font_px * 0.5,
                 height: font_px,
+                rtl: false,
             }];
         }
 
@@ -3058,7 +3063,9 @@ impl TitleRenderer {
 
         let char_count = tb.text.chars().count();
 
-        for g in &glyphs_owned {
+        let glyph_rtl = layout.glyph_rtl().to_vec();
+        for (gi, g) in glyphs_owned.iter().enumerate() {
+            let rtl = glyph_rtl.get(gi).copied().unwrap_or(false);
             let char_index = byte_to_char.iter()
                 .find(|(bi, _)| *bi == g.byte_offset)
                 .map(|(_, ci)| *ci)
@@ -3084,10 +3091,13 @@ impl TitleRenderer {
                 positions.push(CharPosition {
                     char_index: char_index + k,
                     byte_offset: if k == 0 { g.byte_offset } else { tb.text.char_indices().nth(char_index + k).map_or(g.byte_offset, |(bi, _)| bi) },
-                    x: g.x + offset_x + share * k as f32,
+                    // A cluster's characters share its box in their
+                    // reading order: from its right, right to left.
+                    x: g.x + offset_x + if rtl { advance - share * (k + 1) as f32 } else { share * k as f32 },
                     y: g.y + offset_y,
                     advance: if shared > 1 { share } else { advance },
                     height: glyph_height,
+                    rtl,
                 });
             }
         }
@@ -3111,10 +3121,11 @@ impl TitleRenderer {
                     filled.push(CharPosition {
                         char_index: ci,
                         byte_offset: tb.text.char_indices().nth(ci).map(|(bi, _)| bi).unwrap_or(0),
-                        x: prev.x + prev.advance,
+                        x: if prev.rtl { prev.x } else { prev.x + prev.advance },
                         y: prev.y,
                         advance: 0.0,
                         height: prev.height,
+                        rtl: prev.rtl,
                     });
                 } else if !positions.is_empty() {
                     let next = &positions[0];
@@ -3125,6 +3136,7 @@ impl TitleRenderer {
                         y: next.y,
                         advance: 0.0,
                         height: next.height,
+                        rtl: next.rtl,
                     });
                 }
             }
@@ -3132,13 +3144,15 @@ impl TitleRenderer {
 
         // Add end-of-text position for cursor-at-end
         if let Some(last) = filled.last() {
+            // After the last character: past its reading end.
             filled.push(CharPosition {
                 char_index: char_count,
                 byte_offset: tb.text.len(),
-                x: last.x + last.advance,
+                x: if last.rtl { last.x } else { last.x + last.advance },
                 y: last.y,
                 advance: 0.0,
                 height: last.height,
+                rtl: last.rtl,
             });
         }
 
@@ -3658,7 +3672,10 @@ fn gaussian_blur_expand(
 /// been a single fontdue pass, and where each of its lines starts.
 /// The body is set in `body_from(byte)`'s pieces from that byte on,
 /// each at its style run's size and face (#1505); the cap is set at
-/// `cap.0` in face `cap.1`.
+/// `cap.0` in face `cap.1`. In a right-to-left box (`rtl`, #1693) the
+/// cap stands at the box's right and the body, set right to left from
+/// the right, wraps on its left.
+#[allow(clippy::too_many_arguments)]
 fn layout_drop_cap_wrap(
     fonts: &[Face],
     text: &str,
@@ -3667,11 +3684,19 @@ fn layout_drop_cap_wrap(
     body_size: f32,
     body_from: impl Fn(usize) -> Vec<Piece>,
     full_max_w: f32,
+    rtl: bool,
 ) -> (Vec<fontdue::layout::GlyphPosition>, Vec<usize>) {
     let (cap_size, cap_face) = cap;
+    // The body's lines start at the box's right in a right-to-left box.
+    let body_align = if rtl { HorizontalAlign::Right } else { HorizontalAlign::Left };
+    let new_layout = || {
+        let mut l = ShapedLayout::new();
+        l.set_rtl(rtl);
+        l
+    };
 
     // ── Stage 1: drop cap ──
-    let mut cap_layout = ShapedLayout::new();
+    let mut cap_layout = new_layout();
     cap_layout.reset(&LayoutSettings {
         x: 0.0,
         y: 0.0,
@@ -3688,10 +3713,10 @@ fn layout_drop_cap_wrap(
         // Defensive: no glyph for the first character (shouldn't
         // happen for a non-empty string + valid font, but if it
         // does, fall through to plain body layout).
-        let mut body_layout = ShapedLayout::new();
+        let mut body_layout = new_layout();
         body_layout.reset(&LayoutSettings {
             max_width: Some(full_max_w),
-            horizontal_align: HorizontalAlign::Left,
+            horizontal_align: body_align,
             vertical_align: VerticalAlign::Top,
             wrap_style: WrapStyle::Word,
             ..LayoutSettings::default()
@@ -3714,13 +3739,13 @@ fn layout_drop_cap_wrap(
 
     // ── Stage 2: narrow body to the right of the cap ──
     let narrow_w = (full_max_w - body_x_offset).max(body_size);
-    let mut narrow_layout = ShapedLayout::new();
+    let mut narrow_layout = new_layout();
     narrow_layout.reset(&LayoutSettings {
         x: 0.0,
         y: 0.0,
         max_width: Some(narrow_w),
         max_height: None,
-        horizontal_align: HorizontalAlign::Left,
+        horizontal_align: body_align,
         vertical_align: VerticalAlign::Top,
         wrap_style: WrapStyle::Word,
         ..LayoutSettings::default()
@@ -3752,13 +3777,13 @@ fn layout_drop_cap_wrap(
     let wide_glyphs: Vec<fontdue::layout::GlyphPosition> = if byte_consumed >= text.len() {
         Vec::new()
     } else {
-        let mut wide_layout = ShapedLayout::new();
+        let mut wide_layout = new_layout();
         wide_layout.reset(&LayoutSettings {
             x: 0.0,
             y: 0.0,
             max_width: Some(full_max_w),
             max_height: None,
-            horizontal_align: HorizontalAlign::Left,
+            horizontal_align: body_align,
             vertical_align: VerticalAlign::Top,
             wrap_style: WrapStyle::Word,
             ..LayoutSettings::default()
@@ -3774,9 +3799,18 @@ fn layout_drop_cap_wrap(
     // Cap glyphs keep their byte_offsets (bytes 0..cap_end of the
     // full source); the body's already index it.
     let mut out: Vec<fontdue::layout::GlyphPosition> = cap_glyphs;
-    // Narrow body glyphs: shift x by body_x_offset.
+    // Right to left, the cap at the box's right and the narrow body,
+    // already set from the right of its column, left of it; else the
+    // narrow body shifted right of the cap.
+    if rtl {
+        for g in &mut out {
+            g.x += full_max_w - cap_w;
+        }
+    }
     for mut g in in_column {
-        g.x += body_x_offset;
+        if !rtl {
+            g.x += body_x_offset;
+        }
         out.push(g);
     }
     // Wide body glyphs: shift y by cap_h.

@@ -3223,6 +3223,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "klipp-linebreak"
+version = "0.1.0"
+
+[[package]]
 name = "klipp-load-lock"
 version = "0.1.0"
 
@@ -3482,6 +3486,7 @@ dependencies = [
  "harfrust",
  "image",
  "klipp-core",
+ "klipp-linebreak",
  "klipp-timeline",
  "rayon",
  "read-fonts",

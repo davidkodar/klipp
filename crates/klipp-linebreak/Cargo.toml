@@ -1,0 +1,9 @@
+[package]
+name = "klipp-linebreak"
+version.workspace = true
+edition = "2021"
+# fontdue's line breaker, itself xi-unicode's: see LICENSE-* here.
+license = "MIT OR Apache-2.0 OR Zlib"
+description = "fontdue 0.9.3's Unicode line-break opportunities, unchanged, so title text can be broken by shaped widths at exactly the places fontdue breaks it"
+
+[dependencies]
