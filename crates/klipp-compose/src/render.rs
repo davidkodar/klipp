@@ -1458,7 +1458,6 @@ impl Renderer {
                 GradeInput::Gpu(g) => g.seed(&mut self.executor, width, height),
                 GradeInput::Scene { codes, transfer, source_to_working } => {
                     self.allow_gpu
-                        && gpu_seed_codes(codes)
                         && self.executor.prime_chain_from_hdr10_codes(
                             codes,
                             width,
@@ -3496,7 +3495,6 @@ impl Renderer {
             // while the same frame is regraded.
             GradeInput::Scene { codes, transfer, source_to_working }
                 if self.allow_gpu
-                    && gpu_seed_codes(codes)
                     && self.executor.prime_chain_from_hdr10_codes(
                         codes,
                         width,
@@ -4953,19 +4951,6 @@ fn split_above_white(px: &mut [f32]) -> Option<Vec<f32>> {
         }
     });
     Some(over)
-}
-
-/// Whether the GPU bridge can seed a chain from these codes: 10-bit ones.
-/// A deeper source's 16-bit codes are converted on the CPU, and
-/// composited there, until the bridge takes them (#1226); said once,
-/// not every frame.
-fn gpu_seed_codes(codes: &klipp_color::hdr::SceneCodes) -> bool {
-    static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    let packed = codes.packed10().is_some();
-    if !packed && !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        tracing::info!("a source deeper than 10 bits is graded on the CPU at its full precision: the GPU bridge takes 10-bit codes");
-    }
-    packed
 }
 
 fn to_linear(f: SourceFrame, width: u32, height: u32) -> (Arc<Vec<f32>>, Option<klipp_color::hdr::HdrTransfer>) {

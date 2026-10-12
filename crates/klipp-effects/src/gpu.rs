@@ -368,6 +368,8 @@ pub struct GpuEffectsPipeline {
     /// written into the chain's `buf_a`. The GPU half of
     /// `klipp_color::hdr::hdr10_codes_to_scene_linear_rgba`.
     bridge_hdr10_pipeline: wgpu::ComputePipeline,
+    /// The same for 16-bit codes, a source deeper than 10 bits (#1226).
+    bridge_hdr16_pipeline: wgpu::ComputePipeline,
     /// Chain output (linear f32) → display sRGB u8, with the HDR display
     /// tone map applied first when asked. Lets a graded frame leave the
     /// GPU as 4 bytes a pixel instead of 16.
@@ -1339,6 +1341,9 @@ impl GpuEffectsPipeline {
         let bridge_hdr10_pipeline = create_pipeline(
             &device, &pipeline_layout, "bridge_hdr10_to_linear", shader_hdr10_to_linear(),
         );
+        let bridge_hdr16_pipeline = create_pipeline(
+            &device, &pipeline_layout, "bridge_hdr16_to_linear", shader_hdr16_to_linear(),
+        );
         let display_u8_pipeline = create_pipeline(
             &device, &pipeline_layout, "linear_to_display_u8", SHADER_LINEAR_TO_DISPLAY_U8,
         );
@@ -1579,6 +1584,7 @@ impl GpuEffectsPipeline {
             hdr_encode_data: None,
             bt2020_display_pipeline,
             bridge_hdr10_pipeline,
+            bridge_hdr16_pipeline,
             display_u8_pipeline,
             hdr_nit_map_pipeline,
             hdr_nit_buf: None,
@@ -3203,11 +3209,40 @@ impl GpuEffectsPipeline {
         scene_scale: f32,
         source_to_working: [[f32; 4]; 3],
     ) -> bool {
+        self.bridge_scene_codes_into_chain(codes, false, width, height, transfer_id, scene_scale, source_to_working)
+    }
+
+    /// [`Self::bridge_hdr10_to_linear_into_chain`] for 16-bit codes
+    /// (`klipp_color::hdr::pack_rgb16`, eight bytes a pixel): a source
+    /// deeper than 10 bits, at its own precision (#1226).
+    pub fn bridge_hdr16_to_linear_into_chain(
+        &mut self,
+        codes: &wgpu::Buffer,
+        width: u32,
+        height: u32,
+        transfer_id: u32,
+        scene_scale: f32,
+        source_to_working: [[f32; 4]; 3],
+    ) -> bool {
+        self.bridge_scene_codes_into_chain(codes, true, width, height, transfer_id, scene_scale, source_to_working)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn bridge_scene_codes_into_chain(
+        &mut self,
+        codes: &wgpu::Buffer,
+        deep: bool,
+        width: u32,
+        height: u32,
+        transfer_id: u32,
+        scene_scale: f32,
+        source_to_working: [[f32; 4]; 3],
+    ) -> bool {
         if self.is_device_lost() { return false; }
         let pixel_count = (width as u64) * (height as u64);
         if pixel_count == 0 { return true; }
         self.ensure_buffers(pixel_count * 16);
-        if codes.size() < pixel_count * 4 { return false; }
+        if codes.size() < pixel_count * if deep { 8 } else { 4 } { return false; }
 
         let buf_a = self.buf_a.as_ref().expect("ensure_buffers established buf_a");
         self.write_params(&Hdr10BridgeParams {
@@ -3227,7 +3262,7 @@ impl GpuEffectsPipeline {
             let mut pass = encoder.begin_compute_pass(
                 &wgpu::ComputePassDescriptor { label: None, timestamp_writes: None },
             );
-            pass.set_pipeline(&self.bridge_hdr10_pipeline);
+            pass.set_pipeline(if deep { &self.bridge_hdr16_pipeline } else { &self.bridge_hdr10_pipeline });
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups((pixel_count as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
         }
@@ -9401,6 +9436,12 @@ fn shader_hdr10_to_linear() -> &'static str {
     SRC.get_or_init(|| format!("{}{}{}", crate::color_wgsl::WGSL_PRELUDE, crate::color_wgsl::WGSL_HELPERS, SHADER_HDR10_TO_LINEAR_BODY))
 }
 
+/// [`shader_hdr10_to_linear`] for 16-bit codes: [`SHADER_HDR16_TO_LINEAR_BODY`].
+fn shader_hdr16_to_linear() -> &'static str {
+    static SRC: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SRC.get_or_init(|| format!("{}{}{}", crate::color_wgsl::WGSL_PRELUDE, crate::color_wgsl::WGSL_HELPERS, SHADER_HDR16_TO_LINEAR_BODY))
+}
+
 /// A scene-referred clip's display step as a chain pass (phase 2b M2, step
 /// 11c): `klipp_color::hdr::SceneToDisplay::apply`, the SDR tone map or
 /// display light, from the two shared definitions the decoders' previews
@@ -9482,6 +9523,34 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let code = vec3<f32>(f32(p & 1023u), f32((p >> 10u) & 1023u), f32((p >> 20u) & 1023u)) / 1023.0;
     // PQ/HLG return 1.0 = 10 000 nits (scale 100 to 1.0 = 100 nits);
     // camera logs already return reflectance (scale 1).
+    let scene = display_to_linear(code, params.transfer_id) * params.scene_scale;
+    output[idx] = pack(vec4<f32>( dot(params.m0.xyz, scene), dot(params.m1.xyz, scene), dot(params.m2.xyz, scene), 1.0, ));
+}
+"
+);
+
+// SHADER_HDR10_TO_LINEAR_BODY for 16-bit codes, a source deeper than 10
+// bits (#1226): `klipp_color::hdr::pack_rgb16`, R and G in a pixel's
+// first word, B in the low half of its second. Must match
+// `klipp_color::hdr::hdr16_codes_to_scene_linear_rgba`.
+const SHADER_HDR16_TO_LINEAR_BODY: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params {
+    width: u32, height: u32, transfer_id: u32, scene_scale: f32,
+    m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>,
+}
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let rg = input[idx * 2u];
+    let b = input[idx * 2u + 1u];
+    let code = vec3<f32>(f32(rg & 65535u), f32(rg >> 16u), f32(b & 65535u)) / 65535.0;
     let scene = display_to_linear(code, params.transfer_id) * params.scene_scale;
     output[idx] = pack(vec4<f32>( dot(params.m0.xyz, scene), dot(params.m1.xyz, scene), dot(params.m2.xyz, scene), 1.0, ));
 }
@@ -16432,6 +16501,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         // Compiled into pipelines but missing from this list until #692,
         // which kept them out of the WGSL validation and pack lints.
         ("SHADER_HDR10_TO_LINEAR", shader_hdr10_to_linear()),
+        ("SHADER_HDR16_TO_LINEAR", shader_hdr16_to_linear()),
         ("SHADER_SCENE_TO_DISPLAY", shader_scene_to_display()),
         ("SHADER_SPRITE_ROWS_F16", SHADER_SPRITE_ROWS_F16),
         ("SHADER_DIFFERENCE_KEY", SHADER_DIFFERENCE_KEY),
