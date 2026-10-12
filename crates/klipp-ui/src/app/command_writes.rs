@@ -20,6 +20,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         // arrives later.
         AppCommand::SetSplitCompareNode { .. }
         | AppCommand::ShowPanel { .. }
+        | AppCommand::SetViewerOverlay { .. }
         | AppCommand::GradeTrackInColour { .. }
         | AppCommand::LoadCreditsList { .. }
         | AppCommand::ToggleFavouriteFont { .. }

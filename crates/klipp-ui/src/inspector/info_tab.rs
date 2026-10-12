@@ -272,15 +272,11 @@ pub fn show_no_selection(
         let w = ui.available_width();
         let project_bytes: u64 = state.media_pool.all().map(|m| m.file_size_bytes).sum();
 
-        let cache_bytes: u64 = dirs::cache_dir()
-            .map(|d| d.join("klipp"))
-            .and_then(|p| dir_size_bytes(&p))
-            .unwrap_or(0);
-
-        let proxy_bytes: u64 = dirs::cache_dir()
-            .map(|d| d.join("klipp").join("proxies"))
-            .and_then(|p| dir_size_bytes(&p))
-            .unwrap_or(0);
+        let (cache_bytes, proxy_bytes) = cache_sizes();
+        if cache_bytes == 0 && proxy_bytes == 0 {
+            // Measured on a thread; drawn again when it is in.
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+        }
 
         let home = dirs::home_dir();
         let free_bytes: u64 = state.project_path.as_deref()
@@ -330,6 +326,31 @@ pub fn show_no_selection(
 }
 
 /// State 2: Bin media selected — CLIP INFO, TAGS, TIMELINE USAGE
+/// The cache's and the proxies' sizes in bytes, measured on a thread at
+/// most every ten seconds: walking a cache of many gigabytes on every
+/// repaint held the inspector up. (0, 0) until the first measure is in.
+fn cache_sizes() -> (u64, u64) {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static SIZES: Mutex<(Option<Instant>, bool, u64, u64)> = Mutex::new((None, false, 0, 0));
+    let mut s = SIZES.lock().unwrap_or_else(|e| e.into_inner());
+    let stale = s.0.is_none_or(|at| at.elapsed() > Duration::from_secs(10));
+    if stale && !s.1 {
+        s.1 = true;
+        let started = std::thread::Builder::new().name("cache-size".into()).spawn(|| {
+            let cache = dirs::cache_dir().map(|d| d.join("klipp"));
+            let all = cache.as_deref().and_then(dir_size_bytes).unwrap_or(0);
+            let proxies = cache.map(|d| d.join("proxies")).and_then(|p| dir_size_bytes(&p)).unwrap_or(0);
+            let mut s = SIZES.lock().unwrap_or_else(|e| e.into_inner());
+            *s = (Some(Instant::now()), false, all, proxies);
+        });
+        if started.is_err() {
+            s.1 = false;
+        }
+    }
+    (s.2, s.3)
+}
+
 pub fn show_bin_media(
     ui: &mut egui::Ui,
     state: &AppState,
