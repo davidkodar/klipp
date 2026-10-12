@@ -414,13 +414,16 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             .fold(0.0, f64::max);
         // What runs on fades out at its own end, as the hint asks: the
         // sound by its fade, a picture by its opacity keyed down to
-        // nothing (#1572).
+        // nothing (#1572). The fade covers the run-on's last second, or
+        // half of it when it runs on under two: a blink of a fade still ends the piece
+        // on its run-on at full level (#1598).
+        let covers = |run_on: f64| run_on.min(2.0) * 0.5;
         let sound_fades = || {
             seq.tracks
                 .iter()
                 .flat_map(|t| t.clips.iter().map(move |c| (t, c)))
                 .filter(|(t, c)| is_heard(seq, pool, t, c) && secs(c.timeline_out) > picture_end + frame * 1.5)
-                .all(|(_, c)| sound_settings_clip(seq, c).fade_out_secs > 0.0)
+                .all(|(_, c)| f64::from(sound_settings_clip(seq, c).fade_out_secs) >= covers(secs(c.timeline_out) - picture_end) - 1e-6)
         };
         let picture_fades = || {
             pictures
@@ -430,10 +433,16 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
                 .filter(|c| secs(c.timeline_out) > sound_end + frame * 1.5)
                 .all(|c| {
                     let end = secs(c.timeline_out) - secs(c.timeline_in) - frame * 0.5;
+                    // Down to nothing at the end, and already on its way
+                    // down `covers` before it.
+                    let begun = end - covers(secs(c.timeline_out) - sound_end) * 0.9;
                     c.truth_lane(&klipp_core::ParamId::Opacity)
                         .map(|(keys, _)| keys)
                         .filter(|keys| !keys.is_empty())
-                        .is_some_and(|keys| klipp_core::keyframe::evaluate(&keys, end, 1.0) < 0.05)
+                        .is_some_and(|keys| {
+                            let at = |t: f64| klipp_core::keyframe::evaluate(&keys, t, 1.0);
+                            at(end) < 0.05 && at(begun) < 0.95 * at(0.0).max(0.05)
+                        })
                 })
         };
         let runs_on_fades = if sound_end > picture_end { sound_fades() } else { picture_fades() };
@@ -1223,7 +1232,8 @@ mod tests {
     /// #1572: what runs on past the other fades out at its end, as the
     /// hint asks, and the check stays quiet: music past the picture with
     /// its fade, a last shot past the sound keyed down to nothing (by the
-    /// compose op, as a film fades its picture out).
+    /// compose op, as a film fades its picture out). A fade of a blink is
+    /// still a finding: it must cover the run-on's last second (#1598).
     #[test]
     fn a_run_on_that_fades_out_is_no_finding() {
         let (mut seq, pool, talk, music) = piece();
@@ -1232,6 +1242,9 @@ mod tests {
         seq.tracks.push(bed);
         let r = check(&seq, &pool, &Spoken(talk));
         assert!(rules(&r).contains(&"ends_apart"), "music runs on 2 s past the picture: {}", r.text());
+        seq.tracks.last_mut().unwrap().clips[0].fade_out_secs = 0.2;
+        let r = check(&seq, &pool, &Spoken(talk));
+        assert!(rules(&r).contains(&"ends_apart"), "a 0.2 s fade leaves 1.8 s of music at full level over black (#1598): {}", r.text());
         seq.tracks.last_mut().unwrap().clips[0].fade_out_secs = 3.5;
         let r = check(&seq, &pool, &Spoken(talk));
         assert!(!rules(&r).contains(&"ends_apart"), "the music fades out: {}", r.text());
@@ -1245,14 +1258,17 @@ mod tests {
         let r = check(&seq, &pool, &Spoken(talk));
         assert!(rules(&r).contains(&"ends_apart"), "the picture runs on 2 s past the sound: {}", r.text());
         let last = seq.tracks[v].clips[1].id;
-        let fade = |to: f64| -> Sequence {
-            let ops: Vec<crate::ops::Op> = serde_json::from_str(&format!(r#"[{{"op":"compose","clip_id":"{}","poses":[{{"secs":2.0,"opacity":1}},{{"secs":4.0,"opacity":{to}}}]}}]"#, last.0)).unwrap();
+        let fade_from = |from: f64, to: f64| -> Sequence {
+            let ops: Vec<crate::ops::Op> = serde_json::from_str(&format!(r#"[{{"op":"compose","clip_id":"{}","poses":[{{"secs":{from},"opacity":1}},{{"secs":4.0,"opacity":{to}}}]}}]"#, last.0)).unwrap();
             let plan = crate::ops::resolve(&seq, &pool, &ops).unwrap();
             let (mut seqs, mut p, mut fps) = (vec![seq.clone()], pool.clone(), seq.fps);
             let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
             view.apply_forward(&plan.steps[0].edit);
             seqs.remove(0)
         };
+        let fade = |to: f64| fade_from(2.0, to);
+        let r = check(&fade_from(3.8, 0.0), &pool, &Spoken(talk));
+        assert!(rules(&r).contains(&"ends_apart"), "a 0.2 s fade to nothing is a cut to black after 1.8 s of picture (#1598): {}", r.text());
         let r = check(&fade(0.5), &pool, &Spoken(talk));
         assert!(rules(&r).contains(&"ends_apart"), "a fade to half is still picture: {}", r.text());
         let r = check(&fade(0.0), &pool, &Spoken(talk));
