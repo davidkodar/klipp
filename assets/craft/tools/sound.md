@@ -1,0 +1,29 @@
+# Sound, music and narration
+
+What each of these tools does in full: the details its short description leaves out. Read one tool's part with klipp_guide and its name as the topic (find_shots), or this whole page as sound-tools.
+
+## klipp_add_music
+
+Download a searched music track OR sound effect into the media pool, keeping its licence and attribution beside the file for your export credits. Pass a klipp_search_music result's fields, or several as tracks. Then place it on an audio track (place marks it music) and duck it under speech. Honour the licence — keep non-commercial tracks out of commercial work.
+
+## klipp_align_audio
+
+Line a clip's sound up with another's — dual-system sound, a separate recorder against the camera's scratch track. It cross-correlates the two clips' audio, finds the offset, and moves clip_id so it plays in sync with reference_clip_id; it reports the match confidence and refuses when the two share no common sound. max_offset_secs bounds the search (30 by default). Both clips must carry audio.
+
+## klipp_auto_sfx
+
+Preview sound design; apply true commits one undo step: whooshes on cuts, clicks on reveals, riser into last cut. on cuts is default; transitions selects cuts with transitions; stylised selects zoom/whip/glitch/film-burn, excluding dissolve/dip. Optional media ids select sounds; otherwise preview built-in whooshes, then synthesise/import on apply. Skip conflicting placements, preserve existing clips. Place on SFX track with sfx role. When both sources are analysed, whooshes are 3 dB above the loudest underlying sound and clicks 3 dB below; otherwise -6/-8 dB.
+
+## klipp_narrate
+
+The `voice` argument:
+
+Narration from text, made on the machine. voice is a manifest id; the default is kokoro_voice_af_heart (natural, female, US English; Apache-2.0). The other Kokoro voices are kokoro_voice_ + af_bella, af_nicole, am_michael, am_fenrir, am_puck (US); bf_emma, bf_isabella, bm_george, bm_fable (UK); they need the espeak-ng program and one 87 MB download for all ten. Lighter, more robotic Piper voices (the piper program) are piper_ + en_us_ljspeech_high, en_us_kristin_medium, en_us_norman_medium, en_us_john_medium, en_us_libritts_high (CC BY: credit LibriTTS), en_gb_cori_high, sv_se_nst_medium (Swedish); piper_en_us_lessac_medium is research only, never for paid work. Where Kokoro cannot run, the default is piper_en_us_ljspeech_high. Nothing downloads unless download_models is true (or the person downloads it in Window > Narrate); a refusal names the size. The take goes into the pool, and with apply true onto a Voice track at at_secs as dialogue. speed (0.5 to 2; 0.85 reads unhurried) and pause_secs (0 to 3, between sentences) shape the delivery. Then duck the music under it; transcript gives the words' times. A scratch voice to cut to, replaced by a recording later.
+
+## klipp_search_music
+
+Search Jamendo royalty-free music by mood/genre, best textual match first. Results give title, artist, duration, tags, pace and licence/commercial clearance. listen previews up to five without importing (count from first or track-id list), reporting tempo, beat clarity and energy evolution. Import via klipp_add_music. Requires Jamendo client id in user key config. Match reference energy using style_profile; never reuse its track.
+
+## klipp_search_sfx
+
+Search royalty-free sound effects by keyword (e.g. "whoosh", "door slam", "rain", "impact") from Freesound. Each result shows its licence and whether it clears commercial use. max_secs keeps to short sounds (a transition's whoosh, not a long design file); listen (a count, or [track_id, …], at most 5) hears previews and says each one's length, when it peaks and how loud it is, which is where it goes: the peak on the cut. Then add it with klipp_add_music (it takes a sound effect the same as a track). Needs a Freesound token in the user's key config.
