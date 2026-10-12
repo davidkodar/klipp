@@ -105,6 +105,13 @@ pub const EXTRUSION_DEPTH: &str = "extrusion.depth";
 pub const EXTRUSION_ANGLE: &str = "extrusion.angle";
 pub const EXTRUSION_LIGHTING: &str = "extrusion.lighting";
 
+// ── The text's own type (#1511) ──
+//
+// `TextBox.{font_size,tracking,line_spacing}_keyframes`.
+pub const TEXT_SIZE: &str = "text.size";
+pub const TEXT_TRACKING: &str = "text.tracking";
+pub const TEXT_LINE_SPACING: &str = "text.line_spacing";
+
 // ── MotionBlur ──
 pub const MOTION_BLUR_SHUTTER_ANGLE: &str = "motion_blur.shutter_angle";
 
