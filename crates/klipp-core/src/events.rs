@@ -2287,7 +2287,13 @@ pub enum AppCommand {
     UpdateTitleData { clip_id: ClipId, text: String, font_size: f32, font_name: String, font_style: u8, color: [u8; 4] },
     /// Give a title every field of the brief style it follows again (#66).
     RevertTitleToStyle { clip_id: ClipId },
-    SetTitleAlignment { clip_id: ClipId, alignment: u8 },  // 0=Left, 1=Center, 2=Right
+    SetTitleAlignment { clip_id: ClipId, alignment: u8 },  // 0=Left, 1=Center, 2=Right, 3=Justify
+    /// Where a justified text box's paragraph ends (#1506):
+    /// 0=Left, 1=Center, 2=Justify.
+    SetTitleLastLine { clip_id: ClipId, last_line: u8 },
+    /// Where a text box's text sits up and down the box (#1506):
+    /// 0=Top, 1=Middle, 2=Bottom.
+    SetTitleVerticalAlign { clip_id: ClipId, vertical_align: u8 },
     SetTitlePosition { clip_id: ClipId, x: f32, y: f32 },
     /// Replace one Title-object's transform wholesale. Used by the
     /// on-canvas editor (drag-to-move, drag handle-resize, drag

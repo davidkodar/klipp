@@ -1185,6 +1185,7 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                 let align = match alignment.as_str() {
                     "Left" => TextAlignment::Left,
                     "Right" => TextAlignment::Right,
+                    "Justify" => TextAlignment::Justify,
                     _ => TextAlignment::Center,
                 };
                 let fs = match font_style.as_str() {
@@ -1326,6 +1327,8 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     columns: 1,
                     vertical_layout: false,
                     text_direction: klipp_timeline::TextDirection::Ltr,
+                    last_line: Default::default(),
+                    vertical_align: Default::default(),
                 };
                 let mut td = klipp_timeline::TitleData::single_text(tb);
                 if let Some(obj) = td.objects.first_mut() {

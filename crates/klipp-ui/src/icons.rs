@@ -115,6 +115,7 @@ define_icons! {
     TextAlignLeft   => "text-align-left",
     TextAlignCenter => "text-align-center",
     TextAlignRight  => "text-align-right",
+    TextAlignJustify => "text-align-justify",
 
     // Browser (cont.)
     PushPin         => "push-pin",

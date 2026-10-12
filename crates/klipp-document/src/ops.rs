@@ -1016,7 +1016,7 @@ pub enum Op {
     /// words; `at` and `secs` place and hold it; `track` names a text
     /// track (one is made on top if left out). Look: `x`,`y` centre the
     /// text (0..1), `size` in px of a 1080-line frame, `color` #rrggbb,
-    /// `font`, `bold`, `align` (left/center/right); `backing` a dark
+    /// `font`, `bold`, `align` (left/center/right/justify); `backing` a dark
     /// panel behind the text (0..1) or `backing_color`, `full_frame` a
     /// solid colour card behind everything, `outline`+`outline_color` a
     /// stroke, `glow`+`glow_color` a neon glow, `shadow` a soft drop
@@ -2568,7 +2568,8 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                         "left" => Ok(klipp_timeline::TextAlignment::Left),
                         "center" | "centre" => Ok(klipp_timeline::TextAlignment::Center),
                         "right" => Ok(klipp_timeline::TextAlignment::Right),
-                        other => Err(refuse(i, format!("\"{other}\" is not an alignment"), "use left, center or right")),
+                        "justify" | "justified" => Ok(klipp_timeline::TextAlignment::Justify),
+                        other => Err(refuse(i, format!("\"{other}\" is not an alignment"), "use left, center, right or justify")),
                     })
                     .transpose()?,
                 x: *x,
@@ -7274,7 +7275,8 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
             "left" => TextAlignment::Left,
             "center" | "centre" => TextAlignment::Center,
             "right" => TextAlignment::Right,
-            other => return Err(refuse(i, format!("\"{other}\" is not an alignment"), "use left, center or right")),
+            "justify" | "justified" => TextAlignment::Justify,
+            other => return Err(refuse(i, format!("\"{other}\" is not an alignment"), "use left, center, right or justify")),
         };
     }
     if let Some(w) = a.outline {
@@ -7675,6 +7677,7 @@ fn style_looks(ts: &klipp_timeline::TypeStyle) -> Vec<(&'static str, Look)> {
         "left" => Some(klipp_timeline::TextAlignment::Left),
         "center" | "centre" => Some(klipp_timeline::TextAlignment::Center),
         "right" => Some(klipp_timeline::TextAlignment::Right),
+        "justify" | "justified" => Some(klipp_timeline::TextAlignment::Justify),
         _ => None,
     });
     add("alignment", Look { align, ..Default::default() });
@@ -8399,6 +8402,16 @@ mod tests {
         assert_eq!(title("UP ON THE ROOF", 120.0, "right", 0.82), 0.82);
         // Still inside title-safe: too far left comes in to the margin.
         assert_eq!(title("UP ON THE ROOF", 120.0, "left", 0.0), 0.05);
+    }
+
+    /// #1506: a title op can set its text justified.
+    #[test]
+    fn a_title_can_be_justified() {
+        let (seq, pool, _, _, _) = fixture();
+        let op: Op = serde_json::from_value(serde_json::json!({ "op": "title", "text": "Words to set", "at": { "secs": 1.0 }, "secs": 2.0, "align": "justify" })).unwrap();
+        let plan = resolve(&seq, &pool, &[op]).unwrap();
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
+        assert_eq!(clip.title_data().unwrap().alignment(), klipp_timeline::TextAlignment::Justify);
     }
 
     /// #734: one clip's grade copied onto another, whole, as one step;

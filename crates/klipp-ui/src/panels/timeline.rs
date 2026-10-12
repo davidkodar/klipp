@@ -8383,6 +8383,7 @@ impl TimelinePanel {
                             klipp_timeline::TextAlignment::Left => "Left",
                             klipp_timeline::TextAlignment::Center => "Center",
                             klipp_timeline::TextAlignment::Right => "Right",
+                            klipp_timeline::TextAlignment::Justify => "Justify",
                         }), |ui| {
                             if ui.selectable_label(*current_align == klipp_timeline::TextAlignment::Left, "Left").clicked() {
                                 cmds.push(AppCommand::SetTitleAlignment { clip_id, alignment: 0 });
@@ -8394,6 +8395,10 @@ impl TimelinePanel {
                             }
                             if ui.selectable_label(*current_align == klipp_timeline::TextAlignment::Right, "Right").clicked() {
                                 cmds.push(AppCommand::SetTitleAlignment { clip_id, alignment: 2 });
+                                ui.close_menu();
+                            }
+                            if ui.selectable_label(*current_align == klipp_timeline::TextAlignment::Justify, "Justify").clicked() {
+                                cmds.push(AppCommand::SetTitleAlignment { clip_id, alignment: 3 });
                                 ui.close_menu();
                             }
                         });
