@@ -76,10 +76,21 @@ impl PathLine {
 
 /// One glyph to place: its centre's distance along the laid line, and
 /// its centre's height above (negative) or below the line's baseline.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Laid {
     pub(crate) along: f32,
     pub(crate) below_baseline: f32,
+}
+
+/// A text on a path as its resting render laid it (#1697): each glyph's
+/// place along the text, the text's length, and where each glyph stood
+/// on the path at rest. A moving path poses each resting glyph from
+/// there to where it stands now.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PathUnits {
+    pub(crate) laid: Vec<Laid>,
+    pub(crate) length: f32,
+    pub(crate) resting: Vec<Option<Placed>>,
 }
 
 /// Where a glyph goes: its centre in frame pixels and its turn, radians.

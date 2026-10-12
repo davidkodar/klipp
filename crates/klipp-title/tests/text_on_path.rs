@@ -195,3 +195,124 @@ fn a_keyed_path_and_its_text_drawn_together_never_drift() {
         assert!((g.0 - gaps[0].0).abs() < 2.0 && (g.1 - gaps[0].1).abs() < 2.0, "drawn together, they move as one: {gaps:?}");
     }
 }
+
+// ── #1697: a travelling text plays as posed glyphs ──
+
+/// A straight guide path, unpainted, across the middle.
+fn straight_guide() -> VectorPath {
+    let pose = PathPose { stroke_glow: None, contours: vec![PathContour { closed: false, vertices: vec![
+        PathVertex { point: [0.05, 0.5], incoming: [0.05, 0.5], outgoing: [0.05, 0.5] },
+        PathVertex { point: [0.95, 0.5], incoming: [0.95, 0.5], outgoing: [0.95, 0.5] },
+    ] }], fill: [0.0; 4], stroke: [0.0; 4], stroke_width: 0.0 };
+    VectorPath { trim: None, pose, keyframes: Vec::new() }
+}
+
+fn travelling(from: f32, to: f32) -> impl Fn(TitleObjectId) -> TextPath {
+    move |layer| TextPath::Layer {
+        layer,
+        contour: 0,
+        offset: from,
+        offset_keyframes: {
+            let mut keys = Vec::new();
+            klipp_core::keyframe::upsert_keyframe(&mut keys, 0.0, from);
+            klipp_core::keyframe::upsert_keyframe(&mut keys, 2.0, to);
+            keys
+        },
+        align: PathTextAlign::Start,
+        flip: false,
+    }
+}
+
+/// The same title rastered every frame: a constant opacity key makes it
+/// time-dependent in a way that changes no pixel.
+fn rastered(td: &TitleData) -> TitleData {
+    let mut td = td.clone();
+    let text = td.objects.iter_mut().find(|o| matches!(o.content, TitleObjectContent::TextBox(_))).unwrap();
+    klipp_core::keyframe::upsert_keyframe(&mut text.opacity_keyframes, 0.0, 1.0);
+    td
+}
+
+/// Whether two frames hold the same ink: each inked pixel of either
+/// has ink of the other within 2 px (the raster sets each glyph on a
+/// whole pixel, the posed sprite where it falls), and their ink sums
+/// within 5 %. The share of ink that does, the worse way round.
+fn overlap(a: &[u8], b: &[u8]) -> f32 {
+    let inked = |px: &[u8]| -> Vec<bool> { px.chunks_exact(4).map(|p| p[3] > 100).collect() };
+    let (ia, ib) = (inked(a), inked(b));
+    let near = |from: &[bool], to: &[bool]| {
+        let (mut ok, mut all) = (0usize, 0usize);
+        for (i, _) in from.iter().enumerate().filter(|(_, &x)| x) {
+            all += 1;
+            let (x, y) = ((i as u32 % W) as i32, (i as u32 / W) as i32);
+            let hit = (-2..=2).any(|dy| (-2..=2).any(|dx| {
+                let (u, v) = (x + dx, y + dy);
+                u >= 0 && v >= 0 && (u as u32) < W && (v as u32) < H && to[(v as u32 * W + u as u32) as usize]
+            }));
+            ok += hit as usize;
+        }
+        ok as f32 / all.max(1) as f32
+    };
+    let sum = |px: &[u8]| px.chunks_exact(4).map(|p| p[3] as f64).sum::<f64>();
+    assert!((sum(a) / sum(b).max(1.0) - 1.0).abs() < 0.05, "ink {} vs {}", sum(a), sum(b));
+    near(&ia, &ib).min(near(&ib, &ia))
+}
+
+/// A text travelling along a guide path plays as its resting glyphs
+/// posed, and each posed frame is the frame rastered: the same ink, in
+/// the same place.
+#[test]
+fn a_travelling_text_is_posed_glyph_by_glyph_as_it_would_be_rastered() {
+    let td = title(straight_guide(), "TRAVELLER", travelling(0.0, 0.5), 0.0);
+    let mut r = TitleRenderer::new();
+    for t in [0.0f32, 0.7, 1.3, 2.0] {
+        let frame = r.frame_with_window(&td, W, H, None, t, Some(4.0));
+        assert!(matches!(frame, klipp_title::TitleFrame::Glyphs { .. }), "at {t} s the glyphs are posed");
+        let posed = r.render_with_time(&td, W, H, None, t);
+        let raster = r.render_with_time(&rastered(&td), W, H, None, t);
+        let (a, b) = (centroid(&ink(&posed)), centroid(&ink(&raster)));
+        assert!((a.0 - b.0).abs() < 1.0 && (a.1 - b.1).abs() < 1.0, "at {t} s the posed text is where the raster is: {a:?} vs {b:?}");
+        assert!(overlap(&posed, &raster) > 0.99, "at {t} s the same ink: {}", overlap(&posed, &raster));
+    }
+}
+
+/// On a morphing S-curve the glyphs turn as they travel, and still land
+/// as the raster lays them.
+#[test]
+fn glyphs_turn_with_a_morphing_curve_as_the_raster_turns_them() {
+    let mut p = VectorPath { trim: None, pose: s_curve(0.5, 0.0), keyframes: Vec::new() };
+    p.key(0.0, s_curve(0.5, 0.0)).unwrap();
+    let mut flat = s_curve(0.5, 0.0);
+    for v in &mut flat.contours[0].vertices {
+        for a in [&mut v.point, &mut v.incoming, &mut v.outgoing] {
+            a[1] = 0.5 + (a[1] - 0.5) * 0.2;
+        }
+    }
+    p.key(2.0, flat).unwrap();
+    let td = title(p, "BENDING", on(0.1), 0.0);
+    let mut r = TitleRenderer::new();
+    for t in [0.5f32, 1.0, 2.0] {
+        let frame = r.frame_with_window(&td, W, H, None, t, Some(4.0));
+        let klipp_title::TitleFrame::Glyphs { poses, .. } = frame else { panic!("posed at {t} s") };
+        assert!(poses.iter().any(|p| p.rotation.abs() > 0.05), "the curve flattens, so the glyphs turn");
+        let posed = r.render_with_time(&td, W, H, None, t);
+        let raster = r.render_with_time(&rastered(&td), W, H, None, t);
+        assert!(overlap(&posed, &raster) > 0.98, "at {t} s the same ink: {}", overlap(&posed, &raster));
+    }
+}
+
+/// A painted path is part of the picture, and a glyph that is off the
+/// path at rest has nothing to pose: both are rastered, and draw.
+#[test]
+fn a_painted_path_or_a_glyph_coming_onto_the_path_is_rastered() {
+    let mut painted = straight_guide();
+    painted.pose.stroke = [1.0; 4];
+    painted.pose.stroke_width = 3.0;
+    let mut r = TitleRenderer::new();
+    let td = title(painted, "PAINTED", travelling(0.0, 0.5), 0.0);
+    assert!(matches!(r.frame_with_window(&td, W, H, None, 1.0, Some(4.0)), klipp_title::TitleFrame::Rendered { .. }), "a painted path is rastered");
+
+    // Starting past the end of the path, travelling back onto it.
+    let td = title(straight_guide(), "INCOMING", travelling(1.0, 0.2), 0.0);
+    assert!(!matches!(r.frame_with_window(&td, W, H, None, 2.0, Some(4.0)), klipp_title::TitleFrame::Glyphs { .. }), "glyphs off the path at rest are rastered on");
+    assert!(ink(&r.render_with_time(&td, W, H, None, 2.0)).len() > 200, "and draw");
+}

@@ -36,6 +36,7 @@ mod colour;
 mod fallback;
 mod shaping;
 mod text_on_path;
+pub use text_on_path::PathUnits;
 pub mod variable;
 mod vector_path;
 use fontdue::layout::{HorizontalAlign, LayoutSettings, VerticalAlign, WrapStyle};
@@ -117,6 +118,9 @@ pub struct TitleLayout {
     /// The colour glyphs (emoji) drawn, in their own colours over the
     /// text fill (#1503); their coverage is in the mask too.
     pub colour_glyphs: Vec<ColourGlyph>,
+    /// For a text on a drawn path, each glyph's place along the text and
+    /// on the path at rest (#1697): what poses it as the path moves.
+    pub path_units: Option<PathUnits>,
 }
 
 /// No glyph: the value of `glyph_index` where nothing was painted.
@@ -136,6 +140,8 @@ pub struct UnitMap {
     pub boxes: Vec<[i32; 4]>,
     pub parents: Vec<char>,
     pub pad: i32,
+    /// The text's places along a drawn path, when it is on one (#1697).
+    pub path: Option<PathUnits>,
 }
 
 impl UnitMap {
@@ -176,7 +182,7 @@ impl UnitMap {
                 index[i] = best.1;
             }
         }
-        Self { x0, y0, w, h, index, boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: layout.pad }
+        Self { x0, y0, w, h, index, boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: layout.pad, path: layout.path_units.clone() }
     }
 
     /// The glyph at frame pixel `(x, y)`, if any.
@@ -1025,6 +1031,7 @@ impl TitleRenderer {
                 glyph_parents: Vec::new(),
                 pad: 0,
                 colour_glyphs: Vec::new(),
+                path_units: None,
             };
         }
 
@@ -1157,6 +1164,7 @@ impl TitleRenderer {
                 glyph_parents: Vec::new(),
                 pad: max_pad,
                 colour_glyphs: Vec::new(),
+                path_units: None,
             };
         }
         // A staggered motion poses each glyph on its own from the
@@ -1334,6 +1342,7 @@ impl TitleRenderer {
             glyph_parents: glyphs.iter().map(|g| g.parent).collect(),
             pad: max_pad,
             colour_glyphs,
+            path_units: None,
         }
     }
 
@@ -1387,6 +1396,10 @@ impl TitleRenderer {
         let mask_w = w;
         let mask_h = h;
         let mut alpha_mask = vec![0u8; mask_w * mask_h];
+        // Which glyph each pixel is, and each glyph's turned box: the
+        // map a moving path poses the glyphs by (#1697).
+        let mut owner = vec![GLYPH_NONE; mask_w * mask_h];
+        let mut glyph_boxes = vec![[0i32; 4]; glyphs.len()];
 
         let mut text_min_x = f32::MAX;
         let mut text_min_y = f32::MAX;
@@ -1411,7 +1424,11 @@ impl TitleRenderer {
                 &mut alpha_mask, mask_w, mask_h,
                 &coverage, gw, gh,
                 px, py, at.angle,
+                Some((&mut owner, i as u16)),
             );
+            let (c, sn) = (at.angle.cos().abs(), at.angle.sin().abs());
+            let (ex, ey) = (gw as f32 * 0.5 * c + gh as f32 * 0.5 * sn, gw as f32 * 0.5 * sn + gh as f32 * 0.5 * c);
+            glyph_boxes[i] = [(px - ex).floor() as i32, (py - ey).floor() as i32, (px + ex).ceil() as i32 + 1, (py + ey).ceil() as i32 + 1];
             let radius = ((gw as f32 / 2.0).powi(2) + (gh as f32 / 2.0).powi(2)).sqrt();
             text_min_x = text_min_x.min(px - radius);
             text_min_y = text_min_y.min(py - radius);
@@ -1452,10 +1469,12 @@ impl TitleRenderer {
                 glyph_parents: Vec::new(),
                 pad: 0,
                 colour_glyphs: Vec::new(),
+                path_units: None,
             };
         }
 
         let mut cropped = vec![0u8; crop_w * crop_h];
+        let mut glyph_index = vec![GLYPH_NONE; crop_w * crop_h];
         for cy in 0..crop_h {
             let src_y = crop_y0 + cy;
             if src_y >= mask_h { continue; }
@@ -1463,6 +1482,7 @@ impl TitleRenderer {
                 let src_x = crop_x0 + cx;
                 if src_x >= mask_w { continue; }
                 cropped[cy * crop_w + cx] = alpha_mask[src_y * mask_w + src_x];
+                glyph_index[cy * crop_w + cx] = owner[src_y * mask_w + src_x];
             }
         }
 
@@ -1480,11 +1500,12 @@ impl TitleRenderer {
             scale,
             glyph_colors: Vec::new(),
             glyph_coverages: Vec::new(),
-            glyph_index: Vec::new(),
-            glyph_boxes: Vec::new(),
-            glyph_parents: Vec::new(),
-            pad: 0,
+            glyph_index,
+            glyph_boxes,
+            glyph_parents: glyphs.iter().map(|g| g.parent).collect(),
+            pad: max_pad,
             colour_glyphs: Vec::new(),
+            path_units: Some(text_on_path::PathUnits { laid, length, resting: placed }),
         }
     }
 
@@ -1835,6 +1856,63 @@ impl TitleRenderer {
         (out, self.last_rows)
     }
 
+    /// The frame at `time_secs` of `title`, whose `text` travels along
+    /// its drawn path, as the resting render's glyphs posed (#1697): each
+    /// moved and turned from where it stood on the path at rest to where
+    /// it stands now. `None` when the resting render holds no glyph map,
+    /// has too many glyphs to pose, or lacks a glyph the path now shows.
+    fn path_glyph_frame(&mut self, title: &TitleData, text: &TitleObject, width: u32, height: u32, gpu: Option<&mut dyn AlphaMaskProcessor>, time_secs: f32) -> Option<TitleFrame> {
+        let TitleObjectContent::TextBox(tb) = &text.content else { return None };
+        let path = tb.text_path.as_ref()?;
+        let sprite = self.resting_sprite(&resting_title(title), width, height, gpu);
+        let units = sprite.units.clone().filter(|u| u.boxes.len() <= MAX_POSED_GLYPHS)?;
+        let at = units.path.as_ref()?;
+        let line = self.bound_path_line(title, title, Some(time_secs), width, height);
+        let shift = tb.baseline_shift * crate::frame_scale(width, height);
+        let now = text_on_path::place(path, line.as_ref(), path.offset_at(time_secs as f64), &at.laid, at.length, [0.0; 2], shift);
+        let pad = units.pad as f32;
+        let mut poses = Vec::with_capacity(units.boxes.len());
+        for (g, b) in units.boxes.iter().enumerate() {
+            let rest = at.resting.get(g).copied().flatten();
+            let here = now.get(g).copied().flatten();
+            let hidden = GlyphPose { dx: 0.0, dy: 0.0, scale: 1.0, alpha: 0.0, anchor: (0.0, 0.0), clip: None, moved: [0; 4], rotation: 0.0 };
+            let pose = match (rest, here) {
+                // A glyph off the path at rest has no pixels to pose.
+                (None, Some(_)) => return None,
+                (_, None) => hidden,
+                (Some(rest), Some(here)) if b[2] > b[0] && b[3] > b[1] => {
+                    let (dx, dy) = (here.centre[0] - rest.centre[0], here.centre[1] - rest.centre[1]);
+                    let turn = (here.angle - rest.angle + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+                    // The box round the resting box turned again, moved.
+                    let (c, sn) = (turn.cos().abs(), turn.sin().abs());
+                    let (hx, hy) = ((b[2] - b[0]) as f32 * 0.5 + pad, (b[3] - b[1]) as f32 * 0.5 + pad);
+                    let (ex, ey) = (hx * c + hy * sn, hx * sn + hy * c);
+                    let anchor = (rest.centre[0], rest.centre[1]);
+                    let moved = [
+                        (anchor.0 + dx - ex).floor() as i32 - 1,
+                        (anchor.1 + dy - ey).floor() as i32 - 1,
+                        (anchor.0 + dx + ex).ceil() as i32 + 1,
+                        (anchor.1 + dy + ey).ceil() as i32 + 1,
+                    ];
+                    GlyphPose { dx, dy, scale: 1.0, alpha: 1.0, anchor, clip: None, moved, rotation: turn }
+                }
+                _ => hidden,
+            };
+            poses.push(pose);
+        }
+        let (mut y0, mut y1) = (i32::MAX, i32::MIN);
+        for p in &poses {
+            if p.alpha > 0.001 && p.moved[3] > p.moved[1] {
+                y0 = y0.min(p.moved[1]);
+                y1 = y1.max(p.moved[3]);
+            }
+        }
+        let rows = if y1 <= y0 { (0, 0) } else { (y0.clamp(0, height as i32) as u32, y1.clamp(0, height as i32) as u32) };
+        self.last_rows = rows;
+        self.last_blur = 0.0;
+        Some(TitleFrame::Glyphs { sprite, poses, rows })
+    }
+
     /// [`Self::render_with_window`]'s frame in the cheapest exact form:
     /// the resting sprite and where it goes when that is all the frame
     /// is, else the rendered pixels. `render_with_window` is this with
@@ -2109,6 +2187,17 @@ impl TitleRenderer {
             || (staggered.is_some_and(|o| !o.fx().edge_fade.is_none()) || staggered.is_some() && poses.iter().any(|(_, p)| p.focus.is_some()));
 
         let mut gpu = gpu;
+        // A text whose only motion is its drawn path's (it travels, the
+        // path morphs or moves) poses its resting glyphs along the path
+        // as the sprite path does a stagger (#1697).
+        let others_move = any_char_anim || any_dressed_motion || any_glitch_active || any_glow_keyframes || any_shadow_keyframes
+            || any_inner_shadow_keyframes || any_extrusion_keyframes || any_outline_keyframes || any_type_keyframes || any_opacity_keyframes
+            || title.background != TitleBackground::None;
+        if !others_move && (any_path_motion || any_text_path_motion || any_position_keyframes || any_transform_keyframes) {
+            if let Some(frame) = path_traveller(title).and_then(|text| self.path_glyph_frame(title, text, width, height, gpu.take(), time_secs)) {
+                return frame;
+            }
+        }
         if !any_render_time_override {
             // A full-frame card: the words are the sprite and the fill
             // goes under them at placement, so the fill stays put while
@@ -3693,6 +3782,30 @@ fn glyph_poses(
             GlyphPose { dx, dy, scale, alpha, anchor, clip, moved, rotation }
         })
         .collect()
+}
+
+/// The text of `title` that can be posed along its drawn path on the
+/// sprite path (#1697): the one visible text, on a drawn path, with no
+/// motion, animator or loop of its own, whose path layer paints nothing
+/// (a guide) and is the only other visible layer. The sprite path draws
+/// only the glyphs, so a painted path is rastered with the text.
+fn path_traveller(title: &TitleData) -> Option<&TitleObject> {
+    let visible: Vec<&TitleObject> = title.objects.iter().filter(|o| o.visible).collect();
+    let text = visible.iter().copied().find(|o| matches!(o.content, TitleObjectContent::TextBox(_)))?;
+    let TitleObjectContent::TextBox(tb) = &text.content else { return None };
+    let Some(TextPath::Layer { layer, .. }) = &tb.text_path else { return None };
+    let fx = text.fx();
+    if fx.motion.enter.is_some() || fx.motion.exit.is_some() || !fx.animators.is_empty() || !fx.loops.is_empty() {
+        return None;
+    }
+    let path_obj = title.object(*layer)?;
+    let TitleObjectContent::Shape(shape) = &path_obj.content else { return None };
+    let ShapeKind::Path(path) = &shape.kind else { return None };
+    let unpainted = |p: &klipp_core::vector_path::PathPose| p.fill[3] <= 0.0 && (p.stroke[3] <= 0.0 || p.stroke_width <= 0.0) && p.stroke_glow.is_none();
+    let guide = shape.fill.is_none() && shape.stroke.is_none() && shape.gradient.as_ref().is_none_or(|g| !g.enabled)
+        && unpainted(&path.pose) && path.keyframes.iter().all(|k| unpainted(&k.pose)) && path_obj.fx().is_default();
+    let others = visible.iter().all(|o| o.id == text.id || o.id == *layer);
+    (guide && others).then_some(text)
 }
 
 /// The frame a [`TitleFrame::Glyphs`] names, made on the CPU: each
@@ -5743,6 +5856,7 @@ fn blit_rotated(
     src: &[u8], src_w: usize, src_h: usize,
     cx: f32, cy: f32,
     angle_rad: f32,
+    mut owner: Option<(&mut [u16], u16)>,
 ) {
     let cos_a = angle_rad.cos();
     let sin_a = angle_rad.sin();
@@ -5769,6 +5883,12 @@ fn blit_rotated(
                 let src_alpha = src[sy as usize * src_w + sx as usize];
                 if src_alpha > 0 {
                     let dst_idx = dst_y as usize * dst_w + dst_x as usize;
+                    // The pixel is the glyph's that paints it most.
+                    if let Some((owner, g)) = owner.as_mut() {
+                        if src_alpha > dst[dst_idx] {
+                            owner[dst_idx] = *g;
+                        }
+                    }
                     dst[dst_idx] = dst[dst_idx].max(src_alpha);
                 }
             }
