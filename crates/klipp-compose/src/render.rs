@@ -1218,8 +1218,9 @@ impl Renderer {
     /// Whether the last [`Self::render_yuv420_on_gpu`] declined only
     /// after rendering — a grade that came back on the CPU, a stack that
     /// failed part-way — so the caller rendered the frame twice. A
-    /// caller in a loop stops asking after that; a decline before any
-    /// work costs nothing and says nothing about the next frame.
+    /// caller in a loop stops asking while the same clips are on screen
+    /// (#1276); a decline before any work costs nothing and says nothing
+    /// about the next frame.
     pub fn gpu_export_declined_after_work(&self) -> bool {
         self.gpu_export_declined_after_work
     }
@@ -1398,12 +1399,10 @@ impl Renderer {
         // layer of another size (`place_layer`): this path converts at the
         // frame's own size. Refusing it sent every frame of, say, a vertical
         // clip on a 16:9 sequence down the CPU composite (#1277). A
-        // scene-referred one the stack can't place yet.
+        // scene-referred one too, under an SDR delivery (#1276); the stack
+        // declines an HDR one before any work.
         if (f.width, f.height) != (width, height) {
-            return match f.pixels {
-                SourcePixels::SceneReferred { .. } => Single::Refused("a scene-referred source of another size"),
-                _ => Single::ForTheStack,
-            };
+            return Single::ForTheStack;
         }
         let input = match f.pixels {
             SourcePixels::Gpu(g) => GradeInput::Gpu(g),
@@ -1492,8 +1491,8 @@ impl Renderer {
         // dispatch, a device that failed — means this frame gets rendered
         // twice, once here and once by the caller. That is the one case
         // where taking this path costs something, so a caller in a loop
-        // should stop asking after the first time it happens rather than
-        // pay it on every frame.
+        // should stop asking for the clip's stretch after the first time
+        // it happens rather than pay it on every frame.
         if !pixels.is_empty() {
             self.gpu_export_declined_after_work = true;
             return Single::Refused("the grade came back on the CPU");
@@ -1964,7 +1963,6 @@ impl Renderer {
                         SourcePixels::Gpu(Arc::new(FittedGpu { inner: g, w: f.width, h: f.height, ow: width, oh: height, fitted: std::sync::OnceLock::new() }))
                     }
                     SourcePixels::Linear(p) if other_size => SourcePixels::Linear(fit(p, f.width, f.height, width, height)),
-                    SourcePixels::SceneReferred { .. } if other_size => return Err("scene-referred source of another size"),
                     other => other,
                 };
                 match pixels {
@@ -2018,7 +2016,53 @@ impl Renderer {
                         stats.grade_ms += ms_since(t);
                         self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(slot, &pixels))
                     }
-                    SourcePixels::SceneReferred { .. } => return Err("scene-referred source"),
+                    // A log, HLG or PQ source: its codes decoded to the
+                    // working space as the grade's chain starts, on the GPU
+                    // (`grade`), and the clip's display step (the SDR tone
+                    // map) in its plan after the grade and before its
+                    // effects, the CPU composite's order. Refused, every
+                    // frame with one on a crop, a transform, a fade, a title
+                    // or a transition went to the CPU composite (#1276).
+                    // Only an SDR delivery in a Rec.709 project gets here:
+                    // the stack declines the others before any layer.
+                    SourcePixels::SceneReferred { codes, transfer, source_to_working } => {
+                        let t = Instant::now();
+                        // Deeper than 10 bits, its codes don't fit the GPU's
+                        // decode (#1226): decoded on the CPU as another size is.
+                        let input = if other_size || codes.len() != (width as usize) * (height as usize) || codes.packed10().is_none() {
+                            // Decoded and fitted on the CPU, as the CPU
+                            // composite fits it (`to_linear`); graded and
+                            // displayed on the GPU from there.
+                            let decoded = codes.to_scene_linear_rgba(transfer, source_to_working);
+                            GradeInput::Cpu(fit(Arc::new(decoded), f.width, f.height, width, height))
+                        } else {
+                            GradeInput::Scene { codes, transfer, source_to_working }
+                        };
+                        effects_done = self.splice_effects(c, &fx, time, fps, transforms, stats);
+                        self.run_display = Some(self.scene_to_display(transfer));
+                        self.executor.request_output_on_gpu();
+                        let pixels = self.grade_on_stack(c, input, time, clip_time, fps, width, height, src);
+                        stats.grade_ms += ms_since(t);
+                        // The grade's run took the display step only if it
+                        // ran: a failed run gives back its input, scene light
+                        // the stack must not blend.
+                        let displayed = self.run_display.take().is_some() && self.grade_ran;
+                        let recorded = !effects_done || self.finish_spliced();
+                        if !displayed || !recorded {
+                            // Nothing this layer queued runs in the next
+                            // layer's grade or the next frame's.
+                            self.clear_queued_run();
+                            return Err(if displayed { "an effect could not be recorded" } else { "a scene-referred layer's display step didn't run" });
+                        }
+                        stats.effects_followed_grade += u32::from(effects_done);
+                        PLAN_EFFECT_CLIPS.fetch_add(u64::from(effects_done), std::sync::atomic::Ordering::Relaxed);
+                        if pixels.is_empty() {
+                            let slot_a = self.executor.last_chain_final_slot().unwrap_or(true);
+                            self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_chain(slot, slot_a))
+                        } else {
+                            self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(slot, &pixels))
+                        }
+                    }
                 }
             }
             ClipKind::Title(td) if fx_on_gpu && c.grade_is_identity() => {
@@ -3026,6 +3070,15 @@ impl Renderer {
         self.grade_ran && self.executor.last_run_effects_complete()
     }
 
+    /// Drop what a layer queued for its grade's run — its spliced effects,
+    /// their mixes and masks, a display step — when the stack refuses it
+    /// part-way, so none of it runs in the next grade (#1276).
+    fn clear_queued_run(&mut self) {
+        self.run_effects.clear();
+        self.run_blends.clear();
+        self.run_display = None;
+    }
+
     /// Whether `clip`'s effects can take the grade's result where it sits
     /// on the GPU: the grade runs (no shortcut, nothing inspected), and
     /// every effect runs on the GPU. An HDR source's display step runs in
@@ -3465,6 +3518,9 @@ impl Renderer {
             }
         };
         self.found.stats.grade_ms += ms_since(t);
+        // A test's fault (`fault`, #1276): the run, made as any run is,
+        // fails as a graph that fails does.
+        let out = if crate::fault::grade_fails(clip.id) { Err(klipp_nodes::executor::ExecutorError::MissingNodeOutput) } else { out };
         match out {
             Ok(out) => {
                 self.grade_ran = true;

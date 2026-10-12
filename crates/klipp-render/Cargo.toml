@@ -42,6 +42,8 @@ klipp-core     = { workspace = true }
 klipp-timeline = { workspace = true, features = ["test-clip"] }
 klipp-media    = { workspace = true }
 klipp-nodes    = { workspace = true }
+# The renderer's test-only fault (`klipp_compose::fault`, #1276).
+klipp-compose  = { workspace = true, features = ["fault-hook"] }
 serial_test    = "3"
 serde_json     = { workspace = true }
 

@@ -27,12 +27,19 @@ rayon             = { workspace = true }
 tracing           = { workspace = true }
 
 [dev-dependencies]
+# Its own test-only fault (`fault`), on for its tests alone.
+klipp-compose = { workspace = true, features = ["fault-hook"] }
 klipp-timeline = { workspace = true, features = ["test-clip"] }
 klipp-color = { workspace = true }
 klipp-frei0r = { workspace = true }
 # The golden corpus's stored frames are one PNG (#1089).
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde_json = { workspace = true }
+
+[features]
+# A test-only fault on a clip's grade run (`fault`, #1276): turned on only
+# by dev-dependencies.
+fault-hook = []
 
 [lints]
 workspace = true

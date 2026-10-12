@@ -2915,6 +2915,7 @@ dependencies = [
  "image",
  "klipp-analysis",
  "klipp-color",
+ "klipp-compose",
  "klipp-core",
  "klipp-effects",
  "klipp-frei0r",

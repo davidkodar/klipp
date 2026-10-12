@@ -7,6 +7,7 @@
 //! where those rules live, once; both sides call it.
 
 pub mod eval;
+pub mod fault;
 pub mod inspect;
 mod ofx_node;
 pub mod synth;

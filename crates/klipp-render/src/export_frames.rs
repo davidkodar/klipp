@@ -11,11 +11,13 @@
 //! picture fills the output; otherwise it is rendered as linear light and
 //! padded to the output, for the encoder's own display transform. A miss
 //! that comes after the work (a grade back on the CPU, a stack failing part
-//! way) turns the GPU way off for the rest of the export, so no later frame
-//! is rendered twice; a miss at the gate is the frame's alone.
+//! way) keeps the GPU way off while the frames hold the same clips, so no
+//! frame of that stretch is rendered twice, and the GPU way comes back at
+//! the first frame that doesn't (#1276); a lost device keeps it off for the
+//! rest of the export. A miss at the gate is the frame's alone.
 
 use klipp_compose::{RenderOptions, Renderer};
-use klipp_core::{ExportSettings, Timecode};
+use klipp_core::{ClipId, ExportSettings, Timecode};
 use klipp_effects::gpu::{GpuFrameLight, Yuv420Target};
 use klipp_timeline::Sequence;
 use tracing::debug;
@@ -93,7 +95,17 @@ pub struct ExportFrameMaker {
     /// The picture's size in the output, and where it sits.
     fit: (u32, u32, u32, u32),
     opts: RenderOptions,
+    /// What the encoder takes a GPU-made frame with: kept for the whole
+    /// export unless the device is lost.
     gpu_yuv: Option<Yuv420Target>,
+    /// The clips on screen (every layer's, both sides of a transition) at
+    /// the frame the GPU declined after rendering it: while the frames
+    /// hold the same ones they go the ordinary way without asking again,
+    /// and the first that doesn't asks again (#1276). A stretch the GPU
+    /// couldn't take for a passing reason stays off for that stretch.
+    declined_stack: Option<Vec<ClipId>>,
+    /// How many frames were asked of the GPU way.
+    gpu_attempts: u64,
     label: String,
     /// How long the last [`Self::frame`] spent padding, so a caller timing
     /// the render can keep the pad apart.
@@ -128,7 +140,7 @@ impl ExportFrameMaker {
         // An HLG or PQ delivery renders display light for the encoder's
         // HDR encode (an ACES PQ transform renders its own from SDR).
         let opts = RenderOptions { hdr_peak_nits: settings.renders_hdr().then(|| settings.hdr_peak_nits()), ..Default::default() };
-        Self { out, fit, opts, gpu_yuv, label, last_pad: std::time::Duration::ZERO }
+        Self { out, fit, opts, gpu_yuv, declined_stack: None, gpu_attempts: 0, label, last_pad: std::time::Duration::ZERO }
     }
 
     /// The output size frames come at.
@@ -142,9 +154,17 @@ impl ExportFrameMaker {
         (self.fit.0, self.fit.1) != self.out
     }
 
-    /// Whether frames are still tried on the GPU.
+    /// Whether frames are still tried on the GPU: the encoder takes them,
+    /// and the device isn't lost. A stretch declined after its work skips
+    /// the GPU and still says yes.
     pub fn converts_on_gpu(&self) -> bool {
         self.gpu_yuv.is_some()
+    }
+
+    /// How many frames were asked of the GPU way so far: a declined
+    /// stretch asks once, not at every frame.
+    pub fn gpu_attempts(&self) -> u64 {
+        self.gpu_attempts
     }
 
     /// The frame of `timeline` at `time`, rendered with `renderer` from
@@ -157,18 +177,36 @@ impl ExportFrameMaker {
         // clip's grade and the delivery is one this can finish: then the
         // Y'CbCr planes come back instead of a linear frame, and the
         // per-pixel display-and-convert pass on the CPU does not happen.
-        let planes = self.gpu_yuv.and_then(|target| renderer.render_yuv420_on_gpu(timeline, time, fit_w, fit_h, frames, self.opts, target));
+        // A stretch declined after its work isn't asked again while its
+        // clips are on screen.
+        if self.declined_stack.as_ref().is_some_and(|declined| *declined != on_screen(timeline, time)) {
+            self.declined_stack = None;
+            debug!("{}: GPU frame conversion back from {time:?}", self.label);
+        }
+        let ask = self.gpu_yuv.filter(|_| self.declined_stack.is_none());
+        let planes = ask.and_then(|target| {
+            self.gpu_attempts += 1;
+            renderer.render_yuv420_on_gpu(timeline, time, fit_w, fit_h, frames, self.opts, target)
+        });
         if let Some((planes, light)) = planes {
             frames.end_frame()?;
             return Ok(ExportFrame::Planes { planes, light });
         }
-        if self.gpu_yuv.is_some() && renderer.gpu_export_declined_after_work() {
+        if ask.is_some() && renderer.gpu_export_declined_after_work() {
             // The miss came after the frame was rendered, so this frame was
-            // rendered twice, and every frame after it would be. A miss at
-            // the gate costs nothing and is this frame's alone: a plugin
-            // clip's stretch goes the ordinary way and the GPU resumes.
-            self.gpu_yuv = None;
-            debug!("{}: GPU frame conversion off from {time:?}", self.label);
+            // rendered twice, and every frame of its stretch would be: the
+            // GPU isn't asked again while the same clips are on screen. A
+            // lost device won't come back, so then it's off for good. A
+            // miss at the gate costs nothing and is this frame's alone: a
+            // plugin clip's stretch goes the ordinary way and the GPU
+            // resumes.
+            if renderer.gpu_pipeline().is_none_or(|g| g.is_device_lost()) {
+                self.gpu_yuv = None;
+                debug!("{}: GPU frame conversion off from {time:?}: the device is lost", self.label);
+            } else {
+                self.declined_stack = Some(on_screen(timeline, time));
+                debug!("{}: GPU frame conversion off from {time:?} while its clips are on screen", self.label);
+            }
         }
         let (picture, found) = renderer.render_inspected(timeline, time, fit_w, fit_h, frames, self.opts, Default::default());
         frames.end_frame()?;
@@ -180,6 +218,12 @@ impl ExportFrameMaker {
         self.last_pad = t.elapsed();
         Ok(ExportFrame::Linear(picture))
     }
+}
+
+/// The clips on screen in `timeline` at `time`, bottom first: every
+/// layer's, both sides of a transition, a precomposition's own.
+fn on_screen(timeline: &Sequence, time: Timecode) -> Vec<ClipId> {
+    klipp_compose::active_layers(timeline, time).iter().flat_map(|l| l.clips.iter().map(|c| c.id)).collect()
 }
 
 #[cfg(test)]
