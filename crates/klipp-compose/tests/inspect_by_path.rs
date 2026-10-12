@@ -399,8 +399,8 @@ fn a_node_inside_a_compound_is_inspected_by_its_path() {
 /// The picture's own nodes answer their thumbnails by their paths in the
 /// picture, as the Nodes dock asks (#1726): the Source the clip's source,
 /// the grade group the graded picture, an effect the picture after it
-/// (on the GPU, where the effects run in the grade's plan). Placement is
-/// unavailable, with why: it is applied when the layers are put together.
+/// (on the GPU, where the effects run in the grade's plan), Placement the
+/// finished frame, as the program viewer shows it.
 #[test]
 fn the_pictures_own_nodes_answer_their_thumbnails() {
     let (seq, id, _) = sequence(exposure(1.0, NodeId::new_v4()), None);
@@ -427,7 +427,10 @@ fn the_pictures_own_nodes_answer_their_thumbnails() {
         assert!(s.is_some() && g.is_some(), "gpu {gpu}: {:?}", found.unavailable);
         assert_eq!(s, found.thumbs.get(&klipp_compose::inspect::grade_node(id, run_source)), "gpu {gpu}: the Source is the grade's source");
         assert_ne!(s, g, "gpu {gpu}: the grade group shows the graded picture");
-        assert!(unavailable(&placement).is_some_and(|w| w.contains("layers")), "gpu {gpu}: {:?}", found.unavailable);
+        // Placement shows the finished frame, as the program viewer does.
+        let (frame, _) = draw(&seq, gpu, Inspect::default());
+        let finished = klipp_nodes::executor::downsample_to_thumb_u8(&frame, W, H, klipp_nodes::executor::THUMB_W, klipp_nodes::executor::THUMB_H);
+        assert_eq!(found.thumbs.get(&placement), Some(&finished), "gpu {gpu}: {:?}", unavailable(&placement));
         match found.thumbs.get(&gamma) {
             Some(e) => assert_ne!(Some(e), g, "gpu {gpu}: the effect shows the picture after it"),
             // On the CPU the effects of an inspected clip run apart from

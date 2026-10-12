@@ -41,6 +41,24 @@ pub(crate) struct Resolved {
     /// Each resolved request by the node it reads, to say which ones the
     /// run didn't hold.
     pub asked: Vec<(NodeId, InspectAt)>,
+    /// Requests on the picture's Placement or Output: answered with the
+    /// finished frame, the clip placed and matted among its layers, as
+    /// the program viewer shows it.
+    pub finished: Vec<InspectAt>,
+}
+
+/// Whether `at` names the Placement or the Output of `clip`'s picture.
+fn names_the_finish(seq: &Sequence, clip: ClipId, at: &InspectAt) -> bool {
+    let (Root::Clip { clip: c }, [node]) = (at.path.root, at.path.nodes.as_slice()) else { return false };
+    if c != clip.0 || at.port.as_str() != "out" {
+        return false;
+    }
+    let picture = seq.all_clips().find(|x| x.id == clip).and_then(|x| x.picture_v2().ok());
+    picture.is_some_and(|p| {
+        p.picture.graph.nodes.iter().any(|n| {
+            n.id == *node && matches!(n.type_id.as_str(), klipp_graph_format::lifted::types::PLACEMENT | klipp_graph_format::lifted::types::OUTPUT)
+        })
+    })
 }
 
 /// The node `at` names in `clip`'s picture as `seq` renders it, and
@@ -98,9 +116,6 @@ fn node_of(seq: &Sequence, clip: ClipId, at: &InspectAt) -> Result<(NodeId, bool
                     Some(klipp_graph_format::lifted::types::GROUP) if *node == grade_group => running
                         .and_then(|g| g.input_of(g.output_node_id, 0).map(|n| (n, false)))
                         .ok_or_else(|| "the clip's grade gives no picture".into()),
-                    Some(klipp_graph_format::lifted::types::PLACEMENT | klipp_graph_format::lifted::types::OUTPUT) => {
-                        Err("placed when the layers are put together, after the clip's own picture: no preview of its own yet".into())
-                    }
                     Some(klipp_graph_format::types::LEGACY_EFFECT) if at.port.as_str() == "out" => Ok((*node, false)),
                     Some(klipp_graph_format::types::LEGACY_EFFECT) => Err(format!("an effect has no output {}", at.port)),
                     Some(klipp_graph_format::types::LEGACY_OFX) => Err("a plug-in effect runs outside the grade and can't be inspected yet".into()),
@@ -140,7 +155,12 @@ pub(crate) fn resolve(seq: &Sequence, inspect: &crate::render::Inspect, unavaila
     };
     let mut thumbs = HashSet::new();
     let mut thumb_of: HashMap<NodeId, Vec<InspectAt>> = HashMap::new();
+    let mut finished = Vec::new();
     for at in inspect.thumbs.iter().flatten() {
+        if names_the_finish(seq, clip, at) {
+            finished.push(at.clone());
+            continue;
+        }
         match one(at, unavailable) {
             Some((_, true)) => unavailable.push((at.clone(), "a matte's thumbnail isn't drawn yet".into())),
             Some((node, false)) => {
@@ -160,5 +180,6 @@ pub(crate) fn resolve(seq: &Sequence, inspect: &crate::render::Inspect, unavaila
     r.scope_tap = scope_tap.filter(|(_, matte)| !matte).map(|(n, _)| n);
     r.thumbs = inspect.thumbs.as_ref().map(|_| thumbs);
     r.thumb_of = thumb_of;
+    r.finished = finished;
     r
 }

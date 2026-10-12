@@ -1095,6 +1095,13 @@ impl Renderer {
         self.hdr_peak = opts.hdr_peak_nits;
         self.title_nits = seq.title_nits;
         let out = self.render_stack(seq, time, width, height, src, opts);
+        // The picture's Placement and Output show the finished frame.
+        if !self.resolved.finished.is_empty() {
+            let thumb = klipp_nodes::executor::downsample_to_thumb_u8(&out, width, height, klipp_nodes::executor::THUMB_W, klipp_nodes::executor::THUMB_H);
+            for at in std::mem::take(&mut self.resolved.finished) {
+                self.found.thumbs.insert(at, thumb.clone());
+            }
+        }
         // The frame is done: a plug-in instance not rendered near it since
         // goes (`PluginInstances::end_frame`).
         self.instances.end_frame((time.to_secs_f64() * seq.fps.as_f64()).round() as i64);

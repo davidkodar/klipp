@@ -6291,7 +6291,7 @@ pub const THUMB_H: u32 = 108;
 /// per output pixel) and keeps the thumbnail honest about colour —
 /// no resampling artefacts that would mislead the user about what
 /// the node actually produced.
-fn downsample_to_thumb_u8(src: &[f32], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+pub fn downsample_to_thumb_u8(src: &[f32], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
     if src.len() < (src_w * src_h * 4) as usize || src_w == 0 || src_h == 0 {
         return Vec::new();
     }
