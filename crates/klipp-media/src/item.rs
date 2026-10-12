@@ -452,6 +452,21 @@ impl MediaItem {
         if self.color_transfer.as_deref().is_some_and(|t| is_sdr_transfer(&t.to_lowercase())) {
             return LogPrior::DisplayTagged;
         }
+        // Stock-footage re-encodes can discard every colour tag (#1569).
+        // Their known 8-bit 4:2:0 H.264 encoding is weak display evidence,
+        // never proof: cameras can also record log into this format.
+        let untagged = self.color_transfer.as_deref().is_none_or(|t| {
+            matches!(t.trim().to_ascii_lowercase().as_str(), "" | "unknown" | "unspecified")
+        });
+        let consumer_eight_bit = matches!(self.bit_depth, None | Some(8))
+            && self.pixel_format.as_deref().is_some_and(|pf| {
+                matches!(pf, "yuv420p" | "yuvj420p" | "nv12" | "nv21")
+            });
+        if untagged && consumer_eight_bit && self.video_codec.eq_ignore_ascii_case("h264")
+            && self.effective_log_format() == klipp_core::LogFormat::Srgb
+        {
+            return LogPrior::DisplayLikely;
+        }
         LogPrior::Unknown
     }
 
@@ -1047,6 +1062,58 @@ mod reprobe_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn untagged_eight_bit_h264_haze_is_not_enough_to_call_camera_log() {
+        use klipp_color::measure::{looks_like_log, FrameMeasure};
+        // #1569: the two reported aerials have these range/chroma readings,
+        // 8-bit yuv420p H.264, and an Unspecified transfer. The remaining
+        // histogram values deliberately satisfy the broad log heuristic.
+        for (range, chroma) in [(27.0, 8.0), (49.0, 9.0)] {
+            let mut item = MediaItem::synthetic_for_test(PathBuf::from("aerial.mp4"), None);
+            item.video_codec = "H264".into();
+            item.bit_depth = Some(8);
+            item.pixel_format = Some("yuv420p".into());
+            item.color_transfer = Some("Unspecified".into());
+            let reading = FrameMeasure {
+                contrast_range: range,
+                chroma_mean: chroma,
+                l_p1: 20.0,
+                l_p99: 80.0,
+                log_prior: item.log_prior(),
+                ..Default::default()
+            };
+            assert!(!looks_like_log(&reading), "ordinary haze was rejected: {reading:?}");
+        }
+    }
+
+    #[test]
+    fn eight_bit_video_can_still_have_a_log_like_histogram() {
+        use klipp_color::measure::{looks_like_log, FrameMeasure, LogPrior};
+        let mut item = MediaItem::synthetic_for_test(PathBuf::from("camera.mp4"), None);
+        item.bit_depth = Some(8);
+        item.pixel_format = Some("yuv420p".into());
+        let reading = FrameMeasure {
+            contrast_range: 49.0, chroma_mean: 2.0, l_p1: 20.0, l_p99: 75.0,
+            log_prior: item.log_prior(), ..Default::default()
+        };
+        assert!(looks_like_log(&reading), "8-bit camera log must remain detectable");
+
+        // Missing/contradictory probe data and explicit non-display encodings
+        // must not acquire the consumer-video prior from a filename alone.
+        for (depth, format, transfer, log) in [
+            (None, None, None, klipp_core::LogFormat::Srgb),
+            (Some(10), Some("yuv420p"), None, klipp_core::LogFormat::Srgb),
+            (Some(8), Some("yuv420p"), Some("log100"), klipp_core::LogFormat::Srgb),
+            (Some(8), Some("yuv420p"), None, klipp_core::LogFormat::SLog3),
+        ] {
+            item.bit_depth = depth;
+            item.pixel_format = format.map(str::to_string);
+            item.color_transfer = transfer.map(str::to_string);
+            item.detected_log_format = log;
+            assert_eq!(item.log_prior(), LogPrior::Unknown);
+        }
+    }
 
     /// #504: an 8-bit iPhone clip can never be log; one not probed yet,
     /// or a 10-bit one (Apple Log), is not ruled out (#607 review); a

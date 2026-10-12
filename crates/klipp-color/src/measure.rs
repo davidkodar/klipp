@@ -372,6 +372,9 @@ pub enum LogPrior {
     DisplayTagged,
     /// Cannot be log: an 8-bit iPhone clip (Apple Log is 10-bit only).
     NeverLog,
+    /// Untagged 8-bit H.264 4:2:0: often a display-ready re-encode.
+    /// This is evidence, not proof; strongly log-like pictures still count.
+    DisplayLikely,
 }
 
 /// Skin-coloured pixels read as one: their median hue, chroma and
@@ -1006,9 +1009,9 @@ pub fn looks_like_log(m: &FrameMeasure) -> bool {
     let flat = m.contrast_range < 55.0 && m.chroma_mean < 13.0 && m.l_p1 > 12.0 && m.l_p99 < 88.0 && m.clip_hi_pct < 0.05;
     match m.log_prior {
         LogPrior::Unknown => flat,
-        // Tagged for a display: only a picture as flat and colourless as
-        // log itself, black raised well off zero.
-        LogPrior::DisplayTagged => flat && m.contrast_range < 52.0 && m.chroma_mean < 6.0 && m.l_p1 > 15.0,
+        // Tagged for a display or likely a consumer re-encode: only a
+        // picture as flat and colourless as log, black raised well off zero.
+        LogPrior::DisplayTagged | LogPrior::DisplayLikely => flat && m.contrast_range < 52.0 && m.chroma_mean < 6.0 && m.l_p1 > 15.0,
         LogPrior::NeverLog => false,
     }
 }
