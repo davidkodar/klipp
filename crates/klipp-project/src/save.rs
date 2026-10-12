@@ -195,7 +195,13 @@ fn save_project_full_as(
     let manifest = MediaManifestJson {
         version: "1.0.0".to_string(),
         generation: Some(generation),
-        items: media_pool.all().map(|item| media_item_to_json(item, dir)).collect(),
+        // By id: the pool is a hash map, whose order changes from run to
+        // run, and an unchanged project should save the same (#1354).
+        items: {
+            let mut items: Vec<_> = media_pool.all().map(|item| media_item_to_json(item, dir)).collect();
+            items.sort_by(|a, b| a.id.cmp(&b.id));
+            items
+        },
         bins: media_pool.bins.iter().map(|b| BinJson {
             id: b.id.to_string(),
             name: b.name.clone(),

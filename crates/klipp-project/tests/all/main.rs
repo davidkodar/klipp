@@ -41,6 +41,8 @@ mod layer_fx_format;
 mod log_format_override;
 #[path = "../looks_each_saved.rs"]
 mod looks_each_saved;
+#[path = "../manifest_order.rs"]
+mod manifest_order;
 #[path = "../media_kind_round_trip.rs"]
 mod media_kind_round_trip;
 #[path = "../media_state_round_trip.rs"]
