@@ -81,8 +81,26 @@ fn node_of(seq: &Sequence, clip: ClipId, at: &InspectAt) -> Result<(NodeId, bool
             // One of the clip's effects: its spliced node takes its id.
             (Root::Clip { clip: c }, [node]) if c == clip.0 => {
                 let picture = seq.all_clips().find(|x| x.id == clip).and_then(|x| x.picture_v2().ok());
-                let kind = picture.as_ref().and_then(|p| p.picture.graph.nodes.iter().find(|n| n.id == *node).map(|n| n.type_id.as_str().to_owned()));
+                let held = picture.as_ref().and_then(|p| p.picture.graph.nodes.iter().find(|n| n.id == *node));
+                let kind = held.map(|n| n.type_id.as_str().to_owned());
+                // An effect of the picture's own (a film grain, a vignette):
+                // spliced into the grade's run under its id, as a legacy
+                // effect is.
+                let effect = held.is_some_and(|n| klipp_graph_lift::effect_params::tag(n).is_some());
+                // The grade as the clip runs it: the picture's Source is its
+                // Source, the picture's grade group its output.
+                let running = seq.all_clips().find(|x| x.id == clip).map(|x| x.grade_to_run().into_owned());
+                let grade_group = klipp_graph_lift::ids::entry_id(klipp_graph_lift::ids::RootKind::Clip, clip.0, "grade", 0);
                 match kind.as_deref() {
+                    Some(klipp_graph_format::lifted::types::SOURCE) => running
+                        .and_then(|g| g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source).map(|n| (n.id, false)))
+                        .ok_or_else(|| "the clip's grade has no source".into()),
+                    Some(klipp_graph_format::lifted::types::GROUP) if *node == grade_group => running
+                        .and_then(|g| g.input_of(g.output_node_id, 0).map(|n| (n, false)))
+                        .ok_or_else(|| "the clip's grade gives no picture".into()),
+                    Some(klipp_graph_format::lifted::types::PLACEMENT | klipp_graph_format::lifted::types::OUTPUT) => {
+                        Err("placed when the layers are put together, after the clip's own picture: no preview of its own yet".into())
+                    }
                     Some(klipp_graph_format::types::LEGACY_EFFECT) if at.port.as_str() == "out" => Ok((*node, false)),
                     Some(klipp_graph_format::types::LEGACY_EFFECT) => Err(format!("an effect has no output {}", at.port)),
                     Some(klipp_graph_format::types::LEGACY_OFX) => Err("a plug-in effect runs outside the grade and can't be inspected yet".into()),
@@ -91,6 +109,7 @@ fn node_of(seq: &Sequence, clip: ClipId, at: &InspectAt) -> Result<(NodeId, bool
                     Some(klipp_graph_format::lifted::types::TEMPORAL_DENOISE | klipp_graph_format::lifted::types::FRAME_BLEND) => {
                         Err("a temporal denoise or a frame blend runs before the grade, outside the plan, so it can't be inspected yet (#1305)".into())
                     }
+                    Some(_) if effect && at.port.as_str() == "out" => Ok((*node, false)),
                     _ => Err(why),
                 }
             }
