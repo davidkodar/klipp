@@ -700,6 +700,7 @@ fn handle(
             | ControlCommand::Plan { .. }
             | ControlCommand::Apply { .. }
             | ControlCommand::Fonts
+            | ControlCommand::TitleTemplates
             | ControlCommand::NodeTypes { .. }
             | ControlCommand::GraphRead { .. }
             | ControlCommand::GraphOps { .. }

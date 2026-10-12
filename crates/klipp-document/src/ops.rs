@@ -429,6 +429,24 @@ pub enum Op {
         #[serde(default = "default_duck_bridge")]
         bridge_secs: f64,
     },
+    /// A saved title template (#1139), by `name`, at `at` for `secs`, its
+    /// published `fields` set by label: a text as its words, a colour as
+    /// #rrggbb, the speed as a number (1 as made). title_templates lists
+    /// the templates and their fields.
+    Template {
+        name: String,
+        at: Anchor,
+        #[serde(default = "default_title_secs")]
+        secs: f64,
+        #[serde(default)]
+        track: Option<TrackRef>,
+        #[serde(default)]
+        fields: std::collections::BTreeMap<String, serde_json::Value>,
+        /// The template as its file holds it, read by whoever resolves the
+        /// op (the socket): never sent.
+        #[serde(skip)]
+        data: Option<Box<klipp_timeline::TitleData>>,
+    },
     /// A lower third: `name`, and `role` under it, bottom left inside
     /// title-safe, for `secs` from `at`, fading in and out. It goes on a
     /// text track where it fits (one is made on top if none does).
@@ -2635,6 +2653,28 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 set_followed_style(&mut edit, &name);
             }
             Ok((what, edit, ids))
+        }
+        Op::Template { name, at, secs: held, track, fields, data } => {
+            use klipp_core::TitleFieldValue as V;
+            let at = resolve_anchor(seq, fps, at, i)?;
+            let mut td = data.as_deref().cloned().ok_or_else(|| refuse(i, format!("there is no title template \"{name}\""), "title_templates lists the templates saved"))?;
+            for (label, v) in fields {
+                let Some(index) = td.field_named(label) else {
+                    let labels: Vec<String> = td.live_fields().into_iter().map(|(_, f, _)| f.label.clone()).collect();
+                    return Err(refuse(i, format!("\"{name}\" has no field \"{label}\""), format!("its fields are {}", labels.join(", "))));
+                };
+                let value = match (td.field_value(index), v) {
+                    (Some(V::Text(_)), serde_json::Value::String(s)) => V::Text(s.clone()),
+                    (Some(V::Colour(_)), serde_json::Value::String(s)) => V::Colour(parse_color(s).ok_or_else(|| refuse(i, format!("\"{s}\" is not a colour"), "write a colour as #rrggbb or #rrggbbaa"))?),
+                    (Some(V::Speed(_)), serde_json::Value::Number(n)) => V::Speed(n.as_f64().unwrap_or(1.0) as f32),
+                    _ => return Err(refuse(i, format!("\"{label}\" can't take {v}"), "give a text as words, a colour as #rrggbb, the speed as a number")),
+                };
+                td.set_field(index, &value).map_err(|e| refuse(i, e, "title_templates lists each template's fields"))?;
+            }
+            if !held.is_finite() || *held < 0.2 {
+                return Err(refuse(i, format!("{held} s is too short"), "hold it at least a fraction of a second"));
+            }
+            place_title(seq, fps, i, at, *held, track.as_ref(), td, &format!("template \"{name}\""), "")
         }
         Op::LowerThird { name, role, at, secs: hold, track, side, x, y } => {
             let at = resolve_anchor(seq, fps, at, i)?;
@@ -7402,13 +7442,24 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
         td.background = TitleBackground::Color { color: [0, 0, 0, alpha], padding: 0.3 };
     }
 
+    let short: String = text.chars().take(24).collect();
+    let note = moved.map(|z| format!(", moved to the {z} to keep clear of {kept_from}")).unwrap_or_default();
+    place_title(seq, fps, i, at, a.secs, a.track, td, &format!("title \"{short}\""), &note)
+}
+
+/// Put `td` on the timeline at `at` for `secs`, on `track` or on a text
+/// track with room (one made when there is none): the edit, named `what`
+/// with `note` after where it went. The title op and a template's (#1139)
+/// place a title the one way.
+#[allow(clippy::too_many_arguments)]
+fn place_title(seq: &Sequence, fps: Fps, i: usize, at: Timecode, secs_held: f64, track: Option<&TrackRef>, td: klipp_timeline::TitleData, what: &str, note: &str) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let tl_in = at;
-    let tl_out = tl_in + snap(a.secs, fps);
+    let tl_out = tl_in + snap(secs_held, fps);
     if tl_out > seq.total_duration() {
         return Err(refuse(i, format!("it would run to {:.2} s, past the end of the timeline at {:.2} s", secs(tl_out), secs(seq.total_duration())), "start it earlier or hold it shorter"));
     }
     let fits = |ti: usize| overlapping(seq, ti, tl_in, tl_out, None).is_none() && !seq.tracks[ti].locked;
-    let existing = match a.track {
+    let existing = match track {
         Some(t) => {
             let ti = resolve_track(seq, t, i)?;
             if !matches!(seq.tracks[ti].kind, TrackKind::Text | TrackKind::Video) {
@@ -7423,9 +7474,8 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
     };
     let clip = title_clip(td, tl_in, tl_out, fps);
     let id = clip.id;
-    let short: String = text.chars().take(24).collect();
     let what = format!(
-        "title \"{short}\" at {:.2}-{:.2} s on {}{}",
+        "{what} at {:.2}-{:.2} s on {}{note}",
         secs(tl_in),
         secs(tl_out),
         match existing {
@@ -7433,7 +7483,6 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
             None if seq.tracks.is_empty() => "a new text track 0".to_string(),
             None => "a new text track 0; every other track's index moves down by one".to_string(),
         },
-        moved.map(|z| format!(", moved to the {z} to keep clear of {kept_from}")).unwrap_or_default(),
     );
     let edit = EditCommand::AddTitleClip { clip, track_index: existing.unwrap_or(0), created_track: existing.is_none() };
     Ok((what, edit, vec![id]))
@@ -8037,6 +8086,41 @@ mod tests {
         // Asking one secondary for both is refused with what to do.
         let err = resolve(&seq, &pool, &[op(Some(20.0), Some(0.8))]).unwrap_err();
         assert!(format!("{err:?}").contains("either turns the hue"), "{err:?}");
+    }
+
+    /// A saved template placed by the template op (#1139): its fields set
+    /// by label (any case), each value by its kind, the title on a text
+    /// track with room; a label it doesn't have, a value of the wrong kind,
+    /// or no template given is refused, naming what there is.
+    #[test]
+    fn a_template_op_places_the_template_with_its_fields_set() {
+        use klipp_core::TitleFieldValue as V;
+        let (seq, pool, ..) = fixture();
+        let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Jane Doe".into(), ..Default::default() });
+        td.objects[0].fx_mut().motion.enter = Some(klipp_core::title_motion::Motion::new(klipp_core::title_motion::MotionKind::Rise).duration(0.6));
+        td.published = td.default_fields();
+        let op = |fields: serde_json::Value, data: Option<&klipp_timeline::TitleData>| Op::Template {
+            name: "Guest".into(),
+            at: Anchor::Secs(1.0),
+            secs: 2.0,
+            track: None,
+            fields: serde_json::from_value(fields).unwrap(),
+            data: data.map(|d| Box::new(d.clone())),
+        };
+        let plan = resolve(&seq, &pool, &[op(serde_json::json!({ "text 1": "John Roe", "Text 1 colour": "#ff8800", "Speed": 2.0 }), Some(&td))]).unwrap();
+        assert!(plan.steps[0].what.starts_with("template \"Guest\" at 1.00-3.00 s"), "{}", plan.steps[0].what);
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!("a title clip") };
+        let ClipKind::Title(placed) = &clip.kind else { panic!("a title") };
+        assert_eq!(placed.field_value(0), Some(V::Text("John Roe".into())));
+        assert_eq!(placed.field_value(1), Some(V::Colour([255, 136, 0, 255])));
+        assert_eq!(placed.field_value(2), Some(V::Speed(2.0)));
+        assert_eq!(placed.published.len(), 3, "it keeps its fields to edit later");
+
+        let why = |fields: serde_json::Value, data| resolve(&seq, &pool, &[op(fields, data)]).unwrap_err().to_string();
+        assert!(why(serde_json::json!({ "Title": "x" }), Some(&td)).contains("Text 1, Text 1 colour, Speed"), "names the fields");
+        assert!(why(serde_json::json!({ "Speed": "fast" }), Some(&td)).contains("can't take"));
+        assert!(why(serde_json::json!({ "Text 1 colour": "orange" }), Some(&td)).contains("is not a colour"));
+        assert!(why(serde_json::json!({}), None).contains("no title template"));
     }
 
     /// A title placed over a face moves to the nearest clear zone and

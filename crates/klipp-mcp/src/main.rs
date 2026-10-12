@@ -1016,6 +1016,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_fonts" => json!({ "method": "fonts" }),
+        "klipp_title_templates" => json!({ "method": "title_templates" }),
         "klipp_graph" | "klipp_graph_read" => {
             let mut v = args.clone();
             if !v.is_object() { return Err("graph arguments must be an object".into()); }
@@ -2171,6 +2172,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               frame, color #rrggbb, x and y where the text's centre goes (0 to 1), backing how \
               dark a panel sits behind it (0 none to 1 black), outline a width in pixels. It is \
               how captions are lifted clear of a lower third while it is up.\n\
+              template {name, at, secs?, track?, fields?} — see klipp_title_templates \
               lower_third {name, role?, at, secs?, track?, side?, x?, y?} — a name with a role \
               under it, bottom left in title-safe, four seconds by default, fading in and out, on \
               a text track with room (made on top if none: every other index then moves down by \
@@ -2389,6 +2391,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               frame, color #rrggbb, x and y where the text's centre goes (0 to 1), backing how \
               dark a panel sits behind it (0 none to 1 black), outline a width in pixels. It is \
               how captions are lifted clear of a lower third while it is up.\n\
+              template {name, at, secs?, track?, fields?} — see klipp_title_templates \
               lower_third {name, role?, at, secs?, track?, side?, x?, y?} — a name with a role \
               under it, bottom left in title-safe, four seconds by default, fading in and out, on \
               a text track with room (made on top if none: every other index then moves down by \
@@ -2578,6 +2581,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               max_offset_secs bounds the search (30 by default). Both clips must carry audio.",
              json!({ "clip_id": { "type": "string", "description": "the clip to move into sync (e.g. the external audio)" }, "reference_clip_id": { "type": "string", "description": "the clip to sync to (e.g. the camera)" }, "max_offset_secs": { "type": "number" } }),
              vec!["clip_id", "reference_clip_id"]),
+        tool("klipp_title_templates",
+             "Saved title templates and their fields by label, for the template op.",
+             json!({}), vec![]),
         tool("klipp_fonts",
              "The font families a title or a brief's type style can name: those bundled with Klipp, \
               always there, and those installed on this machine. Any other name falls back to Inter; \

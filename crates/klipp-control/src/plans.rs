@@ -16,8 +16,62 @@ pub(crate) fn resolve_plan(ctx: &ControlContext, ops: &[klipp_document::ops::Op]
     // changes a clip's own grade, and must not copy its group's into it.
     let seq = seq.with_own_grades();
     let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+    let ops = &with_templates(ops, template_dir().as_deref());
     let plan = klipp_document::ops::resolve_with(&seq, &pool, ops, &AnalysedTranscripts).map_err(|r| format!("{r} (step {} refused; nothing applied)", r.step + 1))?;
     Ok((plan, revision))
+}
+
+/// The user's title template folder (#1139).
+pub(crate) fn template_dir() -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|c| klipp_timeline::template_dir(&c))
+}
+
+/// `ops` with each `template` op given the template its name names, read
+/// from `dir` (#1139): the document resolves ops without reading files.
+/// One whose name names none is left without, which the document refuses.
+pub(crate) fn with_templates(ops: &[klipp_document::ops::Op], dir: Option<&std::path::Path>) -> Vec<klipp_document::ops::Op> {
+    use klipp_document::ops::Op;
+    if !ops.iter().any(|op| matches!(op, Op::Template { .. })) {
+        return ops.to_vec();
+    }
+    let saved = dir.map(klipp_timeline::read_templates).unwrap_or_default();
+    ops.iter()
+        .cloned()
+        .map(|mut op| {
+            if let Op::Template { name, data, .. } = &mut op {
+                *data = saved.iter().find(|t| t.name.eq_ignore_ascii_case(name.trim())).map(|t| Box::new(t.data.clone()));
+            }
+            op
+        })
+        .collect()
+}
+
+/// The templates saved in `dir`, each with the fields it keeps editable and
+/// their values as made, as `title_templates` answers (#1139).
+pub(crate) fn title_templates(dir: Option<&std::path::Path>) -> serde_json::Value {
+    use klipp_core::TitleFieldValue as V;
+    let saved = dir.map(klipp_timeline::read_templates).unwrap_or_default();
+    let list: Vec<serde_json::Value> = saved
+        .iter()
+        .map(|t| {
+            let fields: Vec<serde_json::Value> = t
+                .data
+                .live_fields()
+                .into_iter()
+                .map(|(_, f, v)| match v {
+                    V::Text(s) => json!({ "label": f.label, "kind": "text", "value": s }),
+                    V::Colour([r, g, b, a]) => json!({ "label": f.label, "kind": "colour", "value": format!("#{r:02x}{g:02x}{b:02x}{a:02x}") }),
+                    V::Speed(x) => json!({ "label": f.label, "kind": "speed", "value": x }),
+                })
+                .collect();
+            json!({ "name": t.name, "category": t.category, "fields": fields })
+        })
+        .collect();
+    let text = match saved.len() {
+        0 => "No title templates are saved: save a styled title as one from the Titles browser.".to_string(),
+        n => format!("{n} title template{}: {}. Place one with the template op, setting its fields by label.", if n == 1 { "" } else { "s" }, saved.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")),
+    };
+    json!({ "text": text, "templates": list })
 }
 
 /// Exact clip changes predicted by resolved cut edits. The UI applies the
@@ -244,4 +298,44 @@ pub(crate) fn with_warnings(v: &mut serde_json::Value, warnings: Vec<String>) {
         v["text"] = json!(format!("{text}\n{}", warnings.iter().map(|w| format!("[warning] {w}")).collect::<Vec<_>>().join("\n")));
     }
     v["warnings"] = json!(warnings);
+}
+
+#[cfg(test)]
+mod template_tests {
+    use super::*;
+
+    /// A template saved in `dir` as the Titles browser writes one.
+    fn saved(dir: &std::path::Path) -> klipp_timeline::TitleData {
+        let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Jane Doe".into(), ..Default::default() });
+        td.published = td.default_fields();
+        let file = json!({ "name": "Guest", "category": "Lower Thirds", "written_by": "0.1.0", "data": td });
+        std::fs::write(dir.join(format!("Guest.{}", klipp_timeline::TEMPLATE_EXTENSION)), file.to_string()).unwrap();
+        td
+    }
+
+    /// title_templates lists each saved template with its fields as made;
+    /// a template op gets its template by name in any case, and one naming
+    /// none is left without (#1139).
+    #[test]
+    fn templates_are_listed_and_given_to_their_ops() {
+        let dir = std::env::temp_dir().join(format!("klipp-control-templates-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let td = saved(&dir);
+        let listed = title_templates(Some(&dir));
+        assert_eq!(listed["templates"][0]["name"], "Guest");
+        assert_eq!(listed["templates"][0]["fields"][0], json!({ "label": "Text 1", "kind": "text", "value": "Jane Doe" }));
+        assert_eq!(listed["templates"][0]["fields"][1]["kind"], "colour");
+        assert!(listed["text"].as_str().unwrap().contains("1 title template: Guest"), "{listed}");
+        assert!(title_templates(None)["text"].as_str().unwrap().starts_with("No title templates"));
+
+        let op = |name: &str| klipp_document::ops::Op::Template { name: name.into(), at: klipp_document::ops::Anchor::Secs(0.0), secs: 3.0, track: None, fields: Default::default(), data: None };
+        let filled = with_templates(&[op("guest"), op("Nobody")], Some(&dir));
+        let data = |op: &klipp_document::ops::Op| match op {
+            klipp_document::ops::Op::Template { data, .. } => data.as_deref().cloned(),
+            _ => None,
+        };
+        assert_eq!(data(&filled[0]), Some(td), "by name, any case");
+        assert_eq!(data(&filled[1]), None, "no such template");
+        std::fs::remove_dir_all(dir).ok();
+    }
 }

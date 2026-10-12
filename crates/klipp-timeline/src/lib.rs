@@ -70,6 +70,8 @@ mod picture_reads;
 pub use picture_reads::{PictureEffect, PictureOfx};
 mod clip_kind;
 mod title_fields;
+mod title_template_file;
+pub use title_template_file::{read_templates, template_dir, TemplateFile, TEMPLATE_EXTENSION};
 pub use title_fields::{FieldKind, LayerTiming, PublishedField, Timing, SPEED_RANGE as TITLE_SPEED_RANGE};
 pub mod crossfade;
 pub mod flatten;

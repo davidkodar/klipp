@@ -303,6 +303,13 @@ pub(crate) fn respond(
             Ok(v)
         }
 
+        ControlCommand::TitleTemplates => {
+            if in_batch {
+                return read_in_batch("title_templates");
+            }
+            Ok(crate::plans::title_templates(crate::plans::template_dir().as_deref()))
+        }
+
         ControlCommand::Fonts => {
             if in_batch {
                 return read_in_batch("fonts");

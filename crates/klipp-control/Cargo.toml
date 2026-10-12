@@ -21,6 +21,7 @@ publish = false
 libc = "0.2"
 
 [dependencies]
+dirs = { workspace = true }
 klipp-color = { workspace = true }
 klipp-ml = { workspace = true }
 klipp-core = { workspace = true }
