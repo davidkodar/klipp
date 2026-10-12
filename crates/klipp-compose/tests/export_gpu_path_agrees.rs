@@ -586,6 +586,56 @@ fn the_stack_takes_what_the_single_clip_path_refuses() {
     }
 }
 
+/// #1279: in an ACEScg and a BT.2020 project the stack's export planes are
+/// the renderer's, through the project's own export transform (the ACES
+/// Rec.709 output transform, BT.2020's gamut map): an overlay, a dissolve,
+/// a screen blend, and a generator authored in BT.709.
+#[test]
+fn the_stack_exports_a_wide_working_space_as_the_renderer_does() {
+    use klipp_core::WorkingColorspace as Ws;
+    let aces = klipp_effects::gpu::Yuv420Target { tone_map_op: 3, odt_tag: klipp_color::aces::GpuOdt::Rec709Sdr.tag(), ..plain_target() };
+    for (ws, target) in [(Ws::AcesCG, aces), (Ws::Bt2020Linear, bt2020_target())] {
+        let (a, b) = (graded(0.0, 1.0, 0.5), graded(0.0, 1.0, 0.5));
+        let overlay = sequence(vec![vec![a.clone()], vec![b.clone()]]);
+        let overlay_src = Flat::default().with(&a, [80, 160, 220]).with(&b, [220, 90, 40]);
+        let (c, d) = (graded(0.0, 1.0, 0.5), graded(0.5, 1.5, 0.5));
+        let mut dissolve = sequence(vec![vec![c.clone(), d.clone()]]);
+        dissolve.tracks[0].transitions = vec![Transition {
+            id: TransitionId::new(),
+            kind: klipp_core::TransitionKind::CrossDissolve,
+            duration: tc(0.25),
+            clip_a_id: c.id,
+            clip_b_id: d.id,
+            user_params: Default::default(),
+            alignment: klipp_core::TransitionAlignment::Center,
+        }];
+        let dissolve_src = Flat::default().with(&c, [144, 224, 240]).with(&d, [240, 120, 60]);
+        let mut h = graded(0.0, 1.0, 0.5);
+        h.blend_mode = BlendMode::Screen;
+        let under = graded(0.0, 1.0, 0.0);
+        let screened = sequence(vec![vec![under.clone()], vec![h.clone()]]);
+        let screened_src = Flat::default().with(&under, [60, 120, 180]).with(&h, [128, 128, 128]);
+        let k = clip(ClipKind::Generator(GeneratorData::SolidColor { color: [255, 0, 0, 255] }), 0.0, 1.0);
+        let generated = sequence(vec![vec![k.clone()]]);
+        let cases: Vec<(&str, Sequence, Flat)> = vec![
+            ("an overlay layer", overlay, overlay_src),
+            ("a dissolve", dissolve, dissolve_src),
+            ("a screen blend", screened, screened_src),
+            ("a generator", generated, Flat::default()),
+        ];
+        for (what, seq, mut src) in cases {
+            let Some(planes) = gpu_planes_ws(&seq, 0.5, &mut src.clone_for_gpu(), ws, target) else {
+                eprintln!("skipping: the GPU path refused (no usable GPU)");
+                return;
+            };
+            let want = cpu_luma_ws(&seq, 0.5, &mut src, ws);
+            let got = &planes[..want.len()];
+            let worst = got.iter().zip(want.iter()).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
+            assert!(worst <= 1, "{ws:?}, {what}: the stack's export luma differs from the renderer by {worst} levels");
+        }
+    }
+}
+
 /// A clip whose height is keyed apart from its width (#1471): halfway
 /// between its keys the width's lane gives 1 and the height's 0.5, so
 /// the picture fills the frame's width and the middle half of its rows.

@@ -543,6 +543,8 @@ pub struct GpuEffectsPipeline {
     /// [`Self::set_luma_coefs`] when the project's working colorspace
     /// changes.
     luma_coefs: [f32; 3],
+    /// See [`Self::set_authored_to_working`].
+    authored_to_working: [[f32; 4]; 3],
     /// The grade encoding the colour grade's controls act in
     /// (`klipp_grade_model::Encoding::as_u8`, #467): 0, BT.1886, unless
     /// the project grades in ACEScct or ACEScc under ACEScg.
@@ -1654,6 +1656,7 @@ impl GpuEffectsPipeline {
             stack_params_slot: std::cell::Cell::new(0),
             scopes: None,
             luma_coefs: [0.2126, 0.7152, 0.0722],
+            authored_to_working: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]],
             grade_encoding: 0,
         })
     }
@@ -1669,6 +1672,14 @@ impl GpuEffectsPipeline {
     #[inline]
     pub fn set_luma_coefs(&mut self, coefs: [f32; 3]) {
         self.luma_coefs = coefs;
+    }
+
+    /// The BT.709 → working-space matrix a placed title, glyph run or
+    /// generator layer is converted by, as the CPU's
+    /// `authored_to_working` converts it (#1279); identity, the default,
+    /// in a Rec.709 project.
+    pub fn set_authored_to_working(&mut self, m: [[f32; 3]; 3]) {
+        self.authored_to_working = m.map(|r| [r[0], r[1], r[2], 0.0]);
     }
 
     /// The encoding the colour grade's controls act in (#467), as
@@ -5369,7 +5380,7 @@ impl GpuEffectsPipeline {
         }
         let sprite = self.stack_sprite_f16.as_ref().unwrap();
         self.upload(sprite, 0, bytemuck::cast_slice(packed));
-        self.write_params(&SpriteRowsParams { width, height, y0: 0, y1: height });
+        self.write_params(&SpriteRowsParams { width, height, y0: 0, y1: height, to_working: self.authored_to_working });
         let px = width * height;
         self.stack_pass(&self.sprite_rows_f16_pipeline, sprite, &layer, px.div_ceil(WORKGROUP_SIZE), "stack_sprite_f16");
         true
@@ -5413,7 +5424,7 @@ impl GpuEffectsPipeline {
         let row_bytes = (width as u64) * 4;
         let (b0, b1) = ((y0 as u64 * row_bytes) as usize, (y1 as u64 * row_bytes) as usize);
         self.upload(sprite, b0 as u64, &rgba[b0..b1]);
-        self.write_params(&SpriteRowsParams { width, height, y0, y1 });
+        self.write_params(&SpriteRowsParams { width, height, y0, y1, to_working: self.authored_to_working });
         let rows_px = (y1 - y0) * width;
         self.stack_pass(&self.sprite_rows_pipeline, sprite, &layer, rows_px.div_ceil(WORKGROUP_SIZE), "stack_sprite_rows");
         true
@@ -5523,6 +5534,7 @@ impl GpuEffectsPipeline {
             _pad0: 0,
             _pad1: 0,
             _pad2: 0,
+            to_working: self.authored_to_working,
         });
         let rows_px = (y1 - y0) * width;
         let sprite = &self.stack_sprites[pos].buffer;
@@ -5613,7 +5625,7 @@ impl GpuEffectsPipeline {
         let flat: Vec<f32> = glyphs.iter().flatten().copied().collect();
         let table = self.sprite_glyph_table.as_ref().unwrap();
         self.upload(table, 0, bytemuck::cast_slice(&flat));
-        self.write_params(&SpriteGlyphsParams { width, height, y0, y1, n: glyphs.len() as u32, ux0, uy0, uw, uh, _p0: 0, _p1: 0, _p2: 0 });
+        self.write_params(&SpriteGlyphsParams { width, height, y0, y1, n: glyphs.len() as u32, ux0, uy0, uw, uh, _p0: 0, _p1: 0, _p2: 0, to_working: self.authored_to_working });
         let sprite = &self.stack_sprites[pos];
         let units_buf = &sprite.units.as_ref().unwrap().4;
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -6947,6 +6959,8 @@ struct SpriteGlyphsParams {
     _p0: u32,
     _p1: u32,
     _p2: u32,
+    /// BT.709 → working space, rows padded to four (#1279).
+    to_working: [[f32; 4]; 3],
 }
 
 #[repr(C)]
@@ -6956,6 +6970,8 @@ struct SpriteRowsParams {
     height: u32,
     y0: u32,
     y1: u32,
+    /// BT.709 → working space, rows padded to four (#1279).
+    to_working: [[f32; 4]; 3],
 }
 
 #[repr(C)]
@@ -6989,6 +7005,8 @@ struct SpritePlaceParams {
     _pad0: u32,
     _pad1: u32,
     _pad2: u32,
+    /// BT.709 → working space, rows padded to four (#1279).
+    to_working: [[f32; 4]; 3],
 }
 
 /// How a placed sprite fades with where it is on the frame (#592), as
@@ -9764,10 +9782,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 const SHADER_SPRITE_ROWS_F16: &str = concat!(
     shader_pixel_storage_wgsl!(),
     "
-struct Params { width: u32, height: u32, y0: u32, y1: u32 }
+struct Params { width: u32, height: u32, y0: u32, y1: u32, m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32> }
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
+// The authored BT.709 picture in the working space (#1279): the CPU's
+// `authored_to_working`; identity in a Rec.709 project.
+fn to_ws(c: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(dot(params.m0.xyz, c), dot(params.m1.xyz, c), dot(params.m2.xyz, c));
+}
 
 fn srgb_to_linear_c(c: f32) -> f32 {
     if (c <= 0.04045) { return c / 12.92; }
@@ -9780,7 +9803,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.y1 * params.width { return; }
     let rg = unpack2x16float(input[idx * 2u]);
     let ba = unpack2x16float(input[idx * 2u + 1u]);
-    output[idx] = pack(vec4<f32>(srgb_to_linear_c(rg.x), srgb_to_linear_c(rg.y), srgb_to_linear_c(ba.x), ba.y));
+    output[idx] = pack(vec4<f32>(to_ws(vec3<f32>(srgb_to_linear_c(rg.x), srgb_to_linear_c(rg.y), srgb_to_linear_c(ba.x))), ba.y));
 }
 "
 );
@@ -9788,10 +9811,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 const SHADER_SPRITE_ROWS: &str = concat!(
     shader_pixel_storage_wgsl!(),
     "
-struct Params { width: u32, height: u32, y0: u32, y1: u32 }
+struct Params { width: u32, height: u32, y0: u32, y1: u32, m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32> }
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
+// The authored BT.709 picture in the working space (#1279): the CPU's
+// `authored_to_working`; identity in a Rec.709 project.
+fn to_ws(c: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(dot(params.m0.xyz, c), dot(params.m1.xyz, c), dot(params.m2.xyz, c));
+}
 
 fn srgb_to_linear_c(c: f32) -> f32 {
     if (c <= 0.04045) { return c / 12.92; }
@@ -9807,7 +9835,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let g = f32((packed >> 8u) & 0xFFu) / 255.0;
     let b = f32((packed >> 16u) & 0xFFu) / 255.0;
     let a = f32((packed >> 24u) & 0xFFu) / 255.0;
-    output[idx] = pack(vec4<f32>(srgb_to_linear_c(r), srgb_to_linear_c(g), srgb_to_linear_c(b), a));
+    output[idx] = pack(vec4<f32>(to_ws(vec3<f32>(srgb_to_linear_c(r), srgb_to_linear_c(g), srgb_to_linear_c(b))), a));
 }
 "
 );
@@ -9826,10 +9854,16 @@ struct Params {
     under_b: f32, under_a: f32, focus_axis: u32, band: f32,
     edge_opacity: f32, fade_top: f32, fade_bottom: f32, fade_left: f32,
     fade_right: f32, _pad0: u32, _pad1: u32, _pad2: u32,
+    m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>,
 }
 @group(0) @binding(0) var<storage, read> sprite: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
+// The authored BT.709 picture in the working space (#1279): the CPU's
+// `authored_to_working`; identity in a Rec.709 project.
+fn to_ws(c: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(dot(params.m0.xyz, c), dot(params.m1.xyz, c), dot(params.m2.xyz, c));
+}
 
 fn srgb_to_linear_c(c: f32) -> f32 {
     if (c <= 0.04045) { return c / 12.92; }
@@ -9922,7 +9956,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let lin = vec3<f32>(srgb_to_linear_c(rgb.x / 255.0), srgb_to_linear_c(rgb.y / 255.0), srgb_to_linear_c(rgb.z / 255.0));
     if params.under_a <= 0.0 {
-        output[idx] = pack(vec4<f32>(lin, a8 / 255.0));
+        output[idx] = pack(vec4<f32>(to_ws(lin), a8 / 255.0));
         return;
     }
     // Over the full-frame colour beneath, in linear light.
@@ -9933,7 +9967,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if oa > 0.0 {
         o = (lin * sa + vec3<f32>(params.under_r, params.under_g, params.under_b) * ua) / oa;
     }
-    output[idx] = pack(vec4<f32>(o, oa));
+    output[idx] = pack(vec4<f32>(to_ws(o), oa));
 }
 "
 );
@@ -9946,12 +9980,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 const SHADER_SPRITE_GLYPHS: &str = concat!(
     shader_pixel_storage_wgsl!(),
     "
-struct Params { width: u32, height: u32, y0: u32, y1: u32, n: u32, ux0: u32, uy0: u32, uw: u32, uh: u32, _p0: u32, _p1: u32, _p2: u32 }
+struct Params { width: u32, height: u32, y0: u32, y1: u32, n: u32, ux0: u32, uy0: u32, uw: u32, uh: u32, _p0: u32, _p1: u32, _p2: u32, m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32> }
 @group(0) @binding(0) var<storage, read> sprite: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
 @group(0) @binding(3) var<storage, read> units: array<u32>;
 @group(0) @binding(4) var<storage, read> glyphs: array<vec4<f32>>; // not-pixels: glyph poses (moved rect, pose, anchor), four vec4 each
+
+// The authored BT.709 picture in the working space (#1279): the CPU's
+// `authored_to_working`; identity in a Rec.709 project.
+fn to_ws(c: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(dot(params.m0.xyz, c), dot(params.m1.xyz, c), dot(params.m2.xyz, c));
+}
 
 fn srgb_to_linear_c(c: f32) -> f32 {
     if (c <= 0.04045) { return c / 12.92; }
@@ -10015,7 +10055,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // To the bytes the CPU twin stores, then decoded as an upload is.
     let rgb8 = clamp(floor(acc.xyz / acc.w + vec3<f32>(0.5)), vec3<f32>(0.0), vec3<f32>(255.0));
     let a8 = clamp(floor(acc.w * 255.0 + 0.5), 0.0, 255.0);
-    output[idx] = pack(vec4<f32>(srgb_to_linear_c(rgb8.x / 255.0), srgb_to_linear_c(rgb8.y / 255.0), srgb_to_linear_c(rgb8.z / 255.0), a8 / 255.0));
+    output[idx] = pack(vec4<f32>(to_ws(vec3<f32>(srgb_to_linear_c(rgb8.x / 255.0), srgb_to_linear_c(rgb8.y / 255.0), srgb_to_linear_c(rgb8.z / 255.0))), a8 / 255.0));
 }
 "
 );

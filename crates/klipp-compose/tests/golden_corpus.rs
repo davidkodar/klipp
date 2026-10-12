@@ -335,17 +335,17 @@ impl Case {
 }
 
 /// Which paths a case is expected to leave to the others. The GPU stack
-/// and the export's GPU path take Rec.709 projects and decline every
-/// other working space today (the stack is Rec.709 only, `render.rs`
-/// `composite_on_gpu`); a case that differs says so in
-/// [`Case::declines`]. A path that starts declining what it took, or
-/// taking what it declined, fails: losing GPU coverage wholesale must
-/// not pass quietly.
+/// takes every working space (#1279); the export path is checked here
+/// for Rec.709 and BT.2020 only ([`export_target`] has no ACES target),
+/// so an ACEScg case's export counts as declined. A case that differs
+/// says so in [`Case::declines`]. A path that starts declining what it
+/// took, or taking what it declined, fails: losing GPU coverage
+/// wholesale must not pass quietly.
 fn expected_declines(case: &Case) -> Vec<Path> {
     match &case.declines {
         Some(d) => d.clone(),
-        None if case.working == WorkingColorspace::Rec709Linear => vec![],
-        None => vec![Path::Stack, Path::Export],
+        None if export_target(case.working).is_some() => vec![],
+        None => vec![Path::Export],
     }
 }
 

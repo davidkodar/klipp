@@ -96,6 +96,38 @@ fn the_gpu_stack_is_the_renderers_frame() {
     assert!(d <= 1, "GPU stack differs from the CPU renderer by {d} levels");
 }
 
+/// #1279: in an ACEScg or a BT.2020 project the stack's frame is the CPU
+/// renderer's, through the project's own display transform: the title
+/// and the generator, authored in BT.709, placed into the working space as
+/// the CPU puts them there, the blends in it, and the project's encode at
+/// the end. The bar sees a working space: the same layers in Rec.709 are
+/// another picture.
+#[test]
+fn the_gpu_stack_is_the_renderers_frame_in_a_wide_working_space() {
+    use klipp_core::WorkingColorspace as Ws;
+    let (seq, mut src) = stack();
+    let shown = |linear: &[f32], ws: Ws| klipp_color::display::display_transform_ws_to(linear, klipp_color::display::ToneMapOp::None, ws, klipp_core::SdrTransfer::Srgb);
+    let mut rec709 = renderer();
+    let narrow = rec709.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default());
+    for ws in [Ws::AcesCG, Ws::Bt2020Linear] {
+        let mut r = renderer();
+        r.set_working_colorspace(ws);
+        let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
+            if r.last_decline().is_none() {
+                eprintln!("skipping: no usable GPU");
+                return;
+            }
+            panic!("{ws:?}: the GPU stack declined it: {:?}", r.last_decline());
+        };
+        assert_eq!(r.last_decline(), None, "{ws:?}: taken by the stack");
+        let cpu = shown(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()), ws);
+        let d = worst(&cpu, &gpu);
+        assert!(d <= 1, "{ws:?}: the GPU stack differs from the CPU renderer by {d} levels");
+        let off = worst(&shown(&narrow, ws), &gpu);
+        assert!(off > 1, "{ws:?}: the Rec.709 picture is only {off} levels off: the bar wouldn't see the working space");
+    }
+}
+
 #[test]
 fn the_gpu_stack_declines_what_it_cannot_do_yet() {
     let (seq, mut src) = stack();
