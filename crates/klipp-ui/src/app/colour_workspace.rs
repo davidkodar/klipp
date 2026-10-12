@@ -174,13 +174,18 @@ impl KlippApp {
                 // What the nodes and wheels grade: the selected clip, or
                 // the timeline grade over every clip after its own.
                 ui.label(egui::RichText::new("Grade").color(theme.text_dim));
-                let grading_clip = !self.state.grade_timeline && self.state.grade_group_stage.is_none();
+                // A track deleted, by undo too, is not graded.
+                if self.state.grade_track.is_some_and(|t| !self.state.sequences[self.state.active_sequence_idx].tracks.iter().any(|x| x.id == t && x.kind == klipp_timeline::TrackKind::Video)) {
+                    self.state.grade_track = None;
+                }
+                let grading_clip = !self.state.grade_timeline && self.state.grade_group_stage.is_none() && self.state.grade_track.is_none();
                 if ui.selectable_label(grading_clip, "Clip")
                     .on_hover_text("Grade the selected clip")
                     .clicked()
                 {
                     self.state.grade_timeline = false;
                     self.state.grade_group_stage = None;
+                    self.state.grade_track = None;
                     self.state.graph_descent_path.clear();
                     self.state.selected_node_id = None;
                     self.state.selected_node_ids.clear();
@@ -196,6 +201,7 @@ impl KlippApp {
                     egui::RichText::new("Timeline")
                 };
                 self.grade_group_controls(ui, all_cmds, theme);
+                self.grade_track_controls(ui, theme);
                 if ui.selectable_label(self.state.grade_timeline, timeline_label)
                     .on_hover_text(
                         "Grade the whole sequence: runs on every frame after each clip's own grade, before the timeline LUT.\n\
@@ -206,6 +212,7 @@ impl KlippApp {
                 {
                     self.state.grade_timeline = true;
                     self.state.grade_group_stage = None;
+                    self.state.grade_track = None;
                     self.state.graph_descent_path.clear();
                     self.state.selected_node_id = None;
                     self.state.selected_node_ids.clear();

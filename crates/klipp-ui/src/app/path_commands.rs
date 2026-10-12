@@ -80,7 +80,7 @@ fn edited_path(op: &GraphOp) -> Option<&NodePath> {
 /// Whether `root` is one of a sequence's own grades, edited by path at
 /// its root rather than in a clip's picture (M3 step 19).
 fn is_sequence_grade(root: Root) -> bool {
-    matches!(root, Root::TimelineGrade { .. } | Root::GroupStage { .. })
+    matches!(root, Root::TimelineGrade { .. } | Root::GroupStage { .. } | Root::Track { part: klipp_graph_format::path::TrackPart::Grade, .. })
 }
 
 fn grade_stage(stage: klipp_graph_format::lifted::Stage) -> klipp_timeline::GradeStage {
@@ -1060,6 +1060,7 @@ impl crate::state::AppState {
             Root::Clip { clip } => Some(ClipId(clip)),
             Root::TimelineGrade { sequence } if sequence == seq.id.0 => Some(seq.timeline_grade_clip_id()),
             Root::GroupStage { group, stage } => seq.grade_group(klipp_core::GradeGroupId(group)).map(|g| g.stage_clip_id(grade_stage(stage))),
+            Root::Track { track, part: klipp_graph_format::path::TrackPart::Grade } => Some(klipp_timeline::Sequence::track_grade_clip_id(klipp_core::TrackId(track))),
             _ => None,
         }
     }

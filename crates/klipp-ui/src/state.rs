@@ -1925,6 +1925,9 @@ pub struct AppState {
     /// post-clip grade rather than the selected clip (#237). Never with
     /// `grade_timeline`.
     pub grade_group_stage: Option<(klipp_core::GradeGroupId, klipp_timeline::GradeStage)>,
+    /// The video track whose own grade the Colour workspace grades, when
+    /// it grades one (#1408): after each of its clips' own grades.
+    pub grade_track: Option<klipp_core::TrackId>,
     /// Where color tools are docked: Right (inspector) or Bottom (below viewer).
     pub color_tools_position: ColorToolsPosition,
     /// Selected node in the node graph (shared between canvas and inspector).
@@ -4305,6 +4308,7 @@ impl Default for AppState {
             show_color_panel: false,
             grade_timeline: false,
             grade_group_stage: None,
+            grade_track: None,
             color_tools_position: ColorToolsPosition::Right,
             selected_node_id: None,
             selected_node_ids: std::collections::HashSet::new(),
@@ -4853,6 +4857,25 @@ impl AppState {
             }
         }
         ids
+    }
+
+    /// Grade track `id`'s own grade in the Colour workspace (#1408), as
+    /// the toolbar's Track menu picks it: the other targets let go, and no
+    /// node of the last one selected.
+    pub fn pick_track_grade(&mut self, id: klipp_core::TrackId) {
+        self.grade_track = Some(id);
+        self.grade_timeline = false;
+        self.grade_group_stage = None;
+        self.graph_descent_path.clear();
+        self.selected_node_id = None;
+        self.selected_node_ids.clear();
+    }
+
+    /// The track header's Grade in Colour (#1408): the Colour workspace,
+    /// grading that track's grade.
+    pub fn grade_track_in_colour(&mut self, id: klipp_core::TrackId) {
+        self.active_workspace = Workspace::Color;
+        self.pick_track_grade(id);
     }
 
     /// Push a single edit onto the active sequence's undo stack and

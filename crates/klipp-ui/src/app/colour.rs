@@ -39,6 +39,11 @@ impl KlippApp {
         }
     }
 
+    /// The Colour toolbar's Track menu (#1408): see [`grade_track_menu`].
+    pub(super) fn grade_track_controls(&mut self, ui: &mut egui::Ui, theme: &KlippTheme) {
+        grade_track_menu(ui, &mut self.state, theme);
+    }
+
     pub(super) fn handle_color_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         // Grade groups themselves are edits to the sequence, not to a
         // graph: never through a stand-in.
@@ -175,6 +180,7 @@ impl KlippApp {
         if let Some(pick) = stage_pick {
             self.state.grade_group_stage = pick;
             self.state.grade_timeline = false;
+            self.state.grade_track = None;
             self.state.graph_descent_path.clear();
             self.state.selected_node_id = None;
             self.state.selected_node_ids.clear();
@@ -264,6 +270,8 @@ impl KlippApp {
         // The timeline grade, or a grade group's stage (#237).
         let which = if self.state.grade_timeline {
             GradeStandIn::Timeline
+        } else if let Some(t) = self.state.grade_track {
+            GradeStandIn::Track(t)
         } else {
             let (g, s) = self.state.grade_group_stage?;
             GradeStandIn::Group(g, s)
@@ -3305,5 +3313,87 @@ mod sample_path_tests {
         let clip = klipp_core::ClipId::new();
         let n = klipp_nodes::NodeId::new_v4();
         assert_eq!(sample_path(&seq, clip, n), klipp_compose::inspect::grade_node(clip, n).path);
+    }
+}
+
+/// The Colour toolbar's Track menu (#1408): each visible video track, whose
+/// own grade, after each of its clips' grades, the workspace then grades.
+/// Marked while a track's grade is the one graded; a track whose grade
+/// does something is marked in the list.
+pub(super) fn grade_track_menu(ui: &mut egui::Ui, state: &mut crate::state::AppState, theme: &KlippTheme) {
+    let seq = &state.sequences[state.active_sequence_idx];
+    let tracks: Vec<(klipp_core::TrackId, String, bool)> = seq
+        .tracks
+        .iter()
+        .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
+        .map(|t| (t.id, t.name.clone(), t.effects.track_grade().is_some_and(|g| !g.is_identity())))
+        .collect();
+    let shown = state.grade_track.and_then(|id| tracks.iter().find(|t| t.0 == id)).map(|t| t.1.clone());
+    let label = match &shown {
+        Some(name) => egui::RichText::new(format!("Track \u{00b7} {name}")).color(theme.accent),
+        None => egui::RichText::new("Track"),
+    };
+    let mut pick = None;
+    ui.menu_button(label, |ui| {
+        for (id, name, graded) in &tracks {
+            let text = if *graded { format!("{name} \u{25CF}") } else { name.clone() };
+            if ui.selectable_label(state.grade_track == Some(*id), text).on_hover_text("Grade this track: after each of its clips' own grades").clicked() {
+                pick = Some(*id);
+                ui.close_menu();
+            }
+        }
+    })
+    .response
+    .on_hover_text("A track's grade: runs on every picture of the track after its own grade");
+    if let Some(id) = pick {
+        state.pick_track_grade(id);
+    }
+}
+
+#[cfg(test)]
+mod grade_track_menu_tests {
+    use super::*;
+
+    /// The Colour toolbar's Track menu lists the video tracks and, clicked,
+    /// grades the one picked, letting go of the timeline grade and a group
+    /// stage (#1408); the track header's Grade in Colour also opens the
+    /// Colour workspace.
+    #[test]
+    fn the_track_menu_picks_a_track_s_grade() {
+        let mut state = crate::state::AppState { grade_timeline: true, ..Default::default() };
+        let v1 = state.sequences[0].tracks.iter().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let (tid, name) = (v1.id, v1.name.clone());
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let mut clock = 0.0;
+        let mut frame = |state: &mut crate::state::AppState, events: Vec<egui::Event>| {
+            clock += 0.1;
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))), time: Some(clock), events, ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| grade_track_menu(ui, state, &theme));
+            });
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.visual_bounding_rect().center())),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        let click = |frame: &mut dyn FnMut(&mut crate::state::AppState, Vec<egui::Event>) -> Vec<(String, egui::Pos2)>, state: &mut crate::state::AppState, at: egui::Pos2| {
+            let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            frame(state, vec![egui::Event::PointerMoved(at), button(true)]);
+            frame(state, vec![button(false)]);
+            frame(state, Vec::new())
+        };
+        let drawn = frame(&mut state, Vec::new());
+        let menu = drawn.iter().find(|(t, _)| t == "Track").expect("the Track menu").1;
+        let drawn = click(&mut frame, &mut state, menu);
+        let item = drawn.iter().find(|(t, _)| *t == name).unwrap_or_else(|| panic!("{name} listed: {drawn:?}")).1;
+        let drawn = click(&mut frame, &mut state, item);
+        assert_eq!(state.grade_track, Some(tid), "picked");
+        assert!(!state.grade_timeline && state.grade_group_stage.is_none(), "the other targets let go");
+        assert!(drawn.iter().any(|(t, _)| *t == format!("Track \u{00b7} {name}")), "the menu names it: {drawn:?}");
+
+        let mut state = crate::state::AppState::default();
+        state.grade_track_in_colour(tid);
+        assert_eq!((state.active_workspace, state.grade_track), (crate::state::Workspace::Color, Some(tid)));
     }
 }

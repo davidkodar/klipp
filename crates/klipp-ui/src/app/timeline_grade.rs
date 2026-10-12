@@ -41,13 +41,15 @@ pub(super) fn settle_timeline_grade_proxy(seq: &mut klipp_timeline::Sequence, fr
 }
 
 /// What the Colour workspace grades through a stand-in clip rather than
-/// a clip of the timeline: the timeline grade, or a grade group's
-/// pre-clip or post-clip grade (#237). Either stands in on the same
+/// a clip of the timeline: the timeline grade, a grade group's pre-clip
+/// or post-clip grade (#237), or a video track's own grade (#1408). Either stands in on the same
 /// hidden track, under the id its edits are routed by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GradeStandIn {
     Timeline,
     Group(klipp_core::GradeGroupId, klipp_timeline::GradeStage),
+    /// A video track's own grade (#1408).
+    Track(klipp_core::TrackId),
 }
 
 impl GradeStandIn {
@@ -56,13 +58,14 @@ impl GradeStandIn {
         if clip_id == seq.timeline_grade_clip_id() {
             return Some(Self::Timeline);
         }
-        seq.grade_group_stage_of(clip_id).map(|(g, s)| Self::Group(g, s))
+        seq.grade_group_stage_of(clip_id).map(|(g, s)| Self::Group(g, s)).or_else(|| seq.track_grade_of(clip_id).map(Self::Track))
     }
 
     pub(super) fn id(self, seq: &klipp_timeline::Sequence) -> Option<klipp_core::ClipId> {
         match self {
             Self::Timeline => Some(seq.timeline_grade_clip_id()),
             Self::Group(g, s) => seq.grade_group(g).map(|g| g.stage_clip_id(s)),
+            Self::Track(t) => seq.tracks.iter().any(|x| x.id == t && x.kind == klipp_timeline::TrackKind::Video).then(|| klipp_timeline::Sequence::track_grade_clip_id(t)),
         }
     }
 
@@ -70,6 +73,7 @@ impl GradeStandIn {
         match self {
             Self::Timeline => seq.timeline_grade(),
             Self::Group(g, s) => seq.grade_group(g).and_then(|g| g.stage(s)),
+            Self::Track(t) => seq.tracks.iter().find(|x| x.id == t).and_then(|x| x.effects.track_grade()),
         }
     }
 
@@ -79,6 +83,11 @@ impl GradeStandIn {
             Self::Group(g, s) => {
                 if let Some(g) = seq.grade_groups.iter_mut().find(|x| x.id == g) {
                     g.stage_slot(s).set(Some(graph));
+                }
+            }
+            Self::Track(t) => {
+                if let Some(x) = seq.tracks.iter_mut().find(|x| x.id == t) {
+                    x.effects.grade_slot().set(Some(graph));
                 }
             }
         }
@@ -92,6 +101,7 @@ impl GradeStandIn {
         match self {
             Self::Timeline => Root::TimelineGrade { sequence: seq.id.0 },
             Self::Group(g, s) => Root::GroupStage { group: g.0, stage: if s == klipp_timeline::GradeStage::Pre { Stage::Pre } else { Stage::Post } },
+            Self::Track(t) => Root::Track { track: t.0, part: klipp_graph_format::path::TrackPart::Grade },
         }
     }
 
@@ -103,6 +113,7 @@ impl GradeStandIn {
                 let name = seq.grade_group(g).map_or("Group", |g| g.name.as_str());
                 format!("{name} \u{00b7} {}", if s == klipp_timeline::GradeStage::Pre { "Pre-clip" } else { "Post-clip" })
             }
+            Self::Track(t) => format!("Track grade \u{00b7} {}", seq.tracks.iter().find(|x| x.id == t).map_or("Track", |x| x.name.as_str())),
         }
     }
 }
@@ -276,6 +287,33 @@ mod timeline_grade_stand_in_tests {
         assert_eq!(stand_down_timeline_grade_on(&mut seq, &mut fresh), TimelineGradeSettled::Begun);
         assert!(seq.grade_groups[0].stage(klipp_timeline::GradeStage::Post).is_some_and(|g| g.nodes.iter().any(|n| n.id == lut)), "the edit landed on the group's post-clip grade");
         assert!(seq.grade_groups[0].stage(klipp_timeline::GradeStage::Pre).is_none() && seq.timeline_grade().is_none(), "and nowhere else");
+        assert!(!seq.tracks.iter().any(|t| t.id == track_id), "the stand-in is gone");
+    }
+
+    /// #1408: a video track's own grade stands in the same way: graded
+    /// through its stand-in, its graph lands on the track; a visit that
+    /// changes nothing leaves the track without a grade.
+    #[test]
+    fn a_track_grade_stands_in_and_settles_on_the_track() {
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let tid = seq.tracks.iter().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().id;
+        let which = GradeStandIn::Track(tid);
+        let mut fresh = None;
+        let track_grade = |seq: &klipp_timeline::Sequence| seq.tracks.iter().find(|t| t.id == tid).unwrap().effects.track_grade().cloned();
+
+        let id = stand_in_grade_on(&mut seq, which, &mut fresh).expect("stood in");
+        assert_eq!(GradeStandIn::of(&seq, id), Some(which));
+        assert!(which.title(&seq).starts_with("Track grade"), "{}", which.title(&seq));
+        assert_eq!(stand_down_timeline_grade_on(&mut seq, &mut fresh), TimelineGradeSettled::Unchanged, "a look is not an edit");
+        assert!(track_grade(&seq).is_none());
+
+        stand_in_grade_on(&mut seq, which, &mut fresh).expect("stood in");
+        let track_id = timeline_grade_proxy_track_id(&seq);
+        let proxy = seq.tracks.iter_mut().find(|t| t.id == track_id).unwrap().clips.first_mut().unwrap();
+        let lut = proxy.edit_grade(|g| g.ensure_lut3d());
+        assert_eq!(stand_down_timeline_grade_on(&mut seq, &mut fresh), TimelineGradeSettled::Begun);
+        assert!(track_grade(&seq).is_some_and(|g| g.nodes.iter().any(|n| n.id == lut)), "the edit landed on the track's grade");
+        assert!(seq.timeline_grade().is_none(), "and nowhere else");
         assert!(!seq.tracks.iter().any(|t| t.id == track_id), "the stand-in is gone");
     }
 

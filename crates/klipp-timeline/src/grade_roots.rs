@@ -10,13 +10,14 @@
 //! grade's, and saved in the grade's stored body (#1321,
 //! [`klipp_graph_lift::sequence_grade_mix`]).
 //!
-//! A track's grade (`Root::Track`) has no inspector to edit it yet (#1408)
-//! and is refused here.
+//! A track's grade (`Root::Track` with `TrackPart::Grade`) is edited the
+//! same way (#1408), kept as the track's v1 grade graph. It has no stored
+//! form for a correction's mix or mask channel yet, so those are refused.
 
 use crate::{GradeStage, Sequence};
 use klipp_effects::mask_mix::MaskChannel;
 use klipp_graph_format::lifted::Stage;
-use klipp_graph_format::path::Root;
+use klipp_graph_format::path::{Root, TrackPart};
 use klipp_graph_format::Graph;
 use klipp_graph_lift::ops::GraphOp;
 use klipp_graph_lift::sequence_grade_mix::{self as grade_mix, Blend};
@@ -33,7 +34,7 @@ fn stage_of(stage: Stage) -> GradeStage {
 /// Why a path edit of `root` is refused before it is tried, if it is.
 fn refused(root: Root) -> Option<String> {
     match root {
-        Root::Track { .. } => Some("a track's grade isn't edited by path yet (#1408)".into()),
+        Root::Track { part: TrackPart::Effects, .. } => Some("a track's effects aren't one of the sequence's grades".into()),
         _ => None,
     }
 }
@@ -107,6 +108,7 @@ impl Sequence {
                 let g = self.grade_groups.iter().find(|g| g.id.0 == group).ok_or("no such grade group")?;
                 Ok(g.stage(stage_of(stage)))
             }
+            Root::Track { track, part: TrackPart::Grade } => Ok(self.tracks.iter().find(|t| t.id.0 == track).ok_or("no such track")?.effects.track_grade()),
             _ => Err("not one of this sequence's own grades".into()),
         }
     }
@@ -141,6 +143,15 @@ impl Sequence {
                     Stage::Post => post,
                 }
             }
+            // A track's grade is a grade body addressed `[node]` as the
+            // timeline grade's is, and lifts the same way: a track's own
+            // lift leaves out a grade that changes nothing, which the
+            // first edit of a fresh one starts from (#1408).
+            Root::Track { track, part: TrackPart::Grade } => {
+                self.tracks.iter().find(|t| t.id.0 == track).ok_or("no such track")?;
+                let raw = serde_json::json!({ "id": track, "timeline_graph": grade });
+                to_v2::timeline_to_v2(raw.as_object().expect("an object")).map_err(|e| e.to_string())?
+            }
             _ => return Err("not one of this sequence's own grades".into()),
         };
         let structural = structural.ok_or("the grade lifts to nothing")?;
@@ -164,6 +175,10 @@ impl Sequence {
             Root::GroupStage { group, stage } => {
                 let g = self.grade_groups.iter_mut().find(|g| g.id.0 == group).ok_or("no such grade group")?;
                 g.stage_slot(stage_of(stage)).set(grade);
+                Ok(())
+            }
+            Root::Track { track, part: TrackPart::Grade } => {
+                self.tracks.iter_mut().find(|t| t.id.0 == track).ok_or("no such track")?.effects.grade_slot().set(grade);
                 Ok(())
             }
             _ => Err("not one of this sequence's own grades".into()),
@@ -212,12 +227,16 @@ impl Sequence {
             Root::GroupStage { group, stage } => {
                 docs.stages.insert((group, stage), lifted);
             }
+            Root::Track { track, .. } => {
+                docs.track_grades.insert(track, lifted);
+            }
             _ => unreachable!("refused above"),
         }
         klipp_graph_lift::ops::apply_batch_with_catalog(&mut docs, ops, &crate::RegistryCatalog)?;
         let edited = match root {
             Root::TimelineGrade { sequence } => docs.timeline.remove(&sequence),
             Root::GroupStage { group, stage } => docs.stages.remove(&(group, stage)),
+            Root::Track { track, .. } => docs.track_grades.remove(&track),
             _ => None,
         }
         .ok_or("the edit lost its grade")?;
@@ -279,6 +298,36 @@ mod tests {
         }
     }
 
+    /// A path edit of a track's grade lands in the track's stored grade,
+    /// as one of the sequence's own grades does (#1408): the value on the
+    /// same node, every node id kept, the grade before handed back; a track
+    /// without a grade takes its first edit on the graph drawn. A track's
+    /// effects aren't a grade.
+    #[test]
+    fn a_path_edit_of_a_track_grade_lands_in_the_track() {
+        let mut seq = Sequence::new_default();
+        let tid = seq.tracks.iter().find(|t| t.kind == crate::TrackKind::Video).unwrap().id;
+        let root = Root::Track { track: tid.0, part: TrackPart::Grade };
+        let start = NodeGraph::default();
+        let node = corrector(&start);
+        assert!(seq.root_grade(root).unwrap().is_none(), "no grade yet");
+        let (old, _) = seq.apply_root_grade_ops(&[set_exposure(root, node, 0.5)], Some(&start)).unwrap();
+        assert!(old.is_none(), "it had none");
+        let before = seq.root_grade(root).unwrap().cloned().unwrap();
+        let (old, new) = seq.apply_root_grade_ops(&[set_exposure(root, node, 0.75)], None).unwrap();
+        assert_eq!(old.map(|g| serde_json::to_value(g).unwrap()), Some(serde_json::to_value(&before).unwrap()), "the grade before");
+        let track = seq.tracks.iter().find(|t| t.id == tid).unwrap();
+        let stored = track.effects.track_grade().unwrap();
+        assert_eq!(serde_json::to_value(stored).unwrap(), serde_json::to_value(&new).unwrap(), "stored on the track");
+        assert_eq!(stored.nodes.iter().find(|n| n.id == node).unwrap().params.exposure, Some(0.75));
+        let ids = |g: &NodeGraph| g.nodes.iter().map(|n| n.id).collect::<Vec<_>>();
+        assert_eq!(ids(stored), ids(&before), "every node id kept");
+        let effects = Root::Track { track: tid.0, part: TrackPart::Effects };
+        assert!(seq.apply_root_grade_ops(&[set_exposure(effects, node, 0.5)], None).is_err(), "a track's effects aren't a grade");
+        assert_eq!(Sequence::track_grade_clip_id(tid), Sequence::track_grade_clip_id(tid), "the stand-in is fixed");
+        assert_eq!(seq.track_grade_of(Sequence::track_grade_clip_id(tid)), Some(tid));
+    }
+
     /// A root with no grade yet takes its first edit on `start`, the graph
     /// the inspector drew; with no start, the edit is refused and nothing
     /// is stored.
@@ -298,8 +347,8 @@ mod tests {
     /// A correction's mix and mask channel on a sequence's own grade land
     /// on its node as its run setting (#1321), lifted with the grade for
     /// the next edit, and a later edit of another value keeps them; whole
-    /// and red take the setting off. A track's grade isn't edited by path
-    /// (#1408).
+    /// and red take the setting off. A track's grade has no stored form for
+    /// them, so they're refused there (#1408).
     #[test]
     fn a_mix_and_mask_channel_land_and_track_roots_are_refused() {
         use klipp_effects::mask_mix::MaskChannel;
@@ -320,8 +369,14 @@ mod tests {
         seq.apply_root_grade_ops(&[GraphOp::SetMix { path: path.clone(), mix: Some(1.0) }, GraphOp::SetMaskChannel { path, channel: Some("red".into()) }], None).unwrap();
         assert_eq!(blend(&seq), None, "whole and red is none");
         assert!(seq.root_blends(root).is_empty());
-        let track = Root::Track { track: uuid::Uuid::nil(), part: klipp_graph_format::path::TrackPart::Grade };
-        assert!(seq.apply_root_grade_ops(&[set_exposure(track, node, 0.5)], None).unwrap_err().contains("#1408"));
+        let tid = seq.tracks[0].id;
+        seq.tracks[0].effects.grade_slot().set(Some(NodeGraph::default()));
+        let track = Root::Track { track: tid.0, part: TrackPart::Grade };
+        let tnode = corrector(seq.root_grade(track).unwrap().unwrap());
+        let before = seq.root_grade(track).unwrap().cloned();
+        let why = seq.apply_root_grade_ops(&[GraphOp::SetMix { path: NodePath::new(track, [tnode]), mix: Some(0.5) }], None).unwrap_err();
+        assert!(why.contains("mix"), "{why}");
+        assert_eq!(seq.root_grade(track).unwrap().cloned(), before, "nothing stored");
     }
 
     /// Blends set on a grade by node id: a node none names has none, and

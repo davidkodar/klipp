@@ -19271,6 +19271,11 @@ fn track_effects_menu(ui: &mut egui::Ui, track: &klipp_timeline::Track, cmds: &m
         if fx.track_grade().is_some_and(|g| !g.is_identity()) {
             ui.label("Grade, after each clip's own");
         }
+        // Its grade, edited as the timeline grade is (#1408).
+        if track.kind == TrackKind::Video && ui.button("Grade in Colour").on_hover_text("Grade this track in the Colour workspace: after each of its clips' own grades").clicked() {
+            cmds.push(AppCommand::GradeTrackInColour { track_id });
+            ui.close_menu();
+        }
         for (k, e) in fx.audio.iter().enumerate() {
             let name = klipp_audio::dsp::available_effects().into_iter().find(|(t, _)| *t == e.effect_type).map_or(e.effect_type.clone(), |(_, n)| n.to_string());
             row(ui, name, e.enabled, true, k, cmds);

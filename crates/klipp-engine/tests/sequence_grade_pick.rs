@@ -197,7 +197,7 @@ fn a_pick_it_cannot_read_is_refused() {
     assert_eq!(ask(Pick { root: Root::Post, placed: true, ..Pick::default() }).unwrap(), Err(NodeSampleRefusal::Placed));
     assert_eq!(
         ask(Pick { track_root: true, ..Pick::default() }).unwrap(),
-        Err(NodeSampleRefusal::Why("a track's grade can't be sampled yet: it has no inspector (#1408)".into())),
+        Err(NodeSampleRefusal::Why("a track's grade can't be sampled yet: pick on a clip's own grade instead".into())),
     );
     assert_eq!(
         ask(Pick { playing: true, ..Pick::default() }).unwrap(),

@@ -1312,6 +1312,9 @@ pub enum AppCommand {
     /// only, never the document. For harnesses driving the app (the
     /// control socket's `show_panel`, test hooks only).
     ShowPanel { workspace: Option<String>, inspector_tab: Option<String> },
+    /// Open the Colour workspace on video track `track_id`'s own grade
+    /// (#1408): the layout only, never the document.
+    GradeTrackInColour { track_id: TrackId },
     // Workspace layout presets (#39)
     /// Apply one of the 5 built-in workspace layouts by index into
     /// `builtin_workspace_layouts()`. Writes visibility flags + sizes.

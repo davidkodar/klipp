@@ -2708,6 +2708,10 @@ impl KlippApp {
                 self.state.show_clip_properties = true;
                 true
             }
+            AppCommand::GradeTrackInColour { track_id } => {
+                self.state.grade_track_in_colour(*track_id);
+                true
+            }
             AppCommand::ShowPanel { workspace, inspector_tab } => {
                 if super::main_layout::show_panel(&mut self.state, &mut self.layout, workspace.as_deref(), inspector_tab.as_deref()) {
                     self.layout_dirty = true;

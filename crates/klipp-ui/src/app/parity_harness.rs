@@ -116,7 +116,8 @@ pub(super) enum GradeRoot {
 
 impl GradeRoot {
     /// The sequence's own grades, each a fixture of `Surface::NonClipGrade`.
-    /// A track's grade is not one: it has no surface to draw (#1408).
+    /// A track's grade, graded through its stand-in too, has no fixture
+    /// here yet (#1408).
     pub(super) const SEQUENCE: [GradeRoot; 3] = [GradeRoot::Timeline, GradeRoot::Pre, GradeRoot::Post];
 
     /// The fixture's variant on `Surface::NonClipGrade`.

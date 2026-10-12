@@ -264,11 +264,13 @@ impl GradeSnapshot {
         // it, the channel it reads the mask by (#1348).
         {
             use klipp_graph_format::PortCatalog;
-            if klipp_timeline::RegistryCatalog.node_spec(lifted).is_some_and(|s| s.mixable) {
+            // A track's grade has no stored form for them yet (#1408).
+            let keeps_blends = !matches!(self.root, Root::Track { .. });
+            if keeps_blends && klipp_timeline::RegistryCatalog.node_spec(lifted).is_some_and(|s| s.mixable) {
                 // "Node mix": a page may have a Mix of its own (the curves').
                 crate::inspector::stack_view::mix_row(ui, "Node mix", &addr, lifted.mix, false, cmds);
             }
-            if self.masked.contains(&node) {
+            if keeps_blends && self.masked.contains(&node) {
                 crate::inspector::stack_view::mask_channel_row(ui, lifted, &addr, false, cmds);
             }
         }

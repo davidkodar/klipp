@@ -561,8 +561,8 @@ fn sequence_grade_obligations(surfaces: &BTreeSet<Surface>) -> Vec<(&'static str
 
 /// Whether a `Surface::NonClipGrade` variant names one of the sequence's
 /// own grades a family ran on (`Report::merge_on_root`): the timeline
-/// grade or a group's pre-clip or post-clip stage. A track's grade is
-/// never one (#1408).
+/// grade or a group's pre-clip or post-clip stage. A track's grade has no
+/// parity fixture yet (#1408).
 fn on_a_sequence_grade(variant: &str) -> bool {
     super::parity_harness::GradeRoot::SEQUENCE.iter().any(|root| variant.starts_with(&format!("{}: ", root.variant())))
 }

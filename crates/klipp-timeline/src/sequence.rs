@@ -587,6 +587,18 @@ impl Sequence {
     /// The id the timeline grade runs under as a clip (see
     /// [`Clip::timeline_grade_of`]): fixed for the sequence, and never a
     /// real clip's.
+    /// The clip a track's grade is edited through in the Colour workspace
+    /// (#1408): fixed for the track, as a stage's is for its group.
+    pub fn track_grade_clip_id(track: TrackId) -> ClipId {
+        const TRACK: u128 = 0x7472_6163_6b2d_6772_6164_652d_7374_0001;
+        ClipId(uuid::Uuid::from_u128(track.0.as_u128() ^ TRACK))
+    }
+
+    /// The video track whose grade `clip_id` stands in for, if it does.
+    pub fn track_grade_of(&self, clip_id: ClipId) -> Option<TrackId> {
+        self.tracks.iter().filter(|t| t.kind == TrackKind::Video).map(|t| t.id).find(|t| Self::track_grade_clip_id(*t) == clip_id)
+    }
+
     pub fn timeline_grade_clip_id(&self) -> ClipId {
         const TIMELINE: u128 = 0x7469_6d65_6c69_6e65_6772_6164_6521_0001;
         ClipId(uuid::Uuid::from_u128(self.id.0.as_u128() ^ TIMELINE))
