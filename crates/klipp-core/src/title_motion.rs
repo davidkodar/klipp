@@ -528,6 +528,389 @@ impl TitleMotion {
 
 
 
+// ─── Animators: part of the text, in any order, unit by unit ─────────
+
+/// An animator (#1510): a range of a text layer's characters, words or
+/// lines, picked out by its selector, and what it does to them at full
+/// selection. Each unit takes the change in proportion to how much of
+/// it the selector picks, on top of the layer's entrance and exit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Animator {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default = "animator_on", skip_serializing_if = "animator_is_on")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub selector: RangeSelector,
+    #[serde(default)]
+    pub props: AnimatorProps,
+}
+
+fn animator_on() -> bool {
+    true
+}
+fn animator_is_on(b: &bool) -> bool {
+    *b
+}
+
+impl Default for Animator {
+    fn default() -> Self {
+        Self { name: String::new(), enabled: true, selector: RangeSelector::default(), props: AnimatorProps::default() }
+    }
+}
+
+/// The units an animator picks from, counted as a staggered motion
+/// counts them: characters (spaces not counted), words or lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SelectUnit {
+    #[default]
+    Char,
+    Word,
+    Line,
+}
+
+impl SelectUnit {
+    /// The stagger unit counted the same way.
+    pub fn stagger(self) -> StaggerUnit {
+        match self {
+            SelectUnit::Char => StaggerUnit::Char,
+            SelectUnit::Word => StaggerUnit::Word,
+            SelectUnit::Line => StaggerUnit::Line,
+        }
+    }
+}
+
+/// How the selection rises and falls across its range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SelectShape {
+    /// Whole inside the range, a unit at its edge by how much of it is in.
+    #[default]
+    Square,
+    /// Rising from the range's start to its end.
+    RampUp,
+    /// Falling from the range's start to its end.
+    RampDown,
+    /// Rising to the range's middle and falling again.
+    Triangle,
+    /// A half circle over the range.
+    Round,
+    /// A cosine bump over the range.
+    Smooth,
+}
+
+/// The order the units are laid along the range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SelectOrder {
+    #[default]
+    Forward,
+    Reverse,
+    /// The middle unit first, then outwards, the left before the right.
+    FromCentre,
+    /// Shuffled by `seed`: the same order on every render of the seed.
+    Random { seed: u32 },
+}
+
+/// Which units an animator picks and how much: the range from `start`
+/// to `end`, moved by `offset`, as fractions of the units in `order`,
+/// each keyable; the weight shaped by `shape`, eased by `easing` and
+/// scaled by `amount` (a negative amount picks the units outside).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RangeSelector {
+    #[serde(default)]
+    pub unit: SelectUnit,
+    #[serde(default)]
+    pub start: f32,
+    #[serde(default = "selector_end")]
+    pub end: f32,
+    #[serde(default)]
+    pub offset: f32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub start_keyframes: Vec<crate::keyframe::Keyframe>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub end_keyframes: Vec<crate::keyframe::Keyframe>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offset_keyframes: Vec<crate::keyframe::Keyframe>,
+    #[serde(default)]
+    pub shape: SelectShape,
+    #[serde(default = "selector_easing")]
+    pub easing: Easing,
+    #[serde(default)]
+    pub order: SelectOrder,
+    #[serde(default = "selector_amount")]
+    pub amount: f32,
+}
+
+fn selector_end() -> f32 {
+    1.0
+}
+fn selector_easing() -> Easing {
+    Easing::Linear
+}
+fn selector_amount() -> f32 {
+    1.0
+}
+
+impl Default for RangeSelector {
+    fn default() -> Self {
+        Self {
+            unit: SelectUnit::Char,
+            start: 0.0,
+            end: 1.0,
+            offset: 0.0,
+            start_keyframes: Vec::new(),
+            end_keyframes: Vec::new(),
+            offset_keyframes: Vec::new(),
+            shape: SelectShape::Square,
+            easing: Easing::Linear,
+            order: SelectOrder::Forward,
+            amount: 1.0,
+        }
+    }
+}
+
+/// What an animator does to a unit it picks wholly; a unit picked by a
+/// weight `w` takes `w` of it. Offsets are in font sizes, blur in
+/// font sizes too, the colour blended toward in linear light.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnimatorProps {
+    #[serde(default)]
+    pub dx: f32,
+    #[serde(default)]
+    pub dy: f32,
+    #[serde(default = "selector_amount")]
+    pub scale: f32,
+    /// Degrees, clockwise, about the unit's own centre.
+    #[serde(default)]
+    pub rotation: f32,
+    #[serde(default = "selector_amount")]
+    pub opacity: f32,
+    #[serde(default)]
+    pub blur: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<[u8; 4]>,
+}
+
+impl Default for AnimatorProps {
+    fn default() -> Self {
+        Self { dx: 0.0, dy: 0.0, scale: 1.0, rotation: 0.0, opacity: 1.0, blur: 0.0, colour: None }
+    }
+}
+
+/// A glyph's pose from its animators: offset in pixels, scale, rotation
+/// in degrees, opacity, blur in pixels, and the colour it is blended
+/// toward with how much of it (in linear light, applied to the glyph's
+/// own colour by [`UnitPose::colour_of`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UnitPose {
+    pub dx: f32,
+    pub dy: f32,
+    pub scale: f32,
+    pub rotation: f32,
+    pub alpha: f32,
+    pub blur: f32,
+    pub colour: Option<([f32; 4], f32)>,
+}
+
+impl Default for UnitPose {
+    fn default() -> Self {
+        Self { dx: 0.0, dy: 0.0, scale: 1.0, rotation: 0.0, alpha: 1.0, blur: 0.0, colour: None }
+    }
+}
+
+impl UnitPose {
+    /// Whether the pose changes nothing.
+    pub fn is_rest(&self) -> bool {
+        *self == UnitPose::default()
+    }
+
+    /// `base`, an sRGB colour, as the pose blends it.
+    pub fn colour_of(&self, base: [u8; 4]) -> [u8; 4] {
+        let Some((target, mix)) = self.colour else { return base };
+        let from = linear_rgba(base);
+        let mut out = [0u8; 4];
+        for i in 0..4 {
+            let v = from[i] + (target[i] - from[i]) * mix;
+            out[i] = if i == 3 { (v.clamp(0.0, 1.0) * 255.0).round() as u8 } else { srgb_byte(v) };
+        }
+        out
+    }
+}
+
+/// An sRGB colour's channels in linear light, alpha as it is, all 0..1.
+fn linear_rgba(c: [u8; 4]) -> [f32; 4] {
+    let lin = |v: u8| {
+        let c = v as f32 / 255.0;
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    [lin(c[0]), lin(c[1]), lin(c[2]), c[3] as f32 / 255.0]
+}
+
+/// Linear light, 0..1, as an sRGB byte.
+fn srgb_byte(v: f32) -> u8 {
+    let v = v.clamp(0.0, 1.0);
+    let c = if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+    (c * 255.0).round() as u8
+}
+
+/// Each unit's place along the selector's range, 0 first: the order
+/// laid over `n` units. Random shuffles by the seed alone (splitmix64
+/// and Fisher–Yates), so the order is the same on every render.
+pub fn select_ranks(order: SelectOrder, n: usize) -> Vec<usize> {
+    let by_rank: Vec<usize> = match order {
+        SelectOrder::Forward => (0..n).collect(),
+        SelectOrder::Reverse => (0..n).rev().collect(),
+        SelectOrder::FromCentre => {
+            let mut units: Vec<usize> = (0..n).collect();
+            let centre = (n as f32 - 1.0) * 0.5;
+            // Stable: equally far, the left one first.
+            units.sort_by(|a, b| (*a as f32 - centre).abs().total_cmp(&(*b as f32 - centre).abs()));
+            units
+        }
+        SelectOrder::Random { seed } => {
+            let mut state = seed as u64 ^ 0x9e37_79b9_7f4a_7c15;
+            let mut next = || {
+                state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+                let mut z = state;
+                z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                z ^ (z >> 31)
+            };
+            let mut units: Vec<usize> = (0..n).collect();
+            for i in (1..n).rev() {
+                let j = (next() % (i as u64 + 1)) as usize;
+                units.swap(i, j);
+            }
+            units
+        }
+    };
+    let mut rank = vec![0; n];
+    for (r, &u) in by_rank.iter().enumerate() {
+        rank[u] = r;
+    }
+    rank
+}
+
+impl RangeSelector {
+    /// The range at `time_secs`, its keys evaluated: (from, to).
+    pub fn range_at(&self, time_secs: f64) -> (f32, f32) {
+        let key = |keys: &[crate::keyframe::Keyframe], v: f32| crate::keyframe::evaluate(keys, time_secs, v);
+        let offset = key(&self.offset_keyframes, self.offset);
+        (key(&self.start_keyframes, self.start) + offset, key(&self.end_keyframes, self.end) + offset)
+    }
+
+    /// How much of each of `n` units the selector picks at `time_secs`,
+    /// 0..1 (`amount` may scale it beyond), in unit order.
+    pub fn weights(&self, n: usize, time_secs: f64) -> Vec<f32> {
+        if n == 0 {
+            return Vec::new();
+        }
+        let (from, to) = self.range_at(time_secs);
+        let (lo, hi) = (from.min(to), from.max(to));
+        let ranks = select_ranks(self.order, n);
+        let size = 1.0 / n as f32;
+        ranks
+            .iter()
+            .map(|&r| {
+                let (a, b) = (r as f32 * size, (r + 1) as f32 * size);
+                let centre = (a + b) * 0.5;
+                let span = hi - lo;
+                // Where the unit's centre is across the range, 0..1.
+                let across = if span > 0.0 { (centre - lo) / span } else { 0.0 };
+                let inside = (lo..hi).contains(&centre);
+                let w = match self.shape {
+                    SelectShape::Square => ((b.min(hi) - a.max(lo)) / size).clamp(0.0, 1.0),
+                    _ if !inside => 0.0,
+                    SelectShape::RampUp => across,
+                    SelectShape::RampDown => 1.0 - across,
+                    SelectShape::Triangle => 1.0 - (2.0 * across - 1.0).abs(),
+                    SelectShape::Round => (1.0 - (2.0 * across - 1.0).powi(2)).max(0.0).sqrt(),
+                    SelectShape::Smooth => 0.5 - 0.5 * (std::f32::consts::TAU * across).cos(),
+                };
+                let w = self.easing.apply(w.clamp(0.0, 1.0));
+                if self.amount < 0.0 { (1.0 - w) * -self.amount } else { w * self.amount }
+            })
+            .collect()
+    }
+}
+
+impl Animator {
+    /// `pose` with this animator's change for a unit picked by `w`
+    /// laid on top, at a font of `font_px`: offsets add, scale and
+    /// opacity multiply, rotation adds, blur takes the larger, colour
+    /// blends on toward this one's.
+    pub fn apply(&self, w: f32, font_px: f32, pose: &mut UnitPose) {
+        if !self.enabled || w == 0.0 {
+            return;
+        }
+        let p = &self.props;
+        pose.dx += p.dx * font_px * w;
+        pose.dy += p.dy * font_px * w;
+        pose.scale *= 1.0 + (p.scale - 1.0) * w;
+        pose.rotation += p.rotation * w;
+        pose.alpha *= (1.0 + (p.opacity - 1.0) * w).clamp(0.0, 1.0);
+        pose.blur = pose.blur.max(p.blur * font_px * w.abs());
+        if let Some(c) = p.colour {
+            let target = linear_rgba(c);
+            let mix = w.clamp(0.0, 1.0);
+            pose.colour = Some(match pose.colour {
+                None => (target, mix),
+                Some((before, m)) => {
+                    let mut t = [0.0; 4];
+                    for i in 0..4 {
+                        t[i] = before[i] + (target[i] - before[i]) * mix;
+                    }
+                    (t, 1.0 - (1.0 - m) * (1.0 - mix))
+                }
+            });
+        }
+    }
+}
+
+/// Every unit's pose from a layer's `animators` at `time_secs`, for
+/// glyphs whose characters are `parents` (in layout order), at a font of
+/// `font_px`: one per glyph. The one evaluation both render paths use.
+pub fn animator_poses(animators: &[Animator], parents: &[char], font_px: f32, time_secs: f64) -> Vec<UnitPose> {
+    let mut poses = vec![UnitPose::default(); parents.len()];
+    for a in animators.iter().filter(|a| a.enabled) {
+        let units = units_of(parents, a.selector.unit.stagger());
+        let n = units.iter().zip(parents).filter(|(_, c)| !c.is_whitespace()).map(|(u, _)| u + 1).max().unwrap_or(0);
+        let weights = a.selector.weights(n, time_secs);
+        for ((pose, &u), c) in poses.iter_mut().zip(&units).zip(parents) {
+            if !c.is_whitespace() {
+                a.apply(weights.get(u).copied().unwrap_or(0.0), font_px, pose);
+            }
+        }
+    }
+    poses
+}
+
+/// Which unit each glyph belongs to for `unit`: the line, word or
+/// non-space character it is in, by its character in `parents`.
+pub fn units_of(parents: &[char], unit: StaggerUnit) -> Vec<usize> {
+    let mut out = Vec::with_capacity(parents.len());
+    let (mut line, mut word, mut ch) = (0usize, 0usize, 0usize);
+    let mut in_word = false;
+    for &c in parents {
+        if c == '\n' {
+            line += 1;
+            in_word = false;
+            out.push(match unit { StaggerUnit::None => 0, StaggerUnit::Line => line, StaggerUnit::Word => word.saturating_sub(1), StaggerUnit::Char => ch });
+            continue;
+        }
+        if c.is_whitespace() {
+            in_word = false;
+        } else if !in_word {
+            in_word = true;
+            word += 1;
+        }
+        out.push(match unit { StaggerUnit::None => 0, StaggerUnit::Line => line, StaggerUnit::Word => word.saturating_sub(1), StaggerUnit::Char => ch });
+        if !c.is_whitespace() {
+            ch += 1;
+        }
+    }
+    out
+}
+
 // ─── Loops: what a layer keeps doing while it is on screen ───────────
 
 /// Direction of a scrolling loop.
@@ -1305,5 +1688,136 @@ mod custom_easing_tests {
         let json = serde_json::to_string(&custom).unwrap();
         assert_eq!(json, r#"{"Custom":{"x1":0.2,"y1":1.3,"x2":0.5,"y2":1.0}}"#);
         assert_eq!(serde_json::from_str::<Easing>(&json).unwrap(), custom);
+    }
+}
+
+#[cfg(test)]
+mod animator_tests {
+    use super::*;
+    use crate::keyframe::{Interpolation, Keyframe};
+
+    fn key(t: f64, v: f32) -> Keyframe {
+        Keyframe { time_secs: t, value: v, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+    }
+
+    fn selector(start: f32, end: f32, shape: SelectShape, order: SelectOrder) -> RangeSelector {
+        RangeSelector { start, end, shape, order, ..Default::default() }
+    }
+
+    /// The orders lay the units along the range as named; a random order
+    /// is a shuffle fixed by its seed alone (#1510).
+    #[test]
+    fn orders_lay_the_units_along_the_range() {
+        assert_eq!(select_ranks(SelectOrder::Forward, 4), [0, 1, 2, 3]);
+        assert_eq!(select_ranks(SelectOrder::Reverse, 4), [3, 2, 1, 0]);
+        // The middle first, then outwards, the left before the right.
+        assert_eq!(select_ranks(SelectOrder::FromCentre, 5), [3, 1, 0, 2, 4]);
+        let a = select_ranks(SelectOrder::Random { seed: 7 }, 12);
+        let mut sorted = a.clone();
+        sorted.sort();
+        assert_eq!(sorted, (0..12).collect::<Vec<_>>(), "a shuffle of every unit");
+        assert_eq!(a, select_ranks(SelectOrder::Random { seed: 7 }, 12), "the same every time");
+        assert_ne!(a, select_ranks(SelectOrder::Random { seed: 8 }, 12), "another seed, another order");
+        assert_ne!(a, (0..12).collect::<Vec<_>>());
+        // Pinned: the shuffle is integer arithmetic on the seed, so it is
+        // the same on every machine; a change here changes saved titles.
+        assert_eq!(a, [0, 5, 4, 10, 9, 11, 7, 8, 3, 2, 6, 1]);
+    }
+
+    /// A square range picks the units inside it whole and a unit at its
+    /// edge by how much of it is in; the shapes rise and fall across the
+    /// range; a negative amount picks the units outside.
+    #[test]
+    fn a_selector_weighs_each_unit() {
+        let w = |s: &RangeSelector| s.weights(5, 0.0);
+        assert_eq!(w(&selector(0.4, 0.6, SelectShape::Square, SelectOrder::Forward)), [0.0, 0.0, 1.0, 0.0, 0.0]);
+        let edge = w(&selector(0.3, 0.5, SelectShape::Square, SelectOrder::Forward));
+        assert!((edge[1] - 0.5).abs() < 1e-5 && (edge[2] - 0.5).abs() < 1e-5 && edge[0] == 0.0, "{edge:?}");
+        let up = w(&selector(0.0, 1.0, SelectShape::RampUp, SelectOrder::Forward));
+        assert!(up.windows(2).all(|p| p[1] > p[0]) && (up[2] - 0.5).abs() < 1e-5, "{up:?}");
+        let down = w(&selector(0.0, 1.0, SelectShape::RampDown, SelectOrder::Forward));
+        assert!(down.windows(2).all(|p| p[1] < p[0]), "{down:?}");
+        let tri = w(&selector(0.0, 1.0, SelectShape::Triangle, SelectOrder::Forward));
+        assert!((tri[2] - 1.0).abs() < 1e-5 && tri[0] < tri[1] && (tri[0] - tri[4]).abs() < 1e-5, "{tri:?}");
+        for shape in [SelectShape::Round, SelectShape::Smooth] {
+            let v = w(&selector(0.0, 1.0, shape, SelectOrder::Forward));
+            assert!((v[2] - 1.0).abs() < 1e-5 && v[0] < v[1] && (v[0] - v[4]).abs() < 1e-5, "{shape:?} {v:?}");
+        }
+        // The order moves the shape: reversed, the ramp falls.
+        let rev = w(&selector(0.0, 1.0, SelectShape::RampUp, SelectOrder::Reverse));
+        assert!(rev.windows(2).all(|p| p[1] < p[0]), "{rev:?}");
+        let mut outside = selector(0.4, 0.6, SelectShape::Square, SelectOrder::Forward);
+        outside.amount = -1.0;
+        assert_eq!(w(&outside), [1.0, 1.0, 0.0, 1.0, 1.0]);
+        assert!(selector(0.0, 1.0, SelectShape::Square, SelectOrder::Forward).weights(0, 0.0).is_empty());
+    }
+
+    /// The range's start, end and offset are keyed: a start swept from 0
+    /// to 1 lets the units go one after another, in the selector's order.
+    #[test]
+    fn a_keyed_range_sweeps_the_units_in_order() {
+        let mut s = selector(0.0, 1.0, SelectShape::Square, SelectOrder::Random { seed: 3 });
+        s.start_keyframes = vec![key(0.0, 0.0), key(1.0, 1.0)];
+        let ranks = select_ranks(s.order, 6);
+        let mut gone_at = vec![f64::MAX; 6];
+        for i in 0..=60 {
+            let t = i as f64 / 60.0;
+            for (u, w) in s.weights(6, t).into_iter().enumerate() {
+                if w == 0.0 && gone_at[u] == f64::MAX {
+                    gone_at[u] = t;
+                }
+            }
+        }
+        let mut by_rank: Vec<usize> = (0..6).collect();
+        by_rank.sort_by_key(|&u| ranks[u]);
+        assert!(by_rank.windows(2).all(|p| gone_at[p[0]] < gone_at[p[1]]), "{gone_at:?} {ranks:?}");
+        s.offset_keyframes = vec![key(0.0, 0.5)];
+        assert_eq!(s.range_at(0.0), (0.5, 1.5));
+    }
+
+    /// The animators' pose per glyph: only the picked word's letters
+    /// change, spaces never, and each property lays on as it should.
+    #[test]
+    fn animators_pose_only_the_glyphs_they_pick() {
+        let parents: Vec<char> = "one MIDDLE two".chars().collect();
+        let turn = Animator {
+            selector: RangeSelector { unit: SelectUnit::Word, start: 1.0 / 3.0, end: 2.0 / 3.0, ..Default::default() },
+            props: AnimatorProps { rotation: 90.0, opacity: 0.5, dy: 1.0, scale: 2.0, colour: Some([0, 0, 255, 255]), ..Default::default() },
+            ..Default::default()
+        };
+        let poses = animator_poses(std::slice::from_ref(&turn), &parents, 40.0, 0.0);
+        for (c, p) in parents.iter().zip(&poses) {
+            let in_middle = c.is_uppercase();
+            assert_eq!(!p.is_rest(), in_middle, "{c:?} {p:?}");
+            if in_middle {
+                assert_eq!((p.rotation, p.alpha, p.dy, p.scale), (90.0, 0.5, 40.0, 2.0));
+                assert_eq!(p.colour_of([255, 0, 0, 255]), [0, 0, 255, 255]);
+            }
+        }
+        // Half picked: half the change, the colour half the light.
+        let mut half = turn.clone();
+        half.selector.amount = 0.5;
+        let p = animator_poses(&[half], &parents, 40.0, 0.0)[4];
+        assert_eq!((p.rotation, p.scale), (45.0, 1.5));
+        assert_eq!(p.colour_of([255, 0, 0, 255]), [188, 0, 188, 255]);
+        // Off, or none: every glyph at rest.
+        let off = Animator { enabled: false, ..turn };
+        assert!(animator_poses(&[off], &parents, 40.0, 0.0).iter().all(UnitPose::is_rest));
+        assert!(animator_poses(&[], &parents, 40.0, 0.0).iter().all(UnitPose::is_rest));
+    }
+
+    /// An animator saves its own fields only, and reads back the same.
+    #[test]
+    fn an_animator_saves_and_reads_back() {
+        let a = Animator {
+            name: "Spin".into(),
+            selector: RangeSelector { unit: SelectUnit::Word, order: SelectOrder::Random { seed: 9 }, start_keyframes: vec![key(0.0, 0.0)], easing: Easing::Custom(CubicBezier::new(0.2, 0.0, 0.4, 1.0)), ..Default::default() },
+            props: AnimatorProps { rotation: 360.0, ..Default::default() },
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        assert!(!json.contains("enabled") && !json.contains("end_keyframes") && !json.contains("colour"), "{json}");
+        assert_eq!(serde_json::from_str::<Animator>(&json).unwrap(), a);
+        assert_eq!(serde_json::from_str::<Animator>("{}").unwrap(), Animator::default());
     }
 }
