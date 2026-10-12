@@ -724,7 +724,7 @@ mod tests {
         assert!(parse_credit("not a credit").is_none());
 
         let list = credits_text(&[hit.clone(), song, whoosh.clone(), whoosh]);
-        assert_eq!(list.matches("Artninja").count(), 1, "a track used twice is credited once:\n{list}");
+        assert_eq!(list.matches("by Artninja").count(), 1, "a track used twice is credited once:\n{list}");
         let at = |s: &str| list.find(s).unwrap_or_else(|| panic!("{s} missing:\n{list}"));
         assert!(at("Attribution required") < at("CC BY (") && at("CC BY (") < at("CC BY-SA"), "{list}");
         assert!(at("CC BY-SA") < at("No attribution required") && at("No attribution required") < at("CC0"), "{list}");

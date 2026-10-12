@@ -173,7 +173,10 @@ fn a_clip_read_from_its_middle_plays_to_its_end() {
 /// still sound.
 #[test]
 fn a_kept_pitch_double_speed_clip_sounds_to_its_end() {
-    let Some(path) = tone(48000, 2, 9) else { return };
+    // Mono: each test's tone is a file of its own, named by its rate,
+    // channels and length; two tests sharing one rewrote it under each
+    // other.
+    let Some(path) = tone(48000, 1, 9) else { return };
     let varispeed = klipp_render::snapshot::VarispeedRead { speed: 2.0, source_in: 1.0, source_out: 7.0, head_secs: 0.0, keep_pitch: true };
     let mut fast = clip(path, 0, FRAMES, varispeed.decode_from());
     fast.varispeed = Some(varispeed);
