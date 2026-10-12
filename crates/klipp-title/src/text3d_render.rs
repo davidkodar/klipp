@@ -216,6 +216,12 @@ struct PreparedFace<'a> {
 /// The frame of `scene` at `width`×`height`, straight-alpha sRGB bytes,
 /// at `ss`×`ss` samples a pixel. Pixels it does not touch are clear.
 pub fn render(scene: &Scene, width: u32, height: u32, ss: u32) -> Vec<u8> {
+    render_boxed(scene, width, height, ss).0
+}
+
+/// [`render`], and the box `[x0, y0, x1, y1]` (frame pixels) outside
+/// which nothing is drawn, `None` when nothing is.
+pub fn render_boxed(scene: &Scene, width: u32, height: u32, ss: u32) -> (Vec<u8>, Option<[usize; 4]>) {
     let (w, h) = (width as usize, height as usize);
     let mut out = vec![0u8; w * h * 4];
     let t = scene.settings;
@@ -257,12 +263,12 @@ pub fn render(scene: &Scene, width: u32, height: u32, ss: u32) -> Vec<u8> {
         }
     }
     if lo[0] > hi[0] {
-        return out;
+        return (out, None);
     }
     let (x0, y0) = ((lo[0].floor() as i64 - 1).clamp(0, w as i64) as usize, (lo[1].floor() as i64 - 1).clamp(0, h as i64) as usize);
     let (x1, y1) = ((hi[0].ceil() as i64 + 2).clamp(0, w as i64) as usize, (hi[1].ceil() as i64 + 2).clamp(0, h as i64) as usize);
     if x1 <= x0 || y1 <= y0 {
-        return out;
+        return (out, None);
     }
     view.origin = [x0 as f32, y0 as f32];
     let (bw, bh) = ((x1 - x0) * ss as usize, (y1 - y0) * ss as usize);
@@ -462,7 +468,7 @@ pub fn render(scene: &Scene, width: u32, height: u32, ss: u32) -> Vec<u8> {
             }
         }
     }
-    out
+    (out, Some([x0, y0, x1, y1]))
 }
 
 #[cfg(test)]
