@@ -1250,7 +1250,16 @@ pub enum AppCommand {
         width: u32,
         height: u32,
         sequence_name: String,
+        /// A project template to start from (#618): its sequences, tracks,
+        /// bins and colour setup in place of the format above.
+        template: Option<PathBuf>,
     },
+    /// Keep the open project's structure as a project template called
+    /// `name` (#618): its sequences' formats and tracks, its bins and
+    /// smart bins and its colour setup, without media or edits.
+    SaveProjectTemplate { name: String, description: String },
+    /// Delete the project template kept at `path` (#618).
+    DeleteProjectTemplate { path: PathBuf },
     RemoveRecentProject { path: PathBuf },
     DeleteProject { path: PathBuf },
     RenameProjectOnDisk { old_path: PathBuf, new_name: String },

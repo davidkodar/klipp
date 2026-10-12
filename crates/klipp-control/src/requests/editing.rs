@@ -42,7 +42,7 @@ pub(crate) fn respond(
                 return Err("the open project has unsaved changes: save_project first, or pass discard_changes true to lose them".into());
             }
             let sequence_name = sequence_name.unwrap_or_else(|| "Main Sequence".into());
-            send_envelope(ctx, vec![AppCommand::CreateProject { name, location, fps_num, fps_den, width, height, sequence_name }], false)?;
+            send_envelope(ctx, vec![AppCommand::CreateProject { name, location, fps_num, fps_den, width, height, sequence_name, template: None }], false)?;
             let after = wait_for_project_event(ctx, before.generation, 60_000)?;
             if let Some(e) = after.last_error {
                 return Err(e);

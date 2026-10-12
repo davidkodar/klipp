@@ -903,12 +903,14 @@ impl KlippApp {
 
         // 4c1. New Project dialog
         if self.state.show_new_project_dialog {
-            if let Some(cmd) = self.new_project_dialog.show(
-                ctx,
-                &mut self.state.show_new_project_dialog,
-                &self.theme,
-            ) {
-                cmds.push(cmd);
+            self.new_project_dialog.show(ctx, &mut self.state.show_new_project_dialog, &self.theme, cmds);
+        }
+        // Save Project as Template (#618): what it will keep, said up front.
+        if let Some(mut dlg) = self.state.save_template_dialog.take() {
+            let setup = klipp_project::template::ProjectSetup { sequences: &self.state.sequences, pool: &self.state.media_pool, colour: self.template_colour() };
+            let summary = klipp_project::template::ProjectTemplate::capture("-", "", &setup).summary();
+            if dlg.show(ctx, &self.theme, &summary, cmds) {
+                self.state.save_template_dialog = Some(dlg);
             }
         }
 
