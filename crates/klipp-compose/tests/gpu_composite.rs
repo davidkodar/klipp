@@ -1008,3 +1008,219 @@ fn a_graded_clip_with_a_gpu_effect_stays_on_the_stack() {
     let d = worst(&cpu, &gpu);
     assert!(d <= 1, "graded + GPU effect: GPU stack differs from the CPU renderer by {d} levels");
 }
+
+/// Scene-referred codes, 10-bit, ramping down the frame with a hue turning
+/// across it, at `w` by `h`: black to peak, no two channels alike.
+fn scene_codes(w: u32, h: u32) -> Arc<klipp_color::hdr::SceneCodes> {
+    Arc::new(klipp_color::hdr::SceneCodes::Packed10(
+        (0..h)
+            .flat_map(|y| {
+                (0..w).map(move |x| {
+                    let (v, t) = (y * 1023 / h, x * 1023 / w);
+                    klipp_color::hdr::pack_rgb10(v, (v * 3 / 4 + t / 4).min(1023), (v / 2 + t / 2).min(1023))
+                })
+            })
+            .collect(),
+    ))
+}
+
+/// Scene-referred clips' codes, each in its transfer and at its own size;
+/// every other clip a flat linear picture. `linear` hands the scene clips
+/// over decoded to scene light instead, with no transfer: the same picture
+/// without its display step, for the control.
+struct Scenes {
+    scene: HashMap<ClipId, (klipp_color::hdr::HdrTransfer, u32, u32)>,
+    flat: Flat,
+    linear: bool,
+}
+
+impl FrameSource for Scenes {
+    fn frame(&mut self, clip: &Clip, secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        let Some(&(transfer, w, h)) = self.scene.get(&clip.id) else { return self.flat.frame(clip, secs, width, height) };
+        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let pixels = if self.linear {
+            SourcePixels::Linear(Arc::new(scene_codes(w, h).to_scene_linear_rgba(transfer, identity)))
+        } else {
+            SourcePixels::SceneReferred { codes: scene_codes(w, h), transfer, source_to_working: identity }
+        };
+        Some(SourceFrame { pixels, width: w, height: h, pts: None })
+    }
+}
+
+/// A half-stop grade, so a layer's grade runs a node of its own.
+fn half_stop(c: &mut Clip) {
+    c.set_grade({
+        use klipp_nodes::{graph::{Edge, Node, NodeGraph, NodeId, NodePos}, kinds::NodeKind, params::NodeParams};
+        let node = |kind: NodeKind, params: NodeParams| Node {
+            id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![],
+        };
+        let nodes = vec![
+            node(NodeKind::Source, NodeParams::default()),
+            node(NodeKind::Exposure, NodeParams { exposure: Some(-0.5), ..Default::default() }),
+            node(NodeKind::Output, NodeParams::default()),
+        ];
+        let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i + 1].id, to_port: 0 }).collect();
+        let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
+        NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions, working_space_override: None, frames: vec![], sticky_notes: vec![] }
+    });
+}
+
+/// A scene-referred clip cropped, moved and fading in over an SDR base
+/// layer, a title over both: `(sequence, source)`, the scene clip at
+/// `size` in `transfer`.
+fn scene_over_base(transfer: klipp_color::hdr::HdrTransfer, size: (u32, u32), graded: bool) -> (Sequence, Scenes) {
+    use klipp_effects::BuiltinEffect;
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    let mut text = Track::new("Text", TrackKind::Text);
+    let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Log".into(), font_size: 120.0, ..Default::default() });
+    text.clips = vec![clip(ClipKind::Title(td), 0.0, 5.0)];
+    let mut top = Track::new("V2", TrackKind::Video);
+    let mut t = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 10.0);
+    if graded {
+        half_stop(&mut t);
+    }
+    t = TestClip::of(t)
+        .effects([
+            BuiltinEffect::Crop { left: 0.1, right: 0.2, top: 0.05, bottom: 0.15, feather: 0.0 },
+            BuiltinEffect::Transform {
+                position_x: 14.0,
+                position_y: -6.0,
+                scale_x: 0.85,
+                scale_y: 0.85,
+                rotation: 4.0,
+                anchor_x: 0.5,
+                anchor_y: 0.5,
+                rotation_x: 0.0,
+                rotation_y: 0.0,
+                perspective: 0.0,
+                focal_ref: None,
+            },
+        ])
+        .lane("opacity", 0.0, 0.2)
+        .lane("opacity", 2.0, 1.0)
+        .build();
+    let mut base = Track::new("V1", TrackKind::Video);
+    let b = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 10.0);
+    let mut src = Scenes { scene: HashMap::new(), flat: Flat::default(), linear: false };
+    src.scene.insert(t.id, (transfer, size.0, size.1));
+    src.flat.0.insert(b.id, picture(0.1));
+    top.clips = vec![t];
+    base.clips = vec![b];
+    seq.tracks = vec![text, top, base];
+    (seq, src)
+}
+
+/// Whether the stack takes a plain SDR frame here at all: asked first, so
+/// a decline of a scene-referred one after it is a failure, not a skip.
+fn stack_available() -> bool {
+    let (seq, mut src) = stack();
+    renderer().render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).is_some()
+}
+
+/// A log, HLG or PQ clip with a crop, a transform and a fade, under a
+/// title, is placed on the GPU stack: its codes decoded to the working
+/// space as its grade's chain starts, its display step in its plan before
+/// its effects (#1276). It used to be refused part-way, sending every
+/// such frame to the CPU composite. Held to the CPU render within a
+/// level, at the sequence's size and fitted from another, graded and not;
+/// the control is the same picture handed over without its display step,
+/// which the bar must tell apart.
+#[test]
+fn a_scene_referred_clip_with_a_crop_transform_and_fade_stays_on_the_stack() {
+    use klipp_color::hdr::HdrTransfer;
+    if !stack_available() {
+        eprintln!("UNVERIFIED: the GPU stack declined a plain frame (no usable GPU?)");
+        return;
+    }
+    let transfers = [("S-Log3", HdrTransfer::Log(klipp_core::ColorTransfer::SLog3)), ("HLG", HdrTransfer::Hlg), ("PQ", HdrTransfer::Pq)];
+    for (name, transfer) in transfers {
+        for size in [(W, H), (480, 270), (90, 160)] {
+            for graded in [false, true] {
+                let case = format!("{name} at {}x{}, graded {graded}", size.0, size.1);
+                let (seq, mut src) = scene_over_base(transfer, size, graded);
+                let mut r = renderer();
+                let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
+                    panic!("{case}: the GPU stack declined it: {:?}", r.last_decline());
+                };
+                assert_eq!(r.last_decline(), None, "{case}: taken by the stack");
+                let cpu = display(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+                let d = worst(&cpu, &gpu);
+                assert!(d <= 1, "{case}: the GPU stack differs from the CPU renderer by {d} levels");
+                // The control: without its display step the frame is
+                // another picture, and the bar says so.
+                src.linear = true;
+                let undisplayed = display(&renderer().render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+                let off = worst(&undisplayed, &gpu);
+                assert!(off > 1, "{case}: a frame without its display step is only {off} levels off: the bar wouldn't see it missing");
+            }
+        }
+    }
+}
+
+/// A transition between a scene-referred clip and an SDR one is drawn by
+/// the stack, both sides placed there (#1276).
+#[test]
+fn a_transition_from_a_scene_referred_clip_stays_on_the_stack() {
+    if !stack_available() {
+        eprintln!("UNVERIFIED: the GPU stack declined a plain frame (no usable GPU?)");
+        return;
+    }
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    let mut v = Track::new("V1", TrackKind::Video);
+    let a = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 2.0);
+    let b = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 2.0, 4.0);
+    let mut src = Scenes { scene: HashMap::new(), flat: Flat::default(), linear: false };
+    src.scene.insert(a.id, (klipp_color::hdr::HdrTransfer::Hlg, W, H));
+    src.flat.0.insert(b.id, picture(0.5));
+    v.transitions.push(klipp_timeline::Transition {
+        id: klipp_core::TransitionId::new(),
+        clip_a_id: a.id,
+        clip_b_id: b.id,
+        kind: klipp_core::TransitionKind::CrossDissolve,
+        duration: tc(2.0),
+        alignment: Default::default(),
+        user_params: Default::default(),
+    });
+    v.clips = vec![a, b];
+    seq.tracks = vec![v];
+    let mut r = renderer();
+    let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(2.0), W, H, &mut src, RenderOptions::default()) else {
+        panic!("the GPU stack declined the transition: {:?}", r.last_decline());
+    };
+    assert_eq!(r.last_decline(), None);
+    let cpu = display(&r.render(&seq, tc(2.0), W, H, &mut src, RenderOptions::default()));
+    let d = worst(&cpu, &gpu);
+    assert!(d <= 1, "the transition differs from the CPU renderer by {d} levels");
+}
+
+/// A scene-referred layer whose grade fails is refused after its effects
+/// and display step were queued for the run, and leaves none of them
+/// behind (#1276): an SDR layer graded next on the same renderer is its
+/// CPU render, not tone-mapped, cropped or moved by what was queued.
+#[test]
+fn a_scene_referred_layer_refused_part_way_leaves_nothing_queued() {
+    if !stack_available() {
+        eprintln!("UNVERIFIED: the GPU stack declined a plain frame (no usable GPU?)");
+        return;
+    }
+    let (seq, mut src) = scene_over_base(klipp_color::hdr::HdrTransfer::Hlg, (W, H), true);
+    let mut r = renderer();
+    {
+        let _fault = klipp_compose::fault::fail_grade(seq.tracks[1].clips[0].id);
+        assert!(r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none(), "a failed grade is refused");
+        assert_eq!(r.last_decline(), Some("a scene-referred layer's display step didn't run"));
+    }
+    // The base alone, graded, with no effects of its own: anything left
+    // queued would run in its grade.
+    let mut plain = seq.clone();
+    plain.tracks.drain(..2);
+    half_stop(&mut plain.tracks[0].clips[0]);
+    let Some((gpu, _)) = r.render_display_u8_on_gpu(&plain, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
+        panic!("the GPU stack declined the SDR layer: {:?}", r.last_decline());
+    };
+    let cpu = display(&renderer().render(&plain, tc(1.0), W, H, &mut src, RenderOptions::default()));
+    let d = worst(&cpu, &gpu);
+    assert!(d <= 1, "the SDR layer after the refusal differs from its CPU render by {d} levels");
+}

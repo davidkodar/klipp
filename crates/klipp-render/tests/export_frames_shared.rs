@@ -146,3 +146,123 @@ fn an_exports_frames_are_the_shared_decisions_frames() {
     let shifted = worst(made(1..FRAMES).into_iter().enumerate().map(|(f, m)| (job(f), m)).collect());
     assert!(shifted > 6, "a frame one step off in time is only {shifted} levels off: the bound wouldn't tell a different picture apart");
 }
+
+/// A frame the GPU declines after rendering it keeps the GPU way off only
+/// while the same clips are on screen: the stretch asks once, not at
+/// every frame, and the first frame with other clips asks again and gets
+/// planes (#1276). It used to turn the GPU way off for the rest of the
+/// export. A stretch declined before any work (a plug-in) isn't
+/// remembered at all, as before.
+///
+/// Declined after the work: an adjustment layer whose grade run fails
+/// (`klipp_compose::fault`), after its effect was spliced into the run, so
+/// the stack refuses it part-way. The timeline (frames at 25 fps):
+/// generator `a` to frame 12 then `b`, with a cross dissolve over the cut;
+/// the failing layers over 3..6 and over 8..16, across the dissolve; a
+/// plug-in clip over 17..19.
+#[test]
+fn a_frame_declined_after_its_work_turns_the_gpu_off_for_its_stretch_alone() {
+    let tc = |f| RationalTime::from_frames(f, 25);
+    let generator = |colour: [u8; 4], from, to| klipp_timeline::Clip {
+        kind: klipp_timeline::ClipKind::Generator(GeneratorData::SolidColor { color: colour }),
+        source_in: tc(0),
+        source_out: tc(to - from),
+        ..klipp_timeline::Clip::gap(tc(from), tc(to))
+    };
+    let adjustment = |from, to| {
+        let c = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::AdjustmentLayer, ..klipp_timeline::Clip::gap(tc(from), tc(to)) };
+        klipp_timeline::test_clip::TestClip::of(c).effects([klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 }]).build()
+    };
+    let a = generator([200, 60, 40, 255], 0, 12);
+    let b = generator([30, 90, 210, 255], 12, 24);
+    let (adj1, adj2) = (adjustment(3, 6), adjustment(8, 16));
+    let plugin = klipp_timeline::test_clip::TestClip::of(generator([90, 200, 90, 255], 17, 19))
+        .plugin(klipp_plugin::AppliedEffect { plugin_name: "com.klipp.test.Invert".into(), enabled: true, ..Default::default() })
+        .build();
+    let _faults = (klipp_compose::fault::fail_grade(adj1.id), klipp_compose::fault::fail_grade(adj2.id));
+
+    let mut snap = snapshot();
+    let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+    v1.transitions.push(klipp_timeline::Transition {
+        id: TransitionId::new(),
+        clip_a_id: a.id,
+        clip_b_id: b.id,
+        kind: TransitionKind::CrossDissolve,
+        duration: tc(4),
+        alignment: Default::default(),
+        user_params: Default::default(),
+    });
+    v1.clips = vec![a, b];
+    let mut v2 = klipp_timeline::Track::new("V2", klipp_timeline::TrackKind::Video);
+    v2.clips = vec![adj1, adj2];
+    let mut v3 = klipp_timeline::Track::new("V3", klipp_timeline::TrackKind::Video);
+    v3.clips = vec![plugin];
+    snap.video.sequence.tracks = vec![v3, v2, v1];
+    snap.duration_frames = 24;
+    let seq = snap.video.sequence.clone();
+
+    let probe = tmp("declined-stretch.mp4");
+    let s = settings(&probe);
+    let mut maker = ExportFrameMaker::new(&s, &snap, &Encoder::open(&probe, &s, &snap).unwrap(), "test");
+    let _ = std::fs::remove_file(&probe);
+    assert!(maker.converts_on_gpu(), "this test needs a GPU (Klipp requires one)");
+    let mut host = klipp_plugin::OfxHost::new();
+    let at = host.register_raw_plugin(klipp_plugin::test_plugin::create_test_plugin_raw());
+    host.initialise_plugin(at).expect("the invert plug-in loads");
+    let mut renderer = klipp_render::export_frames::export_renderer_with_host(&snap, "test", host);
+    let mut source = ExportFrameSource::new(&snap.video.media, snap.fps, snap.working_colorspace);
+    let on_screen = |f: i64| -> Vec<klipp_core::ClipId> {
+        klipp_compose::active_layers(&seq, tc(f)).iter().flat_map(|l| l.clips.iter().map(|c| c.id)).collect()
+    };
+
+    // Each frame as the export would ask for it: whether it came back as
+    // planes, whether the GPU was asked, and whether it declined after
+    // its work.
+    let mut frame = |f: i64| {
+        let before = maker.gpu_attempts();
+        let planes = matches!(maker.frame(&mut renderer, &seq, tc(f), &mut source), Ok(ExportFrame::Planes { .. }));
+        (planes, maker.gpu_attempts() - before, renderer.gpu_export_declined_after_work())
+    };
+    for f in 0..3 {
+        assert_eq!(frame(f), (true, 1, false), "frame {f}: plain, on the GPU");
+    }
+    // Declined after its work once; the rest of its stretch isn't asked.
+    assert_eq!(frame(3), (false, 1, true), "frame 3: the failing layer, declined after its work");
+    for f in 4..6 {
+        let (planes, attempts, _) = frame(f);
+        assert_eq!((planes, attempts), (false, 0), "frame {f}: the declined stretch, not asked again");
+    }
+    // Leaving it: the GPU is asked again, and takes the frames.
+    for f in 6..8 {
+        assert_eq!(frame(f), (true, 1, false), "frame {f}: plain again, back on the GPU");
+    }
+    // Coming back into it asks once more, and once only.
+    assert_eq!(frame(4), (false, 1, true), "frame 4 again: the stretch re-entered asks once");
+    assert_eq!(frame(5).1, 0, "frame 5 again: not asked twice");
+
+    // Across the dissolve: every change in what is on screen (a side of
+    // the transition joining or leaving) asks once, and the frames
+    // between ask nothing.
+    let mut last = on_screen(5);
+    let mut transition = false;
+    for f in 8..16 {
+        let now = on_screen(f);
+        transition |= klipp_compose::active_layers(&seq, tc(f)).iter().any(|l| l.transition);
+        let asked = u64::from(now != last);
+        let (planes, attempts, _) = frame(f);
+        assert!(!planes, "frame {f}: under the failing layer");
+        assert_eq!(attempts, asked, "frame {f}: asked only when its clips changed ({last:?} to {now:?})");
+        last = now;
+    }
+    assert!(transition, "the failing layer spans the dissolve");
+    assert_eq!(frame(16), (true, 1, false), "frame 16: plain again, back on the GPU");
+
+    // The control: a plug-in clip is declined before any work, never
+    // remembered, so each of its frames asks, and the next plain frame
+    // is on the GPU, as before.
+    for f in 17..19 {
+        let (planes, attempts, after_work) = frame(f);
+        assert_eq!((planes, attempts, after_work), (false, 1, false), "frame {f}: the plug-in, declined at the gate");
+    }
+    assert_eq!(frame(19), (true, 1, false), "frame 19: plain again, on the GPU");
+}

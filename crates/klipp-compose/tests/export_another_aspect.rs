@@ -141,7 +141,7 @@ fn planes(seq: &Sequence, w: u32, h: u32, src: &mut Source) -> Option<Vec<u8>> {
 }
 
 /// The ordinary render's luma, encoded as the CPU export encodes it.
-fn cpu_luma(seq: &Sequence, w: u32, h: u32, src: &mut Source) -> Vec<u8> {
+fn cpu_luma(seq: &Sequence, w: u32, h: u32, src: &mut dyn FrameSource) -> Vec<u8> {
     let px = renderer().render(seq, tc(0.5), w, h, src, RenderOptions::default());
     let display = klipp_color::display::ExportDisplay::new(klipp_core::ToneMapOp::None, klipp_core::WorkingColorspace::Rec709Linear, klipp_core::OdtChoice::MatchViewer);
     px.chunks_exact(4)
@@ -224,18 +224,24 @@ fn a_source_of_another_aspect_is_exported_on_the_gpu() {
     }
 }
 
-/// A scene-referred source of another size is still refused: the stack
-/// can't place one yet (#1276 keeps that), so the frame takes the CPU
-/// composite, said in the decline.
+/// A scene-referred source of another size is exported on the GPU too
+/// (#1276): the single-clip path hands it to the stack, which decodes and
+/// fits it as the CPU composite does and runs its grade and display step on
+/// the GPU. It used to be refused, every frame of it taking the CPU
+/// composite. Its luma is the ordinary render's.
 #[test]
-fn a_scene_referred_source_of_another_size_is_still_refused() {
+fn a_scene_referred_source_of_another_size_is_exported_on_the_gpu() {
+    if !gpu_path_available() {
+        eprintln!("UNVERIFIED: no usable GPU");
+        return;
+    }
     struct Scene;
     impl FrameSource for Scene {
         fn frame(&mut self, _clip: &Clip, _secs: f64, _width: u32, _height: u32) -> Option<SourceFrame> {
             let (w, h) = (9, 16);
             Some(SourceFrame {
                 pixels: SourcePixels::SceneReferred {
-                    codes: Arc::new(klipp_color::hdr::SceneCodes::Packed10(vec![klipp_color::hdr::pack_rgb10(512, 512, 512); (w * h) as usize])),
+                    codes: Arc::new(klipp_color::hdr::SceneCodes::Packed10((0..w * h).map(|i| klipp_color::hdr::pack_rgb10(300 + i * 3, 520, 700 - i * 2)).collect())),
                     transfer: klipp_color::hdr::HdrTransfer::Pq,
                     source_to_working: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
                 },
@@ -245,11 +251,15 @@ fn a_scene_referred_source_of_another_size_is_still_refused() {
             })
         }
     }
-    let c = media();
-    let seq = sequence(&c, 32, 16);
-    let mut r = renderer();
-    assert!(r.render_yuv420_on_gpu(&seq, tc(0.5), 32, 16, &mut Scene, RenderOptions::default(), target()).is_none());
-    if r.last_decline() != Some("the GPU pipeline was unavailable") {
-        assert_eq!(r.last_decline(), Some("a scene-referred source of another size"));
+    for grade in [false, true] {
+        let c = if grade { graded(media()) } else { media() };
+        let seq = sequence(&c, 32, 16);
+        let mut r = renderer();
+        let got = r.render_yuv420_on_gpu(&seq, tc(0.5), 32, 16, &mut Scene, RenderOptions::default(), target()).map(|(b, _)| b);
+        let got = got.unwrap_or_else(|| panic!("graded {grade}: the GPU path refused it: {:?}", r.last_decline()));
+        assert_eq!(r.last_decline(), None, "graded {grade}");
+        let want = cpu_luma(&seq, 32, 16, &mut Scene);
+        let d = worst(&got[..want.len()], &want);
+        assert!(d <= 1, "graded {grade}: luma differs from the render by {d} levels");
     }
 }

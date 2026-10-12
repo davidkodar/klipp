@@ -504,12 +504,10 @@ fn temporal_cases() -> Vec<Case> {
         c.set_grade(exposure(0.3));
         c = TestClip::of(c).effects(vec![BuiltinEffect::Glow { radius: 4.0, intensity: 0.5 }]).build();
         let f = Frames::default().scene(&c, transfer);
-        let mut case = Case::new(format!("scene/{name} graded with glow"), sequence(vec![track("V1", TrackKind::Video, vec![c])]), f);
         // A scene-referred clip with an effect: the export's single-clip
-        // path hands it to the stack, which takes no scene-referred
-        // source today.
-        case.declines = Some(vec![Path::Stack, Path::Export]);
-        out.push(case);
+        // path hands it to the stack, which places it, its display step in
+        // its plan before the effect (#1276).
+        out.push(Case::new(format!("scene/{name} graded with glow"), sequence(vec![track("V1", TrackKind::Video, vec![c])]), f));
     }
 
     // An HDR delivery: an SDR clip and a PQ source, exported as PQ.
