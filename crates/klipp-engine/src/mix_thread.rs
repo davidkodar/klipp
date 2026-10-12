@@ -28,11 +28,22 @@ pub struct SourceMix {
     /// as the export starts it (#1588). `u64::MAX` (the default): at
     /// once.
     starts_at: AtomicU64,
+    /// The mixed frame the source falls silent at, on the same count: its
+    /// clip's end, or the cut into the next clip on its track, so it ends
+    /// on that sample rather than at the tick that retires it (#1632).
+    /// `u64::MAX` (the default): it plays on until it is retired.
+    ends_at: AtomicU64,
 }
 
 impl Default for SourceMix {
     fn default() -> Self {
-        Self { volume: AtomicU32::new(1.0f32.to_bits()), pan: AtomicU32::new(0.0f32.to_bits()), channel_config: AtomicU32::new(0), starts_at: AtomicU64::new(u64::MAX) }
+        Self {
+            volume: AtomicU32::new(1.0f32.to_bits()),
+            pan: AtomicU32::new(0.0f32.to_bits()),
+            channel_config: AtomicU32::new(0),
+            starts_at: AtomicU64::new(u64::MAX),
+            ends_at: AtomicU64::new(u64::MAX),
+        }
     }
 }
 
@@ -40,6 +51,20 @@ impl SourceMix {
     /// Start the source at mixed frame `frame` (see `starts_at`).
     pub fn start_at(&self, frame: u64) {
         self.starts_at.store(frame, Ordering::Relaxed);
+    }
+
+    /// End the source at mixed frame `frame` (see `ends_at`).
+    pub fn end_at(&self, frame: u64) {
+        self.ends_at.store(frame, Ordering::Relaxed);
+    }
+
+    /// The interleaved samples of a chunk mixed from frame `at` that this
+    /// source is heard in up to its end: all of `len` before it.
+    fn heard_until(&self, at: u64, len: usize) -> usize {
+        match self.ends_at.load(Ordering::Relaxed) {
+            u64::MAX => len,
+            end => (end.saturating_sub(at).saturating_mul(2)).min(len as u64) as usize,
+        }
     }
 
     /// The silence, in interleaved samples, a chunk of `len` mixed from
@@ -114,6 +139,9 @@ enum MixCommand {
     ClearAll,
     /// Drop the staging consumer of one track: its clip has ended.
     RemoveStaging { track_index: usize },
+    /// Drop the staging fed through `mix` alone: one of two sources a
+    /// track has across a cut (#1632).
+    RemoveStagingOf { mix: Arc<SourceMix> },
     /// Drain all staging consumers and main producer (on seek).
     /// The mix thread sets the ack flag when done.
     Flush { ack: Arc<AtomicBool> },
@@ -251,6 +279,12 @@ impl MixThread {
     /// Remove one track's staging consumer; the others play on.
     pub fn remove_staging(&self, track_index: usize) {
         let _ = self.cmd_tx.send(MixCommand::RemoveStaging { track_index });
+    }
+
+    /// Remove the one staging fed through `mix`, of a track that may
+    /// have two across a cut.
+    pub fn remove_staging_of(&self, mix: &Arc<SourceMix>) {
+        let _ = self.cmd_tx.send(MixCommand::RemoveStagingOf { mix: mix.clone() });
     }
 
     /// Remove all staging consumers (e.g., on clip change or stop).
@@ -400,6 +434,9 @@ fn mix_loop(
                     debug!("Mix thread: removed staging for track {track_index}");
                     stagings.retain(|s| s.track_index != track_index);
                 }
+                MixCommand::RemoveStagingOf { mix } => {
+                    stagings.retain(|s| !Arc::ptr_eq(&s.mix, &mix));
+                }
                 MixCommand::Flush { ack } => {
                     // Drain all staging consumers
                     for staging in &mut stagings {
@@ -457,12 +494,18 @@ fn mix_loop(
             // A source that starts later in this chunk, or after it, is
             // silent until its first sample's frame (#1588).
             let silence = staging.mix.silence_before(mixed_so_far, read_size);
+            // And one that ends in it is heard up to its end, silent after.
+            let heard = staging.mix.heard_until(mixed_so_far, read_size).max(silence);
             buf[..silence].fill(0.0);
-            let filled = silence + staging.consumer.pop_slice(&mut buf[silence..]);
+            let filled = silence + staging.consumer.pop_slice(&mut buf[silence..heard]);
             if filled > 0 {
                 any_data = true;
-                buf.truncate(filled);
-                staging.mix.apply(&mut buf[silence..]);
+                staging.mix.apply(&mut buf[silence..filled]);
+                if filled == heard && heard < read_size {
+                    buf[heard..].fill(0.0);
+                } else {
+                    buf.truncate(filled);
+                }
             } else {
                 buf.clear();
             }
@@ -720,6 +763,49 @@ mod source_mix_tests {
             let onset = heard.chunks_exact(2).position(|f| f[0] != 0.0).expect("the sound is heard");
             assert_eq!(onset as u64, start, "{rate}: heard from its own sample");
         }
+    }
+
+    /// #1632: at a cut on one track the outgoing sound ends on the cut's
+    /// frame and the incoming starts on it: two sources on one track key,
+    /// the one heard to the frame before, the other from it, neither
+    /// both nor neither.
+    #[test]
+    fn a_cut_on_one_track_swaps_on_its_sample() {
+        use super::MixThread;
+        use ringbuf::traits::{Consumer, Producer, Split};
+        use std::sync::atomic::AtomicU32;
+        use std::sync::{Arc, Mutex};
+
+        let cut = 3_001u64;
+        let mixer = Arc::new(Mutex::new(klipp_audio::AudioMixer::new(1)));
+        let (mt, mut main) = MixThread::new(48_000, mixer, Arc::new(crate::sync::MasterClock::new()), false);
+        let key = crate::engine::source_key(0, 0);
+        for (level, start, end) in [(0.25f32, None, Some(cut)), (0.75, Some(cut), None)] {
+            let (mut producer, consumer) = ringbuf::HeapRb::<f32>::new(16_384).split();
+            assert_eq!(producer.push_slice(&[level; 12_000]), 12_000);
+            let mix = Arc::new(super::SourceMix::default());
+            if let Some(f) = start {
+                mix.start_at(f);
+            }
+            if let Some(f) = end {
+                mix.end_at(f);
+            }
+            mt.add_staging(key, consumer, Arc::new(AtomicU32::new(0)), mix);
+        }
+        let mut heard: Vec<f32> = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while heard.len() < (cut as usize + 1_000) * 2 && std::time::Instant::now() < deadline {
+            let mut buf = vec![0.0f32; 4096];
+            let got = main.pop_slice(&mut buf);
+            heard.extend_from_slice(&buf[..got]);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let frames: Vec<f32> = heard.chunks_exact(2).map(|f| f[0]).collect();
+        let (before, after) = (frames[cut as usize - 1], frames[cut as usize]);
+        assert!(before > 0.0 && after > 0.0, "sound on both sides of the cut: {before} {after}");
+        assert!((after / before - 3.0).abs() < 1e-3, "the outgoing to the frame before, the incoming from it: {before} then {after}");
+        assert!(frames[..cut as usize].iter().all(|&f| (f - before).abs() < 1e-6), "the outgoing alone before the cut");
+        assert!(frames[cut as usize..cut as usize + 1_000].iter().all(|&f| (f - after).abs() < 1e-6), "the incoming alone after it");
     }
 
     /// The mixed frame a clip is heard at, from where the mix is.
