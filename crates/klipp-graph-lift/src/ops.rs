@@ -333,7 +333,7 @@ const SAME_TIME: f64 = 1e-9;
 /// tracks, held on its record (not its `anim`, which the record never
 /// reads), changed as the grade changes them: a key is put in at its
 /// time (`NodeKeyframeTrack::set_keyframe`, keeping the interpolation of
-/// a key already there) or taken out at its time; an animation set whole
+/// a key already there, a new one taking its own) or taken out at its time; an animation set whole
 /// replaces the track's keys.
 fn apply_grade_anim(n: &mut Node, op: &GraphOp) -> Result<(), String> {
     let legacy = n.legacy.as_mut().ok_or("a grade node without its record")?;
@@ -348,7 +348,18 @@ fn apply_grade_anim(n: &mut Node, op: &GraphOp) -> Result<(), String> {
     match op {
         GraphOp::AddKeyAt { key, keyframe, .. } => {
             for k in read(key, std::slice::from_ref(keyframe))?.keyframes {
-                tracks.track_mut(key.as_str()).set_keyframe(k.time_secs, k.value);
+                let track = tracks.track_mut(key.as_str());
+                let before = track.keyframes.len();
+                track.set_keyframe(k.time_secs, k.value);
+                // A new key comes in as it was made (a switch's step,
+                // #1318); one already there keeps its own interpolation.
+                if track.keyframes.len() > before {
+                    if let Some(new) = track.keyframes.iter_mut().min_by(|a, b| (a.time_secs - k.time_secs).abs().total_cmp(&(b.time_secs - k.time_secs).abs())) {
+                        new.interpolation = k.interpolation;
+                        new.tangent_in = k.tangent_in;
+                        new.tangent_out = k.tangent_out;
+                    }
+                }
             }
         }
         GraphOp::RemoveKeyAt { key, time_secs, .. } => {

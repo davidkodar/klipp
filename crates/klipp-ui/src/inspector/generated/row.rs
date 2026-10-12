@@ -217,6 +217,48 @@ fn add_key(ctx: &mut RowCtx, desc: &ParamDesc, value: f32) {
     });
 }
 
+/// A switch's or a choice's key: the stored number (a switch's 0 or 1, a
+/// choice's index), held until the next key rather than blended.
+fn add_step_key(ctx: &mut RowCtx, desc: &ParamDesc, value: f32) {
+    let key = Keyframe { time_secs: ctx.clip_time_secs, value, interpolation: Interpolation::Step, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    ctx.cmds.push(AppCommand::AddKeyAt {
+        addr: ctx.addr.clone(),
+        key: ParamKey::new(desc.key),
+        keyframe: serde_json::to_value(key).unwrap_or(Value::Null),
+    });
+}
+
+/// A keyframable switch's or choice's diamond and key arrows (#1318): a
+/// click keys `value` at the playhead as a step, by path, or takes the
+/// key there away; the arrows seek to the previous or next key. `None`
+/// when they did nothing, or the parameter can't be keyed.
+fn stepped_keys(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc, keys: KeyState, value: f32) -> Option<RowOutcome> {
+    if !has_diamond(desc) {
+        return None;
+    }
+    let r = crate::widgets::scrubby_param::key_controls(ui, KeyframeState {
+        has_keyframe_at_playhead: keys.at_playhead,
+        has_any_keyframes: keys.any,
+        keys_in_frame: keys.in_frame,
+        prev_keyframe_time: keys.prev,
+        next_keyframe_time: keys.next,
+        current_interpolation: keys.interpolation,
+    });
+    if r.toggled {
+        if keys.at_playhead {
+            ctx.cmds.push(AppCommand::RemoveKeyAt { addr: ctx.addr.clone(), key: ParamKey::new(desc.key), time_secs: ctx.clip_time_secs });
+        } else {
+            add_step_key(ctx, desc, value);
+        }
+        return Some(RowOutcome::Keyed);
+    }
+    let to = if r.prev { keys.prev } else if r.next { keys.next } else { None };
+    to.map(|t| {
+        seek(ctx, t);
+        RowOutcome::Navigated
+    })
+}
+
 fn seek(ctx: &mut RowCtx, clip_secs: f64) {
     ctx.cmds.push(AppCommand::SeekTo(klipp_core::Timecode::from_secs_f64(ctx.timeline_in_secs + clip_secs, ctx.rate)));
 }
@@ -250,8 +292,8 @@ pub fn param_row(ui: &mut egui::Ui, ctx: &mut RowCtx, input: RowInput) -> RowOut
             }
             None => read_only(ui, desc.key, pres.label.unwrap_or(desc.label), stored, id),
         },
-        Widget::Toggle => toggle_row(ui, ctx, desc, pres, stored),
-        Widget::Combo => combo_row(ui, ctx, desc, pres, stored),
+        Widget::Toggle => toggle_row(ui, ctx, RowInput { desc, pres, stored, shown_at_t, keys }),
+        Widget::Combo => combo_row(ui, ctx, RowInput { desc, pres, stored, shown_at_t, keys }),
         Widget::ColourRgb | Widget::ColourRgba => colour_row(ui, ctx, desc, pres, stored),
         Widget::Slider if !has_diamond(desc) => slider_row(ui, ctx, desc, pres, stored),
         Widget::Scrub | Widget::Slider | Widget::Gradient(_) | Widget::HueRainbow | Widget::WheelPart(_) | Widget::Vec2 => {
@@ -506,7 +548,8 @@ fn slider_row(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc, pres: &Pres
 }
 
 /// A switch, or a choice of two (off then on) shown as one.
-fn toggle_row(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc, pres: &Presentation, stored: &Value) -> RowOutcome {
+fn toggle_row(ui: &mut egui::Ui, ctx: &mut RowCtx, input: RowInput) -> RowOutcome {
+    let RowInput { desc, pres, stored, shown_at_t, keys } = input;
     let label = pres.label.unwrap_or(desc.label);
     let on = match desc.kind {
         ParamKind::Choice(_) => choice_index(desc, stored).map(|i| i == 1),
@@ -517,10 +560,30 @@ fn toggle_row(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc, pres: &Pres
         },
     };
     let Some(mut on) = on else { return read_only(ui, desc.key, label, stored, "") };
-    #[cfg(any(test, feature = "row-recorder"))]
-    crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", desc.key, label, on);
-    if !ui.checkbox(&mut on, label).changed() {
+    // Keyed: the switch shows the animation at the playhead, and a click
+    // on it is a key there.
+    let keyed = keys.any && has_diamond(desc);
+    if let Some(v) = shown_at_t.filter(|_| keyed) {
+        on = v > 0.5;
+    }
+    let shown = on;
+    let (changed, stepped) = ui
+        .horizontal(|ui| {
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::control(ui.next_auto_id(), "checkbox", desc.key, label, on);
+            let changed = ui.checkbox(&mut on, label).changed();
+            (changed, stepped_keys(ui, ctx, desc, keys, f32::from(u8::from(shown))))
+        })
+        .inner;
+    if let Some(outcome) = stepped {
+        return outcome;
+    }
+    if !changed {
         return RowOutcome::Nothing;
+    }
+    if keyed {
+        add_step_key(ctx, desc, f32::from(u8::from(on)));
+        return RowOutcome::Keyed;
     }
     // In the stored form: a switch's bool or number, a choice's index or
     // name.
@@ -535,7 +598,8 @@ fn toggle_row(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc, pres: &Pres
 }
 
 /// A choice's drop-down: its labels name the stored index.
-fn combo_row(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc, pres: &Presentation, stored: &Value) -> RowOutcome {
+fn combo_row(ui: &mut egui::Ui, ctx: &mut RowCtx, input: RowInput) -> RowOutcome {
+    let RowInput { desc, pres, stored, shown_at_t, keys } = input;
     let label = pres.label.unwrap_or(desc.label);
     let names: Vec<&str> = match (desc.kind, pres.labels) {
         (_, Some(labels)) => labels.to_vec(),
@@ -546,22 +610,38 @@ fn combo_row(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc, pres: &Prese
         ParamKind::Bool => number(stored).map(|v| usize::from(v != 0.0)),
         _ => choice_index(desc, stored),
     };
-    let Some(index) = index.filter(|i| *i < names.len()) else {
+    let Some(mut index) = index.filter(|i| *i < names.len()) else {
         return read_only(ui, desc.key, label, stored, "");
     };
+    // Keyed: the choice shows the animation at the playhead, and picking
+    // another item is a key there.
+    let keyed = keys.any && has_diamond(desc);
+    if let Some(v) = shown_at_t.filter(|v| keyed && v.is_finite() && *v >= 0.0 && (v.round() as usize) < names.len()) {
+        index = v.round() as usize;
+    }
     #[cfg(any(test, feature = "row-recorder"))]
     crate::widgets::row_recorder::control(ui.next_auto_id(), "choice", desc.key, label, stored.clone());
     let mut chosen = index;
-    ui.horizontal(|ui| {
-        ui.label(label);
-        egui::ComboBox::from_id_salt((ctx.addr.clone(), desc.key)).selected_text(names[index]).show_ui(ui, |ui| {
-            for (i, name) in names.iter().enumerate() {
-                ui.selectable_value(&mut chosen, i, *name);
-            }
-        });
-    });
+    let stepped = ui
+        .horizontal(|ui| {
+            ui.label(label);
+            egui::ComboBox::from_id_salt((ctx.addr.clone(), desc.key)).selected_text(names[index]).show_ui(ui, |ui| {
+                for (i, name) in names.iter().enumerate() {
+                    ui.selectable_value(&mut chosen, i, *name);
+                }
+            });
+            stepped_keys(ui, ctx, desc, keys, index as f32)
+        })
+        .inner;
+    if let Some(outcome) = stepped {
+        return outcome;
+    }
     if chosen == index {
         return RowOutcome::Nothing;
+    }
+    if keyed {
+        add_step_key(ctx, desc, chosen as f32);
+        return RowOutcome::Keyed;
     }
     let by_index = ctx.entry.as_ref().is_some_and(|e| e.choices_by_index);
     let new = match (desc.kind, stored) {
