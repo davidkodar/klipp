@@ -2894,6 +2894,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "klipp-captions"
+version = "0.1.0"
+
+[[package]]
 name = "klipp-color"
 version = "0.1.0"
 dependencies = [
@@ -3484,6 +3488,7 @@ dependencies = [
  "klipp-analysis",
  "klipp-audio",
  "klipp-audio-search",
+ "klipp-captions",
  "klipp-color",
  "klipp-compose",
  "klipp-convert",

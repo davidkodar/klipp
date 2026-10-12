@@ -56,7 +56,7 @@ const WRITE_TOOLS: &[&str] = &[
     "klipp_append_clip", "klipp_remove_clip", "klipp_attach_audio", "klipp_set_append_audio", "klipp_select_clip",
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
-    "klipp_generator", "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_apply",
+    "klipp_generator", "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_import_subtitles", "klipp_apply",
     "klipp_open_project", "klipp_switch_sequence",
 ];
 
@@ -1051,7 +1051,14 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_export_status" => json!({ "method": "export_status", "wait": args.get("wait").and_then(Value::as_bool).unwrap_or(false), "job_id": args.get("job_id"), "timeout_ms": args.get("timeout_ms") }),
-        "klipp_export_subtitles" => json!({ "method": "export_subtitles", "path": arg_str(args, "path")? }),
+        "klipp_export_subtitles" => {
+            let mut v = json!({ "method": "export_subtitles", "path": arg_str(args, "path")? });
+            if let Some(f) = args.get("format").and_then(Value::as_str) {
+                v["format"] = json!(f);
+            }
+            v
+        }
+        "klipp_import_subtitles" => json!({ "method": "import_subtitles", "path": arg_str(args, "path")? }),
         "klipp_orient" => json!({ "method": "orient" }),
         "klipp_brief" => json!({ "method": "brief" }),
         "klipp_set_brief" => {
@@ -1953,31 +1960,24 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "media_id": { "type": "string" }, "max_chars": { "type": "integer", "description": "Cut at this many characters (default 8000)" } }),
              vec!["media_id"]),
         tool("klipp_beat_sheet",
-             "The screencast/demo beat sheet of a media item: where the picture is \
-              settled versus changing (idle/action segments), the candidate cut points \
-              (a scene change, or where a change just settled — cut TO a settle and hold \
-              until it reads, never mid-action), and the title/hold windows (settled \
-              stretches long enough to hold a title without it fighting a moving picture). \
-              Built from the shots + motion passes — run analyze first. With the OCR models \
-              downloaded, every settled beat and reveal is named by what the screen showed \
-              (\"6.13-14.50 s SEARCH & FILTERING\"), so a plan can be made by feature name. \
-              Coarse (per-second): treat the times as where to LOOK, then confirm with \
-              frame_at/contact_sheet where it matters. Ideal for cutting a screen recording \
-              into a promo without cutting mid-feature.",
+             "A screencast or demo's beat sheet: where the picture is settled or changing \
+              (idle/action), the cut points (a scene change, or where a change just settled: cut TO a \
+              settle and hold until it reads, never mid-action) and the title/hold windows (settled \
+              stretches a title can sit on). From the shots and motion passes, so analyze first. With \
+              the OCR models downloaded each settled beat and reveal is named by what the screen showed \
+              (\"6.13-14.50 s SEARCH & FILTERING\"), so a plan can work by feature name. Per second: \
+              the times say where to look; confirm with frame_at or contact_sheet where it matters.",
              json!({ "media_id": { "type": "string" } }),
              vec!["media_id"]),
         tool("klipp_find_shots",
-             "Motion filters require decoded measurements; missing bins do not count as static. Find shots across every analysed media item: by framing (close-up, medium \
-              close-up, medium, wide, very wide, inset — a small figure in a corner, a face \
-              cam over a screen — or no people; B-roll wants no people), at least so many people, an \
-              object the detector named (cat, car, cup…), motion (static, gentle, \
-              moving, busy), whether anything is said, a minimum length. Every condition \
-              given must hold. Each hit has the media id and the shot's start and end in \
-              the file, ready for an edit. A long continuous take (over 12 s: a walk, a \
-              held phone shot) is also searched moment by moment, split where the camera \
-              settles or moves off or the framing changes; such a hit carries a moment \
-              number and steady (the camera still enough to use as it is), so motion \
-              static or gentle finds a steady few seconds inside a walk.",
+             "Shots across every analysed item, every condition given holding: framing (close-up, medium \
+              close-up, medium, wide, very wide, inset: a small figure in a corner or a face cam over a screen; \
+              none for no people, as B-roll wants), at least so many people, a detector object (cat, car, cup…), \
+              motion (static, gentle, moving, busy; needs decoded measurements, and a missing bin is not static), \
+              speech or not, a minimum length. Each hit: the media id and the shot's start and end in the file. \
+              A take over 12 s is also searched moment by moment, split where the camera settles or moves or the \
+              framing changes; those hits carry a moment number and steady (still enough to use), so static or \
+              gentle finds a steady stretch inside a walk.",
              json!({
                  "framing": { "type": "string" }, "min_people": { "type": "integer" },
                  "object": { "type": "string" }, "motion": { "type": "string" },
@@ -2483,7 +2483,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               cancelled), progress 0 to 1, frames, stage, error, loudness result. With wait true, waits for job_id or all currently known jobs. Returns finished, succeeded and timed_out; failed or cancelled is not success. Timeout does not cancel renders.",
              json!({ "wait": { "type": "boolean" }, "job_id": { "type": "string" }, "timeout_ms": { "type": "integer", "description": "Maximum wait, default one hour" } }), vec![]),
         tool("klipp_export_subtitles",
-             "Write the sequence's subtitle and text clips as an SRT file at an absolute path.",
+             "Write the subtitle clips (text clips if none) to an absolute path, as the extension says: .srt, .vtt, .ass or .ssa; format, if given, must match.",
+             json!({ "path": { "type": "string" }, "format": { "type": "string" } }), vec!["path"]),
+        tool("klipp_import_subtitles",
+             "Read an .srt, .vtt, .ass or .ssa file (absolute path) onto a new subtitle track.",
              json!({ "path": { "type": "string" } }), vec!["path"]),
         tool("klipp_transcript",
              "What is said in a media file between two times, with when, in seconds of the \
@@ -2529,15 +2532,13 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               read; changes nothing.",
              json!({ "media_id": { "type": "string" }, "target_secs": { "type": "number", "description": "fit the track to this length, seconds" }, "skip_intro": { "type": "boolean", "description": "with target_secs: leave the intro out and fit from where it ends" }, "at_secs": { "type": "number", "description": "where the fitted track's place ops start on the timeline (0)" }, "track": { "description": "the track for the place ops: an index, or a kind such as \"audio\" (the first audio track)" } }), vec!["media_id"]),
         tool("klipp_style_profile",
-             "Read a reference video's editing style as facts, so you can build a clip in the \
-              same feel from other footage: its cut cadence (how many shots, how long, how many \
-              per minute, and whether it cuts on the beat), its tempo, its look measured off the \
-              picture through the scopes (blacks, whites, contrast, saturation, warmth), and its \
-              motion and detected holds. Cut cadence is not animation pacing: inspect changes \
-              within shots before choosing hold lengths. Motion statistics do not identify \
-              semantic animation events. It reads only. Match the feel with your own footage \
-              and your own or licensed music, never the reference's track. The reference must be \
-              imported and analysed first.",
+             "A reference video's editing style as facts, to build a clip in its feel from other \
+              footage: its cut cadence (shots, their lengths, cuts a minute, on the beat or not), its \
+              tempo, its look off the scopes (blacks, whites, contrast, saturation, warmth), its motion \
+              and detected holds. Cut cadence is not animation pacing: look at changes within shots \
+              before choosing hold lengths, as motion statistics name no animation events. Read only. \
+              Match the feel with your own footage and your own or licensed music, never the \
+              reference's track. Import and analyse the reference first.",
              json!({ "media_id": { "type": "string" } }), vec!["media_id"]),
         tool("klipp_search_music",
              "Search Jamendo royalty-free music by mood/genre, best textual match first. Results give title, artist, \
@@ -2689,10 +2690,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               media; brief length/size/captions/cast/music. With screen beat sheets: cuts during changes, short reading \
               holds, titles over changing screens (suggests hold windows), flat cadence; cuts to settled screens are \
               not jump cuts. With plans: missing brief features or under-three-second coverage, approved plans unbuilt \
-              or drifted. Findings give location, cause and remedy. Before klipp_export, fix errors and assess \
-              warnings. color true additionally renders one frame per top-track shot to measure clipping, crushed \
-              blacks, dullness, excess saturation and skin-line deviations; slower. loudness true meters the mix \
-              for sections far under the rest; slower.",
+              or drifted. Each finding gives where, why and the fix; fix errors and weigh warnings before klipp_export. \
+              Slower: color true renders a frame a top-track shot for clipping, crushed blacks, dullness, \
+              oversaturation and skin-line drift; loudness true meters the mix for sections far under the rest.",
              json!({ "color": { "type": "boolean" }, "loudness": { "type": "boolean" } }), vec![]),
         tool("klipp_rename_sequence",
              "Name the active sequence: what the timeline is called in the app and in the \
@@ -3296,4 +3296,12 @@ mod project_change_notice_tests {
         for args in [json!({}), json!({ "index": 0, "sequence_id": "abc" })] {
             assert!(tool_to_command("klipp_switch_sequence", &args).unwrap_err().contains("index or sequence_id"), "{args}");
         }
+    }
+
+    /// #1516: subtitles are read over MCP too, and written in a format asked for.
+    #[test]
+    fn subtitles_are_imported_and_exported_in_a_format() {
+        assert_eq!(tool_to_command("klipp_import_subtitles", &json!({ "path": "/a/b.srt" })).unwrap(), json!({ "method": "import_subtitles", "path": "/a/b.srt" }));
+        assert_eq!(tool_to_command("klipp_export_subtitles", &json!({ "path": "/a/b.vtt", "format": "vtt" })).unwrap(), json!({ "method": "export_subtitles", "path": "/a/b.vtt", "format": "vtt" }));
+        assert_eq!(tool_to_command("klipp_export_subtitles", &json!({ "path": "/a/b.srt" })).unwrap(), json!({ "method": "export_subtitles", "path": "/a/b.srt" }));
     }

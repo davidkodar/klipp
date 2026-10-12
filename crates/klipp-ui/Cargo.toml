@@ -24,6 +24,7 @@ ai-candle = ["dep:klipp-ml-candle", "klipp-ml-candle/candle"]
 ai-candle-cuda = ["ai-candle", "klipp-ml-candle/cuda"]
 
 [dependencies]
+klipp-captions = { workspace = true }
 klipp-color = { workspace = true }
 klipp-grade-model = { workspace = true }
 klipp-core = { workspace = true }
