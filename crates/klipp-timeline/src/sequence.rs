@@ -493,15 +493,27 @@ impl Sequence {
         let one = |nodes: &[klipp_nodes::NodeId]| match nodes {
             [inner] => Ok(*inner),
             [] => Err("an empty path names no node".to_string()),
-            _ => Err("that node is inside a compound, whose nodes have no thumbnail, solo or scope tap yet (#1475)".to_string()),
+            _ => Err("a node inside a compound is inspected only in a clip's own grade so far (#1475)".to_string()),
         };
         match path.root {
             Root::Clip { clip: c } if c == clip_id.0 => {
                 let grade = klipp_graph_lift::ids::entry_id(klipp_graph_lift::ids::RootKind::Clip, c, "grade", 0);
                 match path.nodes.split_first() {
+                    // Through each compound it names to the node inside
+                    // (#1475): the executor runs a compound's nodes under
+                    // their own ids.
                     Some((first, rest)) if *first == grade => {
-                        let inner = one(rest)?;
-                        if held(own, inner) { Ok(inner) } else { Err(format!("{inner} isn't in the clip's grade")) }
+                        let (inner, through) = rest.split_last().ok_or("an empty path names no node")?;
+                        let mut level = own;
+                        for id in through {
+                            level = level
+                                .nodes
+                                .iter()
+                                .find(|n| n.id == *id && n.kind == klipp_nodes::NodeKind::Compound)
+                                .and_then(|n| n.params.compound_subgraph.as_ref())
+                                .ok_or_else(|| format!("{id} isn't a compound of the clip's grade"))?;
+                        }
+                        if held(level, *inner) { Ok(*inner) } else { Err(format!("{inner} isn't in the clip's grade")) }
                     }
                     Some((first, _)) => Err(format!("{first} isn't the clip's grade group; only grade nodes are inspected")),
                     None => Err("an empty path names no node".into()),

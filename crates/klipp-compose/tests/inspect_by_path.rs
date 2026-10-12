@@ -345,3 +345,53 @@ fn an_identity_effect_shows_the_picture_that_feeds_it() {
         }
     }
 }
+
+/// A node inside a compound of a clip's grade, and inside a compound in
+/// that, answers its thumbnail, a solo and the scope's tap by its full
+/// path, on the CPU and the GPU (#1475): nothing is unavailable, each
+/// depth's solo shows its own picture, not the clip's.
+#[test]
+fn a_node_inside_a_compound_is_inspected_by_its_path() {
+    let node = |kind, params| Node { id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![] };
+    let chain = |inner: Vec<Node>| {
+        let mut nodes = vec![node(NodeKind::Source, NodeParams::default())];
+        nodes.extend(inner);
+        nodes.push(node(NodeKind::Output, NodeParams::default()));
+        let edges = nodes.windows(2).map(|w| Edge { from_node: w[0].id, from_port: 0, to_node: w[1].id, to_port: 0 }).collect();
+        let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 100.0, y: 0.0 })).collect();
+        NodeGraph { output_node_id: nodes.last().unwrap().id, nodes, edges, node_positions, working_space_override: None, frames: vec![], sticky_notes: vec![] }
+    };
+    let exposure = |stops| node(NodeKind::Exposure, NodeParams { exposure: Some(stops), ..Default::default() });
+    let (inner, deep) = (exposure(1.0), exposure(0.5));
+    let (inner_id, deep_id) = (inner.id, deep.id);
+    let nested = node(NodeKind::Compound, NodeParams { compound_subgraph: Some(chain(vec![deep])), ..Default::default() });
+    let nested_id = nested.id;
+    let outer = node(NodeKind::Compound, NodeParams { compound_subgraph: Some(chain(vec![inner, nested])), ..Default::default() });
+    let outer_id = outer.id;
+    let mut clip = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+    clip.set_grade(chain(vec![outer, exposure(-2.0)]));
+    let id = clip.id;
+    let grade = klipp_graph_lift::ids::entry_id(klipp_graph_lift::ids::RootKind::Clip, id.0, "grade", 0);
+    let mut seq = Sequence::new_default();
+    let mut track = Track::new("V1", TrackKind::Video);
+    track.clips = vec![clip];
+    seq.tracks = vec![track];
+    let at = |nodes: &[NodeId]| InspectAt::out(NodePath::new(Root::Clip { clip: id.0 }, std::iter::once(grade).chain(nodes.iter().copied())));
+    for gpu in [false, true] {
+        let plain = draw(&seq, gpu, Inspect::default()).0;
+        let mut soloed = Vec::new();
+        for (what, path) in [("one deep", at(&[outer_id, inner_id])), ("two deep", at(&[outer_id, nested_id, deep_id]))] {
+            let what = format!("{what} gpu {gpu}");
+            let (_, found) = draw(&seq, gpu, Inspect { clip: Some(id), only: Some(id), thumbs: Some([path.clone()].into_iter().collect()), ..Default::default() });
+            assert!(found.unavailable.is_empty(), "{what}: {:?}", found.unavailable);
+            assert!(found.thumbs.contains_key(&path), "{what}: a thumbnail");
+            let (_, found) = draw(&seq, gpu, Inspect { clip: Some(id), scope_tap: Some(path.clone()), ..Default::default() });
+            assert!(found.unavailable.is_empty() && found.scope_tap.is_some(), "{what}: a tap: {:?}", found.unavailable);
+            let (shown, found) = draw(&seq, gpu, Inspect { clip: Some(id), solo: Some(path.clone()), ..Default::default() });
+            assert!(found.unavailable.is_empty(), "{what}: {:?}", found.unavailable);
+            assert_ne!(shown, plain, "{what}: the solo isn't the clip's picture");
+            soloed.push(shown);
+        }
+        assert_ne!(soloed[0], soloed[1], "gpu {gpu}: each depth shows its own node");
+    }
+}

@@ -54,7 +54,7 @@ fn node_of(seq: &Sequence, clip: ClipId, at: &InspectAt) -> Result<(NodeId, bool
             return Err("the timeline grade is read through its own proxy, not a clip".into());
         }
         let [node] = at.path.nodes.as_slice() else {
-            return Err("that node is inside a compound, whose nodes have no thumbnail, solo or scope tap yet (#1475)".into());
+            return Err("a node inside a compound of the timeline grade isn't inspected yet, only one in a clip's own grade (#1475)".into());
         };
         let kind = seq.timeline_grade().and_then(|g| g.nodes.iter().find(|n| n.id == *node)).map(|n| n.kind).ok_or_else(|| format!("{node} isn't in the timeline grade"))?;
         let name = serde_json::to_value(kind).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
@@ -65,9 +65,13 @@ fn node_of(seq: &Sequence, clip: ClipId, at: &InspectAt) -> Result<(NodeId, bool
         Ok(node) => {
             // The grade the clip runs: its own on a render copy, else the
             // bakes replayed for it.
-            let running = seq.all_clips().find(|x| x.id == clip).and_then(|x| x.grade().nodes.iter().find(|n| n.id == node).map(|n| n.kind));
+            // At any depth of its compounds (#1475).
+            fn kind_in(g: &klipp_nodes::NodeGraph, id: NodeId) -> Option<klipp_nodes::NodeKind> {
+                g.nodes.iter().find_map(|n| if n.id == id { Some(n.kind) } else { n.params.compound_subgraph.as_ref().and_then(|sub| kind_in(sub, id)) })
+            }
+            let running = seq.all_clips().find(|x| x.id == clip).and_then(|x| kind_in(x.grade(), node));
             let kind = running
-                .or_else(|| seq.render_grade(clip).and_then(|g| g.nodes.iter().find(|n| n.id == node).map(|n| n.kind)))
+                .or_else(|| seq.render_grade(clip).and_then(|g| kind_in(&g, node)))
                 .ok_or_else(|| format!("{node} doesn't run"))?;
             let name = serde_json::to_value(kind).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
             let index = klipp_graph_format::ports::output_index(&name, &at.port).ok_or_else(|| format!("a {name} has no output {}", at.port))?;
