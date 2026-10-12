@@ -1290,6 +1290,7 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     color_keyframes: Default::default(),
                     write_on: *write_on,
                     extrusion: ext,
+                    three_d: None,
                     text_path: tp,
                     char_animation: ca,
                     // Prefer the new TextureFill struct when present

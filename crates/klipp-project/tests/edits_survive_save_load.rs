@@ -437,3 +437,29 @@ fn a_gradients_stop_keys_come_back() {
     let ClipKind::Title(loaded) = &seqs[0].tracks[0].clips[0].kind else { panic!("not a title") };
     assert_eq!(loaded.primary_text(), Some(&tb));
 }
+
+/// #1512: a text's 3D settings and keys come back through a real save
+/// and a strict load, beside its older extrusion.
+#[test]
+fn a_texts_3d_comes_back() {
+    let key = |time_secs: f64, value: f32| klipp_core::Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    let mut three_d = klipp_timeline::Text3d {
+        depth: 0.4,
+        back_bevel: Some(klipp_timeline::Bevel { size: 0.03, segments: 4, profile: klipp_timeline::BevelProfile::Round }),
+        rotation: [10.0, -30.0, 0.0],
+        face_color: Some([220, 40, 40, 255]),
+        ..Default::default()
+    };
+    three_d.keys.rotate_y = vec![key(0.0, -60.0), key(2.0, 60.0)];
+    let tb = TextBox { text: "Solid".into(), three_d: Some(three_d), ..TextBox::default() };
+    let mut seq = Sequence::new_default();
+    let mut c = Clip::gap(tc(0), tc(48));
+    c.kind = ClipKind::Title(TitleData::single_text(tb.clone()));
+    seq.tracks[0].clips = vec![c];
+    let dir = project_dir("text-3d");
+    save_project_with_color(&dir, &[seq], &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
+    let (seqs, ..) = klipp_project::load_project_strict(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let ClipKind::Title(loaded) = &seqs[0].tracks[0].clips[0].kind else { panic!("not a title") };
+    assert_eq!(loaded.primary_text(), Some(&tb));
+}

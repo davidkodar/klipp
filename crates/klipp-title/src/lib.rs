@@ -36,6 +36,7 @@ mod colour;
 mod fallback;
 mod shaping;
 mod text_on_path;
+pub mod text3d_mesh;
 pub use text_on_path::PathUnits;
 pub mod variable;
 mod vector_path;
