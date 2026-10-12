@@ -1,0 +1,69 @@
+# The timeline, markers, multicam and the edit plan
+
+What each of these tools does in full: the details its short description leaves out. Read one tool's part with klipp_guide and its name as the topic (find_shots), or this whole page as timeline-tools.
+
+## klipp_add_marker
+
+Put a marker on the timeline: how you and the editor leave each other notes. Mark what you are unsure of or want looked at, with a label and a note saying why, and the editor jumps through them. at_secs is timeline seconds; duration_secs makes it a range. color: red, orange, yellow, green, blue, purple; kind: chapter, todo, comment, best_take, section (chapters export as chapter points). Answers with the marker's id.
+
+## klipp_attach_audio
+
+Give a clip the audio of its own media file, linked, spanning exactly what the clip spans. Repairs a clip that was added before appending brought the audio along; refused if the clip already has its audio.
+
+## klipp_build_edit_plan
+
+Build the approved edit plan onto the timeline after whatever is down, as a dry run by default — the reply says what it would build, step by step, and changes nothing. With apply true it is built as one undo step (undo takes it all back). Refused while the plan is unapproved. `detail` adds every step as JSON.
+
+## klipp_create_multicam
+
+Make a multicam group from pool items (two or more angles of one event): synced onto one clock and laid out at the playhead, each angle on tracks of its own, as Create Synced Multicam does. sync is "timecode", "audio" or "timecode_then_audio" (default: timecode where a clip has it, sound for the rest). Seek first to where it should go. The sync runs in the background: read klipp_status (its multicam entry) or klipp_timeline once it is laid out.
+
+## klipp_detect_scene_cuts
+
+Split a clip at the cuts in its picture: a flattened movie, a montage someone exported, a long take with edits in it, back into its shots on the timeline. Runs in the background; the clip is then split at each hard cut, its linked sound with it, as one undo step. Hard cuts are found well; slow dissolves may be missed. Read klipp_timeline after a while for the shots.
+
+## klipp_generator
+
+The `data` argument:
+
+Preview a native generator clip; apply true places it as one undo step. Give at_secs, secs (positive, at most one day), optional video track index, and data in the native generator format: {SolidColor:{color:[r,g,b,a]}}, {Gradient:{top:[r,g,b,a],bottom:[r,g,b,a],angle_deg:0}}, {LivingGradient:{a:[r,g,b,a],b:[r,g,b,a],angle_deg:20,drift_deg_per_sec:4,glow:0.35}}, {Grain:{color:[r,g,b,a],amount:0.35,size_px:2,speed:24}}, {Polygon:{sides:24,color:[r,g,b,a],fill:true}} for a circle, {Placeholder:{label:missing,color:[r,g,b,a]}}, or the string Countdown. Colour channels are bytes 0..255. Omit track to use/create a bottom Background video track. Overlaps and locked tracks are refused.
+
+## klipp_list_clips
+
+Every track and its clips, one line a clip: clip id, kind, range in seconds, name (file, title text or generator) and media id, with speed, off, graded and effects only where set. Narrow it to a track, a stretch of time or one media item; full adds source ranges, frames, blend, grade group and paths. Each track lists its transitions too: kind, length, the stretch they cover and their two clips. Clip ids from here are what the grade tools take.
+
+## klipp_prepare_cut
+
+Prepare a frame-exact cut in a bounded TIMELINE range. Maps source pauses, word and sentence edges, shot changes, and settled screen reveals through trims and retiming onto sequence frames. Returns ranked candidates with evidence and uncertainty, relevant clips, linked sound, locks, handles, revision and project identity. Give the editing intent and an optional target moment. This only reads; choose a frame, plan the cut, and apply with its revision precondition. If ambiguous, inspect a contact sheet or audio excerpt first.
+
+## klipp_set_append_audio
+
+Source patching: whether appending a clip also brings its audio. On suits camera footage; off is for cutting to music, where every clip would otherwise lay down room tone. Shows as V+A / V only in the timeline toolbar, and resets to on when the app restarts.
+
+## klipp_set_brief
+
+The `brief` argument:
+
+Replace the brief as one undo step. With merge true, keep omitted fields; null clears a field. Fields (all optional): title, about, tone, platform, target_secs, width, height, loudness_lufs (web -14, broadcast -23), captions/music (bool), cast [{name,role,described}], features [{title,description,rank}] (rank 1 headline; plan segments reference titles), arc (e.g. hook/features/CTA), cta, brand_colors ["#rrggbb",...] (first is title default), notes. type_styles: [{name,font?,bold?,size?,color?,fill?,backing?,full_frame?,x?,y?,align?,outline?,outline_color?,glow?,glow_color?,gradient?,animate?,animate_secs?,stagger?,enter?,exit?,loop_effect?,shadow?}] (shadow as on a title: {x?,y?,blur?,color?,opacity?}). Title ops/plan titles select style by name and override its fields. Built-ins heading/callout/card can be replaced. enter/exit use title motion objects; kind none disables. look: {name} preset broadcast_neutral|web_punchy|film_soft|warm_interview|cool_tech|screencast, or black_l,white_l,mid_l,contrast_range,chroma_mean,cast_a,cast_b,skin_hue; style_profile supplies a reference look_target. vocabulary: correctly spelt names/products/terms for speech recognition; run klipp_analyze after setting. language: ISO 639-1 speech code (en,sv); omitted detects per file. Lower thirds use cast names; klipp_check checks the brief; exports inherit omitted size/loudness. Unknown fields refused.
+
+## klipp_set_edit_plan
+
+The `plan` argument:
+
+Propose the paper edit, as one undo step: the cut said before a clip is placed, so the user can read, change and approve it while changing it is cheap. `plan` is {segments: [...], music?, notes?}. Each segment, in cut order: {media_id, source_in_secs, source_out_secs (stills may hold past their import duration), feature? (a title from the brief's features, as spelt there), note? (what it shows and why — write one), placement? {x?, y?, width?, height?, rotation_deg?, opacity?} uses compose coordinates (equal width and height); background? {generator: solid|gradient|living_gradient|grain|circle|countdown|placeholder|color_bars, colors?: [#rrggbb, ...]} places a backdrop below the picture, taking the brief palette when colors are omitted; with_audio? (the file's own sound; off by default), title? {text, secs?, style? heading|callout|card (card covers the shot by default), x? and y? as frame fractions, full_frame? (false overlays), color?, fill?, glow? 0-1, glow_color?, gradient? [top, bottom], animate? (the title op's), animate_secs?, stagger? char|word|line, enter?, exit? (the title op motion objects)}, transition? ("cross_dissolve", "dip_to_black": how it joins the segment before), zoom? {from?, to, x?, y?}, sfx? {media_id (from search_sfx), at_secs? into the segment, source_in_secs?, secs?, volume_db?}}. Music is {media_id, duck_db?, source_in_secs?, volume_db?, fade_in_secs?, fade_out_secs?}. With snap_to_bars true the bed's beats are read and every segment is rounded to whole bars (half bars under one) and the bed starts on its first beat; the reply says what moved. Give consecutive montage segments section: "montage" (or "montage: name"). These snap to beats instead of bars. Once built from an approved plan, their screen reading minimum is relaxed and short titles use word-count timing. A montage title exactly matching a brief feature counts as its label when feature is omitted; an explicit feature takes precedence. Ground the stretches in klipp_beat_sheet: cut to a settled reveal and hold until it reads; put titles in a hold window. The plan is stored unapproved; the reply says which of the brief's features it leaves out. Show its text to the user and ask.
+
+## klipp_set_multicam_sound
+
+Choose whose sound the multicam group at at_secs (or the playhead) plays. Each angle brings its own sound, and heard together they echo, so a group plays one: an angle counted from 1 (the default is angle 1, the sound a synced group was matched to; pick the lav or the camera nearest the speaker), "follow" to cut the sound with the picture, or "off" when a recorder's track outside the group carries the sound. Playback and export hear the same. klipp_status's multicam entry says which is set.
+
+## klipp_switch_angle
+
+Cut the multicam group in play to an angle, counted from 1 as keys 1-9 are, at at_secs or at the playhead: from there on the program shows that camera, until the next cut. One undo step per cut. klipp_status's multicam entry lists the group's angles, the one in effect and the cut list; klipp_timeline marks each clip's angle and the primary's cuts. Cutting to a transcript: switch to the speaker's angle at each change of speaker.
+
+## klipp_timeline
+
+The timeline as text: tracks top first, every clip with its range in seconds and frames, what it is (media file, title text, generator), its grade and effects in a word, its id, the transitions on each track, and the markers. Read this before planning an edit; klipp_list_clips is the same as JSON with more fields. On a long cut, read one track or a stretch at a time with track, from_secs and to_secs.
+
+## klipp_timeline_sheet
+
+A contact sheet of the timeline as one image: a tile for each shot (each stretch between cuts on the picture tracks), or frames tiles evenly spaced, over a range of it. The look at a whole cut — framing, grade continuity, titles — in one call instead of a frame_at per shot. The reply lists each tile's time and what is on it.

@@ -1229,6 +1229,57 @@ const RECIPES: &str = include_str!("../../../assets/craft/recipes.md");
 /// What a person can do here, for answering them when they ask (#626).
 const ABILITIES: &str = include_str!("../../../assets/craft/abilities.md");
 
+/// More on the editorial ops klipp_plan and klipp_apply take, after the
+/// guide's own list of them (#1667).
+const OPS: &str = include_str!("../../../assets/craft/ops.md");
+/// Each tool's details, by area, a `## klipp_<tool>` section a tool
+/// (#1667): what its short description leaves out.
+const TOOL_PAGES: &[(&str, &str)] = &[
+    ("session-tools", include_str!("../../../assets/craft/tools/session.md")),
+    ("timeline-tools", include_str!("../../../assets/craft/tools/timeline.md")),
+    ("analysis-tools", include_str!("../../../assets/craft/tools/analysis.md")),
+    ("colour-tools", include_str!("../../../assets/craft/tools/colour.md")),
+    ("sound-tools", include_str!("../../../assets/craft/tools/sound.md")),
+];
+
+/// A guide topic's text: a page, the ops, an area's tool page, or one
+/// tool's section of it by the tool's name (`find_shots` or
+/// `klipp_find_shots`).
+fn guide_topic(topic: &str) -> Result<String, String> {
+    Ok(match topic {
+        "guide" => GUIDE.to_string(),
+        "graph" => GRAPH_GUIDE.to_string(),
+        "craft" => CRAFT.to_string(),
+        "recipes" => RECIPES.to_string(),
+        "abilities" => ABILITIES.to_string(),
+        // The guide's op list, then the fuller notes on some, then every
+        // op's name: the ops klipp_plan previews and klipp_apply applies.
+        "ops" => {
+            let list = GUIDE.find("\n## Ops\n").map_or("", |at| {
+                let rest = &GUIDE[at + 1..];
+                &rest[..rest[1..].find("\n## ").map_or(rest.len(), |e| e + 2)]
+            });
+            format!("{list}\n{OPS}\nEvery op: {}.\n", klipp_document::ops::OP_NAMES.join(", "))
+        }
+        "all" => format!("{GUIDE}\n\n---\n\n{CRAFT}\n\n---\n\n{RECIPES}\n\n---\n\n{GRAPH_GUIDE}"),
+        other => {
+            if let Some((_, page)) = TOOL_PAGES.iter().find(|(name, _)| *name == other) {
+                return Ok(page.to_string());
+            }
+            let heading = format!("## klipp_{}\n", other.strip_prefix("klipp_").unwrap_or(other));
+            let section = TOOL_PAGES.iter().find_map(|(_, page)| {
+                let at = page.find(&heading)?;
+                let rest = &page[at + heading.len()..];
+                Some(format!("{}{}", heading, &rest[..rest.find("\n## ").map_or(rest.len(), |e| e + 1)]))
+            });
+            return section.ok_or_else(|| {
+                let pages: Vec<&str> = TOOL_PAGES.iter().map(|(n, _)| *n).collect();
+                format!("unknown topic {other}; use guide, graph, craft, recipes, abilities, ops, all, {}, or a tool's name", pages.join(", "))
+            });
+        }
+    })
+}
+
 /// Sent with `initialize`, which clients put before the model in every
 /// session: how to answer the two things a person asks first (#626).
 const INSTRUCTIONS: &str = "Klipp is a video editor running on this computer; these tools work in the open project.
@@ -1242,15 +1293,7 @@ Before editing, read klipp_guide (topic guide) for how to work here.";
 fn call_tool(name: &str, args: &Value) -> Result<(Vec<Value>, Option<Value>), String> {
     if name == "klipp_guide" {
         let topic = args.get("topic").and_then(|v| v.as_str()).unwrap_or("guide");
-        let text = match topic {
-            "guide" => GUIDE.to_string(),
-            "graph" => GRAPH_GUIDE.to_string(),
-            "craft" => CRAFT.to_string(),
-            "recipes" => RECIPES.to_string(),
-            "abilities" => ABILITIES.to_string(),
-            "all" => format!("{GUIDE}\n\n---\n\n{CRAFT}\n\n---\n\n{RECIPES}\n\n---\n\n{GRAPH_GUIDE}"),
-            other => return Err(format!("unknown topic {other}; use guide, graph, craft, recipes, abilities or all")),
-        };
+        let text = guide_topic(topic)?;
         return Ok((vec![json!({ "type": "text", "text": text })], None));
     }
     let mut cmd = tool_to_command(name, args)?;
@@ -1511,36 +1554,25 @@ fn tool(name: &str, description: &str, mut properties: Value, required: Vec<&str
             "description": "Lost-reply retry: same key, identical write. Keys expire on app exit."
         });
     }
-    // Keep every tool's guidance discoverable. For the few large argument
-    // references, put the complete reference on the relevant input field.
-    let description = match name {
-        "klipp_generator" => {
-            properties["data"]["description"] = json!(description);
-            "Preview a native generator clip; apply true places it as one undo step. Give at_secs and secs; data describes the native generator. Overlaps and locked tracks are refused."
-        }
-        "klipp_set_brief" => {
-            properties["brief"]["description"] = json!(description);
-            "Replace the project brief as one undo step. With merge true, change only supplied fields; null clears a field. Read the brief field for the full format."
-        }
-        "klipp_set_edit_plan" => {
-            properties["plan"]["description"] = json!(description);
-            "Propose a paper edit for user approval as one undo step. Read the plan field for segment, music, montage and title formats. Show the resulting plan to the user and ask."
-        }
-        "klipp_narrate" => {
-            properties["voice"]["description"] = json!(description);
-            "Create local narration and import the take; apply true places it on a Voice track. Nothing downloads unless download_models is true. Read the voice field for voices, licences and prerequisites."
-        }
-        _ => description,
-    };
-    let description = match name {
-        "klipp_guide" => "Read the editable workflow, full operation reference and recipes. Read before editing.",
-        "klipp_plan" => "Preview frame-exact editorial ops without changing the timeline. Returns a revision for a guarded klipp_apply. Read klipp_guide for the full operation reference.",
-        "klipp_apply" => "Apply frame-exact editorial ops as one undo step. Pass expected_revision from a recent plan or timeline read. Read klipp_guide for the full operation reference.",
-        _ => description,
-    };
+    // A tool says what it does in a sentence or two and names the guide
+    // topic its details are in (#1667); where those details are an
+    // argument's format, the argument names the topic too.
+    if let Some(field) = match name {
+        "klipp_generator" => Some("data"),
+        "klipp_set_brief" => Some("brief"),
+        "klipp_set_edit_plan" => Some("plan"),
+        "klipp_narrate" => Some("voice"),
+        _ => None,
+    } {
+        properties[field]["description"] = json!(format!("Its format: klipp_guide topic {}.", &name["klipp_".len()..]));
+    }
     let description = description.split_whitespace().collect::<Vec<_>>().join(" ");
-    if matches!(name, "klipp_plan" | "klipp_apply") {
+    // The common ops' strict shapes once, on the preview; the apply takes
+    // the same ops (#1667).
+    if name == "klipp_plan" {
         properties["ops"] = edit_schema::ops_schema();
+    } else if name == "klipp_apply" {
+        properties["ops"] = json!({"type":"array","minItems":1,"items":{"type":"object","required":["op"]},"description":"The ops of klipp_plan's schema; every op: klipp_guide topic ops."});
     }
     json!({
         "name": name,
@@ -1563,35 +1595,26 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               footage, plan, apply, look, deliver; units, ids, anchors, ops, manners), the \
               craft reference (what a professional does without being asked), and the \
               recipes (worked plans for an interview with B-roll, a social cut-down, a \
-              montage). Files the user can read and change.",
-             json!({ "topic": { "type": "string", "description": "guide (default), graph (read before graph edits), craft, recipes, abilities (what a person can do here, for answering them when they ask), or all" } }),
+              montage). Files the user can read and change. A tool's details are under its \
+              name as the topic.",
+             json!({ "topic": { "type": "string", "description": "guide (default), graph (read before graph edits), craft, recipes, abilities (what a person can do here, for answering them when they ask), ops (every edit op), all, an area (session-tools, timeline-tools, analysis-tools, colour-tools, sound-tools), or a tool's name (find_shots) for its details" } }),
              vec![]),
         tool("klipp_status",
-             "Whether Klipp is there and what is open, read live without changing anything: \
-              first a plain summary to tell a person who asks whether Klipp is connected \
-              (version, project and whether it is saved, timeline, playhead, media), then \
-              the details: the build (commit, dirty, when it was built, and whether a newer \
-              build is on disk so a restart is due), transport state, timeline summary, \
-              viewer resolution and the latest performance sample. Start here.",
+             "Whether Klipp is there and what is open, read live without changing anything: a plain summary for a person who asks, then the build, transport, timeline, viewer and performance details. Start here. Details: klipp_guide topic status.",
              json!({}), vec![]),
         tool("klipp_operation_status",
-             "Read the latest known outcome of a queued write by its operation_id. Reports waiting_for_ui, ui_applied or ui_refused, the final document revision and refusal reason. Outcomes are kept only while Klipp runs; an ID from before a restart says so. Progress is null when the UI has no measurable total; this tracks UI command completion, not any background render or import probe.",
+             "The outcome of a queued write by its operation_id: waiting, applied or refused, with the final revision and the reason. Details: klipp_guide topic operation_status.",
              json!({ "operation_id": { "type": "string" } }), vec!["operation_id"]),
         tool("klipp_job_status",
-             "Read live render and analysis jobs in one shape, including phase, progress, result and error. Give job_id to follow one job. With wait true, return on a progress change or after a bounded long poll; call again until completed, failed or cancelled.",
+             "Live render and analysis jobs in one shape: phase, progress, result and error; job_id for one job, wait true to long-poll. Details: klipp_guide topic job_status.",
              json!({ "job_id": { "type": "string" }, "wait": { "type": "boolean" },
                      "timeout_ms": { "type": "integer", "minimum": 0, "maximum": 10000 } }), vec![]),
         tool("klipp_follow_job",
-             "Wait for one render or analysis job to end, then say how it ended: completed with the file and its \
-              loudness, failed with why, or cancelled, and the way there (each 10% with the time). Waits up to \
-              max_wait_ms (10 minutes unless given, at most an hour); if the job is still running then, says so — \
-              call again. Your client may show progress meanwhile, but you see only this reply. For live progress \
-              you can tell the person as it happens, run `klipp-mcp follow <job_id>` as a background task \
-              instead: it prints a line per step and a last line when the job ends.",
+             "Wait for one render or analysis job to end and say how it ended, with the way there. Details: klipp_guide topic follow_job.",
              json!({ "job_id": { "type": "string" },
                      "max_wait_ms": { "type": "integer", "minimum": 1, "maximum": 3600000 } }), vec!["job_id"]),
         tool("klipp_cancel_job",
-             "Cancel the named render or one queued analysis job. Running analysis, import and sync cannot be interrupted safely. A queued UI cancellation has its own operation_id; confirm its outcome before saying the job stopped.",
+             "Cancel a render or a queued analysis job; running analysis, import and sync cannot be stopped. Details: klipp_guide topic cancel_job.",
              json!({ "job_id": { "type": "string" } }), vec!["job_id"]),
         tool("klipp_play", "Start playback.", json!({}), vec![]),
         tool("klipp_pause", "Pause playback.", json!({}), vec![]),
@@ -1602,13 +1625,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "secs": { "type": "number", "description": "Seconds from timeline start" } }),
              vec!["secs"]),
         tool("klipp_list_clips",
-             "Every track and its clips, one line a clip: clip id, kind, range in \
-              seconds, name (file, title text or generator) and media id, with speed, \
-              off, graded and effects only where set. Narrow it to a track, a stretch \
-              of time or one media item; full adds source ranges, frames, blend, grade \
-              group and paths. Each track lists its transitions too: kind, length, \
-              the stretch they cover and their two clips. Clip ids from here are what \
-              the grade tools take.",
+             "Every track and its clips, a line a clip: ids, kinds, ranges, names, media ids and transitions; narrow by track, time or media. Clip ids here are what the grade tools take. Details: klipp_guide topic list_clips.",
              json!({
                  "track": { "type": ["integer", "string"], "description": "A track's index or name" },
                  "from_secs": { "type": "number", "description": "Only clips that end after this" },
@@ -1621,7 +1638,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "The media pool: media ids, paths, duration, fps, resolution, codec.",
              json!({}), vec![]),
         tool("klipp_generator",
-             "Preview a native generator clip; apply true places it as one undo step. Give at_secs, secs (positive, at most one day), optional video track index, and data in the native generator format: {SolidColor:{color:[r,g,b,a]}}, {Gradient:{top:[r,g,b,a],bottom:[r,g,b,a],angle_deg:0}}, {LivingGradient:{a:[r,g,b,a],b:[r,g,b,a],angle_deg:20,drift_deg_per_sec:4,glow:0.35}}, {Grain:{color:[r,g,b,a],amount:0.35,size_px:2,speed:24}}, {Polygon:{sides:24,color:[r,g,b,a],fill:true}} for a circle, {Placeholder:{label:missing,color:[r,g,b,a]}}, or the string Countdown. Colour channels are bytes 0..255. Omit track to use/create a bottom Background video track. Overlaps and locked tracks are refused.",
+             "Preview a native generator clip; apply true places it as one undo step. Give at_secs and secs; data describes the native generator. Overlaps and locked tracks are refused. Details: klipp_guide topic generator.",
              json!({ "data": { "type": ["object", "string"] }, "at_secs": { "type": "number" }, "secs": { "type": "number" }, "track": { "type": "integer" }, "apply": { "type": "boolean" } }), vec!["data", "at_secs", "secs"]),
         tool("klipp_import_media",
              "Import media: one path, several paths, or a folder's media files. Each is answered \
@@ -1637,35 +1654,22 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec!["media_id"]),
         tool("klipp_set_append_audio",
-             "Source patching: whether appending a clip also brings its audio. On suits camera \
-              footage; off is for cutting to music, where every clip would otherwise lay down \
-              room tone. Shows as V+A / V only in the timeline toolbar, and resets to on when \
-              the app restarts.",
+             "Source patching: whether appending a clip also brings its audio (on for camera footage, off for cutting to music). Details: klipp_guide topic set_append_audio.",
              json!({ "enabled": { "type": "boolean", "description": "true brings audio, false is video only" } }),
              vec!["enabled"]),
         tool("klipp_attach_audio",
-             "Give a clip the audio of its own media file, linked, spanning exactly what the \
-              clip spans. Repairs a clip that was added before appending brought the audio \
-              along; refused if the clip already has its audio.",
+             "Give a clip its own media file's audio, linked and spanning the clip; refused if it has it already. Details: klipp_guide topic attach_audio.",
              json!({ "clip_id": { "type": "string", "description": "From klipp_list_clips" } }),
              vec!["clip_id"]),
         tool("klipp_remove_clip", "Remove a clip from the timeline.",
              json!({ "clip_id": { "type": "string", "description": "From klipp_list_clips" } }),
              vec!["clip_id"]),
         tool("klipp_detect_scene_cuts",
-             "Split a clip at the cuts in its picture: a flattened movie, a montage someone exported, \
-              a long take with edits in it, back into its shots on the timeline. Runs in the \
-              background; the clip is then split at each hard cut, its linked sound with it, as one \
-              undo step. Hard cuts are found well; slow dissolves may be missed. Read klipp_timeline \
-              after a while for the shots.",
+             "Split a clip at the hard cuts in its picture (a flattened movie or montage), in the background, as one undo step. Details: klipp_guide topic detect_scene_cuts.",
              json!({ "clip_id": { "type": "string", "description": "The clip to split" } }),
              vec!["clip_id"]),
         tool("klipp_track_surface",
-             "Track a planar surface in perspective for the pin op. Supply click or corners (see fields), measured with \
-              klipp_frame_at at at_secs. Runs asynchronously as one undo step; klipp_list_clips reports the surface id \
-              and tracked range. Tracking stops on occlusion, blur or leaving frame; inspect nearby frames. Resume by \
-              correcting corners on a later frame, specifying the same surface and direction forward/backward. The new \
-              range replaces overlapping tracking and preserves the rest.",
+             "Track a planar surface in perspective for the pin op, from a click or corners measured with klipp_frame_at; in the background, as one undo step. Details: klipp_guide topic track_surface.",
              json!({
                  "clip_id": { "type": "string", "description": "The clip of footage the surface is in" },
                  "click": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "number" }, "description": "[x,y] inside the surface, fractions of the frame; instead of corners" },
@@ -1690,10 +1694,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               changing a grade — node ids come from here.",
              json!({ "clip_id": { "type": "string" } }), vec!["clip_id"]),
         tool("klipp_add_node",
-             "Add a colour node to a clip's grade graph. Kind is a NodeKind name, \
-              e.g. ColorBalance, Corrector, RGBCurves, Qualifier, Mask, MaskCutout, \
-              LayerMixer, or ofx:<identifier> for an OFX plug-in; an unknown one is refused with the list. Replies with the \
-              new node's node_id. A new node is unconnected — wire it with klipp_connect_nodes.",
+             "Add an unconnected colour node (a NodeKind name, or ofx:<identifier>) to a clip's grade graph; replies with its node_id. Wire it with klipp_connect_nodes. Details: klipp_guide topic add_node.",
              json!({
                  "clip_id": { "type": "string" },
                  "kind": { "type": "string", "description": "NodeKind name, e.g. ColorBalance" },
@@ -1715,10 +1716,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec!["clip_id", "from", "to"]),
         tool("klipp_set_node_param",
-             "Set one numeric parameter on a grade node, e.g. temperature, tint, hue, \
-              global_mix, saturation, contrast. Call klipp_get_grade first to see what \
-              a node currently carries: node ids belong to one clip, so the id of \
-              another clip's Corrector is refused rather than applied.",
+             "Set one numeric parameter on one of a clip's grade nodes; read klipp_get_grade first for its node ids. Details: klipp_guide topic set_node_param.",
              json!({
                  "clip_id": { "type": "string" },
                  "node_id": { "type": "string", "description": "From klipp_get_grade for THIS clip" },
@@ -1733,12 +1731,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "clip_id": { "type": "string" }, "node_id": { "type": "string", "description": "From klipp_get_grade for THIS clip" }, "name": { "type": "string" } }),
              vec!["clip_id", "node_id", "name"]),
         tool("klipp_set_log_format",
-             "Set the camera log (or HDR) encoding a clip was recorded in, for footage \
-              whose file metadata does not say (most camera log files do not). Klipp \
-              then decodes it to scene-linear for grading and shows it converted to \
-              normal contrast. Applies to the clip's media, so every clip of the same \
-              file follows. klipp_list_media shows each file's detected and effective \
-              format.",
+             "Set the camera log or HDR encoding a clip's media was recorded in, when its metadata does not say; every clip of the file follows. Details: klipp_guide topic set_log_format.",
              json!({
                  "clip_id": { "type": "string" },
                  "format": {
@@ -1765,11 +1758,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec![]),
         tool("klipp_perf",
-             "Frame timings: decode, grade, composite, total, drops, plus GPU->CPU \
-              readback counters, and presented_fps, the pictures shown per second \
-              over the last 2 s: it falls to null within 2 s of a pause, and stepping or \
-              scrubbing reads as a small rate. Use it to tell whether a change actually made \
-              playback faster.",
+             "Frame timings (decode, grade, composite, drops, readbacks) and presented_fps over the last 2 s, to tell whether a change made playback faster. Details: klipp_guide topic perf.",
              json!({}), vec![]),
         tool("klipp_log_tail",
              "Tail of Klipp's debug log. The engine logs its decisions here, including \
@@ -1777,12 +1766,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "lines": { "type": "integer", "description": "How many lines (default 100)" } }),
              vec![]),
         tool("klipp_timeline",
-             "The timeline as text: tracks top first, every clip with its range in \
-              seconds and frames, what it is (media file, title text, generator), its \
-              grade and effects in a word, its id, the transitions on each track, and \
-              the markers. Read this before \
-              planning an edit; klipp_list_clips is the same as JSON with more fields. On a long cut, \
-              read one track or a stretch at a time with track, from_secs and to_secs.",
+             "The timeline as text: tracks, every clip with its range, kind, grade, effects and id, the transitions and the markers. Read it before planning an edit. Details: klipp_guide topic timeline.",
              json!({
                  "max_chars": { "type": "integer", "description": "Cut on a line boundary at this many characters (default 12000)" },
                  "track": { "type": "integer", "description": "One track only, by index (0 is the top)" },
@@ -1791,12 +1775,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec![]),
         tool("klipp_analyze",
-             "Background analysis: shot boundaries, EBU R128 loudness/true peak, silence, and word-timed \
-              transcript/language if the speech model is installed. Beat sheet and OCR require screen footage (no \
-              camera metadata or tagged screen via klipp_tag_media) and their installed models. Omit media_id for the \
-              pool; analysed items are free. Also runs on import without downloads. wait true waits, then read \
-              klipp_media_analysis. download_models fetches missing enabled-in-preferences models with user knowledge: \
-              speech hundreds of MB, OCR pair about 10 MB.",
+             "Start background analysis of the pool or one item: shots, loudness, silence, transcript, and for screen footage the beat sheet and OCR. Models download only with download_models. Details: klipp_guide topic analyze.",
              json!({
                  "media_id": { "type": "string", "description": "From klipp_list_media; omit for every item" },
                  "wait": { "type": "boolean", "description": "Wait until all requested items end; inspect finished and succeeded" },
@@ -1810,69 +1789,26 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "query": { "type": "string" }, "max_hits": { "type": "integer" } }),
              vec!["query"]),
         tool("klipp_screen_text",
-             "What was on the screen of a screen recording and when: every line OCR read, \
-              folded into spans with the seconds it stayed up and where on the frame \
-              (x, y, w, h as fractions), between from_secs and to_secs. Says which screen a \
-              beat shows — \"Search & Filtering\" up 12–18 s — so a plan can name the right \
-              moment. SENSITIVE lines (an email, a key, a password, a card number) are listed \
-              masked with where to blur. Needs the two OCR models (about 10 MB): if the reply \
-              says they are not downloaded, ask the user before klipp_analyze with \
-              download_models true.",
+             "What a screen recording showed and when: OCR lines folded into spans with their times and places, sensitive ones masked. Needs the OCR models. Details: klipp_guide topic screen_text.",
              json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" }, "all": { "type": "boolean", "description": "every line read, not the summary of headings and lines that stayed up" } }),
              vec!["media_id"]),
         tool("klipp_grade_to_target",
-             "Measure the top picture track or clip against the brief look in CIELAB: black/white/mid lightness, \
-              contrast, chroma, neutral cast and each face skin hue. Adjust lift/black, gain/white, exposure/median, \
-              temperature+tint/cast and saturation/chroma; remeasure for up to three rounds. Strength limits changes \
-              from the starting grade. Revert and stop a shot if sky/foliage/skin hues drift or colours become garish. \
-              Preview reports current measurements and first adjustments, grouping shots from one file as a scene. \
-              apply true makes one undo step. Screen recordings are checked only for cast/clipping. Follow with \
-              klipp_skin_balance for skin and klipp_look for style.",
+             "Measure the picture against the brief's look in CIELAB and grade toward it, up to three rounds; apply true makes one undo step. Details: klipp_guide topic grade_to_target.",
              json!({ "clip_id": { "type": "string" }, "apply": { "type": "boolean" }, "rounds": { "type": "integer" }, "force": { "type": "boolean" }, "strength": { "type": "string", "enum": ["gentle", "normal", "bold"], "description": "how far each knob may move from where the shot started; gentle unless asked" } }), vec![]),
         tool("klipp_audio_spectrum",
-             "A file's sound as frequency against time: where a hum starts, when a hiss creeps \
-              in, which stretch has the air conditioning in it. The scrolling analyser in the \
-              app shows what is playing; this reads the whole file at once, which is the only \
-              way to answer *when*. Answers with named findings and the band levels a second at \
-              a time -- rumble, hum, voice, sibilance, hiss -- each judged relative to the \
-              voice's own level rather than as an absolute, because a quiet recording of a clean \
-              room and a loud one of a noisy room have the same noise floor and different \
-              problems.",
+             "A file's sound as frequency against time over the whole file: named findings (hum, hiss, rumble) and band levels a second at a time. Details: klipp_guide topic audio_spectrum.",
              json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" } }), vec!["media_id"]),
         tool("klipp_adopt_look",
-             "Take a look's numbers off a reference -- a file in the media pool, or the \
-              timeline's own best-graded shot -- and make them the target every colour \
-              judgement is held to. This is how a grade is briefed on a real job: somebody \
-              points at a picture and says \"like this\". The named presets are the fallback \
-              for when there is no such picture, not the normal path. apply false reports what \
-              it measured and which preset is nearest; apply true writes it to the brief, and \
-              check, grade_to_target and match_scenes all read it from there.",
+             "Take a look's numbers off a reference picture (a pool file, or the best-graded shot) as the target colour is judged by; apply true writes it to the brief. Details: klipp_guide topic adopt_look.",
              json!({ "media_id": { "type": "string" }, "from_timeline": { "type": "boolean" }, "apply": { "type": "boolean" } }), vec![]),
         tool("klipp_match_scenes",
-             "Group the timeline's shots into scenes by how they were lit, pick the shot in each \
-              that is already closest to the look as the hero, grade the rest onto it, and report \
-              how far each still is. This is the job that fills most of a colourist's day and it \
-              is not the same as grading each shot well: two shots can each be defensible alone \
-              and still cut badly, because the eye tracks a change across a cut far more readily \
-              than an absolute error inside a shot. Matched on the face first, then exposure, \
-              then the cast on the neutrals, then contrast. apply false reports; apply true \
-              grades, the whole pass as one undo step.",
+             "Group the shots into scenes by their light, pick a hero in each and grade the rest onto it; apply true grades the pass as one undo step. Details: klipp_guide topic match_scenes.",
              json!({ "apply": { "type": "boolean" }, "rounds": { "type": "integer" } }), vec![]),
         tool("klipp_grade_chain",
-             "A clip's grade chain in the order the picture flows through it, each node named \
-              with the stage it belongs to -- input transform, balance, secondary, look, output \
-              -- and whatever the chain does out of that order. A balance sitting after a look \
-              is correcting the look's own cast and will never settle; a key pulled before the \
-              balance drifts as the balance moves under it. Read this when a grading loop is \
-              not converging.",
+             "A clip's grade chain in picture order, each node named with its stage, and what runs out of order. Read when a grading loop will not settle. Details: klipp_guide topic grade_chain.",
              json!({ "clip_id": { "type": "string" } }), vec![]),
         tool("klipp_colour_selfcheck",
-             "Send a published 24-patch ColorChecker through the render path and read it back, \
-              to find out whether the path itself moves colour. Run it once before grading to \
-              measured targets: if the chart does not come back where it went in, every cast \
-              and skin-tone reading is partly a measurement of the pipeline, and a grading loop \
-              will chase it for ever. Checks the CPU and GPU paths and holds them against each \
-              other, because the viewer shows one and an export may take the other.",
+             "Send a ColorChecker through the CPU and GPU render paths and read it back, to see whether the pipeline itself moves colour. Run once before grading to targets. Details: klipp_guide topic colour_selfcheck.",
              json!({ "size": { "type": "integer" } }), vec![]),
         tool("klipp_measure_region",
              "One box of the frame read on its own, in the same numbers as klipp_frame_stats: a \
@@ -1881,67 +1817,25 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               two different things.",
              json!({ "secs": { "type": "number" }, "x": { "type": "number" }, "y": { "type": "number" }, "w": { "type": "number" }, "h": { "type": "number" }, "timeout_ms": { "type": "integer" } }), vec!["secs", "x", "y", "w", "h"]),
         tool("klipp_skin_balance",
-             "Skin onto the skin band, by measurement: the faces in the clip's frame (the framing \
-              analysis's people, the head of each) are read as an 8×8 grid of skin patches in \
-              CIELAB; the face's median hue is held to the band 40–65° that real skin of every \
-              kind sits in. With apply true a skin secondary (a qualifier keyed on skin, a hue \
-              shift) turns the hue onto the band, measured again after each of up to three \
-              rounds. Refused when the face is lit by two colours of light; when the scene's \
-              neutrals carry the same cast the reply says to white balance first. Read a face \
-              at any time with klipp_frame_stats.",
+             "Turn faces' skin hue onto the 40-65 degree band by measurement, with a skin secondary, up to three rounds with apply true. Details: klipp_guide topic skin_balance.",
              json!({ "clip_id": { "type": "string" }, "apply": { "type": "boolean" } }), vec!["clip_id"]),
         tool("klipp_review",
-             "The cut as an editor scrubs it, in one call: a draft render of the whole timeline \
-              (max_width 640 by default, fast), a contact sheet of the draft (frames tiles in cols \
-              columns, one every couple of seconds), and the check with its colour pass. Read the \
-              sheet image for the shape of the cut — the rhythm, the titles, the cards — and the \
-              check for what to fix; frame_at for a closer look at one frame. Takes as long as the \
-              draft render (seconds to a minute).",
+             "The cut as an editor scrubs it, in one call: a fast draft render, a contact sheet of it, and the check with its colour pass. Details: klipp_guide topic review.",
              json!({ "max_width": { "type": "integer" }, "frames": { "type": "integer" }, "cols": { "type": "integer" }, "path": { "type": "string" } }), vec![]),
         tool("klipp_narrate",
-             "Narration from text, made on the machine. voice is a manifest id; the default is \
-              kokoro_voice_af_heart (natural, female, US English; Apache-2.0). The other Kokoro voices are \
-              kokoro_voice_ + af_bella, af_nicole, am_michael, am_fenrir, am_puck (US); bf_emma, bf_isabella, \
-              bm_george, bm_fable (UK); they need the espeak-ng program and one 87 MB download for all ten. \
-              Lighter, more robotic Piper voices (the piper program) are piper_ + en_us_ljspeech_high, \
-              en_us_kristin_medium, en_us_norman_medium, en_us_john_medium, en_us_libritts_high (CC BY: credit \
-              LibriTTS), en_gb_cori_high, sv_se_nst_medium (Swedish); piper_en_us_lessac_medium is research \
-              only, never for paid work. Where Kokoro cannot run, the default is piper_en_us_ljspeech_high. \
-              Nothing downloads unless download_models is true (or the person downloads it in Window > \
-              Narrate); a refusal names the size. The take goes into the pool, and with apply true onto a \
-              Voice track at at_secs as dialogue. speed (0.5 to 2; 0.85 reads unhurried) and pause_secs (0 to \
-              3, between sentences) shape the delivery. Then duck the music under it; transcript gives the \
-              words' times. A scratch voice to cut to, replaced by a recording later.",
+             "Create local narration and import the take; apply true places it on a Voice track. Nothing downloads unless download_models is true. Voices, licences and prerequisites: klipp_guide topic narrate.",
              json!({ "text": { "type": "string" }, "at_secs": { "type": "number" }, "voice": { "type": "string" }, "speed": { "type": "number" }, "pause_secs": { "type": "number" }, "download_models": { "type": "boolean" }, "apply": { "type": "boolean" }, "path": { "type": "string" } }), vec!["text"]),
         tool("klipp_record",
-             "Record the screen for secs with the recorder on the machine (gpu-screen-recorder, else \
-              wf-recorder): target \"focused\" (the focused window, the default), \"screen\", a \
-              monitor's name, or a region \"WxH+X+Y\"; fps 60. Imported into the pool unless import \
-              is false, so the footage of the product can be made from here: ask the user to bring \
-              the window up, record, analyze, cut.",
+             "Record the screen (the focused window, the screen, a monitor or a region) for secs, imported into the pool. Details: klipp_guide topic record.",
              json!({ "secs": { "type": "number" }, "target": { "type": "string" }, "fps": { "type": "integer" }, "path": { "type": "string" }, "import": { "type": "boolean" } }), vec!["secs"]),
         tool("klipp_mix_loudness",
-             "How loud the mix is over a stretch of the timeline, as the export mixes it (before \
-              loudness normalisation): every step_secs (0.5) its short-term loudness and the \
-              loudest 400 ms inside the step, with the steps that stand out 4 dB over the median \
-              marked. Use it to hear whether a whoosh or a hit lands over the music at its cut, \
-              and whether music sits under speech. A read; about a tenth of the stretch's length.",
+             "The mix's loudness over a stretch as the export mixes it, step by step, the steps 4 dB over the median marked. Details: klipp_guide topic mix_loudness.",
              json!({ "from_secs": { "type": "number" }, "to_secs": { "type": "number" }, "step_secs": { "type": "number" } }), vec![]),
         tool("klipp_auto_sfx",
-             "Preview sound design; apply true commits one undo step: whooshes on cuts, clicks on reveals, riser into \
-              last cut. on cuts is default; transitions selects cuts with transitions; stylised selects \
-              zoom/whip/glitch/film-burn, excluding dissolve/dip. Optional media ids select sounds; otherwise preview \
-              built-in whooshes, then synthesise/import on apply. Skip conflicting placements, preserve existing clips. \
-              Place on SFX track with sfx role. When both sources are analysed, whooshes are 3 dB above the loudest \
-              underlying sound and clicks 3 dB below; otherwise -6/-8 dB.",
+             "Preview sound design for the cut: whooshes on cuts, clicks on reveals, a riser into the last cut; apply true commits it as one undo step. Details: klipp_guide topic auto_sfx.",
              json!({ "whoosh": { "type": "string" }, "click": { "type": "string" }, "riser": { "type": "string" }, "on": { "type": "string", "enum": ["cuts", "transitions", "stylised"] }, "apply": { "type": "boolean" } }), vec![]),
         tool("klipp_auto_redact",
-             "Hide everything the screen text found sensitive — emails, keys, passwords, card \
-              numbers — wherever the timeline shows it: one redact op per finding (a cropped, \
-              pixelated copy of the footage on a video track above), resolved as a plan. A dry \
-              run by default; with apply true it is done as one undo step. Needs the OCR pass \
-              (klipp_analyze with the OCR models). Look at a frame afterwards to see each box \
-              covers its text.",
+             "Pixelate every sensitive thing the screen text found (emails, keys, passwords, card numbers) where the timeline shows it; a dry run unless apply is true. Details: klipp_guide topic auto_redact.",
              json!({ "apply": { "type": "boolean" } }), vec![]),
         tool("klipp_search_screen_text",
              "Find every moment a word or phrase was on screen, across all footage: the \
@@ -1954,31 +1848,15 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_analysis_status", "Where analysis stands. With wait true, holds the response until the selected items end or timeout. Reports finished, succeeded and timed_out; failed items carry errors.",
              json!({ "wait": { "type": "boolean" }, "media_id": { "type": "string" }, "timeout_ms": { "type": "integer", "description": "Maximum wait, default one hour; does not cancel work" } }), vec![]),
         tool("klipp_media_analysis",
-             "What is known about a media item, as text: its shots with their ranges, \
-              its loudness, range and true peak, and its silences. The timeline view \
-              shows the same facts per clip in brief. Times are seconds from the file's \
-              start; a clip's source_in maps them to the timeline.",
+             "What is known about a media item as text: its shots, loudness, true peak and silences, in seconds of the file. Details: klipp_guide topic media_analysis.",
              json!({ "media_id": { "type": "string" }, "max_chars": { "type": "integer", "description": "Cut at this many characters (default 8000)" } }),
              vec!["media_id"]),
         tool("klipp_beat_sheet",
-             "A screencast or demo's beat sheet: where the picture is settled or changing \
-              (idle/action), the cut points (a scene change, or where a change just settled: cut TO a \
-              settle and hold until it reads, never mid-action) and the title/hold windows (settled \
-              stretches a title can sit on). From the shots and motion passes, so analyze first. With \
-              the OCR models downloaded each settled beat and reveal is named by what the screen showed \
-              (\"6.13-14.50 s SEARCH & FILTERING\"), so a plan can work by feature name. Per second: \
-              the times say where to look; confirm with frame_at or contact_sheet where it matters.",
+             "A screencast's beat sheet: idle and action stretches, cut points and title holds, named by the screen text when OCR ran. Analyze first. Details: klipp_guide topic beat_sheet.",
              json!({ "media_id": { "type": "string" } }),
              vec!["media_id"]),
         tool("klipp_find_shots",
-             "Shots across every analysed item, every condition given holding: framing (close-up, medium \
-              close-up, medium, wide, very wide, inset: a small figure in a corner or a face cam over a screen; \
-              none for no people, as B-roll wants), at least so many people, a detector object (cat, car, cup…), \
-              motion (static, gentle, moving, busy; needs decoded measurements, and a missing bin is not static), \
-              speech or not, a minimum length. Each hit: the media id and the shot's start and end in the file. \
-              A take over 12 s is also searched moment by moment, split where the camera settles or moves or the \
-              framing changes; those hits carry a moment number and steady (still enough to use), so static or \
-              gentle finds a steady stretch inside a walk.",
+             "Shots across every analysed item matching all conditions given: framing, people, objects, motion, speech and length; long takes searched moment by moment. Details: klipp_guide topic find_shots.",
              json!({
                  "framing": { "type": "string" }, "min_people": { "type": "integer" },
                  "object": { "type": "string" }, "motion": { "type": "string" },
@@ -1987,11 +1865,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec![]),
         tool("klipp_contact_sheet",
-             "Look at a media file: a grid of frames evenly spaced over a range (the whole \
-              file by default), each with its time in the file burnt in, as one JPEG, \
-              inlined when small enough. Use it to see what a clip is before planning, \
-              and to check a range you cut to. Twelve frames, four to a row, 240 px \
-              tiles by default; the reply lists each tile's time.",
+             "A grid of frames over a media file's range, each with its time burnt in, as one JPEG: see a clip before planning. Details: klipp_guide topic contact_sheet.",
              json!({
                  "media_id": { "type": "string" },
                  "from_secs": { "type": "number" }, "to_secs": { "type": "number" },
@@ -2010,438 +1884,12 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                      "path": { "type": "string" } }),
              vec!["from_secs", "to_secs"]),
         tool("klipp_plan",
-             concat!("Dry run: what a list of editorial operations would do, step by step, with each \
-              touched clip's range afterwards. Nothing changes. Use it before klipp_apply. ",
-              "Editorial operations, resolved by Klipp into frame-exact edits. Give a list of ops; \
-              each is an object with \"op\" and its fields:\n\
-              place {media_id, track, at, source_in?, source_out?, insert?, with_audio?} — a \
-              media item onto a track (an index from klipp_timeline, or \"video\"/\"audio\"/\"text\" \
-              for the first of that kind) at an anchor; source_in/out in seconds of the file, \
-              the whole file by default; for still images this is the hold range and may exceed the import duration. Its sound comes along linked on the first audio track \
-              (made if none) unless with_audio is false (B-roll over a voice); an empty sequence \
-              takes the first picture's size and rate; with insert, every unlocked track is \
-              rippled later to make room and a clip straddling the anchor is split.\n\
-              add_track {kind, name?} — a video or text track on top (it becomes track 0, every \
-              other index moves down by one), an audio or subtitle track at the bottom.\n\
-              remove_track {track, with_clips?} — a track out (index or kind), every track below moving \
-              up by one; refused while it holds clips unless with_clips, which takes them and unlinks \
-              their partners elsewhere.\n\
-              captions {track?, from?, to?, max_chars?, max_lines?, replace?} — captions for what is heard \
-              on the timeline, from the transcripts (run klipp_analyze first): each word lands \
-              where its clip puts it, cues close at sentences, pauses and cuts, two lines of 42 \
-              by default; on the first subtitle track, made at the bottom if there is none. The \
-              reply lists every cue to be read; correct one with set_text. Do it after the \
-              speech is placed and trimmed; after a re-cut, make them again with replace true.\n\
-              audio {clip_id, volume_db?, gain_db?, pan?, fade_in?, fade_out?} — a clip's sound: \
-              volume and pre-fader gain in dB, pan -1..1, fades in seconds; what is left out \
-              stays. For an audio clip linked to a video clip the settings go on the video \
-              clip, where playback and the render read them. track (index or kind) in place of \
-              clip_id, with from?/to?, sets every clip heard on it in one step.\n\
-              track_audio {track, effect, params?: {name: value}, bypass?, remove?} — the track's own audio chain, run \
-              after every clip's own (eq, compressor, limiter, gate, high_pass, denoiser, voice_isolation, deesser, \
-              hum_removal, reverb…): adds the effect (or sets the one there), bypasses it, or takes it off.\n\
-              duck {clip_id, by_db?, fade_secs?, bridge_secs?} — music under speech: the clip's volume comes \
-              down (9 dB by default) wherever speech is heard over it (not clips marked music, \
-              sfx, ambience, foley or broll, nor any set 12 dB under the music; a transcribed clip \
-              only where its words are, a voiceover throughout), moving over \
-              fade_secs (0.5) each way, down across gaps under bridge_secs (2), as volume keyframes. Set the music's volume first, \
-              place the speech first.\n\
-              volume {clip_id, keys:[{at, db}]} — a clip's volume drawn by hand: levels in dB from \
-              the clip's own level (0 as set, -9 a duck, -60 near silence) at timeline seconds, straight moves between; \
-              replaces its volume keyframes. For the dip duck cannot find, or a swell.\n\
-              grade {clip_id | on, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, \
-              gain?, highlights?, shadows?, vibrance?, reset?} — a picture clip's primary grade: \
-              what is given is set, the rest stays. Every knob is 0 at neutral except saturation \
-              and contrast, which are multipliers with 1 as shot (1.1 a touch more, 0.9 less); exposure in stops; temperature/tint the white balance in mireds, -50 to 50 (about 5 Lab b* at 25; a tenth of a unit does nothing); \
-              lift/gamma/gain the shadows/mids/highlights; gain and highlights are strong for their range, \
-              so a first touch is ±0.02 to 0.05 (on a sunlit shot highlights -0.2 took the white point from 84 to 65 IRE, \
-              and gain +0.05 clipped a sixth of the frame): step small and read frame_stats between; \
-              vibrance is skin-safe saturation; \
-              reset takes it to neutral first. Read frame_stats and grade to the numbers; grade \
-              for continuity first — shots that follow each other should match — then the look.\n\
-              grade_group {group, clips:[clip_id…], leave?, look_target?, departs?} — picture clips into a named grade group \
-              (made when new; a clip is in one group at most), or out of it with leave; look_target names a \
-              preset its shots are graded and judged to instead of the brief's (\"none\" clears it), departs true \
-              judges them for faults only, a section off the look on purpose; either works on a group alone; \
-              remove_grade_group {group} ends one, its clips keep their own grades. A group's clips \
-              share a pre-clip grade (before each one's own: a camera's or a scene's balance) and a \
-              post-clip grade (after it: the scene's look). grade and look take on in place of \
-              clip_id: on {group, stage?: \"pre\"|\"post\" (default)} grades the group once for \
-              every member; on \"timeline\" grades the whole sequence after every clip. One look \
-              over a scene is a group and one look on it, not the same look on every shot.\n\
-              slip {clip_id, secs} — move what a clip shows, not the clip: source in and out both by \
-              secs (later in the file for positive), the timeline untouched; its linked sound slips by as \
-              much, a J or L cut kept. slide {clip_id, secs} — the clip moved between its neighbours, \
-              its picture and length kept: the one before longer, the one after shorter, sound with them; \
-              refused where a neighbour runs out. strobe {clip_id, piece_frames, on?, off?, from?, to?, \
-              ripple?} — the clip (or from..to inside it) cut into pieces piece_frames long and of every \
-              on pieces kept the next off removed (1 and 1), so the shot flickers; ripple closes the gaps, \
-              else they stay black; the last piece takes the remainder; one undo. set_length {clips, \
-              frames, keep?, ripple?} — each clip made frames long, keep start (default), end or centre; \
-              ripple closes up, as for a rapid-fire montage of 3-frame clips; one undo. over_edits \
-              {clip_id, tracks?, align?, every_clip?, from?, to?} — a copy of the clip (a flash, an \
-              adjustment clip) on its own track over every cut of the targeted picture tracks (or the \
-              tracks given), align centre (default), start or end on the cut; every_clip uses each \
-              clip's start; a cut where a copy would overlap is skipped; one undo. role {clip_id, role} — \
-              what a clip is to the mix and the checks: dialogue, music, sfx, ambience, foley, \
-              voiceover, broll, graphics; a bed marked music is never taken for speech. matte \
-              {clip_id, source?, channel?, invert?, feather_px?, choke_px?, show_source?, clear?} — \
-              the clip seen only through another (track matte); without source, the clip above it: \
-              title {text, size 700-1000, font \"Bebas Neue\", over_faces: true} over a clip, then matte on the clip, \
-              puts the footage inside the word. format \
-              {width, height, fps?} — the sequence's picture size (and rate): the delivery's, \
-              the picture fitted, never stretched.\n\
-              redact {clip_id, x, y, w, h, from?, to?, kind?, amount?} — hide a patch of the picture \
-              (an email, a key, a face) for a stretch: a cropped copy pixelated (kind mosaic, \
-              default) or blurred on a video track above; x, y, w, h are fractions of the frame \
-              from the top left, as check's sensitive_on_screen and klipp_screen_text give them; \
-              from and to default to the clip's edges. auto_redact does every finding at once.\n\
-              pin {clip_id, media_id, surface?, from?, to?, fit?, inset?} — a picture, video or still \
-              onto a surface klipp_track_surface followed in the clip: on a video track above, following \
-              it; surface is its id or name, the clip's latest when left out; fit stretch|fit (auto by \
-              shape when left out); inset a margin each side, ~0.02 for a screen's bezel.\n\
-              label {clip_id, name?, colour?} — the clip's own name on the timeline, shown in place \
-              of its media's (blank gives the media's back), and its colour: none, red, orange, \
-              yellow, green, blue or purple. Timeline and list_clips show both.\n\
-              effect {clip_id | on: \"timeline\" | {group} | {track, from?, to?, itself?}, kind, amount?} — a finishing effect on a picture, or on every picture of the timeline, a grade group or a track in one step (with itself: true, on the track itself, after every clip's own, clips added later too): vignette, grain, glow, \
-              bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
-              directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \
-              mirror, lens_distortion, edge_detect, denoise, vhs, old_film, corners (rounded alpha mask), \
-              shadow (drop shadow), outer_glow (glow outside the layer silhouette), fill_bars (the black \
-              bars round an upright phone shot in a wide frame filled with the picture, enlarged and \
-              blurred: Resolve's blanking fill; more amount is softer and darker); amount 0-1. These are \
-              effect kinds, e.g. {op: effect, clip_id: ID, kind: corners, amount: 0.4}; shadow and outer_glow \
-              use the same fields. Place the picture with compose to show the backdrop around it. A key \
-              is kind chroma_key (green_screen, blue_screen) on one clip, the app's Chroma Key: color \
-              #rrggbb (green; blue for blue_screen), tolerance 0.2, softness 0.1, spill 0.6, each 0-1. clean_audio {clip_id, voice?, reduction_db?, wind?, hiss?, hum?, deess?} — clean a \
-              clip's sound, each flag its tool: voice isolates dialogue from wind, traffic and room noise with the \
-              Voice Isolation AI effect, the best cleanup where someone speaks (reduction_db 12 keeps the place, \
-              default 24, 60 removes all it can; leave it off where nobody speaks, it would take the ambience); \
-              wind for gusts and rumble, hiss for tape or air hiss, hum for mains buzz, deess for harsh sibilance. \
-              stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
-              replace {clip_id, media_id, source_in?} — another file in the clip's slot: same place, length and speed, its grade, effects, role, volume, links and transitions kept, its linked sound moved with it; source_in defaults to the clip's own when it fits, else the file's start. \
-              retime {clip_id, speed | fit, ripple?} — change speed, its linked sound with it; fit true instead of speed fills the room to the next clip on its track exactly, the speed worked out (fit to fill) (>1 faster/shorter, <1 slower/longer, negative reversed; the sound plays at the speed, its pitch moving with it, backward when reversed; a speed ramp's sound is silent); ripple moves the clips after it, without it a clip that would grow into the next is refused and a \
-              shrunk one leaves a gap. \
-              generator {data, at, secs?|end?, track?} — place native generator data (see klipp_generator), \
-              with exactly one duration secs or end anchor. Omit track for a Background video track below all \
-              existing layers; e.g. {op: generator, data: {SolidColor: {color: [16,24,32,255]}}, at: {secs: 0}, secs: 3}.\n\
-              compose {clip_id, poses: [{secs?, x?, y?, width?, height?, rotation_deg?, opacity?}]} — place a \
-              picture inside the frame; one pose holds, more animate. secs is relative to the clip; x,y are \
-              its centre as frame fractions (-1..2, default 0.5); width and height must be equal (0.01..4, \
-              default 1); rotation_deg is -360..360 (default 0), opacity 0..1 (default 1). Example: \
-              {op: compose, clip_id: ID, poses: [{x: 0.7, y: 0.7, width: 0.4, height: 0.4}]}.\n\
-              camera {keys: [{secs?, x?, y?, zoom?, roll_deg?}]} — move the whole sequence, including all its \
-              layers. secs is TIMELINE time within the piece (default 0); x,y are the camera's look point \
-              (-1..2, default 0.5), zoom 0.1..8 (default 1), roll_deg -360..360 (default 0). One key holds; \
-              keys: [] clears the camera. Example over a three-second piece: \
-              {op: camera, keys: [{secs: 0}, {secs: 3, zoom: 1.1, x: 0.55}]}.\n\
-              reframe {clip_id, scale?, x?, y?} — punch in and reposition a picture: scale zooms \
-              (1 as shot, up to 4), x and y pan -1..1. Salvage a wide or badly-framed shot, \
-              or set a slow push; it sits before other effects.\n\
-              zoom {clip_id, from?, to, x?, y?} — an ANIMATED zoom over the clip: scale from→to \
-              (1 as shot, up to 4), a push-in or pull-out, optionally moving toward x,y (-1..1) for \
-              a Ken Burns move. Renders on the GPU; motion on a still shot.\n\
-              pan {clip_id, keys: [{secs, scale?, x?, y?}]} — an animated crop through poses in \
-              the clip's own seconds: scale (1-4) centred on frame point x,y (0..1, as the beat \
-              sheet's spots and screen text give them); eases between, never past the edge.\n\
-              follow {clip_id, scale?, hold_secs?} — a pan made from the beat sheet: push to each \
-              spot where something happened in the clip's stretch, hold, ease back out.\n\
-              highlight {at, secs?, x, y, w, h, kind? box|ring|spot, color?, stroke?, track?} — a \
-              highlight over the region (centre x,y, size w,h, fractions of the frame): a rounded \
-              box, a capsule ring, or everything outside it dimmed; fades in and out.\n\
-              ramp {clip_id, from, to, secs?} — a speed ramp from×→to× over secs of timeline, then \
-              holding to; the clip's length follows.\n\
-              qualify {clip_id, target?|hue?, hue_width?, sat_low?, sat_high?, lum_low?, lum_high?, \
-              invert?, exposure?, saturation?, hue_shift?, temperature?, remove?, window?, \
-              window_feather?} — a secondary: key a colour or tone (target skin/sky/foliage/reds…, \
-              or a hue in degrees, with saturation and luminance windows) and correct only it \
-              (exposure, saturation, hue_shift, temperature); invert grades all but the key. \
-              window holds the key inside a shape as well — a list of {at, x, y, w, h}, boxes in \
-              frame fractions at times in clip seconds — because a hue key alone cannot tell a \
-              face from a red jumper, a brick wall or a wooden table, and turns all of them. \
-              Several entries keyframe the window so it follows a subject who moves. Fix a sky, \
-              calm a loud shirt, warm skin.\n\
-              transition {clip_id, kind?, secs?} — a transition between a clip and the one after \
-              it on its track, secs long (0.5 default), centred on the cut. kind is cross_dissolve \
-              (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \
-              or a stylised one (zoom, whip, glitch, film_burn) a piece asks for by its style, \
-              never by default. Both clips need footage beyond the cut to overlap. On audio, a crossfade.\n\
-              style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?, full_frame?, shadow?} \
-              — the look and place of one title, or of every title on a track (\"subtitle\" for \
-              all the captions), between from and to when given: size in pixels of a 1080-line \
-              frame, color #rrggbb, x and y where the text's centre goes (0 to 1), backing how \
-              dark a panel sits behind it (0 none to 1 black), outline a width in pixels. It is \
-              how captions are lifted clear of a lower third while it is up.\n\
-              template {name, at, secs?, track?, fields?} — see klipp_title_templates \
-              lower_third {name, role?, at, secs?, track?, side?, x?, y?} — a name with a role \
-              under it, bottom left in title-safe, four seconds by default, fading in and out, on \
-              a text track with room (made on top if none: every other index then moves down by \
-              one). Refused across a shot change. Names come from the brief, never a guess. Where \
-              the speaker is not on the left or the picture has its own name burnt in there, \
-              side \"right\" sets it against the right edge, x is that edge and y the name's line, \
-              as fractions of the frame inside title-safe.\n\
-              vector_path {clip_id, object_id?, path:{pose:{contours:[{closed,vertices:[{point:[x,y],incoming:[x,y],outgoing:[x,y]}]}],fill:[r,g,b,a],stroke:[r,g,b,a],stroke_width,stroke_glow?:{radius,strength}},keyframes:[{time_secs,pose,easing}],trim?:{range:{start,end,offset},keyframes:[{time_secs,range,easing}]}}} edits a title layer; trim uses independent normalized arc-length keys per contour, open paths clip and closed paths wrap offset, fill unchanged, round caps/joins, glow from revealed stroke only; coordinates normalized to its box, keyed topology must match. title {text, at, style? (a brief type style or heading|callout|card), secs?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, \
-              backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, \
-              animate?, animate_secs?, stagger?, enter?, exit?, loop?, glitch?, chromatic?, shadow?} — a title from scratch, enter/exit are {kind, duration_secs?, delay_secs?, easing?, stagger?, stagger_secs?, distance?, scale?, anchor?}. \
-              Kinds include mask_rise/mask_drop and none (disable); easing is linear, out_cubic, out_quint, out_expo, out_back, out_bounce, in_out_cubic, in_cubic or cubic-bezier(x1,y1,x2,y2), over the motion's own time (in_cubic starts slowly on an exit too; an exit's default is in_cubic). \
-              Timing: duration (0,3600] s, delay [0,3600] s, stagger [0,60] s; distance [0,100] font-size units, only for rise/drop/slide_left/slide_right. \
-              Exits grow and shrink scale without fading, by scale (a factor of the resting size: grow above 1, default 4; shrink below 1, default 0): \
-              a word matte whose exit is grow with scale 30 and anchor \"solid\" flies into a letter until the picture inside fills the frame, for a seamless cut to the full shot. anchor (grow, shrink, scale_up, scale_down, pop, slam, focus_in) is what they scale about: \"solid\" (the point deepest inside the letters; without it a two-line word grows into the gap between its lines and goes black), \"centre\", or {x, y} in the title's box. \
-              scale also sets how far scale_up (below 1) and scale_down (above 1) go; both fade. Entrance delay plus exit lead must leave a visible interval inside the title. Timing-only overrides on a disabled entrance are ignored. \
-              Exit delay is lead time before clip end; exit stagger runs in the renderer's reverse unit order. Masked travel stays fixed. \
-              Do not combine enter with animate/animate_secs/stagger. Explicit enter/exit replaces that style side; omitted sides inherit. \
-              any look and motion: x,y centre (0..1), size in px of a 1080 frame, color #rrggbb; \
-              backing a dark panel (0..1) or backing_color, full_frame a solid card, outline+outline_color \
-              a stroke, glow+glow_color a neon glow, shadow {x?, y?, blur?, color?, opacity?} a soft drop shadow (px of a 1080 frame; opacity 0 removes it), gradient [#top,#bottom]; animate an entrance (fade, \
-              rise, drop, slide_left, slide_right, scale_up, scale_down, blur, mask_rise, mask_drop, typewriter, pop, slam, fly_left, fly_right, fly_top, fly_bottom, bounce, flicker, focus_in, soft_rise) with stagger \
-              (line/word/char); loop a continuous effect (pulse, flash, neon, wave, shake, color_cycle, scroll for a credits roll, crawl for a ticker; roll_shape {focus {band, edge_opacity}} thins a roll away from the middle; edge_fade {top, bottom, left, right} fades any title out towards those frame edges); \
-              glitch and chromatic (0..1) for a digital edge.\n\
-              set_text {clip_id, text} — the words of a title or a caption, its look, place and \
-              timing kept: for a cue the transcript misheard or a name it cannot spell.\n\
-              trim {clip_id, edge: \"in\"|\"out\", to, ripple?, linked?} — one edge to an anchor, the \
-              other stays, the source moves with the edge; the clip it is linked to (a \
-              picture's sound) is trimmed with it by the same amount unless linked is false; with ripple the later clips on the \
-              track close up by the change (a head trim then keeps the clip's start).\n\
-              split {clip_id, at} — into two, the linked sound with it.\n\
-              join {clip_id, side?} — close a through edit: the clip and the piece of the same shot on its \
-              side (next, default, or previous) made one again, its sound with it; name the false cut's \
-              own neighbours, as every edit of one film runs on in its file.\n\
-              remove {clip_id, ripple?, linked?} — off the track, its linked sound or picture with it unless linked is false; with ripple the later clips close the gap; a linked ripple refuses different timeline ranges or a locked partner. Use ripple:false to leave later clips in place.\n\
-              cut {from, to} — that stretch out of every unlocked track, linked halves split with it, everything after moved up: a text-based delete. Refused through a retimed clip.\n\
-              move {clip_id, to} — the clip's start to an anchor, length unchanged, a linked \
-              partner with it.\n\
-              j_cut {incoming_clip, frames} — the incoming clip's sound starts so many frames \
-              before its picture; l_cut {outgoing_clip, frames} — the outgoing clip's sound \
-              stays so many frames past its picture. Both need linked audio on one track.\n\
-              Anchors: {\"secs\": s}, {\"frame\": n}, {\"clip_start\": clip}, {\"clip_end\": clip}, \
-              {\"track_end\": track} (where the last clip on a track ends: where an assembly's \
-              next select goes), {\"marker\": label}, {\"offset\": {\"from\": anchor, \"secs\": s}}. \
-              A clip in an anchor, a clip_id (and \
-              incoming_clip, outgoing_clip) is an id string, or {\"track\": n, \"secs\": s} for the \
-              clip covering that time on that track as the plan stands at that step — how a \
-              later step names a half a split made or a clip a place put down.\n\
-              Ops run in order, each seeing the ones before it (a split's halves are new ids, \
-              reported in the reply). Times snap to frames. Overlaps, locked tracks and edges \
-              past the media are refused with why and what would help, and nothing is applied."),
+             "Dry run: what a list of editorial operations would do, step by step, with each touched clip's range afterwards. Nothing changes. Returns a revision for a guarded klipp_apply. Ops: klipp_guide topic ops.",
              json!({ "ops": { "type": "array", "items": { "type": "object" } },
                      "detail": { "type": "boolean", "description": "every step in full and each touched clip's range as JSON; off by default, when long runs of one kind of step are folded" } }),
              vec!["ops"]),
         tool("klipp_apply",
-             concat!("Apply a list of editorial operations as ONE undo step, after resolving them the \
-              way klipp_plan does; pass its expected_revision and optionally expected_project_identity \
-              to refuse the whole edit if the timeline or project changed since planning. \
-              Replies with the steps and the revision. ",
-              "Editorial operations, resolved by Klipp into frame-exact edits. Give a list of ops; \
-              each is an object with \"op\" and its fields:\n\
-              place {media_id, track, at, source_in?, source_out?, insert?, with_audio?} — a \
-              media item onto a track (an index from klipp_timeline, or \"video\"/\"audio\"/\"text\" \
-              for the first of that kind) at an anchor; source_in/out in seconds of the file, \
-              the whole file by default; for still images this is the hold range and may exceed the import duration. Its sound comes along linked on the first audio track \
-              (made if none) unless with_audio is false (B-roll over a voice); an empty sequence \
-              takes the first picture's size and rate; with insert, every unlocked track is \
-              rippled later to make room and a clip straddling the anchor is split.\n\
-              add_track {kind, name?} — a video or text track on top (it becomes track 0, every \
-              other index moves down by one), an audio or subtitle track at the bottom.\n\
-              remove_track {track, with_clips?} — a track out (index or kind), every track below moving \
-              up by one; refused while it holds clips unless with_clips, which takes them and unlinks \
-              their partners elsewhere.\n\
-              captions {track?, from?, to?, max_chars?, max_lines?, replace?} — captions for what is heard \
-              on the timeline, from the transcripts (run klipp_analyze first): each word lands \
-              where its clip puts it, cues close at sentences, pauses and cuts, two lines of 42 \
-              by default; on the first subtitle track, made at the bottom if there is none. The \
-              reply lists every cue to be read; correct one with set_text. Do it after the \
-              speech is placed and trimmed; after a re-cut, make them again with replace true.\n\
-              audio {clip_id, volume_db?, gain_db?, pan?, fade_in?, fade_out?} — a clip's sound: \
-              volume and pre-fader gain in dB, pan -1..1, fades in seconds; what is left out \
-              stays. For an audio clip linked to a video clip the settings go on the video \
-              clip, where playback and the render read them. track (index or kind) in place of \
-              clip_id, with from?/to?, sets every clip heard on it in one step.\n\
-              track_audio {track, effect, params?: {name: value}, bypass?, remove?} — the track's own audio chain, run \
-              after every clip's own (eq, compressor, limiter, gate, high_pass, denoiser, voice_isolation, deesser, \
-              hum_removal, reverb…): adds the effect (or sets the one there), bypasses it, or takes it off.\n\
-              duck {clip_id, by_db?, fade_secs?, bridge_secs?} — music under speech: the clip's volume comes \
-              down (9 dB by default) wherever speech is heard over it (not clips marked music, \
-              sfx, ambience, foley or broll, nor any set 12 dB under the music; a transcribed clip \
-              only where its words are, a voiceover throughout), moving over \
-              fade_secs (0.5) each way, down across gaps under bridge_secs (2), as volume keyframes. Set the music's volume first, \
-              place the speech first.\n\
-              volume {clip_id, keys:[{at, db}]} — a clip's volume drawn by hand: levels in dB from \
-              the clip's own level (0 as set, -9 a duck, -60 near silence) at timeline seconds, straight moves between; \
-              replaces its volume keyframes. For the dip duck cannot find, or a swell.\n\
-              grade {clip_id | on, exposure?, contrast?, saturation?, temperature?, tint?, lift?, gamma?, \
-              gain?, highlights?, shadows?, vibrance?, reset?} — a picture clip's primary grade: \
-              what is given is set, the rest stays. Every knob is 0 at neutral except saturation \
-              and contrast, which are multipliers with 1 as shot (1.1 a touch more, 0.9 less); exposure in stops; temperature/tint the white balance in mireds, -50 to 50 (about 5 Lab b* at 25; a tenth of a unit does nothing); \
-              lift/gamma/gain the shadows/mids/highlights; gain and highlights are strong for their range, \
-              so a first touch is ±0.02 to 0.05 (on a sunlit shot highlights -0.2 took the white point from 84 to 65 IRE, \
-              and gain +0.05 clipped a sixth of the frame): step small and read frame_stats between; \
-              vibrance is skin-safe saturation; \
-              reset takes it to neutral first. Read frame_stats and grade to the numbers; grade \
-              for continuity first — shots that follow each other should match — then the look.\n\
-              grade_group {group, clips:[clip_id…], leave?, look_target?, departs?} — picture clips into a named grade group \
-              (made when new; a clip is in one group at most), or out of it with leave; look_target names a \
-              preset its shots are graded and judged to instead of the brief's (\"none\" clears it), departs true \
-              judges them for faults only, a section off the look on purpose; either works on a group alone; \
-              remove_grade_group {group} ends one, its clips keep their own grades. A group's clips \
-              share a pre-clip grade (before each one's own: a camera's or a scene's balance) and a \
-              post-clip grade (after it: the scene's look). grade and look take on in place of \
-              clip_id: on {group, stage?: \"pre\"|\"post\" (default)} grades the group once for \
-              every member; on \"timeline\" grades the whole sequence after every clip. One look \
-              over a scene is a group and one look on it, not the same look on every shot.\n\
-              slip {clip_id, secs} — move what a clip shows, not the clip: source in and out both by \
-              secs (later in the file for positive), the timeline untouched; its linked sound slips by as \
-              much, a J or L cut kept. slide {clip_id, secs} — the clip moved between its neighbours, \
-              its picture and length kept: the one before longer, the one after shorter, sound with them; \
-              refused where a neighbour runs out. strobe {clip_id, piece_frames, on?, off?, from?, to?, \
-              ripple?} — the clip (or from..to inside it) cut into pieces piece_frames long and of every \
-              on pieces kept the next off removed (1 and 1), so the shot flickers; ripple closes the gaps, \
-              else they stay black; the last piece takes the remainder; one undo. set_length {clips, \
-              frames, keep?, ripple?} — each clip made frames long, keep start (default), end or centre; \
-              ripple closes up, as for a rapid-fire montage of 3-frame clips; one undo. over_edits \
-              {clip_id, tracks?, align?, every_clip?, from?, to?} — a copy of the clip (a flash, an \
-              adjustment clip) on its own track over every cut of the targeted picture tracks (or the \
-              tracks given), align centre (default), start or end on the cut; every_clip uses each \
-              clip's start; a cut where a copy would overlap is skipped; one undo. role {clip_id, role} — \
-              what a clip is to the mix and the checks: dialogue, music, sfx, ambience, foley, \
-              voiceover, broll, graphics; a bed marked music is never taken for speech. matte \
-              {clip_id, source?, channel?, invert?, feather_px?, choke_px?, show_source?, clear?} — \
-              the clip seen only through another (track matte); without source, the clip above it: \
-              title {text, size 700-1000, font \"Bebas Neue\", over_faces: true} over a clip, then matte on the clip, \
-              puts the footage inside the word. format \
-              {width, height, fps?} — the sequence's picture size (and rate): the delivery's, \
-              the picture fitted, never stretched.\n\
-              redact {clip_id, x, y, w, h, from?, to?, kind?, amount?} — hide a patch of the picture \
-              (an email, a key, a face) for a stretch: a cropped copy pixelated (kind mosaic, \
-              default) or blurred on a video track above; x, y, w, h are fractions of the frame \
-              from the top left, as check's sensitive_on_screen and klipp_screen_text give them; \
-              from and to default to the clip's edges. auto_redact does every finding at once.\n\
-              pin {clip_id, media_id, surface?, from?, to?, fit?, inset?} — a picture, video or still \
-              onto a surface klipp_track_surface followed in the clip: on a video track above, following \
-              it; surface is its id or name, the clip's latest when left out; fit stretch|fit (auto by \
-              shape when left out); inset a margin each side, ~0.02 for a screen's bezel.\n\
-              label {clip_id, name?, colour?} — the clip's own name on the timeline, shown in place \
-              of its media's (blank gives the media's back), and its colour: none, red, orange, \
-              yellow, green, blue or purple. Timeline and list_clips show both.\n\
-              effect {clip_id | on: \"timeline\" | {group} | {track, from?, to?, itself?}, kind, amount?} — a finishing effect on a picture, or on every picture of the timeline, a grade group or a track in one step (with itself: true, on the track itself, after every clip's own, clips added later too): vignette, grain, glow, \
-              bloom, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, \
-              directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, \
-              mirror, lens_distortion, edge_detect, denoise, vhs, old_film, corners (rounded alpha mask), \
-              shadow (drop shadow), outer_glow (glow outside the layer silhouette), fill_bars (the black \
-              bars round an upright phone shot in a wide frame filled with the picture, enlarged and \
-              blurred: Resolve's blanking fill; more amount is softer and darker); amount 0-1. These are \
-              effect kinds, e.g. {op: effect, clip_id: ID, kind: corners, amount: 0.4}; shadow and outer_glow \
-              use the same fields. Place the picture with compose to show the backdrop around it. A key \
-              is kind chroma_key (green_screen, blue_screen) on one clip, the app's Chroma Key: color \
-              #rrggbb (green; blue for blue_screen), tolerance 0.2, softness 0.1, spill 0.6, each 0-1. clean_audio {clip_id, voice?, reduction_db?, wind?, hiss?, hum?, deess?} — clean a \
-              clip's sound, each flag its tool: voice isolates dialogue from wind, traffic and room noise with the \
-              Voice Isolation AI effect, the best cleanup where someone speaks (reduction_db 12 keeps the place, \
-              default 24, 60 removes all it can; leave it off where nobody speaks, it would take the ambience); \
-              wind for gusts and rumble, hiss for tape or air hiss, hum for mains buzz, deess for harsh sibilance. \
-              stabilize {clip_id, smoothing?} — steady a shaky clip (0-1, crops a little). \
-              replace {clip_id, media_id, source_in?} — another file in the clip's slot: same place, length and speed, its grade, effects, role, volume, links and transitions kept, its linked sound moved with it; source_in defaults to the clip's own when it fits, else the file's start. \
-              retime {clip_id, speed | fit, ripple?} — change speed, its linked sound with it; fit true instead of speed fills the room to the next clip on its track exactly, the speed worked out (fit to fill) (>1 faster/shorter, <1 slower/longer, negative reversed; the sound plays at the speed, its pitch moving with it, backward when reversed; a speed ramp's sound is silent); ripple moves the clips after it, without it a clip that would grow into the next is refused and a \
-              shrunk one leaves a gap. \
-              generator {data, at, secs?|end?, track?} — place native generator data (see klipp_generator), \
-              with exactly one duration secs or end anchor. Omit track for a Background video track below all \
-              existing layers; e.g. {op: generator, data: {SolidColor: {color: [16,24,32,255]}}, at: {secs: 0}, secs: 3}.\n\
-              compose {clip_id, poses: [{secs?, x?, y?, width?, height?, rotation_deg?, opacity?}]} — place a \
-              picture inside the frame; one pose holds, more animate. secs is relative to the clip; x,y are \
-              its centre as frame fractions (-1..2, default 0.5); width and height must be equal (0.01..4, \
-              default 1); rotation_deg is -360..360 (default 0), opacity 0..1 (default 1). Example: \
-              {op: compose, clip_id: ID, poses: [{x: 0.7, y: 0.7, width: 0.4, height: 0.4}]}.\n\
-              camera {keys: [{secs?, x?, y?, zoom?, roll_deg?}]} — move the whole sequence, including all its \
-              layers. secs is TIMELINE time within the piece (default 0); x,y are the camera's look point \
-              (-1..2, default 0.5), zoom 0.1..8 (default 1), roll_deg -360..360 (default 0). One key holds; \
-              keys: [] clears the camera. Example over a three-second piece: \
-              {op: camera, keys: [{secs: 0}, {secs: 3, zoom: 1.1, x: 0.55}]}.\n\
-              reframe {clip_id, scale?, x?, y?} — punch in and reposition a picture: scale zooms \
-              (1 as shot, up to 4), x and y pan -1..1. Salvage a wide or badly-framed shot, \
-              or set a slow push; it sits before other effects.\n\
-              zoom {clip_id, from?, to, x?, y?} — an ANIMATED zoom over the clip: scale from→to \
-              (1 as shot, up to 4), a push-in or pull-out, optionally moving toward x,y (-1..1) for \
-              a Ken Burns move. Renders on the GPU; motion on a still shot.\n\
-              pan {clip_id, keys: [{secs, scale?, x?, y?}]} — an animated crop through poses in \
-              the clip's own seconds: scale (1-4) centred on frame point x,y (0..1, as the beat \
-              sheet's spots and screen text give them); eases between, never past the edge.\n\
-              follow {clip_id, scale?, hold_secs?} — a pan made from the beat sheet: push to each \
-              spot where something happened in the clip's stretch, hold, ease back out.\n\
-              highlight {at, secs?, x, y, w, h, kind? box|ring|spot, color?, stroke?, track?} — a \
-              highlight over the region (centre x,y, size w,h, fractions of the frame): a rounded \
-              box, a capsule ring, or everything outside it dimmed; fades in and out.\n\
-              ramp {clip_id, from, to, secs?} — a speed ramp from×→to× over secs of timeline, then \
-              holding to; the clip's length follows.\n\
-              qualify {clip_id, target?|hue?, hue_width?, sat_low?, sat_high?, lum_low?, lum_high?, \
-              invert?, exposure?, saturation?, hue_shift?, temperature?, remove?, window?, \
-              window_feather?} — a secondary: key a colour or tone (target skin/sky/foliage/reds…, \
-              or a hue in degrees, with saturation and luminance windows) and correct only it \
-              (exposure, saturation, hue_shift, temperature); invert grades all but the key. \
-              window holds the key inside a shape as well — a list of {at, x, y, w, h}, boxes in \
-              frame fractions at times in clip seconds — because a hue key alone cannot tell a \
-              face from a red jumper, a brick wall or a wooden table, and turns all of them. \
-              Several entries keyframe the window so it follows a subject who moves. Fix a sky, \
-              calm a loud shirt, warm skin.\n\
-              transition {clip_id, kind?, secs?} — a transition between a clip and the one after \
-              it on its track, secs long (0.5 default), centred on the cut. kind is cross_dissolve \
-              (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \
-              or a stylised one (zoom, whip, glitch, film_burn) a piece asks for by its style, \
-              never by default. Both clips need footage beyond the cut to overlap. On audio, a crossfade.\n\
-              style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?, full_frame?, shadow?} \
-              — the look and place of one title, or of every title on a track (\"subtitle\" for \
-              all the captions), between from and to when given: size in pixels of a 1080-line \
-              frame, color #rrggbb, x and y where the text's centre goes (0 to 1), backing how \
-              dark a panel sits behind it (0 none to 1 black), outline a width in pixels. It is \
-              how captions are lifted clear of a lower third while it is up.\n\
-              template {name, at, secs?, track?, fields?} — see klipp_title_templates \
-              lower_third {name, role?, at, secs?, track?, side?, x?, y?} — a name with a role \
-              under it, bottom left in title-safe, four seconds by default, fading in and out, on \
-              a text track with room (made on top if none: every other index then moves down by \
-              one). Refused across a shot change. Names come from the brief, never a guess. Where \
-              the speaker is not on the left or the picture has its own name burnt in there, \
-              side \"right\" sets it against the right edge, x is that edge and y the name's line, \
-              as fractions of the frame inside title-safe.\n\
-              vector_path {clip_id, object_id?, path:{pose:{contours:[{closed,vertices:[{point:[x,y],incoming:[x,y],outgoing:[x,y]}]}],fill:[r,g,b,a],stroke:[r,g,b,a],stroke_width,stroke_glow?:{radius,strength}},keyframes:[{time_secs,pose,easing}],trim?:{range:{start,end,offset},keyframes:[{time_secs,range,easing}]}}} edits a title layer; trim uses independent normalized arc-length keys per contour, open paths clip and closed paths wrap offset, fill unchanged, round caps/joins, glow from revealed stroke only; coordinates normalized to its box, keyed topology must match. title {text, at, style? (a brief type style or heading|callout|card), secs?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, \
-              backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, \
-              animate?, animate_secs?, stagger?, enter?, exit?, loop?, glitch?, chromatic?, shadow?} — a title from scratch, enter/exit are {kind, duration_secs?, delay_secs?, easing?, stagger?, stagger_secs?, distance?, scale?, anchor?}. \
-              Kinds include mask_rise/mask_drop and none (disable); easing is linear, out_cubic, out_quint, out_expo, out_back, out_bounce, in_out_cubic, in_cubic or cubic-bezier(x1,y1,x2,y2), over the motion's own time (in_cubic starts slowly on an exit too; an exit's default is in_cubic). \
-              Timing: duration (0,3600] s, delay [0,3600] s, stagger [0,60] s; distance [0,100] font-size units, only for rise/drop/slide_left/slide_right. \
-              Exits grow and shrink scale without fading, by scale (a factor of the resting size: grow above 1, default 4; shrink below 1, default 0): \
-              a word matte whose exit is grow with scale 30 and anchor \"solid\" flies into a letter until the picture inside fills the frame, for a seamless cut to the full shot. anchor (grow, shrink, scale_up, scale_down, pop, slam, focus_in) is what they scale about: \"solid\" (the point deepest inside the letters; without it a two-line word grows into the gap between its lines and goes black), \"centre\", or {x, y} in the title's box. \
-              scale also sets how far scale_up (below 1) and scale_down (above 1) go; both fade. Entrance delay plus exit lead must leave a visible interval inside the title. Timing-only overrides on a disabled entrance are ignored. \
-              Exit delay is lead time before clip end; exit stagger runs in the renderer's reverse unit order. Masked travel stays fixed. \
-              Do not combine enter with animate/animate_secs/stagger. Explicit enter/exit replaces that style side; omitted sides inherit. \
-              any look and motion: x,y centre (0..1), size in px of a 1080 frame, color #rrggbb; \
-              backing a dark panel (0..1) or backing_color, full_frame a solid card, outline+outline_color \
-              a stroke, glow+glow_color a neon glow, shadow {x?, y?, blur?, color?, opacity?} a soft drop shadow (px of a 1080 frame; opacity 0 removes it), gradient [#top,#bottom]; animate an entrance (fade, \
-              rise, drop, slide_left, slide_right, scale_up, scale_down, blur, mask_rise, mask_drop, typewriter, pop, slam, fly_left, fly_right, fly_top, fly_bottom, bounce, flicker, focus_in, soft_rise) with stagger \
-              (line/word/char); loop a continuous effect (pulse, flash, neon, wave, shake, color_cycle, scroll for a credits roll, crawl for a ticker; roll_shape {focus {band, edge_opacity}} thins a roll away from the middle; edge_fade {top, bottom, left, right} fades any title out towards those frame edges); \
-              glitch and chromatic (0..1) for a digital edge.\n\
-              set_text {clip_id, text} — the words of a title or a caption, its look, place and \
-              timing kept: for a cue the transcript misheard or a name it cannot spell.\n\
-              trim {clip_id, edge: \"in\"|\"out\", to, ripple?, linked?} — one edge to an anchor, the \
-              other stays, the source moves with the edge; the clip it is linked to (a \
-              picture's sound) is trimmed with it by the same amount unless linked is false; with ripple the later clips on the \
-              track close up by the change (a head trim then keeps the clip's start).\n\
-              split {clip_id, at} — into two, the linked sound with it.\n\
-              join {clip_id, side?} — close a through edit: the clip and the piece of the same shot on its \
-              side (next, default, or previous) made one again, its sound with it; name the false cut's \
-              own neighbours, as every edit of one film runs on in its file.\n\
-              remove {clip_id, ripple?, linked?} — off the track, its linked sound or picture with it unless linked is false; with ripple the later clips close the gap; a linked ripple refuses different timeline ranges or a locked partner. Use ripple:false to leave later clips in place.\n\
-              cut {from, to} — that stretch out of every unlocked track, linked halves split with it, everything after moved up: a text-based delete. Refused through a retimed clip.\n\
-              move {clip_id, to} — the clip's start to an anchor, length unchanged, a linked \
-              partner with it.\n\
-              j_cut {incoming_clip, frames} — the incoming clip's sound starts so many frames \
-              before its picture; l_cut {outgoing_clip, frames} — the outgoing clip's sound \
-              stays so many frames past its picture. Both need linked audio on one track.\n\
-              Anchors: {\"secs\": s}, {\"frame\": n}, {\"clip_start\": clip}, {\"clip_end\": clip}, \
-              {\"track_end\": track} (where the last clip on a track ends: where an assembly's \
-              next select goes), {\"marker\": label}, {\"offset\": {\"from\": anchor, \"secs\": s}}. \
-              A clip in an anchor, a clip_id (and \
-              incoming_clip, outgoing_clip) is an id string, or {\"track\": n, \"secs\": s} for the \
-              clip covering that time on that track as the plan stands at that step — how a \
-              later step names a half a split made or a clip a place put down.\n\
-              Ops run in order, each seeing the ones before it (a split's halves are new ids, \
-              reported in the reply). Times snap to frames. Overlaps, locked tracks and edges \
-              past the media are refused with why and what would help, and nothing is applied."),
+             "Apply a list of editorial operations as ONE undo step, after resolving them the way klipp_plan does; pass its expected_revision and optionally expected_project_identity to refuse the whole edit if the timeline or project changed since planning. Replies with the steps and the revision. Ops: klipp_guide topic ops.",
              json!({ "ops": { "type": "array", "items": { "type": "object" } },
                      "expected_revision": { "type": "integer", "minimum": 0, "description": "Revision from klipp_plan or a timeline read; refuse if it changed" },
                      "expected_project_identity": { "type": "integer", "minimum": 0, "description": "Optional project identity from klipp_plan; refuse if the open project changed" },
@@ -2453,22 +1901,13 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({}), vec![]),
         tool("klipp_redo", "One step forward in the edit history.", json!({}), vec![]),
         tool("klipp_batch",
-             "Several write tools applied together in one frame and recorded as ONE undo \
-              step: use it for anything that is one action in your plan (an append and \
-              its grade, a set of parameter changes). Every call is checked before any \
-              is applied; a bad one refuses the whole batch and nothing changes. Reads \
-              (status, lists, screenshots) are refused inside a batch. klipp_look calls \
-              batch too, but only with other looks: one look on many clips is one call \
-              and one undo step. Replies with the document revision after the batch.",
+             "Several write tools applied together as ONE undo step; every call is checked first and a bad one refuses the whole batch. Reads are refused inside. Details: klipp_guide topic batch.",
              json!({ "calls": { "type": "array", "description": "In order. Each: {\"tool\": name, \"args\": {...}}",
                  "items": { "type": "object", "properties": {
                      "tool": { "type": "string" }, "args": { "type": "object" } }, "required": ["tool"] } } }),
              vec!["calls"]),
         tool("klipp_export",
-             "Render the active sequence to an absolute path: defaults, or an export preset by name, \
-              codec (h264, hevc, prores...), bit_depth 10, bitrate_kbps; the extension gives the container (mp4, mov, mkv, webm). Refused \
-              while a clip's media is offline or onto a project media file. \
-              Asynchronous: klipp_export_status with wait true returns when the file is done.",
+             "Render the active sequence to an absolute path with the defaults, a preset, or a codec, bit depth and bitrate; asynchronous. Details: klipp_guide topic export.",
              json!({
                  "path": { "type": "string", "description": "Absolute output path" },
                  "width": { "type": "integer" }, "height": { "type": "integer" },
@@ -2482,8 +1921,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec!["path"]),
         tool("klipp_export_status",
-             "Every render job Klipp knows: status (queued, rendering, complete, failed, \
-              cancelled), progress 0 to 1, frames, stage, error, loudness result. With wait true, waits for job_id or all currently known jobs. Returns finished, succeeded and timed_out; failed or cancelled is not success. Timeout does not cancel renders.",
+             "Every render job: status, progress, frames, stage, error and loudness; wait true waits for one job or all. Details: klipp_guide topic export_status.",
              json!({ "wait": { "type": "boolean" }, "job_id": { "type": "string" }, "timeout_ms": { "type": "integer", "description": "Maximum wait, default one hour" } }), vec![]),
         tool("klipp_export_subtitles",
              "Write the subtitle clips (text clips if none) to an absolute path, as the extension says: .srt, .vtt, .ass, .ssa, .ttml (IMSC), .scc (608) or .stl (EBU); format, if given, must match.",
@@ -2492,93 +1930,45 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Read an .srt, .vtt, .ass, .ssa or TTML (.ttml, .dfxp, .xml, .itt), .scc or .stl file (absolute path) onto a new subtitle track.",
              json!({ "path": { "type": "string" } }), vec!["path"]),
         tool("klipp_transcript",
-             "What is said in a media file between two times, with when, in seconds of the \
-              file: the segments, and with words true every word with its start and end, and \
-              the stretches measured silent in that range. Use it to put a cut on the edge of \
-              a word or in a silence (a cut in measured silence is clean), and to read a \
-              stretch the analysis text cut short.",
+             "What is said in a media file between two times, by segment, and with words true word by word, with the measured silences. Details: klipp_guide topic transcript.",
              json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" }, "words": { "type": "boolean" } }),
              vec!["media_id"]),
         tool("klipp_cut_points",
-             "The clean places to cut in a media file, ranked: the measured pauses (strength \
-              3, the cleanest), the sentence ends and shot changes (strength 2), the phrase \
-              breaks (strength 1). Pass near_secs and it also says whether that moment is \
-              clean, mid-sentence or mid-word, and the nearest clean point to move to. Use it \
-              before you trim or place a spoken clip, so a cut never lands through a word or \
-              the middle of a sentence. from_secs and to_secs narrow the range.",
+             "The clean places to cut in a media file, ranked: pauses, then sentence ends and shot changes, then phrase breaks; near_secs judges one moment. Details: klipp_guide topic cut_points.",
              json!({ "media_id": { "type": "string" }, "near_secs": { "type": "number" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" } }),
              vec!["media_id"]),
         tool("klipp_prepare_cut",
-             "Prepare a frame-exact cut in a bounded TIMELINE range. Maps source pauses, word and sentence edges, shot changes, and settled screen reveals through trims and retiming onto sequence frames. Returns ranked candidates with evidence and uncertainty, relevant clips, linked sound, locks, handles, revision and project identity. Give the editing intent and an optional target moment. This only reads; choose a frame, plan the cut, and apply with its revision precondition. If ambiguous, inspect a contact sheet or audio excerpt first.",
+             "Prepare a frame-exact cut in a timeline range: ranked candidates from pauses, words, shots and screen reveals, with evidence, the clips and the revision. Reads only. Details: klipp_guide topic prepare_cut.",
              json!({ "from_secs": { "type": "number" }, "to_secs": { "type": "number" },
                      "near_secs": { "type": "number" }, "intent": { "type": "string" },
                      "max_candidates": { "type": "integer", "minimum": 1, "maximum": 32 } }),
              vec!["from_secs", "to_secs"]),
         tool("klipp_selects",
-             "Cut a long take down to its selects: the runs of speech between the real pauses, \
-              each with the time it runs from and to and what is said, marked keep or drop (a \
-              run that is only filler — um, uh — or too short to use is a drop). Use it to build \
-              a tight cut from a loose recording: place each keep range in order and close the \
-              gaps. min_gap_secs sets the pause that starts a new select (0.6 by default). A \
-              read; changes nothing.",
+             "A long take's selects: the runs of speech between pauses with their text, each marked keep or drop. Reads only. Details: klipp_guide topic selects.",
              json!({ "media_id": { "type": "string" }, "min_gap_secs": { "type": "number", "description": "the pause length that splits one select from the next, seconds" } }),
              vec!["media_id"]),
         tool("klipp_beats",
-             "The tempo and beat grid of a clip's sound: BPM, a confidence, and the beat times \
-              in seconds. Run it on the music you are cutting to, then place or trim cuts to a \
-              beat time for a musical rhythm. A low confidence means no clear beat (speech or \
-              ambience). For music it also gives the track's sections (intro, build, peak, \
-              breakdown, outro, body) on phrase lines and its energy bar by bar, for putting \
-              chapter changes on musical turns. With target_secs it fits the track to that \
-              length by taking out or repeating whole bars where the join is cleanest, keeping \
-              its start and end, and returns place ops (on track, from at_secs) to apply. A \
-              read; changes nothing.",
+             "A clip's tempo and beat grid, and for music its sections and energy; with target_secs, place ops that fit it to a length. Reads only. Details: klipp_guide topic beats.",
              json!({ "media_id": { "type": "string" }, "target_secs": { "type": "number", "description": "fit the track to this length, seconds" }, "skip_intro": { "type": "boolean", "description": "with target_secs: leave the intro out and fit from where it ends" }, "at_secs": { "type": "number", "description": "where the fitted track's place ops start on the timeline (0)" }, "track": { "description": "the track for the place ops: an index, or a kind such as \"audio\" (the first audio track)" } }), vec!["media_id"]),
         tool("klipp_style_profile",
-             "A reference video's editing style as facts, to build a clip in its feel from other \
-              footage: its cut cadence (shots, their lengths, cuts a minute, on the beat or not), its \
-              tempo, its look off the scopes (blacks, whites, contrast, saturation, warmth), its motion \
-              and detected holds. Cut cadence is not animation pacing: look at changes within shots \
-              before choosing hold lengths, as motion statistics name no animation events. Read only. \
-              Match the feel with your own footage and your own or licensed music, never the \
-              reference's track. Import and analyse the reference first.",
+             "A reference video's editing style as facts (cut cadence, tempo, look, motion, holds), to cut other footage in its feel. Reads only. Details: klipp_guide topic style_profile.",
              json!({ "media_id": { "type": "string" } }), vec!["media_id"]),
         tool("klipp_search_music",
-             "Search Jamendo royalty-free music by mood/genre, best textual match first. Results give title, artist, \
-              duration, tags, pace and licence/commercial clearance. listen previews up to five without importing \
-              (count from first or track-id list), reporting tempo, beat clarity and energy evolution. Import via \
-              klipp_add_music. Requires Jamendo client id in user key config. Match reference energy using \
-              style_profile; never reuse its track.",
+             "Search royalty-free music on Jamendo by mood or genre, with licences; listen previews up to five. Import with klipp_add_music. Details: klipp_guide topic search_music.",
              json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "commercial_only": { "type": "boolean", "description": "only tracks whose licence allows commercial use" }, "instrumental": { "type": "boolean", "description": "only instrumental tracks, for a promo with its own titles" }, "listen": { "description": "hear previews (at most 5): the first this-many, or [track_id, …]; tempo, beat and energy, nothing imported", "oneOf": [{ "type": "integer" }, { "type": "array", "items": { "type": "string" } }] } }), vec!["query"]),
         tool("klipp_search_sfx",
-             "Search royalty-free sound effects by keyword (e.g. \"whoosh\", \"door slam\", \"rain\", \
-              \"impact\") from Freesound. Each result shows its licence and whether it clears \
-              commercial use. max_secs keeps to short sounds (a transition's whoosh, not a long \
-              design file); listen (a count, or [track_id, …], at most 5) hears previews and says \
-              each one's length, when it peaks and how loud it is, which is where it goes: the peak \
-              on the cut. Then add it with klipp_add_music (it takes a sound effect the same as a \
-              track). Needs a Freesound token in the user's key config.",
+             "Search royalty-free sound effects on Freesound by keyword, with licences; listen hears up to five and says where each peaks. Import with klipp_add_music. Details: klipp_guide topic search_sfx.",
              json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "max_secs": { "type": "number", "description": "only sounds this long or shorter" }, "commercial_only": { "type": "boolean", "description": "only sounds whose licence allows commercial use" }, "listen": { "description": "hear previews (at most 5): the first this-many, or [track_id, …]; length, peak time, loudness", "oneOf": [{ "type": "integer" }, { "type": "array", "items": { "type": "string" } }] } }), vec!["query"]),
         tool("klipp_add_music",
-             "Download a searched music track OR sound effect into the media pool, keeping its licence and \
-              attribution beside the file for your export credits. Pass a klipp_search_music result's \
-              fields, or several as tracks. Then place it on an audio track (place marks it music) and duck it \
-              under speech. Honour the licence — keep non-commercial tracks out of commercial work.",
+             "Download a searched music track or sound effect into the pool, its licence and attribution kept for the credits. Details: klipp_guide topic add_music.",
              json!({ "title": { "type": "string" }, "artist": { "type": "string" }, "track_id": { "type": "string" }, "download_url": { "type": "string" }, "preview_url": { "type": "string" }, "license": { "type": "string" }, "license_url": { "type": "string" }, "page_url": { "type": "string" }, "tracks": { "type": "array", "items": { "type": "object" } } }),
              vec![]),
         tool("klipp_match_grade",
-             "Match picture clips using scope measurements: adjust target exposure/lift/gain/temperature/tint toward \
-              reference black/mid/white and colour balance. secs/reference_secs select timeline frames inside each clip; \
-              otherwise use the midpoint of each longest detected shot, avoiding cuts. One undo step; verify this first \
-              pass with klipp_check color or klipp_frame_stats, then refine with grade.",
+             "Match picture clips to a reference by scope measurements (exposure, lift, gain, temperature, tint), as one undo step. Details: klipp_guide topic match_grade.",
              json!({ "clip_id": { "type": "string", "description": "the shot to grade" }, "reference_clip_id": { "type": "string", "description": "the shot to match it to" }, "secs": { "type": "number", "description": "the target frame to read, timeline seconds inside the clip" }, "reference_secs": { "type": "number", "description": "the reference frame to read, timeline seconds inside it" } }),
              vec!["clip_id", "reference_clip_id"]),
         tool("klipp_align_audio",
-             "Line a clip's sound up with another's — dual-system sound, a separate recorder \
-              against the camera's scratch track. It cross-correlates the two clips' audio, \
-              finds the offset, and moves clip_id so it plays in sync with reference_clip_id; \
-              it reports the match confidence and refuses when the two share no common sound. \
-              max_offset_secs bounds the search (30 by default). Both clips must carry audio.",
+             "Sync a clip's sound to another's by cross-correlating their audio, and move it there; reports the confidence. Details: klipp_guide topic align_audio.",
              json!({ "clip_id": { "type": "string", "description": "the clip to move into sync (e.g. the external audio)" }, "reference_clip_id": { "type": "string", "description": "the clip to sync to (e.g. the camera)" }, "max_offset_secs": { "type": "number" } }),
              vec!["clip_id", "reference_clip_id"]),
         tool("klipp_title_templates",
@@ -2602,24 +1992,13 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               narrow path for details. mask_channel_set marks an explicitly stored channel.",
              json!({"path":graph_schema::path_schema(true),"depth":{"type":"integer","minimum":0,"maximum":4,"default":1}}), vec!["path"]),
         tool("klipp_node_types",
-             "The node types Klipp's registry describes: each effect's id, name and category, its \
-              ports, and its parameters with the key keyframes are stored under, the unit, the \
-              default and the accepted range. Read it to know what an effect takes before setting \
-              one; pass a category (Colour, BlurDetail, LightGlow, Geometry, FilmTemporal, Key, \
-              PlugIn, Grade) to narrow the list.",
+             "The node types in Klipp's registry: each effect's ports and parameters, with keys, units, defaults and ranges; narrow by category. Details: klipp_guide topic node_types.",
              json!({ "category": { "type": "string", "description": "a category to list, e.g. Colour" } }), vec![]),
         tool("klipp_looks",
-             "The bundled looks — 3D LUTs — an agent can apply, by category: cinematic and film \
-              emulations (B&W, slide, negative, print, instant, Fuji). Read it to see the names \
-              klipp_look takes; pass a category to see all of its looks. A creative choice a \
-              piece asks for, on top of the grade, never a substitute for grading to the numbers.",
+             "The bundled looks (3D LUTs) by category: the names klipp_look takes. Details: klipp_guide topic looks.",
              json!({ "category": { "type": "string", "description": "a category to list in full, e.g. cinematic or film-print" } }), vec![]),
         tool("klipp_look",
-             "Apply a bundled 3D LUT after the grade on a picture clip, as one undo step. Choose category/name or \
-              identifying words from klipp_looks; opacity 0-1 defaults to 1; remove clears it. Correct \
-              exposure/continuity first; verify with frame_at. on timeline applies after clip grades. on {group} uses \
-              the group post-clip grade (create via grade_group); one call updates the whole scene/piece and later \
-              changes affect every member.",
+             "Apply a bundled 3D LUT after the grade on a clip, the timeline or a grade group, as one undo step; remove clears it. Details: klipp_guide topic look.",
              json!({ "clip_id": { "type": "string" }, "on": { "description": "instead of clip_id: \"timeline\", {\"group\": name, \"stage\": \"post\" (default) or \"pre\"}, or {\"track\": index or kind, \"from\"?, \"to\"?} for every picture clip of a track, with \"itself\": true for the track's own grade" }, "name": { "type": "string", "description": "a look name from klipp_looks, or an absolute .cube path" }, "opacity": { "type": "number" }, "remove": { "type": "boolean" } }),
              vec![]),
         tool("klipp_orient",
@@ -2635,19 +2014,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               the user for what it should say and set it.",
              json!({}), vec![]),
         tool("klipp_set_brief",
-             "Replace the brief as one undo step. With merge true, keep omitted fields; null clears a field. \
-              Fields (all optional): title, about, tone, platform, target_secs, width, height, loudness_lufs (web -14, \
-              broadcast -23), captions/music (bool), cast [{name,role,described}], features [{title,description,rank}] \
-              (rank 1 headline; plan segments reference titles), arc (e.g. hook/features/CTA), cta, brand_colors \
-              [\"#rrggbb\",...] (first is title default), notes. type_styles: \
-              [{name,font?,bold?,size?,color?,fill?,backing?,full_frame?,x?,y?,align?,outline?,outline_color?,glow?,glow_color?,gradient?,animate?,animate_secs?,stagger?,enter?,exit?,loop_effect?,shadow?}] (shadow as on a title: {x?,y?,blur?,color?,opacity?}). \
-              Title ops/plan titles select style by name and override its fields. Built-ins heading/callout/card can be \
-              replaced. enter/exit use title motion objects; kind none disables. look: {name} preset \
-              broadcast_neutral|web_punchy|film_soft|warm_interview|cool_tech|screencast, or \
-              black_l,white_l,mid_l,contrast_range,chroma_mean,cast_a,cast_b,skin_hue; style_profile supplies a \
-              reference look_target. vocabulary: correctly spelt names/products/terms for speech recognition; run \
-              klipp_analyze after setting. language: ISO 639-1 speech code (en,sv); omitted detects per file. Lower thirds use cast names; klipp_check checks the brief; exports inherit \
-              omitted size/loudness. Unknown fields refused.",
+             "Replace the project brief as one undo step. With merge true, change only supplied fields; null clears a field. Details: klipp_guide topic set_brief.",
              json!({ "brief": { "type": "object" }, "merge": { "type": "boolean", "description": "change only the fields given; the rest stay" } }), vec!["brief"]),
         tool("klipp_edit_plan",
              "The edit plan: the paper edit, as text and as JSON, with whether it is approved and \
@@ -2655,29 +2022,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               build_edit_plan would build.",
              json!({}), vec![]),
         tool("klipp_set_edit_plan",
-             "Propose the paper edit, as one undo step: the cut said before a clip is placed, so \
-              the user can read, change and approve it while changing it is cheap. `plan` is \
-              {segments: [...], music?, notes?}. Each segment, in cut \
-              order: {media_id, source_in_secs, source_out_secs (stills may hold past their import duration), feature? (a title from the \
-              brief's features, as spelt there), note? (what it shows and why — write one), \
-              placement? {x?, y?, width?, height?, rotation_deg?, opacity?} uses compose coordinates (equal width and height); background? {generator: solid|gradient|living_gradient|grain|circle|countdown|placeholder|color_bars, colors?: [#rrggbb, ...]} places a backdrop below the picture, taking the brief palette when colors are omitted; with_audio? (the file's own sound; off by default), title? {text, secs?, style? \
-              heading|callout|card (card covers the shot by default), x? and y? as frame fractions, full_frame? (false overlays), color?, fill?, glow? 0-1, glow_color?, gradient? [top, \
-              bottom], animate? (the title op's), animate_secs?, stagger? char|word|line, enter?, exit? (the title op motion objects)}, transition? \
-              (\"cross_dissolve\", \"dip_to_black\": how it joins the segment before), zoom? \
-              {from?, to, x?, y?}, sfx? {media_id (from search_sfx), at_secs? into the \
-              segment, source_in_secs?, secs?, volume_db?}}. Music is {media_id, duck_db?, \
-              source_in_secs?, volume_db?, fade_in_secs?, fade_out_secs?}. With snap_to_bars \
-              true the bed's beats are read and every segment is rounded to whole bars (half \
-              bars under one) and the bed starts on its first beat; the reply says what moved. \
-              Give consecutive montage segments section: \"montage\" (or \"montage: name\"). \
-              These snap to beats instead of bars. Once built from an approved plan, their \
-              screen reading minimum is relaxed and short titles use word-count timing. \
-              A montage title exactly matching a brief feature counts as its label when \
-              feature is omitted; an explicit feature takes precedence. \
-              Ground the stretches in \
-              klipp_beat_sheet: cut to a settled reveal and hold until it reads; put titles in \
-              a hold window. The plan is stored unapproved; the reply says which of the brief's \
-              features it leaves out. Show its text to the user and ask.",
+             "Propose a paper edit (segments, music, montage, titles) for user approval as one undo step. Show the resulting plan to the user and ask. Details: klipp_guide topic set_edit_plan.",
              json!({ "plan": { "type": "object" } }), vec!["plan"]),
         tool("klipp_approve_edit_plan",
              "Mark the edit plan approved, as one undo step. Call it only after the user has \
@@ -2685,20 +2030,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               also approve and build it themselves in Klipp's Edit Plan window (Window menu).",
              json!({}), vec![]),
         tool("klipp_build_edit_plan",
-             "Build the approved edit plan onto the timeline after whatever is down, as a dry \
-              run by default — the reply says what it would build, step by step, and changes \
-              nothing. With apply true it is built as one undo step (undo takes it all back). \
-              Refused while the plan is unapproved. `detail` adds every step as JSON.",
+             "Build the approved edit plan onto the timeline: a dry run unless apply is true, then one undo step. Details: klipp_guide topic build_edit_plan.",
              json!({ "apply": { "type": "boolean" }, "detail": { "type": "boolean" } }), vec![]),
         tool("klipp_check",
-             "Read-only pre-export checks: black/flash frames, uncovered jump cuts, titles spanning cuts or too short, \
-              captions under lower thirds, cuts inside words, unducked music, mismatched picture/audio ends, offline \
-              media; brief length/size/captions/cast/music. With screen beat sheets: cuts during changes, short reading \
-              holds, titles over changing screens (suggests hold windows), flat cadence; cuts to settled screens are \
-              not jump cuts. With plans: missing brief features or under-three-second coverage, approved plans unbuilt \
-              or drifted. Each finding gives where, why and the fix; fix errors and weigh warnings before klipp_export. \
-              Slower: color true renders a frame a top-track shot for clipping, crushed blacks, dullness, \
-              oversaturation and skin-line drift; loudness true meters the mix for sections far under the rest.",
+             "Read-only checks of the cut before export, against craft and the brief: each finding with where, why and the fix. Optional colour and loudness passes. Details: klipp_guide topic check.",
              json!({ "color": { "type": "boolean" }, "loudness": { "type": "boolean" } }), vec![]),
         tool("klipp_rename_sequence",
              "Name the active sequence: what the timeline is called in the app and in the \
@@ -2710,46 +2045,25 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               klipp_status lists them. The tools then work on it.",
              json!({ "index": { "type": "integer" }, "sequence_id": { "type": "string" } }), vec![]),
         tool("klipp_create_multicam",
-             "Make a multicam group from pool items (two or more angles of one event): synced \
-              onto one clock and laid out at the playhead, each angle on tracks of its own, as \
-              Create Synced Multicam does. sync is \"timecode\", \"audio\" or \
-              \"timecode_then_audio\" (default: timecode where a clip has it, sound for the \
-              rest). Seek first to where it should go. The sync runs in the background: read \
-              klipp_status (its multicam entry) or klipp_timeline once it is laid out.",
+             "Make a multicam group from two or more pool angles of one event, synced by timecode or sound and laid out at the playhead, in the background. Details: klipp_guide topic create_multicam.",
              json!({
                  "media_ids": { "type": "array", "items": { "type": "string" }, "description": "the angles, from klipp_list_media" },
                  "sync": { "type": "string", "enum": ["timecode", "audio", "timecode_then_audio"] }
              }), vec!["media_ids"]),
         tool("klipp_switch_angle",
-             "Cut the multicam group in play to an angle, counted from 1 as keys 1-9 are, at \
-              at_secs or at the playhead: from there on the program shows that camera, until \
-              the next cut. One undo step per cut. klipp_status's multicam entry lists the \
-              group's angles, the one in effect and the cut list; klipp_timeline marks each \
-              clip's angle and the primary's cuts. Cutting to a transcript: switch to the \
-              speaker's angle at each change of speaker.",
+             "Cut the multicam group in play to an angle, counted from 1, at at_secs or the playhead, as one undo step. Details: klipp_guide topic switch_angle.",
              json!({
                  "angle": { "type": "integer", "minimum": 1 },
                  "at_secs": { "type": "number", "description": "timeline seconds; the playhead when left out" }
              }), vec!["angle"]),
         tool("klipp_set_multicam_sound",
-             "Choose whose sound the multicam group at at_secs (or the playhead) plays. Each \
-              angle brings its own sound, and heard together they echo, so a group plays one: \
-              an angle counted from 1 (the default is angle 1, the sound a synced group was \
-              matched to; pick the lav or the camera nearest the speaker), \"follow\" to cut \
-              the sound with the picture, or \"off\" when a recorder's track outside the \
-              group carries the sound. Playback and export hear the same. klipp_status's \
-              multicam entry says which is set.",
+             "Choose whose sound the multicam group plays: an angle, follow the picture, or off. Details: klipp_guide topic set_multicam_sound.",
              json!({
                  "sound": { "description": "an angle number from 1, \"follow\" or \"off\"" },
                  "at_secs": { "type": "number", "description": "timeline seconds; the playhead when left out" }
              }), vec!["sound"]),
         tool("klipp_add_marker",
-             "Put a marker on the timeline: how you and the editor leave each other notes. \
-              Mark what you are unsure of or want looked at, with a label and a note saying \
-              why, and the editor jumps through them. at_secs is timeline seconds; \
-              duration_secs makes it a range. color: red, orange, yellow, green, blue, \
-              purple; kind: chapter, todo, comment, best_take, section (chapters export as \
-              chapter points). Answers with the marker's id.",
+             "Put a marker, a point or a range, on the timeline with a label, note, colour and kind; answers with its id. Details: klipp_guide topic add_marker.",
              json!({
                  "at_secs": { "type": "number" },
                  "duration_secs": { "type": "number" },
@@ -2777,11 +2091,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Remove a marker, by id.",
              json!({ "marker_id": { "type": "string" } }), vec!["marker_id"]),
         tool("klipp_new_project",
-             "Start an empty project: name, and location an existing folder (the project is \
-              <location>/<name>.klipp, saved at once). width, height and fps set its first \
-              sequence; left out, both follow the first clip placed. Refused when the open \
-              project has unsaved changes unless discard_changes is true: klipp_save_project \
-              first.",
+             "Start an empty project at <location>/<name>.klipp, saved at once; refused over unsaved changes unless discard_changes is true. Details: klipp_guide topic new_project.",
              json!({
                  "name": { "type": "string" },
                  "location": { "type": "string", "description": "absolute path of an existing folder" },
@@ -2802,18 +2112,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "fps": { "type": "number" }
              }), vec!["name", "width", "height", "fps"]),
         tool("klipp_save_project",
-             "Save the project: to an absolute path (a folder ending in .klipp, made if \
-              needed), or where it was last saved when no path is given. Save before a long \
-              piece of work and when you are done, so the user can carry on by hand. \
-              klipp_status says where the project is saved and whether it has unsaved changes.",
+             "Save the project to an absolute .klipp folder, or where it was last saved. Details: klipp_guide topic save_project.",
              json!({ "path": { "type": "string" } }), vec![]),
         tool("klipp_relink_media",
-             "Point a media item at a file: an offline item found again, or a better copy. \
-              The file is judged against what the project knew of the item (reel, start \
-              timecode, length, rate, size) and relinked; the answer's check says how sure \
-              that is. A file that is probably not the clip is refused with the reason; \
-              force: true relinks it anyway (a relink is not undone by undo). \
-              klipp_list_media marks items offline.",
+             "Point a media item at a file, judged against what the project knew of it; a probable mismatch is refused unless force is true. Details: klipp_guide topic relink_media.",
              json!({
                  "media_id": { "type": "string" },
                  "path": { "type": "string", "description": "absolute path of the file" },
@@ -2828,10 +2130,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "remove": { "type": "array", "items": { "type": "string" } }
              }), vec!["media_id"]),
         tool("klipp_window_screenshot",
-             "The whole Klipp window as the person sees it, panels and dialogs included, as a \
-              PNG (1600 wide by default): for checking a layout, a panel or a dialog. The \
-              viewer in it is drawn through its monitor LUT and overlays, so measure colour \
-              with klipp_screenshot or klipp_frame_stats, never from this.",
+             "The whole Klipp window as the person sees it, as a PNG, for checking a layout or a dialog; never for measuring colour. Details: klipp_guide topic window_screenshot.",
              json!({ "path": { "type": "string" }, "max_width": { "type": "integer" } }), vec![]),
         tool("klipp_open_project",
              "Open the project at an absolute path, replacing the one that is open. Refused \
@@ -2839,20 +2138,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               discard_changes true to lose them on purpose.",
              json!({ "path": { "type": "string" }, "discard_changes": { "type": "boolean" } }), vec!["path"]),
         tool("klipp_frame_stats",
-             "The scope readings of the frame at a time, the numbers a colourist grades to: \
-              the black, mid and white luma points in IRE, the RGB balance and any cast, the \
-              saturation, how much is clipped at white and black — and in CIELAB: lightness \
-              percentiles, contrast, chroma, the cast on the neutrals (a*, b*, named), and \
-              every face read as a grid of skin patches (hue against the 40–65° skin band, \
-              chroma, lightness, spread), each judged against the brief's look with the knob \
-              that fixes it. Read it before and after a grade — grade to the numbers, not by \
-              eye, and match a shot to its neighbours by them.",
+             "The scope numbers of the frame at a time (luma points, balance, saturation, clipping, CIELAB lightness, cast and faces), judged against the brief's look. Details: klipp_guide topic frame_stats.",
              json!({ "secs": { "type": "number" }, "timeout_ms": { "type": "integer" } }), vec!["secs"]),
         tool("klipp_timeline_sheet",
-             "A contact sheet of the timeline as one image: a tile for each shot (each stretch between \
-              cuts on the picture tracks), or frames tiles evenly spaced, over a range of it. The look \
-              at a whole cut — framing, grade continuity, titles — in one call instead of a frame_at \
-              per shot. The reply lists each tile's time and what is on it.",
+             "A contact sheet of the timeline as one image: a tile per shot, or evenly spaced frames, over a range. Details: klipp_guide topic timeline_sheet.",
              json!({
                  "from_secs": { "type": "number" },
                  "to_secs": { "type": "number" },
@@ -2874,11 +2163,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec!["secs"]),
         tool("klipp_scope",
-             "A scope image of a frame, GPU-drawn the way the app's own scopes are: the \
-              waveform, the RGB parade, the vectorscope, or the histogram, as a PNG. It reads \
-              the frame at secs (the playhead when omitted) without disturbing the scopes the \
-              viewer is looking at. The colourist's second eye; frame_stats gives the same \
-              frame as numbers to grade to.",
+             "A GPU-drawn waveform, parade, vectorscope or histogram of a frame as a PNG, without disturbing the app's own scopes. Details: klipp_guide topic scope.",
              json!({
                  "mode": { "type": "string", "description": "waveform, parade, vectorscope, or histogram (waveform by default)" },
                  "secs": { "type": "number", "description": "timeline seconds; the playhead when omitted" },
@@ -2976,7 +2261,44 @@ mod interface_tests {
             assert!(size <= budget,"{name}: {size} > {budget}");
         }
         let catalog = serde_json::to_vec(&tools).unwrap().len();
-        assert!(catalog < 92_000, "keep at least 2 KB of catalog headroom: {catalog} bytes");
+        assert!(catalog < 66_000, "keep the catalogue short; details go in guide topics (#1667): {catalog} bytes");
+    }
+
+    /// #1667: a tool's description names the guide topic its details are
+    /// in, and every topic named is there; every tool page's section is a
+    /// tool's, and the op topic lists every op.
+    #[test]
+    fn every_guide_topic_a_tool_names_is_there() {
+        let tools = tool_definitions_for(false);
+        let catalogue = serde_json::to_string(&tools).unwrap();
+        let named: Vec<&str> = catalogue.match_indices("klipp_guide topic ").map(|(at, m)| {
+            let rest = &catalogue[at + m.len()..];
+            &rest[..rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')).unwrap_or(rest.len())]
+        }).collect();
+        assert!(named.len() > 60, "{} topics named", named.len());
+        for topic in &named {
+            let text = guide_topic(topic).unwrap_or_else(|e| panic!("{topic}: {e}"));
+            assert!(text.len() > 40, "{topic}");
+        }
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        for (page, text) in TOOL_PAGES {
+            assert_eq!(guide_topic(page).unwrap(), *text);
+            for line in text.lines().filter_map(|l| l.strip_prefix("## ")) {
+                assert!(names.contains(&line), "{page} has a section for {line}, which is not a tool");
+                let one = guide_topic(&line["klipp_".len()..]).unwrap();
+                assert!(one.starts_with(&format!("## {line}\n")) && !one[3..].contains("\n## "), "{line}: {one}");
+                assert_eq!(guide_topic(line).unwrap(), one, "the full name reads the same");
+            }
+        }
+        let ops = guide_topic("ops").unwrap();
+        for op in klipp_document::ops::OP_NAMES {
+            assert!(ops.contains(op), "{op}");
+        }
+        assert!(ops.starts_with("## Ops\n") && ops.contains("`place {media_id, track, at"), "the guide's op list first");
+        assert!(ops.contains("# More on the ops") && ops.contains("bridge_secs"), "then the fuller notes");
+        assert!(!ops.contains("## Batches"), "and the list ends where the guide's next part starts");
+        let err = guide_topic("nope").unwrap_err();
+        assert!(err.contains("ops") && err.contains("timeline-tools") && err.contains("a tool's name"), "{err}");
     }
 
     #[test]

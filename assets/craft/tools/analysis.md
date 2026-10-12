@@ -1,0 +1,67 @@
+# Analysis and looking at the footage
+
+What each of these tools does in full: the details its short description leaves out. Read one tool's part with klipp_guide and its name as the topic (find_shots), or this whole page as analysis-tools.
+
+## klipp_analyze
+
+Background analysis: shot boundaries, EBU R128 loudness/true peak, silence, and word-timed transcript/language if the speech model is installed. Beat sheet and OCR require screen footage (no camera metadata or tagged screen via klipp_tag_media) and their installed models. Omit media_id for the pool; analysed items are free. Also runs on import without downloads. wait true waits, then read klipp_media_analysis. download_models fetches missing enabled-in-preferences models with user knowledge: speech hundreds of MB, OCR pair about 10 MB.
+
+## klipp_audio_spectrum
+
+A file's sound as frequency against time: where a hum starts, when a hiss creeps in, which stretch has the air conditioning in it. The scrolling analyser in the app shows what is playing; this reads the whole file at once, which is the only way to answer *when*. Answers with named findings and the band levels a second at a time -- rumble, hum, voice, sibilance, hiss -- each judged relative to the voice's own level rather than as an absolute, because a quiet recording of a clean room and a loud one of a noisy room have the same noise floor and different problems.
+
+## klipp_auto_redact
+
+Hide everything the screen text found sensitive — emails, keys, passwords, card numbers — wherever the timeline shows it: one redact op per finding (a cropped, pixelated copy of the footage on a video track above), resolved as a plan. A dry run by default; with apply true it is done as one undo step. Needs the OCR pass (klipp_analyze with the OCR models). Look at a frame afterwards to see each box covers its text.
+
+## klipp_beat_sheet
+
+A screencast or demo's beat sheet: where the picture is settled or changing (idle/action), the cut points (a scene change, or where a change just settled: cut TO a settle and hold until it reads, never mid-action) and the title/hold windows (settled stretches a title can sit on). From the shots and motion passes, so analyze first. With the OCR models downloaded each settled beat and reveal is named by what the screen showed ("6.13-14.50 s SEARCH & FILTERING"), so a plan can work by feature name. Per second: the times say where to look; confirm with frame_at or contact_sheet where it matters.
+
+## klipp_beats
+
+The tempo and beat grid of a clip's sound: BPM, a confidence, and the beat times in seconds. Run it on the music you are cutting to, then place or trim cuts to a beat time for a musical rhythm. A low confidence means no clear beat (speech or ambience). For music it also gives the track's sections (intro, build, peak, breakdown, outro, body) on phrase lines and its energy bar by bar, for putting chapter changes on musical turns. With target_secs it fits the track to that length by taking out or repeating whole bars where the join is cleanest, keeping its start and end, and returns place ops (on track, from at_secs) to apply. A read; changes nothing.
+
+## klipp_check
+
+Read-only pre-export checks: black/flash frames, uncovered jump cuts, titles spanning cuts or too short, captions under lower thirds, cuts inside words, unducked music, mismatched picture/audio ends, offline media; brief length/size/captions/cast/music. With screen beat sheets: cuts during changes, short reading holds, titles over changing screens (suggests hold windows), flat cadence; cuts to settled screens are not jump cuts. With plans: missing brief features or under-three-second coverage, approved plans unbuilt or drifted. Each finding gives where, why and the fix; fix errors and weigh warnings before klipp_export. Slower: color true renders a frame a top-track shot for clipping, crushed blacks, dullness, oversaturation and skin-line drift; loudness true meters the mix for sections far under the rest.
+
+## klipp_contact_sheet
+
+Look at a media file: a grid of frames evenly spaced over a range (the whole file by default), each with its time in the file burnt in, as one JPEG, inlined when small enough. Use it to see what a clip is before planning, and to check a range you cut to. Twelve frames, four to a row, 240 px tiles by default; the reply lists each tile's time.
+
+## klipp_cut_points
+
+The clean places to cut in a media file, ranked: the measured pauses (strength 3, the cleanest), the sentence ends and shot changes (strength 2), the phrase breaks (strength 1). Pass near_secs and it also says whether that moment is clean, mid-sentence or mid-word, and the nearest clean point to move to. Use it before you trim or place a spoken clip, so a cut never lands through a word or the middle of a sentence. from_secs and to_secs narrow the range.
+
+## klipp_find_shots
+
+Shots across every analysed item, every condition given holding: framing (close-up, medium close-up, medium, wide, very wide, inset: a small figure in a corner or a face cam over a screen; none for no people, as B-roll wants), at least so many people, a detector object (cat, car, cup…), motion (static, gentle, moving, busy; needs decoded measurements, and a missing bin is not static), speech or not, a minimum length. Each hit: the media id and the shot's start and end in the file. A take over 12 s is also searched moment by moment, split where the camera settles or moves or the framing changes; those hits carry a moment number and steady (still enough to use), so static or gentle finds a steady stretch inside a walk.
+
+## klipp_media_analysis
+
+What is known about a media item, as text: its shots with their ranges, its loudness, range and true peak, and its silences. The timeline view shows the same facts per clip in brief. Times are seconds from the file's start; a clip's source_in maps them to the timeline.
+
+## klipp_mix_loudness
+
+How loud the mix is over a stretch of the timeline, as the export mixes it (before loudness normalisation): every step_secs (0.5) its short-term loudness and the loudest 400 ms inside the step, with the steps that stand out 4 dB over the median marked. Use it to hear whether a whoosh or a hit lands over the music at its cut, and whether music sits under speech. A read; about a tenth of the stretch's length.
+
+## klipp_review
+
+The cut as an editor scrubs it, in one call: a draft render of the whole timeline (max_width 640 by default, fast), a contact sheet of the draft (frames tiles in cols columns, one every couple of seconds), and the check with its colour pass. Read the sheet image for the shape of the cut — the rhythm, the titles, the cards — and the check for what to fix; frame_at for a closer look at one frame. Takes as long as the draft render (seconds to a minute).
+
+## klipp_screen_text
+
+What was on the screen of a screen recording and when: every line OCR read, folded into spans with the seconds it stayed up and where on the frame (x, y, w, h as fractions), between from_secs and to_secs. Says which screen a beat shows — "Search & Filtering" up 12–18 s — so a plan can name the right moment. SENSITIVE lines (an email, a key, a password, a card number) are listed masked with where to blur. Needs the two OCR models (about 10 MB): if the reply says they are not downloaded, ask the user before klipp_analyze with download_models true.
+
+## klipp_selects
+
+Cut a long take down to its selects: the runs of speech between the real pauses, each with the time it runs from and to and what is said, marked keep or drop (a run that is only filler — um, uh — or too short to use is a drop). Use it to build a tight cut from a loose recording: place each keep range in order and close the gaps. min_gap_secs sets the pause that starts a new select (0.6 by default). A read; changes nothing.
+
+## klipp_style_profile
+
+A reference video's editing style as facts, to build a clip in its feel from other footage: its cut cadence (shots, their lengths, cuts a minute, on the beat or not), its tempo, its look off the scopes (blacks, whites, contrast, saturation, warmth), its motion and detected holds. Cut cadence is not animation pacing: look at changes within shots before choosing hold lengths, as motion statistics name no animation events. Read only. Match the feel with your own footage and your own or licensed music, never the reference's track. Import and analyse the reference first.
+
+## klipp_transcript
+
+What is said in a media file between two times, with when, in seconds of the file: the segments, and with words true every word with its start and end, and the stretches measured silent in that range. Use it to put a cut on the edge of a word or in a silence (a cut in measured silence is clean), and to read a stretch the analysis text cut short.

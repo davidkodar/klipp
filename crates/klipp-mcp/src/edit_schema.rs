@@ -65,10 +65,9 @@ pub(super) fn ops_schema() -> Value {
             json!({"kind":{"type":"string","description":"Track kind, case insensitive: video, audio, text/title, subtitle/subtitles/captions"},"name":{"type":"string"}}),
         ),
     ];
-    let mut other_ops = klipp_document::ops::OP_NAMES.to_vec();
-    other_ops.retain(|op| !COMMON.contains(op));
+    // The rest by name in the guide, which lists every op (#1667).
     let mut alternatives = common.to_vec();
-    alternatives.push(json!({"type":"object","properties":{"op":{"type":"string","enum":other_ops}},"required":["op"],"description":"Less common operation; read klipp_guide before using it."}));
+    alternatives.push(json!({"type":"object","properties":{"op":{"type":"string","not":{"enum":COMMON}}},"required":["op"],"description":"Another op: klipp_guide topic ops."}));
     json!({"type":"array","minItems":1,"items":{"oneOf":alternatives},"$defs":{"anchor":anchor,"clip_ref":clip_ref,"track_ref":track_ref}})
 }
 
