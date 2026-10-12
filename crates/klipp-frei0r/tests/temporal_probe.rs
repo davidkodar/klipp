@@ -2,9 +2,10 @@
 //! (`klipp_frei0r::temporal`) against the installed plug-ins (#1472).
 //!
 //! Each installed filter renders one frame fresh, and the same frame after
-//! 40 others, at its default parameters and again with every number at 0.5
-//! (Delay0r keeps nothing at its default delay of 0). If either differs, it
-//! keeps history. Each plug-in runs in a child process of this test, so a
+//! 40 others on two instances, at its default parameters and again with
+//! every number at 0.5 (Delay0r keeps nothing at its default delay of 0).
+//! If the two runs agree and differ from the fresh frame, it keeps
+//! history; if they disagree, its output is random (#1602). Each plug-in runs in a child process of this test, so a
 //! plug-in that crashes ends only its own case.
 //!
 //! A mismatch between the list and the plug-ins fails. The plug-ins are
@@ -62,11 +63,23 @@ fn probe_one_plug_in() {
         println!("PROBE nondeterministic");
         return;
     }
-    let effect = make();
-    for k in 0..40 {
-        effect.run(f64::from(k) * 0.04, &b);
+    // The frame after 40 others, on two instances: history repeats itself,
+    // chance doesn't. A plug-in whose two runs differ draws at random and
+    // can't be probed (#1602): a random glitch during the run read as
+    // history, and the verdict changed from run to run.
+    let after_history = || {
+        let effect = make();
+        for k in 0..40 {
+            effect.run(f64::from(k) * 0.04, &b);
+        }
+        effect.run(at, &a)
+    };
+    let (first, second) = (after_history(), after_history());
+    if first != second {
+        println!("PROBE nondeterministic");
+        return;
     }
-    println!("PROBE {}", if effect.run(at, &a) != fresh { "stateful" } else { "stateless" });
+    println!("PROBE {}", if first != fresh { "stateful" } else { "stateless" });
 }
 
 /// One child's verdict: `stateful`, `stateless`, `nondeterministic`, or
