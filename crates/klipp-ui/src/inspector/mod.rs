@@ -5104,6 +5104,14 @@ fn show_title_editor(
         if ui.checkbox(&mut vertical, "Vertical").changed() {
             cmds.push(AppCommand::SetTitleVerticalLayout { clip_id, vertical });
         }
+        // Vertical text's columns run from the right, as Japanese and
+        // Chinese are set, unless asked otherwise (#1507).
+        if vertical {
+            let mut from_left = td.primary_text().is_some_and(|tb| tb.vertical_columns_ltr);
+            if ui.checkbox(&mut from_left, "Columns from the left").changed() {
+                cmds.push(AppCommand::SetTitleVerticalColumnsLtr { clip_id, left_to_right: from_left });
+            }
+        }
         let dir_idx = match td.primary_text().map_or(klipp_timeline::TextDirection::Ltr, |tb| tb.text_direction) {
             klipp_timeline::TextDirection::Ltr => 0u8,
             klipp_timeline::TextDirection::Rtl => 1u8,

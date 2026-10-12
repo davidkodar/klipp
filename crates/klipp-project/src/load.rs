@@ -1330,6 +1330,7 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     glitch_intensity: 0.0,
                     columns: 1,
                     vertical_layout: false,
+                    vertical_columns_ltr: false,
                     text_direction: klipp_timeline::TextDirection::Ltr,
                     last_line: Default::default(),
                     vertical_align: Default::default(),

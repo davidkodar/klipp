@@ -40,6 +40,14 @@ use harfrust::{Direction, Feature, FontRef, ShapeOptions, ShaperData, ShaperInst
 /// laid out before does not match (#1501).
 pub const SHAPING_VERSION: u32 = 2;
 
+/// A glyph turned a quarter clockwise, as a sideways run of vertical
+/// text is (#1507), carries its size negated in its key: its coverage is
+/// the upright glyph's turned, and its key apart from it. No other glyph
+/// has a size below zero.
+pub(crate) fn sideways_px(px: f32) -> f32 {
+    -px
+}
+
 /// A font loaded for titles: fontdue's face for metrics and drawing,
 /// and the bytes and shaping tables harfrust shapes with. `shaper` is
 /// `None` for a file harfrust cannot read; its text is set unshaped.
@@ -137,15 +145,14 @@ impl Face<'_> {
     /// The coverage of the glyph `key` names, as fontdue's
     /// `rasterize_config` gives it, or a colour glyph's alpha (#1503).
     pub(crate) fn coverage(&self, key: GlyphRasterConfig) -> (Metrics, Vec<u8>) {
+        if key.px < 0.0 {
+            let (m, cov) = self.coverage(GlyphRasterConfig { px: -key.px, ..key });
+            return turned(m, &cov);
+        }
         if self.font.colour.is_none() && self.font.instance.is_none() {
             return self.font.font.rasterize_config(key);
         }
         self.font.coverage_indexed(key.glyph_index, key.px)
-    }
-
-    /// [`LoadedFont::coverage_indexed`].
-    pub(crate) fn coverage_indexed(&self, gid: u16, px: f32) -> (Metrics, Vec<u8>) {
-        self.font.coverage_indexed(gid, px)
     }
 
     /// [`LoadedFont::colour_glyph`].
@@ -455,6 +462,49 @@ fn visual_order(segments: &[Segment]) -> Vec<usize> {
         }
     }
     order
+}
+
+/// A glyph's coverage turned a quarter clockwise (#1507): its top to
+/// the right, its box `height` wide and `width` tall.
+fn turned(m: Metrics, cov: &[u8]) -> (Metrics, Vec<u8>) {
+    let (w, h) = (m.width, m.height);
+    let mut out = vec![0u8; w * h];
+    for r in 0..h {
+        for c in 0..w {
+            out[c * h + (h - 1 - r)] = cov[r * w + c];
+        }
+    }
+    (Metrics { width: h, height: w, ..m }, out)
+}
+
+/// `text` shaped top to bottom in `face` (#1507), its vertical forms
+/// (`vert`, `vrt2`) and vertical advances the font's: each glyph's
+/// offset from where it is set is from its vertical origin, the centre
+/// of its top. `None` for a font the shaper cannot read.
+pub(crate) fn shape_vertical(face: &Face, text: &str) -> Option<harfrust::GlyphBuffer> {
+    let data = face.font.shaper.as_ref()?;
+    let font = FontRef::from_index(&face.font.data, 0).ok()?;
+    let shaper = data.shaper(&font).instance(face.font.instance.as_ref().map(|(_, s)| s)).build();
+    let mut buffer = UnicodeBuffer::new();
+    buffer.push_str(text);
+    buffer.guess_segment_properties();
+    buffer.set_direction(Direction::TopToBottom);
+    Some(shaper.shape(buffer, ShapeOptions::new().features(&face.features)))
+}
+
+/// `text` shaped left to right or right to left in `face`, as a line's
+/// runs are (#1507's sideways runs).
+pub(crate) fn shape_horizontal(face: &Face, text: &str, rtl: bool) -> Option<harfrust::GlyphBuffer> {
+    shape(face, text, rtl)
+}
+
+/// [`turned`] on a bare coverage, for the vertical text tests: the
+/// turned box's width and height and its coverage.
+#[cfg(test)]
+pub(crate) fn turned_for_test(w: usize, h: usize, cov: &[u8]) -> ((usize, usize), Vec<u8>) {
+    let m = Metrics { width: w, height: h, ..Metrics::default() };
+    let (m, out) = turned(m, cov);
+    ((m.width, m.height), out)
 }
 
 #[cfg(test)]

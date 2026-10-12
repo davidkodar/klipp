@@ -37,6 +37,7 @@ mod fallback;
 mod shaping;
 mod text_on_path;
 pub use text_on_path::PathUnits;
+mod vertical;
 pub mod variable;
 mod vector_path;
 use fontdue::layout::{HorizontalAlign, LayoutSettings, VerticalAlign, WrapStyle};
@@ -887,33 +888,21 @@ impl TitleRenderer {
         // we use fontdue's normal Layout flow.
         let mut drop_cap_wrap_glyphs: Vec<fontdue::layout::GlyphPosition> = Vec::new();
 
-        // Vertical layout (CJK-style top-to-bottom stacking). Each
-        // character becomes its own line so glyphs stack vertically
-        // with their normal horizontal orientation. Drop caps and
-        // wrap-under disable this path (single-line cap doesn't
-        // make sense as vertical column header).
+        // Vertical text (#1507): set top to bottom in columns, from the
+        // right unless the box says from the left, in vertical forms with
+        // sideways runs turned. Drop caps and wrap-under disable it.
         let vertical_active = tb.vertical_layout && !drop_cap_active;
         let mut vertical_glyphs: Vec<fontdue::layout::GlyphPosition> = Vec::new();
+        let mut vertical_starts: Vec<usize> = Vec::new();
         if vertical_active {
-            let line_height = font_px * 1.2;
-            let mut byte_offset = 0usize;
-            let column_x = width as f32 * 0.45;  // single-column centred
-            for (char_idx, ch) in resolved_text.chars().enumerate() {
-                let (ch_px, ch_face) = pieces_of(byte_offset, byte_offset + ch.len_utf8()).first().map_or((font_px, 0), |p| (p.2, p.3));
-                let mut sub_layout = ShapedLayout::new();
-                sub_layout.reset(&LayoutSettings {
-                    x: column_x,
-                    y: char_idx as f32 * line_height,
-                    max_width: Some(font_px * 2.5),
-                    horizontal_align: HorizontalAlign::Left,
-                    vertical_align: VerticalAlign::Top,
-                    wrap_style: WrapStyle::Word,
-                    ..LayoutSettings::default()
-                });
-                sub_layout.append(&fonts, &resolved_text, (byte_offset, byte_offset + ch.len_utf8(), ch_px, ch_face));
-                vertical_glyphs.extend_from_slice(sub_layout.glyphs());
-                byte_offset += ch.len_utf8();
-            }
+            let how = vertical::Columns {
+                length: box_h,
+                pitch: font_px * 1.2 * tb.line_spacing,
+                tracking: tb.tracking * scale,
+                left_to_right: tb.vertical_columns_ltr,
+                rtl: tb.text_direction == TextDirection::Rtl,
+            };
+            (vertical_glyphs, vertical_starts) = vertical::lay(&fonts, &resolved_text, &pieces_of(0, resolved_text.len()), &how);
         }
 
         // Multi-column body layout. When `columns >= 2` we split the
@@ -1053,7 +1042,7 @@ impl TitleRenderer {
         let line_starts = if drop_cap_wrap_eligible || columns_active {
             std::mem::take(&mut path_line_starts)
         } else if vertical_active {
-            (0..glyphs_owned.len()).collect()
+            std::mem::take(&mut vertical_starts)
         } else {
             layout.lines().map_or(Vec::new(), |lines| lines.iter().map(|l| l.glyph_start).collect())
         };
@@ -1061,10 +1050,10 @@ impl TitleRenderer {
         // each line after the first moves down by its place in the
         // lines, a body line's height (a vertical character's) times
         // the extra spacing. The other paths' layouts spaced theirs.
-        if tb.line_spacing != 1.0 && (drop_cap_wrap_eligible || vertical_active) {
-            let pitch = if vertical_active {
-                font_px * 1.2
-            } else {
+        // Vertical text spaced its columns and its characters as it set
+        // them (#1507).
+        if tb.line_spacing != 1.0 && drop_cap_wrap_eligible {
+            let pitch = {
                 let face = pieces_of(body_start, resolved_text.len()).first().map_or(0, |p| p.3);
                 fonts[face].horizontal_line_metrics(font_px).map_or(font_px * 1.2, |m| m.new_line_size)
             };
@@ -1077,14 +1066,16 @@ impl TitleRenderer {
         }
 
         // Apply tracking (extra pixel spacing per character)
-        if tb.tracking != 0.0 {
+        if tb.tracking != 0.0 && !vertical_active {
             let tracking_px = tb.tracking * scale;
             for (i, g) in glyphs_owned.iter_mut().enumerate() {
                 g.x += tracking_px * i as f32;
             }
         }
         // A style run's own tracking and baseline offset (#1505).
-        apply_run_spacing(&mut glyphs_owned, &tb.style_runs, &line_starts, tb.tracking, scale);
+        if !vertical_active {
+            apply_run_spacing(&mut glyphs_owned, &tb.style_runs, &line_starts, tb.tracking, scale);
+        }
 
         // Justified lines fill the box (#1506). Only fontdue's own
         // layout carries its lines; the drop-cap wrap, vertical and
@@ -5335,7 +5326,8 @@ fn rasterize_to_mask_motion(
             let scaled_px = (base_font_px * scale).max(1.0);
             // The shaped glyph (a ligature, a feature's form), not its
             // first character's (#1501).
-            let (m, cov) = font.coverage_indexed(glyph.key.glyph_index, scaled_px);
+            // By its key, so a sideways glyph is turned (#1507).
+            let (m, cov) = font.coverage(fontdue::layout::GlyphRasterConfig { px: scaled_px.copysign(glyph.key.px), ..glyph.key });
             (cov, m.width, m.height)
         } else {
             let (_, cov) = font.coverage(glyph.key);
@@ -9831,14 +9823,16 @@ mod style_run_tests {
         let mut r = TitleRenderer::new();
         let hashes = hashes_of(&mut r, &unchanged_boxes());
         // Taken on main at e4618c0f1, before #1505; the last, "Hello
-        // world" in Inter, retaken with #1501's shaping, which kerns it.
+        // world" in Inter, retaken with #1501's shaping, which kerns it;
+        // the vertical "Hi there" retaken with #1507, which turns Latin
+        // sideways in a column.
         let before = [
             (537262310058089473, 12990052878724863373),
             (9375910112802164878, 7007222290492971662),
             (17185529782468128921, 6239473186763768033),
             (1323807162608565093, 12990052878724863373),
             (12328210842903889326, 12990052878724863373),
-            (17796725844148216080, 10202472981451332177),
+            (13922581151920256384, 10202472981451332177),
             (5448820052067944582, 6194283091192519508),
             (7193490694850778374, 224027851749628502),
             (7400897415938749996, 9238244902904153988),
@@ -10282,7 +10276,8 @@ mod fallback_tests {
             let cursor = fnv(r.compute_char_positions(td, 640, 360).iter().flat_map(|p| [p.x.to_bits(), p.y.to_bits()]).flat_map(u32::to_le_bytes));
             (pixels, cursor)
         }).collect();
-        // Taken on main at ee722dcb6, before #1503.
+        // Taken on main at ee722dcb6, before #1503; the vertical "Ωé"
+        // retaken with #1507, which turns them sideways in a column.
         let before = [
             (12362235235435922744, 11758040230992881638),
             (11429411338127416158, 14383662946162571450),
@@ -10292,7 +10287,7 @@ mod fallback_tests {
             (3193317923789182864, 14796392279787328656),
             (17543495563288601848, 15058820355971908112),
             (1948305321527838988, 11067866960264763338),
-            (15456292890279627271, 16988677102251989457),
+            (14617716708989983263, 16988677102251989457),
         ];
         assert_eq!(hashes, before, "text its face covers draws or lays out differently");
     }

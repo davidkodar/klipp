@@ -923,6 +923,11 @@ pub struct TextBox {
     /// in the rasteriser.
     #[serde(default)]
     pub vertical_layout: bool,
+    /// Vertical text's columns from the left (#1507), as Mongolian is
+    /// set; `false` (the default, left unwritten) from the right, as
+    /// Japanese and Chinese are.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub vertical_columns_ltr: bool,
     /// Text direction. `Ltr` (default) = standard left-to-right.
     /// `Rtl` = right-to-left for Hebrew. Limited Arabic support —
     /// proper Arabic shaping (joining forms, lam-alif ligatures, …)
@@ -1384,6 +1389,7 @@ impl Default for TextBox {
             glitch_intensity: 0.0,
             columns: 1,
             vertical_layout: false,
+            vertical_columns_ltr: false,
             text_direction: TextDirection::Ltr,
             last_line: LastLineAlign::Left,
             vertical_align: TextVerticalAlign::Middle,
