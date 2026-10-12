@@ -194,10 +194,10 @@ pub(crate) fn respond(
                 return read_in_batch("style_profile");
             }
             let id = klipp_core::MediaId(media_id.parse().map_err(|e| format!("media_id is not a uuid: {e}"))?);
-            let (path, filename, dur, has_audio) = {
+            let (path, filename, dur, has_audio, item) = {
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
                 let item = pool.get(&id).ok_or_else(|| format!("no media item {}", id.0))?;
-                (item.path.clone(), item.filename.clone(), item.duration.to_secs_f64(), item.has_audio)
+                (item.path.clone(), item.filename.clone(), item.duration.to_secs_f64(), item.has_audio, item.clone())
             };
             let report = klipp_analysis::report::MediaAnalysis::load(&path);
             let Some(shots) = report.shots.as_ref() else {
@@ -243,7 +243,7 @@ pub(crate) fn respond(
                 json!(null)
             };
             let mut response = style_profile_response(&filename, &media_id, cuts, &beats, look,
-                StylePacingInput { shots, motion: report.motion.as_ref(), sheet: report.beatsheet.as_ref() });
+                StylePacingInput { shots, motion: report.motion.as_ref(), sheet: report.screen_beatsheet(&item) });
             if report.motion.as_ref().is_none_or(|m| m.overall_mean().is_none())
                 && klipp_analysis::service::status(id).is_some_and(|s| matches!(s.state, klipp_analysis::service::State::Queued | klipp_analysis::service::State::Running)) {
                 response["next"] = json!("Motion analysis is queued or running; wait for it to finish, then read style_profile again. Do not queue a second analysis.");

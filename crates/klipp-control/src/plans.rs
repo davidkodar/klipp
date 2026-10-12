@@ -168,8 +168,12 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
     fn faces(&self, item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
         klipp_analysis::report::MediaAnalysis::load(&item.path).framing.map(|f| f.samples.iter().flat_map(|s| face_or_head_regions(&f, s).into_iter().map(move |b| (s.secs, b))).collect()).unwrap_or_default()
     }
+    /// The beat sheet, for a screen recording only: one made for camera
+    /// footage the metadata took for a screen would hold its shots to a
+    /// screen's rules (#1568).
     fn screen_beats(&self, item: &klipp_media::MediaItem) -> Option<klipp_document::ops::ScreenBeats> {
-        let bs = klipp_analysis::report::MediaAnalysis::load(&item.path).beatsheet?;
+        let analysis = klipp_analysis::report::MediaAnalysis::load(&item.path);
+        let bs = analysis.screen_beatsheet(item)?;
         if !bs.has_freeze {
             return None;
         }

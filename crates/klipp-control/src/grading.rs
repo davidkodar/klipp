@@ -377,7 +377,7 @@ pub(crate) fn look_for(ctx: &ControlContext, secs: f64) -> klipp_color::measure:
             let item = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).find_map(|t| t.clip_at_timecode(tc)).and_then(|(_, c)| pool.get(&c.media_id()?));
             if let Some(item) = item {
                 let a = klipp_analysis::report::MediaAnalysis::load(&item.path);
-                let holds = a.beatsheet.as_ref().is_some_and(|b| b.has_freeze);
+                let holds = a.screen_beatsheet(item).is_some_and(|b| b.has_freeze);
                 let people = a.framing.as_ref().is_some_and(|f| f.samples.iter().any(|s| !s.people.is_empty() || !s.faces.is_empty()));
                 if holds && !people {
                     return LookTarget::preset("screencast").unwrap();
