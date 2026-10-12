@@ -302,21 +302,28 @@ pub(crate) fn measure_at(ctx: &ControlContext, secs: f64, only: Option<klipp_cor
     let (data, w, h) = grab_frame_rgba_of(ctx, secs, only, timeout_ms)?;
     let faces = skin_regions(ctx, secs, &data, w, h);
     let mut m = klipp_color::measure::measure_frame(&data, w, h, &faces);
-    m.log_prior = log_prior_at(ctx, secs);
+    m.log_prior = log_prior_at(ctx, secs, only);
     Ok(m)
 }
 
-/// What the file of the picture clip at `secs` says about being log.
-pub(crate) fn log_prior_at(ctx: &ControlContext, secs: f64) -> klipp_color::measure::LogPrior {
+/// The measured clip's metadata: the isolated clip when requested, otherwise
+/// the visible picture at `secs`. An overlay must not supply a solo read's prior.
+pub(crate) fn log_prior_at(ctx: &ControlContext, secs: f64, only: Option<klipp_core::ClipId>) -> klipp_color::measure::LogPrior {
     let (Ok(seq), Ok(pool)) = (ctx.sequence.read(), ctx.media_pool.read()) else { return Default::default() };
     let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
-    seq.tracks
-        .iter()
-        .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
-        .find_map(|t| t.clip_at_timecode(tc).map(|(_, c)| c).filter(|c| is_picture_clip(c)))
-        .and_then(|c| pool.get(&c.media_id()?).map(|item| item.log_prior()))
+    let mut tracks = seq.tracks.iter()
+        .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible);
+    let clip = match only {
+        Some(id) => tracks.flat_map(|t| &t.clips).find(|c| c.id == id && is_picture_clip(c)),
+        None => tracks.find_map(|t| t.clip_at_timecode(tc).map(|(_, c)| c).filter(|c| is_picture_clip(c))),
+    };
+    clip.and_then(|c| pool.get(&c.media_id()?).map(|item| item.log_prior()))
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+#[path = "grading_log_prior_tests.rs"]
+mod log_prior_tests;
 
 /// Whether the colour tools grade this clip: an enabled clip of media.
 pub(crate) fn is_picture_clip(c: &klipp_timeline::Clip) -> bool {
