@@ -616,14 +616,29 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "to": arg_str(args, "to")?,
             "to_port": args.get("to_port").and_then(|v| v.as_u64()).unwrap_or(0) as u8,
         }),
-        "klipp_set_node_param" => json!({
-            "method": "set_node_param",
-            "clip_id": arg_str(args, "clip_id")?,
-            "node_id": arg_str(args, "node_id")?,
-            "param": arg_str(args, "param")?,
-            "value": args.get("value").and_then(|v| v.as_f64())
-                .ok_or("missing required argument: value")? as f32,
-        }),
+        "klipp_set_node_param" => {
+            let remove = args.get("remove").and_then(|v| v.as_bool()).unwrap_or(false);
+            let value = args.get("value").and_then(|v| v.as_f64());
+            if value.is_none() && !remove {
+                return Err("missing required argument: value".into());
+            }
+            let mut req = json!({
+                "method": "set_node_param",
+                "clip_id": arg_str(args, "clip_id")?,
+                "node_id": arg_str(args, "node_id")?,
+                "param": arg_str(args, "param")?,
+                "value": value.map(|v| v as f32),
+                "remove": remove,
+            });
+            // A key at a time on the timeline (#891).
+            if let Some(at) = args.get("at").and_then(|v| v.as_f64()) {
+                req["at"] = json!(at);
+            }
+            if let Some(i) = args.get("interpolation").and_then(|v| v.as_str()) {
+                req["interpolation"] = json!(i);
+            }
+            req
+        }
         "klipp_toggle_node" => json!({
             "method": "toggle_node_enabled",
             "clip_id": arg_str(args, "clip_id")?,
@@ -1716,14 +1731,17 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec!["clip_id", "from", "to"]),
         tool("klipp_set_node_param",
-             "Set one numeric parameter on one of a clip's grade nodes; read klipp_get_grade first for its node ids. Details: klipp_guide topic set_node_param.",
+             "Set one numeric parameter on one of a clip's grade nodes, or key it at a time to ride it over the shot; read klipp_get_grade first for its node ids. Details: klipp_guide topic set_node_param.",
              json!({
                  "clip_id": { "type": "string" },
                  "node_id": { "type": "string", "description": "From klipp_get_grade for THIS clip" },
                  "param": { "type": "string", "description": "Parameter name, e.g. temperature" },
                  "value": { "type": "number" },
+                 "at": { "type": "number", "description": "Key it at this timeline second" },
+                 "interpolation": { "type": "string", "enum": ["linear", "ease_in", "ease_out", "ease_both", "bezier", "hold"] },
+                 "remove": { "type": "boolean", "description": "Take the key at `at` away" },
              }),
-             vec!["clip_id", "node_id", "param", "value"]),
+             vec!["clip_id", "node_id", "param"]),
         tool("klipp_toggle_node", "Enable or disable a grade node (a bypass toggle).",
              json!({ "clip_id": { "type": "string" }, "node_id": { "type": "string" } }),
              vec!["clip_id", "node_id"]),
@@ -2206,6 +2224,25 @@ mod sheet_inline_tests {
 #[cfg(test)]
 mod listen_arg_tests {
     use super::*;
+
+    /// #891: a grade parameter keyed at a time goes through with its
+    /// time, interpolation and removal; a plain set still needs a value.
+    #[test]
+    fn set_node_param_keys_at_a_time() {
+        let base = json!({ "clip_id": "c", "node_id": "n", "param": "exposure" });
+        let mut keyed = base.clone();
+        keyed["value"] = json!(1.0);
+        keyed["at"] = json!(2.5);
+        keyed["interpolation"] = json!("ease_out");
+        let req = tool_to_command("klipp_set_node_param", &keyed).unwrap();
+        assert_eq!((req["method"].clone(), req["at"].clone(), req["interpolation"].clone(), req["value"].clone(), req["remove"].clone()), (json!("set_node_param"), json!(2.5), json!("ease_out"), json!(1.0), json!(false)));
+        let mut removed = base.clone();
+        removed["at"] = json!(2.5);
+        removed["remove"] = json!(true);
+        let req = tool_to_command("klipp_set_node_param", &removed).unwrap();
+        assert_eq!((req["remove"].clone(), req["value"].clone()), (json!(true), Value::Null));
+        assert!(tool_to_command("klipp_set_node_param", &base).unwrap_err().contains("value"));
+    }
 
     /// #795: listen goes through as a count or as a list of ids.
     #[test]
