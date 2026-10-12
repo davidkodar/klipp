@@ -60,7 +60,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use klipp_core::{AppCommand, ControlShared};
 use klipp_document::control::{ControlAck, ControlEnvelope};
-use protocol::{ControlCommand, Listen, Request, Response};
+use protocol::{ControlCommand, Listen, MusicPick, Request, Response};
 use serde_json::json;
 
 /// Everything the server needs to read state and send commands. Built

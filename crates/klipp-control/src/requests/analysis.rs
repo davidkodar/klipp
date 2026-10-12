@@ -212,7 +212,7 @@ pub(crate) fn respond(
                         return Err(format!("synthesize whoosh: {e}"));
                     }
                 }
-                let imported = handle(ctx, ControlCommand::ImportMedia { path: path.to_string_lossy().into_owned(), analyze: false }, &mut None)?;
+                let imported = handle(ctx, ControlCommand::import_one(path.to_string_lossy().into_owned(), false), &mut None)?;
                 let id = imported["media_id"].as_str().ok_or("the whoosh was synthesized but its import has not completed")?;
                 Some(klipp_core::MediaId(parse_uuid(id, "media_id")?))
             } else { whoosh };

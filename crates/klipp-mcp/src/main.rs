@@ -547,9 +547,16 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "media_id": args.get("media_id").and_then(Value::as_str),
         }),
         "klipp_list_media" => json!({ "method": "list_media" }),
-        "klipp_import_media" => json!({
-            "method": "import_media", "path": arg_str(args, "path")?, "analyze": args.get("analyze").and_then(Value::as_bool).unwrap_or(true),
-        }),
+        "klipp_import_media" => {
+            let mut v = json!({ "method": "import_media", "analyze": args.get("analyze").and_then(Value::as_bool).unwrap_or(true) });
+            if let Some(p) = args.get("path").and_then(Value::as_str) { v["path"] = json!(p); }
+            if let Some(ps) = args.get("paths").filter(|p| !p.is_null()) { v["paths"] = ps.clone(); }
+            if let Some(f) = args.get("folder").and_then(Value::as_str) { v["folder"] = json!(f); }
+            if v.get("path").is_none() && v.get("paths").is_none() && v.get("folder").is_none() {
+                return Err("klipp_import_media needs path, paths or folder".into());
+            }
+            v
+        }
         "klipp_append_clip" => {
             let mut v = json!({
                 "method": "append_clip", "media_id": arg_str(args, "media_id")?,
@@ -992,6 +999,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             for key in ["title", "artist", "track_id", "download_url", "preview_url", "license", "license_url", "page_url"] {
                 if let Some(x) = args.get(key).and_then(|v| v.as_str()) { v[key] = json!(x); }
             }
+            if let Some(t) = args.get("tracks").filter(|t| !t.is_null()) { v["tracks"] = t.clone(); }
             v
         }
         "klipp_style_profile" => json!({ "method": "style_profile", "media_id": arg_str(args, "media_id")? }),
@@ -1603,10 +1611,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Preview a native generator clip; apply true places it as one undo step. Give at_secs, secs (positive, at most one day), optional video track index, and data in the native generator format: {SolidColor:{color:[r,g,b,a]}}, {Gradient:{top:[r,g,b,a],bottom:[r,g,b,a],angle_deg:0}}, {LivingGradient:{a:[r,g,b,a],b:[r,g,b,a],angle_deg:20,drift_deg_per_sec:4,glow:0.35}}, {Grain:{color:[r,g,b,a],amount:0.35,size_px:2,speed:24}}, {Polygon:{sides:24,color:[r,g,b,a],fill:true}} for a circle, {Placeholder:{label:missing,color:[r,g,b,a]}}, or the string Countdown. Colour channels are bytes 0..255. Omit track to use/create a bottom Background video track. Overlaps and locked tracks are refused.",
              json!({ "data": { "type": ["object", "string"] }, "at_secs": { "type": "number" }, "secs": { "type": "number" }, "track": { "type": "integer" }, "apply": { "type": "boolean" } }), vec!["data", "at_secs", "secs"]),
         tool("klipp_import_media",
-             "Import a file into the media pool. Asynchronous — the app probes the \
-              file on a worker thread, so call klipp_list_media afterwards to see it.",
-             json!({ "path": { "type": "string", "description": "Absolute path to a media file" }, "analyze": { "type": "boolean", "description": "Automatically analyze on import (default true); false leaves the queue untouched" } }),
-             vec!["path"]),
+             "Import media: one path, several paths, or a folder's media files. Each is answered \
+              with its media_id or error; no media_id yet means still probing: follow its job_id.",
+             json!({ "path": { "type": "string" }, "paths": { "type": "array", "items": { "type": "string" } }, "folder": { "type": "string" }, "analyze": { "type": "boolean", "description": "default true" } }),
+             vec![]),
         tool("klipp_append_clip",
              "Append a media pool item to the timeline as a new clip. A clip at a different \
               frame rate from the project is added without changing the project's rate.",
@@ -2544,11 +2552,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "max_secs": { "type": "number", "description": "only sounds this long or shorter" }, "commercial_only": { "type": "boolean", "description": "only sounds whose licence allows commercial use" }, "listen": { "description": "hear previews (at most 5): the first this-many, or [track_id, …]; length, peak time, loudness", "oneOf": [{ "type": "integer" }, { "type": "array", "items": { "type": "string" } }] } }), vec!["query"]),
         tool("klipp_add_music",
              "Download a searched music track OR sound effect into the media pool, keeping its licence and \
-              attribution beside the file for your export credits. Pass the fields from a \
-              klipp_search_music result (title, artist, download_url, license, license_url, \
-              page_url). Then place it on an audio track (place marks it music) and duck it \
+              attribution beside the file for your export credits. Pass a klipp_search_music result's \
+              fields, or several as tracks. Then place it on an audio track (place marks it music) and duck it \
               under speech. Honour the licence — keep non-commercial tracks out of commercial work.",
-             json!({ "title": { "type": "string" }, "artist": { "type": "string" }, "track_id": { "type": "string" }, "download_url": { "type": "string" }, "preview_url": { "type": "string" }, "license": { "type": "string" }, "license_url": { "type": "string" }, "page_url": { "type": "string" } }),
+             json!({ "title": { "type": "string" }, "artist": { "type": "string" }, "track_id": { "type": "string" }, "download_url": { "type": "string" }, "preview_url": { "type": "string" }, "license": { "type": "string" }, "license_url": { "type": "string" }, "page_url": { "type": "string" }, "tracks": { "type": "array", "items": { "type": "object" } } }),
              vec![]),
         tool("klipp_match_grade",
              "Match picture clips using scope measurements: adjust target exposure/lift/gain/temperature/tint toward \
@@ -3173,6 +3180,15 @@ mod wait_tests {
         assert_eq!(old["analyze"], true);
         let skip = tool_to_command("klipp_import_media", &json!({ "path": "/tmp/take.mp4", "analyze": false })).unwrap();
         assert_eq!(skip["analyze"], false);
+        // Many at once (#1587): paths and a folder go through, and
+        // something to import is required.
+        let many = tool_to_command("klipp_import_media", &json!({ "paths": ["/tmp/a.mp4", "/tmp/b.mp4"], "folder": "/tmp/shots" })).unwrap();
+        assert_eq!(many["paths"], json!(["/tmp/a.mp4", "/tmp/b.mp4"]));
+        assert_eq!(many["folder"], "/tmp/shots");
+        assert!(many.get("path").is_none());
+        assert!(tool_to_command("klipp_import_media", &json!({ "analyze": false })).is_err());
+        let music = tool_to_command("klipp_add_music", &json!({ "tracks": [{ "title": "a" }, { "title": "b" }] })).unwrap();
+        assert_eq!(music["tracks"][1]["title"], "b");
         let queue = tool_to_command("klipp_analysis_queue", &json!({ "media_id": "take", "cancel_pending": true })).unwrap();
         assert_eq!(queue["media_id"], "take");
         assert_eq!(queue["cancel_pending"], true);

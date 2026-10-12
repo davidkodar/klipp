@@ -1202,6 +1202,31 @@ fn control_socket_reads_state_and_forwards_commands() {
     let _ = std::fs::remove_file(&junk);
     assert_eq!(refused["ok"], json!(false), "{refused}");
     assert!(refused["error"].as_str().unwrap().contains("could not be imported"), "{}", refused["error"]);
+    // Many at once (#1587): each file answered on its own, one that can't
+    // be imported stopping none of the rest; a folder gives its media
+    // files only, not a list beside them or a subfolder.
+    let shots = std::env::temp_dir().join(format!("klipp-import-many-{}", std::process::id()));
+    std::fs::create_dir_all(shots.join("sub")).unwrap();
+    std::fs::write(shots.join("broken.mp4"), b"this is not a video file at all").unwrap();
+    std::fs::write(shots.join("list.txt"), b"broken.mp4").unwrap();
+    std::fs::write(shots.join("sub").join("deeper.mp4"), b"not reached").unwrap();
+    let many = h.ok(json!({ "method": "import_media", "paths": ["/definitely/not/here.mov"], "folder": shots.to_string_lossy(), "analyze": false }));
+    assert_eq!(many["failed"], 2, "{many}");
+    assert_eq!(many["imported"], 0, "{many}");
+    let results = many["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2, "the list and the subfolder are left out: {many}");
+    assert!(results[0]["error"].as_str().unwrap().contains("not found"), "{many}");
+    assert!(results[1]["path"].as_str().unwrap().ends_with("broken.mp4"), "{many}");
+    assert!(results[1]["error"].as_str().unwrap().contains("could not be imported"), "{many}");
+    let empty = h.call(json!({ "method": "import_media", "folder": shots.join("sub").join("none").to_string_lossy() }));
+    assert_eq!(empty["ok"], json!(false), "a folder that isn't there is refused: {empty}");
+    std::fs::remove_file(shots.join("broken.mp4")).unwrap();
+    let none = h.call(json!({ "method": "import_media", "folder": shots.to_string_lossy() }));
+    assert_eq!(none["ok"], json!(false), "a folder with no media is refused: {none}");
+    assert!(none["error"].as_str().unwrap().contains("no media file"), "{}", none["error"]);
+    let _ = std::fs::remove_dir_all(&shots);
+    let nothing = h.call(json!({ "method": "import_media" }));
+    assert_eq!(nothing["ok"], json!(false), "{nothing}");
 
     // An unparseable line must still get an answer rather than hang the
     // client waiting for one.
