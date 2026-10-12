@@ -14,10 +14,11 @@ pub enum CurveParam {
     Video(VideoParam),
     /// Playback speed envelope.
     Speed,
-    /// An effect parameter's keyframe track, by its node's path in the
-    /// clip's picture and the parameter's key (M3 step 3): it follows the
-    /// node through a reorder. `tag` is the effect's saved tag, which
-    /// names and ranges the track from the catalog.
+    /// An effect or grade node parameter's keyframe track, by its node's
+    /// path in the clip's picture and the parameter's key (M3 step 3): it
+    /// follows the node through a reorder. `tag` is the effect's saved
+    /// tag, or a grade node's type id (`[group, node]`, #891), which names
+    /// and ranges the track from the catalog.
     Node { path: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey, tag: String },
     /// Audio effect parameter keyframe track, identified by
     /// "{effect_index}:{param_name}". Reserved param names: "__bypass"
@@ -33,12 +34,92 @@ pub enum CurveParam {
 /// key): the effect's name, the parameter's label as the inspector shows
 /// it, and its (min, max, default) on the curve (M3 step 3).
 fn node_param(tag: &str, key: &klipp_graph_format::ParamKey) -> Option<(&'static str, &'static str, (f32, f32, f32))> {
+    // A grade node's track is named by its type's id (#891).
+    if let Some(t) = klipp_nodes::registry::node_types().find(|t| t.desc.id == tag) {
+        let p = t.desc.params.iter().find(|p| p.key == key.as_str())?;
+        let label = t.presentation(p).label.unwrap_or(p.label);
+        let (lo, hi) = p.soft.or(p.range)?;
+        let default = if p.default.is_finite() { p.default } else { lo };
+        return Some((t.desc.name, label, (lo, hi, default)));
+    }
     let t = klipp_effects::registry::effect_type(tag)?;
     let p = t.desc.params.iter().find(|p| (if p.index.is_some() { p.key } else { p.field }) == key.as_str())?;
     let label = t.presentation(p).label.unwrap_or(p.label);
     let (lo, hi) = p.soft.or(p.range)?;
     let default = if p.default.is_finite() { p.default } else { lo };
     Some((t.desc.name, label, (lo, hi, default)))
+}
+
+/// The parameters of the clip's effects and grade that can be keyed and
+/// have no keys yet, by node (its name, then each parameter's label, track
+/// and value now): where a track can be started.
+fn startable_tracks(clip: &klipp_timeline::Clip) -> Vec<(String, Vec<(String, CurveParam, f32)>)> {
+    use klipp_graph_format::ParamKey;
+    let mut out = Vec::new();
+    for (path, tag, keyed) in clip.effect_nodes() {
+        let Some(t) = klipp_effects::registry::effect_type(&tag) else { continue };
+        let params: Vec<_> = t.desc.params.iter().filter(|p| p.keyframable && !p.derived && !matches!(p.kind, klipp_effects::registry::ParamKind::Other)).filter_map(|p| {
+            let key = ParamKey::from(if p.index.is_some() { p.key } else { p.field });
+            if keyed.contains(&key) {
+                return None;
+            }
+            let value = clip.node_key_state(&path, &key).and_then(|s| s.value).unwrap_or(if p.default.is_finite() { p.default } else { 0.0 });
+            Some((t.presentation(p).label.unwrap_or(p.label).to_owned(), CurveParam::Node { path: path.clone(), key, tag: tag.clone() }, value))
+        }).collect();
+        if !params.is_empty() {
+            out.push((t.desc.name.to_owned(), params));
+        }
+    }
+    for (path, label, ty, entry, keyed) in clip.grade_nodes() {
+        let Some(t) = klipp_nodes::registry::node_types().find(|t| t.desc.id == ty) else { continue };
+        let params: Vec<_> = t.desc.params.iter().filter(|p| {
+            p.keyframable && !p.derived && !matches!(p.kind, klipp_effects::registry::ParamKind::Other) && t.presentation(p).widget != klipp_effects::registry::presentation::Widget::Hidden && !keyed.iter().any(|k| k == p.key)
+        }).map(|p| {
+            let value = crate::inspector::generated::row::number(&crate::inspector::generated::grade_value(&entry, p)).unwrap_or(if p.default.is_finite() { p.default } else { 0.0 });
+            (t.presentation(p).label.unwrap_or(p.label).to_owned(), CurveParam::Node { path: path.clone(), key: ParamKey::from(p.key), tag: ty.clone() }, value)
+        }).collect();
+        if !params.is_empty() {
+            out.push((label, params));
+        }
+    }
+    out
+}
+
+/// The header's "+ Track" menu, in the app's menu look: the selected
+/// clip's nodes, each with its parameters that have no keys yet. Picking
+/// one starts its track: a key at the playhead holding the value it has
+/// now (one undo step), and the track shown. The key and the track.
+fn start_track_menu(ui: &mut egui::Ui, state: &AppState, clip_id: klipp_core::ClipId) -> Option<(AppCommand, CurveParam)> {
+    use crate::widgets::menu::{menu_body, menu_item};
+    let clip = state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id)?;
+    let mut picked = None;
+    ui.menu_button(egui::RichText::new("+ Track").size(10.0), |ui| {
+        menu_body(ui, |ui| {
+            let nodes = startable_tracks(clip);
+            if nodes.is_empty() {
+                ui.label(egui::RichText::new("Every parameter has keys").size(10.0));
+            }
+            for (name, params) in nodes {
+                ui.menu_button(name, |ui| {
+                    menu_body(ui, |ui| {
+                        for (label, param, value) in params {
+                            if menu_item(ui, &label, "").clicked() {
+                                picked = Some((param, value));
+                                ui.close_menu();
+                            }
+                        }
+                    })
+                });
+            }
+        })
+    })
+    .response
+    .on_hover_text("Start a keyframe track: a key at the playhead with the parameter's value now");
+    let (param, value) = picked?;
+    let CurveParam::Node { path, key, .. } = &param else { return None };
+    let t = (state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).clamp(0.0, clip.duration().to_secs_f64());
+    let keyframe = serde_json::to_value(Keyframe { time_secs: t, value, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).ok()?;
+    Some((AppCommand::AddKeyAt { addr: path.clone(), key: key.clone(), keyframe }, param))
 }
 
 impl CurveParam {
@@ -323,6 +404,18 @@ impl CurveEditorPanel {
                     state.keyframe_context_menu = None;
                     self.drag = None;
                     self.needs_fit = true;
+                }
+
+                // A track on a parameter that has no keys yet (#891).
+                if let Some(CurveScope::Clip { id, .. }) = &scope {
+                    if let Some((start, param)) = start_track_menu(ui, state, *id) {
+                        cmds.push(start);
+                        self.param = param;
+                        state.selected_keyframe = None;
+                        state.keyframe_context_menu = None;
+                        self.drag = None;
+                        self.needs_fit = true;
+                    }
                 }
 
                 ui.add_space(8.0);
@@ -670,6 +763,10 @@ impl CurveEditorPanel {
                 // By node, in the order the picture runs them.
                 for (path, key, tag) in clip.animated_effect_keys() {
                     params.push(CurveParam::Node { path, key, tag });
+                }
+                // Then the grade's, by path through its group (#891).
+                for (path, key, type_id) in clip.animated_grade_keys() {
+                    params.push(CurveParam::Node { path, key, tag: type_id });
                 }
                 let mut audio_effect_keys: Vec<String> =
                     clip.audio_effect_keyframes.keys().cloned().collect();

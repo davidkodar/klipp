@@ -12,8 +12,25 @@ use std::collections::BTreeSet;
 /// old route to compare: the `NonClipGrade` surface's track variant.
 pub(super) const TRACK_GRADE_EXCLUSION: &str = "#1408 (a track's grade is graded through its stand-in as the sequence's grades are, tested on its own; no parity fixture yet)";
 
-/// A grade row's track in the curve editor: grade keyframing isn't M3's.
-pub(super) const GRADE_CURVE_EXCLUSION: &str = "#891 (grade keyframing: phase 4; the curve editor lists effect tracks only)";
+/// A grade row's track in the curve editor (#891): the editor lists a
+/// grade node's tracks by path, and the lane is one widget writing the
+/// key it edits by that path whatever the node, so it is owed on the
+/// representatives ([`GRADE_CURVE_REPRESENTATIVE`]), not per type.
+pub(super) const GRADE_CURVE_EXCLUSION: &str = "#891 (a grade node's track is one curve-editor lane by path whatever its type: owed on GRADE_CURVE_REPRESENTATIVE)";
+
+/// The grade tracks the curve editor owes its key edits on (#891): a
+/// Corrector slider's, a gradient slider's (temperature) and a colour
+/// wheel's part.
+pub(super) const GRADE_CURVE_REPRESENTATIVE: [(&str, &str); 3] = [
+    ("klipp.grade.corrector", "exposure"),
+    ("klipp.grade.corrector", "temperature"),
+    ("klipp.grade.corrector", "lift_x"),
+];
+
+/// Whether `entry` is one of [`GRADE_CURVE_REPRESENTATIVE`].
+pub(super) fn grade_curve_representative(entry: &CatalogEntry) -> bool {
+    GRADE_CURVE_REPRESENTATIVE.iter().any(|(t, p)| *t == entry.type_id && *p == entry.parameter)
+}
 
 /// A picture-graph pick reveals the effect's own card in the Effects
 /// tab (#1347): the graph has no inspector of its own to compare.
@@ -288,26 +305,26 @@ pub(super) fn surfaces(entry: &CatalogEntry) -> Result<BTreeSet<Surface>, String
         // has no surface (TRACK_GRADE_EXCLUSION).
         required.insert(NonClipGrade);
     }
-    // A grade row's track isn't in the curve editor (GRADE_CURVE_EXCLUSION).
-    if !entry.grade && matches!(entry.value, CatalogValue::Parameter { desc, .. } if desc.keyframable) {
+    // A grade row's track is owed on the representatives
+    // (GRADE_CURVE_EXCLUSION).
+    if (!entry.grade || grade_curve_representative(entry)) && matches!(entry.value, CatalogValue::Parameter { desc, .. } if desc.keyframable) {
         required.insert(CurveEditor);
     }
     Ok(required)
 }
 
-/// Keyframing a grade track in the curve editor, or a grade specialist
-/// editor's values (the curves, the warper), which draw no diamond: no
-/// view does it today. A colour wheel's parts and the rails under it key
-/// by their diamonds (#891).
-const GRADE_KEYFRAMING: &str = "#891 (grade keyframing: phase 4)";
+/// A grade specialist editor's values (the curves, the warper), which
+/// draw no diamond: keyed in the curve editor only. A colour wheel's parts
+/// and the rails under it key by their diamonds (#891).
+const GRADE_KEYFRAMING: &str = "#891 (a grade specialist editor, the curves or the warper, draws no diamond)";
 
 /// Reviewed absent affordances stay obligations with explicit exclusions,
 /// not silently omitted interactions. One decision covers every fixture.
 pub(super) fn key_exclusion(entry: &CatalogEntry, surface: Surface) -> Option<&'static str> {
-    // The curve editor lists effect tracks only; a grade track, a wheel's
-    // parts among them, is keyed in neither view today.
+    // A grade track is owed in full on the representatives; every other
+    // grade entry's isn't a surface of its own (GRADE_CURVE_EXCLUSION).
     if surface == Surface::CurveEditor {
-        return entry.grade.then_some(GRADE_KEYFRAMING);
+        return (entry.grade && !grade_curve_representative(entry)).then_some(GRADE_CURVE_EXCLUSION);
     }
     match &entry.value {
         CatalogValue::Parameter { presentation, .. }

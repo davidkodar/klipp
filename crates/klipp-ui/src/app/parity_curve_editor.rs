@@ -6,8 +6,9 @@
 //! Every place a case clicks is a share of the track's drawn range, so one
 //! set of cases drives every parameter.
 //!
-//! Grade tracks aren't listed (#891): a central exclusion in the parity
-//! rules.
+//! A grade node's track is listed by its path through the grade group
+//! (#891), one lane whatever its node: driven on the representatives
+//! (`rules::GRADE_CURVE_REPRESENTATIVE`).
 
 use super::inspector_edit_host::{InspectorEditHost, InspectorSideEffects};
 use super::parity_manifest::{catalog, CatalogValue, CoverageKey, Interaction, KeyInterpolation, Manifest, Report, Surface};
@@ -38,6 +39,8 @@ struct Track {
     /// The clip's Video track this row is reached as in the curve editor,
     /// when it is one (the anchor Opacity's value is the clip's opacity).
     video: Option<klipp_core::VideoParam>,
+    /// A grade node's kind, for a grade track (#891).
+    grade: Option<klipp_nodes::NodeKind>,
 }
 
 impl Track {
@@ -53,20 +56,29 @@ impl Track {
     }
 }
 
-/// The track of a keyframable effect parameter's catalog entry: `None` for
-/// a grade's (not listed, #891) or an entry with no parameter.
+/// The track of a keyframable effect parameter's catalog entry, or of a
+/// grade representative's (#891): `None` for another grade entry or an
+/// entry with no parameter.
 fn track(entry: &super::parity_manifest::CatalogEntry) -> Option<Track> {
     let CatalogValue::Parameter { desc, .. } = entry.value else { return None };
-    if entry.grade || !desc.keyframable {
+    if !desc.keyframable {
         return None;
+    }
+    if entry.grade {
+        if !super::parity_manifest::grade_curve_representative(entry.type_id, &entry.parameter) {
+            return None;
+        }
+        let ty = klipp_nodes::registry::node_types().find(|t| t.desc.id == entry.type_id)?;
+        let (lo, hi) = desc.soft.or(desc.range).unwrap_or((0.0, 1.0));
+        return Some(Track { tag: ty.desc.id, key: desc.key, lo, hi, video: None, grade: Some(ty.kind) });
     }
     let ty = klipp_effects::registry::effect_types().find(|t| t.desc.id == entry.type_id)?;
     // Opacity's value is the clip's own opacity, its Video track (0 to 1).
     if ty.tag == "opacity" && desc.key == "value" {
-        return Some(Track { tag: ty.tag, key: desc.key, lo: 0.0, hi: 1.0, video: Some(klipp_core::VideoParam::Opacity) });
+        return Some(Track { tag: ty.tag, key: desc.key, lo: 0.0, hi: 1.0, video: Some(klipp_core::VideoParam::Opacity), grade: None });
     }
     let (lo, hi) = desc.soft.or(desc.range).unwrap_or((0.0, 1.0));
-    Some(Track { tag: ty.tag, key: desc.key, lo, hi, video: None })
+    Some(Track { tag: ty.tag, key: desc.key, lo, hi, video: None, grade: None })
 }
 
 /// One clip, selected, its blur's radius keyed at `KEYS`, drawn in the
@@ -85,6 +97,20 @@ struct Curves {
 /// parameter keyed at `KEYS`, and no history. Built once per case, so both
 /// views start from the same clip.
 fn fixture(track: &Track) -> Result<klipp_timeline::Clip, String> {
+    // A grade node keyed by its path through the grade group (#891).
+    if let Some(kind) = track.grade {
+        let (mut state, id, node) = super::grade_inspector_tests::graded(kind).ok_or("the grade won't take one")?;
+        let addr = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().grade_nodes().into_iter().map(|(p, ..)| p).find(|p| p.node() == Some(node)).ok_or("no grade node by path")?;
+        for (t, share) in KEYS {
+            let keyframe = serde_json::to_value(klipp_core::Keyframe { time_secs: t, value: track.at(share), interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).unwrap();
+            state.path_command(&AppCommand::AddKeyAt { addr: addr.clone(), key: track.key.into(), keyframe }).ok_or("no key added")?;
+        }
+        let clip = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().clone();
+        if clip.animated_grade_keys().is_empty() {
+            return Err("the keyed grade parameter isn't listed as a track".into());
+        }
+        return Ok(clip);
+    }
     let ty = klipp_effects::registry::effect_type(track.tag).ok_or("no such effect")?;
     let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
     let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
@@ -140,7 +166,8 @@ impl Curves {
         let param = match track.video {
             Some(p) => CurveParam::Video(p),
             None => {
-                let (path, key, tag) = state.sequences[0].all_clips().find(|c| c.id == id).unwrap().animated_effect_keys().into_iter().next().ok_or("no animated track")?;
+                let clip = state.sequences[0].all_clips().find(|c| c.id == id).unwrap();
+                let (path, key, tag) = clip.animated_effect_keys().into_iter().chain(clip.animated_grade_keys()).next().ok_or("no animated track")?;
                 CurveParam::Node { path, key, tag }
             }
         };
@@ -183,7 +210,7 @@ impl Curves {
         if let Some(p) = self.track.video {
             return CurveParam::Video(p);
         }
-        let (path, key, tag) = self.clip().animated_effect_keys().into_iter().next().expect("the track");
+        let (path, key, tag) = self.clip().animated_effect_keys().into_iter().chain(self.clip().animated_grade_keys()).next().expect("the track");
         CurveParam::Node { path, key, tag }
     }
 
@@ -467,7 +494,7 @@ fn pick(c: &mut Curves, item: &str) -> Result<(), String> {
 #[test]
 fn a_lane_bezier_handle_drag_is_one_step() {
     use klipp_core::VideoParam;
-    let track = Track { tag: "opacity", key: "value", lo: 0.0, hi: 1.0, video: Some(VideoParam::Opacity) };
+    let track = Track { tag: "opacity", key: "value", lo: 0.0, hi: 1.0, video: Some(VideoParam::Opacity), grade: None };
     let mut clip = fixture(&track).unwrap();
     clip.edit_video_param_keyframes(VideoParam::Opacity, |keys| {
         keys[1].interpolation = klipp_core::Interpolation::Bezier;

@@ -2104,10 +2104,8 @@ impl TimelinePanel {
                 .order(egui::Order::Foreground)
                 .interactable(true)
                 .show(ui.ctx(), |ui| {
-                    egui::Frame::menu(ui.style())
-                        .inner_margin(egui::Margin::same(4.0))
-                        .show(ui, |ui| {
-                            ui.set_min_width(140.0);
+                    // The app's menu look: full-width rows (#891).
+                    crate::widgets::menu::menu_frame(ui, |ui| {
 
                             // ── Copy / Paste / Reverse keyframes ────────
                             if !matches!(ctx_menu.param_kind, crate::state::KeyframeParamKind::Title { .. }) {
@@ -2279,6 +2277,7 @@ impl TimelinePanel {
                                 .and_then(|clip| {
                                     // The placement and opacity lanes as the picture holds them (M4 step 12c).
                                     let video_lane: Vec<klipp_core::Keyframe> = match &ctx_menu.param_kind { crate::state::KeyframeParamKind::Video(p) => crate::inspector::placement_by_path::param_keys(clip, *p), _ => Vec::new() };
+                                    let node_lane: Vec<klipp_core::Keyframe> = match &ctx_menu.param_kind { crate::state::KeyframeParamKind::Node { path, key } => clip.node_key_state(path, key).map(|s| s.keys).unwrap_or_default(), _ => Vec::new() };
                                     let kfs: &[klipp_core::Keyframe] = match &ctx_menu.param_kind {
                                         crate::state::KeyframeParamKind::Audio(p) => match p {
                                             klipp_core::AudioParam::Volume => &clip.volume_keyframes,
@@ -2287,7 +2286,7 @@ impl TimelinePanel {
                                         },
                                         crate::state::KeyframeParamKind::Video(_) => &video_lane,
                                         crate::state::KeyframeParamKind::Title { object_id, param } => param.keyframes(clip, *object_id),
-                                            crate::state::KeyframeParamKind::Node { .. } => &[],
+                                        crate::state::KeyframeParamKind::Node { .. } => &node_lane,
                                         crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                             clip.audio_effect_keyframes
                                                 .get(&format!("{effect_index}:{param_name}"))
@@ -2454,8 +2453,22 @@ impl TimelinePanel {
                             ] {
                                 let text = egui::RichText::new(format!("  {label}"));
                                 if ui.add(egui::Button::new(text).frame(false)).clicked() {
-                                    emit_interp(cmds, klipp_core::Interpolation::Bezier);
-                                    emit_ease(cmds, preset);
+                                    match (&ctx_menu.param_kind, node_key_time) {
+                                        // A node's key eases by path, the
+                                        // side the item names, one step (#891).
+                                        (crate::state::KeyframeParamKind::Node { path, key }, Some(time_secs)) => {
+                                            let ease = AppCommand::EaseKeyAt { addr: path.clone(), key: key.clone(), time_secs, ease: preset.key_ease() };
+                                            match state.sequence().all_clips().find(|c| c.id == ctx_menu.clip_id) {
+                                                Some(clip) => cmds.extend(crate::inspector::stack_view::route_placed(clip, vec![ease])),
+                                                None => cmds.push(ease),
+                                            }
+                                        }
+                                        (crate::state::KeyframeParamKind::Node { .. }, None) => {}
+                                        _ => {
+                                            emit_interp(cmds, klipp_core::Interpolation::Bezier);
+                                            emit_ease(cmds, preset);
+                                        }
+                                    }
                                     close_menu = true;
                                 }
                             }
