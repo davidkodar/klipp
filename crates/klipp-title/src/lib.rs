@@ -832,6 +832,7 @@ impl TitleRenderer {
 
         let mut layout = ShapedLayout::new();
         layout.set_rtl(tb.text_direction == TextDirection::Rtl);
+        layout.set_paragraphs(paragraphs_px(&tb, scale));
         layout.reset(&LayoutSettings {
             x: 0.0,
             y: 0.0,
@@ -870,7 +871,8 @@ impl TitleRenderer {
             let pieces = faces.split(&resolved_text, set_pieces(&tb.style_runs, &faces.of_run, 0, resolved_text.len(), font_px * ratio, run_px));
             shaping::widest_typed_line(&fonts, &resolved_text, &pieces)
         };
-        let fit = box_fit_ratio(&tb, face_at, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), shaped_widest, box_w, box_h);
+        let (fit_w, fit_h) = paragraph_room(&tb, &resolved_text, scale, box_w, box_h);
+        let fit = box_fit_ratio(&tb, face_at, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), shaped_widest, fit_w, fit_h);
         let font_px = font_px * fit;
         // The text from one byte to another, cut where its style runs
         // begin and end, each piece at its run's size and face (#1505).
@@ -1136,7 +1138,8 @@ impl TitleRenderer {
         // and where it sits up and down its box (`text_offset_x`,
         // `text_offset_y`).
         let anchor_x = title.position().x * width as f32;
-        let offset_x = text_offset_x(alignment, anchor_x, text_w, text_min_x, box_w);
+        let offset_x = text_offset_x(alignment, anchor_x, text_w, text_min_x, box_w)
+            + indent_shift(alignment, layout.lines().filter(|_| !drop_cap_wrap_eligible && !columns_active && !vertical_active));
         // Baseline shift is authored in 1080p reference pixels and
         // scales with the frame so a +20 px offset on a 1080p edit
         // looks the same on a 4K master. Positive shifts text DOWN.
@@ -3096,7 +3099,8 @@ impl TitleRenderer {
             let pieces = faces.split(&resolved_text, set_pieces(&tb.style_runs, &faces.of_run, 0, resolved_text.len(), font_px * ratio, run_px));
             shaping::widest_typed_line(&fonts, &resolved_text, &pieces)
         };
-        let fit = box_fit_ratio(&tb, face_at, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), shaped_widest, box_w, box_h);
+        let (fit_w, fit_h) = paragraph_room(&tb, &resolved_text, scale, box_w, box_h);
+        let fit = box_fit_ratio(&tb, face_at, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), shaped_widest, fit_w, fit_h);
         let font_px = font_px * fit;
         let run_px = |run: &StyleRun| run.font_size.unwrap_or(tb.font_size) * scale * case_scale * fit;
 
@@ -3104,6 +3108,7 @@ impl TitleRenderer {
 
         let mut layout = ShapedLayout::new();
         layout.set_rtl(tb.text_direction == TextDirection::Rtl);
+        layout.set_paragraphs(paragraphs_px(&tb, scale));
         layout.reset(&LayoutSettings {
             x: 0.0,
             y: 0.0,
@@ -3176,7 +3181,7 @@ impl TitleRenderer {
         // Mirrors render_layout's offset calc — kept in lockstep so
         // cursor hit-testing matches the rendered glyph positions.
         let anchor_x = title.position().x * width as f32;
-        let offset_x = text_offset_x(tb.alignment, anchor_x, text_w, text_min_x, box_w);
+        let offset_x = text_offset_x(tb.alignment, anchor_x, text_w, text_min_x, box_w) + indent_shift(tb.alignment, layout.lines());
         // Baseline shift is authored in 1080p reference pixels and
         // scales with the frame so a +20 px offset on a 1080p edit
         // looks the same on a 4K master. Positive shifts text DOWN.
@@ -4945,6 +4950,27 @@ fn line_of(line_starts: &[usize], i: usize) -> usize {
     line_starts.partition_point(|&s| s <= i).saturating_sub(1)
 }
 
+/// A text box's paragraph settings in frame pixels (#1721).
+fn paragraphs_px(tb: &klipp_timeline::TextBox, scale: f32) -> shaping::Paragraphs {
+    let p = &tb.paragraph;
+    shaping::Paragraphs {
+        start: p.indent_start.max(0.0) * scale,
+        end: p.indent_end.max(0.0) * scale,
+        first: p.indent_first.max(-p.indent_start.max(0.0)) * scale,
+        before: p.space_before.max(0.0) * scale,
+        after: p.space_after.max(0.0) * scale,
+    }
+}
+
+/// The room a text box's fit has for its lines (#1721): the box's width
+/// less its indents, and its height less the space its paragraphs put
+/// between them.
+fn paragraph_room(tb: &klipp_timeline::TextBox, text: &str, scale: f32, box_w: f32, box_h: f32) -> (f32, f32) {
+    let p = paragraphs_px(tb, scale);
+    let gaps = text.matches('\n').count() as f32 * (p.before + p.after);
+    ((box_w - p.start - p.end).max(1.0), (box_h - gaps).max(1.0))
+}
+
 /// fontdue's alignment for a text box's: a justified box is laid out
 /// from the left and [`justify_lines`] then spreads its lines (#1506).
 fn h_align_of(alignment: TextAlignment) -> HorizontalAlign {
@@ -4969,6 +4995,23 @@ fn text_offset_x(alignment: TextAlignment, anchor_x: f32, text_w: f32, text_min_
         TextAlignment::Center => anchor_x - text_w * 0.5 - text_min_x,
         TextAlignment::Right => anchor_x - text_w - text_min_x,
         TextAlignment::Justify => anchor_x - box_w * 0.5,
+    }
+}
+
+/// How far a box's indents move its text from where [`text_offset_x`]
+/// rests it (#1721): that rests the text's ink, which an indent every
+/// line has moves too, so the least indent is put back — from the left
+/// for left-aligned text, from the right for right-aligned, half their
+/// difference for centred. Justified text is set in the box already.
+fn indent_shift(alignment: TextAlignment, lines: Option<&Vec<shaping::Line>>) -> f32 {
+    let Some(lines) = lines.filter(|l| !l.is_empty()) else { return 0.0 };
+    let left = lines.iter().map(|l| l.left).fold(f32::MAX, f32::min);
+    let right = lines.iter().map(|l| l.right).fold(f32::MAX, f32::min);
+    match alignment {
+        TextAlignment::Left => left,
+        TextAlignment::Right => -right,
+        TextAlignment::Center => (left - right) * 0.5,
+        TextAlignment::Justify => 0.0,
     }
 }
 
@@ -5007,6 +5050,8 @@ fn justify_lines(
         let Some(first) = (start..=end).find(|&i| seen(&glyphs[i])) else { continue };
         let Some(final_) = (start..=end).rev().find(|&i| seen(&glyphs[i])) else { continue };
         let right = glyphs[final_].x + glyphs[final_].width as f32;
+        // The line's own box, inside its paragraph's indents (#1721).
+        let limit = box_w - line.right;
         // The paragraph ends here when a line break lies between this
         // line's last letter and the next line's first.
         // In the text's order, not the line's: a right-to-left line's
@@ -5017,7 +5062,7 @@ fn justify_lines(
         });
         if ends_paragraph && last != LastLineAlign::Justify {
             if last == LastLineAlign::Center {
-                let shift = (box_w - right - glyphs[first].x) * 0.5;
+                let shift = (limit - right - (glyphs[first].x - line.left)) * 0.5;
                 for g in &mut glyphs[start..=end] {
                     g.x += shift;
                 }
@@ -5034,7 +5079,7 @@ fn justify_lines(
                 in_gap = false;
             }
         }
-        let extra = box_w - right;
+        let extra = limit - right;
         if gaps == 0 || extra <= 0.0 {
             continue;
         }

@@ -195,6 +195,22 @@ pub(crate) struct Line {
     pub(crate) glyph_end: usize,
     /// Where the line's baseline is, down the layout (#1508).
     pub(crate) baseline: f32,
+    /// How far in from the box's left and right edges the line is set
+    /// (#1721): its paragraph's indents.
+    pub(crate) left: f32,
+    pub(crate) right: f32,
+}
+
+/// A layout's paragraph settings in its pixels (#1721): each line's
+/// indents from the box's start and end edges, a paragraph's first
+/// line's past the start's, and the space between paragraphs.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Paragraphs {
+    pub(crate) start: f32,
+    pub(crate) end: f32,
+    pub(crate) first: f32,
+    pub(crate) before: f32,
+    pub(crate) after: f32,
 }
 
 /// A piece of the text appended to a layout: where in the source text
@@ -233,6 +249,8 @@ pub(crate) struct ShapedLayout {
     source: String,
     /// Whether a paragraph's base direction is right to left (#1502).
     rtl: bool,
+    /// Indents and the space between paragraphs (#1721).
+    paragraphs: Paragraphs,
 }
 
 /// A run of one line's characters set together: fontdue's glyphs
@@ -257,6 +275,7 @@ impl ShapedLayout {
             lines: Vec::new(),
             source: String::new(),
             rtl: false,
+            paragraphs: Paragraphs::default(),
         }
     }
 
@@ -264,6 +283,20 @@ impl ShapedLayout {
     /// (#1502). Kept across a reset.
     pub(crate) fn set_rtl(&mut self, rtl: bool) {
         self.rtl = rtl;
+    }
+
+    /// Set the text's paragraphs so (#1721), before anything is laid.
+    pub(crate) fn set_paragraphs(&mut self, paragraphs: Paragraphs) {
+        self.paragraphs = paragraphs;
+    }
+
+    /// How far in from the box's left and right a line is set: its
+    /// paragraph's indents, the first line's its own, the start edge
+    /// the right in right-to-left text.
+    fn pads(&self, first_line: bool) -> (f32, f32) {
+        let p = self.paragraphs;
+        let start = p.start + if first_line { p.first } else { 0.0 };
+        if self.rtl { (p.end, start) } else { (start, p.end) }
     }
 
     pub(crate) fn reset(&mut self, settings: &LayoutSettings) {
@@ -343,6 +376,12 @@ impl ShapedLayout {
         let mask = LinebreakData::from_mask(self.settings.wrap_style == fontdue::layout::WrapStyle::Word, self.settings.wrap_hard_breaks, true);
         let mut breaker = Linebreaker::new();
         let (mut current, mut start, mut prev, mut at_pos, mut at_idx) = (0.0f32, 0.0f32, LINEBREAK_NONE, 0.0f32, 0usize);
+        // Each line as wide as the box less its paragraph's indents.
+        let width = |first_line: bool| {
+            let (l, r) = self.pads(first_line);
+            (max_width - l - r).max(1.0)
+        };
+        let mut first_line = true;
         let mut bytes: Vec<usize> = Vec::new();
         let mut starts = Vec::new();
         for &(a, b, px, face) in &self.pieces {
@@ -354,11 +393,12 @@ impl ShapedLayout {
                     at_pos = current;
                     at_idx = bytes.len().saturating_sub(1);
                 }
-                if linebreak.is_hard() || current - start + advance > max_width {
+                if linebreak.is_hard() || current - start + advance > width(first_line) {
                     prev = LINEBREAK_NONE;
                     if !linebreak.is_hard() {
                         starts.push(at_idx + 1);
                     }
+                    first_line = linebreak.is_hard();
                     start = at_pos;
                 }
                 bytes.push(a + i);
@@ -419,7 +459,16 @@ impl ShapedLayout {
             .then(|| unicode_bidi::BidiInfo::new(&self.source, Some(base)));
         let source_at = |j: usize| self.appended[owner[j]].base + laid[j].byte_offset;
         let mut idx = 0;
-        for line in lines {
+        // Whether the line starts a paragraph, and how far down the
+        // space between paragraphs has moved it (#1721).
+        let (mut first_line, mut drop) = (true, 0.0f32);
+        let gap = self.paragraphs.before + self.paragraphs.after;
+        for (n, line) in lines.iter().enumerate() {
+            if first_line && n > 0 {
+                drop += gap;
+            }
+            let (left, right) = self.pads(first_line);
+            let mut hard_break = false;
             let end = (line.glyph_end + 1).min(laid.len());
             // The line's levels, its trailing spaces at the paragraph's.
             let levels = bidi.as_ref().filter(|_| idx < end).and_then(|b| {
@@ -437,6 +486,7 @@ impl ShapedLayout {
                         idx += 1;
                         continue;
                     }
+                    hard_break = true;
                     let level = levels.as_ref().map_or(0, |(_, p)| *p);
                     segments.push(Segment { from: idx, to: idx + 1, level, control: true });
                     idx += 1;
@@ -477,11 +527,13 @@ impl ShapedLayout {
                 set_run(face, piece, from, to, s.level % 2 == 1, line.baseline_y, &mut pen, &laid[s.from..s.to], &mut self.glyphs);
                 self.glyph_rtl.resize(self.glyphs.len(), s.level % 2 == 1);
             }
-            let x = self.settings.x + ((max_width - pen) * align).floor();
+            let x = self.settings.x + left + ((max_width - left - right - pen) * align).floor();
             for g in &mut self.glyphs[first..] {
                 g.x += x;
+                g.y += drop;
             }
-            self.lines.push(Line { glyph_start: first, glyph_end: self.glyphs.len().saturating_sub(1), baseline: line.baseline_y });
+            self.lines.push(Line { glyph_start: first, glyph_end: self.glyphs.len().saturating_sub(1), baseline: line.baseline_y + drop, left, right });
+            first_line = hard_break;
         }
     }
 }

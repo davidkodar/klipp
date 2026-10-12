@@ -1343,6 +1343,7 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     last_line: Default::default(),
                     vertical_align: Default::default(),
                     fit: Default::default(),
+                    paragraph: Default::default(),
                     features: Vec::new(),
                     font_weight: None,
                     font_axes: Vec::new(),

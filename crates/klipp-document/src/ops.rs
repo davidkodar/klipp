@@ -233,6 +233,10 @@ pub struct Typeset {
     /// 24 when not given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_size: Option<f32>,
+    /// The box's paragraphs (#1721): the space between them and their
+    /// indents, pixels at 1080p.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paragraph: Option<ParagraphSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub underline: Option<bool>,
     /// Styled stretches of the text, in place of any it had; `[]` clears
@@ -388,6 +392,26 @@ pub struct MaskLayer {
     pub kind: Option<String>,
 }
 
+/// A text box's paragraphs (#1721), each field in place of the box's
+/// when given, in pixels at 1080p: `space_before` above a paragraph and
+/// `space_after` below it, `indent` every line in from the start edge
+/// and `indent_end` from the end, `first_indent` a paragraph's first
+/// line past `indent` (below 0 it hangs out, as far as the box's edge).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParagraphSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_before: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_after: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indent: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indent_end: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_indent: Option<f32>,
+}
+
 /// A value at a time from the title's start.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -491,6 +515,17 @@ pub struct KeysSpec {
     pub color: Option<Vec<ColourKey>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gradient_stops: Option<std::collections::BTreeMap<String, Vec<ColourKey>>>,
+    /// The paragraph settings' keys (#1721), as `paragraph` names them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_before: Option<Vec<ValueKey>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_after: Option<Vec<ValueKey>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indent: Option<Vec<ValueKey>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indent_end: Option<Vec<ValueKey>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_indent: Option<Vec<ValueKey>>,
 }
 
 /// The text along a path layer of the same title (#1508), or `"none"`
@@ -7509,7 +7544,7 @@ fn style(
     look: &Look,
 ) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     if *look == Look::default() {
-        return Err(refuse(i, "nothing to change", "give a look field (size, color, font, bold, align, x, y, backing, outline, shadow, glow, gradient, glitch, chromatic), a typesetting field (weight, axes, features, last_line, valign, fit, underline, runs), a motion (animate, enter, exit, loop, animators, keys), on_path, blend, mask or three_d"));
+        return Err(refuse(i, "nothing to change", "give a look field (size, color, font, bold, align, x, y, backing, outline, shadow, glow, gradient, glitch, chromatic), a typesetting field (weight, axes, features, last_line, valign, fit, paragraph, underline, runs), a motion (animate, enter, exit, loop, animators, keys), on_path, blend, mask or three_d"));
     }
     for (name, v, lo, hi) in [
         ("size", look.size, 6.0, 1000.0),
@@ -7709,6 +7744,7 @@ struct Typesetting {
     last_line: Option<klipp_timeline::LastLineAlign>,
     valign: Option<klipp_timeline::TextVerticalAlign>,
     fit: Option<klipp_timeline::TextFit>,
+    paragraph: Option<ParagraphSpec>,
     underline: Option<bool>,
     runs: Option<Vec<(RunSpec, Option<[u8; 4]>)>>,
     /// Animators in place of the text's; `Some(vec![])` clears them.
@@ -7952,6 +7988,8 @@ struct TypeKeys {
     line_spacing: Option<Vec<klipp_core::Keyframe>>,
     color: Option<klipp_timeline::ColourKeys>,
     stops: Vec<(usize, klipp_timeline::ColourKeys)>,
+    /// Paragraph settings' keys by their key name (#1721).
+    paragraph: Vec<(&'static str, Vec<klipp_core::Keyframe>)>,
 }
 
 fn keyframe(at: f64, value: f32) -> klipp_core::Keyframe {
@@ -8138,6 +8176,22 @@ fn motion_extras(t: &Typeset, i: usize) -> Result<(Option<Vec<klipp_core::title_
                         Ok((n, colour_keys(v, "gradient stop", i)?))
                     })
                     .collect::<Result<Vec<_>, Refusal>>()?,
+                paragraph: {
+                    use klipp_core::title_effect_keys as tk;
+                    let mut out = Vec::new();
+                    for (keys, key, lo, what) in [
+                        (&k.space_before, tk::TEXT_SPACE_BEFORE, 0.0, "space_before"),
+                        (&k.space_after, tk::TEXT_SPACE_AFTER, 0.0, "space_after"),
+                        (&k.indent, tk::TEXT_INDENT_START, 0.0, "indent"),
+                        (&k.indent_end, tk::TEXT_INDENT_END, 0.0, "indent_end"),
+                        (&k.first_indent, tk::TEXT_INDENT_FIRST, -2000.0, "first_indent"),
+                    ] {
+                        if let Some(v) = keys {
+                            out.push((key, value_keys(v, lo, 2000.0, what, i)?));
+                        }
+                    }
+                    out
+                },
             })
         })
         .transpose()?;
@@ -8199,6 +8253,12 @@ fn set_motion_extras(tb: &mut klipp_timeline::TextBox, fx: &mut Option<klipp_tim
         if let Some(c) = &k.color {
             late(&c.r, "color")?;
             tb.color_keyframes = c.clone();
+        }
+        for (key, keys) in &k.paragraph {
+            late(keys, key)?;
+            if let Some(field) = tb.paragraph.keys_mut_for(key) {
+                *field = keys.clone();
+            }
         }
         if !k.stops.is_empty() {
             let Some(g) = tb.gradient.as_mut() else {
@@ -8291,6 +8351,19 @@ fn check_features(features: &[String], i: usize) -> Result<Vec<String>, Refusal>
         .collect()
 }
 
+/// A [`ParagraphSpec`] checked (#1721): spacing and indents 0 to 2000
+/// px, a first line -2000 to 2000.
+fn paragraph_spec(p: &ParagraphSpec, i: usize) -> Result<ParagraphSpec, Refusal> {
+    for (v, lo, what) in [(p.space_before, 0.0, "space_before"), (p.space_after, 0.0, "space_after"), (p.indent, 0.0, "indent"), (p.indent_end, 0.0, "indent_end"), (p.first_indent, -2000.0, "first_indent")] {
+        if let Some(v) = v {
+            if !v.is_finite() || !(lo..=2000.0).contains(&v) {
+                return Err(refuse(i, format!("paragraph {what} {v} is out of range"), format!("give {what} from {lo} to 2000 pixels at 1080p")));
+            }
+        }
+    }
+    Ok(p.clone())
+}
+
 /// A [`Typeset`]'s fit and minimum size, checked: a minimum is only
 /// for a shrinking text.
 fn text_fit(t: &Typeset, i: usize) -> Result<Option<klipp_timeline::TextFit>, Refusal> {
@@ -8369,6 +8442,7 @@ fn typesetting(t: &Typeset, i: usize) -> Result<Typesetting, Refusal> {
             })
             .transpose()?,
         fit: text_fit(t, i)?,
+        paragraph: t.paragraph.as_ref().map(|p| paragraph_spec(p, i)).transpose()?,
         underline: t.underline,
         runs,
         animators,
@@ -8433,6 +8507,14 @@ fn set_type(tb: &mut klipp_timeline::TextBox, t: &Typesetting) -> Result<(), Str
     }
     if let Some(f) = t.fit {
         tb.fit = f;
+    }
+    if let Some(p) = &t.paragraph {
+        let q = &mut tb.paragraph;
+        for (v, field) in [(p.space_before, &mut q.space_before), (p.space_after, &mut q.space_after), (p.indent, &mut q.indent_start), (p.indent_end, &mut q.indent_end), (p.first_indent, &mut q.indent_first)] {
+            if let Some(v) = v {
+                *field = v;
+            }
+        }
     }
     if let Some(u) = t.underline {
         tb.underline = u;
@@ -12371,6 +12453,44 @@ mod tests {
         assert!(bad(r##"[{"op":"style","track":"video"}]"##).why.contains("nothing to change"));
         assert!(bad(r##"[{"op":"style","track":"video","color":"yellow"}]"##).why.contains("not a colour"));
         assert!(bad(r##"[{"op":"style","track":"video","size":40}]"##).why.contains("no title there"));
+    }
+
+    /// #1721: a title's paragraphs are spaced and indented, a first line
+    /// keyed, and a restyle changes only what it names; a length out of
+    /// range or a field that is not one is refused.
+    #[test]
+    fn a_titles_paragraphs_are_spaced_indented_and_keyed() {
+        let (seq, pool, _, _, _) = fixture();
+        let para = |c: &Clip| {
+            let klipp_timeline::TitleObjectContent::TextBox(tb) = &c.title_data().unwrap().objects[0].content else { panic!("text") };
+            tb.paragraph.clone()
+        };
+        let ops: Vec<Op> = serde_json::from_str(r##"[
+            {"op":"title","text":"One\nTwo","at":{"secs":1.0},"secs":3.0,
+             "paragraph":{"space_after":18,"indent":40,"first_indent":-40},
+             "keys":{"first_indent":[{"at":0.0,"value":-40},{"at":1.0,"value":0}]}},
+            {"op":"style","clip_id":{"track":0,"secs":2.0},"paragraph":{"space_before":6}}
+        ]"##).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
+        let p = para(clip);
+        assert_eq!((p.space_after, p.indent_start, p.indent_first, p.space_before), (18.0, 40.0, -40.0, 0.0));
+        assert_eq!(p.indent_first_keyframes.len(), 2);
+        assert_eq!(p.at(0.5).indent_first, -20.0);
+        let mut seqs = vec![seq.clone()];
+        let (mut pl, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pl, fps: &mut fps };
+        for st in &plan.steps {
+            view.apply_forward(&st.edit);
+        }
+        let restyled = view.sequences[0].tracks[0].clips.iter().find(|c| c.title_data().is_some()).unwrap();
+        let p = para(restyled);
+        assert_eq!((p.space_before, p.space_after, p.indent_start), (6.0, 18.0, 40.0), "what the restyle leaves out stays");
+
+        let bad = |json: &str| resolve(&seq, &pool, &serde_json::from_str::<Vec<Op>>(json).unwrap()).unwrap_err();
+        let r = bad(r##"[{"op":"title","text":"Hi","at":{"secs":1.0},"paragraph":{"indent":-5}}]"##);
+        assert!(r.why.contains("paragraph indent -5 is out of range") && r.hint.contains("from 0 to 2000"), "{} / {}", r.why, r.hint);
+        assert!(serde_json::from_str::<Vec<Op>>(r##"[{"op":"title","text":"Hi","at":{"secs":1.0},"paragraph":{"leading":5}}]"##).is_err(), "an unknown paragraph field");
     }
 
     /// #1722: a title's box is set to shrink to fit, down to a minimum,

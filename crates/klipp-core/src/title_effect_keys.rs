@@ -111,6 +111,13 @@ pub const EXTRUSION_LIGHTING: &str = "extrusion.lighting";
 pub const TEXT_SIZE: &str = "text.size";
 pub const TEXT_TRACKING: &str = "text.tracking";
 pub const TEXT_LINE_SPACING: &str = "text.line_spacing";
+/// A text box's paragraph settings (#1721), in pixels at 1080p:
+/// `TextBox.paragraph.*_keyframes`.
+pub const TEXT_SPACE_BEFORE: &str = "text.space_before";
+pub const TEXT_SPACE_AFTER: &str = "text.space_after";
+pub const TEXT_INDENT_START: &str = "text.indent_start";
+pub const TEXT_INDENT_END: &str = "text.indent_end";
+pub const TEXT_INDENT_FIRST: &str = "text.indent_first";
 /// Where a text on a drawn path sits along it, 0..1 (#1508):
 /// `TextPath::Layer.offset_keyframes`.
 pub const TEXT_PATH_OFFSET: &str = "text.path_offset";

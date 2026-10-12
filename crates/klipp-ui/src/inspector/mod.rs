@@ -4920,10 +4920,10 @@ fn show_title_editor(
 
     {
         let style_runs_n = td.style_runs().len() as u32;
-        let _grp_count = (td.tracking() != 0.0) as u32 + ((td.line_spacing() - 1.0).abs() > 1e-6) as u32 + (td.baseline_shift() != 0.0) as u32 + (td.case_transform() != klipp_timeline::TextCase::None) as u32 + (td.drop_cap_scale() >= 1.0) as u32 + td.primary_text().map_or(0u32, |tb| { (tb.columns != 1) as u32 + tb.vertical_layout as u32 + (tb.text_direction == klipp_timeline::TextDirection::Rtl) as u32 + tb.underline as u32 + tb.strikethrough as u32 }) + (style_runs_n > 0) as u32;
+        let _grp_count = (td.tracking() != 0.0) as u32 + ((td.line_spacing() - 1.0).abs() > 1e-6) as u32 + (td.baseline_shift() != 0.0) as u32 + (td.case_transform() != klipp_timeline::TextCase::None) as u32 + (td.drop_cap_scale() >= 1.0) as u32 + td.primary_text().map_or(0u32, |tb| { (tb.columns != 1) as u32 + tb.vertical_layout as u32 + (tb.text_direction == klipp_timeline::TextDirection::Rtl) as u32 + tb.underline as u32 + tb.strikethrough as u32 + (tb.paragraph != klipp_timeline::Paragraph::default()) as u32 }) + (style_runs_n > 0) as u32;
         let status = crate::widgets::inspector_group::GroupStatus {
             count: if _grp_count > 0 { Some(_grp_count) } else { None },
-            active: td.tracking() != 0.0 || (td.line_spacing() - 1.0).abs() > 1e-6 || td.baseline_shift() != 0.0 || td.case_transform() != klipp_timeline::TextCase::None || td.drop_cap_scale() >= 1.0 || td.primary_text().is_some_and(|tb| tb.columns != 1 || tb.vertical_layout || tb.text_direction == klipp_timeline::TextDirection::Rtl || tb.underline || tb.strikethrough) || style_runs_n > 0,
+            active: td.tracking() != 0.0 || (td.line_spacing() - 1.0).abs() > 1e-6 || td.baseline_shift() != 0.0 || td.case_transform() != klipp_timeline::TextCase::None || td.drop_cap_scale() >= 1.0 || td.primary_text().is_some_and(|tb| tb.columns != 1 || tb.vertical_layout || tb.text_direction == klipp_timeline::TextDirection::Rtl || tb.underline || tb.strikethrough || tb.paragraph != klipp_timeline::Paragraph::default()) || style_runs_n > 0,
         };
         if title_group_is_open(ui, theme, clip_id, "Typography", status) {
             ui.add_space(6.0);
@@ -4944,6 +4944,21 @@ fn show_title_editor(
         let resp = crate::widgets::scrubby_param::scrubby_param_row(ui, "Line spacing", &mut line_sp, 0.5..=4.0, 1.0, 0.05, 2, "x", ks(k::TEXT_LINE_SPACING));
         handle_text_key_edit(cmds, clip_id, target_oid, k::TEXT_LINE_SPACING, line_sp, keys(k::TEXT_LINE_SPACING), clip_time_secs, keyframe_tolerance, (&resp).into(),
             |line_spacing| AppCommand::SetTitleLineSpacing { clip_id, line_spacing });
+        // The box's paragraphs (#1721), keyable as the type is.
+        let para = keyed.as_ref().map(|tb| tb.paragraph.clone()).unwrap_or_default();
+        // A first line below 0 hangs out of the indent.
+        for (label, key, value, range) in [
+            ("Space before", k::TEXT_SPACE_BEFORE, para.space_before, 0.0..=400.0),
+            ("Space after", k::TEXT_SPACE_AFTER, para.space_after, 0.0..=400.0),
+            ("Indent", k::TEXT_INDENT_START, para.indent_start, 0.0..=1000.0),
+            ("End indent", k::TEXT_INDENT_END, para.indent_end, 0.0..=1000.0),
+            ("First line", k::TEXT_INDENT_FIRST, para.indent_first, -1000.0..=1000.0),
+        ] {
+            let mut v = value;
+            let resp = crate::widgets::scrubby_param::scrubby_param_row(ui, label, &mut v, range, 0.0, 0.5, 0, " px", ks(key));
+            handle_text_key_edit(cmds, clip_id, target_oid, key, v, keys(key), clip_time_secs, keyframe_tolerance, (&resp).into(),
+                |value| AppCommand::SetTitleParagraph { clip_id, key: key.into(), value });
+        }
     }
     let mut write_on = td.write_on();
     if ui.add(egui::Slider::new(&mut write_on, 0.0..=1.0).text("Write-On").step_by(0.01)).changed() {
@@ -8322,6 +8337,44 @@ mod selection_underline_tests {
         let mut cmds = frame(ctx, td, sel, vec![egui::Event::PointerMoved(pos), button(true)]).0;
         cmds.extend(frame(ctx, td, sel, vec![button(false)]).0);
         (cmds, texts.into_iter().map(|(t, _)| t).collect())
+    }
+
+    /// #1721: the Typography group has the paragraph rows, each showing
+    /// the box's setting.
+    #[test]
+    fn the_typography_group_has_the_paragraph_rows() {
+        let ctx = egui::Context::default();
+        ctx.data_mut(|d| {
+            let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(egui::Id::new(TITLE_EXPANDED_GROUPS_KEY));
+            set.extend(["Advanced title tools".to_string(), "Typography".to_string()]);
+        });
+        let mut tb = klipp_timeline::TextBox { text: "Title text".into(), font_name: "Inter".into(), ..Default::default() };
+        tb.paragraph.indent_first = -36.0;
+        tb.paragraph.indent_start = 36.0;
+        let td = klipp_timeline::TitleData::single_text(tb);
+        let clip = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(klipp_core::Timecode::zero(), klipp_core::Timecode { value: 48, rate: 24 }) };
+        let state = AppState::default();
+        let mut chips = title_tab::TitleChips::default();
+        let mut texts = Vec::new();
+        for _ in 0..2 {
+            let mut cmds = Vec::new();
+            let out = ctx.run(
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 6000.0))), ..Default::default() },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        egui::ScrollArea::vertical().show(ui, |ui| show_title_editor(ui, &KlippTheme::default(), &clip, &state, &mut cmds, &mut chips));
+                    });
+                },
+            );
+            texts = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            }).collect::<Vec<_>>();
+        }
+        for label in ["Space before", "Space after", "Indent", "End indent", "First line"] {
+            assert!(texts.iter().any(|t| t == label), "no {label} row in {texts:?}");
+        }
+        assert!(texts.iter().any(|t| t.contains("-36")), "the hanging first line shows: {texts:?}");
     }
 
     /// #1722: the box's fit is a row of its own: Shrink and Grow each set

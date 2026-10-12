@@ -955,6 +955,10 @@ pub struct TextBox {
     /// Left unwritten at its default, `Wrap`.
     #[serde(default, skip_serializing_if = "is_default")]
     pub fit: TextFit,
+    /// The box's paragraphs: space between them and their indents
+    /// (#1721). Left unwritten at its default, none.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub paragraph: Paragraph,
     /// OpenType features the box's text is shaped with, on top of the
     /// shaper's defaults (kerning, ligatures, contextual alternates)
     /// (#1501): "smcp" turns one on, "-liga" off, "ss01=1" sets a value.
@@ -1156,6 +1160,9 @@ impl TextBox {
         if let Some(t) = tb.three_d.as_mut().filter(|t| !t.keys.is_empty()) {
             *t = t.at(time_secs);
         }
+        if tb.paragraph != Paragraph::default() {
+            tb.paragraph = tb.paragraph.at(time_secs);
+        }
         tb
     }
 
@@ -1171,6 +1178,9 @@ impl TextBox {
             k::TEXT_SIZE => return Some(&mut self.font_size_keyframes),
             k::TEXT_TRACKING => return Some(&mut self.tracking_keyframes),
             k::TEXT_LINE_SPACING => return Some(&mut self.line_spacing_keyframes),
+            k::TEXT_SPACE_BEFORE | k::TEXT_SPACE_AFTER | k::TEXT_INDENT_START | k::TEXT_INDENT_END | k::TEXT_INDENT_FIRST => {
+                return self.paragraph.keys_mut_for(param_key);
+            }
             k::TEXT_PATH_OFFSET => {
                 return match &mut self.text_path {
                     Some(TextPath::Layer { offset_keyframes, .. }) => Some(offset_keyframes),
@@ -1211,6 +1221,9 @@ impl TextBox {
             k::TEXT_SIZE => return Some(&self.font_size_keyframes),
             k::TEXT_TRACKING => return Some(&self.tracking_keyframes),
             k::TEXT_LINE_SPACING => return Some(&self.line_spacing_keyframes),
+            k::TEXT_SPACE_BEFORE | k::TEXT_SPACE_AFTER | k::TEXT_INDENT_START | k::TEXT_INDENT_END | k::TEXT_INDENT_FIRST => {
+                return self.paragraph.keys_for(param_key);
+            }
             k::TEXT_PATH_OFFSET => {
                 return match &self.text_path {
                     Some(TextPath::Layer { offset_keyframes, .. }) => Some(offset_keyframes),
@@ -1413,6 +1426,7 @@ impl Default for TextBox {
             last_line: LastLineAlign::Left,
             vertical_align: TextVerticalAlign::Middle,
             fit: TextFit::Wrap,
+            paragraph: Paragraph::default(),
             features: Vec::new(),
             font_weight: None,
             font_axes: Vec::new(),
@@ -2513,6 +2527,98 @@ pub enum TextVerticalAlign {
     #[default]
     Middle,
     Bottom,
+}
+
+/// A text box's paragraphs (#1721): a paragraph is the text between
+/// line breaks. Lengths are pixels at 1080p, scaled with the frame as a
+/// text's size is; each is keyable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Paragraph {
+    /// Space above a paragraph, past the first.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub space_before: f32,
+    /// Space below a paragraph, before the last.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub space_after: f32,
+    /// Every line's indent from the box's start edge: the left, or the
+    /// right in right-to-left text.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub indent_start: f32,
+    /// Every line's indent from the box's end edge.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub indent_end: f32,
+    /// A paragraph's first line's indent past `indent_start`; below 0 it
+    /// hangs out of it, as far as the box's edge, the lines under it
+    /// staying in.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub indent_first: f32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub space_before_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub space_after_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub indent_start_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub indent_end_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub indent_first_keyframes: Vec<klipp_core::Keyframe>,
+}
+
+impl Paragraph {
+    /// The settings at `time_secs`, keys evaluated and cleared; spacing
+    /// and indents never below 0, and a first line never hung past the
+    /// box's edge.
+    pub fn at(&self, time_secs: f64) -> Paragraph {
+        let key = |keys: &[klipp_core::Keyframe], v: f32| if keys.is_empty() { v } else { klipp_core::keyframe::evaluate(keys, time_secs, v) };
+        let start = key(&self.indent_start_keyframes, self.indent_start).max(0.0);
+        Paragraph {
+            space_before: key(&self.space_before_keyframes, self.space_before).max(0.0),
+            space_after: key(&self.space_after_keyframes, self.space_after).max(0.0),
+            indent_start: start,
+            indent_end: key(&self.indent_end_keyframes, self.indent_end).max(0.0),
+            indent_first: key(&self.indent_first_keyframes, self.indent_first).max(-start),
+            ..Paragraph::default()
+        }
+    }
+
+    /// The keys of the setting named `key`, to change.
+    pub fn keys_mut_for(&mut self, key: &str) -> Option<&mut Vec<klipp_core::Keyframe>> {
+        use klipp_core::title_effect_keys as k;
+        Some(match key {
+            k::TEXT_SPACE_BEFORE => &mut self.space_before_keyframes,
+            k::TEXT_SPACE_AFTER => &mut self.space_after_keyframes,
+            k::TEXT_INDENT_START => &mut self.indent_start_keyframes,
+            k::TEXT_INDENT_END => &mut self.indent_end_keyframes,
+            k::TEXT_INDENT_FIRST => &mut self.indent_first_keyframes,
+            _ => return None,
+        })
+    }
+
+    /// The keys of the setting named `key`.
+    pub fn keys_for(&self, key: &str) -> Option<&[klipp_core::Keyframe]> {
+        use klipp_core::title_effect_keys as k;
+        Some(match key {
+            k::TEXT_SPACE_BEFORE => &self.space_before_keyframes,
+            k::TEXT_SPACE_AFTER => &self.space_after_keyframes,
+            k::TEXT_INDENT_START => &self.indent_start_keyframes,
+            k::TEXT_INDENT_END => &self.indent_end_keyframes,
+            k::TEXT_INDENT_FIRST => &self.indent_first_keyframes,
+            _ => return None,
+        })
+    }
+
+    /// The setting named `key`, to change.
+    pub fn value_mut_for(&mut self, key: &str) -> Option<&mut f32> {
+        use klipp_core::title_effect_keys as k;
+        Some(match key {
+            k::TEXT_SPACE_BEFORE => &mut self.space_before,
+            k::TEXT_SPACE_AFTER => &mut self.space_after,
+            k::TEXT_INDENT_START => &mut self.indent_start,
+            k::TEXT_INDENT_END => &mut self.indent_end,
+            k::TEXT_INDENT_FIRST => &mut self.indent_first,
+            _ => return None,
+        })
+    }
 }
 
 /// How a text box's text meets the box when it is too long for it
