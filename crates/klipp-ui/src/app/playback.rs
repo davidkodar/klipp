@@ -173,6 +173,11 @@ impl KlippApp {
                 let _ = self.cmd_tx.send(AppCommand::SetMasterVolume(effective));
                 true
             }
+            AppCommand::SetHearDeliveryLoudness(on) => {
+                self.prefs.playback.hear_delivery_loudness = *on;
+                self.prefs_dirty = true;
+                true
+            }
             AppCommand::SetMasterVolume(v) => {
                 self.state.master_volume = *v;
                 let effective = if self.state.master_muted { 0.0 } else { *v };

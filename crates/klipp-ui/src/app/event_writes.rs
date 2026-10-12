@@ -69,6 +69,7 @@ pub(crate) fn event_writes(event: &AppEvent) -> bool {
         | AppEvent::TrackPeakLevels { .. }
         | AppEvent::MasterPeakLevels { .. }
         | AppEvent::LufsReadings { .. }
+        | AppEvent::DeliveryLoudness { .. }
         | AppEvent::EngineStats { .. }
         | AppEvent::SkimTranscodeProgress { .. }
         | AppEvent::SkimTranscodeFailed { .. }

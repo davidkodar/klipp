@@ -832,6 +832,16 @@ impl KlippApp {
     /// The repaint clock, the meters' ballistics, thumbnail textures, and
     /// skim frames routed to the viewer that asked for them.
     pub(super) fn tick_meters_and_skims(&mut self, ctx: &egui::Context) {
+        // The loudness playback is heard at, sent when it changes (#1565).
+        let brief_lufs = self.state.sequence().brief.as_ref().and_then(|b| b.loudness_lufs);
+        let enabled = self.prefs.playback.hear_delivery_loudness;
+        let target = super::export::delivery_target(&self.export_dialog, brief_lufs, enabled);
+        self.state.delivery_loudness.available = super::export::delivery_target(&self.export_dialog, brief_lufs, true).is_some();
+        self.state.delivery_loudness.enabled = enabled;
+        if self.state.delivery_loudness.sent != Some(target) {
+            self.state.delivery_loudness.sent = Some(target);
+            let _ = self.cmd_tx.send(AppCommand::SetDeliveryTarget(target));
+        }
         // Frame-rate-aware repaint during playback (must be AFTER drain_events so Playing state is set).
         // 16 ms = 60 Hz cap. Engine grade time at 1080p typically exceeds
         // 8 ms budget under load, so asking the UI for 125 Hz just burns

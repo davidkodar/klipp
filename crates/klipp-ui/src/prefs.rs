@@ -198,6 +198,10 @@ pub struct PlaybackPrefs {
     /// Whether loop playback is enabled (cycle between in/out points or whole sequence).
     #[serde(default)]
     pub loop_playback: bool,
+    /// Whether playback is heard at the loudness the export will deliver,
+    /// when the export or the sequence's brief sets one (#1565).
+    #[serde(default = "default_true")]
+    pub hear_delivery_loudness: bool,
     /// Resolution (max height in pixels) for skim frame decodes. Higher = sharper but slower.
     #[serde(default = "default_skim_resolution")]
     pub skim_resolution: u32,
@@ -869,6 +873,7 @@ impl Default for PlaybackPrefs {
             skim_audio: true,
             jkl_audio_mute_threshold: 4.0,
             loop_playback: false,
+            hear_delivery_loudness: true,
             skim_resolution: default_skim_resolution(),
             playback_quality: Default::default(),
             background_render: true,

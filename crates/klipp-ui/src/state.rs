@@ -2326,6 +2326,9 @@ pub struct AppState {
     pub lufs_true_peak_dbfs: f32,
     /// Loudness range (EBU R128 LRA)
     pub lufs_lra: f32,
+    /// What playback adds to be heard at the export's delivered loudness,
+    /// as the engine last said (#1565).
+    pub delivery_loudness: DeliveryLoudness,
     /// Rolling short-term LUFS history for the loudness-history scope.
     /// Capacity: 600 samples @ ~10 Hz = ~60 seconds of timeline. Pushed
     /// once per `LufsReadings` event (see app.rs handler) and popped from
@@ -4442,6 +4445,7 @@ impl Default for AppState {
             lufs_short_term: f32::NEG_INFINITY,
             lufs_integrated: f32::NEG_INFINITY,
             lufs_true_peak_dbfs: f32::NEG_INFINITY,
+            delivery_loudness: DeliveryLoudness::default(),
             lufs_lra: 0.0,
             lufs_short_term_history: {
                 let mut v = std::collections::VecDeque::new();
@@ -6229,5 +6233,65 @@ mod keep_analyses_tests {
         assert!(!state.analyses.contains_key(&a), "unused: let go");
         assert_eq!(lumas(&state, &b), Some(5), "not loaded here: kept");
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// Playback's delivery gain, from the engine (#1565).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct DeliveryLoudness {
+    /// The loudness playback is heard at; `None` for unity.
+    pub target_lufs: Option<f32>,
+    /// The gain playback adds, once measured.
+    pub gain_db: Option<f32>,
+    /// The export's own gain, larger than playback's when it limits.
+    pub export_gain_db: Option<f32>,
+    /// The mix is being measured.
+    pub measuring: bool,
+    /// The target last sent to the engine, so it is sent on change only.
+    pub sent: Option<Option<(f32, f32)>>,
+    /// The export or the brief sets a loudness, so there is a delivery
+    /// to hear, whether or not playback is heard at it.
+    pub available: bool,
+    /// The preference: playback heard at the delivery's loudness.
+    pub enabled: bool,
+}
+
+impl DeliveryLoudness {
+    /// The line beside the master meter, `None` with no target:
+    /// "Delivery +4.1 dB → -14 LUFS", with "(limited in export)" when the
+    /// export's limiter takes the peaks playback holds under.
+    pub fn label(&self) -> Option<String> {
+        if self.available && !self.enabled {
+            return Some("Delivery loudness off".into());
+        }
+        let target = self.target_lufs?;
+        Some(match (self.gain_db, self.measuring) {
+            (_, true) => format!("Delivery \u{2192} {target:.0} LUFS, measuring\u{2026}"),
+            (Some(g), false) => {
+                let limited = self.export_gain_db.is_some_and(|e| e - g > 0.05);
+                format!("Delivery {g:+.1} dB \u{2192} {target:.0} LUFS{}", if limited { " (limited in export)" } else { "" })
+            }
+            (None, false) => format!("Delivery \u{2192} {target:.0} LUFS, not measured"),
+        })
+    }
+}
+
+#[cfg(test)]
+mod delivery_loudness_tests {
+    use super::DeliveryLoudness;
+
+    /// #1565: the label says the gain and the target, that the export
+    /// limits where playback is held under it, and nothing with no target.
+    #[test]
+    fn the_label_says_the_delivery() {
+        assert_eq!(DeliveryLoudness::default().label(), None);
+        let d = DeliveryLoudness { target_lufs: Some(-14.0), gain_db: Some(4.1), export_gain_db: Some(4.1), ..Default::default() };
+        assert_eq!(d.label().unwrap(), "Delivery +4.1 dB \u{2192} -14 LUFS");
+        let d = DeliveryLoudness { export_gain_db: Some(6.0), ..d };
+        assert_eq!(d.label().unwrap(), "Delivery +4.1 dB \u{2192} -14 LUFS (limited in export)");
+        let d = DeliveryLoudness { measuring: true, ..d };
+        assert!(d.label().unwrap().contains("measuring"));
+        let off = DeliveryLoudness { available: true, enabled: false, ..Default::default() };
+        assert_eq!(off.label().unwrap(), "Delivery loudness off");
     }
 }

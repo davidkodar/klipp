@@ -442,6 +442,16 @@ impl KlippApp {
                         self.state.clip_indicator = true;
                     }
                 }
+                AppEvent::DeliveryLoudness { target_lufs, gain_db, export_gain_db, measuring } => {
+                    let d = &mut self.state.delivery_loudness;
+                    d.target_lufs = target_lufs;
+                    d.measuring = measuring;
+                    // A measurement starting keeps the gain playback has.
+                    if !measuring {
+                        d.gain_db = gain_db;
+                        d.export_gain_db = export_gain_db;
+                    }
+                }
                 AppEvent::LufsReadings { momentary, short_term, integrated, loudness_range, true_peak_dbfs } => {
                     self.state.lufs_momentary = momentary;
                     self.state.lufs_short_term = short_term;
