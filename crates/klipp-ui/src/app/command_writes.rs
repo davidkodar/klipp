@@ -517,6 +517,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTitleAlignment { .. }
         | AppCommand::SetTitleLastLine { .. }
         | AppCommand::SetTitleVerticalAlign { .. }
+        | AppCommand::SetTitleFit { .. }
         | AppCommand::SetTitlePosition { .. }
         | AppCommand::SetTitleObjectTransform { .. }
         | AppCommand::AddTitleObject { .. }

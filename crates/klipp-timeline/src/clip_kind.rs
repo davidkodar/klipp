@@ -951,6 +951,10 @@ pub struct TextBox {
     /// centred on the box's centre. Left unwritten at its default.
     #[serde(default, skip_serializing_if = "is_default")]
     pub vertical_align: TextVerticalAlign,
+    /// How the text meets its box when it is too long for it (#1722).
+    /// Left unwritten at its default, `Wrap`.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub fit: TextFit,
     /// OpenType features the box's text is shaped with, on top of the
     /// shaper's defaults (kerning, ligatures, contextual alternates)
     /// (#1501): "smcp" turns one on, "-liga" off, "ss01=1" sets a value.
@@ -1408,6 +1412,7 @@ impl Default for TextBox {
             text_direction: TextDirection::Ltr,
             last_line: LastLineAlign::Left,
             vertical_align: TextVerticalAlign::Middle,
+            fit: TextFit::Wrap,
             features: Vec::new(),
             font_weight: None,
             font_axes: Vec::new(),
@@ -2508,6 +2513,27 @@ pub enum TextVerticalAlign {
     #[default]
     Middle,
     Bottom,
+}
+
+/// How a text box's text meets the box when it is too long for it
+/// (#1722).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+pub enum TextFit {
+    /// Wrapped between words at the box's width, and set smaller until
+    /// it is no taller than the box: what a text box has always done.
+    #[default]
+    Wrap,
+    /// Kept on the lines it was typed on, and set smaller until its
+    /// widest line fits the box's width and the lines its height — never
+    /// below `min_size`, in the units of `TextBox::font_size`. Smaller
+    /// than that would need, it wraps at the box's width there. A lower
+    /// third's name: a long one takes the line at a smaller size.
+    Shrink { min_size: f32 },
+    /// Wrapped at the box's width at its own size, the box growing with
+    /// the lines rather than the type shrinking; from its vertical
+    /// alignment, so a top-aligned box grows down. A backing fitted to
+    /// it grows with it.
+    Grow,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]

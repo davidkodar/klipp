@@ -179,6 +179,21 @@ fn lifted(mut t: Text) -> Text {
     t
 }
 
+/// A name that keeps its line: a long one is set smaller to fit its box
+/// rather than wrapping under the lines below it (#1722).
+fn keeps_line(mut t: Text) -> Text {
+    t.tb.fit = klipp_timeline::TextFit::Shrink { min_size: (t.tb.font_size * 0.5).round() };
+    t
+}
+
+/// [`text_at`] in a box `w` of the frame wide, for a layer that has to
+/// stay inside a bar.
+fn boxed_at(t: Text, x: f32, y: f32, w: f32) -> Layer {
+    let mut layer = text_at(t, x, y, 0.0);
+    layer.1.size.x = w;
+    layer
+}
+
 fn moved(mut t: Text, motion: TitleMotion) -> Text {
     t.fx.motion = motion;
     t
@@ -231,15 +246,17 @@ fn fade_out(secs: f32) -> Motion {
 fn lt_name_bar() -> TitleData {
     layers(vec![
         rect(0.30, 0.845, 0.48, 0.115, [14, 14, 18, 210], 4.0),
-        text_at(
-            moved(face("[Name]", GRO, FontStyle::Bold, 44.0, WHITE, TextAlignment::Left),
+        // Both lines inside the bar, from 0.085 to its right edge less
+        // the same margin.
+        boxed_at(
+            moved(keeps_line(face("[Name]", GRO, FontStyle::Bold, 44.0, WHITE, TextAlignment::Left)),
                 TitleMotion::both(enter(MotionKind::MaskRise, 0.5, Easing::OutExpo).delay(0.1), fade_out(0.3))),
-            0.085, 0.822, 0.0,
+            0.085, 0.822, 0.43,
         ),
-        text_at(
-            moved(face("[Title or role]", GRO, FontStyle::Regular, 26.0, MUTED, TextAlignment::Left),
+        boxed_at(
+            moved(keeps_line(face("[Title or role]", GRO, FontStyle::Regular, 26.0, MUTED, TextAlignment::Left)),
                 TitleMotion::both(enter(MotionKind::MaskRise, 0.5, Easing::OutExpo).delay(0.25), fade_out(0.3))),
-            0.085, 0.872, 0.0,
+            0.085, 0.872, 0.43,
         ),
     ])
 }
@@ -248,7 +265,7 @@ fn lt_clean_line() -> TitleData {
     layers(vec![
         rect(0.19, 0.847, 0.22, 0.006, ACCENT, 0.0),
         text_at(
-            moved(lifted(face("[Name]", GRO, FontStyle::Bold, 46.0, WHITE, TextAlignment::Left)),
+            moved(keeps_line(lifted(face("[Name]", GRO, FontStyle::Bold, 46.0, WHITE, TextAlignment::Left))),
                 TitleMotion::both(enter(MotionKind::SlideRight, 0.5, Easing::OutQuint).distance(0.4), fade_out(0.3))),
             0.08, 0.805, 0.0,
         ),
@@ -265,7 +282,7 @@ fn lt_broadcast() -> TitleData {
         rect(0.25, 0.815, 0.38, 0.07, [26, 84, 196, 255], 0.0),
         rect(0.25, 0.874, 0.38, 0.048, [244, 244, 246, 255], 0.0),
         text_at(
-            moved(upper(face("[Name]", DISPLAY, FontStyle::Regular, 50.0, WHITE, TextAlignment::Left), 2.0),
+            moved(keeps_line(upper(face("[Name]", DISPLAY, FontStyle::Regular, 50.0, WHITE, TextAlignment::Left), 2.0)),
                 TitleMotion::both(enter(MotionKind::SlideRight, 0.4, Easing::OutExpo).distance(0.8), fade_out(0.25))),
             0.075, 0.815, 0.0,
         ),
@@ -291,7 +308,7 @@ fn lt_broadcast() -> TitleData {
 fn lt_documentary() -> TitleData {
     layers(vec![
         text_at(
-            moved(lifted(face("[Name]", SERIF, FontStyle::Italic, 46.0, WHITE, TextAlignment::Left)),
+            moved(keeps_line(lifted(face("[Name]", SERIF, FontStyle::Italic, 46.0, WHITE, TextAlignment::Left))),
                 TitleMotion::both(enter(MotionKind::Rise, 0.8, Easing::OutCubic).distance(0.3), fade_out(0.5))),
             0.08, 0.815, 0.0,
         ),
@@ -1846,6 +1863,49 @@ mod tests {
     }
 
     use super::*;
+
+    /// #1722: the lower thirds take a long name on its line. In Name
+    /// Bar it is set smaller to stay inside the bar, where it wrapped
+    /// over the role line and ran past the bar's end.
+    #[test]
+    fn a_lower_third_takes_a_long_name_on_its_line() {
+        let mut r = klipp_title::TitleRenderer::new();
+        let (w, h) = (1920u32, 1080u32);
+        let named = |name: &str| {
+            let mut td = lt_name_bar();
+            for o in &mut td.objects {
+                if let TitleObjectContent::TextBox(tb) = &mut o.content {
+                    if tb.text == "[Name]" {
+                        tb.text = name.into();
+                    }
+                }
+            }
+            td
+        };
+        let name_only = |td: &TitleData| {
+            let mut only = td.clone();
+            only.objects.retain(|o| matches!(&o.content, TitleObjectContent::TextBox(tb) if tb.text != "[Title or role]"));
+            only
+        };
+        let short = r.render_layout_at_time(&name_only(&named("Ana Ruiz")), w, h, Some(2.0));
+        let long = r.render_layout_at_time(&name_only(&named("Professor Elizabeth Montgomery-Smith of Westbury")), w, h, Some(2.0));
+        let bar_right = (0.30 + 0.48 / 2.0) * w as f32;
+        assert!(long.text_right <= bar_right, "the long name ends at {} past the bar's end, {bar_right}", long.text_right);
+        // Two lines would be twice the short name's height; descenders
+        // alone add a little.
+        let (one, got) = (short.text_bottom - short.text_top, long.text_bottom - long.text_top);
+        assert!(got < one * 1.5, "on its one line: {got} px tall, a line {one}");
+        assert!(long.text_right - long.text_left > 0.43 * w as f32 * 0.85, "set smaller only as far as it must be");
+        assert!((short.text_left - long.text_left).abs() < 2.0, "from the same left edge");
+        for build in [lt_name_bar, lt_clean_line, lt_broadcast, lt_documentary] {
+            let td = build();
+            let name = td.objects.iter().find_map(|o| match &o.content {
+                TitleObjectContent::TextBox(tb) if tb.text == "[Name]" => Some(tb.fit),
+                _ => None,
+            });
+            assert!(matches!(name, Some(klipp_timeline::TextFit::Shrink { .. })), "a lower third's name keeps its line: {name:?}");
+        }
+    }
 
     /// No template may claim it animates (`animation: Some(_)`) and
     /// ship its `TitleData::animation_type` as `Static` AND have
