@@ -475,7 +475,7 @@ fn quiet_link(ui: &mut egui::Ui, _theme: &KlippTheme, text: &str) -> egui::Respo
 }
 
 fn open(url: &str) {
-    let _ = std::process::Command::new("xdg-open").arg(url).stdin(std::process::Stdio::null()).spawn();
+    let _ = crate::ui_util::open_external(url);
 }
 
 #[cfg(test)]

@@ -2526,10 +2526,7 @@ impl KlippApp {
                     // #63 Tier-1: open output folder if the pref is enabled.
                     if self.prefs.export.open_folder_after_export {
                         if let Some(parent) = output_path.parent() {
-                            if let Err(e) = std::process::Command::new("xdg-open")
-                                .arg(parent)
-                                .spawn()
-                            {
+                            if let Err(e) = crate::ui_util::open_external(parent) {
                                 tracing::warn!(
                                     "open_folder_after_export: xdg-open failed for {}: {}",
                                     parent.display(),
@@ -2641,7 +2638,7 @@ impl KlippApp {
                     self.state.show_render_queue = false;
                 }
                 crate::panels::render_queue::RenderQueueAction::Play(path) => {
-                    if let Err(e) = std::process::Command::new("xdg-open").arg(&path).spawn() {
+                    if let Err(e) = crate::ui_util::open_external(&path) {
                         self.state.toast.show(format!("Could not open {}: {e}", path.display()));
                     }
                 }

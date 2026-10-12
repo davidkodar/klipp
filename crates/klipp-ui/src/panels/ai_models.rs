@@ -2941,10 +2941,7 @@ fn inference_status_label(theme: &KlippTheme) -> (String, egui::Color32, String)
 }
 
 fn open_in_file_browser(path: &std::path::Path) -> std::io::Result<()> {
-    std::process::Command::new("xdg-open")
-        .arg(path)
-        .spawn()
-        .map(|_| ())
+    crate::ui_util::open_external(path)
 }
 
 /// Open `~/.config/klipp/models.toml` in the user's default editor.

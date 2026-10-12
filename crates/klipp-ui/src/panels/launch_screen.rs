@@ -516,9 +516,7 @@ impl LaunchScreen {
             .allocate_rect(footer_rect, egui::Sense::click())
             .on_hover_cursor(egui::CursorIcon::PointingHand);
         if resp.clicked() {
-            let _ = std::process::Command::new("xdg-open")
-                .arg("https://github.com/davidkodar/klipp")
-                .spawn();
+            let _ = crate::ui_util::open_external("https://github.com/davidkodar/klipp");
         }
         ui.painter().text(
             footer_rect.center(),

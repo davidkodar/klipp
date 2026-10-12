@@ -3697,18 +3697,14 @@ impl BrowserPanel {
                         } else {
                             menu_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| menu_path.clone())
                         };
-                        let _ = std::process::Command::new("xdg-open")
-                            .arg(&target)
-                            .spawn();
+                        let _ = crate::ui_util::open_external(&target);
                         ui.close_menu();
                     }
 
                     // ── Open with Default Application (only for files) ──
                     if !menu_is_dir
                         && ui.button("Open with Default Application").clicked() {
-                            let _ = std::process::Command::new("xdg-open")
-                                .arg(&menu_path)
-                                .spawn();
+                            let _ = crate::ui_util::open_external(&menu_path);
                             ui.close_menu();
                         }
 
