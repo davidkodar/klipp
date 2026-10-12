@@ -986,6 +986,19 @@ pub enum SelectRange {
     Backward,
 }
 
+/// A value of a title's published field (#1139): what a template keeps
+/// editable once applied.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum TitleFieldValue {
+    /// A text layer's text.
+    Text(String),
+    /// A colour, sRGB with alpha.
+    Colour([u8; 4]),
+    /// How fast the title's motion runs against the template's: 1.0 as
+    /// made, 2.0 twice as fast.
+    Speed(f32),
+}
+
 #[derive(Debug, Clone)]
 pub enum AppCommand {
     /// A batch of graph ops on one picture, applied as one undo step named
@@ -2470,6 +2483,10 @@ pub enum AppCommand {
     SetTitleTracking { clip_id: ClipId, tracking: f32 },
     /// The entrance and exit motion of the targeted text layer.
     SetTitleMotion { clip_id: ClipId, motion: crate::title_motion::TitleMotion },
+    /// Set published field `index` of title `clip_id` to `value` (#1139):
+    /// a template's text, colour or speed. `done` false while a drag is
+    /// under way, shown at once and recorded as one step when it ends.
+    SetTitleField { clip_id: ClipId, index: usize, value: TitleFieldValue, done: bool },
     /// Set write-on reveal progress (0.0-1.0).
     SetTitleWriteOn { clip_id: ClipId, write_on: f32 },
     /// Set line spacing multiplier.

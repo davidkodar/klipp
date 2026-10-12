@@ -91,7 +91,7 @@ fn chip_title(subject: &ChipSubject, fx: &LayerFx, adjust: impl FnOnce(&mut Text
         f.loops.clear();
         let mut scratch = TextBox::default();
         adjust(&mut scratch, &mut f);
-        let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None };
+        let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None, published: Vec::new() };
         let mut xf = klipp_timeline::default_text_transform();
         xf.size = klipp_timeline::TitlePosition { x: 0.6, y: 0.6 };
         let id = td.add_object(content.clone(), xf);
@@ -730,6 +730,60 @@ fn motion_row(
         }
     }
     changed
+}
+
+/// A motion-graphics template's fields (#1139): each live published field
+/// of `td` as one control, its text in a box, its colour in a swatch, its
+/// speed on a slider, each change one `SetTitleField` (a slider's drag one
+/// step when it ends). Whether there was any field to draw.
+pub fn template_fields(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId, td: &klipp_timeline::TitleData, cmds: &mut Vec<AppCommand>) -> bool {
+    use klipp_core::TitleFieldValue as V;
+    let fields = td.live_fields();
+    if fields.is_empty() {
+        return false;
+    }
+    ui.label(egui::RichText::new("TEMPLATE").small().strong().color(theme.text_dim));
+    ui.add_space(2.0);
+    for (index, field, value) in fields {
+        let mut set = |value: V, done: bool| cmds.push(AppCommand::SetTitleField { clip_id, index, value, done });
+        match value {
+            V::Text(text) => {
+                ui.label(field.label.as_str());
+                let mut edited = text.clone();
+                let r = ui.add(egui::TextEdit::multiline(&mut edited).desired_rows(1).desired_width(f32::INFINITY).id_salt(("template_text", clip_id, index)));
+                if r.changed() && edited != text {
+                    set(V::Text(edited), true);
+                }
+            }
+            V::Colour(c) => {
+                ui.horizontal(|ui| {
+                    ui.label(field.label.as_str());
+                    let mut col = egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]);
+                    if ui.color_edit_button_srgba(&mut col).changed() {
+                        set(V::Colour(col.to_srgba_unmultiplied()), true);
+                    }
+                });
+            }
+            V::Speed(f) => {
+                let mut v = f;
+                let r = ui.add(
+                    egui::Slider::new(&mut v, klipp_timeline::TITLE_SPEED_RANGE)
+                        .logarithmic(true)
+                        .text(field.label.as_str())
+                        .suffix("\u{00d7}")
+                        .fixed_decimals(2),
+                );
+                // A drag is one step: shown as it goes, recorded when it ends.
+                if r.changed() {
+                    set(V::Speed(v), !r.dragged());
+                } else if r.drag_stopped() {
+                    set(V::Speed(v), true);
+                }
+            }
+        }
+        ui.add_space(4.0);
+    }
+    true
 }
 
 /// The motion card: In, Out and the loops of the text layer.
@@ -1601,5 +1655,118 @@ mod gallery_tests {
         assert_eq!(click(&ctx, &texts, "Recent"), None);
         let (texts, _) = frame(&ctx, Vec::new());
         assert_eq!(shown(&texts), ["Rise"], "Recent holds the pick");
+    }
+}
+
+#[cfg(test)]
+mod template_field_tests {
+    use super::*;
+    use klipp_core::TitleFieldValue as V;
+    use klipp_core::ClipId;
+    use klipp_timeline::{ClipKind, TextBox, TitleData};
+
+    /// A state holding one title, a template's: its text, colour and (it
+    /// rises in) speed published.
+    fn state() -> (crate::state::AppState, ClipId) {
+        let mut td = TitleData::single_text(TextBox { text: "Jane Doe".into(), ..Default::default() });
+        td.objects[0].fx_mut().motion.enter = Some(klipp_core::title_motion::Motion::new(klipp_core::title_motion::MotionKind::Rise).duration(0.6));
+        td.published = td.default_fields();
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut clip = klipp_timeline::Clip::gap(t(0.0), t(4.0));
+        clip.kind = ClipKind::Title(td);
+        let id = clip.id;
+        let mut state = crate::state::AppState::default();
+        state.sequences[0].tracks[0].clips.push(clip);
+        (state, id)
+    }
+
+    fn title(state: &crate::state::AppState, id: ClipId) -> TitleData {
+        state.sequences[0].all_clips().find(|c| c.id == id).unwrap().title_data().unwrap().clone()
+    }
+
+    fn undo(state: &mut crate::state::AppState, id: ClipId) {
+        let entry = state.active_history_mut().undo().expect("a step");
+        let crate::history::EditCommand::EditTitle { old_data, .. } = entry.command else { panic!("a title step") };
+        let clip = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
+        clip.kind = ClipKind::Title(old_data);
+    }
+
+    /// Each field's change is one undo step (#1139): a speed drag's steps
+    /// are one, recorded when it ends; colours picked close together on
+    /// one field are one; undo puts the title back as it was. A field
+    /// whose layer is gone is refused with nothing changed.
+    #[test]
+    fn a_field_change_is_one_step() {
+        let (mut s, id) = state();
+        let made = title(&s, id);
+        for f in [1.5, 2.0, 2.5] {
+            s.set_title_field(id, 2, &V::Speed(f), false).unwrap();
+        }
+        assert_eq!(s.active_history().undo_count(), 0, "a drag under way records nothing");
+        s.set_title_field(id, 2, &V::Speed(3.0), true).unwrap();
+        assert_eq!(s.active_history().undo_count(), 1, "the drag is one step");
+        assert_eq!(title(&s, id).field_value(2), Some(V::Speed(3.0)));
+        undo(&mut s, id);
+        assert_eq!(title(&s, id), made, "undo: the template as it was");
+
+        for c in [[255, 0, 0, 255], [255, 100, 0, 255], [255, 200, 0, 255]] {
+            s.set_title_field(id, 1, &V::Colour(c), true).unwrap();
+        }
+        assert_eq!(s.active_history().undo_count(), 1, "colours picked together are one step");
+        s.set_title_field(id, 0, &V::Text("John Roe".into()), true).unwrap();
+        assert_eq!(s.active_history().undo_count(), 2);
+        undo(&mut s, id);
+        undo(&mut s, id);
+        assert_eq!(title(&s, id), made);
+
+        let clip = s.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
+        let ClipKind::Title(td) = &mut clip.kind else { unreachable!() };
+        td.objects.clear();
+        let gone = title(&s, id);
+        assert!(s.set_title_field(id, 0, &V::Text("x".into()), true).is_err());
+        assert_eq!(title(&s, id), gone, "nothing changed");
+    }
+
+    /// The Template section draws each live field, and a speed drag sends
+    /// its steps as under way and its end as done.
+    #[test]
+    fn the_template_section_draws_its_fields_and_a_drag_ends_done() {
+        let (s, id) = state();
+        let td = title(&s, id);
+        let ctx = egui::Context::default();
+        let theme = KlippTheme::default();
+        let mut clock = 0.0;
+        let mut frame = |events: Vec<egui::Event>| {
+            clock += 0.1;
+            let mut cmds = Vec::new();
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 600.0))), time: Some(clock), events, ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| assert!(template_fields(ui, &theme, id, &td, &mut cmds)));
+            });
+            let texts: Vec<(String, egui::Rect)> = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.visual_bounding_rect())),
+                _ => None,
+            }).collect();
+            (cmds, texts)
+        };
+        frame(Vec::new());
+        let (_, texts) = frame(Vec::new());
+        for want in ["TEMPLATE", "Text 1", "Text 1 colour", "Speed"] {
+            assert!(texts.iter().any(|(t, _)| t == want), "{want}: {texts:?}");
+        }
+        // The slider's rail lies left of its label.
+        let speed = texts.iter().find(|(t, _)| t == "Speed").unwrap().1;
+        let at = egui::pos2(speed.left() - 60.0, speed.center().y);
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut sent = Vec::new();
+        sent.extend(frame(vec![egui::Event::PointerMoved(at), button(at, true)]).0);
+        for dx in [10.0, 20.0, 30.0] {
+            sent.extend(frame(vec![egui::Event::PointerMoved(at + egui::vec2(dx, 0.0))]).0);
+        }
+        sent.extend(frame(vec![button(at + egui::vec2(30.0, 0.0), false)]).0);
+        let dones: Vec<bool> = sent.iter().filter_map(|c| match c { AppCommand::SetTitleField { index: 2, done, .. } => Some(*done), _ => None }).collect();
+        assert!(dones.len() >= 2, "steps sent: {sent:?}");
+        assert!(dones[..dones.len() - 1].iter().all(|d| !d), "under way: {dones:?}");
+        assert_eq!(dones.last(), Some(&true), "the end is done: {dones:?}");
     }
 }

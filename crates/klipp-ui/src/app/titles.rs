@@ -718,6 +718,17 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitleField { clip_id, index, value, done } => {
+                match self.state.set_title_field(*clip_id, *index, value, *done) {
+                    Ok(()) => {
+                        self.render_title_to_viewer(*clip_id);
+                        self.sync_sequence_to_engine();
+                        let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                    }
+                    Err(why) => self.state.toast.show(why),
+                }
+                true
+            }
             AppCommand::SetTitleMotion { clip_id, motion } => {
                 let old = self.snapshot_title(*clip_id);
                 let target_oid = self.title_layer_target_id(*clip_id);

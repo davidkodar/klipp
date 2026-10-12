@@ -1172,6 +1172,10 @@ pub struct TitleData {
     /// the title still has as the style had it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<String>,
+    /// The fields a motion-graphics template keeps editable once applied
+    /// (#1139): what the inspector shows first. Empty for a plain title.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub published: Vec<crate::PublishedField>,
 }
 
 /// What `TitleData::migrate_legacy_animation` did.
@@ -1313,6 +1317,7 @@ impl TitleData {
             animation_type: TitleAnimationType::default(),
             background: TitleBackground::None,
             style: None,
+            published: Vec::new(),
         };
         td.add_object(TitleObjectContent::TextBox(text_box), default_text_transform());
         td
