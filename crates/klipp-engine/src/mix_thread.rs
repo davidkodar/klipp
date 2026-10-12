@@ -5,7 +5,7 @@ use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::HeapRb;
 use std::collections::VecDeque;
 use crate::sync::MasterClock;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -22,15 +22,35 @@ pub struct SourceMix {
     volume: AtomicU32,
     pan: AtomicU32,
     channel_config: AtomicU32,
+    /// The mixed stereo frame the source's first sample is heard at, on
+    /// the count [`MixThread::mixed_frames`] keeps: a sound opened ahead
+    /// of its clip is silent until then, so it starts on its own sample
+    /// as the export starts it (#1588). `u64::MAX` (the default): at
+    /// once.
+    starts_at: AtomicU64,
 }
 
 impl Default for SourceMix {
     fn default() -> Self {
-        Self { volume: AtomicU32::new(1.0f32.to_bits()), pan: AtomicU32::new(0.0f32.to_bits()), channel_config: AtomicU32::new(0) }
+        Self { volume: AtomicU32::new(1.0f32.to_bits()), pan: AtomicU32::new(0.0f32.to_bits()), channel_config: AtomicU32::new(0), starts_at: AtomicU64::new(u64::MAX) }
     }
 }
 
 impl SourceMix {
+    /// Start the source at mixed frame `frame` (see `starts_at`).
+    pub fn start_at(&self, frame: u64) {
+        self.starts_at.store(frame, Ordering::Relaxed);
+    }
+
+    /// The silence, in interleaved samples, a chunk of `len` mixed from
+    /// frame `at` owes this source before its first sample.
+    fn silence_before(&self, at: u64, len: usize) -> usize {
+        match self.starts_at.load(Ordering::Relaxed) {
+            u64::MAX => 0,
+            start => (start.saturating_sub(at).saturating_mul(2)).min(len as u64) as usize,
+        }
+    }
+
     pub fn set(&self, volume: f32, pan: f32, channel_config: u32) {
         self.volume.store(volume.to_bits(), Ordering::Relaxed);
         self.pan.store(pan.to_bits(), Ordering::Relaxed);
@@ -117,6 +137,9 @@ pub struct MixThread {
     /// engine after seek to pre-fill audio before resuming the cpal stream
     /// without sleeping a fixed duration.
     main_buffered: Arc<AtomicUsize>,
+    /// Stereo frames the mix loop has mixed since it started: the count
+    /// a source's [`SourceMix::start_at`] is given on.
+    mixed_frames: Arc<AtomicU64>,
 }
 
 impl MixThread {
@@ -139,6 +162,8 @@ impl MixThread {
         let lufs_reset = Arc::new(AtomicBool::new(false));
         let spectrum_buf = Arc::new(Mutex::new(VecDeque::<f32>::new()));
         let main_buffered = Arc::new(AtomicUsize::new(0));
+        let mixed_frames = Arc::new(AtomicU64::new(0));
+        let mixed_frames_writer = mixed_frames.clone();
         let lufs_readings_writer = lufs_readings.clone();
         let lufs_reset_reader = lufs_reset.clone();
         let spectrum_writer = spectrum_buf.clone();
@@ -149,7 +174,7 @@ impl MixThread {
             .name("klipp-mix".into())
             .spawn(move || {
                 crate::thread_guard::catch_panic("klipp-mix", || {
-                    mix_loop(producer, cmd_rx, mixer, master_clock, sr, lufs_readings_writer, lufs_reset_reader, spectrum_writer, main_buffered_writer, tp_oversample);
+                    mix_loop(producer, cmd_rx, mixer, master_clock, sr, lufs_readings_writer, lufs_reset_reader, spectrum_writer, main_buffered_writer, mixed_frames_writer, tp_oversample);
                 });
             })
             .expect("failed to spawn mix thread");
@@ -163,6 +188,7 @@ impl MixThread {
                 spectrum_buf,
                 spectrum_sample_rate: sample_rate,
                 main_buffered,
+                mixed_frames,
             },
             consumer,
         )
@@ -173,6 +199,12 @@ impl MixThread {
     /// pipeline has pre-filled enough to resume cpal without an underrun gap.
     pub fn buffered_samples(&self) -> usize {
         self.main_buffered.load(Ordering::Acquire)
+    }
+
+    /// Stereo frames mixed so far, the newest in the main ring: with
+    /// [`Self::buffered_samples`] it says which mixed frame is heard when.
+    pub fn mixed_frames(&self) -> u64 {
+        self.mixed_frames.load(Ordering::Acquire)
     }
 
     /// Get a clone of the shared LUFS readings for the UI/engine to read.
@@ -269,8 +301,10 @@ fn mix_loop(
     lufs_reset: Arc<AtomicBool>,
     spectrum_buf: Arc<Mutex<VecDeque<f32>>>,
     main_buffered: Arc<AtomicUsize>,
+    mixed_frames: Arc<AtomicU64>,
     tp_oversample: bool,
 ) {
+    let mut mixed_so_far: u64 = 0;
     // 2 seconds of interleaved-stereo audio is plenty for any realistic FFT
     // window and leaves room for UI jitter. At 192 kHz that's ~1.5 MiB.
     let spectrum_max_samples = (sample_rate as usize) * 2 * 2;
@@ -420,11 +454,15 @@ fn mix_loop(
         for (i, staging) in stagings.iter_mut().enumerate() {
             let buf = &mut track_buffers[i];
             buf.resize(read_size, 0.0);
-            let filled = staging.consumer.pop_slice(buf);
+            // A source that starts later in this chunk, or after it, is
+            // silent until its first sample's frame (#1588).
+            let silence = staging.mix.silence_before(mixed_so_far, read_size);
+            buf[..silence].fill(0.0);
+            let filled = silence + staging.consumer.pop_slice(&mut buf[silence..]);
             if filled > 0 {
                 any_data = true;
                 buf.truncate(filled);
-                staging.mix.apply(buf);
+                staging.mix.apply(&mut buf[silence..]);
             } else {
                 buf.clear();
             }
@@ -550,6 +588,11 @@ fn mix_loop(
         // Push mixed output to main ring buffer
         if !mixed.is_empty() {
             let pushed = producer.push_slice(&mixed);
+            mixed_so_far += (mixed.len() / 2) as u64;
+            mixed_frames.store(mixed_so_far, Ordering::Release);
+            // With the count, so the two read together say which mixed
+            // frame is heard when.
+            main_buffered.store(producer.occupied_len(), Ordering::Release);
             if pushed < mixed.len() {
                 debug!(
                     "Mix thread: main buffer overflow, dropped {} samples",
@@ -639,5 +682,52 @@ mod source_mix_tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         assert!((total - want).abs() <= 1e-2, "mixed {total}, want {want}");
+    }
+
+    /// #1588: a sound opened ahead of its clip starts on its own sample
+    /// in the mix, the sample the export starts it on. A clip placed at
+    /// 4.15 s, opened while the mix is at 4.0 s, is silent for exactly
+    /// the 0.15 s between, at 48 and at 44.1 kHz, as the export mixdown
+    /// puts it 0.15 s of samples after 4.0 s.
+    #[test]
+    fn a_sound_opened_ahead_starts_on_its_sample() {
+        use super::MixThread;
+        use ringbuf::traits::{Consumer, Producer, Split};
+        use std::sync::atomic::AtomicU32;
+        use std::sync::{Arc, Mutex};
+
+        for rate in [48_000u32, 44_100] {
+            let mixer = Arc::new(Mutex::new(klipp_audio::AudioMixer::new(1)));
+            let (mt, mut main) = MixThread::new(rate, mixer, Arc::new(crate::sync::MasterClock::new()), false);
+            let start = crate::engine::start_frame_for(4.15, 4.0, mt.mixed_frames(), rate).expect("it starts later");
+            // The export's sample for the same placement, counted from 4.0 s.
+            let export_at = |secs: f64| (secs * rate as f64 + 1e-6).floor() as u64;
+            assert_eq!(start, export_at(4.15) - export_at(4.0), "{rate}: the export's sample");
+            let (mut producer, consumer) = ringbuf::HeapRb::<f32>::new(4096).split();
+            assert_eq!(producer.push_slice(&[0.9f32; 512]), 512);
+            let mix = Arc::new(super::SourceMix::default());
+            mix.start_at(start);
+            mt.add_staging(crate::engine::source_key(0, 0), consumer, Arc::new(AtomicU32::new(0)), mix);
+
+            let mut heard: Vec<f32> = Vec::new();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while heard.len() < (start as usize + 256) * 2 && std::time::Instant::now() < deadline {
+                let mut buf = vec![0.0f32; 4096];
+                let got = main.pop_slice(&mut buf);
+                heard.extend_from_slice(&buf[..got]);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let onset = heard.chunks_exact(2).position(|f| f[0] != 0.0).expect("the sound is heard");
+            assert_eq!(onset as u64, start, "{rate}: heard from its own sample");
+        }
+    }
+
+    /// The mixed frame a clip is heard at, from where the mix is.
+    #[test]
+    fn start_frames_count_from_the_mix() {
+        use crate::engine::start_frame_for;
+        assert_eq!(start_frame_for(4.15, 4.0, 1000, 48_000), Some(1000 + 7200));
+        assert_eq!(start_frame_for(4.0, 4.0, 1000, 48_000), None, "already started: opened under its clip");
+        assert_eq!(start_frame_for(3.9, 4.0, 1000, 48_000), None);
     }
 }

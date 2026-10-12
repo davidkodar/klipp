@@ -179,6 +179,9 @@ struct ActiveAudioSource {
     /// The volume, gain, pan and channel config of the clip it plays,
     /// applied to this source's samples alone in the mix thread.
     mix: std::sync::Arc<crate::mix_thread::SourceMix>,
+    /// Where its clip starts, for a source opened ahead of it to start
+    /// on its own sample (#1588); `None` for one opened under its clip.
+    starts_at: Option<Timecode>,
 }
 /// Pre-opened audio source ready for loop swap (created by pre-seek thread).
 struct PreSeekAudioSource {
@@ -1667,6 +1670,18 @@ fn audio_rows(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, fad
     rows
 }
 
+/// How far ahead of where the mix is a clip's sound is opened, to start
+/// on its own sample (#1588): past an engine tick, and the decoder's
+/// first read.
+const OPEN_AHEAD_SECS: f64 = 0.15;
+
+/// The mixed frame a clip starting at `start` seconds is heard at, when
+/// the newest mixed frame, `mixed`, is heard at `heard` seconds: `None`
+/// for one already started, which opens under its clip as before.
+pub(crate) fn start_frame_for(start: f64, heard: f64, mixed: u64, sample_rate: u32) -> Option<u64> {
+    (start > heard).then(|| mixed + ((start - heard) * sample_rate as f64).round() as u64)
+}
+
 /// How far ahead of the output the mix thread works: the samples in the
 /// main ring (interleaved stereo) at the device rate, in seconds.
 fn mix_lead_secs(buffered_samples: usize, sample_rate: u32) -> f64 {
@@ -1851,8 +1866,13 @@ impl PlaybackEngine {
         // already mixing when the picture gets there.
         let tc = self.audio_heard_at();
         let rows = self.audio_rows_at(tc);
+        // A clip about to start on a silent track is opened ahead, from
+        // its own first sample, and starts on it in the mix: opened the
+        // tick after its start it began a tick late, its head cut (#1588).
+        let ahead = self.audio_rows_starting_soon(&rows);
         let wanted: std::collections::HashMap<usize, (MediaId, u64)> = rows
             .iter()
+            .chain(ahead.iter().map(|(row, _)| row))
             .map(|(t, m, _, _, fx, kfs)| (*t, (*m, audio_chain_fingerprint_for(fx, kfs))))
             .collect();
         let mut retired = Vec::new();
@@ -1874,15 +1894,20 @@ impl PlaybackEngine {
         let mut opened = false;
         // The sources opened here, resumed once their clips' settings are on.
         let mut started: Vec<usize> = Vec::new();
-        for (track_idx, media_id, path, source_secs, fx, kfs) in rows {
+        let rows = rows.into_iter().map(|row| (row, None)).chain(ahead);
+        for ((track_idx, media_id, path, source_secs, fx, kfs), starts) in rows {
             if have.contains(&track_idx) {
                 continue;
             }
             let before = self.audio_sources.len();
             self.open_audio_source(track_idx, media_id, &path, source_secs, fx, kfs);
             if self.audio_sources.len() > before {
-                if let Some(a) = self.audio_sources.last() {
+                if let Some(a) = self.audio_sources.last_mut() {
                     started.push(a.track_index);
+                    if let Some((at, frame)) = starts {
+                        a.mix.start_at(frame);
+                        a.starts_at = Some(at);
+                    }
                 }
                 debug!("audio source on track {track_idx} opened at {source_secs:.3}s for the clip beginning under {:.3}s", tc.to_secs_f64());
                 opened = true;
@@ -3919,6 +3944,30 @@ impl PlaybackEngine {
     /// and on SequenceUpdated.
     /// Where the samples the mix thread is making now will be heard: the
     /// playhead plus the mix lead while playing, the playhead otherwise.
+    /// The sounds of clips that start within [`OPEN_AHEAD_SECS`] of where
+    /// the mix is, on tracks with nothing sounding now (none of `now`'s
+    /// keys): each opened from its clip's first source second, with the
+    /// clip's start and the mixed frame it is heard at (#1588).
+    fn audio_rows_starting_soon(&self, now: &[TrackAudioRow]) -> Vec<(TrackAudioRow, Option<(Timecode, u64)>)> {
+        let Some(mt) = &self.mix_thread else { return Vec::new() };
+        let sample_rate = self.cpal_sample_rate;
+        let (mixed, buffered) = (mt.mixed_frames(), mt.buffered_samples());
+        let heard = self.playhead.to_secs_f64() + mix_lead_secs(buffered, sample_rate);
+        let soon = RationalTime::from_secs_f64(heard + OPEN_AHEAD_SECS, 48_000);
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+        audio_rows(&seq, &pool, &self.fadeable_media, soon, self.use_proxies, false)
+            .into_iter()
+            .filter(|row| row.0 < LANE_STRIDE && !now.iter().any(|n| key_track(n.0) == key_track(row.0)))
+            .filter_map(|mut row| {
+                let clip = sounding_for_key(&seq, &self.fadeable_media, row.0, soon)?.clip;
+                let frame = start_frame_for(clip.timeline_in.to_secs_f64(), heard, mixed, sample_rate)?;
+                row.3 = klipp_compose::render::source_secs(clip, clip.timeline_in, seq.fps.as_f64());
+                Some((row, Some((clip.timeline_in, frame))))
+            })
+            .collect()
+    }
+
     fn audio_heard_at(&self) -> Timecode {
         let lead = match (&self.mix_thread, self.state) {
             (Some(mt), PlaybackState::Playing) => mix_lead_secs(mt.buffered_samples(), self.cpal_sample_rate),
@@ -3941,7 +3990,13 @@ impl PlaybackEngine {
 
         for active in &self.audio_sources {
             if seq.tracks.get(key_track(active.track_index)).is_some() {
+                // A sound opened ahead of its clip takes the clip's
+                // settings at its start until it gets there.
                 let own_tc = own_clip_tc(&seq, &self.fadeable_media, active, self.playhead, heard_tc);
+                let own_tc = match active.starts_at {
+                    Some(at) if at > own_tc => at,
+                    _ => own_tc,
+                };
                 if let Some(audio_clip) = sounding_for_key(&seq, &self.fadeable_media, active.track_index, own_tc).map(|s| s.clip) {
                     // Compute clip-relative time for keyframe evaluation
                     let clip_time_secs = (heard_at - audio_clip.timeline_in.to_secs_f64()).max(0.0);
@@ -4478,6 +4533,7 @@ impl PlaybackEngine {
                             settings_fingerprint: settings_fp,
                             source: AudioSource::PcmFeeder(feeder),
                             mix,
+                            starts_at: None,
                         });
                         return;
                     }
@@ -4505,6 +4561,7 @@ impl PlaybackEngine {
                     settings_fingerprint: settings_fp,
                     source: AudioSource::Decoder(adec),
                     mix,
+                    starts_at: None,
                 });
             }
             Err(e) => {
@@ -6219,6 +6276,7 @@ impl PlaybackEngine {
                         // next settings push re-applies the current ones.
                         settings_fingerprint: 0,
                         source: ps_source.source,
+                        starts_at: None,
                     });
                 }
                 // The pre-seek thread filled them on the envelopes of
