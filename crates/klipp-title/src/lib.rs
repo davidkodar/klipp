@@ -782,6 +782,7 @@ impl TitleRenderer {
         let h_align = h_align_of(tb.alignment);
 
         let mut layout = ShapedLayout::new();
+        layout.set_rtl(tb.text_direction == TextDirection::Rtl);
         layout.reset(&LayoutSettings {
             x: 0.0,
             y: 0.0,
@@ -799,19 +800,15 @@ impl TitleRenderer {
         // Resolve the laid-out text, honouring the pre-layout case
         // transform. The `text` field on TextBox is preserved verbatim
         // so the user can flip the treatment without re-typing.
-        let mut resolved_text: String = match tb.case_transform {
+        let resolved_text: String = match tb.case_transform {
             klipp_timeline::TextCase::None => tb.text.clone(),
             klipp_timeline::TextCase::Uppercase
             | klipp_timeline::TextCase::SmallCaps => tb.text.to_uppercase(),
             klipp_timeline::TextCase::Lowercase => tb.text.to_lowercase(),
         };
-        // RTL: reverse the visual character order. This works
-        // correctly for Hebrew + ASCII; Arabic shaping (joining
-        // forms, lam-alif ligatures) needs harfbuzz and is tracked
-        // for a follow-up.
-        if tb.text_direction == TextDirection::Rtl {
-            resolved_text = resolved_text.chars().rev().collect();
-        }
+        // Right to left is the paragraph's base direction, which the
+        // layout's bidi algorithm orders and shapes the text by (#1502);
+        // the text stays in its logical order.
         // A character its face lacks is drawn from a face that has it,
         // measured and laid in that face (#1503).
         self.fall_back(&mut faces, &tb.style_runs, &resolved_text);
@@ -928,6 +925,7 @@ impl TitleRenderer {
             for (col_idx, chunk) in chunks.iter().enumerate() {
                 let column_x = col_idx as f32 * (col_w + column_gap);
                 let mut col_layout = ShapedLayout::new();
+                col_layout.set_rtl(tb.text_direction == TextDirection::Rtl);
                 col_layout.reset(&LayoutSettings {
                     x: column_x,
                     y: 0.0,
@@ -2682,6 +2680,7 @@ impl TitleRenderer {
         let h_align = h_align_of(tb.alignment);
 
         let mut layout = ShapedLayout::new();
+        layout.set_rtl(tb.text_direction == TextDirection::Rtl);
         layout.reset(&LayoutSettings {
             x: 0.0,
             y: 0.0,
@@ -4350,8 +4349,11 @@ fn justify_lines(
         let right = glyphs[final_].x + glyphs[final_].width as f32;
         // The paragraph ends here when a line break lies between this
         // line's last letter and the next line's first.
-        let ends_paragraph = glyphs[end + 1..].iter().find(|g| seen(g)).is_none_or(|next| {
-            text.get(glyphs[final_].byte_offset..next.byte_offset).is_some_and(|between| between.contains('\n'))
+        // In the text's order, not the line's: a right-to-left line's
+        // last letter is its leftmost (#1502).
+        let line_end = (start..=end).filter(|&i| seen(&glyphs[i])).map(|i| glyphs[i].byte_offset).max().unwrap_or(glyphs[final_].byte_offset);
+        let ends_paragraph = glyphs[end + 1..].iter().filter(|g| seen(g)).map(|g| g.byte_offset).min().is_none_or(|next| {
+            text.get(line_end..next).is_some_and(|between| between.contains('\n'))
         });
         if ends_paragraph && last != LastLineAlign::Justify {
             if last == LastLineAlign::Center {
@@ -6561,27 +6563,35 @@ mod tests {
         );
     }
 
-    /// RTL reverses character order — "ABC" rendered LTR vs RTL
-    /// should produce a different bitmap (the A and C glyphs swap
-    /// horizontal positions).
+    /// #1502: a right-to-left box is a right-to-left paragraph, ordered
+    /// by the bidi algorithm: Latin letters keep their order, a closing
+    /// mark goes to the paragraph's start, on its left, and Hebrew reads
+    /// right to left; the cursor's positions follow what is drawn.
     #[test]
-    fn rtl_reverses_visible_character_order() {
-        let mut renderer = TitleRenderer::new();
-        let mk = |dir: klipp_timeline::TextDirection| {
-            let tb = klipp_timeline::TextBox {
-                text: "ABC".to_string(),
-                font_size: 80.0,
-                text_direction: dir,
-                ..Default::default()
-            };
-            #[allow(unused_mut)]
-            let mut fx = klipp_timeline::LayerFx::default();
-            klipp_timeline::TitleData::single_text_fx(tb, fx)
+    fn a_right_to_left_box_orders_its_text_by_the_bidi_algorithm() {
+        let mut r = TitleRenderer::new();
+        r.system_fallback = false;
+        let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fonts/NotoSansHebrew-subset.ttf"));
+        let traits = variable::face_traits(&std::fs::read(&path).unwrap()).unwrap();
+        let info = font_discovery::FontInfo { family: "Hebrew Test".into(), style: "Regular".into(), path, weight: traits.weight, italic: traits.italic, axes: traits.axes };
+        r.font_registry = std::sync::Arc::new([("Hebrew Test".to_string(), vec![info])].into_iter().collect());
+        let mk = |text: &str, dir: klipp_timeline::TextDirection| {
+            let tb = klipp_timeline::TextBox { text: text.to_string(), font_size: 80.0, font_name: "Hebrew Test".into(), text_direction: dir, ..Default::default() };
+            klipp_timeline::TitleData::single_text_fx(tb, klipp_timeline::LayerFx::default())
         };
-        let ltr = renderer.render(&mk(klipp_timeline::TextDirection::Ltr), 1280, 720);
-        let rtl = renderer.render(&mk(klipp_timeline::TextDirection::Rtl), 1280, 720);
-        assert_ne!(&ltr[..], &rtl[..],
-            "RTL must produce different pixels than LTR for asymmetric text");
+        let x_of = |at: &[CharPosition], text: &str, c: char| at.iter().find(|p| text[p.byte_offset..].starts_with(c)).unwrap_or_else(|| panic!("no {c}")).x;
+        let at = r.compute_char_positions(&mk("ABC!", klipp_timeline::TextDirection::Rtl), 1280, 720);
+        let x = |c| x_of(&at, "ABC!", c);
+        assert!(x('!') < x('A') && x('A') < x('B') && x('B') < x('C'), "Latin in its order, the mark at the start");
+        let at = r.compute_char_positions(&mk("ABC!", klipp_timeline::TextDirection::Ltr), 1280, 720);
+        let x = |c| x_of(&at, "ABC!", c);
+        assert!(x('A') < x('B') && x('C') < x('!'), "left to right, as ever");
+        let at = r.compute_char_positions(&mk("שלום", klipp_timeline::TextDirection::Rtl), 1280, 720);
+        let x = |c| x_of(&at, "שלום", c);
+        assert!(x('ש') > x('ל') && x('ל') > x('ו') && x('ו') > x('ם'), "Hebrew right to left");
+        let rtl = r.render(&mk("ABC!", klipp_timeline::TextDirection::Rtl), 1280, 720);
+        let ltr = r.render(&mk("ABC!", klipp_timeline::TextDirection::Ltr), 1280, 720);
+        assert_ne!(rtl, ltr, "the mark draws where it is laid");
     }
 
     /// Chromatic aberration must change the rendered pixels —
