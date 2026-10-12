@@ -97,6 +97,54 @@ pub fn weight_name(weight: u16) -> &'static str {
     }
 }
 
+/// The OpenType feature tags the face in `data` has, in its GSUB and
+/// GPOS feature lists, sorted and each once (#1710): what the Title
+/// tab's feature toggles and stylistic-set picker look up. Empty for a
+/// file read-fonts cannot read.
+pub fn face_feature_tags(data: &[u8]) -> Vec<String> {
+    use read_fonts::{FontRef, TableProvider};
+    let Ok(font) = FontRef::from_index(data, 0) else { return Vec::new() };
+    let mut tags: Vec<String> = Vec::new();
+    if let Ok(list) = font.gsub().and_then(|t| t.feature_list()) {
+        tags.extend(list.feature_records().iter().map(|r| r.feature_tag().to_string()));
+    }
+    if let Ok(list) = font.gpos().and_then(|t| t.feature_list()) {
+        tags.extend(list.feature_records().iter().map(|r| r.feature_tag().to_string()));
+    }
+    tags.sort();
+    tags.dedup();
+    tags
+}
+
+/// The feature tags of `family`'s face in `style` ("Regular", "Bold",
+/// "Italic" or "Bold Italic"), found as the renderer finds the face: a
+/// bundled family's own, else `registry`'s file (its Regular, then its
+/// first, when the style is missing), and the built-in face for
+/// "sans-serif" or no family (#1710). Each face is read once and kept;
+/// empty for a family not found.
+pub fn family_feature_tags(registry: &FontRegistry, family: &str, style: &str) -> Vec<String> {
+    static READ: OnceLock<Mutex<BTreeMap<(String, String), Vec<String>>>> = OnceLock::new();
+    let key = (family.to_string(), style.to_string());
+    let read = READ.get_or_init(Default::default);
+    if let Some(tags) = read.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return tags.clone();
+    }
+    let tags = if family == "sans-serif" || family.is_empty() {
+        face_feature_tags(crate::EMBEDDED_FONT)
+    } else if let Some(bytes) = crate::bundled::lookup(family, style) {
+        face_feature_tags(bytes)
+    } else {
+        registry
+            .get(family)
+            .and_then(|infos| infos.iter().find(|i| i.style == style).or_else(|| infos.iter().find(|i| i.style == "Regular")).or_else(|| infos.first()))
+            .and_then(|info| std::fs::read(&info.path).ok())
+            .map(|data| face_feature_tags(&data))
+            .unwrap_or_default()
+    };
+    read.lock().unwrap_or_else(|e| e.into_inner()).insert(key, tags.clone());
+    tags
+}
+
 /// A shared, immutable registry of discovered fonts grouped by family.
 /// Cheap to clone — internally an `Arc`.
 pub type FontRegistry = Arc<BTreeMap<String, Vec<FontInfo>>>;
@@ -503,5 +551,25 @@ mod tests {
         let a = discover_system_fonts();
         let b = discover_system_fonts();
         assert!(Arc::ptr_eq(&a, &b), "second call must reuse the OnceLock");
+    }
+
+    /// A face's feature list is read from its GSUB and GPOS (#1710):
+    /// Inter's stylistic sets are ss01 to ss08, JetBrains Mono's four
+    /// of them, Bebas Neue's none; the built-in face has small caps and
+    /// Inter has not.
+    #[test]
+    fn a_faces_features_are_its_gsub_and_gpos_tags() {
+        let ss = |tags: Vec<String>| tags.into_iter().filter(|t| t.starts_with("ss")).collect::<Vec<_>>();
+        let inter = face_feature_tags(crate::bundled::lookup("Inter", "Regular").unwrap());
+        assert_eq!(ss(inter.clone()), (1..=8).map(|n| format!("ss{n:02}")).collect::<Vec<_>>());
+        assert!(inter.iter().any(|t| t == "kern"), "GPOS's are there too");
+        assert!(!inter.iter().any(|t| t == "smcp"));
+        assert_eq!(ss(face_feature_tags(crate::bundled::lookup("JetBrains Mono", "Regular").unwrap())), ["ss01", "ss02", "ss19", "ss20"]);
+        assert!(ss(face_feature_tags(crate::bundled::lookup("Bebas Neue", "Regular").unwrap())).is_empty());
+        let registry: FontRegistry = Arc::new(BTreeMap::new());
+        assert!(family_feature_tags(&registry, "sans-serif", "Regular").iter().any(|t| t == "smcp"));
+        assert_eq!(family_feature_tags(&registry, "Inter", "Bold Italic").iter().filter(|t| t.starts_with("ss")).count(), 8);
+        assert!(family_feature_tags(&registry, "No Such Family", "Regular").is_empty());
+        assert!(face_feature_tags(b"not a font").is_empty());
     }
 }
