@@ -35,6 +35,7 @@
 mod colour;
 mod fallback;
 mod shaping;
+mod text_on_path;
 pub mod variable;
 mod vector_path;
 use fontdue::layout::{HorizontalAlign, LayoutSettings, VerticalAlign, WrapStyle};
@@ -450,6 +451,9 @@ pub struct TitleRenderer {
     /// The waves of every layer of the title being rendered, by
     /// object id; filled by `render_with_time`.
     loop_waves: HashMap<u32, (f32, f32)>,
+    /// The drawn path the text layer being rendered follows, resolved
+    /// from its title by `render_inner` (#1508).
+    bound_path: Option<text_on_path::PathLine>,
     /// A roll's focus band per layer for the frame being rastered,
     /// applied with the layer's edge fade where it has been placed (#592).
     loop_focus: HashMap<u32, (RampAxis, FocusBand)>,
@@ -497,6 +501,7 @@ impl TitleRenderer {
             motion_window: None,
             loop_wave: None,
             loop_waves: HashMap::new(),
+            bound_path: None,
             loop_focus: HashMap::new(),
             defer_layer_fades: false,
             image_cache: HashMap::new(),
@@ -765,6 +770,17 @@ impl TitleRenderer {
         let tb = title.primary_text_or_default();
         let w = width as usize;
         let h = height as usize;
+        // A text on a drawn path follows the path its layer resolved, or,
+        // laid from a whole title, the one it names there (#1508).
+        let path_line = match &tb.text_path {
+            Some(TextPath::Layer { .. }) => self.bound_path.clone().or_else(|| self.bound_path_line(title, title, time_secs, width, height)),
+            _ => None,
+        };
+        // One whose path is gone is laid as text that follows none.
+        let on_path = match &tb.text_path {
+            Some(TextPath::Layer { .. }) => path_line.is_some(),
+            other => other.is_some(),
+        };
 
         // Resolve the fonts: the box's own, then every other face its
         // style runs name (#1505), each loaded into the cache if needed.
@@ -789,7 +805,8 @@ impl TitleRenderer {
         layout.reset(&LayoutSettings {
             x: 0.0,
             y: 0.0,
-            max_width: Some(text_box_extent(title, width, height).0),
+            // Text on a path is one line, as long as the text (#1508).
+            max_width: (!on_path).then(|| text_box_extent(title, width, height).0),
             max_height: Some(text_box_extent(title, width, height).1),
             horizontal_align: h_align,
             vertical_align: VerticalAlign::Top,
@@ -1066,9 +1083,11 @@ impl TitleRenderer {
         let glyphs = &glyphs_owned;
 
         // ── Text on path: rasterize per-glyph with rotation ──
-        if let Some(text_path) = &tb.text_path {
+        if let Some(text_path) = tb.text_path.as_ref().filter(|_| on_path) {
+            let line = path_line;
+            let lines = layout.lines().cloned().unwrap_or_default();
             return self.render_layout_on_path(
-                &fonts, glyphs, title, text_path, width, height, w, h, scale,
+                &fonts, glyphs, &lines, title, text_path, line.as_ref(), time_secs, width, height, w, h, scale,
             );
         }
 
@@ -1318,15 +1337,21 @@ impl TitleRenderer {
         }
     }
 
-    /// Render glyphs placed along a geometric path (arc, circle, wave).
-    /// Each glyph is rasterized individually and rotated to follow the path tangent.
+    /// Render glyphs placed along a path (#1508): a drawn path's `line`,
+    /// or a fixed arc, circle or wave about the title's position. Each
+    /// glyph keeps its place along the shaped line (`lines` are its
+    /// lines, set one after another) and stands on the path by its
+    /// baseline, rasterized on its own and turned to the tangent.
     #[allow(clippy::too_many_arguments)]
     fn render_layout_on_path(
         &self,
         fonts: &[Face],
         glyphs: &[fontdue::layout::GlyphPosition],
+        lines: &[shaping::Line],
         title: &TitleData,
         text_path: &TextPath,
+        line: Option<&text_on_path::PathLine>,
+        time_secs: Option<f32>,
         width: u32,
         height: u32,
         w: usize,
@@ -1334,30 +1359,31 @@ impl TitleRenderer {
         scale: f32,
     ) -> TitleLayout {
         let tb = title.primary_text_or_default();
-        // Compute cumulative advance widths to map each glyph to an arc-length parameter
-        let mut advances: Vec<f32> = Vec::with_capacity(glyphs.len());
-        let mut cumulative = 0.0f32;
-        for g in glyphs {
-            advances.push(cumulative);
-            // Use glyph width + x_advance as the advance for this character
-            cumulative += g.width as f32;
-            // Add small gap between characters
-            if g.width > 0 {
-                cumulative += 2.0;
+        // Each glyph's centre along the text, its lines run end to end
+        // a space apart, and its height off its line's baseline.
+        let gap = tb.font_size * scale * 0.3;
+        let mut laid = vec![text_on_path::Laid { along: 0.0, below_baseline: 0.0 }; glyphs.len()];
+        let mut carried = 0.0f32;
+        for l in lines {
+            let range = l.glyph_start..=l.glyph_end.min(glyphs.len().saturating_sub(1));
+            let left = range.clone().map(|i| glyphs[i].x).fold(f32::MAX, f32::min);
+            let right = range.clone().map(|i| glyphs[i].x + glyphs[i].width as f32).fold(f32::MIN, f32::max);
+            if left > right {
+                continue;
             }
+            for i in range {
+                let g = &glyphs[i];
+                laid[i] = text_on_path::Laid { along: carried + g.x + g.width as f32 * 0.5 - left, below_baseline: g.y + g.height as f32 * 0.5 - l.baseline };
+            }
+            carried += right - left + gap;
         }
-        let total_advance = cumulative.max(1.0);
+        let length = (carried - gap).max(1.0);
+        let centre = [title.position().x * width as f32, title.position().y * height as f32];
+        let offset = text_path.offset_at(time_secs.unwrap_or(0.0) as f64);
+        let placed = text_on_path::place(text_path, line, offset, &laid, length, centre, tb.baseline_shift * scale);
 
-        // Center of the path is at the title position
-        let center_x = title.position().x * width as f32;
-        let center_y = title.position().y * height as f32;
-
-        // For each glyph, compute its position and rotation on the path
-        // Then rasterize into a small buffer and blit rotated onto the full-frame mask
         let max_pad = effect_padding(title, scale);
         // Use the full frame as the mask (path text can go anywhere)
-        let mask_x0 = 0usize;
-        let _mask_y0 = 0usize;
         let mask_w = w;
         let mask_h = h;
         let mut alpha_mask = vec![0u8; mask_w * mask_h];
@@ -1366,35 +1392,33 @@ impl TitleRenderer {
         let mut text_min_y = f32::MAX;
         let mut text_max_x = f32::MIN;
         let mut text_max_y = f32::MIN;
+        // A write-on reveals the text in its order along the path.
+        let reveal = tb.write_on.clamp(0.0, 1.0) * length;
 
         for (i, glyph) in glyphs.iter().enumerate() {
             if glyph.width == 0 || glyph.height == 0 {
                 continue;
             }
-
-            // Normalized position along path (0..1)
-            let t = (advances[i] + glyph.width as f32 * 0.5) / total_advance;
-            let (px, py, angle) = path_point(text_path, t, total_advance, center_x, center_y);
-
-            // Rasterize this glyph into a small buffer
+            let Some(at) = placed[i] else { continue };
+            if tb.write_on < 1.0 && laid[i].along > reveal {
+                continue;
+            }
+            let (px, py) = (at.centre[0], at.centre[1]);
             let (_, coverage) = fonts[glyph.font_index].coverage(glyph.key);
             let gw = glyph.width;
             let gh = glyph.height;
-
-            // Blit rotated glyph onto the main mask
             blit_rotated(
                 &mut alpha_mask, mask_w, mask_h,
                 &coverage, gw, gh,
-                px, py, angle,
+                px, py, at.angle,
             );
-
-            // Update bounding box
             let radius = ((gw as f32 / 2.0).powi(2) + (gh as f32 / 2.0).powi(2)).sqrt();
             text_min_x = text_min_x.min(px - radius);
             text_min_y = text_min_y.min(py - radius);
             text_max_x = text_max_x.max(px + radius);
             text_max_y = text_max_y.max(py + radius);
         }
+        let (center_x, center_y) = (centre[0], centre[1]);
 
         // Clamp bounding box
         if text_min_x == f32::MAX {
@@ -1402,19 +1426,6 @@ impl TitleRenderer {
             text_min_y = center_y;
             text_max_x = center_x;
             text_max_y = center_y;
-        }
-
-        // Apply write-on reveal
-        if tb.write_on < 1.0 {
-            let cutoff_x = (text_min_x + (text_max_x - text_min_x) * tb.write_on.clamp(0.0, 1.0)) as i32;
-            for my in 0..mask_h {
-                for mx in 0..mask_w {
-                    let global_x = (mask_x0 + mx) as i32;
-                    if global_x >= cutoff_x {
-                        alpha_mask[my * mask_w + mx] = 0;
-                    }
-                }
-            }
         }
 
         // Crop the mask to a tight bounding box with padding
@@ -2076,7 +2087,10 @@ impl TitleRenderer {
         let any_dressed_motion = title.objects.iter().any(|o| {
             o.visible && !matches!(o.content, TitleObjectContent::TextBox(_)) && (motion_live(o) || !o.fx().loops.is_empty())
         });
-        let any_render_time_override = any_path_motion || any_char_anim || any_dressed_motion
+        // A text travelling along a drawn path (#1508); the path's own
+        // morph and its layer's keys are counted above.
+        let any_text_path_motion = title.objects.iter().any(|o| matches!(&o.content, TitleObjectContent::TextBox(tb) if matches!(&tb.text_path, Some(TextPath::Layer { offset_keyframes, .. }) if !offset_keyframes.is_empty())));
+        let any_render_time_override = any_path_motion || any_text_path_motion || any_char_anim || any_dressed_motion
             || any_glitch_active
             || any_position_keyframes
             || any_transform_keyframes
@@ -2327,6 +2341,11 @@ impl TitleRenderer {
                         o.transform = effective_transform.clone();
                     }
                     self.loop_wave = self.loop_waves.get(&obj.id.0).copied();
+                    // A text on a drawn path follows that layer as it is
+                    // drawn now, in frame pixels; the path places it, not
+                    // its own box (#1508).
+                    let on_layer = matches!(single.text_path(), Some(TextPath::Layer { .. }));
+                    self.bound_path = if on_layer { self.bound_path_line(title, &single, time_secs, width, height) } else { None };
                     let mut layer = self.render_text_layer(
                         &single,
                         width,
@@ -2339,7 +2358,8 @@ impl TitleRenderer {
                     // then the rendered glyph layer is rotated around the
                     // authored anchor so the canvas and Inspector stay
                     // WYSIWYG.
-                    if effective_transform.rotation.abs() > 0.001 {
+                    self.bound_path = None;
+                    if effective_transform.rotation.abs() > 0.001 && !on_layer {
                         rotate_rgba_layer(
                             &mut layer,
                             width as usize,
@@ -2372,10 +2392,8 @@ impl TitleRenderer {
                     }
                 }
                 TitleObjectContent::Shape(shape) => {
-                    if let Some(fit) = shape.fit {
-                        let Some(fitted) = self.resolved_shape_fit(title, fit, width, height, time_secs) else { continue };
-                        effective_transform = fitted;
-                    }
+                    let Some(transform) = self.shape_transform(title, obj, shape, time_secs, width, height) else { continue };
+                    effective_transform = transform;
                     let fx = obj.fx();
                     if !fx.is_default() {
                         // The layer, then its stack and its pose on it.
@@ -2417,6 +2435,33 @@ impl TitleRenderer {
             }
         }
         buf
+    }
+
+    /// Where a shape layer is drawn at `time_secs`: its transform as
+    /// keyed then, or the box it fits round its target text. One place,
+    /// so a text on the layer's path follows exactly what is drawn
+    /// (#1508). `None` when it fits round nothing.
+    fn shape_transform(&mut self, title: &TitleData, obj: &TitleObject, shape: &klipp_timeline::Shape, time_secs: Option<f32>, width: u32, height: u32) -> Option<ObjectTransform> {
+        match shape.fit {
+            Some(fit) => self.resolved_shape_fit(title, fit, width, height, time_secs),
+            None => Some(time_secs.map_or_else(|| obj.transform.clone(), |t| obj.transform.evaluated_at(t as f64))),
+        }
+    }
+
+    /// The drawn path `text`'s primary text box follows (#1508): its
+    /// layer in `title` as that layer is drawn at `time_secs`, morph
+    /// keys and transform and all, its contour flattened in frame
+    /// pixels. `None` when the box is not on a drawn path, or the layer
+    /// is missing or not a path.
+    fn bound_path_line(&mut self, title: &TitleData, text: &TitleData, time_secs: Option<f32>, width: u32, height: u32) -> Option<text_on_path::PathLine> {
+        let Some(TextPath::Layer { layer, contour, .. }) = text.text_path() else { return None };
+        let obj = title.object(layer)?;
+        let TitleObjectContent::Shape(shape) = &obj.content else { return None };
+        let ShapeKind::Path(path) = &shape.kind else { return None };
+        let transform = self.shape_transform(title, obj, shape, time_secs, width, height)?;
+        let pose = path.at(time_secs.unwrap_or(0.0) as f64);
+        let (closed, points) = vector_path::contours(&pose, &transform, width, height).into_iter().nth(contour)?;
+        text_on_path::PathLine::new(points, closed)
     }
 
     /// Resolve a backing's normalized rectangle using the same text bounds
@@ -2705,7 +2750,8 @@ impl TitleRenderer {
         layout.reset(&LayoutSettings {
             x: 0.0,
             y: 0.0,
-            max_width: Some(text_box_extent(title, width, height).0),
+            // Text on a path is one line, as long as the text (#1508).
+            max_width: tb.text_path.is_none().then(|| text_box_extent(title, width, height).0),
             max_height: Some(text_box_extent(title, width, height).1),
             horizontal_align: h_align,
             vertical_align: VerticalAlign::Top,
@@ -5689,34 +5735,6 @@ fn draw_pattern_fill(
 
 // ─── Text-on-path helpers ───────────────────────────────────────────────────
 
-/// Evaluate a point on the path at parameter t (0.0-1.0 normalized arc-length).
-/// Returns (x, y, angle_radians) where angle is the tangent direction.
-fn path_point(path: &TextPath, t: f32, total_advance: f32, center_x: f32, center_y: f32) -> (f32, f32, f32) {
-    match path {
-        TextPath::Arc { radius, start_angle, sweep } => {
-            let angle = start_angle.to_radians() + sweep.to_radians() * t;
-            let x = center_x + radius * angle.cos();
-            let y = center_y + radius * angle.sin();
-            let tangent_angle = angle + std::f32::consts::FRAC_PI_2;
-            (x, y, tangent_angle)
-        }
-        TextPath::Circle { radius } => {
-            let angle = 2.0 * std::f32::consts::PI * t;
-            let x = center_x + radius * angle.cos();
-            let y = center_y + radius * angle.sin();
-            (x, y, angle + std::f32::consts::FRAC_PI_2)
-        }
-        TextPath::Wave { amplitude, frequency, phase } => {
-            let linear_x = center_x - total_advance * 0.5 + total_advance * t;
-            let wave_arg = frequency * 2.0 * std::f32::consts::PI * t + phase.to_radians();
-            let y = center_y + amplitude * wave_arg.sin();
-            let dy_dx = amplitude * frequency * 2.0 * std::f32::consts::PI * wave_arg.cos() / total_advance;
-            let angle = dy_dx.atan();
-            (linear_x, y, angle)
-        }
-    }
-}
-
 /// Blit a small source alpha buffer into a destination mask with rotation.
 /// The glyph is centered at (cx, cy) in the destination and rotated by angle_rad.
 #[allow(clippy::too_many_arguments)]
@@ -5982,6 +6000,10 @@ fn layout_hash_with(td: &TitleData, frame_w: u32, frame_h: u32, fallback_version
     tb.tracking.to_bits().hash(&mut h);
     tb.line_spacing.to_bits().hash(&mut h);
     tb.baseline_shift.to_bits().hash(&mut h);
+    // The path the text follows, when it follows one (#1508).
+    if let Some(path) = &tb.text_path {
+        serde_json::to_string(path).unwrap_or_default().hash(&mut h);
+    }
     tb.features.hash(&mut h);
     tb.font_weight.hash(&mut h);
     tb.font_axes.iter().for_each(|(tag, v)| (tag, v.to_bits()).hash(&mut h));

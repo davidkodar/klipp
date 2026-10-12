@@ -174,6 +174,8 @@ pub(crate) fn parse_features(features: &[String]) -> Vec<Feature> {
 pub(crate) struct Line {
     pub(crate) glyph_start: usize,
     pub(crate) glyph_end: usize,
+    /// Where the line's baseline is, down the layout (#1508).
+    pub(crate) baseline: f32,
 }
 
 /// A piece of the text appended to a layout: where in the source text
@@ -356,7 +358,7 @@ impl ShapedLayout {
             for g in &mut self.glyphs[first..] {
                 g.x += x;
             }
-            self.lines.push(Line { glyph_start: first, glyph_end: self.glyphs.len().saturating_sub(1) });
+            self.lines.push(Line { glyph_start: first, glyph_end: self.glyphs.len().saturating_sub(1), baseline: line.baseline_y });
         }
     }
 }

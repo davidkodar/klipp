@@ -2567,6 +2567,15 @@ pub enum AppCommand {
     /// For Circle: p1=radius
     /// For Wave: p1=amplitude, p2=frequency, p3=phase
     SetTitleTextPath { clip_id: ClipId, path_kind: u8, p1: f32, p2: f32, p3: f32 },
+    /// Set the title's text on a drawn path (#1508): contour `contour`
+    /// of the path layer `layer` (an object id in the title), at
+    /// `offset` (0..1) along it, `align` 0 start, 1 centre, 2 end, and
+    /// `flip` to the path's other side. The offset's keys stay while the
+    /// text stays on the same layer.
+    SetTitleTextPathLayer { clip_id: ClipId, layer: u32, contour: usize, offset: f32, align: u8, flip: bool },
+    /// Add a path for the title's text to follow, an unpainted S across
+    /// the text's place, set the text on it and select it (#1508).
+    DrawTitleTextPath { clip_id: ClipId },
     /// Set per-character animation. entrance: 0=None, 1=FadeIn, 2=SlideUp, 3=SlideDown, 4=ScaleUp.
     /// Set enabled=false to disable entirely.
     /// Set image texture fill path. `path: None` = disable texture fill.

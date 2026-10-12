@@ -1125,6 +1125,12 @@ impl TextBox {
             k::TEXT_SIZE => return Some(&mut self.font_size_keyframes),
             k::TEXT_TRACKING => return Some(&mut self.tracking_keyframes),
             k::TEXT_LINE_SPACING => return Some(&mut self.line_spacing_keyframes),
+            k::TEXT_PATH_OFFSET => {
+                return match &mut self.text_path {
+                    Some(TextPath::Layer { offset_keyframes, .. }) => Some(offset_keyframes),
+                    _ => None,
+                };
+            }
             _ => {}
         }
         if let Some(channel) = param_key.strip_prefix("text.color.") {
@@ -1146,6 +1152,12 @@ impl TextBox {
             k::TEXT_SIZE => return Some(&self.font_size_keyframes),
             k::TEXT_TRACKING => return Some(&self.tracking_keyframes),
             k::TEXT_LINE_SPACING => return Some(&self.line_spacing_keyframes),
+            k::TEXT_PATH_OFFSET => {
+                return match &self.text_path {
+                    Some(TextPath::Layer { offset_keyframes, .. }) => Some(offset_keyframes),
+                    _ => None,
+                };
+            }
             _ => {}
         }
         if let Some(channel) = param_key.strip_prefix("text.color.") {
@@ -2121,6 +2133,50 @@ pub enum TextPath {
         frequency: f32,   // number of wave cycles across the text (0.5-5)
         phase: f32,       // phase offset in degrees (0-360)
     },
+    /// Text follows a drawn path (#1508): one contour of a path layer in
+    /// the same title, as that layer draws it at each moment, its morph
+    /// keys and transform included. A missing layer, or one that is not
+    /// a path, lays the text straight.
+    Layer {
+        layer: TitleObjectId,
+        /// Which of the path's contours, from 0.
+        #[serde(default, skip_serializing_if = "is_default")]
+        contour: usize,
+        /// Where along the contour the text sits, as a fraction of its
+        /// length: 0 its start, 1 its end; on a closed contour it wraps.
+        #[serde(default, skip_serializing_if = "is_default")]
+        offset: f32,
+        /// `offset` over the clip's time, so the text travels.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        offset_keyframes: Vec<klipp_core::Keyframe>,
+        /// Which part of the text sits at `offset`.
+        #[serde(default, skip_serializing_if = "is_default")]
+        align: PathTextAlign,
+        /// The text on the path's other side, running the other way.
+        #[serde(default, skip_serializing_if = "is_default")]
+        flip: bool,
+    },
+}
+
+impl TextPath {
+    /// A drawn path's `offset` at `time_secs` of its clip; 0 for the
+    /// fixed shapes.
+    pub fn offset_at(&self, time_secs: f64) -> f32 {
+        match self {
+            TextPath::Layer { offset, offset_keyframes, .. } if !offset_keyframes.is_empty() => klipp_core::keyframe::evaluate(offset_keyframes, time_secs, *offset),
+            TextPath::Layer { offset, .. } => *offset,
+            _ => 0.0,
+        }
+    }
+}
+
+/// Which part of a text on a drawn path sits at its offset (#1508).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum PathTextAlign {
+    #[default]
+    Start,
+    Center,
+    End,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -1814,6 +1814,46 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitleTextPathLayer { clip_id, layer, contour, offset, align, flip } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                set_text_path_layer(tb, klipp_timeline::TitleObjectId(*layer), *contour, *offset, *align, *flip);
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Text Path", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::DrawTitleTextPath { clip_id } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                let mut new_id = None;
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            new_id = Some(draw_text_path(td, target_oid));
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Draw Text Path", old); }
+                if let Some(id) = new_id {
+                    self.state.selected_title_object = Some((*clip_id, id));
+                }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetTitleTextPath { clip_id, path_kind, p1, p2, p3 } => {
                 let old = self.snapshot_title(*clip_id);
                 let path = match path_kind {
@@ -3601,6 +3641,72 @@ pub(super) fn title_seek_on_select(
         return None;
     }
     title_rest_time(clip, fps_rate)
+}
+
+/// `tb` set on contour `contour` of the path layer `layer` (#1508), at
+/// `offset` along it, `align` 0 start, 1 centre, 2 end, `flip` to the
+/// other side; the offset's keys kept while it stays on that layer.
+fn set_text_path_layer(tb: &mut klipp_timeline::TextBox, layer: klipp_timeline::TitleObjectId, contour: usize, offset: f32, align: u8, flip: bool) {
+    let align = match align {
+        1 => klipp_timeline::PathTextAlign::Center,
+        2 => klipp_timeline::PathTextAlign::End,
+        _ => klipp_timeline::PathTextAlign::Start,
+    };
+    let offset_keyframes = match &tb.text_path {
+        Some(klipp_timeline::TextPath::Layer { layer: was, offset_keyframes, .. }) if *was == layer => offset_keyframes.clone(),
+        _ => Vec::new(),
+    };
+    tb.text_path = Some(klipp_timeline::TextPath::Layer { layer, contour, offset: offset.clamp(0.0, 1.0), offset_keyframes, align, flip });
+}
+
+/// A path for `text`'s words to follow, added to `td` across where the
+/// text is and a little wider, unpainted, named "Text path", and the
+/// text set on it (#1508): its id.
+fn draw_text_path(td: &mut klipp_timeline::TitleData, text: Option<klipp_timeline::TitleObjectId>) -> klipp_timeline::TitleObjectId {
+    let at = text.and_then(|o| td.object(o)).map_or(klipp_timeline::TitlePosition { x: 0.5, y: 0.5 }, |o| o.transform.center);
+    let xform = klipp_timeline::ObjectTransform { center: at, size: klipp_timeline::TitlePosition { x: 0.6, y: 0.3 }, ..klipp_timeline::default_text_transform() };
+    let shape = klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Path(klipp_timeline::VectorPath::text_guide()), fit: None, fill: None, gradient: None, stroke: None };
+    let id = td.add_object(klipp_timeline::TitleObjectContent::Shape(shape), xform);
+    if let Some(o) = td.objects.iter_mut().find(|o| o.id == id) {
+        o.name = "Text path".into();
+    }
+    if let Some(tb) = target_textbox_mut(td, text) {
+        tb.text_path = None;
+        set_text_path_layer(tb, id, 0, 0.0, 0, false);
+    }
+    id
+}
+
+#[cfg(test)]
+mod text_path_tests {
+    use super::{draw_text_path, set_text_path_layer};
+    use klipp_timeline::{PathTextAlign, TextPath, TitleData, TitleObjectContent};
+
+    /// #1508: drawing a path for a title's text adds an unpainted path
+    /// layer across the text and sets the text on it; setting its start,
+    /// align and side keeps the travel keyed on it, and moving the text
+    /// to another layer drops it.
+    #[test]
+    fn a_drawn_text_path_is_added_bound_and_edited() {
+        let mut td = TitleData::default();
+        let text = td.objects[0].id;
+        let path = draw_text_path(&mut td, Some(text));
+        let layer = td.object(path).unwrap();
+        assert_eq!(layer.name, "Text path");
+        assert_eq!(layer.transform.center, td.object(text).unwrap().transform.center, "across where the text is");
+        let TitleObjectContent::Shape(shape) = &layer.content else { panic!("a shape") };
+        let klipp_timeline::ShapeKind::Path(p) = &shape.kind else { panic!("a path") };
+        assert!(p.pose.fill[3] == 0.0 && p.pose.stroke[3] == 0.0, "it paints nothing of its own");
+        let tb = td.primary_text().unwrap();
+        assert!(matches!(&tb.text_path, Some(TextPath::Layer { layer, offset, align: PathTextAlign::Start, flip: false, .. }) if *layer == path && *offset == 0.0));
+
+        let TitleObjectContent::TextBox(tb) = &mut td.objects[0].content else { panic!() };
+        klipp_core::keyframe::upsert_keyframe(tb.effect_keyframes_mut_for(klipp_core::title_effect_keys::TEXT_PATH_OFFSET).unwrap(), 1.0, 0.5);
+        set_text_path_layer(tb, path, 0, 0.25, 1, true);
+        assert!(matches!(&tb.text_path, Some(TextPath::Layer { offset, align: PathTextAlign::Center, flip: true, offset_keyframes, .. }) if *offset == 0.25 && offset_keyframes.len() == 1), "the travel stays: {:?}", tb.text_path);
+        set_text_path_layer(tb, klipp_timeline::TitleObjectId(77), 0, 2.0, 2, false);
+        assert!(matches!(&tb.text_path, Some(TextPath::Layer { offset, offset_keyframes, align: PathTextAlign::End, .. }) if *offset == 1.0 && offset_keyframes.is_empty()), "another layer starts afresh, the offset kept on the path");
+    }
 }
 
 #[cfg(test)]

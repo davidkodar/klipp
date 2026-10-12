@@ -118,6 +118,20 @@ fn ring(n: usize, radius: impl Fn(usize) -> f32) -> Vec<PathVertex> {
 }
 
 impl VectorPath {
+    /// A path for a text to follow and nothing else (#1508): an open S
+    /// across its box, unpainted, so it draws nothing of its own.
+    pub fn text_guide() -> Self {
+        let v = |point: [f32; 2], d: [f32; 2]| PathVertex { point, incoming: [point[0] - d[0], point[1] - d[1]], outgoing: [point[0] + d[0], point[1] + d[1]] };
+        let pose = PathPose {
+            stroke_glow: None,
+            contours: vec![PathContour { closed: false, vertices: vec![v([0.0, 0.6], [0.15, -0.3]), v([0.5, 0.5], [0.15, 0.0]), v([1.0, 0.4], [0.15, -0.3])] }],
+            fill: [0.0; 4],
+            stroke: [0.0; 4],
+            stroke_width: 0.0,
+        };
+        Self { trim: None, pose, keyframes: Vec::new() }
+    }
+
     /// `preset` as a path in a layer's box, painted with `fill` and
     /// `stroke` (straight RGBA 0..1) at `stroke_width` pixels of 1080.
     /// A line has no fill.

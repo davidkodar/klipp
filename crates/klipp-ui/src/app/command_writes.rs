@@ -559,6 +559,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTitleDirection { .. }
         | AppCommand::SetTitleExtrusion { .. }
         | AppCommand::SetTitleTextPath { .. }
+        | AppCommand::SetTitleTextPathLayer { .. }
+        | AppCommand::DrawTitleTextPath { .. }
         | AppCommand::SetTitleTextureFill { .. }
         | AppCommand::SetTitleTexturePreset { .. }
         | AppCommand::SetTitleTextureParams { .. }
