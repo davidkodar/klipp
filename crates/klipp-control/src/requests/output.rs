@@ -204,12 +204,39 @@ pub(crate) fn respond(
             Ok(json!({ "jobs": jobs, "finished": finished, "succeeded": succeeded, "timed_out": wait && !finished }))
         }
 
-        ControlCommand::ExportSubtitles { path } => {
+        ControlCommand::ExportSubtitles { path, format } => {
             let p = std::path::PathBuf::from(&path);
             if !p.is_absolute() {
                 return Err(format!("subtitle path must be absolute (got {path:?})"));
             }
+            let ext = subtitle_format(&p).ok_or_else(|| format!("{path:?} names no subtitle format; end it .srt, .vtt, .ass or .ssa"))?;
+            if let Some(f) = format.as_deref() {
+                let want = f.trim().to_ascii_lowercase();
+                let want = if want == "webvtt" { "vtt".to_string() } else { want };
+                if !SUBTITLE_FORMATS.contains(&want.as_str()) {
+                    return Err(format!("{f:?} is not a subtitle format; give srt, vtt, ass or ssa"));
+                }
+                if want != ext {
+                    return Err(format!("the path ends .{ext} but the format asked for is {want}; end the path .{want}"));
+                }
+            }
             send(AppCommand::ExportSubtitles { path: p })
+        }
+
+        ControlCommand::ImportSubtitles { path } => {
+            let p = std::path::PathBuf::from(&path);
+            if !p.is_absolute() {
+                return Err(format!("subtitle path must be absolute (got {path:?})"));
+            }
+            if subtitle_format(&p).is_none() {
+                return Err(format!("{path:?} is not a subtitle file this reads; give an .srt, .vtt, .ass or .ssa"));
+            }
+            if !p.is_file() {
+                return Err(format!("no file at {path:?}"));
+            }
+            let mut v = send(AppCommand::ImportSubtitles { path: p })?;
+            v["next"] = json!("The cues land on a new subtitle track named after the file; timeline shows it.");
+            Ok(v)
         }
 
         ControlCommand::SaveProject { path } => {
@@ -607,6 +634,15 @@ fn sequence_credits(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPoo
         .filter(|m| seen.insert(m.path.clone()))
         .filter_map(|m| klipp_audio_search::read_credit(&m.path))
         .collect()
+}
+
+/// The subtitle formats the sidecar reader and writers take, by extension.
+const SUBTITLE_FORMATS: &[&str] = &["srt", "vtt", "ass", "ssa"];
+
+/// The subtitle format a path's extension names, lowercase.
+fn subtitle_format(p: &std::path::Path) -> Option<&'static str> {
+    let ext = p.extension()?.to_str()?.to_ascii_lowercase();
+    SUBTITLE_FORMATS.iter().copied().find(|f| *f == ext)
 }
 
 #[cfg(test)]

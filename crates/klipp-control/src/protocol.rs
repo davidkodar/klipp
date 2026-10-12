@@ -843,8 +843,17 @@ pub enum ControlCommand {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
-    /// Write the sequence's subtitle and text clips as an SRT file.
-    ExportSubtitles { path: String },
+    /// Write the sequence's subtitle clips (its text clips where it has
+    /// none) as a subtitle file, in the format the path's extension names:
+    /// SRT, WebVTT or ASS/SSA. `format`, when given, must be that one.
+    ExportSubtitles {
+        path: String,
+        #[serde(default)]
+        format: Option<String>,
+    },
+    /// Read an SRT, WebVTT or ASS/SSA file onto a new subtitle track of
+    /// the active sequence, as the app's Import Subtitles does (#1516).
+    ImportSubtitles { path: String },
     /// What is said in a media file between two times, with when: the
     /// segments, and with `words` every word and its start and end, in
     /// the file's seconds. For setting a cut on the edge of a word.

@@ -733,6 +733,7 @@ fn handle(
         cmd @ (ControlCommand::Export { .. }
             | ControlCommand::ExportStatus { .. }
             | ControlCommand::ExportSubtitles { .. }
+            | ControlCommand::ImportSubtitles { .. }
             | ControlCommand::SaveProject { .. }
             | ControlCommand::OpenProject { .. }
             | ControlCommand::FrameStats { .. }

@@ -3080,3 +3080,43 @@ fn status_lists_the_sequences_and_switch_sequence_opens_one() {
     }
     assert_eq!(h.sent.lock().unwrap().len(), 2, "a refused switch sends nothing");
 }
+
+/// #1516: a subtitle file is read over the socket as the app reads it, onto
+/// a new track; a path that is relative, names no subtitle format or is not
+/// there is refused, and an export's format must be its path's.
+#[test]
+fn subtitles_import_over_the_socket_and_export_in_the_format_asked() {
+    let mut h = harness();
+    let dir = std::env::temp_dir().join(format!("klipp-subs-roundtrip-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let srt = dir.join("talk.srt");
+    std::fs::write(&srt, "1\n00:00:00,000 --> 00:00:01,000\nHello\n\n").unwrap();
+    h.ok(json!({ "method": "import_subtitles", "path": srt.to_str().unwrap() }));
+    match h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(klipp_core::AppCommand::ImportSubtitles { path }) => assert_eq!(path, srt),
+        other => panic!("expected ImportSubtitles, got {other:?}"),
+    }
+    for (path, why) in [
+        ("talk.srt".to_string(), "absolute"),
+        (dir.join("talk.txt").to_string_lossy().into_owned(), "not a subtitle file"),
+        (dir.join("gone.vtt").to_string_lossy().into_owned(), "no file"),
+    ] {
+        let r = h.call(json!({ "method": "import_subtitles", "path": path }));
+        assert_eq!(r["ok"], json!(false), "{path}: {r}");
+        assert!(r["error"].as_str().unwrap().contains(why), "{path}: {r}");
+    }
+    let out = dir.join("out.vtt");
+    h.ok(json!({ "method": "export_subtitles", "path": out.to_str().unwrap(), "format": "WebVTT" }));
+    assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(klipp_core::AppCommand::ExportSubtitles { .. })));
+    for (path, format, why) in [("out.srt", Some("vtt"), "ends .srt"), ("out.txt", None, "names no subtitle format"), ("out.srt", Some("scc"), "not a subtitle format")] {
+        let mut req = json!({ "method": "export_subtitles", "path": dir.join(path).to_str().unwrap() });
+        if let Some(f) = format {
+            req["format"] = json!(f);
+        }
+        let r = h.call(req.clone());
+        assert_eq!(r["ok"], json!(false), "{req}: {r}");
+        assert!(r["error"].as_str().unwrap().contains(why), "{req}: {r}");
+    }
+    assert!(h.cmd_rx.try_recv().is_err(), "a refused call sends nothing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
