@@ -220,3 +220,60 @@ fn a_style_op_sets_the_texts_blend_and_mask() {
     let why = Doc::new().run(json!([{"op":"title","text":"x","at":{"secs":0},"secs":2,"mask":{"layer":5}}])).unwrap_err();
     assert!(why.contains("no other layer"), "{why}");
 }
+
+/// #1512: a style op turns the text 3D by a look with fields over it,
+/// keys its turn, changes it again without losing the rest, and takes
+/// it off; a new title can be 3D from the start.
+#[test]
+fn a_style_op_turns_a_text_3d() {
+    let (mut d, id) = titled("Solid");
+    d.run(json!([{"op":"style","clip_id":id,"three_d":{"look":"chrome","depth":0.4,"turn":20,"light":{"azimuth":-30,"elevation":40},"keys":{"turn":[{"at":0,"value":-45},{"at":3,"value":45}]}}}])).unwrap();
+    let t = d.title().1.primary_text().unwrap().three_d.clone().expect("3D");
+    let chrome = klipp_core::text3d::Text3d::default().with_look("chrome").unwrap();
+    assert!(t.enabled);
+    assert_eq!((t.depth, t.rotation[1], t.light.azimuth, t.light.elevation), (0.4, 20.0, -30.0, 40.0));
+    assert_eq!((t.face_color, t.front_bevel, t.light.specular), (chrome.face_color, chrome.front_bevel, chrome.light.specular), "the rest is chrome's");
+    assert_eq!(t.keys.rotate_y.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>(), [(0.0, -45.0), (3.0, 45.0)]);
+    // Another op changes what it names and keeps the rest.
+    d.run(json!([{"op":"style","clip_id":id,"three_d":{"bevel":"none","perspective":false,"side_color":"#102030"}}])).unwrap();
+    let t2 = d.title().1.primary_text().unwrap().three_d.clone().unwrap();
+    assert_eq!((t2.front_bevel, t2.camera.orthographic, t2.side_color, t2.depth, t2.keys.rotate_y.len()), (None, true, [16, 32, 48, 255], 0.4, 2));
+    d.run(json!([{"op":"style","clip_id":id,"three_d":"none"}])).unwrap();
+    assert_eq!(d.title().1.primary_text().unwrap().three_d, None);
+    let mut fresh = Doc::new();
+    fresh.run(json!([{"op":"title","text":"Block","at":{"secs":0},"secs":2,"three_d":{"look":"block"}}])).unwrap();
+    assert_eq!(fresh.title().1.primary_text().unwrap().three_d.as_ref().and_then(|t| t.look()), Some("block"));
+}
+
+/// Wrong 3D values are refused with the choices or the range, nothing
+/// changed.
+#[test]
+fn wrong_3d_values_are_refused() {
+    let (mut d, id) = titled("Wrong 3D");
+    let before = d.title().1.clone();
+    for (three_d, says) in [
+        (json!({"look":"marble"}), "block, bevelled, chrome"),
+        (json!({"depth":5}), "depth (ems) from 0 to 2"),
+        (json!({"bevel":{"size":0.5}}), "bevel size (ems) from 0 to 0.2"),
+        (json!({"bevel":{"size":0.02,"profile":"ogee"}}), "straight or round"),
+        (json!({"bevel":{"size":0.02,"segments":40}}), "segments from 1 to 12"),
+        (json!({"fov":0}), "fov (degrees) from 1 to 170"),
+        (json!({"light":{"elevation":120}}), "light elevation (degrees) from -90 to 90"),
+        (json!({"light":{"glare":1}}), "unknown field"),
+        (json!({"face_color":"gold"}), "#rrggbb"),
+        (json!({"keys":{"spin":[{"at":0,"value":1}]}}), "key turn, tilt, roll"),
+        (json!({"keys":{"turn":[{"at":9,"value":1}]}}), "after the title's end"),
+        (json!("sideways"), "\"none\""),
+        (json!({"bevel":{"size":0.02,"depth":1}}), "unknown field `depth`"),
+    ] {
+        let why = d.run(json!([{"op":"style","clip_id":id,"three_d":three_d}])).expect_err(&format!("{three_d}"));
+        assert!(why.contains(says), "{three_d}: {why}");
+        assert_eq!(d.title().1, &before);
+    }
+    // A name-or-fields spec's own error reaches the reply, not "did not
+    // match any variant".
+    for (field, value) in [("on_path", json!({"layer":0,"wobble":1})), ("mask", json!({"layer":0,"opacity":1}))] {
+        let why = d.run(json!([{"op":"style","clip_id":id, field: value}])).unwrap_err();
+        assert!(why.contains("unknown field") && !why.contains("any variant"), "{field}: {why}");
+    }
+}

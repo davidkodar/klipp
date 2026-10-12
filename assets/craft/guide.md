@@ -386,7 +386,7 @@ exist until the plan runs.
   `dip_to_white` mark a break. A stylised kind (`zoom`, `whip`,
   `glitch`, `film_burn`) is a style choice the brief has to ask for.
   Both clips need footage beyond the cut to overlap.
-- `style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, backing_color?, outline?, outline_color?, shadow?, glow?, glow_color?, gradient?, glitch?, chromatic?, animate?, animate_secs?, stagger?, enter?, exit?, loop?, roll_shape?, edge_fade?, weight?, axes?, features?, last_line?, valign?, underline?, runs?, animators?, keys?, on_path?, blend?, mask?}`:
+- `style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, backing_color?, outline?, outline_color?, shadow?, glow?, glow_color?, gradient?, glitch?, chromatic?, animate?, animate_secs?, stagger?, enter?, exit?, loop?, roll_shape?, edge_fade?, weight?, axes?, features?, last_line?, valign?, underline?, runs?, animators?, keys?, on_path?, blend?, mask?, three_d?}`:
   the look and place of one title, or of every title on a track
   (`"subtitle"` for all the captions), between `from` and `to` when
   given (anchors, as `{"secs": 44.0}`). `size` is pixels of a 1080-line frame, `color` is `#rrggbb`,
@@ -418,7 +418,7 @@ exist until the plan runs.
   `side: "right"` sets it against the right edge, and `x` (that edge)
   and `y` (the name's line) place it, as fractions of the frame inside
   title-safe. A name under the wrong person is worse than none.
-- `title {text, at, secs?, style?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?, enter?, exit?, over_faces?, shadow?, weight?, axes?, features?, last_line?, valign?, underline?, runs?, animators?, keys?, on_path?, blend?, mask?}`:
+- `title {text, at, secs?, style?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?, enter?, exit?, over_faces?, shadow?, weight?, axes?, features?, last_line?, valign?, underline?, runs?, animators?, keys?, on_path?, blend?, mask?, three_d?}`:
   a title from scratch: a heading, a callout or a hero card, on a text
   track (one is made on top if left out). `style` names a look, one of
   the brief's type styles or `heading`, `callout` or `card`, and its
@@ -480,6 +480,21 @@ exist until the plan runs.
   title is drawn (`kind` alpha, the default), is not (inverted_alpha),
   is bright (luma) or is dark (inverted_luma), that layer then a matte
   and not drawn itself; `"none"` takes the mask off.
+  `three_d` draws the text as solids, extruded, bevelled, turned under
+  a perspective camera and lit: `{look? (block, bevelled, chrome),
+  depth? (ems, 0 to 2), bevel? and back_bevel? ({size (ems, up to
+  0.2), segments?, profile? (straight, round)} or "none"), turn?,
+  tilt?, roll? (degrees), fov? (1 to 170), perspective? (false: none),
+  light? {azimuth, elevation, intensity, ambient, highlight,
+  shininess}, face_color?, side_color?, bevel_color?, keys?}`, `keys`
+  by name (turn, tilt, roll, depth, bevel, fov, light_azimuth,
+  light_elevation, light_intensity) as `[{at, value}]`. A look sets
+  depth, bevels, light and colours; the fields lay over it, or over the
+  text's 3D as it is, so a later style changes only what it names.
+  `"none"` takes 3D off. The layer's glow, shadow, outline and backing
+  go round the solid. A word turning in y over two seconds:
+  `{look: "bevelled", keys: {turn: [{at: 0, value: -40}, {at: 2,
+  value: 40}]}}`.
 - `set_text {clip_id, text}`: the words of a title or a caption; its
   look, place and timing stay. For the cue the transcript misheard and
   the name it cannot spell: read the captions once they are made
