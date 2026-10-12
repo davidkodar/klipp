@@ -3,6 +3,10 @@
 #[allow(unused_imports)]
 use crate::*;
 
+#[cfg(test)]
+#[path = "colour_group_tests.rs"]
+mod group_advice_tests;
+
 pub(crate) fn respond(
     ctx: &ControlContext,
     cmd: ControlCommand,
@@ -797,11 +801,22 @@ pub(crate) fn respond(
             // chasing the target shot by shot (#742).
             // Grouped by the media itself, not its file name: two cards'
             // IMG_0001.mov are two scenes (#770 review).
-            let media_of: std::collections::HashMap<String, klipp_core::MediaId> = {
+            // A scene whose shots already share one grade group is graded
+            // together: the advice would only repeat after grouping (#1571).
+            let (media_of, grouped) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
-                seq.tracks.iter().flat_map(|t| t.clips.iter()).filter_map(|c| c.media_id().map(|m| (c.id.0.to_string(), m))).collect()
+                let clips = || seq.tracks.iter().flat_map(|t| t.clips.iter());
+                let media_of: std::collections::HashMap<String, klipp_core::MediaId> = clips().filter_map(|c| c.media_id().map(|m| (c.id.0.to_string(), m))).collect();
+                let grouped: std::collections::HashMap<String, klipp_core::GradeGroupId> = clips()
+                    .filter_map(|c| c.grade_group.filter(|g| seq.grade_groups.iter().any(|x| x.id == *g)).map(|g| (c.id.0.to_string(), g)))
+                    .collect();
+                (media_of, grouped)
             };
-            let groups = scene_groups(&shots, &media_of);
+            let one_group = |g: &serde_json::Value| {
+                let mut ids = g["clips"].as_array().into_iter().flatten().map(|id| id.as_str().and_then(|id| grouped.get(id)));
+                ids.next().flatten().is_some_and(|first| ids.all(|other| other == Some(first)))
+            };
+            let groups: Vec<serde_json::Value> = scene_groups(&shots, &media_of).into_iter().filter(|g| !one_group(g)).collect();
             for g in &groups {
                 lines.push(format!(
                     "{} shots come from {}: one scene. Grade them together (grade_group with these clips, then grade on the group) and keep per-shot moves small; a primary each, chasing the target alone, pulls them apart at the cuts.",
