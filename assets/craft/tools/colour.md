@@ -58,6 +58,8 @@ Set the camera log (or HDR) encoding a clip was recorded in, for footage whose f
 
 Set one numeric parameter on a grade node, e.g. temperature, tint, hue, global_mix, saturation, contrast. Call klipp_get_grade first to see what a node currently carries: node ids belong to one clip, so the id of another clip's Corrector is refused rather than applied.
 
+To ride a value over the shot, key it: give `at`, a time in seconds on the timeline inside the clip, and the value there. Each call adds or updates one key, one undo step; keys on one parameter blend between them. `interpolation` shapes the move at that key: linear (the default), ease_in (slow into it), ease_out (slow out of it), ease_both, bezier, or hold (no move until the next key). `remove: true` with `at` takes that key away. Once a parameter has keys, its plain value no longer shows: change it by keying. A colour wheel is three parameters (lift_x, lift_y, lift_master): key all three at a time to move the wheel. klipp_get_grade reports each node's keys.
+
 ## klipp_skin_balance
 
 Skin onto the skin band, by measurement: the faces in the clip's frame (the framing analysis's people, the head of each) are read as an 8×8 grid of skin patches in CIELAB; the face's median hue is held to the band 40–65° that real skin of every kind sits in. With apply true a skin secondary (a qualifier keyed on skin, a hue shift) turns the hue onto the band, measured again after each of up to three rounds. Refused when the face is lit by two colours of light; when the scene's neutrals carry the same cast the reply says to white balance first. Read a face at any time with klipp_frame_stats.
