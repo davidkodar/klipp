@@ -389,3 +389,28 @@ fn a_texts_keyed_colour_comes_back() {
     let ClipKind::Title(loaded) = &seqs[0].tracks[0].clips[0].kind else { panic!("not a title") };
     assert_eq!(loaded.primary_text(), Some(&tb));
 }
+
+/// #1510: a layer's animators come back through a real save and a
+/// strict load, selector keys, order and seed included.
+#[test]
+fn a_layers_animators_come_back() {
+    use klipp_timeline::{Animator, AnimatorProps, LayerFx, RangeSelector, SelectOrder, SelectShape, SelectUnit};
+    let key = |time_secs: f64, value: f32| klipp_core::Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    let animator = Animator {
+        name: "Turn the middle".into(),
+        selector: RangeSelector { unit: SelectUnit::Word, start: 0.34, end: 0.66, shape: SelectShape::Smooth, order: SelectOrder::Random { seed: 7 }, offset_keyframes: vec![key(0.0, -1.0), key(2.0, 1.0)], ..Default::default() },
+        props: AnimatorProps { rotation: 90.0, opacity: 0.0, colour: Some([10, 200, 90, 255]), ..Default::default() },
+        ..Default::default()
+    };
+    let fx = LayerFx { animators: vec![animator, Animator { enabled: false, ..Default::default() }], ..Default::default() };
+    let mut seq = Sequence::new_default();
+    let mut c = Clip::gap(tc(0), tc(48));
+    c.kind = ClipKind::Title(TitleData::single_text_fx(TextBox { text: "one MIDDLE two".into(), ..TextBox::default() }, fx.clone()));
+    seq.tracks[0].clips = vec![c];
+    let dir = project_dir("animators");
+    save_project_with_color(&dir, &[seq], &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
+    let (seqs, ..) = klipp_project::load_project_strict(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let ClipKind::Title(loaded) = &seqs[0].tracks[0].clips[0].kind else { panic!("not a title") };
+    assert_eq!(loaded.primary_fx(), &fx);
+}

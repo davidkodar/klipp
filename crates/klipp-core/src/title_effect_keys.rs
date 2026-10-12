@@ -154,6 +154,22 @@ pub fn parse_outline_param_key(key: &str) -> Option<(usize, &str)> {
     Some((idx, field))
 }
 
+// ── Animators (#1510) ──
+//
+// A layer's animators stack on `LayerFx.animators`; each selector's
+// range is keyable as `animator.{idx}.{field}`, field ∈ {start, end,
+// offset}.
+pub fn animator_key(idx: usize, field: &str) -> String {
+    format!("animator.{idx}.{field}")
+}
+
+/// Parse `animator.{index}.{field}` into `(index, field)`.
+pub fn parse_animator_param_key(key: &str) -> Option<(usize, &str)> {
+    let rest = key.strip_prefix("animator.")?;
+    let (idx_str, field) = rest.split_once('.')?;
+    Some((idx_str.parse::<usize>().ok()?, field))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

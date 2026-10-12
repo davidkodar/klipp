@@ -517,6 +517,10 @@ pub struct LayerFx {
     /// screen, still or moving (#592).
     #[serde(default, skip_serializing_if = "EdgeFade::is_none")]
     pub edge_fade: EdgeFade,
+    /// Animators: ranges of the text that move, turn, fade or change
+    /// colour unit by unit, on top of the entrance and exit (#1510).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub animators: Vec<klipp_core::title_motion::Animator>,
 }
 
 fn motion_is_still(m: &TitleMotion) -> bool {
@@ -541,6 +545,7 @@ static STILL_FX: LayerFx = LayerFx {
     inner_shadow_stack_enabled: true,
     motion_blur: None,
     edge_fade: EdgeFade::NONE,
+    animators: Vec::new(),
 };
 
 /// A fresh layer's stack is the still one: nothing on it, every
@@ -673,6 +678,7 @@ impl LegacyTextFx {
             inner_shadow_stack_enabled: self.inner_shadow_stack_enabled,
             motion_blur: self.motion_blur,
             edge_fade: EdgeFade::NONE,
+            animators: Vec::new(),
         }
     }
 }
@@ -952,7 +958,15 @@ impl LayerFx {
     ) -> Option<&mut Vec<klipp_core::Keyframe>> {
         // Note: check `inner_shadow.` before `shadow.` — the latter
         // would otherwise prefix-match the former.
-        if let Some((idx, field)) = klipp_core::title_effect_keys::parse_glow_param_key(param_key) {
+        if let Some((idx, field)) = klipp_core::title_effect_keys::parse_animator_param_key(param_key) {
+            let selector = &mut self.animators.get_mut(idx)?.selector;
+            match field {
+                "start" => Some(&mut selector.start_keyframes),
+                "end" => Some(&mut selector.end_keyframes),
+                "offset" => Some(&mut selector.offset_keyframes),
+                _ => None,
+            }
+        } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_glow_param_key(param_key) {
             // Per-stack-element glow keyframes (`glow.{idx}.field`).
             let layer = self.glows.get_mut(idx)?;
             match field {
@@ -999,7 +1013,15 @@ impl LayerFx {
 
     /// Read-only mirror of `effect_keyframes_mut_for`.
     pub fn effect_keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
-        if let Some((idx, field)) = klipp_core::title_effect_keys::parse_glow_param_key(param_key) {
+        if let Some((idx, field)) = klipp_core::title_effect_keys::parse_animator_param_key(param_key) {
+            let selector = &self.animators.get(idx)?.selector;
+            match field {
+                "start" => Some(&selector.start_keyframes),
+                "end" => Some(&selector.end_keyframes),
+                "offset" => Some(&selector.offset_keyframes),
+                _ => None,
+            }
+        } else if let Some((idx, field)) = klipp_core::title_effect_keys::parse_glow_param_key(param_key) {
             let layer = self.glows.get(idx)?;
             match field {
                 "radius" => Some(layer.radius_keyframes.as_slice()),
@@ -4279,5 +4301,31 @@ mod colour_key_tests {
         assert!([&tb.color_keyframes.r, &tb.color_keyframes.g, &tb.color_keyframes.b, &tb.color_keyframes.a].iter().all(|k| k.len() == 1));
         let json = serde_json::to_string(&TextBox::default()).unwrap();
         assert!(!json.contains("color_keyframes"), "{json}");
+    }
+}
+
+#[cfg(test)]
+mod animator_key_tests {
+    use super::*;
+
+    /// An animator's range is keyed through the layer's effect keys, by
+    /// its place in the stack; a stack without animators writes none
+    /// (#1510).
+    #[test]
+    fn an_animators_range_is_a_keyable_param() {
+        let k = |i: usize, f: &str| klipp_core::title_effect_keys::animator_key(i, f);
+        let mut fx = LayerFx { animators: vec![Default::default(), Default::default()], ..Default::default() };
+        for field in ["start", "end", "offset"] {
+            fx.effect_keyframes_mut_for(&k(1, field)).expect(field).push(klipp_core::Keyframe {
+                time_secs: 0.5, value: 0.25, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0),
+            });
+        }
+        let s = &fx.animators[1].selector;
+        assert_eq!((s.start_keyframes.len(), s.end_keyframes.len(), s.offset_keyframes.len()), (1, 1, 1));
+        assert!(fx.animators[0].selector.start_keyframes.is_empty());
+        assert_eq!(fx.effect_keyframes_for(&k(1, "offset")).map(<[_]>::len), Some(1));
+        assert!(fx.effect_keyframes_for(&k(2, "start")).is_none() && fx.effect_keyframes_for(&k(0, "amount")).is_none());
+        assert!(!serde_json::to_string(&LayerFx::default()).unwrap().contains("animators"));
+        assert!(LayerFx::default().is_default());
     }
 }
