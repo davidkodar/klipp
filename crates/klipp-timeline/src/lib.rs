@@ -71,6 +71,7 @@ pub use picture_reads::{PictureEffect, PictureOfx};
 mod clip_kind;
 mod title_fields;
 mod title_template_file;
+pub mod title_library;
 mod credits;
 pub use klipp_core::text3d;
 pub use klipp_core::text3d::{Bevel, BevelProfile, Camera3d, Light3d, Text3d, Text3dKeys};

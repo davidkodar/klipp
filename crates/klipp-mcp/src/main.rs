@@ -1972,7 +1972,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "clip_id": { "type": "string", "description": "the clip to move into sync (e.g. the external audio)" }, "reference_clip_id": { "type": "string", "description": "the clip to sync to (e.g. the camera)" }, "max_offset_secs": { "type": "number" } }),
              vec!["clip_id", "reference_clip_id"]),
         tool("klipp_title_templates",
-             "Saved title templates and their fields by label, for the template op.",
+             "Title templates, built-in by category and saved, and their fields by label, for the template op.",
              json!({}), vec![]),
         tool("klipp_fonts",
              "The font families a title or a brief's type style can name: those bundled with Klipp, \

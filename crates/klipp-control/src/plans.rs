@@ -26,9 +26,11 @@ pub(crate) fn template_dir() -> Option<std::path::PathBuf> {
     dirs::config_dir().map(|c| klipp_timeline::template_dir(&c))
 }
 
-/// `ops` with each `template` op given the template its name names, read
-/// from `dir` (#1139): the document resolves ops without reading files.
-/// One whose name names none is left without, which the document refuses.
+/// `ops` with each `template` op given the template its name names (#1139):
+/// one saved in `dir`, else a built-in of that name (#1724); the document
+/// resolves ops without reading files. Each is marked as made from its
+/// template, as the Titles browser marks one. One whose name names none is
+/// left without, which the document refuses.
 pub(crate) fn with_templates(ops: &[klipp_document::ops::Op], dir: Option<&std::path::Path>) -> Vec<klipp_document::ops::Op> {
     use klipp_document::ops::Op;
     if !ops.iter().any(|op| matches!(op, Op::Template { .. })) {
@@ -39,40 +41,61 @@ pub(crate) fn with_templates(ops: &[klipp_document::ops::Op], dir: Option<&std::
         .cloned()
         .map(|mut op| {
             if let Op::Template { name, data, .. } = &mut op {
-                *data = saved.iter().find(|t| t.name.eq_ignore_ascii_case(name.trim())).map(|t| Box::new(t.data.clone()));
+                *data = match saved.iter().find(|t| t.name.eq_ignore_ascii_case(name.trim())) {
+                    Some(t) => {
+                        let mut td = t.data.clone();
+                        td.template = Some(format!("user:{}", t.name));
+                        Some(Box::new(td))
+                    }
+                    None => klipp_timeline::title_library::builtin(name).map(|t| Box::new(t.data())),
+                };
             }
             op
         })
         .collect()
 }
 
-/// The templates saved in `dir`, each with the fields it keeps editable and
-/// their values as made, as `title_templates` answers (#1139).
-pub(crate) fn title_templates(dir: Option<&std::path::Path>) -> serde_json::Value {
+/// A title's live fields as `title_templates` lists them: each by label,
+/// its kind, and its value as made.
+fn listed_fields(td: &klipp_timeline::TitleData) -> Vec<serde_json::Value> {
     use klipp_core::TitleFieldValue as V;
+    td.live_fields()
+        .into_iter()
+        .map(|(_, f, v)| match v {
+            V::Text(s) => json!({ "label": f.label, "kind": "text", "value": s }),
+            V::Colour([r, g, b, a]) => json!({ "label": f.label, "kind": "colour", "value": format!("#{r:02x}{g:02x}{b:02x}{a:02x}") }),
+            V::Speed(x) => json!({ "label": f.label, "kind": "speed", "value": x }),
+            V::Size(x) => json!({ "label": f.label, "kind": "size", "value": x }),
+        })
+        .collect()
+}
+
+/// The title templates the template op places, as `title_templates`
+/// answers: the built-in library by category (#1724), and those saved in
+/// `dir` (#1139), each with the fields it keeps editable and their values
+/// as made. A saved one of a built-in's name is the one placed.
+pub(crate) fn title_templates(dir: Option<&std::path::Path>) -> serde_json::Value {
+    use klipp_timeline::title_library::{CATEGORIES, TITLES};
     let saved = dir.map(klipp_timeline::read_templates).unwrap_or_default();
     let list: Vec<serde_json::Value> = saved
         .iter()
-        .map(|t| {
-            let fields: Vec<serde_json::Value> = t
-                .data
-                .live_fields()
-                .into_iter()
-                .map(|(_, f, v)| match v {
-                    V::Text(s) => json!({ "label": f.label, "kind": "text", "value": s }),
-                    V::Colour([r, g, b, a]) => json!({ "label": f.label, "kind": "colour", "value": format!("#{r:02x}{g:02x}{b:02x}{a:02x}") }),
-                    V::Speed(x) => json!({ "label": f.label, "kind": "speed", "value": x }),
-                    V::Size(x) => json!({ "label": f.label, "kind": "size", "value": x }),
-                })
-                .collect();
-            json!({ "name": t.name, "category": t.category, "fields": fields })
-        })
+        .map(|t| json!({ "name": t.name, "category": t.category, "fields": listed_fields(&t.data) }))
         .collect();
-    let text = match saved.len() {
-        0 => "No title templates are saved: save a styled title as one from the Titles browser.".to_string(),
-        n => format!("{n} title template{}: {}. Place one with the template op, setting its fields by label.", if n == 1 { "" } else { "s" }, saved.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")),
-    };
-    json!({ "text": text, "templates": list })
+    let builtin: Vec<serde_json::Value> = TITLES
+        .iter()
+        .map(|t| json!({ "name": t.name, "category": t.category, "fields": listed_fields(&t.data()) }))
+        .collect();
+    let by_category: Vec<String> = CATEGORIES
+        .iter()
+        .map(|c| format!("{c}: {}", TITLES.iter().filter(|t| t.category == *c).map(|t| t.name).collect::<Vec<_>>().join(", ")))
+        .collect();
+    let mut text = format!("{} built-in title templates. {}.", TITLES.len(), by_category.join("; "));
+    text.push_str(&match saved.len() {
+        0 => " None saved.".to_string(),
+        n => format!(" {n} saved: {}.", saved.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")),
+    });
+    text.push_str(" Place one with the template op by name, setting its fields by label.");
+    json!({ "text": text, "builtin": builtin, "templates": list })
 }
 
 /// Exact clip changes predicted by resolved cut edits. The UI applies the
@@ -326,8 +349,8 @@ mod template_tests {
         assert_eq!(listed["templates"][0]["name"], "Guest");
         assert_eq!(listed["templates"][0]["fields"][0], json!({ "label": "Text 1", "kind": "text", "value": "Jane Doe" }));
         assert_eq!(listed["templates"][0]["fields"][1]["kind"], "colour");
-        assert!(listed["text"].as_str().unwrap().contains("1 title template: Guest"), "{listed}");
-        assert!(title_templates(None)["text"].as_str().unwrap().starts_with("No title templates"));
+        assert!(listed["text"].as_str().unwrap().contains("1 saved: Guest"), "{listed}");
+        assert!(title_templates(None)["text"].as_str().unwrap().contains("None saved"));
 
         let op = |name: &str| klipp_document::ops::Op::Template { name: name.into(), at: klipp_document::ops::Anchor::Secs(0.0), secs: 3.0, track: None, fields: Default::default(), data: None };
         let filled = with_templates(&[op("guest"), op("Nobody")], Some(&dir));
@@ -335,8 +358,41 @@ mod template_tests {
             klipp_document::ops::Op::Template { data, .. } => data.as_deref().cloned(),
             _ => None,
         };
-        assert_eq!(data(&filled[0]), Some(td), "by name, any case");
+        let mut marked = td;
+        marked.template = Some("user:Guest".into());
+        assert_eq!(data(&filled[0]), Some(marked), "by name, any case, marked as made from it");
         assert_eq!(data(&filled[1]), None, "no such template");
         std::fs::remove_dir_all(dir).ok();
     }
+
+    /// The built-in library is listed by category with its fields, and a
+    /// template op names a built-in by name and gets it, marked as made
+    /// from it; a saved template of the same name wins (#1724).
+    #[test]
+    fn built_in_templates_are_listed_and_placed_by_name() {
+        let listed = title_templates(None);
+        let builtin = listed["builtin"].as_array().unwrap();
+        assert_eq!(builtin.len(), klipp_timeline::title_library::TITLES.len());
+        let bar = builtin.iter().find(|t| t["name"] == "Name Bar").unwrap();
+        assert_eq!(bar["category"], "Lower Thirds");
+        let labels: Vec<&str> = bar["fields"].as_array().unwrap().iter().map(|f| f["label"].as_str().unwrap()).collect();
+        assert_eq!(labels, ["Name", "Role", "Accent", "Size", "Speed"]);
+        assert!(listed["text"].as_str().unwrap().contains("Lower Thirds: Name Bar"), "{}", listed["text"]);
+
+        let op = |name: &str| klipp_document::ops::Op::Template { name: name.into(), at: klipp_document::ops::Anchor::Secs(0.0), secs: 3.0, track: None, fields: Default::default(), data: None };
+        let filled = with_templates(&[op("name bar")], None);
+        let klipp_document::ops::Op::Template { data: Some(td), .. } = &filled[0] else { panic!("a built-in by name") };
+        assert_eq!(td.template.as_deref(), Some("Name Bar"));
+        assert_eq!(td.field_named("Role").map(|i| td.field_value(i)), Some(Some(klipp_core::TitleFieldValue::Text("[Title or role]".into()))));
+
+        let dir = std::env::temp_dir().join(format!("klipp-control-templates-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = json!({ "name": "Name Bar", "category": "Lower Thirds", "written_by": "0.1.0", "data": saved(&dir) });
+        std::fs::write(dir.join(format!("Name Bar.{}", klipp_timeline::TEMPLATE_EXTENSION)), file.to_string()).unwrap();
+        let filled = with_templates(&[op("Name Bar")], Some(&dir));
+        let klipp_document::ops::Op::Template { data: Some(td), .. } = &filled[0] else { panic!() };
+        assert_eq!(td.template.as_deref(), Some("user:Name Bar"), "the saved one wins");
+        std::fs::remove_dir_all(dir).ok();
+    }
 }
+
