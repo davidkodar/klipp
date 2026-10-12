@@ -424,6 +424,7 @@ pub fn show(
                             let thumb = state.effect_thumbnails.get_texture(&fx.name);
                             let is_pending = state.effect_thumbnails.is_ofx_pending(&fx.name);
                             let supports_gpu = fx.supports_gpu(&state.available_plugins);
+                            let temporal = fx.is_temporal(&state.available_plugins);
                             let resp = if render_grid {
                                 effect_card(
                                     ui,
@@ -435,6 +436,7 @@ pub fn show(
                                     thumb,
                                     is_pending,
                                     supports_gpu,
+                                    temporal,
                                 )
                             } else {
                                 effect_list_row(
@@ -721,6 +723,7 @@ fn effect_card(
     thumbnail: Option<&egui::TextureHandle>,
     is_pending: bool,
     supports_gpu: bool,
+    temporal: bool,
 ) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(
         egui::vec2(width, card_h),
@@ -848,7 +851,8 @@ fn effect_card(
         {
             ui.label(egui::RichText::new("CPU only — adjust while paused, apply on export").size(10.0).color(theme.marker_warning));
         }
-        if plugin_id.contains("Retime") || plugin_id.contains("SlitScan") || plugin_id.contains("timeOffset") {
+        // As the plug-in declared it (it reads frames at other times).
+        if temporal {
             ui.label(egui::RichText::new("Render only — not real-time, applied on export").size(10.0).color(theme.marker_error));
         }
         if plugin_id.contains("anaglyph") || plugin_id.contains("joinView") || plugin_id.contains("mixView")

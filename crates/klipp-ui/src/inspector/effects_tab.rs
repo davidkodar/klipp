@@ -1047,11 +1047,9 @@ pub(crate) fn show_ofx_cards(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppS
                     ui.add_space(2.0);
                 }
 
-                // Render-only notice for temporal plugins
-                let is_temporal = effect.plugin_name.contains("Retime")
-                    || effect.plugin_name.contains("SlitScan")
-                    || effect.plugin_name.contains("timeOffset")
-                    || effect.plugin_name.contains("TimeOffset");
+                // Render-only notice for a plug-in that declared it reads
+                // frames at other times, as the render path reads it.
+                let is_temporal = state.available_plugins.iter().any(|p| p.name == effect.plugin_name && p.temporal);
                 if is_temporal {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Render only").size(10.0).color(theme.marker_error).strong());

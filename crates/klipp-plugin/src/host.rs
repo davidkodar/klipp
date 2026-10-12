@@ -114,6 +114,10 @@ pub struct OfxPluginInfo {
     /// during Describe. Drives the on-thumbnail GPU/CPU badge in the
     /// effects browser. Mirrors `OfxPlugin::supports_opengl`.
     pub supports_opengl: bool,
+    /// It asks for frames at other times (`OfxImageEffectPropTemporalClipAccess`),
+    /// as it declared: mirrors `OfxPlugin::temporal`, which the render
+    /// path reads.
+    pub temporal: bool,
 }
 
 // ── Loaded plugin ────────────────────────────────────────────────────
@@ -188,6 +192,7 @@ impl OfxPlugin {
             supported_contexts: self.supported_contexts.clone(),
             description: self.description.clone(),
             supports_opengl: self.supports_opengl,
+            temporal: self.temporal,
         }
     }
 }
