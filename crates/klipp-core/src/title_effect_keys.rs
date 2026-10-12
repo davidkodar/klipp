@@ -111,6 +111,9 @@ pub const EXTRUSION_LIGHTING: &str = "extrusion.lighting";
 pub const TEXT_SIZE: &str = "text.size";
 pub const TEXT_TRACKING: &str = "text.tracking";
 pub const TEXT_LINE_SPACING: &str = "text.line_spacing";
+/// Where a text on a drawn path sits along it, 0..1 (#1508):
+/// `TextPath::Layer.offset_keyframes`.
+pub const TEXT_PATH_OFFSET: &str = "text.path_offset";
 
 // `TextBox.color_keyframes`: a channel each, in linear light 0..1.
 pub const TEXT_COLOR: &str = "text.color";

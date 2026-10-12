@@ -251,6 +251,10 @@ pub fn parameters(object: &klipp_timeline::TitleObject) -> Vec<TitleCurveParam> 
         if !tb.color_keyframes.is_empty() {
             keys.extend([k::TEXT_COLOR_R, k::TEXT_COLOR_G, k::TEXT_COLOR_B, k::TEXT_COLOR_A].map(String::from));
         }
+        // Where a text on a drawn path sits along it (#1508).
+        if matches!(tb.text_path, Some(klipp_timeline::TextPath::Layer { .. })) {
+            keys.push(k::TEXT_PATH_OFFSET.into());
+        }
         for i in 0..object.fx().glows.len() {
             keys.extend([k::glow_radius_key(i), k::glow_intensity_key(i)]);
         }

@@ -5431,32 +5431,49 @@ fn show_title_editor(
             ui.add_space(6.0);
     // Text Path
     {
+        // The fixed shapes, then each path layer of the title to follow
+        // (#1508).
+        let path_layers: Vec<(klipp_timeline::TitleObjectId, String)> = td
+            .objects
+            .iter()
+            .filter(|o| matches!(&o.content, klipp_timeline::TitleObjectContent::Shape(sh) if matches!(sh.kind, klipp_timeline::ShapeKind::Path(_))))
+            .map(|o| (o.id, if o.name.is_empty() { format!("Path {}", o.id.0 + 1) } else { o.name.clone() }))
+            .collect();
         let path_idx: usize = match &td.text_path() {
             None => 0,
             Some(klipp_timeline::TextPath::Arc { .. }) => 1,
             Some(klipp_timeline::TextPath::Circle { .. }) => 2,
             Some(klipp_timeline::TextPath::Wave { .. }) => 3,
+            Some(klipp_timeline::TextPath::Layer { layer, .. }) => path_layers.iter().position(|(id, _)| id == layer).map_or(usize::MAX, |i| 4 + i),
         };
-        let path_labels = ["None", "Arc", "Circle", "Wave"];
+        let mut path_labels: Vec<String> = ["None", "Arc", "Circle", "Wave"].map(String::from).to_vec();
+        path_labels.extend(path_layers.iter().map(|(_, name)| name.clone()));
         let mut new_idx = path_idx;
-        egui::ComboBox::from_label("Type")
-            .selected_text(path_labels[path_idx])
-            .width(100.0)
+        egui::ComboBox::from_label("Follow")
+            .selected_text(path_labels.get(path_idx).map_or("A missing path", |l| l.as_str()))
+            .width(120.0)
             .show_ui(ui, |ui| {
                 for (i, label) in path_labels.iter().enumerate() {
-                    if ui.selectable_label(path_idx == i, *label).clicked() {
+                    if ui.selectable_label(path_idx == i, label.as_str()).clicked() {
                         new_idx = i;
                     }
                 }
             });
         if new_idx != path_idx {
-            let (pk, p1, p2, p3) = match new_idx {
-                1 => (1u8, 200.0f32, 0.0f32, 180.0f32),
-                2 => (2, 200.0, 0.0, 0.0),
-                3 => (3, 30.0, 2.0, 0.0),
-                _ => (0, 0.0, 0.0, 0.0),
-            };
-            cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: pk, p1, p2, p3 });
+            if let Some((layer, _)) = new_idx.checked_sub(4).and_then(|i| path_layers.get(i)) {
+                cmds.push(AppCommand::SetTitleTextPathLayer { clip_id, layer: layer.0, contour: 0, offset: 0.0, align: 0, flip: false });
+            } else {
+                let (pk, p1, p2, p3) = match new_idx {
+                    1 => (1u8, 200.0f32, 0.0f32, 180.0f32),
+                    2 => (2, 200.0, 0.0, 0.0),
+                    3 => (3, 30.0, 2.0, 0.0),
+                    _ => (0, 0.0, 0.0, 0.0),
+                };
+                cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: pk, p1, p2, p3 });
+            }
+        }
+        if ui.button("Draw a path for this text").on_hover_text("Adds a curve the text follows; drag its points to shape it").clicked() {
+            cmds.push(AppCommand::DrawTitleTextPath { clip_id });
         }
         // Show path params if active
         if let Some(path) = &td.text_path() {
@@ -5485,6 +5502,34 @@ fn show_title_editor(
                     path_changed |= ui.add(egui::DragValue::new(&mut p).range(0.0..=360.0).speed(1.0).suffix("\u{00b0}").prefix("Phase: ")).changed();
                     if path_changed {
                         cmds.push(AppCommand::SetTitleTextPath { clip_id, path_kind: 3, p1: a, p2: f, p3: p });
+                    }
+                }
+                klipp_timeline::TextPath::Layer { layer, contour, offset, align, flip, .. } => {
+                    // Start along the path, keyable so the text travels.
+                    use klipp_core::title_effect_keys as k;
+                    let no_keys: &[klipp_core::Keyframe] = &[];
+                    let keys = td.primary_text().and_then(|tb| tb.effect_keyframes_for(k::TEXT_PATH_OFFSET)).unwrap_or(no_keys);
+                    let ks = target_oid.map(|_| title_object_keyframe_state(keys, clip_time_secs, keyframe_tolerance));
+                    let mut at = path.offset_at(clip_time_secs);
+                    let align_id = match align { klipp_timeline::PathTextAlign::Start => 0u8, klipp_timeline::PathTextAlign::Center => 1, klipp_timeline::PathTextAlign::End => 2 };
+                    let (layer, contour, offset, flip) = (layer.0, *contour, *offset, *flip);
+                    let resp = crate::widgets::scrubby_param::scrubby_param_row(ui, "Start", &mut at, 0.0..=1.0, 0.0, 0.005, 3, "", ks);
+                    handle_text_key_edit(cmds, clip_id, target_oid, k::TEXT_PATH_OFFSET, at, keys, clip_time_secs, keyframe_tolerance, (&resp).into(),
+                        |offset| AppCommand::SetTitleTextPathLayer { clip_id, layer, contour, offset, align: align_id, flip });
+                    let mut new_align = align_id;
+                    ui.horizontal(|ui| {
+                        ui.label("Align");
+                        for (id, label) in [(0u8, "Start"), (1, "Centre"), (2, "End")] {
+                            ui.selectable_value(&mut new_align, id, label);
+                        }
+                    });
+                    let mut new_flip = flip;
+                    ui.checkbox(&mut new_flip, "Flip side");
+                    if new_align != align_id || new_flip != flip {
+                        cmds.push(AppCommand::SetTitleTextPathLayer { clip_id, layer, contour, offset, align: new_align, flip: new_flip });
+                    }
+                    if !path_layers.iter().any(|(id, _)| id.0 == layer) {
+                        ui.label(egui::RichText::new("Its path layer is gone: the text is laid straight.").size(10.0).color(theme.accent));
                     }
                 }
             }
