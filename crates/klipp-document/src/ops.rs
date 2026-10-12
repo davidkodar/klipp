@@ -228,6 +228,172 @@ pub struct Typeset {
     /// them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runs: Option<Vec<RunSpec>>,
+    /// Animators (#1701): presets by name or full, in place of any the
+    /// text had; `[]` clears them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animators: Option<Vec<AnimatorSpec>>,
+    /// Keys on the text's size, tracking, line spacing, colour and
+    /// gradient stops, in seconds from the title's start (#1701).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<KeysSpec>,
+    /// The text along a path layer of the same title, or `"none"` (#1701).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_path: Option<OnPathSpec>,
+    /// How the text layer mixes with the layers below it (#1513).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend: Option<String>,
+    /// Another layer of the same title masking the text, or `"none"`
+    /// (#1513).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<MaskSpec>,
+}
+
+/// A layer of the same title whose alpha or brightness is how much of
+/// the text shows: `kind` alpha (the default), inverted_alpha, luma or
+/// inverted_luma. `"none"` takes the mask off.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MaskSpec {
+    Off(String),
+    Layer {
+        layer: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+    },
+}
+
+/// A value at a time from the title's start.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ValueKey {
+    pub at: f64,
+    pub value: f32,
+}
+
+/// A colour at a time from the title's start.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ColourKey {
+    pub at: f64,
+    pub color: String,
+}
+
+/// A second range an animator is limited to.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RangeSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<f32>,
+}
+
+/// An animator (#1510) as an op gives it: a `preset` by name with any
+/// field over it, or the fields alone. What it picks: `unit`, the range
+/// `start`..`end` moved by `offset` (0..1, keyed by `*_keys`), `shape`,
+/// `order` (random by `seed`), `easing`, `amount` and a `within` range;
+/// what it does to what it picks wholly: `move_x`, `move_y` (font
+/// sizes), `scale`, `rotate` (degrees), `opacity`, `blur`, `color`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnimatorSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_keys: Option<Vec<ValueKey>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_keys: Option<Vec<ValueKey>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset_keys: Option<Vec<ValueKey>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub easing: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub within: Option<RangeSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub move_x: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub move_y: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotate: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opacity: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blur: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+
+/// Keys on a text's type and colour (#1511), each in place of the keys
+/// it had; `[]` clears a field's keys. `gradient_stops` by the stop's
+/// index in the gradient, from 0.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeysSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<Vec<ValueKey>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracking: Option<Vec<ValueKey>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_spacing: Option<Vec<ValueKey>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<Vec<ColourKey>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradient_stops: Option<std::collections::BTreeMap<String, Vec<ColourKey>>>,
+}
+
+/// The text along a path layer of the same title (#1508), or `"none"`
+/// to lay it straight again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OnPathSpec {
+    Off(String),
+    Path(PathSpec),
+}
+
+/// A path for text: `layer` the path's layer id in the same title,
+/// `contour` which of its outlines, `offset` where on it the text sits
+/// (0..1, keyed by `offset_keys`), `align` which part of the text sits
+/// there (start, center, end), `flip` its other side.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PathSpec {
+    pub layer: u32,
+    #[serde(default)]
+    pub contour: usize,
+    #[serde(default)]
+    pub offset: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset_keys: Option<Vec<ValueKey>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub align: Option<String>,
+    #[serde(default)]
+    pub flip: bool,
 }
 
 /// A styled stretch of a title's text (#1686): the words it covers, the
@@ -7077,11 +7243,16 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look, secs: f64) -> Result<kli
     // Sizes keep their proportions: a lower third's role stays smaller than its name.
     let first_size = new.objects.iter().find_map(|o| match &o.content { TitleObjectContent::TextBox(tb) => Some(tb.font_size), _ => None }).unwrap_or(1.0).max(1.0);
     let (mut runs_placed, mut runs_missing) = (false, None::<String>);
+    // The layers a text's path is looked for among (#1701).
+    let layers = td.objects.clone();
     for o in new.objects.iter_mut() {
         if let (Some((cx, cy)), true) = (first_centre, look.x.is_some() || look.y.is_some()) {
             let (dx, dy) = (look.x.map(|x| x - cx).unwrap_or(0.0), look.y.map(|y| y - cy).unwrap_or(0.0));
             o.transform.center.x = (o.transform.center.x + dx).clamp(0.02, 0.98);
             o.transform.center.y = (o.transform.center.y + dy).clamp(0.02, 0.98);
+        }
+        if matches!(o.content, TitleObjectContent::TextBox(_)) {
+            set_blend_and_mask(o, &look.typeset, &layers)?;
         }
         let klipp_timeline::TitleObject { content, fx, .. } = o;
         let TitleObjectContent::TextBox(tb) = content else { continue };
@@ -7111,6 +7282,7 @@ fn restyle(td: &klipp_timeline::TitleData, look: &Look, secs: f64) -> Result<kli
         if look.typeset.runs.is_some() && !runs_placed {
             runs_placed = set_type(tb, &look.typeset).map_err(|e| runs_missing.get_or_insert(e).clone()).is_ok();
         }
+        set_motion_extras(tb, fx, &look.typeset, secs, &layers)?;
         // The text's own fill and edge, not its layer stack.
         if let Some(g) = &look.gradient {
             tb.gradient = Some(g.clone());
@@ -7208,7 +7380,7 @@ fn style(
     look: &Look,
 ) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     if *look == Look::default() {
-        return Err(refuse(i, "nothing to change", "give a look field (size, color, font, bold, align, x, y, backing, outline, shadow, glow, gradient, glitch, chromatic), a typesetting field (weight, axes, features, last_line, valign, underline, runs) or a motion (animate, enter, exit, loop)"));
+        return Err(refuse(i, "nothing to change", "give a look field (size, color, font, bold, align, x, y, backing, outline, shadow, glow, gradient, glitch, chromatic), a typesetting field (weight, axes, features, last_line, valign, underline, runs), a motion (animate, enter, exit, loop, animators, keys), on_path, blend or mask"));
     }
     for (name, v, lo, hi) in [
         ("size", look.size, 6.0, 1000.0),
@@ -7408,6 +7580,366 @@ struct Typesetting {
     valign: Option<klipp_timeline::TextVerticalAlign>,
     underline: Option<bool>,
     runs: Option<Vec<(RunSpec, Option<[u8; 4]>)>>,
+    /// Animators in place of the text's; `Some(vec![])` clears them.
+    animators: Option<Vec<klipp_core::title_motion::Animator>>,
+    /// Keys asked for, each field in place of the text's.
+    keys: Option<TypeKeys>,
+    /// The text on a path (`Some(None)` straight again), its layer
+    /// checked against each title when applied.
+    on_path: Option<Option<klipp_timeline::TextPath>>,
+    blend: Option<klipp_core::BlendMode>,
+    /// The mask (`Some(None)` off), its source checked against each
+    /// title when applied.
+    mask: Option<Option<klipp_timeline::LayerMask>>,
+}
+
+/// A blend mode by its snake_case name.
+fn blend_mode(name: &str, i: usize) -> Result<klipp_core::BlendMode, Refusal> {
+    let key = |b: &klipp_core::BlendMode| b.display_name().to_lowercase().replace(' ', "_");
+    klipp_core::BlendMode::ALL.into_iter().find(|b| key(b) == name.to_lowercase().replace(' ', "_")).ok_or_else(|| {
+        let names: Vec<String> = klipp_core::BlendMode::ALL.iter().map(key).collect();
+        refuse(i, format!("\"{name}\" is not a blend mode"), format!("use {}", names.join(", ")))
+    })
+}
+
+/// A mask by its spec.
+fn layer_mask(m: &MaskSpec, i: usize) -> Result<Option<klipp_timeline::LayerMask>, Refusal> {
+    use klipp_core::layer_mask::LayerMaskKind as K;
+    match m {
+        MaskSpec::Off(s) if s.eq_ignore_ascii_case("none") => Ok(None),
+        MaskSpec::Off(s) => Err(refuse(i, format!("mask \"{s}\""), "give mask {layer, kind?}, or \"none\"")),
+        MaskSpec::Layer { layer, kind } => Ok(Some(klipp_timeline::LayerMask {
+            source: klipp_timeline::TitleObjectId(*layer),
+            kind: match kind.as_deref().map(str::to_lowercase).as_deref() {
+                None | Some("alpha") => K::Alpha,
+                Some("inverted_alpha") => K::InvertedAlpha,
+                Some("luma") => K::Luma,
+                Some("inverted_luma") => K::InvertedLuma,
+                Some(other) => return Err(refuse(i, format!("\"{other}\" is not a mask kind"), "use alpha, inverted_alpha, luma or inverted_luma")),
+            },
+        })),
+    }
+}
+
+/// A text layer's blend and mask set on it (#1513), the mask's source
+/// checked against `layers`, the title's.
+fn set_blend_and_mask(o: &mut klipp_timeline::TitleObject, t: &Typesetting, layers: &[klipp_timeline::TitleObject]) -> Result<(), String> {
+    if let Some(b) = t.blend {
+        o.blend = b;
+    }
+    if let Some(mask) = &t.mask {
+        if let Some(m) = mask {
+            if m.source == o.id {
+                return Err(format!("layer {} cannot mask itself", o.id.0));
+            }
+            if !layers.iter().any(|l| l.id == m.source) {
+                let others: Vec<String> = layers.iter().filter(|l| l.id != o.id).map(|l| l.id.0.to_string()).collect();
+                return Err(if others.is_empty() {
+                    format!("the title has no layer {} to mask with, and no other layer; add one (vector_path adds a path) first", m.source.0)
+                } else {
+                    format!("the title has no layer {}; its other layers are {}", m.source.0, others.join(", "))
+                });
+            }
+        }
+        o.mask = *mask;
+    }
+    Ok(())
+}
+
+/// A [`KeysSpec`] checked: keyframes in the model's terms. Their times
+/// are checked against each title's length when applied.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct TypeKeys {
+    size: Option<Vec<klipp_core::Keyframe>>,
+    tracking: Option<Vec<klipp_core::Keyframe>>,
+    line_spacing: Option<Vec<klipp_core::Keyframe>>,
+    color: Option<klipp_timeline::ColourKeys>,
+    stops: Vec<(usize, klipp_timeline::ColourKeys)>,
+}
+
+fn keyframe(at: f64, value: f32) -> klipp_core::Keyframe {
+    klipp_core::Keyframe { time_secs: at, value, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+}
+
+/// Why a key's time cannot be, if it cannot.
+fn check_at(at: f64, what: &str, i: usize) -> Result<(), Refusal> {
+    if at.is_finite() && at >= 0.0 {
+        Ok(())
+    } else {
+        Err(refuse(i, format!("a {what} key at {at} s"), "give each key's at in seconds from the title's start, 0 or later"))
+    }
+}
+
+/// `keys` as keyframes, each value within `lo..=hi`.
+fn value_keys(keys: &[ValueKey], lo: f32, hi: f32, what: &str, i: usize) -> Result<Vec<klipp_core::Keyframe>, Refusal> {
+    keys.iter()
+        .map(|k| {
+            check_at(k.at, what, i)?;
+            if !k.value.is_finite() || !(lo..=hi).contains(&k.value) {
+                return Err(refuse(i, format!("a {what} key of {} is out of range", k.value), format!("give {what} keys from {lo} to {hi}")));
+            }
+            Ok(keyframe(k.at, k.value))
+        })
+        .collect()
+}
+
+/// `keys` as a colour's channel keys.
+fn colour_keys(keys: &[ColourKey], what: &str, i: usize) -> Result<klipp_timeline::ColourKeys, Refusal> {
+    let mut out = klipp_timeline::ColourKeys::default();
+    for k in keys {
+        check_at(k.at, what, i)?;
+        let c = parse_color(&k.color).ok_or_else(|| refuse(i, format!("\"{}\" is not a colour", k.color), format!("write each {what} key's color as #rrggbb or #rrggbbaa")))?;
+        out.set(k.at, c);
+    }
+    Ok(out)
+}
+
+/// A selector's unit by name.
+fn select_unit(u: &str, i: usize) -> Result<klipp_core::title_motion::SelectUnit, Refusal> {
+    use klipp_core::title_motion::SelectUnit as U;
+    match u.to_lowercase().as_str() {
+        "char" | "chars" | "character" | "characters" | "letter" | "letters" => Ok(U::Char),
+        "word" | "words" => Ok(U::Word),
+        "line" | "lines" => Ok(U::Line),
+        other => Err(refuse(i, format!("\"{other}\" is not an animator unit"), "use char, word or line")),
+    }
+}
+
+/// A range fraction, checked to `lo..=1`.
+fn range_value(v: Option<f32>, lo: f32, what: &str, i: usize) -> Result<Option<f32>, Refusal> {
+    match v {
+        Some(v) if !v.is_finite() || !(lo..=1.0).contains(&v) => Err(refuse(i, format!("an animator's {what} {v} is out of range"), format!("give {what} from {lo} to 1, a fraction of the units"))),
+        v => Ok(v),
+    }
+}
+
+/// An [`AnimatorSpec`] as an animator: its preset, if any, with the
+/// spec's fields over it, every value checked.
+fn animator(spec: &AnimatorSpec, i: usize) -> Result<klipp_core::title_motion::Animator, Refusal> {
+    use klipp_core::title_motion::{animator_preset, RangeSelector, SelectOrder, SelectShape, ANIMATOR_PRESETS};
+    let mut a = match spec.preset.as_deref() {
+        // A preset's keys are laid over four seconds; `*_keys` replace them.
+        Some(p) => animator_preset(&p.to_lowercase(), 4.0).ok_or_else(|| refuse(i, format!("\"{p}\" is not an animator preset"), format!("use {}, or give the animator's fields", ANIMATOR_PRESETS.join(", "))))?,
+        None => Default::default(),
+    };
+    if let Some(n) = &spec.name {
+        a.name = n.clone();
+    }
+    if let Some(e) = spec.enabled {
+        a.enabled = e;
+    }
+    let s = &mut a.selector;
+    if let Some(u) = &spec.unit {
+        s.unit = select_unit(u, i)?;
+    }
+    if let Some(v) = range_value(spec.start, 0.0, "start", i)? {
+        s.start = v;
+    }
+    if let Some(v) = range_value(spec.end, 0.0, "end", i)? {
+        s.end = v;
+    }
+    if let Some(v) = range_value(spec.offset, -1.0, "offset", i)? {
+        s.offset = v;
+    }
+    if let Some(k) = &spec.start_keys {
+        s.start_keyframes = value_keys(k, 0.0, 1.0, "start", i)?;
+    }
+    if let Some(k) = &spec.end_keys {
+        s.end_keyframes = value_keys(k, 0.0, 1.0, "end", i)?;
+    }
+    if let Some(k) = &spec.offset_keys {
+        s.offset_keyframes = value_keys(k, -1.0, 1.0, "offset", i)?;
+    }
+    if let Some(sh) = &spec.shape {
+        s.shape = match sh.to_lowercase().as_str() {
+            "square" => SelectShape::Square,
+            "ramp_up" => SelectShape::RampUp,
+            "ramp_down" => SelectShape::RampDown,
+            "triangle" => SelectShape::Triangle,
+            "round" => SelectShape::Round,
+            "smooth" => SelectShape::Smooth,
+            other => return Err(refuse(i, format!("\"{other}\" is not an animator shape"), "use square, ramp_up, ramp_down, triangle, round or smooth")),
+        };
+    }
+    if let Some(o) = &spec.order {
+        s.order = match o.to_lowercase().as_str() {
+            "forward" => SelectOrder::Forward,
+            "reverse" => SelectOrder::Reverse,
+            "centre" | "center" | "from_centre" | "from_center" => SelectOrder::FromCentre,
+            "random" => SelectOrder::Random { seed: spec.seed.unwrap_or(1) },
+            other => return Err(refuse(i, format!("\"{other}\" is not an animator order"), "use forward, reverse, centre or random (with a seed)")),
+        };
+        if spec.seed.is_some() && !matches!(s.order, SelectOrder::Random { .. }) {
+            return Err(refuse(i, "a seed with an order that is not random", "give order random with the seed, or leave the seed out"));
+        }
+    } else if let Some(seed) = spec.seed {
+        match &mut s.order {
+            SelectOrder::Random { seed: s } => *s = seed,
+            _ => return Err(refuse(i, "a seed without a random order", "give order random with the seed")),
+        }
+    }
+    if let Some(e) = &spec.easing {
+        s.easing = crate::title_style::easing(e).map_err(|e| refuse(i, format!("animator easing: {e}"), "use a motion easing name or cubic-bezier(x1, y1, x2, y2)"))?;
+    }
+    if let Some(v) = spec.amount {
+        if !v.is_finite() || !(-1.0..=1.0).contains(&v) {
+            return Err(refuse(i, format!("an animator's amount {v} is out of range"), "give amount from -1 to 1 (negative picks the units outside the range)"));
+        }
+        s.amount = v;
+    }
+    if let Some(w) = &spec.within {
+        let mut within = RangeSelector::default();
+        if let Some(u) = &w.unit {
+            within.unit = select_unit(u, i)?;
+        }
+        within.start = range_value(w.start, 0.0, "within start", i)?.unwrap_or(0.0);
+        within.end = range_value(w.end, 0.0, "within end", i)?.unwrap_or(1.0);
+        within.offset = range_value(w.offset, -1.0, "within offset", i)?.unwrap_or(0.0);
+        a.within = Some(within);
+    }
+    let p = &mut a.props;
+    for (v, field, lo, hi, what) in [
+        (spec.move_x, &mut p.dx, -20.0, 20.0, "move_x (font sizes)"),
+        (spec.move_y, &mut p.dy, -20.0, 20.0, "move_y (font sizes)"),
+        (spec.scale, &mut p.scale, 0.0, 20.0, "scale"),
+        (spec.rotate, &mut p.rotation, -3600.0, 3600.0, "rotate (degrees)"),
+        (spec.opacity, &mut p.opacity, 0.0, 1.0, "opacity"),
+        (spec.blur, &mut p.blur, 0.0, 4.0, "blur (font sizes)"),
+    ] {
+        if let Some(v) = v {
+            if !v.is_finite() || !(lo..=hi).contains(&v) {
+                return Err(refuse(i, format!("an animator's {what} {v} is out of range"), format!("give {what} from {lo} to {hi}")));
+            }
+            *field = v;
+        }
+    }
+    if let Some(c) = &spec.color {
+        p.colour = Some(parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), "write an animator's color as #rrggbb or #rrggbbaa"))?);
+    }
+    Ok(a)
+}
+
+/// The `keys`, `animators` and `on_path` of a [`Typeset`] checked.
+#[allow(clippy::type_complexity)]
+fn motion_extras(t: &Typeset, i: usize) -> Result<(Option<Vec<klipp_core::title_motion::Animator>>, Option<TypeKeys>, Option<Option<klipp_timeline::TextPath>>), Refusal> {
+    let animators = t.animators.as_ref().map(|a| a.iter().map(|s| animator(s, i)).collect::<Result<Vec<_>, _>>()).transpose()?;
+    let keys = t
+        .keys
+        .as_ref()
+        .map(|k| -> Result<TypeKeys, Refusal> {
+            Ok(TypeKeys {
+                size: k.size.as_deref().map(|v| value_keys(v, 4.0, 1000.0, "size", i)).transpose()?,
+                tracking: k.tracking.as_deref().map(|v| value_keys(v, -50.0, 500.0, "tracking", i)).transpose()?,
+                line_spacing: k.line_spacing.as_deref().map(|v| value_keys(v, 0.1, 5.0, "line_spacing", i)).transpose()?,
+                color: k.color.as_deref().map(|v| colour_keys(v, "color", i)).transpose()?,
+                stops: k
+                    .gradient_stops
+                    .iter()
+                    .flatten()
+                    .map(|(idx, v)| {
+                        let n = idx.parse::<usize>().map_err(|_| refuse(i, format!("\"{idx}\" is not a gradient stop"), "name gradient stops by their index from 0: {\"0\": [...]}"))?;
+                        Ok((n, colour_keys(v, "gradient stop", i)?))
+                    })
+                    .collect::<Result<Vec<_>, Refusal>>()?,
+            })
+        })
+        .transpose()?;
+    let on_path = t
+        .on_path
+        .as_ref()
+        .map(|p| -> Result<Option<klipp_timeline::TextPath>, Refusal> {
+            match p {
+                OnPathSpec::Off(s) if s.eq_ignore_ascii_case("none") => Ok(None),
+                OnPathSpec::Off(s) => Err(refuse(i, format!("on_path \"{s}\""), "give on_path {layer, contour?, offset?, offset_keys?, align?, flip?}, or \"none\"")),
+                OnPathSpec::Path(p) => {
+                    if !p.offset.is_finite() || !(0.0..=1.0).contains(&p.offset) {
+                        return Err(refuse(i, format!("a path offset {} is out of range", p.offset), "give offset from 0 (the path's start) to 1 (its end)"));
+                    }
+                    let align = match p.align.as_deref().map(str::to_lowercase).as_deref() {
+                        None | Some("start") => klipp_timeline::PathTextAlign::Start,
+                        Some("center") | Some("centre") => klipp_timeline::PathTextAlign::Center,
+                        Some("end") => klipp_timeline::PathTextAlign::End,
+                        Some(other) => return Err(refuse(i, format!("\"{other}\" is not a path alignment"), "use start, center or end")),
+                    };
+                    Ok(Some(klipp_timeline::TextPath::Layer {
+                        layer: klipp_timeline::TitleObjectId(p.layer),
+                        contour: p.contour,
+                        offset: p.offset,
+                        offset_keyframes: p.offset_keys.as_deref().map(|v| value_keys(v, -10.0, 10.0, "path offset", i)).transpose()?.unwrap_or_default(),
+                        align,
+                        flip: p.flip,
+                    }))
+                }
+            }
+        })
+        .transpose()?;
+    Ok((animators, keys, on_path))
+}
+
+/// A text's animators, keys and path set on it (#1701), the keys' times
+/// checked against the title's `secs` and the path against `layers`,
+/// the title's. An error says what does not fit.
+fn set_motion_extras(tb: &mut klipp_timeline::TextBox, fx: &mut Option<klipp_timeline::LayerFx>, t: &Typesetting, secs: f64, layers: &[klipp_timeline::TitleObject]) -> Result<(), String> {
+    let late = |keys: &[klipp_core::Keyframe], what: &str| match keys.iter().find(|k| k.time_secs > secs + 1e-6) {
+        Some(k) => Err(format!("a {what} key at {} s is after the title's end at {secs:.2} s", k.time_secs)),
+        None => Ok(()),
+    };
+    if let Some(animators) = &t.animators {
+        for a in animators {
+            for (keys, what) in [(&a.selector.start_keyframes, "animator start"), (&a.selector.end_keyframes, "animator end"), (&a.selector.offset_keyframes, "animator offset")] {
+                late(keys, what)?;
+            }
+        }
+        fx.get_or_insert_with(Default::default).animators = animators.clone();
+    }
+    if let Some(k) = &t.keys {
+        for (keys, field, what) in [(&k.size, &mut tb.font_size_keyframes, "size"), (&k.tracking, &mut tb.tracking_keyframes, "tracking"), (&k.line_spacing, &mut tb.line_spacing_keyframes, "line_spacing")] {
+            if let Some(keys) = keys {
+                late(keys, what)?;
+                *field = keys.clone();
+            }
+        }
+        if let Some(c) = &k.color {
+            late(&c.r, "color")?;
+            tb.color_keyframes = c.clone();
+        }
+        if !k.stops.is_empty() {
+            let Some(g) = tb.gradient.as_mut() else {
+                return Err("gradient stop keys were given for a text without a gradient; give it a gradient first".into());
+            };
+            let n = g.stops().len();
+            for (idx, keys) in &k.stops {
+                if *idx >= n {
+                    return Err(format!("the gradient has {n} stops; there is no stop {idx} (they count from 0)"));
+                }
+                late(&keys.r, "gradient stop")?;
+                if g.stop_keyframes.len() <= *idx {
+                    g.stop_keyframes.resize(idx + 1, Default::default());
+                }
+                g.stop_keyframes[*idx] = keys.clone();
+            }
+        }
+    }
+    if let Some(path) = &t.on_path {
+        if let Some(klipp_timeline::TextPath::Layer { layer, contour, offset_keyframes, .. }) = path {
+            late(offset_keyframes, "path offset")?;
+            let is_path = |o: &&klipp_timeline::TitleObject| matches!(&o.content, klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Path(_), .. }));
+            let Some(klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Path(p), .. })) = layers.iter().find(|o| o.id == *layer).filter(is_path).map(|o| &o.content) else {
+                let paths: Vec<String> = layers.iter().filter(is_path).map(|o| o.id.0.to_string()).collect();
+                return Err(if paths.is_empty() {
+                    format!("layer {} is not a path layer of this title, and it has none; add one with vector_path on its clip", layer.0)
+                } else {
+                    format!("layer {} is not a path layer of this title; its path layers are {}", layer.0, paths.join(", "))
+                });
+            };
+            let n = p.pose.contours.len();
+            if *contour >= n {
+                return Err(format!("the path has {n} contours; there is no contour {contour} (they count from 0)"));
+            }
+        }
+        tb.text_path = path.clone();
+    }
+    Ok(())
 }
 
 fn check_weight(w: u16, i: usize) -> Result<u16, Refusal> {
@@ -7453,6 +7985,7 @@ fn check_features(features: &[String], i: usize) -> Result<Vec<String>, Refusal>
 
 fn typesetting(t: &Typeset, i: usize) -> Result<Typesetting, Refusal> {
     use klipp_timeline::{LastLineAlign, TextVerticalAlign};
+    let (animators, keys, on_path) = motion_extras(t, i)?;
     let runs = t
         .runs
         .as_ref()
@@ -7505,6 +8038,11 @@ fn typesetting(t: &Typeset, i: usize) -> Result<Typesetting, Refusal> {
             .transpose()?,
         underline: t.underline,
         runs,
+        animators,
+        keys,
+        on_path,
+        blend: t.blend.as_deref().map(|b| blend_mode(b, i)).transpose()?,
+        mask: t.mask.as_ref().map(|m| layer_mask(m, i)).transpose()?,
     })
 }
 
@@ -7680,6 +8218,11 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
         }
         tb.chromatic_aberration_px = ch * 12.0;
     }
+    // Its animators, keys and path, over the fill and type set above. A
+    // new title has no path layer of its own yet.
+    let mut stack = Some(std::mem::take(&mut fx));
+    set_motion_extras(&mut tb, &mut stack, &a.typeset, a.secs, &[]).map_err(|e| refuse(i, e, "correct the keys, animators or on_path: a path is a layer vector_path adds to the title's clip, styled on afterwards"))?;
+    fx = stack.unwrap_or_default();
     fx.motion = a.motion;
     if let Some(lp) = a.loop_effect {
         fx.loops = title_loop(lp, tb.color, fx.glows.first().map(|g| g.color), a.roll_shape, i)?.into_iter().collect();
@@ -7690,6 +8233,9 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
 
     let mut td = TitleData::single_text(tb);
     td.objects[0].fx = Some(fx);
+    // A new title's one layer: its blend; a mask needs another layer.
+    let alone = td.objects.clone();
+    set_blend_and_mask(&mut td.objects[0], &a.typeset, &alone).map_err(|e| refuse(i, e, "mask a title's text once its clip has another layer to mask with"))?;
     if a.x.is_some() || a.y.is_some() {
         if let Some(obj) = td.objects.get_mut(0) {
             // Inside the title-safe area: nothing sits on the frame's edge,

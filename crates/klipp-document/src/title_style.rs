@@ -175,7 +175,7 @@ fn parse_motion(
 
 /// An easing by name, or a curve of its own as `cubic-bezier(x1, y1,
 /// x2, y2)` (#1511): the handles' times within 0..1.
-fn easing(v: &str) -> Result<klipp_core::title_motion::Easing, String> {
+pub(crate) fn easing(v: &str) -> Result<klipp_core::title_motion::Easing, String> {
     use klipp_core::title_motion::Easing;
     let lower = v.trim().to_lowercase();
     if let Some(args) = lower.strip_prefix("cubic-bezier(").and_then(|r| r.strip_suffix(')')) {

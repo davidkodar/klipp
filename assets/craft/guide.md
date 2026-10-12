@@ -386,7 +386,7 @@ exist until the plan runs.
   `dip_to_white` mark a break. A stylised kind (`zoom`, `whip`,
   `glitch`, `film_burn`) is a style choice the brief has to ask for.
   Both clips need footage beyond the cut to overlap.
-- `style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, backing_color?, outline?, outline_color?, shadow?, glow?, glow_color?, gradient?, glitch?, chromatic?, animate?, animate_secs?, stagger?, enter?, exit?, loop?, roll_shape?, edge_fade?, weight?, axes?, features?, last_line?, valign?, underline?, runs?}`:
+- `style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, backing_color?, outline?, outline_color?, shadow?, glow?, glow_color?, gradient?, glitch?, chromatic?, animate?, animate_secs?, stagger?, enter?, exit?, loop?, roll_shape?, edge_fade?, weight?, axes?, features?, last_line?, valign?, underline?, runs?, animators?, keys?, on_path?, blend?, mask?}`:
   the look and place of one title, or of every title on a track
   (`"subtitle"` for all the captions), between `from` and `to` when
   given (anchors, as `{"secs": 44.0}`). `size` is pixels of a 1080-line frame, `color` is `#rrggbb`,
@@ -418,7 +418,7 @@ exist until the plan runs.
   `side: "right"` sets it against the right edge, and `x` (that edge)
   and `y` (the name's line) place it, as fractions of the frame inside
   title-safe. A name under the wrong person is worse than none.
-- `title {text, at, secs?, style?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?, enter?, exit?, over_faces?, shadow?, weight?, axes?, features?, last_line?, valign?, underline?, runs?}`:
+- `title {text, at, secs?, style?, track?, x?, y?, size?, color?, font?, bold?, align?, backing?, backing_color?, full_frame?, outline?, outline_color?, glow?, glow_color?, gradient?, animate?, animate_secs?, stagger?, loop?, glitch?, chromatic?, enter?, exit?, over_faces?, shadow?, weight?, axes?, features?, last_line?, valign?, underline?, runs?, animators?, keys?, on_path?, blend?, mask?}`:
   a title from scratch: a heading, a callout or a hero card, on a text
   track (one is made on top if left out). `style` names a look, one of
   the brief's type styles or `heading`, `callout` or `card`, and its
@@ -448,6 +448,38 @@ exist until the plan runs.
   covers, the first time they appear unless `occurrence` counts on (1,
   2, ...); `bold` and `italic` set its style together, one left out
   being off. Runs may not overlap; words the title lacks are refused.
+  Animators move part of the text unit by unit, over the entrance and
+  exit: `animators` is a list (in place of any the text had, `[]`
+  clears them), each a `preset` (`wave`, `random_fade_in`, `spin_in`)
+  with any field over it, or the fields alone. What it picks: `unit`
+  (char, word, line), `start` and `end` (0 to 1, fractions of the
+  units) moved by `offset` (-1 to 1), each keyed by `start_keys`,
+  `end_keys`, `offset_keys` as `[{at, value}]` (seconds from the
+  title's start); `shape` (square, ramp_up, ramp_down, triangle, round,
+  smooth); `order` (forward, reverse, centre, random with a `seed`, the
+  same order every render); `easing` (as a motion's); `amount` (-1 to
+  1, negative picks the units outside); `within` `{unit?, start?, end?}`
+  a second range it is limited to. What it does to what it picks
+  wholly: `move_x`, `move_y` (font sizes), `scale`, `rotate` (degrees),
+  `opacity`, `blur` (font sizes), `color`. The middle word of "one
+  MIDDLE two" turning letter by letter in a random order is `{unit:
+  "char", order: "random", seed: 7, rotate: 90, within: {start: 0.25,
+  end: 0.75}, start_keys: [{at: 0, value: 0}, {at: 2, value: 1}]}`.
+  `keys` keys the text over its time: `size`, `tracking`,
+  `line_spacing` as `[{at, value}]`, `color` and `gradient_stops` (by
+  the stop's index from 0, `{"2": [...]}`) as `[{at, color}]`, colours
+  blended in linear light; each field replaces its keys, `[]` clears
+  them. `on_path` lays the text along a path layer of the same title
+  (`vector_path` adds one to its clip; a new title has none, so style
+  it on after): `{layer, contour?, offset? (0 to 1), offset_keys?,
+  align? (start, center, end), flip?}`, or `"none"` to lay it straight.
+  `blend` mixes the text with the title's layers below it (normal, add,
+  multiply, screen, overlay, soft_light, hard_light, difference,
+  exclusion, color_dodge, color_burn, darken, lighten); `mask`
+  `{layer, kind?}` shows the text only where another layer of the same
+  title is drawn (`kind` alpha, the default), is not (inverted_alpha),
+  is bright (luma) or is dark (inverted_luma), that layer then a matte
+  and not drawn itself; `"none"` takes the mask off.
 - `set_text {clip_id, text}`: the words of a title or a caption; its
   look, place and timing stay. For the cue the transcript misheard and
   the name it cannot spell: read the captions once they are made
