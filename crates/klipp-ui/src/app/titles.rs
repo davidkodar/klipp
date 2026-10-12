@@ -583,6 +583,30 @@ impl KlippApp {
 
     fn handle_title_content(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
+            AppCommand::ReplaceInTitles { find, replace, match_case, whole_word, subtitles, project, only } => {
+                let q = klipp_document::find::TextQuery { find: find.clone(), match_case: *match_case, whole_word: *whole_word, subtitles: *subtitles };
+                let only = only.map(|(clip_id, object, start, end)| klipp_document::find::TextMatch { clip_id, object: klipp_timeline::TitleObjectId(object), start, end, at_secs: 0.0, line: String::new() });
+                let active = self.state.active_sequence_idx;
+                let scope: Vec<usize> = if *project { (0..self.state.sequences.len()).collect() } else { vec![active] };
+                let mut changed = 0;
+                for idx in scope {
+                    let edits = klipp_document::find::replace_in_titles(&self.state.sequences[idx], &q, replace, only.as_ref());
+                    if edits.is_empty() {
+                        continue;
+                    }
+                    changed += edits.len();
+                    // Each sequence's own history takes its step.
+                    self.state.active_sequence_idx = idx;
+                    self.apply_edits_as_one(&edits, "Replace Text");
+                }
+                if self.state.active_sequence_idx != active {
+                    self.state.active_sequence_idx = active;
+                    self.sync_sequence_to_engine();
+                }
+                self.state.title_find_selected = None;
+                self.state.toast.show(if changed == 0 { format!("No title holds \u{201c}{find}\u{201d}") } else { format!("Replaced in {changed} title(s)") });
+                true
+            }
             AppCommand::RevertTitleToStyle { clip_id } => {
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
                 let reverted = seq.all_clips().find(|c| c.id == *clip_id).ok_or_else(|| "the title is gone".to_string()).and_then(|c| klipp_document::ops::revert_to_style(seq, c));

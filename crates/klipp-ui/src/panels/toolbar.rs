@@ -448,6 +448,7 @@ impl ToolbarPanel {
             if ui.add_enabled(state.active_history().can_undo(), egui::Button::new(state.active_history().undo_label().map(|d| format!("Undo {d}")).unwrap_or("Undo".into())).shortcut_text(kb.display_for("undo"))).clicked() { cmds.push(AppCommand::Undo); ui.close_menu(); }
             if ui.add_enabled(state.active_history().can_redo(), egui::Button::new(state.active_history().redo_label().map(|d| format!("Redo {d}")).unwrap_or("Redo".into())).shortcut_text(kb.display_for("redo"))).clicked() { cmds.push(AppCommand::Redo); ui.close_menu(); }
             if ui.button("History...").clicked() { state.show_history_panel = true; ui.close_menu(); }
+            if ui.button("Find and Replace in Titles\u{2026}").on_hover_text("Find words across every title, and replace them in one step").clicked() { state.show_title_find = true; ui.close_menu(); }
             ui.separator();
             if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Cut").shortcut_text(kb.display_for("cut_clip"))).clicked() {
                 if let Some(clip_id) = state.selected_clip {

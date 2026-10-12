@@ -983,6 +983,11 @@ impl KlippApp {
             cmds.extend(dialog_cmds);
         }
 
+        // Find and replace in titles (#1717).
+        if self.state.show_title_find {
+            cmds.extend(crate::panels::title_find_dialog::show_title_find_dialog(ctx, &mut self.state));
+        }
+
         // Clip Properties modal (#47)
         if self.state.show_clip_properties {
             let dialog_cmds = crate::panels::clip_properties::show_clip_properties_dialog(

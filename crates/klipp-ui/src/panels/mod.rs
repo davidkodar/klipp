@@ -4,6 +4,7 @@ pub mod audio_plugins;
 pub mod project_doctor;
 pub mod system_probe;
 pub mod batch_rename_dialog;
+pub mod title_find_dialog;
 pub mod cache_manager;
 pub mod clip_properties;
 pub mod curve_editor;

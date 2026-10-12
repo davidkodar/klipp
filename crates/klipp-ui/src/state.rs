@@ -2537,6 +2537,13 @@ pub struct AppState {
     pub show_new_project_dialog: bool,
     // Batch rename dialog (for bin media items).
     pub show_batch_rename_dialog: bool,
+    /// Find and replace in titles (#1717): open, what is looked for, its
+    /// replacement, whether over every sequence, and the match picked.
+    pub show_title_find: bool,
+    pub title_find: klipp_document::find::TextQuery,
+    pub title_find_replace: String,
+    pub title_find_project: bool,
+    pub title_find_selected: Option<usize>,
     pub batch_rename_ids: Vec<MediaId>,
     pub batch_rename_mode: crate::app::BatchRenameMode,
     pub batch_rename_find: String,
@@ -4555,6 +4562,11 @@ impl Default for AppState {
             analysis_generation: 0,
             show_new_project_dialog: false,
             show_batch_rename_dialog: false,
+            show_title_find: false,
+            title_find: Default::default(),
+            title_find_replace: String::new(),
+            title_find_project: false,
+            title_find_selected: None,
             batch_rename_ids: Vec::new(),
             batch_rename_mode: crate::app::BatchRenameMode::FindReplace,
             batch_rename_find: String::new(),
