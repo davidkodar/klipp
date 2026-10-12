@@ -1293,6 +1293,22 @@ fn a_mix_and_channel_edit_on_a_sequence_grade_lands() {
     }
 }
 
+/// A grade node's own mix on its page (#1348): its "Node mix" row,
+/// dragged, is the node's mix by path, one step, and undo takes it back.
+#[test]
+fn a_grade_node_s_mix_drags_by_path_in_one_step() {
+    let mut run = Run::new(NodeKind::Corrector).unwrap();
+    let before = saved(&run.state, run.clip);
+    let cmds = drag_with(&mut run, &mut |run, events| { let (cmds, _, texts) = run.frame(events); (cmds, Vec::new(), texts) }, "Node mix", -60.0, false);
+    let (addr, _) = crate::inspector::grade_view::grade_node(clip(&run.state, run.clip), run.node).unwrap();
+    assert!(cmds.iter().any(|c| matches!(c, AppCommand::SetMixAt { addr: a, mix: Some(m) } if *a == addr && *m < 1.0)), "{cmds:?}");
+    let mix = crate::inspector::grade_view::grade_node(clip(&run.state, run.clip), run.node).unwrap().1.mix;
+    assert!(mix.is_some_and(|m| m < 1.0), "the node keeps less of its change: {mix:?}");
+    assert_eq!(run.state.active_history().undo_count(), 1, "one step");
+    undo_once(&mut run.state);
+    assert_eq!(saved(&run.state, run.clip), before, "undo takes it back");
+}
+
 /// Redo once, as the app does for a sequence grade's path edit.
 fn redo_root(state: &mut AppState) {
     let entry = state.active_history_mut().redo().expect("a step to redo");

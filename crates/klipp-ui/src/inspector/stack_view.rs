@@ -430,6 +430,84 @@ pub fn to_effect_list(clip: &Clip, ty: &klipp_effects::registry::EffectType, nod
     out
 }
 
+/// A node's Mix row: how much of its change is kept, dragged as one step,
+/// typed, and reset to full from its label (IC15); full is stored as
+/// none. An effect's card and a grade node's page draw it alike (#1348).
+pub(crate) fn mix_row(ui: &mut egui::Ui, label: &str, addr: &NodePath, stored: Option<f32>, read_only: bool, cmds: &mut Vec<AppCommand>) {
+    let mix = stored.unwrap_or(1.0);
+    let mut v = mix;
+    let r = ui
+        .add_enabled_ui(!read_only, |ui| crate::widgets::scrubby_param::scrubby_param_row(ui, label, &mut v, 0.0..=1.0, 1.0, 0.005, 2, "", None))
+        .inner;
+    let key = klipp_graph_format::ParamKey::from(AppState::NODE_MIX_DRAG_KEY);
+    if r.drag_started {
+        cmds.push(AppCommand::BeginParamEditAt {
+            addr: addr.clone(),
+            key: key.clone(),
+        });
+    }
+    // egui reports drag_stopped on Escape before the widget is drawn.
+    if r.drag_stopped && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        cmds.push(AppCommand::AbandonParamEditAt {
+            addr: addr.clone(),
+            key,
+        });
+        // Escape also releases egui's capture so held-pointer movement
+        // cannot begin writing a second edit before the button is released.
+        ui.ctx().stop_dragging();
+    } else {
+        if r.changed && v != mix {
+            cmds.push(AppCommand::SetMixAt {
+                addr: addr.clone(),
+                mix: (v < 1.0).then_some(v),
+            });
+        }
+        if r.drag_stopped {
+            cmds.push(AppCommand::EndParamEditAt {
+                addr: addr.clone(),
+                key,
+            });
+        }
+    }
+}
+
+/// The channel a masked node reads its mask by, one of those its mask
+/// port takes, or the port's default (#1348). Nothing for a node whose
+/// mask takes no channel.
+pub(crate) fn mask_channel_row(ui: &mut egui::Ui, node: &Node, addr: &NodePath, read_only: bool, cmds: &mut Vec<AppCommand>) {
+    use klipp_graph_format::PortCatalog;
+    let Some(choices) = klipp_timeline::RegistryCatalog.node_spec(node).and_then(|s| s.inputs.into_iter().find(|p| p.key == "mask")).and_then(|p| p.params.into_iter().find(|(k, _)| k == "channel")).map(|(_, v)| v) else { return };
+    if choices.is_empty() {
+        return;
+    }
+    let current = match node.params.get(&klipp_graph_format::ParamKey::from("mask.channel")) {
+        Some(klipp_graph_format::ParamValue::Text(c)) => Some(c.clone()),
+        _ => None,
+    };
+    let name = |c: Option<&str>| match c {
+        None => "Default".to_owned(),
+        Some(c) => {
+            let mut chars = c.chars();
+            chars.next().map(|f| f.to_uppercase().chain(chars).collect()).unwrap_or_default()
+        }
+    };
+    let mut chosen = current.clone();
+    ui.add_enabled_ui(!read_only, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Mask channel");
+            egui::ComboBox::from_id_salt(("mask_channel", addr.clone())).selected_text(name(current.as_deref())).show_ui(ui, |ui| {
+                ui.selectable_value(&mut chosen, None, name(None));
+                for c in &choices {
+                    ui.selectable_value(&mut chosen, Some(c.clone()), name(Some(c)));
+                }
+            });
+        });
+    });
+    if chosen != current {
+        cmds.push(AppCommand::SetMaskChannelAt { addr: addr.clone(), channel: chosen });
+    }
+}
+
 /// What a node is called in the stack: its label, else its effect's
 /// name, else a grade group's, else its type.
 pub fn display_name(graph: &Graph, addr: &NodePath, label: &str, is_group: bool) -> String {
@@ -480,48 +558,15 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
         ui.label(egui::RichText::new(placement_text(p)).size(10.0).color(theme.text_dim));
     }
     if row.mixable {
-        let mix = node.and_then(|n| n.mix).unwrap_or(1.0);
-        let mut v = mix;
-        // A number row like the card's others: dragged, typed, and reset
-        // from its label to full (IC15).
-        let r = ui
-            .add_enabled_ui(!row.read_only, |ui| crate::widgets::scrubby_param::scrubby_param_row(ui, "Mix", &mut v, 0.0..=1.0, 1.0, 0.005, 2, "", None))
-            .inner;
-        let key = klipp_graph_format::ParamKey::from(AppState::NODE_MIX_DRAG_KEY);
-        if r.drag_started {
-            cmds.push(AppCommand::BeginParamEditAt {
-                addr: row.addr.clone(),
-                key: key.clone(),
-            });
-        }
-        // egui reports drag_stopped on Escape before the widget is drawn.
-        if r.drag_stopped && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            cmds.push(AppCommand::AbandonParamEditAt {
-                addr: row.addr.clone(),
-                key,
-            });
-            // Escape also releases egui's capture so held-pointer movement
-            // cannot begin writing a second edit before the button is released.
-            ui.ctx().stop_dragging();
-        } else {
-            if r.changed && v != mix {
-                cmds.push(AppCommand::SetMixAt {
-                    addr: row.addr.clone(),
-                    mix: (v < 1.0).then_some(v),
-                });
-            }
-            if r.drag_stopped {
-                cmds.push(AppCommand::EndParamEditAt {
-                    addr: row.addr.clone(),
-                    key,
-                });
-            }
-        }
+        mix_row(ui, "Mix", &row.addr, node.and_then(|n| n.mix), row.read_only, cmds);
     }
     for chip in &row.mask_chips {
         if ui.small_button(format!("Masked by: {}", chip.label)).on_hover_text("Show the mask in the graph").clicked() {
             cmds.push(AppCommand::RevealGraph { path: chip.source.clone(), select: true });
         }
+    }
+    if let Some(n) = node.filter(|_| !row.mask_chips.is_empty()) {
+        mask_channel_row(ui, n, &row.addr, row.read_only, cmds);
     }
     for branch in &row.sub_stacks {
         let from = display_name(graph, &branch.source, "", false);

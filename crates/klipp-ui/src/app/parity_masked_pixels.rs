@@ -196,3 +196,69 @@ fn a_masked_effects_edit_draws_as_the_document_op_on_both_routes() {
     assert!(report.blocked.is_empty(), "a masked effect left the native route: {:?}", report.blocked);
     assert_eq!(report.passed, manifest.required, "every mask kind earned");
 }
+
+/// A masked effect's card picks the channel it reads its mask by
+/// (#1348): "Mask channel" is on the card a mask feeds and not on one no
+/// mask does; it shows the channel set, and its choice is the effect's
+/// channel by path, one step that undo takes back.
+#[test]
+fn a_masked_effect_s_card_picks_its_mask_channel() {
+    let (plain, window) = clip(Kind::Beside);
+    let mut masked_clip = plain.clone();
+    masked_clip.apply_picture_ops(&masking(&plain, Kind::Beside, window).unwrap()).unwrap();
+    for (c, masked) in [(plain, false), (masked_clip, true)] {
+        let mut state = crate::state::AppState::default();
+        state.sequences[0].tracks[0].clips.push(c.clone());
+        let ctx = egui::Context::default();
+        let mut clock = 0.0;
+        let mut frame = |state: &crate::state::AppState, events: Vec<egui::Event>| {
+            clock += 0.1;
+            let mut cmds = Vec::new();
+            let c = state.sequences[0].all_clips().find(|x| x.id == c.id).unwrap().clone();
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 1600.0))), time: Some(clock), events, ..Default::default() };
+            let out = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| crate::inspector::stack_view::show(ui, &crate::theme::KlippTheme::default(), state, &c, &mut cmds, 0.0));
+            });
+            let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.visual_bounding_rect().center())),
+                _ => None,
+            }).collect();
+            (cmds, texts)
+        };
+        frame(&state, Vec::new());
+        let texts = frame(&state, Vec::new()).1;
+        let row = texts.iter().find(|(t, _)| t == "Mask channel");
+        assert_eq!(row.is_some(), masked, "masked {masked}: {texts:?}");
+        if !masked {
+            continue;
+        }
+        let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let click = |frame: &mut dyn FnMut(&crate::state::AppState, Vec<egui::Event>) -> (Vec<klipp_core::AppCommand>, Vec<(String, egui::Pos2)>), state: &crate::state::AppState, at: egui::Pos2| {
+            frame(state, vec![egui::Event::PointerMoved(at), button(at, true)]);
+            let cmds = frame(state, vec![button(at, false)]).0;
+            (cmds, frame(state, Vec::new()).1)
+        };
+        let y = row.unwrap().1.y;
+        // The channel shown, right of the label: the window set Luminance.
+        let shown = texts.iter().find(|(t, p)| t == "Luminance" && (p.y - y).abs() < 6.0).unwrap_or_else(|| panic!("the channel shown: {texts:?}")).1;
+        let (_, texts) = click(&mut frame, &state, shown);
+        let alpha = texts.iter().find(|(t, _)| t == "Alpha").unwrap_or_else(|| panic!("no Alpha choice: {texts:?}")).1;
+        let (cmds, _) = click(&mut frame, &state, alpha);
+        let fx = c.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT).unwrap().id;
+        let addr = NodePath::new(Root::Clip { clip: c.id.0 }, [fx]);
+        assert!(matches!(cmds.as_slice(), [klipp_core::AppCommand::SetMaskChannelAt { addr: a, channel: Some(ch) }] if *a == addr && ch == "alpha"), "{cmds:?}");
+        let before = state.sequences[0].all_clips().find(|x| x.id == c.id).unwrap().picture_v2().unwrap().picture.clone();
+        assert_eq!(state.path_command(&cmds[0]), Some(true), "{:?}", state.toast.message_for_test());
+        let channel = |state: &crate::state::AppState| state.sequences[0].all_clips().find(|x| x.id == c.id).unwrap().picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.id == fx).unwrap().params.get(&klipp_graph_format::ParamKey::from("mask.channel")).cloned();
+        assert_eq!(channel(&state), Some(klipp_graph_format::ParamValue::Text("alpha".into())));
+        assert_eq!(state.active_history().undo_count(), 1, "one step");
+        let entry = state.active_history_mut().undo().unwrap();
+        let mut command = entry.command;
+        if let klipp_document::history::EditCommand::Named { edit, .. } = command {
+            command = *edit;
+        }
+        let klipp_document::history::EditCommand::PictureEdit { clip_id, edit, .. } = command else { panic!("a picture edit") };
+        state.set_picture(clip_id, &edit.before);
+        assert_eq!(state.sequences[0].all_clips().find(|x| x.id == c.id).unwrap().picture_v2().unwrap().picture, before, "undo takes it back");
+    }
+}
