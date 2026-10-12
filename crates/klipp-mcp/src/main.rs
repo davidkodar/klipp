@@ -1259,7 +1259,7 @@ fn call_tool(name: &str, args: &Value) -> Result<(Vec<Value>, Option<Value>), St
 }
 
 fn has_structured_output(name: &str) -> bool {
-    matches!(name, "klipp_status" | "klipp_timeline" | "klipp_plan" | "klipp_apply" | "klipp_prepare_cut")
+    matches!(name, "klipp_status" | "klipp_timeline" | "klipp_plan" | "klipp_apply" | "klipp_prepare_cut" | "klipp_grade_to_target")
 }
 
 fn output_schema(name: &str) -> Value {
@@ -1378,7 +1378,15 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
     }
     if name == "klipp_generator" || name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_grade_to_target" || name == "klipp_measure_region" || name == "klipp_colour_selfcheck" || name == "klipp_grade_chain" || name == "klipp_match_scenes" || name == "klipp_adopt_look" || name == "klipp_audio_spectrum" || name == "klipp_skin_balance" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
-            return Ok(with_next(text.to_string()));
+            let mut text = text.to_string();
+            // A grade pass writes many times: the next edit needs the
+            // revision it ended at, not the one before it (#1571).
+            if name == "klipp_grade_to_target" {
+                if let Some(revision) = result.get("revision").and_then(Value::as_u64) {
+                    text.push_str(&format!("\n\nRevision: {revision}"));
+                }
+            }
+            return Ok(with_next(text));
         }
     }
     // An apply says what it did as the plan would, and that it is done:
@@ -3005,6 +3013,25 @@ mod interface_tests {
 #[cfg(test)]
 mod friendly_answer_tests {
     use super::*;
+
+    #[test]
+    fn grade_to_target_keeps_the_current_revision_in_text() {
+        for applied in [false, true] {
+            let reply = json!({ "text": "Two shots checked.", "revision": 87, "applied": applied, "undo_steps": 1, "next": "check with color" });
+            let content = content_for("klipp_grade_to_target", &reply).unwrap();
+            let text = content[0]["text"].as_str().unwrap();
+            assert!(text.contains("Revision: 87"), "the next edit needs the current revision: {text}");
+            assert!(text.contains("Next: check with color"));
+        }
+    }
+
+    #[test]
+    fn grade_to_target_declares_structured_revision_output() {
+        let tools = tool_definitions_for(true);
+        let grade = tools.iter().find(|tool| tool["name"] == "klipp_grade_to_target").unwrap();
+        assert_eq!(grade["outputSchema"]["properties"]["revision"]["type"], "integer");
+        assert!(has_structured_output("klipp_grade_to_target"), "modern clients must receive the raw revision too");
+    }
 
     /// #626: a status reply leads with the plain summary a person is told,
     /// the fields after it; the guide answers "what can I do"; and the
