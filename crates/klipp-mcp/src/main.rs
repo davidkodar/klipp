@@ -57,7 +57,7 @@ const WRITE_TOOLS: &[&str] = &[
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
     "klipp_generator", "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_apply",
-    "klipp_open_project",
+    "klipp_open_project", "klipp_switch_sequence",
 ];
 
 /// Calls with side effects may be replayed after a lost socket reply. The
@@ -1078,6 +1078,11 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         }),
         "klipp_check" => json!({ "method": "check", "color": args.get("color").and_then(|v| v.as_bool()).unwrap_or(false), "loudness": args.get("loudness").and_then(|v| v.as_bool()).unwrap_or(false) }),
         "klipp_rename_sequence" => json!({ "method": "rename_sequence", "name": arg_str(args, "name")? }),
+        "klipp_switch_sequence" => match (args.get("index").and_then(Value::as_u64), args.get("sequence_id").and_then(Value::as_str)) {
+            (Some(index), None) => json!({ "method": "switch_sequence", "index": index }),
+            (None, Some(id)) => json!({ "method": "switch_sequence", "sequence_id": id }),
+            _ => return Err("give index or sequence_id (one of them), as klipp_status lists the sequences".into()),
+        },
         "klipp_add_marker" => {
             let mut v = json!({ "method": "add_marker", "at_secs": args.get("at_secs").and_then(|v| v.as_f64()).ok_or("missing required argument: at_secs")? });
             for key in ["duration_secs", "label", "note", "color", "kind"] {
@@ -1887,22 +1892,18 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "max_width": { "type": "integer" }, "frames": { "type": "integer" }, "cols": { "type": "integer" }, "path": { "type": "string" } }), vec![]),
         tool("klipp_narrate",
              "Narration from text, made on the machine. voice is a manifest id; the default is \
-              kokoro_voice_af_heart (natural, female, US English; Apache-2.0). The other Kokoro voices: \
-              kokoro_voice_af_bella, kokoro_voice_af_nicole, kokoro_voice_am_michael, kokoro_voice_am_fenrir, \
-              kokoro_voice_am_puck (US); kokoro_voice_bf_emma, kokoro_voice_bf_isabella, kokoro_voice_bm_george, \
-              kokoro_voice_bm_fable (UK). They need the espeak-ng program and one 87 MB download for all ten. \
-              Lighter, more robotic Piper voices (the piper program): piper_en_us_ljspeech_high, \
-              piper_en_us_kristin_medium, piper_en_us_norman_medium, piper_en_us_john_medium, \
-              piper_en_us_libritts_high (CC BY: credit LibriTTS), piper_en_gb_cori_high, piper_sv_se_nst_medium \
-              (Swedish); piper_en_us_lessac_medium is research only, never for paid work. Where Kokoro cannot \
-              run, the default is piper_en_us_ljspeech_high. Nothing downloads unless download_models is true \
-              (or the person downloads it in Window > Narrate); a refusal names the size. The take is \
-              imported into the pool, and with apply true placed on a Voice \
-              track at at_secs as dialogue. speed (0.5 to 2, 1 as the voice speaks; 0.85 for an \
-              unhurried read) and pause_secs (the silence between sentences, 0 to 3) shape the \
-              delivery. Then duck the music under it and transcript gives the \
-              words with their times. A scratch voice to cut to; replace the file with a recorded \
-              one later.",
+              kokoro_voice_af_heart (natural, female, US English; Apache-2.0). The other Kokoro voices are \
+              kokoro_voice_ + af_bella, af_nicole, am_michael, am_fenrir, am_puck (US); bf_emma, bf_isabella, \
+              bm_george, bm_fable (UK); they need the espeak-ng program and one 87 MB download for all ten. \
+              Lighter, more robotic Piper voices (the piper program) are piper_ + en_us_ljspeech_high, \
+              en_us_kristin_medium, en_us_norman_medium, en_us_john_medium, en_us_libritts_high (CC BY: credit \
+              LibriTTS), en_gb_cori_high, sv_se_nst_medium (Swedish); piper_en_us_lessac_medium is research \
+              only, never for paid work. Where Kokoro cannot run, the default is piper_en_us_ljspeech_high. \
+              Nothing downloads unless download_models is true (or the person downloads it in Window > \
+              Narrate); a refusal names the size. The take goes into the pool, and with apply true onto a \
+              Voice track at at_secs as dialogue. speed (0.5 to 2; 0.85 reads unhurried) and pause_secs (0 to \
+              3, between sentences) shape the delivery. Then duck the music under it; transcript gives the \
+              words' times. A scratch voice to cut to, replaced by a recording later.",
              json!({ "text": { "type": "string" }, "at_secs": { "type": "number" }, "voice": { "type": "string" }, "speed": { "type": "number" }, "pause_secs": { "type": "number" }, "download_models": { "type": "boolean" }, "apply": { "type": "boolean" }, "path": { "type": "string" } }), vec!["text"]),
         tool("klipp_record",
              "Record the screen for secs with the recorder on the machine (gpu-screen-recorder, else \
@@ -2634,8 +2635,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               broadcast_neutral|web_punchy|film_soft|warm_interview|cool_tech|screencast, or \
               black_l,white_l,mid_l,contrast_range,chroma_mean,cast_a,cast_b,skin_hue; style_profile supplies a \
               reference look_target. vocabulary: correctly spelt names/products/terms for speech recognition; run \
-              klipp_analyze after setting. language: ISO 639-1 speech code (en,sv); omitted detects per file. Omitted \
-              fields request nothing. Lower thirds use cast names; klipp_check checks the brief; exports inherit \
+              klipp_analyze after setting. language: ISO 639-1 speech code (en,sv); omitted detects per file. Lower thirds use cast names; klipp_check checks the brief; exports inherit \
               omitted size/loudness. Unknown fields refused.",
              json!({ "brief": { "type": "object" }, "merge": { "type": "boolean", "description": "change only the fields given; the rest stay" } }), vec!["brief"]),
         tool("klipp_edit_plan",
@@ -2646,13 +2646,12 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_set_edit_plan",
              "Propose the paper edit, as one undo step: the cut said before a clip is placed, so \
               the user can read, change and approve it while changing it is cheap. `plan` is \
-              {segments: [...], music?: {media_id, duck_db?}, notes?}. Each segment, in cut \
+              {segments: [...], music?, notes?}. Each segment, in cut \
               order: {media_id, source_in_secs, source_out_secs (stills may hold past their import duration), feature? (a title from the \
               brief's features, as spelt there), note? (what it shows and why — write one), \
               placement? {x?, y?, width?, height?, rotation_deg?, opacity?} uses compose coordinates (equal width and height); background? {generator: solid|gradient|living_gradient|grain|circle|countdown|placeholder|color_bars, colors?: [#rrggbb, ...]} places a backdrop below the picture, taking the brief palette when colors are omitted; with_audio? (the file's own sound; off by default), title? {text, secs?, style? \
               heading|callout|card (card covers the shot by default), x? and y? as frame fractions, full_frame? (false overlays), color?, fill?, glow? 0-1, glow_color?, gradient? [top, \
-              bottom], animate? fade|rise|drop|slide_left|slide_right|scale_up|scale_down|blur|\
-              typewriter|mask_rise|mask_drop|pop|slam|fly_left|fly_right|fly_top|fly_bottom|bounce|flicker|focus_in|soft_rise, animate_secs?, stagger? char|word|line, enter?, exit? (the title op motion objects)}, transition? \
+              bottom], animate? (the title op's), animate_secs?, stagger? char|word|line, enter?, exit? (the title op motion objects)}, transition? \
               (\"cross_dissolve\", \"dip_to_black\": how it joins the segment before), zoom? \
               {from?, to, x?, y?}, sfx? {media_id (from search_sfx), at_secs? into the \
               segment, source_in_secs?, secs?, volume_db?}}. Music is {media_id, duck_db?, \
@@ -2696,6 +2695,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               project file. A new project's sequence has a default or inherited name until \
               it is named; the brief's title does not rename it.",
              json!({ "name": { "type": "string" } }), vec!["name"]),
+        tool("klipp_switch_sequence",
+             "Open another of the project's sequences, as clicking its tab does: by index or sequence_id, as \
+              klipp_status lists them. The tools then work on it.",
+             json!({ "index": { "type": "integer" }, "sequence_id": { "type": "string" } }), vec![]),
         tool("klipp_create_multicam",
              "Make a multicam group from pool items (two or more angles of one event): synced \
               onto one clock and laid out at the playhead, each angle on tracks of its own, as \
@@ -3279,3 +3282,14 @@ mod project_change_notice_tests {
         assert!(!project_changed_under("klipp_timeline", u64::MAX, 2));
     }
 }
+
+    /// klipp_switch_sequence asks the socket's switch_sequence by index or
+    /// id, and is refused with neither or both before a socket call.
+    #[test]
+    fn switch_sequence_takes_an_index_or_an_id() {
+        assert_eq!(tool_to_command("klipp_switch_sequence", &json!({ "index": 1 })).unwrap(), json!({ "method": "switch_sequence", "index": 1 }));
+        assert_eq!(tool_to_command("klipp_switch_sequence", &json!({ "sequence_id": "abc" })).unwrap(), json!({ "method": "switch_sequence", "sequence_id": "abc" }));
+        for args in [json!({}), json!({ "index": 0, "sequence_id": "abc" })] {
+            assert!(tool_to_command("klipp_switch_sequence", &args).unwrap_err().contains("index or sequence_id"), "{args}");
+        }
+    }
