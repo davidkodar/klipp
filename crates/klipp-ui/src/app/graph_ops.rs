@@ -1,8 +1,10 @@
 //! A batch of graph ops on one picture, as one undo step or nothing
 //! (node-graph M2 step 15d): what the control socket's `graph_ops` and the
 //! assistant send (`AppCommand::GraphOps`). A clip's picture goes through
-//! `Clip::apply_picture_ops`; the other pictures (a track's, a grade
-//! group's stages, the timeline grade) follow.
+//! `Clip::apply_picture_ops`; the sequence's own grades (the timeline
+//! grade, a grade group's stages, a track's grade) through
+//! `Sequence::apply_root_grade_ops`, and a track's effect list through
+//! `Sequence::apply_track_effect_ops` (#1214).
 
 use super::*;
 use klipp_graph_format::path::Root;
@@ -55,8 +57,25 @@ pub(super) fn graph_ops_edit(seq: &klipp_timeline::Sequence, ops: &[GraphOp]) ->
     if let Some(at) = ops.iter().position(|op| op.path().root != root) {
         return Err((Some(at), "a batch edits one picture".into()));
     }
-    let Root::Clip { clip } = root else {
-        return Err((Some(0), "only a clip's picture takes graph ops so far; a track's, a grade group's and the timeline's follow".into()));
+    let clip = match root {
+        Root::Clip { clip } => clip,
+        // A track's effect list, through its own list (#1214).
+        Root::Track { track, part: klipp_graph_format::path::TrackPart::Effects } => {
+            let t = seq.tracks.iter().find(|t| t.id.0 == track).ok_or_else(|| (None, format!("no track {track} on this sequence")))?;
+            let (_, effects) = seq.clone().apply_track_effect_ops(ops).map_err(|e| (None, e))?;
+            let old = t.settings();
+            let new = klipp_timeline::TrackSettings { effects, ..old.clone() };
+            return Ok(GraphOpsOutcome { edit: EditCommand::SetTrackSettings { changes: vec![(t.id, old, new)] }, renamed: Vec::new(), ungated: Vec::new() });
+        }
+        // The sequence's own grades, a track's among them, as the Colour
+        // workspace edits them (#1214): whole, as one grade step. One the
+        // sequence doesn't have yet has no node a batch could name, and is
+        // refused.
+        _ => {
+            let (old, new) = seq.clone().apply_root_grade_ops(ops, None).map_err(|e| (None, e))?;
+            let edit = EditCommand::SetRootGrade { description: "Graph Edit", root, old: old.map(Box::new), new: Some(Box::new(new)) };
+            return Ok(GraphOpsOutcome { edit, renamed: Vec::new(), ungated: Vec::new() });
+        }
     };
     let clip_id = klipp_core::ClipId(clip);
     let original = seq.tracks.iter().flat_map(|t| &t.clips).find(|c| c.id == clip_id).ok_or_else(|| (None, format!("no clip {clip} on this sequence's tracks")))?;
@@ -91,6 +110,62 @@ mod tests {
         let id = clip.id;
         seq.tracks[0].clips.push(clip);
         (seq, id, fx)
+    }
+
+    /// A batch on each of the sequence's own grades (the timeline grade,
+    /// a grade group's stage, a track's grade) is one grade step of it
+    /// (#1214): the grade before and after, the edit in the after, the
+    /// sequence left as it was until it's applied.
+    #[test]
+    fn a_batch_on_a_sequence_grade_is_one_grade_step() {
+        use klipp_graph_format::lifted::Stage;
+        use klipp_graph_format::path::TrackPart;
+        let (mut seq, ..) = sequence();
+        let group = klipp_timeline::GradeGroup::new("Night");
+        let gid = group.id.0;
+        seq.grade_groups.push(group);
+        let tid = seq.tracks.iter().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().id.0;
+        for root in [Root::TimelineGrade { sequence: seq.id.0 }, Root::GroupStage { group: gid, stage: Stage::Post }, Root::Track { track: tid, part: TrackPart::Grade }] {
+            let grade = klipp_nodes::NodeGraph::default();
+            let corrector = grade.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
+            seq.set_root_grade(root, Some(grade.clone())).unwrap();
+            let op = GraphOp::SetParam { path: NodePath::new(root, [corrector]), key: "exposure".into(), value: ParamValue::Float(0.7) };
+            let GraphOpsOutcome { edit, .. } = graph_ops_edit(&seq, &[op]).unwrap_or_else(|e| panic!("{root:?}: {e:?}"));
+            let EditCommand::SetRootGrade { root: r, old, new, .. } = edit else { panic!("{root:?}: a grade step") };
+            assert_eq!(r, root);
+            assert_eq!(old.as_deref(), Some(&grade), "{root:?}: the grade before");
+            let exposure = new.as_ref().and_then(|g| g.nodes.iter().find(|n| n.id == corrector)).and_then(|n| n.params.exposure);
+            assert_eq!(exposure, Some(0.7), "{root:?}: the edit in the grade after");
+            assert_eq!(seq.root_grade(root).unwrap(), Some(&grade), "{root:?}: built on a copy");
+        }
+    }
+
+    /// A batch on a track's effect list is one track step (#1214): its
+    /// effects before and after, through the track's own list; a key op is
+    /// refused, as a track's effects keep no keyframes.
+    #[test]
+    fn a_batch_on_a_track_s_effects_is_one_track_step() {
+        use klipp_graph_format::path::TrackPart;
+        let (mut seq, ..) = sequence();
+        let at = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        // The track's list as it's saved.
+        seq.tracks[at].effects = serde_json::from_value(serde_json::json!({ "video": [{ "type": "gaussian_blur", "radius": 3.0 }], "video_enabled": [true] })).unwrap();
+        let radius = |fx: &klipp_timeline::TrackEffects| serde_json::to_value(fx).unwrap()["video"][0]["radius"].as_f64();
+        let tid = seq.tracks[at].id;
+        let root = Root::Track { track: tid.0, part: TrackPart::Effects };
+        let node = seq.lift_track_parts(tid.0).unwrap().0[0].id;
+        let path = NodePath::new(root, [node]);
+        let GraphOpsOutcome { edit, .. } = graph_ops_edit(&seq, &[GraphOp::SetParam { path: path.clone(), key: "radius".into(), value: ParamValue::Float(6.0) }]).unwrap();
+        let EditCommand::SetTrackSettings { changes } = edit else { panic!("a track step") };
+        let [(t, old, new)] = changes.as_slice() else { panic!("one track") };
+        assert_eq!(*t, tid);
+        assert_eq!(old, &seq.tracks[at].settings(), "the track before");
+        assert_eq!(radius(&new.effects), Some(6.0), "the edit in the track's list");
+        assert_eq!((new.opacity, new.volume, new.pan), (old.opacity, old.volume, old.pan), "only its effects");
+        assert_eq!(radius(&seq.tracks[at].effects), Some(3.0), "built on a copy");
+        let key = serde_json::json!({ "time_secs": 0.5, "value": 2.0, "interpolation": "Linear", "tangent_in": [0.0, 0.0], "tangent_out": [0.0, 0.0] });
+        let refused = graph_ops_edit(&seq, &[GraphOp::AddKeyAt { path, key: "radius".into(), keyframe: key }]).unwrap_err();
+        assert!(refused.1.contains("no keyframes"), "{refused:?}");
     }
 
     /// A batch on a clip is one picture edit of that clip; the sequence is
@@ -148,7 +223,7 @@ mod tests {
     }
 
     /// A refusal names the op it stopped at: the first that couldn't be
-    /// applied, another picture's op, or a picture that doesn't take ops yet.
+    /// applied, another picture's op, or a grade the sequence doesn't have.
     #[test]
     fn a_refusal_names_the_op_it_stopped_at() {
         let (seq, clip, fx) = sequence();
@@ -159,8 +234,8 @@ mod tests {
         assert_eq!(i, Some(2), "{why}");
         let elsewhere = GraphOp::SetEnabled { path: NodePath::new(Root::Clip { clip: uuid::Uuid::nil() }, [fx[0]]), enabled: true };
         assert_eq!(graph_ops_edit(&seq, &[good.clone(), elsewhere]).unwrap_err().0, Some(1));
-        let track = GraphOp::SetEnabled { path: NodePath::new(Root::TimelineGrade { sequence: uuid::Uuid::nil() }, [fx[0]]), enabled: true };
-        assert!(graph_ops_edit(&seq, &[track]).unwrap_err().1.contains("only a clip's picture"));
+        let none = GraphOp::SetEnabled { path: NodePath::new(Root::TimelineGrade { sequence: seq.id.0 }, [fx[0]]), enabled: true };
+        assert!(graph_ops_edit(&seq, &[none]).unwrap_err().1.contains("doesn't exist yet"), "a grade the sequence doesn't have");
         assert!(graph_ops_edit(&seq, &[]).is_err());
     }
 }
