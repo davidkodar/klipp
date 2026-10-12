@@ -2055,7 +2055,7 @@ impl ViewerPanel {
             .and_then(|p| p.parent().map(|d| d.join(BIN)))
             .filter(|p| p.is_file());
         let program = beside.unwrap_or_else(|| std::path::PathBuf::from(BIN));
-        match std::process::Command::new(&program).spawn() {
+        match std::process::Command::new(&program).stdin(std::process::Stdio::null()).spawn() {
             Ok(child) => {
                 tracing::info!("HDR reference output: opened {}", program.display());
                 self.hdr_output_child = Some(child);

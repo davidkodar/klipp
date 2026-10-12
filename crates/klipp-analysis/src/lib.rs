@@ -99,6 +99,7 @@ impl AnalysisCtx {
     pub fn ffmpeg_available(&self) -> bool {
         std::process::Command::new(&self.ffmpeg)
             .arg("-version")
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
