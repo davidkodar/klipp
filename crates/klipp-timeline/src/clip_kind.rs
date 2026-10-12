@@ -1699,6 +1699,23 @@ impl TitleData {
         self.objects.iter().find(|o| o.id == id)
     }
 
+    /// A copy of layer `id` with an id of its own, just above it in the
+    /// stack (#1715): its name with " copy" after it, when it has one;
+    /// what it masks with, if anything, the same. `None` for a layer the
+    /// title does not have.
+    pub fn duplicate_object(&mut self, id: TitleObjectId) -> Option<TitleObjectId> {
+        let at = self.objects.iter().position(|o| o.id == id)?;
+        let mut copy = self.objects[at].clone();
+        copy.id = TitleObjectId(self.next_object_id);
+        self.next_object_id = self.next_object_id.saturating_add(1);
+        if !copy.name.is_empty() {
+            copy.name = format!("{} copy", copy.name);
+        }
+        let new_id = copy.id;
+        self.objects.insert(at + 1, copy);
+        Some(new_id)
+    }
+
     pub fn object_mut(&mut self, id: TitleObjectId) -> Option<&mut TitleObject> {
         self.objects.iter_mut().find(|o| o.id == id)
     }
@@ -4785,5 +4802,29 @@ mod styled_like_tests {
         assert_eq!((tb.text.as_str(), tb.font_name.as_str()), ("Ben Holt", "Libre Baskerville"));
         assert_eq!(styled.objects[0].transform.center.x, 0.2, "its place kept");
         assert!(matches!(&styled.objects[1].content, TitleObjectContent::TextBox(tb) if tb.text == "Producer" && tb.font_name != "Libre Baskerville"), "the other layer as it was");
+    }
+}
+
+#[cfg(test)]
+mod duplicate_tests {
+    use super::*;
+
+    /// A duplicate is the layer again, with a new id, named a copy, just
+    /// above the original; the ids after it keep counting on (#1715).
+    #[test]
+    fn a_duplicate_sits_above_its_original_with_an_id_of_its_own() {
+        let mut td = TitleData::single_text(TextBox { text: "Hi".into(), ..Default::default() });
+        let first = td.objects[0].id;
+        td.objects[0].name = "Name".into();
+        let shape = td.add_object(TitleObjectContent::TextBox(TextBox::default()), default_text_transform());
+        let copy = td.duplicate_object(first).unwrap();
+        assert_eq!(td.objects.iter().map(|o| o.id).collect::<Vec<_>>(), [first, copy, shape]);
+        assert_ne!(copy, first);
+        assert_ne!(copy, shape);
+        assert_eq!(td.objects[1].name, "Name copy");
+        assert_eq!(td.objects[1].content, td.objects[0].content);
+        let next = td.add_object(TitleObjectContent::TextBox(TextBox::default()), default_text_transform());
+        assert!(next.0 > copy.0, "ids keep counting on");
+        assert_eq!(td.duplicate_object(TitleObjectId(99)), None);
     }
 }

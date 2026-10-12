@@ -2374,6 +2374,8 @@ pub enum AppCommand {
     /// Remove an object from a title. Selection clears if the
     /// removed object was the active one.
     DeleteTitleObject { clip_id: ClipId, object_id: u32 },
+    /// A copy of a title layer just above it, selected (#1715).
+    DuplicateTitleObject { clip_id: ClipId, object_id: u32 },
     /// Toggle the eye-icon visibility flag on an object.
     SetTitleObjectVisible { clip_id: ClipId, object_id: u32, visible: bool },
     /// Toggle the lock flag on an object — locked objects are
