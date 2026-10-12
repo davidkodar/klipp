@@ -342,6 +342,19 @@ impl GradeSnapshot {
         self.pending
     }
 
+    /// The node printer lights grade at this level (#1527): its enabled
+    /// Corrector, else its enabled Colour Wheels, else the Corrector it
+    /// reserves, which their first edit makes. Its path, and the offset it
+    /// holds now.
+    pub(crate) fn printer_light_target(&self) -> Option<(NodePath, (f32, f32, f32))> {
+        let enabled = |kind| self.v1.iter().find(|n| n.kind == kind && n.enabled);
+        if let Some(n) = enabled(klipp_nodes::NodeKind::Corrector).or_else(|| enabled(klipp_nodes::NodeKind::ColorWheels)) {
+            let p = &n.params;
+            return Some((self.addr(n.id), (p.offset_x.unwrap_or(0.0), p.offset_y.unwrap_or(0.0), p.offset_master.unwrap_or(0.0))));
+        }
+        self.pending.map(|id| (self.addr(id), (0.0, 0.0, 0.0)))
+    }
+
     /// Draw one tab of the tabbed page (M3 step 19) for `node`: its
     /// generated rows whose presentation order is in `band` (a Corrector
     /// holds every tab, each its own band; any other kind is all one tab,
@@ -393,7 +406,7 @@ impl GradeSnapshot {
 
     /// Draw `node`'s parameter `key` as its generated row, as the per-node
     /// layout draws it, and push what it implies: whether it drew one (not
-    /// for a node or key the snapshot doesn't hold, a phantom Corrector's).
+    /// for a node or key the snapshot doesn't hold).
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn row(&self, ui: &mut egui::Ui, theme: &KlippTheme, node: NodeId, key: &str, cmds: &mut Vec<AppCommand>, frame: FrameSelection) -> bool {
         let Some((kind, lifted)) = self.nodes.iter().find(|(_, n)| n.id == node) else { return false };

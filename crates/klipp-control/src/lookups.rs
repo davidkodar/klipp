@@ -114,9 +114,8 @@ pub(crate) fn existing_clip_id(
 /// grade read back as identity with no indication why.
 ///
 /// Nodes inside a Compound's subgraph count: they are addressable, and
-/// rejecting them here would break a legitimate write. So does
-/// [`klipp_nodes::PHANTOM_CORRECTOR_ID`], which is not a node at all but
-/// the request to materialise a Corrector on a clip that has none.
+/// rejecting them here would break a legitimate write. A clip with no
+/// Corrector is given one by path (`graph_ops`), as any node is made.
 pub(crate) fn existing_node_id(
     ctx: &ControlContext,
     clip: klipp_core::ClipId,
@@ -124,9 +123,6 @@ pub(crate) fn existing_node_id(
     what: &str,
 ) -> Result<uuid::Uuid, String> {
     let want = parse_uuid(s, what)?;
-    if want == klipp_nodes::PHANTOM_CORRECTOR_ID {
-        return Ok(want);
-    }
     let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
     let graph = seq
         .tracks

@@ -1126,17 +1126,17 @@ fn control_socket_reads_state_and_forwards_commands() {
         matches!(h.cmd_rx.try_recv(), Ok(klipp_core::AppCommand::SetNodeParam { .. })),
         "a node nested in a Compound must still be writable",
     );
-    // The phantom Corrector id is not a node — it is the request to
-    // create one on a clip that has none — so it passes through.
-    h.ok(json!({
-        "method": "set_node_param",
-        "clip_id": clip_b,
-        "node_id": klipp_nodes::PHANTOM_CORRECTOR_ID.to_string(),
-        "param": "saturation", "value": 1.1,
-    }));
-    assert!(
-        matches!(h.cmd_rx.try_recv(), Ok(klipp_core::AppCommand::SetNodeParam { .. })),
-        "the phantom Corrector id must reach the app, which materialises the node",
+    // An id the clip doesn't hold is refused, a made-up "make me a
+    // Corrector" id among them: a node is made by path (#1527).
+    refused(
+        &mut h,
+        json!({
+            "method": "set_node_param",
+            "clip_id": clip_b,
+            "node_id": uuid::Uuid::from_u128(0xC0DE_C0DE_C0DE_C0DE_C0DE_C0DE_C0DE_C0DE).to_string(),
+            "param": "saturation", "value": 1.1,
+        }),
+        "has no node",
     );
 
     // ── Change-then-look waits for the frame that reflects the change ─

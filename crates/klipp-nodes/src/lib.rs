@@ -48,7 +48,7 @@ pub mod auto_layout;
 pub mod json_check;
 pub mod registry;
 
-pub use graph::{CannotAppend, Edge, Node, NodeFrame, NodeFrameId, NodeGraph, NodeId, NodePos, NodeStickyNote, NodeStickyNoteId, PHANTOM_CORRECTOR_ID, effective_signal_role_at};
+pub use graph::{CannotAppend, Edge, Node, NodeFrame, NodeFrameId, NodeGraph, NodeId, NodePos, NodeStickyNote, NodeStickyNoteId, effective_signal_role_at};
 pub use auto_layout::auto_layout;
 pub use decline::{Decline, DeclineOutcome};
 pub use kinds::{GradeStage, NodeKind, PortRole};
