@@ -115,6 +115,32 @@ pub fn resolve_effect_nodes(
     pin: Option<klipp_timeline::surface::Quad>,
     scale: f32,
 ) -> Result<Vec<(BuiltinEffect, Option<Blend>, Option<NodeId>)>, String> {
+    resolve_effect_nodes_and_identities(clip, picture, time, fps, resolved, pin, scale).map(|(fx, _)| fx)
+}
+
+/// What feeds an effect dropped from the run as an identity (#1314):
+/// the run's picture before it, which it would pass through unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdentityFeed {
+    /// The grade's output: no effect runs before it.
+    Grade,
+    /// The output of the run's effect before it, this picture node.
+    Node(NodeId),
+}
+
+/// [`resolve_effect_nodes`], and each effect node it drops as an identity
+/// with what feeds it in the run. One after an effect with no picture
+/// node (the list route's) isn't named: nothing could answer for it.
+#[allow(clippy::type_complexity)]
+pub fn resolve_effect_nodes_and_identities(
+    clip: &Clip,
+    picture: &ClipPicture,
+    time: Timecode,
+    fps: f64,
+    resolved: Option<ResolvedTransform>,
+    pin: Option<klipp_timeline::surface::Quad>,
+    scale: f32,
+) -> Result<(Vec<(BuiltinEffect, Option<Blend>, Option<NodeId>)>, Vec<(NodeId, IdentityFeed)>), String> {
     let w = walk(clip, picture, time, fps, resolved, pin)?;
     let (mut fx, mut blends) = (w.fx, w.blends);
     let mut nodes: Vec<Option<NodeId>> = w.nodes.into_iter().map(Some).collect();
@@ -126,13 +152,19 @@ pub fn resolve_effect_nodes(
         }
         PlacementCut::Identity => {}
     }
-    Ok(fx
-        .into_iter()
-        .zip(blends)
-        .zip(nodes)
-        .filter(|((e, _), _)| !klipp_effects::is_identity_effect(e))
-        .map(|((e, b), n)| (e.at_render_scale(scale), b, n))
-        .collect())
+    let (mut kept, mut identities) = (Vec::new(), Vec::new());
+    let mut feed = Some(IdentityFeed::Grade);
+    for ((e, b), n) in fx.into_iter().zip(blends).zip(nodes) {
+        if klipp_effects::is_identity_effect(&e) {
+            if let (Some(node), Some(feed)) = (n, feed) {
+                identities.push((node, feed));
+            }
+        } else {
+            feed = n.map(IdentityFeed::Node);
+            kept.push((e.at_render_scale(scale), b, n));
+        }
+    }
+    Ok((kept, identities))
 }
 
 /// Where the clip's transform goes among its pixel effects (R2-R4), the

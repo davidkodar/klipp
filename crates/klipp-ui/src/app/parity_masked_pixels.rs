@@ -244,7 +244,7 @@ fn a_masked_effect_s_card_picks_its_mask_channel() {
         let (_, texts) = click(&mut frame, &state, shown);
         let alpha = texts.iter().find(|(t, _)| t == "Alpha").unwrap_or_else(|| panic!("no Alpha choice: {texts:?}")).1;
         let (cmds, _) = click(&mut frame, &state, alpha);
-        let fx = c.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT).unwrap().id;
+        let fx = c.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
         let addr = NodePath::new(Root::Clip { clip: c.id.0 }, [fx]);
         assert!(matches!(cmds.as_slice(), [klipp_core::AppCommand::SetMaskChannelAt { addr: a, channel: Some(ch) }] if *a == addr && ch == "alpha"), "{cmds:?}");
         let before = state.sequences[0].all_clips().find(|x| x.id == c.id).unwrap().picture_v2().unwrap().picture.clone();

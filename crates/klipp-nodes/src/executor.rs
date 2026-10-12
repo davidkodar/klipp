@@ -2364,6 +2364,10 @@ impl GraphExecutor {
                         Arc::new(source_frame.to_vec())
                     }
                 };
+                // A tap on a node that changes nothing is its input (#1314).
+                if Some(node_id) == matte_tap {
+                    tapped_output = Some(passthrough.clone());
+                }
                 node_outputs.insert(node.id, passthrough);
                 per_node_ms.push((format!("{node_kind_name}#bypass"), t_node.elapsed().as_secs_f64() * 1000.0));
                 continue;
@@ -7020,6 +7024,27 @@ mod tests {
         assert!(tapped.is_some(), "tapped output should be captured");
         let tap = tapped.unwrap();
         assert!(tap[0] > 100, "tapped exposure output should be bright");
+    }
+
+    /// A tap on a node that changes nothing, run as a bypass, is its
+    /// input: a default Exposure, or one switched off (#1314). It used to
+    /// come back empty.
+    #[test]
+    fn scope_tap_on_a_bypassed_node_is_its_input() {
+        for enabled in [true, false] {
+            let mut graph = default_graph();
+            let exp = graph.nodes.iter_mut().find(|n| n.kind == NodeKind::Exposure).unwrap();
+            exp.enabled = enabled;
+            if !enabled {
+                exp.params.exposure = Some(1.0);
+            }
+            let exp_id = exp.id;
+            let mut executor = GraphExecutor::new_cpu_only();
+            let frame = vec![100, 100, 100, 255];
+            let (_, tapped) = executor.execute(&frame, &graph, 1, 1, 0.0, 0, Some(exp_id), None).unwrap();
+            let tap = tapped.unwrap_or_else(|| panic!("enabled {enabled}: the tap of a bypassed node"));
+            assert!((i32::from(tap[0]) - 100).abs() <= 1, "enabled {enabled}: its input: {tap:?}");
+        }
     }
 
     #[test]

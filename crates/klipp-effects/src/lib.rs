@@ -1056,6 +1056,8 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
         }
         BuiltinEffect::OuterGlow { radius, intensity, .. } => *intensity <= 0.0 || *radius <= 0.0,
         BuiltinEffect::Sharpen { amount } => amount.abs() < f32::EPSILON,
+        // As the effect itself skips it (#1314).
+        BuiltinEffect::Gamma { gamma } => (gamma - 1.0).abs() < f32::EPSILON,
         BuiltinEffect::Crop { left, right, top, bottom, feather } => {
             *left == 0.0 && *right == 0.0 && *top == 0.0 && *bottom == 0.0 && *feather == 0.0
         }

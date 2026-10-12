@@ -732,6 +732,12 @@ pub struct Renderer {
     /// The picture node each planned effect of a clip came from (M3 step
     /// 16a), for its spliced node's id.
     planned_nodes: HashMap<ClipId, Vec<Option<klipp_nodes::NodeId>>>,
+    /// Each clip's effect nodes dropped from its run as identities, with
+    /// what feeds them there: what an inspection of one shows (#1314).
+    identity_feeds: HashMap<ClipId, Vec<(klipp_nodes::NodeId, crate::resolve::IdentityFeed)>>,
+    /// The node of `spliced` that gives the grade's output, before the
+    /// effects and the display step spliced after it.
+    spliced_graded: Option<klipp_nodes::NodeId>,
     /// The inspection being rendered, resolved to the nodes that run.
     resolved: crate::inspect::Resolved,
     /// An executor on the CPU alone: a masked or mixed clip's plan runs on
@@ -873,6 +879,8 @@ impl Renderer {
             run_blends: Vec::new(),
             planned_blends: Vec::new(),
             planned_nodes: HashMap::new(),
+            identity_feeds: HashMap::new(),
+            spliced_graded: None,
             resolved: Default::default(),
             cpu_executor: None,
             matte_input: None,
@@ -2558,6 +2566,15 @@ impl Renderer {
         // download and upload between them, when nothing in between needs
         // the picture on the CPU (#1089, M2 step 10).
         let on_gpu = self.effects_follow_grade_on_gpu(clip, &fx);
+        // What feeds each effect dropped as an identity, for an inspection
+        // of one, whichever route runs the effects (#1314).
+        if self.inspect.clip == Some(clip.id) {
+            let found = clip.picture_v2().and_then(|p| crate::resolve::resolve_effect_nodes_and_identities(clip, &p.picture, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied(), 1.0));
+            match found {
+                Ok((_, identities)) => self.identity_feeds.insert(clip.id, identities),
+                Err(_) => self.identity_feeds.remove(&clip.id),
+            };
+        }
         // What runs on the CPU between the grade and the effects keeps them
         // out of the grade's run: a plug-in (step 11c-2), or a shutter
         // that places the picture at every sample and averages them
@@ -2974,11 +2991,13 @@ impl Renderer {
     fn plan_effects(&mut self, clip: &Clip, time: Timecode, fps: f64, transforms: &HashMap<ClipId, ResolvedTransform>, fallback: &[BuiltinEffect], stats: &mut RenderStats) -> Vec<BuiltinEffect> {
         self.planned_blends.clear();
         self.planned_nodes.remove(&clip.id);
+        self.identity_feeds.remove(&clip.id);
         let resolved = clip.picture_v2().and_then(|p| {
-            crate::resolve::resolve_effect_nodes(clip, &p.picture, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied(), 1.0)
+            crate::resolve::resolve_effect_nodes_and_identities(clip, &p.picture, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied(), 1.0)
         });
         match resolved {
-            Ok(triples) => {
+            Ok((triples, identities)) => {
+                self.identity_feeds.insert(clip.id, identities);
                 let (mut fx, mut blends, mut nodes) = (Vec::new(), Vec::new(), Vec::new());
                 for (e, b, n) in triples {
                     fx.push(e);
@@ -3499,17 +3518,47 @@ impl Renderer {
         // masked or mixed (a picture-truth clip's): those run in the plan
         // with it, the grade's nodes still tapped (step 9c-2). A
         // scene-referred clip's display step runs in it either way.
-        let graph = if self.run_effects.is_empty() && self.run_display.is_none() && self.run_source_node.is_none() {
-            &*to_run
+        let (graph, graded) = if self.run_effects.is_empty() && self.run_display.is_none() && self.run_source_node.is_none() {
+            (&*to_run, to_run.input_of(to_run.output_node_id, 0))
         } else {
             self.splice_run(clip);
-            &self.spliced
+            (&self.spliced, self.spliced_graded)
         };
         // A request whose node this run doesn't hold (an effect fused
         // into the one before it, a node gone since) is unavailable, never
-        // answered by another node or the output (M3 step 16a).
+        // answered by another node or the output (M3 step 16a). An effect
+        // dropped as an identity passes its input through unchanged, so it
+        // is answered by what feeds it (#1314).
         let held: HashSet<NodeId> = graph.nodes.iter().map(|n| n.id).collect();
+        let feeds = self.identity_feeds.get(&clip.id);
+        let fed_by = |node: &NodeId| {
+            let (_, feed) = feeds?.iter().find(|(n, _)| n == node)?;
+            match feed {
+                crate::resolve::IdentityFeed::Grade => graded,
+                crate::resolve::IdentityFeed::Node(n) => Some(*n),
+            }
+            .filter(|n| held.contains(n))
+        };
+        let mut scope_tap = self.resolved.scope_tap.filter(|n| held.contains(n));
+        // The set as asked comes back after the run; the run's own adds
+        // the nodes that answer for identities.
+        let asked_thumbs = self.resolved.thumbs.take();
+        let mut thumbs = asked_thumbs.clone();
+        let mut fed_thumbs: Vec<(NodeId, InspectAt)> = Vec::new();
         for (node, at) in self.resolved.asked.iter().filter(|(n, _)| !held.contains(n)) {
+            if let Some(input) = fed_by(node) {
+                if self.resolved.solo == Some(*node) {
+                    self.executor.set_solo_node(Some(input));
+                }
+                if self.resolved.scope_tap == Some(*node) {
+                    scope_tap = Some(input);
+                }
+                if let Some(t) = thumbs.as_mut().filter(|t| t.contains(node)) {
+                    t.insert(input);
+                    fed_thumbs.push((input, at.clone()));
+                }
+                continue;
+            }
             if !self.found.unavailable.iter().any(|(a, _)| a == at) {
                 self.found.unavailable.push((at.clone(), format!("{node} doesn't run in this frame's picture")));
             }
@@ -3517,14 +3566,12 @@ impl Renderer {
                 self.executor.set_solo_node(None);
             }
         }
-        let scope_tap = self.resolved.scope_tap.filter(|n| held.contains(n));
         let matte_view = matte_view.filter(|n| held.contains(n));
-        let thumbs = self.resolved.thumbs.take();
         let r = match ctx {
             Some(ctx) => self.executor.execute_linear_with_context(source, graph, width, height, clip_time, frame, scope_tap, matte_view, thumbs.as_ref(), ctx),
             None => self.executor.execute_linear_with_thumbs(source, graph, width, height, clip_time, frame, scope_tap, matte_view, thumbs.as_ref()),
         };
-        self.resolved.thumbs = thumbs;
+        self.resolved.thumbs = asked_thumbs;
         if r.is_ok() {
             self.note_declines(clip.id);
         }
@@ -3532,6 +3579,9 @@ impl Renderer {
             self.found.scope_tap = tapped;
             for (node, bytes) in thumbs {
                 for at in self.resolved.thumb_of.get(&node).into_iter().flatten() {
+                    self.found.thumbs.insert(at.clone(), bytes.clone());
+                }
+                for (_, at) in fed_thumbs.iter().filter(|(n, _)| *n == node) {
                     self.found.thumbs.insert(at.clone(), bytes.clone());
                 }
             }
@@ -3554,6 +3604,7 @@ impl Renderer {
         self.spliced.clone_from(base);
         let source = self.spliced.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source).map(|n| n.id);
         let graded = self.spliced.input_of(self.spliced.output_node_id, 0);
+        self.spliced_graded = graded;
         if let Some(step) = self.run_display {
             self.spliced.splice_before_output(scene_to_display_node(clip, step));
         }

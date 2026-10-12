@@ -178,7 +178,7 @@ mod tests {
             .build();
         let lifted = clip.picture_v2().unwrap();
         let graph = &lifted.picture.graph;
-        let blurs = graph.nodes.iter().filter(|n| n.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT).map(|n| NodePath::new(Root::Clip { clip: clip.id.0 }, [n.id])).collect::<Vec<_>>();
+        let blurs = graph.nodes.iter().filter(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).map(|n| NodePath::new(Root::Clip { clip: clip.id.0 }, [n.id])).collect::<Vec<_>>();
         assert_eq!(blurs.len(), 10);
         let mut state = AppState::default();
         state.sequences[0].tracks[0].clips.push(clip.clone());

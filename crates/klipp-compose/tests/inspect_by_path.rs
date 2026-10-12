@@ -273,9 +273,9 @@ fn a_source_neighbour_node_tap_has_its_time_context() {
 }
 
 /// An identity grade the tools read inside still runs, so its nodes'
-/// thumbnails come back (a plain clip's Source), and a request it doesn't
-/// hold (an identity effect, dropped from the run) is said to be
-/// unavailable rather than met with silence.
+/// thumbnails come back (a plain clip's Source); an identity effect,
+/// dropped from the run, shows the picture that feeds it, here the
+/// grade's output, the source's (#1314).
 #[test]
 fn an_identity_grade_still_answers_its_inspection() {
     let clip = TestClip::of(Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) }).effect(klipp_effects::BuiltinEffect::Gamma { gamma: 1.0 }).build();
@@ -292,10 +292,56 @@ fn an_identity_grade_still_answers_its_inspection() {
         let thumbs = [klipp_compose::inspect::grade_node(id, source), gamma.clone()].into_iter().collect();
         let (_, found) = draw(&seq, gpu, Inspect { clip: Some(id), only: Some(id), thumbs: Some(thumbs), ..Default::default() });
         assert!(found.thumbs.contains_key(&klipp_compose::inspect::grade_node(id, source)), "gpu {gpu}: the source's thumbnail: {:?}", found.unavailable);
-        assert!(found.unavailable.iter().any(|(at, _)| *at == gamma), "gpu {gpu}: the identity effect is said to be unavailable: {:?}", found.unavailable);
+        assert!(found.unavailable.is_empty(), "gpu {gpu}: {:?}", found.unavailable);
+        assert_eq!(found.thumbs.get(&gamma), found.thumbs.get(&klipp_compose::inspect::grade_node(id, source)), "gpu {gpu}: the identity effect shows the grade's output");
         // The scope's tap on it too: the source's picture.
         let (_, found) = draw(&seq, gpu, Inspect { clip: Some(id), scope_tap: Some(klipp_compose::inspect::grade_node(id, source)), ..Default::default() });
         let tapped = found.scope_tap.unwrap_or_else(|| panic!("gpu {gpu}: a tap on the identity grade's source: {:?}", found.unavailable));
         assert!(tapped.chunks_exact(4).all(|p| (p[0] - 0.18).abs() < 1e-3), "gpu {gpu}: the source's grey");
+    }
+}
+
+/// An effect dropped from the run as an identity (a Gamma of 1) answers
+/// its thumbnail, its solo and the scope's tap as what feeds it would
+/// (#1314): first in the chain, with the grade's output; after another
+/// effect, as that effect is answered (inspecting a clip keeps its
+/// effects out of the grade's run, #1274, so both are unavailable then,
+/// and never answered by the clip's output).
+#[test]
+fn an_identity_effect_shows_the_picture_that_feeds_it() {
+    use klipp_effects::BuiltinEffect::Gamma;
+    let media = || Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+    for (chain, identity, feeder) in [(vec![1.0, 1.5], 0, None), (vec![0.8, 1.0, 1.5], 1, Some(0))] {
+        let clip = chain.iter().fold(TestClip::of(media()), |c, g| c.effect(Gamma { gamma: *g })).build();
+        let id = clip.id;
+        let source = clip.grade().nodes.iter().find(|n| n.kind == NodeKind::Source).expect("a source").id;
+        let effects: Vec<_> = clip.picture_v2().unwrap().picture.graph.nodes.iter().filter(|n| klipp_graph_lift::effect_params::tag(n) == Some("gamma")).map(|n| n.id).collect();
+        assert_eq!(effects.len(), chain.len());
+        let mut seq = Sequence::new_default();
+        let mut track = Track::new("V1", TrackKind::Video);
+        track.clips = vec![clip];
+        seq.tracks = vec![track];
+        let at = |n| InspectAt::out(NodePath::new(Root::Clip { clip: id.0 }, [n]));
+        let (asked, feeding) = (at(effects[identity]), feeder.map_or_else(|| klipp_compose::inspect::grade_node(id, source), |i| at(effects[i])));
+        let unavailable = |found: &klipp_compose::Inspection, a: &InspectAt| found.unavailable.iter().any(|(x, _)| x == a);
+        for gpu in [false, true] {
+            let what = format!("{chain:?} gpu {gpu}");
+            let thumbs = [asked.clone(), feeding.clone()].into_iter().collect();
+            let (_, found) = draw(&seq, gpu, Inspect { clip: Some(id), only: Some(id), thumbs: Some(thumbs), ..Default::default() });
+            assert_eq!(unavailable(&found, &asked), unavailable(&found, &feeding), "{what}: {:?}", found.unavailable);
+            assert_eq!(found.thumbs.get(&asked), found.thumbs.get(&feeding), "{what}: the thumbnail of what feeds it");
+            if feeder.is_none() {
+                assert!(found.thumbs.contains_key(&asked), "{what}: first in the chain, the grade's output: {:?}", found.unavailable);
+            }
+            let solo = |a: &InspectAt| draw(&seq, gpu, Inspect { clip: Some(id), solo: Some(a.clone()), ..Default::default() });
+            let ((shown, found), (fed, fed_found)) = (solo(&asked), solo(&feeding));
+            assert_eq!(unavailable(&found, &asked), unavailable(&fed_found, &feeding), "{what}: {:?}", found.unavailable);
+            if !unavailable(&found, &asked) {
+                assert_eq!(shown, fed, "{what}: the solo of what feeds it");
+            }
+            let tap = |a: &InspectAt| draw(&seq, gpu, Inspect { clip: Some(id), scope_tap: Some(a.clone()), ..Default::default() }).1;
+            let (tapped, fed) = (tap(&asked), tap(&feeding));
+            assert_eq!(tapped.scope_tap, fed.scope_tap, "{what}: the tap of what feeds it: {:?}", tapped.unavailable);
+        }
     }
 }
