@@ -262,6 +262,15 @@ klipp-audio-search = { path = "crates/klipp-audio-search" }
 # ─── Workspace-wide profile settings ────────────────────────────────────────
 [profile.dev]
 opt-level = 1          # Minimal optimization — faster compile, still debuggable
+# Line tables only: panics and backtraces keep file and line, while test
+# binaries are several times smaller, so links and target folders shrink.
+debug = "line-tables-only"
+
+# The former dev profile, full debug info, for stepping through a test in
+# a debugger: `cargo test --profile dev-full-debug ...`. Its own folder
+# under target/, so switching to it doesn't rebuild the dev builds.
+[profile.dev-full-debug]
+inherits = "dev"
 debug = true
 
 [profile.dev.package."*"]
