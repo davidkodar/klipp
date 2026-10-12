@@ -389,7 +389,23 @@ fn posed_glyphs_are_the_cpu_glyph_pose_uploaded() {
             moved[1] = moved[1].max(y0);
             moved[3] = moved[3].min(y1);
         }
-        klipp_title::GlyphPose { dx, dy, scale, alpha, anchor, clip, moved }
+        klipp_title::GlyphPose { dx, dy, scale, alpha, anchor, clip, moved, rotation: 0.0 }
+    };
+    // A glyph an animator turns (#1510): its moved box round the turned
+    // corners, as `glyph_poses` makes it.
+    let turned = |g: usize, rotation: f32, scale: f32, dx: f32| {
+        let b = boxes[g];
+        let anchor = ((b[0] + b[2]) as f32 * 0.5, (b[1] + b[3]) as f32 * 0.5);
+        let (c, sn) = (rotation.cos(), rotation.sin());
+        let (hx, hy) = ((b[2] - b[0]) as f32 * 0.5 + 3.0, (b[3] - b[1]) as f32 * 0.5 + 3.0);
+        let (ex, ey) = ((hx * c).abs() + (hy * sn).abs(), (hx * sn).abs() + (hy * c).abs());
+        let moved = [
+            (anchor.0 - ex * scale + dx).floor() as i32 - 1,
+            (anchor.1 - ey * scale).floor() as i32 - 1,
+            (anchor.0 + ex * scale + dx).ceil() as i32 + 1,
+            (anchor.1 + ey * scale).ceil() as i32 + 1,
+        ];
+        klipp_title::GlyphPose { dx, dy: 0.0, scale, alpha: 1.0, anchor, clip: None, moved, rotation }
     };
     let cases: Vec<Vec<klipp_title::GlyphPose>> = vec![
         vec![pose(0, 0.0, 0.0, 1.0, 1.0, None), pose(1, 0.0, 0.0, 1.0, 1.0, None), pose(2, 0.0, 0.0, 1.0, 1.0, None)],
@@ -398,6 +414,8 @@ fn posed_glyphs_are_the_cpu_glyph_pose_uploaded() {
         vec![pose(0, 0.0, 9.0, 1.0, 1.0, Some((8, 30))), pose(1, 0.0, 4.0, 1.0, 1.0, Some((8, 30))), pose(2, 0.0, 0.0, 1.0, 1.0, None)],
         // Glyphs slid over one another: the later one lies on top.
         vec![pose(0, 14.0, 0.0, 1.0, 1.0, None), pose(1, 0.0, 0.0, 1.0, 0.7, None), pose(2, -16.0, 0.0, 1.0, 1.0, None)],
+        // Turned by animators, one scaled and moved too.
+        vec![turned(0, 0.6, 1.0, 0.0), turned(1, -1.2, 1.4, 3.0), turned(2, std::f32::consts::FRAC_PI_2, 0.8, -2.0)],
     ];
     for (n, poses) in cases.iter().enumerate() {
         let want_u8 = klipp_title::pose_sprite_glyphs(&rgba, W, H, &units, poses, (0, H));

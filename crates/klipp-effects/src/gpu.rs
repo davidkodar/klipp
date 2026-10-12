@@ -9977,6 +9977,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // `pose_sprite_glyphs`, then the sprite decode, in one. Every pixel in
 // the rows asks every glyph whose moved box holds it for its bilinear,
 // glyph-masked sample, and lays the glyphs over one another in order.
+// A glyph an animator turns is sampled back through its turn.
 const SHADER_SPRITE_GLYPHS: &str = concat!(
     shader_pixel_storage_wgsl!(),
     "
@@ -10029,8 +10030,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if f32(x) < moved.x || f32(x) >= moved.z || f32(y) < moved.y || f32(y) >= moved.w { continue; }
         let pose = glyphs[g * 4u + 1u];
         let anch = glyphs[g * 4u + 2u];
-        let fx = (f32(x) + 0.5 - pose.x - anch.x) / pose.z + anch.x - 0.5;
-        let fy = (f32(y) + 0.5 - pose.y - anch.y) / pose.z + anch.y - 0.5;
+        // A turn, clockwise radians about the anchor (an animator's).
+        let turn = glyphs[g * 4u + 3u].x;
+        var u = f32(x) + 0.5 - pose.x - anch.x;
+        var v = f32(y) + 0.5 - pose.y - anch.y;
+        if turn != 0.0 {
+            let c = cos(turn);
+            let sn = sin(turn);
+            let ur = u * c + v * sn;
+            v = v * c - u * sn;
+            u = ur;
+        }
+        let fx = u / pose.z + anch.x - 0.5;
+        let fy = v / pose.z + anch.y - 0.5;
         let x0f = floor(fx);
         let y0f = floor(fy);
         let tx = fx - x0f;
