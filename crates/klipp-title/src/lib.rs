@@ -37,6 +37,7 @@ mod fallback;
 mod shaping;
 mod text_on_path;
 pub mod text3d_mesh;
+pub mod text3d_render;
 pub use text_on_path::PathUnits;
 mod vertical;
 pub mod variable;
@@ -456,6 +457,10 @@ pub struct TitleRenderer {
     solid_point: Option<(u64, Option<(f32, f32)>)>,
     /// The unit map the last `render_inner` made, for `cache_store`.
     last_units: Option<std::sync::Arc<UnitMap>>,
+    /// The glyphs the last layout of a 3D text placed (#1512): what
+    /// `render_text_layer` builds the solids from. Filled while the
+    /// layout's faces borrow the renderer, so behind a lock.
+    last_glyphs3d: std::sync::Mutex<Vec<crate::text3d_render::Glyph3d>>,
     /// The next `CachedRender::id`.
     next_cache_id: u64,
     /// The clip's length while rendering with `render_with_window`,
@@ -517,6 +522,7 @@ impl TitleRenderer {
             last_focus_blur: None,
             solid_point: None,
             last_units: None,
+            last_glyphs3d: std::sync::Mutex::new(Vec::new()),
             next_cache_id: 1,
             motion_window: None,
             loop_wave: None,
@@ -1128,6 +1134,33 @@ impl TitleRenderer {
         let baseline_shift_px = tb.baseline_shift * scale;
         let offset_y = text_offset_y(tb.vertical_align, title.position().y * height as f32, box_h, text_h, text_min_y)
             + baseline_shift_px;
+        // A 3D text's glyphs where they stand, for their solids (#1512):
+        // each one's font, glyph, size and baseline origin on the frame.
+        if tb.three_d.as_ref().is_some_and(|t| t.enabled) {
+            let placed = glyphs
+                .iter()
+                .filter(|g| g.width > 0 && g.height > 0)
+                .map(|g| {
+                    let face = &fonts[g.font_index];
+                    let b = face.font.metrics_indexed(g.key.glyph_index, g.key.px).bounds;
+                    let sprite = face.font.colour_glyph(g.key.glyph_index, g.key.px).map(|c| crate::text3d_render::Sprite {
+                        x: ((g.x + offset_x) as i32) as f32,
+                        y: ((g.y + offset_y) as i32) as f32,
+                        width: c.width,
+                        height: c.height,
+                        rgba: c.rgba.clone(),
+                    });
+                    crate::text3d_render::Glyph3d {
+                        font: faces.keys[g.font_index].0.clone(),
+                        glyph: g.key.glyph_index,
+                        px: g.key.px,
+                        origin: [g.x + offset_x - b.xmin, g.y + offset_y + b.height + b.ymin],
+                        sprite,
+                    }
+                })
+                .collect();
+            *self.last_glyphs3d.lock().unwrap_or_else(|e| e.into_inner()) = placed;
+        }
 
         // Compute the mask bounding box (padded for effects). When
         // an underline is enabled the stripe sits ~5 % below the
@@ -2674,6 +2707,12 @@ impl TitleRenderer {
         gpu: Option<&mut dyn AlphaMaskProcessor>,
         time_secs: Option<f32>,
     ) -> Vec<u8> {
+        // Real 3D text (#1512): the glyphs as solids, drawn in place of
+        // the flat face (and of any older extrusion).
+        if let Some(buf) = self.render_text3d(title, width, height, time_secs) {
+            self.last_units = None;
+            return buf;
+        }
         let layout = self.render_layout_at_time(title, width, height, time_secs);
         let mut buf = Self::compose(&layout, title, width, height, gpu, time_secs);
         self.apply_texture_fill(&mut buf, &layout, title, width, height);
@@ -2705,6 +2744,37 @@ impl TitleRenderer {
 
         self.last_units = (!layout.glyph_index.is_empty()).then(|| std::sync::Arc::new(UnitMap::from_layout(&layout, &buf, width, height)));
         buf
+    }
+
+    /// `title`'s text in 3D at `width`×`height`, when it has 3D on
+    /// (#1512): laid out as the flat text is, each glyph's outline
+    /// extruded and bevelled, the whole turned about the text's centre
+    /// and lit. `None` for a text without 3D.
+    fn render_text3d(&mut self, title: &TitleData, width: u32, height: u32, time_secs: Option<f32>) -> Option<Vec<u8>> {
+        let tb = title.primary_text()?;
+        let settings = tb.three_d.as_ref().filter(|t| t.enabled)?.clone();
+        let layout = self.render_layout_at_time(title, width, height, time_secs);
+        let placed = std::mem::take(&mut *self.last_glyphs3d.lock().unwrap_or_else(|e| e.into_inner()));
+        // Depths in ems of the text's size, as its size is drawn.
+        let em = tb.font_size * crate::frame_scale(width, height);
+        let bevel = |b: &Option<klipp_timeline::Bevel>| b.map(|b| text3d_mesh::BevelPx { size: b.size * em, segments: b.segments, round: b.profile == klipp_timeline::BevelProfile::Round });
+        let (front, back) = (bevel(&settings.front_bevel), bevel(&settings.back_bevel));
+        let depth = settings.depth * em;
+        // A colour glyph is a flat sprite on the front plane.
+        let sprites: Vec<text3d_render::Sprite> = placed.iter().filter_map(|g| g.sprite.clone()).collect();
+        let meshes: Vec<text3d_mesh::GlyphMesh> = placed
+            .iter()
+            .filter(|g| g.sprite.is_none())
+            .filter_map(|g| {
+                let font = self.font_cache.get(&g.font).unwrap_or(&self.fallback_font);
+                let contours = font.outline(g.glyph, g.px, g.origin, 0.2)?;
+                Some(text3d_mesh::extrude(&contours, depth, front, back, 25.0))
+            })
+            .collect();
+        let pivot = [(layout.text_left + layout.text_right) * 0.5, (layout.text_top + layout.text_bottom) * 0.5, depth * 0.5];
+        let face = settings.face_color.unwrap_or(tb.color);
+        let scene = text3d_render::Scene { meshes: &meshes, sprites: &sprites, settings: &settings, pivot, face, side: settings.side_color, bevel: settings.bevel_color.unwrap_or(face) };
+        Some(text3d_render::render(&scene, width, height, 2))
     }
 
     /// Look up a cached rasterised buffer for the given title +

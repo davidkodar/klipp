@@ -138,7 +138,7 @@ impl Instance {
         self.coords.iter().map(|(t, v)| (harfrust::Tag::new(&t.to_bytes()), *v)).collect()
     }
 
-    fn face<'a>(&self, data: &'a [u8]) -> Option<ttf_parser::Face<'a>> {
+    pub(crate) fn face<'a>(&self, data: &'a [u8]) -> Option<ttf_parser::Face<'a>> {
         let mut face = ttf_parser::Face::parse(data, 0).ok()?;
         for &(tag, value) in &self.coords {
             face.set_variation(tag, value);

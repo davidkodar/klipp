@@ -82,6 +82,18 @@ impl LoadedFont {
         Some(Self { font, data, shaper, colour, instance })
     }
 
+    /// Glyph `gid`'s outline as contours in frame pixels, `px` pixels
+    /// per em with its baseline origin at `origin`, at the font's
+    /// instance (#1512); `None` for a glyph without one.
+    pub(crate) fn outline(&self, gid: u16, px: f32, origin: [f32; 2], tolerance: f32) -> Option<Vec<crate::text3d_mesh::Contour>> {
+        let face = match &self.instance {
+            Some((i, _)) => i.face(&self.data)?,
+            None => ttf_parser::Face::parse(&self.data, 0).ok()?,
+        };
+        let scale = px / face.units_per_em() as f32;
+        crate::text3d_mesh::glyph_contours(&face, ttf_parser::GlyphId(gid), scale, origin, tolerance)
+    }
+
     /// The hash glyph keys carry for this font: fontdue's hash of its
     /// file, and for an instance its coordinates' too (#1504).
     pub(crate) fn hash(&self) -> usize {
