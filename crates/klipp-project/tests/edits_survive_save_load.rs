@@ -146,9 +146,9 @@ fn a_text_boxs_justify_and_vertical_alignment_come_back() {
     assert_eq!(loaded, &td, "the title did not round-trip whole");
 }
 
-/// A style run's font, style, tracking and baseline offset (#1505) come
-/// back through a real save and a strict load, beside its size and
-/// colour.
+/// A style run's font, style, tracking and baseline offset (#1505), and
+/// its own underline (#1515), come back through a real save and a strict
+/// load, beside its size and colour.
 #[test]
 fn a_style_runs_font_style_tracking_and_offset_come_back() {
     let mut seq = Sequence::new_default();
@@ -161,7 +161,7 @@ fn a_style_runs_font_style_tracking_and_offset_come_back() {
         color: Some([200, 40, 10, 255]),
         ..klipp_timeline::StyleRun::default_for_range(4, 9)
     };
-    let raised = klipp_timeline::StyleRun { baseline_offset: Some(20.0), ..klipp_timeline::StyleRun::default_for_range(10, 14) };
+    let raised = klipp_timeline::StyleRun { baseline_offset: Some(20.0), underline: Some(true), ..klipp_timeline::StyleRun::default_for_range(10, 14) };
     let td = TitleData::single_text(TextBox { text: "the quick brown fox".into(), style_runs: vec![styled, raised], ..TextBox::default() });
     let mut c = Clip::gap(tc(0), tc(48));
     c.kind = ClipKind::Title(td.clone());

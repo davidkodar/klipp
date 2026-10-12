@@ -32,6 +32,11 @@ pub struct StyleRun {
     /// sets a value. Empty (the default, left unwritten) adds none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub features: Vec<String>,
+    /// Underline for this run alone (if None, inherits the text box's).
+    /// Kept and saved, so a subtitle underlined in part keeps it through
+    /// export (#1515); drawn per run once #1668 lands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underline: Option<bool>,
 }
 
 impl StyleRun {
@@ -47,6 +52,7 @@ impl StyleRun {
             tracking: None,
             baseline_offset: None,
             features: Vec::new(),
+            underline: None,
         }
     }
 
@@ -59,6 +65,7 @@ impl StyleRun {
             && self.tracking.is_none()
             && self.baseline_offset.is_none()
             && self.features.is_empty()
+            && self.underline.is_none()
     }
 
     /// Returns true if two runs have identical style fields (ignoring range).
@@ -70,6 +77,7 @@ impl StyleRun {
             && self.tracking == other.tracking
             && self.baseline_offset == other.baseline_offset
             && self.features == other.features
+            && self.underline == other.underline
     }
 }
 

@@ -6739,8 +6739,8 @@ mod tests {
         text: "Hello World".to_string(),
         font_size: 72.0,
         style_runs: vec![
-                    StyleRun { start: 0, end: 5, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new() },
-                    StyleRun { start: 6, end: 11, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new() },
+                    StyleRun { start: 0, end: 5, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None },
+                    StyleRun { start: 6, end: 11, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None },
                 ],
         ..Default::default()
     };
@@ -6793,9 +6793,9 @@ mod tests {
         text: text.to_string(),
         font_size: 72.0,
         style_runs: vec![
-                    StyleRun { start: 0, end: 3, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new() }, // ABC
-                    StyleRun { start: 3, end: 7, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new() },  // DEFG
-                    StyleRun { start: 7, end: 10, font_size: Some(72.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new() }, // HIJ
+                    StyleRun { start: 0, end: 3, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None }, // ABC
+                    StyleRun { start: 3, end: 7, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None },  // DEFG
+                    StyleRun { start: 7, end: 10, font_size: Some(72.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None }, // HIJ
                 ],
         ..Default::default()
     };
@@ -8367,6 +8367,7 @@ mod tests {
                     tracking: None,
                     baseline_offset: None,
                     features: Vec::new(),
+                    underline: None,
                 });
             })
         });
