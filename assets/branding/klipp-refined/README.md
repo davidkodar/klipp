@@ -1,25 +1,29 @@
-# Klipp refined logo
+# Klipp identity
 
-Vector refinement of the amber filmstrip / editing-playhead concept. The app
-embeds these icons in its project selection screen, toolbar, empty viewer, and
-window icon. The desktop installation icon pack remains separate.
+*Klipp* is Swedish for "cut". The mark is a K whose leg has been cut off at
+the waist and slipped to the right, like a clip moved on a timeline. The stem
+and arm are soft white; the moved piece is amber.
 
-- `klipp-icon.svg`: full vector master, transparent outside the charcoal tile.
-- `klipp-icon-small.svg`: simplified geometry for 16–32 px, without perforations,
-  with a heavier playhead and wider frame borders.
-- `klipp-logo.svg`: stacked lockup with a custom outlined geometric wordmark.
-  All letters are paths; no font dependencies.
-- `klipp-icon-{size}.png`: transparent PNG exports, 16 through 1024 px.
-- `klipp-logo.png`: transparent 640 × 796 lockup.
-- `preview.png` / `preview.svg`: palette and actual-size review sheet.
+The app embeds these files in its window icon, project selection screen,
+toolbar, empty viewer and About screens, and the package installs the icon
+PNGs into the hicolor theme. The website serves copies of `klipp-icon.svg` and
+`klipp-wordmark.svg`, which `build.py` writes into `website/assets/`.
 
-Palette: muted amber `#D99A38`, neutral charcoal `#242629`, soft white `#EAE7E0`.
-Use the white wordmark on dark surfaces. All artwork uses solid fills, without
-textures, shadows, gradients, embedded bitmaps, or external resources.
+- `klipp-icon.svg`: the icon master, a charcoal tile with the cut K.
+- `klipp-icon-small.svg`: 16–32 px version with a heavier stem and a wider
+  cut, so the slip still shows at a few pixels.
+- `klipp-icon-{size}.png`: PNG exports, 16 through 1024 px.
+- `klipp-wordmark.svg` / `.png`: the "Klipp" wordmark in soft white, for dark
+  backgrounds. `klipp-wordmark-light.*` is the charcoal version for light
+  backgrounds. The K repeats the cut; the dot of the i is an amber square.
+- `klipp-logo.svg` / `.png`: horizontal lockup, icon and wordmark, for dark
+  backgrounds. `klipp-logo-light.*` is the version for light backgrounds.
+- `preview.png` / `preview.svg`: review sheet with both lockups and the icon
+  at the sizes it ships.
 
-Regenerate with `python3 assets/branding/klipp-refined/build.py` from the repository
-root. Requires Python 3 and `rsvg-convert`. The script uses only Python's standard
-library. Vector geometry is authored directly, not traced from the image preview.
+Palette: amber `#D99A38`, charcoal `#242629`, soft white `#EAE7E0`. Everything
+is drawn from rectangles, straight cuts and arcs with solid fills: no fonts,
+gradients, shadows or embedded bitmaps.
 
-The PNG renders and 16–128 px review sheet were visually inspected. Tiny sizes
-prioritize the frame/edit silhouette over photographic-film detail.
+Regenerate with `python3 assets/branding/klipp-refined/build.py`. Requires
+Python 3 and `rsvg-convert`; the script uses only the standard library.
