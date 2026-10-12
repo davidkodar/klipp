@@ -470,6 +470,8 @@ impl KlippApp {
             klipp_title::font_discovery::discover_system_fonts()
         };
         app.state.available_fonts = font_registry.keys().cloned().collect();
+        app.state.favourite_fonts = app.prefs.title.favourite_fonts.clone();
+        app.state.recent_fonts = app.prefs.title.recent_fonts.clone();
         tracing::info!("UI font discovery: {} families available", app.state.available_fonts.len());
 
         // Enrich any stale recent project entries with metadata from disk

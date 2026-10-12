@@ -22,6 +22,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ShowPanel { .. }
         | AppCommand::GradeTrackInColour { .. }
         | AppCommand::LoadCreditsList { .. }
+        | AppCommand::ToggleFavouriteFont { .. }
+        | AppCommand::NoteRecentFont { .. }
         | AppCommand::ToggleGraphDock
         | AppCommand::RevealGraph { .. }
         | AppCommand::SetGraphDockRoot { .. }

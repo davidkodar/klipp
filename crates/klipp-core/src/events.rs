@@ -2554,6 +2554,10 @@ pub enum AppCommand {
     /// Read a credits list (#1514) from `path` into the open credits
     /// dialog: what its Load button picked.
     LoadCreditsList { path: std::path::PathBuf },
+    /// Star a font family in the font picker, or unstar it (#1719).
+    ToggleFavouriteFont { family: String },
+    /// A font family was just picked: first of the recent ones.
+    NoteRecentFont { family: String },
     /// Set write-on reveal progress (0.0-1.0).
     SetTitleWriteOn { clip_id: ClipId, write_on: f32 },
     /// Set line spacing multiplier.
