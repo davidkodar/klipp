@@ -1827,8 +1827,9 @@ impl Renderer {
                         *progress
                     };
                     let p = [params.param0, params.param1, params.param2, params.param3];
+                    let colour = self.authored_colour(params.color);
                     let t = Instant::now();
-                    if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_transition(slots[0], slots[1], slots[2], kind_id, eased, p, params.color)) {
+                    if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_transition(slots[0], slots[1], slots[2], kind_id, eased, p, colour)) {
                         return self.gpu_stack_declines("the transition pass failed");
                     }
                     stats.composite_ms += ms_since(t);
@@ -3271,6 +3272,19 @@ impl Renderer {
     /// An effect compares them against the picture it is given, so in
     /// another working space they have to be the same colour expressed
     /// there, or the key misses the green it was pointed at.
+    /// A transition's colour (0 to 1, sRGB-encoded, as a dip to a colour
+    /// takes it) in the working space, still sRGB-encoded for the shader
+    /// to decode: picked in BT.709 like a title's, so in an ACEScg or a
+    /// BT.2020 project it means the colour picked (#1653).
+    fn authored_colour(&self, c: [f32; 4]) -> [f32; 4] {
+        let Some(m) = klipp_color::primaries::working_space_conversion_matrix(WorkingColorspace::Rec709Linear, self.working) else {
+            return c;
+        };
+        use klipp_color::transfer::{linear_to_srgb, srgb_to_linear};
+        let w = klipp_color::primaries::matrix3_mul_vec(m, [srgb_to_linear(c[0]), srgb_to_linear(c[1]), srgb_to_linear(c[2])]);
+        [linear_to_srgb(w[0]), linear_to_srgb(w[1]), linear_to_srgb(w[2]), c[3]]
+    }
+
     fn authored_colours(&self, fx: &mut [BuiltinEffect]) {
         let Some(m) = klipp_color::primaries::working_space_conversion_matrix(
             WorkingColorspace::Rec709Linear,
@@ -4099,15 +4113,16 @@ impl Renderer {
                 p.chunks_exact_mut(4).for_each(|px| { px[0] *= px[3]; px[1] *= px[3]; px[2] *= px[3]; });
             }
         }
+        let colour = self.authored_colour(params.color);
         let mut mixed = match self.gpu() {
             Some(gpu) => gpu.render_transition_linear(
                 &from, &to, kind_id, eased, width, height,
-                params.param0, params.param1, params.param2, params.param3, params.color,
+                params.param0, params.param1, params.param2, params.param3, colour,
             ),
             // The same shader, transcribed: the same picture without a GPU.
             None => klipp_effects::render_transition_linear(
                 &from, &to, kind_id, eased, width, height,
-                params.param0, params.param1, params.param2, params.param3, params.color,
+                params.param0, params.param1, params.param2, params.param3, colour,
             ),
         };
         if premultiplied {

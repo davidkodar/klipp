@@ -698,6 +698,54 @@ fn a_transition_between_two_clips_matches() {
     assert_match("cross dissolve", &seq, &mut src);
 }
 
+/// #1653: a transition's colour is picked in BT.709, as a title's is, so
+/// in an ACEScg or a BT.2020 project a dip's held colour is the colour
+/// picked, put into the working space, not the same numbers read as the
+/// working space's; the GPU stack's dip is the CPU's.
+#[test]
+fn a_dip_holds_the_colour_picked_in_a_wide_working_space() {
+    use klipp_core::WorkingColorspace as Ws;
+    let picked = [0.9f32, 0.2, 0.1, 1.0];
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    let mut v = Track::new("V1", TrackKind::Video);
+    let a = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 2.0);
+    let b = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 2.0, 4.0);
+    let mut src = Flat::default();
+    src.0.insert(a.id, picture(0.0));
+    src.0.insert(b.id, picture(0.5));
+    v.transitions.push(klipp_timeline::Transition {
+        id: klipp_core::TransitionId::new(),
+        clip_a_id: a.id,
+        clip_b_id: b.id,
+        kind: klipp_core::TransitionKind::DipToBlack,
+        duration: tc(2.0),
+        alignment: Default::default(),
+        // Held at the colour across the middle of the dip.
+        user_params: klipp_core::TransitionUserParams { param0: 0.3, color: picked, ..Default::default() },
+    });
+    v.clips = vec![a, b];
+    seq.tracks = vec![v];
+    let shown = |linear: &[f32], ws: Ws| klipp_color::display::display_transform_ws_to(linear, klipp_color::display::ToneMapOp::None, ws, klipp_core::SdrTransfer::Srgb);
+    for ws in [Ws::AcesCG, Ws::Bt2020Linear] {
+        let mut r = renderer();
+        r.set_working_colorspace(ws);
+        let cpu = r.render(&seq, tc(2.0), W, H, &mut src, RenderOptions::default());
+        let m = klipp_color::primaries::working_space_conversion_matrix(Ws::Rec709Linear, ws).unwrap();
+        let want = klipp_color::primaries::matrix3_mul_vec(m, [0, 1, 2].map(|c| klipp_color::transfer::srgb_to_linear(picked[c])));
+        let i = (((H / 2) * W + W / 2) * 4) as usize;
+        for c in 0..3 {
+            assert!((cpu[i + c] - want[c]).abs() < 2e-3, "{ws:?}: the dip holds {:?}, the colour picked is {want:?} there", &cpu[i..i + 3]);
+        }
+        let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(2.0), W, H, &mut src, RenderOptions::default()) else {
+            eprintln!("UNVERIFIED: the GPU stack declined ({:?})", r.last_decline());
+            continue;
+        };
+        let d = worst(&shown(&cpu, ws), &gpu);
+        assert!(d <= 1, "{ws:?}: the stack's dip differs from the CPU's by {d} levels");
+    }
+}
+
 #[test]
 fn an_adjustment_layer_with_a_grade_and_an_effect_matches() {
     let (mut seq, mut src) = stack();
