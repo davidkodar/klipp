@@ -40,6 +40,9 @@ pub(crate) fn respond(
             }
             // What the export does not say for itself, the brief says.
             let brief = seq.brief.clone();
+            // The credits of what this sequence uses, and nothing else the
+            // shared download library holds (#1582).
+            let credits = sequence_credits(&seq, &pool);
             drop(pool);
             drop(seq);
             let (width, height) = match (width, height, brief.as_ref()) {
@@ -109,6 +112,13 @@ pub(crate) fn respond(
                 .iter().map(|job| job.job_id.clone()).collect();
             let mut v = send(AppCommand::ExportSequence { settings })?;
             v["export"] = said;
+            if !credits.is_empty() {
+                let file = credits_path(&out);
+                match std::fs::write(&file, klipp_audio_search::credits_text(&credits)) {
+                    Ok(()) => v["credits"] = json!({ "path": file, "count": credits.len() }),
+                    Err(e) => v["credits"] = json!({ "error": format!("the credits list could not be written to {}: {e}", file.display()) }),
+                }
+            }
             if v["applied"] != true {
                 v["next"] = json!("Export submission is still queued for the UI. Resolve its operation_id with operation_status before looking for a render job.");
                 return Ok(v);
@@ -472,5 +482,69 @@ pub(crate) fn respond(
         }
 
         _ => Err("internal: a request was routed to the wrong area".into()),
+    }
+}
+
+/// The credits list's file, beside the export: `film.mp4` gets
+/// `film.credits.txt`.
+fn credits_path(out: &std::path::Path) -> std::path::PathBuf {
+    out.with_extension("credits.txt")
+}
+
+/// The credit of each downloaded file the sequence's enabled clips use,
+/// each file once: what its export owes credit for. A file with no credit
+/// beside it (the person's own footage) has none.
+fn sequence_credits(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool) -> Vec<klipp_audio_search::Credit> {
+    let mut seen = std::collections::HashSet::new();
+    seq.tracks
+        .iter()
+        .flat_map(|t| t.clips.iter())
+        .filter(|c| c.enabled)
+        .filter_map(|c| c.media_id().and_then(|id| pool.get(&id)))
+        .filter(|m| seen.insert(m.path.clone()))
+        .filter_map(|m| klipp_audio_search::read_credit(&m.path))
+        .collect()
+}
+
+#[cfg(test)]
+mod credits_tests {
+    use super::{credits_path, sequence_credits};
+
+    /// #1582: the credits are those of the files the sequence uses, each
+    /// once, not every download in the shared library; a disabled clip
+    /// and footage with no credit add nothing.
+    #[test]
+    fn the_credits_are_the_sequences_own() {
+        let dir = std::env::temp_dir().join(format!("klipp-sequence-credits-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str, credited: bool| {
+            let audio = dir.join(format!("{name}.mp3"));
+            std::fs::write(&audio, b"x").unwrap();
+            if credited {
+                let page = format!("https://freesound.org/people/a/sounds/{name}/");
+                std::fs::write(audio.with_extension("klipp-credit.txt"), format!("\"{name}\" by a — CC BY ({page})\nLicence: CC BY (https://creativecommons.org/licenses/by/4.0/)\nSource page: {page}\n")).unwrap();
+            }
+            audio
+        };
+        let mut pool = klipp_media::MediaPool::new();
+        let mut add = |name: &str, credited: bool| pool.add(klipp_media::MediaItem::synthetic_for_test(file(name, credited), None));
+        let (whoosh, riser, unused, footage, off) = (add("whoosh", true), add("riser", true), add("unused", true), add("footage", false), add("off", true));
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 24);
+        let clip = |id, at: f64| klipp_timeline::Clip::media(id, tc(at), tc(at + 1.0), tc(0.0), tc(1.0));
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut picture = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        picture.clips = vec![clip(footage, 0.0)];
+        let mut sound = klipp_timeline::Track::new("A1", klipp_timeline::TrackKind::Audio);
+        let mut disabled = clip(off, 4.0);
+        disabled.enabled = false;
+        sound.clips = vec![clip(whoosh, 0.0), clip(riser, 1.0), clip(whoosh, 2.0), disabled];
+        seq.tracks = vec![picture, sound];
+        let _ = unused;
+
+        let mut titles: Vec<String> = sequence_credits(&seq, &pool).into_iter().map(|c| c.title).collect();
+        titles.sort();
+        assert_eq!(titles, ["riser", "whoosh"]);
+        assert_eq!(credits_path(std::path::Path::new("/out/film.mp4")), std::path::Path::new("/out/film.credits.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -416,6 +416,87 @@ Source page: {}
     Ok(audio_path)
 }
 
+/// A downloaded track's credit, as [`download_track`] keeps it beside the
+/// file: what an export's credits list names (#1582).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Credit {
+    pub title: String,
+    pub author: String,
+    /// The licence's label, "CC BY" or "CC0".
+    pub licence: String,
+    /// The licence deed's URL; empty when the credit names none.
+    pub licence_url: String,
+    /// The page the track came from, to link back to.
+    pub source: String,
+}
+
+impl Credit {
+    /// Whether the licence asks to be credited: every one but a dedication
+    /// to the public domain.
+    pub fn needs_attribution(&self) -> bool {
+        let l = self.licence.to_lowercase();
+        !(l.contains("cc0") || l.contains("public domain") || l.contains("publicdomain"))
+    }
+}
+
+/// The credit [`download_track`] wrote beside `audio`; `None` for a file
+/// with none, or one that doesn't read as a credit.
+pub fn read_credit(audio: &std::path::Path) -> Option<Credit> {
+    parse_credit(&std::fs::read_to_string(audio.with_extension("klipp-credit.txt")).ok()?)
+}
+
+/// A credit file's text: `"title" by author — licence (page)`, then
+/// `Licence: label (deed URL)` and `Source page: page`.
+fn parse_credit(text: &str) -> Option<Credit> {
+    let first = text.lines().next()?;
+    let (head, _) = first.rsplit_once(" — ")?;
+    let (title, author) = head.strip_prefix('"')?.rsplit_once("\" by ")?;
+    let field = |name: &str| text.lines().find_map(|l| l.strip_prefix(name)).map(|v| v.trim().to_owned());
+    let licence_line = field("Licence:")?;
+    let (licence, licence_url) = match licence_line.rsplit_once(" (") {
+        Some((label, url)) => (label.trim().to_owned(), url.trim_end_matches(')').trim().to_owned()),
+        None => (licence_line, String::new()),
+    };
+    Some(Credit { title: title.to_owned(), author: author.trim().to_owned(), licence, licence_url, source: field("Source page:").unwrap_or_default() })
+}
+
+/// The credits text for `credits`: each track once, grouped by licence,
+/// the licences that ask to be credited first, then those that don't.
+/// Empty for no credits.
+pub fn credits_text(credits: &[Credit]) -> String {
+    let mut unique: Vec<&Credit> = Vec::new();
+    for c in credits {
+        if !unique.iter().any(|u| u.source == c.source && u.title == c.title && u.author == c.author) {
+            unique.push(c);
+        }
+    }
+    if unique.is_empty() {
+        return String::new();
+    }
+    let mut licences: Vec<(&str, &str, bool)> = Vec::new();
+    for c in &unique {
+        if !licences.iter().any(|(l, _, _)| *l == c.licence) {
+            licences.push((c.licence.as_str(), c.licence_url.as_str(), c.needs_attribution()));
+        }
+    }
+    licences.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(b.0)));
+    let mut out = String::from("Credits\n");
+    let mut heading = None;
+    for (licence, url, attribute) in licences {
+        if heading != Some(attribute) {
+            out.push_str(if attribute { "\nAttribution required\n" } else { "\nNo attribution required\n" });
+            heading = Some(attribute);
+        }
+        out.push_str(&format!("\n{licence}{}\n", if url.is_empty() { String::new() } else { format!(" ({url})") }));
+        let mut tracks: Vec<&&Credit> = unique.iter().filter(|c| c.licence == licence).collect();
+        tracks.sort_by(|a, b| a.title.cmp(&b.title));
+        for c in tracks {
+            out.push_str(&format!("  \"{}\" by {}{}\n", c.title, c.author, if c.source.is_empty() { String::new() } else { format!(" — {}", c.source) }));
+        }
+    }
+    out
+}
+
 /// Which library `audio` was fetched from, read from the credit file
 /// `download_track` wrote beside it: its source page names the library.
 /// `None` for a file with no credit beside it, or one naming neither.
@@ -618,6 +699,37 @@ mod tests {
         assert_eq!(library_source(&credit("other", "https://example.com/a")), None);
         assert_eq!(library_source(&dir.join("bare.mp3")), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1582: a credit file reads back as what was credited, and the
+    /// credits list names each track once, under its licence, the ones
+    /// that ask to be credited first.
+    #[test]
+    fn credits_are_listed_by_licence_attribution_first() {
+        let text = |title: &str, author: &str, licence: &str, deed: &str, page: &str| {
+            format!("\"{title}\" by {author} — {licence} ({page})\nLicence: {licence} ({deed})\nSource page: {page}\n")
+        };
+        let by = "https://creativecommons.org/licenses/by/4.0/";
+        let zero = "https://creativecommons.org/publicdomain/zero/1.0/";
+        let whoosh = parse_credit(&text("Big \"Air\" Whoosh", "Artninja", "CC BY", by, "https://freesound.org/people/Artninja/sounds/1/")).unwrap();
+        assert_eq!(whoosh.title, "Big \"Air\" Whoosh", "a quote inside the title is kept");
+        assert_eq!(whoosh.author, "Artninja");
+        assert_eq!(whoosh.licence, "CC BY");
+        assert_eq!(whoosh.licence_url, by);
+        assert_eq!(whoosh.source, "https://freesound.org/people/Artninja/sounds/1/");
+        assert!(whoosh.needs_attribution());
+        let song = parse_credit(&text("Golden", "Ana", "CC BY-SA", "https://creativecommons.org/licenses/by-sa/3.0/", "https://www.jamendo.com/track/2")).unwrap();
+        let hit = parse_credit(&text("Hit", "Papkin", "CC0", zero, "https://freesound.org/people/Papkin/sounds/3/")).unwrap();
+        assert!(!hit.needs_attribution());
+        assert!(parse_credit("not a credit").is_none());
+
+        let list = credits_text(&[hit.clone(), song, whoosh.clone(), whoosh]);
+        assert_eq!(list.matches("by Artninja").count(), 1, "a track used twice is credited once:\n{list}");
+        let at = |s: &str| list.find(s).unwrap_or_else(|| panic!("{s} missing:\n{list}"));
+        assert!(at("Attribution required") < at("CC BY (") && at("CC BY (") < at("CC BY-SA"), "{list}");
+        assert!(at("CC BY-SA") < at("No attribution required") && at("No attribution required") < at("CC0"), "{list}");
+        assert!(list.contains("  \"Hit\" by Papkin — https://freesound.org/people/Papkin/sounds/3/"), "{list}");
+        assert_eq!(credits_text(&[]), "");
     }
 
     use super::*;

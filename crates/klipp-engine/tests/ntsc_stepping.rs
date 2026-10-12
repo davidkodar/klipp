@@ -38,7 +38,12 @@ fn steps_and_jumps_move_whole_frames_at_29_97() {
     let at = |parked: &common::Parked| parked.frame_number().expect("no playhead reported");
 
     eprintln!("parked at frame {:?}", parked.frame_number());
-    let mut shown = parked.frame();
+    // What the viewer shows: its bytes, or, for a frame presented on the
+    // GPU without them (zero-copy, which a paused step may take or not
+    // as the machine's load goes), how many such frames there have been.
+    // Two GPU frames both read as no bytes, and compared the same.
+    let picture = |parked: &common::Parked| (parked.frame(), parked.gpu_frames_and_generation().0);
+    let mut shown = picture(&parked);
     for (cmd, want) in [
         (AppCommand::SeekRelative(-1), 9.0),
         (AppCommand::SeekRelative(-1), 8.0),
@@ -52,7 +57,7 @@ fn steps_and_jumps_move_whole_frames_at_29_97() {
         let got = at(&parked);
         eprintln!("{label}: at frame {got:.3}, want {want}");
         assert!((got - want).abs() < 0.01, "{label}: the playhead is at frame {got:.3}, not {want}");
-        let now = parked.frame();
+        let now = picture(&parked);
         assert_ne!(now, shown, "{label}: the picture did not change");
         shown = now;
     }

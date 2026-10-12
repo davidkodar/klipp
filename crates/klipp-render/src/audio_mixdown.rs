@@ -241,7 +241,12 @@ fn get_track_samples(
             continue;
         }
         let clip = &state.clips[clip_idx];
-        let buf = match decode_clip_audio(&clip.path, clip.source_start_secs, sample_rate) {
+        // The clip's effects, made first: how far they look ahead says how
+        // far past the clip's end its sound must be read.
+        let mut chain = (!clip.audio_effects.is_empty()).then(|| AudioEffectChain::from_instances_with_kfs(&clip.audio_effects, &clip.audio_effect_keyframes, sample_rate));
+        let latency_secs = chain.as_ref().map_or(0.0, |c| c.total_latency_samples(sample_rate) as f64 / sample_rate as f64);
+        let until = decode_until(clip, fps, latency_secs);
+        let buf = match decode_clip_audio(&clip.path, clip.source_start_secs, until, sample_rate) {
             Ok(mut buf) => {
                 // A retimed clip (#642): its sound read at its speed, from
                 // where each moment of it on the timeline is in the source,
@@ -266,12 +271,7 @@ fn get_track_samples(
                 // sub-chunks internally and walks `clip_time_secs` forward
                 // through the buffer when keyframes are present, so a single
                 // call covers the whole clip.
-                if !clip.audio_effects.is_empty() {
-                    let mut chain = AudioEffectChain::from_instances_with_kfs(
-                        &clip.audio_effects,
-                        &clip.audio_effect_keyframes,
-                        sample_rate,
-                    );
+                if let Some(chain) = chain.as_mut() {
                     let ctx = AudioProcessContext {
                         sample_rate,
                         channels: 2,
@@ -499,11 +499,34 @@ fn shape_samples(samples: &mut [f32], shape: &AudioClipShape, clip_pos_ext: f64,
     }
 }
 
-/// Decode all audio from a clip into interleaved stereo f32 samples.
+/// Read past a clip's last source second by this much, at its speed: room
+/// for a kept-pitch stretcher's grain and the resampler's filter, so the
+/// clip's last sample sounds as it did when the whole file was read.
+const DECODE_MARGIN_SECS: f64 = 0.5;
+
+/// The source second a clip's decode can stop at (#1594): the end of what
+/// it plays (its timeline range, crossfade handles included, read at its
+/// speed), its effects' look-ahead, and [`DECODE_MARGIN_SECS`]. `None`, to
+/// read to the end of the file, for a speed with no end to read to.
+fn decode_until(clip: &AudioClipSnapshot, fps: f64, latency_secs: f64) -> Option<f64> {
+    let secs = clip.timeline_end_frame.saturating_sub(clip.timeline_start_frame) as f64 / fps;
+    let (end, speed) = match clip.varispeed {
+        None => (clip.source_start_secs + secs, 1.0),
+        Some(v) if v.speed.is_finite() && v.speed != 0.0 => (v.source_at(0.0).max(v.source_at(secs)), v.speed.abs()),
+        Some(_) => return None,
+    };
+    (fps > 0.0 && end.is_finite()).then_some(end + (latency_secs + DECODE_MARGIN_SECS) * speed)
+}
+
+/// Decode a clip's audio from `source_start_secs` into interleaved stereo
+/// f32 samples, stopping once `until` (a source second) is decoded, or at
+/// the end of the file: a clip holds what it plays, not the rest of its
+/// file (#1594: 120 MB for ten seconds of a five-minute track).
 /// Uses ffmpeg-next's `packets()` iterator (which properly handles stream association).
 fn decode_clip_audio(
     path: &std::path::Path,
     source_start_secs: f64,
+    until: Option<f64>,
     output_rate: u32,
 ) -> Result<Vec<f32>, RenderError> {
     let mut format_ctx = ffmpeg_next::format::input(path).map_err(RenderError::Decode)?;
@@ -590,6 +613,15 @@ fn decode_clip_audio(
         }
 
         drain_audio_frames(&mut decoder, &mut resampler, src_layout, &mut buffer, &mut first_pts);
+        // Read as far as the clip plays: the buffer starts at the first
+        // decoded frame's time, which the seek put at or before the in
+        // point.
+        if let (Some(until), Some(pts)) = (until, first_pts) {
+            let start = pts as f64 * f64::from(stream_time_base);
+            if start + (buffer.len() / 2) as f64 / output_rate as f64 >= until {
+                break;
+            }
+        }
     }
 
     // Flush decoder
@@ -699,7 +731,7 @@ fn append_stereo(frame: &ffmpeg_next::frame::Audio, buffer: &mut Vec<f32>) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::snapshot::{AudioClipSnapshot, AudioTrackSnapshot, SequenceSnapshot};
+    use crate::snapshot::{AudioClipSnapshot, AudioTrackSnapshot, SequenceSnapshot, VarispeedRead};
 
     fn make_empty_snapshot(num_audio_tracks: usize) -> SequenceSnapshot {
         let audio_tracks: Vec<AudioTrackSnapshot> = (0..num_audio_tracks)
@@ -938,7 +970,7 @@ mod tests {
         // If the first 2s are silence for this file, that's OK.
         // Verify the decode itself works by checking the direct decode.
         let path2 = std::env::var("TEST_MEDIA_FILE").map(std::path::PathBuf::from).unwrap();
-        let buf = decode_clip_audio(&path2, 0.0, 48000).unwrap();
+        let buf = decode_clip_audio(&path2, 0.0, None, 48000).unwrap();
         assert!(
             !buf.is_empty(),
             "decode_clip_audio should produce samples"
@@ -947,5 +979,51 @@ mod tests {
             buf.iter().any(|&s| s != 0.0),
             "full file decode should have non-zero samples"
         );
+    }
+
+    /// #1594: a clip's decode stops where it stops playing, with room for
+    /// its effects' look-ahead, instead of holding the rest of its file.
+    #[test]
+    fn a_clip_decodes_only_what_it_plays() {
+        if !std::process::Command::new("ffmpeg").arg("-version").output().is_ok_and(|o| o.status.success()) {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("klipp-decode-until-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tone-9s.wav");
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:duration=9"])
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let secs = |buf: &[f32]| buf.len() as f64 / 2.0 / 48000.0;
+        let whole = decode_clip_audio(&path, 1.0, None, 48000).unwrap();
+        assert!((secs(&whole) - 8.0).abs() < 0.05, "unbounded, to the end of the file: {}", secs(&whole));
+        let bounded = decode_clip_audio(&path, 1.0, Some(4.0), 48000).unwrap();
+        assert!(secs(&bounded) >= 3.0 && secs(&bounded) < 3.5, "from 1 s to 4 s and a packet: {}", secs(&bounded));
+        assert_eq!(bounded[..2 * 48000], whole[..2 * 48000], "the same sound where both have it");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Where a decode stops: a clip of 48 frames at 24 fps from source
+        // 5 s plays to 7 s; effects that look ahead read further.
+        let clip = |varispeed| AudioClipSnapshot {
+            timeline_start_frame: 24,
+            timeline_end_frame: 72,
+            source_start_secs: 5.0,
+            path: std::path::PathBuf::new(),
+            audio_effects: vec![],
+            audio_effect_keyframes: std::collections::HashMap::new(),
+            shape: AudioClipShape::default(),
+            varispeed,
+        };
+        assert_eq!(decode_until(&clip(None), 24.0, 0.0), Some(7.0 + DECODE_MARGIN_SECS));
+        assert_eq!(decode_until(&clip(None), 24.0, 0.25), Some(7.25 + DECODE_MARGIN_SECS));
+        // Played backward at 2x from its out point at 20 s: it reads 20 s
+        // down to 16 s, so it stops after 20 s.
+        let reversed = VarispeedRead { speed: -2.0, source_in: 16.0, source_out: 20.0, head_secs: 0.0, keep_pitch: false };
+        assert_eq!(decode_until(&clip(Some(reversed)), 24.0, 0.0), Some(20.0 + 2.0 * DECODE_MARGIN_SECS));
+        let stopped = VarispeedRead { speed: 0.0, ..reversed };
+        assert_eq!(decode_until(&clip(Some(stopped)), 24.0, 0.0), None);
     }
 }

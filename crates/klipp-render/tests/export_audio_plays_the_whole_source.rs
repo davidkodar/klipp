@@ -157,3 +157,34 @@ fn a_24khz_mono_clip_trimmed_mid_file_plays_its_whole_range() {
 fn a_44100hz_stereo_clip_trimmed_mid_file_plays_its_whole_range() {
     plays_trimmed_ranges(44100, 2);
 }
+
+/// #1594: a clip's decode stops where it stops playing. A ranged export
+/// that starts mid-clip still plays the clip to its end: the decode is
+/// bounded by the clip, not by where reading began.
+#[test]
+fn a_clip_read_from_its_middle_plays_to_its_end() {
+    let Some(path) = tone(48000, 2, 9) else { return };
+    let mut mix = mixdown(vec![clip(path, 0, FRAMES, 5.9)]);
+    stays_up(&mut mix, FRAMES / 2..FRAMES, "48 kHz stereo, read from the clip's middle");
+}
+
+/// #1594: a clip at 2x with its pitch kept reads twice its length of
+/// source, and the stretcher a window ahead of that: its last frames
+/// still sound.
+#[test]
+fn a_kept_pitch_double_speed_clip_sounds_to_its_end() {
+    // Mono: each test's tone is a file of its own, named by its rate,
+    // channels and length; two tests sharing one rewrote it under each
+    // other.
+    let Some(path) = tone(48000, 1, 9) else { return };
+    let varispeed = klipp_render::snapshot::VarispeedRead { speed: 2.0, source_in: 1.0, source_out: 7.0, head_secs: 0.0, keep_pitch: true };
+    let mut fast = clip(path, 0, FRAMES, varispeed.decode_from());
+    fast.varispeed = Some(varispeed);
+    let mut mix = mixdown(vec![fast]);
+    let read: Vec<Vec<f32>> = (0..FRAMES).map(|f| mix.get_frame_audio(f)).collect();
+    let middle = rms(&read[read.len() / 2]);
+    assert!(middle > 0.01, "the clip's middle is silent (RMS {middle})");
+    // The last frame ramps against a click; the one before it is whole.
+    let late = rms(&read[read.len() - 2]);
+    assert!(late > middle * 0.5, "the clip's second-to-last frame has RMS {late:.4}, its middle {middle:.4}");
+}
