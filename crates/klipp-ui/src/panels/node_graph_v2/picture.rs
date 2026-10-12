@@ -110,6 +110,15 @@ fn port_words(key: &str, rgb: bool) -> String {
     readable_id(key)
 }
 
+/// The name the canvas gives the node `at` names in `clip`'s picture:
+/// what the viewer says it is viewing (#1763).
+pub(crate) fn node_name(clip: &klipp_timeline::Clip, at: &NodePath) -> Option<String> {
+    let picture = clip.picture_v2().ok()?;
+    let (&node, level) = at.nodes.split_last()?;
+    let model = PictureCanvas::new(&picture.picture.graph, NodePath::new(at.root, level.iter().copied()), None).ok()?;
+    model.nodes.iter().find(|n| n.id() == node).map(|n| n.label.clone())
+}
+
 impl<'a> PictureCanvas<'a> {
     pub(super) fn new(root: &'a Graph, level: NodePath, selected: Option<NodeId>) -> Result<Self, String> {
         let mut graph = root;
@@ -1180,19 +1189,56 @@ mod tests {
         let blur = model.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n.node) == Some("gaussian_blur")).unwrap();
         let label = blur.label.clone();
         let id = blur.id();
-        d.menu(&label, "Solo this node");
+        d.menu(&label, "View in viewer (1)");
         assert_eq!(d.state.solo_node, Some(id), "{:?}", d.sent);
-        assert!(d.texts.iter().any(|(s, _)| s.contains(&format!("SOLO: {label}"))), "the chip: {:?}", d.texts);
+        assert!(d.texts.iter().any(|(s, _)| s.contains(&format!("Viewing: {label}"))), "the chip: {:?}", d.texts);
 
         d.state.solo_node = None;
         d.settle();
-        assert!(!d.texts.iter().any(|(s, _)| s.contains("SOLO")), "no solo, no chip");
+        assert!(!d.texts.iter().any(|(s, _)| s.contains("Viewing:")), "no solo, no chip");
         d.state.solo_node = Some(id);
         d.settle();
         let at = d.at("\u{2715}");
         d.click(at, egui::PointerButton::Primary);
         assert_eq!(d.state.solo_node, None, "the chip's ✕ clears it: {:?}", d.sent);
-        assert!(!d.texts.iter().any(|(s, _)| s.contains("SOLO")));
+        assert!(!d.texts.iter().any(|(s, _)| s.contains("Viewing:")));
+    }
+
+    /// The eye on a node's header views it in the program viewer, as
+    /// node editors do (#1763): clicked, the node is viewed and the chip
+    /// says so; clicked again, or the Output's, the finished picture is
+    /// back. The 1 key does the same for the selected node.
+    #[test]
+    fn the_eye_and_the_1_key_view_a_node_in_the_viewer() {
+        let mut d = Dock::new();
+        let graph = d.graph();
+        let model = PictureCanvas::new(&graph, root(&d.clip()), None).unwrap();
+        let blur = model.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n.node) == Some("gaussian_blur")).unwrap();
+        let (label, id) = (blur.label.clone(), blur.id());
+        let output = model.nodes.iter().find(|n| n.node.type_id.as_str() == lt::OUTPUT).unwrap().label.clone();
+        let card = |d: &Dock, label: &str| { let at = d.at(label); *d.cards.iter().find(|r| r.contains(at) || r.expand(20.0).contains(at)).unwrap_or_else(|| panic!("no card for {label}: {:?}", d.cards)) };
+        let eye = |d: &Dock, label: &str| super::super::view_eye_rect(card(d, label), d.panel.zoom).center();
+        // Hovered, the eye shows; clicked, the node is viewed.
+        let at = eye(&d, &label);
+        d.frame(vec![egui::Event::PointerMoved(at)]);
+        d.click(at, egui::PointerButton::Primary);
+        assert_eq!(d.state.solo_node, Some(id), "the eye views it: {:?}", d.sent);
+        assert_eq!(node_name(&d.clip(), &NodePath::new(root(&d.clip()).root, [id])), Some(label.clone()), "what the viewer names");
+        d.settle();
+        assert!(d.texts.iter().any(|(s, _)| s == &format!("Viewing: {label}")), "{:?}", d.texts);
+        // Clicked again: back to the finished picture.
+        let at = eye(&d, &label);
+        d.click(at, egui::PointerButton::Primary);
+        assert_eq!(d.state.solo_node, None, "{:?}", d.sent);
+        // The 1 key on the selected node, then the Output's eye.
+        d.click(d.at(&label), egui::PointerButton::Primary);
+        d.frame(vec![egui::Event::Key { key: egui::Key::Num1, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        d.settle();
+        assert_eq!(d.state.solo_node, Some(id), "1 views the selected node: {:?}", d.sent);
+        let at = eye(&d, &output);
+        d.frame(vec![egui::Event::PointerMoved(at)]);
+        d.click(at, egui::PointerButton::Primary);
+        assert_eq!(d.state.solo_node, None, "the Output's eye is the finished picture");
     }
 
     /// An effect picked where the picture has nowhere to put it (inside
@@ -1439,12 +1485,14 @@ mod tests {
         let (_, found) = renderer.render_inspected(&seq, t, 64, 36, &mut Grey, klipp_compose::RenderOptions::default(), inspect);
         let batch = klipp_engine::node_thumbnails::ThumbnailBatch::new(1, 0, klipp_engine::node_thumbnails::PreviewQuality::Viewer, klipp_timeline::SharedSequence::new(seq.clone()).revision(), &wanted, found.thumbs)
             .with_unavailable(&wanted, found.unavailable);
-        let placement = graph.nodes.iter().find(|n| n.type_id.as_str() == lt::PLACEMENT).unwrap().id;
-        let (no_preview, why) = batch.unavailable.iter().find(|(at, _)| at.path.node() == Some(placement)).map(|(at, why)| (at.path.node().unwrap(), why.clone())).expect("the renderer has no preview of the placement");
-        d.state.node_thumbs_unavailable = batch.unavailable.clone();
+        // On the CPU an inspected clip's effects run apart from its grade
+        // (#1274): the renderer has no preview of the blur, and says why.
         let blur = effect(&d, "gaussian_blur");
+        let (no_preview, why) = batch.unavailable.iter().find(|(at, _)| at.path.node() == Some(blur)).map(|(at, why)| (at.path.node().unwrap(), why.clone())).expect("the renderer has no preview of the blur on the CPU");
+        d.state.node_thumbs_unavailable = batch.unavailable.clone();
+        let declined = graph.nodes.iter().find(|n| n.type_id.as_str() == lt::SCENE_TO_DISPLAY || n.type_id.as_str() == lt::GROUP).unwrap().id;
         d.state.frame_declines.push(klipp_nodes::Decline {
-            clip: Some(c.id), node: blur, kind: NodeKind::Effect, outcome: klipp_nodes::DeclineOutcome::Unsupported,
+            clip: Some(c.id), node: declined, kind: NodeKind::Effect, outcome: klipp_nodes::DeclineOutcome::Unsupported,
             name: "Gaussian Blur".into(), reason: "needs a frame size under 2048".into(), why: String::new(),
         });
         d.settle();
@@ -1455,7 +1503,7 @@ mod tests {
             }
             d.texts.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>()
         };
-        let texts = tooltip(&mut d, blur);
+        let texts = tooltip(&mut d, declined);
         assert!(texts.iter().any(|t| t == "!"), "the declined badge: {texts:?}");
         assert!(texts.iter().any(|t| t == "Declined: needs a frame size under 2048"), "its reason on hover: {texts:?}");
         let texts = tooltip(&mut d, no_preview);

@@ -2134,6 +2134,9 @@ pub struct AppState {
     /// "S" badge on the soloed node and the toolbar's "SOLO: …"
     /// indicator. Cleared by AppCommand::SetNodeSolo { at: None }.
     pub solo_node: Option<klipp_nodes::NodeId>,
+    /// What the program viewer shows instead of the finished picture
+    /// while a node is viewed: the node's name (#1763).
+    pub viewed_node_name: Option<String>,
 
     // Before/After split view
     pub before_after_active: bool,
@@ -4439,6 +4442,7 @@ impl Default for AppState {
             hue_curve_awaiting: None,
             matte_preview_active: false,
             solo_node: None,
+            viewed_node_name: None,
             before_after_active: false,
             stabilization_compare_active: false,
             resumable_path_drag: None,
