@@ -10,14 +10,26 @@ use klipp_core::fill_gradient::{GradientKind, GradientRamp, GradientStop, MAX_GR
 use klipp_core::{AppCommand, ClipId};
 use klipp_timeline::TextGradient;
 
-/// The editor for `gradient`, on the title's text when `object_id` is
-/// `None`, else on that shape. Edits go out as `SetTitleGradientStops`,
-/// switched on.
+/// A text gradient's stop colour keys, for the editor to key them by
+/// (#1511): the text layer, its keys, the playhead and how near a key
+/// must be to be at it.
+pub(super) struct StopKeys<'a> {
+    pub object_id: u32,
+    pub keys: &'a [klipp_timeline::ColourKeys],
+    pub time_secs: f64,
+    pub tolerance: f64,
+}
+
+/// The editor for `gradient` (as it is at the playhead), on the title's
+/// text when `object_id` is `None`, else on that shape. Edits go out as
+/// `SetTitleGradientStops`, switched on; with `keys`, the picked stop's
+/// colour keys at the playhead, and a keyed stop's colour edit keys it.
 pub(super) fn show(
     ui: &mut egui::Ui,
     clip_id: ClipId,
     object_id: Option<u32>,
     gradient: &TextGradient,
+    keys: Option<StopKeys<'_>>,
     cmds: &mut Vec<AppCommand>,
 ) {
     let mut stops = gradient.stops();
@@ -118,9 +130,33 @@ pub(super) fn show(
         let hi = stops.get(selected + 1).map_or(1.0, |s| s.position);
         let stop = &mut stops[selected];
         let mut c = egui::Color32::from_rgba_unmultiplied(stop.color[0], stop.color[1], stop.color[2], stop.color[3]);
-        if ui.color_edit_button_srgba(&mut c).changed() {
-            stop.color = c.to_srgba_unmultiplied();
-            changed = true;
+        let picked = ui.color_edit_button_srgba(&mut c).changed();
+        let stop_keys = keys.as_ref().map(|k| k.keys.get(selected).cloned().unwrap_or_default());
+        let toggled = match (&keys, &stop_keys) {
+            (Some(k), Some(sk)) => {
+                let ks = crate::inspector::keyframe_selection::state(&sk.r, k.time_secs, k.tolerance);
+                crate::widgets::scrubby_param::key_controls(ui, ks).toggled
+            }
+            _ => false,
+        };
+        let keyed = stop_keys.as_ref().is_some_and(|sk| !sk.is_empty());
+        match &keys {
+            // A keyed stop's colour, or its diamond, keys it at the playhead.
+            Some(k) if toggled || (picked && keyed) => {
+                let at_key = stop_keys.as_ref().is_some_and(|sk| crate::inspector::keyframe_selection::nearest(&sk.r, k.time_secs, k.tolerance).is_some());
+                cmds.push(AppCommand::SetTitleObjectColourKeyframe {
+                    clip_id,
+                    object_id: k.object_id,
+                    param_key: klipp_core::title_effect_keys::gradient_stop_key(selected),
+                    time_secs: k.time_secs,
+                    color: (!(toggled && at_key)).then_some(c.to_srgba_unmultiplied()),
+                });
+            }
+            _ if picked => {
+                stop.color = c.to_srgba_unmultiplied();
+                changed = true;
+            }
+            _ => {}
         }
         let mut percent = stop.position * 100.0;
         let r = ui.add(egui::DragValue::new(&mut percent).range(0.0..=100.0).speed(0.5).suffix(" %").fixed_decimals(0));
@@ -144,5 +180,45 @@ pub(super) fn show(
     }
     if drag_stopped {
         cmds.push(AppCommand::EndTitleGradientDrag { clip_id });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The picked stop's diamond keys its colour at the playhead on the
+    /// text layer, by its place in the stops (#1511).
+    #[test]
+    fn the_picked_stops_diamond_keys_its_colour() {
+        let ctx = egui::Context::default();
+        let g = TextGradient::pair([200, 10, 10, 255], [0, 0, 0, 255], true);
+        let clip_id = ClipId(uuid::Uuid::nil());
+        let run = |events: Vec<egui::Event>| {
+            let mut cmds = Vec::new();
+            let out = ctx.run(
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 400.0))), events, ..Default::default() },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        show(ui, clip_id, None, &g, Some(StopKeys { object_id: 4, keys: &[], time_secs: 0.75, tolerance: 0.01 }), &mut cmds);
+                    });
+                },
+            );
+            let diamond = out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Path(p) if p.closed && p.points.len() == 4 => Some(p.points.iter().fold(egui::Vec2::ZERO, |a, q| a + q.to_vec2()).to_pos2() / 4.0),
+                _ => None,
+            });
+            (diamond, cmds)
+        };
+        let (diamond, cmds) = run(Vec::new());
+        assert!(cmds.is_empty());
+        let at = diamond.expect("the picked stop has a diamond");
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        run(vec![egui::Event::PointerMoved(at), button(true)]);
+        let (_, cmds) = run(vec![button(false)]);
+        assert!(
+            matches!(&cmds[..], [AppCommand::SetTitleObjectColourKeyframe { object_id: 4, param_key, time_secs, color: Some([200, 10, 10, 255]), .. }] if param_key == "gradient.stop.0" && *time_secs == 0.75),
+            "{cmds:?}"
+        );
     }
 }

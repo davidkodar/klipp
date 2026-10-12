@@ -2091,7 +2091,12 @@ impl KlippApp {
                             match object_id {
                                 None => {
                                     if let Some(tb) = target_textbox_mut(td, target_oid) {
-                                        tb.gradient = Some(gradient.clone());
+                                        // Each stop keeps its colour keys (#1511).
+                                        let mut g = gradient.clone();
+                                        if let Some(before) = &tb.gradient {
+                                            g.carry_keys_from(before);
+                                        }
+                                        tb.gradient = Some(g);
                                     }
                                 }
                                 Some(id) => {
@@ -2940,6 +2945,18 @@ impl KlippApp {
                                         None => tb.color_keyframes.remove(*time_secs, tolerance),
                                     }
                                     routed = true;
+                                } else if let Some((i, "")) = klipp_core::title_effect_keys::parse_gradient_stop_key(param_key) {
+                                    // A gradient stop's colour, by its place in the stops (#1511).
+                                    if let Some(g) = tb.gradient.as_mut().filter(|g| i < g.stops().len()) {
+                                        if g.stop_keyframes.len() <= i {
+                                            g.stop_keyframes.resize(i + 1, Default::default());
+                                        }
+                                        match color {
+                                            Some(c) => g.stop_keyframes[i].set(*time_secs, *c),
+                                            None => g.stop_keyframes[i].remove(*time_secs, tolerance),
+                                        }
+                                        routed = true;
+                                    }
                                 }
                             }
                         }

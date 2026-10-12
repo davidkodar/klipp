@@ -115,6 +115,21 @@ pub const TEXT_LINE_SPACING: &str = "text.line_spacing";
 /// `TextPath::Layer.offset_keyframes`.
 pub const TEXT_PATH_OFFSET: &str = "text.path_offset";
 
+// A text gradient's stop colours, a stop at a time (#1511): stop `i`
+// of the gradient's stops in position order, keyed whole as
+// `gradient.stop.{i}` and channel by channel as `gradient.stop.{i}.{r,g,b,a}`.
+pub fn gradient_stop_key(idx: usize) -> String {
+    format!("gradient.stop.{idx}")
+}
+
+/// Parse `gradient.stop.{index}` or `gradient.stop.{index}.{channel}`
+/// into `(index, channel)`, the channel empty for the whole colour.
+pub fn parse_gradient_stop_key(key: &str) -> Option<(usize, &str)> {
+    let rest = key.strip_prefix("gradient.stop.")?;
+    let (idx, channel) = rest.split_once('.').unwrap_or((rest, ""));
+    Some((idx.parse::<usize>().ok()?, channel))
+}
+
 // `TextBox.color_keyframes`: a channel each, in linear light 0..1.
 pub const TEXT_COLOR: &str = "text.color";
 pub const TEXT_COLOR_R: &str = "text.color.r";

@@ -124,3 +124,28 @@ fn a_colour_keyed_from_red_to_blue_blends_their_light() {
         assert_eq!(&solid[..3], &colour[..3], "at t={t}");
     }
 }
+
+/// A gradient's stop colour keyed draws, at each moment, as the still
+/// gradient with that moment's colour, in the viewer's frame and the
+/// export's alike; halfway from red to blue the stop is their light
+/// blended (#1511).
+#[test]
+fn a_gradient_stop_keyed_draws_its_colour_at_each_moment() {
+    use klipp_timeline::{ColourKeys, GradientStop, TextGradient};
+    let stops = |top: [u8; 4]| [GradientStop { position: 0.0, color: top }, GradientStop { position: 0.6, color: [255, 255, 0, 255] }, GradientStop { position: 1.0, color: [0, 0, 0, 255] }];
+    let base = TextBox { text: "GRADE".into(), font_size: 120.0, ..Default::default() };
+    let mut keys = ColourKeys::default();
+    keys.set(0.0, [255, 0, 0, 255]);
+    keys.set(2.0, [0, 0, 255, 255]);
+    let mut keyed_gradient = TextGradient::with_stops(&stops([255, 0, 0, 255]), Default::default(), true);
+    keyed_gradient.stop_keyframes = vec![keys];
+    let keyed = title(TextBox { gradient: Some(keyed_gradient), ..base.clone() });
+    let mut r = TitleRenderer::new();
+    for (t, top) in [(0.0f32, [255u8, 0, 0, 255]), (1.0, [188, 0, 188, 255]), (2.0, [0, 0, 255, 255])] {
+        let export = r.render_with_window(&keyed, W, H, None, t, Some(4.0));
+        assert_eq!(viewer(&mut r, &keyed, t), export, "at t={t}");
+        let still = title(TextBox { gradient: Some(TextGradient::with_stops(&stops(top), Default::default(), true)), ..base.clone() });
+        assert_eq!(export, r.render_with_window(&still, W, H, None, t, Some(4.0)), "at t={t} the first stop is {top:?}");
+    }
+    assert_ne!(r.render_with_window(&keyed, W, H, None, 0.0, Some(4.0)), r.render_with_window(&keyed, W, H, None, 2.0, Some(4.0)));
+}

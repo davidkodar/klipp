@@ -109,7 +109,11 @@ pub fn summary(a: &Animator) -> String {
     }
     let name = if a.name.is_empty() { "Animator" } else { &a.name };
     let what = if does.is_empty() { "nothing yet".to_string() } else { does.join(", ") };
-    let moving = if keyed { ", animated" } else { "" };
+    let moving = match (keyed, &a.within) {
+        (_, Some(w)) => format!("{}, within {} {:.0}\u{2013}{:.0}%", if keyed { ", animated" } else { "" }, unit_label(w.unit).to_lowercase(), w.start * 100.0, w.end * 100.0),
+        (true, None) => ", animated".to_string(),
+        (false, None) => String::new(),
+    };
     format!("{name} \u{00b7} {} {:.0}\u{2013}{:.0}%{moving} \u{00b7} {what}", unit_label(s.unit).to_lowercase(), s.start * 100.0, s.end * 100.0)
 }
 
@@ -153,7 +157,9 @@ pub fn show_animators(
     let mut keys: Vec<KeyRequest> = Vec::new();
     for (i, a) in animators.iter_mut().enumerate() {
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
+        // Wrapped, so a long line never widens the inspector past its
+        // rows' diamonds.
+        ui.horizontal_wrapped(|ui| {
             changed |= ui.checkbox(&mut a.enabled, "").on_hover_text("On or off").changed();
             ui.label(egui::RichText::new(summary(a)).size(crate::theme::type_scale::CAPTION).color(theme.text_secondary));
             if ui.small_button("\u{2715}").on_hover_text("Remove this animator").clicked() {
@@ -179,23 +185,17 @@ pub fn show_animators(
     }
 }
 
-/// An animator's full controls; true when one of them changed it in
-/// place. A range row with keys (or its diamond) asks for a key instead.
+/// A selector's unit and its range, start, end and offset, keyable as
+/// `animator.{i}.{prefix}{field}`; true when one changed in place.
 #[allow(clippy::too_many_arguments)]
-fn details(ui: &mut egui::Ui, i: usize, a: &mut Animator, keyable: bool, t: f64, tolerance: f64, keys: &mut Vec<KeyRequest>) -> bool {
+fn range_rows(ui: &mut egui::Ui, i: usize, prefix: &str, s: &mut RangeSelector, keyable: bool, t: f64, tolerance: f64, keys: &mut Vec<KeyRequest>) -> bool {
     use crate::widgets::scrubby_param::scrubby_param_row;
     let mut changed = false;
-    ui.horizontal(|ui| {
-        ui.label("Name");
-        changed |= ui.text_edit_singleline(&mut a.name).changed();
-    });
-    let s = &mut a.selector;
-    egui::ComboBox::from_id_salt(("animator_unit", i)).selected_text(unit_label(s.unit)).show_ui(ui, |ui| {
+    egui::ComboBox::from_id_salt(("animator_unit", i, prefix.to_string())).selected_text(unit_label(s.unit)).show_ui(ui, |ui| {
         for u in [SelectUnit::Char, SelectUnit::Word, SelectUnit::Line] {
             changed |= ui.selectable_value(&mut s.unit, u, unit_label(u)).changed();
         }
     });
-    // The range: start, end and offset, keyable.
     let (start, end, offset) = (s.start, s.end, s.offset);
     for (field, label, base, keyframes) in [
         ("start", "Start", start, &mut s.start_keyframes),
@@ -220,9 +220,26 @@ fn details(ui: &mut egui::Ui, i: usize, a: &mut Animator, keyable: bool, t: f64,
                 changed = true;
             }
         } else if edit.toggled || edit.changed || edit.interpolation.is_some() {
-            keys.push(KeyRequest { param_key: klipp_core::title_effect_keys::animator_key(i, field), value: v / 100.0, edit, keyframes: keyframes.clone() });
+            keys.push(KeyRequest { param_key: klipp_core::title_effect_keys::animator_key(i, &format!("{prefix}{field}")), value: v / 100.0, edit, keyframes: keyframes.clone() });
         }
     }
+    changed
+}
+
+/// An animator's full controls; true when one of them changed it in
+/// place. A range row with keys (or its diamond) asks for a key instead.
+#[allow(clippy::too_many_arguments)]
+fn details(ui: &mut egui::Ui, i: usize, a: &mut Animator, keyable: bool, t: f64, tolerance: f64, keys: &mut Vec<KeyRequest>) -> bool {
+    use crate::widgets::scrubby_param::scrubby_param_row;
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label("Name");
+        changed |= ui.text_edit_singleline(&mut a.name).changed();
+    });
+    // Each range's rows in an id scope of their own: the two ranges'
+    // rows share their labels.
+    changed |= ui.push_id(("animator_range", i), |ui| range_rows(ui, i, "", &mut a.selector, keyable, t, tolerance, keys)).inner;
+    let s = &mut a.selector;
     ui.horizontal(|ui| {
         egui::ComboBox::from_id_salt(("animator_shape", i)).selected_text(shape_label(s.shape)).show_ui(ui, |ui| {
             for sh in [SelectShape::Square, SelectShape::RampUp, SelectShape::RampDown, SelectShape::Triangle, SelectShape::Round, SelectShape::Smooth] {
@@ -254,6 +271,16 @@ fn details(ui: &mut egui::Ui, i: usize, a: &mut Animator, keyable: bool, t: f64,
             changed = true;
         }
     });
+    // A second range the first is limited to: a random order inside one
+    // word, say.
+    let mut limited = a.within.is_some();
+    if ui.checkbox(&mut limited, "Limit to").on_hover_text("Only the units inside a second range: its weight multiplies this one's").changed() {
+        a.within = limited.then(|| RangeSelector { start: 0.0, end: 1.0, ..Default::default() });
+        changed = true;
+    }
+    if let Some(within) = &mut a.within {
+        changed |= ui.push_id(("animator_within_range", i), |ui| range_rows(ui, i, "within.", within, keyable, t, tolerance, keys)).inner;
+    }
     // What it does at full selection.
     let p = &mut a.props;
     let mut row = |ui: &mut egui::Ui, label: &str, v: &mut f32, range: std::ops::RangeInclusive<f32>, default: f32, speed: f64, suffix: &str| {
@@ -389,5 +416,32 @@ mod tests {
             );
         }
         assert!(f.texts.iter().any(|(t, _)| t == "Rotation"), "the properties are there too");
+    }
+
+    /// "Limit to" adds a second range in one step, and its rows key by
+    /// the animator's `within.` keys (#1510).
+    #[test]
+    fn limit_to_adds_a_range_that_keys_by_its_own_keys() {
+        let ctx = egui::Context::default();
+        let fx = LayerFx { animators: vec![presets(4.0)[2].clone()], ..Default::default() };
+        let f = frame(&ctx, &fx, Vec::new());
+        click(&ctx, &fx, at(&f, "Details"));
+        let f = frame(&ctx, &fx, Vec::new());
+        let cmds = click(&ctx, &fx, at(&f, "Limit to"));
+        let limited = match &cmds[..] {
+            [AppCommand::SetTitleAnimators { animators, .. }] => animators[0].clone(),
+            other => panic!("one command: {other:?}"),
+        };
+        assert_eq!(limited.within, Some(RangeSelector::default()));
+        assert!(summary(&limited).contains("within letters 0\u{2013}100%"), "{}", summary(&limited));
+        let fx = LayerFx { animators: vec![limited], ..Default::default() };
+        let f = frame(&ctx, &fx, Vec::new());
+        // The second Start row is the limit's.
+        let starts: Vec<f32> = f.texts.iter().filter(|(t, _)| t == "Start").map(|(_, p)| p.y).collect();
+        assert_eq!(starts.len(), 2, "both ranges are shown");
+        assert!(f.diamonds.iter().all(|d| d.x < 420.0), "every diamond inside the panel: {:?}", f.diamonds);
+        let diamond = *f.diamonds.iter().find(|d| (d.y - starts[1]).abs() < 8.0).expect("the limit's Start has a diamond");
+        let cmds = click(&ctx, &fx, diamond);
+        assert!(matches!(&cmds[..], [AppCommand::AddTitleObjectEffectKeyframe { param_key, .. }] if param_key == "animator.0.within.start"), "{cmds:?}");
     }
 }
