@@ -1964,14 +1964,11 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec!["media_id"]),
         tool("klipp_audio_excerpt",
-             "Hear a media file, or the timeline's mix: the sound between two times (at most sixty \
-              seconds) as 16 kHz mono WAV, inlined when small enough (about thirty seconds). With \
-              media_id, the file's own sound, for judging a take, a noise, a music bed. Without it \
-              (or with sequence true), the timeline's times and the sequence's mix as the export \
-              mixes it (music, effects, narration, ducks, fades, before loudness normalisation): \
-              hear or transcribe the cut before rendering.",
+             "Hear a media file (media_id) or, without one, the timeline's mix as the export mixes \
+              it: the sound between two times (at most sixty seconds) as 16 kHz mono WAV, inlined \
+              when small enough (about thirty seconds).",
              json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" },
-                     "sequence": { "type": "boolean", "description": "the timeline's mix, not a file (the default when media_id is left out)" },
+                     "sequence": { "type": "boolean" },
                      "path": { "type": "string" } }),
              vec!["from_secs", "to_secs"]),
         tool("klipp_plan",
@@ -2009,8 +2006,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               down (9 dB by default) wherever speech is heard over it (not clips marked music, \
               sfx, ambience, foley or broll, nor any set 12 dB under the music; a transcribed clip \
               only where its words are, a voiceover throughout), moving over \
-              fade_secs (0.5) each way, as volume keyframes, and staying down across gaps in the \
-              speech shorter than bridge_secs (2). Set the music's volume first, \
+              fade_secs (0.5) each way, down across gaps under bridge_secs (2), as volume keyframes. Set the music's volume first, \
               place the speech first.\n\
               volume {clip_id, keys:[{at, db}]} — a clip's volume drawn by hand: levels in dB from \
               the clip's own level (0 as set, -9 a duck, -60 near silence) at timeline seconds, straight moves between; \
@@ -2129,9 +2125,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               it on its track, secs long (0.5 default), centred on the cut. kind is cross_dissolve \
               (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \
               or a stylised one (zoom, whip, glitch, film_burn) a piece asks for by its style, \
-              never by default. Both clips need footage beyond the cut to overlap. On an audio \
-              track it is a constant-power crossfade whatever the kind: two touching music \
-              clips (a bed spliced from sections) blend instead of cutting.\n\
+              never by default. Both clips need footage beyond the cut to overlap. On audio, a crossfade.\n\
               style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?, full_frame?, shadow?} \
               — the look and place of one title, or of every title on a track (\"subtitle\" for \
               all the captions), between from and to when given: size in pixels of a 1080-line \
@@ -2228,8 +2222,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               down (9 dB by default) wherever speech is heard over it (not clips marked music, \
               sfx, ambience, foley or broll, nor any set 12 dB under the music; a transcribed clip \
               only where its words are, a voiceover throughout), moving over \
-              fade_secs (0.5) each way, as volume keyframes, and staying down across gaps in the \
-              speech shorter than bridge_secs (2). Set the music's volume first, \
+              fade_secs (0.5) each way, down across gaps under bridge_secs (2), as volume keyframes. Set the music's volume first, \
               place the speech first.\n\
               volume {clip_id, keys:[{at, db}]} — a clip's volume drawn by hand: levels in dB from \
               the clip's own level (0 as set, -9 a duck, -60 near silence) at timeline seconds, straight moves between; \
@@ -2348,9 +2341,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               it on its track, secs long (0.5 default), centred on the cut. kind is cross_dissolve \
               (the default, and all an interview or documentary wants), dip_to_black, dip_to_white, \
               or a stylised one (zoom, whip, glitch, film_burn) a piece asks for by its style, \
-              never by default. Both clips need footage beyond the cut to overlap. On an audio \
-              track it is a constant-power crossfade whatever the kind: two touching music \
-              clips (a bed spliced from sections) blend instead of cutting.\n\
+              never by default. Both clips need footage beyond the cut to overlap. On audio, a crossfade.\n\
               style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, outline?, full_frame?, shadow?} \
               — the look and place of one title, or of every title on a track (\"subtitle\" for \
               all the captions), between from and to when given: size in pixels of a 1080-line \
@@ -2661,11 +2652,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               not jump cuts. With plans: missing brief features or under-three-second coverage, approved plans unbuilt \
               or drifted. Findings give location, cause and remedy. Before klipp_export, fix errors and assess \
               warnings. color true additionally renders one frame per top-track shot to measure clipping, crushed \
-              blacks, dullness, excess saturation and skin-line deviations; slower. loudness true additionally \
-              meters the mix a second apart and warns on a stretch of 3 s or more over 8 LU under the rest \
-              (not a fade, speech or silence); slower.",
-             json!({ "color": { "type": "boolean", "description": "also measure a frame of every shot through the scopes for grade faults (slower)" },
-                     "loudness": { "type": "boolean", "description": "also meter the mix for sections well under the rest (slower)" } }), vec![]),
+              blacks, dullness, excess saturation and skin-line deviations; slower. loudness true meters the mix \
+              for sections far under the rest; slower.",
+             json!({ "color": { "type": "boolean" }, "loudness": { "type": "boolean" } }), vec![]),
         tool("klipp_rename_sequence",
              "Name the active sequence: what the timeline is called in the app and in the \
               project file. A new project's sequence has a default or inherited name until \

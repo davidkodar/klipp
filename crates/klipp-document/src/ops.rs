@@ -3276,7 +3276,6 @@ pub(crate) fn is_heard(seq: &Sequence, pool: &MediaPool, track: &klipp_timeline:
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_db: f32, fade_secs: f64, bridge_secs: f64, transcripts: &dyn Transcripts) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     if !(1.0..=40.0).contains(&by_db) {
         return Err(refuse(i, format!("{by_db} dB is not a duck"), "music under speech comes down six to twelve decibels"));
