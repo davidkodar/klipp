@@ -514,51 +514,6 @@ impl KlippApp {
         }
     }
 
-    /// Single-input / single-output topology only for v1; refuses
-    /// gracefully (toast + no-op) on multi-port selections.
-    /// Run hierarchical auto-layout on the clip's currently-visible
-    /// node graph (root or descended sub-graph). Captures the whole
-    /// root graph before + after into a single SetNodeGraph history
-    /// entry so Ctrl+Z reverts every position in one step.
-    fn auto_layout_node_graph(
-        &mut self,
-        clip_id: klipp_core::ClipId,
-        needs_refresh: &mut bool,
-    ) {
-        let path = self.state.graph_descent_path.clone();
-        for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-            let Some(clip) = track.find_clip_mut(clip_id) else { continue };
-            let old_root_graph = clip.grade().clone();
-            let changed = clip.edit_grade(|root| {
-                let Ok(target_graph) = Self::resolve_graph_at_path_mut(root, &path) else {
-                    self.state.toast.show("Auto-layout: invalid descent path");
-                    return false;
-                };
-                let new_positions = klipp_nodes::auto_layout(target_graph);
-                if new_positions.is_empty() {
-                    // Empty graph or cycle bail-out — nothing to do.
-                    return false;
-                }
-                target_graph.node_positions = new_positions;
-                true
-            });
-            if !changed {
-                return;
-            }
-            let new_root_graph = clip.grade().clone();
-            self.state.active_history_mut().push(crate::history::HistoryEntry {
-                command: crate::history::EditCommand::SetNodeGraph {
-                    clip_id,
-                    old_graph: old_root_graph,
-                    new_graph: new_root_graph,
-                },
-            });
-            *needs_refresh = true;
-            self.state.toast.show("Auto-layout applied (Ctrl+Z to revert)");
-            return;
-        }
-    }
-
     /// The frame on screen, as bytes, when it is a whole frame of
     /// `clip_id` that a white balance can be read from; otherwise why not.
     ///
@@ -878,8 +833,11 @@ impl KlippApp {
                 true
             }
 
-            AppCommand::AutoLayoutNodeGraph { clip_id } => {
-                self.auto_layout_node_graph(*clip_id, needs_refresh);
+            AppCommand::AutoLayoutNodeGraph { .. } => {
+                // By path, the whole layout one step (#1528).
+                if self.state.canvas_auto_layout(cmd) == Some(true) {
+                    *needs_refresh = true;
+                }
                 true
             }
 
@@ -1017,26 +975,12 @@ impl KlippApp {
                 });
                 true
             }
-            AppCommand::MoveNode { clip_id, node_id, delta_x, delta_y } => {
-                // Position-only changes don't go through history —
-                // they fire every drag-frame and would blow out the
-                // undo stack. Still need path-aware resolution so
-                // moves inside a compound stick.
-                let path = self.state.graph_descent_path.clone();
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.edit_grade(|root| {
-                            if let Ok(graph) = Self::resolve_graph_at_path_mut(root, &path) {
-                                let pos = graph.node_positions.entry(*node_id).or_default();
-                                pos.x += delta_x;
-                                pos.y += delta_y;
-                            }
-                        });
-                        break;
-                    }
+            AppCommand::MoveNode { .. } => {
+                // By path at the level shown, inside the canvas's layout
+                // gesture: one step per drag (#1528).
+                if self.state.canvas_move(cmd) == Some(true) {
+                    *needs_refresh = true;
                 }
-                // No undo for continuous drag — undo pushed on drag_stopped via SetNodeGraph
-                *needs_refresh = true;
                 true
             }
             AppCommand::ToggleNodeEnabled { clip_id, node_id } => {

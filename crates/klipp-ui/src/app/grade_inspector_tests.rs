@@ -1346,3 +1346,136 @@ fn the_canvas_s_structure_commands_land_as_path_steps() {
     dispatch(&mut run, cmds, "Ungroup Compound");
     assert!(!level(&run).nodes.iter().any(|n| n.id == group) && level(&run).nodes.iter().any(|n| n.id == ids[0]), "ungrouped back");
 }
+
+/// A node dragged on the grade canvas, at the grade's top or inside a
+/// compound one or two deep, on a clip's grade and each sequence grade
+/// (through its stand-in's id), is placed by path: the drag's commands,
+/// fed through the app's dispatch, move the stored node by the drag in one
+/// undo step, and undo puts it back (#1528).
+#[test]
+fn a_canvas_node_drag_is_one_step_by_path_at_any_depth() {
+    use crate::panels::node_graph_v2::canvas_command_tests::Harness;
+    // Drag the Saturation's card by (60, 40) over three frames, feeding
+    // each frame's commands on as the colour page does.
+    let drag = |run: &mut Run, h: &mut Harness| {
+        let (_, rect) = h.card(NodeKind::Saturation);
+        let at = rect.center();
+        let mut sent = h.frame(vec![egui::Event::PointerMoved(at), egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
+        for step in [egui::vec2(30.0, 20.0), egui::vec2(60.0, 40.0)] {
+            sent.extend(h.frame(vec![egui::Event::PointerMoved(at + step)]));
+        }
+        sent.extend(h.frame(vec![egui::Event::PointerButton { pos: at + egui::vec2(60.0, 40.0), button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]));
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::MoveNode { .. })), "the canvas sent no move: {sent:?}");
+        for cmd in &sent {
+            if run.state.canvas_move(cmd).is_none() {
+                run.state.path_command(cmd);
+            }
+        }
+    };
+    let spread = |mut level: NodeGraph| {
+        for (i, n) in level.nodes.iter().enumerate() {
+            level.node_positions.insert(n.id, klipp_nodes::NodePos { x: (i as f32 - 2.0) * 230.0, y: 0.0 });
+        }
+        level
+    };
+    for depth in 0..3 {
+        // A clip's grade.
+        let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
+        let (grade, descent, ids) = at_depth(depth);
+        let clip_id = run.clip;
+        run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+            *g = grade;
+            let level = spread(level_of(g, &descent).unwrap());
+            *crate::app::KlippApp::resolve_graph_at_path_mut(g, &descent).unwrap() = level;
+        });
+        run.state.graph_descent_path = descent.clone();
+        let at = |run: &Run| level_of(clip(&run.state, clip_id).grade(), &descent).unwrap().node_positions[&ids[1]];
+        let (before, saved_before) = (at(&run), saved(&run.state, clip_id));
+        let mut h = Harness::on(level_of(clip(&run.state, clip_id).grade(), &descent).unwrap(), clip_id);
+        h.settle();
+        drag(&mut run, &mut h);
+        let after = at(&run);
+        assert!((after.x - before.x - 60.0).abs() < 0.5 && (after.y - before.y - 40.0).abs() < 0.5, "clip depth {depth}: moved by the drag: {before:?} → {after:?}");
+        assert_eq!(run.state.active_history().undo_count(), 1, "clip depth {depth}: one step");
+        undo_once(&mut run.state);
+        assert_eq!(saved(&run.state, clip_id), saved_before, "clip depth {depth}: undo puts it back");
+
+        // Each sequence grade, through its stand-in's id.
+        let (mut run, which) = sequence_grades(true);
+        for w in which {
+            let (grade, descent, ids) = at_depth(depth);
+            let seq = &mut run.state.sequences[0];
+            let root = w.root(seq);
+            let mut grade = grade;
+            let level = spread(level_of(&grade, &descent).unwrap());
+            *crate::app::KlippApp::resolve_graph_at_path_mut(&mut grade, &descent).unwrap() = level;
+            seq.set_root_grade(root, Some(grade)).unwrap();
+            let stand_in = match w {
+                GradeStandIn::Timeline => seq.timeline_grade_clip_id(),
+                GradeStandIn::Group(g, stage) => seq.grade_group(g).unwrap().stage_clip_id(stage),
+            };
+            run.state.graph_descent_path = descent.clone();
+            let at = |run: &Run| level_of(run.state.sequences[0].root_grade(root).unwrap().unwrap(), &descent).unwrap().node_positions[&ids[1]];
+            let (before, stored_before, steps) = (at(&run), stored(&run, w), run.state.active_history().undo_count());
+            let mut h = Harness::on(level_of(run.state.sequences[0].root_grade(root).unwrap().unwrap(), &descent).unwrap(), stand_in);
+            h.settle();
+            drag(&mut run, &mut h);
+            let after = at(&run);
+            assert!((after.x - before.x - 60.0).abs() < 0.5 && (after.y - before.y - 40.0).abs() < 0.5, "{w:?} depth {depth}: moved by the drag: {before:?} → {after:?}");
+            assert_eq!(run.state.active_history().undo_count(), steps + 1, "{w:?} depth {depth}: one step");
+            undo_root(&mut run.state);
+            assert_eq!(stored(&run, w), stored_before, "{w:?} depth {depth}: undo puts it back");
+        }
+    }
+}
+
+/// Auto Layout on the grade canvas, at the grade's top or inside a compound
+/// one or two deep, on a clip's grade and each sequence grade (through its
+/// stand-in's id): fed through the app's dispatch, the level shown takes
+/// the layout's positions in one step, and undo puts them back (#1528).
+#[test]
+fn auto_layout_is_one_step_by_path_at_any_depth() {
+    let positions = |g: &NodeGraph| {
+        let mut p: Vec<_> = g.node_positions.iter().map(|(id, p)| (*id, (p.x, p.y))).collect();
+        p.sort_by_key(|(id, _)| *id);
+        p
+    };
+    for depth in 0..3 {
+        // A clip's grade.
+        let mut run = Run::with_panel(NodeKind::Corrector).unwrap();
+        let (grade, descent, _) = at_depth(depth);
+        let clip_id = run.clip;
+        run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| *g = grade);
+        run.state.graph_descent_path = descent.clone();
+        let level = |run: &Run| level_of(clip(&run.state, clip_id).grade(), &descent).unwrap();
+        let want = { let mut l = level(&run); l.node_positions = klipp_nodes::auto_layout(&l); positions(&l) };
+        let saved_before = saved(&run.state, clip_id);
+        assert_eq!(run.state.canvas_auto_layout(&AppCommand::AutoLayoutNodeGraph { clip_id }), Some(true), "clip depth {depth}: {:?}", run.state.toast.message_for_test());
+        assert_eq!(positions(&level(&run)), want, "clip depth {depth}: laid out");
+        assert_eq!(run.state.active_history().undo_count(), 1, "clip depth {depth}: one step");
+        undo_once(&mut run.state);
+        assert_eq!(saved(&run.state, clip_id), saved_before, "clip depth {depth}: undo puts it back");
+
+        // Each sequence grade.
+        let (mut run, which) = sequence_grades(true);
+        for w in which {
+            let (grade, descent, _) = at_depth(depth);
+            let seq = &mut run.state.sequences[0];
+            let root = w.root(seq);
+            seq.set_root_grade(root, Some(grade)).unwrap();
+            let stand_in = match w {
+                GradeStandIn::Timeline => seq.timeline_grade_clip_id(),
+                GradeStandIn::Group(g, stage) => seq.grade_group(g).unwrap().stage_clip_id(stage),
+            };
+            run.state.graph_descent_path = descent.clone();
+            let level = |run: &Run| level_of(run.state.sequences[0].root_grade(root).unwrap().unwrap(), &descent).unwrap();
+            let want = { let mut l = level(&run); l.node_positions = klipp_nodes::auto_layout(&l); positions(&l) };
+            let (stored_before, steps) = (stored(&run, w), run.state.active_history().undo_count());
+            assert_eq!(run.state.canvas_auto_layout(&AppCommand::AutoLayoutNodeGraph { clip_id: stand_in }), Some(true), "{w:?} depth {depth}: {:?}", run.state.toast.message_for_test());
+            assert_eq!(positions(&level(&run)), want, "{w:?} depth {depth}: laid out");
+            assert_eq!(run.state.active_history().undo_count(), steps + 1, "{w:?} depth {depth}: one step");
+            undo_root(&mut run.state);
+            assert_eq!(stored(&run, w), stored_before, "{w:?} depth {depth}: undo puts it back");
+        }
+    }
+}

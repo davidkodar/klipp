@@ -34,9 +34,9 @@ const KNOWN: &[(&str, &str, usize)] = &[
     // A drag left open, closed on the state alone (M3 step 2). The list
     // handlers and their drags go through the picture (M4 step 12c-5).
     ("klipp-ui/src/app/effects.rs", "EditBuiltinEffect", 2),
-    // The grade closures (node edits, auto layout, balance, a look) and
+    // The grade closures (node edits, balance, a look) and
     // their tests.
-    ("klipp-ui/src/app/colour.rs", "SetNodeGraph", 9),
+    ("klipp-ui/src/app/colour.rs", "SetNodeGraph", 8),
     // A compound's grade moved in and out with its clips.
     // Keys generated from a track, on a grade window.
     ("klipp-ui/src/app/stabilization.rs", "SetNodeGraph", 3),
