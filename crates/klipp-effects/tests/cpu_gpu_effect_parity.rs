@@ -150,6 +150,7 @@ fn cases() -> Vec<(&'static str, BuiltinEffect)> {
         ("ColourSpaceTransform", ColourSpaceTransform {
             input_gamut: 5, input_curve: 2, output_gamut: 1, output_curve: 0, prepared: Some(Prepared(Arc::new(transform(true, false)))),
         }),
+        ("PictureTransform", PictureTransform { position_x: 12.0, position_y: -6.0, scale_x: 0.8, scale_y: 0.7, rotation: 15.0, anchor_x: 0.4, anchor_y: 0.6 }),
         ("ColourSpaceTransform to a curve", ColourSpaceTransform {
             input_gamut: 0, input_curve: 0, output_gamut: 9, output_curve: 4, prepared: Some(Prepared(Arc::new(transform(false, true)))),
         }),

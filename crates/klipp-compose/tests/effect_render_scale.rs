@@ -105,6 +105,12 @@ fn visible(tag: &str, v: &mut serde_json::Value) {
             v["amount"] = serde_json::json!(0.8);
         }
         "median_filter" => v["radius"] = serde_json::json!(2),
+        // A move the frame still shows: most of its range sends the
+        // picture out of it.
+        "picture_transform" => {
+            v["position_x"] = serde_json::json!(24.0);
+            v["position_y"] = serde_json::json!(-12.0);
+        }
         _ => {}
     }
 }

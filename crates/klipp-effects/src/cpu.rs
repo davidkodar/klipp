@@ -937,6 +937,10 @@ pub(crate) fn apply(
         // Their prepared tables are run by the chain (`apply_chain`); a
         // caller here has nothing to run them with.
         Lut3D { .. } | ColourSpaceTransform { .. } => p,
+        PictureTransform { .. } => match effect.picture_transform_as_transform() {
+            Some(t) => apply(&t, p, w, h, yw),
+            None => p,
+        },
     }
 }
 

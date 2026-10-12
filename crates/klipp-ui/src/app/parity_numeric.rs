@@ -97,7 +97,8 @@ pub(super) fn number(desc: &ParamDesc, value: f32) -> Value {
 
 /// `ty`'s sample, set to act where the sample alone can't (#1746): a 3D
 /// LUT reads a file, a two-point one whose corners aren't a straight map
-/// (so its interpolations differ too); a colour-space transform converts.
+/// (so its interpolations differ too); a colour-space transform converts;
+/// a picture transform is shrunk and turned.
 pub(super) fn acting_sample(ty: &EffectType) -> BuiltinEffect {
     match ty.tag {
         "lut_3d" => {
@@ -118,6 +119,8 @@ pub(super) fn acting_sample(ty: &EffectType) -> BuiltinEffect {
             BuiltinEffect::Lut3D { path: path.clone(), opacity: 1.0, tetrahedral: true, prepared: None }
         }
         "colour_space_transform" => BuiltinEffect::ColourSpaceTransform { input_gamut: 2, input_curve: 1, output_gamut: 1, output_curve: 0, prepared: None },
+        // Shrunk and turned, so its anchor moves the picture too.
+        "picture_transform" => BuiltinEffect::PictureTransform { position_x: 0.0, position_y: 0.0, scale_x: 0.8, scale_y: 0.8, rotation: 10.0, anchor_x: 0.5, anchor_y: 0.5 },
         _ => (ty.sample)(),
     }
 }

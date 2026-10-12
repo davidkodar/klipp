@@ -229,6 +229,15 @@ impl BuiltinEffect {
             E::Deflicker { strength, .. } => real(f, "strength", strength),
             E::VideoStabilization { crop_ratio, .. } => real(f, "crop_ratio", crop_ratio),
             E::Lut3D { opacity, .. } => real(f, "opacity", opacity),
+            E::PictureTransform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y } => {
+                real(f, "position_x", position_x);
+                real(f, "position_y", position_y);
+                real(f, "scale_x", scale_x);
+                real(f, "scale_y", scale_y);
+                real(f, "rotation", rotation);
+                real(f, "anchor_x", anchor_x);
+                real(f, "anchor_y", anchor_y);
+            }
             E::CornerPin { tl, tr, br, bl } => {
                 for (corner, names) in [tl, tr, br, bl].into_iter().zip(crate::corner_pin::PARAMS) {
                     real(f, names[0], &mut corner[0]);
