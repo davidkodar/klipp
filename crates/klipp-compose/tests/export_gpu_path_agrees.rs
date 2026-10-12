@@ -249,7 +249,7 @@ impl FrameSource for Flat {
                 .collect();
             return Some(SourceFrame {
                 pixels: SourcePixels::SceneReferred {
-                    codes: Arc::new(codes),
+                    codes: Arc::new(klipp_color::hdr::SceneCodes::Packed10(codes)),
                     transfer,
                     source_to_working: self.scene_matrix.get(&clip.id).copied().unwrap_or(SAME_PRIMARIES),
                 },

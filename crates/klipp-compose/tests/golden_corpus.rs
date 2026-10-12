@@ -181,7 +181,7 @@ impl FrameSource for Frames {
     fn frame(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
         if let Some(&transfer) = self.scene.get(&clip.id) {
             let pixels = SourcePixels::SceneReferred {
-                codes: Arc::new(scene_codes()),
+                codes: Arc::new(klipp_color::hdr::SceneCodes::Packed10(scene_codes())),
                 transfer,
                 source_to_working: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             };

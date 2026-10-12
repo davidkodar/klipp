@@ -493,7 +493,7 @@ fn the_graded_fast_path_is_the_renderers_frame_for_pq() {
     // The graph a PQ clip is seeded with: its input transform bypasses,
     // the decoder having delivered codes.
     let (seq, clip) = one_clip(keyframed_grade(Some(LogFormat::PQ)));
-    let codes = Arc::new(codes);
+    let codes = Arc::new(klipp_color::hdr::SceneCodes::Packed10(codes));
     let mut src = Frame(Box::new(move || SourcePixels::SceneReferred {
         codes: Arc::clone(&codes),
         transfer: HdrTransfer::Pq,
@@ -543,7 +543,7 @@ fn the_gpu_export_of_a_wide_gamut_pq_clip_is_the_viewers_picture() {
     let codes = conv.convert_p010_hdr_codes(&y, &uv, W, H, W * 2, W * 2, W, H, 0, ids, matrix4).expect("CPU codes");
     let gpu_codes = conv.convert_p010_on_gpu(&y, &uv, W, H, W * 2, W * 2, W, H, 0, ids, matrix4).hdr_codes.expect("GPU codes");
     let (seq, clip) = one_clip(keyframed_grade(Some(LogFormat::PQ)));
-    let codes = Arc::new(codes);
+    let codes = Arc::new(klipp_color::hdr::SceneCodes::Packed10(codes));
     let mut src = Frame(Box::new(move || SourcePixels::SceneReferred { codes: Arc::clone(&codes), transfer: HdrTransfer::Pq, source_to_working: m }));
 
     // The viewer's picture: the graded fast path.
@@ -699,7 +699,7 @@ fn a_parked_frame_seeded_from_memory_is_the_renderers_frame() {
     let (seq, clip) = one_clip(keyframed_grade(Some(LogFormat::PQ)));
     let m = primaries_to_working_matrix(ColorPrimaries::Bt2020, WORKING);
     for shift in [0, 400] {
-        let codes = Arc::new(pq_codes(shift));
+        let codes = Arc::new(klipp_color::hdr::SceneCodes::Packed10(pq_codes(shift)));
         let c = Arc::clone(&codes);
         let mut src = Frame(Box::new(move || SourcePixels::SceneReferred {
             codes: Arc::clone(&c),
@@ -774,7 +774,7 @@ fn the_graded_fast_path_is_the_renderers_frame_under_hdr_monitoring() {
         .expect("GPU codes");
 
     let (seq, clip) = one_clip(keyframed_grade(Some(LogFormat::PQ)));
-    let codes = Arc::new(codes);
+    let codes = Arc::new(klipp_color::hdr::SceneCodes::Packed10(codes));
     let mut src = Frame(Box::new(move || SourcePixels::SceneReferred {
         codes: Arc::clone(&codes),
         transfer: HdrTransfer::Pq,

@@ -301,10 +301,12 @@ pub struct HdrInput {
     pub height: u32,
 }
 
-/// Where an HDR frame's packed code values live.
+/// Where an HDR frame's code values live. On the GPU they are the
+/// decoder's 10-bit codes; on the CPU 10-bit, or 16-bit for a source
+/// deeper than 10 bits (#1226).
 #[derive(Clone)]
 pub enum HdrCodes {
-    Cpu(std::sync::Arc<Vec<u32>>),
+    Cpu(std::sync::Arc<klipp_color::hdr::SceneCodes>),
     Gpu {
         buffer: std::sync::Arc<wgpu::Buffer>,
         device: std::sync::Arc<wgpu::Device>,
@@ -316,7 +318,7 @@ impl HdrInput {
     /// The packed codes on the CPU, reading them back if they are
     /// GPU-resident. The readback counts toward `CPU_READBACK_*` like any
     /// other, so the perf overlay reports it.
-    pub fn cpu_codes(&self) -> std::sync::Arc<Vec<u32>> {
+    pub fn cpu_codes(&self) -> std::sync::Arc<klipp_color::hdr::SceneCodes> {
         match &self.codes {
             HdrCodes::Cpu(c) => std::sync::Arc::clone(c),
             HdrCodes::Gpu { buffer, device, queue } => {
@@ -331,7 +333,7 @@ impl HdrInput {
                 use std::sync::atomic::Ordering::Relaxed;
                 CPU_READBACK_COUNT.fetch_add(1, Relaxed);
                 CPU_READBACK_US.fetch_add(t0.elapsed().as_micros() as u64, Relaxed);
-                std::sync::Arc::new(words)
+                std::sync::Arc::new(klipp_color::hdr::SceneCodes::Packed10(words))
             }
         }
     }
@@ -345,11 +347,7 @@ impl HdrInput {
     /// Scene-linear RGBA f32 in the working space, 1.0 = 100 nits — the
     /// grade's input.
     pub fn scene_linear(&self) -> Vec<f32> {
-        klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(
-            &self.cpu_codes(),
-            self.transfer,
-            self.source_to_working,
-        )
+        self.cpu_codes().to_scene_linear_rgba(self.transfer, self.source_to_working)
     }
 }
 

@@ -62,7 +62,7 @@ fn codes() -> Vec<u32> {
 }
 
 struct Scene {
-    codes: Arc<Vec<u32>>,
+    codes: Arc<klipp_color::hdr::SceneCodes>,
     transfer: HdrTransfer,
 }
 
@@ -129,9 +129,9 @@ fn a_wide_gamut_scene_referred_clip_exports_to_sdr_as_the_renderer_draws_it() {
         eprintln!("UNVERIFIED: no usable GPU");
         return;
     }
-    let codes = Arc::new(codes());
+    let codes = Arc::new(klipp_color::hdr::SceneCodes::Packed10(codes()));
     // The fixture reaches outside BT.709, or this would pass unclamped.
-    let linear = klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(&codes, HdrTransfer::Pq, BT2020_TO_709);
+    let linear = codes.to_scene_linear_rgba(HdrTransfer::Pq, BT2020_TO_709);
     assert!(linear.chunks_exact(4).any(|p| p[..3].iter().any(|c| *c < -0.01)), "the fixture has no colour outside BT.709");
 
     let c = graded();

@@ -506,7 +506,7 @@ struct Scene(klipp_color::hdr::HdrTransfer);
 
 impl FrameSource for Scene {
     fn frame(&mut self, _c: &Clip, _secs: f64, w: u32, h: u32) -> Option<SourceFrame> {
-        let codes = (0..h)
+        let codes: Vec<u32> = (0..h)
             .flat_map(|y| {
                 (0..w).map(move |x| {
                     let (v, t) = (y * 1023 / h, x * 1023 / w);
@@ -515,7 +515,7 @@ impl FrameSource for Scene {
             })
             .collect();
         let pixels = SourcePixels::SceneReferred {
-            codes: Arc::new(codes),
+            codes: Arc::new(klipp_color::hdr::SceneCodes::Packed10(codes)),
             transfer: self.0,
             source_to_working: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         };

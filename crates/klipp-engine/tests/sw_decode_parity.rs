@@ -73,7 +73,7 @@ fn cpu_codes_match_the_p010_shader() {
                 .convert_p010_hdr_codes(&yb, &uvb, W, H, W * 2, W * 2, dw, dh, rot, ids, pm)
                 .expect("scene-referred transfer yields codes");
             let cpu = yuv_to_hdr_codes(&samples, dw, dh, rot, ids);
-            compare(&format!("{label} {dw}x{dh} rot {rot}"), &gpu, &cpu);
+            compare(&format!("{label} {dw}x{dh} rot {rot}"), &gpu, cpu.packed10().expect("10-bit codes"));
         }
     }
 }
@@ -98,7 +98,7 @@ fn cpu_codes_match_the_nv12_shader() {
     for (dw, dh, rot) in [(W, H, 0u32), (W / 2, H / 2, 90)] {
         let gpu = conv.convert_nv12_hdr_codes(&yb, &uvb, W, H, W, W, dw, dh, rot, ids, pm).unwrap();
         let cpu = yuv_to_hdr_codes(&samples, dw, dh, rot, ids);
-        compare(&format!("8-bit S-Log3 {dw}x{dh} rot {rot}"), &gpu, &cpu);
+        compare(&format!("8-bit S-Log3 {dw}x{dh} rot {rot}"), &gpu, cpu.packed10().expect("8-bit codes"));
     }
 }
 
@@ -115,6 +115,7 @@ fn chroma_422_uses_full_height_chroma() {
     let s = YuvSamples { y: &y, u: &u, v: &v, width: w, height: h, chroma_shift_w: 1, chroma_shift_h: 0, bit_depth: 10 };
     let ids = [color_ids::COLOR_RANGE_LIMITED, color_ids::MATRIX_BT709, color_ids::TRANSFER_SLOG3, 0];
     let codes = yuv_to_hdr_codes(&s, w, h, 0, ids);
+    let codes = codes.packed10().expect("10-bit codes");
     let [r0, g0, b0] = unpack_rgb10(codes[0]);
     let [r1, g1, b1] = unpack_rgb10(codes[4]);
     assert_eq!((r0, g0, b0), (420, 420, 420), "neutral row stays neutral");

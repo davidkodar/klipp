@@ -712,8 +712,7 @@ impl Pregrade {
                 PregradePixels::Srgb8(u8s) => Arc::clone(u8s),
                 PregradePixels::Hdr(h) => {
                     let codes = h.cpu_codes();
-                    let mut linear =
-                        klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(&codes, h.transfer, h.source_to_working);
+                    let mut linear = codes.to_scene_linear_rgba(h.transfer, h.source_to_working);
                     klipp_color::hdr::apply_hdr_display_tonemap(&mut linear, h.transfer);
                     Arc::new(klipp_effects::linear_f32_rgba_to_srgb_u8(&linear))
                 }
@@ -834,7 +833,7 @@ fn pregrade_bytes(p: &Pregrade) -> usize {
     match &p.pixels {
         PregradePixels::Srgb8(b) => b.len(),
         PregradePixels::Hdr(h) => match &h.codes {
-            crate::types::HdrCodes::Cpu(c) => c.len() * 4,
+            crate::types::HdrCodes::Cpu(c) => c.byte_len(),
             crate::types::HdrCodes::Gpu { .. } => 0,
         },
     }
