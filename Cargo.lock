@@ -3000,11 +3000,19 @@ dependencies = [
 name = "klipp-corpus"
 version = "0.1.0"
 dependencies = [
+ "image",
+ "klipp-analysis",
+ "klipp-compose",
  "klipp-core",
  "klipp-effects",
+ "klipp-engine",
+ "klipp-frei0r",
  "klipp-graph-lift",
  "klipp-media",
+ "klipp-nodes",
+ "klipp-plugin",
  "klipp-project",
+ "klipp-render",
  "klipp-timeline",
  "serde",
  "serde_json",

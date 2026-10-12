@@ -3,14 +3,13 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use klipp_core::{ClipId, Fps, MediaId, Resolution, SequenceId, Timecode, TrackId};
-use klipp_effects::BuiltinEffect;
 use klipp_graph_lift::ops::GraphOp;
 use klipp_media::{MediaItem, MediaItemKind, MediaPool};
 use klipp_timeline::{Clip, EffectEdit, Sequence};
 use serde_json::Value;
 use uuid::Uuid;
 
-pub const CASES: &[&str] = &["edit", "effects"];
+pub use crate::cases::CASES;
 
 fn id(label: &str) -> Uuid {
     Uuid::new_v5(
@@ -27,7 +26,7 @@ pub fn generate(root: &Path) -> Result<BTreeMap<String, String>, String> {
     let mut hashes = BTreeMap::new();
     for case in CASES {
         let mut pool = MediaPool::default();
-        for (name, audio) in [("motion.mkv", false), ("sync.wav", true)] {
+        for (name, audio) in [(case.video(), false), ("sync.wav", true)] {
             pool.add(MediaItem {
                 path: root.join("media").join(name),
                 kind: MediaItemKind::File,
@@ -62,14 +61,22 @@ pub fn generate(root: &Path) -> Result<BTreeMap<String, String>, String> {
         }
         // A cut at frame 24 with a source discontinuity; the audio crosses it.
         for (index, (start, length, source)) in [(0, 24, 0), (24, 24, 12)].into_iter().enumerate() {
+            // Temporal checks include both real media edges, where only one
+            // neighbour exists. Other cases keep the cut's source discontinuity.
+            let source = if *case == crate::cases::Case::Temporal && index == 1 {
+                24
+            } else {
+                source
+            };
             let mut clip = Clip::media(
-                MediaId(id("motion.mkv")),
+                MediaId(id(case.video())),
                 tc(start),
                 tc(start + length),
                 tc(source),
                 tc(source + length),
             );
             clip.id = ClipId(id(&format!("{case}/video/{index}")));
+            case.before_ids(&mut clip, index)?;
             seq.tracks[0].clips.push(clip);
         }
         let mut audio = Clip::media(MediaId(id("sync.wav")), tc(0), tc(48), tc(0), tc(48));
@@ -79,38 +86,33 @@ pub fn generate(root: &Path) -> Result<BTreeMap<String, String>, String> {
         // Renaming a stored picture after saving would invalidate those IDs.
         let mut model = serde_json::to_value(&seq).map_err(|e| e.to_string())?;
         let mut ids = BTreeMap::new();
-        definitions(&model, &mut ids, case);
+        definitions(&model, &mut ids, case.id());
         replace(&mut model, &ids);
         let mut seq: Sequence = serde_json::from_value(model).map_err(|e| e.to_string())?;
         // Apply graph edits only after canonicalizing the blank model: a clip's
         // own serde is its field view, so it must not round-trip picture truth.
         for (index, clip) in seq.tracks[0].clips.iter_mut().enumerate() {
-            if *case == "effects" {
-                for (edit_index, edit) in [
-                    EffectEdit::Add(&BuiltinEffect::GaussianBlur {
-                        radius: 2.0 + index as f32,
-                    }),
-                    EffectEdit::Add(&BuiltinEffect::Sharpen { amount: 0.7 }),
-                    EffectEdit::SetEnabled(1, index == 0),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    let mut ops = clip
-                        .effect_edit_ops(edit)
-                        .ok_or("corpus effects did not accept picture ops")?;
-                    for op in &mut ops {
-                        if let GraphOp::AddNode { node, .. } = op {
-                            node.id = id(&format!("{case}/video/{index}/effect/{edit_index}"));
-                        }
+            for (effect_index, (effect, enabled)) in case.effects(index).into_iter().enumerate() {
+                let mut ops = clip
+                    .effect_edit_ops(EffectEdit::Add(&effect))
+                    .ok_or("corpus effect did not accept picture ops")?;
+                for op in &mut ops {
+                    if let GraphOp::AddNode { node, .. } = op {
+                        node.id = id(&format!("{case}/video/{index}/effect/{effect_index}"));
                     }
+                }
+                clip.apply_picture_ops(&ops)?;
+                if !enabled {
+                    let ops = clip
+                        .effect_edit_ops(EffectEdit::SetEnabled(effect_index, false))
+                        .ok_or("corpus effect did not accept disabling")?;
                     clip.apply_picture_ops(&ops)?;
                 }
             }
         }
         let directory = root.join("projects").join(format!("{case}.klipp"));
         klipp_project::save_project(&directory, &[seq], &pool)?;
-        canonicalize(&directory, case)?;
+        canonicalize(&directory, case.id())?;
         let files = ["project.json", "media/manifest.json"];
         let before: Vec<_> = files
             .iter()

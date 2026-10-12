@@ -269,6 +269,7 @@ print(" ".join(sorted(k for k in deps if k.startswith("klipp-"))))
     }
     downstream_test klipp-compose golden_corpus "the render references (golden_corpus)"
     downstream_test klipp-convert render_inputs "the conversion's render inputs (render_inputs)"
+    downstream_test klipp-corpus checkpoint "the saved-project checkpoint (checkpoint)"
     step "clippy on $_touched" cargo clippy --all-targets $_test_args -- -D warnings
     # A public doc linking a private item, or a bare [0,1] in prose,
     # passes clippy and every test and fails only the gate's rustdoc.

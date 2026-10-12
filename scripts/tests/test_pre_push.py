@@ -972,6 +972,21 @@ class PreGateTests(RealGitGate):
         self.assertIn("test -p klipp-compose --test golden_corpus", self.calls())
         self.assertIn("could not be read", result.stdout)
 
+    def test_a_graph_change_runs_the_saved_project_checkpoint(self):
+        # Metadata can omit a downstream dev tool; its named checkpoint must
+        # still run when the graph code it consumes changes.
+        (self.root / "crates/klipp-corpus/tests").mkdir(parents=True)
+        (self.root / "crates/klipp-corpus/tests/checkpoint.rs").write_text("\n")
+        (self.root / "crates/klipp-corpus/Cargo.toml").write_text(
+            '[package]\nname = "klipp-corpus"\n[dependencies]\n'
+            'klipp-graph-lift = { path = "../klipp-graph-lift" }\n')
+        self.commit(self.root, "saved-project checkpoint")
+        self.git(self.root, "push", "-q", "origin", "HEAD:main")
+        self.change("crates/klipp-graph-lift/src/lib.rs", "graph changed\n")
+        result = self.pre_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("test -p klipp-corpus --test checkpoint", self.calls())
+
     def test_a_change_the_conversion_reads_runs_its_render_inputs(self):
         # render_inputs lives in klipp-convert and reads the lift (a
         # dependency) and the timeline's live eval (a dev-dependency): a

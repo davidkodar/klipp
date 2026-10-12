@@ -1,0 +1,383 @@
+{
+  "schema": 1,
+  "reason": "Initial seven-family saved-project checkpoint on b2633b3af: 256px frames; temporal denoise at 0 and 24 retains the media edge and cross-second sample, others at 12; reduced samples fit the 2 MiB budget without relaxing the one-level bar; two independent runs and active effect witnesses required.",
+  "inputs_sha256": "ca82bc040e82299c5520faa9a500c4ad3df56d9e083b5450c8bb4fe6b8f31653",
+  "atlas_sha256": "4f5bf48ba559bf80faa56f4dd508d987667049addb1e0d1b49495ce7cca04bad",
+  "coverage": {
+    "analysis/0": {
+      "declines": [],
+      "export_cpu": 0,
+      "export_gpu": 1,
+      "export_letterboxed": 0,
+      "flat": 0,
+      "frames": 4,
+      "gpu_cpu_kernels": 0,
+      "grade_on_gpu": true,
+      "plan_clips": 2,
+      "plan_fallbacks": 0,
+      "stack": 1,
+      "stack_declined": 0
+    },
+    "edit/0": {
+      "declines": [],
+      "export_cpu": 0,
+      "export_gpu": 1,
+      "export_letterboxed": 0,
+      "flat": 0,
+      "frames": 4,
+      "gpu_cpu_kernels": 0,
+      "grade_on_gpu": false,
+      "plan_clips": 0,
+      "plan_fallbacks": 0,
+      "stack": 1,
+      "stack_declined": 0
+    },
+    "effects/0": {
+      "declines": [],
+      "export_cpu": 0,
+      "export_gpu": 1,
+      "export_letterboxed": 0,
+      "flat": 0,
+      "frames": 4,
+      "gpu_cpu_kernels": 0,
+      "grade_on_gpu": true,
+      "plan_clips": 2,
+      "plan_fallbacks": 0,
+      "stack": 1,
+      "stack_declined": 0
+    },
+    "frei0r/0": {
+      "declines": [],
+      "export_cpu": 1,
+      "export_gpu": 0,
+      "export_letterboxed": 0,
+      "flat": 0,
+      "frames": 3,
+      "gpu_cpu_kernels": 0,
+      "grade_on_gpu": true,
+      "plan_clips": 1,
+      "plan_fallbacks": 0,
+      "stack": 0,
+      "stack_declined": 1
+    },
+    "grade/0": {
+      "declines": [],
+      "export_cpu": 0,
+      "export_gpu": 1,
+      "export_letterboxed": 0,
+      "flat": 0,
+      "frames": 4,
+      "gpu_cpu_kernels": 0,
+      "grade_on_gpu": true,
+      "plan_clips": 2,
+      "plan_fallbacks": 0,
+      "stack": 1,
+      "stack_declined": 0
+    },
+    "ofx/0": {
+      "declines": [],
+      "export_cpu": 1,
+      "export_gpu": 0,
+      "export_letterboxed": 0,
+      "flat": 0,
+      "frames": 3,
+      "gpu_cpu_kernels": 0,
+      "grade_on_gpu": true,
+      "plan_clips": 0,
+      "plan_fallbacks": 0,
+      "stack": 0,
+      "stack_declined": 1
+    },
+    "temporal/0": {
+      "declines": [
+        "temporal/0/0-cpu clip ef9409b4-d46e-516a-8a7d-dd3ef3f26edc node ef9409b4-d43e-2d54-8a7d-dd3ef3f26edc: Temporal Noise Reduction: no frame past the media's edge (fallback)",
+        "temporal/0/0-gpu clip ef9409b4-d46e-516a-8a7d-dd3ef3f26edc node ef9409b4-d43e-2d54-8a7d-dd3ef3f26edc: Temporal Noise Reduction: no frame past the media's edge (fallback)"
+      ],
+      "export_cpu": 2,
+      "export_gpu": 0,
+      "export_letterboxed": 0,
+      "flat": 0,
+      "frames": 6,
+      "gpu_cpu_kernels": 0,
+      "grade_on_gpu": true,
+      "plan_clips": 0,
+      "plan_fallbacks": 0,
+      "stack": 0,
+      "stack_declined": 2
+    }
+  },
+  "frames": [
+    {
+      "path": "analysis/0/12-cpu.png",
+      "width": 256,
+      "height": 144,
+      "offset": 0,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "analysis/0/12-export-yuv.png",
+      "width": 256,
+      "height": 216,
+      "offset": 147456,
+      "len": 221184,
+      "layout": {
+        "bits": 8,
+        "height": 144,
+        "luma": [
+          0.2125999927520752,
+          0.7152000069618225,
+          0.0722000002861023
+        ],
+        "range": "limited",
+        "sample_shift": 0,
+        "semi_planar": true,
+        "width": 256
+      }
+    },
+    {
+      "path": "analysis/0/12-gpu.png",
+      "width": 256,
+      "height": 144,
+      "offset": 368640,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "analysis/0/12-stack.png",
+      "width": 256,
+      "height": 144,
+      "offset": 516096,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "edit/0/12-cpu.png",
+      "width": 256,
+      "height": 144,
+      "offset": 663552,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "edit/0/12-export-yuv.png",
+      "width": 256,
+      "height": 216,
+      "offset": 811008,
+      "len": 221184,
+      "layout": {
+        "bits": 8,
+        "height": 144,
+        "luma": [
+          0.2125999927520752,
+          0.7152000069618225,
+          0.0722000002861023
+        ],
+        "range": "limited",
+        "sample_shift": 0,
+        "semi_planar": true,
+        "width": 256
+      }
+    },
+    {
+      "path": "edit/0/12-gpu.png",
+      "width": 256,
+      "height": 144,
+      "offset": 1032192,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "edit/0/12-stack.png",
+      "width": 256,
+      "height": 144,
+      "offset": 1179648,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "effects/0/12-cpu.png",
+      "width": 256,
+      "height": 144,
+      "offset": 1327104,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "effects/0/12-export-yuv.png",
+      "width": 256,
+      "height": 216,
+      "offset": 1474560,
+      "len": 221184,
+      "layout": {
+        "bits": 8,
+        "height": 144,
+        "luma": [
+          0.2125999927520752,
+          0.7152000069618225,
+          0.0722000002861023
+        ],
+        "range": "limited",
+        "sample_shift": 0,
+        "semi_planar": true,
+        "width": 256
+      }
+    },
+    {
+      "path": "effects/0/12-gpu.png",
+      "width": 256,
+      "height": 144,
+      "offset": 1695744,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "effects/0/12-stack.png",
+      "width": 256,
+      "height": 144,
+      "offset": 1843200,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "frei0r/0/12-cpu.png",
+      "width": 256,
+      "height": 144,
+      "offset": 1990656,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "frei0r/0/12-export.png",
+      "width": 256,
+      "height": 144,
+      "offset": 2138112,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "frei0r/0/12-gpu.png",
+      "width": 256,
+      "height": 144,
+      "offset": 2285568,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "grade/0/12-cpu.png",
+      "width": 256,
+      "height": 144,
+      "offset": 2433024,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "grade/0/12-export-yuv.png",
+      "width": 256,
+      "height": 216,
+      "offset": 2580480,
+      "len": 221184,
+      "layout": {
+        "bits": 8,
+        "height": 144,
+        "luma": [
+          0.2125999927520752,
+          0.7152000069618225,
+          0.0722000002861023
+        ],
+        "range": "limited",
+        "sample_shift": 0,
+        "semi_planar": true,
+        "width": 256
+      }
+    },
+    {
+      "path": "grade/0/12-gpu.png",
+      "width": 256,
+      "height": 144,
+      "offset": 2801664,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "grade/0/12-stack.png",
+      "width": 256,
+      "height": 144,
+      "offset": 2949120,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "ofx/0/12-cpu.png",
+      "width": 256,
+      "height": 144,
+      "offset": 3096576,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "ofx/0/12-export.png",
+      "width": 256,
+      "height": 144,
+      "offset": 3244032,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "ofx/0/12-gpu.png",
+      "width": 256,
+      "height": 144,
+      "offset": 3391488,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "temporal/0/0-cpu.png",
+      "width": 256,
+      "height": 144,
+      "offset": 3538944,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "temporal/0/0-export.png",
+      "width": 256,
+      "height": 144,
+      "offset": 3686400,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "temporal/0/0-gpu.png",
+      "width": 256,
+      "height": 144,
+      "offset": 3833856,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "temporal/0/24-cpu.png",
+      "width": 256,
+      "height": 144,
+      "offset": 3981312,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "temporal/0/24-export.png",
+      "width": 256,
+      "height": 144,
+      "offset": 4128768,
+      "len": 147456,
+      "layout": null
+    },
+    {
+      "path": "temporal/0/24-gpu.png",
+      "width": 256,
+      "height": 144,
+      "offset": 4276224,
+      "len": 147456,
+      "layout": null
+    }
+  ]
+}

@@ -247,7 +247,7 @@ mod tests {
         for case in crate::projects::CASES {
             let directory = root.join("projects").join(format!("{case}.klipp"));
             open(&directory).unwrap();
-            reopen(&directory, &root.join("reopen").join(case)).unwrap();
+            reopen(&directory, &root.join("reopen").join(case.id())).unwrap();
         }
         std::fs::remove_dir_all(root).unwrap();
     }

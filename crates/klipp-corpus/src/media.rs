@@ -7,6 +7,19 @@ pub const WIDTH: usize = 640;
 pub const HEIGHT: usize = 360;
 pub const FRAMES: usize = 48;
 
+#[derive(Clone, Copy)]
+pub enum Pattern {
+    Motion,
+    Flicker,
+    Noise,
+}
+
+pub const VIDEOS: &[(&str, Pattern)] = &[
+    ("motion.mkv", Pattern::Motion),
+    ("flicker.mkv", Pattern::Flicker),
+    ("noise.mkv", Pattern::Noise),
+];
+
 fn ffmpeg() -> Command {
     let mut c = Command::new("ffmpeg");
     c.args([
@@ -55,6 +68,41 @@ fn frame(at: usize) -> Vec<u8> {
 
 pub fn generate(root: &Path) -> Result<(), String> {
     std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    for &(name, pattern) in VIDEOS {
+        video(&root.join(name), pattern)?;
+    }
+    write_audio(&root.join("sync.wav"))
+}
+
+fn patterned_frame(pattern: Pattern, at: usize) -> Vec<u8> {
+    let mut pixels = frame(at);
+    match pattern {
+        Pattern::Motion => {}
+        Pattern::Flicker => {
+            // Deliberate whole-frame pumping, so a deflicker has work to do.
+            let gain = [70, 100, 85][at % 3];
+            for y in &mut pixels[..WIDTH * HEIGHT] {
+                *y = (16 + (u32::from(*y) - 16) * gain / 100) as u8;
+            }
+        }
+        Pattern::Noise => {
+            // Grain changes each frame, below the denoiser's motion threshold.
+            // The static source's grain alone would make temporal NR an identity.
+            for (i, y) in pixels[..WIDTH * HEIGHT].iter_mut().enumerate() {
+                let mut state =
+                    (i as u32).wrapping_mul(0x9e37_79b9) ^ (at as u32).wrapping_mul(0x85eb_ca6b);
+                state ^= state >> 16;
+                state = state.wrapping_mul(0x7feb_352d);
+                state ^= state >> 15;
+                let noise = (state % 17) as i32 - 8;
+                *y = (i32::from(*y) + noise).clamp(16, 235) as u8;
+            }
+        }
+    }
+    pixels
+}
+
+fn video(path: &Path, pattern: Pattern) -> Result<(), String> {
     let mut child = ffmpeg()
         .args([
             "-y",
@@ -92,7 +140,7 @@ pub fn generate(root: &Path) -> Result<(), String> {
             "-color_trc",
             "bt709",
         ])
-        .arg(root.join("motion.mkv"))
+        .arg(path)
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -101,7 +149,7 @@ pub fn generate(root: &Path) -> Result<(), String> {
         let mut input = child.stdin.take().ok_or("ffmpeg stdin missing")?;
         for at in 0..FRAMES {
             input
-                .write_all(&frame(at))
+                .write_all(&patterned_frame(pattern, at))
                 .map_err(|e| format!("frame {at}: {e}"))?;
         }
         Ok::<_, String>(())
@@ -109,12 +157,12 @@ pub fn generate(root: &Path) -> Result<(), String> {
     let output = child.wait_with_output().map_err(|e| e.to_string())?;
     if !output.status.success() {
         return Err(format!(
-            "encode motion.mkv: {}",
+            "encode {}: {}",
+            path.display(),
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    write_result?;
-    write_audio(&root.join("sync.wav"))
+    write_result
 }
 
 fn write_audio(path: &Path) -> Result<(), String> {
@@ -233,6 +281,27 @@ pub fn metadata(path: &Path) -> Result<serde_json::Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn analysis_and_temporal_inputs_are_not_static() {
+        let luma = |p: &[u8]| {
+            p[..WIDTH * HEIGHT]
+                .iter()
+                .map(|&v| u64::from(v))
+                .sum::<u64>()
+        };
+        let dark = patterned_frame(Pattern::Flicker, 0);
+        let light = patterned_frame(Pattern::Flicker, 1);
+        assert!(luma(&light) > luma(&dark) * 12 / 10);
+        let a = patterned_frame(Pattern::Noise, 0);
+        let b = patterned_frame(Pattern::Noise, 1);
+        assert_ne!(&a[..WIDTH * 120], &b[..WIDTH * 120]);
+        assert_eq!(
+            &a[WIDTH * HEIGHT..],
+            &b[WIDTH * HEIGHT..],
+            "chroma is unchanged"
+        );
+        assert_eq!(a, patterned_frame(Pattern::Noise, 0));
+    }
     #[test]
     fn motion_changes_only_the_middle_band() {
         let a = frame(0);
