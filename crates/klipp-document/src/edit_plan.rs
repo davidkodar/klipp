@@ -302,7 +302,7 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
         // Ducked under the segments' own sound; with none, there is
         // nothing to duck under and the op would refuse.
         if any_with_audio {
-            ops.push(Op::Duck { clip_id: ClipRef::At { track: music_track, secs: start + laid / 2.0 }, by_db: m.duck_db.unwrap_or(9.0), fade_secs: 0.5 });
+            ops.push(Op::Duck { clip_id: ClipRef::At { track: music_track, secs: start + laid / 2.0 }, by_db: m.duck_db.unwrap_or(9.0), fade_secs: 0.5, bridge_secs: 2.0 });
         }
     }
     // The sound effects, on a track of their own below the music: each

@@ -293,6 +293,10 @@ pub(crate) fn respond(
     }
 }
 
+/// How long a fitted track's join crossfades: short enough to keep the
+/// beat, long enough that a loud bar into a quiet one isn't a click.
+const JOIN_CROSSFADE_SECS: f64 = 0.25;
+
 /// A music track's sections and energy over its whole length, added to
 /// a beats read (#503), and with `target` a fit to that length by whole
 /// bars, as place ops from `at` on `track`.
@@ -319,7 +323,7 @@ fn music_shape(v: &mut serde_json::Value, path: &std::path::Path, id: klipp_core
             None => klipp_document::ops::TrackRef::Kind("audio".into()),
         };
         let mut place_at = at;
-        let ops: Vec<serde_json::Value> = fit
+        let mut ops: Vec<serde_json::Value> = fit
             .segments
             .iter()
             .map(|&(a, b)| {
@@ -328,20 +332,29 @@ fn music_shape(v: &mut serde_json::Value, path: &std::path::Path, id: klipp_core
                 serde_json::to_value(op).unwrap_or_default()
             })
             .collect();
+        // Each join crossfaded (#1575): on an audio track a transition is a
+        // constant-power crossfade into both clips' handles, named by the
+        // clip its place step made ("@N").
+        let joins = fit.segments.len().saturating_sub(1);
+        ops.extend((0..joins).map(|n| {
+            let op = klipp_document::ops::Op::Transition { clip_id: klipp_document::ops::ClipRef::Made(klipp_document::ops::StepRef(n)), kind: "cross_dissolve".into(), secs: JOIN_CROSSFADE_SECS, remove: false };
+            serde_json::to_value(op).unwrap_or_default()
+        }));
         let how = match fit.bars_changed {
             0 => "already that long".to_string(),
             n if n < 0 => format!("{} bars taken out", -n),
             n => format!("{n} bars repeated"),
         };
         text.push_str(&format!(
-            "\nFitted to {:.2} s ({how}{}): play {} back to back. Apply the ops to place it; a short crossfade on the join smooths it.",
+            "\nFitted to {:.2} s ({how}{}): play {} back to back. Apply the ops as they are, in one apply: they place it{}.",
             fit.length_secs,
             fit.join_secs.map(|j| format!(", the join at {j:.2} s")).unwrap_or_default(),
-            fit.segments.iter().map(|(a, b)| format!("{a:.2}-{b:.2} s")).collect::<Vec<_>>().join(" then ")
+            fit.segments.iter().map(|(a, b)| format!("{a:.2}-{b:.2} s")).collect::<Vec<_>>().join(" then "),
+            if joins > 0 { format!(" and crossfade {} over {JOIN_CROSSFADE_SECS:.2} s", if joins == 1 { "the join" } else { "each join" }) } else { String::new() }
         ));
         v["fit"] = json!(fit);
         v["ops"] = json!(ops);
-        v["next"] = json!("apply the ops to place the fitted track, then add a short crossfade at the join");
+        v["next"] = json!("apply the ops as they are, in one apply: they place the fitted track and crossfade its joins");
     }
     v["text"] = json!(text);
     Ok(())

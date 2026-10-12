@@ -659,13 +659,18 @@ pub enum ControlCommand {
         inline: Option<bool>,
     },
     /// The sound of a range of a media file (at most sixty seconds) as
-    /// 16 kHz mono WAV: what a model that can hear is given.
+    /// 16 kHz mono WAV: what a model that can hear is given. With no
+    /// `media_id` (or `sequence`), the range is the timeline's, and the
+    /// sound is the sequence's mix as the export mixes it (#1577).
     AudioExcerpt {
-        media_id: String,
+        #[serde(default)]
+        media_id: Option<String>,
         from_secs: f64,
         to_secs: f64,
         #[serde(default)]
         path: Option<String>,
+        #[serde(default)]
+        sequence: bool,
     },
 
     // ── Operations ────────────────────────────────────────────────
@@ -1105,10 +1110,14 @@ pub enum ControlCommand {
     /// would put it right. Changes nothing. With `color`, it also
     /// measures a frame of each shot for blown highlights, crushed
     /// blacks, over-saturation and skin off the skin-tone line — slower,
-    /// since it renders frames.
+    /// since it renders frames. With `loudness`, it also meters the mix
+    /// for stretches well under the rest of the piece — slower, since it
+    /// mixes the whole piece's sound.
     Check {
         #[serde(default)]
         color: bool,
+        #[serde(default)]
+        loudness: bool,
     },
     /// Save the project: to `path` (a `.klipp` folder, made if needed),
     /// or where it was last saved when `path` is left out. Refused for a
