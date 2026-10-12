@@ -1287,6 +1287,7 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     font_size_keyframes: Vec::new(),
                     tracking_keyframes: Vec::new(),
                     line_spacing_keyframes: Vec::new(),
+                    color_keyframes: Default::default(),
                     write_on: *write_on,
                     extrusion: ext,
                     text_path: tp,

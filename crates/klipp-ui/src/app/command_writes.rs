@@ -660,6 +660,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::MoveTitleObjectEffectKeyframe { .. }
         | AppCommand::SetTitleObjectEffectKeyframeTangent { .. }
         | AppCommand::SetTitleObjectEffectKeyframeInterpolation { .. }
+        | AppCommand::SetTitleObjectColourKeyframe { .. }
         | AppCommand::AddTitleObjectPositionKeyframe { .. }
         | AppCommand::AddTitleObjectTransformKeyframe { .. }
         | AppCommand::RemoveTitleObjectTransformKeyframe { .. }

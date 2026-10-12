@@ -2984,6 +2984,16 @@ pub enum AppCommand {
         tangent_in: Option<(f64, f32)>,
         tangent_out: Option<(f64, f32)>,
     },
+    /// Key a title layer's colour at `time_secs` on all four of its
+    /// channels at once, or (`color` None) take that key from all four:
+    /// one step (#1511). `param_key` names the colour (`text.color`).
+    SetTitleObjectColourKeyframe {
+        clip_id: ClipId,
+        object_id: u32,
+        param_key: String,
+        time_secs: f64,
+        color: Option<[u8; 4]>,
+    },
     SetTitleObjectEffectKeyframeInterpolation {
         clip_id: ClipId,
         object_id: u32,

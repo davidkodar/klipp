@@ -2821,6 +2821,34 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitleObjectColourKeyframe { clip_id, object_id, param_key, time_secs, color } => {
+                let old = self.snapshot_title(*clip_id);
+                let tolerance = crate::inspector::keyframe_selection::frame_tolerance(self.state.sequence());
+                let target = klipp_timeline::TitleObjectId(*object_id);
+                let mut routed = false;
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(klipp_timeline::TitleObjectContent::TextBox(tb)) = td.object_mut(target).map(|o| &mut o.content) {
+                                if param_key == klipp_core::title_effect_keys::TEXT_COLOR {
+                                    match color {
+                                        Some(c) => tb.color_keyframes.set(*time_secs, *c),
+                                        None => tb.color_keyframes.remove(*time_secs, tolerance),
+                                    }
+                                    routed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                debug_assert!(routed, "SetTitleObjectColourKeyframe: unknown colour {param_key:?} or not a text layer");
+                if let Some(old) = old { self.push_title_undo(*clip_id, if color.is_some() { "Key Colour" } else { "Remove Colour Key" }, old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::AddTitleObjectEffectKeyframe {
                 clip_id, object_id, param_key, time_secs, value,
             } => {
@@ -3228,6 +3256,7 @@ pub(super) fn title_edit_clip_id(cmd: &AppCommand) -> Option<klipp_core::ClipId>
         | C::RemoveTitleObjectEffectKeyframe { clip_id, .. }
         | C::MoveTitleObjectEffectKeyframe { clip_id, .. }
         | C::SetTitleObjectEffectKeyframeInterpolation { clip_id, .. }
+        | C::SetTitleObjectColourKeyframe { clip_id, .. }
         | C::SetTitleObjectEffectKeyframeTangent { clip_id, .. }
         | C::SetTitleTexturePreset { clip_id, .. }
         | C::SetTitleTextureParams { clip_id, .. }

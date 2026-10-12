@@ -58,6 +58,15 @@ impl TitleCurveParam {
         match self {
             Self::Position(TitlePositionAxis::X) => "Layer X".into(),
             Self::Position(TitlePositionAxis::Y) => "Layer Y".into(),
+            Self::Effect(key) if key.starts_with("text.color.") => {
+                let channel = match key.rsplit('.').next() {
+                    Some("r") => "red",
+                    Some("g") => "green",
+                    Some("b") => "blue",
+                    _ => "alpha",
+                };
+                format!("Text colour · {channel}")
+            }
             Self::Effect(key) => {
                 let parts: Vec<_> = key.split('.').collect();
                 let effect = match parts[0] {
@@ -85,6 +94,8 @@ impl TitleCurveParam {
     pub fn range(&self) -> (f32, f32, f32) {
         match self {
             Self::Position(_) => (-1.0, 2.0, 0.5),
+            // Linear light, and alpha, 0..1.
+            Self::Effect(key) if key.starts_with("text.color.") => (0.0, 1.0, 1.0),
             Self::Effect(key) => match key.rsplit('.').next().unwrap_or("") {
                 "intensity" => (0.0, 5.0, 1.0),
                 "lighting" => (0.0, 1.0, 0.5),
@@ -222,7 +233,7 @@ pub fn parameters(object: &klipp_timeline::TitleObject) -> Vec<TitleCurveParam> 
         TitleCurveParam::Position(TitlePositionAxis::X),
         TitleCurveParam::Position(TitlePositionAxis::Y),
     ];
-    if let TitleObjectContent::TextBox(_) = &object.content {
+    if let TitleObjectContent::TextBox(tb) = &object.content {
         let mut keys = vec![
             k::TEXT_SIZE.into(),
             k::TEXT_TRACKING.into(),
@@ -235,6 +246,11 @@ pub fn parameters(object: &klipp_timeline::TitleObject) -> Vec<TitleCurveParam> 
             k::CHAR_ANIM_WAVE_AMPLITUDE.into(),
             k::CHAR_ANIM_WAVE_SPEED.into(),
         ];
+        // A colour's channels once it is keyed: it is keyed whole, in
+        // the inspector, and shaped channel by channel here (#1511).
+        if !tb.color_keyframes.is_empty() {
+            keys.extend([k::TEXT_COLOR_R, k::TEXT_COLOR_G, k::TEXT_COLOR_B, k::TEXT_COLOR_A].map(String::from));
+        }
         for i in 0..object.fx().glows.len() {
             keys.extend([k::glow_radius_key(i), k::glow_intensity_key(i)]);
         }
@@ -405,5 +421,20 @@ mod tests {
             assert_eq!(param.label(), label);
         }
         assert_eq!(TitleCurveParam::Effect("text.size".into()).range(), (1.0, 300.0, 72.0));
+    }
+
+    /// A text's colour channels are listed once it is keyed, named as
+    /// the colour's, in linear light 0..1 (#1511).
+    #[test]
+    fn a_keyed_colour_lists_its_channels() {
+        let (mut title, _) = animated_title();
+        let colour = TitleCurveParam::Effect("text.color.g".into());
+        assert!(!parameters(&title.objects[0]).contains(&colour), "not before it is keyed");
+        let TitleObjectContent::TextBox(tb) = &mut title.objects[0].content else { panic!("text") };
+        tb.color_keyframes.set(0.5, [10, 20, 30, 255]);
+        assert!(parameters(&title.objects[0]).contains(&colour));
+        assert_eq!(colour.label(), "Text colour · green");
+        assert_eq!(colour.range(), (0.0, 1.0, 1.0));
+        assert_eq!(title.objects[0].effect_keyframes_for("text.color.g").map(<[_]>::len), Some(1));
     }
 }

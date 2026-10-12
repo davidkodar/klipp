@@ -95,7 +95,7 @@ pub use shared::{SequenceRead, SequenceRevision, SequenceWrite, SharedSequence};
 pub use klipp_core::title_motion::{CrawlDirection, CubicBezier, EdgeFade, Easing, LoopGeometry, LoopPose, Motion, MotionKind, ScrollDirection, StaggerUnit, TitleLoop, TitleMotion};
 pub use clip_kind::{
     adjust_style_runs_for_text_change, apply_style_to_range, default_text_transform,
-    CharAnimation, CharEntrance, ClipKind, FontAxis, FontStyle, InnerShadow, LastLineAlign, MotionBlur, ObjectTransform,
+    CharAnimation, CharEntrance, ClipKind, ColourKeys, FontAxis, FontStyle, InnerShadow, LastLineAlign, MotionBlur, ObjectTransform,
     Shape, ShapeFit, ShapeKind, ShapeStroke, StyleRun, TextAlignment, TextBox, TextCase, TextDirection,
     TextExtrusion, TextGlow, TextGradient, TextOutline, TextPattern, TextPath, TextVerticalAlign, TextureFill,
     TexturePresetId, TextureSource, TextureTileMode, TitleAnimationType,
