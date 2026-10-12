@@ -75,7 +75,14 @@ impl KlippApp {
         self.node_graph_v2_panel.thumbnail_quality = None;
         let visible = (self.state.graph_dock_open || (self.state.show_color_panel && self.state.show_node_strip))
             && self.state.playback != klipp_engine::PlaybackState::Playing;
-        let selected = self.state.selected_clip;
+        // The clip whose graph is drawn: the dock's, which may be the
+        // picture under the playhead with nothing selected (its nodes
+        // stayed blank), else the selected clip's.
+        let selected = match (self.state.graph_dock_open, self.state.graph_dock_root) {
+            (true, Some(klipp_graph_format::path::Root::Clip { clip })) => Some(ClipId(clip)),
+            (true, _) => None,
+            (false, _) => self.state.selected_clip,
+        };
         if !visible || self.state.node_thumbnail_state.clip != selected {
             if let Some(clip_id) = self.state.node_thumbnail_state.clip.take() {
                 self.state.invalidate_node_thumbnails();
