@@ -12,7 +12,7 @@ pub(crate) fn respond(
     let mut send = sender!(ctx, collect);
 
     match cmd {
-        ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions, preset, codec, audio_codec, bitrate_kbps } => {
+        ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions, captions_608, preset, codec, audio_codec, bitrate_kbps } => {
             let out = std::path::PathBuf::from(&path);
             if !out.is_absolute() {
                 return Err(format!("export path must be absolute (got {path:?})"));
@@ -127,10 +127,17 @@ pub(crate) fn respond(
             if let Some(burn) = burn_captions {
                 settings.burn_in_subtitles = burn;
             }
+            if let Some(cc) = captions_608 {
+                if cc && !matches!(settings.video_codec, V::H264 | V::H265) {
+                    return Err(format!("{} carries no CEA-608 captions; captions_608 needs h264 or hevc", settings.video_codec.label()));
+                }
+                settings.captions_608 = cc;
+            }
             // Said, because it cannot be seen from the reply otherwise and
             // decides whether a sidecar file is needed.
             let said = json!({
                 "captions_and_titles_burnt_in": settings.burn_in_subtitles,
+                "captions_608": settings.captions_608,
                 "target_lufs": settings.target_lufs,
                 "true_peak_dbtp": settings.target_lufs.map(|_| settings.true_peak_dbtp.unwrap_or(-1.0)),
                 // The size it is encoded at: an odd side is rounded down,

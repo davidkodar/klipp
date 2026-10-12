@@ -948,6 +948,9 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(c) = args.get("true_peak_dbtp").and_then(|v| v.as_f64()) {
                 v["true_peak_dbtp"] = json!(c);
             }
+            if let Some(b) = args.get("captions_608").and_then(|v| v.as_bool()) {
+                v["captions_608"] = json!(b);
+            }
             if let Some(b) = args.get("burn_captions").and_then(|v| v.as_bool()) {
                 v["burn_captions"] = json!(b);
             }
@@ -1934,6 +1937,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "target_lufs": { "type": "number", "description": "Loudness target: -14 web, -23 broadcast; default the brief's" },
                  "true_peak_dbtp": { "type": "number", "description": "True-peak ceiling, -10 to 0 (default -1; ATSC A/85 -2)" },
                  "burn_captions": { "type": "boolean", "description": "Captions and titles burnt in (default on); the reply says which" },
+                 "captions_608": { "type": "boolean", "description": "Captions as CEA-608 inside the video stream (h264/hevc)" },
                  "preset": { "type": "string" }, "codec": { "type": "string" }, "audio_codec": { "type": "string" },
                  "bit_depth": { "type": "integer" }, "bitrate_kbps": { "type": "integer" },
              }),

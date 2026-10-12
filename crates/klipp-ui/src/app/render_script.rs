@@ -271,7 +271,7 @@ mod render_script_tests {
             embed_subtitles: false,
             target_lufs: None,
             true_peak_dbtp: None,
-            embed_chapters: false,
+            embed_chapters: false, captions_608: false,
             bit_depth: 0,
             hdr_mode: klipp_core::HdrMode::Sdr,
             tone_map_op: klipp_core::ToneMapOp::Hable,

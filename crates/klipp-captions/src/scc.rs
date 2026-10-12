@@ -316,12 +316,22 @@ fn load_words(sub: &SubtitleEntry) -> Vec<[u8; 2]> {
     words
 }
 
-/// `subs` as a Scenarist SCC file, pop-on on CC1: each cue loaded in the
+/// 608's frame rate, 30000/1001: the rate [`cc1_pairs`] counts in.
+pub const CC_FPS: f64 = FPS;
+
+/// `subs` as CEA-608 CC1 data, pop-on: the byte pair sent in each 608
+/// frame that sends one, by frame from 0 at 29.97, parity set. The SCC
+/// file's pairs, and the pairs a video stream carries (#1663).
+pub fn cc1_pairs(subs: &[SubtitleEntry]) -> std::collections::BTreeMap<u64, [u8; 2]> {
+    cc1_words(subs).into_iter().map(|(f, w)| (f, [parity(w[0]), parity(w[1])])).collect()
+}
+
+/// `subs` as Scenarist SCC timing, pop-on on CC1: each cue loaded in the
 /// frames before its start, shown on its start frame (end of caption)
 /// and erased on its end frame, unless the next cue replaces it there.
 /// A cue whose load does not fit before its start shows as soon as it
-/// has loaded.
-pub fn generate_scc(subs: &[SubtitleEntry]) -> String {
+/// has loaded. Each 608 frame's word, without parity.
+fn cc1_words(subs: &[SubtitleEntry]) -> std::collections::BTreeMap<u64, [u8; 2]> {
     let frame = |secs: f64| (secs.max(0.0) * FPS).round() as u64;
     let mut sorted: Vec<&SubtitleEntry> = subs.iter().filter(|s| !s.text.trim().is_empty()).collect();
     sorted.sort_by(|a, b| a.start_secs.total_cmp(&b.start_secs));
@@ -359,6 +369,12 @@ pub fn generate_scc(subs: &[SubtitleEntry]) -> String {
             shown_after = e + 2;
         }
     }
+    slots
+}
+
+/// `subs` as a Scenarist SCC file, pop-on on CC1 ([`cc1_words`]).
+pub fn generate_scc(subs: &[SubtitleEntry]) -> String {
+    let slots = cc1_words(subs);
     let mut out = String::from("Scenarist_SCC V1.0\n");
     let mut last: Option<u64> = None;
     for (f, w) in &slots {

@@ -50,6 +50,7 @@ pub mod snapshot;
 mod sws_colour;
 mod vaapi;
 
+pub mod a53;
 pub mod audio_mixdown;
 pub mod encoder;
 pub mod export_frames;
