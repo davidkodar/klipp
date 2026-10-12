@@ -6,8 +6,9 @@
 //! fields' own documentation gives.
 //!
 //! Some fields are written by the compositor every frame but are still
-//! saved: the grain, old-film, VHS and noise `seed` (the frame number)
-//! and deflicker's `gain` (from the clip's analysis). They are described
+//! saved: the grain, old-film, VHS and noise `seed` (the frame number),
+//! deflicker's `gain` (from the clip's analysis) and flicker's `time`
+//! (the clip's time, #989). They are described
 //! as saved, fixed parameters; nothing a user sets.
 //!
 //! Where two places disagree, the description follows the reset and says
@@ -171,6 +172,30 @@ pub(super) static TYPES: &[EffectType] = &[
         )),
         tag: "noise_generator",
         sample: || BuiltinEffect::NoiseGenerator { amount: 0.1, monochrome: 0, seed: 0 },
+    },
+    // A random flicker (#989): its seed the user's, its time the
+    // compositor's (the clip's time each frame), as grain's seed is.
+    EffectType {
+        desc: mixable(effect(
+            "klipp.fx.flicker",
+            "Flicker",
+            Category::FilmTemporal,
+            &[
+                ParamDesc::float("amount", "Amount", 0.5, UNIT, Unit::Ratio),
+                ParamDesc::float("speed", "Speed", 8.0, (0.5, 30.0), Unit::Ratio),
+                ParamDesc::float("smoothness", "Smoothness", 0.0, UNIT, Unit::Ratio),
+                ParamDesc::float("hold", "Hold", 0.3, UNIT, Unit::Ratio),
+                ParamDesc { kind: ParamKind::Whole, ..ParamDesc::float("seed", "Seed", 67.0, (0.0, 10_000.0), Unit::Count).fixed() },
+                choice("target", "Flickers", 0.0, &["opacity", "exposure", "gamma"]),
+                ParamDesc { soft: None, ..ParamDesc::float("time", "Time", 0.0, (0.0, 1.0), Unit::Seconds).fixed() },
+            ],
+            ColourDomain::Linear,
+            Spatial::PerPixel,
+            Temporal::None,
+            true,
+        )),
+        tag: "flicker",
+        sample: || BuiltinEffect::Flicker { amount: 0.5, speed: 8.0, smoothness: 0.0, hold: 0.3, seed: 67, target: 0, time: 0.0 },
     },
     EffectType {
         desc: effect(

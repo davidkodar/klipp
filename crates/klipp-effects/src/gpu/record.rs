@@ -47,6 +47,10 @@ pub enum Recorded {
 /// it isn't recordable. So a plan can size its segments before it records.
 #[doc(hidden)]
 pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
+    // A flicker is the plain effect it is at its time (#989).
+    if let Some(plain) = crate::flicker::as_plain(effect) {
+        return slots_needed(&plain);
+    }
     // A box blur's horizontal and vertical passes share one slot: the
     // same parameters.
     let boxes = |radius: f32| crate::blur::boxes_for_gaussian(radius).iter().filter(|r| **r != 0).count();
@@ -104,6 +108,7 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         | BuiltinEffect::LensFlare { .. }
         | BuiltinEffect::LightRays { .. }
         | BuiltinEffect::Vignette { .. }
+        | BuiltinEffect::BinocularVignette { .. }
         | BuiltinEffect::Lut3D { .. }
         | BuiltinEffect::ColourSpaceTransform { .. }
         | BuiltinEffect::PictureTransform { .. } => Some(1),
@@ -115,6 +120,9 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
 /// isn't linear light. Its input and output are linear all the same.
 #[doc(hidden)]
 pub fn converts_inside(effect: &BuiltinEffect) -> Option<ColourDomain> {
+    if let Some(plain) = crate::flicker::as_plain(effect) {
+        return converts_inside(&plain);
+    }
     match effect {
         BuiltinEffect::Invert { .. }
         | BuiltinEffect::Posterize { .. }
@@ -148,6 +156,10 @@ impl GpuEffectsPipeline {
         // A picture transform is the Transform effect's pass (#1746).
         if let Some(t) = effect.picture_transform_as_transform() {
             return self.record_effect(&t, src, dst, scratch, width, height, rec);
+        }
+        // A flicker records as the plain effect it is now (#989).
+        if let Some(plain) = crate::flicker::as_plain(effect) {
+            return self.record_effect(&plain, src, dst, scratch, width, height, rec);
         }
         // Each arm checks its identity before its slots, so an effect that
         // records nothing never asks for a refill.
@@ -667,6 +679,16 @@ impl GpuEffectsPipeline {
                     luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
                 });
                 (&self.light_rays_pipeline, slot)
+            }
+            BuiltinEffect::BinocularVignette { amount, spacing, width: eye_w, height: eye_h, softness, fringe } => {
+                if amount.abs() < f32::EPSILON && fringe.abs() < f32::EPSILON {
+                    return Recorded::Identity;
+                }
+                let slot = rec.slots.claim(q, &super::BinocularVignetteParams {
+                    width, height,
+                    amount: *amount, spacing: *spacing, eye_w: *eye_w, eye_h: *eye_h, softness: *softness, fringe: *fringe,
+                });
+                (&self.binocular_vignette_pipeline, slot)
             }
             BuiltinEffect::Vignette { amount, size, softness, roundness } => {
                 let slot = rec.slots.claim(q, &VignetteParams {

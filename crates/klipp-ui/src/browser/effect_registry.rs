@@ -242,6 +242,16 @@ impl EffectRegistry {
                 grouping: "Light".into(),
             },
             EffectEntry {
+                name: "Binocular Vignette".into(),
+                category: EffectCategory::Light,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::BinocularVignette {
+                    amount: -1.0, spacing: 0.4, width: 0.85, height: 0.85, softness: 0.15, fringe: 4.0,
+                }),
+                source_label: "Built-in",
+                description: "The frame seen through two eyepieces, a colour fringe at their rims.".into(),
+                grouping: "Light".into(),
+            },
+            EffectEntry {
                 name: "Diffusion".into(),
                 category: EffectCategory::Light,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Diffusion {
@@ -485,6 +495,16 @@ impl EffectRegistry {
                 }),
                 source_label: "Built-in",
                 description: "Flicker, scratches, dust, gate weave and a sepia wash.".into(),
+                grouping: "Film".into(),
+            },
+            EffectEntry {
+                name: "Flicker".into(),
+                category: EffectCategory::Film,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Flicker {
+                    amount: 0.5, speed: 8.0, smoothness: 0.0, hold: 0.3, seed: 67, target: 0, time: 0.0,
+                }),
+                source_label: "Built-in",
+                description: "Random jumps of the opacity, exposure or gamma, at a speed, with still spells.".into(),
                 grouping: "Film".into(),
             },
             EffectEntry {

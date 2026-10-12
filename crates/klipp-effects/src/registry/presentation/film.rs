@@ -21,6 +21,7 @@ const DEFLICKER: &str = "klipp.fx.deflicker";
 const STABILIZE: &str = "klipp.fx.video_stabilization";
 const RAMP: &str = "klipp.fx.speed_ramp";
 const FREI0R: &str = "klipp.fx.frei0r";
+const FLICKER: &str = "klipp.fx.flicker";
 
 const fn toggle() -> P {
     P::shown_as(Widget::Toggle)
@@ -52,6 +53,14 @@ pub(super) static PARAMS: &[ParamEntry] = &[
     // A switch, not a 0-to-1 slider (IC5).
     at(NOISE, "monochrome", toggle()),
     at(NOISE, "seed", P::scrub(1.0, 0).widget(Widget::Slider).soft_whole((0, 10_000))),
+    // Flicker (#989): what flickers first; its time is the compositor's.
+    at(FLICKER, "target", combo().labels(&["Opacity", "Exposure", "Gamma"]).order(0)),
+    at(FLICKER, "amount", P::scrub(0.005, 2).order(1)),
+    at(FLICKER, "speed", P::scrub(0.1, 1).suffix(Suffix::Text("/s")).order(2)),
+    at(FLICKER, "smoothness", P::scrub(0.005, 2).order(3)),
+    at(FLICKER, "hold", P::scrub(0.005, 2).order(4)),
+    at(FLICKER, "seed", P::scrub(1.0, 0).soft_whole((0, 10_000)).order(5)),
+    at(FLICKER, "time", P::hidden()),
     at(CHROMA_KEY, "key_color", P::shown_as(Widget::ColourRgb)),
     at(CHROMA_KEY, "tolerance", P::scrub(0.005, 3)),
     at(CHROMA_KEY, "spill", P::scrub(0.005, 3)),

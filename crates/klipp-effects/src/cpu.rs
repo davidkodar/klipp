@@ -408,6 +408,41 @@ pub(crate) fn apply(
             }
             p
         }
+        // A flicker is the plain effect it is at its time (#989).
+        Flicker { .. } => match crate::flicker::as_plain(effect) {
+            Some(plain) => apply(&plain, p, w, h, yw),
+            None => p,
+        },
+        // The twin of `SHADER_BINOCULAR_VIGNETTE` (#989).
+        BinocularVignette { amount, spacing, width: eye_w, height: eye_h, softness, fringe } => {
+            if amount.abs() < f32::EPSILON && fringe.abs() < f32::EPSILON {
+                return p;
+            }
+            let (rx, ry) = ((eye_w * hf * 0.5).max(1.0), (eye_h * hf * 0.5).max(1.0));
+            let cy = hf * 0.5;
+            let (c1, c2) = (wf * (0.5 - spacing * 0.5), wf * (0.5 + spacing * 0.5));
+            let soft = softness.max(0.01);
+            each_pixel(&p, w, h, |x, y, f| {
+                let (x, y) = (x as f32, y as f32);
+                let dist = |c: f32| (((x - c) / rx) * ((x - c) / rx) + ((y - cy) / ry) * ((y - cy) / ry)).sqrt();
+                let (d1, d2) = (dist(c1), dist(c2));
+                let (d, cx) = if d2 < d1 { (d2, c2) } else { (d1, c1) };
+                let falloff = ((d - (1.0 - soft)) / soft).clamp(0.0, 1.0);
+                let k = 1.0 + amount * falloff;
+                let px = f.at(x as usize, y as usize);
+                let (mut r, mut b) = (px[0], px[2]);
+                let (vx, vy) = (x - cx, y - cy);
+                let len = (vx * vx + vy * vy).sqrt();
+                let reach = d.clamp(0.0, 1.0);
+                let s = fringe * reach * reach;
+                if len > 0.0 && s != 0.0 {
+                    let (ux, uy) = (vx / len * s, vy / len * s);
+                    r = bilinear(f, x + ux, y + uy)[0];
+                    b = bilinear(f, x - ux, y - uy)[2];
+                }
+                [r * k, px[1] * k, b * k, px[3]]
+            })
+        }
         Vignette { amount, size, softness, roundness } => {
             let (cx, cy) = (wf * 0.5, hf * 0.5);
             each_pixel(&p, w, h, |x, y, f| {

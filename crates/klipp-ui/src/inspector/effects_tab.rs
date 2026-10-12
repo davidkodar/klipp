@@ -388,6 +388,12 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::Vignette { .. } => BuiltinEffect::Vignette {
             amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.5,
         },
+        BuiltinEffect::BinocularVignette { .. } => BuiltinEffect::BinocularVignette {
+            amount: -1.0, spacing: 0.4, width: 0.85, height: 0.85, softness: 0.15, fringe: 4.0,
+        },
+        BuiltinEffect::Flicker { .. } => BuiltinEffect::Flicker {
+            amount: 0.5, speed: 8.0, smoothness: 0.0, hold: 0.3, seed: 67, target: 0, time: 0.0,
+        },
         BuiltinEffect::Diffusion { .. } => BuiltinEffect::Diffusion {
             amount: 0.3, radius: 25.0, threshold: 0.5, desaturation: 0.2,
         },
@@ -506,7 +512,8 @@ fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> boo
         | BuiltinEffect::RadialBlur { .. } | BuiltinEffect::Levels { .. }
         | BuiltinEffect::Letterbox { .. } | BuiltinEffect::ChromaticAberration { .. }
         | BuiltinEffect::FilmGrain { .. } | BuiltinEffect::TiltShift { .. }
-        | BuiltinEffect::OldFilm { .. } | BuiltinEffect::Vhs { .. })
+        | BuiltinEffect::OldFilm { .. } | BuiltinEffect::Vhs { .. }
+        | BuiltinEffect::Flicker { .. } | BuiltinEffect::BinocularVignette { .. })
 }
 
 #[allow(dead_code)]

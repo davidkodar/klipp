@@ -5421,7 +5421,14 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
         "denoise" => E::Denoise { spatial_sigma: a * 4.0, color_sigma: a * 0.1, iterations: 1 },
         "vhs" => E::Vhs { tracking: a * 0.5, bleed: a, noise: a * 0.5, scanlines: a, seed: 1 },
         "old_film" => E::OldFilm { flicker: a * 0.5, scratches: a, dust: a, weave: a * 0.5, sepia: a * 0.5, seed: 1 },
-        other => return Err((format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, chroma_key, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, edge_detect, denoise, vhs or old_film".into())),
+        // A random flicker of the opacity, eight jumps a second, a third
+        // of them holding (#989); more flickers deeper.
+        "flicker" => E::Flicker { amount: a, speed: 8.0, smoothness: 0.0, hold: 0.3, seed: 1, target: 0, time: 0.0 },
+        "exposure_flicker" => E::Flicker { amount: a * 0.5, speed: 8.0, smoothness: 0.3, hold: 0.3, seed: 1, target: 1, time: 0.0 },
+        // Two eyepieces, the outside darker the more, a fringe at their
+        // rims (#989).
+        "binocular" | "binocular_vignette" => E::BinocularVignette { amount: -(0.5 + a * 0.5), spacing: 0.4, width: 0.85, height: 0.85, softness: 0.15, fringe: a * 6.0 },
+        other => return Err((format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, chroma_key, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, edge_detect, denoise, vhs, old_film, flicker, exposure_flicker or binocular".into())),
     };
     Ok((fx, a))
 }
@@ -14167,5 +14174,29 @@ mod effect_scale_tests {
             assert!((5.0..=20.0).contains(&blur(None)), "{kind}: {}", blur(None));
             assert_eq!(blur(Some(1.0)), 50.0, "{kind}");
         }
+    }
+
+    /// #989: the flicker kinds flicker the opacity or the light, deeper
+    /// with the amount, and the binocular darkens round two eyepieces
+    /// more with it, its fringe growing.
+    #[test]
+    fn the_flicker_and_binocular_kinds() {
+        let flicker = |kind, amount| match named_picture_effect(kind, amount).unwrap().0 {
+            E::Flicker { amount, target, .. } => (amount, target),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(flicker("flicker", Some(0.8)), (0.8, 0));
+        let (a, target) = flicker("exposure_flicker", None);
+        assert!(target == 1 && a > 0.0 && a < flicker("exposure_flicker", Some(1.0)).0);
+        for kind in ["binocular", "binocular_vignette"] {
+            let eyes = |amount| match named_picture_effect(kind, amount).unwrap().0 {
+                E::BinocularVignette { amount, fringe, .. } => (amount, fringe),
+                other => panic!("{other:?}"),
+            };
+            let (soft, hard) = (eyes(Some(0.2)), eyes(Some(1.0)));
+            assert!(hard.0 < soft.0 && hard.0 == -1.0 && hard.1 > soft.1, "{kind}: {soft:?} {hard:?}");
+        }
+        let err = named_picture_effect("flickr", None).unwrap_err();
+        assert!(err.1.contains("flicker") && err.1.contains("binocular"), "{err:?}");
     }
 }

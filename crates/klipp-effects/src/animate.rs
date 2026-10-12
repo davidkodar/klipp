@@ -238,6 +238,20 @@ impl BuiltinEffect {
                 real(f, "anchor_x", anchor_x);
                 real(f, "anchor_y", anchor_y);
             }
+            E::Flicker { amount, speed, smoothness, hold, .. } => {
+                real(f, "amount", amount);
+                real(f, "speed", speed);
+                real(f, "smoothness", smoothness);
+                real(f, "hold", hold);
+            }
+            E::BinocularVignette { amount, spacing, width, height, softness, fringe } => {
+                real(f, "amount", amount);
+                real(f, "spacing", spacing);
+                real(f, "width", width);
+                real(f, "height", height);
+                real(f, "softness", softness);
+                real(f, "fringe", fringe);
+            }
             E::CornerPin { tl, tr, br, bl } => {
                 for (corner, names) in [tl, tr, br, bl].into_iter().zip(crate::corner_pin::PARAMS) {
                     real(f, names[0], &mut corner[0]);

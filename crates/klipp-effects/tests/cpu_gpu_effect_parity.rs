@@ -154,6 +154,12 @@ fn cases() -> Vec<(&'static str, BuiltinEffect)> {
         ("ColourSpaceTransform to a curve", ColourSpaceTransform {
             input_gamut: 0, input_curve: 0, output_gamut: 9, output_curve: 4, prepared: Some(Prepared(Arc::new(transform(false, true)))),
         }),
+        // Flicker (#989), each target, mid-jump and eased.
+        ("Flicker opacity", Flicker { amount: 0.8, speed: 8.0, smoothness: 0.5, hold: 0.0, seed: 3, target: 0, time: 0.43 }),
+        ("Flicker exposure", Flicker { amount: 0.6, speed: 12.0, smoothness: 0.0, hold: 0.0, seed: 5, target: 1, time: 1.27 }),
+        ("Flicker gamma", Flicker { amount: 0.7, speed: 6.0, smoothness: 1.0, hold: 0.0, seed: 9, target: 2, time: 0.81 }),
+        ("BinocularVignette", BinocularVignette { amount: -0.9, spacing: 0.4, width: 0.8, height: 0.7, softness: 0.2, fringe: 3.0 }),
+        ("BinocularVignette lit", BinocularVignette { amount: 0.5, spacing: 0.6, width: 0.5, height: 0.9, softness: 0.05, fringe: -2.5 }),
     ]
 }
 

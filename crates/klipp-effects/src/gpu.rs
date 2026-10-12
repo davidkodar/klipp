@@ -217,6 +217,7 @@ pub struct GpuEffectsPipeline {
     equalize_pipeline: wgpu::ComputePipeline,
     letterbox_pipeline: wgpu::ComputePipeline,
     chromatic_aberration_pipeline: wgpu::ComputePipeline,
+    binocular_vignette_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — rolling shutter correction (uses huesat 4-binding layout)
     rsc_pipeline: wgpu::ComputePipeline,
     rsc_row_buf: Option<wgpu::Buffer>,
@@ -954,6 +955,7 @@ impl GpuEffectsPipeline {
         let levels_pipeline = create_pipeline(&device, &pipeline_layout, "levels", SHADER_LEVELS);
         let letterbox_pipeline = create_pipeline(&device, &pipeline_layout, "letterbox", SHADER_LETTERBOX);
         let chromatic_aberration_pipeline = create_pipeline(&device, &pipeline_layout, "chromatic_aberration", SHADER_CHROMATIC_ABERRATION);
+        let binocular_vignette_pipeline = create_pipeline(&device, &pipeline_layout, "binocular_vignette", SHADER_BINOCULAR_VIGNETTE);
         let color_grade_pipeline = create_pipeline(&device, &pipeline_layout, "color_grade", SHADER_COLOR_GRADE);
 
         // Hue/Sat pipeline: 4 bindings (input, output, params, LUT storage)
@@ -1532,6 +1534,7 @@ impl GpuEffectsPipeline {
             equalize_pipeline,
             letterbox_pipeline,
             chromatic_aberration_pipeline,
+            binocular_vignette_pipeline,
             rsc_pipeline,
             rsc_row_buf: None,
             rsc_row_buf_size: 0,
@@ -8327,6 +8330,20 @@ struct ChromaticAberrationParams {
     center_y: f32,
     _pad0: u32,
     _pad1: u32,
+}
+// 8 fields x 4 bytes = 32 bytes
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct BinocularVignetteParams {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) amount: f32,
+    pub(crate) spacing: f32,
+    pub(crate) eye_w: f32,
+    pub(crate) eye_h: f32,
+    pub(crate) softness: f32,
+    pub(crate) fringe: f32,
 }
 // 8 fields x 4 bytes = 32 bytes
 
@@ -15599,6 +15616,75 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
+// Binocular vignette (#989): the frame seen through two eyepieces, the
+// CPU twin's arithmetic step for step: the nearest eye's normalised
+// distance, a soft edge inside its rim, red and blue split along the
+// line from its centre towards the rim, then the outside darkened or
+// lightened by `amount`.
+const SHADER_BINOCULAR_VIGNETTE: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params { width: u32, height: u32, amount: f32, spacing: f32, eye_w: f32, eye_h: f32, softness: f32, fringe: f32 }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+fn sample_bilinear(fx: f32, fy: f32, w: u32, h: u32) -> vec4<f32> {
+    let x0 = u32(clamp(i32(floor(fx)), 0, i32(w) - 1));
+    let x1 = u32(clamp(i32(floor(fx)) + 1, 0, i32(w) - 1));
+    let y0 = u32(clamp(i32(floor(fy)), 0, i32(h) - 1));
+    let y1 = u32(clamp(i32(floor(fy)) + 1, 0, i32(h) - 1));
+    let dx = fract(fx);
+    let dy = fract(fy);
+    let tl = unpack(input[y0 * w + x0]);
+    let tr = unpack(input[y0 * w + x1]);
+    let bl = unpack(input[y1 * w + x0]);
+    let br = unpack(input[y1 * w + x1]);
+    return mix(mix(tl, tr, dx), mix(bl, br, dx), dy);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    let w = params.width;
+    let h = params.height;
+    if idx >= w * h { return; }
+    let x = f32(idx % w);
+    let y = f32(idx / w);
+    let wf = f32(w);
+    let hf = f32(h);
+    let rx = max(params.eye_w * hf * 0.5, 1.0);
+    let ry = max(params.eye_h * hf * 0.5, 1.0);
+    let cy = hf * 0.5;
+    let c1 = wf * (0.5 - params.spacing * 0.5);
+    let c2 = wf * (0.5 + params.spacing * 0.5);
+    let d1 = sqrt(((x - c1) / rx) * ((x - c1) / rx) + ((y - cy) / ry) * ((y - cy) / ry));
+    let d2 = sqrt(((x - c2) / rx) * ((x - c2) / rx) + ((y - cy) / ry) * ((y - cy) / ry));
+    var d = d1;
+    var cx = c1;
+    if d2 < d1 { d = d2; cx = c2; }
+    let soft = max(params.softness, 0.01);
+    let falloff = clamp((d - (1.0 - soft)) / soft, 0.0, 1.0);
+    let k = 1.0 + params.amount * falloff;
+    let px = unpack(input[idx]);
+    var r = px.x;
+    var b = px.z;
+    let vx = x - cx;
+    let vy = y - cy;
+    let len = sqrt(vx * vx + vy * vy);
+    let reach = clamp(d, 0.0, 1.0);
+    let s = params.fringe * reach * reach;
+    if len > 0.0 && s != 0.0 {
+        let ux = vx / len * s;
+        let uy = vy / len * s;
+        r = sample_bilinear(x + ux, y + uy, w, h).x;
+        b = sample_bilinear(x - ux, y - uy, w, h).z;
+    }
+    output[idx] = pack(vec4<f32>(r * k, px.y * k, b * k, px.w));
+}
+"
+);
+
 const SHADER_CHROMATIC_ABERRATION: &str = concat!(
     shader_pixel_storage_wgsl!(),
     "
@@ -16662,6 +16748,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_EQUALIZE", SHADER_EQUALIZE),
         ("SHADER_LETTERBOX", SHADER_LETTERBOX),
         ("SHADER_CHROMATIC_ABERRATION", SHADER_CHROMATIC_ABERRATION),
+        ("SHADER_BINOCULAR_VIGNETTE", SHADER_BINOCULAR_VIGNETTE),
         ("SHADER_ROLLING_SHUTTER", SHADER_ROLLING_SHUTTER),
         ("SHADER_STABILIZATION", SHADER_STABILIZATION),
         ("SHADER_COLOR_BALANCE", SHADER_COLOR_BALANCE),

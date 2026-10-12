@@ -522,11 +522,14 @@ mod node_types_tests {
         assert_eq!(all["publication"]["available"], false);
         assert_eq!(invert["mixable"], false);
         assert_eq!(invert["inputs"], serde_json::json!([{ "key": "in", "type": "Image", "optional": false }]));
-        // 35 effects (the 3D LUT and the colour-space transform among
-        // them, #1746) and the 8 gateable grade corrections (M3 step 17a).
-        assert_eq!(types.iter().filter(|t| t["mixable"] == true).count(), 43);
+        // 37 effects (the 3D LUT and the colour-space transform among
+        // them, #1746; the flicker and the binocular vignette, #989) and
+        // the 8 gateable grade corrections (M3 step 17a).
+        assert_eq!(types.iter().filter(|t| t["mixable"] == true).count(), 45);
         assert_eq!(find("lut_3d")["mixable"], true);
         assert_eq!(find("colour_space_transform")["mixable"], true);
+        assert_eq!(find("flicker")["mixable"], true);
+        assert_eq!(find("binocular_vignette")["mixable"], true);
         // A correction's gate reads red until a channel is picked: a new
         // connection writes none, and an absent one is red.
         let corrector = find("Corrector");

@@ -453,6 +453,12 @@ const EFFECTS_IN_A_LATER_BATCH: &[&str] = &[
     // `picture_transform_render.rs`; its stored frames come with the next
     // recording on main (#1746).
     "PictureTransform",
+    // Flicker and the binocular vignette (#989): drawn alike on the CPU
+    // and the GPU in klipp-effects' `cpu_gpu_effect_parity.rs`, and the
+    // flicker's time from the clip's in `effect_keyframes.rs`. Their
+    // stored frames come with the next recording on main.
+    "Flicker",
+    "BinocularVignette",
 ];
 
 /// One moving, grainy clip carrying `fx` (#1024).

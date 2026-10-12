@@ -9,13 +9,13 @@ use klipp_effects::registry::{effect_types, PortType, MASK_CHANNEL, MIXABLE_IN};
 /// effects, those with their own mix (invert, emboss, edge detect), and
 /// chroma key, which is still open. By saved tag (HSV adjust is saved
 /// as `h_s_v_adjust`).
-const MIXABLE: [&str; 35] = [
+const MIXABLE: [&str; 37] = [
     "color_fade", "posterize", "channel_mixer", "gamma", "h_s_v_adjust", "vibrance", "levels", "equalize",
     "film_grain", "old_film", "vhs", "noise_generator",
     "gaussian_blur", "focus_blur", "sharpen", "directional_blur", "radial_blur", "tilt_shift", "denoise",
     "median_filter", "dilate", "erode", "mosaic",
     "bloom", "glow", "light_rays", "vignette", "diffusion", "lens_flare", "light_wrap", "anamorphic_streak",
-    "film_halation", "chromatic_aberration", "lut_3d", "colour_space_transform",
+    "film_halation", "chromatic_aberration", "lut_3d", "colour_space_transform", "flicker", "binocular_vignette",
 ];
 
 #[test]

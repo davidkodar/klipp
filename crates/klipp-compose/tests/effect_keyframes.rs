@@ -87,6 +87,8 @@ fn every_effect() -> Vec<E> {
         E::Lut3D { path: "look.cube".into(), opacity: 0.5, tetrahedral: true, prepared: None },
         E::ColourSpaceTransform { input_gamut: 5, input_curve: 2, output_gamut: 0, output_curve: 0, prepared: None },
         E::PictureTransform { position_x: 4.0, position_y: 2.0, scale_x: 0.9, scale_y: 0.9, rotation: 5.0, anchor_x: 0.5, anchor_y: 0.5 },
+        E::Flicker { amount: 0.5, speed: 8.0, smoothness: 0.2, hold: 0.3, seed: 1, target: 0, time: 0.0 },
+        E::BinocularVignette { amount: -0.8, spacing: 0.4, width: 0.8, height: 0.8, softness: 0.2, fringe: 3.0 },
     ];
     // Adding an effect stops this compiling until it is listed above.
     for e in &all {
@@ -104,7 +106,7 @@ fn every_effect() -> Vec<E> {
             | E::FilmGrain { .. } | E::TiltShift { .. } | E::OldFilm { .. } | E::Vhs { .. }
             | E::RollingShutterCorrection { .. } | E::TemporalDenoise { .. } | E::Deflicker { .. }
             | E::VideoStabilization { .. } | E::SpeedRamp { .. } | E::Frei0r { .. } | E::CornerPin { .. }
-            | E::Lut3D { .. } | E::ColourSpaceTransform { .. } | E::PictureTransform { .. } => {}
+            | E::Lut3D { .. } | E::ColourSpaceTransform { .. } | E::PictureTransform { .. } | E::Flicker { .. } | E::BinocularVignette { .. } => {}
         }
     }
     all
@@ -163,6 +165,21 @@ fn a_keyframed_effect_ramps_between_its_keys() {
         assert_ne!(at(0.0), at(1.0), "{} {name} did not move", kind(&effect));
         assert_ne!(at(1.0), at(2.0), "{} {name} did not move", kind(&effect));
     }
+}
+
+/// A flicker jumps by the clip's own time (#989): the render gives it the
+/// time into the clip, wherever the clip sits.
+#[test]
+fn a_flicker_is_given_the_clips_time() {
+    let flicker = E::Flicker { amount: 0.5, speed: 8.0, smoothness: 0.0, hold: 0.0, seed: 1, target: 0, time: 0.0 };
+    let mut clip = clip_with(flicker);
+    clip.timeline_in = tc(2.0);
+    clip.timeline_out = tc(6.0);
+    let time_at = |t: f64| match clip_effects(&clip, tc(t), 24.0, None, None).0.first() {
+        Some(E::Flicker { time, .. }) => *time,
+        other => panic!("{other:?}"),
+    };
+    assert!((time_at(2.5) - 0.5).abs() < 1e-4 && (time_at(3.25) - 1.25).abs() < 1e-4, "{} {}", time_at(2.5), time_at(3.25));
 }
 
 /// A key addresses the effect at its own place in the list, not the

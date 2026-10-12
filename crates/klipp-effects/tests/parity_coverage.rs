@@ -108,6 +108,8 @@ const EFFECTS: &[(&str, Cover)] = &[
     ("Lut3D", Case("Lut3D")),
     ("ColourSpaceTransform", Case("ColourSpaceTransform")),
     ("PictureTransform", Case("PictureTransform")),
+    ("Flicker", Case("Flicker exposure")),
+    ("BinocularVignette", Case("BinocularVignette")),
 ];
 
 const SHADERS: &[(&str, Cover)] = &[
@@ -121,6 +123,7 @@ const SHADERS: &[(&str, Cover)] = &[
     ("LAYER_FILL_SMALL", Test(LAYER, "fill_bars_matches_cpu_on_gpu")),
     ("LAYER_FILL_OVER", Test(LAYER, "fill_bars_matches_cpu_on_gpu")),
     ("SHADER_OPACITY", EVERY_EFFECT),
+    ("SHADER_BINOCULAR_VIGNETTE", EVERY_EFFECT),
     ("SHADER_COLOR_FADE", EVERY_EFFECT),
     ("SHADER_BLUR_H", EVERY_EFFECT),
     ("SHADER_BLUR_V", EVERY_EFFECT),
