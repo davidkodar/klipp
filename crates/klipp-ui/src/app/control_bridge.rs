@@ -97,7 +97,7 @@ impl KlippApp {
             if refused.is_none() && !env.commands.is_empty() {
                 sought = last_seek(&env.commands);
                 self.suppress_fps_prompt = true;
-                let touches_params = env.commands.iter().any(|c| matches!(c, AppCommand::SetNodeParam { .. } | AppCommand::AddKeyframe { .. } | AppCommand::RemoveKeyframe { .. }));
+                let touches_params = env.commands.iter().any(|c| matches!(c, AppCommand::SetNodeParam { .. }));
                 let cmds = expand_control_commands(env.commands, env.batch);
                 self.send_commands(cmds);
                 self.suppress_fps_prompt = false;
@@ -419,7 +419,7 @@ pub fn expand_control_commands(commands: Vec<AppCommand>, batch: bool) -> Vec<Ap
 /// nothing (#1082).
 pub(super) fn param_write_outside(seq: &klipp_timeline::Sequence, cmds: &[AppCommand]) -> Option<klipp_core::ClipId> {
     cmds.iter().find_map(|c| match c {
-        AppCommand::SetNodeParam { clip_id, .. } | AppCommand::AddKeyframe { clip_id, .. } | AppCommand::RemoveKeyframe { clip_id, .. } if !seq.tracks.iter().any(|t| t.clips.iter().any(|x| x.id == *clip_id)) => Some(*clip_id),
+        AppCommand::SetNodeParam { clip_id, .. } if !seq.tracks.iter().any(|t| t.clips.iter().any(|x| x.id == *clip_id)) => Some(*clip_id),
         _ => None,
     })
 }

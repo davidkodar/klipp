@@ -5006,6 +5006,17 @@ fn show_title_editor(
             handle_text_key_edit(cmds, clip_id, target_oid, key, v, keys(key), clip_time_secs, keyframe_tolerance, (&resp).into(),
                 |value| AppCommand::SetTitleParagraph { clip_id, key: key.into(), value });
         }
+        // Fewer one-word last lines (#1721): the fewest words a wrapped
+        // paragraph ends on.
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Last line").size(11.0).color(theme.text_secondary));
+            let cur = para.min_last_words.min(4);
+            for (v, label, tip) in [(0u8, "Any", "Lines break where they fall"), (2, "2+ words", "A paragraph never ends on one word alone"), (3, "3+ words", "A paragraph ends on three words or more")] {
+                if pill_toggle_button(ui, theme, label, cur == v || (v == 0 && cur == 1), |r| r.size(11.0)).on_hover_text(tip).clicked() && cur != v {
+                    cmds.push(AppCommand::SetTitleMinLastWords { clip_id, words: v });
+                }
+            }
+        });
         // Its paragraphs as a list (#1721).
         {
             use klipp_timeline::{ListMarker, NumberStyle};
@@ -8537,7 +8548,7 @@ mod selection_underline_tests {
         frame(Vec::new());
         let (_, texts) = frame(Vec::new());
         let has = |label: &str| texts.iter().any(|(t, _)| t == label);
-        for label in ["Space before", "Space after", "Indent", "End indent", "First line", "Tab stops", "240 px", "Decimal", "List", "i. ii. iii.", "indent 48 px"] {
+        for label in ["Space before", "Space after", "Indent", "End indent", "First line", "Tab stops", "240 px", "Decimal", "List", "i. ii. iii.", "indent 48 px", "Last line", "2+ words"] {
             assert!(has(label), "no {label} in {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>());
         }
         assert!(texts.iter().any(|(t, _)| t.contains("-36")), "the hanging first line shows");

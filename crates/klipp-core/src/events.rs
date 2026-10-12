@@ -2627,6 +2627,9 @@ pub enum AppCommand {
     /// `indent` pixels at 1080p past the start indent. A count keeps the
     /// start and suffix it had.
     SetTitleList { clip_id: ClipId, style: u8, indent: f32 },
+    /// The fewest words a text box's wrapped paragraphs end on (#1721);
+    /// 0 for no rule.
+    SetTitleMinLastWords { clip_id: ClipId, words: u8 },
     /// Toggle text underline rendering.
     SetTitleUnderline { clip_id: ClipId, underline: bool },
     /// The weight the text box is set in, `None` for its style's, and

@@ -350,24 +350,12 @@ pub enum ControlCommand {
         #[serde(default)]
         to_port: u8,
     },
-    /// Set one numeric grade parameter, e.g. param "temperature". With
-    /// `at` (seconds on the timeline, within the clip) it keys it there
-    /// instead (#891): the value at that time, the move into and out of the
-    /// key `interpolation` ("linear", "ease_in", "ease_out", "ease_both",
-    /// "bezier", "hold"); `remove` takes the key at `at` away. One undo
-    /// step either way.
+    /// Set one numeric grade parameter, e.g. param "temperature".
     SetNodeParam {
         clip_id: String,
         node_id: String,
         param: String,
-        #[serde(default)]
-        value: Option<f32>,
-        #[serde(default)]
-        at: Option<f64>,
-        #[serde(default)]
-        interpolation: Option<String>,
-        #[serde(default)]
-        remove: bool,
+        value: f32,
     },
     ToggleNodeEnabled { clip_id: String, node_id: String },
     /// Give a grade node a name of its own (#893): "skin", "sky", "look".

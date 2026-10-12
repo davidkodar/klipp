@@ -2594,6 +2594,11 @@ pub struct Paragraph {
     /// start indent, its text `indent` past it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub list: Option<ListStyle>,
+    /// The fewest words a wrapped paragraph's last line may have (#1721):
+    /// one short of it, the line above gives it its last words, where
+    /// they fit. 0 and 1 leave the lines as they break.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub min_last_words: u8,
 }
 
 /// A list's look (#1721): the marker before each paragraph that has
@@ -2716,6 +2721,7 @@ impl Paragraph {
             indent_first: key(&self.indent_first_keyframes, self.indent_first).max(-start),
             tabs: self.tabs.clone(),
             list: self.list.clone(),
+            min_last_words: self.min_last_words,
             ..Paragraph::default()
         }
     }

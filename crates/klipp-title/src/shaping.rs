@@ -217,6 +217,8 @@ pub(crate) struct Paragraphs {
     /// stops past them (#1721).
     pub(crate) tabs: Vec<(f32, klipp_timeline::TabAlign)>,
     pub(crate) tab_step: f32,
+    /// The fewest words a wrapped paragraph's last line may have (#1721).
+    pub(crate) min_last_words: u8,
 }
 
 impl Paragraphs {
@@ -405,6 +407,7 @@ impl ShapedLayout {
         };
         let mut first_line = true;
         let mut bytes: Vec<usize> = Vec::new();
+        let mut chars: Vec<(char, f32)> = Vec::new();
         let mut starts = Vec::new();
         for &(a, b, px, face) in &self.pieces {
             let advances = shaped_advances(&faces[face], &self.source[a..b], px);
@@ -424,8 +427,12 @@ impl ShapedLayout {
                     start = at_pos;
                 }
                 bytes.push(a + i);
+                chars.push((c, advance));
                 current += advance;
             }
+        }
+        if self.paragraphs.min_last_words > 1 {
+            balance_last_lines(&mut starts, &chars, self.paragraphs.min_last_words as usize, width(false));
         }
         // As source bytes: where the character a line starts with is.
         let end = self.pieces.last().map_or(0, |p| p.1);
@@ -718,6 +725,39 @@ fn set_tabs(glyphs: &mut [GlyphPosition], paragraphs: &Paragraphs, first: usize,
         }
     }
     pen + moved
+}
+
+/// Give each wrapped paragraph's last line at least `min_words` words
+/// (#1721): where it has fewer, it starts that many words earlier on the
+/// line above, if the line still fits `width` and the line above keeps a
+/// word. `starts` are the characters soft-broken lines start at, in
+/// order; `chars` every character with its advance.
+fn balance_last_lines(starts: &mut [usize], chars: &[(char, f32)], min_words: usize, width: f32) {
+    let space = |i: usize| chars[i].0.is_whitespace();
+    let words = |from: usize, to: usize| (from..to).filter(|&i| !space(i) && (i == from || space(i - 1))).count();
+    for k in 0..starts.len() {
+        let s = starts[k];
+        // The paragraph's end: its line break, or the text's end.
+        let end = (s..chars.len()).find(|&i| chars[i].0 == '\n').unwrap_or(chars.len());
+        if starts.get(k + 1).is_some_and(|&n| n < end) {
+            continue;
+        }
+        let have = words(s, end);
+        if have == 0 || have >= min_words {
+            continue;
+        }
+        // Where the line above starts: the previous soft break in the
+        // paragraph, or the paragraph's start.
+        let para = (0..s).rev().find(|&i| chars[i].0 == '\n').map_or(0, |i| i + 1);
+        let above = if k > 0 && starts[k - 1] >= para { starts[k - 1] } else { para };
+        let word_starts: Vec<usize> = (above + 1..s).filter(|&i| !space(i) && space(i - 1)).collect();
+        let Some(&from) = word_starts.iter().rev().nth(min_words - have - 1).or(word_starts.first()) else { continue };
+        let last = (from..end).rev().find(|&i| !space(i)).map_or(from, |i| i + 1);
+        let wide: f32 = chars[from..last].iter().map(|c| c.1).sum();
+        if wide <= width {
+            starts[k] = from;
+        }
+    }
 }
 
 /// The widest of the lines `source` was typed on, set as `pieces`
