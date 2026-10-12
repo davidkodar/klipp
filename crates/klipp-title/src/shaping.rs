@@ -204,13 +204,33 @@ pub(crate) struct Line {
 /// A layout's paragraph settings in its pixels (#1721): each line's
 /// indents from the box's start and end edges, a paragraph's first
 /// line's past the start's, and the space between paragraphs.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Paragraphs {
     pub(crate) start: f32,
     pub(crate) end: f32,
     pub(crate) first: f32,
     pub(crate) before: f32,
     pub(crate) after: f32,
+    /// Tab stops from the start indent, in order, and the step of the
+    /// stops past them (#1721).
+    pub(crate) tabs: Vec<(f32, klipp_timeline::TabAlign)>,
+    pub(crate) tab_step: f32,
+}
+
+impl Paragraphs {
+    /// The stop a tab at `x` (from the start indent) moves to: the first
+    /// set past it; else the start indent itself, for a first line hung
+    /// out of it; else the next of the stops every `tab_step`.
+    fn stop_after(&self, x: f32) -> (f32, klipp_timeline::TabAlign) {
+        if let Some(&stop) = self.tabs.iter().find(|(at, _)| *at > x + 0.5) {
+            return stop;
+        }
+        if x < -0.5 {
+            return (0.0, klipp_timeline::TabAlign::Left);
+        }
+        let step = self.tab_step.max(1.0);
+        (((x + 0.5) / step).floor() * step + step, klipp_timeline::TabAlign::Left)
+    }
 }
 
 /// A piece of the text appended to a layout: where in the source text
@@ -294,7 +314,7 @@ impl ShapedLayout {
     /// paragraph's indents, the first line's its own, the start edge
     /// the right in right-to-left text.
     fn pads(&self, first_line: bool) -> (f32, f32) {
-        let p = self.paragraphs;
+        let p = &self.paragraphs;
         let start = p.start + if first_line { p.first } else { 0.0 };
         if self.rtl { (p.end, start) } else { (start, p.end) }
     }
@@ -486,7 +506,7 @@ impl ShapedLayout {
                         idx += 1;
                         continue;
                     }
-                    hard_break = true;
+                    hard_break |= laid[idx].parent == '\n';
                     let level = levels.as_ref().map_or(0, |(_, p)| *p);
                     segments.push(Segment { from: idx, to: idx + 1, level, control: true });
                     idx += 1;
@@ -526,6 +546,12 @@ impl ShapedLayout {
                 let face = &faces[piece.face];
                 set_run(face, piece, from, to, s.level % 2 == 1, line.baseline_y, &mut pen, &laid[s.from..s.to], &mut self.glyphs);
                 self.glyph_rtl.resize(self.glyphs.len(), s.level % 2 == 1);
+            }
+            // What follows each tab to its stop (#1721), measured from the
+            // start indent: a first line's own indent is its offset from it.
+            if !self.rtl {
+                let from_indent = if first_line { self.paragraphs.first } else { 0.0 };
+                pen = set_tabs(&mut self.glyphs, &self.paragraphs, first, pen, from_indent);
             }
             let x = self.settings.x + left + ((max_width - left - right - pen) * align).floor();
             for g in &mut self.glyphs[first..] {
@@ -655,6 +681,41 @@ fn shaped_advances(face: &Face, text: &str, px: f32) -> Vec<f32> {
         }
     }
     out
+}
+
+/// Move what follows each tab on the line whose glyphs start at
+/// `first` to its stop (#1721), the line laid from 0 and `pen` wide,
+/// its start `from_indent` past the start indent: each tab's text up
+/// to the next tab starts, centres, ends or puts its decimal point
+/// on the stop, never moving left. The line's new width.
+fn set_tabs(glyphs: &mut [GlyphPosition], paragraphs: &Paragraphs, first: usize, pen: f32, from_indent: f32) -> f32 {
+    use klipp_timeline::TabAlign;
+    let tabs: Vec<usize> = (first..glyphs.len()).filter(|&i| glyphs[i].parent == '\t').collect();
+    let mut moved = 0.0f32;
+    for (k, &t) in tabs.iter().enumerate() {
+        let next = tabs.get(k + 1).copied();
+        let start = glyphs[t].x;
+        let end = next.map_or(pen + moved, |n| glyphs[n].x);
+        let width = (end - start).max(0.0);
+        let (stop, align) = paragraphs.stop_after(start + from_indent);
+        let stop = stop - from_indent;
+        let field = t + 1..next.unwrap_or(glyphs.len());
+        let point = field.clone().find(|&i| glyphs[i].parent == '.').map(|i| glyphs[i].x - start);
+        let target = match align {
+            TabAlign::Left => stop,
+            TabAlign::Center => stop - width * 0.5,
+            TabAlign::Right => stop - width,
+            TabAlign::Decimal => point.map_or(stop - width, |d| stop - d),
+        };
+        let shift = (target - start).max(0.0).round();
+        if shift > 0.0 {
+            for g in &mut glyphs[t + 1..] {
+                g.x += shift;
+            }
+            moved += shift;
+        }
+    }
+    pen + moved
 }
 
 /// The widest of the lines `source` was typed on, set as `pieces`

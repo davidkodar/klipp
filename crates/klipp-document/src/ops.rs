@@ -396,10 +396,13 @@ pub struct MaskLayer {
 /// when given, in pixels at 1080p: `space_before` above a paragraph and
 /// `space_after` below it, `indent` every line in from the start edge
 /// and `indent_end` from the end, `first_indent` a paragraph's first
-/// line past `indent` (below 0 it hangs out, as far as the box's edge).
+/// line past `indent` (below 0 it hangs out, as far as the box's edge),
+/// `tabs` the tab stops in place of the box's (`[]` clears them).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ParagraphSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tabs: Option<Vec<TabSpec>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space_before: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -410,6 +413,16 @@ pub struct ParagraphSpec {
     pub indent_end: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_indent: Option<f32>,
+}
+
+/// A tab stop (#1721): `at` pixels at 1080p from the start indent, and
+/// `align` left (the default), center, right or decimal.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TabSpec {
+    pub at: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub align: Option<String>,
 }
 
 /// A value at a time from the title's start.
@@ -7748,6 +7761,7 @@ struct Typesetting {
     valign: Option<klipp_timeline::TextVerticalAlign>,
     fit: Option<klipp_timeline::TextFit>,
     paragraph: Option<ParagraphSpec>,
+    tabs: Option<Vec<klipp_timeline::TabStop>>,
     underline: Option<bool>,
     runs: Option<Vec<(RunSpec, Option<[u8; 4]>)>>,
     /// Animators in place of the text's; `Some(vec![])` clears them.
@@ -8367,6 +8381,33 @@ fn paragraph_spec(p: &ParagraphSpec, i: usize) -> Result<ParagraphSpec, Refusal>
     Ok(p.clone())
 }
 
+/// Tab stops checked (#1721): at most 32, each 0 to 4000 px with an
+/// alignment that is one, in order.
+fn tab_stops(tabs: &[TabSpec], i: usize) -> Result<Vec<klipp_timeline::TabStop>, Refusal> {
+    use klipp_timeline::{TabAlign, TabStop};
+    if tabs.len() > 32 {
+        return Err(refuse(i, format!("{} tab stops", tabs.len()), "give at most 32 tab stops"));
+    }
+    let mut out = tabs
+        .iter()
+        .map(|t| {
+            if !t.at.is_finite() || !(0.0..=4000.0).contains(&t.at) {
+                return Err(refuse(i, format!("a tab stop at {} is out of range", t.at), "give each stop's at from 0 to 4000 pixels at 1080p"));
+            }
+            let align = match t.align.as_deref().map(str::to_lowercase).as_deref() {
+                None | Some("left") => TabAlign::Left,
+                Some("center") | Some("centre") => TabAlign::Center,
+                Some("right") => TabAlign::Right,
+                Some("decimal") => TabAlign::Decimal,
+                Some(other) => return Err(refuse(i, format!("\"{other}\" is not a tab alignment"), "use left, center, right or decimal")),
+            };
+            Ok(TabStop { at: t.at, align })
+        })
+        .collect::<Result<Vec<_>, Refusal>>()?;
+    out.sort_by(|a, b| a.at.total_cmp(&b.at));
+    Ok(out)
+}
+
 /// A [`Typeset`]'s fit and minimum size, checked: a minimum is only
 /// for a shrinking text.
 fn text_fit(t: &Typeset, i: usize) -> Result<Option<klipp_timeline::TextFit>, Refusal> {
@@ -8446,6 +8487,7 @@ fn typesetting(t: &Typeset, i: usize) -> Result<Typesetting, Refusal> {
             .transpose()?,
         fit: text_fit(t, i)?,
         paragraph: t.paragraph.as_ref().map(|p| paragraph_spec(p, i)).transpose()?,
+        tabs: t.paragraph.as_ref().and_then(|p| p.tabs.as_deref()).map(|tabs| tab_stops(tabs, i)).transpose()?,
         underline: t.underline,
         runs,
         animators,
@@ -8518,6 +8560,9 @@ fn set_type(tb: &mut klipp_timeline::TextBox, t: &Typesetting) -> Result<(), Str
                 *field = v;
             }
         }
+    }
+    if let Some(tabs) = &t.tabs {
+        tb.paragraph.tabs = tabs.clone();
     }
     if let Some(u) = t.underline {
         tb.underline = u;
@@ -12494,6 +12539,32 @@ mod tests {
         let r = bad(r##"[{"op":"title","text":"Hi","at":{"secs":1.0},"paragraph":{"indent":-5}}]"##);
         assert!(r.why.contains("paragraph indent -5 is out of range") && r.hint.contains("from 0 to 2000"), "{} / {}", r.why, r.hint);
         assert!(serde_json::from_str::<Vec<Op>>(r##"[{"op":"title","text":"Hi","at":{"secs":1.0},"paragraph":{"leading":5}}]"##).is_err(), "an unknown paragraph field");
+    }
+
+    /// #1721: a title's tab stops are set in order, an alignment left
+    /// out is left, `[]` clears them, and bad stops are refused.
+    #[test]
+    fn a_titles_tab_stops_are_set_in_order() {
+        use klipp_timeline::{TabAlign, TabStop};
+        let (seq, pool, _, _, _) = fixture();
+        let tabs_of = |c: &Clip| {
+            let klipp_timeline::TitleObjectContent::TextBox(tb) = &c.title_data().unwrap().objects[0].content else { panic!("text") };
+            tb.paragraph.tabs.clone()
+        };
+        let ops: Vec<Op> = serde_json::from_str(r##"[
+            {"op":"title","text":"Item\t12.50","at":{"secs":1.0},"secs":3.0,"paragraph":{"tabs":[{"at":600,"align":"decimal"},{"at":200}]}},
+            {"op":"title","text":"Plain","at":{"secs":5.0},"secs":2.0,"paragraph":{"tabs":[]}}
+        ]"##).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
+        assert_eq!(tabs_of(clip), vec![TabStop { at: 200.0, align: TabAlign::Left }, TabStop { at: 600.0, align: TabAlign::Decimal }]);
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[1].edit else { panic!() };
+        assert!(tabs_of(clip).is_empty());
+        let bad = |json: &str| resolve(&seq, &pool, &serde_json::from_str::<Vec<Op>>(json).unwrap()).unwrap_err();
+        let r = bad(r##"[{"op":"title","text":"Hi","at":{"secs":1.0},"paragraph":{"tabs":[{"at":100,"align":"justify"}]}}]"##);
+        assert!(r.why.contains("\"justify\" is not a tab alignment") && r.hint.contains("decimal"), "{}", r.why);
+        let r = bad(r##"[{"op":"title","text":"Hi","at":{"secs":1.0},"paragraph":{"tabs":[{"at":-3}]}}]"##);
+        assert!(r.why.contains("out of range"), "{}", r.why);
     }
 
     /// #1722: a title's box is set to shrink to fit, down to a minimum,

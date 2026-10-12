@@ -2562,6 +2562,35 @@ pub struct Paragraph {
     pub indent_end_keyframes: Vec<klipp_core::Keyframe>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub indent_first_keyframes: Vec<klipp_core::Keyframe>,
+    /// Where a tab in the text moves what follows it (#1721), in order
+    /// from the start indent, pixels at 1080p. Past the last, a stop
+    /// falls every two ems.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tabs: Vec<TabStop>,
+}
+
+/// A tab stop (#1721): `at` pixels at 1080p from the start indent, and
+/// which part of the text after the tab lands there.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct TabStop {
+    pub at: f32,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub align: TabAlign,
+}
+
+/// Which part of a tab's text sits on its stop.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum TabAlign {
+    /// The text starts at the stop.
+    #[default]
+    Left,
+    /// The text is centred on the stop.
+    Center,
+    /// The text ends at the stop.
+    Right,
+    /// The text's decimal point is on the stop; a number without one
+    /// ends there.
+    Decimal,
 }
 
 impl Paragraph {
@@ -2577,6 +2606,7 @@ impl Paragraph {
             indent_start: start,
             indent_end: key(&self.indent_end_keyframes, self.indent_end).max(0.0),
             indent_first: key(&self.indent_first_keyframes, self.indent_first).max(-start),
+            tabs: self.tabs.clone(),
             ..Paragraph::default()
         }
     }
