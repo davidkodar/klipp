@@ -715,8 +715,8 @@ pub fn download_dir() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    /// #1573: a phrase that matches nothing falls back to shorter runs
-    /// of its first words, longest first.
+    /// #1570: a no-derivatives licence forbids editing the music, as an
+    /// editor does; the other Creative Commons licences don't.
     #[test]
     fn no_derivatives_licences_forbid_edits() {
         assert!(super::forbids_edits("CC BY-ND"));
@@ -726,6 +726,8 @@ mod tests {
         assert!(!super::forbids_edits("CC BY 4.0"));
     }
 
+    /// #1573: a phrase that matches nothing falls back to shorter runs
+    /// of its first words, longest first.
     #[test]
     fn a_phrase_falls_back_to_fewer_words() {
         assert_eq!(super::sfx_attempts("reverse cymbal swell"), vec!["reverse cymbal swell", "reverse cymbal", "reverse"]);
