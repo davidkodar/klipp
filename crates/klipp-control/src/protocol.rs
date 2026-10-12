@@ -825,6 +825,10 @@ pub enum ControlCommand {
         /// out, they are, which is what the app's own export does.
         #[serde(default)]
         burn_captions: Option<bool>,
+        /// The subtitle track as CEA-608 closed captions inside the video
+        /// stream (#1663), as broadcast deliveries want; h264 and hevc.
+        #[serde(default)]
+        captions_608: Option<bool>,
         /// One of the app's built-in export presets, by name ("ProRes 422",
         /// "YouTube 4K", ...) or id: its codecs, size, quality and
         /// loudness, under any field given here as well (#1583). The

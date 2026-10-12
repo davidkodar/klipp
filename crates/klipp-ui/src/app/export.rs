@@ -101,6 +101,9 @@ pub(super) struct ExportDialogState {
     pub(super) video_bitrate_kbps: u32,
     pub(super) burn_in_subtitles: bool,
     pub(super) embed_subtitles: bool,
+    /// Carry the subtitle track as CEA-608 captions in the video stream
+    /// (#1663); H.264 and H.265 only.
+    pub(super) captions_608: bool,
     /// Write sequence markers as chapter metadata in the output container
     /// (MP4/MKV/MOV only — ignored for WebM). Opt-in; default false.
     pub(super) embed_chapters: bool,
@@ -152,6 +155,7 @@ impl Default for ExportDialogState {
             video_bitrate_kbps: 10000,
             burn_in_subtitles: true,
             embed_subtitles: false,
+            captions_608: false,
             embed_chapters: false,
             normalize_loudness: false,
             loudness_preset: 0,
@@ -418,6 +422,7 @@ pub(super) fn build_export_settings(
         target_lufs: dialog_target_lufs(dialog),
         true_peak_dbtp: dialog_true_peak(dialog),
         embed_chapters: dialog.embed_chapters,
+        captions_608: dialog.captions_608 && matches!(dialog.video_codec, klipp_core::ExportVideoCodec::H264 | klipp_core::ExportVideoCodec::H265),
         bit_depth: dialog.bit_depth,
         hdr_mode: dialog.hdr_mode,
         tone_map_op: dialog.tone_map_op,
@@ -1617,6 +1622,13 @@ impl KlippApp {
                             &mut self.export_dialog.embed_subtitles,
                             "Embed subtitles as soft track",
                         );
+                    });
+                    // Captions in the picture's own stream (#1663): the
+                    // A/53 data broadcast chains read, H.264 and H.265.
+                    let carries_608 = matches!(self.export_dialog.video_codec, klipp_core::ExportVideoCodec::H264 | klipp_core::ExportVideoCodec::H265);
+                    ui.add_enabled_ui(carries_608, |ui| {
+                        ui.checkbox(&mut self.export_dialog.captions_608, "Closed captions in the video (CEA-608)")
+                            .on_hover_text("Carry the subtitle track as CEA-608 closed captions inside the video stream, as broadcast and some streaming deliveries want. H.264 and H.265 only.");
                     });
                     if self.export_dialog.embed_subtitles
                         && matches!(self.export_dialog.format, klipp_core::ExportFormat::WebM)

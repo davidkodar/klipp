@@ -8,6 +8,8 @@
 // per file here.
 #![allow(clippy::duplicate_mod)]
 
+#[path = "../captions_608_export.rs"]
+mod captions_608_export;
 #[path = "../clip_sources_reads_the_media.rs"]
 mod clip_sources_reads_the_media;
 #[path = "../export_audio_plays_the_whole_source.rs"]

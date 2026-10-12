@@ -893,7 +893,7 @@ mod tests {
                 preset: klipp_core::EncoderPreset::Fast,
                 audio_codec: klipp_core::ExportAudioCodec::Copy,
                 audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
-                burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, true_peak_dbtp: None, embed_chapters: false,
+                burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, true_peak_dbtp: None, embed_chapters: false, captions_608: false,
                 bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable,
                 odt: klipp_core::OdtChoice::MatchViewer,
                 mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS },

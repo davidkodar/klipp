@@ -69,6 +69,9 @@ pub struct Encoder {
     light_stats: LightLevelStats,
     /// The mastering display's peak, cd/m², for the HDR10 side data.
     hdr_peak_nits: f32,
+    /// The subtitle track as CEA-608 captions in the video stream
+    /// (#1663), when the export carries them.
+    captions: Option<crate::a53::Captions>,
     /// Linear picture → display-encoded RGB, per pixel: the viewer's
     /// transform, an ACES output transform, or an HDR delivery's PQ/HLG
     /// encode. Fixed at `open()` from the settings and the project's
@@ -322,6 +325,32 @@ impl FrameLight {
 /// A PQ signal's light, cd/m².
 fn pq_light(signal: f32) -> f32 {
     klipp_color::hdr::pq_decode_nits(signal)
+}
+
+/// The captions an export carries in its video stream (#1663): its first
+/// subtitle track as CEA-608 CC1, timed from the export's first frame,
+/// when the settings ask and the codec is H.264 or H.265.
+fn captions_608(settings: &ExportSettings, snapshot: &SequenceSnapshot) -> Option<crate::a53::Captions> {
+    let codec = match settings.video_codec {
+        ExportVideoCodec::H264 => crate::a53::Codec::H264,
+        ExportVideoCodec::H265 => crate::a53::Codec::Hevc,
+        _ => return None,
+    };
+    let track = snapshot.subtitle_tracks.first().filter(|_| settings.captions_608)?;
+    let (fps, start) = (snapshot.fps.max(1.0), snapshot.start_frame());
+    let cues: Vec<klipp_captions::SubtitleEntry> = track
+        .clips
+        .iter()
+        .filter(|c| c.timeline_end_frame > start)
+        .map(|c| klipp_captions::SubtitleEntry {
+            start_secs: c.timeline_start_frame.saturating_sub(start) as f64 / fps,
+            end_secs: (c.timeline_end_frame - start) as f64 / fps,
+            text: c.text.clone(),
+            spans: Vec::new(),
+            placement: Default::default(),
+        })
+        .collect();
+    Some(crate::a53::Captions::new(klipp_captions::scc::cc1_pairs(&cues), fps, codec))
 }
 
 /// The per-pixel display transform an export with these settings writes.
@@ -1044,6 +1073,7 @@ impl Encoder {
             hdr_mode: settings.delivery(),
             light_stats: LightLevelStats::new(),
             hdr_peak_nits: settings.hdr_peak_nits(),
+            captions: captions_608(settings, snapshot),
             display: export_display(settings, snapshot.working_colorspace),
             gif_filter: if matches!(settings.format, ExportFormat::Gif) {
                 let fps_den = (snapshot.fps.max(1.0).round() as u32).max(1);
@@ -1777,6 +1807,17 @@ impl Encoder {
             if packet.duration() == 0 {
                 packet.set_duration(1);
             }
+            // Its picture's captions, by its presentation time: a frame
+            // a tick (#1663).
+            if let (Some(captions), Some(pts), Some(data)) = (&self.captions, packet.pts(), packet.data()) {
+                let mut with = ffmpeg_next::Packet::copy(&captions.insert(data, pts.max(0) as u64));
+                with.set_stream(self.video_stream_idx);
+                with.set_pts(packet.pts());
+                with.set_dts(packet.dts());
+                with.set_duration(packet.duration());
+                with.set_flags(packet.flags());
+                packet = with;
+            }
             packet.rescale_ts(
                 self.video_time_base,
                 self.output_ctx
@@ -2052,7 +2093,7 @@ mod tests {
             preset: EncoderPreset::Fast,
             audio_codec: ExportAudioCodec::Aac,
             audio_bitrate_kbps: Some(128), video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
-            burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, true_peak_dbtp: None, embed_chapters: false,
+            burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, true_peak_dbtp: None, embed_chapters: false, captions_608: false,
             bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable,
             odt: klipp_core::OdtChoice::MatchViewer,
             mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS }

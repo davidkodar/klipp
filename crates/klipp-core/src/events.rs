@@ -332,6 +332,12 @@ pub struct ExportSettings {
     /// Embed sequence markers as chapter metadata in the output container.
     /// Only honoured for MP4/MKV/MOV — WebM has no chapter concept.
     pub embed_chapters: bool,
+    /// Carry the subtitle track as CEA-608 captions inside the video
+    /// stream (#1663): ATSC A/53 caption data before each picture, which
+    /// broadcast and some streaming deliveries read without a sidecar.
+    /// H.264 and H.265 only.
+    #[serde(default)]
+    pub captions_608: bool,
     /// Requested encoder bit depth. `0` = codec default (8-bit); `10` enables
     /// 10-bit encode for H.264/H.265. Other codecs ignore this (ProRes is
     /// always 10-bit, DNxHD is 8-bit). #65 baseline.
@@ -401,6 +407,7 @@ impl Default for ExportSettings {
             target_lufs: None,
             true_peak_dbtp: None,
             embed_chapters: false,
+            captions_608: false,
             bit_depth: 0,
             hdr_mode: HdrMode::default(),
             tone_map_op: ToneMapOp::default(),
