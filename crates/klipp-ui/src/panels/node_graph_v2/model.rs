@@ -58,6 +58,10 @@ pub(super) trait CanvasGraph {
     fn signal_role(&self, node: NodeId, port: u8) -> PortRole;
     fn add_menu(&self) -> &[MenuCategory];
     fn command(&self, command: AppCommand) -> Option<AppCommand>;
+    /// Why `command` can't be made here, when it can't and the person
+    /// asked for it (#1743): shown on the canvas, so a pick never does
+    /// nothing in silence.
+    fn refusal(&self, _command: &AppCommand) -> Option<String> { None }
     fn thumbnail_output(&self, clip: klipp_core::ClipId, node: NodeId, descent: &[NodeId]) -> Option<klipp_compose::InspectAt> {
         let mut at = klipp_compose::inspect::grade_node(clip, node);
         at.path.nodes.splice(1..1, descent.iter().copied());

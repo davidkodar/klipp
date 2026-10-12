@@ -261,6 +261,9 @@ pub struct NodeGraphV2Panel {
     /// Per-node context menu — opened on right-click on a node.
     /// `(node_id, screen_pos)`; cleared on close.
     node_menu: Option<(NodeId, egui::Pos2)>,
+    /// The pass a node, note or frame menu was opened on: the right
+    /// click that opened it is not a click outside it (#1743; the note
+    /// and frame menus closed as they opened without it).
     node_menu_opened_frame: u64,
     /// Cleared on first paint of a new clip (or when `view_dirty`
     /// is set explicitly). Triggers a one-shot fit-to-view so the
@@ -373,6 +376,10 @@ pub struct NodeGraphV2Panel {
     /// focused panel (#1742). On by default, as a canvas drawn alone has
     /// them.
     pub grade_keys: bool,
+    /// The node soloed in the engine, for the picture canvas to mark
+    /// with its halo, chip and Clear solo (#1743); the app sets it before
+    /// each draw, as it hands the grade canvas its solo.
+    pub picture_solo: Option<NodeId>,
 }
 
 impl Default for NodeGraphV2Panel {
@@ -424,6 +431,7 @@ impl Default for NodeGraphV2Panel {
             thumb_clipping_overlays: std::collections::HashMap::new(),
             thumb_histograms: std::collections::HashMap::new(),
             grade_keys: true,
+            picture_solo: None,
         }
     }
 }
@@ -554,6 +562,7 @@ impl NodeGraphV2Panel {
         if self.last_picture_level.as_ref() != Some(level) || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.drag_node = None;
             self.drag_frame = None;
+            self.drag_sticky = None;
             if let Some(root) = self.picture_move_root.take() { cmds.push(AppCommand::AbandonNodeLayoutEdit { root }); }
         }
         if self.last_picture_level.as_ref() != Some(level) {
@@ -572,15 +581,18 @@ impl NodeGraphV2Panel {
         }
         let updates = self.show_canvas(ui, selected_node, selected_set, &graph, clip.id, theme,
             engine_node_thumbs, engine_node_thumbs_gen, deferred_drops, &mut level.nodes, &labels, None, None,
-            clip_time_secs, false, 0.0, None);
+            clip_time_secs, false, 0.0, self.picture_solo);
         // A click without movement must not create an undo entry. Begin
-        // only when the first position update is about to be dispatched.
-        if self.picture_move_root.is_none() && updates.iter().any(|cmd| matches!(cmd, AppCommand::SetNodePositionAt { .. })) {
+        // only when the first position update is about to be dispatched:
+        // a node's, or a note's (#1743).
+        let moves = |cmd: &AppCommand| matches!(cmd, AppCommand::SetNodePositionAt { .. })
+            || matches!(cmd, AppCommand::SetAnnotationsAt { label, .. } if *label == picture::MOVE_NOTE);
+        if self.picture_move_root.is_none() && updates.iter().any(moves) {
             self.picture_move_root = Some(level.root);
             cmds.push(AppCommand::BeginNodeLayoutEdit { root: level.root });
         }
         cmds.extend(updates);
-        if self.drag_node.is_none() && self.drag_frame.is_none() {
+        if self.drag_node.is_none() && self.drag_frame.is_none() && self.drag_sticky.is_none() {
             if let Some(root) = self.picture_move_root.take() { cmds.push(AppCommand::EndNodeLayoutEdit { root }); }
         }
         Ok(cmds)
@@ -727,7 +739,7 @@ impl NodeGraphV2Panel {
 
         // ── Group 3: annotate ──
         // Sticky-note creation at the canvas viewport centre.
-        if graph.grade_tools() && toolbar_ui.add(mutating_button(egui::RichText::new("\u{1F4DD} Note")))
+        if toolbar_ui.add(mutating_button(egui::RichText::new("\u{1F4DD} Note")))
             .on_hover_text("Add a sticky note at the canvas centre")
             .clicked()
         {
@@ -3007,11 +3019,13 @@ impl NodeGraphV2Panel {
                             self.sticky_menu = None;
                         } else if let Some(sid) = on_sticky {
                             self.sticky_menu = Some((sid, p));
+                            self.node_menu_opened_frame = frame_nr;
                             self.add_menu_open = false;
                             self.node_menu = None;
                             self.frame_menu = None;
                         } else if let Some(fid) = on_frame {
                             self.frame_menu = Some((fid, p));
+                            self.node_menu_opened_frame = frame_nr;
                             self.add_menu_open = false;
                             self.node_menu = None;
                             self.sticky_menu = None;
@@ -3409,7 +3423,17 @@ impl NodeGraphV2Panel {
             }
         }
 
-        cmds.into_iter().filter_map(|command| graph.command(command)).collect()
+        let mut made = Vec::with_capacity(cmds.len());
+        for command in cmds {
+            let refused = graph.refusal(&command);
+            match graph.command(command) {
+                Some(command) => made.push(command),
+                None => if let Some(why) = refused {
+                    self.bookmark_toast = Some((why, std::time::Instant::now()));
+                },
+            }
+        }
+        made
     }
 
     /// Compute zoom + pan that frames every node in the graph
@@ -3955,7 +3979,7 @@ impl NodeGraphV2Panel {
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
                 });
             });
-        if area_resp.response.clicked_elsewhere() { close = true; }
+        if ui.ctx().cumulative_pass_nr() != self.node_menu_opened_frame && area_resp.response.clicked_elsewhere() { close = true; }
         if close { self.frame_menu = None; }
     }
 
@@ -4083,7 +4107,7 @@ impl NodeGraphV2Panel {
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
                 });
             });
-        if area_resp.response.clicked_elsewhere() { close = true; }
+        if ui.ctx().cumulative_pass_nr() != self.node_menu_opened_frame && area_resp.response.clicked_elsewhere() { close = true; }
         if close { self.sticky_menu = None; }
     }
 
@@ -4285,12 +4309,14 @@ impl NodeGraphV2Panel {
                     // selection's external-edge shape and rejects
                     // gracefully (toast) if the v1 single-port
                     // restriction would be violated.
-                    if graph.grade_tools() && !is_structural && in_set && selected_set.len() >= 2 {
+                    // A frame is the canvas's own, on the picture as on
+                    // the grade (#1743); a compound is the grade's.
+                    if !is_structural && in_set && selected_set.len() >= 2 {
                         let label = format!(
                             "Group {} into Compound",
                             selected_set.len(),
                         );
-                        if ui.button(label).clicked() {
+                        if graph.grade_tools() && ui.button(label).clicked() {
                             cmds.push(AppCommand::GroupIntoCompound {
                                 clip_id,
                                 node_ids: selected_set.iter().copied().collect(),

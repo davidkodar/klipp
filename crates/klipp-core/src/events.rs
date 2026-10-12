@@ -1071,6 +1071,10 @@ pub enum AppCommand {
     EndNodeLayoutEdit { root: klipp_graph_format::path::Root },
     AbandonNodeLayoutEdit { root: klipp_graph_format::path::Root },
     SetNodePositionAt { addr: klipp_graph_format::path::NodePath, position: (f32, f32) },
+    /// The frames and sticky notes on the node editor's canvas at the
+    /// level of the node `at` names, set whole, as one step named `label`
+    /// (#1743); a note's move inside a layout gesture is the gesture's.
+    SetAnnotationsAt { at: klipp_graph_format::path::NodePath, frames: Vec<serde_json::Value>, sticky_notes: Vec<serde_json::Value>, label: &'static str },
     // Transport
     Play,
     Pause,

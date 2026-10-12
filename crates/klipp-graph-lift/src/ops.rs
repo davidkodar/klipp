@@ -584,6 +584,11 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn
                 g.ui.positions.insert(target, position.clone());
             }
         }
+        GraphOp::SetAnnotations { frames, sticky_notes, .. } => {
+            find(g, target)?;
+            g.ui.frames = frames.clone();
+            g.ui.sticky_notes = sticky_notes.clone();
+        }
         GraphOp::AddKeyAt { .. } | GraphOp::RemoveKeyAt { .. } | GraphOp::SetAnim { .. } => {
             let at = find(g, target)?;
             if matches!(g.nodes[at].type_id.as_str(), types::LEGACY_NODE | lt::MERGE) {
@@ -678,6 +683,7 @@ fn apply_list(list: &mut Vec<Node>, op: &GraphOp, target: NodeId, catalog: Optio
         }
         GraphOp::Connect { .. } | GraphOp::Disconnect { .. } | GraphOp::PublishOutput { .. } | GraphOp::Unpublish { .. } | GraphOp::SetMaskChannel { .. } | GraphOp::AddNodeBeside { .. } => return Err("a track's effects are a list, with nothing to wire".into()),
         GraphOp::Group { .. } | GraphOp::Ungroup { .. } => return Err("a track's effects are a list, with no compound".into()),
+        GraphOp::SetAnnotations { .. } => return Err("a track's effects are a list, with no canvas to annotate".into()),
     }
     Ok(())
 }

@@ -43,6 +43,10 @@ pub enum GraphOp {
     /// Name a node, or place it in the node editor: what the editor shows,
     /// never the picture. `None` leaves that part as it is.
     SetNodeMeta { path: NodePath, label: Option<String>, position: Option<Value> },
+    /// Set the frames and sticky notes drawn on the node editor's canvas
+    /// at the level of the node `path` names, each list whole (#1743):
+    /// what the editor shows, never the picture.
+    SetAnnotations { path: NodePath, frames: Vec<Value>, sticky_notes: Vec<Value> },
     /// Put `keyframe` on a parameter's animation, in time order, replacing
     /// a key at the same time. Stored as the keyframe's own JSON (time,
     /// value, interpolation, tangents), which the renderer reads typed.
@@ -81,6 +85,7 @@ impl GraphOp {
             | Self::SetMaskChannel { path, .. }
             | Self::MoveAfter { path, .. }
             | Self::SetNodeMeta { path, .. }
+            | Self::SetAnnotations { path, .. }
             | Self::AddKeyAt { path, .. }
             | Self::RemoveKeyAt { path, .. }
             | Self::SetAnim { path, .. }

@@ -189,7 +189,7 @@ const GRADE_MIX_NOT_COPIED: &str = "A grade with a correction's mix or mask chan
 /// `#d4c89a`. Single value in v1; a future right-click recolour
 /// menu would route through SetStickyNoteColor (not yet shipped).
 /// Stored packed RGBA u32 (little-endian: r, g, b, a).
-const STICKY_DEFAULT_COLOR_RGBA: u32 = u32::from_le_bytes([0xd4, 0xc8, 0x9a, 0xff]);
+pub(crate) const STICKY_DEFAULT_COLOR_RGBA: u32 = u32::from_le_bytes([0xd4, 0xc8, 0x9a, 0xff]);
 
 use crossbeam_queue::ArrayQueue;
 use klipp_media::{MediaItem, ThumbnailEntry};
