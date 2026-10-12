@@ -33,6 +33,7 @@ fn path_titles_round_trip_with_an_explicit_unsupported_reader_tag() {
             kind: ShapeKind::Path(p.clone()),
             fit: None,
             fill: None,
+            gradient: None,
             stroke: None,
         }),
         klipp_timeline::default_text_transform(),

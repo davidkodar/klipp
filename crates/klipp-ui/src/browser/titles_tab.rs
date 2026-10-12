@@ -196,7 +196,7 @@ type Layer = (TitleObjectContent, ObjectTransform, klipp_timeline::LayerFx);
 
 fn rect(x: f32, y: f32, w: f32, h: f32, fill: [u8; 4], radius: f32) -> Layer {
     (
-        TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: radius }, fit: None, fill: Some(fill), stroke: None }),
+        TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: radius }, fit: None, fill: Some(fill), gradient: None, stroke: None }),
         ObjectTransform { center: TitlePosition { x, y }, size: TitlePosition { x: w, y: h }, ..default_text_transform() },
         klipp_timeline::LayerFx::default(),
     )

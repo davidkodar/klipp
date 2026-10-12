@@ -1363,7 +1363,7 @@ fn a_moving_shape_is_smeared_by_the_motion_blur_on_its_layer() {
         let mut xf = klipp_timeline::default_text_transform();
         xf.size = klipp_timeline::TitlePosition { x: 0.25, y: 0.5 };
         let id = td.add_object(
-            klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([255, 255, 255, 255]), stroke: None, fit: None }),
+            klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([255, 255, 255, 255]), gradient: None, stroke: None, fit: None }),
             xf,
         );
         td.object_mut(id).unwrap().fx = Some(klipp_timeline::LayerFx { motion_blur: blur, ..Default::default() });
@@ -2067,7 +2067,7 @@ fn a_still_title_renders_the_same_with_its_motion_blur_on() {
         let mut xf = klipp_timeline::default_text_transform();
         xf.size = klipp_timeline::TitlePosition { x: 0.25, y: 0.5 };
         let id = td.add_object(
-            klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([255, 255, 255, 255]), stroke: None, fit: None }),
+            klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([255, 255, 255, 255]), gradient: None, stroke: None, fit: None }),
             xf,
         );
         let mb = blur.then_some(klipp_timeline::MotionBlur { enabled: true, shutter_angle: 360.0, shutter_angle_keyframes: vec![], samples: 8 });

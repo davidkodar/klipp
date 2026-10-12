@@ -35,6 +35,7 @@ fn revealed_stroke_halo_matches_cpu_and_gpu() {
             klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape {
                 kind: klipp_timeline::ShapeKind::Path(path.clone()),
                 fill: None,
+                gradient: None,
                 stroke: None,
                 fit: None,
             }),

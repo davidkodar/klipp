@@ -14,7 +14,7 @@ fn rect(size: (f32, f32), rotation: f32, anchor: (f32, f32)) -> Vec<u8> {
     xf.size = TitlePosition { x: size.0, y: size.1 };
     xf.rotation = rotation;
     xf.anchor_norm = TitlePosition { x: anchor.0, y: anchor.1 };
-    td.add_object(TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([40, 80, 200, 255]), stroke: None, fit: None }), xf);
+    td.add_object(TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([40, 80, 200, 255]), gradient: None, stroke: None, fit: None }), xf);
     TitleRenderer::new().render(&td, W, H)
 }
 

@@ -398,7 +398,7 @@ fn title_op(t: &PlanTitle, secs: f64, brand: Option<&str>, brief: Option<&Brief>
         track: Some(TrackRef::Kind("text".into())),
         x: Some(t.x.or(look.x).unwrap_or(0.5)), y: Some(t.y.or(look.y).unwrap_or(0.10)), size: look.size, color, font: look.font.clone(), bold: look.bold, align: look.align.clone(),
         backing, backing_color, full_frame, outline: look.outline, outline_color: look.outline_color.clone(),
-        glow: t.glow.or(look.glow), glow_color: t.glow_color.clone().or(look.glow_color.clone()), gradient: t.gradient.clone().or(look.gradient.clone()),
+        glow: t.glow.or(look.glow), glow_color: t.glow_color.clone().or(look.glow_color.clone()), gradient: t.gradient.clone().or(look.gradient.clone()).map(crate::ops::GradientSpec::Pair),
         animate: motion.animate, enter: motion.enter, exit: motion.exit,
         animate_secs: motion.animate_secs, stagger: motion.stagger,
         loop_effect: look.loop_effect.clone(), glitch: None, chromatic: None, roll_shape: None, edge_fade: None,

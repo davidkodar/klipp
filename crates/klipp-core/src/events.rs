@@ -2439,6 +2439,20 @@ pub enum AppCommand {
     SetTitleGlowStackEnabled { clip_id: ClipId, enabled: bool },
     /// Set gradient fill. `enabled=false` = disable, uses solid color instead.
     SetTitleGradient { clip_id: ClipId, enabled: bool, top_color: [u8; 4], bottom_color: [u8; 4] },
+    /// Set a gradient fill of any number of stops, linear at an angle or
+    /// radial (#1509): on the title's text when `object_id` is `None`,
+    /// else on that shape. `stops` has at least two.
+    SetTitleGradientStops {
+        clip_id: ClipId,
+        object_id: Option<u32>,
+        enabled: bool,
+        stops: Vec<crate::fill_gradient::GradientStop>,
+        kind: crate::fill_gradient::GradientKind,
+    },
+    /// A gradient stop or the angle dragged: the steps written between
+    /// the two are one undo step (#1509).
+    BeginTitleGradientDrag { clip_id: ClipId },
+    EndTitleGradientDrag { clip_id: ClipId },
     /// Set multiple outline layers (replaces single outline).
     /// Each tuple is (color_rgba, width_px).
     SetTitleOutlines { clip_id: ClipId, outlines: Vec<([u8; 4], f32)> },

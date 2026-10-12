@@ -425,7 +425,9 @@ exist until the plan runs.
   fields fill every one left out here. `x`, `y`, `size`, `color`,
   `backing`, `outline` and `shadow` read as in `style`; `full_frame` is a solid
   `#rrggbb` card behind everything, `gradient` a two-colour fill
-  (`#top,#bottom`). `animate` is the entrance (fade, rise, drop,
+  (`#top,#bottom`) or `{stops: [[pos 0-1, #rrggbb], ...], angle?}`
+  (degrees, 0 top to bottom, 90 left to right) or `{stops, radial: {x, y, r}}`,
+  2 to 16 stops mixed in linear light (#1509). `animate` is the entrance (fade, rise, drop,
   slide_left, slide_right, scale_up, scale_down, blur, mask_rise,
   mask_drop, typewriter) and `loop` a continuous effect (pulse, flash,
   neon, wave, shake, color_cycle). `size` is pixels at 1080 on the

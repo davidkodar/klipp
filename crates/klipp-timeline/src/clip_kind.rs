@@ -1331,6 +1331,10 @@ impl Default for TextBox {
 pub struct Shape {
     pub kind: ShapeKind,
     pub fill: Option<[u8; 4]>,
+    /// Gradient fill over the shape's box (#1509); in place of `fill`
+    /// when set and enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradient: Option<TextGradient>,
     pub stroke: Option<ShapeStroke>,
     /// Fit to the laid-out bounds of a text layer. Missing or hidden
     /// targets suppress the backing rather than painting a stale box.
@@ -2491,6 +2495,11 @@ impl TextGlow {
     }
 }
 
+/// A gradient fill, on a text or a shape. Saved as two colours, top to
+/// bottom, as it always was; a gradient of more stops, or one at an
+/// angle or radial (#1509), adds `stops` and `kind`. `top_color` and
+/// `bottom_color` always hold the first and the last stop, so whatever
+/// reads or keys the pair still finds the ends.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TextGradient {
     pub top_color: [u8; 4],
@@ -2498,6 +2507,53 @@ pub struct TextGradient {
     /// Soft-disable: see [`TitleShadow::enabled`].
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Every stop in position order, when there are more than the pair
+    /// (#1509). Empty: the two colours above, at 0 and 1.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stops: Vec<crate::GradientStop>,
+    /// Linear at an angle or radial (#1509); top to bottom by default.
+    #[serde(default, skip_serializing_if = "crate::GradientKind::is_default")]
+    pub kind: crate::GradientKind,
+}
+
+impl TextGradient {
+    /// The two-colour gradient, top to bottom.
+    pub fn pair(top_color: [u8; 4], bottom_color: [u8; 4], enabled: bool) -> Self {
+        Self { top_color, bottom_color, enabled, stops: Vec::new(), kind: crate::GradientKind::default() }
+    }
+
+    /// A gradient through `stops` laid out by `kind` (#1509). Two stops
+    /// at 0 and 1 are kept as the pair, so a pair saves as it always
+    /// has; the ends are mirrored into `top_color` and `bottom_color`.
+    pub fn with_stops(stops: &[crate::GradientStop], kind: crate::GradientKind, enabled: bool) -> Self {
+        let mut stops = stops.to_vec();
+        stops.sort_by(|a, b| a.position.total_cmp(&b.position));
+        let first = stops.first().map(|s| s.color).unwrap_or([255; 4]);
+        let last = stops.last().map(|s| s.color).unwrap_or(first);
+        let pair = stops.len() == 2 && stops[0].position == 0.0 && stops[1].position == 1.0;
+        Self { top_color: first, bottom_color: last, enabled, stops: if pair { Vec::new() } else { stops }, kind }
+    }
+
+    /// The gradient as it was before #1509: two colours, top to bottom.
+    /// A text draws it as it always did, mixing the colours row by row
+    /// in sRGB; every other gradient mixes in linear light.
+    pub fn is_pair(&self) -> bool {
+        self.stops.len() < 2 && self.kind.is_default()
+    }
+
+    /// Every stop in position order: `stops`, or the pair at 0 and 1.
+    pub fn stops(&self) -> Vec<crate::GradientStop> {
+        if self.stops.len() >= 2 {
+            let mut stops = self.stops.clone();
+            stops.sort_by(|a, b| a.position.total_cmp(&b.position));
+            stops
+        } else {
+            vec![
+                crate::GradientStop { position: 0.0, color: self.top_color },
+                crate::GradientStop { position: 1.0, color: self.bottom_color },
+            ]
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

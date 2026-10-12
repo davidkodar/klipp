@@ -509,6 +509,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ReorderTitleObjects { .. }
         | AppCommand::BeginTitlePathDrag { .. }
         | AppCommand::EndTitlePathDrag { .. }
+        | AppCommand::BeginTitleGradientDrag { .. }
+        | AppCommand::EndTitleGradientDrag { .. }
         | AppCommand::SetTitleVectorPath { .. }
         | AppCommand::SetTitleShapeFill { .. }
         | AppCommand::SetTitleShapeStroke { .. }
@@ -527,6 +529,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTitleGlowLayer { .. }
         | AppCommand::SetTitleGlowStackEnabled { .. }
         | AppCommand::SetTitleGradient { .. }
+        | AppCommand::SetTitleGradientStops { .. }
         | AppCommand::SetTitleOutlines { .. }
         | AppCommand::SetTitleOutlineLayer { .. }
         | AppCommand::SetTitleOutlineStackEnabled { .. }

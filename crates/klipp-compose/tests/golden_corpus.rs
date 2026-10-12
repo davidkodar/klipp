@@ -978,7 +978,7 @@ fn title_blur_cases() -> Vec<Case> {
         let mut xf = klipp_timeline::default_text_transform();
         xf.size = klipp_timeline::TitlePosition { x: 0.25, y: 0.4 };
         let id = td.add_object(
-            klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([240, 200, 60, 255]), stroke: None, fit: None }),
+            klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([240, 200, 60, 255]), gradient: None, stroke: None, fit: None }),
             xf,
         );
         let blur = klipp_timeline::MotionBlur { enabled: true, shutter_angle: 180.0, shutter_angle_keyframes: vec![], samples: 8 };
