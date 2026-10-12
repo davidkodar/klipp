@@ -166,6 +166,11 @@ impl<'a> PictureCanvas<'a> {
         self.nodes.iter().find(|n| n.node.id == id).filter(|n| !n.kind().is_terminal() && !n.kind().is_group()).map(|n| n.node)
     }
 
+    /// How many wires leave `node`'s output `port` (#1744).
+    fn readers(&self, node: NodeId, port: u8) -> usize {
+        self.edges.iter().filter(|e| e.from_node == node && e.from_port == port).count()
+    }
+
     /// An effect's stored entry as a reset leaves it (#1745); `None` for
     /// a node that is not an effect.
     fn effect_reset(&self, id: NodeId) -> Option<serde_json::Value> {
@@ -307,6 +312,15 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
             AppCommand::DuplicateNodes { node_ids, .. } | AppCommand::CopyNodes { node_ids, .. } if !node_ids.iter().any(|id| self.copyable(*id).is_some()) => {
                 Some("Only a picture's effects are copied here; a group is entered to copy what it holds".to_owned())
             }
+            AppCommand::InsertNodeOnWire { kind, .. } | AppCommand::AddNodeWired { kind, .. } if crate::inspector::stack_view::new_effect_node(kind).is_none() => {
+                Some(format!("{kind} can't go in a picture: it is a grade node"))
+            }
+            AppCommand::InsertNodeOnWire { from, from_port, .. } | AppCommand::SpliceNodeIntoWire { from, from_port, .. } if self.readers(*from, *from_port) != 1 => {
+                Some("That wire's source feeds more than one node: a node goes in after it from its own menu".to_owned())
+            }
+            AppCommand::SpliceNodeIntoWire { node_id, .. } if self.copyable(*node_id).is_none() => {
+                Some("Only an effect moves into a wire here".to_owned())
+            }
             AppCommand::ResetNode { node_id, .. } if self.effect_reset(*node_id).is_none() => {
                 Some("Reset works on an effect here; the grade's nodes reset in the grade".to_owned())
             }
@@ -399,6 +413,29 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
             }
             AppCommand::ResetNode { node_id, .. } => Some(AppCommand::SetPayloadAt { addr: self.path(node_id), payload: self.effect_reset(node_id)? }),
             AppCommand::ShowPanel { .. } => Some(command),
+            // Wiring (#1744): a node into a wire goes after the wire's
+            // source, which this wire alone reads; a wire's end moves by
+            // path, both halves one step.
+            AppCommand::InsertNodeOnWire { kind, position, from, .. } | AppCommand::AddNodeWired { kind, position, from, .. } => {
+                let node = crate::inspector::stack_view::new_effect_node(&kind)?;
+                let path = self.path(node.id);
+                Some(AppCommand::GraphOps { ops: vec![
+                    GraphOp::AddNode { after: self.path(from), node: Box::new(node) },
+                    GraphOp::SetNodeMeta { path, label: None, position: Some(serde_json::json!({"x": position.0, "y": position.1})) },
+                ], label: "Insert node".into() })
+            }
+            AppCommand::SpliceNodeIntoWire { node_id, from, from_port, to, .. } => {
+                (node_id != from && node_id != to && self.readers(from, from_port) == 1).then_some(())?;
+                self.copyable(node_id)?;
+                Some(AppCommand::MoveNodeAt { addr: self.path(node_id), after: from })
+            }
+            AppCommand::ReconnectEdge { to, to_port, new_to, new_to_port, .. } => {
+                let source = self.edges.iter().find(|e| e.to_node == to && e.to_port == to_port)?;
+                Some(AppCommand::GraphOps { ops: vec![
+                    GraphOp::Disconnect { to: self.path(to), port: self.port(to, to_port, false)? },
+                    GraphOp::Connect { from: self.path(source.from_node), from_port: self.port(source.from_node, source.from_port, true)?, to: self.path(new_to), to_port: self.port(new_to, new_to_port, false)? },
+                ], label: "Reconnect wire".into() })
+            }
             AppCommand::SetNodeSolo { at } => Some(AppCommand::SetNodeSolo { at: match at { Some(at) => Some(self.output(at.path.node()?)?), None => None } }),
             AppCommand::SetVisibleNodeThumbs { request, clip_id, at } => Some(AppCommand::SetVisibleNodeThumbs { request, clip_id, at: at.iter().filter_map(|at| self.output(at.path.node()?)).collect() }),
             // Grade-only clipboard and versions have no picture writer
@@ -925,15 +962,19 @@ mod tests {
         sent: Vec<AppCommand>,
         /// The keys held through the frames that follow.
         mods: egui::Modifiers,
+        /// The node cards drawn, at the canvas's zoom.
+        cards: Vec<egui::Rect>,
     }
 
     impl Dock {
         fn new() -> Self {
-            let c = clip();
+            Self::of(clip())
+        }
+        fn of(c: Clip) -> Self {
             let mut state = crate::state::AppState::default();
             state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(c.clone());
             state.selected_clip = Some(c.id);
-            let mut d = Self { ctx: Default::default(), panel: Default::default(), state, clip: c.id, selected: None, set: Default::default(), time: 0.0, texts: Vec::new(), sent: Vec::new(), mods: egui::Modifiers::NONE };
+            let mut d = Self { ctx: Default::default(), panel: Default::default(), state, clip: c.id, selected: None, set: Default::default(), time: 0.0, texts: Vec::new(), sent: Vec::new(), mods: egui::Modifiers::NONE, cards: Vec::new() };
             d.settle();
             d
         }
@@ -958,6 +999,10 @@ mod tests {
             });
             self.texts = out.shapes.iter().filter_map(|s| match &s.shape {
                 egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)), _ => None,
+            }).collect();
+            let (w, h) = (super::super::NODE_W * self.panel.zoom, super::super::NODE_H * self.panel.zoom);
+            self.cards = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r) if (r.rect.width() - w).abs() < 0.5 && (r.rect.height() - h).abs() < 0.5 => Some(r.rect), _ => None,
             }).collect();
             for cmd in cmds.into_iter().filter(|c| !matches!(c, AppCommand::SetVisibleNodeThumbs { .. })) {
                 // The solo the app mirrors for the canvas, as its colour
@@ -1218,6 +1263,106 @@ mod tests {
         let now = kinds(&d);
         assert!(!now.iter().any(|k| k == "gaussian_blur") && now.iter().any(|k| k == "sharpen"), "{now:?}: {:?}", d.sent);
         assert_eq!(d.steps(), 2);
+    }
+
+    /// The picture canvas's node `id`: its card, its input `port`, its
+    /// output, as drawn (#1744).
+    fn card_of(d: &Dock, id: NodeId) -> egui::Rect {
+        let graph = d.graph();
+        let model = PictureCanvas::new(&graph, root(&d.clip()), None).unwrap();
+        let label = model.nodes.iter().find(|n| n.id() == id).unwrap().label.clone();
+        let at = d.at(&label);
+        *d.cards.iter().find(|r| r.contains(at)).unwrap_or_else(|| panic!("no card for {label}"))
+    }
+    fn in_port(d: &Dock, id: NodeId, port: u8) -> egui::Pos2 {
+        let graph = d.graph();
+        let model = PictureCanvas::new(&graph, root(&d.clip()), None).unwrap();
+        super::super::input_port_pos(&card_of(d, id), port, model.nodes.iter().find(|n| n.id() == id).unwrap().input_count())
+    }
+    fn out_port(d: &Dock, id: NodeId) -> egui::Pos2 {
+        let graph = d.graph();
+        let model = PictureCanvas::new(&graph, root(&d.clip()), None).unwrap();
+        super::super::output_port_pos(&card_of(d, id), 0, &model.nodes.iter().find(|n| n.id() == id).unwrap().kind())
+    }
+    fn effect(d: &Dock, tag: &str) -> NodeId {
+        d.graph().nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some(tag)).unwrap_or_else(|| panic!("no {tag}")).id
+    }
+    fn display(d: &Dock) -> NodeId {
+        d.graph().nodes.iter().find(|n| n.type_id.as_str() == lt::SCENE_TO_DISPLAY).unwrap().id
+    }
+    /// What reads `id`'s output, in the picture.
+    fn reader(d: &Dock, id: NodeId) -> Option<NodeId> {
+        d.graph().edges.iter().find(|e| e.from.0 == id).map(|e| e.to.0)
+    }
+    impl Dock {
+        fn drag(&mut self, from: egui::Pos2, to: egui::Pos2) {
+            self.frame(vec![egui::Event::PointerMoved(from), Dock::button(from, egui::PointerButton::Primary, true)]);
+            for i in 1..=4 {
+                self.frame(vec![egui::Event::PointerMoved(from + (to - from) * (i as f32 / 4.0))]);
+            }
+            self.frame(vec![Dock::button(to, egui::PointerButton::Primary, false)]);
+            self.settle();
+        }
+        fn type_and_enter(&mut self, text: &str) {
+            self.frame(vec![egui::Event::Text(text.into())]);
+            self.frame(vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+            self.settle();
+        }
+    }
+
+    /// The wire menu on the picture (#1744): Insert node… puts the
+    /// effect picked into the wire, one step; there is no reroute here.
+    #[test]
+    fn a_picture_wire_takes_a_node_from_its_menu() {
+        let mut d = Dock::new();
+        let (s2d, blur) = (display(&d), effect(&d, "gaussian_blur"));
+        let mid = super::super::bezier_at_phase(out_port(&d, s2d), in_port(&d, blur, 0), 0.5);
+        d.click(mid, egui::PointerButton::Secondary);
+        assert!(d.texts.iter().any(|(t, _)| t == "Insert node\u{2026}") && !d.texts.iter().any(|(t, _)| t == "Add reroute"), "the wire menu: {:?}", d.texts);
+        let at = d.at("Insert node\u{2026}");
+        d.click(at, egui::PointerButton::Primary);
+        d.type_and_enter("Sharpen");
+        let sharpen = effect(&d, "sharpen");
+        assert_eq!((reader(&d, s2d), reader(&d, sharpen)), (Some(sharpen), Some(blur)), "into the wire: {:?}", d.sent);
+        assert_eq!(d.steps(), 1);
+    }
+
+    /// An effect dragged onto a wire of the picture moves there in the
+    /// chain, the drag and the drop one undo step (#1744).
+    #[test]
+    fn a_picture_effect_dropped_on_a_wire_moves_into_it() {
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let c = TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0)))
+            .effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 2.0 })
+            .effect(klipp_effects::BuiltinEffect::Sharpen { amount: 0.5 })
+            .build();
+        let mut d = Dock::of(c);
+        let (s2d, blur, sharpen) = (display(&d), effect(&d, "gaussian_blur"), effect(&d, "sharpen"));
+        assert_eq!((reader(&d, s2d), reader(&d, blur)), (Some(blur), Some(sharpen)));
+        let mid = super::super::bezier_at_phase(out_port(&d, s2d), in_port(&d, blur, 0), 0.5);
+        let from = card_of(&d, sharpen).center();
+        d.drag(from, mid);
+        assert_eq!((reader(&d, s2d), reader(&d, sharpen)), (Some(sharpen), Some(blur)), "Sharpen now before Blur: {:?}", d.sent);
+        assert_eq!(d.steps(), 1, "one step: {:?}", d.sent);
+    }
+
+    /// A wire dragged from an effect's output into empty canvas opens the
+    /// add menu; the effect picked comes after it, one step. A wire into
+    /// what feeds it is refused on the canvas, saying why (#1744).
+    #[test]
+    fn a_picture_wire_let_go_adds_a_node_or_refuses_a_loop() {
+        let mut d = Dock::new();
+        let (s2d, blur) = (display(&d), effect(&d, "gaussian_blur"));
+        let below = card_of(&d, blur).center() + egui::vec2(0.0, 200.0);
+        d.drag(out_port(&d, blur), below);
+        d.type_and_enter("Sharpen");
+        let sharpen = effect(&d, "sharpen");
+        assert_eq!(reader(&d, blur), Some(sharpen), "fed by the wire: {:?}", d.sent);
+        assert_eq!(d.steps(), 1);
+
+        d.drag(out_port(&d, sharpen), in_port(&d, s2d, 0));
+        assert_eq!(d.steps(), 1, "nothing made");
+        assert!(d.panel.bookmark_toast.as_ref().is_some_and(|(t, _)| t.contains("loop")), "{:?}", d.panel.bookmark_toast);
     }
 }
 

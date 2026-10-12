@@ -420,6 +420,10 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::DuplicateNodes { .. }
         | AppCommand::PasteNodes { .. }
         | AppCommand::ReplaceNode { .. }
+        | AppCommand::InsertNodeOnWire { .. }
+        | AppCommand::SpliceNodeIntoWire { .. }
+        | AppCommand::ReconnectEdge { .. }
+        | AppCommand::AddNodeWired { .. }
         | AppCommand::PastePictureNodes { .. }
         | AppCommand::RenameNode { .. }
         | AppCommand::SetNodeLut { .. }

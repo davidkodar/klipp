@@ -1907,3 +1907,128 @@ fn a_grade_note_drag_is_one_step() {
     assert!(moved.x > note.pos.x + 10.0 && moved.y > note.pos.y + 10.0, "the note moved: {moved:?}: {sent:?}");
     assert_eq!(state.active_history().undo_count(), steps + 1, "one step for the drag: {sent:?}");
 }
+
+/// A grade compound's chain Source → Exposure → Saturation → Contrast →
+/// Output on the canvas, spread in a row (#1744).
+fn wired() -> (AppState, ClipId, Vec<NodeId>, NodeId, crate::panels::node_graph_v2::canvas_command_tests::Harness) {
+    let (state, clip_id, ids, h) = canvas_at_depth(|i| ((i as f32 - 2.0) * 230.0, 0.0));
+    let source = h.graph.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
+    (state, clip_id, ids, source, h)
+}
+
+fn wire_level(state: &AppState, clip_id: ClipId) -> NodeGraph {
+    level_of(clip(state, clip_id).grade(), &state.graph_descent_path.clone()).unwrap()
+}
+
+fn has_wire(g: &NodeGraph, from: NodeId, to: NodeId, to_port: u8) -> bool {
+    g.edges.iter().any(|e| e.from_node == from && e.to_node == to && e.to_port == to_port)
+}
+
+/// A wire's menu (#1744): Delete lifts it; Add reroute and Insert node…
+/// (the add menu, its pick) put a node into it, fed by its source and
+/// feeding its end, one undo step each.
+#[test]
+fn a_wire_menu_deletes_inserts_and_adds_a_reroute() {
+    let (mut state, clip_id, ids, _, mut h) = wired();
+    let mid = h.wire_mid(ids[0], ids[1], 0);
+    h.click(mid, egui::PointerButton::Secondary);
+    h.settle();
+    assert!(h.has("Insert node\u{2026}") && h.has("Add reroute") && h.has("Delete"), "the wire menu");
+    let sent = h.click(h.text("Delete"), egui::PointerButton::Primary);
+    assert!(sent.iter().any(|c| matches!(c, AppCommand::DisconnectEdge { to, to_port: 0, .. } if *to == ids[1])), "{sent:?}");
+
+    h.settle();
+    h.click(mid, egui::PointerButton::Secondary);
+    h.settle();
+    let sent = h.click(h.text("Add reroute"), egui::PointerButton::Primary);
+    let steps = state.active_history().undo_count();
+    dispatch_canvas(&mut state, &sent);
+    let g = wire_level(&state, clip_id);
+    let reroute = g.nodes.iter().find(|n| n.kind == NodeKind::Reroute).expect("a reroute added").id;
+    assert!(has_wire(&g, ids[0], reroute, 0) && has_wire(&g, reroute, ids[1], 0) && !has_wire(&g, ids[0], ids[1], 0), "into the wire: {sent:?}");
+    assert_eq!(state.active_history().undo_count(), steps + 1);
+
+    let mid = h.wire_mid(ids[1], ids[2], 0);
+    h.settle();
+    h.click(mid, egui::PointerButton::Secondary);
+    h.settle();
+    h.click(h.text("Insert node\u{2026}"), egui::PointerButton::Primary);
+    h.settle();
+    h.frame(vec![egui::Event::Text("Exposure".into())]);
+    let sent = h.key(egui::Key::Enter);
+    dispatch_canvas(&mut state, &sent);
+    let g = wire_level(&state, clip_id);
+    let added = g.nodes.iter().find(|n| n.kind == NodeKind::Exposure && n.id != ids[0]).expect("an Exposure added").id;
+    assert!(has_wire(&g, ids[1], added, 0) && has_wire(&g, added, ids[2], 0), "into the wire: {sent:?}");
+    assert_eq!(state.active_history().undo_count(), steps + 2);
+}
+
+/// A wire's input end dragged to another input moves the wire there,
+/// one step; let go in empty canvas, the wire goes (#1744).
+#[test]
+fn a_wire_end_dragged_off_reconnects_or_disconnects() {
+    let (mut state, clip_id, ids, _, mut h) = wired();
+    let steps = state.active_history().undo_count();
+    let sent = h.drag(h.in_port(ids[1], 0), h.in_port(ids[2], 0));
+    assert!(sent.iter().any(|c| matches!(c, AppCommand::ReconnectEdge { to, to_port: 0, new_to, new_to_port: 0, .. } if *to == ids[1] && *new_to == ids[2])), "{sent:?}");
+    dispatch_canvas(&mut state, &sent);
+    let g = wire_level(&state, clip_id);
+    assert!(has_wire(&g, ids[0], ids[2], 0), "Exposure now feeds Contrast");
+    assert!(!g.edges.iter().any(|e| e.to_node == ids[1]), "Saturation's input is free");
+    assert!(!has_wire(&g, ids[1], ids[2], 0), "the wire it replaced is gone");
+    assert_eq!(state.active_history().undo_count(), steps + 1);
+
+    let below = h.card_of(ids[2]).center() + egui::vec2(0.0, 220.0);
+    let sent = h.drag(h.in_port(ids[2], 0), below);
+    assert!(sent.iter().any(|c| matches!(c, AppCommand::DisconnectEdge { to, to_port: 0, .. } if *to == ids[2])), "let go in empty canvas: {sent:?}");
+}
+
+/// A wire dragged from an output into empty canvas opens the add menu
+/// there, and the node picked comes fed by it, one step (#1744).
+#[test]
+fn a_wire_let_go_in_empty_canvas_adds_a_node_fed_by_it() {
+    let (mut state, clip_id, ids, _, mut h) = wired();
+    let below = h.card_of(ids[2]).center() + egui::vec2(0.0, 220.0);
+    let sent = h.drag(h.out_port(ids[2]), below);
+    assert!(!sent.iter().any(|c| matches!(c, AppCommand::ConnectNodes { .. })), "{sent:?}");
+    h.settle();
+    h.frame(vec![egui::Event::Text("Exposure".into())]);
+    let sent = h.key(egui::Key::Enter);
+    assert!(sent.iter().any(|c| matches!(c, AppCommand::AddNodeWired { from, from_port: 0, .. } if *from == ids[2])), "{sent:?}");
+    let steps = state.active_history().undo_count();
+    dispatch_canvas(&mut state, &sent);
+    let g = wire_level(&state, clip_id);
+    let added = g.nodes.iter().find(|n| n.kind == NodeKind::Exposure && n.id != ids[0]).expect("added").id;
+    assert!(has_wire(&g, ids[2], added, 0), "fed by the wire");
+    assert_eq!(state.active_history().undo_count(), steps + 1);
+}
+
+/// A node dragged onto a wire goes into it: taken out of its place (what
+/// fed it feeds what it fed) and put between the wire's ends, the drag
+/// and the drop one undo step (#1744).
+#[test]
+fn a_node_dropped_on_a_wire_goes_into_it_in_one_step() {
+    let (mut state, clip_id, ids, source, mut h) = wired();
+    let output = h.graph.nodes.iter().find(|n| n.kind == NodeKind::Output).unwrap().id;
+    let steps = state.active_history().undo_count();
+    let target = h.wire_mid(source, ids[0], 0);
+    let sent = h.drag(h.card_of(ids[2]).center(), target);
+    assert!(sent.iter().any(|c| matches!(c, AppCommand::SpliceNodeIntoWire { node_id, from, to, .. } if *node_id == ids[2] && *from == source && *to == ids[0])), "{sent:?}");
+    dispatch_canvas(&mut state, &sent);
+    let g = wire_level(&state, clip_id);
+    assert!(has_wire(&g, source, ids[2], 0) && has_wire(&g, ids[2], ids[0], 0), "Contrast between Source and Exposure");
+    assert!(has_wire(&g, ids[1], output, 0), "Saturation now feeds the Output");
+    assert_eq!(state.active_history().undo_count(), steps + 1, "the drag and the drop one step: {sent:?}");
+}
+
+/// A wire that would close a loop is refused where it is dropped, with
+/// the reason on the canvas; one that would not is made (the control).
+#[test]
+fn a_wire_that_would_loop_says_why() {
+    let (_, _, ids, _, mut h) = wired();
+    let sent = h.drag(h.out_port(ids[2]), h.in_port(ids[0], 0));
+    assert!(!sent.iter().any(|c| matches!(c, AppCommand::ConnectNodes { .. })), "{sent:?}");
+    assert!(h.toast().is_some_and(|t| t.contains("loop")), "{:?}", h.toast());
+    let sent = h.drag(h.out_port(ids[0]), h.in_port(ids[2], 0));
+    assert!(sent.iter().any(|c| matches!(c, AppCommand::ConnectNodes { from, to, .. } if *from == ids[0] && *to == ids[2])), "{sent:?}");
+}
