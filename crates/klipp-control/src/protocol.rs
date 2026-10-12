@@ -659,13 +659,18 @@ pub enum ControlCommand {
         inline: Option<bool>,
     },
     /// The sound of a range of a media file (at most sixty seconds) as
-    /// 16 kHz mono WAV: what a model that can hear is given.
+    /// 16 kHz mono WAV: what a model that can hear is given. With no
+    /// `media_id` (or `sequence`), the range is the timeline's, and the
+    /// sound is the sequence's mix as the export mixes it (#1577).
     AudioExcerpt {
-        media_id: String,
+        #[serde(default)]
+        media_id: Option<String>,
         from_secs: f64,
         to_secs: f64,
         #[serde(default)]
         path: Option<String>,
+        #[serde(default)]
+        sequence: bool,
     },
 
     // ── Operations ────────────────────────────────────────────────

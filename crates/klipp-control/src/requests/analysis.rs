@@ -596,10 +596,34 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::AudioExcerpt { media_id, from_secs, to_secs, path } => {
+        ControlCommand::AudioExcerpt { media_id, from_secs, to_secs, path, sequence } => {
             if in_batch {
                 return read_in_batch("audio_excerpt");
             }
+            let media_id = match (media_id, sequence) {
+                (Some(_), true) => return Err("give media_id for a file's sound, or sequence for the timeline's mix, not both".into()),
+                (Some(id), false) => id,
+                // The timeline's range, heard as the export mixes it (#1577).
+                (None, _) => {
+                    let snapshot = {
+                        let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                        let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                        klipp_render::SequenceSnapshot::from_sequence(&seq, &pool, &klipp_core::ExportSettings::default(), None, false, klipp_core::WorkingColorspace::Rec709Linear)
+                            .map_err(|e| format!("the mix could not be read: {e}"))?
+                    };
+                    let end = snapshot.end_frame() as f64 / snapshot.fps.max(1.0);
+                    let from = from_secs.clamp(0.0, end);
+                    let to = to_secs.clamp(from, end).min(from + 60.0);
+                    if to - from < 0.1 {
+                        return Err(format!("{from:.2}-{to:.2} s holds no sound of the timeline (it ends at {end:.2} s)"));
+                    }
+                    let out = temp_output(path, "klipp-mix-excerpt", "wav")?;
+                    let p = mix_excerpt(&snapshot, from, to, &out)?;
+                    let bytes = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+                    return Ok(json!({ "path": p.to_string_lossy(), "from_secs": from, "to_secs": to, "bytes": bytes, "format": "wav 16 kHz mono 16-bit",
+                        "source": "the sequence's mix, as the export mixes it, before loudness normalisation" }));
+                }
+            };
             let (media_path, duration) = media_path_and_duration(ctx, &media_id)?;
             let out = temp_output(path, "klipp-excerpt", "wav")?;
             let from = from_secs.clamp(0.0, duration);

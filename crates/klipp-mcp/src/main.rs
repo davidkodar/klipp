@@ -851,10 +851,15 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         "klipp_audio_excerpt" => {
             let mut v = json!({
                 "method": "audio_excerpt",
-                "media_id": arg_str(args, "media_id")?,
                 "from_secs": args.get("from_secs").and_then(|v| v.as_f64()).ok_or("missing required argument: from_secs")?,
                 "to_secs": args.get("to_secs").and_then(|v| v.as_f64()).ok_or("missing required argument: to_secs")?,
             });
+            if let Some(m) = args.get("media_id").and_then(|v| v.as_str()) {
+                v["media_id"] = json!(m);
+            }
+            if let Some(s) = args.get("sequence").and_then(|v| v.as_bool()) {
+                v["sequence"] = json!(s);
+            }
             if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
                 v["path"] = json!(p);
             }
@@ -1959,12 +1964,16 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec!["media_id"]),
         tool("klipp_audio_excerpt",
-             "Hear a media file: the sound between two times (at most sixty seconds) as \
-              16 kHz mono WAV, inlined when small enough (about thirty seconds). For \
-              judging a take, a noise, a music bed.",
+             "Hear a media file, or the timeline's mix: the sound between two times (at most sixty \
+              seconds) as 16 kHz mono WAV, inlined when small enough (about thirty seconds). With \
+              media_id, the file's own sound, for judging a take, a noise, a music bed. Without it \
+              (or with sequence true), the timeline's times and the sequence's mix as the export \
+              mixes it (music, effects, narration, ducks, fades, before loudness normalisation): \
+              hear or transcribe the cut before rendering.",
              json!({ "media_id": { "type": "string" }, "from_secs": { "type": "number" }, "to_secs": { "type": "number" },
+                     "sequence": { "type": "boolean", "description": "the timeline's mix, not a file (the default when media_id is left out)" },
                      "path": { "type": "string" } }),
-             vec!["media_id", "from_secs", "to_secs"]),
+             vec!["from_secs", "to_secs"]),
         tool("klipp_plan",
              concat!("Dry run: what a list of editorial operations would do, step by step, with each \
               touched clip's range afterwards. Nothing changes. Use it before klipp_apply. ",

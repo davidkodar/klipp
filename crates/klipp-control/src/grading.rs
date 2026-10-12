@@ -512,6 +512,44 @@ pub(crate) fn loudness_drops(rows: &[(f64, f32, f32)], step: f64, excused: &dyn 
     drops
 }
 
+/// The sequence's mix from `from` to `to` seconds of the timeline, as the
+/// export mixes it (the same mixdown, before loudness normalisation),
+/// written to `out` as 16 kHz mono 16-bit WAV (#1577): what an agent can
+/// listen to, or transcribe, before rendering.
+pub(crate) fn mix_excerpt(snapshot: &klipp_render::SequenceSnapshot, from: f64, to: f64, out: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    use std::io::Write;
+    let fps = snapshot.fps.max(1.0);
+    let rate = snapshot.sample_rate;
+    let mut mix = klipp_render::AudioMixdown::new(snapshot).map_err(|e| format!("the mix could not be read: {e}"))?;
+    let (first, last) = ((from * fps).floor() as u64, (to * fps).ceil() as u64);
+    let mut pcm: Vec<f32> = Vec::new();
+    for frame in first..last {
+        pcm.extend(mix.get_frame_audio(frame));
+    }
+    // Interleaved stereo from the first frame's first sample: cut to the
+    // range's own samples.
+    let start = mix.frame_sample_range(first).0;
+    let a = (((from * rate as f64).round() as u64).saturating_sub(start) * 2) as usize;
+    let b = (((to * rate as f64).round() as u64).saturating_sub(start) * 2) as usize;
+    let pcm = &pcm[a.min(pcm.len())..b.min(pcm.len())];
+    let mut child = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-nostats", "-loglevel", "error", "-y", "-f", "f32le", "-ar"])
+        .arg(rate.to_string())
+        .args(["-ac", "2", "-i", "pipe:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"])
+        .arg(out)
+        .stdin(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not run ffmpeg: {e}"))?;
+    let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+    child.stdin.take().ok_or("ffmpeg took no input")?.write_all(&bytes).map_err(|e| format!("could not hand ffmpeg the mix: {e}"))?;
+    let done = child.wait_with_output().map_err(|e| format!("ffmpeg stopped: {e}"))?;
+    if !done.status.success() || !out.is_file() {
+        return Err(format!("ffmpeg could not write the excerpt: {}", String::from_utf8_lossy(&done.stderr).trim()));
+    }
+    Ok(out.to_path_buf())
+}
+
 /// The level an effect is set to so it sits `over_db` above the loudest
 /// sound already heard under it (#792): files a dozen decibels apart, all
 /// set to the same volume, left one whoosh shouting over the intro and

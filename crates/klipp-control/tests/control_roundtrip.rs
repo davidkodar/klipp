@@ -2721,6 +2721,68 @@ fn check_warns_on_a_section_well_under_the_rest() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// #1577: the sequence's mix heard over the socket. A tone bed ducked
+/// 12 dB from 4 to 6 s of a timeline, with a second tone clip from 8 s:
+/// the excerpt of 2-10 s, with no media, is 8 s of 16 kHz mono whose
+/// level follows the duck and rises where the second clip joins, as the
+/// export mixes it. A file's excerpt and the timeline's at once is refused.
+#[test]
+fn audio_excerpt_hears_the_sequences_mix() {
+    let mut h = harness();
+    let dir = std::env::temp_dir().join(format!("klipp-mix-excerpt-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("tone.wav");
+    let made = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=12", "-ac", "2"])
+        .arg(&wav)
+        .status();
+    if !made.is_ok_and(|s| s.success()) {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let mut item = klipp_media::MediaItem::synthetic_for_test(wav.clone(), None);
+    item.has_audio = true;
+    item.video_codec = String::new();
+    item.duration = klipp_core::RationalTime::from_secs_f64(12.0, 30);
+    let media = h.media_pool.write().unwrap().add(item);
+    let time = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 30);
+    let mut bed = klipp_timeline::Clip::media(media, time(0.0), time(12.0), time(0.0), time(12.0));
+    let low = 10f32.powf(-12.0 / 20.0);
+    for (t, v) in [(3.5, 1.0), (4.0, low), (6.0, low), (6.5, 1.0)] {
+        klipp_core::keyframe::upsert_keyframe(&mut bed.volume_keyframes, t, v);
+    }
+    let second = klipp_timeline::Clip::media(media, time(8.0), time(12.0), time(0.0), time(4.0));
+    let track = |clips| {
+        let mut t = klipp_timeline::Track::new("A", klipp_timeline::TrackKind::Audio);
+        t.clips = clips;
+        t
+    };
+    h.sequence.write().unwrap().tracks = vec![klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video), track(vec![bed]), track(vec![second])];
+
+    let out = dir.join("mix.wav");
+    let r = h.ok(json!({ "method": "audio_excerpt", "from_secs": 2.0, "to_secs": 10.0, "path": out.to_string_lossy() }));
+    assert!(r["source"].as_str().unwrap().contains("mix"), "{r}");
+    let bytes = std::fs::read(&out).unwrap();
+    let data = bytes.windows(4).position(|w| w == b"data").expect("a data chunk") + 8;
+    let samples: Vec<f32> = bytes[data..].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
+    assert!((samples.len() as f64 - 8.0 * 16000.0).abs() < 160.0, "8 s at 16 kHz: {} samples", samples.len());
+    // Seconds of the timeline, read from the excerpt that starts at 2 s.
+    let rms = |a: f64, b: f64| {
+        let s = &samples[((a - 2.0) * 16000.0) as usize..((b - 2.0) * 16000.0) as usize];
+        (s.iter().map(|x| x * x).sum::<f32>() / s.len() as f32).sqrt()
+    };
+    let (before, ducked, after, both) = (rms(2.5, 3.4), rms(4.2, 5.8), rms(6.7, 7.8), rms(8.2, 9.8));
+    assert!(before > 0.01, "the bed is heard: {before}");
+    let ratio = ducked / before;
+    assert!((ratio - low).abs() < 0.05, "ducked 12 dB, as the export mixes it: {ratio:.3} of the level, not {low:.3}");
+    assert!((after / before - 1.0).abs() < 0.05, "back up after the duck: {after} against {before}");
+    assert!(both > after * 1.5, "the second clip joins the mix at 8 s: {both} against {after}");
+
+    let both_asked = h.call(json!({ "method": "audio_excerpt", "media_id": media.0.to_string(), "sequence": true, "from_secs": 0.0, "to_secs": 1.0 }));
+    assert!(both_asked["error"].as_str().unwrap().contains("not both"), "{both_asked}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn add_node_refuses_an_unknown_kind_and_names_the_node_it_adds() {
     let mut h = harness();
