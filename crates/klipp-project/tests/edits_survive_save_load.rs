@@ -176,6 +176,34 @@ fn a_style_runs_font_style_tracking_and_offset_come_back() {
     assert_eq!(loaded, &td, "the title did not round-trip whole");
 }
 
+/// A text box's OpenType features and a style run's (#1501) come back
+/// through a real save and a strict load; a box and a run without any
+/// write neither.
+#[test]
+fn a_text_boxs_and_a_runs_features_come_back() {
+    let mut seq = Sequence::new_default();
+    let run = klipp_timeline::StyleRun { features: vec!["smcp".into(), "-liga".into()], ..klipp_timeline::StyleRun::default_for_range(0, 6) };
+    let plain_run = klipp_timeline::StyleRun { color: Some([1, 2, 3, 255]), ..klipp_timeline::StyleRun::default_for_range(7, 9) };
+    let set = TextBox { text: "office to".into(), features: vec!["onum".into(), "ss01=1".into()], style_runs: vec![run, plain_run], ..TextBox::default() };
+    let mut td = TitleData::single_text(set);
+    td.add_object(TitleObjectContent::TextBox(TextBox { text: "Plain".into(), ..TextBox::default() }), klipp_timeline::default_text_transform());
+    let mut c = Clip::gap(tc(0), tc(48));
+    c.kind = ClipKind::Title(td.clone());
+    seq.tracks[0].clips = vec![c];
+
+    let dir = project_dir("features");
+    klipp_project::save_project(&dir, &[seq], &MediaPool::new()).unwrap();
+    let saved = std::fs::read_dir(&dir).unwrap().filter_map(|e| std::fs::read_to_string(e.unwrap().path()).ok()).collect::<String>();
+    let (seqs, ..) = klipp_project::load_project_strict(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(saved.contains("\"onum\"") && saved.contains("\"smcp\""), "the features were not written");
+    assert!(!saved.replace(char::is_whitespace, "").contains("\"features\":[]"), "a box or run without features wrote them");
+    let ClipKind::Title(loaded) = &seqs[0].tracks[0].clips[0].kind else { panic!("not a title") };
+    assert_eq!(loaded.primary_text().unwrap().features, ["onum", "ss01=1"]);
+    assert_eq!(loaded.primary_text().unwrap().style_runs[0].features, ["smcp", "-liga"]);
+    assert_eq!(loaded, &td, "the title did not round-trip whole");
+}
+
 #[test]
 fn magnetic_roles_and_anchors_come_back() {
     let mut seq = Sequence::new_default();

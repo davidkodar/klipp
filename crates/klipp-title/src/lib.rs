@@ -6,7 +6,8 @@
 //! mixed formatting — this crate produces an RGBA buffer ready for
 //! compositing over a video frame.
 //!
-//! Layout runs through `fontdue` (pure-Rust TTF/OTF rasteriser) so the
+//! Layout runs through `fontdue` (pure-Rust TTF/OTF rasteriser), each
+//! line shaped with OpenType by `harfrust` ([`shaping`], #1501), so the
 //! crate has no C dependency. System font discovery is in
 //! [`font_discovery`] and is cached at startup via
 //! `~/.cache/klipp/font_registry.json`.
@@ -26,12 +27,12 @@
 //! render, even when the user's system has no matching font. It's
 //! picked automatically when the requested font can't be resolved.
 
+mod shaping;
 mod vector_path;
-use fontdue::layout::{
-    CoordinateSystem, HorizontalAlign, Layout, LayoutSettings, TextStyle, VerticalAlign,
-    WrapStyle,
-};
+use fontdue::layout::{HorizontalAlign, LayoutSettings, VerticalAlign, WrapStyle};
 use fontdue::Font;
+use shaping::{Face, LoadedFont, ShapedLayout};
+pub use shaping::SHAPING_VERSION;
 use klipp_timeline::{LayerFx, TitleObject};
 use klipp_timeline::{
     FontStyle, ImageFit, ImageLayer, LastLineAlign, ObjectTransform, Shape, ShapeKind, StyleRun,
@@ -385,8 +386,8 @@ fn alpha_rows(buf: &[u8], width: u32, height: u32) -> (u32, u32) {
 
 /// Renders title clips to RGBA pixel buffers.
 pub struct TitleRenderer {
-    fallback_font: Font,
-    font_cache: HashMap<String, Font>,
+    fallback_font: LoadedFont,
+    font_cache: HashMap<String, LoadedFont>,
     /// Shared registry of available system fonts. Cheap to clone — internally
     /// an `Arc` populated by `font_discovery::discover_system_fonts()`, which
     /// dedupes across the whole process and caches the result on disk.
@@ -444,11 +445,8 @@ impl Default for TitleRenderer {
 
 impl TitleRenderer {
     pub fn new() -> Self {
-        let fallback_font = Font::from_bytes(
-            EMBEDDED_FONT,
-            fontdue::FontSettings::default(),
-        )
-        .expect("Failed to load embedded Noto Sans font");
+        let fallback_font = LoadedFont::new(std::borrow::Cow::Borrowed(EMBEDDED_FONT))
+            .expect("Failed to load embedded Noto Sans font");
         let registry = font_discovery::discover_system_fonts();
         tracing::info!("Font discovery: found {} font families", registry.len());
         Self {
@@ -514,7 +512,7 @@ impl TitleRenderer {
         // Fonts that ship with the app come first: the same face on
         // every machine, no disk read.
         if let Some(bytes) = bundled::lookup(family, style_str) {
-            if let Ok(font) = Font::from_bytes(bytes, fontdue::FontSettings::default()) {
+            if let Some(font) = LoadedFont::new(std::borrow::Cow::Borrowed(bytes)) {
                 self.font_cache.insert(key.clone(), font);
             }
             return key;
@@ -531,9 +529,7 @@ impl TitleRenderer {
 
             if let Some(info) = info {
                 if let Ok(data) = std::fs::read(&info.path) {
-                    if let Ok(font) =
-                        Font::from_bytes(data.as_slice(), fontdue::FontSettings::default())
-                    {
+                    if let Some(font) = LoadedFont::new(std::borrow::Cow::Owned(data)) {
                         self.font_cache.insert(key.clone(), font);
                     }
                 }
@@ -545,15 +541,18 @@ impl TitleRenderer {
 
     /// The faces a text box is set in (#1505): its own font first, then
     /// each other family and style its style runs name, every one
-    /// loaded and resolved as the box's own font is.
+    /// loaded and resolved as the box's own font is. A run with its own
+    /// OpenType features is a face of its own, shaped with the box's
+    /// features and then its (#1501).
     fn run_faces(&mut self, tb: &klipp_timeline::TextBox) -> RunFaces {
-        let mut keys = vec![self.ensure_font_loaded(&tb.font_name, tb.font_style)];
+        let mut keys = vec![(self.ensure_font_loaded(&tb.font_name, tb.font_style), tb.features.clone())];
         let of_run = tb.style_runs.iter().map(|run| {
-            if run.font_name.is_none() && run.font_style.is_none() {
+            if run.font_name.is_none() && run.font_style.is_none() && run.features.is_empty() {
                 return 0;
             }
             let family = run.font_name.as_deref().unwrap_or(&tb.font_name);
-            let key = self.ensure_font_loaded(family, run.font_style.unwrap_or(tb.font_style));
+            let font = self.ensure_font_loaded(family, run.font_style.unwrap_or(tb.font_style));
+            let key = (font, tb.features.iter().chain(&run.features).cloned().collect());
             keys.iter().position(|k| *k == key).unwrap_or_else(|| {
                 keys.push(key);
                 keys.len() - 1
@@ -562,10 +561,10 @@ impl TitleRenderer {
         RunFaces { keys, of_run }
     }
 
-    /// The loaded fonts for `keys`, the fallback font for a key that
-    /// did not load.
-    fn fonts_of(&self, keys: &[String]) -> Vec<&Font> {
-        keys.iter().map(|k| self.font_cache.get(k).unwrap_or(&self.fallback_font)).collect()
+    /// The faces for `keys`, each its loaded font (the fallback font
+    /// for a key that did not load) and its features.
+    fn fonts_of(&self, keys: &[(String, Vec<String>)]) -> Vec<Face<'_>> {
+        keys.iter().map(|(k, features)| Face::new(self.font_cache.get(k).unwrap_or(&self.fallback_font), features)).collect()
     }
 
     /// Phase 1: Font loading, glyph rasterization into alpha mask, returns layout info.
@@ -620,7 +619,7 @@ impl TitleRenderer {
         // Lay out text
         let h_align = h_align_of(tb.alignment);
 
-        let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
+        let mut layout = ShapedLayout::new();
         layout.reset(&LayoutSettings {
             x: 0.0,
             y: 0.0,
@@ -649,7 +648,7 @@ impl TitleRenderer {
             resolved_text = resolved_text.chars().rev().collect();
         }
         let (box_w, box_h) = text_box_extent(title, width, height);
-        let face_at = |i: usize| fonts[faces.at(&tb.style_runs, i)];
+        let face_at = |i: usize| -> &Font { &fonts[faces.at(&tb.style_runs, i)] };
         let fit = fit_block_ratio(face_at, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), box_w, box_h, tb.line_spacing);
         let font_px = font_px * fit;
         // The text from one byte to another, cut where its style runs
@@ -675,9 +674,8 @@ impl TitleRenderer {
         // The cap is set in the face of the run over it, if any (#1505).
         let cap_face = faces.at(&tb.style_runs, 0);
 
-        // Append text with per-run font sizes when style runs exist.
-        // Track (glyph_count_before, segment_byte_start) for byte_offset fixup.
-        let mut segment_info: Vec<(usize, usize)> = Vec::new();
+        // Every glyph's byte offset indexes `resolved_text`: each piece
+        // is laid as its byte range of it.
 
         // Pre-built glyph list for the drop-cap wrap path. Empty when
         // we use fontdue's normal Layout flow.
@@ -695,9 +693,8 @@ impl TitleRenderer {
             let mut byte_offset = 0usize;
             let column_x = width as f32 * 0.45;  // single-column centred
             for (char_idx, ch) in resolved_text.chars().enumerate() {
-                let ch_str = ch.to_string();
                 let (ch_px, ch_face) = pieces_of(byte_offset, byte_offset + ch.len_utf8()).first().map_or((font_px, 0), |p| (p.2, p.3));
-                let mut sub_layout = Layout::new(CoordinateSystem::PositiveYDown);
+                let mut sub_layout = ShapedLayout::new();
                 sub_layout.reset(&LayoutSettings {
                     x: column_x,
                     y: char_idx as f32 * line_height,
@@ -707,15 +704,10 @@ impl TitleRenderer {
                     wrap_style: WrapStyle::Word,
                     ..LayoutSettings::default()
                 });
-                sub_layout.append(&fonts, &TextStyle::new(&ch_str, ch_px, ch_face));
-                for g in sub_layout.glyphs() {
-                    let mut g_owned = *g;
-                    g_owned.byte_offset += byte_offset;
-                    vertical_glyphs.push(g_owned);
-                }
+                sub_layout.append(&fonts, &resolved_text, (byte_offset, byte_offset + ch.len_utf8(), ch_px, ch_face));
+                vertical_glyphs.extend_from_slice(sub_layout.glyphs());
                 byte_offset += ch.len_utf8();
             }
-            segment_info.push((0, 0));
         }
 
         // Multi-column body layout. When `columns >= 2` we split the
@@ -765,7 +757,7 @@ impl TitleRenderer {
             let mut byte_offset = 0usize;
             for (col_idx, chunk) in chunks.iter().enumerate() {
                 let column_x = col_idx as f32 * (col_w + column_gap);
-                let mut col_layout = Layout::new(CoordinateSystem::PositiveYDown);
+                let mut col_layout = ShapedLayout::new();
                 col_layout.reset(&LayoutSettings {
                     x: column_x,
                     y: 0.0,
@@ -782,7 +774,6 @@ impl TitleRenderer {
                 columns_glyphs.extend(col_glyphs);
                 byte_offset += chunk.len();
             }
-            segment_info.push((0, 0));
         }
 
         if drop_cap_wrap_eligible {
@@ -798,14 +789,10 @@ impl TitleRenderer {
                 |from| pieces_of(from, resolved_text.len()),
                 text_box_extent(title, width, height).0,
             );
-            segment_info.push((0, 0));
-            // We synthesise byte-offsets later from drop_cap_wrap_glyphs.
         } else if drop_cap_active {
             // "Drop initial" path: cap as the head segment.
-            let cap_text = &resolved_text[..drop_cap_byte_end];
             let cap_size = font_px * tb.drop_cap_scale;
-            segment_info.push((0, 0));
-            layout.append(&fonts, &TextStyle::new(cap_text, cap_size, cap_face));
+            layout.append(&fonts, &resolved_text, (0, drop_cap_byte_end, cap_size, cap_face));
         }
 
         // The body, from `body_start` onwards (the drop cap, if
@@ -815,9 +802,8 @@ impl TitleRenderer {
         // to its post-cap remainder. The drop-cap wrap built its
         // glyphs already.
         if !drop_cap_wrap_eligible {
-            for (start, end, px, face) in pieces_of(body_start, resolved_text.len()) {
-                segment_info.push((layout.glyphs().len(), start));
-                layout.append(&fonts, &TextStyle::new(&resolved_text[start..end], px, face));
+            for piece in pieces_of(body_start, resolved_text.len()) {
+                layout.append(&fonts, &resolved_text, piece);
             }
         }
 
@@ -853,19 +839,6 @@ impl TitleRenderer {
         }
 
         // ── Post-process glyph positions for tracking and line spacing ──
-
-        // Fix up byte_offset: fontdue's byte_offset is per-segment, but style runs
-        // use absolute byte positions. Add each segment's byte start.
-        for (seg_idx, &(glyph_start, byte_start)) in segment_info.iter().enumerate() {
-            let glyph_end = if seg_idx + 1 < segment_info.len() {
-                segment_info[seg_idx + 1].0
-            } else {
-                glyphs_owned.len()
-            };
-            for g in &mut glyphs_owned[glyph_start..glyph_end] {
-                g.byte_offset += byte_start;
-            }
-        }
 
         // Apply line spacing multiplier (shift lines after the first)
         if tb.line_spacing != 1.0 {
@@ -1134,7 +1107,7 @@ impl TitleRenderer {
     #[allow(clippy::too_many_arguments)]
     fn render_layout_on_path(
         &self,
-        fonts: &[&Font],
+        fonts: &[Face],
         glyphs: &[fontdue::layout::GlyphPosition],
         title: &TitleData,
         text_path: &TextPath,
@@ -2436,14 +2409,14 @@ impl TitleRenderer {
         };
         let font_px = tb.font_size * scale * case_scale;
         let (box_w, box_h) = text_box_extent(title, width, height);
-        let face_at = |i: usize| fonts[faces.at(&tb.style_runs, i)];
+        let face_at = |i: usize| -> &Font { &fonts[faces.at(&tb.style_runs, i)] };
         let fit = fit_block_ratio(face_at, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), box_w, box_h, tb.line_spacing);
         let font_px = font_px * fit;
         let run_px = |run: &StyleRun| run.font_size.unwrap_or(tb.font_size) * scale * case_scale * fit;
 
         let h_align = h_align_of(tb.alignment);
 
-        let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
+        let mut layout = ShapedLayout::new();
         layout.reset(&LayoutSettings {
             x: 0.0,
             y: 0.0,
@@ -2455,13 +2428,9 @@ impl TitleRenderer {
             ..LayoutSettings::default()
         });
 
-        // Track (glyph_count_before_append, segment_byte_start_in_full_text)
-        // so we can fix up fontdue's per-segment byte_offset → absolute byte_offset.
-        let mut segment_info: Vec<(usize, usize)> = Vec::new();
-
-        for (start, end, px, face) in set_pieces(&tb.style_runs, &faces.of_run, 0, resolved_text.len(), font_px, run_px) {
-            segment_info.push((layout.glyphs().len(), start));
-            layout.append(&fonts, &TextStyle::new(&resolved_text[start..end], px, face));
+        // Each glyph's byte offset indexes `resolved_text`.
+        for piece in set_pieces(&tb.style_runs, &faces.of_run, 0, resolved_text.len(), font_px, run_px) {
+            layout.append(&fonts, &resolved_text, piece);
         }
 
         let glyphs = layout.glyphs();
@@ -2478,19 +2447,6 @@ impl TitleRenderer {
         }
 
         let mut glyphs_owned: Vec<fontdue::layout::GlyphPosition> = glyphs.to_vec();
-
-        // Fix up byte_offset: fontdue's byte_offset is relative to each append() call's string,
-        // but we need it relative to the full tb.text.
-        for (seg_idx, &(glyph_start, byte_start)) in segment_info.iter().enumerate() {
-            let glyph_end = if seg_idx + 1 < segment_info.len() {
-                segment_info[seg_idx + 1].0
-            } else {
-                glyphs_owned.len()
-            };
-            for g in &mut glyphs_owned[glyph_start..glyph_end] {
-                g.byte_offset += byte_start;
-            }
-        }
 
         // Apply line spacing (same as render_layout)
         if tb.line_spacing != 1.0 {
@@ -2565,9 +2521,15 @@ impl TitleRenderer {
             + baseline_shift_px;
 
         // Build character positions from glyph data.
-        // fontdue gives us one glyph per visible character (spaces may have width=0).
+        // There is one glyph per character (spaces may have width=0),
+        // but for a ligature (#1501): its glyph stands for every
+        // character from its byte offset to the next glyph's, and they
+        // share its box evenly.
         // We need to map byte_offset → char_index for correct cursor positioning.
         let mut positions: Vec<CharPosition> = Vec::with_capacity(glyphs_owned.len() + 1);
+        let mut starts: Vec<usize> = glyphs_owned.iter().map(|g| g.byte_offset).collect();
+        starts.sort_unstable();
+        starts.dedup();
 
         // Build a byte_offset → char_index lookup
         let byte_to_char: Vec<(usize, usize)> = tb.text
@@ -2597,18 +2559,25 @@ impl TitleRenderer {
                 font_px
             };
 
-            positions.push(CharPosition {
-                char_index,
-                byte_offset: g.byte_offset,
-                x: g.x + offset_x,
-                y: g.y + offset_y,
-                advance,
-                height: glyph_height,
-            });
+            let next = starts.iter().find(|&&b| b > g.byte_offset).copied().unwrap_or(resolved_text.len());
+            let shared = resolved_text.get(g.byte_offset..next).map_or(1, |s| s.chars().count().max(1));
+            let share = advance / shared as f32;
+            for k in 0..shared {
+                positions.push(CharPosition {
+                    char_index: char_index + k,
+                    byte_offset: if k == 0 { g.byte_offset } else { tb.text.char_indices().nth(char_index + k).map_or(g.byte_offset, |(bi, _)| bi) },
+                    x: g.x + offset_x + share * k as f32,
+                    y: g.y + offset_y,
+                    advance: if shared > 1 { share } else { advance },
+                    height: glyph_height,
+                });
+            }
         }
 
-        // Sort by char_index for consistent ordering
+        // Sort by char_index for consistent ordering; glyphs of one
+        // cluster (a letter and its marks) give its characters once.
         positions.sort_by_key(|p| p.char_index);
+        positions.dedup_by_key(|p| p.char_index);
 
         // Fill in positions for characters that didn't produce glyphs (e.g. newlines).
         // Use interpolated positions from neighbors.
@@ -3173,7 +3142,7 @@ fn gaussian_blur_expand(
 /// each at its style run's size and face (#1505); the cap is set at
 /// `cap.0` in face `cap.1`.
 fn layout_drop_cap_wrap(
-    fonts: &[&Font],
+    fonts: &[Face],
     text: &str,
     cap_end: usize,
     cap: (f32, usize),
@@ -3184,7 +3153,7 @@ fn layout_drop_cap_wrap(
     let (cap_size, cap_face) = cap;
 
     // ── Stage 1: drop cap ──
-    let mut cap_layout = Layout::new(CoordinateSystem::PositiveYDown);
+    let mut cap_layout = ShapedLayout::new();
     cap_layout.reset(&LayoutSettings {
         x: 0.0,
         y: 0.0,
@@ -3195,13 +3164,13 @@ fn layout_drop_cap_wrap(
         wrap_style: WrapStyle::Word,
         ..LayoutSettings::default()
     });
-    cap_layout.append(fonts, &TextStyle::new(&text[..cap_end], cap_size, cap_face));
+    cap_layout.append(fonts, text, (0, cap_end, cap_size, cap_face));
     let cap_glyphs: Vec<fontdue::layout::GlyphPosition> = cap_layout.glyphs().to_vec();
     if cap_glyphs.is_empty() {
         // Defensive: no glyph for the first character (shouldn't
         // happen for a non-empty string + valid font, but if it
         // does, fall through to plain body layout).
-        let mut body_layout = Layout::new(CoordinateSystem::PositiveYDown);
+        let mut body_layout = ShapedLayout::new();
         body_layout.reset(&LayoutSettings {
             max_width: Some(full_max_w),
             horizontal_align: HorizontalAlign::Left,
@@ -3227,7 +3196,7 @@ fn layout_drop_cap_wrap(
 
     // ── Stage 2: narrow body to the right of the cap ──
     let narrow_w = (full_max_w - body_x_offset).max(body_size);
-    let mut narrow_layout = Layout::new(CoordinateSystem::PositiveYDown);
+    let mut narrow_layout = ShapedLayout::new();
     narrow_layout.reset(&LayoutSettings {
         x: 0.0,
         y: 0.0,
@@ -3247,10 +3216,10 @@ fn layout_drop_cap_wrap(
         None => (narrow_glyphs.clone(), text.len()),
         Some(0) => (Vec::new(), cap_end),
         Some(idx) => {
-            // The glyphs' byte offsets index the full `text`.
-            let last_kept = &narrow_glyphs[idx - 1];
-            let consumed = last_kept.byte_offset + last_kept.parent.len_utf8();
-            (narrow_glyphs[..idx].to_vec(), consumed)
+            // The glyphs' byte offsets index the full `text`; the body
+            // below starts at the first glyph that did not fit, so a
+            // ligature kept beside the cap is not set again (#1501).
+            (narrow_glyphs[..idx].to_vec(), narrow_glyphs[idx].byte_offset)
         }
     };
 
@@ -3265,7 +3234,7 @@ fn layout_drop_cap_wrap(
     let wide_glyphs: Vec<fontdue::layout::GlyphPosition> = if byte_consumed >= text.len() {
         Vec::new()
     } else {
-        let mut wide_layout = Layout::new(CoordinateSystem::PositiveYDown);
+        let mut wide_layout = ShapedLayout::new();
         wide_layout.reset(&LayoutSettings {
             x: 0.0,
             y: 0.0,
@@ -3305,22 +3274,12 @@ fn layout_drop_cap_wrap(
 type Piece = (usize, usize, f32, usize);
 
 /// Lay `pieces` of `text` into `layout` one after another, each at its
-/// own size and face, and the glyphs with byte offsets into `text`
-/// (fontdue's count from the start of each piece).
-fn lay_pieces(layout: &mut Layout, fonts: &[&Font], text: &str, pieces: &[Piece]) -> Vec<fontdue::layout::GlyphPosition> {
-    let mut marks = Vec::with_capacity(pieces.len());
-    for &(start, end, px, face) in pieces {
-        marks.push((layout.glyphs().len(), start));
-        layout.append(fonts, &TextStyle::new(&text[start..end], px, face));
+/// own size and face, and the glyphs with byte offsets into `text`.
+fn lay_pieces(layout: &mut ShapedLayout, fonts: &[Face], text: &str, pieces: &[Piece]) -> Vec<fontdue::layout::GlyphPosition> {
+    for &piece in pieces {
+        layout.append(fonts, text, piece);
     }
-    let mut glyphs = layout.glyphs().to_vec();
-    for (k, &(first, start)) in marks.iter().enumerate() {
-        let last = marks.get(k + 1).map_or(glyphs.len(), |m| m.0);
-        for g in &mut glyphs[first..last] {
-            g.byte_offset += start;
-        }
-    }
-    glyphs
+    layout.glyphs().to_vec()
 }
 
 
@@ -3897,10 +3856,10 @@ fn wrapped_height<'f>(font_at: impl Fn(usize) -> &'f Font, text: &str, px_at: im
 }
 
 /// The faces a text box is set in, from [`TitleRenderer::run_faces`]:
-/// cache keys, the box's own first, and the index into them of each
-/// style run's face (#1505).
+/// cache keys and OpenType features (#1501), the box's own first, and
+/// the index into them of each style run's face (#1505).
 struct RunFaces {
-    keys: Vec<String>,
+    keys: Vec<(String, Vec<String>)>,
     of_run: Vec<usize>,
 }
 
@@ -4040,7 +3999,7 @@ fn text_offset_y(align: TextVerticalAlign, anchor_y: f32, box_h: f32, text_h: f3
 /// fontdue's for them; their byte offsets index `text`.
 fn justify_lines(
     glyphs: &mut [fontdue::layout::GlyphPosition],
-    lines: &[fontdue::layout::LinePosition],
+    lines: &[shaping::Line],
     text: &str,
     box_w: f32,
     last: LastLineAlign,
@@ -4484,7 +4443,7 @@ fn resolve_glyph_colors(
 /// Build per-glyph color info and coverage bitmaps for rich text fill rendering.
 /// This is used in the compose phase to draw each glyph with its own color.
 fn build_glyph_color_info(
-    fonts: &[&Font],
+    fonts: &[Face],
     glyphs: &[fontdue::layout::GlyphPosition],
     offset_x: f32,
     offset_y: f32,
@@ -4525,7 +4484,7 @@ fn build_glyph_color_info(
 /// Rasterize fontdue glyphs into a single-channel alpha mask.
 #[allow(clippy::too_many_arguments)]
 fn rasterize_to_mask(
-    fonts: &[&Font],
+    fonts: &[Face],
     glyphs: &[fontdue::layout::GlyphPosition],
     offset_x: f32,
     offset_y: f32,
@@ -4610,7 +4569,7 @@ fn motion_units(glyphs: &[fontdue::layout::GlyphPosition], unit: klipp_timeline:
 /// of an invisible edge.
 #[allow(clippy::too_many_arguments)]
 fn rasterize_to_mask_motion(
-    fonts: &[&Font],
+    fonts: &[Face],
     glyphs: &[fontdue::layout::GlyphPosition],
     offset_x: f32,
     offset_y: f32,
@@ -4651,10 +4610,12 @@ fn rasterize_to_mask_motion(
         let sigma = b1.max(b2);
         let clip_to_rest = c1 || c2;
 
-        let font = fonts[glyph.font_index];
+        let font = &fonts[glyph.font_index];
         let (coverage_base, base_w, base_h) = if (scale - 1.0).abs() > 0.001 {
             let scaled_px = (base_font_px * scale).max(1.0);
-            let (m, cov) = font.rasterize(glyph.parent, scaled_px);
+            // The shaped glyph (a ligature, a feature's form), not its
+            // first character's (#1501).
+            let (m, cov) = font.rasterize_indexed(glyph.key.glyph_index, scaled_px);
             (cov, m.width, m.height)
         } else {
             let (_, cov) = font.rasterize_config(glyph.key);
@@ -5506,7 +5467,9 @@ pub struct GlyphCacheEntry {
 /// * `tracking`, `line_spacing`, `baseline_shift`
 /// * `style_runs[*]` — `start`, `end`, `font_name`, `font_size`,
 ///   `font_style`, `tracking` and `baseline_offset` (each moves the
-///   run's glyphs, #1505); not its colour
+///   run's glyphs, #1505), and `features` (#1501); not its colour
+/// * `features`, the box's OpenType features, and [`SHAPING_VERSION`],
+///   so positions laid out before shaping changed do not match (#1501)
 /// * `position()` — the title's frame-relative offset
 /// * `frame_w`, `frame_h` — render resolution
 ///
@@ -5531,6 +5494,8 @@ pub fn glyph_layout_hash(td: &TitleData, frame_w: u32, frame_h: u32) -> u64 {
     tb.tracking.to_bits().hash(&mut h);
     tb.line_spacing.to_bits().hash(&mut h);
     tb.baseline_shift.to_bits().hash(&mut h);
+    tb.features.hash(&mut h);
+    SHAPING_VERSION.hash(&mut h);
 
     for run in &tb.style_runs {
         run.start.hash(&mut h);
@@ -5540,6 +5505,7 @@ pub fn glyph_layout_hash(td: &TitleData, frame_w: u32, frame_h: u32) -> u64 {
         run.font_style.map(|s| std::mem::discriminant(&s)).hash(&mut h);
         run.tracking.map(f32::to_bits).hash(&mut h);
         run.baseline_offset.map(f32::to_bits).hash(&mut h);
+        run.features.hash(&mut h);
     }
 
     let pos = td.position();
@@ -6773,8 +6739,8 @@ mod tests {
         text: "Hello World".to_string(),
         font_size: 72.0,
         style_runs: vec![
-                    StyleRun { start: 0, end: 5, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None },
-                    StyleRun { start: 6, end: 11, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None },
+                    StyleRun { start: 0, end: 5, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new() },
+                    StyleRun { start: 6, end: 11, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new() },
                 ],
         ..Default::default()
     };
@@ -6827,9 +6793,9 @@ mod tests {
         text: text.to_string(),
         font_size: 72.0,
         style_runs: vec![
-                    StyleRun { start: 0, end: 3, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None }, // ABC
-                    StyleRun { start: 3, end: 7, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None },  // DEFG
-                    StyleRun { start: 7, end: 10, font_size: Some(72.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None }, // HIJ
+                    StyleRun { start: 0, end: 3, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new() }, // ABC
+                    StyleRun { start: 3, end: 7, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new() },  // DEFG
+                    StyleRun { start: 7, end: 10, font_size: Some(72.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new() }, // HIJ
                 ],
         ..Default::default()
     };
@@ -8400,6 +8366,7 @@ mod tests {
                     font_style: None,
                     tracking: None,
                     baseline_offset: None,
+                    features: Vec::new(),
                 });
             })
         });
@@ -8796,11 +8763,12 @@ mod style_run_tests {
     }
 
     /// Glyph `i` was drawn as `font` draws its character at `px`: its
-    /// box is that bitmap's size and its pixels are that bitmap.
+    /// box is that bitmap's size and its pixels hold that bitmap (a
+    /// kerned neighbour's ink may reach into the box, #1501).
     fn drawn_in(layout: &TitleLayout, i: usize, font: &fontdue::Font, px: f32) -> bool {
         let (m, bitmap) = font.rasterize(layout.glyph_parents[i], px);
         let b = layout.glyph_boxes[i];
-        (b[2] - b[0], b[3] - b[1]) == (m.width as i32, m.height as i32) && ink(layout, i) == bitmap
+        (b[2] - b[0], b[3] - b[1]) == (m.width as i32, m.height as i32) && ink(layout, i).iter().zip(&bitmap).all(|(i, c)| i >= c)
     }
 
     /// A word set in another family and style, and one in the box's
@@ -8912,7 +8880,8 @@ mod style_run_tests {
         const TEXT: &str = "one two three four five six seven eight nine ten eleven twelve";
         let run_at = TEXT.find("eleven").unwrap();
         let mut r = TitleRenderer::new();
-        let columns = |runs: Vec<StyleRun>| boxed(TEXT, TextAlignment::Center, |tb| { tb.columns = 2; tb.style_runs = runs });
+        // "fi" is not joined (#1501), so glyph i is letter i.
+        let columns = |runs: Vec<StyleRun>| boxed(TEXT, TextAlignment::Center, |tb| { tb.columns = 2; tb.style_runs = runs; tb.features = vec!["-liga".into()] });
         let styled = r.render_layout(&columns(vec![run(run_at, run_at + 6, |r| { r.font_name = Some("Libre Baskerville".into()); r.font_style = Some(FontStyle::Italic) })]), W, H);
         let plain = r.render_layout(&columns(Vec::new()), W, H);
         assert_eq!(styled.glyph_count, TEXT.len());
@@ -9034,7 +9003,8 @@ mod style_run_tests {
     fn boxes_without_the_fields_draw_as_before() {
         let mut r = TitleRenderer::new();
         let hashes = hashes_of(&mut r, &unchanged_boxes());
-        // Taken on main at e4618c0f1, before #1505.
+        // Taken on main at e4618c0f1, before #1505; the last, "Hello
+        // world" in Inter, retaken with #1501's shaping, which kerns it.
         let before = [
             (537262310058089473, 12990052878724863373),
             (9375910112802164878, 7007222290492971662),
@@ -9044,8 +9014,210 @@ mod style_run_tests {
             (17796725844148216080, 10202472981451332177),
             (5448820052067944582, 6194283091192519508),
             (7193490694850778374, 224027851749628502),
-            (17815865332275288940, 5142921099911906366),
+            (7400897415938749996, 9238244902904153988),
         ];
         assert_eq!(hashes, before, "a box whose runs set no font, style, tracking or baseline offset draws or lays out differently");
+    }
+}
+
+#[cfg(test)]
+mod shaping_tests {
+    //! #1501: title text is shaped with OpenType — kerning, ligatures
+    //! and the features a box or a run turns on or off.
+    use super::*;
+    use klipp_timeline::{TextBox, TitlePosition};
+
+    const W: u32 = 1920;
+    const H: u32 = 1080;
+    /// Libre Baskerville Regular's "f_f_i" ligature.
+    const FFI: u16 = 623;
+
+    fn boxed(text: &str, family: &str, alignment: TextAlignment, adjust: impl FnOnce(&mut TextBox)) -> TitleData {
+        let mut tb = TextBox { text: text.to_string(), font_name: family.into(), font_size: 48.0, alignment, ..Default::default() };
+        adjust(&mut tb);
+        let mut td = TitleData::single_text_fx(tb, LayerFx::default());
+        let o = td.objects.first_mut().unwrap();
+        o.transform.center = TitlePosition { x: 0.5, y: 0.5 };
+        o.transform.size = TitlePosition { x: 0.6, y: 0.9 };
+        td
+    }
+
+    fn loaded(family: &str, style: &str) -> shaping::LoadedFont {
+        shaping::LoadedFont::new(std::borrow::Cow::Borrowed(bundled::lookup(family, style).unwrap())).unwrap()
+    }
+
+    /// `text` laid on one line in a bundled face with `features`, at
+    /// 48 px: each glyph's character, glyph id and left edge.
+    fn shaped(family: &str, text: &str, features: &[&str]) -> Vec<(char, u16, f32)> {
+        let font = loaded(family, "Regular");
+        let features: Vec<String> = features.iter().map(|f| f.to_string()).collect();
+        let faces = [Face::new(&font, &features)];
+        let mut layout = ShapedLayout::new();
+        layout.reset(&LayoutSettings::default());
+        layout.append(&faces, text, (0, text.len(), 48.0, 0));
+        layout.glyphs().iter().map(|g| (g.parent, g.key.glyph_index, g.x)).collect()
+    }
+
+    /// "AV" kerns: the V sits closer to the A than the A's advance puts
+    /// it, as fontdue alone laid it, and "-kern" puts it back there.
+    #[test]
+    fn a_kerning_pair_sits_closer() {
+        for family in ["Libre Baskerville", "Inter"] {
+            let font = loaded(family, "Regular").font;
+            let mut plain = fontdue::layout::Layout::new(fontdue::layout::CoordinateSystem::PositiveYDown);
+            plain.append(&[&font], &fontdue::layout::TextStyle::new("AV", 48.0, 0));
+            let unkerned = plain.glyphs()[1].x - plain.glyphs()[0].x;
+            let kerned = shaped(family, "AV", &[]);
+            assert!(kerned[1].0 == 'V' && kerned[1].2 - kerned[0].2 < unkerned - 1.0, "{family}: V is {} past A, unkerned {unkerned}", kerned[1].2 - kerned[0].2);
+            let off = shaped(family, "AV", &["-kern"]);
+            assert_eq!(off[1].2 - off[0].2, unkerned, "{family}: -kern still kerns");
+            // The renderer draws the pair kerned.
+            let mut r = TitleRenderer::new();
+            let mut gap = |features: Vec<String>| {
+                let layout = r.render_layout(&boxed("AV", family, TextAlignment::Left, |tb| tb.features = features), W, H);
+                layout.glyph_boxes[1][0] - layout.glyph_boxes[0][0]
+            };
+            assert!(gap(Vec::new()) < gap(vec!["-kern".into()]), "{family}: the drawn V is not kerned");
+        }
+    }
+
+    /// "office" in Libre Baskerville sets "ffi" as its one ligature
+    /// glyph, which stands for the first f; "-liga" sets three letters.
+    #[test]
+    fn ffi_forms_a_ligature() {
+        let glyphs = shaped("Libre Baskerville", "office", &[]);
+        assert_eq!(glyphs.iter().map(|g| (g.0, g.1)).collect::<Vec<_>>()[..2], [('o', 481), ('f', FFI)]);
+        assert_eq!(glyphs.len(), 4, "o, ffi, c, e");
+        assert_eq!(glyphs.iter().filter(|g| g.1 == FFI).count(), 1);
+        let off = shaped("Libre Baskerville", "office", &["-liga"]);
+        assert_eq!(off.len(), 6);
+        assert!(off.iter().all(|g| g.1 != FFI));
+        // The renderer draws the ligature, and the box's "-liga" or a
+        // run's turns it off for its text only.
+        let mut r = TitleRenderer::new();
+        let mut count = |adjust: fn(&mut TextBox)| r.render_layout(&boxed("office office", "Libre Baskerville", TextAlignment::Left, adjust), W, H).glyph_count;
+        assert_eq!(count(|_| {}), 9);
+        assert_eq!(count(|tb| tb.features = vec!["-liga".into()]), 13);
+        assert_eq!(count(|tb| tb.style_runs = vec![StyleRun { features: vec!["-liga".into()], ..StyleRun::default_for_range(7, 13) }]), 11);
+        let layout = r.render_layout(&boxed("office", "Libre Baskerville", TextAlignment::Left, |_| {}), W, H);
+        let (m, _) = loaded("Libre Baskerville", "Regular").font.rasterize_indexed(FFI, 48.0);
+        let b = layout.glyph_boxes[1];
+        assert_eq!((layout.glyph_parents[1], b[2] - b[0], b[3] - b[1]), ('f', m.width as i32, m.height as i32), "the ffi glyph is not drawn");
+    }
+
+    /// A feature the shaper's defaults leave off turns on: Inter's
+    /// slashed zero.
+    #[test]
+    fn a_feature_turns_on() {
+        let plain = shaped("Inter", "0", &[]);
+        let slashed = shaped("Inter", "0", &["zero"]);
+        assert_ne!(plain[0].1, slashed[0].1, "zero did not change the glyph");
+    }
+
+    /// The cursor stays within a pixel of each letter of a kerned line,
+    /// and the letters of a ligature take their places inside its box,
+    /// left to right.
+    #[test]
+    fn the_cursor_follows_kerned_and_joined_letters() {
+        const TEXT: &str = "AVATAR To office";
+        let mut r = TitleRenderer::new();
+        let td = boxed(TEXT, "Libre Baskerville", TextAlignment::Center, |_| {});
+        let layout = r.render_layout(&td, W, H);
+        let positions = r.compute_char_positions(&td, W, H);
+        assert_eq!(positions.len(), TEXT.chars().count() + 1);
+        let ffi = TEXT.find("ffi").unwrap();
+        // One glyph per character but for the ligature's two after it.
+        assert_eq!(layout.glyph_count, TEXT.len() - 2);
+        for (g, b) in layout.glyph_boxes.iter().enumerate() {
+            let at = if g > ffi { g + 2 } else { g };
+            let p = &positions[at];
+            assert_eq!(p.byte_offset, at);
+            if layout.glyph_parents[g] != ' ' {
+                assert!((p.x - b[0] as f32).abs() <= 1.0 && (p.y - b[1] as f32).abs() <= 1.0, "{:?} drawn at {b:?}, cursor at {}, {}", layout.glyph_parents[g], p.x, p.y);
+            }
+        }
+        let b = layout.glyph_boxes[ffi];
+        let xs: Vec<f32> = positions[ffi..ffi + 3].iter().map(|p| p.x).collect();
+        assert!(xs.windows(2).all(|w| w[0] < w[1]), "the ligature's letters are not in order: {xs:?}");
+        for p in &positions[ffi..ffi + 3] {
+            assert!(p.x >= b[0] as f32 && p.x + p.advance <= b[2] as f32 + 0.01, "a letter of ffi at {}..{} is outside its box {b:?}", p.x, p.x + p.advance);
+        }
+    }
+
+    /// Justified lines of kerned text still fill the box: each line but
+    /// the paragraph's last ends at the box's right edge.
+    #[test]
+    fn justify_fills_the_box_with_kerned_text() {
+        const TEXT: &str = "AVOWAL To Tea Ty Wa fly office we Yo VA LT AV To Wo yo Te Ta AV WAVY Toyota affix Tea To Ty AVA LTA";
+        let mut r = TitleRenderer::new();
+        let layout = r.render_layout(&boxed(TEXT, "Libre Baskerville", TextAlignment::Justify, |tb| tb.font_size = 40.0), W, H);
+        // Lines, by where a letter sits left of the one before.
+        let mut rights: Vec<i32> = Vec::new();
+        let mut last_x = i32::MIN;
+        for (b, c) in layout.glyph_boxes.iter().zip(&layout.glyph_parents) {
+            if c.is_whitespace() || b[2] == b[0] {
+                continue;
+            }
+            if b[0] < last_x || rights.is_empty() {
+                rights.push(b[2]);
+            }
+            last_x = b[0];
+            *rights.last_mut().unwrap() = (*rights.last().unwrap()).max(b[2]);
+        }
+        assert!(rights.len() >= 2, "the text should wrap, got {} lines", rights.len());
+        let box_right = 960 + 1152 / 2;
+        for (i, right) in rights[..rights.len() - 1].iter().enumerate() {
+            assert!((right - box_right).abs() <= 1, "line {i} ends at {right}, not the box's right {box_right}");
+        }
+    }
+
+    fn fnv(bytes: impl IntoIterator<Item = u8>) -> u64 {
+        bytes.into_iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
+    }
+
+    /// Text whose face kerns and joins none of its letters draws and
+    /// lays out for the cursor byte for byte as it did before shaping:
+    /// JetBrains Mono, plain, in columns, with a drop cap, justified
+    /// and with a sized run, at 640x360.
+    #[test]
+    fn text_shaping_leaves_alone_draws_as_before() {
+        const TEXT: &str = "the quick brown fox jumps over the lazy dog and runs far into the woods\nby the river and home";
+        let mono = |alignment, adjust: fn(&mut TextBox)| boxed(TEXT, "JetBrains Mono", alignment, adjust);
+        let boxes = [
+            mono(TextAlignment::Left, |_| {}),
+            mono(TextAlignment::Center, |tb| tb.columns = 2),
+            mono(TextAlignment::Left, |tb| tb.drop_cap_scale = 3.0),
+            mono(TextAlignment::Justify, |tb| tb.tracking = 2.0),
+            mono(TextAlignment::Right, |tb| tb.style_runs = vec![StyleRun { font_size: Some(64.0), color: Some([255, 0, 0, 255]), ..StyleRun::default_for_range(4, 9) }]),
+        ];
+        let mut r = TitleRenderer::new();
+        let hashes: Vec<(u64, u64)> = boxes.iter().map(|td| {
+            let pixels = fnv(r.render(td, 640, 360));
+            let cursor = fnv(r.compute_char_positions(td, 640, 360).iter().flat_map(|p| [p.x.to_bits(), p.y.to_bits()]).flat_map(u32::to_le_bytes));
+            (pixels, cursor)
+        }).collect();
+        // Taken on main at 926cfab3d, before #1501.
+        let before = [
+            (6118582486406094929, 12454316361513787245),
+            (945665265085242760, 15164285115390767754),
+            (1478896466625051445, 12454316361513787245),
+            (10567450272971704784, 60548708505280472),
+            (17028306380591570627, 11204599021776345478),
+        ];
+        assert_eq!(hashes, before, "text with nothing to shape draws or lays out differently");
+    }
+
+    /// A box's and a run's features each re-lay the cursor's glyph
+    /// cache when they change.
+    #[test]
+    fn the_glyph_cache_hash_reads_features() {
+        let base = boxed("office", "Libre Baskerville", TextAlignment::Left, |tb| tb.style_runs = vec![StyleRun::default_for_range(0, 3)]);
+        let plain = glyph_layout_hash(&base, W, H);
+        let mut on_box = base.clone();
+        on_box.primary_text_mut().unwrap().features = vec!["-liga".into()];
+        let mut on_run = base.clone();
+        on_run.primary_text_mut().unwrap().style_runs[0].features = vec!["-liga".into()];
+        assert_ne!(glyph_layout_hash(&on_box, W, H), plain);
+        assert_ne!(glyph_layout_hash(&on_run, W, H), plain);
     }
 }

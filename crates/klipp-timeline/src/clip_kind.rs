@@ -27,6 +27,11 @@ pub struct StyleRun {
     /// Vertical baseline offset in pixels — positive = up (if None, defaults to 0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline_offset: Option<f32>,
+    /// OpenType features the run's text is shaped with, after the text
+    /// box's own (#1501): "smcp" turns one on, "-liga" off, "ss01=1"
+    /// sets a value. Empty (the default, left unwritten) adds none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
 }
 
 impl StyleRun {
@@ -41,6 +46,7 @@ impl StyleRun {
             font_style: None,
             tracking: None,
             baseline_offset: None,
+            features: Vec::new(),
         }
     }
 
@@ -52,6 +58,7 @@ impl StyleRun {
             && self.font_style.is_none()
             && self.tracking.is_none()
             && self.baseline_offset.is_none()
+            && self.features.is_empty()
     }
 
     /// Returns true if two runs have identical style fields (ignoring range).
@@ -62,6 +69,7 @@ impl StyleRun {
             && self.font_style == other.font_style
             && self.tracking == other.tracking
             && self.baseline_offset == other.baseline_offset
+            && self.features == other.features
     }
 }
 
@@ -867,6 +875,12 @@ pub struct TextBox {
     /// centred on the box's centre. Left unwritten at its default.
     #[serde(default, skip_serializing_if = "is_default")]
     pub vertical_align: TextVerticalAlign,
+    /// OpenType features the box's text is shaped with, on top of the
+    /// shaper's defaults (kerning, ligatures, contextual alternates)
+    /// (#1501): "smcp" turns one on, "-liga" off, "ss01=1" sets a value.
+    /// Empty (the default) is left unwritten.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
 }
 
 fn is_default<T: Default + PartialEq>(v: &T) -> bool {
@@ -1098,6 +1112,7 @@ impl Default for TextBox {
             text_direction: TextDirection::Ltr,
             last_line: LastLineAlign::Left,
             vertical_align: TextVerticalAlign::Middle,
+            features: Vec::new(),
         }
     }
 }

@@ -1329,6 +1329,7 @@ fn load_clip_kind(c: &ClipJson, project_dir: &Path) -> ClipKind {
                     text_direction: klipp_timeline::TextDirection::Ltr,
                     last_line: Default::default(),
                     vertical_align: Default::default(),
+                    features: Vec::new(),
                 };
                 let mut td = klipp_timeline::TitleData::single_text(tb);
                 if let Some(obj) = td.objects.first_mut() {
