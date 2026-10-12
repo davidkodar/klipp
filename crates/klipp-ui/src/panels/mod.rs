@@ -17,6 +17,7 @@ pub mod looks;
 pub mod node_graph;
 pub mod node_graph_v2;
 pub mod node_inspector;
+pub mod about;
 pub mod launch_screen;
 pub mod markers;
 pub mod edit_list;
