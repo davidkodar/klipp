@@ -1,0 +1,222 @@
+//! The title features the inspector has, through the ops (#1701):
+//! animators, keys on a text's type and colour, and text on a path.
+
+use klipp_core::title_motion::{SelectOrder, SelectUnit};
+use klipp_document::{
+    apply::DocumentView,
+    ops::{self, Op},
+};
+use klipp_media::MediaPool;
+use klipp_core::ClipId;
+use klipp_timeline::{Sequence, TextPath, TitleData, TitleObjectContent};
+use serde_json::{json, Value};
+
+struct Doc {
+    sequences: Vec<Sequence>,
+    pool: MediaPool,
+}
+
+impl Doc {
+    fn new() -> Self {
+        let mut seq = Sequence::new_default();
+        seq.tracks[0].clips.push(klipp_timeline::Clip::gap(klipp_core::Timecode::from_secs_f64(0.0, 24), klipp_core::Timecode::from_secs_f64(4.0, 24)));
+        Doc { sequences: vec![seq], pool: MediaPool::new() }
+    }
+
+    /// Resolve and apply `ops`, or the refusal's why and hint.
+    fn run(&mut self, ops: Value) -> Result<Vec<klipp_document::history::EditCommand>, String> {
+        let ops: Vec<Op> = serde_json::from_value(ops).map_err(|e| e.to_string())?;
+        let plan = ops::resolve(&self.sequences[0], &self.pool, &ops).map_err(|r| format!("{} | {}", r.why, r.hint))?;
+        let mut fps = self.sequences[0].fps;
+        let mut doc = DocumentView { sequences: &mut self.sequences, active: 0, media_pool: &mut self.pool, fps: &mut fps };
+        let mut edits = Vec::new();
+        for s in &plan.steps {
+            doc.apply_forward(&s.edit);
+            edits.push(s.edit.clone());
+        }
+        Ok(edits)
+    }
+
+    fn undo(&mut self, edits: &[klipp_document::history::EditCommand]) {
+        let mut fps = self.sequences[0].fps;
+        let mut doc = DocumentView { sequences: &mut self.sequences, active: 0, media_pool: &mut self.pool, fps: &mut fps };
+        for e in edits.iter().rev() {
+            doc.apply_inverse(e);
+        }
+    }
+
+    fn title(&self) -> (ClipId, &TitleData) {
+        let c = self.sequences[0].tracks.iter().flat_map(|t| &t.clips).find(|c| c.title_data().is_some()).expect("a title");
+        (c.id, c.title_data().unwrap())
+    }
+}
+
+fn titled(text: &str) -> (Doc, ClipId) {
+    let mut d = Doc::new();
+    d.run(json!([{"op":"title","text":text,"at":{"secs":0},"secs":4}])).unwrap();
+    let id = d.title().0;
+    (d, id)
+}
+
+/// The issue's case: one style op turns the middle word letter by letter
+/// in a seeded random order and keys its tracking from 0 to 200; undo
+/// gives the title back as it was.
+#[test]
+fn one_style_op_turns_the_middle_word_and_keys_its_tracking() {
+    let (mut d, id) = titled("one MIDDLE two");
+    let before = d.title().1.clone();
+    let edits = d
+        .run(json!([{"op":"style","clip_id":id,
+            "animators":[{"unit":"char","order":"random","seed":7,"rotate":90,"within":{"start":0.25,"end":0.75},
+                          "start_keys":[{"at":0,"value":0},{"at":2,"value":1}]}],
+            "keys":{"tracking":[{"at":0,"value":0},{"at":2,"value":200}]}}]))
+        .unwrap();
+    let td = d.title().1;
+    let a = &td.primary_fx().animators[0];
+    assert_eq!((a.selector.unit, a.selector.order, a.props.rotation), (SelectUnit::Char, SelectOrder::Random { seed: 7 }, 90.0));
+    assert_eq!(a.within.as_ref().map(|w| (w.start, w.end)), Some((0.25, 0.75)));
+    assert_eq!(a.selector.start_keyframes.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>(), [(0.0, 0.0), (2.0, 1.0)]);
+    let tb = td.primary_text().unwrap();
+    assert_eq!(tb.tracking_keyframes.iter().map(|k| (k.time_secs, k.value)).collect::<Vec<_>>(), [(0.0, 0.0), (2.0, 200.0)]);
+    d.undo(&edits);
+    assert_eq!(d.title().1, &before);
+}
+
+/// A preset by name, a field over it; `[]` clears the animators.
+#[test]
+fn a_preset_takes_overrides_and_an_empty_list_clears() {
+    let (mut d, id) = titled("Spin");
+    d.run(json!([{"op":"style","clip_id":id,"animators":[{"preset":"spin_in","rotate":180},{"preset":"wave","enabled":false}]}])).unwrap();
+    let fx = d.title().1.primary_fx().clone();
+    let spin = klipp_core::title_motion::animator_preset("spin_in", 4.0).unwrap();
+    assert_eq!(fx.animators[0].props.rotation, 180.0);
+    assert_eq!((fx.animators[0].props.scale, &fx.animators[0].selector), (spin.props.scale, &spin.selector), "the rest is the preset's");
+    assert!(!fx.animators[1].enabled);
+    d.run(json!([{"op":"style","clip_id":id,"animators":[]}])).unwrap();
+    assert!(d.title().1.primary_fx().animators.is_empty());
+}
+
+/// A title op keys its colour and its gradient's stops as it is made.
+#[test]
+fn a_new_title_keys_its_colour_and_gradient_stops() {
+    let mut d = Doc::new();
+    d.run(json!([{"op":"title","text":"Keyed","at":{"secs":0},"secs":4,
+        "gradient":{"stops":[[0.0,"#ff0000"],[0.5,"#00ff00"],[1.0,"#0000ff"]]},
+        "keys":{"color":[{"at":0,"color":"#ffffff"},{"at":3,"color":"#ff8800"}],
+                "gradient_stops":{"2":[{"at":0,"color":"#0000ff"},{"at":2,"color":"#ffffff"}]},
+                "size":[{"at":1,"value":60}],"line_spacing":[{"at":0,"value":1.0},{"at":2,"value":1.5}]}}]))
+        .unwrap();
+    let tb = d.title().1.primary_text().unwrap().clone();
+    assert_eq!(tb.color_keyframes.r.len(), 2);
+    let g = tb.gradient.as_ref().unwrap();
+    assert!(g.stop_keyframes.get(2).is_some_and(|k| k.b.len() == 2) && g.stop_keyframes[..2].iter().all(|k| k.is_empty()));
+    assert_eq!((tb.font_size_keyframes.len(), tb.line_spacing_keyframes.len()), (1, 2));
+    // Halfway from blue to white, in linear light.
+    assert_eq!(tb.at(1.0).gradient.unwrap().stops[2].color, [188, 188, 255, 255]);
+}
+
+/// Text on a path layer of the same title, by its id; "none" lays it
+/// straight again.
+#[test]
+fn a_style_op_puts_the_text_on_a_path_layer() {
+    let (mut d, id) = titled("Along the curve");
+    d.run(json!([{"op":"vector_path","clip_id":id,"shape":"ellipse","x":0.5,"y":0.5,"w":0.6,"h":0.4}])).unwrap();
+    let path_id = d.title().1.objects.iter().find(|o| matches!(o.content, TitleObjectContent::Shape(_))).unwrap().id;
+    d.run(json!([{"op":"style","clip_id":id,"on_path":{"layer":path_id.0,"offset":0.2,"align":"center","offset_keys":[{"at":0,"value":0.2},{"at":4,"value":0.7}]}}])).unwrap();
+    let tp = d.title().1.primary_text().unwrap().text_path.clone();
+    assert!(
+        matches!(&tp, Some(TextPath::Layer { layer, offset, align: klipp_timeline::PathTextAlign::Center, offset_keyframes, flip: false, contour: 0 }) if *layer == path_id && *offset == 0.2 && offset_keyframes.len() == 2),
+        "{tp:?}"
+    );
+    d.run(json!([{"op":"style","clip_id":id,"on_path":"none"}])).unwrap();
+    assert_eq!(d.title().1.primary_text().unwrap().text_path, None);
+}
+
+/// Every wrong value is refused before anything changes, with the
+/// choices or the range.
+#[test]
+fn wrong_values_are_refused_with_the_choices() {
+    let (mut d, id) = titled("Wrong");
+    let before = d.title().1.clone();
+    let style = |extra: Value| {
+        let mut op = json!({"op":"style","clip_id":id});
+        op.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        json!([op])
+    };
+    for (extra, says) in [
+        (json!({"animators":[{"preset":"twirl"}]}), "wave, random_fade_in, spin_in"),
+        (json!({"animators":[{"unit":"glyph"}]}), "char, word or line"),
+        (json!({"animators":[{"shape":"zigzag"}]}), "ramp_up"),
+        (json!({"animators":[{"order":"sideways"}]}), "centre or random"),
+        (json!({"animators":[{"seed":3}]}), "random with the seed"),
+        (json!({"animators":[{"order":"reverse","seed":3}]}), "random with the seed"),
+        (json!({"animators":[{"amount":2}]}), "-1 to 1"),
+        (json!({"animators":[{"start":1.5}]}), "start from 0 to 1"),
+        (json!({"animators":[{"rotate":9999}]}), "rotate (degrees) from"),
+        (json!({"animators":[{"easing":"wobbly"}]}), "cubic-bezier"),
+        (json!({"animators":[{"color":"teal"}]}), "#rrggbb"),
+        (json!({"keys":{"tracking":[{"at":9,"value":10}]}}), "after the title's end"),
+        (json!({"keys":{"tracking":[{"at":-1,"value":10}]}}), "0 or later"),
+        (json!({"keys":{"size":[{"at":1,"value":2}]}}), "size keys from 4"),
+        (json!({"keys":{"gradient_stops":{"0":[{"at":1,"color":"#ffffff"}]}}}), "without a gradient"),
+        (json!({"keys":{"gradient_stops":{"first":[{"at":1,"color":"#ffffff"}]}}}), "index from 0"),
+        (json!({"on_path":{"layer":0}}), "it has none; add one with vector_path"),
+        (json!({"on_path":"straight"}), "\"none\""),
+        (json!({"on_path":{"layer":0,"align":"middle"}}), "start, center or end"),
+    ] {
+        let why = d.run(style(extra.clone())).expect_err(&format!("{extra} is refused"));
+        assert!(why.contains(says), "{extra}: {why}");
+        assert_eq!(d.title().1, &before, "{extra}: nothing changed");
+    }
+    // A gradient's stop that isn't there, and a layer that isn't a path.
+    d.run(json!([{"op":"style","clip_id":id,"gradient":["#ff0000","#0000ff"]}])).unwrap();
+    let why = d.run(style(json!({"keys":{"gradient_stops":{"2":[{"at":1,"color":"#ffffff"}]}}}))).unwrap_err();
+    assert!(why.contains("has 2 stops; there is no stop 2"), "{why}");
+    d.run(json!([{"op":"vector_path","clip_id":id,"shape":"ellipse"}])).unwrap();
+    let text_id = d.title().1.objects[0].id.0;
+    let why = d.run(style(json!({"on_path":{"layer":text_id}}))).unwrap_err();
+    assert!(why.contains("is not a path layer of this title; its path layers are"), "{why}");
+    let path_id = d.title().1.objects.last().unwrap().id.0;
+    let why = d.run(style(json!({"on_path":{"layer":path_id,"contour":3}}))).unwrap_err();
+    assert!(why.contains("there is no contour 3"), "{why}");
+    // A new title has no path of its own.
+    let why = d.run(json!([{"op":"title","text":"x","at":{"secs":0},"secs":2,"track":0,"on_path":{"layer":0}}])).unwrap_err();
+    assert!(why.contains("vector_path"), "{why}");
+}
+
+/// A text layer blends with the layers below it and is masked by
+/// another layer of its title (#1513); "none" takes the mask off.
+#[test]
+fn a_style_op_sets_the_texts_blend_and_mask() {
+    let (mut d, id) = titled("Masked");
+    d.run(json!([{"op":"vector_path","clip_id":id,"shape":"ellipse"}])).unwrap();
+    let path = d.title().1.objects.last().unwrap().id;
+    d.run(json!([{"op":"style","clip_id":id,"blend":"color_dodge","mask":{"layer":path.0,"kind":"inverted_luma"}}])).unwrap();
+    let text = d.title().1.objects[0].clone();
+    assert_eq!(text.blend, klipp_core::BlendMode::ColorDodge);
+    assert_eq!(text.mask, Some(klipp_timeline::LayerMask { source: path, kind: klipp_core::layer_mask::LayerMaskKind::InvertedLuma }));
+    assert_eq!(d.title().1.objects.last().unwrap().blend, klipp_core::BlendMode::Normal, "only the text's");
+    d.run(json!([{"op":"style","clip_id":id,"mask":"none","blend":"Soft Light"}])).unwrap();
+    let text = &d.title().1.objects[0];
+    assert_eq!((text.mask, text.blend), (None, klipp_core::BlendMode::SoftLight));
+    let before = d.title().1.clone();
+    for (op, says) in [
+        (json!({"blend":"glow"}), "normal, add, multiply"),
+        (json!({"mask":{"layer":path.0,"kind":"shadow"}}), "alpha, inverted_alpha, luma or inverted_luma"),
+        (json!({"mask":{"layer":99}}), "has no layer 99; its other layers are"),
+        (json!({"mask":{"layer":text.id.0}}), "cannot mask itself"),
+        (json!({"mask":"off"}), "\"none\""),
+    ] {
+        let mut o = json!({"op":"style","clip_id":id});
+        o.as_object_mut().unwrap().extend(op.as_object().unwrap().clone());
+        let why = d.run(json!([o])).expect_err(&format!("{op}"));
+        assert!(why.contains(says), "{op}: {why}");
+        assert_eq!(d.title().1, &before);
+    }
+    // A new title has only its text: a blend, but nothing to mask with.
+    let mut fresh = Doc::new();
+    fresh.run(json!([{"op":"title","text":"Add","at":{"secs":0},"secs":2,"blend":"screen"}])).unwrap();
+    assert_eq!(fresh.title().1.objects[0].blend, klipp_core::BlendMode::Screen);
+    let why = Doc::new().run(json!([{"op":"title","text":"x","at":{"secs":0},"secs":2,"mask":{"layer":5}}])).unwrap_err();
+    assert!(why.contains("no other layer"), "{why}");
+}

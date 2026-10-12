@@ -757,6 +757,41 @@ fn srgb_byte(v: f32) -> u8 {
     (c * 255.0).round() as u8
 }
 
+/// The animator presets by name, as edit operations and the Title tab
+/// name them (#1510, #1701).
+pub const ANIMATOR_PRESETS: [&str; 3] = ["wave", "random_fade_in", "spin_in"];
+
+/// The preset `name` for a title `clip_secs` long: a wave running
+/// through the letters over the clip, letters fading in in a random
+/// order, and letters spinning in one after another; `None` for a name
+/// that is not one.
+pub fn animator_preset(name: &str, clip_secs: f64) -> Option<Animator> {
+    let key = |time_secs: f64, value: f32| crate::keyframe::Keyframe { time_secs, value, interpolation: crate::keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+    let clip = clip_secs.max(0.1);
+    let entrance = clip.min(1.2);
+    Some(match name {
+        "wave" => Animator {
+            name: "Wave".into(),
+            selector: RangeSelector { end: 0.3, shape: SelectShape::Smooth, offset_keyframes: vec![key(0.0, -0.3), key(clip, 1.0)], ..Default::default() },
+            props: AnimatorProps { dy: -0.3, ..Default::default() },
+            ..Default::default()
+        },
+        "random_fade_in" => Animator {
+            name: "Random fade in".into(),
+            selector: RangeSelector { order: SelectOrder::Random { seed: 1 }, start_keyframes: vec![key(0.0, 0.0), key(entrance, 1.0)], ..Default::default() },
+            props: AnimatorProps { opacity: 0.0, ..Default::default() },
+            ..Default::default()
+        },
+        "spin_in" => Animator {
+            name: "Spin in".into(),
+            selector: RangeSelector { start_keyframes: vec![key(0.0, 0.0), key(entrance, 1.0)], easing: Easing::OutCubic, ..Default::default() },
+            props: AnimatorProps { rotation: 360.0, scale: 0.4, opacity: 0.0, ..Default::default() },
+            ..Default::default()
+        },
+        _ => return None,
+    })
+}
+
 /// Each unit's place along the selector's range, 0 first: the order
 /// laid over `n` units. Random shuffles by the seed alone (splitmix64
 /// and Fisher–Yates), so the order is the same on every render.

@@ -3,55 +3,15 @@
 //! what it does, its full controls folded under Details. The range's
 //! start, end and offset key through the title layer keyframe commands.
 
-use klipp_core::title_motion::{Animator, AnimatorProps, Easing, RangeSelector, SelectOrder, SelectShape, SelectUnit};
-use klipp_core::{AppCommand, ClipId, Interpolation, Keyframe};
+use klipp_core::title_motion::{Animator, Easing, RangeSelector, SelectOrder, SelectShape, SelectUnit};
+use klipp_core::{AppCommand, ClipId, Keyframe};
 use klipp_timeline::{LayerFx, TitleObjectId};
 
 use crate::theme::KlippTheme;
 
-fn key(time_secs: f64, value: f32) -> Keyframe {
-    Keyframe { time_secs, value, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
-}
-
-/// The presets, for a clip `clip_secs` long: a wave running through
-/// the letters over the clip, letters fading in in a random order, and
-/// letters spinning in one after another.
+/// The presets, for a clip `clip_secs` long, as klipp-core names them.
 pub fn presets(clip_secs: f64) -> Vec<Animator> {
-    let clip = clip_secs.max(0.1);
-    let entrance = clip.min(1.2);
-    vec![
-        Animator {
-            name: "Wave".into(),
-            selector: RangeSelector {
-                end: 0.3,
-                shape: SelectShape::Smooth,
-                offset_keyframes: vec![key(0.0, -0.3), key(clip, 1.0)],
-                ..Default::default()
-            },
-            props: AnimatorProps { dy: -0.3, ..Default::default() },
-            ..Default::default()
-        },
-        Animator {
-            name: "Random fade in".into(),
-            selector: RangeSelector {
-                order: SelectOrder::Random { seed: 1 },
-                start_keyframes: vec![key(0.0, 0.0), key(entrance, 1.0)],
-                ..Default::default()
-            },
-            props: AnimatorProps { opacity: 0.0, ..Default::default() },
-            ..Default::default()
-        },
-        Animator {
-            name: "Spin in".into(),
-            selector: RangeSelector {
-                start_keyframes: vec![key(0.0, 0.0), key(entrance, 1.0)],
-                easing: Easing::OutCubic,
-                ..Default::default()
-            },
-            props: AnimatorProps { rotation: 360.0, scale: 0.4, opacity: 0.0, ..Default::default() },
-            ..Default::default()
-        },
-    ]
+    klipp_core::title_motion::ANIMATOR_PRESETS.iter().filter_map(|n| klipp_core::title_motion::animator_preset(n, clip_secs)).collect()
 }
 
 fn unit_label(u: SelectUnit) -> &'static str {
