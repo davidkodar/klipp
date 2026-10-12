@@ -519,9 +519,10 @@ impl MediaItem {
         if make.contains("sony") || model.contains("fx") || model.contains("a7") || model.contains("venice") {
             return LogFormat::SLog3;
         }
-        // Leica's one log is L-Log (#1225).
+        // Leica's one log is L-Log (#1225), in BT.709 primaries on the SL
+        // (Typ 601) and BT.2020 on every later body (#1642).
         if make.contains("leica") {
-            return LogFormat::LeicaLLog;
+            return if model.contains("typ 601") { LogFormat::LeicaLLogBt709 } else { LogFormat::LeicaLLog };
         }
         if make.contains("panasonic") || model.contains("gh") || model.contains("s1") || model.contains("s5") {
             return LogFormat::VLog;
@@ -1174,14 +1175,19 @@ mod tests {
     }
 
     /// #1225: a 10-bit clip from a Leica camera is L-Log, Leica's only
-    /// log; 8-bit from it stays SDR.
+    /// log, in BT.709 primaries from the SL (Typ 601) (#1642); 8-bit from
+    /// it stays SDR.
     #[test]
     fn a_leica_clip_is_l_log() {
-        use klipp_core::LogFormat;
-        for model in ["LEICA SL2-S", "LEICA SL3", "LEICA Q3", "LEICA SL (Typ 601)"] {
+        use klipp_core::{ColorPrimaries, LogFormat};
+        for model in ["LEICA SL2-S", "LEICA SL3", "LEICA Q3"] {
             let item = ten_bit_hevc("Leica Camera AG", model, "", None);
             assert_eq!(item.detect_log_format(), LogFormat::LeicaLLog, "{model}");
         }
+        let typ601 = ten_bit_hevc("Leica Camera AG", "LEICA SL (Typ 601)", "", None);
+        assert_eq!(typ601.detect_log_format(), LogFormat::LeicaLLogBt709);
+        assert_eq!(LogFormat::LeicaLLogBt709.camera_colourspace().map(|(_, p)| p), Some(ColorPrimaries::Bt709));
+        assert_eq!(LogFormat::LeicaLLog.camera_colourspace().map(|(_, p)| p), Some(ColorPrimaries::Bt2020));
         let mut sdr = ten_bit_hevc("Leica Camera AG", "LEICA SL3", "", None);
         sdr.bit_depth = Some(8);
         sdr.pixel_format = Some("yuv420p".into());

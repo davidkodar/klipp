@@ -74,6 +74,9 @@ pub enum LogFormat {
     AppleLog,
     /// Leica L-Log
     LeicaLLog,
+    /// Leica L-Log as the SL (Typ 601) records it: the same curve, in
+    /// BT.709 primaries rather than BT.2020 (#1642).
+    LeicaLLogBt709,
     /// RED Log3G10
     RedLog3G10,
     /// Blackmagic Design Film Generation 5
@@ -109,12 +112,10 @@ impl LogFormat {
             Self::GoProFlat => (T::GoProFlat, P::Bt709),
             // Leica records L-Log in BT.2020 on every current body — SL2,
             // SL2-S, SL3, SL3-S and Q3 — and in BT.709 on the SL (Typ 601)
-            // alone, per Table 3 of the L-Log Reference Manual v1.6. The
-            // format cannot tell which camera shot it and the container's
-            // own tag is no help, so this takes the five against the one.
-            // Typ 601 footage needs its primaries set by hand; Leica's own
-            // LUTs do not cover that camera either, for the same reason.
+            // alone, per Table 3 of the L-Log Reference Manual (v1.6, v1.9).
+            // The curve is one; the camera picks the primaries (#1642).
             Self::LeicaLLog => (T::LeicaLLog, P::Bt2020),
+            Self::LeicaLLogBt709 => (T::LeicaLLog, P::Bt709),
             // sRGB, linear, PQ and HLG are not camera logs.
             Self::Srgb | Self::Linear | Self::PQ | Self::HLG => return None,
         })

@@ -192,7 +192,7 @@ pub(crate) fn node_summary(graph: &klipp_nodes::NodeGraph) -> Vec<String> {
 /// Every `LogFormat` a client may name, in the spelling the wire uses.
 pub const LOG_FORMAT_NAMES: &[&str] = &[
     "Srgb", "Linear", "LogC3", "LogC4", "SLog2", "SLog3", "CanonLog", "CanonLog3",
-    "VLog", "NLog", "FLog", "DJIDLog", "GoProFlat", "AppleLog", "LeicaLLog",
+    "VLog", "NLog", "FLog", "DJIDLog", "GoProFlat", "AppleLog", "LeicaLLog", "LeicaLLogBt709",
     "RedLog3G10", "BmdFilmGen5", "HLG", "PQ",
 ];
 
