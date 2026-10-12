@@ -291,6 +291,33 @@ fn commit_pair(dir: &Path, project: &[u8], manifest: &[u8], backup_count: u32, g
     Ok(())
 }
 
+/// A clip's four times as values at one rate, which is how a clip is
+/// stored. The times may carry different rates (a clip at its media's
+/// rate bladed or moved at the sequence's), and a value written at a rate
+/// it was not counted in reads back as another time. The rate is the
+/// least common multiple of theirs, so every time is stored exactly; a
+/// clip whose times already share a rate is written as before.
+fn one_rate(times: [klipp_core::Timecode; 4]) -> ([i64; 4], u32) {
+    fn gcd(a: u64, b: u64) -> u64 {
+        if b == 0 { a } else { gcd(b, a % b) }
+    }
+    let rate = times.iter().try_fold(1u64, |acc, t| {
+        let r = u64::from(t.rate.max(1));
+        let lcm = acc / gcd(acc, r) * r;
+        (lcm <= u64::from(u32::MAX)).then_some(lcm)
+    });
+    let exact = rate.and_then(|rate| {
+        let values = times.map(|t| i64::try_from(rate / u64::from(t.rate.max(1))).ok().and_then(|k| t.value.checked_mul(k)));
+        values.iter().all(Option::is_some).then(|| (values.map(Option::unwrap), rate as u32))
+    });
+    // Rates with no common multiple a u32 holds: the finest of them, to
+    // the nearest tick.
+    exact.unwrap_or_else(|| {
+        let finest = times.iter().map(|t| t.rate).max().unwrap_or(1);
+        (times.map(|t| t.rescale_to(finest).value), finest)
+    })
+}
+
 fn timecode_to_json(tc: &klipp_core::Timecode) -> TimecodeJson {
     TimecodeJson { value: tc.value, rate: tc.rate }
 }
@@ -403,15 +430,17 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         grade_versions,
                         active_grade_version,
                     } = ClipPictureV1::of(c);
+                    let ([timeline_in, timeline_out, source_in, source_out], rate) =
+                        one_rate([c.timeline_in, c.timeline_out, c.source_in, c.source_out]);
                     ClipJson {
                         id: c.id.to_string(),
                         media_id: c.media_id().map(|mid| mid.to_string()),
                         kind: Some(clip_kind_to_json(&c.kind, project_dir)),
-                        timeline_in: c.timeline_in.value,
-                        timeline_out: c.timeline_out.value,
-                        source_in: c.source_in.value,
-                        source_out: c.source_out.value,
-                        rate: c.timeline_in.rate,
+                        timeline_in,
+                        timeline_out,
+                        source_in,
+                        source_out,
+                        rate,
                         node_graph,
                         color_grade,
                         effects,

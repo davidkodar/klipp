@@ -17,6 +17,8 @@ mod camera_round_trip;
 mod canvas_metadata;
 #[path = "../clip_label_round_trip.rs"]
 mod clip_label_round_trip;
+#[path = "../clip_rates_round_trip.rs"]
+mod clip_rates_round_trip;
 #[path = "../consolidate_integration.rs"]
 mod consolidate_integration;
 #[path = "../corner_pin_round_trip.rs"]
