@@ -607,6 +607,44 @@ impl KlippApp {
                 self.state.toast.show(if changed == 0 { format!("No title holds \u{201c}{find}\u{201d}") } else { format!("Replaced in {changed} title(s)") });
                 true
             }
+            AppCommand::CopyTitleStyle { clip_id } => {
+                let td = self.state.sequence().all_clips().find(|c| c.id == *clip_id).and_then(|c| c.title_data().cloned());
+                match td {
+                    Some(td) => {
+                        self.state.title_style_clipboard = Some(td);
+                        self.state.toast.show("Title style copied".to_string());
+                    }
+                    None => self.state.toast.show("Not a title: no style copied".to_string()),
+                }
+                true
+            }
+            AppCommand::PasteTitleStyle { from, to } => {
+                let seq = self.state.sequence();
+                let look = match from {
+                    Some(id) => seq.all_clips().find(|c| c.id == *id).and_then(|c| c.title_data().cloned()),
+                    None => self.state.title_style_clipboard.clone(),
+                };
+                let Some(look) = look else {
+                    self.state.toast.show("Copy a title's style first".to_string());
+                    return true;
+                };
+                let edits = paste_title_style(seq, &look, to);
+                if edits.is_empty() {
+                    self.state.toast.show("Those titles already look like it".to_string());
+                } else {
+                    let n = edits.len();
+                    self.apply_edits_as_one(&edits, "Paste Title Style");
+                    self.state.toast.show(format!("Pasted the style on {n} title(s)"));
+                }
+                true
+            }
+            AppCommand::PickTitleStyle { target } => {
+                self.state.title_style_pick = *target;
+                if target.is_some() {
+                    self.state.toast.show("Click the title whose look to take".to_string());
+                }
+                true
+            }
             AppCommand::RevertTitleToStyle { clip_id } => {
                 let seq = &self.state.sequences[self.state.active_sequence_idx];
                 let reverted = seq.all_clips().find(|c| c.id == *clip_id).ok_or_else(|| "the title is gone".to_string()).and_then(|c| klipp_document::ops::revert_to_style(seq, c));
@@ -3783,6 +3821,23 @@ pub(super) fn title_seek_on_select(
     title_rest_time(clip, fps_rate)
 }
 
+/// The edits that give each title of `to` in `seq` the look of `look`,
+/// each keeping its words (#1718): one per title it changes; clips that
+/// are not titles, or on locked tracks, are left.
+fn paste_title_style(seq: &klipp_timeline::Sequence, look: &klipp_timeline::TitleData, to: &[klipp_core::ClipId]) -> Vec<EditCommand> {
+    seq.tracks
+        .iter()
+        .filter(|t| !t.locked)
+        .flat_map(|t| t.clips.iter())
+        .filter(|c| to.contains(&c.id))
+        .filter_map(|c| {
+            let old = c.title_data()?;
+            let new = look.styled_like(old).filter(|n| n != old)?;
+            Some(EditCommand::EditTitle { clip_id: c.id, description: "Paste Title Style", old_data: old.clone(), new_data: new })
+        })
+        .collect()
+}
+
 /// `tb` set on contour `contour` of the path layer `layer` (#1508), at
 /// `offset` along it, `align` 0 start, 1 centre, 2 end, `flip` to the
 /// other side; the offset's keys kept while it stays on that layer.
@@ -3815,6 +3870,44 @@ fn draw_text_path(td: &mut klipp_timeline::TitleData, text: Option<klipp_timelin
         set_text_path_layer(tb, id, 0, 0.0, 0, false);
     }
     id
+}
+
+#[cfg(test)]
+mod paste_style_tests {
+    use super::paste_title_style;
+    use klipp_document::history::EditCommand;
+    use klipp_timeline::{Clip, ClipKind, Sequence, TextBox, TitleData, Track, TrackKind};
+
+    /// #1718's done-when: one title's style pasted onto another, whose
+    /// text stays and whose look matches, as one edit; a clip that is not
+    /// a title is left.
+    #[test]
+    fn a_titles_style_pastes_onto_another_whose_words_stay() {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let title = |text: &str, font: &str, size: f32, at: f64| {
+            let mut c = Clip::gap(tc(at), tc(at + 1.0));
+            c.kind = ClipKind::Title(TitleData::single_text(TextBox { text: text.into(), font_name: font.into(), font_size: size, color: [255, 204, 0, 255], ..Default::default() }));
+            c
+        };
+        let look = title("Look", "Libre Baskerville", 72.0, 0.0);
+        let target = title("Ana Diaz", "Inter", 40.0, 2.0);
+        let not_a_title = Clip::gap(tc(4.0), tc(5.0));
+        let mut seq = Sequence::new_default();
+        let mut track = Track::new("Text 1", TrackKind::Text);
+        track.clips = vec![look.clone(), target.clone(), not_a_title.clone()];
+        seq.tracks = vec![track];
+        let edits = paste_title_style(&seq, look.title_data().unwrap(), &[target.id, not_a_title.id]);
+        let [EditCommand::EditTitle { clip_id, new_data, .. }] = &edits[..] else { panic!("one edit: {edits:?}") };
+        assert_eq!(*clip_id, target.id);
+        let tb = new_data.primary_text().unwrap();
+        assert_eq!(tb.text, "Ana Diaz", "its words stay");
+        let want = look.title_data().unwrap().primary_text().unwrap();
+        assert_eq!((tb.font_name.as_str(), tb.font_size, tb.color), (want.font_name.as_str(), want.font_size, want.color), "its look matches");
+        // Pasting it again changes nothing.
+        let mut seq2 = seq.clone();
+        seq2.tracks[0].clips[1].kind = ClipKind::Title(new_data.clone());
+        assert!(paste_title_style(&seq2, look.title_data().unwrap(), &[target.id]).is_empty());
+    }
 }
 
 #[cfg(test)]
