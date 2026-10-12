@@ -324,7 +324,7 @@ pub(crate) fn respond(
             }
             // The colour pass grabs frames, so it takes the sequence read
             // lock for a moment only; work out the times first, then let go.
-            let (report, color_times, audio_media) = {
+            let (mut report, color_times, audio_media, to_read) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
                 let mut report = klipp_document::qc::check(&seq, &pool, &AnalysedTranscripts);
@@ -341,6 +341,9 @@ pub(crate) fn respond(
                         hint: "check loudness: true meters the mix for section drops before export".into(),
                     });
                 }
+                // The titles read straight off the picture, for the
+                // legibility pass (#1581): up to 16, each once.
+                let to_read = klipp_document::qc::titles_to_read(&seq, &pool, 16);
                 // Each detected shot of each picture clip, read on its own
                 // — a clip holding a cut, or a long walk through changing
                 // light, is several shots, and one median across them all
@@ -391,8 +394,32 @@ pub(crate) fn respond(
                         }
                     }
                 }
-                (report, times, audio_media)
+                (report, times, audio_media, to_read)
             };
+            // Each title's words against the picture under it, that clip
+            // rendered alone at the title's middle (#1581). A picture that
+            // can't be read is said, never taken for a clean one.
+            for title in &to_read {
+                match grab_frame_rgba_of(ctx, title.at_secs, Some(title.under), Some(4000)) {
+                    Ok((picture, w, h)) => {
+                        if let Some(f) = klipp_document::qc::legibility(title, &picture, w as usize, h as usize) {
+                            match f.severity {
+                                klipp_document::qc::Severity::Error => report.errors += 1,
+                                klipp_document::qc::Severity::Warning => report.warnings += 1,
+                                klipp_document::qc::Severity::Note => {}
+                            }
+                            report.findings.push(f);
+                        }
+                    }
+                    Err(e) => report.findings.push(klipp_document::qc::Finding {
+                        severity: klipp_document::qc::Severity::Note,
+                        rule: "title_hard_to_read",
+                        at_secs: Some(title.at_secs),
+                        what: format!("{}'s words weren't read against the picture under them ({e})", title.label),
+                        hint: "Look at that frame to see they read".into(),
+                    }),
+                }
+            }
             // Every shot read in Lab against the brief's look (or the
             // neutral one, or the screen recording's), faces and all.
             let mut color_findings: Vec<(String, f64, String, String)> = Vec::new();
