@@ -449,6 +449,27 @@ pub struct GraphExecutor {
     /// clips), the executor silently falls back to the normal Output
     /// pick — no error, no toast spam.
     solo_node: Option<NodeId>,
+    /// The inspection a run asks of nodes inside its compounds (#1475).
+    inside: CompoundInspect,
+}
+
+/// What a top-level run asks of the nodes inside its compounds, which
+/// run as runs of their own, and what those answered (#1475): the scope's
+/// tap and the thumbnails, by node id (a grade's ids are unique at every
+/// depth), and whether the soloed node was inside one.
+#[derive(Default)]
+struct CompoundInspect {
+    tap: Option<NodeId>,
+    thumbs: Option<std::collections::HashSet<NodeId>>,
+    tapped: Option<Vec<f32>>,
+    found_thumbs: std::collections::HashMap<NodeId, Vec<u8>>,
+    /// The compound of this level whose run picked the soloed node.
+    solo_in: Option<NodeId>,
+}
+
+/// Whether `graph` holds `id`, at any depth of its compounds.
+fn holds_node(graph: &NodeGraph, id: NodeId) -> bool {
+    graph.nodes.iter().any(|n| n.id == id || n.params.compound_subgraph.as_ref().is_some_and(|g| holds_node(g, id)))
 }
 
 /// Maximum recursion depth for nested `Compound` nodes before the
@@ -809,6 +830,7 @@ impl GraphExecutor {
             lut_tetrahedral: true,
             current_clip_track_points: Vec::new(),
             solo_node: None,
+            inside: CompoundInspect::default(),
         }
     }
 
@@ -892,6 +914,7 @@ impl GraphExecutor {
             lut_tetrahedral: true,
             current_clip_track_points: Vec::new(),
             solo_node: None,
+            inside: CompoundInspect::default(),
         }
     }
 
@@ -1716,10 +1739,24 @@ impl GraphExecutor {
         self.run_analysis = analysis;
         self.run_analysis_missing = missing;
         self.run_motion_uploaded = false;
-        let result = self.execute_with_plan(
+        // A top-level run's requests reach the nodes inside its compounds.
+        let top = self.compound_depth == 0;
+        if top {
+            self.inside = CompoundInspect { tap: matte_tap, thumbs: visible_nodes.cloned(), ..Default::default() };
+        }
+        let mut result = self.execute_with_plan(
             source_frame, graph, &plan, width, height, clip_time_secs, frame_number,
             matte_tap, matte_preview_node, visible_nodes, ctx,
         );
+        if top {
+            let inside = std::mem::take(&mut self.inside);
+            if let Ok((_, tapped, thumbs)) = result.as_mut() {
+                if tapped.is_none() {
+                    *tapped = inside.tapped;
+                }
+                thumbs.extend(inside.found_thumbs);
+            }
+        }
         self.run_analysis.clear();
         // Kept for the next run of this shape. A long session of many
         // shapes starts over rather than grow without bound.
@@ -3035,9 +3072,11 @@ impl GraphExecutor {
         let normal_output_id = graph
             .input_of(graph.output_node_id, 0)
             .ok_or(ExecutorError::NoOutputConnection)?;
+        // A solo inside a compound is that compound's output here (#1475).
         let result_node_id = match self.solo_node {
             Some(id) if node_outputs.contains_key(&id) => id,
-            _ => normal_output_id,
+            Some(_) => self.inside.solo_in.filter(|c| node_outputs.contains_key(c)).unwrap_or(normal_output_id),
+            None => normal_output_id,
         };
         let result_arc = node_outputs
             .remove(&result_node_id)
@@ -5841,6 +5880,11 @@ impl GraphExecutor {
                 // nodes), so the clone is cheap relative to the
                 // actual grade work about to run on the frame.
                 let subgraph = subgraph.clone();
+                // The top-level run's tap and thumbnails, asked of the
+                // nodes in here too (#1475); a matte preview stays the
+                // outer level's.
+                let (tap, thumbs) = (self.inside.tap, self.inside.thumbs.clone());
+                let solo_here = self.solo_node.is_some_and(|s| holds_node(&subgraph, s));
                 let result = self.execute_linear_with_thumbs(
                     primary_input,
                     &subgraph,
@@ -5848,14 +5892,22 @@ impl GraphExecutor {
                     height,
                     clip_time_secs,
                     frame_number,
-                    None, // matte_tap — outer-level concern, not ours
-                    None, // matte_preview_node — same
-                    None, // visible_nodes — per-node thumbs inside
-                          // compounds land with a follow-up pass
+                    tap.filter(|t| holds_node(&subgraph, *t)),
+                    None,
+                    thumbs.as_ref(),
                 );
                 self.compound_depth -= 1;
+                if solo_here {
+                    self.inside.solo_in = Some(node_id);
+                }
                 match result {
-                    Ok((output, _tapped, _thumbs)) => output,
+                    Ok((output, tapped, found)) => {
+                        if tapped.is_some() {
+                            self.inside.tapped = tapped;
+                        }
+                        self.inside.found_thumbs.extend(found);
+                        output
+                    }
                     Err(e) => {
                         tracing::warn!(
                             "Compound: sub-graph execution failed: {:?} — falling through",
@@ -7034,6 +7086,50 @@ mod tests {
         assert!(tapped.is_some(), "tapped output should be captured");
         let tap = tapped.unwrap();
         assert!(tap[0] > 100, "tapped exposure output should be bright");
+    }
+
+    /// Source → `inner` → Output, linked in order.
+    fn chain_of(inner: Vec<crate::graph::Node>) -> NodeGraph {
+        let node = |kind| crate::graph::Node { id: NodeId::new_v4(), kind, label: String::new(), enabled: true, params: NodeParams::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() };
+        let mut nodes = vec![node(NodeKind::Source)];
+        nodes.extend(inner);
+        nodes.push(node(NodeKind::Output));
+        let edges = nodes.windows(2).map(|w| crate::graph::Edge { from_node: w[0].id, from_port: 0, to_node: w[1].id, to_port: 0 }).collect();
+        NodeGraph { output_node_id: nodes.last().unwrap().id, nodes, edges, node_positions: Default::default(), working_space_override: None, frames: Vec::new(), sticky_notes: Vec::new() }
+    }
+
+    fn grade_node(kind: NodeKind, params: NodeParams) -> crate::graph::Node {
+        crate::graph::Node { id: NodeId::new_v4(), kind, label: String::new(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: Vec::new() }
+    }
+
+    /// A node inside a compound, and inside a compound inside that,
+    /// answers the scope's tap, its thumbnail and a solo (#1475): the
+    /// solo shows what the tap reads, not the grade's output, and the
+    /// thumbnail is drawn; the run's output is as without them.
+    #[test]
+    fn a_node_inside_a_compound_is_tapped_soloed_and_thumbnailed() {
+        let exposure = |stops| grade_node(NodeKind::Exposure, NodeParams { exposure: Some(stops), ..Default::default() });
+        let (inner, deep) = (exposure(1.0), exposure(0.5));
+        let (inner_id, deep_id) = (inner.id, deep.id);
+        let nested = grade_node(NodeKind::Compound, NodeParams { compound_subgraph: Some(chain_of(vec![deep])), ..Default::default() });
+        let outer = grade_node(NodeKind::Compound, NodeParams { compound_subgraph: Some(chain_of(vec![inner, nested])), ..Default::default() });
+        let graph = chain_of(vec![outer, exposure(-2.0)]);
+        let frame = [0.18f32, 0.18, 0.18, 1.0].repeat(4);
+        let mut exec = GraphExecutor::new_cpu_only();
+        let (plain, _, _) = exec.execute_linear_with_thumbs(&frame, &graph, 2, 2, 0.0, 0, None, None, None).unwrap();
+        for id in [inner_id, deep_id] {
+            let what = if id == inner_id { "one deep" } else { "two deep" };
+            let thumbs: std::collections::HashSet<NodeId> = [id].into_iter().collect();
+            let (out, tapped, found) = exec.execute_linear_with_thumbs(&frame, &graph, 2, 2, 0.0, 0, Some(id), None, Some(&thumbs)).unwrap();
+            assert_eq!(out, plain, "{what}: the output as without them");
+            let tapped = tapped.unwrap_or_else(|| panic!("{what}: a tap"));
+            assert!(found.contains_key(&id), "{what}: a thumbnail");
+            exec.set_solo_node(Some(id));
+            let (soloed, _, _) = exec.execute_linear_with_thumbs(&frame, &graph, 2, 2, 0.0, 0, None, None, None).unwrap();
+            exec.set_solo_node(None);
+            assert_eq!(soloed, tapped, "{what}: the solo shows the node");
+            assert_ne!(soloed, plain, "{what}: not the grade's output");
+        }
     }
 
     /// A tap on a node that changes nothing, run as a bypass, is its

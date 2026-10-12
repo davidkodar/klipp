@@ -3582,7 +3582,18 @@ impl Renderer {
         // answered by another node or the output (M3 step 16a). An effect
         // dropped as an identity passes its input through unchanged, so it
         // is answered by what feeds it (#1314).
-        let held: HashSet<NodeId> = graph.nodes.iter().map(|n| n.id).collect();
+        // The nodes inside its compounds too: the executor answers for
+        // them by id (#1475).
+        fn all_ids(g: &klipp_nodes::NodeGraph, out: &mut HashSet<NodeId>) {
+            for n in &g.nodes {
+                out.insert(n.id);
+                if let Some(sub) = &n.params.compound_subgraph {
+                    all_ids(sub, out);
+                }
+            }
+        }
+        let mut held: HashSet<NodeId> = HashSet::new();
+        all_ids(graph, &mut held);
         let feeds = self.identity_feeds.get(&clip.id);
         let fed_by = |node: &NodeId| {
             let (_, feed) = feeds?.iter().find(|(n, _)| n == node)?;
