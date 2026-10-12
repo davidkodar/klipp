@@ -417,6 +417,8 @@ pub enum Op {
     /// Music under speech: the volume of `clip_id` drops by `by_db`
     /// (9 by default) wherever another clip is heard over it, moving
     /// there and back over `fade_secs` (0.5 by default), never as a step.
+    /// A gap in the speech shorter than `bridge_secs` (2 by default) stays
+    /// down: the music doesn't swell up between two sentences.
     /// Written as volume keyframes on the clip; any it had are replaced.
     Duck {
         clip_id: ClipRef,
@@ -424,6 +426,8 @@ pub enum Op {
         by_db: f32,
         #[serde(default = "default_duck_fade")]
         fade_secs: f64,
+        #[serde(default = "default_duck_bridge")]
+        bridge_secs: f64,
     },
     /// A lower third: `name`, and `role` under it, bottom left inside
     /// title-safe, for `secs` from `at`, fading in and out. It goes on a
@@ -1598,6 +1602,10 @@ fn default_duck_fade() -> f64 {
     0.5
 }
 
+fn default_duck_bridge() -> f64 {
+    2.0
+}
+
 /// A word of a media file's transcript, in the file's seconds.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpokenWord {
@@ -2252,9 +2260,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             volume_keys(seq, pool, i, ti, clip, keys)
         }
-        Op::Duck { clip_id, by_db, fade_secs } => {
+        Op::Duck { clip_id, by_db, fade_secs, bridge_secs } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            duck(seq, pool, i, ti, clip, *by_db, *fade_secs, transcripts)
+            duck(seq, pool, i, ti, clip, *by_db, *fade_secs, *bridge_secs, transcripts)
         }
         Op::Transition { clip_id, remove: true, .. } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
@@ -3268,12 +3276,16 @@ pub(crate) fn is_heard(seq: &Sequence, pool: &MediaPool, track: &klipp_timeline:
 }
 
 #[allow(clippy::too_many_arguments)]
-fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_db: f32, fade_secs: f64, transcripts: &dyn Transcripts) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+#[allow(clippy::too_many_arguments)]
+fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_db: f32, fade_secs: f64, bridge_secs: f64, transcripts: &dyn Transcripts) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     if !(1.0..=40.0).contains(&by_db) {
         return Err(refuse(i, format!("{by_db} dB is not a duck"), "music under speech comes down six to twelve decibels"));
     }
     if !(0.05..=5.0).contains(&fade_secs) {
         return Err(refuse(i, format!("a move of {fade_secs} s"), "give fade_secs between 0.05 and 5; a duck is a fade, never a step"));
+    }
+    if !(0.0..=10.0).contains(&bridge_secs) {
+        return Err(refuse(i, format!("a bridge of {bridge_secs} s"), "give bridge_secs between 0 and 10: the longest gap in the speech the music stays down across"));
     }
     if !is_heard(seq, pool, &seq.tracks[ti], music) {
         return Err(refuse(i, format!("{} is not heard", clip_name(seq, pool, music)), "name the music clip: one with sound, not muted"));
@@ -3295,7 +3307,8 @@ fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_
         !quiet && !not_speech(sound_role(seq, c))
     };
     // Where speech is heard over the music, merged where the gaps are
-    // too short to come up and go down again. A clip with a transcript is
+    // too short to come up and go down again, or shorter than the bridge:
+    // up and down again between two sentences pumps (#1578). A clip with a transcript is
     // speech where its words are, not along its whole length: a camera's
     // sound unmarked, at a level heard over the bed, ducked it for 100 s
     // of street where six voice lines were all the speech (#457). One
@@ -3324,7 +3337,7 @@ fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_
     let mut spans: Vec<(f64, f64)> = Vec::new();
     for (a, b) in over {
         match spans.last_mut() {
-            Some(last) if a - last.1 < fade_secs * 2.5 => last.1 = last.1.max(b),
+            Some(last) if a - last.1 < bridge_secs.max(fade_secs * 2.5) => last.1 = last.1.max(b),
             _ => spans.push((a, b)),
         }
     }
@@ -3350,11 +3363,12 @@ fn duck(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, music: &Clip, by_
     new_state.volume_keyframes = kfs;
     let on = if settings.id == music.id { String::new() } else { " (on the video clip it is linked to)".to_string() };
     let what = format!(
-        "duck {} by {by_db:.0} dB under {} stretch{} of speech ({}), moving over {fade_secs:.2} s{on}",
+        "duck {} by {by_db:.0} dB under {} stretch{} of speech ({}), moving over {fade_secs:.2} s, down across gaps under {:.2} s{on}",
         clip_name(seq, pool, music),
         spans.len(),
         if spans.len() == 1 { "" } else { "es" },
         spans.iter().map(|(a, b)| format!("{a:.2}-{b:.2} s")).collect::<Vec<_>>().join(", "),
+        bridge_secs.max(fade_secs * 2.5),
     );
     let edit = EditCommand::EditKeyframes {
         clip_id: settings.id,
@@ -9139,7 +9153,7 @@ mod tests {
         // the music comes back up over half a second after it.
         let plan = resolve(&seq, &pool, &[
             Op::Audio { clip_id: Some(ClipRef::Id(music_id)), track: None, from: None, to: None, volume_db: Some(-6.0), gain_db: None, pan: None, fade_in: None, fade_out: Some(1.0) },
-            Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 12.0, fade_secs: 0.5 },
+            Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 12.0, fade_secs: 0.5, bridge_secs: 2.0 },
         ]).unwrap();
         assert!(plan.steps[1].what.contains("1 stretch") && plan.steps[1].what.contains("0.00-8.00"), "{}", plan.steps[1].what);
         let EditCommand::EditKeyframes { clip_id, new_state, .. } = &plan.steps[1].edit else { panic!("keyframes") };
@@ -9151,8 +9165,8 @@ mod tests {
         assert!(at(8.25) > low && at(8.25) < base, "on the way up: {}", at(8.25));
         // A duck of nothing, a step, a clip that is not heard: refused.
         let alone = { let mut s2 = seq.clone(); s2.tracks = vec![seq.tracks[2].clone()]; s2 };
-        assert!(resolve(&alone, &pool, &[Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 9.0, fade_secs: 0.5 }]).unwrap_err().why.contains("no speech is heard"));
-        assert!(bad(Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 9.0, fade_secs: 0.0 }).hint.contains("never a step"));
+        assert!(resolve(&alone, &pool, &[Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 9.0, fade_secs: 0.5, bridge_secs: 2.0 }]).unwrap_err().why.contains("no speech is heard"));
+        assert!(bad(Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 9.0, fade_secs: 0.0, bridge_secs: 2.0 }).hint.contains("never a step"));
         // As the tools send them.
         let _: Vec<Op> = serde_json::from_str(r#"[{"op":"audio","clip_id":{"track":2,"secs":1.0},"volume_db":-8,"fade_in":2},{"op":"duck","clip_id":{"track":2,"secs":1.0}}]"#).unwrap();
     }
@@ -9168,7 +9182,7 @@ mod tests {
         let music_id = music.id;
         music_track.clips = vec![music];
         seq.tracks.push(music_track);
-        let duck = |seq: &Sequence| resolve(seq, &pool, &[Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 9.0, fade_secs: 0.5 }]);
+        let duck = |seq: &Sequence| resolve(seq, &pool, &[Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 9.0, fade_secs: 0.5, bridge_secs: 2.0 }]);
         assert!(duck(&seq).is_ok(), "speech at full level is ducked under");
         // The camera sound at -20 dB under a bed at 0: a street, not speech.
         let mut quiet = seq.clone();
@@ -9216,7 +9230,7 @@ mod tests {
         let music_id = music.id;
         music_track.clips = vec![music];
         seq.tracks.push(music_track);
-        let duck = |seq: &Sequence, said: &Said| resolve_with(seq, &pool, &[Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 9.0, fade_secs: 0.5 }], said);
+        let duck = |seq: &Sequence, said: &Said| resolve_with(seq, &pool, &[Op::Duck { clip_id: ClipRef::Id(music_id), by_db: 9.0, fade_secs: 0.5, bridge_secs: 2.0 }], said);
         // A phrase at 2-3.2 s; "so" alone at 6 s, unsure; noise at 7 s.
         let street = Said(vec![(2.0, 2.6, 0.9), (2.7, 3.2, 0.8), (6.0, 6.2, 0.5), (7.0, 7.3, 0.1)]);
         let plan = duck(&seq, &street).unwrap();
@@ -9232,6 +9246,39 @@ mod tests {
             c.role = klipp_core::ClipRole::Voiceover;
         }
         assert!(duck(&vo, &Said(vec![])).unwrap().steps[0].what.contains("0.00-8.00"));
+    }
+
+    /// #1578: two sentences 1.6 s apart get one duck, not two: the music
+    /// stays down across a gap shorter than `bridge_secs` (2 by default,
+    /// as the tools send it) instead of swelling up between them. With no
+    /// bridge, the gap is longer than the fades' own merge and they part.
+    #[test]
+    fn a_duck_stays_down_between_sentences() {
+        struct Said;
+        impl Transcripts for Said {
+            fn words(&self, _: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                Some([(2.0, 3.0), (4.6, 5.6)].iter().map(|&(a, b)| SpokenWord { start_secs: a, end_secs: b, text: " w".into(), confidence: 0.9 }).collect())
+            }
+        }
+        let (mut seq, pool, media, _, _) = fixture();
+        let mut music_track = Track::new("A2", TrackKind::Audio);
+        let music = Clip::media(media, tc(0.0), tc(10.0), tc(0.0), tc(10.0));
+        let music_id = music.id;
+        music_track.clips = vec![music];
+        seq.tracks.push(music_track);
+        let duck = |op: serde_json::Value| {
+            let ops: Vec<Op> = serde_json::from_value(serde_json::json!([op])).unwrap();
+            resolve_with(&seq, &pool, &ops, &Said)
+        };
+        let id = music_id.0.to_string();
+        let plan = duck(serde_json::json!({ "op": "duck", "clip_id": id })).unwrap();
+        assert!(plan.steps[0].what.contains("1 stretch of speech (2.00-5.60 s)"), "{}", plan.steps[0].what);
+        let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframes") };
+        let at = |t: f64| klipp_core::keyframe::evaluate(&new_state.volume_keyframes, t, 1.0);
+        assert!((at(3.8) - at(2.5)).abs() < 1e-4, "down in the gap as under the words: {} and {}", at(3.8), at(2.5));
+        let plan = duck(serde_json::json!({ "op": "duck", "clip_id": id, "bridge_secs": 0 })).unwrap();
+        assert!(plan.steps[0].what.contains("2 stretches of speech (2.00-3.00 s, 4.60-5.60 s)"), "{}", plan.steps[0].what);
+        assert!(duck(serde_json::json!({ "op": "duck", "clip_id": id, "bridge_secs": 11 })).unwrap_err().hint.contains("bridge_secs"));
     }
 
     /// #677: footage inside a word. A title over the first clip, then a

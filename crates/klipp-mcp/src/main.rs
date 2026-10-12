@@ -1996,11 +1996,12 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               track_audio {track, effect, params?: {name: value}, bypass?, remove?} — the track's own audio chain, run \
               after every clip's own (eq, compressor, limiter, gate, high_pass, denoiser, voice_isolation, deesser, \
               hum_removal, reverb…): adds the effect (or sets the one there), bypasses it, or takes it off.\n\
-              duck {clip_id, by_db?, fade_secs?} — music under speech: the clip's volume comes \
+              duck {clip_id, by_db?, fade_secs?, bridge_secs?} — music under speech: the clip's volume comes \
               down (9 dB by default) wherever speech is heard over it (not clips marked music, \
               sfx, ambience, foley or broll, nor any set 12 dB under the music; a transcribed clip \
               only where its words are, a voiceover throughout), moving over \
-              fade_secs (0.5) each way, as volume keyframes. Set the music's volume first, \
+              fade_secs (0.5) each way, as volume keyframes, and staying down across gaps in the \
+              speech shorter than bridge_secs (2). Set the music's volume first, \
               place the speech first.\n\
               volume {clip_id, keys:[{at, db}]} — a clip's volume drawn by hand: levels in dB from \
               the clip's own level (0 as set, -9 a duck, -60 near silence) at timeline seconds, straight moves between; \
@@ -2212,11 +2213,12 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               track_audio {track, effect, params?: {name: value}, bypass?, remove?} — the track's own audio chain, run \
               after every clip's own (eq, compressor, limiter, gate, high_pass, denoiser, voice_isolation, deesser, \
               hum_removal, reverb…): adds the effect (or sets the one there), bypasses it, or takes it off.\n\
-              duck {clip_id, by_db?, fade_secs?} — music under speech: the clip's volume comes \
+              duck {clip_id, by_db?, fade_secs?, bridge_secs?} — music under speech: the clip's volume comes \
               down (9 dB by default) wherever speech is heard over it (not clips marked music, \
               sfx, ambience, foley or broll, nor any set 12 dB under the music; a transcribed clip \
               only where its words are, a voiceover throughout), moving over \
-              fade_secs (0.5) each way, as volume keyframes. Set the music's volume first, \
+              fade_secs (0.5) each way, as volume keyframes, and staying down across gaps in the \
+              speech shorter than bridge_secs (2). Set the music's volume first, \
               place the speech first.\n\
               volume {clip_id, keys:[{at, db}]} — a clip's volume drawn by hand: levels in dB from \
               the clip's own level (0 as set, -9 a duck, -60 near silence) at timeline seconds, straight moves between; \
