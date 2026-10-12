@@ -2543,7 +2543,9 @@ impl NodeInspectorPanel {
                 // well, the step started from the edit itself (as the
                 // curves' did, #1392).
                 let mut masks = params.masks.clone().unwrap_or_default();
-                Self::render_masks_body(ui, &mut masks, node_id, clip_id, cmds, theme, frame, &[]);
+                // The masks a tracker drives, for Re-track and Untrack (#1398).
+                let tracked = self.tracked_masks.clone();
+                Self::render_masks_body(ui, &mut masks, node_id, clip_id, cmds, theme, frame, &tracked);
             }
             NodeKind::FilmGrain => {
                 // As the qualifier: a copy, sent once when it changed (#894).
@@ -3683,6 +3685,12 @@ pub(crate) fn lut_picker(ui: &mut egui::Ui, params: &NodeParams, node_id: NodeId
             cmds.push(AppCommand::SetNodeLut { clip_id, node_id, path: None });
         }
     });
+}
+
+/// Which of `node`'s masks a tracker of `clip` drives, by index: the masks
+/// the mask list offers Re-track and Untrack (#1398).
+pub(crate) fn tracked_masks_of(clip: &klipp_timeline::Clip, node: NodeId) -> Vec<usize> {
+    clip.track_points.iter().filter_map(|tp| tp.linked_mask).filter(|(n, _)| *n == node).map(|(_, i)| i).collect()
 }
 
 /// A grade node's header: its name, its on switch, and the diamond that
@@ -5063,6 +5071,43 @@ fn pivot_linear(shown: f32) -> f32 {
 #[cfg(test)]
 mod wheel_layout_tests {
     use super::*;
+
+    /// The old per-node panel's Mask node offers a tracked mask Re-track
+    /// and Untrack, as the generated view does, and an untracked one Track
+    /// alone (#1398); which masks are tracked is read from the clip.
+    #[test]
+    fn the_old_mask_panel_offers_retrack_and_untrack_for_a_tracked_mask() {
+        let node = NodeId::new_v4();
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        clip.track_points.push(serde_json::from_value(serde_json::json!({
+            "id": uuid::Uuid::new_v4(), "name": "Mask 1", "color": [255, 200, 0, 255],
+            "positions": [[0.5, 0.5]], "start_frame": 0, "enabled": true, "search_radius": 24,
+            "linked_mask": [node, 0],
+        })).unwrap());
+        assert_eq!(tracked_masks_of(&clip, node), vec![0]);
+        assert!(tracked_masks_of(&clip, NodeId::new_v4()).is_empty(), "another node's");
+        let circle = klipp_core::Mask { shape: klipp_core::MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 }, ..Default::default() };
+        for (tracked, want) in [(vec![0], ["\u{1F3AF} Re-track", "\u{1F6AB} Untrack"].as_slice()), (Vec::new(), ["\u{1F3AF} Track"].as_slice())] {
+            let ctx = egui::Context::default();
+            let mut panel = NodeInspectorPanel { tracked_masks: tracked.clone(), ..Default::default() };
+            let mut params = NodeParams { masks: Some(klipp_core::MaskStack { masks: vec![circle.clone()] }), ..Default::default() };
+            let mut texts = Vec::new();
+            for _ in 0..3 {
+                let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 2000.0))), ..Default::default() }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        panel.show_inspector_layout(ui, node, &NodeKind::Mask, &mut true, &mut params, &mut Default::default(), clip.id, &mut Vec::new(), &KlippTheme::default(),
+                            FrameSelection::new(klipp_core::Timecode::zero(), klipp_core::Timecode::zero(), 0.02), false);
+                    });
+                });
+                texts = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some(t.galley.text().to_owned()), _ => None }).collect::<Vec<_>>();
+            }
+            for w in want {
+                assert!(texts.iter().any(|t| t == w), "tracked {tracked:?}: no {w:?} among {texts:?}");
+            }
+            assert_eq!(texts.iter().any(|t| t == "\u{1F6AB} Untrack"), !tracked.is_empty(), "tracked {tracked:?}");
+        }
+    }
 
     #[test]
     fn wheels_and_controls_fit_and_stay_centred_across_resizing() {
