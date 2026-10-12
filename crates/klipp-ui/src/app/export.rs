@@ -1327,9 +1327,16 @@ impl KlippApp {
                                 } else {
                                     self.export_dialog.mastering_peak_nits
                                 };
+                                let titles = self
+                                    .state
+                                    .sequences
+                                    .get(self.state.active_sequence_idx)
+                                    .map_or(klipp_timeline::DEFAULT_TITLE_NITS, |s| s.title_nits)
+                                    .min(peak);
                                 format!(
                                     "Match Viewer = the viewer's picture with its highlights kept, mastered to {peak:.0} nits. \
-                                     SDR material sits at 203 nits (BT.2408). The viewer itself shows the SDR version."
+                                     SDR material sits at 203 nits (BT.2408); titles at the sequence's title brightness \
+                                     (Sequence Settings), {titles:.0} nits. The viewer itself shows the SDR version."
                                 )
                             };
                             ui.label("");

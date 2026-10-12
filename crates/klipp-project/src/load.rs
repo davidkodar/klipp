@@ -1070,6 +1070,13 @@ fn load_sequence_from_json(
         drop_frame: seq_json
             .drop_frame
             .unwrap_or_else(|| klipp_timeline::Sequence::default_drop_frame(sanitize_fps(seq_json.fps.num, seq_json.fps.den))),
+        // Held inside the range a sequence may ask for, a NaN included.
+        title_nits: seq_json
+            .title_nits
+            .filter(|n| n.is_finite())
+            .map_or(klipp_timeline::DEFAULT_TITLE_NITS, |n| {
+                n.clamp(*klipp_timeline::TITLE_NITS_RANGE.start(), *klipp_timeline::TITLE_NITS_RANGE.end())
+            }),
     };
     // A file from before roles were saved carries none: give it the roles
     // a new sequence gets, which is what it had when it was made and what

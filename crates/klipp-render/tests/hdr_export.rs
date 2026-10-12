@@ -46,7 +46,20 @@ fn export_ws(
     ws: WorkingColorspace,
     tweak: impl FnOnce(&mut ExportSettings),
 ) {
+    export_seq(c, media, out, ws, |_| {}, tweak)
+}
+
+/// [`export_ws`], with the sequence adjusted by `seq` first.
+fn export_seq(
+    c: klipp_timeline::Clip,
+    media: Option<(MediaId, MediaFile)>,
+    out: &Path,
+    ws: WorkingColorspace,
+    seq: impl FnOnce(&mut klipp_timeline::Sequence),
+    tweak: impl FnOnce(&mut ExportSettings),
+) {
     let mut video = VideoTimeline::default();
+    seq(&mut video.sequence);
     video.sequence.fps = Fps::new(25, 1);
     video.sequence.resolution = Resolution { width: W, height: H };
     let mut t = klipp_timeline::Track::new("V", klipp_timeline::TrackKind::Video);
@@ -245,6 +258,61 @@ fn sdr_white_lands_on_the_bt2408_reference_level() {
     // HDR10's light-level metadata describes PQ; HLG carries none.
     let side = probe(&out, &["-show_streams", "-of", "default=nw=1"]);
     assert!(!side.contains("max_content"), "HLG export signals MaxCLL: {side}");
+}
+
+/// The first frame's text level: its commonest 10-bit luma code above
+/// the black, the inside of the letters (their edges ring a few codes
+/// over in the encode).
+fn text_luma(path: &Path) -> i32 {
+    let out = std::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-i"]).arg(path)
+        .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "yuv420p10le", "-"])
+        .output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let mut count = std::collections::HashMap::new();
+    for b in out.stdout[..(W * H * 2) as usize].chunks_exact(2) {
+        let y = u16::from_le_bytes([b[0], b[1]]) as i32;
+        if y > 200 {
+            *count.entry(y).or_insert(0u32) += 1;
+        }
+    }
+    let mut top: Vec<_> = count.into_iter().collect();
+    top.sort_by_key(|&(y, n)| (std::cmp::Reverse(n), y));
+    eprintln!("{}: commonest text codes {:?}", path.display(), &top[..top.len().min(5)]);
+    top.first().expect("text in the frame").0
+}
+
+/// A title's white in a PQ delivery is the sequence's title brightness
+/// (#1723): SDR reference white unless set, the set level when it is,
+/// and never above the master's peak. Its black stays black.
+#[test]
+fn a_title_in_a_pq_export_is_as_bright_as_the_sequence_asks() {
+    if !ffmpeg_ok() {
+        return;
+    }
+    let title = || {
+        clip(klipp_timeline::ClipKind::Title(klipp_timeline::TitleData::single_text(klipp_timeline::TextBox {
+            text: "HH".into(),
+            font_size: 400.0,
+            ..Default::default()
+        })))
+    };
+    let level = |name: &str, nits: f32, peak: f32| {
+        let out = tmp(name);
+        export_seq(title(), None, &out, WorkingColorspace::Rec709Linear, |s| s.title_nits = nits, |s| s.mastering_peak_nits = peak);
+        assert_eq!(codes_at(&out, 2, 2)[0], 64, "{name}: the background is black");
+        text_luma(&out)
+    };
+    let (at_default, brighter) = (level("title_203.mp4", 203.0, 1000.0), level("title_600.mp4", 600.0, 1000.0));
+    eprintln!("title white: 203 nits → {at_default}, 600 nits → {brighter}");
+    assert!((at_default - y10(pq_signal(203.0))).abs() <= 2, "{at_default}");
+    assert!((brighter - y10(pq_signal(600.0))).abs() <= 2, "{brighter}");
+    let held = level("title_2000.mp4", 2000.0, 1000.0);
+    assert!((held - y10(pq_signal(1000.0))).abs() <= 2, "2000 nits on a 1000-nit master: {held}");
+    // An SDR export of the same sequence is untouched by it.
+    let out = tmp("title_sdr.mp4");
+    export_seq(title(), None, &out, WorkingColorspace::Rec709Linear, |s| s.title_nits = 600.0, |s| s.hdr_mode = HdrMode::Sdr);
+    assert!((text_luma(&out) - 940).abs() <= 2, "SDR white: {}", text_luma(&out));
 }
 
 /// H.264 at 10 bits delivers HDR. This is the combination the export

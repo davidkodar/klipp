@@ -23,10 +23,12 @@ pub struct SequenceSettingsDialog {
     /// The sequence camera's shutter: degrees (0 off) and samples.
     pub shutter_deg: f32,
     pub shutter_samples: u8,
+    /// A title's white in an HDR delivery, cd/m².
+    pub title_nits: f32,
 }
 
 impl SequenceSettingsDialog {
-    pub fn open(sequence_idx: usize, width: u32, height: u32, fps_num: u32, fps_den: u32, (shutter_deg, shutter_samples): (f32, u8)) -> Self {
+    pub fn open(sequence_idx: usize, width: u32, height: u32, fps_num: u32, fps_den: u32, (shutter_deg, shutter_samples): (f32, u8), title_nits: f32) -> Self {
         let resolution_idx = RESOLUTION_PRESETS
             .iter()
             .position(|(_, w, h)| *w == width && *h == height)
@@ -35,7 +37,7 @@ impl SequenceSettingsDialog {
             .iter()
             .position(|(_, n, d)| *n == fps_num && *d == fps_den)
             .unwrap_or_else(|| FPS_PRESETS.len() - 1);
-        Self { sequence_idx, width, height, fps_num, fps_den, resolution_idx, fps_idx, shutter_deg, shutter_samples }
+        Self { sequence_idx, width, height, fps_num, fps_den, resolution_idx, fps_idx, shutter_deg, shutter_samples, title_nits }
     }
 
     /// Show the modal. Returns `(still_open, commands)`. When the user clicks
@@ -49,6 +51,7 @@ impl SequenceSettingsDialog {
         original_fps_num: u32,
         original_fps_den: u32,
         original_shutter: (f32, u8),
+        original_title_nits: f32,
     ) -> (bool, Vec<AppCommand>) {
         let mut open = true;
         let mut cmds = Vec::new();
@@ -166,6 +169,25 @@ impl SequenceSettingsDialog {
                     }
                 });
 
+                ui.add_space(12.0);
+
+                // ── HDR ──
+                ui.label(egui::RichText::new("HDR").strong());
+                ui.add_space(4.0);
+                let range = klipp_timeline::TITLE_NITS_RANGE;
+                ui.horizontal(|ui| {
+                    ui.label("Title brightness");
+                    ui.add(egui::DragValue::new(&mut self.title_nits).range(*range.start()..=*range.end()).speed(1.0).suffix(" nits"))
+                        .on_hover_text(
+                            "How bright a title's white is in an HDR (PQ or HLG) export and in the viewer's HDR preview. \
+                             203 nits is where SDR white sits; brighter stands out more. Held under the export's peak. \
+                             An SDR export is not affected.",
+                        );
+                    if ui.small_button("Reset").on_hover_text("Back to 203 nits, SDR white").clicked() {
+                        self.title_nits = klipp_timeline::DEFAULT_TITLE_NITS;
+                    }
+                });
+
                 ui.add_space(16.0);
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() { open = false; }
@@ -192,6 +214,9 @@ impl SequenceSettingsDialog {
                     samples: self.shutter_samples,
                 });
             }
+            if self.title_nits != original_title_nits {
+                cmds.push(AppCommand::SetSequenceTitleNits { sequence_idx: self.sequence_idx, nits: self.title_nits });
+            }
             if self.fps_num != original_fps_num || self.fps_den != original_fps_den {
                 cmds.push(AppCommand::SetSequenceFps {
                     sequence_idx: self.sequence_idx,
@@ -212,13 +237,13 @@ mod tests {
     #[test]
     fn the_dialog_offers_the_shutter_and_says_nothing_when_it_is_left_alone() {
         let ctx = egui::Context::default();
-        let mut dlg = SequenceSettingsDialog::open(0, 1920, 1080, 24, 1, (180.0, 8));
+        let mut dlg = SequenceSettingsDialog::open(0, 1920, 1080, 24, 1, (180.0, 8), 203.0);
         let mut text = String::new();
         let mut cmds = Vec::new();
         // Two passes: egui lays a window out before it paints it.
         for _ in 0..2 {
             let out = ctx.run(egui::RawInput::default(), |ctx| {
-                let (_, c) = dlg.show(ctx, 1920, 1080, 24, 1, (180.0, 8));
+                let (_, c) = dlg.show(ctx, 1920, 1080, 24, 1, (180.0, 8), 203.0);
                 cmds = c;
             });
             text.clear();
@@ -234,7 +259,7 @@ mod tests {
             }
             out.shapes.iter().for_each(|c| walk(&c.shape, &mut text));
         }
-        for label in ["Motion blur", "Shutter", "Samples"] {
+        for label in ["Motion blur", "Shutter", "Samples", "Title brightness"] {
             assert!(text.contains(label), "no {label} in:\n{text}");
         }
         assert!(cmds.is_empty(), "nothing is sent until Apply");

@@ -17720,6 +17720,7 @@ mod compound_filmstrip_tests {
 
     fn make_seq(name: &str) -> Sequence {
         Sequence {
+            title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
             drop_frame: false,
             camera: Default::default(),
             timeline_graph: None,

@@ -3226,6 +3226,9 @@ pub enum AppCommand {
     /// The sequence camera's shutter: motion blur on everything that moves.
     /// `shutter_deg` 0 is off. Undoable.
     SetSequenceShutter { sequence_idx: usize, shutter_deg: f32, samples: u8 },
+    /// How bright the sequence's titles are in an HDR delivery, cd/m²
+    /// (`Sequence::title_nits`), held inside `TITLE_NITS_RANGE`. Undoable.
+    SetSequenceTitleNits { sequence_idx: usize, nits: f32 },
 
     /// One of the sequence camera's moving values, keyed at a moment.
     /// Where it looks, how far in, and its roll — the move itself,

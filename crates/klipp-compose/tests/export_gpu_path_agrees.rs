@@ -727,6 +727,49 @@ fn the_stack_takes_an_hdr_delivery_as_the_renderer_does() {
     }
 }
 
+/// #1723: a title's white in an HDR delivery is the sequence's title
+/// brightness, held under the peak, and the stack draws it as the
+/// renderer does. A white box filling the frame: 600 nits is display
+/// light 600/203 everywhere, 2000 nits on a 1000-nit master is the peak,
+/// and the default is SDR white.
+#[test]
+fn a_titles_hdr_brightness_is_the_renderers_on_the_stack() {
+    use klipp_timeline::{Shape, ShapeKind, TitleData, TitleObjectContent, TitlePosition};
+    if !gpu_path_available() {
+        eprintln!("skipping: no usable GPU");
+        return;
+    }
+    let mut td = TitleData::default();
+    td.objects.clear();
+    td.add_object(
+        TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([255; 4]), gradient: None, stroke: None, fit: None }),
+        klipp_timeline::ObjectTransform { center: TitlePosition { x: 0.5, y: 0.5 }, size: TitlePosition { x: 1.2, y: 1.2 }, ..klipp_timeline::default_text_transform() },
+    );
+    let title = clip(ClipKind::Title(td), 0.0, 1.0);
+    let opts = RenderOptions { hdr_peak_nits: Some(1000.0), ..Default::default() };
+    for (nits, want) in [(203.0, 1.0), (600.0, 600.0 / 203.0), (2000.0, 1000.0 / 203.0)] {
+        let mut seq = sequence(vec![vec![title.clone()]]);
+        seq.title_nits = nits;
+        let mut cpu = renderer();
+        let px = cpu.render(&seq, tc(0.5), W, H, &mut Flat::default(), opts);
+        let mid = &px[((H / 2 * W + W / 2) * 4) as usize..][..4];
+        assert!(mid[..3].iter().all(|v| (v - want).abs() <= want * 1e-3), "{nits} nits: the renderer drew {mid:?}, want {want}");
+        let (want_luma, _, _) = hdr_luma(&px, klipp_core::WorkingColorspace::Rec709Linear, klipp_core::HdrMode::Pq, 1000.0);
+        let mut r = renderer();
+        let (planes, _) = r
+            .render_yuv420_on_gpu(&seq, tc(0.5), W, H, &mut Flat::default(), opts, pq_target(1000.0))
+            .unwrap_or_else(|| panic!("{nits} nits: the GPU path refused: {:?}", r.last_decline()));
+        let got: Vec<u16> = planes[..want_luma.len() * 2].chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]]) >> 6).collect();
+        let worst = got.iter().zip(&want_luma).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
+        assert!(worst <= 1, "{nits} nits: the stack differs from the renderer by {worst} of 1023");
+    }
+    // An SDR render has no say in it.
+    let mut seq = sequence(vec![vec![title]]);
+    seq.title_nits = 600.0;
+    let px = renderer().render(&seq, tc(0.5), W, H, &mut Flat::default(), RenderOptions::default());
+    assert!(px[..3].iter().all(|v| (v - 1.0).abs() < 1e-3), "SDR: {:?}", &px[..4]);
+}
+
 /// A clip whose height is keyed apart from its width (#1471): halfway
 /// between its keys the width's lane gives 1 and the height's 0.5, so
 /// the picture fills the frame's width and the middle half of its rows.

@@ -929,7 +929,12 @@ impl KlippApp {
                 .get(dlg.sequence_idx)
                 .map(|s| (s.camera.shutter_deg, s.camera.shutter_samples))
                 .unwrap_or((0.0, 8));
-            let (still_open, dlg_cmds) = dlg.show(ctx, orig_w, orig_h, orig_n, orig_d, orig_shutter);
+            let orig_title_nits = self
+                .state
+                .sequences
+                .get(dlg.sequence_idx)
+                .map_or(klipp_timeline::DEFAULT_TITLE_NITS, |s| s.title_nits);
+            let (still_open, dlg_cmds) = dlg.show(ctx, orig_w, orig_h, orig_n, orig_d, orig_shutter, orig_title_nits);
             cmds.extend(dlg_cmds);
             if !still_open {
                 self.sequence_settings_dialog = None;

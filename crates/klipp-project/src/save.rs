@@ -353,6 +353,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
         timeline_graph: seq.timeline_grade().cloned(),
         grade_groups: seq.grade_groups.clone(),
         drop_frame: Some(seq.drop_frame),
+        title_nits: (seq.title_nits != klipp_timeline::DEFAULT_TITLE_NITS).then_some(seq.title_nits),
         last_playhead: seq.last_playhead.map(|rt| TimecodeJson { value: rt.value, rate: rt.rate }),
         markers: seq.markers.iter().map(|m| {
             MarkerJson {

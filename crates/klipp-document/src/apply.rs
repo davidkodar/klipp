@@ -210,6 +210,9 @@ impl DocumentView<'_> {
             EditCommand::SetSequenceCamera { old, .. } => {
                 self.sequences[self.active].camera = (**old).clone();
             }
+            EditCommand::SetSequenceTitleNits { old, .. } => {
+                self.sequences[self.active].title_nits = *old;
+            }
             EditCommand::SetClipDepth { clip_id, old, .. } => {
                 if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
                     c.depth = *old;
@@ -899,6 +902,9 @@ impl DocumentView<'_> {
             }
             EditCommand::SetSequenceCamera { new, .. } => {
                 self.sequences[self.active].camera = (**new).clone();
+            }
+            EditCommand::SetSequenceTitleNits { new, .. } => {
+                self.sequences[self.active].title_nits = *new;
             }
             EditCommand::SetClipDepth { clip_id, new, .. } => {
                 if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
@@ -1793,6 +1799,21 @@ mod grade_group_tests {
         view.apply_inverse(&edit);
         assert_eq!(label(&view), klipp_timeline::ClipLabel::default());
         assert_eq!(view.sequences[0].all_clips().find(|c| c.id == clip_id).unwrap().label("a.mov"), "a.mov", "with no name of its own it shows its media's");
+    }
+
+    /// #1723: a sequence's title brightness undoes and redoes.
+    #[test]
+    fn a_title_brightness_undoes_and_redoes() {
+        let mut sequences = vec![Sequence::new_default()];
+        let mut pool = MediaPool::new();
+        let mut fps = sequences[0].fps;
+        let mut view = DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        let edit = EditCommand::SetSequenceTitleNits { old: klipp_timeline::DEFAULT_TITLE_NITS, new: 600.0 };
+        view.apply_forward(&edit);
+        assert_eq!(view.sequences[0].title_nits, 600.0);
+        view.apply_inverse(&edit);
+        assert_eq!(view.sequences[0].title_nits, klipp_timeline::DEFAULT_TITLE_NITS);
+        assert_eq!(edit.label(), "Title Brightness");
     }
 
     #[test]

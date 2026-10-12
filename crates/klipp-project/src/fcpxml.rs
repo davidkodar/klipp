@@ -532,6 +532,7 @@ mod tests {
     /// Build a minimal Sequence with the given fps/resolution and a single empty Video track.
     fn empty_sequence(fps: Fps) -> Sequence {
         Sequence {
+            title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
             drop_frame: false,
             camera: Default::default(),
             timeline_graph: None,
