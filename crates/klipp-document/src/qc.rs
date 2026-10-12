@@ -180,6 +180,113 @@ pub fn note_missing_global_lut(report: &mut Report, lut: Option<&std::path::Path
     report.errors += 1;
 }
 
+/// Below this contrast between a title's words and the picture under
+/// them (the ratio of their relative luminances, the WCAG measure), most
+/// of the words are hard to read: 3:1 is the floor for large text.
+const LEGIBLE_CONTRAST: f32 = 3.0;
+
+/// A title read against the picture under it (#1581): its words' fill and
+/// box, the moment it is read at (its middle) and the picture clip under
+/// it then, which the caller renders alone.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TitleToRead {
+    pub label: String,
+    pub at_secs: f64,
+    pub under: klipp_core::ClipId,
+    /// The words' box as fractions of the frame: x, y, width, height.
+    pub rect: [f32; 4],
+    pub fill: [u8; 4],
+    /// A shadow or an outline behind the words, which a contrast of the
+    /// fill alone doesn't see.
+    pub helped: bool,
+}
+
+/// The titles whose words are read straight off the picture, each with
+/// the picture under it: on a visible text track, over a picture clip,
+/// with no backing and no card behind them. At most `limit`, in time
+/// order.
+pub fn titles_to_read(seq: &Sequence, pool: &MediaPool, limit: usize) -> Vec<TitleToRead> {
+    let pictures: Vec<&Clip> = seq.tracks.iter().filter(|t| t.kind == TrackKind::Video && t.visible).flat_map(|t| t.clips.iter()).filter(|c| is_picture(c)).collect();
+    let mut out = Vec::new();
+    for t in seq.tracks.iter().filter(|t| t.kind == TrackKind::Text && t.visible) {
+        for c in t.clips.iter().filter(|c| c.enabled) {
+            let ClipKind::Title(td) = &c.kind else { continue };
+            if !matches!(td.background, klipp_timeline::TitleBackground::None) {
+                continue;
+            }
+            let Some(tb) = td.primary_text() else { continue };
+            let Some(rect) = crate::ops::title_box(td, seq.resolution) else { continue };
+            let at = (secs(c.timeline_in) + secs(c.timeline_out)) / 2.0;
+            // The top picture then: the first track in the list is the top.
+            let Some(under) = pictures.iter().find(|p| secs(p.timeline_in) <= at && at < secs(p.timeline_out)) else { continue };
+            let helped = td.objects.iter().filter(|o| o.visible).map(|o| o.fx()).any(|fx| fx.shadows.iter().any(|s| s.enabled && s.color[3] >= 96) || fx.outlines.iter().any(|o| o.enabled));
+            out.push(TitleToRead { label: clip_label(pool, c), at_secs: at, under: under.id, rect, fill: tb.color, helped });
+        }
+    }
+    out.sort_by(|a, b| a.at_secs.total_cmp(&b.at_secs));
+    out.truncate(limit);
+    out
+}
+
+/// sRGB8 to relative luminance (0 black, 1 white).
+fn luminance(rgb: [u8; 3]) -> f32 {
+    let lin = |v: u8| {
+        let c = v as f32 / 255.0;
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * lin(rgb[0]) + 0.7152 * lin(rgb[1]) + 0.0722 * lin(rgb[2])
+}
+
+/// The contrast of two relative luminances, 1 (none) to 21.
+fn contrast(a: f32, b: f32) -> f32 {
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// `title` against `picture` (the clip under it alone, RGBA8 at
+/// `width × height`): a finding when the words' fill has too little
+/// contrast with the picture across the middle of their box. A warning,
+/// or a note when a shadow or an outline may carry the words.
+pub fn legibility(title: &TitleToRead, picture: &[u8], width: usize, height: usize) -> Option<Finding> {
+    let [x, y, w, h] = title.rect;
+    let px = |f: f32, n: usize| ((f.clamp(0.0, 1.0) * n as f32) as usize).min(n);
+    let (x0, x1, y0, y1) = (px(x, width), px(x + w, width), px(y, height), px(y + h, height));
+    let fill = luminance([title.fill[0], title.fill[1], title.fill[2]]);
+    let mut ratios: Vec<f32> = Vec::new();
+    for row in y0..y1 {
+        for col in x0..x1 {
+            let i = (row * width + col) * 4;
+            let Some(p) = picture.get(i..i + 3) else { continue };
+            ratios.push(contrast(fill, luminance([p[0], p[1], p[2]])));
+        }
+    }
+    if ratios.is_empty() {
+        return None;
+    }
+    ratios.sort_by(f32::total_cmp);
+    let median = ratios[ratios.len() / 2];
+    if median >= LEGIBLE_CONTRAST {
+        return None;
+    }
+    let [r, g, b, _] = title.fill;
+    let darker = fill > 0.18;
+    Some(Finding {
+        severity: if title.helped { Severity::Note } else { Severity::Warning },
+        rule: "title_hard_to_read",
+        at_secs: Some(title.at_secs),
+        what: format!(
+            "{}'s words (#{r:02x}{g:02x}{b:02x}) have a contrast of {median:.1}:1 with the picture under them at {:.2} s{}",
+            title.label,
+            title.at_secs,
+            if title.helped { ", which its shadow or outline may carry" } else { "" },
+        ),
+        hint: format!(
+            "Aim for {LEGIBLE_CONTRAST:.0}:1 or more: give it a shadow or a backing (the style op's shadow or backing), make the words {}, or move it over a {} part of the picture",
+            if darker { "darker" } else { "lighter" },
+            if darker { "darker" } else { "lighter" },
+        ),
+    })
+}
+
 /// Check `seq` against its brief and the craft's rules.
 pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) -> Report {
     let mut f: Vec<Finding> = Vec::new();
@@ -1286,5 +1393,39 @@ mod tests {
         // As JSON for a caller that wants to filter.
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["findings"][0]["severity"], "error");
+    }
+
+    /// #1581: a cream title is hard to read over white surf and easy over
+    /// a dark sea; a shadow makes it a note; a backing or a card takes it
+    /// out of the reading.
+    #[test]
+    fn a_title_hard_to_read_against_the_picture_is_a_warning() {
+        let (mut seq, pool, _) = screencast(&[(0.0, 10.0, 40.0)]);
+        let cream = [0xf2, 0xe8, 0xd0, 255];
+        let title = |shadow: bool, background: klipp_timeline::TitleBackground| {
+            let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Chapter".into(), font_size: 140.0, color: cream, ..Default::default() });
+            td.background = background;
+            if shadow {
+                td.objects[0].fx_mut().shadows = vec![klipp_timeline::TitleShadow { enabled: true, color: [0, 0, 0, 160], offset_x: 0.0, offset_x_keyframes: Vec::new(), offset_y: 4.0, offset_y_keyframes: Vec::new(), blur: 8.0, blur_keyframes: Vec::new() }];
+            }
+            td
+        };
+        let mut text = Track::new("T", TrackKind::Text);
+        let at = |a: f64, td| Clip { id: klipp_core::ClipId::new(), kind: ClipKind::Title(td), source_in: tc(0.0), source_out: tc(2.0), ..Clip::gap(tc(a), tc(a + 2.0)) };
+        text.clips.push(at(0.0, title(false, klipp_timeline::TitleBackground::None)));
+        text.clips.push(at(2.0, title(true, klipp_timeline::TitleBackground::None)));
+        text.clips.push(at(4.0, title(false, klipp_timeline::TitleBackground::Color { color: [0, 0, 0, 200], padding: 8.0 })));
+        text.clips.push(at(6.0, title(false, klipp_timeline::TitleBackground::FullFrame { color: [16, 20, 24, 255] })));
+        seq.tracks.insert(0, text);
+        let to_read = titles_to_read(&seq, &pool, 16);
+        assert_eq!(to_read.iter().map(|t| (t.at_secs, t.helped)).collect::<Vec<_>>(), vec![(1.0, false), (3.0, true)], "the backed title and the card aren't read off the picture");
+        let picture = |rgb: [u8; 3]| (0..64 * 36).flat_map(|_| [rgb[0], rgb[1], rgb[2], 255]).collect::<Vec<u8>>();
+        let surf = picture([235, 240, 242]);
+        let sea = picture([20, 40, 60]);
+        let plain = legibility(&to_read[0], &surf, 64, 36).expect("cream over surf is hard to read");
+        assert_eq!((plain.severity, plain.rule), (Severity::Warning, "title_hard_to_read"));
+        assert!(plain.hint.contains("darker"), "{}", plain.hint);
+        assert_eq!(legibility(&to_read[1], &surf, 64, 36).map(|f| f.severity), Some(Severity::Note), "a shadow may carry it");
+        assert_eq!(legibility(&to_read[0], &sea, 64, 36), None, "cream over a dark sea reads");
     }
 }

@@ -1259,25 +1259,7 @@ pub const OP_NAMES: &[&str] = &[
     "strobe", "set_length", "over_edits",
 ];
 
-/// A drop shadow behind a title's text, what keeps bright words
-/// readable over a bright sky. `x` and `y` move it in pixels of a
-/// 1080-line frame (right and down for positive), `blur` softens it in
-/// the same pixels, `color` is `#rrggbb`, `opacity` 0 to 1. Left out,
-/// they are 0, 4, 8, black and 0.6.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ShadowSpec {
-    #[serde(default)]
-    pub x: Option<f32>,
-    #[serde(default)]
-    pub y: Option<f32>,
-    #[serde(default)]
-    pub blur: Option<f32>,
-    #[serde(default)]
-    pub color: Option<String>,
-    #[serde(default)]
-    pub opacity: Option<f32>,
-}
+pub use klipp_timeline::ShadowSpec;
 
 /// The shadow a spec asks for, or `None` at opacity 0.
 fn title_shadow(spec: &ShadowSpec, i: usize) -> Result<Option<klipp_timeline::TitleShadow>, Refusal> {
@@ -1307,6 +1289,12 @@ fn title_shadow(spec: &ShadowSpec, i: usize) -> Result<Option<klipp_timeline::Ti
         blur,
         blur_keyframes: Vec::new(),
     }))
+}
+
+/// A type style's shadow as a title takes it, or why its values can't
+/// be: what `set_brief` holds a style's shadow to.
+pub fn type_style_shadow(spec: &ShadowSpec) -> Result<Option<klipp_timeline::TitleShadow>, String> {
+    title_shadow(spec, 0).map_err(|r| format!("shadow: {}. {}", r.why, r.hint))
 }
 
 /// What a `style` op changes, gathered.
@@ -2597,7 +2585,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 loop_effect: loop_effect.as_deref().or(look.loop_effect.as_deref()), glitch: *glitch, chromatic: *chromatic,
                 roll_shape: *roll_shape,
                 edge_fade: *edge_fade,
-                shadow: shadow.as_ref().map(|s| title_shadow(s, i)).transpose()?.flatten(),
+                shadow: shadow.as_ref().or(look.shadow.as_ref()).map(|s| title_shadow(s, i)).transpose()?.flatten(),
             };
             // The title follows the style it was made in (#66).
             let followed = style.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(|s| if look.name.is_empty() { s.to_string() } else { look.name.clone() });
@@ -7578,6 +7566,7 @@ fn style_looks(ts: &klipp_timeline::TypeStyle) -> Vec<(&'static str, Look)> {
     add("outline colour", Look { outline_color: col(&ts.outline_color), ..Default::default() });
     add("glow", Look { glow: ts.glow, ..Default::default() });
     add("glow colour", Look { glow_color: col(&ts.glow_color), ..Default::default() });
+    add("shadow", Look { shadow: ts.shadow.as_ref().and_then(|s| title_shadow(s, 0).ok()), ..Default::default() });
     let gradient = ts.gradient.as_ref().and_then(|[a, b]| Some([parse_color(a)?, parse_color(b)?]));
     add("gradient", Look { gradient, ..Default::default() });
     let motion = MotionAsk { enter: ts.enter.clone(), exit: ts.exit.clone(), animate: ts.animate.clone(), animate_secs: ts.animate_secs, stagger: ts.stagger.clone() };
@@ -8156,6 +8145,25 @@ mod tests {
         assert!(resolve(&seq, &pool, &[op(Some("card"), None)]).is_ok());
         let err = resolve(&seq, &pool, &[op(Some("banner"), None)]).unwrap_err();
         assert!(format!("{err:?}").contains("kicker"), "{err:?}");
+    }
+
+    /// #1567: a type style's shadow reaches the titles made in it, and a
+    /// title's own shadow wins over it.
+    #[test]
+    fn a_title_takes_its_styles_shadow() {
+        use klipp_timeline::{Brief, ShadowSpec, TypeStyle};
+        let (mut seq, pool, _, _, _) = fixture();
+        let spec = |y: f32, opacity: f32| ShadowSpec { x: Some(0.0), y: Some(y), blur: Some(12.0), color: None, opacity: Some(opacity) };
+        seq.brief = Some(Brief { type_styles: vec![TypeStyle { name: "chapter".into(), shadow: Some(spec(4.0, 0.5)), ..Default::default() }], ..Default::default() });
+        let op = |shadow: Option<ShadowSpec>| Op::Title { text: "Now".into(), at: Anchor::Secs(1.0), style: Some("chapter".into()), secs: 2.0, track: None, x: None, y: None, size: None, color: None, font: None, bold: None, align: None, backing: None, backing_color: None, full_frame: None, outline: None, outline_color: None, glow: None, glow_color: None, gradient: None, animate: None, enter: None, exit: None, animate_secs: None, stagger: None, loop_effect: None, glitch: None, chromatic: None, roll_shape: None, edge_fade: None, over_faces: false, shadow };
+        let shadows = |op: Op| {
+            let plan = resolve(&seq, &pool, &[op]).unwrap();
+            let EditCommand::AddTitleClip { clip, .. } = &plan.steps[plan.steps.len() - 1].edit else { panic!("a title is a clip") };
+            let ClipKind::Title(td) = &clip.kind else { panic!("a title") };
+            td.objects[0].fx().shadows.iter().map(|s| (s.offset_y, s.blur, s.color[3])).collect::<Vec<_>>()
+        };
+        assert_eq!(shadows(op(None)), vec![(4.0, 12.0, 128)], "the style's shadow");
+        assert_eq!(shadows(op(Some(spec(8.0, 1.0)))), vec![(8.0, 12.0, 255)], "the title's own");
     }
 
     /// A title follows the style it was made in (#66): the brief changing

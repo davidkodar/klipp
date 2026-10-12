@@ -55,7 +55,7 @@ Each text layer has an entrance and an exit, set in the inspector's **Motion** g
 
 - **Kind** — Fade, Rise, Drop, Slide from left or right, Grow, Settle, Focus, Mask rise, Mask drop, Typewriter. The mask kinds clip each glyph to its resting box so it appears out of an invisible edge.
 - **Duration** and **Delay** — the exit's delay counts back from the end of the clip, so it always finishes as the clip does.
-- **Easing** — ease out in three strengths, overshoot, ease in and out, ease in, or linear.
+- **Easing** — ease out in three strengths, overshoot, ease in and out, ease in, or linear. An easing runs over its motion's own time, so ease in starts slowly on the way out as it does on the way in. An Out motion starts with ease in.
 - **Stagger** — all at once, or by line, word or character, with the gap between units.
 - **Travel** — how far the moving kinds move, as a fraction of the font size.
 

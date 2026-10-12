@@ -1231,10 +1231,10 @@ impl TitleData {
                         tb.motion.enter = Some(Motion::new(MotionKind::Typewriter).duration(0.05).stagger(StaggerUnit::Char, duration_secs.max(0.1) / chars));
                     }
                     T::FadeIn { duration_secs } => tb.motion.enter = Some(enter(MotionKind::Fade, duration_secs)),
-                    T::FadeOut { duration_secs } => tb.motion.exit = Some(enter(MotionKind::Fade, duration_secs)),
+                    T::FadeOut { duration_secs } => tb.motion.exit = Some(enter(MotionKind::Fade, duration_secs).as_exit()),
                     T::FadeInOut { fade_secs } => {
                         tb.motion.enter = Some(enter(MotionKind::Fade, fade_secs));
-                        tb.motion.exit = Some(enter(MotionKind::Fade, fade_secs));
+                        tb.motion.exit = Some(enter(MotionKind::Fade, fade_secs).as_exit());
                     }
                     T::Flash { rate_hz } => tb.loops.push(TitleLoop::Blink { rate_hz, duty: 0.5 }),
                     T::Blink { rate_hz, duty_cycle } => tb.loops.push(TitleLoop::Blink { rate_hz, duty: duty_cycle }),
@@ -1245,7 +1245,7 @@ impl TitleData {
                     }
                     T::ZoomOut { duration_secs, to_scale } => {
                         let k = if to_scale > 1.0 { MotionKind::ScaleDown } else { MotionKind::ScaleUp };
-                        tb.motion.exit = Some(enter(k, duration_secs));
+                        tb.motion.exit = Some(enter(k, duration_secs).as_exit());
                     }
                     T::SlideInLeft { duration_secs } => tb.motion.enter = Some(enter(MotionKind::SlideRight, duration_secs).distance(6.0)),
                     T::SlideInRight { duration_secs } => tb.motion.enter = Some(enter(MotionKind::SlideLeft, duration_secs).distance(6.0)),

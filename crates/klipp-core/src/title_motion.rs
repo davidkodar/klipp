@@ -156,6 +156,16 @@ impl MotionKind {
         }
     }
 
+    /// The easing a new exit of this kind takes: an exit's easing runs over
+    /// its own time, so the slow start of an `in` curve, the title easing
+    /// away and then leaving; a flicker's steps unsmoothed.
+    pub fn default_exit_easing(self) -> Easing {
+        match self {
+            MotionKind::Flicker => Easing::Linear,
+            _ => Easing::InCubic,
+        }
+    }
+
     /// The picker's group for this motion: what it does to the text.
     pub fn category(self) -> &'static str {
         match self {
@@ -273,6 +283,11 @@ pub enum MotionAnchor {
     Solid,
 }
 
+/// The longest a motion's one unit may take, in seconds: an hour, as
+/// long as its delay may be, so a slow push into the words can run a
+/// title's whole length (#1585). One longer than its title plays in part.
+pub const MAX_DURATION_SECS: f32 = 3600.0;
+
 /// One motion: an entrance or an exit.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Motion {
@@ -316,6 +331,18 @@ impl Default for Motion {
 impl Motion {
     pub fn new(kind: MotionKind) -> Self {
         Self { kind, easing: kind.default_easing(), ..Default::default() }
+    }
+    /// A new exit of `kind`, with the kind's exit easing.
+    pub fn exit(kind: MotionKind) -> Self {
+        Self::new(kind).as_exit()
+    }
+    /// This motion as an exit: an easing left at the kind's entrance
+    /// default takes the kind's exit default; one chosen is kept.
+    pub fn as_exit(mut self) -> Self {
+        if self.easing == self.kind.default_easing() {
+            self.easing = self.kind.default_exit_easing();
+        }
+        self
     }
     pub fn duration(mut self, secs: f32) -> Self { self.duration_secs = secs; self }
     pub fn delay(mut self, secs: f32) -> Self { self.delay_secs = secs; self }
@@ -403,7 +430,10 @@ impl TitleMotion {
     }
 
     /// The eased progress of unit `unit` at `t` seconds into a clip of
-    /// `window` seconds (unknown window: no exit). 1 = resting.
+    /// `window` seconds (unknown window: no exit). 1 = resting. Each
+    /// motion's easing runs over its own time: an exit's from its start to
+    /// its end, so `in_cubic` leaves slowly first, as it arrives slowly
+    /// first on an entrance (#1566).
     pub fn progress(&self, t: f32, window: Option<f32>, unit: usize) -> (f32, f32) {
         let enter = match self.enter {
             Some(m) => {
@@ -415,8 +445,9 @@ impl TitleMotion {
         let exit = match (self.exit, window) {
             (Some(m), Some(w)) => {
                 let remaining = w - t;
-                let local = (remaining - m.delay_secs - unit as f32 * m.stagger_secs) / m.duration_secs.max(0.001);
-                m.easing.apply(local)
+                let left = (remaining - m.delay_secs - unit as f32 * m.stagger_secs) / m.duration_secs.max(0.001);
+                // How far through the exit, eased: how far it has gone.
+                1.0 - m.easing.apply(1.0 - left)
             }
             _ => 1.0,
         };
@@ -1107,5 +1138,56 @@ mod loop_tests {
         let b = eval_loops(&loops, 0.33, None, geo(), [255, 0, 0, 200]).color.unwrap();
         assert_eq!(a[3], 200);
         assert_ne!(a, b);
+    }
+}
+
+#[cfg(test)]
+mod exit_easing_tests {
+    use super::*;
+
+    /// An exit's progress `at` (0..1) of the way through a 5 s exit that
+    /// ends a 10 s clip: 1 = resting, 0 = gone.
+    fn exit_at(m: Motion, at: f32) -> f32 {
+        TitleMotion { enter: None, exit: Some(m.duration(5.0)) }.progress(5.0 + 5.0 * at, Some(10.0), 0).1
+    }
+
+    /// #1566: an exit's easing runs over the exit's own time. `in_cubic`
+    /// leaves slowly first, `out_cubic` fast first, as each arrives.
+    #[test]
+    fn an_exit_eases_over_its_own_time() {
+        for at in [0.0, 0.01, 0.06, 0.25, 0.5, 0.75, 0.92, 1.0] {
+            let slow = exit_at(Motion::new(MotionKind::Larger).easing(Easing::InCubic), at);
+            assert!((slow - (1.0 - at * at * at)).abs() < 1e-5, "in_cubic {at} of the way: {slow}");
+            let fast = exit_at(Motion::new(MotionKind::Larger).easing(Easing::OutCubic), at);
+            assert!((fast - (1.0 - at).powi(3)).abs() < 1e-5, "out_cubic {at} of the way: {fast}");
+        }
+        let grow = |e| exit_at(Motion::new(MotionKind::Larger).easing(e), 0.1);
+        assert!(grow(Easing::InCubic) > 0.99, "in_cubic has barely left a tenth of the way: {}", grow(Easing::InCubic));
+        assert!(grow(Easing::OutCubic) < 0.75, "out_cubic is well on its way a tenth of the way: {}", grow(Easing::OutCubic));
+    }
+
+    /// A new exit takes its kind's exit easing, which draws every exit
+    /// whose entrance default was `out_cubic` or linear just as it drew
+    /// before #1566; an easing chosen is kept.
+    #[test]
+    fn a_default_exit_renders_as_before() {
+        for kind in MotionKind::ALL {
+            let m = Motion::exit(kind);
+            assert_eq!(m.easing, kind.default_exit_easing(), "{kind:?}");
+            if !matches!(kind.default_easing(), Easing::OutCubic | Easing::Linear) {
+                continue;
+            }
+            for i in 0..=20 {
+                let at = i as f32 / 20.0;
+                // Before: the entrance default over the exit's remaining time.
+                let before = kind.default_easing().apply(1.0 - at);
+                let now = exit_at(m, at);
+                assert!((now - before).abs() < 1e-5, "{kind:?} {at} of the way: {now}, before {before}");
+                let (b, n) = (m.pose(before, 72.0), m.pose(now, 72.0));
+                assert!((b.0 - n.0).abs() < 1e-4 && (b.3 - n.3).abs() < 1e-4, "{kind:?} {at} of the way: alpha and scale {n:?}, before {b:?}");
+            }
+        }
+        assert_eq!(Motion::exit(MotionKind::Pop).easing, Easing::InCubic, "a pop's exit doesn't overshoot past gone");
+        assert_eq!(Motion::new(MotionKind::Rise).easing(Easing::OutBack).as_exit().easing, Easing::OutBack, "a chosen easing is kept");
     }
 }
