@@ -1561,9 +1561,67 @@ impl TitleRenderer {
         gpu: Option<&mut dyn AlphaMaskProcessor>,
         time_secs: Option<f32>,
     ) -> Vec<u8> {
-        let tb = title.primary_text_or_default();
         let w = width as usize;
         let h = height as usize;
+        // Only the rows the layer draws in are worked and made bytes
+        // (#1725): a full-frame card fills all, else the text's mask, its
+        // effects' room included, and its backing. The working buffer is
+        // this thread's, kept zero between layers: a 4K frame of floats
+        // made afresh, and cleared, each layer cost more than the layer.
+        let full = matches!(title.background, TitleBackground::FullFrame { .. });
+        if layout.glyph_count == 0 || layout.mask_w == 0 || layout.mask_h == 0 {
+            if !full {
+                return vec![0u8; w * h * 4];
+            }
+            let mut buf = vec![0f32; w * h * 4];
+            fill_full_frame(&mut buf, title);
+            return to_bytes(&buf);
+        }
+        let (y0, y1) = if full {
+            (0, h)
+        } else {
+            let (mut y0, mut y1) = ((layout.mask_y0 as usize).min(h), (layout.mask_y0 as usize + layout.mask_h as usize).min(h));
+            if let TitleBackground::Color { padding, .. } = &title.background {
+                let pad = padding * layout.scale;
+                y0 = y0.min(((layout.text_top - pad) as i32).max(0) as usize);
+                y1 = y1.max((((layout.text_bottom + pad) as i32).max(0) as usize).min(h));
+            }
+            (y0, y1)
+        };
+        COMPOSE_SCRATCH.with_borrow_mut(|scratch| {
+            scratch.resize(w * h * 4, 0.0);
+            let out = Self::compose_into(scratch, layout, title, width, height, gpu, time_secs, (y0, y1));
+            #[cfg(debug_assertions)]
+            debug_assert!(
+                scratch[..y0 * w * 4].iter().chain(&scratch[y1 * w * 4..]).all(|v| *v == 0.0),
+                "a title layer drew outside its rows {y0}..{y1}"
+            );
+            // Kept zero for the next layer.
+            if full {
+                scratch.fill(0.0);
+            } else {
+                scratch[y0 * w * 4..y1 * w * 4].fill(0.0);
+            }
+            out
+        })
+    }
+
+    /// [`Self::compose`] into `buf`, a zero frame, which only rows
+    /// `rows` of are drawn in and made bytes.
+    #[allow(clippy::too_many_arguments)]
+    fn compose_into(
+        buf: &mut [f32],
+        layout: &TitleLayout,
+        title: &TitleData,
+        width: u32,
+        height: u32,
+        gpu: Option<&mut dyn AlphaMaskProcessor>,
+        time_secs: Option<f32>,
+        rows: (usize, usize),
+    ) -> Vec<u8> {
+        let tb = title.primary_text_or_default();
+        let (w, h) = (width as usize, height as usize);
+        let full = matches!(title.background, TitleBackground::FullFrame { .. });
         // The working buffer is float, on the same 0..255 scale the
         // layers already compute in. A title is a stack — a backing
         // panel, a shadow, a glow, an outline, the glyphs — and each
@@ -1571,13 +1629,7 @@ impl TitleRenderer {
         // read it back, so five layers meant five roundings, each
         // throwing away what the next needed. It is rounded once now,
         // where the buffer leaves this function.
-        let mut buf = vec![0f32; w * h * 4];
-
-        fill_full_frame(&mut buf, title);
-
-        if layout.glyph_count == 0 || layout.mask_w == 0 || layout.mask_h == 0 {
-            return to_bytes(&buf);
-        }
+        fill_full_frame(buf, title);
 
         let scale = layout.scale;
         let mask_w = layout.mask_w as usize;
@@ -1586,7 +1638,7 @@ impl TitleRenderer {
         let mask_y0 = layout.mask_y0 as usize;
         let alpha_mask = &layout.alpha_mask;
 
-        paint_backing(&mut buf, title, [layout.text_left, layout.text_top, layout.text_right, layout.text_bottom], width, height, scale);
+        paint_backing(buf, title, [layout.text_left, layout.text_top, layout.text_right, layout.text_bottom], width, height, scale);
 
         // Determine if GPU acceleration should be used (> 250K pixels in mask)
         let use_gpu = gpu.is_some() && (mask_w * mask_h > 250_000);
@@ -1606,13 +1658,13 @@ impl TitleRenderer {
             } else {
                 (layout.text_left + (layout.text_right - layout.text_left) * outline_progress).floor() as i32
             };
-            stack_behind(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, title.primary_fx(), scale, t, outline_cutoff_x, use_gpu, &mut gpu);
+            stack_behind(buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, title.primary_fx(), scale, t, outline_cutoff_x, use_gpu, &mut gpu);
         }
 
         // 4. 3D Text Extrusion (rendered before face text, after outlines)
         // — depth / angle / lighting may animate via keyframes.
         if let Some(ext) = tb.extrusion.as_ref().filter(|e| e.enabled) {
-            render_extrusion(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, ext, title, time_secs);
+            render_extrusion(buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, ext, title, time_secs);
         }
 
         // 5. Text fill (pattern > gradient > solid) — this is the face text
@@ -1639,7 +1691,7 @@ impl TitleRenderer {
             };
             let alpha_mask = &*face_mask;
             if let Some(pattern) = tb.pattern_fill.as_ref().filter(|_| tb.pattern_fill_enabled) {
-                draw_pattern_fill(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, pattern, scale);
+                draw_pattern_fill(buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, pattern, scale);
             } else if let Some(gradient) = tb.gradient.as_ref().filter(|g| g.enabled && !g.is_pair()) {
                 // Stops at an angle or out from a centre, across the
                 // text block, mixed in linear light (#1509).
@@ -1659,7 +1711,7 @@ impl TitleRenderer {
                         let u = (px as f32 + 0.5 - left) / bw;
                         let c = ramp.at(gradient.kind.position_at(u, v, bw, bh));
                         let alpha = (cov as u16 * c[3] as u16 / 255) as u8;
-                        blend_pixel(&mut buf, (py * w + px) * 4, &[c[0], c[1], c[2], alpha]);
+                        blend_pixel(buf, (py * w + px) * 4, &[c[0], c[1], c[2], alpha]);
                     }
                 }
             } else if let Some(gradient) = tb.gradient.as_ref().filter(|g| g.enabled) {
@@ -1684,22 +1736,22 @@ impl TitleRenderer {
                         let alpha = (cov as u16 * a as u16 / 255) as u8;
                         let tinted = [r, g, b, alpha];
                         let idx = (py * w + px) * 4;
-                        blend_pixel(&mut buf, idx, &tinted);
+                        blend_pixel(buf, idx, &tinted);
                     }
                 }
             } else if !layout.glyph_colors.is_empty() {
                 // Rich text: draw each glyph individually with its own color
                 draw_rich_text_fill(
-                    &mut buf, w, h, mask_x0, mask_y0, mask_w, mask_h,
+                    buf, w, h, mask_x0, mask_y0, mask_w, mask_h,
                     &layout.glyph_colors, &layout.glyph_coverages,
                 );
             } else {
-                draw_mask_to_buf(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &face_color, 1.0);
+                draw_mask_to_buf(buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, &face_color, 1.0);
             }
             // The colour glyphs in their colours (#1503).
             colour_pixels(layout, |_, px, py, c| {
                 if px < w && py < h {
-                    blend_pixel(&mut buf, (py * w + px) * 4, &c);
+                    blend_pixel(buf, (py * w + px) * 4, &c);
                 }
             });
         }
@@ -1707,10 +1759,13 @@ impl TitleRenderer {
         // 6. What the stack puts inside the face: inner shadows.
         {
             let t = time_secs.map(|t| t as f64).unwrap_or(0.0);
-            stack_inside(&mut buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, title.primary_fx(), scale, t, use_gpu, &mut gpu);
+            stack_inside(buf, alpha_mask, mask_w, mask_h, mask_x0, mask_y0, w, h, title.primary_fx(), scale, t, use_gpu, &mut gpu);
         }
 
-        to_bytes(&buf)
+        if full {
+            return to_bytes(buf);
+        }
+        to_bytes_rows(buf, w, rows.0, rows.1)
     }
 
     /// A shape's or a picture's layer with its stack and its motion on
@@ -2443,7 +2498,10 @@ impl TitleRenderer {
                     obj.blend != klipp_core::BlendMode::Normal || title.mask_of(obj).is_some()
                 }
             };
-            let below = mixed.then(|| std::mem::replace(&mut buf, vec![0u8; pixel_count * 4]));
+            // A mixed layer is drawn on its own frame, made only when
+            // something is drawn into it: a text at full opacity is its
+            // own frame already (#1725).
+            let below = mixed.then(|| std::mem::take(&mut buf));
             let first_layer = buf_untouched || mixed;
             buf_untouched = false;
             let opacity = time_secs
@@ -2513,6 +2571,7 @@ impl TitleRenderer {
                     if first_layer && (opacity - 1.0).abs() < 0.001 {
                         buf = layer;
                     } else if (opacity - 1.0).abs() < 0.001 {
+                        frame(&mut buf, pixel_count);
                         over_blend(&mut buf, &layer);
                     } else {
                         // Per-object opacity: scale the layer's alpha
@@ -2521,6 +2580,7 @@ impl TitleRenderer {
                         // the pre-opacity rendering hot loop.
                         let mut faded = layer;
                         scale_layer_alpha(&mut faded, opacity);
+                        frame(&mut buf, pixel_count);
                         over_blend(&mut buf, &faded);
                     }
                 }
@@ -2543,8 +2603,10 @@ impl TitleRenderer {
                         if (opacity - 1.0).abs() >= 0.001 {
                             scale_layer_alpha(&mut layer, opacity);
                         }
+                        frame(&mut buf, pixel_count);
                         over_blend(&mut buf, &layer);
                     } else if (opacity - 1.0).abs() < 0.001 {
+                        frame(&mut buf, pixel_count);
                         paint_shape_layer(&mut buf, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0), gpu_for_first_text.as_mut().map(|g| &mut **g as &mut dyn AlphaMaskProcessor), mixed);
                     } else {
                         // Render the shape into a fresh transparent
@@ -2554,6 +2616,7 @@ impl TitleRenderer {
                         let mut layer = vec![0u8; (width as usize) * (height as usize) * 4];
                         paint_shape_layer(&mut layer, shape, &effective_transform, width, height, time_secs.unwrap_or(0.0), gpu_for_first_text.as_mut().map(|g| &mut **g as &mut dyn AlphaMaskProcessor), mixed);
                         scale_layer_alpha(&mut layer, opacity);
+                        frame(&mut buf, pixel_count);
                         over_blend(&mut buf, &layer);
                     }
                 }
@@ -2568,12 +2631,18 @@ impl TitleRenderer {
                         if (opacity - 1.0).abs() >= 0.001 {
                             scale_layer_alpha(&mut layer, opacity);
                         }
+                        frame(&mut buf, pixel_count);
                         over_blend(&mut buf, &layer);
                     }
                 }
             }
             if let Some(mut below) = below {
                 let mut layer = std::mem::take(&mut buf);
+                // Nothing drawn: what was below stays.
+                if layer.is_empty() {
+                    buf = below;
+                    continue;
+                }
                 if let Some((src, kind)) = title.mask_of(obj) {
                     let matte = self.matte_layer(title, src.id, width, height, time_secs);
                     apply_layer_mask(&mut layer, &matte, kind);
@@ -3684,6 +3753,25 @@ fn gaussian_blur_expand(
         padded[dst_row..dst_row + in_w].copy_from_slice(&input[src_row..src_row + in_w]);
     }
 
+    // A wide blur, a glyph an animator or an entrance blurs by a good
+    // part of its size, as three box blurs each way (#1725): as near a
+    // Gaussian as the eye tells, at a cost the radius does not grow. A
+    // 2 em blur at 4K made the exact kernel nearly a thousand taps and
+    // a frame take seconds.
+    if sigma > BOX_BLUR_SIGMA {
+        let mut a: Vec<f32> = padded.iter().map(|&v| v as f32).collect();
+        let mut b = vec![0.0f32; a.len()];
+        for r in box_radii(sigma) {
+            box_pass(&a, &mut b, new_w, new_h, r, true);
+            std::mem::swap(&mut a, &mut b);
+        }
+        for r in box_radii(sigma) {
+            box_pass(&a, &mut b, new_w, new_h, r, false);
+            std::mem::swap(&mut a, &mut b);
+        }
+        return (a.iter().map(|v| v.round().clamp(0.0, 255.0) as u8).collect(), new_w, new_h);
+    }
+
     // Horizontal pass into a float buffer, then vertical pass back to u8.
     let mut tmp = vec![0.0f32; new_w * new_h];
     for y in 0..new_h {
@@ -3710,6 +3798,47 @@ fn gaussian_blur_expand(
         }
     }
     (out, new_w, new_h)
+}
+
+/// Above this sigma, in pixels, [`gaussian_blur_expand`] blurs with
+/// three boxes each way instead of the exact kernel (#1725).
+const BOX_BLUR_SIGMA: f32 = 8.0;
+
+/// The radii of three box blurs that together blur as a Gaussian of
+/// `sigma` does (Kovesi's widths for a given sigma).
+fn box_radii(sigma: f32) -> [usize; 3] {
+    let n = 3.0f32;
+    let ideal = (12.0 * sigma * sigma / n + 1.0).sqrt();
+    let mut wl = ideal.floor() as i32;
+    if wl % 2 == 0 {
+        wl -= 1;
+    }
+    let wl_f = wl as f32;
+    let m = ((12.0 * sigma * sigma - n * wl_f * wl_f - 4.0 * n * wl_f - 3.0 * n) / (-4.0 * wl_f - 4.0)).round() as i32;
+    let width = |i: i32| if i < m { wl } else { wl + 2 };
+    [0, 1, 2].map(|i| (width(i).max(1) as usize - 1) / 2)
+}
+
+/// One box blur of radius `r` along rows (`across`) or columns of a
+/// `w`×`h` frame, zero beyond it: a running sum, so the radius costs
+/// nothing.
+fn box_pass(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: usize, across: bool) {
+    let (lines, len, step, stride) = if across { (h, w, 1, w) } else { (w, h, w, 1) };
+    let norm = 1.0 / (2 * r + 1) as f32;
+    for line in 0..lines {
+        let base = line * stride;
+        let at = |i: usize| src[base + i * step];
+        let mut acc: f32 = (0..=r.min(len - 1)).map(at).sum();
+        for i in 0..len {
+            dst[base + i * step] = acc * norm;
+            if i + r + 1 < len {
+                acc += at(i + r + 1);
+            }
+            if i >= r {
+                acc -= at(i - r);
+            }
+        }
+    }
 }
 
 /// True wrap-under drop cap layout. The body text is laid out in
@@ -6340,8 +6469,41 @@ fn paint_backing(buf: &mut [f32], title: &TitleData, bounds: [f32; 4], width: u3
     }
 }
 
+/// `buf` made a frame of `pixels` transparent pixels when it is none yet:
+/// a mixed layer's frame, made when the layer draws into it (#1725).
+fn frame(buf: &mut Vec<u8>, pixels: usize) {
+    if buf.is_empty() {
+        *buf = vec![0u8; pixels * 4];
+    }
+}
+
+thread_local! {
+    /// [`TitleRenderer::compose`]'s working frame, this thread's, zero
+    /// between layers (#1725).
+    static COMPOSE_SCRATCH: std::cell::RefCell<Vec<f32>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 fn to_bytes(buf: &[f32]) -> Vec<u8> {
     buf.iter().map(|v| v.round().clamp(0.0, 255.0) as u8).collect()
+}
+
+/// [`to_bytes`] of rows `y0..y1` of a frame `w` wide, every other row
+/// zero (#1725): what a layer drawn only in those rows rounds to.
+fn to_bytes_rows(buf: &[f32], w: usize, y0: usize, y1: usize) -> Vec<u8> {
+    use rayon::prelude::*;
+    let mut out = vec![0u8; buf.len()];
+    let (a, b) = (y0 * w * 4, (y1 * w * 4).min(buf.len()));
+    if a < b {
+        // A row at a time across the threads: at 4K a word's rows are
+        // millions of values.
+        let row = (w * 4).max(1);
+        out[a..b].par_chunks_mut(row).zip(buf[a..b].par_chunks(row)).for_each(|(o, v)| {
+            for (o, v) in o.iter_mut().zip(v) {
+                *o = v.round().clamp(0.0, 255.0) as u8;
+            }
+        });
+    }
+    out
 }
 
 fn blend_pixel(buf: &mut [f32], idx: usize, src: &[u8; 4]) {
@@ -11088,5 +11250,49 @@ mod gradient_fill_tests {
         let (a, b) = (set(GREEN), set([255, 255, 255, 255]));
         assert_ne!(r.render(&text(Some(a.clone()), "HHHH"), W, H), r.render(&text(Some(b.clone()), "HHHH"), W, H));
         assert_ne!(r.render(&rect(a), W, H), r.render(&rect(b), W, H));
+    }
+}
+
+#[cfg(test)]
+mod wide_blur_tests {
+    /// #1725: a wide blur is three boxes each way, as near the exact
+    /// Gaussian as the eye tells, its ink where the Gaussian's is.
+    #[test]
+    fn a_wide_blur_is_near_the_gaussian_and_fast() {
+        let (w, h) = (40usize, 30usize);
+        let mut glyph = vec![0u8; w * h];
+        for y in 8..22 {
+            for x in 10..30 {
+                glyph[y * w + x] = 255;
+            }
+        }
+        let sigma = 20.0;
+        let (boxed, bw, bh) = super::gaussian_blur_expand(&glyph, w, h, sigma);
+        // The exact kernel, as below the threshold, scaled up.
+        let exact = {
+            let radius = (sigma * 2.5).ceil() as usize;
+            assert_eq!((bw, bh), (w + 2 * radius, h + 2 * radius), "the same room");
+            let k: Vec<f32> = (0..=2 * radius).map(|i| { let x = i as f32 - radius as f32; (-x * x / (2.0 * sigma * sigma)).exp() }).collect();
+            let sum: f32 = k.iter().sum();
+            let at = |x: i64, y: i64| if x < radius as i64 || y < radius as i64 || x >= (w + radius) as i64 || y >= (h + radius) as i64 { 0.0 } else { glyph[(y as usize - radius) * w + (x as usize - radius)] as f32 };
+            let mut out = vec![0.0f32; bw * bh];
+            for y in 0..bh {
+                for x in 0..bw {
+                    let mut acc = 0.0;
+                    for (j, ky) in k.iter().enumerate() {
+                        for (i, kx) in k.iter().enumerate() {
+                            acc += at(x as i64 + i as i64 - radius as i64, y as i64 + j as i64 - radius as i64) * kx * ky;
+                        }
+                    }
+                    out[y * bw + x] = acc / (sum * sum);
+                }
+            }
+            out
+        };
+        let worst = boxed.iter().zip(&exact).map(|(a, b)| (*a as f32 - b).abs()).fold(0.0, f32::max);
+        assert!(worst < 12.0, "within a few levels of the Gaussian: {worst}");
+        let ink = |v: &mut dyn Iterator<Item = f32>| v.sum::<f32>();
+        let (a, b) = (ink(&mut boxed.iter().map(|&v| v as f32)), ink(&mut exact.iter().copied()));
+        assert!((a / b - 1.0).abs() < 0.02, "the same ink: {a} vs {b}");
     }
 }
