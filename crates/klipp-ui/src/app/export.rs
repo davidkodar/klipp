@@ -2780,12 +2780,21 @@ impl KlippApp {
             }
             AppCommand::ImportSubtitles { path } => {
                 let path = path.clone();
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => {
+                // EBU-STL is binary; the rest are text (#1516).
+                let is_stl = path.extension().and_then(|s| s.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("stl"));
+                let read = std::fs::read(&path).and_then(|bytes| {
+                    if is_stl {
+                        Ok((String::new(), bytes))
+                    } else {
+                        String::from_utf8(bytes).map(|s| (s, Vec::new())).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                    }
+                });
+                match read {
+                    Ok((content, bytes)) => {
                         // Detect format by extension (case-insensitive). Unknown
                         // extensions fall back to the SRT/VTT parser; TTML,
-                        // DFXP, IMSC and iTT read as TTML, and SCC as CEA-608
-                        // (#1516).
+                        // DFXP, IMSC and iTT read as TTML, SCC as CEA-608 and
+                        // STL as EBU Tech 3264 (#1516).
                         let ext = path
                             .extension()
                             .and_then(|s| s.to_str())
@@ -2897,6 +2906,8 @@ impl KlippApp {
                                 Some(klipp_captions::ttml::parse_ttml(&content))
                             } else if ext == "scc" {
                                 Some(klipp_captions::scc::parse_scc(&content))
+                            } else if is_stl {
+                                Some(klipp_captions::stl::parse_stl(&bytes))
                             } else {
                                 None
                             };
@@ -3278,14 +3289,22 @@ impl KlippApp {
                     .and_then(|e| e.to_str())
                     .unwrap_or("")
                     .to_ascii_lowercase();
-                let content = match ext.as_str() {
-                    "vtt" => generate_vtt(&subs),
-                    "ass" | "ssa" => generate_ass(&subs),
+                let content: Vec<u8> = match ext.as_str() {
+                    // EBU-STL for teletext, at the sequence's frame rate
+                    // family (#1516).
+                    "stl" => klipp_captions::stl::generate_stl(
+                        &subs,
+                        if (seq.fps.as_f64().round() as u32).is_multiple_of(30) { 30 } else { 25 },
+                        seq.brief.as_ref().and_then(|b| b.language.as_deref()).unwrap_or(""),
+                        &seq.name,
+                    ),
+                    "vtt" => generate_vtt(&subs).into_bytes(),
+                    "ass" | "ssa" => generate_ass(&subs).into_bytes(),
                     // IMSC 1.1 Text, in the brief's language (#1516).
-                    "ttml" | "dfxp" | "xml" | "itt" => klipp_captions::ttml::generate_imsc(&subs, seq.brief.as_ref().and_then(|b| b.language.as_deref()).unwrap_or("")),
+                    "ttml" | "dfxp" | "xml" | "itt" => klipp_captions::ttml::generate_imsc(&subs, seq.brief.as_ref().and_then(|b| b.language.as_deref()).unwrap_or("")).into_bytes(),
                     // CEA-608 pop-on captions on CC1 (#1516).
-                    "scc" => klipp_captions::scc::generate_scc(&subs),
-                    _ => generate_srt(&subs),
+                    "scc" => klipp_captions::scc::generate_scc(&subs).into_bytes(),
+                    _ => generate_srt(&subs).into_bytes(),
                 };
                 match std::fs::write(&path, &content) {
                     Ok(_) => self.state.toast.show(format!("Exported {} subtitles to {}", subs.len(), path.display())),

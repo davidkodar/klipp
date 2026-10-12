@@ -209,7 +209,7 @@ pub(crate) fn respond(
             if !p.is_absolute() {
                 return Err(format!("subtitle path must be absolute (got {path:?})"));
             }
-            let ext = subtitle_format(&p).ok_or_else(|| format!("{path:?} names no subtitle format; end it .srt, .vtt, .ass, .ssa, .ttml or .scc"))?;
+            let ext = subtitle_format(&p).ok_or_else(|| format!("{path:?} names no subtitle format; end it .srt, .vtt, .ass, .ssa, .ttml, .scc or .stl"))?;
             if let Some(f) = format.as_deref() {
                 let want = f.trim().to_ascii_lowercase();
                 let want = match want.as_str() {
@@ -218,7 +218,7 @@ pub(crate) fn respond(
                     _ => want,
                 };
                 if !SUBTITLE_FORMATS.contains(&want.as_str()) {
-                    return Err(format!("{f:?} is not a subtitle format; give srt, vtt, ass, ssa, ttml or scc"));
+                    return Err(format!("{f:?} is not a subtitle format; give srt, vtt, ass, ssa, ttml, scc or stl"));
                 }
                 // TTML's extensions all write IMSC.
                 if ttml_family(&want) != ttml_family(ext) {
@@ -234,7 +234,7 @@ pub(crate) fn respond(
                 return Err(format!("subtitle path must be absolute (got {path:?})"));
             }
             if subtitle_format(&p).is_none() {
-                return Err(format!("{path:?} is not a subtitle file this reads; give an .srt, .vtt, .ass, .ssa, .ttml, .dfxp, .xml, .itt or .scc"));
+                return Err(format!("{path:?} is not a subtitle file this reads; give an .srt, .vtt, .ass, .ssa, .ttml, .dfxp, .xml, .itt, .scc or .stl"));
             }
             if !p.is_file() {
                 return Err(format!("no file at {path:?}"));
@@ -643,8 +643,8 @@ fn sequence_credits(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPoo
 
 /// The subtitle formats the sidecar reader and writers take, by extension:
 /// TTML's (#1516) read as the family and written as IMSC 1.1 Text, and
-/// SCC's CEA-608 captions.
-const SUBTITLE_FORMATS: &[&str] = &["srt", "vtt", "ass", "ssa", "ttml", "dfxp", "xml", "itt", "scc"];
+/// SCC's CEA-608 captions and EBU-STL.
+const SUBTITLE_FORMATS: &[&str] = &["srt", "vtt", "ass", "ssa", "ttml", "dfxp", "xml", "itt", "scc", "stl"];
 
 /// A format as the one it reads and writes as: TTML's extensions as `ttml`.
 fn ttml_family(f: &str) -> &str {

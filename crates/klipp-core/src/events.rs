@@ -1437,7 +1437,7 @@ pub enum AppCommand {
     /// (or a temp directory when the project is unsaved) and import it into
     /// the media bin as a still MediaItem. No file dialog.
     ExtractFrameToBin,
-    /// Import an SRT, VTT, ASS/SSA, TTML or SCC subtitle file onto a subtitle track.
+    /// Import an SRT, VTT, ASS/SSA, TTML, SCC or EBU-STL subtitle file onto a subtitle track.
     ImportSubtitles { path: PathBuf },
     /// Import a Kdenlive MLT XML project as a new sequence.
     /// Unsupported features (filters, non-cross-dissolve transitions, keyframes)
