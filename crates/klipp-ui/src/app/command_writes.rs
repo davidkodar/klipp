@@ -573,6 +573,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTitleLineSpacing { .. }
         | AppCommand::SetTitleParagraph { .. }
         | AppCommand::SetTitleTabStops { .. }
+        | AppCommand::SetTitleList { .. }
         | AppCommand::SetTitleUnderline { .. }
         | AppCommand::SetTitleFontVariation { .. }
         | AppCommand::SetTitleFeatures { .. }

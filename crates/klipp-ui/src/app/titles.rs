@@ -881,6 +881,44 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitleList { clip_id, style, indent } => {
+                use klipp_timeline::{ListMarker, ListStyle, NumberStyle};
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                let indent = if indent.is_finite() { indent.clamp(0.0, 2000.0) } else { 60.0 };
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                let (start, suffix) = match tb.paragraph.list.as_ref().map(|l| &l.marker) {
+                                    Some(ListMarker::Numbered { start, suffix, .. }) => (*start, suffix.clone()),
+                                    _ => (1, ".".to_string()),
+                                };
+                                let count = |style| ListMarker::Numbered { style, start, suffix: suffix.clone() };
+                                let marker = match style {
+                                    1 => Some(match tb.paragraph.list.as_ref().map(|l| &l.marker) {
+                                        Some(m @ ListMarker::Bullet { .. }) => m.clone(),
+                                        _ => ListMarker::Bullet { mark: "\u{2022}".into() },
+                                    }),
+                                    2 => Some(count(NumberStyle::Arabic)),
+                                    3 => Some(count(NumberStyle::LowerAlpha)),
+                                    4 => Some(count(NumberStyle::UpperAlpha)),
+                                    5 => Some(count(NumberStyle::LowerRoman)),
+                                    6 => Some(count(NumberStyle::UpperRoman)),
+                                    _ => None,
+                                };
+                                tb.paragraph.list = marker.map(|marker| ListStyle { marker, indent });
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title List", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetTitleLastLine { clip_id, last_line } => {
                 let old = self.snapshot_title(*clip_id);
                 let target_oid = self.title_text_target_id(*clip_id);

@@ -403,6 +403,9 @@ pub struct MaskLayer {
 pub struct ParagraphSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tabs: Option<Vec<TabSpec>>,
+    /// Each paragraph an item of a list, or `{"style": "none"}` for none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list: Option<ListSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub space_before: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -413,6 +416,25 @@ pub struct ParagraphSpec {
     pub indent_end: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_indent: Option<f32>,
+}
+
+/// A list (#1721): `style` bullet, number, lower_alpha, upper_alpha,
+/// lower_roman, upper_roman or none; a bullet's `mark` ("•" when not
+/// given), a count's `start` (1) and `suffix` ("."), and `indent`, how far
+/// past the start indent the items' text starts, pixels at 1080p (1.5
+/// ems of the text's size when not given).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListSpec {
+    pub style: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suffix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indent: Option<f32>,
 }
 
 /// A tab stop (#1721): `at` pixels at 1080p from the start indent, and
@@ -7762,6 +7784,8 @@ struct Typesetting {
     fit: Option<klipp_timeline::TextFit>,
     paragraph: Option<ParagraphSpec>,
     tabs: Option<Vec<klipp_timeline::TabStop>>,
+    /// A list: `Some(None)` none; an indent left out is the text's 1.5 ems.
+    list: Option<Option<(klipp_timeline::ListMarker, Option<f32>)>>,
     underline: Option<bool>,
     runs: Option<Vec<(RunSpec, Option<[u8; 4]>)>>,
     /// Animators in place of the text's; `Some(vec![])` clears them.
@@ -8381,6 +8405,46 @@ fn paragraph_spec(p: &ParagraphSpec, i: usize) -> Result<ParagraphSpec, Refusal>
     Ok(p.clone())
 }
 
+/// A [`ListSpec`] checked (#1721): `None` for style none.
+fn list_spec(l: &ListSpec, i: usize) -> Result<Option<(klipp_timeline::ListMarker, Option<f32>)>, Refusal> {
+    use klipp_timeline::{ListMarker, NumberStyle};
+    if let Some(v) = l.indent {
+        if !v.is_finite() || !(0.0..=2000.0).contains(&v) {
+            return Err(refuse(i, format!("a list indent of {v} is out of range"), "give the list's indent from 0 to 2000 pixels at 1080p"));
+        }
+    }
+    let count = |style| {
+        if l.mark.is_some() {
+            return Err(refuse(i, "a mark for a numbered list", "mark is for style bullet; a numbered list takes start and suffix"));
+        }
+        let suffix = l.suffix.clone().unwrap_or_else(|| ".".into());
+        if suffix.chars().count() > 4 {
+            return Err(refuse(i, format!("the suffix \"{suffix}\" is long"), "give a suffix of up to 4 characters, as \".\" or \")\""));
+        }
+        Ok(ListMarker::Numbered { style, start: l.start.unwrap_or(1), suffix })
+    };
+    let marker = match l.style.to_lowercase().as_str() {
+        "none" => return Ok(None),
+        "bullet" => {
+            if l.start.is_some() || l.suffix.is_some() {
+                return Err(refuse(i, "a start or suffix for a bullet list", "start and suffix are for a numbered list; a bullet takes mark"));
+            }
+            let mark = l.mark.clone().unwrap_or_else(|| "\u{2022}".into());
+            if mark.is_empty() || mark.chars().count() > 4 {
+                return Err(refuse(i, format!("the mark \"{mark}\" is not a bullet"), "give a mark of 1 to 4 characters, as \"\u{2022}\" or \"\u{2013}\""));
+            }
+            ListMarker::Bullet { mark }
+        }
+        "number" | "numbered" | "arabic" => count(NumberStyle::Arabic)?,
+        "lower_alpha" => count(NumberStyle::LowerAlpha)?,
+        "upper_alpha" => count(NumberStyle::UpperAlpha)?,
+        "lower_roman" => count(NumberStyle::LowerRoman)?,
+        "upper_roman" => count(NumberStyle::UpperRoman)?,
+        other => return Err(refuse(i, format!("\"{other}\" is not a list style"), "use bullet, number, lower_alpha, upper_alpha, lower_roman, upper_roman or none")),
+    };
+    Ok(Some((marker, l.indent)))
+}
+
 /// Tab stops checked (#1721): at most 32, each 0 to 4000 px with an
 /// alignment that is one, in order.
 fn tab_stops(tabs: &[TabSpec], i: usize) -> Result<Vec<klipp_timeline::TabStop>, Refusal> {
@@ -8488,6 +8552,7 @@ fn typesetting(t: &Typeset, i: usize) -> Result<Typesetting, Refusal> {
         fit: text_fit(t, i)?,
         paragraph: t.paragraph.as_ref().map(|p| paragraph_spec(p, i)).transpose()?,
         tabs: t.paragraph.as_ref().and_then(|p| p.tabs.as_deref()).map(|tabs| tab_stops(tabs, i)).transpose()?,
+        list: t.paragraph.as_ref().and_then(|p| p.list.as_ref()).map(|l| list_spec(l, i)).transpose()?,
         underline: t.underline,
         runs,
         animators,
@@ -8563,6 +8628,12 @@ fn set_type(tb: &mut klipp_timeline::TextBox, t: &Typesetting) -> Result<(), Str
     }
     if let Some(tabs) = &t.tabs {
         tb.paragraph.tabs = tabs.clone();
+    }
+    if let Some(list) = &t.list {
+        tb.paragraph.list = list.as_ref().map(|(marker, indent)| klipp_timeline::ListStyle {
+            marker: marker.clone(),
+            indent: indent.unwrap_or_else(|| (tb.font_size * 1.5).round()),
+        });
     }
     if let Some(u) = t.underline {
         tb.underline = u;
@@ -12565,6 +12636,48 @@ mod tests {
         assert!(r.why.contains("\"justify\" is not a tab alignment") && r.hint.contains("decimal"), "{}", r.why);
         let r = bad(r##"[{"op":"title","text":"Hi","at":{"secs":1.0},"paragraph":{"tabs":[{"at":-3}]}}]"##);
         assert!(r.why.contains("out of range"), "{}", r.why);
+    }
+
+    /// #1721: a title's paragraphs are made a numbered list, a bullet
+    /// list, and no list; bad lists are refused with the choices.
+    #[test]
+    fn a_titles_paragraphs_become_a_list() {
+        use klipp_timeline::{ListMarker, ListStyle, NumberStyle};
+        let (seq, pool, _, _, _) = fixture();
+        let list_of = |c: &Clip| {
+            let klipp_timeline::TitleObjectContent::TextBox(tb) = &c.title_data().unwrap().objects[0].content else { panic!("text") };
+            tb.paragraph.list.clone()
+        };
+        let ops: Vec<Op> = serde_json::from_str(r##"[
+            {"op":"title","text":"Eggs\nFlour","at":{"secs":1.0},"secs":3.0,"size":40,"paragraph":{"list":{"style":"upper_roman","start":3,"suffix":")"}}},
+            {"op":"title","text":"Milk\nSugar","at":{"secs":5.0},"secs":2.0,"paragraph":{"list":{"style":"bullet","indent":30}}},
+            {"op":"style","clip_id":{"track":0,"secs":5.5},"paragraph":{"list":{"style":"none"}}}
+        ]"##).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[0].edit else { panic!() };
+        assert_eq!(list_of(clip), Some(ListStyle { marker: ListMarker::Numbered { style: NumberStyle::UpperRoman, start: 3, suffix: ")".into() }, indent: 60.0 }), "1.5 ems of 40 when no indent is given");
+        let EditCommand::AddTitleClip { clip, .. } = &plan.steps[1].edit else { panic!() };
+        assert_eq!(list_of(clip), Some(ListStyle { marker: ListMarker::Bullet { mark: "\u{2022}".into() }, indent: 30.0 }));
+        let mut seqs = vec![seq.clone()];
+        let (mut pl, mut fps) = (pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pl, fps: &mut fps };
+        for st in &plan.steps {
+            view.apply_forward(&st.edit);
+        }
+        let milk = view.sequences[0].tracks.iter().flat_map(|t| &t.clips).find(|c| c.title_data().is_some_and(|td| td.primary_text().is_some_and(|tb| tb.text.starts_with("Milk")))).unwrap();
+        assert_eq!(list_of(milk), None, "style none clears it");
+
+        let bad = |json: &str| resolve(&seq, &pool, &serde_json::from_str::<Vec<Op>>(json).unwrap()).unwrap_err();
+        let title = |list: &str| format!(r##"[{{"op":"title","text":"Hi","at":{{"secs":1.0}},"paragraph":{{"list":{list}}}}}]"##);
+        for (list, why, how) in [
+            (r#"{"style":"checkbox"}"#, "\"checkbox\" is not a list style", "upper_roman"),
+            (r#"{"style":"number","mark":"*"}"#, "a mark for a numbered list", "start and suffix"),
+            (r#"{"style":"bullet","start":2}"#, "a start or suffix for a bullet list", "takes mark"),
+            (r#"{"style":"bullet","indent":-1}"#, "out of range", "0 to 2000"),
+        ] {
+            let r = bad(&title(list));
+            assert!(r.why.contains(why) && r.hint.contains(how), "{list}: {} / {}", r.why, r.hint);
+        }
     }
 
     /// #1722: a title's box is set to shrink to fit, down to a minimum,

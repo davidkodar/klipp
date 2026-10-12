@@ -199,6 +199,8 @@ pub(crate) struct Line {
     /// (#1721): its paragraph's indents.
     pub(crate) left: f32,
     pub(crate) right: f32,
+    /// Whether the line is its paragraph's first (#1721).
+    pub(crate) starts_paragraph: bool,
 }
 
 /// A layout's paragraph settings in its pixels (#1721): each line's
@@ -558,7 +560,7 @@ impl ShapedLayout {
                 g.x += x;
                 g.y += drop;
             }
-            self.lines.push(Line { glyph_start: first, glyph_end: self.glyphs.len().saturating_sub(1), baseline: line.baseline_y + drop, left, right });
+            self.lines.push(Line { glyph_start: first, glyph_end: self.glyphs.len().saturating_sub(1), baseline: line.baseline_y + drop, left, right, starts_paragraph: first_line });
             first_line = hard_break;
         }
     }

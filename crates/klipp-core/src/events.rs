@@ -2617,6 +2617,11 @@ pub enum AppCommand {
     /// at 1080p from the start indent, and 0=Left, 1=Center, 2=Right,
     /// 3=Decimal.
     SetTitleTabStops { clip_id: ClipId, stops: Vec<(f32, u8)> },
+    /// A text box's paragraphs as a list (#1721): 0=None, 1=Bullets,
+    /// 2=1 2 3, 3=a b c, 4=A B C, 5=i ii iii, 6=I II III; the items' text
+    /// `indent` pixels at 1080p past the start indent. A count keeps the
+    /// start and suffix it had.
+    SetTitleList { clip_id: ClipId, style: u8, indent: f32 },
     /// Toggle text underline rendering.
     SetTitleUnderline { clip_id: ClipId, underline: bool },
     /// The weight the text box is set in, `None` for its style's, and
