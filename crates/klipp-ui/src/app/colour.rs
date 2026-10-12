@@ -1566,9 +1566,11 @@ impl KlippApp {
             AppCommand::AddKeyframe { clip_id, node_id, .. }
             | AppCommand::RemoveKeyframe { clip_id, node_id, .. }
             | AppCommand::ClearKeyframes { clip_id, node_id, .. }
-            | AppCommand::SetKeyframeInterpolation { clip_id, node_id, .. } => {
+            | AppCommand::SetKeyframeInterpolation { clip_id, node_id, .. }
+            | AppCommand::SetKeyframeEase { clip_id, node_id, .. }
+            | AppCommand::SetKeyframeTangents { clip_id, node_id, .. } => {
                 // A node's key track (its bypass's, from the bypass switch
-                // and diamond) edited on the graph holding the node, as its
+                // and diamond, a colour wheel's) edited on the graph holding the node, as its
                 // bypass is switched: one step, or none inside a slider's
                 // gesture (whose close records it). Written straight into
                 // the grade, these recorded no step, so an undo skipped them.
@@ -1576,25 +1578,6 @@ impl KlippApp {
                 self.with_clip_graph_mut_at(*clip_id, &path, needs_refresh, |graph| {
                     write_node_settings(graph, cmd);
                 });
-                true
-            }
-            AppCommand::SetKeyframeTangents { clip_id, node_id, ref param, time_secs, tangent_in, tangent_out } => {
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.find_clip_mut(*clip_id) {
-                        clip.edit_grade(|graph| {
-                            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
-                                let track = node.keyframes.track_mut(param);
-                                let epsilon = 0.01;
-                                if let Some(kf) = track.keyframes.iter_mut().find(|kf| (kf.time_secs - *time_secs).abs() < epsilon) {
-                                    kf.tangent_in = *tangent_in;
-                                    kf.tangent_out = *tangent_out;
-                                }
-                            }
-                        });
-                        break;
-                    }
-                }
-                *needs_refresh = true;
                 true
             }
             _ => false,
@@ -3007,10 +2990,31 @@ pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppC
             }
             return true;
         }
+        // As the keyframe editor sets it: the key and the one before it
+        // (the moves into and out of it).
         AppCommand::SetKeyframeInterpolation { node_id, param, time_secs, interpolation, .. } => {
             if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                let keys = node.keyframes.tracks.iter_mut().find(|t| t.param_name == *param).map(|t| &mut t.keyframes);
+                if let Some((keys, i)) = keys.and_then(|k| k.iter().position(|kf| (kf.time_secs - *time_secs).abs() < 0.01).map(|i| (k, i))) {
+                    klipp_core::keyframe::set_interpolation_at(keys, i, *interpolation);
+                }
+            }
+            return true;
+        }
+        AppCommand::SetKeyframeEase { node_id, param, time_secs, ease, .. } => {
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                let keys = node.keyframes.tracks.iter_mut().find(|t| t.param_name == *param).map(|t| &mut t.keyframes);
+                if let Some((keys, i)) = keys.and_then(|k| k.iter().position(|kf| (kf.time_secs - *time_secs).abs() < 0.01).map(|i| (k, i))) {
+                    klipp_core::keyframe::ease_key(keys, i, *ease);
+                }
+            }
+            return true;
+        }
+        AppCommand::SetKeyframeTangents { node_id, param, time_secs, tangent_in, tangent_out, .. } => {
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
                 if let Some(kf) = node.keyframes.track_mut(param).keyframes.iter_mut().find(|kf| (kf.time_secs - *time_secs).abs() < 0.01) {
-                    kf.interpolation = *interpolation;
+                    kf.tangent_in = *tangent_in;
+                    kf.tangent_out = *tangent_out;
                 }
             }
             return true;

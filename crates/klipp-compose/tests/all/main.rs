@@ -32,6 +32,8 @@ mod golden_corpus;
 mod gpu_composite;
 #[path = "../grade_cpu_gpu_parity.rs"]
 mod grade_cpu_gpu_parity;
+#[path = "../grade_keys_render.rs"]
+mod grade_keys_render;
 #[path = "../grade_mix.rs"]
 mod grade_mix;
 #[path = "../grade_render_scale.rs"]

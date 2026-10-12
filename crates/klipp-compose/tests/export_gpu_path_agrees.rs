@@ -376,6 +376,38 @@ fn a_plain_single_clip_agrees_with_the_renderer() {
     }
 }
 
+/// A grade keyed over the shot (#891) exports the frame it is at: its
+/// exposure keyed from 0 to 2 stops, the GPU path's luma at two times is
+/// the renderer's own at each, and the two times differ, so the export
+/// reads the keys where the viewer does.
+#[test]
+fn a_keyed_grade_exports_each_frame_as_the_renderer_draws_it() {
+    let mut c = graded(0.0, 2.0, 0.0);
+    c.edit_grade(|g| {
+        let node = g.nodes.iter_mut().find(|n| n.kind == NodeKind::Exposure).expect("the Exposure node");
+        let keys = &mut node.keyframes.track_mut("exposure").keyframes;
+        klipp_core::keyframe::upsert_keyframe(keys, 0.0, 0.0);
+        klipp_core::keyframe::upsert_keyframe(keys, 2.0, 2.0);
+    });
+    let seq = sequence(vec![vec![c.clone()]]);
+    if !gpu_path_available() {
+        eprintln!("skipping: the GPU path refused (no usable GPU)");
+        return;
+    }
+    let mut means = Vec::new();
+    for t in [0.5, 1.5] {
+        let mut src = Flat::default().with(&c, [46, 128, 230]).on_gpu();
+        // The path takes a plain graded clip here, so it must take this one.
+        let planes = gpu_planes(&seq, t, &mut src).unwrap_or_else(|| panic!("at {t} s: the GPU path refused a keyed grade"));
+        let want = cpu_luma(&seq, t, &mut src);
+        let got = &planes[..want.len()];
+        let worst = got.iter().zip(want.iter()).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
+        assert!(worst <= 1, "at {t} s: luma differs from the renderer by {worst} levels");
+        means.push(got.iter().map(|&v| f64::from(v)).sum::<f64>() / got.len() as f64);
+    }
+    assert!(means[1] > means[0] + 10.0, "the keys didn't move the exported picture: mean luma {means:?}");
+}
+
 /// An *ungraded* clip takes the path as well, and gives the renderer's
 /// picture.
 ///

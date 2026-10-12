@@ -437,6 +437,10 @@ impl crate::state::AppState {
                 .interpolation_edit(addr, key, *time_secs, *interpolation)
                 .and_then(|ops| self.apply_path_ops(&ops, "Keyframe Interpolation"))
                 .map(|()| true),
+            AppCommand::EaseKeyAt { addr, key, time_secs, ease } => self
+                .ease_edit(addr, key, *time_secs, *ease)
+                .and_then(|ops| self.apply_path_ops(&ops, "Ease Keyframe"))
+                .map(|()| true),
             AppCommand::CopyKeysAt { addr, key } => self.node_at(addr).and_then(|node| {
                 let keys = animation_of(&node, key).map_or(Ok(Vec::new()), |a| decoded_keys(&a, key))?;
                 self.keyframe_clipboard = Some(crate::state::KeyframeClipboard { keyframes: keys, source_duration_secs: self.clip_secs_at(addr) });
@@ -1036,6 +1040,18 @@ impl crate::state::AppState {
         let mut keys: Vec<klipp_core::Keyframe> = anim.keys.iter().map(|k| serde_json::from_value(k.clone()).map_err(|e| format!("a key of {key}: {e}"))).collect::<Result<_, _>>()?;
         let at = keys.iter().position(|k| (k.time_secs - time_secs).abs() < 1e-9).ok_or_else(|| format!("{key} has no key at {time_secs} s"))?;
         klipp_core::keyframe::set_interpolation_at(&mut keys, at, interpolation);
+        anim.keys = keys.iter().map(|k| serde_json::to_value(k).map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
+        Ok(vec![GraphOp::SetAnim { path: addr.clone(), key: key.clone(), anim: Some(anim) }])
+    }
+
+    /// The one op that eases the key of `(addr, key)` at `time_secs` on
+    /// `side` ([`klipp_core::keyframe::ease_key`]).
+    fn ease_edit(&self, addr: &NodePath, key: &ParamKey, time_secs: f64, side: klipp_core::KeyEase) -> Result<Vec<GraphOp>, String> {
+        let node = self.node_at(addr)?;
+        let mut anim = animation_of(&node, key).ok_or_else(|| format!("{key} isn't animated"))?;
+        let mut keys = decoded_keys(&anim, key)?;
+        let at = keys.iter().position(|k| (k.time_secs - time_secs).abs() < 1e-9).ok_or_else(|| format!("{key} has no key at {time_secs} s"))?;
+        klipp_core::keyframe::ease_key(&mut keys, at, side);
         anim.keys = keys.iter().map(|k| serde_json::to_value(k).map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
         Ok(vec![GraphOp::SetAnim { path: addr.clone(), key: key.clone(), anim: Some(anim) }])
     }

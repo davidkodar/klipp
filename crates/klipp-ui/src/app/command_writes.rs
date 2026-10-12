@@ -279,6 +279,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ConnectMaskAt { .. }
         | AppCommand::SetMaskChannelAt { .. }
         | AppCommand::SetInterpKeyAt { .. }
+        | AppCommand::EaseKeyAt { .. }
         | AppCommand::PasteKeysAt { .. }
         | AppCommand::ReverseKeysAt { .. }
         | AppCommand::RequestWhiteBalanceSample { .. }
@@ -462,6 +463,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ClearKeyframes { .. }
         | AppCommand::SetKeyframeInterpolation { .. }
         | AppCommand::SetKeyframeTangents { .. }
+        | AppCommand::SetKeyframeEase { .. }
         | AppCommand::RefreshGrade
         | AppCommand::SetClipLogFormat { .. }
         | AppCommand::AutoWhiteBalance { .. }

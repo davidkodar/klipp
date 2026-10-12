@@ -749,51 +749,13 @@ impl NodeKeyframeTracks {
 impl NodeKeyframeTrack {
     /// Evaluate the track at a given time (seconds relative to clip source_in).
     /// Returns None if the track has no keyframes.
+    ///
+    /// By the one keyframe evaluator ([`klipp_core::keyframe::evaluate`]),
+    /// which the curve editor and the inspector draw a key's curve by, so an
+    /// eased key's handles (their time as well as their value) bend the
+    /// picture as they bend the curve drawn (#891).
     pub fn evaluate(&self, time_secs: f64) -> Option<f32> {
-        let kfs = &self.keyframes;
-        if kfs.is_empty() {
-            return None;
-        }
-        if kfs.len() == 1 {
-            return Some(kfs[0].value);
-        }
-
-        // Before first keyframe: hold first value
-        if time_secs <= kfs[0].time_secs {
-            return Some(kfs[0].value);
-        }
-        // After last keyframe: hold last value
-        if time_secs >= kfs[kfs.len() - 1].time_secs {
-            return Some(kfs[kfs.len() - 1].value);
-        }
-
-        // Binary search for the segment
-        let idx = kfs.partition_point(|kf| kf.time_secs <= time_secs);
-        let idx = idx.saturating_sub(1);
-        let kf0 = &kfs[idx];
-        let kf1 = &kfs[(idx + 1).min(kfs.len() - 1)];
-
-        let dt = kf1.time_secs - kf0.time_secs;
-        if dt <= 0.0 {
-            return Some(kf0.value);
-        }
-
-        let t = ((time_secs - kf0.time_secs) / dt) as f32;
-
-        match kf0.interpolation {
-            klipp_core::Interpolation::Linear => Some(kf0.value + (kf1.value - kf0.value) * t),
-            klipp_core::Interpolation::Step => Some(kf0.value),
-            klipp_core::Interpolation::Bezier => {
-                let p0 = kf0.value;
-                let p1 = kf0.value + kf0.tangent_out.1;
-                let p2 = kf1.value + kf1.tangent_in.1;
-                let p3 = kf1.value;
-                let u = 1.0 - t;
-                let u2 = u * u;
-                let t2 = t * t;
-                Some(u2 * u * p0 + 3.0 * u2 * t * p1 + 3.0 * u * t2 * p2 + t2 * t * p3)
-            }
-        }
+        (!self.keyframes.is_empty()).then(|| klipp_core::keyframe::evaluate(&self.keyframes, time_secs, 0.0))
     }
 
     /// Insert at stored-time precision, preserving existing interpolation.
@@ -813,6 +775,22 @@ impl NodeKeyframeTrack {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A grade key's track renders as its curve is drawn: an eased key's
+    /// handles bend the value by their time as well as their value, the
+    /// one evaluator's answer at every time.
+    #[test]
+    fn a_track_evaluates_as_its_curve_is_drawn() {
+        let mut keys = Vec::new();
+        klipp_core::keyframe::upsert_keyframe(&mut keys, 0.0, 0.0);
+        klipp_core::keyframe::upsert_keyframe(&mut keys, 2.0, 1.0);
+        klipp_core::keyframe::ease_key(&mut keys, 1, klipp_core::KeyEase::In);
+        let track = NodeKeyframeTrack { param_name: "exposure".into(), keyframes: keys.clone() };
+        for t in [-1.0, 0.0, 0.3, 0.9, 1.5, 1.9, 2.0, 3.0] {
+            assert_eq!(track.evaluate(t), Some(klipp_core::keyframe::evaluate(&keys, t, 0.0)), "at {t}");
+        }
+        assert_eq!(NodeKeyframeTrack { param_name: "exposure".into(), keyframes: Vec::new() }.evaluate(1.0), None);
+    }
 
     /// A Color Match node holding a match is not "default": default nodes
     /// are bypassed, and one that ignored its match never ran.

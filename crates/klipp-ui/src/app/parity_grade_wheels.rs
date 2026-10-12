@@ -418,6 +418,11 @@ fn control_cases(report: &mut Report, ty: &NodeType, desc: &'static ParamDesc, c
         }
         oracle_case(&away.twin(), desc, 0.0, |g| reset(g, control))
     });
+    // Its diamond keys it (#891): on its type's own page, the clip's grade,
+    // as a grade row's is (`rules::GRADE_KEY_REPRESENTATIVE`).
+    if desc.keyframable && start.root == GradeRoot::Clip && super::parity_manifest::primary_grade_page(id, desc.key) == Some(surface) && matches!(control, Control::Wheel { .. } | Control::Under { .. }) {
+        report.case(&name("keyed by its diamond"), vec![k(Interaction::AddKey)], || key_case(start, desc, control));
+    }
     report.case(&name("cancelled"), vec![k(Interaction::CancelDrag)], || {
         // Escape takes the drag back: the picture from before it, no step.
         let mut g = start.twin();
@@ -429,6 +434,60 @@ fn control_cases(report: &mut Report, ty: &NodeType, desc: &'static ParamDesc, c
         }
         Ok(())
     });
+}
+
+/// The diamond that keys `control`: a wheel's, right of its title (its
+/// puck and master keyed together); a rail's under a wheel, the nearest
+/// right of its letter or title on its line.
+fn diamond(g: &mut Grade, control: Control) -> Result<egui::Pos2, String> {
+    let (title, nth) = match control {
+        Control::Wheel { label, .. } => (label, 0),
+        Control::Under { wheel, axis } => {
+            let wide = matches!(g.page, Page::Bottom(_));
+            let title = match (axis, wide) {
+                (WheelAxis::Saturation, false) => "S",
+                (WheelAxis::Saturation, true) => "Saturation",
+                (_, false) => "B",
+                (_, true) => "Brightness",
+            };
+            (title, wheel)
+        }
+        _ => return Err("only a wheel or a rail under one has a diamond".into()),
+    };
+    let drawn = g.drawn();
+    let mut labels: Vec<egui::Pos2> = drawn.iter().filter(|(t, _)| t == title).map(|(_, p)| *p).collect();
+    labels.sort_by(|a, b| (a.y.round(), a.x).partial_cmp(&(b.y.round(), b.x)).unwrap());
+    let beside = |at: &egui::Pos2| g.diamonds.iter().map(|d| d.center()).filter(|d| (d.y - at.y).abs() < 6.0 && d.x > at.x).min_by(|a, b| a.x.total_cmp(&b.x));
+    // Labels with a diamond beside them: a wheel's title (not a group
+    // header of the same name), each rail's letter.
+    labels.iter().filter_map(beside).nth(nth).ok_or_else(|| format!("no diamond beside {title:?} #{nth}"))
+}
+
+/// A wheel's or a rail's diamond keys its parameter at the frame's time
+/// with the value it shows, as one undo step undone exactly.
+fn key_case(start: &Grade, desc: &ParamDesc, control: Control) -> Result<(), String> {
+    const AT: f64 = 0.5;
+    let mut g = start.twin();
+    g.drawn();
+    let before = g.picture();
+    let value = g.value(desc).as_f64().map(|v| v as f32);
+    let at = diamond(&mut g, control)?;
+    g.click_at(at);
+    if !g.unapplied.is_empty() {
+        return Err(format!("unapplied {:?}", g.unapplied));
+    }
+    let keys = g.grade().nodes.iter().find(|n| n.id == g.node).and_then(|n| n.keyframes.tracks.iter().find(|t| t.param_name == desc.key)).map(|t| t.keyframes.clone()).unwrap_or_default();
+    if keys.len() != 1 || (keys[0].time_secs - AT).abs() > 1e-9 || value.is_some_and(|v| (keys[0].value - v).abs() > 1e-4) {
+        return Err(format!("the diamond didn't key {} at {AT} s with its value {value:?}: {keys:?}", desc.key));
+    }
+    if g.state.active_history().undo_count() != 1 {
+        return Err(format!("{} undo steps, not one", g.state.active_history().undo_count()));
+    }
+    g.step(false)?;
+    if g.picture() != before {
+        return Err("undo doesn't give back the grade before".into());
+    }
+    Ok(())
 }
 
 pub(super) fn run(report: &mut Report) {
