@@ -41,15 +41,14 @@ impl Default for Bevel {
     }
 }
 
-/// The camera the text is seen through: a field of view in degrees and
-/// a distance in frame heights from the text's centre; orthographic
-/// sees it without perspective.
+/// The camera the text is seen through: a vertical field of view in
+/// degrees, the camera as far from the text as keeps its front face at
+/// its flat size (a wider view is nearer, the perspective stronger);
+/// orthographic sees it without perspective.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Camera3d {
     #[serde(default = "camera_fov")]
     pub fov: f32,
-    #[serde(default = "camera_distance")]
-    pub distance: f32,
     #[serde(default)]
     pub orthographic: bool,
 }
@@ -57,13 +56,9 @@ pub struct Camera3d {
 fn camera_fov() -> f32 {
     30.0
 }
-fn camera_distance() -> f32 {
-    2.0
-}
-
 impl Default for Camera3d {
     fn default() -> Self {
-        Self { fov: camera_fov(), distance: camera_distance(), orthographic: false }
+        Self { fov: camera_fov(), orthographic: false }
     }
 }
 
