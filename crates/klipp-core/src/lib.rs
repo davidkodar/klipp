@@ -39,6 +39,7 @@ pub mod events;
 pub mod generator;
 pub mod gpu_vendor;
 pub mod keyframe;
+pub mod layer_mask;
 pub mod title_effect_keys;
 pub mod title_motion;
 pub mod export_preset;

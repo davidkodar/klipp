@@ -2656,6 +2656,8 @@ mod title_text_coalesce_tests {
             opacity_keyframes: Vec::new(),
             content: klipp_timeline::TitleObjectContent::TextBox(tb_extra),
             fx: Some(klipp_timeline::LayerFx::default()),
+            blend: klipp_core::BlendMode::Normal,
+            mask: None,
         });
         assert!(!title_diff_is_text_only(&a, &b));
     }

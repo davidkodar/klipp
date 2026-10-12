@@ -93,6 +93,7 @@ pub use surface::{PinFit, Surface, SurfaceKey, SurfacePin};
 pub use shared::{SequenceRead, SequenceRevision, SequenceWrite, SharedSequence};
 
 pub use klipp_core::title_motion::{Animator, AnimatorProps, RangeSelector, SelectOrder, SelectShape, SelectUnit, UnitPose, CrawlDirection, CubicBezier, EdgeFade, Easing, LoopGeometry, LoopPose, Motion, MotionKind, ScrollDirection, StaggerUnit, TitleLoop, TitleMotion};
+pub use klipp_core::layer_mask::LayerMaskKind;
 pub use clip_kind::{
     adjust_style_runs_for_text_change, apply_style_to_range, default_text_transform,
     CharAnimation, CharEntrance, ClipKind, ColourKeys, FontAxis, FontStyle, InnerShadow, LastLineAlign, MotionBlur, ObjectTransform,
@@ -100,7 +101,7 @@ pub use clip_kind::{
     PathTextAlign, TextExtrusion, TextGlow, TextGradient, TextOutline, TextPattern, TextPath, TextVerticalAlign, TextureFill,
     TexturePresetId, TextureSource, TextureTileMode, TitleAnimationType,
     TitleAsset,
-    LayerFx, LegacyTextFx, FxMigration,
+    LayerFx, LayerMask, LegacyTextFx, FxMigration,
     TitleBackground, TitleData, TitleObject, TitleObjectContent, TitleObjectId, TitlePosition,
     TitleShadow, GeneratorData, ImageFit, ImageLayer};
 pub use brief::{Brief, CastMember, Feature, MotionAnchorSpec, ShadowSpec, TitleMotionSpec, TypeStyle};

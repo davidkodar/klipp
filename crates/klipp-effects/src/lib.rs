@@ -114,6 +114,30 @@ impl BlendMode {
         BlendMode::Difference, BlendMode::Exclusion, BlendMode::ColorDodge,
         BlendMode::ColorBurn, BlendMode::Darken, BlendMode::Lighten,
     ];
+
+    /// One channel of the mode: the backdrop `b` and the source `s`,
+    /// 0..1 each, mixed as the clip compositor mixes them, so a title
+    /// layer that blends (#1513) blends by the same formulas. Add is
+    /// not clamped; the caller clamps where its values must stay in
+    /// range.
+    pub fn blend_channel(self, b: f32, s: f32) -> f32 {
+        use composite::{burn_ch, dodge_ch, overlay_ch, soft_light_ch};
+        match self {
+            BlendMode::Normal => s,
+            BlendMode::Add => b + s,
+            BlendMode::Multiply => b * s,
+            BlendMode::Screen => 1.0 - (1.0 - b) * (1.0 - s),
+            BlendMode::Overlay => overlay_ch(b, s),
+            BlendMode::SoftLight => soft_light_ch(b, s),
+            BlendMode::HardLight => overlay_ch(s, b),
+            BlendMode::Difference => (b - s).abs(),
+            BlendMode::Exclusion => b + s - 2.0 * b * s,
+            BlendMode::ColorDodge => dodge_ch(b, s),
+            BlendMode::ColorBurn => burn_ch(b, s),
+            BlendMode::Darken => b.min(s),
+            BlendMode::Lighten => b.max(s),
+        }
+    }
 }
 
 /// Override pointer for the focal anchor on `BuiltinEffect::Transform`.

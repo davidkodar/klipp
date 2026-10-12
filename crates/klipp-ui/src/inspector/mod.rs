@@ -5196,7 +5196,7 @@ fn show_title_editor(
     {
         let status = crate::widgets::inspector_group::GroupStatus {
             count: None,
-            active: !matches!(td.background, klipp_timeline::TitleBackground::None) || td.objects.iter().any(|o| (o.opacity - 1.0).abs() > 1e-6),
+            active: !matches!(td.background, klipp_timeline::TitleBackground::None) || td.objects.iter().any(|o| (o.opacity - 1.0).abs() > 1e-6) || td.mixes_layers(),
         };
         if title_group_is_open(ui, theme, clip_id, "Background & Layer Opacity", status) {
             ui.add_space(6.0);
@@ -5241,6 +5241,51 @@ fn show_title_editor(
                 } else {
                     cmds.push(AppCommand::AddTitleObjectOpacityKeyframe { clip_id, object_id, time_secs: clip_time_secs, value: op });
                 }
+            }
+            // How the layer mixes with the layers below it, and the
+            // layer that masks it (#1513).
+            let mut blend = obj.blend;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Blend:").size(11.0).color(theme.text_secondary));
+                egui::ComboBox::from_id_salt(("title_layer_blend", object_id))
+                    .selected_text(blend.display_name())
+                    .show_ui(ui, |ui| {
+                        for mode in klipp_core::BlendMode::ALL {
+                            ui.selectable_value(&mut blend, mode, mode.display_name());
+                        }
+                    });
+            });
+            if blend != obj.blend {
+                cmds.push(AppCommand::SetTitleObjectBlend { clip_id, object_id, blend });
+            }
+            let label = |o: &klipp_timeline::TitleObject| if o.name.is_empty() { format!("Layer {}", o.id.0 + 1) } else { o.name.clone() };
+            let current = obj.mask.map(|m| (m.source.0, m.kind));
+            let mut source = current.map(|(id, _)| id);
+            let mut kind = current.map_or(klipp_core::layer_mask::LayerMaskKind::Alpha, |(_, k)| k);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Mask with:").size(11.0).color(theme.text_secondary));
+                let selected = source.and_then(|id| td.object(klipp_timeline::TitleObjectId(id))).map_or_else(|| "None".to_string(), label);
+                egui::ComboBox::from_id_salt(("title_layer_mask", object_id))
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut source, None, "None");
+                        for other in td.objects.iter().filter(|o| o.id != obj.id) {
+                            ui.selectable_value(&mut source, Some(other.id.0), label(other));
+                        }
+                    });
+                if source.is_some() {
+                    egui::ComboBox::from_id_salt(("title_layer_mask_kind", object_id))
+                        .selected_text(kind.display_name())
+                        .show_ui(ui, |ui| {
+                            for k in klipp_core::layer_mask::LayerMaskKind::ALL {
+                                ui.selectable_value(&mut kind, k, k.display_name());
+                            }
+                        });
+                }
+            });
+            let mask = source.map(|id| (id, kind));
+            if mask != current {
+                cmds.push(AppCommand::SetTitleObjectMask { clip_id, object_id, mask });
             }
             ui.add_space(8.0);
         }
