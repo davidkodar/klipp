@@ -206,6 +206,23 @@ fn first_sample_of_frame(frame: u64, sample_rate: u32, fps_num: u64, fps_den: u6
     (frame as u128 * sample_rate as u128 * fps_den as u128 / fps_num as u128) as u64
 }
 
+/// The samples a clip sounds over on the timeline, first to past its
+/// last: from its exact times when it has them, by the same rounding a
+/// frame's first sample takes, so two clips meeting at a cut meet on one
+/// sample; else from its frames.
+fn clip_samples(clip: &AudioClipSnapshot, sample_rate: u32, fps_num: u64, fps_den: u64) -> (u64, u64) {
+    match clip.exact_secs {
+        Some((a, b)) => {
+            let at = |s: f64| (s * sample_rate as f64 + 1e-6).floor().max(0.0) as u64;
+            (at(a), at(b))
+        }
+        None => (
+            first_sample_of_frame(clip.timeline_start_frame, sample_rate, fps_num, fps_den),
+            first_sample_of_frame(clip.timeline_end_frame, sample_rate, fps_num, fps_den),
+        ),
+    }
+}
+
 /// Get interleaved stereo f32 samples for one video frame from a track.
 /// `first..end` is the frame's mono sample range on the timeline.
 #[allow(clippy::too_many_arguments)]
@@ -253,8 +270,8 @@ fn get_track_samples(
                 // as playback's feeder reads it; then the buffer is the
                 // clip's own time from its first sample, as at 1x.
                 if let Some(v) = clip.varispeed {
-                    let frames = clip.timeline_end_frame.saturating_sub(clip.timeline_start_frame);
-                    let want = (frames as f64 / fps * sample_rate as f64).ceil() as usize + 1;
+                    let (start, end) = clip.span_secs(fps);
+                    let want = ((end - start).max(0.0) * sample_rate as f64).ceil() as usize + 1;
                     let from = (v.source_at(0.0) - clip.source_start_secs) * sample_rate as f64;
                     buf = if v.keep_pitch && v.speed > 0.0 {
                         // On playback's grain grid: anchored at the clip's
@@ -302,10 +319,19 @@ fn get_track_samples(
         // The frame's place in the clip: how far past the clip's start on
         // the timeline it begins, in samples. The buffer starts at the
         // clip's source start, which is what plays at that timeline start.
-        let clip_first = first_sample_of_frame(clip.timeline_start_frame, sample_rate, fps_num, fps_den);
-        let offset = first.saturating_sub(clip_first) as usize * 2;
+        // A clip placed by the sample starts, and ends, inside its first
+        // and last frames: silent there before and after it (#1588).
+        let (clip_first, clip_end) = clip_samples(clip, sample_rate, fps_num, fps_den);
+        let from = first.max(clip_first);
+        let until = end.min(clip_end);
+        if until <= from {
+            continue;
+        }
+        let lead = (from - first) as usize * 2;
+        let want = (until - from) as usize * 2;
+        let offset = (from - clip_first) as usize * 2;
         let available = buffer.len().saturating_sub(offset);
-        let to_read = stereo_count.min(available);
+        let to_read = want.min(available);
         if to_read == 0 {
             continue;
         }
@@ -316,23 +342,23 @@ fn get_track_samples(
         // than the timeline says, or when source_end_secs exceeds the real
         // duration. Without the warning the underrun is silent and looks like
         // A/V drift to anyone debugging the export.
-        if output.len() < stereo_count {
+        if output.len() < want {
             tracing::warn!(
                 "audio_mixdown: clip underrun — padded {} samples of silence \
                  (expected {}, decoded {})",
-                stereo_count - output.len(),
-                stereo_count,
+                want - output.len(),
+                want,
                 output.len(),
             );
         }
-        output.resize(stereo_count, 0.0);
+        output.resize(want, 0.0);
         // The clip's own settings, as playback applies them: this frame's
         // volume, gain and pan from the keyframes, the fade envelope per
         // sample, then the channel layout.
-        let clip_pos_secs = (first - clip_first) as f64 / sample_rate as f64;
+        let clip_pos_secs = (from - clip_first) as f64 / sample_rate as f64;
         let timeline_secs = frame_num as f64 * fps_den as f64 / fps_num as f64;
         shape_samples(&mut output, &clip.shape, clip_pos_secs, timeline_secs, fps, sample_rate);
-        for (m, o) in mixed.iter_mut().zip(&output) {
+        for (m, o) in mixed[lead..].iter_mut().zip(&output) {
             *m += o;
         }
     }
@@ -509,7 +535,8 @@ const DECODE_MARGIN_SECS: f64 = 0.5;
 /// speed), its effects' look-ahead, and [`DECODE_MARGIN_SECS`]. `None`, to
 /// read to the end of the file, for a speed with no end to read to.
 fn decode_until(clip: &AudioClipSnapshot, fps: f64, latency_secs: f64) -> Option<f64> {
-    let secs = clip.timeline_end_frame.saturating_sub(clip.timeline_start_frame) as f64 / fps;
+    let (start, end) = clip.span_secs(fps);
+    let secs = (end - start).max(0.0);
     let (end, speed) = match clip.varispeed {
         None => (clip.source_start_secs + secs, 1.0),
         Some(v) if v.speed.is_finite() && v.speed != 0.0 => (v.source_at(0.0).max(v.source_at(secs)), v.speed.abs()),
@@ -955,6 +982,7 @@ mod tests {
             audio_effect_keyframes: std::collections::HashMap::new(),
             shape: AudioClipShape::default(),
             varispeed: None,
+            exact_secs: None,
         });
 
         let mut mixdown = AudioMixdown::new(&snapshot).unwrap();
@@ -1016,6 +1044,7 @@ mod tests {
             audio_effect_keyframes: std::collections::HashMap::new(),
             shape: AudioClipShape::default(),
             varispeed,
+            exact_secs: None,
         };
         assert_eq!(decode_until(&clip(None), 24.0, 0.0), Some(7.0 + DECODE_MARGIN_SECS));
         assert_eq!(decode_until(&clip(None), 24.0, 0.25), Some(7.25 + DECODE_MARGIN_SECS));

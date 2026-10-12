@@ -145,6 +145,26 @@ pub struct AudioClipSnapshot {
     pub shape: AudioClipShape,
     /// A retimed clip's sound, read at its speed (#642); `None` at 1x.
     pub varispeed: Option<VarispeedRead>,
+    /// Where the clip's sound starts and ends on the timeline, seconds,
+    /// crossfade handles included: a sound placed by the sample starts
+    /// inside a frame (#1588), so the mixdown starts it on its own
+    /// sample. The frames above are those it sounds in. `None` for one
+    /// that starts and ends on them.
+    pub exact_secs: Option<(f64, f64)>,
+}
+
+impl AudioClipSnapshot {
+    /// Where the sound starts and ends on the timeline, seconds: its
+    /// exact times, or its frames'.
+    pub fn span_secs(&self, fps: f64) -> (f64, f64) {
+        self.exact_secs.unwrap_or((self.timeline_start_frame as f64 / fps, self.timeline_end_frame as f64 / fps))
+    }
+
+    /// The frames a sound from `start` to `end` seconds is heard in: the
+    /// one it starts inside, to the one it ends inside.
+    fn frames_of(start: f64, end: f64, fps: f64) -> (u64, u64) {
+        ((start * fps + 1e-9).floor().max(0.0) as u64, (end * fps - 1e-9).ceil().max(0.0) as u64)
+    }
 }
 
 /// How a retimed clip's sound is read (#642): at `speed`, backward when
@@ -714,9 +734,13 @@ fn snapshot_audio_track(
                     // Stretched by the crossfades' handles: the incoming
                     // clip starts sounding early, the outgoing one ends late.
                     let varispeed = VarispeedRead::of(clip, xfade.head_secs);
+                    let start = (clip.timeline_in.to_secs_f64() - head_frames as f64 / fps).max(0.0);
+                    let end = clip.timeline_out.to_secs_f64() + tail_frames as f64 / fps;
+                    let (start_frame, end_frame) = AudioClipSnapshot::frames_of(start, end, fps);
                     clips.push(AudioClipSnapshot {
-                        timeline_start_frame: time_to_frame(&clip.timeline_in, fps).saturating_sub(head_frames),
-                        timeline_end_frame: time_to_frame(&clip.timeline_out, fps) + tail_frames,
+                        timeline_start_frame: start_frame,
+                        timeline_end_frame: end_frame,
+                        exact_secs: Some((start, end)),
                         source_start_secs: varispeed.map_or(clip.source_in.to_secs_f64() - xfade.head_secs, |v| v.decode_from()),
                         path: media.path.clone(),
                         audio_effects: clip.audio_effects.clone(),
@@ -762,9 +786,12 @@ fn snapshot_video_track_sound(track: &Track, seq: &Sequence, media_pool: &MediaP
             continue;
         }
         let varispeed = VarispeedRead::of(clip, 0.0);
+        let (start, end) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
+        let (start_frame, end_frame) = AudioClipSnapshot::frames_of(start, end, fps);
         clips.push(AudioClipSnapshot {
-            timeline_start_frame: time_to_frame(&clip.timeline_in, fps),
-            timeline_end_frame: time_to_frame(&clip.timeline_out, fps),
+            timeline_start_frame: start_frame,
+            timeline_end_frame: end_frame,
+            exact_secs: Some((start, end)),
             source_start_secs: varispeed.map_or(clip.source_in.to_secs_f64(), |v| v.decode_from()),
             path: media.path.clone(),
             audio_effects: clip.audio_effects.clone(),
@@ -806,9 +833,12 @@ fn flatten_compound_audio_clips(
             continue;
         }
         let varispeed = VarispeedRead::of(&clip, 0.0);
+        let (start, end) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
+        let (start_frame, end_frame) = AudioClipSnapshot::frames_of(start, end, fps);
         out.push(AudioClipSnapshot {
-            timeline_start_frame: (clip.timeline_in.to_secs_f64() * fps).round() as u64,
-            timeline_end_frame: (clip.timeline_out.to_secs_f64() * fps).round() as u64,
+            timeline_start_frame: start_frame,
+            timeline_end_frame: end_frame,
+            exact_secs: Some((start, end)),
             source_start_secs: varispeed.map_or(clip.source_in.to_secs_f64(), |v| v.decode_from()),
             path: media.path.clone(),
             audio_effects: clip.audio_effects.clone(),

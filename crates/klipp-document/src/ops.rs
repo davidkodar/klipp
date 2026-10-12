@@ -2079,12 +2079,31 @@ fn resolve_track(seq: &Sequence, t: &TrackRef, step: usize) -> Result<usize, Ref
 }
 
 fn resolve_anchor(seq: &Sequence, fps: Fps, a: &Anchor, step: usize) -> Result<Timecode, Refusal> {
+    resolve_anchor_on(seq, fps, fps, a, step)
+}
+
+/// The grid a clip on `track` is placed on: a sound on an audio track by
+/// the sample, so an effect lands where its peak is asked for, not on
+/// the nearest frame (#1588); a picture, a title and linked sound by the
+/// frame.
+fn placement_grid(track: &klipp_timeline::Track, fps: Fps) -> Fps {
+    if track.kind == TrackKind::Audio { SAMPLE_GRID } else { fps }
+}
+
+/// One tick a sample at 48 kHz: the grid an audio track's clips are
+/// placed on.
+const SAMPLE_GRID: Fps = Fps { num: 48_000, den: 1 };
+
+/// [`resolve_anchor`], with times given in seconds snapped to `grid`
+/// rather than to the sequence's frames; a frame number is still one of
+/// the sequence's frames.
+fn resolve_anchor_on(seq: &Sequence, fps: Fps, grid: Fps, a: &Anchor, step: usize) -> Result<Timecode, Refusal> {
     Ok(match a {
         Anchor::Secs(s) => {
             if !s.is_finite() || *s < 0.0 {
                 return Err(refuse(step, format!("{s} s is not a time on the timeline"), "give seconds from the start, zero or more"));
             }
-            snap(*s, fps)
+            snap(*s, grid)
         }
         Anchor::Frame(f) => {
             if *f < 0 {
@@ -2107,12 +2126,12 @@ fn resolve_anchor(seq: &Sequence, fps: Fps, a: &Anchor, step: usize) -> Result<T
                 .ok_or_else(|| refuse(step, format!("no marker \"{label}\""), "markers are listed at the end of the timeline view"))?
         }
         Anchor::Offset { from, secs: off } => {
-            let base = resolve_anchor(seq, fps, from, step)?;
+            let base = resolve_anchor_on(seq, fps, grid, from, step)?;
             let t = base.to_secs_f64() + off;
             if t < 0.0 {
                 return Err(refuse(step, "the offset lands before the start", "use a smaller offset"));
             }
-            snap(t, fps)
+            snap(t, grid)
         }
     })
 }
@@ -2655,17 +2674,19 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let picture = t.kind == TrackKind::Video && !item.video_codec.is_empty() && item.fps.as_f64() > 0.0;
             let autoset = if picture { seq.first_clip_format(item.resolution, item.fps).filter(|(old, new)| old != new) } else { None };
             let fps = autoset.map(|(_, (_, f))| f).unwrap_or(fps);
+            // A sound on an audio track by the sample; the rest by the frame.
+            let grid = placement_grid(t, fps);
             // Stills have no file end, but their authored time must
             // still fit the integer frame clock (including NTSC ticks).
-            let max_frames = i64::MAX / i64::from(fps.den.max(1));
-            if s_out * fps.as_f64() >= max_frames as f64 {
+            let max_frames = i64::MAX / i64::from(grid.den.max(1));
+            if s_out * grid.as_f64() >= max_frames as f64 {
                 return Err(refuse(i, "the source range exceeds the frame clock", "use a representable source range"));
             }
-            let src_in = snap(s_in, fps);
-            if snap(s_out, fps) <= src_in {
+            let src_in = snap(s_in, grid);
+            if snap(s_out, grid) <= src_in {
                 return Err(refuse(i, "the source range is shorter than a frame", "make it at least one frame"));
             }
-            let tl_in = resolve_anchor(seq, fps, at, i)?;
+            let tl_in = resolve_anchor_on(seq, fps, grid, at, i)?;
             // The end on the timeline is rounded, not the length: each
             // clip's length rounded on its own drifted a chain of 31 bars
             // five frames off the beat (#506). Where the clip starts
@@ -2681,13 +2702,13 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 _ => secs(tl_in),
             };
             let exact_end = exact_start + (s_out - s_in);
-            let end = snap(exact_end, fps).rescale_to(tl_in.rate);
-            let one = snap(1.0 / fps.as_f64(), fps).rescale_to(tl_in.rate).value;
+            let end = snap(exact_end, grid).rescale_to(tl_in.rate);
+            let one = snap(1.0 / grid.as_f64(), grid).rescale_to(tl_in.rate).value;
             let mut frames = (end.value - tl_in.value).max(one);
             // Never past the end of the file: rounding up there is a frame
             // the file does not have.
             if !item.is_still {
-                let room = (snap(media_dur, fps) - src_in).rescale_to(tl_in.rate).value;
+                let room = (snap(media_dur, grid) - src_in).rescale_to(tl_in.rate).value;
                 frames = frames.min(room).max(one);
             }
             let value = tl_in.value.checked_add(frames).ok_or_else(|| refuse(i, "the placement exceeds the frame clock", "use an earlier start or shorter duration"))?;
@@ -2792,8 +2813,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         }
 
         Op::Trim { clip_id: clip_ref, edge, to, ripple, linked } => {
-            let (_, _, clip) = resolve_clip(seq, fps, clip_ref, i)?;
-            let target = resolve_anchor(seq, fps, to, i)?;
+            let (ti, _, clip) = resolve_clip(seq, fps, clip_ref, i)?;
+            // A sound trimmed on its own, to the sample (#1588).
+            let grid = if clip.linked_clip_id.is_some() && *linked { fps } else { placement_grid(&seq.tracks[ti], fps) };
+            let target = resolve_anchor_on(seq, fps, grid, to, i)?;
             resolve_trim(seq, pool, i, clip.id, *edge, target, *ripple, *linked)
         }
 
@@ -2946,7 +2969,11 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             if seq.tracks[ti].locked {
                 return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
             }
-            let new_in = resolve_anchor(seq, fps, to, i)?;
+            // A sound moved on its own goes to the sample (#1588), as
+            // align_audio measures it; one moved with its picture stays on
+            // the picture's frames.
+            let grid = if clip.linked_clip_id.is_some() && *linked { fps } else { placement_grid(&seq.tracks[ti], fps) };
+            let new_in = resolve_anchor_on(seq, fps, grid, to, i)?;
             let len = clip.timeline_out - clip.timeline_in;
             let new_out = new_in + len;
             // To another track (#735): one that takes this kind of clip.
@@ -3859,6 +3886,22 @@ fn resolve_trim_pair(seq: &Sequence, pool: &MediaPool, i: usize, clip_id: ClipId
 
 #[allow(clippy::too_many_arguments)]
 fn trim_clip(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, ti: usize, ci: usize, clip: &Clip, edge: Edge, target: Timecode, ripple: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    // A sound trimmed to the sample is reckoned at the sample: its source
+    // edge moves by the samples its timeline edge does, not by the
+    // nearest frame (#1588). Only where its times are whole samples, so
+    // the old times kept for undo are the same ones.
+    let at_samples;
+    let exact = [clip.timeline_in, clip.timeline_out, clip.source_in, clip.source_out].iter().all(|t| t.rate > 0 && target.rate.is_multiple_of(t.rate));
+    let clip = if target.rate == SAMPLE_GRID.rate() && clip.source_in.rate != target.rate && exact {
+        let mut c = clip.clone();
+        for t in [&mut c.timeline_in, &mut c.timeline_out, &mut c.source_in, &mut c.source_out] {
+            *t = t.rescale_to(target.rate);
+        }
+        at_samples = c;
+        &at_samples
+    } else {
+        clip
+    };
     let clip_id = &clip.id;
     if seq.tracks[ti].locked {
         return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
@@ -8671,6 +8714,51 @@ mod tests {
         let names = ["IMG_1702.mov on track 3", "IMG_1702.mov on track 3", "IMG_1703.mov on track 3", "IMG_1702.mov on track 3"].map(String::from);
         assert_eq!(folded_names(names.into_iter()), "3 clips of IMG_1702.mov on track 3, IMG_1703.mov on track 3");
         assert_eq!(folded_names(["a.mov on track 0".to_string()].into_iter()), "a.mov on track 0");
+    }
+
+    /// #1588: a sound placed on an audio track lands on the sample asked
+    /// for, its source too, where a frame grid put a whoosh at 4.15 s on
+    /// 4.16 s at 25 fps; a picture still lands on a frame, and its linked
+    /// sound with it.
+    #[test]
+    fn a_sound_on_an_audio_track_is_placed_by_the_sample() {
+        let (mut seq, pool, media, _, _) = fixture();
+        seq.tracks.push(Track::new("A2", TrackKind::Audio));
+        let placed = |track: usize, at: f64| {
+            let ops: Vec<Op> = serde_json::from_value(serde_json::json!([
+                {"op": "place", "media_id": media.0.to_string(), "track": track, "at": {"secs": at}, "source_in": 0.513, "source_out": 1.5}
+            ]))
+            .unwrap();
+            let plan = resolve(&seq, &pool, &ops).unwrap();
+            let a = &plan.steps[0].after[0];
+            (a.timeline_in_secs, a.source_in_secs, a.timeline_out_secs)
+        };
+        let (at, from, to) = placed(2, 4.15);
+        assert!((at - 4.15).abs() < 1.0 / 48_000.0, "on the sample: {at}");
+        assert!((from - 0.513).abs() < 1.0 / 48_000.0, "the source too: {from}");
+        assert!((to - (4.15 + 1.5 - 0.513)).abs() < 1.0 / 48_000.0, "and its end: {to}");
+        let (at, _, _) = placed(0, 9.15);
+        assert!((at - 9.16).abs() < 1e-9, "a picture on its frame: {at}");
+
+        // A sound already there, moved and trimmed on its own, goes to the
+        // sample, its source edge by the same samples; one moved with its
+        // picture stays on the frames.
+        let lone = Clip::media(media, tc(0.0), tc(1.0), tc(0.0), tc(1.0));
+        let lone_id = lone.id.0.to_string();
+        seq.tracks[2].clips.push(lone);
+        let after = |op: serde_json::Value| {
+            let ops: Vec<Op> = serde_json::from_value(serde_json::json!([op])).unwrap();
+            let plan = resolve(&seq, &pool, &ops).unwrap();
+            let a = &plan.steps[0].after[0];
+            (a.timeline_in_secs, a.timeline_out_secs, a.source_out_secs)
+        };
+        let (at, _, _) = after(serde_json::json!({"op": "move", "clip_id": lone_id, "to": {"secs": 2.0031}}));
+        assert!((at - 2.0031).abs() < 1.0 / 48_000.0, "moved to the sample: {at}");
+        let (_, out, src_out) = after(serde_json::json!({"op": "trim", "clip_id": lone_id, "edge": "out", "to": {"secs": 0.7771}}));
+        assert!((out - 0.7771).abs() < 1.0 / 48_000.0 && (src_out - 0.7771).abs() < 1.0 / 48_000.0, "trimmed to the sample, its source with it: {out} {src_out}");
+        let linked = seq.tracks[1].clips[0].id.0.to_string();
+        let (at, _, _) = after(serde_json::json!({"op": "move", "clip_id": linked, "to": {"secs": 9.15}}));
+        assert!((at - 9.16).abs() < 1e-9, "a sound moved with its picture stays on a frame: {at}");
     }
 
     /// #790: a clip a step made is named "@N" by the steps after it: a

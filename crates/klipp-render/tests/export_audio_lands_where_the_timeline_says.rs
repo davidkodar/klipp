@@ -87,6 +87,7 @@ fn clip(path: PathBuf, start_frame: u64, end_frame: u64, source_start_secs: f64)
         audio_effect_keyframes: Default::default(),
         shape: Default::default(),
         varispeed: None,
+        exact_secs: None,
     }
 }
 
@@ -220,4 +221,37 @@ fn a_retimed_clip_is_heard_at_its_speed_both_ways() {
     let mut slow = read(0.5, (1.0, 3.0));
     let s48 = slow.get_frame_audio(48);
     assert!((secs_of(s48[0]) - 2.0).abs() < TOL_SECS, "0.5x: frame 48 starts at source {:.4}s, not 2.0s", secs_of(s48[0]));
+}
+
+/// #1588: a sound placed by the sample, at 4.15 s on a 24 fps timeline
+/// (frame 99.6), starts on its own sample inside frame 99, silent before
+/// it in that frame, and ends on its own inside its last; at 48 and at
+/// 44.1 kHz. A frame grid started it at 4.1667 s.
+#[test]
+fn a_sound_placed_by_the_sample_starts_on_its_sample() {
+    let Some(path) = ramp() else { return };
+    for rate in [48_000u32, 44_100] {
+        let (start, end) = (4.15, 5.15);
+        let mut c = clip(path.clone(), (start * 24.0f64).floor() as u64, (end * 24.0f64).ceil() as u64, 2.0);
+        c.exact_secs = Some((start, end));
+        let mut snap = snapshot(24, 1, c);
+        snap.sample_rate = rate;
+        let mut mix = AudioMixdown::new(&snap).unwrap();
+        assert!(mix.get_frame_audio(98).iter().all(|&s| s == 0.0), "{rate}: silence before the sound's frame");
+        let f99 = mix.get_frame_audio(99);
+        let frame_first = (99u64 * rate as u64 / 24) as usize;
+        let lead = (start * rate as f64).floor() as usize - frame_first;
+        assert!(f99[..lead * 2].iter().all(|&s| s == 0.0), "{rate}: silent in frame 99 before 4.15 s");
+        assert!(f99[lead * 2 + 2..].iter().any(|&s| s != 0.0), "{rate}: sounding from 4.15 s");
+        // Past the two-millisecond anti-click ramp it reads its source:
+        // 2.0 s plus how far into it the sample is.
+        let past = 200usize;
+        let at = secs_of(f99[(lead + past) * 2]) - past as f64 / rate as f64;
+        assert!((at - 2.0).abs() < TOL_SECS, "{rate}: starts at source {at:.5} s, not 2.0 s");
+        let f123 = mix.get_frame_audio(123);
+        let last_first = (123u64 * rate as u64 / 24) as usize;
+        let tail = (end * rate as f64).floor() as usize - last_first;
+        assert!(f123[tail * 2..].iter().all(|&s| s == 0.0), "{rate}: silent after 5.15 s");
+        assert!(f123[..tail * 2].iter().any(|&s| s != 0.0), "{rate}: sounding up to 5.15 s");
+    }
 }
