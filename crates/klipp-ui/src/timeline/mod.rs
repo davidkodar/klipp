@@ -502,10 +502,19 @@ impl NewTimelinePanel {
 
         // allocate_clipped_ui sets clip_rect = tracks_rect, preventing the old
         // timeline panel from bleeding into the inspector or status bar.
+        // The Text tool works in the viewer; on the tracks it selects, as
+        // Select does (#1713). Left armed unless the tracks picked another.
+        let text_tool = state.active_tool == klipp_core::Tool::Text;
+        if text_tool {
+            state.active_tool = klipp_core::Tool::Select;
+        }
         crate::ui_util::allocate_clipped_ui(ui, tracks_rect, |ui| {
             let old_cmds = old_timeline.show(ui, state);
             cmds.extend(old_cmds);
         });
+        if text_tool && state.active_tool == klipp_core::Tool::Select {
+            state.active_tool = klipp_core::Tool::Text;
+        }
         markers::draw_lines(ui, tracks_rect, ruler_rect.left(), state, pps, scroll_x);
         // A trim amount being typed for the selected edit points (#913).
         // A dynamic trim under way (#914): how far, and the keys.

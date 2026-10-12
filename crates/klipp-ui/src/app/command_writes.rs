@@ -481,6 +481,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetTransitionAlignment { .. }
         | AppCommand::CreateTitleClip { .. }
         | AppCommand::AddTitleAtPlayhead { .. }
+        | AppCommand::CreateTitleInViewer { .. }
         | AppCommand::InsertCompositionTemplate { .. }
         | AppCommand::SetTemplateOverride { .. }
         | AppCommand::SaveCompositionTemplate { .. }

@@ -2792,6 +2792,10 @@ pub struct AppState {
     pub viewer_text_edit_clip: Option<ClipId>,
     /// Whether to request focus on the text edit widget (first frame only).
     pub viewer_text_edit_request_focus: bool,
+    /// Whether the in-place editor selects all of its text as it next
+    /// takes the keys, so typing replaces it: set for a title the Text
+    /// tool has just made (#1713).
+    pub viewer_text_edit_select_all: bool,
     /// Character selection range in viewer text edit mode (character indices, start..end).
     /// This is updated ONLY when the TextEdit has focus and reports a selection.
     /// It persists when focus moves to the inspector so style changes apply to it.
@@ -4666,6 +4670,7 @@ impl Default for AppState {
             viewer_text_edit_buffer: String::new(),
             viewer_text_edit_clip: None,
             viewer_text_edit_request_focus: false,
+            viewer_text_edit_select_all: false,
             viewer_text_selection: None,
             viewer_text_selection_locked: None,
             viewer_text_cursor: 0,

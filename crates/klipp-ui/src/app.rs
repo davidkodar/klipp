@@ -122,6 +122,7 @@ mod keyframes;
 mod graph_ops;
 mod path_commands;
 mod titles;
+mod text_tool;
 mod poster_frames;
 mod links;
 mod prefs_apply;

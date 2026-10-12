@@ -22,6 +22,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             (klipp_core::Tool::Trim, "Trim Tool", "trim_tool", draw_tl_trim_icon),
             (klipp_core::Tool::Blade, "Blade Tool", "blade_tool", draw_tl_blade_icon),
             (klipp_core::Tool::Range, "Range Tool", "range_tool", draw_tl_range_icon),
+            // Works in the viewer: a click or a drag there makes a title (#1713).
+            (klipp_core::Tool::Text, "Text Tool: click or drag in the viewer to add a title", "text_tool", draw_tl_text_icon),
         ];
         for (tool, tip, action, draw_fn) in tool_defs {
             let active = state.active_tool == *tool;
@@ -515,6 +517,19 @@ fn draw_tl_range_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32
         0.0,
         egui::Color32::from_rgba_premultiplied(c.r(), c.g(), c.b(), 30),
     );
+}
+
+/// A T: the Text tool (#1713).
+fn draw_tl_text_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
+    let ir = icon_area(btn);
+    let s = egui::Stroke::new(1.3_f32, c);
+    // Crossbar with serifs dropping from its ends
+    painter.line_segment([egui::pos2(ir.min.x + 2.0, ir.min.y + 2.0), egui::pos2(ir.max.x - 2.0, ir.min.y + 2.0)], s);
+    painter.line_segment([egui::pos2(ir.min.x + 2.0, ir.min.y + 2.0), egui::pos2(ir.min.x + 2.0, ir.min.y + 4.0)], s);
+    painter.line_segment([egui::pos2(ir.max.x - 2.0, ir.min.y + 2.0), egui::pos2(ir.max.x - 2.0, ir.min.y + 4.0)], s);
+    // Stem and foot
+    painter.line_segment([egui::pos2(ir.center().x, ir.min.y + 2.0), egui::pos2(ir.center().x, ir.max.y - 1.0)], s);
+    painter.line_segment([egui::pos2(ir.center().x - 2.0, ir.max.y - 1.0), egui::pos2(ir.center().x + 2.0, ir.max.y - 1.0)], s);
 }
 
 fn draw_tl_snap_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
