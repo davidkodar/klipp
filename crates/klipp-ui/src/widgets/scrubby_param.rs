@@ -65,6 +65,97 @@ pub struct KeyframeState {
     pub current_interpolation: Option<klipp_core::Interpolation>,
 }
 
+/// A previous or next key arrow, `nav_arrow_width` wide: dim and inert
+/// with no key that way. Whether it was clicked.
+fn nav_arrow(ui: &mut egui::Ui, has_key: bool, icon: Icon) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(10.0, 18.0), if has_key { egui::Sense::click() } else { egui::Sense::hover() });
+    let colour = if !has_key {
+        egui::Color32::from_rgb(60, 60, 65)
+    } else if resp.hovered() {
+        ui.visuals().selection.stroke.color
+    } else {
+        egui::Color32::from_rgb(140, 140, 145)
+    };
+    icon.image(8.0).tint(colour).paint_at(ui, egui::Rect::from_center_size(rect.center(), egui::vec2(8.0, 8.0)));
+    if has_key && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    has_key && resp.clicked()
+}
+
+/// The keyframe diamond over `resp`'s rect, and its hover text. Three
+/// looks: a key at the playhead, filled; keys elsewhere, hollow and
+/// bright with a thicker stroke; no keys, hollow and dim. `None` (a
+/// parameter that can't be keyed) draws a dark outline.
+fn paint_diamond(ui: &egui::Ui, resp: &egui::Response, keyframe_state: Option<&KeyframeState>) {
+    let (colour, filled, stroke_width) = if let Some(ks) = keyframe_state {
+        let hovered = resp.hovered();
+        if ks.has_keyframe_at_playhead {
+            let c = if hovered { ui.visuals().selection.stroke.color.gamma_multiply(1.25) } else { ui.visuals().selection.stroke.color };
+            (c, true, 0.0_f32)
+        } else if ks.has_any_keyframes {
+            let c = if hovered { ui.visuals().selection.stroke.color.gamma_multiply(1.25) } else { ui.visuals().selection.stroke.color };
+            (c, false, 1.8_f32)
+        } else {
+            let c = if hovered { egui::Color32::from_rgb(180, 180, 185) } else { egui::Color32::from_rgb(100, 100, 105) };
+            (c, false, 1.2_f32)
+        }
+    } else {
+        (egui::Color32::from_rgb(50, 50, 55), false, 1.2_f32)
+    };
+    let center = resp.rect.center();
+    let s = 4.5;
+    let points = vec![egui::pos2(center.x, center.y - s), egui::pos2(center.x + s, center.y), egui::pos2(center.x, center.y + s), egui::pos2(center.x - s, center.y)];
+    if filled {
+        ui.painter().add(egui::Shape::convex_polygon(points, colour, egui::Stroke::NONE));
+    } else {
+        ui.painter().add(egui::Shape::closed_line(points, egui::Stroke::new(stroke_width, colour)));
+    }
+    if let Some(ks) = keyframe_state {
+        if ks.keys_in_frame > 1 {
+            resp.clone().on_hover_text(format!("{} keys in this frame. This diamond edits or removes the nearest key; use the curve editor to select the others.", ks.keys_in_frame));
+        } else if !ks.has_any_keyframes {
+            resp.clone().on_hover_text("Click to enable keyframing");
+        } else if ks.has_keyframe_at_playhead {
+            resp.clone().on_hover_text("Remove keyframe");
+        } else {
+            resp.clone().on_hover_text("Add keyframe at playhead");
+        }
+    }
+}
+
+/// What a switch or choice row's key controls did this frame.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct KeyControls {
+    /// The diamond was clicked: add a key at the playhead, or take it away.
+    pub toggled: bool,
+    pub prev: bool,
+    pub next: bool,
+}
+
+/// A switch or choice row's key controls at the right edge, as a number
+/// row draws them: the diamond, with the previous and next key arrows
+/// either side of it once the parameter has keys. Its keys are steps, so
+/// there is no interpolation menu.
+pub fn key_controls(ui: &mut egui::Ui, ks: KeyframeState) -> KeyControls {
+    let mut out = KeyControls::default();
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if ks.has_any_keyframes {
+            out.next = nav_arrow(ui, ks.next_keyframe_time.is_some(), Icon::CaretRight);
+        }
+        let diamond = ui.add(egui::Button::new("").frame(false).min_size(egui::vec2(16.0, 18.0)).sense(egui::Sense::click()));
+        paint_diamond(ui, &diamond, Some(&ks));
+        if diamond.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        out.toggled = diamond.clicked();
+        if ks.has_any_keyframes {
+            out.prev = nav_arrow(ui, ks.prev_keyframe_time.is_some(), Icon::CaretLeft);
+        }
+    });
+    out
+}
+
 /// Returned by scrubby_param_row() so callers can check what happened.
 pub struct ScrubbyParamResponse {
     pub changed: bool,          // value was modified (drag, label-drag, type, or reset)
@@ -264,27 +355,8 @@ fn scrubby_row(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Next keyframe arrow (rightmost — only when keyframes exist)
             if let Some(ref ks) = keyframe_state {
-                if ks.has_any_keyframes {
-                    let has_next = ks.next_keyframe_time.is_some();
-                    let (next_rect, next_resp) = ui.allocate_exact_size(
-                        egui::vec2(nav_arrow_width, 18.0),
-                        if has_next { egui::Sense::click() } else { egui::Sense::hover() },
-                    );
-                    let arrow_color = if !has_next {
-                        egui::Color32::from_rgb(60, 60, 65)
-                    } else if next_resp.hovered() {
-                        ui.visuals().selection.stroke.color
-                    } else {
-                        egui::Color32::from_rgb(140, 140, 145)
-                    };
-                    let icon_rect = egui::Rect::from_center_size(next_rect.center(), egui::vec2(8.0, 8.0));
-                    Icon::CaretRight.image(8.0).tint(arrow_color).paint_at(ui, icon_rect);
-                    if has_next && next_resp.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    if has_next && next_resp.clicked() {
-                        nav_next = true;
-                    }
+                if ks.has_any_keyframes && nav_arrow(ui, ks.next_keyframe_time.is_some(), Icon::CaretRight) {
+                    nav_next = true;
                 }
             }
 
@@ -299,27 +371,8 @@ fn scrubby_row(
 
             // Previous keyframe arrow (left of diamond)
             if let Some(ref ks) = keyframe_state {
-                if ks.has_any_keyframes {
-                    let has_prev = ks.prev_keyframe_time.is_some();
-                    let (prev_rect, prev_resp) = ui.allocate_exact_size(
-                        egui::vec2(nav_arrow_width, 18.0),
-                        if has_prev { egui::Sense::click() } else { egui::Sense::hover() },
-                    );
-                    let arrow_color = if !has_prev {
-                        egui::Color32::from_rgb(60, 60, 65)
-                    } else if prev_resp.hovered() {
-                        ui.visuals().selection.stroke.color
-                    } else {
-                        egui::Color32::from_rgb(140, 140, 145)
-                    };
-                    let icon_rect = egui::Rect::from_center_size(prev_rect.center(), egui::vec2(8.0, 8.0));
-                    Icon::CaretLeft.image(8.0).tint(arrow_color).paint_at(ui, icon_rect);
-                    if has_prev && prev_resp.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    if has_prev && prev_resp.clicked() {
-                        nav_prev = true;
-                    }
+                if ks.has_any_keyframes && nav_arrow(ui, ks.prev_keyframe_time.is_some(), Icon::CaretLeft) {
+                    nav_prev = true;
                 }
             }
 
@@ -383,56 +436,7 @@ fn scrubby_row(
         // Store hover state for next frame (prevents reset button flicker)
         ui.ctx().data_mut(|d| d.insert_temp(row_id, row_is_hovered));
 
-        // Determine diamond color, fill, and stroke width based on keyframe state.
-        // Three visual states:
-        //   1. At playhead: filled bright yellow diamond
-        //   2. Has keyframes (not at playhead): hollow, full-alpha yellow, thicker stroke (1.8px)
-        //   3. No keyframes: hollow, dim gray, thin stroke (1.2px)
-        let (diamond_color, diamond_filled, diamond_stroke_width) = if let Some(ref ks) = keyframe_state {
-            let hovered = diamond_btn_resp.hovered();
-            if ks.has_keyframe_at_playhead {
-                let c = if hovered { ui.visuals().selection.stroke.color.gamma_multiply(1.25) } else { ui.visuals().selection.stroke.color };
-                (c, true, 0.0_f32) // filled — stroke width unused
-            } else if ks.has_any_keyframes {
-                // Full-alpha yellow with thicker stroke — clearly "active but not here"
-                let c = if hovered { ui.visuals().selection.stroke.color.gamma_multiply(1.25) } else { ui.visuals().selection.stroke.color };
-                (c, false, 1.8_f32)
-            } else {
-                let c = if hovered { egui::Color32::from_rgb(180, 180, 185) } else { egui::Color32::from_rgb(100, 100, 105) };
-                (c, false, 1.2_f32)
-            }
-        } else {
-            (egui::Color32::from_rgb(50, 50, 55), false, 1.2_f32)
-        };
-
-        // Draw diamond shape over the button rect
-        let center = diamond_btn_resp.rect.center();
-        let s = 4.5;
-        let diamond_points = vec![
-            egui::pos2(center.x, center.y - s),
-            egui::pos2(center.x + s, center.y),
-            egui::pos2(center.x, center.y + s),
-            egui::pos2(center.x - s, center.y),
-        ];
-        if diamond_filled {
-            ui.painter().add(egui::Shape::convex_polygon(diamond_points, diamond_color, egui::Stroke::NONE));
-        } else {
-            ui.painter().add(egui::Shape::closed_line(diamond_points, egui::Stroke::new(diamond_stroke_width, diamond_color)));
-        }
-
-        if let Some(ref ks) = keyframe_state {
-            if ks.keys_in_frame > 1 {
-                diamond_btn_resp.clone().on_hover_text(format!(
-                    "{} keys in this frame. This diamond edits or removes the nearest key; use the curve editor to select the others.", ks.keys_in_frame
-                ));
-            } else if !ks.has_any_keyframes {
-                diamond_btn_resp.clone().on_hover_text("Click to enable keyframing");
-            } else if ks.has_keyframe_at_playhead {
-                diamond_btn_resp.clone().on_hover_text("Remove keyframe");
-            } else {
-                diamond_btn_resp.clone().on_hover_text("Add keyframe at playhead");
-            }
-        }
+        paint_diamond(ui, &diamond_btn_resp, keyframe_state.as_ref());
 
         if is_keyframeable && diamond_btn_resp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);

@@ -132,8 +132,21 @@ impl Run {
         for cmd in cmds {
             let mut cmd = cmd.clone();
             crate::inspector::keyframe_selection::resolve_command(&self.state.sequences[0], &mut cmd);
-            assert_eq!(self.state.path_command(&cmd), Some(true), "{cmd:?} applied");
+            assert_eq!(self.state.path_command(&cmd), Some(true), "{cmd:?} applied: {:?}", self.state.toast.message_for_test());
         }
+    }
+
+    /// `apply`, a refusal handed back (the toast's words) rather than
+    /// failed on.
+    fn try_apply(&mut self, cmds: &[AppCommand]) -> Result<(), String> {
+        for cmd in cmds {
+            let mut cmd = cmd.clone();
+            crate::inspector::keyframe_selection::resolve_command(&self.state.sequences[0], &mut cmd);
+            if self.state.path_command(&cmd) != Some(true) {
+                return Err(self.state.toast.message_for_test().unwrap_or_default().to_string());
+            }
+        }
+        Ok(())
     }
 
     fn v1(&self) -> &Node {
@@ -165,6 +178,7 @@ fn every_keyframable_grade_param_shows_a_diamond() {
     let mut misses = Vec::new();
     let mut keyed = 0;
     let mut stepped = Vec::new();
+    let mut unwritable = Vec::new();
     for (kind, ty) in kinds() {
         let Some(mut run) = Run::new(kind) else { continue };
         let (addr, _) = crate::inspector::grade_view::grade_node(clip(&run.state, run.clip), run.node).unwrap();
@@ -175,9 +189,9 @@ fn every_keyframable_grade_param_shows_a_diamond() {
             if !desc.keyframable || matches!(pres.widget, Widget::Custom(_)) {
                 continue;
             }
-            if matches!(pres.widget, Widget::Toggle | Widget::Combo) {
+            let is_stepped = matches!(pres.widget, Widget::Toggle | Widget::Combo);
+            if is_stepped {
                 stepped.push(format!("{kind:?} {}", desc.key));
-                continue;
             }
             let label = label_of(desc, pres);
             let same: Vec<usize> = rows.iter().enumerate().filter(|(_, (d, p))| label_of(d, p) == label).map(|(j, _)| j).collect();
@@ -188,14 +202,26 @@ fn every_keyframable_grade_param_shows_a_diamond() {
                 continue;
             }
             let add = run.click_diamond(label, nth, of);
+            // A switch's or a choice's key holds until the next (#1318).
+            let step = |k: &serde_json::Value| serde_json::from_value::<klipp_core::Keyframe>(k.clone()).is_ok_and(|k| k.interpolation == klipp_core::Interpolation::Step);
             match add.as_slice() {
-                [AppCommand::AddKeyAt { addr: a, key, .. }] if *a == addr && key.as_str() == desc.key => {}
+                [AppCommand::AddKeyAt { addr: a, key, keyframe }] if *a == addr && key.as_str() == desc.key && (!is_stepped || step(keyframe)) => {}
                 other => {
                     misses.push(format!("{kind:?} {}: the diamond gave {other:?}", desc.key));
                     continue;
                 }
             }
-            run.apply(&add);
+            // A matte node this fixture chains into the picture leaves a
+            // graph that takes no edit at all, a value's no more than a
+            // key's: the diamond is right, the fixture can't hold the key.
+            if let Err(why) = run.try_apply(&add) {
+                if why.contains("PortTypeMismatch") {
+                    unwritable.push(format!("{kind:?} {}", desc.key));
+                } else {
+                    misses.push(format!("{kind:?} {}: the key was refused: {why}", desc.key));
+                }
+                continue;
+            }
             if !run.v1().keyframes.has_keyframes(desc.key) {
                 misses.push(format!("{kind:?} {}: keyed by path, but the node has no track", desc.key));
                 continue;
@@ -211,12 +237,12 @@ fn every_keyframable_grade_param_shows_a_diamond() {
     }
     assert!(misses.is_empty(), "{} of {} missed:\n{}", misses.len(), misses.len() + keyed, misses.join("\n"));
     assert!(keyed > 20, "only {keyed} diamonds were tried");
-    assert_eq!(stepped, STEPPED, "the keyframable switches and choices, drawn without a diamond");
+    assert_eq!(stepped, STEPPED, "the keyframable switches and choices, each keyed as a step");
+    assert_eq!(unwritable, ["Qualifier qual_enabled", "LumaKey luma_key_enabled"], "the rows whose fixture takes no edit");
 }
 
-/// The keyframable switches and choices: their rows draw no diamond yet
-/// (a switch and a choice row have none); whether they get one is IC1's
-/// open question for stepped parameters.
+/// The keyframable switches and choices: their diamonds key a step
+/// (#1318).
 const STEPPED: &[&str] = &[
     "Corrector wheels_log_mode",
     "Corrector curves_preserve_luma",
@@ -229,6 +255,23 @@ const STEPPED: &[&str] = &[
     "PrimariesMatrix primaries_from",
     "PrimariesMatrix primaries_to",
 ];
+
+/// A switch keyed through its diamond switches at the key and doesn't
+/// blend: a Corrector's log wheels keyed off at 0 s and on at 1 s are off
+/// until 1 s, then on (#1318).
+#[test]
+fn a_keyed_switch_holds_until_its_next_key() {
+    let mut run = Run::new(NodeKind::Corrector).unwrap();
+    let (addr, _) = crate::inspector::grade_view::grade_node(clip(&run.state, run.clip), run.node).unwrap();
+    for (t, v) in [(0.0, 0.0f32), (1.0, 1.0)] {
+        let key = klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Step, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        run.apply(&[AppCommand::AddKeyAt { addr: addr.clone(), key: "wheels_log_mode".into(), keyframe: serde_json::to_value(key).unwrap() }]);
+    }
+    let at = |t: f64| run.v1().keyframes.evaluate_all(t).into_iter().find(|(k, _)| k == "wheels_log_mode").map(|(_, v)| v);
+    assert_eq!(at(0.5), Some(0.0), "held off until the next key");
+    assert_eq!(at(0.999), Some(0.0), "still off just before it");
+    assert_eq!(at(1.0), Some(1.0), "on from the key");
+}
 
 /// A Corrector's exposure keyed through its row animates: keys at 0 s and
 /// 1 s give the halfway value at 0.5 s on the grade node the engine reads.
