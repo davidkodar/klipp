@@ -23,6 +23,7 @@ mod foreground;
 mod job;
 mod pause;
 mod scheduler;
+mod slots;
 mod subprocess;
 mod thread_job;
 
@@ -30,5 +31,6 @@ pub use foreground::ForegroundActivity;
 pub use job::{BackgroundJob, ChunkResult, JobId, JobPriority, ResourceClass};
 pub use pause::PauseToken;
 pub use scheduler::{JobScheduler, SchedulerPolicy};
+pub use slots::{SlotGuard, Slots};
 pub use subprocess::SubprocessJob;
 pub use thread_job::{lower_current_thread_priority, ThreadJob};

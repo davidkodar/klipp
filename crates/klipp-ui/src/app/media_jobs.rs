@@ -802,6 +802,9 @@ impl KlippApp {
             let event_tx = self.proxy_event_tx.clone();
             let job_for_thread = Arc::clone(&job);
             std::thread::spawn(move || {
+                // At most a few transcodes at once; the rest wait here,
+                // in the order they were asked for (#1360).
+                let _slot = super::proxies::TRANSCODE_SLOTS.acquire();
                 let job = job_for_thread;
                 let run_ffmpeg = |args: &[&str], label: &str| -> Result<std::process::ExitStatus, std::io::Error> {
                     use std::io::{BufRead, Read};
