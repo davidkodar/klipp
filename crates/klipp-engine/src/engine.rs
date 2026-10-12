@@ -7654,7 +7654,8 @@ impl PlaybackEngine {
         let batch = crate::node_thumbnails::ThumbnailBatch::new(
             request, crate::node_thumbnails::frame_index(playhead, seq.fps), crate::node_thumbnails::PreviewQuality::Filmstrip,
             revision, &self.thumbnail_priority, found.thumbs,
-        );
+        )
+        .with_unavailable(&self.thumbnail_priority, found.unavailable);
         self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner()).publish_node_thumbnails(batch);
     }
 

@@ -51,8 +51,30 @@ impl AppState {
             self.node_thumbs.clear();
             self.node_thumbs_gen = self.node_thumbs_gen.wrapping_add(1);
         }
+        self.node_thumbs_unavailable.clear();
         self.node_thumbnail_state.publication = None;
         self.node_thumbnail_state.quality = None;
+    }
+}
+
+impl AppState {
+    /// How each node of `clip`'s graph fared on the frame shown (#1747),
+    /// for the node editor's badges: the render's decline for it, else
+    /// why its asked-for preview couldn't be made.
+    pub(crate) fn node_feedback(&self, clip: ClipId) -> std::collections::HashMap<klipp_nodes::NodeId, crate::panels::node_graph_v2::NodeFeedback> {
+        use crate::panels::node_graph_v2::{FeedbackKind, NodeFeedback};
+        let mut out = std::collections::HashMap::new();
+        for (at, why) in &self.node_thumbs_unavailable {
+            if at.path.root != (klipp_graph_format::path::Root::Clip { clip: clip.0 }) { continue; }
+            if let Some(node) = at.path.node() {
+                out.insert(node, NodeFeedback { kind: FeedbackKind::NoPreview, reason: why.clone() });
+            }
+        }
+        for d in self.frame_declines.iter().filter(|d| d.shown() && d.clip == Some(clip)) {
+            let kind = if d.outcome == klipp_nodes::DeclineOutcome::RenderFailed { FeedbackKind::Failed } else { FeedbackKind::Declined };
+            out.insert(d.node, NodeFeedback { kind, reason: d.reason.clone() });
+        }
+        out
     }
 }
 
@@ -119,6 +141,7 @@ impl KlippApp {
             if let Some(batch) = batch {
                 if self.state.node_thumbnail_state.publication != Some(fb.node_thumbs_gen) {
                     self.state.node_thumbs = batch.images.clone();
+                    self.state.node_thumbs_unavailable = batch.unavailable.clone();
                     self.state.node_thumbs_gen = self.state.node_thumbs_gen.wrapping_add(1);
                     self.state.node_thumbnail_state.publication = Some(fb.node_thumbs_gen);
                     self.state.node_thumbnail_state.quality = Some(batch.quality);
