@@ -146,6 +146,26 @@ pub(super) static TYPES: &[EffectType] = &[
         tag: "vignette",
         sample: || BuiltinEffect::Vignette { amount: -0.4, size: 0.8, softness: 0.5, roundness: 0.5 },
     },
+    // Two eyepieces (#989): their spacing a share of the width, their
+    // size shares of the height; the fringe in canvas pixels.
+    EffectType {
+        desc: mixable(light(
+            "klipp.fx.binocular_vignette",
+            "Binocular Vignette",
+            &[
+                ParamDesc::float("amount", "Amount", -1.0, (-1.0, 1.0), Unit::Ratio),
+                ParamDesc::float("spacing", "Eye Spacing", 0.4, (0.0, 1.0), Unit::Normalised),
+                ParamDesc::float("width", "Width", 0.85, (0.1, 2.0), Unit::Normalised),
+                ParamDesc::float("height", "Height", 0.85, (0.1, 2.0), Unit::Normalised),
+                ParamDesc::float("softness", "Softness", 0.15, (0.0, 1.0), Unit::Ratio),
+                ParamDesc::float("fringe", "Fringe", 4.0, (-20.0, 20.0), Unit::CanvasPx),
+            ],
+            Spatial::Geometric,
+            false,
+        )),
+        tag: "binocular_vignette",
+        sample: || BuiltinEffect::BinocularVignette { amount: -1.0, spacing: 0.4, width: 0.85, height: 0.85, softness: 0.15, fringe: 4.0 },
+    },
     EffectType {
         desc: mixable(light(
             "klipp.fx.diffusion",

@@ -38,6 +38,7 @@ mod cpu;
 pub mod layer;
 pub mod cpu_grade;
 pub mod deflicker;
+pub mod flicker;
 pub mod node_analysis;
 mod cpu_transition;
 mod wgsl;
@@ -855,6 +856,38 @@ pub enum BuiltinEffect {
         anchor_x: f32,
         anchor_y: f32,
     },
+    /// Flicker (#989): the picture's opacity, exposure or gamma jumping
+    /// at random, `speed` jumps a second. `amount` is how far a jump
+    /// goes (opacity down by up to it; exposure or gamma up and down by
+    /// up to it in stops), `smoothness` eases from one to the next (0
+    /// cuts), `hold` is the share of jumps that hold still, and `seed`
+    /// picks the pattern. `target` 0 = opacity, 1 = exposure, 2 =
+    /// gamma. **The compositor sets `time`**, the clip's time in
+    /// seconds, as it sets `seed` on FilmGrain.
+    Flicker {
+        amount: f32,
+        speed: f32,
+        smoothness: f32,
+        hold: f32,
+        seed: u32,
+        target: u32,
+        #[serde(default)]
+        time: f32,
+    },
+    /// Binocular Vignette (#989): the frame seen through two eyepieces,
+    /// two overlapping ellipses `spacing` apart (a share of the width),
+    /// each `width` wide and `height` tall (shares of the frame's
+    /// height), soft by `softness`; `amount` darkens (negative) or
+    /// lightens what is outside them, and `fringe` splits red and blue
+    /// by up to that many pixels towards their edge.
+    BinocularVignette {
+        amount: f32,
+        spacing: f32,
+        width: f32,
+        height: f32,
+        softness: f32,
+        fringe: f32,
+    },
 }
 
 impl BuiltinEffect {
@@ -1113,6 +1146,7 @@ impl BuiltinEffect {
                 px(red_shift);
                 px(blue_shift);
             }
+            BuiltinEffect::BinocularVignette { fringe, .. } => px(fringe),
             BuiltinEffect::Dilate { radius } | BuiltinEffect::Erode { radius } | BuiltinEffect::MedianFilter { radius } => whole(radius),
             BuiltinEffect::Denoise { spatial_sigma, .. } => px(spatial_sigma),
             BuiltinEffect::PictureTransform { position_x, position_y, .. } => {
@@ -1176,6 +1210,8 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
         BuiltinEffect::CornerPin { tl, tr, br, bl } => corner_pin::is_still(&[*tl, *tr, *br, *bl]),
         BuiltinEffect::Lut3D { opacity, .. } => *opacity <= 0.0,
         BuiltinEffect::PictureTransform { .. } => effect.picture_transform_as_transform().is_some_and(|t| is_identity_effect(&t)),
+        // A flicker of nothing, or one whose every jump holds (#989).
+        BuiltinEffect::Flicker { amount, hold, .. } => amount.abs() < f32::EPSILON || *hold >= 1.0,
         BuiltinEffect::ColourSpaceTransform { input_gamut, input_curve, output_gamut, output_curve, .. } => {
             input_gamut == output_gamut && *input_curve == 0 && *output_curve == 0
         }

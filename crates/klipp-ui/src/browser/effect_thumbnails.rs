@@ -592,6 +592,13 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         klipp_effects::BuiltinEffect::OldFilm { .. } => {
             klipp_effects::BuiltinEffect::OldFilm { flicker: 0.4, scratches: 1.0, dust: 1.0, weave: 0.5, sepia: 0.7, seed: 5 }
         }
+        // A still card shows a flicker mid-dip.
+        klipp_effects::BuiltinEffect::Flicker { .. } => {
+            klipp_effects::BuiltinEffect::Flicker { amount: 0.6, speed: 1.0, smoothness: 0.0, hold: 0.0, seed: 2, target: 1, time: 0.5 }
+        }
+        klipp_effects::BuiltinEffect::BinocularVignette { .. } => {
+            klipp_effects::BuiltinEffect::BinocularVignette { amount: -1.0, spacing: 0.4, width: 0.8, height: 0.8, softness: 0.1, fringe: 6.0 }
+        }
         klipp_effects::BuiltinEffect::Vhs { .. } => {
             klipp_effects::BuiltinEffect::Vhs { tracking: 0.8, bleed: 0.8, noise: 0.6, scanlines: 0.8, seed: 9 }
         }

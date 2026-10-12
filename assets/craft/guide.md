@@ -299,7 +299,9 @@ exist until the plan runs.
   (`motion_blur`), `sharpen`, `chromatic_aberration` (`rgb_split`,
   `fringe`), `tilt_shift`, `mosaic` (`pixelate`), `posterize`, `invert`,
   `mirror`, `lens_distortion` (`barrel`), `emboss`, `edge_detect`
-  (`edges`), `denoise`, `vhs`, and `old_film`. `corners`
+  (`edges`), `denoise`, `vhs`, `old_film`, `flicker` (random jumps of
+  the opacity; `exposure_flicker` of the light) and `binocular`
+  (`binocular_vignette`: two eyepieces, a fringe at their rims). `corners`
   (`rounded_corners`) rounds a layer's alpha mask, `shadow`
   (`drop_shadow`) places a shadow behind it, and `outer_glow` lights its
   silhouette; compose the picture smaller than the frame to see these.

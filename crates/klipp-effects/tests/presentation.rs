@@ -121,9 +121,9 @@ fn covered() -> Vec<&'static klipp_effects::registry::EffectType> {
     effect_types().filter(|t| presentation::params().any(|e| e.type_id == t.desc.id)).collect()
 }
 
-/// Types made after the old inspector was recorded (#1746): their rows
+/// Types made after the old inspector was recorded (#1746, #989): their rows
 /// are the tables' alone, with no old row to match.
-const AFTER_THE_RECORDING: &[&str] = &["klipp.fx.lut_3d", "klipp.fx.colour_space_transform", "klipp.fx.picture_transform"];
+const AFTER_THE_RECORDING: &[&str] = &["klipp.fx.lut_3d", "klipp.fx.colour_space_transform", "klipp.fx.picture_transform", "klipp.fx.flicker", "klipp.fx.binocular_vignette"];
 
 #[test]
 fn a_covered_type_names_every_param() {
@@ -262,6 +262,8 @@ const HIDDEN: &[(&str, &str)] = &[
     ("klipp.fx.old_film", "seed"),
     ("klipp.fx.vhs", "seed"),
     ("klipp.fx.deflicker", "gain"),
+    // The clip's time, set each frame (#989).
+    ("klipp.fx.flicker", "time"),
     // Set by a title's roll from its focus band, in the Title tab.
     ("klipp.fx.focus_blur", "radius"),
     ("klipp.fx.focus_blur", "vertical"),
@@ -339,6 +341,7 @@ const CHOICE_LABELS: &[(&str, &str, &[&str])] = &[
     ("klipp.fx.chroma_key", "spill_method", &["None", "Channel Clamp", "Hawk"]),
     ("klipp.fx.speed_ramp", "blend_mode", &["Nearest", "Linear"]),
     ("klipp.fx.radial_blur", "mode", &["Zoom", "Spin"]),
+    ("klipp.fx.flicker", "target", &["Opacity", "Exposure", "Gamma"]),
 ];
 
 /// Today's sub-headers (the channel mixer's per-output groups).
