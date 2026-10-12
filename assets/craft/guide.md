@@ -303,6 +303,11 @@ exist until the plan runs.
   (`drop_shadow`) places a shadow behind it, and `outer_glow` lights its
   silhouette; compose the picture smaller than the frame to see these.
   For example, `{op: effect, clip_id: ID, kind: corners, amount: 0.4}`.
+  A key is `chroma_key` (`green_screen`, `blue_screen`) on one clip, the
+  app's Chroma Key: `color` `#rrggbb` (green, or blue for `blue_screen`),
+  `tolerance` (0.2), `softness` (0.1) and `spill` (0.6), each 0 to 1; a
+  second key on the clip replaces the first. Put the keyed clip on a
+  track above what shows through it.
   `fill_bars` (`blanking_fill`, `blur_fill`, `blurred_background`) fills
   the black bars round a picture that does not fill the frame (an
   upright phone shot in a wide sequence, a wide one in a vertical

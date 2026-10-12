@@ -68,6 +68,7 @@ answer from here, in their words, and short:
   screens, and moves between layouts.
   *"Put the webcam in the corner over the screen recording."*
 - Blur, glow, grain, sharpen and vignette.
+- A green or blue screen keyed out, to put someone over another picture.
 - Backgrounds, colour cards, bars and countdowns made in the app.
 
 ## Colour
