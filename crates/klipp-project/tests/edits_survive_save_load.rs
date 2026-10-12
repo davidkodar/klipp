@@ -345,3 +345,27 @@ fn a_motions_own_easing_curve_comes_back() {
     let ClipKind::Title(loaded) = &seqs[0].tracks[0].clips[0].kind else { panic!("not a title") };
     assert_eq!(loaded.primary_fx().motion, motion);
 }
+
+/// #1511: a text's keyed size, tracking and line spacing come back
+/// through a real save and a strict load.
+#[test]
+fn a_texts_keyed_type_comes_back() {
+    let key = |time_secs: f64, value: f32| klipp_core::Keyframe { time_secs, value, interpolation: klipp_core::Interpolation::Bezier, tangent_out: (0.2, 1.0), tangent_in: (-0.2, 0.0) };
+    let tb = TextBox {
+        text: "Keyed".into(),
+        font_size_keyframes: vec![key(0.0, 40.0), key(2.0, 90.0)],
+        tracking_keyframes: vec![key(0.0, 0.0), key(2.0, 200.0)],
+        line_spacing_keyframes: vec![key(1.0, 1.5)],
+        ..TextBox::default()
+    };
+    let mut seq = Sequence::new_default();
+    let mut c = Clip::gap(tc(0), tc(48));
+    c.kind = ClipKind::Title(TitleData::single_text(tb.clone()));
+    seq.tracks[0].clips = vec![c];
+    let dir = project_dir("keyed-type");
+    save_project_with_color(&dir, &[seq], &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
+    let (seqs, ..) = klipp_project::load_project_strict(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let ClipKind::Title(loaded) = &seqs[0].tracks[0].clips[0].kind else { panic!("not a title") };
+    assert_eq!(loaded.primary_text(), Some(&tb));
+}

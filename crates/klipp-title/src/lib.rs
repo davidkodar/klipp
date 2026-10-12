@@ -1896,6 +1896,14 @@ impl TitleRenderer {
                 if fx.loops.is_empty() || !o.visible {
                     return None;
                 }
+                // A roll travels the text as it is now (#1511).
+                let keyed;
+                let tb = if tb.has_type_keyframes() {
+                    keyed = tb.at(time_secs as f64);
+                    &keyed
+                } else {
+                    tb
+                };
                 let font_px = tb.font_size * scale;
                 let (text_w, text_h) = tb.loop_extent(font_px);
                 let geo = klipp_timeline::LoopGeometry { frame_w: width as f32, frame_h: height as f32, text_w, text_h, font_px };
@@ -2014,6 +2022,9 @@ impl TitleRenderer {
             }
         });
         let any_outline_keyframes = title.objects.iter().any(|o| o.fx().outlines.iter().any(|ol| !ol.width_keyframes.is_empty()));
+        // A keyed size, tracking or spacing lays the text out afresh at
+        // each time (#1511).
+        let any_type_keyframes = title.objects.iter().any(|o| matches!(&o.content, TitleObjectContent::TextBox(tb) if tb.has_type_keyframes()));
         let any_opacity_keyframes = title.objects.iter().any(|o| !o.opacity_keyframes.is_empty());
 
         // A shape or a picture with a live entrance, exit or loop is
@@ -2030,7 +2041,8 @@ impl TitleRenderer {
             || any_shadow_keyframes
             || any_inner_shadow_keyframes
             || any_extrusion_keyframes
-            || any_outline_keyframes;
+            || any_outline_keyframes
+            || any_type_keyframes;
 
         let any_render_time_override = any_render_time_override || any_opacity_keyframes;
         // A staggered entrance on a layer that fades by where it is: the
@@ -2263,7 +2275,10 @@ impl TitleRenderer {
                     // path. A full-frame `background` is painted once,
                     // above, and not per text layer; a colour backing
                     // goes with the first text box.
-                    let mut single = TitleData::single_text_fx(tb.clone(), obj.fx().clone());
+                    // Its keyed size, tracking and spacing as they are
+                    // now (#1511).
+                    let tb = time_secs.map_or_else(|| tb.clone(), |t| tb.at(t as f64));
+                    let mut single = TitleData::single_text_fx(tb, obj.fx().clone());
                     single.background = backing.take().unwrap_or(TitleBackground::None);
                     if let Some(o) = single.objects.first_mut() {
                         o.transform = effective_transform.clone();
@@ -2377,7 +2392,8 @@ impl TitleRenderer {
         let target = title.object(fit.target).filter(|o| o.visible)?;
         let TitleObjectContent::TextBox(tb) = &target.content else { return None };
         if tb.text.trim().is_empty() { return None; }
-        let mut single = TitleData::single_text_fx(tb.clone(), target.fx().clone());
+        let tb = time_secs.map_or_else(|| tb.clone(), |t| tb.at(t as f64));
+        let mut single = TitleData::single_text_fx(tb, target.fx().clone());
         single.objects[0].transform = target.transform.clone();
         if let Some(t) = time_secs {
             single.objects[0].transform.center = target.transform.evaluated_center(t as f64);

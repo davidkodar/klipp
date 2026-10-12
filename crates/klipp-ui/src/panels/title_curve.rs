@@ -68,6 +68,7 @@ impl TitleCurveParam {
                     "extrusion" => "Extrusion",
                     "motion_blur" => "Motion Blur",
                     "char_anim" => "Character Animation",
+                    "text" => "Text",
                     other => other,
                 };
                 let field = parts.last().unwrap_or(&"").replace('_', " ");
@@ -92,6 +93,9 @@ impl TitleCurveParam {
                 "offset_x" | "offset_y" => (-200.0, 200.0, 0.0),
                 "stagger" => (0.0, 1.0, 0.05),
                 "wave_speed" => (0.0, 20.0, 1.0),
+                "size" => (1.0, 300.0, 72.0),
+                "tracking" => (-10.0, 200.0, 0.0),
+                "line_spacing" => (0.5, 4.0, 1.0),
                 _ => (0.0, 200.0, 0.0),
             },
         }
@@ -220,6 +224,9 @@ pub fn parameters(object: &klipp_timeline::TitleObject) -> Vec<TitleCurveParam> 
     ];
     if let TitleObjectContent::TextBox(_) = &object.content {
         let mut keys = vec![
+            k::TEXT_SIZE.into(),
+            k::TEXT_TRACKING.into(),
+            k::TEXT_LINE_SPACING.into(),
             k::EXTRUSION_DEPTH.into(),
             k::EXTRUSION_ANGLE.into(),
             k::EXTRUSION_LIGHTING.into(),
@@ -384,5 +391,19 @@ mod tests {
         );
         assert_eq!(title.objects[0].transform, old.objects[0].transform);
         assert!(title.objects[0].effect_keyframes_for("glow.0.radius").unwrap().is_empty());
+    }
+
+    /// A text layer's size, tracking and line spacing are channels of
+    /// their own, named as the text's (#1511).
+    #[test]
+    fn a_text_layers_type_is_a_channel() {
+        let (title, _) = animated_title();
+        let channels = parameters(&title.objects[0]);
+        for (key, label) in [("text.size", "Text · size"), ("text.tracking", "Text · tracking"), ("text.line_spacing", "Text · line spacing")] {
+            let param = TitleCurveParam::Effect(key.into());
+            assert!(channels.contains(&param), "{key}");
+            assert_eq!(param.label(), label);
+        }
+        assert_eq!(TitleCurveParam::Effect("text.size".into()).range(), (1.0, 300.0, 72.0));
     }
 }

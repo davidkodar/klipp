@@ -785,6 +785,15 @@ pub struct TextBox {
     /// Line spacing multiplier, default 1.0.
     #[serde(default = "default_one")]
     pub line_spacing: f32,
+    /// The size, tracking and line spacing over the clip, in clip-local
+    /// time (#1511); empty, the field above holds. Written only when
+    /// keyed, so a title without keys saves as it did.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub font_size_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tracking_keyframes: Vec<klipp_core::Keyframe>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub line_spacing_keyframes: Vec<klipp_core::Keyframe>,
     /// Write-on reveal: 0.0 = no text, 1.0 = all visible. Animation
     /// overrides this per frame for Typewriter; otherwise 1.0.
     #[serde(default = "default_one")]
@@ -1040,13 +1049,43 @@ impl TextBox {
         (max_chars * font_px * 0.55, lines * font_px * self.line_spacing.max(0.5) * 1.4)
     }
 
+    /// Whether the size, tracking or line spacing is keyed (#1511).
+    pub fn has_type_keyframes(&self) -> bool {
+        !self.font_size_keyframes.is_empty() || !self.tracking_keyframes.is_empty() || !self.line_spacing_keyframes.is_empty()
+    }
+
+    /// The text at `time_secs` of its clip: its keyed size, tracking and
+    /// line spacing as they are then, its keys gone (#1511).
+    pub fn at(&self, time_secs: f64) -> TextBox {
+        let mut tb = self.clone();
+        let key = |keys: &mut Vec<klipp_core::Keyframe>, value: &mut f32| {
+            if !keys.is_empty() {
+                *value = klipp_core::keyframe::evaluate(keys, time_secs, *value);
+                keys.clear();
+            }
+        };
+        let (mut size, mut tracking, mut spacing) = (tb.font_size, tb.tracking, tb.line_spacing);
+        key(&mut tb.font_size_keyframes, &mut size);
+        key(&mut tb.tracking_keyframes, &mut tracking);
+        key(&mut tb.line_spacing_keyframes, &mut spacing);
+        (tb.font_size, tb.tracking, tb.line_spacing) = (size.max(1.0), tracking, spacing.max(0.1));
+        tb
+    }
+
     /// Mutable accessor for the keyframe vec of a param that is the
-    /// text's own — `extrusion.*`, `char_anim.*`. The stack's params
-    /// are the object's: [`TitleObject::effect_keyframes_mut_for`].
+    /// text's own — `text.*`, `extrusion.*`, `char_anim.*`. The stack's
+    /// params are the object's: [`TitleObject::effect_keyframes_mut_for`].
     pub fn effect_keyframes_mut_for(
         &mut self,
         param_key: &str,
     ) -> Option<&mut Vec<klipp_core::Keyframe>> {
+        use klipp_core::title_effect_keys as k;
+        match param_key {
+            k::TEXT_SIZE => return Some(&mut self.font_size_keyframes),
+            k::TEXT_TRACKING => return Some(&mut self.tracking_keyframes),
+            k::TEXT_LINE_SPACING => return Some(&mut self.line_spacing_keyframes),
+            _ => {}
+        }
         if param_key.starts_with("extrusion.") {
             self.extrusion.as_mut().and_then(|e| e.keyframes_mut_for(param_key))
         } else if param_key.starts_with("char_anim.") {
@@ -1058,6 +1097,13 @@ impl TextBox {
 
     /// Read-only mirror of `effect_keyframes_mut_for`.
     pub fn effect_keyframes_for(&self, param_key: &str) -> Option<&[klipp_core::Keyframe]> {
+        use klipp_core::title_effect_keys as k;
+        match param_key {
+            k::TEXT_SIZE => return Some(&self.font_size_keyframes),
+            k::TEXT_TRACKING => return Some(&self.tracking_keyframes),
+            k::TEXT_LINE_SPACING => return Some(&self.line_spacing_keyframes),
+            _ => {}
+        }
         if param_key.starts_with("extrusion.") {
             self.extrusion.as_ref().and_then(|e| e.keyframes_for(param_key))
         } else if param_key.starts_with("char_anim.") {
@@ -1132,6 +1178,9 @@ impl Default for TextBox {
             pattern_fill_enabled: true,
             tracking: 0.0,
             line_spacing: 1.0,
+            font_size_keyframes: Vec::new(),
+            tracking_keyframes: Vec::new(),
+            line_spacing_keyframes: Vec::new(),
             write_on: 1.0,
             extrusion: None,
             text_path: None,

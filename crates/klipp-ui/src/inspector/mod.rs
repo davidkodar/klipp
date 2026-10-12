@@ -1484,6 +1484,64 @@ fn handle_extrusion_axis_response(
     }
 }
 
+/// What a keyable text row did (#1511): its diamond, an edited value,
+/// or an interpolation picked for the key at the playhead.
+#[derive(Default)]
+struct TextKeyEdit {
+    toggled: bool,
+    changed: bool,
+    interpolation: Option<klipp_core::Interpolation>,
+}
+
+impl From<&crate::widgets::scrubby_param::ScrubbyParamResponse> for TextKeyEdit {
+    fn from(r: &crate::widgets::scrubby_param::ScrubbyParamResponse) -> Self {
+        Self { toggled: r.keyframe_toggled, changed: r.changed, interpolation: r.keyframe_set_interpolation }
+    }
+}
+
+/// The commands for a keyable text param (size, tracking, line spacing):
+/// the diamond adds a key at the playhead or takes it away; an edit sets
+/// the value (`set`) while it has no keys, and keys it at the playhead
+/// once it has. Without a layer to key, an edit only sets it.
+#[allow(clippy::too_many_arguments)]
+fn handle_text_key_edit(
+    cmds: &mut Vec<AppCommand>,
+    clip_id: klipp_core::ClipId,
+    target_oid: Option<klipp_timeline::TitleObjectId>,
+    param_key: &'static str,
+    value: f32,
+    keyframes: &[klipp_core::Keyframe],
+    clip_time_secs: f64,
+    keyframe_tolerance: f64,
+    edit: TextKeyEdit,
+    set: impl FnOnce(f32) -> AppCommand,
+) {
+    let Some(object_id) = target_oid.map(|o| o.0) else {
+        if edit.changed {
+            cmds.push(set(value));
+        }
+        return;
+    };
+    let at_key = keyframe_selection::nearest(keyframes, clip_time_secs, keyframe_tolerance);
+    if edit.toggled {
+        cmds.push(match at_key {
+            Some(_) => AppCommand::RemoveTitleObjectEffectKeyframe { clip_id, object_id, param_key: param_key.into(), time_secs: clip_time_secs },
+            None => AppCommand::AddTitleObjectEffectKeyframe { clip_id, object_id, param_key: param_key.into(), time_secs: clip_time_secs, value },
+        });
+        return;
+    }
+    if edit.changed {
+        cmds.push(if keyframes.is_empty() {
+            set(value)
+        } else {
+            AppCommand::AddTitleObjectEffectKeyframe { clip_id, object_id, param_key: param_key.into(), time_secs: clip_time_secs, value }
+        });
+    }
+    if let (Some(interpolation), Some(keyframe_index)) = (edit.interpolation, at_key) {
+        cmds.push(AppCommand::SetTitleObjectEffectKeyframeInterpolation { clip_id, object_id, param_key: param_key.into(), keyframe_index, interpolation });
+    }
+}
+
 /// Shared Position block: X/Y inputs + three sticky-active quick-preset
 /// buttons (Top / Center / Lower 3rd). Active highlight stays while X/Y
 /// are within ±0.005 of the canonical coords AND that preset was the
@@ -1655,8 +1713,13 @@ fn show_title_pinned_core_textbox(
         } else if state.viewer_text_edit {
             (state.viewer_text_cursor_font_size.unwrap_or(tb.font_size), false)
         } else {
-            (tb.font_size, false)
+            // As it is at the playhead, keyed or not (#1511).
+            (tb.at(clip_time_secs).font_size, false)
         };
+    // The whole text's size is keyable on its layer; a selection's is a
+    // run's and is not.
+    let size_target = state.selected_title_object.filter(|(c, _)| *c == clip_id).map(|(_, oid)| oid).filter(|_| !has_selection);
+    let keyframe_tolerance = keyframe_selection::frame_tolerance(state.sequence());
 
     let (display_color, color_is_mixed) =
         if has_selection && !tb.style_runs.is_empty() {
@@ -1804,8 +1867,12 @@ fn show_title_pinned_core_textbox(
                 )
             })
             .inner;
-        if size_resp.changed() {
-            if has_selection && sel_range.0 < sel_range.1 {
+        let key = size_target.map(|_| {
+            let ks = title_object_keyframe_state(&tb.font_size_keyframes, clip_time_secs, keyframe_tolerance);
+            crate::widgets::scrubby_param::key_controls(ui, ks)
+        });
+        if has_selection && sel_range.0 < sel_range.1 {
+            if size_resp.changed() {
                 cmds.push(AppCommand::ApplyTitleStyle {
                     clip_id,
                     range_start: sel_range.0,
@@ -1813,16 +1880,18 @@ fn show_title_pinned_core_textbox(
                     property: "font_size".into(),
                     value: format!("{size}"),
                 });
-            } else {
-                cmds.push(AppCommand::UpdateTitleData {
+            }
+        } else {
+            let edit = TextKeyEdit { toggled: key.is_some_and(|k| k.toggled), changed: size_resp.changed(), interpolation: None };
+            handle_text_key_edit(cmds, clip_id, size_target, klipp_core::title_effect_keys::TEXT_SIZE, size, &tb.font_size_keyframes, clip_time_secs, keyframe_tolerance, edit,
+                |font_size| AppCommand::UpdateTitleData {
                     clip_id,
                     text: tb.text.clone(),
-                    font_size: size,
+                    font_size,
                     font_name: tb.font_name.clone(),
                     font_style: font_style_to_u8(tb.font_style),
                     color: tb.color,
                 });
-            }
         }
         if size_is_mixed {
             ui.label(egui::RichText::new("Mixed").size(10.0).color(theme.accent));
@@ -4938,13 +5007,22 @@ fn show_title_editor(
         if title_group_is_open(ui, theme, clip_id, "Typography", status) {
             ui.add_space(6.0);
     // Typography
-    let mut tracking = td.tracking();
-    if ui.add(egui::DragValue::new(&mut tracking).range(-10.0..=50.0).speed(0.2).suffix(" px").prefix("Tracking: ").fixed_decimals(1)).changed() {
-        cmds.push(AppCommand::SetTitleTracking { clip_id, tracking });
-    }
-    let mut line_sp = td.line_spacing();
-    if ui.add(egui::DragValue::new(&mut line_sp).range(0.5..=4.0).speed(0.05).suffix("x").prefix("Line Spacing: ").fixed_decimals(2)).changed() {
-        cmds.push(AppCommand::SetTitleLineSpacing { clip_id, line_spacing: line_sp });
+    // Tracking and line spacing, keyable on a layer (#1511): shown as
+    // they are at the playhead.
+    {
+        use klipp_core::title_effect_keys as k;
+        let keyed = tb_target.map(|tb| tb.at(clip_time_secs));
+        let no_keys: &[klipp_core::Keyframe] = &[];
+        let keys = |key: &str| tb_target.and_then(|tb| tb.effect_keyframes_for(key)).unwrap_or(no_keys);
+        let ks = |key: &str| target_oid.map(|_| title_object_keyframe_state(keys(key), clip_time_secs, keyframe_tolerance));
+        let mut tracking = keyed.as_ref().map_or(td.tracking(), |tb| tb.tracking);
+        let resp = crate::widgets::scrubby_param::scrubby_param_row(ui, "Tracking", &mut tracking, -10.0..=200.0, 0.0, 0.2, 1, " px", ks(k::TEXT_TRACKING));
+        handle_text_key_edit(cmds, clip_id, target_oid, k::TEXT_TRACKING, tracking, keys(k::TEXT_TRACKING), clip_time_secs, keyframe_tolerance, (&resp).into(),
+            |tracking| AppCommand::SetTitleTracking { clip_id, tracking });
+        let mut line_sp = keyed.as_ref().map_or(td.line_spacing(), |tb| tb.line_spacing);
+        let resp = crate::widgets::scrubby_param::scrubby_param_row(ui, "Line spacing", &mut line_sp, 0.5..=4.0, 1.0, 0.05, 2, "x", ks(k::TEXT_LINE_SPACING));
+        handle_text_key_edit(cmds, clip_id, target_oid, k::TEXT_LINE_SPACING, line_sp, keys(k::TEXT_LINE_SPACING), clip_time_secs, keyframe_tolerance, (&resp).into(),
+            |line_spacing| AppCommand::SetTitleLineSpacing { clip_id, line_spacing });
     }
     let mut write_on = td.write_on();
     if ui.add(egui::Slider::new(&mut write_on, 0.0..=1.0).text("Write-On").step_by(0.01)).changed() {
@@ -8183,4 +8261,35 @@ fn show_clip_name_row(
         }
     });
     ui.add_space(2.0);
+}
+
+#[cfg(test)]
+mod text_key_tests {
+    use super::*;
+
+    fn edit(cmds: &mut Vec<AppCommand>, target: Option<u32>, keys: &[klipp_core::Keyframe], e: TextKeyEdit) {
+        handle_text_key_edit(cmds, klipp_core::ClipId(uuid::Uuid::nil()), target.map(klipp_timeline::TitleObjectId), klipp_core::title_effect_keys::TEXT_TRACKING, 40.0, keys, 1.0, 0.01, e,
+            |tracking| AppCommand::SetTitleTracking { clip_id: klipp_core::ClipId(uuid::Uuid::nil()), tracking });
+    }
+
+    /// A text row sets its value while it has no keys, keys the playhead
+    /// once it has, and its diamond adds or takes away the key there
+    /// (#1511).
+    #[test]
+    fn a_text_row_sets_or_keys_its_value() {
+        let key = |t: f64| klipp_core::Keyframe { time_secs: t, value: 0.0, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        let changed = || TextKeyEdit { changed: true, ..Default::default() };
+        let toggled = || TextKeyEdit { toggled: true, ..Default::default() };
+        let run = |target: Option<u32>, keys: &[klipp_core::Keyframe], e: TextKeyEdit| {
+            let mut cmds = Vec::new();
+            edit(&mut cmds, target, keys, e);
+            cmds
+        };
+        assert!(matches!(run(None, &[], changed())[..], [AppCommand::SetTitleTracking { tracking, .. }] if tracking == 40.0));
+        assert!(matches!(run(Some(3), &[], changed())[..], [AppCommand::SetTitleTracking { .. }]));
+        assert!(matches!(&run(Some(3), &[key(0.0)], changed())[..], [AppCommand::AddTitleObjectEffectKeyframe { object_id: 3, time_secs, value, param_key, .. }] if *time_secs == 1.0 && *value == 40.0 && param_key == "text.tracking"));
+        assert!(matches!(run(Some(3), &[key(0.0)], toggled())[..], [AppCommand::AddTitleObjectEffectKeyframe { .. }]));
+        assert!(matches!(run(Some(3), &[key(1.0)], toggled())[..], [AppCommand::RemoveTitleObjectEffectKeyframe { .. }]));
+        assert!(run(None, &[], toggled()).is_empty(), "no layer, nothing to key");
+    }
 }
