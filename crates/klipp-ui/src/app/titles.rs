@@ -735,7 +735,14 @@ impl KlippApp {
                 for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
                     if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
                         if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(fx) = target_fx_mut(td, target_oid) { fx.motion = *motion; }
+                            let edited = target_object_mut(td, target_oid).map(|o| {
+                                o.fx_mut().motion = *motion;
+                                o.id
+                            });
+                            // A template's Speed starts from this timing now (#1139).
+                            if let Some(oid) = edited {
+                                td.rebase_speed(oid);
+                            }
                         }
                     }
                 }

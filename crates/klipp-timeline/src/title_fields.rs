@@ -130,6 +130,31 @@ impl TitleData {
         self.published.iter().enumerate().filter_map(|(i, f)| self.field_value(i).map(|v| (i, f, v))).collect()
     }
 
+    /// The live published field called `label`, in any case.
+    pub fn field_named(&self, label: &str) -> Option<usize> {
+        let label = label.trim();
+        self.live_fields().into_iter().find(|(_, f, _)| f.label.eq_ignore_ascii_case(label)).map(|(i, ..)| i)
+    }
+
+    /// After `object`'s motion was set by hand (not through Speed), keep
+    /// each Speed field's base the timing that, at its factor, is the one
+    /// set: a later Speed move starts from the edit, not from the template.
+    pub fn rebase_speed(&mut self, object: TitleObjectId) {
+        let Some(motion) = self.objects.iter().find(|o| o.id == object).map(|o| o.fx().motion) else { return };
+        let timing = |m: Option<&klipp_core::title_motion::Motion>, factor: f32| {
+            m.map(|m| Timing { duration_secs: m.duration_secs * factor, delay_secs: m.delay_secs * factor, stagger_secs: m.stagger_secs * factor })
+        };
+        for field in &mut self.published {
+            if let FieldKind::Speed { factor, base } = &mut field.kind {
+                let entry = LayerTiming { object, enter: timing(motion.enter.as_ref(), *factor), exit: timing(motion.exit.as_ref(), *factor) };
+                base.retain(|b| b.object != object);
+                if entry.enter.is_some() || entry.exit.is_some() {
+                    base.push(entry);
+                }
+            }
+        }
+    }
+
     /// Set published field `index` to `value`. Refused, with nothing
     /// changed, for a field that isn't live or a value of another kind.
     pub fn set_field(&mut self, index: usize, value: &TitleFieldValue) -> Result<(), String> {
@@ -249,6 +274,22 @@ mod tests {
         assert_eq!(td.objects[0].fx().motion, made, "1.0 is the template's own timing");
         td.set_field(speed, &TitleFieldValue::Speed(99.0)).unwrap();
         assert_eq!(td.field_value(speed), Some(TitleFieldValue::Speed(4.0)), "held to its range");
+    }
+
+    /// A layer's timing set by hand is where a later speed move starts: at
+    /// 2× a 0.8 s entrance set by hand is the base 1.6 s, and back at 1.0
+    /// the entrance is 1.6 s, not the template's 0.6 s.
+    #[test]
+    fn a_timing_set_by_hand_is_where_speed_starts() {
+        let (mut td, name, _) = lower_third();
+        td.published = td.default_fields();
+        let speed = td.field_named("speed").expect("found in any case");
+        td.set_field(speed, &TitleFieldValue::Speed(2.0)).unwrap();
+        td.objects[0].fx_mut().motion.enter.as_mut().unwrap().duration_secs = 0.8;
+        td.rebase_speed(name);
+        td.set_field(speed, &TitleFieldValue::Speed(1.0)).unwrap();
+        assert!((td.objects[0].fx().motion.enter.unwrap().duration_secs - 1.6).abs() < 1e-6);
+        assert_eq!(td.field_named("No such"), None);
     }
 
     /// A field whose layer was deleted is not live: not listed, set

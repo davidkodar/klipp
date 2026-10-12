@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use klipp_timeline::TitleData;
 
 /// File extension of a saved template.
-pub const EXTENSION: &str = "klipptitle";
+pub const EXTENSION: &str = klipp_timeline::TEMPLATE_EXTENSION;
 
 /// One saved template, as written to disk.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -49,7 +49,7 @@ pub struct TitleTemplateStore {
 impl TitleTemplateStore {
     /// The store in the user's config directory.
     pub fn load_default() -> Self {
-        Self::load(dirs::config_dir().map(|d| d.join("klipp").join("title_templates")))
+        Self::load(dirs::config_dir().map(|d| klipp_timeline::template_dir(&d)))
     }
 
     /// Read every `.klipptitle` in `dir`. Files that do not parse are
@@ -380,6 +380,22 @@ mod tests {
         let reloaded = TitleTemplateStore::load(Some(dir.clone()));
         let kept = &reloaded.get("Guest").unwrap().data.published;
         assert_eq!(kept.iter().map(|f| f.label.as_str()).collect::<Vec<_>>(), ["Text 1"], "the unticked one left out");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A template the browser saves is one the socket reads (#1139): the
+    /// shared reader takes the file as written.
+    #[test]
+    fn the_socket_reads_what_the_browser_saves() {
+        let dir = scratch();
+        let mut store = TitleTemplateStore::load(Some(dir.clone()));
+        let mut data = title("Jane Doe");
+        data.published = data.default_fields();
+        store.save("Guest", "Lower Thirds", data.clone()).unwrap();
+        let read = klipp_timeline::read_templates(&dir);
+        assert_eq!(read.len(), 1);
+        assert_eq!((read[0].name.as_str(), read[0].category.as_str()), ("Guest", "Lower Thirds"));
+        assert_eq!(read[0].data, data);
         std::fs::remove_dir_all(dir).ok();
     }
 

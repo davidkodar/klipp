@@ -2941,6 +2941,7 @@ name = "klipp-control"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "dirs",
  "klipp-analysis",
  "klipp-audio",
  "klipp-audio-search",
