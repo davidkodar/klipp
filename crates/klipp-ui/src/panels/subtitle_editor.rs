@@ -238,12 +238,12 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
                     state.subtitle_editor.ripple = !ripple;
                 }
 
-                // Import one or more subtitle files (SRT/VTT/ASS/SSA/TTML/SCC).
+                // Import one or more subtitle files (SRT/VTT/ASS/SSA/TTML/SCC/STL).
                 // Each file becomes its own subtitle track named after the file stem.
                 if ui.button("\u{2191} Import Files\u{2026}").clicked() {
                     crate::file_dialog::spawn(|| {
                         rfd::FileDialog::new()
-                            .add_filter("Subtitles", &["srt", "vtt", "ass", "ssa", "ttml", "dfxp", "xml", "itt", "scc"])
+                            .add_filter("Subtitles", &["srt", "vtt", "ass", "ssa", "ttml", "dfxp", "xml", "itt", "scc", "stl"])
                             .pick_files()
                             .unwrap_or_default()
                             .into_iter()
@@ -263,6 +263,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
                             .add_filter("SSA", &["ssa"])
                             .add_filter("TTML (IMSC)", &["ttml"])
                             .add_filter("SCC (CEA-608)", &["scc"])
+                            .add_filter("EBU-STL", &["stl"])
                             .set_file_name("subtitles.srt")
                             .save_file()
                             .map(|path| vec![AppCommand::ExportSubtitles { path }])
@@ -361,7 +362,7 @@ pub fn show(ctx: &egui::Context, state: &mut AppState) -> Vec<AppCommand> {
                     if ui.button("\u{2191} Import Files\u{2026}").clicked() {
                         crate::file_dialog::spawn(|| {
                             rfd::FileDialog::new()
-                                .add_filter("Subtitles", &["srt", "vtt", "ass", "ssa", "ttml", "dfxp", "xml", "itt", "scc"])
+                                .add_filter("Subtitles", &["srt", "vtt", "ass", "ssa", "ttml", "dfxp", "xml", "itt", "scc", "stl"])
                                 .pick_files()
                                 .unwrap_or_default()
                                 .into_iter()

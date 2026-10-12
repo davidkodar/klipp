@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod scc;
+pub mod stl;
 pub mod styled;
 pub mod ttml;
 pub use styled::{Placement, Span, SpanStyle};

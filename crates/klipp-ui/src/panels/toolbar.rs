@@ -297,6 +297,7 @@ impl ToolbarPanel {
                         .add_filter("SSA", &["ssa"])
                         .add_filter("TTML (IMSC)", &["ttml"])
                         .add_filter("SCC (CEA-608)", &["scc"])
+                        .add_filter("EBU-STL", &["stl"])
                         .set_file_name("subtitles.srt")
                         .save_file()
                         .map(|path| vec![AppCommand::ExportSubtitles { path }])

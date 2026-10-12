@@ -3109,7 +3109,7 @@ fn subtitles_import_over_the_socket_and_export_in_the_format_asked() {
     h.ok(json!({ "method": "export_subtitles", "path": out.to_str().unwrap(), "format": "WebVTT" }));
     assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(klipp_core::AppCommand::ExportSubtitles { .. })));
     // TTML's extensions are one format, IMSC by another name.
-    for (path, format) in [("out.ttml", "imsc"), ("out.dfxp", "ttml"), ("out.itt", "IMSC"), ("out.scc", "scc")] {
+    for (path, format) in [("out.ttml", "imsc"), ("out.dfxp", "ttml"), ("out.itt", "IMSC"), ("out.scc", "scc"), ("out.stl", "STL")] {
         h.ok(json!({ "method": "export_subtitles", "path": dir.join(path).to_str().unwrap(), "format": format }));
         assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(klipp_core::AppCommand::ExportSubtitles { .. })), "{path}");
     }

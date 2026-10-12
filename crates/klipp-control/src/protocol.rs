@@ -846,14 +846,15 @@ pub enum ControlCommand {
     /// Write the sequence's subtitle clips (its text clips where it has
     /// none) as a subtitle file, in the format the path's extension names:
     /// SRT, WebVTT, ASS/SSA, TTML (IMSC 1.1 Text; .ttml, .dfxp, .xml or
-    /// .itt) or SCC (CEA-608). `format`, when given, must be that one.
+    /// .itt), SCC (CEA-608) or EBU-STL. `format`, when given, must be that
+    /// one.
     ExportSubtitles {
         path: String,
         #[serde(default)]
         format: Option<String>,
     },
-    /// Read an SRT, WebVTT, ASS/SSA, TTML (DFXP, IMSC, iTT) or SCC file
-    /// onto a new subtitle track of the active sequence, as the app's
+    /// Read an SRT, WebVTT, ASS/SSA, TTML (DFXP, IMSC, iTT), SCC or EBU-STL
+    /// file onto a new subtitle track of the active sequence, as the app's
     /// Import Subtitles does (#1516).
     ImportSubtitles { path: String },
     /// What is said in a media file between two times, with when: the

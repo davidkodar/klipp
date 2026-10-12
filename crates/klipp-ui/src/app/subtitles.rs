@@ -263,6 +263,23 @@ mod cue_styling_tests {
         assert!((back[1].end_secs - subs[1].end_secs).abs() < 1e-9);
     }
 
+    /// #1516: an EBU-STL subtitle's styling and position come in as the
+    /// app imports them, and the STL written from the clips reads back as
+    /// the same.
+    #[test]
+    fn an_stl_subtitle_survives_import_and_export() {
+        let mut top = SubtitleEntry { start_secs: 2.0, end_secs: 3.0, text: "Up here".into(), ..Default::default() };
+        top.placement = klipp_captions::Placement { pos: None, align: Some(8) };
+        let mut low = SubtitleEntry { start_secs: 1.0, end_secs: 2.0, text: "A quiet word".into(), ..Default::default() };
+        low.spans = vec![klipp_captions::Span { start: 2, end: 7, style: klipp_captions::SpanStyle { italic: true, ..Default::default() } }];
+        let subs = klipp_captions::stl::parse_stl(&klipp_captions::stl::generate_stl(&[low, top], 25, "en", "Talk")).unwrap();
+        let clips: Vec<SubtitleEntry> = subs.iter().map(|s| cue_of(s.start_secs, s.end_secs, &title_of(s))).collect();
+        assert_eq!(clips[0].spans, subs[0].spans);
+        assert_eq!(title_of(&subs[1]).objects[0].transform.center.y, 0.12, "a top subtitle sits where a top cue does");
+        let back = klipp_captions::stl::parse_stl(&klipp_captions::stl::generate_stl(&clips, 25, "en", "Talk")).unwrap();
+        assert_eq!(back, subs);
+    }
+
     /// The styling burns in, through the title renderer the subtitle track
     /// is drawn by: an italic run draws other pixels than the same run
     /// upright, and a cue placed by `\pos` draws its text there.
