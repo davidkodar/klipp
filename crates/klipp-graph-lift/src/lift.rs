@@ -388,66 +388,8 @@ fn lift_grade_body_at(group: &Node, migrate: bool, depth: u32, notes: &mut Vec<L
         }
     }
 
-    // 3. Implicit reads become explicit edges from the group's input: an
-    // unwired primary reads the frame (`executor.rs`, `unwrap_or(source)`),
-    // and so does Layer's unwired background.
-    let mut added = Vec::new();
-    for n in &body.nodes {
-        let kind = kind_of(n);
-        if n.id == input_id || n.id == frame_id || matches!(kind, "Source" | "ExternalMatte") {
-            continue;
-        }
-        let mut ports = vec![input_port(kind, 0)];
-        if kind == "Layer" {
-            ports.push(input_port(kind, 1));
-        }
-        for p in ports {
-            if !connected(&body, n, &p) {
-                added.push(Edge { from: (frame_id, "out".into()), to: (n.id, p) });
-            }
-        }
-    }
-    body.edges.extend(added);
-
-    // Secondary inputs today fills from another: Blend's unwired B reads
-    // its A, RGBCombiner's unwired G and B read its R (`executor.rs`,
-    // `unwrap_or(primary_input)`), and ApplyMatte's unwired pre-grade
-    // reads the frame. Each becomes an edge from what it read.
-    let source_of = |body: &Graph, n: &Node, port: &PortKey| -> Option<(NodeId, PortKey)> {
-        if let Some(e) = body.edges.iter().find(|e| e.to.0 == n.id && &e.to.1 == port) {
-            return Some(e.from.clone());
-        }
-        let name = n.wireless.input_links.get(port)?;
-        let sender = body.nodes.iter().find(|o| o.id != n.id && o.wireless.output_link.as_deref() == Some(name.as_str()))?;
-        Some((sender.id, klipp_graph_format::ports::output_key(kind_of(sender), 0)))
-    };
-    let mut filled = Vec::new();
-    for n in &body.nodes {
-        let kind = kind_of(n);
-        let fills: Vec<(u8, Option<u8>)> = match kind {
-            "Blend" => vec![(1, Some(0))],
-            "RGBCombiner" => vec![(1, Some(0)), (2, Some(0))],
-            "ApplyMatte" => vec![(2, None)],
-            _ => continue,
-        };
-        for (port, from_port) in fills {
-            let p = input_port(kind, port);
-            if connected(&body, n, &p) {
-                continue;
-            }
-            let from = match from_port {
-                Some(fp) => source_of(&body, n, &input_port(kind, fp)),
-                None => Some((frame_id, "out".into())),
-            };
-            if let Some(from) = from {
-                if from_port.is_some() {
-                    group_flags.filled.push(json!([n.id, p]));
-                }
-                filled.push(Edge { from, to: (n.id, p) });
-            }
-        }
-    }
-    body.edges.extend(filled);
+    // 3. Implicit reads become explicit edges ([`derive_reads`]).
+    group_flags.filled.extend(derive_reads(&mut body, input_id, frame_id));
 
     // Parked edges are kept for the record on the body's own input, so a
     // body standing alone (a track or timeline grade, a stage, a version)
@@ -528,7 +470,81 @@ fn lift_compounds(body: &mut Graph, depth: u32, notes: &mut Vec<LiftNote>) {
         }
         feeds.push(n.id);
     }
-    for id in feeds {
+    feed_frames(body, &feeds);
+}
+
+/// The reads a grade body's level makes without a saved edge, made
+/// explicit (the lift's rule, and Group and Ungroup's, #1532): an unwired
+/// primary reads the frame (`executor.rs`, `unwrap_or(source)`), and so
+/// does Layer's unwired background; Blend's unwired B reads its A,
+/// RGBCombiner's unwired G and B read its R (`unwrap_or(primary_input)`),
+/// and ApplyMatte's unwired pre-grade reads the frame. Each becomes an edge
+/// from what it read. Returned: the ports filled from another input, as
+/// `[node, port]`, the record `delift` takes them back out by, for the
+/// caller to keep on the level's input.
+pub(crate) fn derive_reads(body: &mut Graph, input_id: NodeId, frame_id: NodeId) -> Vec<Value> {
+    let input_port = |kind: &str, port: u8| klipp_graph_format::ports::input_key(kind, port);
+    let mut added = Vec::new();
+    for n in &body.nodes {
+        let kind = kind_of(n);
+        if n.id == input_id || n.id == frame_id || matches!(kind, "Source" | "ExternalMatte") {
+            continue;
+        }
+        let mut ports = vec![input_port(kind, 0)];
+        if kind == "Layer" {
+            ports.push(input_port(kind, 1));
+        }
+        for p in ports {
+            if !connected(body, n, &p) {
+                added.push(Edge { from: (frame_id, "out".into()), to: (n.id, p) });
+            }
+        }
+    }
+    body.edges.extend(added);
+    let source_of = |body: &Graph, n: &Node, port: &PortKey| -> Option<(NodeId, PortKey)> {
+        if let Some(e) = body.edges.iter().find(|e| e.to.0 == n.id && &e.to.1 == port) {
+            return Some(e.from.clone());
+        }
+        let name = n.wireless.input_links.get(port)?;
+        let sender = body.nodes.iter().find(|o| o.id != n.id && o.wireless.output_link.as_deref() == Some(name.as_str()))?;
+        Some((sender.id, klipp_graph_format::ports::output_key(kind_of(sender), 0)))
+    };
+    let (mut filled, mut record) = (Vec::new(), Vec::new());
+    for n in &body.nodes {
+        let kind = kind_of(n);
+        let fills: Vec<(u8, Option<u8>)> = match kind {
+            "Blend" => vec![(1, Some(0))],
+            "RGBCombiner" => vec![(1, Some(0)), (2, Some(0))],
+            "ApplyMatte" => vec![(2, None)],
+            _ => continue,
+        };
+        for (port, from_port) in fills {
+            let p = input_port(kind, port);
+            if connected(body, n, &p) {
+                continue;
+            }
+            let from = match from_port {
+                Some(fp) => source_of(body, n, &input_port(kind, fp)),
+                None => Some((frame_id, "out".into())),
+            };
+            if let Some(from) = from {
+                if from_port.is_some() {
+                    record.push(json!([n.id, p]));
+                }
+                filled.push(Edge { from, to: (n.id, p) });
+            }
+        }
+    }
+    body.edges.extend(filled);
+    record
+}
+
+/// Each compound group of `ids` fed its `frame` from what feeds its `in`
+/// (today's executor runs a subgraph on the compound's own input): the
+/// lift's rule, and Group and Ungroup's (#1532).
+pub(crate) fn feed_frames(body: &mut Graph, ids: &[NodeId]) {
+    for id in ids {
+        let id = *id;
         let from = body.edges.iter().find(|e| e.to.0 == id && e.to.1.as_str() == "in").map(|e| e.from.clone()).or_else(|| {
             let n = body.nodes.iter().find(|n| n.id == id)?;
             let name = n.wireless.input_links.get(&PortKey::from("in"))?;

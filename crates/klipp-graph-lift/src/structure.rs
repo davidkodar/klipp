@@ -43,13 +43,6 @@ fn is_end(n: &Node) -> bool {
     matches!(type_of(n), lt::SOURCE | lt::OUTPUT | lt::GROUP_INPUT | lt::GROUP_OUTPUT | lt::GROUP_FRAME)
 }
 
-/// Whether input `port` of `n` is fed: an edge, or a wireless link naming
-/// a sender at the level (as the lift reads it).
-fn connected(g: &Graph, n: &Node, port: &PortKey) -> bool {
-    g.edges.iter().any(|e| e.to.0 == n.id && &e.to.1 == port)
-        || n.wireless.input_links.get(port).is_some_and(|name| g.nodes.iter().any(|o| o.id != n.id && o.wireless.output_link.as_deref() == Some(name.as_str())))
-}
-
 /// A v1 grade node's entry, as the lift keeps it: its kind, its label, its
 /// parameters (every one unset), its keyframes (none).
 fn entry(kind: &str, label: &str) -> Legacy {
@@ -126,81 +119,19 @@ fn strip_derived(g: &mut Graph) {
 }
 
 /// The edges the lift derives at a level, put back after its saved ones
-/// in the lift's order: unwired primaries (and Layer's background) read
-/// the frame; Blend's B and RGBCombiner's G and B read their first input,
-/// ApplyMatte's pre-grade the frame; a compound's frame what feeds its `in`.
+/// by the lift's own rules (`lift::derive_reads`, `lift::feed_frames`,
+/// #1532): its reads and fills, their record on the level's input, and
+/// each compound's frame.
 fn derive(g: &mut Graph) {
     let (Some(input), Some(frame)) = (input_of(g), frame_of(g)) else { return };
-    let mut added = Vec::new();
-    for n in &g.nodes {
-        let kind = kind_of(n);
-        if n.id == input || n.id == frame || matches!(kind, "Source" | "ExternalMatte") {
-            continue;
-        }
-        let mut wanted = vec![ports::input_key(kind, 0)];
-        if kind == "Layer" {
-            wanted.push(ports::input_key(kind, 1));
-        }
-        for p in wanted {
-            if !connected(g, n, &p) {
-                added.push(Edge { from: (frame, "out".into()), to: (n.id, p) });
-            }
-        }
-    }
-    g.edges.extend(added);
-    let source_of = |g: &Graph, n: &Node, port: &PortKey| -> Option<(NodeId, PortKey)> {
-        if let Some(e) = g.edges.iter().find(|e| e.to.0 == n.id && &e.to.1 == port) {
-            return Some(e.from.clone());
-        }
-        let name = n.wireless.input_links.get(port)?;
-        let sender = g.nodes.iter().find(|o| o.id != n.id && o.wireless.output_link.as_deref() == Some(name.as_str()))?;
-        Some((sender.id, ports::output_key(kind_of(sender), 0)))
-    };
-    let mut fills = Vec::new();
-    let mut record = Vec::new();
-    for n in &g.nodes {
-        let kind = kind_of(n);
-        let wanted: Vec<(u8, Option<u8>)> = match kind {
-            "Blend" => vec![(1, Some(0))],
-            "RGBCombiner" => vec![(1, Some(0)), (2, Some(0))],
-            "ApplyMatte" => vec![(2, None)],
-            _ => continue,
-        };
-        for (port, from_port) in wanted {
-            let p = ports::input_key(kind, port);
-            if connected(g, n, &p) {
-                continue;
-            }
-            let from = match from_port {
-                Some(fp) => source_of(g, n, &ports::input_key(kind, fp)),
-                None => Some((frame, "out".into())),
-            };
-            if let Some(from) = from {
-                if from_port.is_some() {
-                    record.push(json!([n.id, p]));
-                }
-                fills.push(Edge { from, to: (n.id, p) });
-            }
-        }
-    }
-    g.edges.extend(fills);
+    let record = crate::lift::derive_reads(g, input, frame);
     if !record.is_empty() {
         if let Some(i) = g.nodes.iter_mut().find(|n| n.id == input) {
             i.legacy_flags.get_or_insert_with(LegacyFlags::default).filled = record;
         }
     }
     let groups: Vec<NodeId> = g.nodes.iter().filter(|n| type_of(n) == lt::GROUP).map(|n| n.id).collect();
-    for id in groups {
-        let n = g.nodes.iter().find(|n| n.id == id).expect("a group of the level");
-        let from = g.edges.iter().find(|e| e.to.0 == id && e.to.1.as_str() == "in").map(|e| e.from.clone()).or_else(|| {
-            let name = n.wireless.input_links.get(&PortKey::from("in"))?;
-            let sender = g.nodes.iter().find(|o| o.id != id && o.wireless.output_link.as_deref() == Some(name.as_str()))?;
-            Some((sender.id, ports::output_key(kind_of(sender), 0)))
-        });
-        if let Some(from) = from {
-            g.edges.push(Edge { from, to: (id, "frame".into()) });
-        }
-    }
+    crate::lift::feed_frames(g, &groups);
 }
 
 fn pos(v: &Value) -> Option<(f32, f32)> {
