@@ -34,7 +34,7 @@ pub struct StyleRun {
     pub features: Vec<String>,
     /// Underline for this run alone (if None, inherits the text box's).
     /// Kept and saved, so a subtitle underlined in part keeps it through
-    /// export (#1515); drawn per run once #1668 lands.
+    /// export (#1515), and drawn under the run's glyphs (#1668).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub underline: Option<bool>,
 }
