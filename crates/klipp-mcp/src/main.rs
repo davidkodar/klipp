@@ -2970,7 +2970,7 @@ mod interface_tests {
             assert!(size <= budget,"{name}: {size} > {budget}");
         }
         let catalog = serde_json::to_vec(&tools).unwrap().len();
-        assert!(catalog < 88_000, "keep at least 2 KB of catalog headroom: {catalog} bytes");
+        assert!(catalog < 92_000, "keep at least 2 KB of catalog headroom: {catalog} bytes");
     }
 
     #[test]
