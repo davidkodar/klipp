@@ -20,6 +20,9 @@ pub struct Coverage {
     stack_declined: usize,
     export_gpu: usize,
     export_cpu: usize,
+    export_letterboxed: usize,
+    gpu_cpu_kernels: u32,
+    plan_clips: u32,
     plan_fallbacks: u32,
     declines: Vec<String>,
 }
@@ -35,6 +38,9 @@ impl From<Rendered> for Coverage {
             stack_declined: r.stack_declined,
             export_gpu: r.export_gpu,
             export_cpu: r.export_cpu,
+            export_letterboxed: r.export_letterboxed,
+            gpu_cpu_kernels: r.gpu_cpu_kernels,
+            plan_clips: r.plan_clips,
             plan_fallbacks: r.plan_fallbacks,
             declines: r.declines,
         }
@@ -123,6 +129,10 @@ pub fn worker(root: &Path) -> Result<(), String> {
                     renderer.set_asset_store(Box::new(CacheStore::at(analysis_root.clone())));
                     Ok(renderer)
                 };
+                // Keep the temporal media edge and a cross-second sample;
+                // other families use one active interior frame to fit 2 MiB.
+                let temporal = *case == crate::cases::Case::Temporal;
+                let witness_frame = if temporal { 24 } else { 12 };
                 let rendered = render_sequence(
                     &snapshot,
                     &out.join(&key),
@@ -130,14 +140,29 @@ pub fn worker(root: &Path) -> Result<(), String> {
                     &out.join("probe.mp4"),
                     &Options {
                         width: 256,
-                        frames: Some(vec![0, 12, 23, 24, 47]),
+                        frames: Some(if temporal { vec![0, 24] } else { vec![12] }),
                     },
                     &factory,
                 )
                 .map_err(|e| format!("{key}: {e}"))?;
-                if !rendered.covered() || rendered.plan_fallbacks != 0 {
+                if !rendered.covered()
+                    || rendered.flat != 0
+                    || rendered.plan_fallbacks != 0
+                    || rendered.declines.iter().any(|line| {
+                        // Denoise cannot read a neighbour before the media
+                        // starts. Only this exact edge fallback is expected.
+                        !(temporal
+                            && ["cpu", "gpu"].iter().any(|route| {
+                                line.starts_with(&format!("temporal/0/0-{route} clip "))
+                            })
+                            && line.ends_with(": Temporal Noise Reduction: no frame past the media's edge (fallback)"))
+                    })
+                {
                     return Err(format!(
-                        "{key}: missing picture coverage or legacy fallback"
+                        "{key}: invalid picture coverage ({} flat frames, {} legacy fallbacks, {} declines)",
+                        rendered.flat,
+                        rendered.plan_fallbacks,
+                        rendered.declines.len()
                     ));
                 }
                 if *case != crate::cases::Case::Edit {
@@ -151,14 +176,14 @@ pub fn worker(root: &Path) -> Result<(), String> {
                         &out.join("probe.mp4"),
                         &Options {
                             width: 256,
-                            frames: Some(vec![12]),
+                            frames: Some(vec![witness_frame]),
                         },
                         &factory,
                     )
                     .map_err(|e| format!("{key}: bypass control: {e}"))?;
                     let (changed, _) = klipp_render::pixel_check::differ(
-                        &out.join(&key).join("12-cpu.png"),
-                        &witness.join("12-cpu.png"),
+                        &out.join(&key).join(format!("{witness_frame}-cpu.png")),
+                        &witness.join(format!("{witness_frame}-cpu.png")),
                     )?;
                     if changed <= 1 {
                         return Err(format!(

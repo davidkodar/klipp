@@ -35,6 +35,14 @@ their inputs. The audio check pins PCM samples; the pixel check covers pictures.
 The references are a compact PNG atlas and JSON index under
 `references/generated/`, limited to 2 MiB together. They contain only generated
 charts. They are not application screenshots or recordings of private projects.
+This first atlas samples frame 12 at 256 pixels wide in each family on every
+available route, except temporal denoise, which keeps frames 0 and 24 to cover
+the media edge and a cross-second sample. Its active effect witness uses frame
+24. All sampled frames must be non-flat and have no legacy-plan fallbacks;
+only temporal's known missing-neighbour decline at frame 0 is accepted. Native plugins and temporal
+effects can decline the stack route and use CPU export; those route choices and
+CPU-kernel counts are pinned. The compact sampling does not establish exhaustive
+cut, disabled-effect or frame-rate coverage.
 
 ## Deliberate reference updates
 

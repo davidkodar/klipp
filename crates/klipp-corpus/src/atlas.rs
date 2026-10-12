@@ -2,6 +2,7 @@
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
+use image::ImageEncoder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -115,17 +116,19 @@ pub fn record(
     }
     let rows = data.len().div_ceil(WIDTH as usize);
     data.resize(rows * WIDTH as usize, 0);
-    let png = rendered.join("reference-atlas.tmp.png");
-    image::save_buffer(
-        &png,
+    let mut image = Vec::new();
+    image::codecs::png::PngEncoder::new_with_quality(
+        &mut image,
+        image::codecs::png::CompressionType::Best,
+        image::codecs::png::FilterType::Adaptive,
+    )
+    .write_image(
         &data,
         WIDTH,
         u32::try_from(rows).map_err(|e| e.to_string())?,
         image::ExtendedColorType::L8,
     )
     .map_err(|e| e.to_string())?;
-    let image = std::fs::read(&png).map_err(|e| e.to_string())?;
-    std::fs::remove_file(&png).map_err(|e| e.to_string())?;
     let index = Index {
         schema: 1,
         reason: reason.trim().to_owned(),
@@ -298,6 +301,88 @@ pub fn repeatable(first: &Path, second: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn committed_atlas_rejects_a_two_level_frame_change() {
+        let reference = crate::repository().join("corpus/references/generated");
+        let manifest = std::fs::read(reference.join("atlas.json")).unwrap();
+        let png = std::fs::read(reference.join("atlas.png")).unwrap();
+        let index: Index = serde_json::from_slice(&manifest).unwrap();
+        let data = image::load_from_memory(&png).unwrap().to_luma8().into_raw();
+        let inputs = crate::sha256(
+            &std::fs::read(crate::repository().join("corpus/generated.json")).unwrap(),
+        );
+        let rendered = std::env::temp_dir().join(format!(
+            "klipp-recorded-atlas-control-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&rendered).unwrap();
+        std::fs::write(
+            rendered.join("coverage.json"),
+            serde_json::to_vec(&index.coverage).unwrap(),
+        )
+        .unwrap();
+        for frame in &index.frames {
+            let path = rendered.join(&frame.path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            image::save_buffer(
+                &path,
+                &data[frame.offset..frame.offset + frame.len],
+                frame.width,
+                frame.height,
+                image::ExtendedColorType::Rgba8,
+            )
+            .unwrap();
+            if let Some(layout) = &frame.layout {
+                std::fs::write(
+                    path.with_extension("json"),
+                    serde_json::to_vec(layout).unwrap(),
+                )
+                .unwrap();
+            }
+        }
+        compare(&reference, &rendered, &inputs).unwrap();
+        let frame = index
+            .frames
+            .iter()
+            .find(|f| f.path.ends_with("-cpu.png"))
+            .unwrap();
+        let original = &data[frame.offset..frame.offset + frame.len];
+        let channel = original
+            .iter()
+            .enumerate()
+            .position(|(i, value)| i % 4 != 3 && *value <= 253)
+            .expect("a generated chart has a non-white colour channel");
+        for delta in [1, 2] {
+            let mut changed = original.to_vec();
+            changed[channel] += delta;
+            image::save_buffer(
+                rendered.join(&frame.path),
+                &changed,
+                frame.width,
+                frame.height,
+                image::ExtendedColorType::Rgba8,
+            )
+            .unwrap();
+            let result = compare(&reference, &rendered, &inputs);
+            if delta == 1 {
+                result.unwrap();
+            } else {
+                let error = result.unwrap_err();
+                assert!(
+                    error.contains(&frame.path) && error.contains("2 levels"),
+                    "{error}"
+                );
+            }
+        }
+        assert_eq!(
+            manifest,
+            std::fs::read(reference.join("atlas.json")).unwrap()
+        );
+        assert_eq!(png, std::fs::read(reference.join("atlas.png")).unwrap());
+        std::fs::remove_dir_all(rendered).unwrap();
+    }
+
     #[test]
     fn a_case_update_preserves_other_reference_bytes_and_refuses_their_regression() {
         let root = std::env::temp_dir().join(format!("klipp-atlas-case-{}", uuid::Uuid::new_v4()));
