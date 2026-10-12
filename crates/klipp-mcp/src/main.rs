@@ -2441,18 +2441,17 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                      "tool": { "type": "string" }, "args": { "type": "object" } }, "required": ["tool"] } } }),
              vec!["calls"]),
         tool("klipp_export",
-             "Render the active sequence to a file: default settings, or an app export preset by name, \
-              codec (h264, hevc, prores...), bit_depth 10, bitrate_kbps; the container comes from the extension (mp4, mov, mkv, webm). Refused when \
-              a clip's media is offline or the path is one of the project's media files. \
-              Asynchronous: call klipp_export_status with wait true to wait for completion; then the \
-              file is done. The path must be absolute.",
+             "Render the active sequence to an absolute path: defaults, or an export preset by name, \
+              codec (h264, hevc, prores...), bit_depth 10, bitrate_kbps; the extension gives the container (mp4, mov, mkv, webm). Refused \
+              while a clip's media is offline or onto a project media file. \
+              Asynchronous: klipp_export_status with wait true returns when the file is done.",
              json!({
                  "path": { "type": "string", "description": "Absolute output path" },
                  "width": { "type": "integer" }, "height": { "type": "integer" },
                  "fps": { "type": "number" },
                  "crf": { "type": "integer", "description": "Quality, lower is better (default 23)" },
-                 "target_lufs": { "type": "number", "description": "Loudness normalisation target, e.g. -14 for the web, -23 for broadcast; left out, the brief's" },
-                 "true_peak_dbtp": { "type": "number", "description": "True-peak ceiling the normalised sound is held under, -10 to 0; -1 when left out, -2 for ATSC A/85" },
+                 "target_lufs": { "type": "number", "description": "Loudness target: -14 web, -23 broadcast; default the brief's" },
+                 "true_peak_dbtp": { "type": "number", "description": "True-peak ceiling, -10 to 0 (default -1; ATSC A/85 -2)" },
                  "burn_captions": { "type": "boolean", "description": "Captions and titles burnt in (default on); the reply says which" },
                  "preset": { "type": "string" }, "codec": { "type": "string" }, "audio_codec": { "type": "string" },
                  "bit_depth": { "type": "integer" }, "bitrate_kbps": { "type": "integer" },
@@ -2948,7 +2947,8 @@ mod interface_tests {
             let size = serde_json::to_vec(tool).unwrap().len();
             assert!(size <= budget,"{name}: {size} > {budget}");
         }
-        assert!(serde_json::to_vec(&tools).unwrap().len() < 88_000, "keep at least 2 KB of catalog headroom");
+        let catalog = serde_json::to_vec(&tools).unwrap().len();
+        assert!(catalog < 88_000, "keep at least 2 KB of catalog headroom: {catalog} bytes");
     }
 
     #[test]
