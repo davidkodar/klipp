@@ -968,6 +968,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
                 if let Some(x) = args.get(key).and_then(|v| v.as_f64()) { v[key] = json!(x); }
             }
             if let Some(t) = args.get("track") { v["track"] = json!(t.as_u64().map(|i| i.to_string()).or_else(|| t.as_str().map(str::to_string))); }
+            if let Some(b) = args.get("skip_intro").and_then(|v| v.as_bool()) { v["skip_intro"] = json!(b); }
             v
         }
         "klipp_search_music" => {
@@ -2506,7 +2507,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               length by taking out or repeating whole bars where the join is cleanest, keeping \
               its start and end, and returns place ops (on track, from at_secs) to apply. A \
               read; changes nothing.",
-             json!({ "media_id": { "type": "string" }, "target_secs": { "type": "number", "description": "fit the track to this length, seconds" }, "at_secs": { "type": "number", "description": "where the fitted track's place ops start on the timeline (0)" }, "track": { "description": "the track for the place ops: an index, or a kind such as \"audio\" (the first audio track)" } }), vec!["media_id"]),
+             json!({ "media_id": { "type": "string" }, "target_secs": { "type": "number", "description": "fit the track to this length, seconds" }, "skip_intro": { "type": "boolean", "description": "with target_secs: leave the intro out and fit from where it ends" }, "at_secs": { "type": "number", "description": "where the fitted track's place ops start on the timeline (0)" }, "track": { "description": "the track for the place ops: an index, or a kind such as \"audio\" (the first audio track)" } }), vec!["media_id"]),
         tool("klipp_style_profile",
              "Read a reference video's editing style as facts, so you can build a clip in the \
               same feel from other footage: its cut cadence (how many shots, how long, how many \

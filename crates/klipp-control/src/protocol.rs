@@ -980,6 +980,10 @@ pub enum ControlCommand {
         media_id: String,
         #[serde(default)]
         target_secs: Option<f64>,
+        /// With `target_secs`: leave the intro out and fit from where it
+        /// ends (#1576).
+        #[serde(default)]
+        skip_intro: bool,
         #[serde(default)]
         at_secs: Option<f64>,
         #[serde(default)]

@@ -156,7 +156,7 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::Beats { media_id, target_secs, at_secs, track } => {
+        ControlCommand::Beats { media_id, target_secs, skip_intro, at_secs, track } => {
             if in_batch {
                 return read_in_batch("beats");
             }
@@ -191,7 +191,7 @@ pub(crate) fn respond(
             let mut v = json!({ "text": text, "media_id": media_id, "bpm": b.bpm, "confidence": b.confidence, "first_beat_secs": first, "beat_interval_secs": interval, "bar_secs": interval * 4.0, "beats_read": b.beat_times.len(), "drift_secs": drift, "first_beats": first_beats, "next": "Cut on beat n = first + n × interval; a shot of two bars is 8 beats. style_profile reads a whole reference at once." });
             // Music: its sections and energy, and a fit to a length (#503).
             if b.confidence >= 0.3 {
-                music_shape(&mut v, &path, id, duration, &b, target_secs, at_secs.unwrap_or(0.0), track.as_deref())?;
+                music_shape(&mut v, &path, id, duration, &b, target_secs, skip_intro, at_secs.unwrap_or(0.0), track.as_deref())?;
             } else if target_secs.is_some() {
                 return Err(format!("{filename} has no clear beat to fit by bars"));
             }
@@ -310,7 +310,7 @@ const JOIN_CROSSFADE_SECS: f64 = 0.25;
 /// a beats read (#503), and with `target` a fit to that length by whole
 /// bars, as place ops from `at` on `track`.
 #[allow(clippy::too_many_arguments)]
-fn music_shape(v: &mut serde_json::Value, path: &std::path::Path, id: klipp_core::MediaId, duration: f64, beats: &klipp_analysis::beats::BeatData, target: Option<f64>, at: f64, track: Option<&str>) -> Result<(), String> {
+fn music_shape(v: &mut serde_json::Value, path: &std::path::Path, id: klipp_core::MediaId, duration: f64, beats: &klipp_analysis::beats::BeatData, target: Option<f64>, skip_intro: bool, at: f64, track: Option<&str>) -> Result<(), String> {
     use klipp_analysis::music_structure as music;
     const SR: u32 = 22_050;
     let pcm = klipp_analysis::audio_sync::decode_mono_pcm(std::path::Path::new("ffmpeg"), path, SR, 0.0, duration.clamp(1.0, 1800.0))?;
@@ -323,7 +323,14 @@ fn music_shape(v: &mut serde_json::Value, path: &std::path::Path, id: klipp_core
     v["bar_lines"] = json!(shape.bars.iter().map(|t| (t * 1000.0).round() / 1000.0).collect::<Vec<_>>());
     v["bar_energy"] = json!(shape.energy.iter().map(|e| (e * 100.0).round() / 100.0).collect::<Vec<_>>());
     if let Some(target) = target {
-        let fit = music::fit(&shape, target).ok_or_else(|| format!("the track ({duration:.1} s) cannot be fitted to {target:.1} s by whole bars: it needs a first and last phrase and room between"))?;
+        let from = if skip_intro { music::intro_end(&shape) } else { None };
+        let fitted = match from { Some(start) => music::fit_from(&shape, target, start), None => music::fit(&shape, target) };
+        let fit = fitted.ok_or_else(|| format!("the track ({duration:.1} s) cannot be fitted to {target:.1} s by whole bars: it needs a first and last phrase and room between"))?;
+        match (skip_intro, from) {
+            (true, Some(start)) => text.push_str(&format!("\nThe intro (0.0-{start:.1} s) is left out: the fit starts on the music.")),
+            (true, None) => text.push_str("\nThe track has no intro section to leave out; fitted from its start."),
+            _ => {}
+        }
         let track_ref = match track {
             Some(t) => match t.parse::<usize>() {
                 Ok(i) => klipp_document::ops::TrackRef::Index(i),
