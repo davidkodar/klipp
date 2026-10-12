@@ -1019,7 +1019,7 @@ impl KlippApp {
                 }
                 true
             }
-            AppCommand::ToggleNodeEnabled { clip_id, node_id } => {
+            AppCommand::ToggleNodeEnabled { clip_id, node_id } | AppCommand::ResetNode { clip_id, node_id } => {
                 let node_id = *node_id;
                 let Some(path) = self.graph_holding(*clip_id, &[node_id]) else { return true };
                 self.with_clip_graph_mut_at(*clip_id, &path, needs_refresh, |graph| {
@@ -2878,6 +2878,22 @@ impl crate::state::AppState {
     }
 }
 
+/// A node's settings at their defaults (#1742), keeping what the node
+/// is: its effects, plug-in, LUT and matte files, and a group's graph.
+/// The reset shortcut once put the whole `NodeParams` back to default,
+/// which emptied a compound and took an effect node's effect away.
+pub(super) fn reset_node_params(params: &mut klipp_nodes::NodeParams) {
+    let kept = klipp_nodes::NodeParams {
+        effects: std::mem::take(&mut params.effects),
+        ofx: params.ofx.take(),
+        lut_path: params.lut_path.take(),
+        matte_image_path: params.matte_image_path.take(),
+        compound_subgraph: params.compound_subgraph.take(),
+        ..Default::default()
+    };
+    *params = kept;
+}
+
 /// A per-node editor's settings command written to its node in `graph`:
 /// the curves, hue curves, qualifier, luma key, difference key, soft clip,
 /// grain, external matte channel, matte combine, LUT file, mask stack,
@@ -2912,6 +2928,12 @@ pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppC
         AppCommand::ToggleNodeEnabled { node_id, .. } => {
             if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
                 node.enabled = !node.enabled;
+            }
+            return true;
+        }
+        AppCommand::ResetNode { node_id, .. } => {
+            if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
+                reset_node_params(&mut node.params);
             }
             return true;
         }

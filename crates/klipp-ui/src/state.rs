@@ -4709,6 +4709,13 @@ impl Default for AppState {
 }
 
 impl AppState {
+    /// Whether a node canvas, the grade's or the picture's, has the keys:
+    /// its single keys and its Ctrl+G are its own, not the timeline's
+    /// (#1742).
+    pub fn node_canvas_focused(&self) -> bool {
+        matches!(self.active_panel, Some(PanelKind::NodeGraph | PanelKind::PictureGraph))
+    }
+
     /// Why the clip cannot have its scene cuts found and split (#616):
     /// not a clip of moving picture whose file is here, or on a locked
     /// track. `None` when it can.

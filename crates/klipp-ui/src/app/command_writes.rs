@@ -398,6 +398,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetNodeInputLink { .. }
         | AppCommand::MoveNode { .. }
         | AppCommand::ToggleNodeEnabled { .. }
+        | AppCommand::ResetNode { .. }
         | AppCommand::AutoLayoutNodeGraph { .. }
         | AppCommand::CreateNodeFrame { .. }
         | AppCommand::RenameNodeFrame { .. }

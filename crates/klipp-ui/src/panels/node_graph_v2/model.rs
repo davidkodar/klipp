@@ -67,7 +67,10 @@ pub(super) trait CanvasGraph {
     fn keyboard_enabled(&self) -> bool { true }
 }
 
-pub(super) struct GradeCanvas<'a>(pub &'a NodeGraph);
+/// The grade's graph on the canvas, and whether the canvas has the keys
+/// (#1742): it has them only while it is the focused panel, so Delete in
+/// the timeline does not take the selected nodes with it.
+pub(super) struct GradeCanvas<'a>(pub &'a NodeGraph, pub bool);
 
 impl CanvasGraph for GradeCanvas<'_> {
     type Node = Node;
@@ -79,6 +82,7 @@ impl CanvasGraph for GradeCanvas<'_> {
     fn signal_role(&self, node: NodeId, port: u8) -> PortRole { klipp_nodes::effective_signal_role_at(self.0, node, port) }
     fn add_menu(&self) -> &[MenuCategory] { grade_menu() }
     fn command(&self, command: AppCommand) -> Option<AppCommand> { Some(command) }
+    fn keyboard_enabled(&self) -> bool { self.1 }
 }
 
 impl CanvasNode for Node {
