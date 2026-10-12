@@ -414,3 +414,26 @@ fn a_layers_animators_come_back() {
     let ClipKind::Title(loaded) = &seqs[0].tracks[0].clips[0].kind else { panic!("not a title") };
     assert_eq!(loaded.primary_fx(), &fx);
 }
+
+/// #1511: a text gradient's stop colour keys come back through a real
+/// save and a strict load.
+#[test]
+fn a_gradients_stop_keys_come_back() {
+    let mut keys = klipp_timeline::ColourKeys::default();
+    keys.set(0.0, [255, 0, 0, 255]);
+    keys.set(1.0, [0, 90, 255, 200]);
+    let stop = |position: f32, color: [u8; 4]| klipp_timeline::GradientStop { position, color };
+    let mut g = klipp_timeline::TextGradient::with_stops(&[stop(0.0, [255, 0, 0, 255]), stop(0.4, [0, 255, 0, 255]), stop(1.0, [0, 0, 0, 255])], Default::default(), true);
+    g.stop_keyframes = vec![Default::default(), keys];
+    let tb = TextBox { text: "Stops".into(), gradient: Some(g), ..TextBox::default() };
+    let mut seq = Sequence::new_default();
+    let mut c = Clip::gap(tc(0), tc(48));
+    c.kind = ClipKind::Title(TitleData::single_text(tb.clone()));
+    seq.tracks[0].clips = vec![c];
+    let dir = project_dir("gradient-stop-keys");
+    save_project_with_color(&dir, &[seq], &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
+    let (seqs, ..) = klipp_project::load_project_strict(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let ClipKind::Title(loaded) = &seqs[0].tracks[0].clips[0].kind else { panic!("not a title") };
+    assert_eq!(loaded.primary_text(), Some(&tb));
+}

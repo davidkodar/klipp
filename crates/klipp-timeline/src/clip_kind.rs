@@ -1089,6 +1089,7 @@ impl TextBox {
     /// (#1511).
     pub fn has_keyframes(&self) -> bool {
         !self.font_size_keyframes.is_empty() || !self.tracking_keyframes.is_empty() || !self.line_spacing_keyframes.is_empty() || !self.color_keyframes.is_empty()
+            || self.gradient.as_ref().is_some_and(TextGradient::has_keyframes)
     }
 
     /// The text at `time_secs` of its clip: its keyed size, tracking,
@@ -1109,6 +1110,9 @@ impl TextBox {
         if !tb.color_keyframes.is_empty() {
             tb.color = tb.color_keyframes.at(time_secs, tb.color);
             tb.color_keyframes = ColourKeys::default();
+        }
+        if let Some(g) = tb.gradient.as_mut().filter(|g| g.has_keyframes()) {
+            *g = g.at(time_secs);
         }
         tb
     }
@@ -1136,6 +1140,16 @@ impl TextBox {
         if let Some(channel) = param_key.strip_prefix("text.color.") {
             return self.color_keyframes.channel_mut(channel);
         }
+        if let Some((i, channel)) = k::parse_gradient_stop_key(param_key) {
+            let g = self.gradient.as_mut()?;
+            if i >= g.stops().len() {
+                return None;
+            }
+            if g.stop_keyframes.len() <= i {
+                g.stop_keyframes.resize(i + 1, ColourKeys::default());
+            }
+            return g.stop_keyframes[i].channel_mut(channel);
+        }
         if param_key.starts_with("extrusion.") {
             self.extrusion.as_mut().and_then(|e| e.keyframes_mut_for(param_key))
         } else if param_key.starts_with("char_anim.") {
@@ -1162,6 +1176,16 @@ impl TextBox {
         }
         if let Some(channel) = param_key.strip_prefix("text.color.") {
             return self.color_keyframes.channel(channel);
+        }
+        if let Some((i, channel)) = k::parse_gradient_stop_key(param_key) {
+            let g = self.gradient.as_ref()?;
+            if i >= g.stops().len() {
+                return None;
+            }
+            return match g.stop_keyframes.get(i) {
+                Some(keys) => keys.channel(channel),
+                None => ["r", "g", "b", "a"].contains(&channel).then_some(&[][..]),
+            };
         }
         if param_key.starts_with("extrusion.") {
             self.extrusion.as_ref().and_then(|e| e.keyframes_for(param_key))
@@ -2580,12 +2604,63 @@ pub struct TextGradient {
     /// Linear at an angle or radial (#1509); top to bottom by default.
     #[serde(default, skip_serializing_if = "crate::GradientKind::is_default")]
     pub kind: crate::GradientKind,
+    /// Each stop's colour over the clip (#1511), by the stop's place in
+    /// [`Self::stops`]; a stop without keys keeps its colour. Written
+    /// only when keyed.
+    #[serde(default, skip_serializing_if = "no_stop_keys")]
+    pub stop_keyframes: Vec<ColourKeys>,
+}
+
+fn no_stop_keys(keys: &[ColourKeys]) -> bool {
+    keys.iter().all(ColourKeys::is_empty)
 }
 
 impl TextGradient {
+    /// Whether a stop's colour is keyed.
+    pub fn has_keyframes(&self) -> bool {
+        !no_stop_keys(&self.stop_keyframes)
+    }
+
+    /// The gradient at `time_secs`: each keyed stop's colour as it is
+    /// then, the pair's colours the ends', its keys gone.
+    pub fn at(&self, time_secs: f64) -> TextGradient {
+        let mut stops = self.stops();
+        for (stop, keys) in stops.iter_mut().zip(&self.stop_keyframes) {
+            if !keys.is_empty() {
+                stop.color = keys.at(time_secs, stop.color);
+            }
+        }
+        let mut g = self.clone();
+        g.stop_keyframes = Vec::new();
+        g.top_color = stops.first().map_or(g.top_color, |s| s.color);
+        g.bottom_color = stops.last().map_or(g.bottom_color, |s| s.color);
+        if g.stops.len() >= 2 {
+            g.stops = stops;
+        }
+        g
+    }
+
+    /// The stop keys of `before` carried onto this gradient's stops: a
+    /// stop keeps its keys where it is still at the same place, so a
+    /// stop added or taken away does not move the others' keys onto
+    /// their neighbours. With as many stops as before, each keeps its
+    /// own, wherever it was dragged.
+    pub fn carry_keys_from(&mut self, before: &TextGradient) {
+        let (old, new) = (before.stops(), self.stops());
+        let key = |i: usize| before.stop_keyframes.get(i).cloned().unwrap_or_default();
+        self.stop_keyframes = if old.len() == new.len() {
+            (0..new.len()).map(key).collect()
+        } else {
+            new.iter().map(|s| old.iter().position(|o| o.position == s.position).map(key).unwrap_or_default()).collect()
+        };
+        if no_stop_keys(&self.stop_keyframes) {
+            self.stop_keyframes.clear();
+        }
+    }
+
     /// The two-colour gradient, top to bottom.
     pub fn pair(top_color: [u8; 4], bottom_color: [u8; 4], enabled: bool) -> Self {
-        Self { top_color, bottom_color, enabled, stops: Vec::new(), kind: crate::GradientKind::default() }
+        Self { top_color, bottom_color, enabled, stops: Vec::new(), kind: crate::GradientKind::default(), stop_keyframes: Vec::new() }
     }
 
     /// A gradient through `stops` laid out by `kind` (#1509). Two stops
@@ -2597,7 +2672,7 @@ impl TextGradient {
         let first = stops.first().map(|s| s.color).unwrap_or([255; 4]);
         let last = stops.last().map(|s| s.color).unwrap_or(first);
         let pair = stops.len() == 2 && stops[0].position == 0.0 && stops[1].position == 1.0;
-        Self { top_color: first, bottom_color: last, enabled, stops: if pair { Vec::new() } else { stops }, kind }
+        Self { top_color: first, bottom_color: last, enabled, stops: if pair { Vec::new() } else { stops }, kind, stop_keyframes: Vec::new() }
     }
 
     /// The gradient as it was before #1509: two colours, top to bottom.
@@ -4454,5 +4529,68 @@ mod animator_key_tests {
         assert_eq!(fx.effect_keyframes_for(&k(0, "within.offset")).map(<[_]>::len), Some(0));
         assert!(!serde_json::to_string(&LayerFx::default()).unwrap().contains("animators"));
         assert!(LayerFx::default().is_default());
+    }
+}
+
+#[cfg(test)]
+mod gradient_key_tests {
+    use super::*;
+    use crate::GradientStop;
+
+    fn three() -> TextGradient {
+        let stop = |position: f32, color: [u8; 4]| GradientStop { position, color };
+        TextGradient::with_stops(&[stop(0.0, [255, 0, 0, 255]), stop(0.5, [0, 255, 0, 255]), stop(1.0, [0, 0, 255, 255])], Default::default(), true)
+    }
+
+    /// A stop's colour keyed blends in linear light; the pair's ends are
+    /// its first and last stops'; the keys go once evaluated (#1511).
+    #[test]
+    fn a_keyed_stop_blends_and_the_ends_follow() {
+        let mut g = TextGradient::pair([255, 0, 0, 255], [0, 0, 0, 255], true);
+        let mut keys = ColourKeys::default();
+        keys.set(0.0, [255, 0, 0, 255]);
+        keys.set(2.0, [0, 0, 255, 255]);
+        g.stop_keyframes = vec![keys.clone()];
+        assert!(g.has_keyframes());
+        let at = g.at(1.0);
+        assert_eq!((at.top_color, at.bottom_color, at.stop_keyframes.is_empty(), at.stops.is_empty()), ([188, 0, 188, 255], [0, 0, 0, 255], true, true));
+        let mut g3 = three();
+        g3.stop_keyframes = vec![ColourKeys::default(), ColourKeys::default(), keys];
+        let at = g3.at(2.0);
+        assert_eq!((at.stops[2].color, at.bottom_color, at.top_color), ([0, 0, 255, 255], [0, 0, 255, 255], [255, 0, 0, 255]));
+        assert!(!serde_json::to_string(&TextGradient::pair([0; 4], [0; 4], true)).unwrap().contains("stop_keyframes"));
+        let mut tb = TextBox { gradient: Some(g3.clone()), ..Default::default() };
+        assert!(tb.has_keyframes());
+        assert_eq!(tb.at(1.0).gradient.unwrap().stops[2].color, [188, 0, 188, 255]);
+        assert_eq!(tb.effect_keyframes_for("gradient.stop.2.b").map(<[_]>::len), Some(2));
+        assert_eq!(tb.effect_keyframes_for("gradient.stop.0.r").map(<[_]>::len), Some(0));
+        assert!(tb.effect_keyframes_for("gradient.stop.3.r").is_none(), "no fourth stop");
+        assert!(tb.effect_keyframes_mut_for("gradient.stop.1.g").is_some());
+    }
+
+    /// Stops added, taken away or dragged keep their own keys.
+    #[test]
+    fn stop_keys_stay_with_their_stops() {
+        let mut keyed = three();
+        let mut k = ColourKeys::default();
+        k.set(0.0, [9, 9, 9, 255]);
+        keyed.stop_keyframes = vec![ColourKeys::default(), ColourKeys::default(), k.clone()];
+        let stop = |position: f32| GradientStop { position, color: [1, 2, 3, 255] };
+        // One added before the last: the last keeps its keys.
+        let mut added = TextGradient::with_stops(&[stop(0.0), stop(0.25), stop(0.5), stop(1.0)], Default::default(), true);
+        added.carry_keys_from(&keyed);
+        assert_eq!(added.stop_keyframes.iter().map(ColourKeys::is_empty).collect::<Vec<_>>(), [true, true, true, false]);
+        // The middle one taken away: the last still keeps them.
+        let mut removed = TextGradient::with_stops(&[stop(0.0), stop(1.0)], Default::default(), true);
+        removed.carry_keys_from(&keyed);
+        assert_eq!(removed.stop_keyframes.get(1), Some(&k));
+        // The last dragged: as many stops, so each keeps its own.
+        let mut dragged = TextGradient::with_stops(&[stop(0.0), stop(0.5), stop(0.9)], Default::default(), true);
+        dragged.carry_keys_from(&keyed);
+        assert_eq!(dragged.stop_keyframes.get(2), Some(&k));
+        // A stop without keys left none behind.
+        let mut plain = three();
+        plain.carry_keys_from(&three());
+        assert!(plain.stop_keyframes.is_empty());
     }
 }

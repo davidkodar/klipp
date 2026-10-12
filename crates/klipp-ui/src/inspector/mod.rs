@@ -3307,7 +3307,9 @@ fn show_title_effects_group(
             let cur_bot = cur.bottom_color;
             inspector_subgroup_card(ui, "Gradient Fill", &mut enabled,
                 (!summary.is_empty()).then_some(summary.as_str()), theme, |ui| {
-                gradient_editor::show(ui, clip_id, None, &cur, cmds);
+                // As it is at the playhead, its stops keyed on the layer (#1511).
+                let keys = target_oid.map(|oid| gradient_editor::StopKeys { object_id: oid.0, keys: &cur.stop_keyframes, time_secs: clip_time_secs, tolerance: keyframe_tolerance });
+                gradient_editor::show(ui, clip_id, None, &cur.at(clip_time_secs), keys, cmds);
             });
             if enabled != gradient_enabled {
                 cmds.push(AppCommand::SetTitleGradient {
@@ -3708,7 +3710,7 @@ fn shape_gradient(
         cmds.push(AppCommand::SetTitleGradientStops { clip_id, object_id: Some(object_id.0), enabled: on, stops: cur.stops(), kind: cur.kind });
     }
     if on {
-        ui.push_id(("shape_gradient", object_id.0), |ui| gradient_editor::show(ui, clip_id, Some(object_id.0), &cur, cmds));
+        ui.push_id(("shape_gradient", object_id.0), |ui| gradient_editor::show(ui, clip_id, Some(object_id.0), &cur, None, cmds));
     }
 }
 

@@ -58,14 +58,17 @@ impl TitleCurveParam {
         match self {
             Self::Position(TitlePositionAxis::X) => "Layer X".into(),
             Self::Position(TitlePositionAxis::Y) => "Layer Y".into(),
-            Self::Effect(key) if key.starts_with("text.color.") => {
+            Self::Effect(key) if key.starts_with("text.color.") || key.starts_with("gradient.stop.") => {
                 let channel = match key.rsplit('.').next() {
                     Some("r") => "red",
                     Some("g") => "green",
                     Some("b") => "blue",
                     _ => "alpha",
                 };
-                format!("Text colour · {channel}")
+                match klipp_core::title_effect_keys::parse_gradient_stop_key(key) {
+                    Some((i, _)) => format!("Gradient stop {} · {channel}", i + 1),
+                    None => format!("Text colour · {channel}"),
+                }
             }
             Self::Effect(key) => {
                 let parts: Vec<_> = key.split('.').collect();
@@ -95,7 +98,7 @@ impl TitleCurveParam {
         match self {
             Self::Position(_) => (-1.0, 2.0, 0.5),
             // Linear light, and alpha, 0..1.
-            Self::Effect(key) if key.starts_with("text.color.") => (0.0, 1.0, 1.0),
+            Self::Effect(key) if key.starts_with("text.color.") || key.starts_with("gradient.stop.") => (0.0, 1.0, 1.0),
             Self::Effect(key) => match key.rsplit('.').next().unwrap_or("") {
                 "intensity" => (0.0, 5.0, 1.0),
                 "lighting" => (0.0, 1.0, 0.5),
@@ -254,6 +257,12 @@ pub fn parameters(object: &klipp_timeline::TitleObject) -> Vec<TitleCurveParam> 
         // Where a text on a drawn path sits along it (#1508).
         if matches!(tb.text_path, Some(klipp_timeline::TextPath::Layer { .. })) {
             keys.push(k::TEXT_PATH_OFFSET.into());
+        }
+        // And a gradient stop's, once its colour is keyed.
+        if let Some(g) = &tb.gradient {
+            for (i, _) in g.stop_keyframes.iter().enumerate().filter(|(_, s)| !s.is_empty()) {
+                keys.extend(["r", "g", "b", "a"].map(|c| format!("{}.{c}", k::gradient_stop_key(i))));
+            }
         }
         for i in 0..object.fx().glows.len() {
             keys.extend([k::glow_radius_key(i), k::glow_intensity_key(i)]);
@@ -440,5 +449,21 @@ mod tests {
         assert_eq!(colour.label(), "Text colour · green");
         assert_eq!(colour.range(), (0.0, 1.0, 1.0));
         assert_eq!(title.objects[0].effect_keyframes_for("text.color.g").map(<[_]>::len), Some(1));
+    }
+
+    /// A keyed gradient stop's channels are listed, named by the stop.
+    #[test]
+    fn a_keyed_gradient_stop_lists_its_channels() {
+        let (mut title, _) = animated_title();
+        let TitleObjectContent::TextBox(tb) = &mut title.objects[0].content else { panic!("text") };
+        let mut g = klipp_timeline::TextGradient::pair([255; 4], [0, 0, 0, 255], true);
+        let mut keys = klipp_timeline::ColourKeys::default();
+        keys.set(0.0, [1, 2, 3, 255]);
+        g.stop_keyframes = vec![Default::default(), keys];
+        tb.gradient = Some(g);
+        let channels = parameters(&title.objects[0]);
+        let blue = TitleCurveParam::Effect("gradient.stop.1.b".into());
+        assert!(channels.contains(&blue) && !channels.contains(&TitleCurveParam::Effect("gradient.stop.0.b".into())));
+        assert_eq!(blue.label(), "Gradient stop 2 · blue");
     }
 }
