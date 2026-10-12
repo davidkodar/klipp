@@ -1873,6 +1873,20 @@ pub enum AppCommand {
     /// A node swapped for a new node of `kind` in its place: its wires
     /// and its place kept, as one undo step.
     ReplaceNode { clip_id: ClipId, node_id: uuid::Uuid, kind: String },
+    /// A new node of `kind` put into the wire from `from`'s `from_port`
+    /// to `to`'s `to_port` (#1744): fed by the one, feeding the other,
+    /// at `position`, as one undo step.
+    InsertNodeOnWire { clip_id: ClipId, kind: String, position: (f32, f32), from: uuid::Uuid, from_port: u8, to: uuid::Uuid, to_port: u8 },
+    /// The node `node_id`, dropped on that wire (#1744): taken out of
+    /// where it was, what fed it now feeding what it fed, and put into
+    /// the wire. Inside the canvas's layout gesture, its step.
+    SpliceNodeIntoWire { clip_id: ClipId, node_id: uuid::Uuid, from: uuid::Uuid, from_port: u8, to: uuid::Uuid, to_port: u8 },
+    /// The wire into `to`'s `to_port`, its end dragged to `new_to`'s
+    /// `new_to_port` (#1744), as one undo step.
+    ReconnectEdge { clip_id: ClipId, to: uuid::Uuid, to_port: u8, new_to: uuid::Uuid, new_to_port: u8 },
+    /// A new node of `kind`, fed by `from`'s `from_port` (#1744): a wire
+    /// dragged into empty canvas and a node picked for it.
+    AddNodeWired { clip_id: ClipId, kind: String, position: (f32, f32), from: uuid::Uuid, from_port: u8 },
     /// The picture canvas's copy (#1745): the nodes as the picture holds
     /// them, kept for a paste.
     CopyPictureNodes { nodes: Vec<klipp_graph_format::Node> },

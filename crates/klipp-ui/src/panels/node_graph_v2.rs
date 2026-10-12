@@ -153,7 +153,14 @@ struct DragNode {
 struct DragWire {
     from_node: NodeId,
     from_port: u8,
+    /// The input this wire was lifted off, when the drag began on a
+    /// wire's input end (#1744): dropped elsewhere it reconnects, in
+    /// empty canvas it disconnects.
+    detached: Option<(NodeId, u8)>,
 }
+
+/// A wire, by its two ends: `(from, from_port, to, to_port)`.
+type WireRef = (NodeId, u8, NodeId, u8);
 
 /// Frame-drag state — when the user grabs a frame's empty body,
 /// every member node moves in lockstep until release. Tracks the
@@ -389,6 +396,18 @@ pub struct NodeGraphV2Panel {
     /// The add menu's recent picks changed since the app last kept them
     /// (#1745): it reads [`Self::recent_kinds`] and clears this.
     recents_changed: bool,
+    /// The wire menu (#1744): the wire right-clicked, where the menu
+    /// sits, and that point on the canvas.
+    wire_menu: Option<(WireRef, egui::Pos2, egui::Pos2)>,
+    /// The wire the add menu's pick goes into (#1744): opened from the
+    /// wire menu, or with Tab over a wire.
+    insert_wire: Option<WireRef>,
+    /// The output the add menu's pick is fed from (#1744): a wire
+    /// dragged from it into empty canvas.
+    wire_from: Option<(NodeId, u8)>,
+    /// The wire a lone dragged node is over, which it goes into when let
+    /// go (#1744).
+    drop_wire: Option<WireRef>,
 }
 
 impl Default for NodeGraphV2Panel {
@@ -444,6 +463,10 @@ impl Default for NodeGraphV2Panel {
             replace_target: None,
             snap_to_grid: false,
             recents_changed: false,
+            wire_menu: None,
+            insert_wire: None,
+            wire_from: None,
+            drop_wire: None,
         }
     }
 }
@@ -1041,6 +1064,7 @@ impl NodeGraphV2Panel {
             || self.wireless_label_editor.is_some()
             || self.sticky_menu.is_some()
             || self.sticky_text_editor.is_some()
+            || self.wire_menu.is_some()
             || self.search_open;
         if !any_menu_open {
             self.handle_pan_zoom(ui, &canvas_rect, &canvas_resp);
@@ -1264,15 +1288,19 @@ impl NodeGraphV2Panel {
         let cursor_in_node = cursor.is_some_and(|c| {
             node_rects.iter().any(|(_, r, _, _, _)| r.contains(c))
         });
+        // A lone node being dragged is under the cursor: the wire it is
+        // over (none of its own) is the one it drops into (#1744).
+        let lone_drag = self.drag_node.as_ref().filter(|d| d.node_ids.len() == 1).map(|d| d.node_ids[0]);
         let edge_hover_eligible = self.drag_wire.is_none()
             && self.box_select.is_none()
             && cursor_in_canvas
-            && !cursor_in_node;
+            && (!cursor_in_node || lone_drag.is_some());
         if edge_hover_eligible {
             if let Some(c) = cursor {
                 let threshold_sq = (8.0 * zoom).powi(2);
                 let mut best_sq = threshold_sq;
                 for (idx, edge) in graph.edges().iter().enumerate() {
+                    if lone_drag.is_some_and(|n| edge.from_node == n || edge.to_node == n) { continue; }
                     let Some((_, from_rect, _, from_kind, _)) =
                         node_rects.iter().find(|(id, _, _, _, _)| *id == edge.from_node).copied()
                     else { continue; };
@@ -1291,7 +1319,13 @@ impl NodeGraphV2Panel {
             }
         }
 
+        let wire_of = |idx: usize| graph.edges().get(idx).map(|e| (e.from_node, e.from_port, e.to_node, e.to_port));
+        self.drop_wire = lone_drag.and(hovered_edge).and_then(wire_of);
+        let hovered_wire = hovered_edge.and_then(wire_of);
+        let lifted = self.drag_wire.and_then(|d| d.detached);
         for (idx, edge) in graph.edges().iter().enumerate() {
+            // The wire whose end is being dragged is drawn as the drag.
+            if lifted == Some((edge.to_node, edge.to_port)) { continue; }
             let Some((_, from_rect, _, from_kind, _)) =
                 node_rects.iter().find(|(id, _, _, _, _)| *id == edge.from_node).copied()
             else { continue; };
@@ -2492,7 +2526,7 @@ impl NodeGraphV2Panel {
         // already been wiped, Group-into-Compound saw `inside.len() <
         // 2` and silently returned. Gating here lets the menu's own
         // `clicked_elsewhere` close-detection handle outside-clicks.
-        let menu_open = self.node_menu.is_some() || self.add_menu_open || self.frame_menu.is_some() || self.sticky_menu.is_some();
+        let menu_open = self.node_menu.is_some() || self.add_menu_open || self.frame_menu.is_some() || self.sticky_menu.is_some() || self.wire_menu.is_some();
         // A press with Space held is the pan's, not a selection's (#1745).
         let panning = ui.input(|i| i.key_down(egui::Key::Space));
         if primary_pressed && !menu_open && !panning {
@@ -2504,12 +2538,26 @@ impl NodeGraphV2Panel {
                         for port in 0..kind.output_port_count() {
                             let port_pos = output_port_pos(rect, port, kind);
                             if (p - port_pos).length() <= PORT_HIT_RADIUS * zoom.max(0.5) {
-                                self.drag_wire = Some(DragWire { from_node: *node_id, from_port: port });
+                                self.drag_wire = Some(DragWire { from_node: *node_id, from_port: port, detached: None });
                                 wire_started = true;
                                 break;
                             }
                         }
                         if wire_started { break; }
+                    }
+                    // A wire's input end (#1744): pressed, the wire lifts
+                    // off it and follows the pointer from its source.
+                    if !wire_started {
+                        'input: for (node_id, rect, _, _, in_count) in &node_rects {
+                            for port in 0..*in_count {
+                                if (p - input_port_pos(rect, port, *in_count)).length() > PORT_HIT_RADIUS * zoom.max(0.5) { continue; }
+                                if let Some(e) = graph.edges().iter().find(|e| e.to_node == *node_id && e.to_port == port) {
+                                    self.drag_wire = Some(DragWire { from_node: e.from_node, from_port: e.from_port, detached: Some((*node_id, port)) });
+                                    wire_started = true;
+                                    break 'input;
+                                }
+                            }
+                        }
                     }
                     if !wire_started {
                         // Node body hit?
@@ -2797,34 +2845,18 @@ impl NodeGraphV2Panel {
                 // — the user saw the wire visually lock onto that port,
                 // dropping anywhere within the snap radius MUST land
                 // there or the visual feedback would be a lie.
-                if let Some((to_node, to_port, _)) = snap_target {
-                    cmds.push(AppCommand::ConnectNodes {
-                        clip_id,
-                        from: dw.from_node,
-                        from_port: dw.from_port,
-                        to: to_node,
-                        to_port,
-                    });
-                } else if let Some(p) = pointer_pos {
+                let mut target = snap_target.map(|(n, port, _)| (n, port));
+                if let (None, Some(p)) = (target, pointer_pos) {
                     'drop: for (node_id, rect, _, kind, in_count) in &node_rects {
                         if *node_id == dw.from_node { continue; }
                         let in_count = *in_count;
-                        let mut hit_existing = false;
                         for port in 0..in_count {
                             let port_pos = input_port_pos(rect, port, in_count);
                             if (p - port_pos).length() <= PORT_HIT_RADIUS * zoom.max(0.5) {
-                                cmds.push(AppCommand::ConnectNodes {
-                                    clip_id,
-                                    from: dw.from_node,
-                                    from_port: dw.from_port,
-                                    to: *node_id,
-                                    to_port: port,
-                                });
-                                hit_existing = true;
-                                break;
+                                target = Some((*node_id, port));
+                                break 'drop;
                             }
                         }
-                        if hit_existing { break 'drop; }
                         // LayerMixer fall-through: drop on left edge
                         // band → grow port count by 1 and connect to
                         // the new port. The band is the full left edge
@@ -2836,18 +2868,39 @@ impl NodeGraphV2Panel {
                                 egui::pos2(rect.min.x + PORT_HIT_RADIUS, rect.max.y),
                             );
                             if edge_band.contains(p) {
-                                cmds.push(AppCommand::ConnectNodes {
-                                    clip_id,
-                                    from: dw.from_node,
-                                    from_port: dw.from_port,
-                                    to: *node_id,
-                                    to_port: in_count,
-                                });
+                                target = Some((*node_id, in_count));
                                 break 'drop;
                             }
                         }
                     }
                 }
+                let on_a_node = pointer_pos.is_some_and(|p| node_rects.iter().any(|(_, r, _, _, _)| r.contains(p)));
+                match (target, dw.detached) {
+                    // Back where it was lifted from: nothing changes.
+                    (Some(to), Some(old)) if to == old => {}
+                    // A connection the graph can't take says why, here
+                    // (#1744): the grade dropped a loop without a word.
+                    (Some((to, _)), _) if to == dw.from_node || feeds(graph, to, dw.from_node) => {
+                        self.bookmark_toast = Some(("That wire would make a loop: a node can't feed itself".to_owned(), std::time::Instant::now()));
+                    }
+                    (Some((to, to_port)), None) => cmds.push(AppCommand::ConnectNodes { clip_id, from: dw.from_node, from_port: dw.from_port, to, to_port }),
+                    (Some((new_to, new_to_port)), Some((to, to_port))) => cmds.push(AppCommand::ReconnectEdge { clip_id, to, to_port, new_to, new_to_port }),
+                    // Lifted off and let go away from any input: gone.
+                    (None, Some((to, to_port))) => cmds.push(AppCommand::DisconnectEdge { clip_id, to, to_port }),
+                    // A new wire let go in empty canvas: the add menu, its
+                    // pick fed by the wire (#1744).
+                    (None, None) => if let Some(p) = pointer_pos.filter(|p| canvas_rect.contains(*p) && !on_a_node) {
+                        let pass = ui.ctx().cumulative_pass_nr() + 1;
+                        self.open_add_menu(p, to_graph(p), pass, None);
+                        self.wire_from = Some((dw.from_node, dw.from_port));
+                    },
+                }
+            }
+            // A lone node dragged and let go over a wire goes into it
+            // (#1744); a click on a node lying on a wire leaves it there.
+            let dragged = self.drag_node.as_ref().filter(|d| d.node_ids.len() == 1 && (d.emitted_dx != 0.0 || d.emitted_dy != 0.0)).map(|d| d.node_ids[0]);
+            if let (Some(wire), Some(node)) = (self.drop_wire.take(), dragged) {
+                cmds.push(AppCommand::SpliceNodeIntoWire { clip_id, node_id: node, from: wire.0, from_port: wire.1, to: wire.2, to_port: wire.3 });
             }
             // Node drop: nothing to commit; deltas were streamed live.
             self.drag_node = None;
@@ -2961,6 +3014,8 @@ impl NodeGraphV2Panel {
                     ctx.memory_mut(|m| m.surrender_focus(id));
                 }
                 self.open_add_menu(at, to_graph(at), ctx.cumulative_pass_nr(), None);
+                // Over a wire, the pick goes into it (#1744).
+                self.insert_wire = hovered_wire;
             }
         }
 
@@ -3095,6 +3150,15 @@ impl NodeGraphV2Panel {
                             self.add_menu_open = false;
                             self.node_menu = None;
                             self.frame_menu = None;
+                        } else if let Some(wire) = hovered_wire {
+                            // A wire's own menu (#1744), over a frame too:
+                            // the wire is drawn on top of it.
+                            self.wire_menu = Some((wire, p, to_graph(p)));
+                            self.node_menu_opened_frame = frame_nr;
+                            self.add_menu_open = false;
+                            self.node_menu = None;
+                            self.frame_menu = None;
+                            self.sticky_menu = None;
                         } else if let Some(fid) = on_frame {
                             self.frame_menu = Some((fid, p));
                             self.node_menu_opened_frame = frame_nr;
@@ -3146,6 +3210,9 @@ impl NodeGraphV2Panel {
         }
         if self.sticky_menu.is_some() {
             self.draw_sticky_menu(ui, clip_id, graph, &mut cmds);
+        }
+        if self.wire_menu.is_some() {
+            self.draw_wire_menu(ui, clip_id, graph.grade_tools(), &mut cmds);
         }
         if self.sticky_text_editor.is_some() {
             self.draw_sticky_text_editor(ui, clip_id, &mut cmds);
@@ -3683,6 +3750,9 @@ impl NodeGraphV2Panel {
         self.add_menu_search.clear();
         self.add_menu_opened_frame = pass;
         self.replace_target = replace;
+        self.insert_wire = None;
+        self.wire_from = None;
+        self.wire_menu = None;
         self.node_menu = None;
         self.frame_menu = None;
         self.sticky_menu = None;
@@ -3800,7 +3870,7 @@ impl NodeGraphV2Panel {
                         chosen_kind = categories.iter().flat_map(|(_, e)| e.iter()).find(|(label, _)| matches(label)).map(|(_, k)| *k);
                     }
                     // Paste where the menu was opened (#1745).
-                    if !replacing && !in_search && add_menu_entry(ui, "Paste", theme) {
+                    if !replacing && self.insert_wire.is_none() && self.wire_from.is_none() && !in_search && add_menu_entry(ui, "Paste", theme) {
                         cmds.push(AppCommand::PasteNodes { clip_id, position: (self.add_menu_graph_pos.x, self.add_menu_graph_pos.y) });
                         close = true;
                     }
@@ -3945,14 +4015,12 @@ impl NodeGraphV2Panel {
             close = true;
         }
         if let Some(kind_str) = chosen_kind {
-            match self.replace_target {
-                Some(node_id) => cmds.push(AppCommand::ReplaceNode { clip_id, node_id, kind: kind_str.to_string() }),
-                None => cmds.push(AppCommand::AddNode {
-                    clip_id,
-                    kind: kind_str.to_string(),
-                    node_id: None,
-                    position: (self.add_menu_graph_pos.x, self.add_menu_graph_pos.y),
-                }),
+            let (kind, position) = (kind_str.to_string(), (self.add_menu_graph_pos.x, self.add_menu_graph_pos.y));
+            match (self.replace_target, self.insert_wire, self.wire_from) {
+                (Some(node_id), _, _) => cmds.push(AppCommand::ReplaceNode { clip_id, node_id, kind }),
+                (None, Some((from, from_port, to, to_port)), _) => cmds.push(AppCommand::InsertNodeOnWire { clip_id, kind, position, from, from_port, to, to_port }),
+                (None, None, Some((from, from_port))) => cmds.push(AppCommand::AddNodeWired { clip_id, kind, position, from, from_port }),
+                (None, None, None) => cmds.push(AppCommand::AddNode { clip_id, kind, node_id: None, position }),
             }
             self.recents_changed = true;
             // Bump kind to the front of recents (dedupe + cap 6).
@@ -3966,7 +4034,40 @@ impl NodeGraphV2Panel {
         if close {
             self.add_menu_open = false;
             self.replace_target = None;
+            self.insert_wire = None;
+            self.wire_from = None;
         }
+    }
+
+    /// A wire's menu (#1744): Delete, Insert node… (the add menu, its
+    /// pick put into the wire), and on the grade, Add reroute.
+    fn draw_wire_menu(&mut self, ui: &mut egui::Ui, clip_id: ClipId, grade: bool, cmds: &mut Vec<AppCommand>) {
+        let Some(((from, from_port, to, to_port), pos, at)) = self.wire_menu else { return };
+        let mut close = false;
+        let area_resp = egui::Area::new(ui.id().with(("ngv2_wire_menu", to, to_port)))
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    if ui.button("Insert node\u{2026}").on_hover_text("Tab over a wire").clicked() {
+                        let pass = ui.ctx().cumulative_pass_nr() + 1;
+                        self.open_add_menu(pos, at, pass, None);
+                        self.insert_wire = Some((from, from_port, to, to_port));
+                        close = true;
+                    }
+                    if grade && ui.button("Add reroute").clicked() {
+                        cmds.push(AppCommand::InsertNodeOnWire { clip_id, kind: "Reroute".into(), position: (at.x, at.y), from, from_port, to, to_port });
+                        close = true;
+                    }
+                    if ui.button("Delete").clicked() {
+                        cmds.push(AppCommand::DisconnectEdge { clip_id, to, to_port });
+                        close = true;
+                    }
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) { close = true; }
+                });
+            });
+        if ui.ctx().cumulative_pass_nr() != self.node_menu_opened_frame && area_resp.response.clicked_elsewhere() { close = true; }
+        if close { self.wire_menu = None; }
     }
 
     fn draw_wireless_label_editor(
@@ -4664,6 +4765,22 @@ impl NodeGraphV2Panel {
         }
         if close { self.node_menu = None; }
     }
+}
+
+/// Whether `from` feeds `to`, through any wires (#1744): a wire from `to`
+/// back into `from` would close a loop.
+fn feeds(graph: &impl CanvasGraph, from: NodeId, to: NodeId) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    let mut next = vec![from];
+    while let Some(n) = next.pop() {
+        if n == to {
+            return true;
+        }
+        if seen.insert(n) {
+            next.extend(graph.edges().iter().filter(|e| e.from_node == n).map(|e| e.to_node));
+        }
+    }
+    false
 }
 
 /// The selection the node editor's own edits act on (#1745): the set,
@@ -5457,6 +5574,37 @@ pub(crate) mod canvas_command_tests {
             self.panel.add_menu_graph_pos = graph_pos;
             self.panel.add_menu_search = search.into();
             self.settle();
+        }
+        /// The card of node `id`, as drawn.
+        pub(crate) fn card_of(&self, id: NodeId) -> egui::Rect {
+            let node = self.graph.nodes.iter().find(|n| n.id == id).unwrap();
+            let at = self.text(&node.label);
+            *self.cards.iter().find(|r| r.contains(at)).unwrap_or_else(|| panic!("no card at {at:?}"))
+        }
+        /// Node `id`'s input `port`, and its output, as drawn (#1744).
+        pub(crate) fn in_port(&self, id: NodeId, port: u8) -> egui::Pos2 {
+            let node = self.graph.nodes.iter().find(|n| n.id == id).unwrap();
+            input_port_pos(&self.card_of(id), port, node.input_count())
+        }
+        pub(crate) fn out_port(&self, id: NodeId) -> egui::Pos2 {
+            let node = self.graph.nodes.iter().find(|n| n.id == id).unwrap();
+            output_port_pos(&self.card_of(id), 0, &node.kind)
+        }
+        /// The middle of the wire from `from`'s output to `to`'s `port`.
+        pub(crate) fn wire_mid(&self, from: NodeId, to: NodeId, port: u8) -> egui::Pos2 {
+            bezier_at_phase(self.out_port(from), self.in_port(to, port), 0.5)
+        }
+        /// A press at `from`, moved in steps to `to`, let go there.
+        pub(crate) fn drag(&mut self, from: egui::Pos2, to: egui::Pos2) -> Vec<AppCommand> {
+            let mut sent = self.frame(vec![egui::Event::PointerMoved(from), Self::button(from, egui::PointerButton::Primary, true)]);
+            for i in 1..=4 {
+                sent.extend(self.frame(vec![egui::Event::PointerMoved(from + (to - from) * (i as f32 / 4.0))]));
+            }
+            sent.extend(self.frame(vec![Self::button(to, egui::PointerButton::Primary, false)]));
+            sent
+        }
+        pub(crate) fn toast(&self) -> Option<String> {
+            self.panel.bookmark_toast.as_ref().map(|(t, _)| t.clone())
         }
         pub(crate) fn has(&self, label: &str) -> bool {
             self.texts.iter().any(|(s, _)| s == label)

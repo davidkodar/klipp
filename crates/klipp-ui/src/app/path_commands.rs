@@ -688,6 +688,10 @@ impl crate::state::AppState {
             // layout gesture (#1745): the dispatch closed the gesture on
             // each move, so a drag was a step a frame.
             AppCommand::MoveNode { clip_id, .. } | AppCommand::MoveStickyNote { clip_id, .. } => layout_drag(self.layout_root(Root::Clip { clip: clip_id.0 })) != open,
+            // A node dropped on a wire: the drag that brought it there and
+            // the drop are one step (#1744), on either canvas.
+            AppCommand::SpliceNodeIntoWire { clip_id, .. } => layout_drag(self.layout_root(Root::Clip { clip: clip_id.0 })) != open,
+            AppCommand::MoveNodeAt { addr, .. } => layout_drag(addr.root) != open,
             // A note moved on the picture canvas is part of its layout
             // gesture (#1743).
             AppCommand::SetAnnotationsAt { at, .. } => layout_drag(at.root) != open,
@@ -771,8 +775,9 @@ impl crate::state::AppState {
             Some(i) if ops.len() > 1 => format!("{label}: op {i}: {why}"),
             _ => format!("{label}: {why}"),
         };
-        // A node, or a note (#1743), placed inside an open layout gesture.
-        if let [GraphOp::SetNodeMeta { path, label: None, position: Some(_) } | GraphOp::SetAnnotations { path, .. }] = ops {
+        // A node, or a note (#1743), placed inside an open layout gesture,
+        // or a node moved in its chain by a drop on a wire (#1744).
+        if let [GraphOp::SetNodeMeta { path, label: None, position: Some(_) } | GraphOp::SetAnnotations { path, .. } | GraphOp::MoveAfter { path, .. }] = ops {
             if self.active_history().is_dragging(&layout_drag(path.root)) {
                 let graph_ops::GraphOpsOutcome { edit, .. } = graph_ops::graph_ops_edit(&self.sequences[self.active_sequence_idx], ops).map_err(refused)?;
                 if let EditCommand::PictureEdit { clip_id, edit, .. } = edit { self.set_picture(clip_id, &edit.after); }
