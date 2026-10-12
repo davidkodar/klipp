@@ -3968,6 +3968,14 @@ fn set_run_property(run: &mut klipp_timeline::StyleRun, prop: &str, val: &str) {
             }
         }
         "ruby" => run.ruby = (!val.trim().is_empty()).then(|| val.to_string()),
+        // Superscript or subscript, or neither (#1721).
+        "script" => {
+            run.script = match val {
+                "superscript" => Some(klipp_timeline::Script::Superscript),
+                "subscript" => Some(klipp_timeline::Script::Subscript),
+                _ => None,
+            };
+        }
         _ => {}
     }
 }

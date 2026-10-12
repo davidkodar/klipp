@@ -51,6 +51,18 @@ pub struct StyleRun {
     /// (#1704). None (the default, left unwritten) for none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ruby: Option<String>,
+    /// Set as a superscript or subscript, as in x² or H₂O (#1721): in
+    /// the face's own superior or inferior figures where it has them,
+    /// else smaller and raised or lowered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<Script>,
+}
+
+/// A run raised or lowered small (#1721).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Script {
+    Superscript,
+    Subscript,
 }
 
 impl StyleRun {
@@ -70,6 +82,7 @@ impl StyleRun {
             font_weight: None,
             font_axes: Vec::new(),
             ruby: None,
+            script: None,
         }
     }
 
@@ -86,6 +99,7 @@ impl StyleRun {
             && self.font_weight.is_none()
             && self.font_axes.is_empty()
             && self.ruby.is_none()
+            && self.script.is_none()
     }
 
     /// Returns true if two runs have identical style fields (ignoring range).
@@ -101,6 +115,7 @@ impl StyleRun {
             && self.font_weight == other.font_weight
             && self.font_axes == other.font_axes
             && self.ruby == other.ruby
+            && self.script == other.script
     }
 }
 
