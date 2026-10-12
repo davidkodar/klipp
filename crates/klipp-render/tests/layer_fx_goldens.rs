@@ -60,7 +60,9 @@ fn a_project_from_before_the_stacks_moved_renders_the_same() {
 
     // And the frames are the frames.
     let mut r = klipp_title::TitleRenderer::new();
-    let goldens = [(0.1f32, 0xeb6f390fffb5cc81u64), (0.5, 0xa908dbad6635812c), (2.0, 0xca8a6c0a50485b39)];
+    // Re-pinned for OpenType shaping (#1501): the title's letters now
+    // kern, which moves them; nothing else in the fixture changed.
+    let goldens = [(0.1f32, 0x1c6eacdcac890cc9u64), (0.5, 0x017c7c10ac3d7544), (2.0, 0x5b8da107b3bde411)];
     for (t, want) in goldens {
         let px = r.render_with_window(td, 480, 270, None, t, Some(4.0));
         assert_eq!(fnv(&px), want, "frame at {t} s differs from the build before the move");
