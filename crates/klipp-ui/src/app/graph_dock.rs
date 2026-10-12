@@ -43,7 +43,9 @@ impl AppState {
     }
 
     /// The top picture clip under the playhead: the first visible video
-    /// track's enabled clip there that has a picture (#1726).
+    /// or title track's enabled clip there that has a picture (#1726),
+    /// passing over one used only as a matte, which shapes the clip below
+    /// rather than showing itself.
     fn picture_under_playhead(&self) -> Option<ClipId> {
         let at = self.playhead;
         self.sequence()
@@ -51,7 +53,7 @@ impl AppState {
             .iter()
             .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text) && t.visible)
             .flat_map(|t| t.clips.iter())
-            .find(|c| c.enabled && c.timeline_in <= at && at < c.timeline_out && c.picture_v2().is_ok())
+            .find(|c| c.enabled && !c.consumed_as_matte && c.matte_stencil.is_none() && c.timeline_in <= at && at < c.timeline_out && c.picture_v2().is_ok())
             .map(|c| c.id)
     }
 
@@ -266,6 +268,31 @@ mod tests {
         s.playhead = klipp_core::RationalTime::from_secs_f64(5.0, 25);
         s.toggle_graph_dock();
         assert_eq!(s.graph_dock_root, None, "no clip under the playhead");
+    }
+
+    /// A clip above used only as a matte (a title cutting the footage
+    /// into letters) is passed over: the dock shows the footage it
+    /// shapes, the picture on screen. Shown as itself, it is the one.
+    #[test]
+    fn the_dock_passes_over_a_matte_to_the_picture_it_shapes() {
+        let (mut s, id, _) = state();
+        let t = |x| klipp_core::RationalTime::from_secs_f64(x, 25);
+        let mut matte = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
+        matte.consumed_as_matte = true;
+        let matte_id = matte.id;
+        let mut above = klipp_timeline::Track::new("V2", klipp_timeline::TrackKind::Video);
+        above.clips.push(matte);
+        s.sequences[0].tracks.insert(0, above);
+        s.selected_clip = None;
+        s.graph_dock_root = None;
+        s.playhead = t(1.0);
+        s.toggle_graph_dock();
+        assert_eq!(s.graph_dock_root, Some(Root::Clip { clip: id.0 }), "the footage the matte shapes");
+        s.toggle_graph_dock();
+        s.sequences[0].tracks[0].clips[0].consumed_as_matte = false;
+        s.graph_dock_root = None;
+        s.toggle_graph_dock();
+        assert_eq!(s.graph_dock_root, Some(Root::Clip { clip: matte_id.0 }), "control: shown as itself, the clip above");
     }
 
     fn state() -> (AppState, ClipId, NodePath) {
