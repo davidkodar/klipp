@@ -39,6 +39,7 @@ mod text_on_path;
 pub mod text3d_mesh;
 pub mod text3d_render;
 pub use text_on_path::PathUnits;
+mod ruby;
 mod vertical;
 pub mod variable;
 mod vector_path;
@@ -283,6 +284,10 @@ pub struct CharPosition {
     /// The character reads right to left (#1693): the caret before it
     /// is at its right edge, after it at its left.
     pub rtl: bool,
+    /// The character is set in a column (#1704): `(x, y)` is its cell's
+    /// top left, `advance` runs down the column and `height` across it;
+    /// the caret before it lies across its top, after it across its foot.
+    pub vertical: bool,
 }
 
 /// One entry in `TitleRenderer`'s rasterized-frame cache. Keyed by
@@ -892,8 +897,9 @@ impl TitleRenderer {
             resolved_text.chars().next().unwrap().len_utf8()
         } else { 0 };
         let body_start = drop_cap_byte_end;
+        // A vertical drop cap is set with the columns (#1704).
         let drop_cap_wrap_eligible = drop_cap_active
-            && tb.alignment == TextAlignment::Left;
+            && tb.alignment == TextAlignment::Left && !tb.vertical_layout;
         // The cap is set in the face of the run over it, if any (#1505),
         // or the face it falls back to (#1503).
         let cap_face = faces.drawn(&tb.style_runs, &resolved_text, 0);
@@ -907,19 +913,14 @@ impl TitleRenderer {
 
         // Vertical text (#1507): set top to bottom in columns, from the
         // right unless the box says from the left, in vertical forms with
-        // sideways runs turned. Drop caps and wrap-under disable it.
-        let vertical_active = tb.vertical_layout && !drop_cap_active;
+        // sideways runs turned; a drop cap at the top of the first
+        // column, the body beside and below it (#1704).
+        let vertical_active = tb.vertical_layout;
         let mut vertical_glyphs: Vec<fontdue::layout::GlyphPosition> = Vec::new();
         let mut vertical_starts: Vec<usize> = Vec::new();
         if vertical_active {
-            let how = vertical::Columns {
-                length: box_h,
-                pitch: font_px * 1.2 * tb.line_spacing,
-                tracking: tb.tracking * scale,
-                left_to_right: tb.vertical_columns_ltr,
-                rtl: tb.text_direction == TextDirection::Rtl,
-            };
-            (vertical_glyphs, vertical_starts) = vertical::lay(&fonts, &resolved_text, &pieces_of(0, resolved_text.len()), &how);
+            let cap = drop_cap_active.then_some((drop_cap_byte_end, font_px * tb.drop_cap_scale, cap_face));
+            (vertical_glyphs, vertical_starts, _) = lay_vertical(&fonts, &resolved_text, &tb, font_px, scale, box_h, pieces_of, cap);
         }
 
         // Multi-column body layout. When `columns >= 2` we split the
@@ -1109,6 +1110,14 @@ impl TitleRenderer {
             }
         }
 
+        // Ruby (#1704): each run's gloss beside its text, laid after the
+        // text's glyphs and drawn with them; the text's lines and
+        // underlines are its own glyphs', the first `text_glyphs`.
+        let text_glyphs = glyphs_owned.len();
+        if !on_path && tb.style_runs.iter().any(|r| r.ruby.is_some()) {
+            let gloss = ruby::lay(&fonts, &glyphs_owned, &tb.style_runs, run_px, vertical_active);
+            glyphs_owned.extend(gloss);
+        }
         let glyphs = &glyphs_owned;
 
         // ── Text on path: rasterize per-glyph with rotation ──
@@ -1116,8 +1125,10 @@ impl TitleRenderer {
             let line = path_line;
             let lines = layout.lines().cloned().unwrap_or_default();
             let keys: Vec<&str> = faces.keys.iter().map(|k| k.0.as_str()).collect();
+            // A vertical box follows the path with its columns (#1704).
+            let columns = vertical_active.then_some(line_starts.as_slice());
             return self.render_layout_on_path(
-                &fonts, &keys, glyphs, &lines, title, text_path, line.as_ref(), time_secs, width, height, w, h, scale,
+                &fonts, &keys, glyphs, &lines, columns, title, text_path, line.as_ref(), time_secs, width, height, w, h, scale,
             );
         }
 
@@ -1326,9 +1337,9 @@ impl TitleRenderer {
         // and its place below the line, filled in the run's colour.
         let mut underline_fills: Vec<GlyphColorInfo> = Vec::new();
         if run_underlines {
-            for (from, to) in underline_stretches(glyphs, &tb.style_runs, &line_starts, tb.underline) {
+            for (from, to) in underline_stretches(&glyphs[..text_glyphs], &tb.style_runs, &line_starts, tb.underline) {
                 let line = line_of(&line_starts, from);
-                let (line_from, line_to) = (line_starts.get(line).copied().unwrap_or(0), line_starts.get(line + 1).copied().unwrap_or(glyphs.len()));
+                let (line_from, line_to) = (line_starts.get(line).copied().unwrap_or(0), line_starts.get(line + 1).copied().unwrap_or(text_glyphs));
                 // Ink only: a space has none.
                 let inked = |range: &[fontdue::layout::GlyphPosition]| range.iter().filter(|g| g.width > 0).copied().collect::<Vec<_>>();
                 let line_glyphs = inked(&glyphs[line_from..line_to]);
@@ -1427,6 +1438,7 @@ impl TitleRenderer {
         keys: &[&str],
         glyphs: &[fontdue::layout::GlyphPosition],
         lines: &[shaping::Line],
+        columns: Option<&[usize]>,
         title: &TitleData,
         text_path: &TextPath,
         line: Option<&text_on_path::PathLine>,
@@ -1443,23 +1455,57 @@ impl TitleRenderer {
         let gap = tb.font_size * scale * 0.3;
         let mut laid = vec![text_on_path::Laid { along: 0.0, below_baseline: 0.0 }; glyphs.len()];
         let mut carried = 0.0f32;
-        for l in lines {
-            let range = l.glyph_start..=l.glyph_end.min(glyphs.len().saturating_sub(1));
-            let left = range.clone().map(|i| glyphs[i].x).fold(f32::MAX, f32::min);
-            let right = range.clone().map(|i| glyphs[i].x + glyphs[i].width as f32).fold(f32::MIN, f32::max);
-            if left > right {
-                continue;
+        match columns {
+            // Vertical text (#1704): each column runs down the path, one
+            // after another, its middle on the path; a glyph across from
+            // the middle stands off the path to the column's right, which
+            // is the path's left once the column's foot points along it.
+            Some(starts) => {
+                for (k, &from) in starts.iter().enumerate() {
+                    let to = starts.get(k + 1).copied().unwrap_or(glyphs.len()).min(glyphs.len());
+                    let column = &glyphs[from.min(to)..to];
+                    let inked = || column.iter().filter(|g| g.width > 0 && g.height > 0);
+                    let top = inked().map(|g| g.y).fold(f32::MAX, f32::min);
+                    let foot = inked().map(|g| g.y + g.height as f32).fold(f32::MIN, f32::max);
+                    let left = inked().map(|g| g.x).fold(f32::MAX, f32::min);
+                    let right = inked().map(|g| g.x + g.width as f32).fold(f32::MIN, f32::max);
+                    if top > foot {
+                        continue;
+                    }
+                    let middle = (left + right) * 0.5;
+                    for (i, g) in column.iter().enumerate() {
+                        laid[from + i] = text_on_path::Laid { along: carried + g.y + g.height as f32 * 0.5 - top, below_baseline: middle - (g.x + g.width as f32 * 0.5) };
+                    }
+                    carried += foot - top + gap;
+                }
             }
-            for i in range {
-                let g = &glyphs[i];
-                laid[i] = text_on_path::Laid { along: carried + g.x + g.width as f32 * 0.5 - left, below_baseline: g.y + g.height as f32 * 0.5 - l.baseline };
+            None => {
+                for l in lines {
+                    let range = l.glyph_start..=l.glyph_end.min(glyphs.len().saturating_sub(1));
+                    let left = range.clone().map(|i| glyphs[i].x).fold(f32::MAX, f32::min);
+                    let right = range.clone().map(|i| glyphs[i].x + glyphs[i].width as f32).fold(f32::MIN, f32::max);
+                    if left > right {
+                        continue;
+                    }
+                    for i in range {
+                        let g = &glyphs[i];
+                        laid[i] = text_on_path::Laid { along: carried + g.x + g.width as f32 * 0.5 - left, below_baseline: g.y + g.height as f32 * 0.5 - l.baseline };
+                    }
+                    carried += right - left + gap;
+                }
             }
-            carried += right - left + gap;
         }
         let length = (carried - gap).max(1.0);
         let centre = [title.position().x * width as f32, title.position().y * height as f32];
         let offset = text_path.offset_at(time_secs.unwrap_or(0.0) as f64);
-        let placed = text_on_path::place(text_path, line, offset, &laid, length, centre, tb.baseline_shift * scale);
+        let mut placed = text_on_path::place(text_path, line, offset, &laid, length, centre, tb.baseline_shift * scale);
+        // A vertical glyph's foot points along the path: turned a
+        // quarter back from a horizontal one's (#1704).
+        if columns.is_some() {
+            for p in placed.iter_mut().flatten() {
+                p.angle -= std::f32::consts::FRAC_PI_2;
+            }
+        }
 
         let max_pad = effect_padding(title, scale);
         // Use the full frame as the mask (path text can go anywhere)
@@ -3251,6 +3297,12 @@ impl TitleRenderer {
         let font_px = font_px * fit;
         let run_px = |run: &StyleRun| run.font_size.unwrap_or(tb.font_size) * scale * case_scale * fit;
 
+        // Vertical text (#1704): each character in its cell of the
+        // columns the renderer sets.
+        if tb.vertical_layout {
+            return self.vertical_char_positions(title, &tb, &fonts, &faces, &resolved_text, font_px, scale, run_px, width, height);
+        }
+
         let h_align = h_align_of(tb.alignment);
 
         let mut layout = ShapedLayout::new();
@@ -3287,6 +3339,7 @@ impl TitleRenderer {
                 advance: font_px * 0.5,
                 height: font_px,
                 rtl: false,
+                vertical: false,
             }];
         }
 
@@ -3311,12 +3364,18 @@ impl TitleRenderer {
             }
         }
 
-        // Compute text bounding box and offset (same as render_layout)
+        // Compute text bounding box and offset (same as render_layout),
+        // the runs' glosses in it (#1704).
+        let gloss = if tb.text_path.is_none() && tb.style_runs.iter().any(|r| r.ruby.is_some()) {
+            ruby::lay(&fonts, &glyphs_owned, &tb.style_runs, run_px, false)
+        } else {
+            Vec::new()
+        };
         let mut text_min_x = f32::MAX;
         let mut text_min_y = f32::MAX;
         let mut text_max_x = f32::MIN;
         let mut text_max_y = f32::MIN;
-        for g in &glyphs_owned {
+        for g in glyphs_owned.iter().chain(&gloss) {
             text_min_x = text_min_x.min(g.x);
             text_min_y = text_min_y.min(g.y);
             text_max_x = text_max_x.max(g.x + g.width as f32);
@@ -3391,6 +3450,7 @@ impl TitleRenderer {
                     advance: if shared > 1 { share } else { advance },
                     height: glyph_height,
                     rtl,
+                    vertical: false,
                 });
             }
         }
@@ -3419,6 +3479,7 @@ impl TitleRenderer {
                         advance: 0.0,
                         height: prev.height,
                         rtl: prev.rtl,
+                        vertical: false,
                     });
                 } else if !positions.is_empty() {
                     let next = &positions[0];
@@ -3430,6 +3491,7 @@ impl TitleRenderer {
                         advance: 0.0,
                         height: next.height,
                         rtl: next.rtl,
+                        vertical: false,
                     });
                 }
             }
@@ -3446,9 +3508,97 @@ impl TitleRenderer {
                 advance: 0.0,
                 height: last.height,
                 rtl: last.rtl,
+                vertical: false,
             });
         }
 
+        filled
+    }
+
+    /// [`Self::compute_char_positions`] for a vertical box (#1704): the
+    /// glyphs laid in columns as `render_layout` lays them, glosses and
+    /// drop cap included, placed as it places them, each character its
+    /// cell of its column.
+    #[allow(clippy::too_many_arguments)]
+    fn vertical_char_positions(
+        &self,
+        title: &TitleData,
+        tb: &klipp_timeline::TextBox,
+        fonts: &[Face],
+        faces: &RunFaces,
+        resolved_text: &str,
+        font_px: f32,
+        scale: f32,
+        run_px: impl Fn(&StyleRun) -> f32 + Copy,
+        width: u32,
+        height: u32,
+    ) -> Vec<CharPosition> {
+        let (box_w, box_h) = text_box_extent(title, width, height);
+        let pieces_of = |from: usize, to: usize| faces.split(resolved_text, set_pieces(&tb.style_runs, &faces.of_run, from, to, font_px, run_px));
+        let cap = (tb.drop_cap_scale >= 1.0).then(|| (resolved_text.chars().next().map_or(0, char::len_utf8), font_px * tb.drop_cap_scale, faces.drawn(&tb.style_runs, resolved_text, 0)));
+        let (glyphs, _, cells) = lay_vertical(fonts, resolved_text, tb, font_px, scale, box_h, pieces_of, cap);
+        let gloss = if tb.text_path.is_none() && tb.style_runs.iter().any(|r| r.ruby.is_some()) {
+            ruby::lay(fonts, &glyphs, &tb.style_runs, run_px, true)
+        } else {
+            Vec::new()
+        };
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for g in glyphs.iter().chain(&gloss) {
+            (x0, y0) = (x0.min(g.x), y0.min(g.y));
+            (x1, y1) = (x1.max(g.x + g.width as f32), y1.max(g.y + g.height as f32));
+        }
+        if glyphs.is_empty() {
+            return Vec::new();
+        }
+        let alignment = if tb.alignment == TextAlignment::Justify { TextAlignment::Center } else { tb.alignment };
+        let offset_x = text_offset_x(alignment, title.position().x * width as f32, x1 - x0, x0, box_w);
+        let offset_y = text_offset_y(tb.vertical_align, title.position().y * height as f32, box_h, y1 - y0, y0) + tb.baseline_shift * scale;
+        let char_of = |byte: usize| tb.text[..byte.min(tb.text.len())].chars().count();
+        let mut starts: Vec<usize> = glyphs.iter().map(|g| g.byte_offset).collect();
+        starts.sort_unstable();
+        starts.dedup();
+        let mut positions: Vec<CharPosition> = Vec::new();
+        for (g, cell) in glyphs.iter().zip(&cells) {
+            // A cluster's characters share its cell down the column.
+            let next = starts.iter().find(|&&b| b > g.byte_offset).copied().unwrap_or(resolved_text.len());
+            // A line break after it is no part of it: it has no glyph.
+            let shared = resolved_text.get(g.byte_offset..next).map_or(1, |s| s.split('\n').next().unwrap_or("").chars().count().max(1));
+            let share = cell[2] / shared as f32;
+            let first = char_of(g.byte_offset);
+            for k in 0..shared {
+                positions.push(CharPosition {
+                    char_index: first + k,
+                    byte_offset: tb.text.char_indices().nth(first + k).map_or(g.byte_offset, |(b, _)| b),
+                    x: cell[0] + offset_x,
+                    y: cell[1] + offset_y + share * k as f32,
+                    advance: share,
+                    height: cell[3],
+                    rtl: false,
+                    vertical: true,
+                });
+            }
+        }
+        positions.sort_by_key(|p| p.char_index);
+        positions.dedup_by_key(|p| p.char_index);
+        // A character with no glyph (a line break) at the foot of the one
+        // before; the end of the text after the last.
+        let count = tb.text.chars().count();
+        let mut filled: Vec<CharPosition> = Vec::with_capacity(count + 1);
+        let mut at = positions.into_iter().peekable();
+        for ci in 0..=count {
+            if let Some(p) = at.next_if(|p| p.char_index == ci) {
+                filled.push(p);
+                continue;
+            }
+            let Some(prev) = filled.last() else { continue };
+            filled.push(CharPosition {
+                char_index: ci,
+                byte_offset: tb.text.char_indices().nth(ci).map_or(tb.text.len(), |(b, _)| b),
+                y: prev.y + prev.advance,
+                advance: 0.0,
+                ..prev.clone()
+            });
+        }
         filled
     }
 
@@ -4199,6 +4349,59 @@ fn layout_drop_cap_wrap(
 /// A piece of a text box's text (#1505): its byte range in the text,
 /// and the size and face (an index into the box's fonts) it is set in.
 type Piece = (usize, usize, f32, usize);
+
+/// A vertical box's glyphs, in frame pixels from the block's top left,
+/// where each column's glyphs start (#1507), and each glyph's cell as
+/// [`vertical::lay_cells`] gives it. A drop cap `cap`
+/// (`(end byte, size, face)`) stands at the top of the first column,
+/// as many columns wide as it needs, the body's first columns starting
+/// below it (#1704).
+#[allow(clippy::too_many_arguments)]
+fn lay_vertical(
+    fonts: &[Face],
+    text: &str,
+    tb: &klipp_timeline::TextBox,
+    font_px: f32,
+    scale: f32,
+    box_h: f32,
+    pieces_of: impl Fn(usize, usize) -> Vec<Piece>,
+    cap: Option<(usize, f32, usize)>,
+) -> (Vec<fontdue::layout::GlyphPosition>, Vec<usize>, Vec<[f32; 4]>) {
+    // A gloss beside a column takes room of its own between columns.
+    let glossed = tb.style_runs.iter().any(|r| r.ruby.is_some());
+    let pitch = font_px * (1.2 + if glossed { ruby::RUBY_SCALE } else { 0.0 }) * tb.line_spacing;
+    let how = vertical::Columns {
+        length: box_h,
+        pitch,
+        tracking: tb.tracking * scale,
+        left_to_right: tb.vertical_columns_ltr,
+        rtl: tb.text_direction == TextDirection::Rtl,
+        indent: (0, 0.0),
+    };
+    let Some((cap_end, cap_px, cap_face)) = cap else {
+        return vertical::lay_cells(fonts, text, &pieces_of(0, text.len()), &how);
+    };
+    // The cap's columns, and the body below it in those.
+    let spans = ((cap_px / pitch).ceil() as usize).max(1);
+    let below = cap_px + font_px * 0.1;
+    let (mut body, body_starts, mut body_cells) = vertical::lay_cells(fonts, text, &pieces_of(cap_end, text.len()), &vertical::Columns { indent: (spans, below), ..how });
+    let (mut capped, _, mut cells) = vertical::lay_cells(fonts, text, &[(0, cap_end, cap_px, cap_face)], &vertical::Columns { length: f32::MAX, pitch: pitch * spans as f32, indent: (0, 0.0), ..how });
+    // Columns run from the right: the first ones, the cap's, rightmost.
+    let total = body_starts.len().max(spans);
+    let (cap_x, body_x) = if how.left_to_right { (0.0, 0.0) } else { ((total - spans) as f32 * pitch, (total - body_starts.len()) as f32 * pitch) };
+    capped.iter_mut().for_each(|g| g.x += cap_x);
+    cells.iter_mut().for_each(|c| c[0] += cap_x);
+    body.iter_mut().for_each(|g| g.x += body_x);
+    body_cells.iter_mut().for_each(|c| c[0] += body_x);
+    let n = capped.len();
+    let mut starts: Vec<usize> = body_starts.iter().map(|s| s + n).collect();
+    if let Some(first) = starts.first_mut() {
+        *first = 0;
+    }
+    capped.extend(body);
+    cells.extend(body_cells);
+    (capped, starts, cells)
+}
 
 /// Lay `pieces` of `text` into `layout` one after another, each at its
 /// own size and face, and the glyphs with byte offsets into `text`.
@@ -6854,6 +7057,8 @@ pub struct GlyphCacheEntry {
 ///   so positions laid out before shaping changed do not match (#1501)
 /// * [`FALLBACK_VERSION`], so positions laid out before the fallback
 ///   chain changed which face draws a character do not match (#1503)
+/// * `vertical_layout`, `vertical_columns_ltr` and, in a vertical box,
+///   `drop_cap_scale`: the columns the caret follows (#1704)
 /// * `position()` — the title's frame-relative offset
 /// * `frame_w`, `frame_h` — render resolution
 ///
@@ -6884,6 +7089,12 @@ fn layout_hash_with(td: &TitleData, frame_w: u32, frame_h: u32, fallback_version
     tb.tracking.to_bits().hash(&mut h);
     tb.line_spacing.to_bits().hash(&mut h);
     tb.baseline_shift.to_bits().hash(&mut h);
+    // Vertical text sets the characters in columns (#1704).
+    tb.vertical_layout.hash(&mut h);
+    if tb.vertical_layout {
+        tb.vertical_columns_ltr.hash(&mut h);
+        tb.drop_cap_scale.to_bits().hash(&mut h);
+    }
     // The path the text follows, when it follows one (#1508).
     if let Some(path) = &tb.text_path {
         serde_json::to_string(path).unwrap_or_default().hash(&mut h);
@@ -8194,8 +8405,8 @@ mod tests {
         text: "Hello World".to_string(),
         font_size: 72.0,
         style_runs: vec![
-                    StyleRun { start: 0, end: 5, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new() },
-                    StyleRun { start: 6, end: 11, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new() },
+                    StyleRun { start: 0, end: 5, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new(), ruby: None },
+                    StyleRun { start: 6, end: 11, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new(), ruby: None },
                 ],
         ..Default::default()
     };
@@ -8248,9 +8459,9 @@ mod tests {
         text: text.to_string(),
         font_size: 72.0,
         style_runs: vec![
-                    StyleRun { start: 0, end: 3, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new() }, // ABC
-                    StyleRun { start: 3, end: 7, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new() },  // DEFG
-                    StyleRun { start: 7, end: 10, font_size: Some(72.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new() }, // HIJ
+                    StyleRun { start: 0, end: 3, font_size: Some(100.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new(), ruby: None }, // ABC
+                    StyleRun { start: 3, end: 7, font_size: Some(50.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new(), ruby: None },  // DEFG
+                    StyleRun { start: 7, end: 10, font_size: Some(72.0), color: None, font_name: None, font_style: None, tracking: None, baseline_offset: None, features: Vec::new(), underline: None, font_weight: None, font_axes: Vec::new(), ruby: None }, // HIJ
                 ],
         ..Default::default()
     };
@@ -9825,6 +10036,7 @@ mod tests {
                     underline: None,
                     font_weight: None,
                     font_axes: Vec::new(),
+                    ruby: None,
                 });
             })
         });
@@ -10466,14 +10678,15 @@ mod style_run_tests {
         // Taken on main at e4618c0f1, before #1505; the last, "Hello
         // world" in Inter, retaken with #1501's shaping, which kerns it;
         // the vertical "Hi there" retaken with #1507, which turns Latin
-        // sideways in a column.
+        // sideways in a column, and its cursor with #1704, which puts the
+        // characters where the column sets them.
         let before = [
             (537262310058089473, 12990052878724863373),
             (9375910112802164878, 7007222290492971662),
             (17185529782468128921, 6239473186763768033),
             (1323807162608565093, 12990052878724863373),
             (12328210842903889326, 12990052878724863373),
-            (13922581151920256384, 10202472981451332177),
+            (13922581151920256384, 382594927444531904),
             (5448820052067944582, 6194283091192519508),
             (7193490694850778374, 224027851749628502),
             (7400897415938749996, 9238244902904153988),
@@ -10918,7 +11131,8 @@ mod fallback_tests {
             (pixels, cursor)
         }).collect();
         // Taken on main at ee722dcb6, before #1503; the vertical "Ωé"
-        // retaken with #1507, which turns them sideways in a column.
+        // retaken with #1507, which turns them sideways in a column, and
+        // its cursor with #1704, which follows the column.
         let before = [
             (12362235235435922744, 11758040230992881638),
             (11429411338127416158, 14383662946162571450),
@@ -10928,7 +11142,7 @@ mod fallback_tests {
             (3193317923789182864, 14796392279787328656),
             (17543495563288601848, 15058820355971908112),
             (1948305321527838988, 11067866960264763338),
-            (14617716708989983263, 16988677102251989457),
+            (14617716708989983263, 7285711496372817013),
         ];
         assert_eq!(hashes, before, "text its face covers draws or lays out differently");
     }

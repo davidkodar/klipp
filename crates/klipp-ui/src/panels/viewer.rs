@@ -1625,6 +1625,31 @@ impl ViewerPanel {
             if positions.is_empty() {
                 return None;
             }
+            // Vertical text (#1704): the column under the pointer, then
+            // the nearest cell edge down it.
+            if positions[0].vertical {
+                let column_of = |cp: &klipp_title::CharPosition| (to_screen(cp.x, cp.y).x, to_screen(cp.x + cp.height, cp.y).x);
+                let mut best_column: Option<(f32, f32)> = None;
+                for cp in positions.iter() {
+                    let (left, right) = column_of(cp);
+                    let d = if p.x < left { left - p.x } else if p.x > right { p.x - right } else { 0.0 };
+                    if best_column.is_none_or(|(bd, _)| d < bd) {
+                        best_column = Some((d, left));
+                    }
+                }
+                let column_left = best_column?.1;
+                let mut best: Option<(f32, usize)> = None;
+                for cp in positions.iter().filter(|cp| (column_of(cp).0 - column_left).abs() <= 0.5) {
+                    let (top, foot) = (to_screen(cp.x, cp.y).y, to_screen(cp.x, cp.y + cp.advance).y);
+                    for (edge, idx) in [(top, cp.char_index), (foot, cp.char_index + 1)] {
+                        let d = (p.y - edge).abs();
+                        if best.is_none_or(|(bd, _)| d < bd) {
+                            best = Some((d, idx));
+                        }
+                    }
+                }
+                return best.map(|(_, i)| i);
+            }
             // The row under the pointer (nearest row when between
             // lines), then the nearest glyph edge within it.
             let row_of = |cp: &klipp_title::CharPosition| (to_screen(cp.x, cp.y).y, to_screen(cp.x, cp.y + cp.height).y);
@@ -1741,26 +1766,18 @@ impl ViewerPanel {
         if let Some((s, e)) = state.viewer_text_selection {
             let fill = egui::Color32::from_rgba_unmultiplied(theme.accent.r(), theme.accent.g(), theme.accent.b(), 90);
             for cp in positions.iter().filter(|cp| cp.char_index >= s && cp.char_index < e) {
-                let r = egui::Rect::from_min_max(to_screen(cp.x, cp.y), to_screen(cp.x + cp.advance, cp.y + cp.height));
+                // A vertical cell runs down its column (#1704).
+                let (across, down) = if cp.vertical { (cp.height, cp.advance) } else { (cp.advance, cp.height) };
+                let r = egui::Rect::from_min_max(to_screen(cp.x, cp.y), to_screen(cp.x + across, cp.y + down));
                 painter.rect_filled(r, 0.0, fill);
             }
         }
-        let caret = {
-            let c = state.viewer_text_cursor;
-            // Before a character, at its reading start: its right edge
-            // when it reads right to left (#1693).
-            if let Some(cp) = positions.iter().find(|cp| cp.char_index == c) {
-                Some((if cp.rtl { cp.x + cp.advance } else { cp.x }, cp.y, cp.height))
-            } else {
-                positions.last().map(|l| (if l.rtl { l.x } else { l.x + l.advance }, l.y, l.height))
-            }
-        };
-        if let Some((x, y, h)) = caret {
+        if let Some([a, b]) = caret_ends(positions, state.viewer_text_cursor) {
             let t = ui.input(|i| i.time);
             let since = t - state.viewer_text_cursor_blink_time;
             let on = since < 0.05 || (since * 2.0).fract() < 0.5;
             if on {
-                painter.line_segment([to_screen(x, y), to_screen(x, y + h)], egui::Stroke::new(2.0_f32, theme.text_primary));
+                painter.line_segment([to_screen(a.0, a.1), to_screen(b.0, b.1)], egui::Stroke::new(2.0_f32, theme.text_primary));
             }
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(80));
         } else if positions.is_empty() {
@@ -6550,6 +6567,29 @@ fn parse_hmsf(input: &str, rate: u32) -> Option<RationalTime> {
 // ── WYSIWYG text edit helpers ──
 
 /// Convert a character index to a byte offset in the string.
+/// The in-place editor's caret before character `cursor`, its two ends
+/// in frame pixels: at the character's reading start, its right edge
+/// when it reads right to left (#1693), across its top in a column
+/// (#1704); past the last character, at its reading end.
+pub(crate) fn caret_ends(positions: &[klipp_title::CharPosition], cursor: usize) -> Option<[(f32, f32); 2]> {
+    if let Some(cp) = positions.iter().find(|cp| cp.char_index == cursor) {
+        return Some(if cp.vertical {
+            [(cp.x, cp.y), (cp.x + cp.height, cp.y)]
+        } else {
+            let x = if cp.rtl { cp.x + cp.advance } else { cp.x };
+            [(x, cp.y), (x, cp.y + cp.height)]
+        });
+    }
+    positions.last().map(|l| {
+        if l.vertical {
+            [(l.x, l.y + l.advance), (l.x + l.height, l.y + l.advance)]
+        } else {
+            let x = if l.rtl { l.x } else { l.x + l.advance };
+            [(x, l.y), (x, l.y + l.height)]
+        }
+    })
+}
+
 fn char_to_byte(s: &str, char_idx: usize) -> usize {
     s.char_indices()
         .nth(char_idx)
@@ -7152,6 +7192,7 @@ mod text_editor_tests {
                 advance,
                 height,
                 rtl: false,
+                vertical: false,
             });
         }
         // End-of-text position
@@ -7164,6 +7205,7 @@ mod text_editor_tests {
             advance: 0.0,
             height,
             rtl: false,
+            vertical: false,
         });
         positions
     }
@@ -7221,6 +7263,7 @@ mod text_editor_tests {
             advance: 0.0,
             height: 30.0,
             rtl: false,
+            vertical: false,
         });
         // Second line: "World" at y=90
         for (i, (bi, _)) in "World".char_indices().enumerate() {
@@ -7232,6 +7275,7 @@ mod text_editor_tests {
                 advance: 20.0,
                 height: 30.0,
                 rtl: false,
+                vertical: false,
             });
         }
         // End of text
@@ -7243,6 +7287,7 @@ mod text_editor_tests {
             advance: 0.0,
             height: 30.0,
             rtl: false,
+            vertical: false,
         });
 
         // Click on first line

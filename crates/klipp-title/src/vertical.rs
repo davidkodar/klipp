@@ -34,6 +34,9 @@ pub(crate) struct Columns {
     pub(crate) left_to_right: bool,
     /// The bidi base direction of a sideways run.
     pub(crate) rtl: bool,
+    /// A drop cap's room (#1704): the first this many columns start
+    /// this far down, below the cap.
+    pub(crate) indent: (usize, f32),
 }
 
 /// A glyph set in a column: its place from the column's middle and
@@ -63,14 +66,27 @@ struct Item {
 
 /// The text laid in columns: its glyphs, in its order, in frame pixels
 /// from the block's top left, and where each column's glyphs start.
+#[cfg(test)]
 pub(crate) fn lay(faces: &[Face], text: &str, pieces: &[Piece], how: &Columns) -> (Vec<GlyphPosition>, Vec<usize>) {
+    let (glyphs, starts, _) = lay_cells(faces, text, pieces, how);
+    (glyphs, starts)
+}
+
+/// [`lay`], and each glyph's cell `[left, top, length, width]`: the
+/// stretch of its column it takes, from its column's left edge and its
+/// top, down the column and across it. The caret goes along a cell's
+/// top and foot (#1704).
+pub(crate) fn lay_cells(faces: &[Face], text: &str, pieces: &[Piece], how: &Columns) -> (Vec<GlyphPosition>, Vec<usize>, Vec<[f32; 4]>) {
     let items = items(faces, text, pieces, how);
     // Columns: items until the next would pass the column's foot.
     let mut columns: Vec<Vec<Item>> = vec![Vec::new()];
     let mut used = 0.0f32;
+    // A column under the drop cap is shorter by the cap.
+    let room = |k: usize| if k < how.indent.0 { (how.length - how.indent.1).max(0.0) } else { how.length };
     for item in items {
+        let k = columns.len() - 1;
         let column = columns.last_mut().expect("a column");
-        let fits = used + item.advance <= how.length + 0.5 || column.is_empty();
+        let fits = used + item.advance <= room(k) + 0.5 || column.is_empty();
         // Closing punctuation stays at the foot of the column before.
         let held = !fits && NO_START.contains(item.first);
         if fits || held {
@@ -104,19 +120,29 @@ pub(crate) fn lay(faces: &[Face], text: &str, pieces: &[Piece], how: &Columns) -
     let n = columns.len();
     let mut glyphs = Vec::new();
     let mut starts = Vec::new();
+    let mut cells = Vec::new();
     for (k, column) in columns.iter().enumerate() {
         let slot = if how.left_to_right { k } else { n - 1 - k };
         let middle = slot as f32 * how.pitch + how.pitch * 0.5;
         starts.push(glyphs.len());
-        let mut top = 0.0f32;
+        let mut top = if k < how.indent.0 { how.indent.1 } else { 0.0 };
         for item in column {
-            for g in &item.glyphs {
+            for (i, g) in item.glyphs.iter().enumerate() {
                 glyphs.push(position(faces, text, g, middle + g.x, top + g.y));
+                // A sideways word's glyph from its pen to the next's; an
+                // upright cluster or pair shares the item's cell.
+                let cell = if g.sideways {
+                    let next = item.glyphs.get(i + 1).map_or(item.advance, |n| n.y);
+                    [top + g.y, (next - g.y).max(0.0)]
+                } else {
+                    [top, item.advance]
+                };
+                cells.push([middle - how.pitch * 0.5, cell[0], cell[1], how.pitch]);
             }
             top += item.advance;
         }
     }
-    (glyphs, starts)
+    (glyphs, starts, cells)
 }
 
 /// A glyph's box placed with its drawing origin at `(x, y)`: upright,
@@ -174,12 +200,59 @@ fn items(faces: &[Face], text: &str, pieces: &[Piece], how: &Columns) -> Vec<Ite
         for (a, b, up) in runs {
             if up {
                 upright_items(face, face_i, px, piece, start, a, b, how, &mut out);
+            } else if upright_pair(&piece[a..b]) {
+                pair_item(face, face_i, px, piece, start, a, b, how, &mut out);
             } else {
                 sideways_items(face, face_i, px, piece, start, a, b, how, &mut out);
             }
         }
     }
     out
+}
+
+/// Whether a run that would lie sideways stands upright instead, side
+/// by side in one cell of the column (tate-chu-yoko, #1704): one or two
+/// ASCII digits or letters, such as "12" or "AB".
+fn upright_pair(run: &str) -> bool {
+    (1..=2).contains(&run.chars().count()) && run.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+/// A short run set upright and side by side in one em of the column
+/// (#1704): shaped as a line, squeezed to the em when wider, its middle
+/// on the column's and its em box in the cell's middle.
+#[allow(clippy::too_many_arguments)]
+fn pair_item(face: &Face, face_i: usize, px: f32, piece: &str, base: usize, a: usize, b: usize, how: &Columns, out: &mut Vec<Item>) {
+    let run = &piece[a..b];
+    let scale = face.font.font.scale_factor(px);
+    // Each glyph and its advance at full size.
+    let mut line: Vec<(u16, usize, f32, f32)> = Vec::new();
+    match shape_horizontal(face, run, false) {
+        Some(shaped) => {
+            for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
+                line.push((u16::try_from(info.glyph_id).unwrap_or(0), base + a + info.cluster as usize, pos.x_offset as f32 * scale, pos.x_advance as f32 * scale));
+            }
+        }
+        None => {
+            for (i, c) in run.char_indices() {
+                let gid = face.font.font.lookup_glyph_index(c);
+                line.push((gid, base + a + i, 0.0, face.font.metrics_indexed(gid, px).advance_width));
+            }
+        }
+    }
+    let wide: f32 = line.iter().map(|g| g.3).sum();
+    let k = if wide > px { px / wide } else { 1.0 };
+    let small = px * k;
+    let (ascent, descent) = face.font.font.horizontal_line_metrics(small).map_or((small * 0.8, -small * 0.2), |m| (m.ascent, m.descent));
+    let baseline = px * 0.5 + (ascent + descent) * 0.5;
+    let mut pen = -wide * k * 0.5;
+    let mut glyphs = Vec::with_capacity(line.len());
+    for (gid, byte, offset, advance) in line {
+        glyphs.push(Set { gid, face: face_i, px: small, byte, sideways: false, x: pen + offset * k, y: baseline });
+        pen += advance * k;
+    }
+    let first = run.chars().next().unwrap_or(' ');
+    let last = run.chars().last().unwrap_or(' ');
+    out.push(Item { glyphs, advance: px + how.tracking, first, last, breaks: false });
 }
 
 /// An upright run's clusters as items, each glyph set about the
@@ -312,7 +385,7 @@ mod tests {
     }
 
     fn how(length: f32) -> Columns {
-        Columns { length, pitch: 48.0, tracking: 0.0, left_to_right: false, rtl: false }
+        Columns { length, pitch: 48.0, tracking: 0.0, left_to_right: false, rtl: false, indent: (0, 0.0) }
     }
 
     fn glyph_of<'a>(glyphs: &'a [GlyphPosition], text: &str, c: char) -> &'a GlyphPosition {
@@ -407,12 +480,7 @@ mod tests {
     /// first on the right.
     #[test]
     fn a_vertical_title_renders_in_columns() {
-        let mut r = crate::TitleRenderer::new();
-        r.system_fallback = false;
-        let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fonts/NotoSansCJKjp-subset.otf"));
-        let traits = crate::variable::face_traits(&std::fs::read(&path).unwrap()).unwrap();
-        let info = crate::font_discovery::FontInfo { family: "JP Test".into(), style: "Regular".into(), path, weight: traits.weight, italic: traits.italic, axes: traits.axes };
-        r.font_registry = std::sync::Arc::new([("JP Test".to_string(), vec![info])].into_iter().collect());
+        let mut r = jp_renderer();
         let tb = klipp_timeline::TextBox { text: "縦書きの題\nテスト".into(), font_size: 60.0, font_name: "JP Test".into(), vertical_layout: true, ..Default::default() };
         let td = klipp_timeline::TitleData::single_text_fx(tb, klipp_timeline::LayerFx::default());
         let layout = r.render_layout(&td, 1920, 1080);
@@ -420,5 +488,220 @@ mod tests {
         let ink_x: Vec<usize> = (0..layout.mask_w as usize).filter(|&x| (0..layout.mask_h as usize).any(|y| layout.alpha_mask[y * layout.mask_w as usize + x] > 0)).collect();
         let gaps = ink_x.windows(2).filter(|w| w[1] > w[0] + 4).count();
         assert_eq!(gaps, 1, "two columns of ink");
+    }
+
+    /// A renderer whose only face is the Japanese test font, "JP Test".
+    fn jp_renderer() -> crate::TitleRenderer {
+        let mut r = crate::TitleRenderer::new();
+        r.system_fallback = false;
+        let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fonts/NotoSansCJKjp-subset.otf"));
+        let traits = crate::variable::face_traits(&std::fs::read(&path).unwrap()).unwrap();
+        let info = crate::font_discovery::FontInfo { family: "JP Test".into(), style: "Regular".into(), path, weight: traits.weight, italic: traits.italic, axes: traits.axes };
+        r.font_registry = std::sync::Arc::new([("JP Test".to_string(), vec![info])].into_iter().collect());
+        r
+    }
+
+    /// `text` in a vertical "JP Test" box, 60 px, `set` on it.
+    fn vertical_title(text: &str, set: impl FnOnce(&mut klipp_timeline::TextBox)) -> klipp_timeline::TitleData {
+        let mut tb = klipp_timeline::TextBox { text: text.into(), font_size: 60.0, font_name: "JP Test".into(), vertical_layout: true, ..Default::default() };
+        set(&mut tb);
+        klipp_timeline::TitleData::single_text_fx(tb, klipp_timeline::LayerFx::default())
+    }
+
+    /// A box's middle.
+    fn mid(b: [i32; 4]) -> (f32, f32) {
+        ((b[0] + b[2]) as f32 * 0.5, (b[1] + b[3]) as f32 * 0.5)
+    }
+
+    /// #1704: two digits or two Latin letters between kanji stand
+    /// upright, side by side in one cell of the column, its middle on the
+    /// column's; three lie sideways as before.
+    #[test]
+    fn two_digits_stand_upright_in_one_cell() {
+        let jp = font("NotoSansCJKjp-subset.otf");
+        let faces = [Face::new(&jp, &[])];
+        let em = 40.0;
+        let one = |text: &str| lay(&faces, text, &[(0, text.len(), em, 0)], &how(10_000.0)).0;
+        for (text, a, b) in [("縦20題", '2', '0'), ("縦AB題", 'A', 'B')] {
+            let glyphs = one(text);
+            let (first, second) = (glyph_of(&glyphs, text, a), glyph_of(&glyphs, text, b));
+            assert!(first.key.px > 0.0 && second.key.px > 0.0, "{text}: upright");
+            assert!(first.x + first.width as f32 <= second.x + 1.0, "{text}: side by side, in reading order");
+            assert!((first.y + first.height as f32 * 0.5 - (second.y + second.height as f32 * 0.5)).abs() < 3.0, "{text}: on one row");
+            // In the column: its middle the column's (pitch 48, so 24).
+            let (left, right) = (first.x, second.x + second.width as f32);
+            assert!(((left + right) * 0.5 - 24.0).abs() < 3.0 && right - left <= em + 1.0, "{text}: centred within an em: {left}..{right}");
+            // One cell: the kanji after it one em further down than
+            // the pair is below the kanji before.
+            let (before, after) = (glyph_of(&glyphs, text, '縦'), glyph_of(&glyphs, text, '題'));
+            assert!(((after.y - before.y) - 2.0 * em).abs() <= 3.0, "{text}: the pair takes one em: {} to {}", before.y, after.y);
+            assert!(before.y + before.height as f32 <= first.y && second.y + second.height as f32 <= after.y, "{text}: between the kanji");
+        }
+        // Three letters lie sideways.
+        let glyphs = one("縦ABC題");
+        assert!(glyph_of(&glyphs, "縦ABC題", 'A').key.px < 0.0);
+    }
+
+    /// #1704: ruby, a run's reading gloss, at half the run's size: down
+    /// the right of its column in vertical text, over its text in
+    /// horizontal text, centred on what it reads, drawn in the run's
+    /// colour.
+    #[test]
+    fn ruby_sits_beside_its_base_text() {
+        let mut r = jp_renderer();
+        let text = "縦書の題";
+        let base = "縦書".len();
+        let glossed = |vertical: bool| {
+            vertical_title(text, |tb| {
+                tb.vertical_layout = vertical;
+                tb.style_runs.push(klipp_timeline::StyleRun { ruby: Some("かき".into()), color: Some([255, 0, 0, 255]), ..klipp_timeline::StyleRun::default_for_range(0, base) });
+            })
+        };
+        for vertical in [true, false] {
+            let layout = r.render_layout(&glossed(vertical), 1920, 1080);
+            let chars = text.chars().count();
+            assert_eq!(layout.glyph_count, chars + 2, "the text and its two-letter gloss");
+            let (kanji, gloss) = (&layout.glyph_boxes[..2], &layout.glyph_boxes[chars..]);
+            assert_eq!(&layout.glyph_parents[chars..], ['か', 'き']);
+            let height = |b: &[i32; 4]| b[3] - b[1];
+            assert!(gloss.iter().all(|g| height(g) < height(&kanji[0]) * 2 / 3), "small: {gloss:?} by {kanji:?}");
+            let span = |bs: &[[i32; 4]]| (bs.iter().map(|b| b[0]).min().unwrap(), bs.iter().map(|b| b[1]).min().unwrap(), bs.iter().map(|b| b[2]).max().unwrap(), bs.iter().map(|b| b[3]).max().unwrap());
+            let (k, g) = (span(kanji), span(gloss));
+            if vertical {
+                assert!(g.0 >= k.2, "right of the column: gloss {g:?}, base {k:?}");
+                assert!(g.0 - k.2 < 30, "close by: {g:?}, {k:?}");
+                assert!(((g.1 + g.3) - (k.1 + k.3)).abs() <= 8, "centred down the base: {g:?}, {k:?}");
+                assert!(g.1 > k.1 && g.3 < k.3, "a gloss shorter than its base sits within it: {g:?}, {k:?}");
+            } else {
+                assert!(g.3 <= k.1, "above the base: gloss {g:?}, base {k:?}");
+                assert!(k.1 - g.3 < 30, "close by: {g:?}, {k:?}");
+                assert!(((g.0 + g.2) - (k.0 + k.2)).abs() <= 8, "centred over the base: {g:?}, {k:?}");
+            }
+            // Drawn, in the run's colour.
+            let px = r.render(&glossed(vertical), 1920, 1080);
+            let (cx, cy) = mid(gloss[0]);
+            let red = (g.1..g.3).flat_map(|y| (g.0..g.2).map(move |x| (x, y))).filter(|&(x, y)| {
+                let p = &px[((y as usize) * 1920 + x as usize) * 4..][..4];
+                p[3] > 128 && p[0] > 200 && p[1] < 60
+            });
+            assert!(red.count() > 20, "the gloss is drawn in red near ({cx}, {cy})");
+        }
+        // A run without a gloss adds nothing.
+        let plain = r.render_layout(&vertical_title(text, |_| {}), 1920, 1080);
+        assert_eq!(plain.glyph_count, text.chars().count());
+    }
+
+    /// #1704: a vertical drop cap stands at the top of the first column,
+    /// as many columns wide as it is; the body starts below it in those
+    /// columns and at the top in the ones after.
+    #[test]
+    fn a_vertical_drop_cap_stands_atop_the_first_column() {
+        let mut r = jp_renderer();
+        let text = "縦書きの題\nかきあいう\nかきあいう\nかきあいう\nかきあいう\nかきあいう";
+        let capped = r.render_layout(&vertical_title(text, |tb| tb.drop_cap_scale = 3.0), 1920, 1080);
+        let plain = r.render_layout(&vertical_title(text, |_| {}), 1920, 1080);
+        let (cap, rest) = (capped.glyph_boxes[0], &capped.glyph_boxes[1..]);
+        let inked: Vec<[i32; 4]> = rest.iter().copied().filter(|b| b[2] > b[0]).collect();
+        let (top, right) = (inked.iter().map(|b| b[1]).min().unwrap(), inked.iter().map(|b| b[2]).max().unwrap());
+        // Three times the size, at the top right of the block.
+        let size = |b: [i32; 4]| b[3] - b[1];
+        assert!(size(cap) > size(plain.glyph_boxes[0]) * 5 / 2, "a cap: {cap:?} vs {:?}", plain.glyph_boxes[0]);
+        assert!((cap[1] - top).abs() < 30 && cap[1] <= top + 30, "at the top: {cap:?}, the body from {top}");
+        assert!((cap[2] - right).abs() < 40, "over the first column, on the right: {cap:?}, the body to {right}");
+        // The body's first character goes below the cap, in its column.
+        let first = capped.glyph_boxes[1];
+        assert!(first[1] >= cap[3], "below the cap: {first:?} under {cap:?}");
+        assert!(mid(first).0 > cap[0] as f32 && mid(first).0 < cap[2] as f32, "in a column under the cap: {first:?}, {cap:?}");
+        // A column past the cap's starts at the top, left of it.
+        let beside = inked.iter().filter(|b| b[2] <= cap[0] && (b[1] - top).abs() < 10).count();
+        assert!(beside >= 1, "the body beside the cap, from the top: {inked:?}");
+        // Without a drop cap, the first character is a body character.
+        assert!(size(plain.glyph_boxes[0]) < 80);
+    }
+
+    /// #1704: a vertical box on a drawn path follows it with its columns:
+    /// down a column is along the path, so a column of long vowel marks
+    /// (each upright a vertical bar) lies along a level path as a line,
+    /// the characters in their order from the path's start.
+    #[test]
+    fn a_vertical_text_follows_a_drawn_path_with_its_columns() {
+        use klipp_core::vector_path::{PathContour, PathPose, PathVertex};
+        use klipp_timeline::{ObjectTransform, PathTextAlign, Shape, ShapeKind, TextPath, TitleData, TitleObjectContent, TitlePosition, VectorPath};
+        let level = |p: [f32; 2]| PathVertex { point: p, incoming: p, outgoing: p };
+        let pose = PathPose { stroke_glow: None, contours: vec![PathContour { closed: false, vertices: vec![level([0.1, 0.5]), level([0.9, 0.5])] }], fill: [0.0; 4], stroke: [0.0; 4], stroke_width: 0.0 };
+        let on_path = |text: &str, vertical: bool| {
+            let mut td = TitleData::default();
+            td.objects.clear();
+            let whole = ObjectTransform { center: TitlePosition { x: 0.5, y: 0.5 }, size: TitlePosition { x: 1.0, y: 1.0 }, ..klipp_timeline::default_text_transform() };
+            let layer = td.add_object(TitleObjectContent::Shape(Shape { kind: ShapeKind::Path(VectorPath { trim: None, pose: pose.clone(), keyframes: Vec::new() }), fill: None, gradient: None, stroke: None, fit: None }), whole);
+            let tb = klipp_timeline::TextBox {
+                text: text.into(),
+                font_size: 60.0,
+                font_name: "JP Test".into(),
+                vertical_layout: vertical,
+                text_path: Some(TextPath::Layer { layer, contour: 0, offset: 0.1, offset_keyframes: Vec::new(), align: PathTextAlign::Start, flip: false }),
+                ..Default::default()
+            };
+            td.add_object(TitleObjectContent::TextBox(tb), klipp_timeline::default_text_transform());
+            td
+        };
+        let mut r = jp_renderer();
+        let ink = |px: &[u8]| {
+            let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
+            for (i, p) in px.chunks_exact(4).enumerate() {
+                if p[3] > 100 {
+                    let (x, y) = (i % 1920, i / 1920);
+                    (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+                }
+            }
+            (x0, y0, x1, y1)
+        };
+        // Off the path, the marks stand in a column: tall and thin.
+        let column = ink(&r.render(&vertical_title("ーーー", |_| {}), 1920, 1080));
+        assert!(column.3 - column.1 > (column.2 - column.0) * 3, "a column: {column:?}");
+        // On the level path, the column lies along it: long and low,
+        // about the path's height.
+        let laid = r.render(&on_path("ーーー", true), 1920, 1080);
+        let (x0, y0, x1, y1) = ink(&laid);
+        assert!(x1 - x0 > (y1 - y0) * 3, "along the path: {:?}", (x0, y0, x1, y1));
+        // Each mark turned to lie along it: the ink a line, not three
+        // standing bars.
+        let inked_cols = (x0..=x1).filter(|&x| (y0..=y1).any(|y| laid[(y * 1920 + x) * 4 + 3] > 100)).count();
+        assert!(inked_cols as f32 > (x1 - x0) as f32 * 0.7, "a line along the path: {inked_cols} of {}", x1 - x0);
+        assert!(((y0 + y1) as f32 * 0.5 - 540.0).abs() < 20.0, "on it: {y0}..{y1}");
+        assert!((x0 as f32 - 1920.0 * 0.1 - 1920.0 * 0.8 * 0.1).abs() < 40.0, "from where the text starts on it: {x0}");
+        // The characters in their order from the path's start.
+        let layout = r.render_layout(&on_path("縦書題", true), 1920, 1080);
+        let xs: Vec<f32> = layout.glyph_boxes.iter().map(|b| mid(*b).0).collect();
+        assert!(xs.windows(2).all(|w| w[0] + 30.0 < w[1]), "in order along the path: {xs:?}");
+        assert!(layout.glyph_boxes.iter().all(|b| (mid(*b).1 - 540.0).abs() < 15.0), "each on the path: {:?}", layout.glyph_boxes);
+        // A horizontal text keeps its own way: the marks lie along the
+        // path too, each a level bar.
+        let flat = ink(&r.render(&on_path("ーーー", false), 1920, 1080));
+        assert!(flat.2 - flat.0 > (flat.3 - flat.1) * 3, "{flat:?}");
+    }
+
+    /// #1704: in vertical text the editor's characters are where the
+    /// columns set them: each cell holds its glyph, down its column; a
+    /// line break starts the next column, to the left, at the top.
+    #[test]
+    fn the_caret_positions_follow_the_columns() {
+        let mut r = jp_renderer();
+        let text = "縦書き\nの題";
+        let td = vertical_title(text, |_| {});
+        let at = r.compute_char_positions(&td, 1920, 1080);
+        assert_eq!(at.len(), text.chars().count() + 1, "every character and the end");
+        assert!(at.iter().all(|p| p.vertical));
+        let layout = r.render_layout(&td, 1920, 1080);
+        // Glyph k is character k, but for the line break (character 3).
+        for (k, ci) in [0usize, 1, 2, 4, 5].into_iter().enumerate() {
+            let (cx, cy) = mid(layout.glyph_boxes[k]);
+            let p = &at[ci];
+            assert!(cx > p.x && cx < p.x + p.height && cy > p.y && cy < p.y + p.advance, "character {ci} holds its glyph: {p:?} vs {:?}", layout.glyph_boxes[k]);
+        }
+        assert!(at[0].y < at[1].y && at[1].y < at[2].y && at[0].x == at[2].x, "down the first column");
+        assert!(at[4].x + at[4].height <= at[0].x + 1.0 && (at[4].y - at[0].y).abs() < 1.0, "the next column, left, from the top");
+        assert!((at[6].y - (at[5].y + at[5].advance)).abs() < 1e-3, "the end after the last");
+        assert_ne!(crate::glyph_layout_hash(&td, 1920, 1080), crate::glyph_layout_hash(&vertical_title(text, |tb| tb.vertical_layout = false), 1920, 1080), "the cached positions follow the switch");
     }
 }
