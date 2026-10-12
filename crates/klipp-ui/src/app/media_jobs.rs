@@ -813,7 +813,7 @@ impl KlippApp {
                     // captured tail contains only meaningful errors.
                     // -loglevel info keeps real errors but drops "frame=…" status spam.
                     let mut full_args: Vec<&str> = args.to_vec();
-                    full_args.extend_from_slice(&["-hide_banner", "-loglevel", "info", "-progress", "pipe:1"]);
+                    full_args.extend_from_slice(&["-nostdin", "-hide_banner", "-loglevel", "info", "-progress", "pipe:1"]);
 
                     // Echo the full command at debug level so we can reproduce
                     // failures from the log without guessing what was run.
