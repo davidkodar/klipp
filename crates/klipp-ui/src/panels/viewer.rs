@@ -6135,12 +6135,11 @@ fn editor_title_geometry(
     if title.objects.iter().any(is_fitted_shape)
         && cache.as_ref().is_none_or(|c| c.title != *title || c.dimensions != dimensions)
     {
-        let mut renderer = klipp_title::TitleRenderer::new();
-        let transforms = title.objects.iter().filter_map(|obj| {
+        let transforms = with_editor_renderer(|renderer| title.objects.iter().filter_map(|obj| {
             let klipp_timeline::TitleObjectContent::Shape(shape) = &obj.content else { return None };
             let fit = shape.fit?;
             Some((obj.id, renderer.resolved_shape_fit(title, fit, dimensions.0, dimensions.1, None)))
-        }).collect();
+        }).collect());
         *cache = Some(TitleFitGeometry { title: title.clone(), dimensions, transforms });
     }
     let mut resolved = title.clone();
@@ -6176,7 +6175,20 @@ pub(crate) fn shown_title_layer(
 /// Match the editor frame to the renderer's measured glyph bounds while
 /// preserving the authored transform centre and wrapping constraint.
 fn tighten_text_editor_boxes(title: &mut klipp_timeline::TitleData, dimensions: (u32, u32)) {
-    let mut renderer = klipp_title::TitleRenderer::new();
+    with_editor_renderer(|renderer| tighten_with(renderer, title, dimensions));
+}
+
+/// `f` with the viewer's title renderer, one kept for the thread: the
+/// editor measures titles every frame one is on screen, and a new
+/// renderer scans the system's fonts (~10 ms each, a hundred a second).
+fn with_editor_renderer<R>(f: impl FnOnce(&mut klipp_title::TitleRenderer) -> R) -> R {
+    thread_local! {
+        static RENDERER: std::cell::RefCell<Option<klipp_title::TitleRenderer>> = const { std::cell::RefCell::new(None) };
+    }
+    RENDERER.with(|cell| f(cell.borrow_mut().get_or_insert_with(klipp_title::TitleRenderer::new)))
+}
+
+fn tighten_with(renderer: &mut klipp_title::TitleRenderer, title: &mut klipp_timeline::TitleData, dimensions: (u32, u32)) {
     let (width, height) = dimensions;
     for obj in &mut title.objects {
         let klipp_timeline::TitleObjectContent::TextBox(tb) = &obj.content else { continue };
