@@ -344,6 +344,10 @@ pub struct Lv2Effect {
     info: Lv2PluginInfo,
     layout: ChannelLayout,
     instances: Vec<livi::Instance>,
+    /// The rate the instances run at: a reset makes its fresh ones at
+    /// it, not at 48 kHz, which ran a 44.1 kHz chain's plug-in at the
+    /// wrong rate after every reset.
+    sample_rate: u32,
     /// Live control values, indexed parallel to `info.control_inputs`.
     /// Pushed into livi instances each block via `set_control_input`
     /// (PortIndex form — looked up via the symbol→index map below).
@@ -372,6 +376,17 @@ pub struct Lv2Effect {
 }
 
 unsafe impl Send for Lv2Effect {}
+
+/// `count` instances of `plugin` at `sample_rate`: what an effect is made
+/// with, and what a reset makes afresh.
+fn instantiate(plugin: &livi::Plugin, features: &std::sync::Arc<livi::Features>, count: usize, sample_rate: u32) -> Result<Vec<livi::Instance>, String> {
+    (0..count)
+        .map(|_| {
+            klipp_load_lock::while_loading(|| unsafe { plugin.instantiate(features.clone(), sample_rate as f64) })
+                .map_err(|e| format!("LV2 instantiate failed: {e}"))
+        })
+        .collect()
+}
 
 impl Lv2Effect {
     pub fn new(uri: &str, sample_rate: u32) -> Result<Self, String> {
@@ -402,12 +417,7 @@ impl Lv2Effect {
             ChannelLayout::StereoNative => 1,
             ChannelLayout::DualMono => 2,
         };
-        let mut instances = Vec::with_capacity(count);
-        for _ in 0..count {
-            let inst = klipp_load_lock::while_loading(|| unsafe { plugin.instantiate(features.clone(), sample_rate as f64) })
-                .map_err(|e| format!("LV2 instantiate failed: {e}"))?;
-            instances.push(inst);
-        }
+        let instances = instantiate(&plugin, &features, count, sample_rate)?;
 
         let control_values: Vec<f32> = info.control_inputs.iter().map(|p| p.default).collect();
         let symbol_to_idx: HashMap<String, usize> = info
@@ -439,6 +449,7 @@ impl Lv2Effect {
             info,
             layout,
             instances,
+            sample_rate,
             control_values,
             symbol_to_idx,
             latency_port,
@@ -636,17 +647,12 @@ impl AudioEffect for Lv2Effect {
             min_block_length: 1,
             max_block_length: 4096,
         });
-        let count = self.instances.len();
-        // Replace instances with fresh ones; on any failure keep old
-        // (state is leaked but the chain keeps producing audio).
-        let mut fresh = Vec::with_capacity(count);
-        for _ in 0..count {
-            match klipp_load_lock::while_loading(|| unsafe { plugin.instantiate(features.clone(), 48_000.0) }) {
-                Ok(i) => fresh.push(i),
-                Err(_) => return,
-            }
+        // Replace instances with fresh ones at the effect's own rate; on
+        // any failure keep the old (state is leaked but the chain keeps
+        // producing audio).
+        if let Ok(fresh) = instantiate(&plugin, &features, self.instances.len(), self.sample_rate) {
+            self.instances = fresh;
         }
-        self.instances = fresh;
     }
 
     fn latency_samples(&self) -> u32 {
@@ -952,5 +958,29 @@ mod tests {
             "/usr/lib/lv2 holds plugin binaries but discovery yielded zero \
              plugins"
         );
+    }
+
+    /// A reset makes its fresh instances at the effect's own rate, not
+    /// at 48 kHz: built at 44.1 kHz, it is at 44.1 kHz after a reset, and
+    /// still plays. Skips without an installed plug-in that loads.
+    #[test]
+    fn a_reset_keeps_the_effects_rate() {
+        use crate::dsp::{AudioEffect, AudioProcessContext};
+        let _g = env_lock();
+        if !system_has_lv2_plugin_binaries() {
+            eprintln!("skipping: no LV2 plugin binaries under /usr/lib/lv2");
+            return;
+        }
+        std::env::remove_var("KLIPP_LV2_DISABLE");
+        let Some(mut fx) = discover_lv2_plugins().iter().find_map(|p| Lv2Effect::new(&p.uri, 44_100).ok()) else {
+            eprintln!("skipping: no LV2 plugin loads");
+            return;
+        };
+        let before = fx.instances.len();
+        fx.reset();
+        assert_eq!((fx.sample_rate, fx.instances.len()), (44_100, before), "the same instances, at the effect's rate");
+        let mut buf = vec![0.1f32; 256 * 2];
+        fx.process(&mut buf, &AudioProcessContext { sample_rate: 44_100, channels: 2, clip_time_secs: 0.0 });
+        assert!(buf.iter().all(|v| v.is_finite()), "it plays after the reset");
     }
 }
