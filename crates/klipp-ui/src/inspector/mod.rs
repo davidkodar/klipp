@@ -1665,6 +1665,30 @@ fn show_title_pinned_core_textbox(
             (tb.color, false)
         };
 
+    // A selection's font, style, tracking and baseline offset, read
+    // as its size and colour are (#1505).
+    let from_runs = has_selection && !tb.style_runs.is_empty();
+    let (display_font, font_is_mixed) = if from_runs {
+        selection_run_value(tb, sel_range, |r| r.font_name.clone(), tb.font_name.clone())
+    } else {
+        (tb.font_name.clone(), false)
+    };
+    let (display_style, style_is_mixed) = if from_runs {
+        selection_run_value(tb, sel_range, |r| r.font_style, tb.font_style)
+    } else {
+        (tb.font_style, false)
+    };
+    let (display_tracking, tracking_is_mixed) = if from_runs {
+        selection_run_value(tb, sel_range, |r| r.tracking, tb.tracking)
+    } else {
+        (tb.tracking, false)
+    };
+    let (display_baseline, baseline_is_mixed) = if from_runs {
+        selection_run_value(tb, sel_range, |r| r.baseline_offset, 0.0)
+    } else {
+        (0.0, false)
+    };
+
     // 1. Editable textarea — primary edit path. Wrapped in a Frame
     //    so the textarea reads as a pill matching the size / % / X / Y
     //    inputs; .frame(false) on the TextEdit drops its default
@@ -1699,50 +1723,58 @@ fn show_title_pinned_core_textbox(
     }
     ui.add_space(8.0);
 
-    // 2. Font ComboBox + size DragValue.
-    let display_name = if tb.font_name == "sans-serif" || tb.font_name.is_empty() {
+    // 2. Font ComboBox + size DragValue. Over a selection the font
+    //    picked sets the selection's (#1505), as its size does.
+    let display_name = if display_font == "sans-serif" || display_font.is_empty() {
         "Noto Sans (Default)"
     } else {
-        tb.font_name.as_str()
+        display_font.as_str()
     };
     ui.horizontal(|ui| {
         let total = ui.available_width();
         let size_w = 70.0;
         let combo_w = (total - size_w - 8.0).max(80.0);
+        let mut picked: Option<String> = None;
         egui::ComboBox::from_id_salt("title_pinned_font")
-            .selected_text(display_name)
+            .selected_text(if font_is_mixed { "Mixed" } else { display_name })
             .width(combo_w)
             .show_ui(ui, |ui| {
                 if ui
                     .selectable_label(
-                        tb.font_name == "sans-serif" || tb.font_name.is_empty(),
+                        display_font == "sans-serif" || display_font.is_empty(),
                         "Noto Sans (Default)",
                     )
                     .clicked()
                 {
-                    cmds.push(AppCommand::UpdateTitleData {
-                        clip_id,
-                        text: tb.text.clone(),
-                        font_size: tb.font_size,
-                        font_name: "sans-serif".to_string(),
-                        font_style: font_style_to_u8(tb.font_style),
-                        color: tb.color,
-                    });
+                    picked = Some("sans-serif".to_string());
                 }
                 ui.separator();
                 for family in &state.available_fonts {
-                    if ui.selectable_label(tb.font_name == *family, family).clicked() {
-                        cmds.push(AppCommand::UpdateTitleData {
-                            clip_id,
-                            text: tb.text.clone(),
-                            font_size: tb.font_size,
-                            font_name: family.clone(),
-                            font_style: font_style_to_u8(tb.font_style),
-                            color: tb.color,
-                        });
+                    if ui.selectable_label(display_font == *family, family).clicked() {
+                        picked = Some(family.clone());
                     }
                 }
             });
+        if let Some(family) = picked {
+            if has_selection && sel_range.0 < sel_range.1 {
+                cmds.push(AppCommand::ApplyTitleStyle {
+                    clip_id,
+                    range_start: sel_range.0,
+                    range_end: sel_range.1,
+                    property: "font_name".into(),
+                    value: family,
+                });
+            } else {
+                cmds.push(AppCommand::UpdateTitleData {
+                    clip_id,
+                    text: tb.text.clone(),
+                    font_size: tb.font_size,
+                    font_name: family,
+                    font_style: font_style_to_u8(tb.font_style),
+                    color: tb.color,
+                });
+            }
+        }
         ui.add_space(8.0);
         let mut size = display_size;
         let size_resp = egui::Frame::none()
@@ -1788,23 +1820,31 @@ fn show_title_pinned_core_textbox(
     //    pill buttons (right). Both groups share a consistent
     //    button height + inactive fill so the row reads as one
     //    coordinated control strip.
+    //    Over a selection B and I set the selection's style (#1505).
     let is_bold = matches!(
-        tb.font_style,
+        display_style,
         klipp_timeline::FontStyle::Bold | klipp_timeline::FontStyle::BoldItalic
     );
     let is_italic = matches!(
-        tb.font_style,
+        display_style,
         klipp_timeline::FontStyle::Italic | klipp_timeline::FontStyle::BoldItalic
     );
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        if pill_toggle_button(ui, theme, "B", is_bold, |r| r.strong().size(13.0)).clicked() {
-            let new_style = match (!is_bold, is_italic) {
-                (true, true) => klipp_timeline::FontStyle::BoldItalic,
-                (true, false) => klipp_timeline::FontStyle::Bold,
-                (false, true) => klipp_timeline::FontStyle::Italic,
-                (false, false) => klipp_timeline::FontStyle::Regular,
-            };
+    let set_style = |cmds: &mut Vec<AppCommand>, bold: bool, italic: bool| {
+        let new_style = match (bold, italic) {
+            (true, true) => klipp_timeline::FontStyle::BoldItalic,
+            (true, false) => klipp_timeline::FontStyle::Bold,
+            (false, true) => klipp_timeline::FontStyle::Italic,
+            (false, false) => klipp_timeline::FontStyle::Regular,
+        };
+        if has_selection && sel_range.0 < sel_range.1 {
+            cmds.push(AppCommand::ApplyTitleStyle {
+                clip_id,
+                range_start: sel_range.0,
+                range_end: sel_range.1,
+                property: "font_style".into(),
+                value: serde_json::to_string(&new_style).unwrap_or_default(),
+            });
+        } else {
             cmds.push(AppCommand::UpdateTitleData {
                 clip_id,
                 text: tb.text.clone(),
@@ -1814,21 +1854,14 @@ fn show_title_pinned_core_textbox(
                 color: tb.color,
             });
         }
+    };
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        if pill_toggle_button(ui, theme, "B", is_bold, |r| r.strong().size(13.0)).clicked() {
+            set_style(cmds, !is_bold, is_italic);
+        }
         if pill_toggle_button(ui, theme, "I", is_italic, |r| r.italics().size(13.0)).clicked() {
-            let new_style = match (is_bold, !is_italic) {
-                (true, true) => klipp_timeline::FontStyle::BoldItalic,
-                (true, false) => klipp_timeline::FontStyle::Bold,
-                (false, true) => klipp_timeline::FontStyle::Italic,
-                (false, false) => klipp_timeline::FontStyle::Regular,
-            };
-            cmds.push(AppCommand::UpdateTitleData {
-                clip_id,
-                text: tb.text.clone(),
-                font_size: tb.font_size,
-                font_name: tb.font_name.clone(),
-                font_style: font_style_to_u8(new_style),
-                color: tb.color,
-            });
+            set_style(cmds, is_bold, !is_italic);
         }
         if pill_toggle_button(ui, theme, "U", tb.underline, |r| r.underline().size(13.0)).clicked() {
             cmds.push(AppCommand::SetTitleUnderline { clip_id, underline: !tb.underline });
@@ -1867,6 +1900,46 @@ fn show_title_pinned_core_textbox(
         });
     });
     ui.add_space(8.0);
+
+    // 3a. A selection's tracking and baseline offset (#1505); the
+    //     box's own are in the Typography group.
+    if has_selection && sel_range.0 < sel_range.1 {
+        ui.horizontal(|ui| {
+            if style_is_mixed {
+                ui.label(egui::RichText::new("Mixed style").size(10.0).color(theme.accent));
+            }
+            let mut tracking = display_tracking;
+            if ui.add(egui::DragValue::new(&mut tracking).range(-10.0..=50.0).speed(0.2).suffix(" px").prefix("Tracking: ").fixed_decimals(1)).changed() {
+                cmds.push(AppCommand::ApplyTitleStyle {
+                    clip_id,
+                    range_start: sel_range.0,
+                    range_end: sel_range.1,
+                    property: "tracking".into(),
+                    value: format!("{tracking}"),
+                });
+            }
+            if tracking_is_mixed {
+                ui.label(egui::RichText::new("Mixed").size(10.0).color(theme.accent));
+            }
+            let mut baseline = display_baseline;
+            if ui.add(egui::DragValue::new(&mut baseline).range(-200.0..=200.0).speed(0.5).suffix(" px").prefix("Raise: ").fixed_decimals(0))
+                .on_hover_text("Moves the selection up off the line, or down with a negative value")
+                .changed()
+            {
+                cmds.push(AppCommand::ApplyTitleStyle {
+                    clip_id,
+                    range_start: sel_range.0,
+                    range_end: sel_range.1,
+                    property: "baseline_offset".into(),
+                    value: format!("{baseline}"),
+                });
+            }
+            if baseline_is_mixed {
+                ui.label(egui::RichText::new("Mixed").size(10.0).color(theme.accent));
+            }
+        });
+        ui.add_space(8.0);
+    }
 
     // 3b. Where the text sits up and down its box (left) and, for
     //     justified text, where each paragraph's last line goes
@@ -2002,6 +2075,28 @@ fn show_title_pinned_core_textbox(
 
     // 5. Position block.
     show_title_position_block(ui, theme, clip_id, td, state, cmds, clip_time_secs);
+}
+
+/// The value a text selection shows for one style-run field, and
+/// whether the selection mixes values: each run over `sel`'s value of
+/// the field, or the box's `base` where the run leaves it, as the size
+/// and colour of a selection are read (#1505).
+fn selection_run_value<T: Clone + PartialEq>(
+    tb: &klipp_timeline::TextBox,
+    sel: (usize, usize),
+    field: impl Fn(&klipp_timeline::StyleRun) -> Option<T>,
+    base: T,
+) -> (T, bool) {
+    let values: Vec<T> = tb
+        .style_runs
+        .iter()
+        .filter(|run| run.start < sel.1 && run.end > sel.0)
+        .map(|run| field(run).unwrap_or_else(|| base.clone()))
+        .collect();
+    match values.first() {
+        None => (base, false),
+        Some(first) => (first.clone(), values.iter().any(|v| v != first)),
+    }
 }
 
 /// Quick-style row: per-letter or selection-wide colour presets, the

@@ -2556,8 +2556,9 @@ pub enum AppCommand {
     /// Set motion blur. `enabled=false` = disable.
     SetTitleMotionBlur { clip_id: ClipId, enabled: bool, shutter_angle: f32, samples: u8 },
     /// Apply a style property to a character range (rich text style runs).
-    /// `property`: "font_size", "color", "font_style", "tracking", "baseline_offset"
-    /// `value`: JSON-encoded value for the property.
+    /// `property`: "font_size", "color", "font_name", "font_style", "tracking", "baseline_offset"
+    /// `value`: JSON-encoded value for the property ("font_name" takes
+    /// the family as it is, #1505).
     ApplyTitleStyle {
         clip_id: ClipId,
         range_start: usize,
