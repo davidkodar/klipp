@@ -1024,24 +1024,42 @@ fn scene_codes(w: u32, h: u32) -> Arc<klipp_color::hdr::SceneCodes> {
     ))
 }
 
+/// [`scene_codes`] as a source deeper than 10 bits gives them: the same
+/// ramps in 16-bit codes, between the 10-bit steps (#1226).
+fn deep_scene_codes(w: u32, h: u32) -> Arc<klipp_color::hdr::SceneCodes> {
+    Arc::new(klipp_color::hdr::SceneCodes::Deep16(
+        (0..h)
+            .flat_map(|y| {
+                (0..w).map(move |x| {
+                    let (v, t) = (y * 65_535 / h, x * 65_535 / w);
+                    klipp_color::hdr::pack_rgb16(v as u16, (v * 3 / 4 + t / 4).min(65_535) as u16, (v / 2 + t / 2).min(65_535) as u16)
+                })
+            })
+            .collect(),
+    ))
+}
+
 /// Scene-referred clips' codes, each in its transfer and at its own size;
 /// every other clip a flat linear picture. `linear` hands the scene clips
 /// over decoded to scene light instead, with no transfer: the same picture
-/// without its display step, for the control.
+/// without its display step, for the control. `deep` gives them 16-bit
+/// codes.
 struct Scenes {
     scene: HashMap<ClipId, (klipp_color::hdr::HdrTransfer, u32, u32)>,
     flat: Flat,
     linear: bool,
+    deep: bool,
 }
 
 impl FrameSource for Scenes {
     fn frame(&mut self, clip: &Clip, secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
         let Some(&(transfer, w, h)) = self.scene.get(&clip.id) else { return self.flat.frame(clip, secs, width, height) };
         let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let codes = if self.deep { deep_scene_codes(w, h) } else { scene_codes(w, h) };
         let pixels = if self.linear {
-            SourcePixels::Linear(Arc::new(scene_codes(w, h).to_scene_linear_rgba(transfer, identity)))
+            SourcePixels::Linear(Arc::new(codes.to_scene_linear_rgba(transfer, identity)))
         } else {
-            SourcePixels::SceneReferred { codes: scene_codes(w, h), transfer, source_to_working: identity }
+            SourcePixels::SceneReferred { codes, transfer, source_to_working: identity }
         };
         Some(SourceFrame { pixels, width: w, height: h, pts: None })
     }
@@ -1102,7 +1120,7 @@ fn scene_over_base(transfer: klipp_color::hdr::HdrTransfer, size: (u32, u32), gr
         .build();
     let mut base = Track::new("V1", TrackKind::Video);
     let b = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 10.0);
-    let mut src = Scenes { scene: HashMap::new(), flat: Flat::default(), linear: false };
+    let mut src = Scenes { scene: HashMap::new(), flat: Flat::default(), linear: false, deep: false };
     src.scene.insert(t.id, (transfer, size.0, size.1));
     src.flat.0.insert(b.id, picture(0.1));
     top.clips = vec![t];
@@ -1158,6 +1176,32 @@ fn a_scene_referred_clip_with_a_crop_transform_and_fade_stays_on_the_stack() {
     }
 }
 
+/// #1226: a deeper source's 16-bit codes are placed on the stack as 10-bit
+/// ones are, decoded on the GPU, and held to the CPU render the same way.
+#[test]
+fn a_deep_scene_referred_clip_stays_on_the_stack() {
+    use klipp_color::hdr::HdrTransfer;
+    if !stack_available() {
+        eprintln!("UNVERIFIED: the GPU stack declined a plain frame (no usable GPU?)");
+        return;
+    }
+    for (name, transfer) in [("S-Log3", HdrTransfer::Log(klipp_core::ColorTransfer::SLog3)), ("HLG", HdrTransfer::Hlg), ("PQ", HdrTransfer::Pq)] {
+        for graded in [false, true] {
+            let case = format!("16-bit {name}, graded {graded}");
+            let (seq, mut src) = scene_over_base(transfer, (W, H), graded);
+            src.deep = true;
+            let mut r = renderer();
+            let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
+                panic!("{case}: the GPU stack declined it: {:?}", r.last_decline());
+            };
+            assert_eq!(r.last_decline(), None, "{case}: taken by the stack");
+            let cpu = display(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+            let d = worst(&cpu, &gpu);
+            assert!(d <= 1, "{case}: the GPU stack differs from the CPU renderer by {d} levels");
+        }
+    }
+}
+
 /// A transition between a scene-referred clip and an SDR one is drawn by
 /// the stack, both sides placed there (#1276).
 #[test]
@@ -1171,7 +1215,7 @@ fn a_transition_from_a_scene_referred_clip_stays_on_the_stack() {
     let mut v = Track::new("V1", TrackKind::Video);
     let a = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 2.0);
     let b = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 2.0, 4.0);
-    let mut src = Scenes { scene: HashMap::new(), flat: Flat::default(), linear: false };
+    let mut src = Scenes { scene: HashMap::new(), flat: Flat::default(), linear: false, deep: false };
     src.scene.insert(a.id, (klipp_color::hdr::HdrTransfer::Hlg, W, H));
     src.flat.0.insert(b.id, picture(0.5));
     v.transitions.push(klipp_timeline::Transition {

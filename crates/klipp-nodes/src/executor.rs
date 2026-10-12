@@ -133,7 +133,7 @@ struct UploadedSeed {
 /// What an [`UploadedSeed`] holds: a scene-referred frame's packed codes,
 /// or display-referred sRGB bytes.
 enum SeedPixels {
-    /// 10-bit scene codes: the only ones the bridge takes (#1226).
+    /// Scene codes, 10-bit or 16-bit (#1226).
     Codes(Arc<klipp_color::hdr::SceneCodes>),
     Srgb8(Arc<Vec<u8>>),
     Rgba64(Arc<Vec<u16>>),
@@ -142,7 +142,10 @@ enum SeedPixels {
 impl SeedPixels {
     fn bytes(&self) -> &[u8] {
         match self {
-            SeedPixels::Codes(c) => bytemuck::cast_slice(c.packed10().unwrap_or(&[])),
+            SeedPixels::Codes(c) => match c.as_ref() {
+                klipp_color::hdr::SceneCodes::Packed10(p) => bytemuck::cast_slice(p.as_slice()),
+                klipp_color::hdr::SceneCodes::Deep16(p) => bytemuck::cast_slice(p.as_slice()),
+            },
             SeedPixels::Srgb8(b) => b.as_slice(),
             SeedPixels::Rgba64(s) => bytemuck::cast_slice(s.as_slice()),
         }
@@ -1058,8 +1061,8 @@ impl GraphExecutor {
     /// same codes (the same `Arc`) come back — a paused frame regraded at
     /// every step of a slider drag uploads once. A quarter of the bytes
     /// the linear frame would be, and no decode on the CPU. A deeper
-    /// source's 16-bit codes are refused, for the caller to convert on the
-    /// CPU, until the bridge takes them (#1226).
+    /// source's 16-bit codes go through the 16-bit bridge, at their own
+    /// precision (#1226).
     #[allow(clippy::too_many_arguments)]
     pub fn prime_chain_from_hdr10_codes(
         &mut self,
@@ -1070,11 +1073,15 @@ impl GraphExecutor {
         scene_scale: f32,
         source_to_working: [[f32; 4]; 3],
     ) -> bool {
-        if codes.packed10().is_none() || codes.len() != (width as usize) * (height as usize) || !self.upload_seed(SeedPixels::Codes(Arc::clone(codes))) {
+        if codes.len() != (width as usize) * (height as usize) || !self.upload_seed(SeedPixels::Codes(Arc::clone(codes))) {
             return false;
         }
         let (Some(gpu), Some(seed)) = (self.gpu.as_mut(), self.uploaded_seed.as_ref()) else { return false };
-        let ok = gpu.bridge_hdr10_to_linear_into_chain(&seed.buffer, width, height, transfer_id, scene_scale, source_to_working);
+        let ok = if codes.packed10().is_some() {
+            gpu.bridge_hdr10_to_linear_into_chain(&seed.buffer, width, height, transfer_id, scene_scale, source_to_working)
+        } else {
+            gpu.bridge_hdr16_to_linear_into_chain(&seed.buffer, width, height, transfer_id, scene_scale, source_to_working)
+        };
         if ok {
             self.gpu_chain_preseeded = true;
             self.gpu_chain_preseed_dims = Some((width, height));

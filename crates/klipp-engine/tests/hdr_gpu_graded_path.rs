@@ -312,3 +312,46 @@ fn a_masked_effect_on_an_hdr_clip_takes_the_graded_path() {
     let whole = cpu.execute_linear(&frame.cpu_scene_linear, &unmasked, W, H, 0.0, 0, None, None).unwrap().0;
     assert!(whole != want, "the window changes the picture");
 }
+
+/// #1226: a 12-bit PQ gradient's 16-bit codes, seeded on the GPU through
+/// the 16-bit bridge and graded there, match the same codes converted and
+/// graded on the CPU, within a quarter of the source's own 12-bit step
+/// (the 10-bit bridge's bar is a quarter of a 10-bit step).
+#[test]
+fn a_deep_source_seeded_on_the_gpu_grades_like_the_cpu_path() {
+    use klipp_color::hdr::{yuv_to_hdr_codes, SceneCodes, YuvSamples};
+    // Luma across the legal range, chroma swept with it, 4:4:4 12-bit.
+    let n = (W * H) as usize;
+    let y: Vec<u16> = (0..n).map(|i| (256 + i * (3760 - 256) / (n - 1)) as u16).collect();
+    let u: Vec<u16> = (0..n).map(|i| (1800 + (i % W as usize) * 8) as u16).collect();
+    let v: Vec<u16> = (0..n).map(|i| (2300 - (i / W as usize) * 12) as u16).collect();
+    let s = YuvSamples { y: &y, u: &u, v: &v, width: W, height: H, chroma_shift_w: 0, chroma_shift_h: 0, bit_depth: 12 };
+    let ids = [color_ids::COLOR_RANGE_LIMITED, color_ids::MATRIX_BT2020_NCL, color_ids::TRANSFER_PQ, color_ids::PRIMARIES_BT2020];
+    let codes = std::sync::Arc::new(yuv_to_hdr_codes(&s, W, H, 0, ids));
+    assert!(matches!(*codes, SceneCodes::Deep16(_)));
+    let m = primaries_to_working_matrix(ColorPrimaries::Bt2020, WorkingColorspace::Rec709Linear);
+
+    let mut cpu = GraphExecutor::new();
+    let (reference, _) = cpu
+        .execute_linear(&codes.to_scene_linear_rgba(HdrTransfer::Pq, m), &graded_pq_graph(), W, H, 0.0, 0, None, None)
+        .expect("CPU-path grade");
+
+    let mut exec = GraphExecutor::new();
+    if !exec.prime_chain_from_hdr10_codes(&codes, W, H, color_ids::TRANSFER_PQ, HdrTransfer::Pq.scene_scale(), pack_primaries_matrix(m)) {
+        eprintln!("skipping: no GPU to seed");
+        return;
+    }
+    let (gpu, _) = exec.execute_linear(&[], &graded_pq_graph(), W, H, 0.0, 0, None, None).expect("a chain seeded from 16-bit codes runs with no CPU source");
+    assert_eq!(gpu.len(), reference.len());
+    // Pixel-relative, as the 10-bit test measures it.
+    let worst = reference
+        .chunks_exact(4)
+        .zip(gpu.chunks_exact(4))
+        .flat_map(|(a, b)| {
+            let magnitude = a[..3].iter().fold(1.0_f32, |m, v| m.max(v.abs()));
+            (0..3).map(move |c| (a[c] - b[c]).abs() / magnitude)
+        })
+        .fold(0.0_f32, f32::max);
+    eprintln!("16-bit GPU seed vs CPU, graded: worst pixel-relative error {worst:.2e}");
+    assert!(worst < 2.25e-3 / 4.0, "the 16-bit GPU seed disagrees with the CPU path by {worst:.2e}");
+}
