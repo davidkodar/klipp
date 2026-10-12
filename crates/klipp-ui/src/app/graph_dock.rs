@@ -49,7 +49,7 @@ impl AppState {
         self.sequence()
             .tracks
             .iter()
-            .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
+            .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text) && t.visible)
             .flat_map(|t| t.clips.iter())
             .find(|c| c.enabled && c.timeline_in <= at && at < c.timeline_out && c.picture_v2().is_ok())
             .map(|c| c.id)
@@ -61,10 +61,11 @@ impl AppState {
         if !self.graph_dock_open { return; }
         let exists = |id| self.sequence().all_clips().any(|c| c.id == id);
         let current = self.graph_dock_root.and_then(|r| match r { Root::Clip { clip } => Some(ClipId(clip)), _ => None });
-        // The selected clip, else the one the dock showed, else the top
-        // picture under the playhead, so an opened dock shows a graph
-        // rather than nothing (#1726).
-        let clip_id = self.selected_clip.filter(|id| exists(*id)).or_else(|| current.filter(|id| exists(*id))).or_else(|| self.picture_under_playhead());
+        // The selected clip, else the top picture under the playhead (a
+        // title over video is the title), else the one the dock showed:
+        // with nothing selected the dock follows the playhead, as the
+        // program viewer does (#1726).
+        let clip_id = self.selected_clip.filter(|id| exists(*id)).or_else(|| self.picture_under_playhead()).or_else(|| current.filter(|id| exists(*id)));
         let root = clip_id.map(|clip| Root::Clip { clip: clip.0 });
         if root != self.graph_dock_root {
             self.graph_dock_root = root;

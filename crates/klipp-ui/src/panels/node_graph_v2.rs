@@ -278,6 +278,11 @@ pub struct NodeGraphV2Panel {
     /// Set by the toolbar's "Fit" button or programmatically
     /// (clip switch). Consumed at the top of the next `show()`.
     fit_pending: bool,
+    /// The pan, zoom and canvas size the last fit left. A canvas that
+    /// changes size under an untouched fit (the dock moved from below
+    /// the viewers to their right) is fitted again; framed for the old
+    /// size, most of the graph sat off the canvas.
+    fitted_view: Option<(egui::Vec2, f32, egui::Vec2)>,
     /// Per-ExternalMatte-node thumbnail cache. Keyed by node id so
     /// two ExternalMatte nodes with different images don't collide;
     /// the stored `PathBuf` lets us invalidate when the user picks a
@@ -397,6 +402,7 @@ impl Default for NodeGraphV2Panel {
             picture_move_root: None,
             grade_move_root: None,
             fit_pending: false,
+            fitted_view: None,
             matte_thumbs: std::collections::HashMap::new(),
             output_thumbs: std::collections::HashMap::new(),
             last_visible_thumb_nodes: Vec::new(),
@@ -960,14 +966,19 @@ impl NodeGraphV2Panel {
                 && !i.modifiers.ctrl
                 && !i.modifiers.command
         });
+        let resized_fit = self.fitted_view.is_some_and(|(pan, zoom, size)| {
+            pan == self.pan && zoom == self.zoom && (size - canvas_rect.size()).length() > 2.0
+        });
         let need_fit = fit_clicked
             || f_pressed
             || self.fit_pending
+            || resized_fit
             || self.last_fit_clip != Some(clip_id);
         if need_fit && !graph.nodes().is_empty() {
             self.fit_to_nodes(graph, canvas_rect);
             self.fit_pending = false;
             self.last_fit_clip = Some(clip_id);
+            self.fitted_view = Some((self.pan, self.zoom, canvas_rect.size()));
         }
 
         // Background + subtle grid (so pan is visually obvious).
@@ -5183,6 +5194,33 @@ pub(crate) mod canvas_command_tests {
             self.settle();
             self.click(self.text(label), egui::PointerButton::Primary)
         }
+    }
+
+    /// A fitted graph is fitted again when its canvas changes size and
+    /// the view is as the fit left it: moved from below the viewers to
+    /// their right, the dock kept the old framing with most nodes off
+    /// it. A view the user zoomed stays as they left it.
+    #[test]
+    fn an_untouched_fit_follows_the_canvas_size() {
+        let mut h = Harness::new();
+        let show = |h: &mut Harness, size: egui::Vec2| {
+            for _ in 0..2 {
+                let _ = h.ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)), ..Default::default() }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        h.panel.show(ui, &mut h.selected, &mut h.set, &mut h.graph, h.clip,
+                            &KlippTheme::default(), &Default::default(), 0, &mut Vec::new(), &mut Vec::new(),
+                            &[], None, None, 0.0, false, 0.0, None);
+                    });
+                });
+            }
+            h.panel.zoom
+        };
+        h.panel.request_fit();
+        let wide = show(&mut h, egui::vec2(1600.0, 260.0));
+        let tall = show(&mut h, egui::vec2(460.0, 1000.0));
+        assert!(tall < wide * 0.6, "fitted again for the narrow canvas: {wide} then {tall}");
+        h.panel.zoom = 1.7;
+        assert_eq!(show(&mut h, egui::vec2(1600.0, 260.0)), 1.7, "a zoomed view is left alone");
     }
 
     /// Real pointer interactions, held against the commands from the grade
