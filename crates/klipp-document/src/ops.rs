@@ -246,20 +246,135 @@ pub struct Typeset {
     /// (#1513).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mask: Option<MaskSpec>,
+    /// The text in 3D (#1512): a look and settings, or `"none"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub three_d: Option<ThreeDSpec>,
 }
+/// "A name or an object" specs read so that an object's own error (an
+/// unknown field, a value of the wrong kind) is the reply's, not "did
+/// not match any variant": a string is the name form, anything else the
+/// object form, read as it is.
+macro_rules! name_or_fields {
+    ($ty:ident, $off:ident, $on:ident, $fields:ty) => {
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                match serde_json::Value::deserialize(d)? {
+                    serde_json::Value::String(s) => Ok($ty::$off(s)),
+                    v => serde_json::from_value::<$fields>(v).map(|f| $ty::$on(f.into())).map_err(serde::de::Error::custom),
+                }
+            }
+        }
+    };
+}
+
+name_or_fields!(ThreeDSpec, Off, On, ThreeD);
+name_or_fields!(BevelSpec, Off, On, BevelOn);
+name_or_fields!(MaskSpec, Off, Layer, MaskLayer);
+name_or_fields!(OnPathSpec, Off, Path, PathSpec);
+
+/// A text in 3D (#1512) as an op gives it: a `look` by name with any
+/// field over it, the fields over the text's 3D settings as they are,
+/// or `"none"` to take 3D off. Lengths are ems of the text's size.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ThreeDSpec {
+    Off(String),
+    On(Box<ThreeD>),
+}
+
+/// The fields of a [`ThreeDSpec`].
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreeD {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub look: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bevel: Option<BevelSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back_bevel: Option<BevelSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tilt: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roll: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fov: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perspective: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub light: Option<LightSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub face_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bevel_color: Option<String>,
+    /// Keys by name: turn, tilt, roll, depth, bevel, fov,
+    /// light_azimuth, light_elevation, light_intensity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<std::collections::BTreeMap<String, Vec<ValueKey>>>,
+}
+
+/// A bevel: `{size, segments?, profile? (straight, round)}`, or `"none"`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum BevelSpec {
+    Off(String),
+    On(BevelOn),
+}
+
+/// A bevel's fields.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BevelOn {
+    pub size: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub segments: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+}
+
+/// The light: from `azimuth` degrees round (0 the right, 90 below) and
+/// `elevation` towards the viewer, its `intensity`, `ambient`,
+/// `highlight` and `shininess`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LightSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub azimuth: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elevation: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intensity: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ambient: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shininess: Option<f32>,
+}
+
 
 /// A layer of the same title whose alpha or brightness is how much of
 /// the text shows: `kind` alpha (the default), inverted_alpha, luma or
 /// inverted_luma. `"none"` takes the mask off.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum MaskSpec {
     Off(String),
-    Layer {
-        layer: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        kind: Option<String>,
-    },
+    Layer(MaskLayer),
+}
+
+/// A mask's fields.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MaskLayer {
+    pub layer: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 /// A value at a time from the title's start.
@@ -369,7 +484,7 @@ pub struct KeysSpec {
 
 /// The text along a path layer of the same title (#1508), or `"none"`
 /// to lay it straight again.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum OnPathSpec {
     Off(String),
@@ -7382,7 +7497,7 @@ fn style(
     look: &Look,
 ) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     if *look == Look::default() {
-        return Err(refuse(i, "nothing to change", "give a look field (size, color, font, bold, align, x, y, backing, outline, shadow, glow, gradient, glitch, chromatic), a typesetting field (weight, axes, features, last_line, valign, underline, runs), a motion (animate, enter, exit, loop, animators, keys), on_path, blend or mask"));
+        return Err(refuse(i, "nothing to change", "give a look field (size, color, font, bold, align, x, y, backing, outline, shadow, glow, gradient, glitch, chromatic), a typesetting field (weight, axes, features, last_line, valign, underline, runs), a motion (animate, enter, exit, loop, animators, keys), on_path, blend, mask or three_d"));
     }
     for (name, v, lo, hi) in [
         ("size", look.size, 6.0, 1000.0),
@@ -7594,7 +7709,173 @@ struct Typesetting {
     /// The mask (`Some(None)` off), its source checked against each
     /// title when applied.
     mask: Option<Option<klipp_timeline::LayerMask>>,
+    /// 3D asked for, laid over each text's own when applied.
+    three_d: Option<ThreeDAsk>,
 }
+/// A [`ThreeDSpec`] checked: `Off`, or what to lay over the text's 3D
+/// settings (`apply`), keys included; times are checked against each
+/// title's length when applied.
+#[derive(Debug, Clone, PartialEq)]
+enum ThreeDAsk {
+    Off,
+    On(Box<ThreeDPatch>),
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct ThreeDPatch {
+    look: Option<&'static str>,
+    depth: Option<f32>,
+    bevel: Option<Option<klipp_core::text3d::Bevel>>,
+    back_bevel: Option<Option<klipp_core::text3d::Bevel>>,
+    rotation: [Option<f32>; 3],
+    fov: Option<f32>,
+    orthographic: Option<bool>,
+    light: [Option<f32>; 6],
+    face_color: Option<[u8; 4]>,
+    side_color: Option<[u8; 4]>,
+    bevel_color: Option<[u8; 4]>,
+    keys: Vec<(&'static str, Vec<klipp_core::Keyframe>)>,
+}
+
+impl ThreeDPatch {
+    /// `base` (the text's 3D settings, or fresh ones) with this laid over.
+    fn apply(&self, base: Option<&klipp_core::text3d::Text3d>) -> klipp_core::text3d::Text3d {
+        let mut t = base.cloned().unwrap_or_else(|| klipp_core::text3d::Text3d::default().with_look("bevelled").unwrap_or_default());
+        t.enabled = true;
+        if let Some(l) = self.look.and_then(|l| t.with_look(l)) {
+            t = l;
+        }
+        if let Some(v) = self.depth {
+            t.depth = v;
+        }
+        if let Some(b) = self.bevel {
+            t.front_bevel = b;
+        }
+        if let Some(b) = self.back_bevel {
+            t.back_bevel = b;
+        }
+        for (k, v) in self.rotation.iter().enumerate() {
+            if let Some(v) = v {
+                t.rotation[k] = *v;
+            }
+        }
+        if let Some(v) = self.fov {
+            t.camera.fov = v;
+        }
+        if let Some(v) = self.orthographic {
+            t.camera.orthographic = v;
+        }
+        let l = &mut t.light;
+        for (v, field) in self.light.iter().zip([&mut l.azimuth, &mut l.elevation, &mut l.intensity, &mut l.ambient, &mut l.specular, &mut l.shininess]) {
+            if let Some(v) = v {
+                *field = *v;
+            }
+        }
+        if self.face_color.is_some() {
+            t.face_color = self.face_color;
+        }
+        if let Some(c) = self.side_color {
+            t.side_color = c;
+        }
+        if self.bevel_color.is_some() {
+            t.bevel_color = self.bevel_color;
+        }
+        for (name, keys) in &self.keys {
+            if let Some(k) = t.keys.get_mut(name) {
+                *k = keys.clone();
+            }
+        }
+        t
+    }
+}
+
+/// A value checked to `lo..=hi`, refused by `what`.
+fn ranged(v: Option<f32>, lo: f32, hi: f32, what: &str, i: usize) -> Result<Option<f32>, Refusal> {
+    match v {
+        Some(v) if !v.is_finite() || !(lo..=hi).contains(&v) => Err(refuse(i, format!("3D {what} {v} is out of range"), format!("give {what} from {lo} to {hi}"))),
+        v => Ok(v),
+    }
+}
+
+/// A bevel spec checked.
+fn bevel_of(b: &BevelSpec, what: &str, i: usize) -> Result<Option<klipp_core::text3d::Bevel>, Refusal> {
+    use klipp_core::text3d::{Bevel, BevelProfile};
+    match b {
+        BevelSpec::Off(s) if s.eq_ignore_ascii_case("none") => Ok(None),
+        BevelSpec::Off(s) => Err(refuse(i, format!("3D {what} \"{s}\""), format!("give {what} {{size, segments?, profile?}}, or \"none\""))),
+        BevelSpec::On(BevelOn { size, segments, profile }) => Ok(Some(Bevel {
+            size: ranged(Some(*size), 0.0, 0.2, &format!("{what} size (ems)"), i)?.unwrap_or(0.0),
+            segments: match segments {
+                Some(s) if !(1..=12).contains(s) => return Err(refuse(i, format!("3D {what} segments {s}"), "give segments from 1 to 12")),
+                Some(s) => *s,
+                None => 4,
+            },
+            profile: match profile.as_deref().map(str::to_lowercase).as_deref() {
+                None | Some("round") => BevelProfile::Round,
+                Some("straight") | Some("flat") => BevelProfile::Flat,
+                Some(other) => return Err(refuse(i, format!("\"{other}\" is not a bevel profile"), "use straight or round")),
+            },
+        })),
+    }
+}
+
+/// A [`ThreeDSpec`] checked into a [`ThreeDAsk`].
+fn three_d_ask(spec: &ThreeDSpec, i: usize) -> Result<ThreeDAsk, Refusal> {
+    let d = match spec {
+        ThreeDSpec::Off(s) if s.eq_ignore_ascii_case("none") || s.eq_ignore_ascii_case("off") => return Ok(ThreeDAsk::Off),
+        ThreeDSpec::Off(s) => return Err(refuse(i, format!("three_d \"{s}\""), "give three_d {look?, depth?, bevel?, turn?, ...}, or \"none\"")),
+        ThreeDSpec::On(d) => d,
+    };
+    let col = |c: &Option<String>, what: &str| c.as_deref().map(|c| parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), format!("write the 3D {what} as #rrggbb")))).transpose();
+    let look = match d.look.as_deref() {
+        None => None,
+        Some(l) => Some(*klipp_core::text3d::LOOKS.iter().find(|n| n.eq_ignore_ascii_case(l)).ok_or_else(|| refuse(i, format!("\"{l}\" is not a 3D look"), format!("use {}", klipp_core::text3d::LOOKS.join(", "))))?),
+    };
+    let light = d.light.clone().unwrap_or_default();
+    let keys = d
+        .keys
+        .iter()
+        .flatten()
+        .map(|(name, v)| {
+            // The op's names for the turns; the model's for the rest.
+            let (model, lo, hi) = match name.as_str() {
+                "turn" => ("rotate_y", -3600.0, 3600.0),
+                "tilt" => ("rotate_x", -3600.0, 3600.0),
+                "roll" => ("rotate_z", -3600.0, 3600.0),
+                "depth" => ("depth", 0.0, 2.0),
+                "bevel" => ("bevel", 0.0, 0.2),
+                "fov" => ("fov", 1.0, 170.0),
+                "light_azimuth" => ("light_azimuth", -720.0, 720.0),
+                "light_elevation" => ("light_elevation", -90.0, 90.0),
+                "light_intensity" => ("light_intensity", 0.0, 5.0),
+                other => return Err(refuse(i, format!("\"{other}\" is not a 3D key"), "key turn, tilt, roll, depth, bevel, fov, light_azimuth, light_elevation or light_intensity")),
+            };
+            Ok((model, value_keys(v, lo, hi, &format!("3D {name}"), i)?))
+        })
+        .collect::<Result<Vec<_>, Refusal>>()?;
+    Ok(ThreeDAsk::On(Box::new(ThreeDPatch {
+        look,
+        depth: ranged(d.depth, 0.0, 2.0, "depth (ems)", i)?,
+        bevel: d.bevel.as_ref().map(|b| bevel_of(b, "bevel", i)).transpose()?,
+        back_bevel: d.back_bevel.as_ref().map(|b| bevel_of(b, "back_bevel", i)).transpose()?,
+        rotation: [ranged(d.tilt, -3600.0, 3600.0, "tilt (degrees)", i)?, ranged(d.turn, -3600.0, 3600.0, "turn (degrees)", i)?, ranged(d.roll, -3600.0, 3600.0, "roll (degrees)", i)?],
+        fov: ranged(d.fov, 1.0, 170.0, "fov (degrees)", i)?,
+        orthographic: d.perspective.map(|p| !p),
+        light: [
+            ranged(light.azimuth, -720.0, 720.0, "light azimuth (degrees)", i)?,
+            ranged(light.elevation, -90.0, 90.0, "light elevation (degrees)", i)?,
+            ranged(light.intensity, 0.0, 5.0, "light intensity", i)?,
+            ranged(light.ambient, 0.0, 1.0, "light ambient", i)?,
+            ranged(light.highlight, 0.0, 1.0, "light highlight", i)?,
+            ranged(light.shininess, 1.0, 512.0, "light shininess", i)?,
+        ],
+        face_color: col(&d.face_color, "face_color")?,
+        side_color: col(&d.side_color, "side_color")?,
+        bevel_color: col(&d.bevel_color, "bevel_color")?,
+        keys,
+    })))
+}
+
 
 /// A blend mode by its snake_case name.
 fn blend_mode(name: &str, i: usize) -> Result<klipp_core::BlendMode, Refusal> {
@@ -7611,7 +7892,7 @@ fn layer_mask(m: &MaskSpec, i: usize) -> Result<Option<klipp_timeline::LayerMask
     match m {
         MaskSpec::Off(s) if s.eq_ignore_ascii_case("none") => Ok(None),
         MaskSpec::Off(s) => Err(refuse(i, format!("mask \"{s}\""), "give mask {layer, kind?}, or \"none\"")),
-        MaskSpec::Layer { layer, kind } => Ok(Some(klipp_timeline::LayerMask {
+        MaskSpec::Layer(MaskLayer { layer, kind }) => Ok(Some(klipp_timeline::LayerMask {
             source: klipp_timeline::TitleObjectId(*layer),
             kind: match kind.as_deref().map(str::to_lowercase).as_deref() {
                 None | Some("alpha") => K::Alpha,
@@ -7923,6 +8204,17 @@ fn set_motion_extras(tb: &mut klipp_timeline::TextBox, fx: &mut Option<klipp_tim
             }
         }
     }
+    if let Some(ask) = &t.three_d {
+        tb.three_d = match ask {
+            ThreeDAsk::Off => None,
+            ThreeDAsk::On(patch) => {
+                for (name, keys) in &patch.keys {
+                    late(keys, &format!("3D {name}"))?;
+                }
+                Some(patch.apply(tb.three_d.as_ref()))
+            }
+        };
+    }
     if let Some(path) = &t.on_path {
         if let Some(klipp_timeline::TextPath::Layer { layer, contour, offset_keyframes, .. }) = path {
             late(offset_keyframes, "path offset")?;
@@ -8046,6 +8338,7 @@ fn typesetting(t: &Typeset, i: usize) -> Result<Typesetting, Refusal> {
         on_path,
         blend: t.blend.as_deref().map(|b| blend_mode(b, i)).transpose()?,
         mask: t.mask.as_ref().map(|m| layer_mask(m, i)).transpose()?,
+        three_d: t.three_d.as_ref().map(|d| three_d_ask(d, i)).transpose()?,
     })
 }
 
