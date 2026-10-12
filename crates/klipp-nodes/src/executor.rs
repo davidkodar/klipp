@@ -3514,12 +3514,19 @@ fn grain_size(grain: &klipp_core::FilmGrainSettings, render_scale: f32) -> f32 {
     (grain.size * render_scale).max(0.001)
 }
 
-/// The bilateral filter's spatial and colour sigmas, floored away from
-/// zero. Both sides divide by twice the square of each, so a zero
+/// The bilateral filter's spatial, luma and chroma sigmas, floored away
+/// from zero. Both sides divide by twice the square of each, so a zero
 /// radius made the spatial term 0/0 and turned every weight into a NaN
 /// — a black frame on the GPU, from a control the UI lets you reach.
-fn denoise_sigmas(luma: f32, chroma: f32, radius_px: f32) -> (f32, f32) {
-    (radius_px.max(0.001), ((luma + chroma) * 0.5).max(0.001))
+///
+/// Luma smooths the picture's luma and Chroma its chroma, each with its
+/// own sigma (#1039); they used to be averaged into one sigma for all of
+/// rgb, so Chroma could not smooth colour on its own. A slider at 0
+/// stays 0, which the filter reads as "leave that part as it is"; a
+/// slider above 0 is floored like the radius.
+fn denoise_sigmas(luma: f32, chroma: f32, radius_px: f32) -> (f32, f32, f32) {
+    let range = |v: f32| if v > 0.0 { v.max(0.001) } else { 0.0 };
+    (radius_px.max(0.001), range(luma), range(chroma))
 }
 
 /// Where a chain-resident composite's port-1 picture comes from.
@@ -4243,11 +4250,11 @@ impl GraphExecutor {
                 let chroma = params.denoise_chroma.unwrap_or(0.0);
                 let radius = params.denoise_radius.unwrap_or(3);
                 if luma <= 0.0 && chroma <= 0.0 { return None; }
-                let (spatial_sigma, color_sigma) = denoise_sigmas(luma, chroma, self.px(radius as f32));
+                let (spatial_sigma, luma_sigma, chroma_sigma) = denoise_sigmas(luma, chroma, self.px(radius as f32));
                     let max_kernel = self.denoise_max_kernel();
                 self.gpu.as_mut().unwrap().apply_denoise_chain(
                     in_is_a, width, height,
-                    spatial_sigma, color_sigma, max_kernel,
+                    spatial_sigma, luma_sigma, chroma_sigma, max_kernel,
                 );
                 Some(1)
             }
@@ -5750,18 +5757,18 @@ impl GraphExecutor {
                     // sigma. A zero radius made the spatial term 0/0 and
                     // every weight a NaN, so the floor goes here, before
                     // the fork, rather than in either twin.
-                    let (spatial_sigma, color_sigma) = denoise_sigmas(luma, chroma, self.px(radius as f32));
+                    let (spatial_sigma, luma_sigma, chroma_sigma) = denoise_sigmas(luma, chroma, self.px(radius as f32));
                     let max_kernel = self.denoise_max_kernel();
                     let coefs = klipp_color::linear::luma_coefs(self.working_colorspace);
                     if let Some(gpu) = &mut self.gpu {
                         gpu.apply_denoise_gpu(
                             primary_input, width, height,
-                            spatial_sigma, color_sigma, max_kernel,
+                            spatial_sigma, luma_sigma, chroma_sigma, max_kernel,
                         )
                     } else {
                         klipp_effects::cpu_grade::bilateral_denoise(
                             primary_input, width, height,
-                            spatial_sigma, color_sigma, max_kernel, coefs,
+                            spatial_sigma, luma_sigma, chroma_sigma, max_kernel, coefs,
                         )
                     }
                 } else {

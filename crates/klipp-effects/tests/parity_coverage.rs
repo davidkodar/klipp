@@ -164,7 +164,7 @@ const SHADERS: &[(&str, Cover)] = &[
     ("SHADER_LENS_DISTORTION", EVERY_EFFECT),
     ("SHADER_DILATE", EVERY_EFFECT),
     ("SHADER_ERODE", EVERY_EFFECT),
-    ("SHADER_DENOISE", EVERY_EFFECT),
+    ("SHADER_DENOISE", Test("klipp-nodes/tests/grain_denoise_parity.rs", "denoise_matches_the_shader_for_every_slider_pair")),
     ("SHADER_GAMMA", EVERY_EFFECT),
     ("SHADER_HSV_ADJUST", EVERY_EFFECT),
     ("SHADER_NOISE_GENERATOR", EVERY_EFFECT),

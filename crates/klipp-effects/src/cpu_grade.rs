@@ -903,8 +903,24 @@ fn wang_hash01(seed: u32) -> f32 {
     x as f32 / 4_294_967_295.0
 }
 
-/// `SHADER_DENOISE`: a bilateral filter whose range term is the luma
-/// difference, in linear light.
+/// `SHADER_DENOISE`: a bilateral filter in linear light that smooths a
+/// pixel's luma and its chroma separately (#1039).
+///
+/// Each pixel splits into `Y`, the working space's luma, and the chroma
+/// `C = rgb − Y·(1,1,1)`. Both are averaged over the same neighbours with
+/// the same spatial weight, and both weigh a neighbour by its *luma*
+/// difference, so neither bleeds across a brightness edge; they differ
+/// only in how wide that tolerance is:
+///
+/// * `Y' = Σ s·exp(-ΔY² / 2σ_l²)·Y_n / Σ …`, `σ_l` from the Luma slider;
+/// * `C' = Σ s·exp(-ΔY² / 2σ_c²)·C_n / Σ …`, `σ_c` from the Chroma slider;
+/// * `rgb' = Y'·(1,1,1) + C'`.
+///
+/// A sigma of 0 means that part is left as it is — no averaging at all,
+/// rather than a very narrow filter. The two sliders used to be averaged
+/// into one sigma for all of `rgb`, so Chroma never smoothed colour on
+/// its own. With equal sigmas this is the old filter again: `Y' + C'` is
+/// the weighted mean of `rgb`, up to rounding.
 ///
 /// Every tap reads the *input*, so this cannot run in place — the
 /// shader reads a separate input buffer and the twin returns a new
@@ -919,14 +935,17 @@ pub fn bilateral_denoise(
     width: u32,
     height: u32,
     spatial_sigma: f32,
-    color_sigma: f32,
+    luma_sigma: f32,
+    chroma_sigma: f32,
     max_kernel: u32,
     luma: [f32; 3],
 ) -> Vec<f32> {
     let (w, h) = (width as i32, height as i32);
     let kernel = (spatial_sigma * 2.0).ceil().min(max_kernel as f32) as i32;
     let spatial_denom = 2.0 * spatial_sigma * spatial_sigma;
-    let color_denom = 2.0 * color_sigma * color_sigma;
+    let (luma_on, chroma_on) = (luma_sigma > 0.0, chroma_sigma > 0.0);
+    let luma_denom = 2.0 * luma_sigma * luma_sigma;
+    let chroma_denom = 2.0 * chroma_sigma * chroma_sigma;
     let luma_at = |i: usize| luma[0] * px[i * 4] + luma[1] * px[i * 4 + 1] + luma[2] * px[i * 4 + 2];
 
     let mut out = vec![0.0f32; px.len()];
@@ -937,28 +956,45 @@ pub fn bilateral_denoise(
             for x in 0..w {
                 let idx = (y * w + x) as usize;
                 let center_luma = luma_at(idx);
-                let mut sum = [0.0f32; 3];
-                let mut total = 0.0f32;
-                for dy in -kernel..=kernel {
-                    for dx in -kernel..=kernel {
-                        let sx = (x + dx).clamp(0, w - 1);
-                        let sy = (y + dy).clamp(0, h - 1);
-                        let n = (sy * w + sx) as usize;
-                        let spatial_dist = (dx * dx + dy * dy) as f32;
-                        let spatial_w = (-spatial_dist / spatial_denom).exp();
-                        let color_diff = center_luma - luma_at(n);
-                        let color_w = (-color_diff * color_diff / color_denom).exp();
-                        let weight = spatial_w * color_w;
-                        for (c, s) in sum.iter_mut().enumerate() {
-                            *s += px[n * 4 + c] * weight;
+                let mut sum_y = 0.0f32;
+                let mut total_y = 0.0f32;
+                let mut sum_c = [0.0f32; 3];
+                let mut total_c = 0.0f32;
+                if luma_on || chroma_on {
+                    for dy in -kernel..=kernel {
+                        for dx in -kernel..=kernel {
+                            let sx = (x + dx).clamp(0, w - 1);
+                            let sy = (y + dy).clamp(0, h - 1);
+                            let n = (sy * w + sx) as usize;
+                            let spatial_dist = (dx * dx + dy * dy) as f32;
+                            let spatial_w = (-spatial_dist / spatial_denom).exp();
+                            let n_luma = luma_at(n);
+                            let luma_diff = center_luma - n_luma;
+                            let d2 = luma_diff * luma_diff;
+                            if luma_on {
+                                let wl = spatial_w * (-d2 / luma_denom).exp();
+                                sum_y += n_luma * wl;
+                                total_y += wl;
+                            }
+                            if chroma_on {
+                                let wc = spatial_w * (-d2 / chroma_denom).exp();
+                                for (c, s) in sum_c.iter_mut().enumerate() {
+                                    *s += (px[n * 4 + c] - n_luma) * wc;
+                                }
+                                total_c += wc;
+                            }
                         }
-                        total += weight;
                     }
                 }
-                let inv = 1.0 / total;
+                let out_y = if luma_on { sum_y * (1.0 / total_y) } else { center_luma };
                 let o = (x * 4) as usize;
                 for c in 0..3 {
-                    row[o + c] = sum[c] * inv;
+                    let out_c = if chroma_on {
+                        sum_c[c] * (1.0 / total_c)
+                    } else {
+                        px[idx * 4 + c] - center_luma
+                    };
+                    row[o + c] = out_y + out_c;
                 }
                 // Alpha passes through untouched, as the shader does.
                 row[o + 3] = px[idx * 4 + 3];

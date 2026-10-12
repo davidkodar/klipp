@@ -3584,7 +3584,8 @@ impl GpuEffectsPipeline {
         width: u32,
         height: u32,
         spatial_sigma: f32,
-        color_sigma: f32,
+        luma_sigma: f32,
+        chroma_sigma: f32,
         max_kernel: u32,
     ) -> Vec<f32> {
         if self.is_device_lost() {
@@ -3602,8 +3603,9 @@ impl GpuEffectsPipeline {
         let workgroups = pixel_count.div_ceil(WORKGROUP_SIZE);
 
         self.write_params(&DenoiseParams {
-            width, height, spatial_sigma, color_sigma,
+            width, height, spatial_sigma, luma_sigma,
             luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], max_kernel,
+            chroma_sigma, _pad: [0; 3],
         });
         self.dispatch(&self.denoise_pipeline, buf_a, buf_b, workgroups);
 
@@ -4848,14 +4850,15 @@ impl GpuEffectsPipeline {
         width: u32,
         height: u32,
         spatial_sigma: f32,
-        color_sigma: f32,
+        luma_sigma: f32,
+        chroma_sigma: f32,
         max_kernel: u32,
     ) {
         if self.is_device_lost() {
             return;
         }
         let slot = self.next_params_slot();
-        self.write_chain_params(slot, &DenoiseParams { width, height, spatial_sigma, color_sigma, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], max_kernel });
+        self.write_chain_params(slot, &DenoiseParams { width, height, spatial_sigma, luma_sigma, luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], max_kernel, chroma_sigma, _pad: [0; 3] });
         let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
         let bind_group = self.chain_bg_3binding[slot * 4 + Self::chain_cfg_3b_ab(in_is_a)]
             .as_ref()
@@ -8140,7 +8143,9 @@ struct DenoiseParams {
     width: u32,
     height: u32,
     spatial_sigma: f32,
-    color_sigma: f32,
+    /// The range sigma, on the luma difference, for smoothing the luma:
+    /// the Luma slider. 0 leaves the luma as it is (#1039).
+    luma_sigma: f32,
     /// Working-space luminance weights, for the brightness this effect
     /// gates on. `GpuEffectsPipeline::set_luma_coefs` installs them; the
     /// CPU twin reads the same numbers.
@@ -8150,8 +8155,13 @@ struct DenoiseParams {
     /// The largest kernel radius, in pixels of the buffer: 10 at the
     /// sequence's size, scaled with the render size for the grade node.
     max_kernel: u32,
+    /// The range sigma, also on the luma difference, for smoothing the
+    /// chroma `rgb − Y`: the Chroma slider. 0 leaves the chroma as it
+    /// is (#1039). Before, the two were averaged into one sigma.
+    chroma_sigma: f32,
+    _pad: [u32; 3],
 }
-// 4 fields x 4 bytes = 16 bytes
+// 12 fields x 4 bytes = 48 bytes, a multiple of 16 as a uniform needs
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -14630,20 +14640,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
-// Denoise — bilateral filter. Spatial + colour-similarity weights.
-// Linear-light luma (BT.709) matches what the coefficients were
-// defined for; linear colour-diff means the colour_sigma slider
-// now measures physical light-level distance rather than sRGB
-// byte distance. Slider values may need re-tuning on complex
-// images (the scale of "similar" pixels shifts).
+// Denoise — bilateral filter in linear light that smooths luma `Y`
+// and chroma `rgb − Y` separately, each with its own range sigma on
+// the luma difference: Luma slider and Chroma slider (#1039).
+// `cpu_grade::bilateral_denoise` is the CPU twin and documents it.
 const SHADER_DENOISE: &str = concat!(
     "
 struct Params {
     width: u32,
     height: u32,
     spatial_sigma: f32,
-    color_sigma: f32,
+    luma_sigma: f32,
     luma_yr: f32, luma_yg: f32, luma_yb: f32, max_kernel: u32,
+    chroma_sigma: f32,
+    _pad0: u32, _pad1: u32, _pad2: u32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -14662,35 +14672,53 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let y = i32(idx / w);
 
     let center = unpack(input[idx]);
-    let center_luma = dot(vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb), center.xyz);
+    let coefs = vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb);
+    let center_luma = dot(coefs, center.xyz);
 
     let kernel_size = min(i32(ceil(params.spatial_sigma * 2.0)), i32(params.max_kernel));
     let spatial_denom = 2.0 * params.spatial_sigma * params.spatial_sigma;
-    let color_denom = 2.0 * params.color_sigma * params.color_sigma;
+    // A sigma of 0 leaves that part as it is (#1039).
+    let luma_on = params.luma_sigma > 0.0;
+    let chroma_on = params.chroma_sigma > 0.0;
+    let luma_denom = 2.0 * params.luma_sigma * params.luma_sigma;
+    let chroma_denom = 2.0 * params.chroma_sigma * params.chroma_sigma;
 
-    var sum = vec3<f32>(0.0);
-    var total_weight = 0.0;
+    var sum_y = 0.0;
+    var total_y = 0.0;
+    var sum_c = vec3<f32>(0.0);
+    var total_c = 0.0;
 
-    for (var dy = -kernel_size; dy <= kernel_size; dy = dy + 1) {
-        for (var dx = -kernel_size; dx <= kernel_size; dx = dx + 1) {
-            let sx = u32(clamp(x + dx, 0, i32(w) - 1));
-            let sy = u32(clamp(y + dy, 0, i32(h) - 1));
-            let n = unpack(input[sy * w + sx]);
-            let n_luma = dot(vec3<f32>(params.luma_yr, params.luma_yg, params.luma_yb), n.xyz);
+    if luma_on || chroma_on {
+        for (var dy = -kernel_size; dy <= kernel_size; dy = dy + 1) {
+            for (var dx = -kernel_size; dx <= kernel_size; dx = dx + 1) {
+                let sx = u32(clamp(x + dx, 0, i32(w) - 1));
+                let sy = u32(clamp(y + dy, 0, i32(h) - 1));
+                let n = unpack(input[sy * w + sx]);
+                let n_luma = dot(coefs, n.xyz);
 
-            let spatial_dist = f32(dx * dx + dy * dy);
-            let spatial_w = exp(-spatial_dist / spatial_denom);
-            let color_diff = center_luma - n_luma;
-            let color_w = exp(-color_diff * color_diff / color_denom);
-            let weight = spatial_w * color_w;
-
-            sum = sum + n.xyz * weight;
-            total_weight += weight;
+                let spatial_dist = f32(dx * dx + dy * dy);
+                let spatial_w = exp(-spatial_dist / spatial_denom);
+                let luma_diff = center_luma - n_luma;
+                let d2 = luma_diff * luma_diff;
+                if luma_on {
+                    let wl = spatial_w * exp(-d2 / luma_denom);
+                    sum_y += n_luma * wl;
+                    total_y += wl;
+                }
+                if chroma_on {
+                    let wc = spatial_w * exp(-d2 / chroma_denom);
+                    sum_c = sum_c + (n.xyz - vec3<f32>(n_luma)) * wc;
+                    total_c += wc;
+                }
+            }
         }
     }
 
-    let inv = 1.0 / total_weight;
-    output[idx] = pack(vec4<f32>(sum * inv, center.w));
+    var out_y = center_luma;
+    if luma_on { out_y = sum_y * (1.0 / total_y); }
+    var out_c = center.xyz - vec3<f32>(center_luma);
+    if chroma_on { out_c = sum_c * (1.0 / total_c); }
+    output[idx] = pack(vec4<f32>(vec3<f32>(out_y) + out_c, center.w));
 }
 "
 );

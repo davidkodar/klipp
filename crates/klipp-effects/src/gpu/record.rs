@@ -826,11 +826,16 @@ impl GpuEffectsPipeline {
                 let slot = rec.slots.claim(q, &DenoiseParams {
                     width, height,
                     spatial_sigma: *spatial_sigma,
-                    color_sigma: *color_sigma,
+                    luma_sigma: *color_sigma,
                     luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2],
                     // The effect's sigma is scaled with the render
                     // size; its kernel keeps the cap it always had.
                     max_kernel: 10,
+                    // The effect has one colour sigma for all of rgb,
+                    // as its CPU twin in `cpu.rs` does: the same sigma
+                    // for luma and chroma is that filter (#1039).
+                    chroma_sigma: *color_sigma,
+                    _pad: [0; 3],
                 }).expect("slots_needed was checked");
                 let mut from = src;
                 for i in 0..passes {
