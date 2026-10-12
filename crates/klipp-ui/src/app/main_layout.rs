@@ -1289,6 +1289,9 @@ impl KlippApp {
                             })
                             .inner
                     });
+                    // The selected node's masks a tracker drives, as the
+                    // generated view marks them (#1398).
+                    self.node_inspector_panel.tracked_masks = self.state.selected_node_id.map(|n| crate::panels::node_inspector::tracked_masks_of(clip, n)).unwrap_or_default();
                     let panel_cmds = if drawn { generated_cmds } else { clip.edit_grade(|root| {
                         let graph: &mut klipp_nodes::NodeGraph =
                             match Self::resolve_graph_at_path_mut(root, &path) {
@@ -1315,6 +1318,7 @@ impl KlippApp {
                         }
                     }) };
                     self.node_inspector_panel.generated = None;
+                    self.node_inspector_panel.tracked_masks.clear();
                     // A key the generated rows name at the playhead is the
                     // stored key in its frame.
                     let mut panel_cmds = panel_cmds;
