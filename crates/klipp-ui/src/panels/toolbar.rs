@@ -65,36 +65,12 @@ impl ToolbarPanel {
         let right_edge = rx - 10.0;
 
         // ═══════════════════════════════════════════
-        // WORKSPACE TABS — centred in toolbar
-        // ═══════════════════════════════════════════
-        // A segmented control: three labels in one field, the active one
-        // lit, sized to its titles so none is ever clipped.
-        let workspaces = [(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Export, "Export")];
-        let ws_font = egui::FontId::proportional(crate::theme::type_scale::CONTROL);
-        let labels: Vec<&str> = workspaces.iter().map(|w| w.1).collect();
-        let ws_size = crate::widgets::segmented::segmented_size(ui, &labels, &ws_font, crate::theme::control::REGULAR);
-        let ws_rect = egui::Rect::from_center_size(toolbar_rect.center(), ws_size);
-        let active = workspaces.iter().position(|w| w.0 == state.active_workspace).unwrap_or(0);
-        if let Some(i) = crate::widgets::segmented::segmented_in(ui, ws_rect, &labels, active, theme, ws_font) {
-            // Just the workspace. What it implies — the colour panel,
-            // the browser borrow — is settled in one place by the app's
-            // `reconcile_workspace`, so this tab and the `C` shortcut
-            // can no longer give two different layouts for one switch.
-            //
-            // Scopes are deliberately not forced on: that decision was
-            // already taken for the shortcut route, and this one had
-            // quietly kept doing it.
-            state.active_workspace = workspaces[i].0;
-        }
-
-        // ═══════════════════════════════════════════
         // LEFT GROUP — brand + menus + tool buttons
         // ═══════════════════════════════════════════
-        let left_rect = egui::Rect::from_min_max(
-            toolbar_rect.min,
-            egui::pos2((ws_rect.left() - 10.0).min(right_edge), toolbar_rect.max.y),
-        );
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(left_rect), |ui| {
+        // Drawn first, up to the right group: where it ends is where the
+        // workspace tabs may start (#1355).
+        let left_rect = egui::Rect::from_min_max(toolbar_rect.min, egui::pos2(right_edge.max(toolbar_rect.min.x), toolbar_rect.max.y));
+        let left_end = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(left_rect), |ui| {
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 ui.add_space(10.0);
@@ -145,9 +121,52 @@ impl ToolbarPanel {
                 Self::window_menu(ui, &mut cmds, state, kb);
                 Self::tools_menu(ui, &mut cmds, state);
                 Self::help_menu(ui, state);
+                ui.min_rect().right()
+            })
+            .inner
+        })
+        .inner;
 
-            });
-        });
+
+        // ═══════════════════════════════════════════
+        // WORKSPACE TABS — centred in toolbar, where the menus leave room
+        // ═══════════════════════════════════════════
+        // A segmented control: three labels in one field, the active one
+        // lit, sized to its titles so none is ever clipped.
+        let workspaces = [(Workspace::Edit, "Edit"), (Workspace::Color, "Colour"), (Workspace::Export, "Export")];
+        let ws_font = egui::FontId::proportional(crate::theme::type_scale::CONTROL);
+        let labels: Vec<&str> = workspaces.iter().map(|w| w.1).collect();
+        let ws_size = crate::widgets::segmented::segmented_size(ui, &labels, &ws_font, crate::theme::control::REGULAR);
+        let active = workspaces.iter().position(|w| w.0 == state.active_workspace).unwrap_or(0);
+        let picked = match switcher_place(toolbar_rect, left_end + 10.0, right_edge, ws_size) {
+            SwitcherPlace::Tabs(ws_rect) => crate::widgets::segmented::segmented_in(ui, ws_rect, &labels, active, theme, ws_font),
+            // Too narrow for the three: the one shown, the others a click away.
+            SwitcherPlace::Menu(rect) => {
+                let mut chosen = active;
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(rect), |ui| {
+                    ui.centered_and_justified(|ui| {
+                        egui::ComboBox::from_id_salt("workspace_switcher").selected_text(labels[active]).width(rect.width()).show_ui(ui, |ui| {
+                            for (i, label) in labels.iter().enumerate() {
+                                ui.selectable_value(&mut chosen, i, *label);
+                            }
+                        });
+                    });
+                });
+                (chosen != active).then_some(chosen)
+            }
+            SwitcherPlace::None => None,
+        };
+        if let Some(i) = picked {
+            // Just the workspace. What it implies — the colour panel,
+            // the browser borrow — is settled in one place by the app's
+            // `reconcile_workspace`, so this tab and the `C` shortcut
+            // can no longer give two different layouts for one switch.
+            //
+            // Scopes are deliberately not forced on: that decision was
+            // already taken for the shortcut route, and this one had
+            // quietly kept doing it.
+            state.active_workspace = workspaces[i].0;
+        }
 
         cmds
     }
@@ -1386,6 +1405,40 @@ fn selection_span(state: &AppState) -> Option<(klipp_core::Timecode, klipp_core:
     (to > from).then_some((from, to))
 }
 
+/// Where the workspace switcher goes on the bar.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SwitcherPlace {
+    /// The three tabs, in this rect.
+    Tabs(egui::Rect),
+    /// A drop-down naming the workspace shown, in this rect.
+    Menu(egui::Rect),
+    /// No room at all.
+    None,
+}
+
+/// The narrowest drop-down the switcher shrinks to.
+const SWITCHER_MENU_WIDTH: f32 = 96.0;
+
+/// Where the workspace tabs of `size` go between the menus' end (`from`)
+/// and the right group's start (`to`) on `bar` (#1355): centred on the
+/// bar when they fit there, else centred in the room between, else a
+/// drop-down in that room. They never draw over a menu or a button.
+fn switcher_place(bar: egui::Rect, from: f32, to: f32, size: egui::Vec2) -> SwitcherPlace {
+    let at = |x: f32, w: f32| egui::Rect::from_center_size(egui::pos2(x, bar.center().y), egui::vec2(w, size.y));
+    let centred = at(bar.center().x, size.x);
+    if centred.left() >= from && centred.right() <= to {
+        return SwitcherPlace::Tabs(centred);
+    }
+    let room = to - from;
+    if room >= size.x {
+        return SwitcherPlace::Tabs(at((from + to) / 2.0, size.x));
+    }
+    if room >= SWITCHER_MENU_WIDTH {
+        return SwitcherPlace::Menu(at((from + to) / 2.0, SWITCHER_MENU_WIDTH));
+    }
+    SwitcherPlace::None
+}
+
 #[cfg(test)]
 mod graph_menu_tests {
     use super::*;
@@ -1541,5 +1594,80 @@ mod shortcut_label_tests {
             unbound.is_empty(),
             "menus name actions that have no default binding, so they render blank: {unbound:?}"
         );
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod narrow_bar_tests {
+    use super::*;
+
+    /// The texts the toolbar paints at `width`, with their rects, after a
+    /// few frames to settle.
+    fn texts_at(width: f32, workspace: Workspace) -> Vec<(String, egui::Rect)> {
+        let ctx = egui::Context::default();
+        let mut panel = ToolbarPanel { logo_texture: None };
+        let mut state = AppState { active_workspace: workspace, ..Default::default() };
+        let mut texts = Vec::new();
+        for i in 0..3 {
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 700.0))), time: Some(f64::from(i) * 0.1), ..Default::default() };
+            let output = ctx.run(input, |ctx| {
+                egui::TopBottomPanel::top("toolbar").exact_height(40.0).show(ctx, |ui| {
+                    panel.show(ui, &mut state, &[], &KlippTheme::default(), &crate::keybindings::KeyBindings::default());
+                });
+            });
+            texts = output.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) if !t.galley.text().trim().is_empty() => Some((t.galley.text().to_owned(), t.visual_bounding_rect())),
+                _ => None,
+            }).collect();
+        }
+        texts
+    }
+
+    /// Pairs of texts drawn over each other.
+    pub(crate) fn overlaps(texts: &[(String, egui::Rect)]) -> Vec<String> {
+        let mut out = Vec::new();
+        for (i, (a, ra)) in texts.iter().enumerate() {
+            for (b, rb) in &texts[i + 1..] {
+                if ra.shrink(0.5).intersects(rb.shrink(0.5)) {
+                    out.push(format!("{a:?} {ra:?} over {b:?} {rb:?}"));
+                }
+            }
+        }
+        out
+    }
+
+    /// At 1018 px, and narrower and wider, in each workspace: the menus,
+    /// the workspace switcher and the right group never draw over each
+    /// other, and every menu title is still there (#1355).
+    #[test]
+    fn the_bar_draws_nothing_over_anything_at_any_width() {
+        for width in [1920.0, 1280.0, 1018.0, 900.0, 760.0] {
+            for workspace in [Workspace::Edit, Workspace::Color, Workspace::Export] {
+                let texts = texts_at(width, workspace);
+                let clash = overlaps(&texts);
+                let off: Vec<_> = texts.iter().filter(|(_, r)| r.left() < 0.0 || r.right() > width).collect();
+                assert!(off.is_empty(), "{width} px, {workspace:?}: off the bar: {off:?}");
+                assert!(clash.is_empty(), "{width} px, {workspace:?}:\n{}", clash.join("\n"));
+                for menu in ["File", "Edit", "View", "Window", "Help"] {
+                    assert!(texts.iter().any(|(t, _)| t == menu), "{width} px, {workspace:?}: no {menu} menu among {texts:?}");
+                }
+            }
+        }
+    }
+
+    /// The switcher sits centred when the menus leave room, moves into the
+    /// room they leave when they don't, becomes a drop-down when the three
+    /// tabs no longer fit, and is left out with no room at all.
+    #[test]
+    fn the_switcher_goes_where_there_is_room() {
+        let bar = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 40.0));
+        let size = egui::vec2(200.0, 28.0);
+        let SwitcherPlace::Tabs(r) = switcher_place(bar, 300.0, 850.0, size) else { panic!("centred") };
+        assert_eq!(r.center().x, 500.0);
+        let SwitcherPlace::Tabs(r) = switcher_place(bar, 560.0, 840.0, size) else { panic!("moved over") };
+        assert!(r.left() >= 560.0 && r.right() <= 840.0, "{r:?}");
+        let SwitcherPlace::Menu(r) = switcher_place(bar, 700.0, 840.0, size) else { panic!("a drop-down") };
+        assert!(r.left() >= 700.0 && r.right() <= 840.0, "{r:?}");
+        assert_eq!(switcher_place(bar, 800.0, 840.0, size), SwitcherPlace::None);
     }
 }
