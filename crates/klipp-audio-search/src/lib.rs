@@ -163,15 +163,64 @@ pub fn search_sfx(query: &str, limit: u32) -> Result<Vec<Track>, String> {
 /// whoosh, not a twenty-second design file (#795). Freesound filters by
 /// duration itself, so a page of results is a page of short ones.
 pub fn search_sfx_within(query: &str, limit: u32, max_secs: Option<f64>) -> Result<Vec<Track>, String> {
+    search_sfx_filtered(query, limit, SfxFilter { max_secs, commercial_only: false }).map(|found| found.tracks)
+}
+
+/// What a sound-effect search is narrowed to.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SfxFilter {
+    /// Only sounds this long or shorter, seconds.
+    pub max_secs: Option<f64>,
+    /// Only sounds whose licence allows commercial use (#1573).
+    pub commercial_only: bool,
+}
+
+/// A sound-effect search's results and the words that found them.
+#[derive(Debug, Clone, Default)]
+pub struct SfxSearch {
+    pub tracks: Vec<Track>,
+    /// The words the results match: the query itself, or fewer of its
+    /// words when nothing matched them all.
+    pub matched_query: String,
+}
+
+/// The queries tried in turn: the whole phrase, then shorter and
+/// shorter runs of its first words. Freesound matches every word, so
+/// "reverse cymbal swell" finds nothing where "reverse cymbal" finds
+/// plenty (#1573).
+fn sfx_attempts(query: &str) -> Vec<String> {
+    let words: Vec<&str> = query.split_whitespace().collect();
+    (1..=words.len()).rev().map(|n| words[..n].join(" ")).collect()
+}
+
+/// [`search_sfx_within`] with the licence filter, falling back to fewer
+/// of the query's words when nothing matches them all.
+pub fn search_sfx_filtered(query: &str, limit: u32, filter: SfxFilter) -> Result<SfxSearch, String> {
     let token = freesound_token().ok_or_else(|| "no Freesound token set — put freesound_token in ~/.config/klipp/keys.toml or set KLIPP_FREESOUND_TOKEN".to_string())?;
     let limit = limit.clamp(1, 50);
+    // A larger page when the licence filter thins it here.
+    let page = if filter.commercial_only { (limit * 3).min(150) } else { limit };
+    for attempt in sfx_attempts(query) {
+        let mut tracks = freesound_page(&token, &attempt, page, filter.max_secs)?;
+        if filter.commercial_only {
+            tracks.retain(|t| t.commercial_ok);
+        }
+        tracks.truncate(limit as usize);
+        if !tracks.is_empty() {
+            return Ok(SfxSearch { tracks, matched_query: attempt });
+        }
+    }
+    Ok(SfxSearch { tracks: Vec::new(), matched_query: query.trim().to_string() })
+}
+
+fn freesound_page(token: &str, query: &str, page: u32, max_secs: Option<f64>) -> Result<Vec<Track>, String> {
     let q = encode(query.trim());
     let filter = match max_secs.filter(|m| m.is_finite() && *m > 0.0) {
         Some(m) => format!("&filter={}", encode(&format!("duration:[0 TO {m}]"))),
         None => String::new(),
     };
     let url = format!(
-        "https://freesound.org/apiv2/search/text/?query={q}&token={token}&page_size={limit}&sort=rating_desc&fields=id,name,username,duration,license,previews,url,tags{filter}"
+        "https://freesound.org/apiv2/search/text/?query={q}&token={token}&page_size={page}&sort=rating_desc&fields=id,name,username,duration,license,previews,url,tags{filter}"
     );
     let text = ureq::get(&url)
         .timeout(std::time::Duration::from_secs(30))
@@ -212,6 +261,13 @@ pub fn search_sfx_within(query: &str, limit: u32, max_secs: Option<f64>) -> Resu
         });
     }
     Ok(tracks)
+}
+
+/// Whether a licence forbids derivatives (CC BY-ND, BY-NC-ND): a cut,
+/// a fit to length or a remix of the track breaks it, which is what an
+/// editor does with music (#1570).
+pub fn forbids_edits(license: &str) -> bool {
+    license.split(|c: char| !c.is_ascii_alphanumeric()).any(|part| part.eq_ignore_ascii_case("ND"))
 }
 
 /// What a music search is narrowed to.
@@ -659,6 +715,24 @@ pub fn download_dir() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
+    /// #1573: a phrase that matches nothing falls back to shorter runs
+    /// of its first words, longest first.
+    #[test]
+    fn no_derivatives_licences_forbid_edits() {
+        assert!(super::forbids_edits("CC BY-ND"));
+        assert!(super::forbids_edits("CC BY-NC-ND 3.0"));
+        assert!(!super::forbids_edits("CC BY-SA"));
+        assert!(!super::forbids_edits("CC0"));
+        assert!(!super::forbids_edits("CC BY 4.0"));
+    }
+
+    #[test]
+    fn a_phrase_falls_back_to_fewer_words() {
+        assert_eq!(super::sfx_attempts("reverse cymbal swell"), vec!["reverse cymbal swell", "reverse cymbal", "reverse"]);
+        assert_eq!(super::sfx_attempts("  whoosh "), vec!["whoosh"]);
+        assert!(super::sfx_attempts("   ").is_empty());
+    }
+
     /// #824: a download stops at its limit instead of reading on, however
     /// much the server sends.
     #[test]

@@ -269,6 +269,7 @@ pub(crate) fn respond(
                 if let Some(changes) = cut_changes {
                     v["changes"] = changes["changes"].clone();
                     v["shifted"] = changes["shifted"].clone();
+                    v["retracked"] = changes["retracked"].clone();
                 }
             }
             v["text"] = json!(if detail { plan.text() } else { plan.text_folded() });

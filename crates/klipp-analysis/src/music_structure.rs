@@ -229,6 +229,40 @@ pub fn fit(s: &Structure, target_secs: f64) -> Option<Fit> {
     Some(Fit { segments, length_secs: length, join_secs: Some(join), bars_changed: bars })
 }
 
+/// Where the track's intro ends: the end of its first section when that
+/// section is an intro, for a fit that starts on the music rather than
+/// on its quiet opening (#1576).
+pub fn intro_end(s: &Structure) -> Option<f64> {
+    s.sections.first().filter(|x| x.kind == SectionKind::Intro).map(|x| x.end_secs)
+}
+
+/// [`fit`] of the track from `start_secs` on: what comes before the bar
+/// line at or after it is left out, and the rest is fitted to about
+/// `target_secs` as `fit` does. The segments are in the source's own
+/// seconds.
+pub fn fit_from(s: &Structure, target_secs: f64, start_secs: f64) -> Option<Fit> {
+    let first = s.bars.iter().position(|&b| b >= start_secs - 1e-6)?;
+    if first == 0 {
+        return fit(s, target_secs);
+    }
+    let start = s.bars[first];
+    let trimmed = Structure {
+        bars: s.bars[first..].iter().map(|b| b - start).collect(),
+        energy: s.energy.get(first..).unwrap_or(&[]).to_vec(),
+        brightness: s.brightness.get(first..).unwrap_or(&[]).to_vec(),
+        sections: s.sections.iter().filter(|x| x.end_secs > start).map(|x| Section {
+            start_secs: (x.start_secs - start).max(0.0), end_secs: x.end_secs - start, ..x.clone()
+        }).collect(),
+        duration_secs: s.duration_secs - start,
+    };
+    let mut f = fit(&trimmed, target_secs)?;
+    for seg in &mut f.segments {
+        seg.0 += start;
+        seg.1 += start;
+    }
+    Some(f)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,6 +322,20 @@ mod tests {
         let s = analyse(&pcm, SR, &beats).unwrap();
         assert_eq!(s.sections.len(), 2, "{:?}", s.sections);
         assert!((s.sections[1].start_secs - 16.0).abs() < 1e-9);
+    }
+
+    /// #1576: skipping the intro starts the fit on the bar line where the
+    /// intro ends, and the result still comes near the target.
+    #[test]
+    fn a_fit_can_skip_the_intro() {
+        let (pcm, beats) = track(&[0.05, 0.2, 0.35, 1.0, 0.15, 1.0, 0.05]);
+        let s = analyse(&pcm, SR, &beats).unwrap();
+        let end = intro_end(&s).expect("the quiet first phrase is an intro");
+        assert!((end - 8.0).abs() < 1e-9, "{end}");
+        let f = fit_from(&s, 32.0, end).expect("a fit from the intro's end");
+        assert!((f.segments[0].0 - 8.0).abs() < 1e-9, "{:?}", f.segments);
+        assert!((f.length_secs - 32.0).abs() <= 2.0, "{f:?}");
+        assert!(f.segments.iter().all(|(a, b)| *a >= 8.0 - 1e-9 && b > a), "{:?}", f.segments);
     }
 
     #[test]

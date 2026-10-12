@@ -968,6 +968,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
                 if let Some(x) = args.get(key).and_then(|v| v.as_f64()) { v[key] = json!(x); }
             }
             if let Some(t) = args.get("track") { v["track"] = json!(t.as_u64().map(|i| i.to_string()).or_else(|| t.as_str().map(str::to_string))); }
+            if let Some(b) = args.get("skip_intro").and_then(|v| v.as_bool()) { v["skip_intro"] = json!(b); }
             v
         }
         "klipp_search_music" => {
@@ -982,6 +983,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             let mut v = json!({ "method": "search_sfx", "query": arg_str(args, "query")? });
             if let Some(x) = args.get("limit").and_then(|v| v.as_u64()) { v["limit"] = json!(x); }
             if let Some(x) = args.get("max_secs").and_then(|v| v.as_f64()) { v["max_secs"] = json!(x); }
+            if let Some(c) = args.get("commercial_only").and_then(|v| v.as_bool()) { v["commercial_only"] = json!(c); }
             if let Some(x) = listen_arg(args) { v["listen"] = x; }
             v
         }
@@ -1246,7 +1248,7 @@ fn call_tool(name: &str, args: &Value) -> Result<(Vec<Value>, Option<Value>), St
     let mut notice: Option<String> = None;
     if let Some(g) = result.get("project_identity").or_else(|| result.get("project_generation")).and_then(|v| v.as_u64()) {
         let seen = LAST_PROJECT_GENERATION.swap(g, std::sync::atomic::Ordering::Relaxed);
-        if seen != u64::MAX && seen != g && !matches!(name, "klipp_open_project" | "klipp_save_project") {
+        if project_changed_under(name, seen, g) {
             notice = Some("Note: the project changed under you since your last call (a new project, or one opened or saved as another) — the timeline, the media pool and their ids are not what they were. Read klipp_status, klipp_list_media and klipp_timeline again before going on.".into());
         }
     }
@@ -1256,6 +1258,15 @@ fn call_tool(name: &str, args: &Value) -> Result<(Vec<Value>, Option<Value>), St
         content.insert(0, json!({ "type": "text", "text": n }));
     }
     Ok((content, Some(result)))
+}
+
+/// Whether a call's reply says the project changed under the session:
+/// the identity moved since the last call, and the call was not the one
+/// that changed it (a new project, an open, a save as; #1574).
+fn project_changed_under(name: &str, seen: u64, now: u64) -> bool {
+    seen != u64::MAX
+        && seen != now
+        && !matches!(name, "klipp_new_project" | "klipp_open_project" | "klipp_save_project")
 }
 
 fn has_structured_output(name: &str) -> bool {
@@ -1405,6 +1416,10 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
             if let Some(shifted) = result.get("shifted") {
                 message.push_str("\nClips shifted by ripple (count per track and frame offset):\n");
                 message.push_str(&serde_json::to_string(shifted).unwrap_or_default());
+            }
+            if let Some(moved) = result.get("retracked").and_then(Value::as_array).filter(|m| !m.is_empty()) {
+                message.push_str("\nClips that only moved track index (count per move):\n");
+                message.push_str(&serde_json::to_string(moved).unwrap_or_default());
             }
             return Ok(with_next(message));
         }
@@ -2426,18 +2441,17 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                      "tool": { "type": "string" }, "args": { "type": "object" } }, "required": ["tool"] } } }),
              vec!["calls"]),
         tool("klipp_export",
-             "Render the active sequence to a file: default settings, or an app export preset by name, \
-              codec (h264, hevc, prores...), bit_depth 10, bitrate_kbps; the container comes from the extension (mp4, mov, mkv, webm). Refused when \
-              a clip's media is offline or the path is one of the project's media files. \
-              Asynchronous: call klipp_export_status with wait true to wait for completion; then the \
-              file is done. The path must be absolute.",
+             "Render the active sequence to an absolute path: defaults, or an export preset by name, \
+              codec (h264, hevc, prores...), bit_depth 10, bitrate_kbps; the extension gives the container (mp4, mov, mkv, webm). Refused \
+              while a clip's media is offline or onto a project media file. \
+              Asynchronous: klipp_export_status with wait true returns when the file is done.",
              json!({
                  "path": { "type": "string", "description": "Absolute output path" },
                  "width": { "type": "integer" }, "height": { "type": "integer" },
                  "fps": { "type": "number" },
                  "crf": { "type": "integer", "description": "Quality, lower is better (default 23)" },
-                 "target_lufs": { "type": "number", "description": "Loudness normalisation target, e.g. -14 for the web, -23 for broadcast; left out, the brief's" },
-                 "true_peak_dbtp": { "type": "number", "description": "True-peak ceiling the normalised sound is held under, -10 to 0; -1 when left out, -2 for ATSC A/85" },
+                 "target_lufs": { "type": "number", "description": "Loudness target: -14 web, -23 broadcast; default the brief's" },
+                 "true_peak_dbtp": { "type": "number", "description": "True-peak ceiling, -10 to 0 (default -1; ATSC A/85 -2)" },
                  "burn_captions": { "type": "boolean", "description": "Captions and titles burnt in (default on); the reply says which" },
                  "preset": { "type": "string" }, "codec": { "type": "string" }, "audio_codec": { "type": "string" },
                  "bit_depth": { "type": "integer" }, "bitrate_kbps": { "type": "integer" },
@@ -2492,7 +2506,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               length by taking out or repeating whole bars where the join is cleanest, keeping \
               its start and end, and returns place ops (on track, from at_secs) to apply. A \
               read; changes nothing.",
-             json!({ "media_id": { "type": "string" }, "target_secs": { "type": "number", "description": "fit the track to this length, seconds" }, "at_secs": { "type": "number", "description": "where the fitted track's place ops start on the timeline (0)" }, "track": { "description": "the track for the place ops: an index, or a kind such as \"audio\" (the first audio track)" } }), vec!["media_id"]),
+             json!({ "media_id": { "type": "string" }, "target_secs": { "type": "number", "description": "fit the track to this length, seconds" }, "skip_intro": { "type": "boolean", "description": "with target_secs: leave the intro out and fit from where it ends" }, "at_secs": { "type": "number", "description": "where the fitted track's place ops start on the timeline (0)" }, "track": { "description": "the track for the place ops: an index, or a kind such as \"audio\" (the first audio track)" } }), vec!["media_id"]),
         tool("klipp_style_profile",
              "Read a reference video's editing style as facts, so you can build a clip in the \
               same feel from other footage: its cut cadence (how many shots, how long, how many \
@@ -2519,7 +2533,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               each one's length, when it peaks and how loud it is, which is where it goes: the peak \
               on the cut. Then add it with klipp_add_music (it takes a sound effect the same as a \
               track). Needs a Freesound token in the user's key config.",
-             json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "max_secs": { "type": "number", "description": "only sounds this long or shorter" }, "listen": { "description": "hear previews (at most 5): the first this-many, or [track_id, …]; length, peak time, loudness", "oneOf": [{ "type": "integer" }, { "type": "array", "items": { "type": "string" } }] } }), vec!["query"]),
+             json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "max_secs": { "type": "number", "description": "only sounds this long or shorter" }, "commercial_only": { "type": "boolean", "description": "only sounds whose licence allows commercial use" }, "listen": { "description": "hear previews (at most 5): the first this-many, or [track_id, …]; length, peak time, loudness", "oneOf": [{ "type": "integer" }, { "type": "array", "items": { "type": "string" } }] } }), vec!["query"]),
         tool("klipp_add_music",
              "Download a searched music track OR sound effect into the media pool, keeping its licence and \
               attribution beside the file for your export credits. Pass the fields from a \
@@ -2933,7 +2947,8 @@ mod interface_tests {
             let size = serde_json::to_vec(tool).unwrap().len();
             assert!(size <= budget,"{name}: {size} > {budget}");
         }
-        assert!(serde_json::to_vec(&tools).unwrap().len() < 88_000, "keep at least 2 KB of catalog headroom");
+        let catalog = serde_json::to_vec(&tools).unwrap().len();
+        assert!(catalog < 88_000, "keep at least 2 KB of catalog headroom: {catalog} bytes");
     }
 
     #[test]
@@ -3201,5 +3216,23 @@ mod clips_text_tests {
         assert_eq!(back, v);
         assert_eq!(text.lines().filter(|l| l.contains("clip_id")).count(), 2, "{text}");
         assert!(text.lines().any(|l| l.trim_start().starts_with("{\"clip_id\":\"b\"")), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod project_change_notice_tests {
+    use super::*;
+
+    /// #1574: the call that made the new project is not told the
+    /// project changed under it; the next unrelated call after an
+    /// outside change still is.
+    #[test]
+    fn the_call_that_changes_the_project_is_not_warned() {
+        assert!(!project_changed_under("klipp_new_project", 1, 2));
+        assert!(!project_changed_under("klipp_open_project", 1, 2));
+        assert!(!project_changed_under("klipp_save_project", 1, 2));
+        assert!(project_changed_under("klipp_timeline", 1, 2));
+        assert!(!project_changed_under("klipp_timeline", 2, 2));
+        assert!(!project_changed_under("klipp_timeline", u64::MAX, 2));
     }
 }

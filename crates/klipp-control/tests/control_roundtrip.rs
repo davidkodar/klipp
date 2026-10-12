@@ -1849,6 +1849,28 @@ fn ripple_reports_later_clips_as_one_bounded_shift() {
     assert_eq!(result["shifted"], json!([{ "track": 0, "clips": 7, "by_frames": -24 }]));
 }
 
+/// #1589: a split that also adds a track on top reports the clips that
+/// only moved down an index as one count, not an entry each.
+#[test]
+fn clips_that_only_change_track_index_are_folded() {
+    let mut h = harness();
+    {
+        let mut sequence = h.sequence.write().unwrap();
+        sequence.tracks[0].clips = (0..6).map(|index| {
+            klipp_timeline::Clip::gap(
+                klipp_core::RationalTime::from_secs_f64(index as f64 * 4.0, 24),
+                klipp_core::RationalTime::from_secs_f64((index + 1) as f64 * 4.0, 24),
+            )
+        }).collect();
+    }
+    h.shared.bump_revision();
+    let result = h.ok(json!({ "method": "apply", "expected_revision": h.shared.revision(),
+        "ops": [{ "op": "add_track", "kind": "video" }, { "op": "split", "clip_id": { "track": 1, "secs": 2.0 }, "at": { "secs": 2.0 } }] }));
+    assert_eq!(result["applied"], true);
+    assert!(result["changes"].as_array().unwrap().len() <= 3, "{result}");
+    assert_eq!(result["retracked"], json!([{ "from_track": 0, "to_track": 1, "clips": 5 }]), "{result}");
+}
+
 #[test]
 fn apply_refuses_a_plan_for_a_changed_revision_or_project() {
     let mut h = harness();

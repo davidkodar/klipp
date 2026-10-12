@@ -64,7 +64,9 @@ pub(crate) fn respond(
             let mut text = format!("{} royalty-free music results for \"{query}\" (Jamendo), best match to the words first:\n", tracks.len());
             for (t, h) in tracks.iter().zip(&heard) {
                 let pace = if t.pace.is_empty() { String::new() } else { format!(", {} pace", t.pace) };
-                text.push_str(&format!("  {} — {}  ({}, {:.0}s{pace}){}  [{}]\n", t.title, t.artist, t.license, t.duration_secs, if t.commercial_ok { "" } else { " [non-commercial]" }, t.tags.join(", ")));
+                let no_edits = if klipp_audio_search::forbids_edits(&t.license) { " [no edits: ND forbids cutting, fitting or remixing]" } else { "" };
+                let preview_only = if t.download_url.is_empty() { " [preview only: add_music takes the preview MP3]" } else { "" };
+                text.push_str(&format!("  {} — {}  ({}, {:.0}s{pace}){}{no_edits}{preview_only}  [{}]\n", t.title, t.artist, t.license, t.duration_secs, if t.commercial_ok { "" } else { " [non-commercial]" }, t.tags.join(", ")));
                 match h {
                     Some(Ok(l)) => text.push_str(&format!("      heard: {}\n", l.describe())),
                     Some(Err(e)) => text.push_str(&format!("      not heard: {e}\n")),
@@ -75,7 +77,8 @@ pub(crate) fn respond(
                 let mut v = json!({
                     "title": t.title, "artist": t.artist, "track_id": t.id,
                     "duration_secs": t.duration_secs, "license": t.license, "license_url": t.license_url,
-                    "commercial_ok": t.commercial_ok, "preview_url": t.preview_url, "download_url": t.download_url,
+                    "commercial_ok": t.commercial_ok, "edits_ok": !klipp_audio_search::forbids_edits(&t.license),
+                    "preview_url": t.preview_url, "download_url": t.download_url,
                     "page_url": t.page_url, "tags": t.tags, "pace": t.pace,
                 });
                 if let Some(Ok(l)) = h {
@@ -91,7 +94,7 @@ pub(crate) fn respond(
             Ok(json!({ "text": text, "results": results, "next": next }))
         }
 
-        ControlCommand::SearchSfx { query, limit, max_secs, listen } => {
+        ControlCommand::SearchSfx { query, limit, max_secs, commercial_only, listen } => {
             if in_batch {
                 return read_in_batch("search_sfx");
             }
@@ -102,10 +105,16 @@ pub(crate) fn respond(
                 return Err("max_secs is a length in seconds, above zero".into());
             }
             let listen = listen.unwrap_or(Listen::First(0));
-            let tracks = klipp_audio_search::search_sfx_within(&query, limit.unwrap_or(12), max_secs)?;
+            let found = klipp_audio_search::search_sfx_filtered(&query, limit.unwrap_or(12), klipp_audio_search::SfxFilter { max_secs, commercial_only })?;
+            let tracks = found.tracks;
             let heard = hear_previews(tracks.iter().enumerate().map(|(i, t)| listen.picks(i, &t.id).then(|| t.preview_url.clone())).collect(), listen_to_sfx);
             let within = max_secs.map(|m| format!(", {m:.1} s or shorter")).unwrap_or_default();
-            let mut text = format!("{} royalty-free sound effects for \"{query}\" (Freesound){within}:\n", tracks.len());
+            let cleared = if commercial_only { ", cleared for commercial use" } else { "" };
+            let mut text = format!("{} royalty-free sound effects for \"{query}\" (Freesound){within}{cleared}:\n", tracks.len());
+            // Freesound matches every word: say when fewer of them found these (#1573).
+            if !tracks.is_empty() && found.matched_query != query.trim() {
+                text.push_str(&format!("  (nothing matched all of \"{}\"; these match \"{}\")\n", query.trim(), found.matched_query));
+            }
             for (t, h) in tracks.iter().zip(&heard) {
                 text.push_str(&format!("  {} — {}  ({}, {:.1}s){}  id {}\n", t.title, t.artist, t.license, t.duration_secs, if t.commercial_ok { "" } else { " [non-commercial]" }, t.id));
                 match h {
@@ -126,7 +135,7 @@ pub(crate) fn respond(
                 }
                 v
             }).collect();
-            Ok(json!({ "text": text, "results": results, "next": "Hear candidates with listen (a count, or [track_id, …]): a sound's length and when it peaks say where it goes, the peak on the cut. Add one with add_music (it takes a sound effect just the same: pass title, artist, preview_url, license, license_url, page_url). The credit is kept; honour the licence." }))
+            Ok(json!({ "text": text, "results": results, "next": "Hear candidates with listen (a count, or [track_id, …]): a sound's length and when it peaks say where it goes, the peak on the cut. Add one with add_music (it takes a sound effect just the same: pass title, artist, preview_url, license, license_url, page_url); it brings Freesound's 128 kbps preview MP3, not the original file. The credit is kept; honour the licence." }))
         }
 
         ControlCommand::AddMusic { title, artist, track_id, download_url, preview_url, license, license_url, page_url } => {
@@ -147,7 +156,7 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::Beats { media_id, target_secs, at_secs, track } => {
+        ControlCommand::Beats { media_id, target_secs, skip_intro, at_secs, track } => {
             if in_batch {
                 return read_in_batch("beats");
             }
@@ -182,7 +191,7 @@ pub(crate) fn respond(
             let mut v = json!({ "text": text, "media_id": media_id, "bpm": b.bpm, "confidence": b.confidence, "first_beat_secs": first, "beat_interval_secs": interval, "bar_secs": interval * 4.0, "beats_read": b.beat_times.len(), "drift_secs": drift, "first_beats": first_beats, "next": "Cut on beat n = first + n × interval; a shot of two bars is 8 beats. style_profile reads a whole reference at once." });
             // Music: its sections and energy, and a fit to a length (#503).
             if b.confidence >= 0.3 {
-                music_shape(&mut v, &path, id, duration, &b, target_secs, at_secs.unwrap_or(0.0), track.as_deref())?;
+                music_shape(&mut v, &path, id, duration, &b, target_secs, skip_intro, at_secs.unwrap_or(0.0), track.as_deref())?;
             } else if target_secs.is_some() {
                 return Err(format!("{filename} has no clear beat to fit by bars"));
             }
@@ -301,7 +310,7 @@ const JOIN_CROSSFADE_SECS: f64 = 0.25;
 /// a beats read (#503), and with `target` a fit to that length by whole
 /// bars, as place ops from `at` on `track`.
 #[allow(clippy::too_many_arguments)]
-fn music_shape(v: &mut serde_json::Value, path: &std::path::Path, id: klipp_core::MediaId, duration: f64, beats: &klipp_analysis::beats::BeatData, target: Option<f64>, at: f64, track: Option<&str>) -> Result<(), String> {
+fn music_shape(v: &mut serde_json::Value, path: &std::path::Path, id: klipp_core::MediaId, duration: f64, beats: &klipp_analysis::beats::BeatData, target: Option<f64>, skip_intro: bool, at: f64, track: Option<&str>) -> Result<(), String> {
     use klipp_analysis::music_structure as music;
     const SR: u32 = 22_050;
     let pcm = klipp_analysis::audio_sync::decode_mono_pcm(std::path::Path::new("ffmpeg"), path, SR, 0.0, duration.clamp(1.0, 1800.0))?;
@@ -314,7 +323,14 @@ fn music_shape(v: &mut serde_json::Value, path: &std::path::Path, id: klipp_core
     v["bar_lines"] = json!(shape.bars.iter().map(|t| (t * 1000.0).round() / 1000.0).collect::<Vec<_>>());
     v["bar_energy"] = json!(shape.energy.iter().map(|e| (e * 100.0).round() / 100.0).collect::<Vec<_>>());
     if let Some(target) = target {
-        let fit = music::fit(&shape, target).ok_or_else(|| format!("the track ({duration:.1} s) cannot be fitted to {target:.1} s by whole bars: it needs a first and last phrase and room between"))?;
+        let from = if skip_intro { music::intro_end(&shape) } else { None };
+        let fitted = match from { Some(start) => music::fit_from(&shape, target, start), None => music::fit(&shape, target) };
+        let fit = fitted.ok_or_else(|| format!("the track ({duration:.1} s) cannot be fitted to {target:.1} s by whole bars: it needs a first and last phrase and room between"))?;
+        match (skip_intro, from) {
+            (true, Some(start)) => text.push_str(&format!("\nThe intro (0.0-{start:.1} s) is left out: the fit starts on the music.")),
+            (true, None) => text.push_str("\nThe track has no intro section to leave out; fitted from its start."),
+            _ => {}
+        }
         let track_ref = match track {
             Some(t) => match t.parse::<usize>() {
                 Ok(i) => klipp_document::ops::TrackRef::Index(i),

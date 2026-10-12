@@ -240,6 +240,14 @@ exist until the plan runs.
   the picture fills the frame, and the cut to the full shot is seamless.
   Without `anchor` a word grows about its centre, which for two lines (or
   two words) is the gap between them: the frame goes black instead.
+  An entrance or exit is `{kind, duration_secs?, delay_secs?, easing?,
+  stagger?, stagger_secs?, distance?, scale?, anchor?}`: `duration_secs`
+  up to 5 (0.6 when left out); `delay_secs` after the title starts for an
+  entrance, before it ends for an exit; `easing` one of linear,
+  out_cubic, out_quint, out_expo, out_back, out_bounce, in_out_cubic or
+  in_cubic; `stagger` by char, word or line, `stagger_secs` apart;
+  `distance` (font sizes) for rise, drop and the slides only; `scale`
+  for grow, shrink, scale_up and scale_down only.
 - `volume {clip_id, keys: [{at, db}]}`: a clip's volume drawn by hand,
   levels in decibels from the clip's own level (0 as set, -9 a duck,
   -60 near silence) at timeline
@@ -375,7 +383,7 @@ exist until the plan runs.
 - `style {clip_id | track, from?, to?, size?, color?, font?, bold?, align?, x?, y?, backing?, backing_color?, outline?, outline_color?, shadow?, glow?, glow_color?, gradient?, glitch?, chromatic?, animate?, animate_secs?, stagger?, enter?, exit?, loop?, roll_shape?, edge_fade?}`:
   the look and place of one title, or of every title on a track
   (`"subtitle"` for all the captions), between `from` and `to` when
-  given. `size` is pixels of a 1080-line frame, `color` is `#rrggbb`,
+  given (anchors, as `{"secs": 44.0}`). `size` is pixels of a 1080-line frame, `color` is `#rrggbb`,
   `x` and `y` are where the text's centre goes (0 to 1 of the frame),
   or, for a left- or right-aligned title, where its left or right edge
   goes, so a chapter title and its kicker share one margin,

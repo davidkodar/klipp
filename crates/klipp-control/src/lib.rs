@@ -432,6 +432,9 @@ mod listen_tests {
         let ControlCommand::SearchSfx { listen: Some(listen), max_secs: Some(m), .. } = req else { panic!("{req:?}") };
         assert_eq!(m, 3.0);
         assert!(listen.picks(9, "7") && listen.picks(0, "42") && !listen.picks(0, "8"));
+        // #1573: the licence filter reaches the search.
+        let req: ControlCommand = serde_json::from_value(json!({ "method": "search_sfx", "query": "whoosh", "commercial_only": true })).unwrap();
+        let ControlCommand::SearchSfx { commercial_only: true, .. } = req else { panic!("{req:?}") };
         let req: ControlCommand = serde_json::from_value(json!({ "method": "search_music", "query": "folk", "listen": 9 })).unwrap();
         let ControlCommand::SearchMusic { listen: Some(listen), .. } = req else { panic!() };
         assert!(listen.picks(4, "x") && !listen.picks(5, "x"), "at most five");
