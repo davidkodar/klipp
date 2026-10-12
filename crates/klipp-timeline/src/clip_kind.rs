@@ -1493,6 +1493,11 @@ pub struct TitleData {
     /// (#1139): what the inspector shows first. Empty for a plain title.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub published: Vec<crate::PublishedField>,
+    /// The title template this title was made from, by the name the
+    /// titles browser keeps it under (#1716), so its look can be carried
+    /// to every title made from it. `None` for a title made from none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
 }
 
 /// What `TitleData::migrate_legacy_animation` did.
@@ -1635,6 +1640,7 @@ impl TitleData {
             background: TitleBackground::None,
             style: None,
             published: Vec::new(),
+            template: None,
         };
         td.add_object(TitleObjectContent::TextBox(text_box), default_text_transform());
         td
@@ -1719,6 +1725,32 @@ impl TitleData {
     /// (#1513).
     pub fn mixes_layers(&self) -> bool {
         self.objects.iter().any(|o| o.visible && (o.blend != klipp_core::BlendMode::Normal || self.mask_of(o).is_some()))
+    }
+
+    /// This title's look with `target`'s words (#1716, #1718): every
+    /// layer, effect, motion and setting this title has, each text layer
+    /// given the text (and the styled runs of it) of `target`'s text
+    /// layer in the same place, and `target`'s style and template kept;
+    /// the layers keep this title's ids, which the look refers to them by.
+    /// `None` when the two do not have the same layers, in kind and
+    /// order: there is no telling then which words go where.
+    pub fn with_texts_of(&self, target: &TitleData) -> Option<TitleData> {
+        let kinds = |td: &TitleData| -> Vec<std::mem::Discriminant<TitleObjectContent>> { td.objects.iter().map(|o| std::mem::discriminant(&o.content)).collect() };
+        if kinds(self) != kinds(target) {
+            return None;
+        }
+        let mut out = self.clone();
+        for (o, t) in out.objects.iter_mut().zip(&target.objects) {
+            if let (TitleObjectContent::TextBox(tb), TitleObjectContent::TextBox(theirs)) = (&mut o.content, &t.content) {
+                tb.text = theirs.text.clone();
+                tb.style_runs = theirs.style_runs.clone();
+            }
+        }
+        // The layers keep this title's ids, which its masks, fits, paths
+        // and published fields name them by.
+        out.style = target.style.clone();
+        out.template = target.template.clone();
+        Some(out)
     }
 
     /// First TextBox object on the stack, or `None` if the title is

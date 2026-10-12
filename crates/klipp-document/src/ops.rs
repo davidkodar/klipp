@@ -2982,6 +2982,8 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             if !held.is_finite() || *held < 0.2 {
                 return Err(refuse(i, format!("{held} s is too short"), "hold it at least a fraction of a second"));
             }
+            // Made from the template, as the titles browser names it (#1716).
+            td.template = Some(format!("user:{name}"));
             place_title(seq, fps, i, at, *held, track.as_ref(), td, &format!("template \"{name}\""), "")
         }
         Op::LowerThird { name, role, at, secs: hold, track, side, x, y } => {
@@ -5992,7 +5994,7 @@ fn highlight(seq: &Sequence, fps: Fps, i: usize, at: Timecode, hold: f64, region
     if !stroke.is_finite() || !(1.0..=40.0).contains(&stroke) {
         return Err(refuse(i, format!("stroke {stroke} is out of range"), "give a stroke width 1 to 40"));
     }
-    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None, published: Vec::new() };
+    let mut td = TitleData { objects: Vec::new(), next_object_id: 0, animation_type: Default::default(), background: klipp_timeline::TitleBackground::None, style: None, published: Vec::new(), template: None };
     let boxed = |cx: f32, cy: f32, bw: f32, bh: f32| ObjectTransform { center: TitlePosition { x: cx, y: cy }, size: TitlePosition { x: bw, y: bh }, ..klipp_timeline::default_text_transform() };
     match kind.to_lowercase().as_str() {
         "box" | "ring" => {
@@ -7530,6 +7532,7 @@ fn lower_third_title(name: &str, role: Option<&str>, place: LowerThirdPlace) -> 
         background: klipp_timeline::TitleBackground::None,
         style: None,
         published: Vec::new(),
+        template: None,
     };
     let name_box = TextBox {
         text: name.to_string(),
@@ -8649,6 +8652,32 @@ pub fn revert_to_style(seq: &Sequence, clip: &Clip) -> Result<EditCommand, Strin
     Ok(EditCommand::EditTitle { clip_id: clip.id, description: "Revert to Style", old_data: td.clone(), new_data: new })
 }
 
+/// Every other title made from the template `clip` was made from, or
+/// else following the style it follows, given `clip`'s look with its own
+/// words (#1716): one edit each, and how many were left because their
+/// layers are not `clip`'s. Titles on locked tracks are left.
+pub fn update_titles_like(seq: &Sequence, clip: &Clip) -> Result<(Vec<EditCommand>, usize), String> {
+    let td = clip.title_data().ok_or("not a title")?;
+    let same = |other: &klipp_timeline::TitleData| match (&td.template, &td.style) {
+        (Some(t), _) => other.template.as_ref() == Some(t),
+        (None, Some(s)) => other.style.as_ref() == Some(s),
+        (None, None) => false,
+    };
+    if td.template.is_none() && td.style.is_none() {
+        return Err("this title was made from no template and follows no style".into());
+    }
+    let (mut edits, mut skipped) = (Vec::new(), 0);
+    for other in seq.tracks.iter().filter(|t| !t.locked).flat_map(|t| t.clips.iter()).filter(|c| c.id != clip.id) {
+        let Some(theirs) = other.title_data().filter(|o| same(o)) else { continue };
+        match td.with_texts_of(theirs) {
+            Some(new) if new != *theirs => edits.push(EditCommand::EditTitle { clip_id: other.id, description: "Update All Titles", old_data: theirs.clone(), new_data: new }),
+            Some(_) => {}
+            None => skipped += 1,
+        }
+    }
+    Ok((edits, skipped))
+}
+
 /// The titles that follow a style, carried along when the brief changes
 /// from `old` to `new` (#66): each field the style changed is changed on
 /// every title that still has it as the old style had it, so what an
@@ -9292,6 +9321,69 @@ mod tests {
         let EditCommand::EditTitle { new_data, .. } = revert_to_style(&seq, &clip(&seq, ids[1])).unwrap() else { panic!() };
         assert_eq!(new_data.primary_text().unwrap().font_size, 36.0);
         assert!(revert_to_style(&seq, &clip(&seq, ids[0])).is_err(), "the first already looks as its style does");
+    }
+
+    /// #1716: after one title made from a template is restyled, "update
+    /// all" gives every other title made from it that look, each keeping
+    /// its own words and styled runs, as one undo step; a title from the
+    /// template whose layers were changed is left, and so is one from
+    /// another template.
+    #[test]
+    fn update_all_gives_a_templates_titles_one_look_and_keeps_their_words() {
+        use klipp_timeline::{StyleRun, TextBox, TitleData};
+        let fps = Fps::new(25, 1);
+        let made = |text: &str, template: &str| {
+            let mut td = TitleData::single_text(TextBox { text: text.into(), font_name: "Inter".into(), font_size: 40.0, ..Default::default() });
+            td.template = Some(template.into());
+            td
+        };
+        let mut seq = Sequence::new_default();
+        seq.fps = fps;
+        let mut track = Track::new("Text 1", TrackKind::Text);
+        let tc = |s: f64| Timecode::from_secs_f64(s, 25);
+        let mut ben = made("Ben Holt", "user:Lower");
+        if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut ben.objects[0].content {
+            tb.style_runs = vec![StyleRun { color: Some([255, 0, 0, 255]), ..StyleRun::default_for_range(0, 3) }];
+        }
+        let mut odd = made("Cy", "user:Lower");
+        odd.add_object(klipp_timeline::TitleObjectContent::TextBox(TextBox::default()), klipp_timeline::default_text_transform());
+        let titles = [made("Ana Diaz", "user:Lower"), ben, made("Dee", "user:Lower"), odd, made("Other", "user:Card")];
+        for (k, td) in titles.into_iter().enumerate() {
+            track.clips.push(title_clip(td, tc(k as f64 * 3.0), tc(k as f64 * 3.0 + 2.0), fps));
+        }
+        seq.tracks = vec![track];
+        // The first restyled: another font, size and colour.
+        let first = {
+            let c = &mut seq.tracks[0].clips[0];
+            let ClipKind::Title(td) = &mut c.kind else { unreachable!() };
+            if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut td.objects[0].content {
+                (tb.font_name, tb.font_size, tb.color) = ("Libre Baskerville".into(), 56.0, [255, 204, 0, 255]);
+            }
+            c.clone()
+        };
+        let (edits, skipped) = update_titles_like(&seq, &first).unwrap();
+        assert_eq!((edits.len(), skipped), (2, 1), "Ben and Dee; Cy's layers differ; the card is another template's");
+        for e in &edits {
+            let EditCommand::EditTitle { old_data, new_data, .. } = e else { panic!("a title edit") };
+            let (old, new) = (old_data.primary_text().unwrap(), new_data.primary_text().unwrap());
+            assert_eq!((new.font_name.as_str(), new.font_size, new.color), ("Libre Baskerville", 56.0, [255, 204, 0, 255]), "the look");
+            assert_eq!((&new.text, &new.style_runs), (&old.text, &old.style_runs), "its own words, styled as they were");
+            assert_eq!(new_data.template, old_data.template);
+        }
+        // As one step, and undone as one.
+        let before = seq.clone();
+        let mut seqs = vec![seq];
+        let (mut pool, mut fps2) = (MediaPool::new(), fps);
+        let step = EditCommand::Named { label: "Update All Titles".into(), edit: Box::new(EditCommand::Batch(edits)) };
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps2 };
+        view.apply_forward(&step);
+        let texts: Vec<String> = view.sequences[0].tracks[0].clips.iter().map(|c| c.title_data().unwrap().text()).collect();
+        assert_eq!(texts, ["Ana Diaz", "Ben Holt", "Dee", "Cy", "Other"], "every title keeps its words");
+        view.apply_inverse(&step);
+        assert!(view.sequences[0].tracks[0].clips.iter().zip(&before.tracks[0].clips).all(|(a, b)| a.title_data() == b.title_data()), "one undo puts every title back");
+        // A title from no template and no style has nothing to update.
+        let plain = Clip { kind: ClipKind::Title(TitleData::single_text(TextBox::default())), ..first };
+        assert!(update_titles_like(&before, &plain).is_err());
     }
 
     use super::*;

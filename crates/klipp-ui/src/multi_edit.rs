@@ -40,6 +40,9 @@ pub fn classify(cmd: &AppCommand) -> Option<(ClipId, Phase)> {
         | AppCommand::SetClipRole { clip_id, .. }
         | AppCommand::SetClipBlendMode { clip_id, .. } => (*clip_id, Phase::Update),
         AppCommand::SetClipSpeed { clip_id, .. } => (*clip_id, Phase::Redo),
+        // A title's look, set on each selected title by its own handler
+        // (#1716): what every title has, never its words.
+        AppCommand::UpdateTitleData { clip_id, .. } | AppCommand::SetTitleAlignment { clip_id, .. } | AppCommand::SetTitleLastLine { clip_id, .. } | AppCommand::SetTitleVerticalAlign { clip_id, .. } | AppCommand::SetTitleBackground { clip_id, .. } | AppCommand::SetTitleShadow { clip_id, .. } | AppCommand::SetTitleShadows { clip_id, .. } | AppCommand::SetTitleShadowStackEnabled { clip_id, .. } | AppCommand::SetTitleOutline { clip_id, .. } | AppCommand::SetTitleOutlines { clip_id, .. } | AppCommand::SetTitleOutlineStackEnabled { clip_id, .. } | AppCommand::SetTitleGlow { clip_id, .. } | AppCommand::SetTitleGlows { clip_id, .. } | AppCommand::SetTitleGlowStackEnabled { clip_id, .. } | AppCommand::SetTitleGradient { clip_id, .. } | AppCommand::SetTitleInnerShadow { clip_id, .. } | AppCommand::SetTitleInnerShadows { clip_id, .. } | AppCommand::SetTitleInnerShadowStackEnabled { clip_id, .. } | AppCommand::SetTitlePattern { clip_id, .. } | AppCommand::SetTitlePatternEnabled { clip_id, .. } | AppCommand::SetTitleTracking { clip_id, .. } | AppCommand::SetTitleMotion { clip_id, .. } | AppCommand::SetTitleLineSpacing { clip_id, .. } | AppCommand::SetTitleUnderline { clip_id, .. } | AppCommand::SetTitleFontVariation { clip_id, .. } | AppCommand::SetTitleFeatures { clip_id, .. } | AppCommand::SetTitleStrikethrough { clip_id, .. } | AppCommand::ApplyTitlePreset { clip_id, .. } | AppCommand::SetTitleCaseTransform { clip_id, .. } | AppCommand::SetTitleBaselineShift { clip_id, .. } | AppCommand::SetTitleChromaticAberration { clip_id, .. } | AppCommand::SetTitleGlitch { clip_id, .. } | AppCommand::SetTitleNeonPreset { clip_id, .. } | AppCommand::SetTitleExtrusion { clip_id, .. } | AppCommand::SetTitleMotionBlur { clip_id, .. } | AppCommand::SetTitleLoops { clip_id, .. } | AppCommand::SetTitleAnimators { clip_id, .. } | AppCommand::SetTitleEdgeFade { clip_id, .. } | AppCommand::SetTitleWriteOn { clip_id, .. } | AppCommand::SetTitleDirection { clip_id, .. } | AppCommand::SetTitleColumns { clip_id, .. } | AppCommand::SetTitleVerticalLayout { clip_id, .. } | AppCommand::SetTitleVerticalColumnsLtr { clip_id, .. } => (*clip_id, Phase::Redo),
         _ => return None,
     })
 }
@@ -128,11 +131,62 @@ pub fn copy_to(cmd: &AppCommand, primary: &Clip, other: &mut Clip) -> bool {
     }
 }
 
-/// `cmd` with its clip changed to `clip`, for the commands that reshape a
-/// clip ([`Phase::Redo`]) and are made on each clip by its own handler.
-pub fn retarget(cmd: &AppCommand, clip: ClipId) -> Option<AppCommand> {
+/// `cmd` made on `other` instead, for the commands each clip's own
+/// handler makes ([`Phase::Redo`]): a speed, or a title's look (#1716).
+/// A title's font, size and colour come with its own text, not the one
+/// the Inspector shows; a clip that is not a title takes no title change.
+pub fn retarget(cmd: &AppCommand, other: &Clip) -> Option<AppCommand> {
+    if matches!(cmd, AppCommand::UpdateTitleData { .. } | AppCommand::SetTitleAlignment { .. } | AppCommand::SetTitleLastLine { .. } | AppCommand::SetTitleVerticalAlign { .. } | AppCommand::SetTitleBackground { .. } | AppCommand::SetTitleShadow { .. } | AppCommand::SetTitleShadows { .. } | AppCommand::SetTitleShadowStackEnabled { .. } | AppCommand::SetTitleOutline { .. } | AppCommand::SetTitleOutlines { .. } | AppCommand::SetTitleOutlineStackEnabled { .. } | AppCommand::SetTitleGlow { .. } | AppCommand::SetTitleGlows { .. } | AppCommand::SetTitleGlowStackEnabled { .. } | AppCommand::SetTitleGradient { .. } | AppCommand::SetTitleInnerShadow { .. } | AppCommand::SetTitleInnerShadows { .. } | AppCommand::SetTitleInnerShadowStackEnabled { .. } | AppCommand::SetTitlePattern { .. } | AppCommand::SetTitlePatternEnabled { .. } | AppCommand::SetTitleTracking { .. } | AppCommand::SetTitleMotion { .. } | AppCommand::SetTitleLineSpacing { .. } | AppCommand::SetTitleUnderline { .. } | AppCommand::SetTitleFontVariation { .. } | AppCommand::SetTitleFeatures { .. } | AppCommand::SetTitleStrikethrough { .. } | AppCommand::ApplyTitlePreset { .. } | AppCommand::SetTitleCaseTransform { .. } | AppCommand::SetTitleBaselineShift { .. } | AppCommand::SetTitleChromaticAberration { .. } | AppCommand::SetTitleGlitch { .. } | AppCommand::SetTitleNeonPreset { .. } | AppCommand::SetTitleExtrusion { .. } | AppCommand::SetTitleMotionBlur { .. } | AppCommand::SetTitleLoops { .. } | AppCommand::SetTitleAnimators { .. } | AppCommand::SetTitleEdgeFade { .. } | AppCommand::SetTitleWriteOn { .. } | AppCommand::SetTitleDirection { .. } | AppCommand::SetTitleColumns { .. } | AppCommand::SetTitleVerticalLayout { .. } | AppCommand::SetTitleVerticalColumnsLtr { .. }) && other.title_data().is_none() {
+        return None;
+    }
     match cmd {
-        AppCommand::SetClipSpeed { speed, ripple, .. } => Some(AppCommand::SetClipSpeed { clip_id: clip, speed: *speed, ripple: *ripple }),
+        AppCommand::SetClipSpeed { speed, ripple, .. } => Some(AppCommand::SetClipSpeed { clip_id: other.id, speed: *speed, ripple: *ripple }),
+        AppCommand::UpdateTitleData { font_size, font_name, font_style, color, .. } => {
+            let text = other.title_data()?.primary_text()?.text.clone();
+            Some(AppCommand::UpdateTitleData { clip_id: other.id, text, font_size: *font_size, font_name: font_name.clone(), font_style: *font_style, color: *color })
+        }
+        AppCommand::SetTitleAlignment { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleAlignment { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleLastLine { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleLastLine { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleVerticalAlign { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleVerticalAlign { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleBackground { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleBackground { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleShadow { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleShadow { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleShadows { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleShadows { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleShadowStackEnabled { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleShadowStackEnabled { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleOutline { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleOutline { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleOutlines { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleOutlines { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleOutlineStackEnabled { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleOutlineStackEnabled { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleGlow { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleGlow { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleGlows { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleGlows { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleGlowStackEnabled { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleGlowStackEnabled { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleGradient { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleGradient { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleInnerShadow { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleInnerShadow { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleInnerShadows { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleInnerShadows { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleInnerShadowStackEnabled { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleInnerShadowStackEnabled { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitlePattern { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitlePattern { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitlePatternEnabled { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitlePatternEnabled { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleTracking { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleTracking { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleMotion { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleMotion { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleLineSpacing { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleLineSpacing { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleUnderline { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleUnderline { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleFontVariation { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleFontVariation { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleFeatures { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleFeatures { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleStrikethrough { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleStrikethrough { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::ApplyTitlePreset { .. } => { let mut c = cmd.clone(); if let AppCommand::ApplyTitlePreset { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleCaseTransform { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleCaseTransform { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleBaselineShift { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleBaselineShift { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleChromaticAberration { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleChromaticAberration { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleGlitch { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleGlitch { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleNeonPreset { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleNeonPreset { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleExtrusion { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleExtrusion { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleMotionBlur { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleMotionBlur { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleLoops { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleLoops { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleAnimators { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleAnimators { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleEdgeFade { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleEdgeFade { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleWriteOn { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleWriteOn { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleDirection { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleDirection { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleColumns { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleColumns { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleVerticalLayout { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleVerticalLayout { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
+        AppCommand::SetTitleVerticalColumnsLtr { .. } => { let mut c = cmd.clone(); if let AppCommand::SetTitleVerticalColumnsLtr { clip_id, .. } = &mut c { *clip_id = other.id; } Some(c) }
         _ => None,
     }
 }
@@ -157,6 +211,23 @@ pub fn mixed(clips: &[&Clip]) -> Vec<&'static str> {
     }
     if clips.iter().any(|c| c.blend_mode != first.blend_mode) {
         out.push("blend mode");
+    }
+    // Titles: their type and the style they follow (#1716).
+    let text = |c: &Clip| c.title_data().and_then(|td| td.primary_text().map(|tb| (tb.font_name.clone(), tb.font_size, tb.color, tb.font_style, td.style.clone())));
+    if clips.iter().all(|c| c.title_data().is_some()) {
+        let of = |f: &dyn Fn(&(String, f32, [u8; 4], klipp_timeline::FontStyle, Option<String>)) -> String| clips.iter().any(|c| text(c).map(|t| f(&t)) != text(first).map(|t| f(&t)));
+        if of(&|t| t.0.clone()) || of(&|t| format!("{:?}", t.3)) {
+            out.push("font");
+        }
+        if of(&|t| t.1.to_string()) {
+            out.push("size");
+        }
+        if of(&|t| format!("{:?}", t.2)) {
+            out.push("colour");
+        }
+        if of(&|t| t.4.clone().unwrap_or_default()) {
+            out.push("style");
+        }
     }
     out
 }
@@ -223,6 +294,39 @@ mod tests {
         assert_eq!(gammas, vec![0.7, 2.0], "the first Gamma the picture runs");
     }
 
+    /// #1716: a title's font, size or colour set in the Title tab with
+    /// three titles selected is made on each by its own handler, from the
+    /// command for the one shown, each keeping its own words; a clip that
+    /// is not a title takes none of it.
+    #[test]
+    fn a_title_change_goes_to_each_selected_title_with_its_own_words() {
+        let titled = |text: &str| {
+            let mut c = clip();
+            c.kind = klipp_timeline::ClipKind::Title(klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: text.into(), ..Default::default() }));
+            c
+        };
+        let (shown, others) = (titled("Ana"), [titled("Ben"), titled("Cy")]);
+        let cmd = AppCommand::UpdateTitleData { clip_id: shown.id, text: "Ana".into(), font_size: 56.0, font_name: "Libre Baskerville".into(), font_style: 1, color: [255, 204, 0, 255] };
+        assert_eq!(classify(&cmd), Some((shown.id, Phase::Redo)), "each title's own handler makes it");
+        for other in &others {
+            let Some(AppCommand::UpdateTitleData { clip_id, text, font_size, font_name, font_style, color }) = retarget(&cmd, other) else { panic!("retargeted") };
+            assert_eq!(clip_id, other.id);
+            assert_eq!(text, other.title_data().unwrap().text(), "its own words");
+            assert_eq!((font_size, font_name.as_str(), font_style, color), (56.0, "Libre Baskerville", 1, [255, 204, 0, 255]));
+        }
+        let tracking = AppCommand::SetTitleTracking { clip_id: shown.id, tracking: 4.0 };
+        assert!(matches!(retarget(&tracking, &others[0]), Some(AppCommand::SetTitleTracking { clip_id, tracking }) if clip_id == others[0].id && tracking == 4.0));
+        assert!(retarget(&cmd, &clip()).is_none(), "a clip that is not a title takes no title change");
+        // The line naming what differs across the selection.
+        let mut bigger = titled("Dee");
+        if let klipp_timeline::ClipKind::Title(td) = &mut bigger.kind {
+            if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut td.objects[0].content {
+                tb.font_size = 90.0;
+            }
+        }
+        assert_eq!(mixed(&[&shown, &others[0], &bigger]), ["size"]);
+    }
+
     /// The undo step the app records for a change on three clips: the
     /// edited clip's own entry and each other clip whole, in one batch,
     /// taken back by one undo.
@@ -284,7 +388,7 @@ mod tests {
         let (a, mut b) = (clip(), clip());
         let cmd = AppCommand::SetClipSpeed { clip_id: a.id, speed: 2.0, ripple: false };
         assert_eq!(classify(&cmd), Some((a.id, Phase::Redo)));
-        assert!(matches!(retarget(&cmd, b.id), Some(AppCommand::SetClipSpeed { clip_id, speed, .. }) if clip_id == b.id && speed == 2.0));
+        assert!(matches!(retarget(&cmd, &b), Some(AppCommand::SetClipSpeed { clip_id, speed, .. }) if clip_id == b.id && speed == 2.0));
         b.volume = 0.2;
         b.speed = 2.0;
         assert_eq!(mixed(&[&a, &b]), vec!["volume", "speed"]);

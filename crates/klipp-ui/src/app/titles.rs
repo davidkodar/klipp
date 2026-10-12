@@ -592,6 +592,24 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::UpdateTitlesLike { clip_id } => {
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let found = seq.all_clips().find(|c| c.id == *clip_id).ok_or_else(|| "the title is gone".to_string()).and_then(|c| klipp_document::ops::update_titles_like(seq, c));
+                match found {
+                    Ok((edits, skipped)) if edits.is_empty() => self.state.toast.show(if skipped > 0 {
+                        format!("Nothing updated: {skipped} title(s) have other layers")
+                    } else {
+                        "Every title like it already looks like it".to_string()
+                    }),
+                    Ok((edits, skipped)) => {
+                        let n = edits.len();
+                        self.apply_edits_as_one(&edits, "Update All Titles");
+                        self.state.toast.show(if skipped > 0 { format!("Updated {n} title(s); {skipped} have other layers and were left") } else { format!("Updated {n} title(s)") });
+                    }
+                    Err(why) => self.state.toast.show(format!("Not updated: {why}")),
+                }
+                true
+            }
             AppCommand::UpdateTitleData { clip_id, text, font_size, font_name, font_style, color } => {
                 let old = self.snapshot_title(*clip_id);
                 let target_oid = self.title_text_target_id(*clip_id);

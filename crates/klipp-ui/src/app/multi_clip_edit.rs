@@ -89,7 +89,8 @@ impl KlippApp {
         }
         if phase == Phase::Redo {
             for other in &post.others {
-                if let Some(cmd) = crate::multi_edit::retarget(&post.cmd, *other) {
+                let clip = self.state.sequence().all_clips().find(|c| c.id == *other).cloned();
+                if let Some(cmd) = clip.and_then(|c| crate::multi_edit::retarget(&post.cmd, &c)) {
                     self.send_commands(vec![cmd]);
                 }
             }

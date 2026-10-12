@@ -5028,12 +5028,30 @@ fn show_title_editor(
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new(format!("Follows style \u{201c}{name}\u{201d}")).size(11.0).color(theme.text_secondary))
                 .on_hover_text("A change to this style in the brief carries this title with it, in every field it still has as the style has it");
+            // This title's look to every title of its style (#1716); a
+            // template's titles have their own line below.
+            if td.template.is_none() && ui.small_button("Update All").on_hover_text("Give every title that follows this style this title's look, each keeping its own words").clicked() {
+                cmds.push(AppCommand::UpdateTitlesLike { clip_id });
+            }
             if diverged.is_empty() {
                 return;
             }
             ui.label(egui::RichText::new(format!("\u{00b7} differs in {}", diverged.join(", "))).size(11.0).color(theme.text_accent));
             if ui.small_button("Revert to Style").on_hover_text("Give this title every field of its style again").clicked() {
                 cmds.push(AppCommand::RevertTitleToStyle { clip_id });
+            }
+        });
+        ui.add_space(6.0);
+    }
+
+    // The template this title was made from (#1716), and the way to give
+    // its look to every title made from it.
+    if let Some(template) = td.template.as_deref() {
+        let name = template.strip_prefix("user:").unwrap_or(template);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new(format!("Made from template \u{201c}{name}\u{201d}")).size(11.0).color(theme.text_secondary));
+            if ui.small_button("Update All").on_hover_text("Give every title made from this template this title's look, each keeping its own words").clicked() {
+                cmds.push(AppCommand::UpdateTitlesLike { clip_id });
             }
         });
         ui.add_space(6.0);

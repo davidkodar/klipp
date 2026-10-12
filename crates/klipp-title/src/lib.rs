@@ -6643,6 +6643,7 @@ mod tests {
             background: TitleBackground::None,
             style: None,
             published: Vec::new(),
+            template: None,
         };
         let _shape_id = td.add_object(
             TitleObjectContent::Shape(klipp_timeline::Shape {
