@@ -1050,8 +1050,9 @@ impl TitleRenderer {
         // or the underline gets clipped on the descender side.
         let max_pad = effect_padding(title, scale);
         // A style run's own underline (#1668) is drawn per line under
-        // the run's glyphs, in place of the box's single stripe.
-        let run_underlines = tb.style_runs.iter().any(|r| r.underline.is_some());
+        // the run's glyphs, in place of the box's single stripe; so is
+        // the box's own in a box with runs, in each run's colour (#1680).
+        let run_underlines = tb.style_runs.iter().any(|r| r.underline.is_some()) || (tb.underline && !tb.style_runs.is_empty());
         let underline_pad = if tb.underline || run_underlines {
             (text_h * 0.10).ceil() as i32 + (font_px * 0.06).ceil() as i32
         } else {
@@ -9843,7 +9844,7 @@ mod run_underline_tests {
     const LONG: &str = "An underlined title long enough to wrap onto a second line and then a third line of words";
 
     /// Boxes with no run underline: the box's underline and
-    /// strikethrough, with and without style runs.
+    /// strikethrough without style runs, and runs without an underline.
     fn without_run_underlines() -> Vec<TitleData> {
         let runs = || vec![
             StyleRun { font_size: Some(72.0), ..StyleRun::default_for_range(0, 5) },
@@ -9854,10 +9855,6 @@ mod run_underline_tests {
             boxed(LONG, |tb| {
                 tb.underline = true;
                 tb.strikethrough = true;
-            }),
-            boxed("Hello world", |tb| {
-                tb.underline = true;
-                tb.style_runs = runs();
             }),
             boxed("Hello world", |tb| tb.style_runs = runs()),
             boxed(LONG, |tb| {
@@ -9872,7 +9869,7 @@ mod run_underline_tests {
     /// byte for byte as it did.
     #[test]
     fn boxes_without_run_underlines_draw_as_before() {
-        const BEFORE: [u64; 5] = [0xae7f_e880_8be2_206a, 0x3641_3dbc_c81a_b919, 0x429f_31d9_51d9_f8a9, 0x429f_31d9_51d9_f8a9, 0x1360_216f_dbf6_1906];
+        const BEFORE: [u64; 4] = [0xae7f_e880_8be2_206a, 0x3641_3dbc_c81a_b919, 0x429f_31d9_51d9_f8a9, 0x1360_216f_dbf6_1906];
         let mut r = TitleRenderer::new();
         r.system_fallback = false;
         for (i, td) in without_run_underlines().iter().enumerate() {
@@ -9940,6 +9937,31 @@ mod run_underline_tests {
         let frame = r.render(&td, W, H);
         assert!(drawn(&frame, hello, below).0 > 0, "the box's underline is not under the other word");
         assert_eq!(drawn(&frame, world, below).0, 0, "drawn under the word with its underline off");
+    }
+
+    /// An underlined box with style runs draws its underline (#1680):
+    /// under a red run in red, and under the text outside any run in
+    /// the box's colour, not red.
+    #[test]
+    fn a_box_underline_is_drawn_with_style_runs() {
+        let mut r = TitleRenderer::new();
+        r.system_fallback = false;
+        let td = boxed("Hello world", |tb| {
+            tb.underline = true;
+            tb.style_runs = vec![StyleRun { color: Some([255, 0, 0, 255]), ..StyleRun::default_for_range(6, 11) }];
+        });
+        let layout = r.render_layout(&td, W, H);
+        let frame = r.render(&td, W, H);
+        let (hello, bottom) = ink(&layout, "Hello world", 0, 5);
+        let (world, _) = ink(&layout, "Hello world", 6, 11);
+        let below = (bottom + 1, bottom + 12);
+        let (any, red) = drawn(&frame, world, below);
+        assert!(red > 0 && red == any, "under the red word: {any} drawn, {red} red");
+        let (any, red) = drawn(&frame, hello, below);
+        assert!(any > 0 && red == 0, "under the other word: {any} drawn, {red} red");
+        // Not underlined, the same box draws nothing below the line.
+        let plain = r.render(&boxed("Hello world", |tb| tb.style_runs = vec![StyleRun { color: Some([255, 0, 0, 255]), ..StyleRun::default_for_range(6, 11) }]), W, H);
+        assert_eq!(drawn(&plain, (0, W as i32), below).0, 0);
     }
 
     /// In a box of several lines, a word's underline lies under that
