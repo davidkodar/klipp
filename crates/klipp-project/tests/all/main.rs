@@ -94,6 +94,8 @@ mod subtitle_source_round_trip;
 mod surface_round_trip;
 #[path = "../texture_fill_path.rs"]
 mod texture_fill_path;
+#[path = "../title_nits_round_trip.rs"]
+mod title_nits_round_trip;
 #[path = "../track_effects_round_trip.rs"]
 mod track_effects_round_trip;
 #[path = "../unknown_effect_refused.rs"]

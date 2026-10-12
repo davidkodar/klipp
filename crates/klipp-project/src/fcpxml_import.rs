@@ -571,6 +571,7 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
                 timeline_graph: None,
                 grade_groups: Vec::new(),
                 // An imported timeline takes its rate's convention.
+                title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
                 drop_frame: Sequence::default_drop_frame(seq_fps),
                 id: SequenceId::new(),
                 name: project_name_from_tree(root),
@@ -647,6 +648,7 @@ pub fn parse_fcpxml(xml: &str) -> Result<ImportResult, FcpxmlImportError> {
         timeline_graph: None,
         grade_groups: Vec::new(),
         // An imported timeline takes its rate's convention.
+        title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
         drop_frame: Sequence::default_drop_frame(seq_fps),
         id: SequenceId::new(),
         name: project_name_from_tree(root),

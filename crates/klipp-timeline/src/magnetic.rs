@@ -2096,6 +2096,7 @@ mod tests {
             track.clips.push(media_clip(i, o));
         }
         Sequence {
+            title_nits: crate::DEFAULT_TITLE_NITS,
             drop_frame: false,
             camera: Default::default(),
             timeline_graph: None,
@@ -2131,6 +2132,7 @@ mod tests {
             connected.clips.push(media_clip(i, o));
         }
         Sequence {
+            title_nits: crate::DEFAULT_TITLE_NITS,
             drop_frame: false,
             camera: Default::default(),
             timeline_graph: None,

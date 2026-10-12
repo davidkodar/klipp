@@ -599,6 +599,23 @@ impl KlippApp {
                     }
                     true
                 }
+                AppCommand::SetSequenceTitleNits { sequence_idx, nits } => {
+                    if let Some(seq) = self.state.sequences.get_mut(*sequence_idx) {
+                        let range = klipp_timeline::TITLE_NITS_RANGE;
+                        let new = if nits.is_finite() { nits.clamp(*range.start(), *range.end()) } else { klipp_timeline::DEFAULT_TITLE_NITS };
+                        let old = seq.title_nits;
+                        if new != old {
+                            seq.title_nits = new;
+                            let id = seq.id;
+                            self.state.history_for_mut(id).push(crate::history::HistoryEntry {
+                                command: crate::history::EditCommand::SetSequenceTitleNits { old, new },
+                            });
+                            self.sync_sequence_to_engine();
+                            self.state.dirty = true;
+                        }
+                    }
+                    true
+                }
                 AppCommand::SetSequenceCameraKey { sequence_idx, param, time_secs, value } => {
                     self.key_sequence_camera(*sequence_idx, *param, *time_secs, Some(*value));
                     true

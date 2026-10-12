@@ -722,6 +722,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::RenameGradeGroup { .. }
         | AppCommand::DeleteGradeGroup { .. }
         | AppCommand::SetSequenceShutter { .. }
+        | AppCommand::SetSequenceTitleNits { .. }
         | AppCommand::SetSequenceCameraKey { .. }
         | AppCommand::RemoveSequenceCameraKey { .. }
         | AppCommand::MoveSequenceCameraKey { .. }

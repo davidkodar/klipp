@@ -661,6 +661,7 @@ pub fn frame_snapshot(seq: &Sequence, time: Timecode) -> Sequence {
         camera: seq.camera.clone(),
         timeline_graph: seq.timeline_grade().cloned().map(Into::into),
         grade_groups: seq.grade_groups.clone(),
+        title_nits: seq.title_nits,
         drop_frame: seq.drop_frame,
         fps: seq.fps,
         resolution: seq.resolution,
@@ -831,6 +832,8 @@ pub struct Renderer {
     found: Inspection,
     /// The current render's `RenderOptions::hdr_peak_nits`.
     hdr_peak: Option<f32>,
+    /// The rendered sequence's `Sequence::title_nits`, for this frame.
+    title_nits: f32,
     /// Tetrahedral 3D-LUT interpolation, or trilinear for speed.
     lut_tetrahedral: bool,
 }
@@ -915,6 +918,7 @@ impl Renderer {
             inspect: Inspect::default(),
             found: Inspection::default(),
             hdr_peak: None,
+            title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
             lut_tetrahedral: true,
         }
     }
@@ -1089,6 +1093,7 @@ impl Renderer {
         self.resolved = crate::inspect::resolve(seq, &inspect, &mut self.found.unavailable);
         self.inspect = inspect;
         self.hdr_peak = opts.hdr_peak_nits;
+        self.title_nits = seq.title_nits;
         let out = self.render_stack(seq, time, width, height, src, opts);
         // The frame is done: a plug-in instance not rendered near it since
         // goes (`PluginInstances::end_frame`).
@@ -1638,6 +1643,7 @@ impl Renderer {
         // CPU (#1279): the frame's peak, for this frame only, cleared
         // however it ends.
         self.hdr_peak = opts.hdr_peak_nits;
+        self.title_nits = seq.title_nits;
         let stats = self.composite_on_gpu_frame(seq, time, width, height, src, opts);
         self.hdr_peak = None;
         stats
@@ -1985,6 +1991,7 @@ impl Renderer {
         let (mut fx, opacity) = clip_effects(c, time, fps, transforms.get(&c.id).copied(), self.pins.get(&c.id).copied());
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
+        self.title_light(c, &mut fx);
         let temporal = fx.iter().any(|e| matches!(e, BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. }));
         // No frei0r test here: the stack declines a frame with a frei0r
         // plug-in before a layer is placed (M4 step 5), so none reaches it.
@@ -2651,6 +2658,7 @@ impl Renderer {
         let (mut fx, opacity) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied());
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
+        self.title_light(clip, &mut fx);
         // The grade's result goes on into the effects on the GPU, with no
         // download and upload between them, when nothing in between needs
         // the picture on the CPU (#1089, M2 step 10).
@@ -3093,9 +3101,16 @@ impl Renderer {
                     blends.push(b);
                     nodes.push(n);
                 }
-                self.planned_nodes.insert(clip.id, nodes);
                 self.authored_colours(&mut fx);
                 self.at_render_scale(&mut fx);
+                // A title's HDR brightness is the render's, not a node of
+                // its picture: put first, as on the list route.
+                if let Some(gain) = self.title_gain_effect(clip) {
+                    fx.insert(0, gain);
+                    blends.insert(0, None);
+                    nodes.insert(0, None);
+                }
+                self.planned_nodes.insert(clip.id, nodes);
                 self.planned_blends = blends;
                 fx
             }
@@ -3257,6 +3272,35 @@ impl Renderer {
             let c = klipp_color::primaries::matrix3_mul_vec(m, [px[0], px[1], px[2]]);
             px[..3].copy_from_slice(&c);
         });
+    }
+
+    /// A title's brightness in an HDR delivery (#1723): its light scaled
+    /// from SDR white (1.0, 203 nits) to the sequence's `title_nits`, held
+    /// under the delivery's peak, as a gain at the head of its effects so
+    /// the CPU and the GPU stack apply it at the same point. An SDR render,
+    /// or a title at 203 nits, has none.
+    fn title_gain_effect(&self, clip: &Clip) -> Option<BuiltinEffect> {
+        let (ClipKind::Title(_), Some(peak)) = (&clip.kind, self.hdr_peak) else { return None };
+        let k = title_gain(self.title_nits, peak);
+        ((k - 1.0).abs() > 1e-6).then_some(BuiltinEffect::ChannelMixer {
+            red_red: k,
+            red_green: 0.0,
+            red_blue: 0.0,
+            green_red: 0.0,
+            green_green: k,
+            green_blue: 0.0,
+            blue_red: 0.0,
+            blue_green: 0.0,
+            blue_blue: k,
+        })
+    }
+
+    /// [`Self::title_gain_effect`] at the head of an effect list. A plan
+    /// made from the picture puts it there too (`plan_effects`).
+    fn title_light(&self, clip: &Clip, fx: &mut Vec<BuiltinEffect>) {
+        if let Some(gain) = self.title_gain_effect(clip) {
+            fx.insert(0, gain);
+        }
     }
 
     /// The pixel-sized parameters of `fx` in the pixels of the buffer being
@@ -4547,6 +4591,15 @@ pub fn clip_effects(
             list_effects(clip, time, fps, resolved, pin)
         }
     }
+}
+
+/// The gain on a title's light for a white of `nits` in a delivery
+/// mastered to `peak`, display light 1.0 being SDR white: never above the
+/// peak, and a NaN brightness is the default's.
+pub fn title_gain(nits: f32, peak: f32) -> f32 {
+    let nits = if nits.is_finite() { nits } else { klipp_timeline::DEFAULT_TITLE_NITS };
+    let nits = nits.clamp(*klipp_timeline::TITLE_NITS_RANGE.start(), *klipp_timeline::TITLE_NITS_RANGE.end());
+    nits.min(peak.max(1.0)) / klipp_color::hdr::HDR_REFERENCE_WHITE_NITS
 }
 
 /// [`clip_effects`] from the clip's effect list rather than its picture:

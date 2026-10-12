@@ -210,6 +210,9 @@ pub enum EditCommand {
     SetTrack { description: &'static str, track_index: usize, old: Box<klipp_timeline::Track>, new: Box<klipp_timeline::Track> },
     /// The move over the whole sequence; see `klipp_timeline::Camera`.
     SetSequenceCamera { old: Box<klipp_timeline::Camera>, new: Box<klipp_timeline::Camera> },
+    /// A title's white in an HDR delivery, cd/m²; see
+    /// `Sequence::title_nits`.
+    SetSequenceTitleNits { old: f32, new: f32 },
     /// How far back a clip sits for the camera; see `Clip::depth`.
     SetClipDepth { clip_id: ClipId, old: f32, new: f32 },
     /// Clips given their own name or colour label (#920), each as (clip,
@@ -815,6 +818,7 @@ impl EditCommand {
             EditCommand::SetTracks { description, .. } => description,
             EditCommand::SetTrack { description, .. } => description,
             EditCommand::SetSequenceCamera { .. } => "Camera",
+            EditCommand::SetSequenceTitleNits { .. } => "Title Brightness",
             EditCommand::SetClipDepth { .. } => "Depth",
             EditCommand::SetClipLabels { description, .. } => description,
             EditCommand::SetGradeGroups { .. } => "Grade Groups",

@@ -113,7 +113,25 @@ pub struct Sequence {
     /// ([`Sequence::default_drop_frame`]).
     #[serde(default)]
     pub drop_frame: bool,
+    /// How bright a title's white is in an HDR delivery, cd/m² (#1723).
+    /// An SDR picture has no say in it; under PQ or HLG a title's white
+    /// would otherwise sit at SDR reference white, 203 nits, as BT.2408
+    /// places graphics. The render holds it under the delivery's peak.
+    #[serde(default = "default_title_nits", skip_serializing_if = "is_default_title_nits")]
+    pub title_nits: f32,
 }
+
+/// [`Sequence::title_nits`] when nobody has chosen one: SDR reference
+/// white, where BT.2408 puts graphics in an HDR programme.
+pub const DEFAULT_TITLE_NITS: f32 = 203.0;
+
+/// The title brightnesses a sequence may ask for, cd/m²: from a dim
+/// caption up to the brightest PQ mastering display.
+pub const TITLE_NITS_RANGE: std::ops::RangeInclusive<f32> = 50.0..=4000.0;
+
+fn default_title_nits() -> f32 { DEFAULT_TITLE_NITS }
+
+fn is_default_title_nits(n: &f32) -> bool { *n == DEFAULT_TITLE_NITS }
 
 /// Which of a sequence's settings the first video clip placed on it may
 /// set: an "Automatic" size or rate follows the footage (as in Final Cut),
@@ -629,6 +647,7 @@ impl Sequence {
             timeline_graph: None,
             grade_groups: Vec::new(),
             drop_frame: Self::default_drop_frame(Fps::film_24()),
+            title_nits: DEFAULT_TITLE_NITS,
             name: "Main Sequence".to_string(),
             fps: Fps::film_24(),
             resolution: Resolution::hd_1080(),
@@ -4320,6 +4339,7 @@ mod tests {
 
     fn make_swap_seq() -> Sequence {
         Sequence {
+            title_nits: crate::DEFAULT_TITLE_NITS,
             drop_frame: false,
             camera: Default::default(),
             timeline_graph: None,

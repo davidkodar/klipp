@@ -43,6 +43,7 @@ impl KlippApp {
             camera: klipp_timeline::Camera::default(),
             timeline_graph: None,
             grade_groups: Vec::new(),
+            title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
             drop_frame: klipp_timeline::Sequence::default_drop_frame(fps),
             id: klipp_core::SequenceId::new(),
             name: name.clone(),
@@ -738,6 +739,7 @@ mod compound_clip_cycle_tests {
 
     fn make_seq(name: &str) -> Sequence {
         Sequence {
+            title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
             drop_frame: false,
             camera: Default::default(),
             timeline_graph: None,

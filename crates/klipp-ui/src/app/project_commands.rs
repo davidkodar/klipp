@@ -328,6 +328,7 @@ impl KlippApp {
                     camera: klipp_timeline::Camera::default(),
                     timeline_graph: None,
                     grade_groups: Vec::new(),
+                    title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
                     drop_frame: klipp_timeline::Sequence::default_drop_frame(fps),
                     id: klipp_core::SequenceId::new(),
                     name: seq_name,
@@ -447,6 +448,7 @@ impl KlippApp {
                     camera: klipp_timeline::Camera::default(),
                     timeline_graph: None,
                     grade_groups: Vec::new(),
+                    title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
                     drop_frame: klipp_timeline::Sequence::default_drop_frame(
                         klipp_core::Fps::new(*fps_num, *fps_den),
                     ),
@@ -649,6 +651,7 @@ impl KlippApp {
                             seq.fps.num,
                             seq.fps.den,
                             (seq.camera.shutter_deg, seq.camera.shutter_samples),
+                            seq.title_nits,
                         ),
                     );
                 }

@@ -162,6 +162,10 @@ pub struct SequenceJson {
     /// "non-drop". A sequence that has chosen writes the choice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drop_frame: Option<bool>,
+    /// A title's white in an HDR delivery, cd/m²; see
+    /// `Sequence::title_nits`. Left out at the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_nits: Option<f32>,
 }
 
 fn default_header_width() -> f32 { 160.0 }
