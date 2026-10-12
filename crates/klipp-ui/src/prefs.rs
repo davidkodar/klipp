@@ -1567,6 +1567,12 @@ pub struct TitlePrefs {
     /// Additional font search directories.
     #[serde(default)]
     pub font_search_paths: Vec<PathBuf>,
+    /// Font families starred in the font picker, shown first (#1719).
+    #[serde(default)]
+    pub favourite_fonts: Vec<String>,
+    /// Font families picked lately, most recent first (#1719).
+    #[serde(default)]
+    pub recent_fonts: Vec<String>,
     /// Default title color as RGB.
     #[serde(default = "default_title_color")]
     pub default_color: [u8; 3],
@@ -1600,12 +1606,35 @@ fn default_title_font() -> String { String::new() }
 fn default_title_size() -> f32 { 48.0 }
 fn default_title_color() -> [u8; 3] { [255, 255, 255] }
 fn default_title_duration() -> f32 { 5.0 }
+/// The font picker keeps this many recent families.
+pub const MAX_RECENT_FONTS: usize = 8;
+
+impl TitlePrefs {
+    /// `family` starred, or unstarred if it was.
+    pub fn toggle_favourite_font(&mut self, family: &str) {
+        if let Some(i) = self.favourite_fonts.iter().position(|f| f == family) {
+            self.favourite_fonts.remove(i);
+        } else {
+            self.favourite_fonts.push(family.to_string());
+        }
+    }
+
+    /// `family` used now: first of the recent ones, the list kept short.
+    pub fn note_recent_font(&mut self, family: &str) {
+        self.recent_fonts.retain(|f| f != family);
+        self.recent_fonts.insert(0, family.to_string());
+        self.recent_fonts.truncate(MAX_RECENT_FONTS);
+    }
+}
+
 impl Default for TitlePrefs {
     fn default() -> Self {
         Self {
             default_font: default_title_font(),
             default_size_pt: default_title_size(),
             font_search_paths: Vec::new(),
+            favourite_fonts: Vec::new(),
+            recent_fonts: Vec::new(),
             default_color: default_title_color(),
             default_alignment: Default::default(),
             default_duration_secs: default_title_duration(),
@@ -3082,5 +3111,33 @@ mod tests {
             prefs.general.auto_save_interval_secs,
             "round-trip via from_json_str must preserve fields",
         );
+    }
+}
+
+#[cfg(test)]
+mod font_pick_tests {
+    use super::*;
+
+    /// A star toggles; a pick goes first among the recent ones, once,
+    /// the list kept to its length; preferences from before read with
+    /// none (#1719).
+    #[test]
+    fn stars_toggle_and_recent_fonts_stay_short_and_fresh() {
+        let mut t = TitlePrefs::default();
+        t.toggle_favourite_font("Inter");
+        t.toggle_favourite_font("Bebas Neue");
+        t.toggle_favourite_font("Inter");
+        assert_eq!(t.favourite_fonts, ["Bebas Neue"]);
+        for f in ["A", "B", "C", "A"] {
+            t.note_recent_font(f);
+        }
+        assert_eq!(t.recent_fonts, ["A", "C", "B"]);
+        for k in 0..20 {
+            t.note_recent_font(&format!("F{k}"));
+        }
+        assert_eq!(t.recent_fonts.len(), MAX_RECENT_FONTS);
+        assert_eq!(t.recent_fonts[0], "F19");
+        let old: TitlePrefs = serde_json::from_str("{}").unwrap();
+        assert!(old.favourite_fonts.is_empty() && old.recent_fonts.is_empty());
     }
 }

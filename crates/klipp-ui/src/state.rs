@@ -2722,6 +2722,12 @@ pub struct AppState {
 
     /// Available system font families (populated at startup from font discovery)
     pub available_fonts: Vec<String>,
+    /// The font picker's starred and recent families, as the
+    /// preferences hold them (#1719).
+    pub favourite_fonts: Vec<String>,
+    pub recent_fonts: Vec<String>,
+    /// The font picker's previews, each family in its own face.
+    pub font_previews: crate::inspector::font_picker::FontPreviews,
 
     /// Pending title data for styled title creation (consumed by CreateTitleClip handler)
     pub pending_title_data: Option<klipp_timeline::TitleData>,
@@ -4675,6 +4681,9 @@ impl Default for AppState {
             ),
             ml_registry: crate::ai_tools::RegistryHandle::from_shared(shared_registry),
             available_fonts: Vec::new(),
+            favourite_fonts: Vec::new(),
+            recent_fonts: Vec::new(),
+            font_previews: Default::default(),
             pending_title_data: None,
             focus_title_text: 0,
             pending_title_preview_clip: None,

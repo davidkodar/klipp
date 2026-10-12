@@ -17,6 +17,7 @@ pub mod modifier_ui;
 pub mod title_tab;
 pub mod title_animators;
 pub mod title_layers;
+pub mod font_picker;
 pub mod title_text3d;
 mod title_features;
 
@@ -1823,28 +1824,25 @@ fn show_title_pinned_core_textbox(
         let total = ui.available_width();
         let size_w = 70.0;
         let combo_w = (total - size_w - 8.0).max(80.0);
-        let mut picked: Option<String> = None;
-        egui::ComboBox::from_id_salt("title_pinned_font")
-            .selected_text(if font_is_mixed { "Mixed" } else { display_name })
-            .width(combo_w)
-            .show_ui(ui, |ui| {
-                if ui
-                    .selectable_label(
-                        display_font == "sans-serif" || display_font.is_empty(),
-                        "Noto Sans (Default)",
-                    )
-                    .clicked()
-                {
-                    picked = Some("sans-serif".to_string());
-                }
-                ui.separator();
-                for family in &state.available_fonts {
-                    if ui.selectable_label(display_font == *family, family).clicked() {
-                        picked = Some(family.clone());
-                    }
-                }
-            });
-        if let Some(family) = picked {
+        // The font picker (#1719): each family in its own face, the
+        // title's words as the sample, starred and recent ones first.
+        let choice = ui.vertical(|ui| {
+            ui.set_width(combo_w);
+            font_picker::picker(ui, theme, ("title_pinned_font", clip_id.0), if font_is_mixed { "Mixed" } else { display_name }, &tb.text, &state.available_fonts, &state.favourite_fonts, &state.recent_fonts, &state.font_previews)
+        }).inner;
+        if let Some(family) = choice.toggle_favourite {
+            cmds.push(AppCommand::ToggleFavouriteFont { family });
+        }
+        if let (Some(family), Some(weight)) = (&choice.family, choice.weight) {
+            if !(has_selection && sel_range.0 < sel_range.1) {
+                cmds.push(AppCommand::SetTitleFontVariation { clip_id, weight: Some(weight), axes: tb.font_axes.clone() });
+            }
+            let _ = family;
+        }
+        if let Some(family) = &choice.family {
+            cmds.push(AppCommand::NoteRecentFont { family: family.clone() });
+        }
+        if let Some(family) = choice.family {
             if has_selection && sel_range.0 < sel_range.1 {
                 cmds.push(AppCommand::ApplyTitleStyle {
                     clip_id,

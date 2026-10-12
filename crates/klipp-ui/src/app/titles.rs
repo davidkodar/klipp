@@ -708,6 +708,18 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::ToggleFavouriteFont { family } | AppCommand::NoteRecentFont { family } => {
+                // A preference, kept across sessions (#1719).
+                if matches!(cmd, AppCommand::ToggleFavouriteFont { .. }) {
+                    self.prefs.title.toggle_favourite_font(family);
+                } else {
+                    self.prefs.title.note_recent_font(family);
+                }
+                self.state.favourite_fonts = self.prefs.title.favourite_fonts.clone();
+                self.state.recent_fonts = self.prefs.title.recent_fonts.clone();
+                let _ = self.prefs.save();
+                true
+            }
             AppCommand::LoadCreditsList { path } => {
                 match std::fs::read_to_string(path) {
                     Ok(text) => self.state.credits_dialog.get_or_insert_with(Default::default).text = text,
