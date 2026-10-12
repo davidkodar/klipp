@@ -245,6 +245,9 @@ pub enum TitleObjectHandle {
     /// Crosshair dot inside the box — moves the rotation/anchor
     /// pivot without affecting the object's visible position.
     Anchor,
+    /// Where a text set on an arc starts (#1714): turns the arc's start
+    /// angle about the layer's centre.
+    PathStart,
 }
 
 #[derive(Debug, Clone)]
@@ -261,6 +264,9 @@ pub struct TitleObjectDrag {
     /// the typography rather than the bounding box only.
     pub initial_font_size: f32,
     pub drag_start_pos: egui::Pos2,
+    /// The picture's width over its height on screen, so a turn and a
+    /// resize of a turned box follow the pointer as it is seen (#1714).
+    pub frame_aspect: f32,
 }
 
 /// Which part of a mask shape is being dragged in the viewer

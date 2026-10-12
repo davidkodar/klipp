@@ -2424,6 +2424,13 @@ pub enum AppCommand {
         anchor_y: f32,
         font_size: f32,
     },
+    /// A drag on a title layer's handles in the viewer begins and ends
+    /// (#1714): the title edits between are one undo step.
+    BeginTitleObjectDrag { clip_id: ClipId },
+    EndTitleObjectDrag { clip_id: ClipId },
+    /// Where a text set on an arc starts, in degrees (0 = right, 90 =
+    /// below), set by the viewer's path-start handle (#1714).
+    SetTitleArcStart { clip_id: ClipId, object_id: u32, start_angle: f32 },
     SetTitleBackground { clip_id: ClipId, bg_kind: u8, color: [u8; 4] },  // 0=None, 1=Color, 2=FullFrame
     SetTitleShadow { clip_id: ClipId, enabled: bool, color: [u8; 4], offset_x: f32, offset_y: f32, blur: f32 },
     /// Replace the entire drop-shadow stack. Each tuple is

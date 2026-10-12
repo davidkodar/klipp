@@ -1601,36 +1601,17 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
-            AppCommand::SetTitleObjectTransform {
-                clip_id, object_id,
-                center_x, center_y, size_x, size_y,
-                rotation, anchor_x, anchor_y,
-            } => {
-                let old = self.snapshot_title(*clip_id);
-                let target = klipp_timeline::TitleObjectId(*object_id);
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(o) = td.object_mut(target) {
-                                // Mutate fields individually so existing
-                                // position keyframes survive an on-canvas
-                                // drag — the drag updates the static
-                                // fallback only.
-                                o.transform.center = klipp_timeline::TitlePosition { x: *center_x, y: *center_y };
-                                o.transform.size = klipp_timeline::TitlePosition { x: *size_x, y: *size_y };
-                                o.transform.rotation = *rotation;
-                                o.transform.anchor_norm = klipp_timeline::TitlePosition { x: *anchor_x, y: *anchor_y };
-                            }
-                        }
-                    }
+            AppCommand::SetTitleObjectTransform { .. }
+            | AppCommand::SetTitleObjectTransformAndFont { .. }
+            | AppCommand::SetTitleArcStart { .. }
+            | AppCommand::BeginTitleObjectDrag { .. }
+            | AppCommand::EndTitleObjectDrag { .. } => {
+                // The viewer's handles (#1714), applied on the state.
+                if let Some(clip_id) = super::title_handles::apply(&mut self.state, cmd) {
+                    self.render_title_to_viewer(clip_id);
+                    self.sync_sequence_to_engine();
+                    let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                 }
-                if let Some(old) = old {
-                    self.push_title_undo(*clip_id, "Move Title Object", old);
-                }
-                self.render_title_to_viewer(*clip_id);
-                self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                self.state.dirty = true;
                 true
             }
             AppCommand::TitlePathError { message } => { self.state.toast.show(message.clone()); true }
@@ -1806,42 +1787,6 @@ impl KlippApp {
                 }
                 if let Some(old) = old {
                     self.push_title_undo(*clip_id, "Edit Title Text", old);
-                }
-                self.render_title_to_viewer(*clip_id);
-                self.sync_sequence_to_engine();
-                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
-                self.state.dirty = true;
-                true
-            }
-            AppCommand::SetTitleObjectTransformAndFont {
-                clip_id, object_id,
-                center_x, center_y, size_x, size_y,
-                rotation, anchor_x, anchor_y,
-                font_size,
-            } => {
-                let old = self.snapshot_title(*clip_id);
-                let target = klipp_timeline::TitleObjectId(*object_id);
-                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
-                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
-                            if let Some(o) = td.object_mut(target) {
-                                // Mutate fields individually so existing
-                                // position keyframes survive a corner-handle
-                                // drag — the drag updates the static
-                                // fallback only.
-                                o.transform.center = klipp_timeline::TitlePosition { x: *center_x, y: *center_y };
-                                o.transform.size = klipp_timeline::TitlePosition { x: *size_x, y: *size_y };
-                                o.transform.rotation = *rotation;
-                                o.transform.anchor_norm = klipp_timeline::TitlePosition { x: *anchor_x, y: *anchor_y };
-                                if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut o.content {
-                                    tb.font_size = *font_size;
-                                }
-                            }
-                        }
-                    }
-                }
-                if let Some(old) = old {
-                    self.push_title_undo(*clip_id, "Resize Title Object", old);
                 }
                 self.render_title_to_viewer(*clip_id);
                 self.sync_sequence_to_engine();
@@ -3230,10 +3175,7 @@ impl KlippApp {
     /// not written to the shared frame buffer (which avoids race conditions with the engine).
     /// Snapshot a title clip's TitleData for undo. Returns None if clip not found or not a title.
     fn snapshot_title(&self, clip_id: klipp_core::ClipId) -> Option<klipp_timeline::TitleData> {
-        self.state.sequences[self.state.active_sequence_idx].tracks.iter()
-            .find_map(|t| t.clips.iter().find(|c| c.id == clip_id))
-            .and_then(|c| c.title_data())
-            .cloned()
+        super::title_handles::snapshot_title(&self.state, clip_id)
     }
 
     /// Resolve which TextBox a title-style mutation should target.
@@ -3275,23 +3217,7 @@ impl KlippApp {
 
     /// Push a title edit undo entry if the data changed.
     fn push_title_undo(&mut self, clip_id: klipp_core::ClipId, description: &'static str, old: klipp_timeline::TitleData) {
-        if let Some(new) = self.snapshot_title(clip_id) {
-            if old != new {
-                if description == "Edit Title Text"
-                    && self.state.active_history_mut().try_coalesce_title_text(clip_id, &old, &new)
-                {
-                    return;
-                }
-                self.state.active_history_mut().push(crate::history::HistoryEntry {
-                    command: crate::history::EditCommand::EditTitle {
-                        clip_id, description, old_data: old, new_data: new,
-                    },
-                });
-                if description == "Edit Title Text" {
-                    self.state.active_history_mut().note_title_text_edit(clip_id);
-                }
-            }
-        }
+        super::title_handles::push_title_undo(&mut self.state, clip_id, description, old);
     }
 
     pub(super) fn snapshot_generator(&self, clip_id: klipp_core::ClipId) -> Option<klipp_core::GeneratorData> {

@@ -123,6 +123,9 @@ mod graph_ops;
 mod path_commands;
 mod titles;
 mod text_tool;
+mod title_handles;
+#[cfg(test)]
+mod viewer_harness;
 mod poster_frames;
 mod links;
 mod prefs_apply;

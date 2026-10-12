@@ -34,6 +34,32 @@ const SURFACE_DROP_INSET: f32 = 0.015;
 /// drag for (#1713); a smaller one is a click where it started.
 const TEXT_TOOL_MIN_BOX: f32 = 8.0;
 
+/// The title text under `p` at the playhead, for the Text tool (#1714):
+/// the clip, its text layer and the layer's text, the topmost track's
+/// first and a layer's frontmost first. A layer is hit on its box as the
+/// in-place editor draws it, hugging the text.
+fn title_text_at(state: &AppState, frame: &ViewerFrameState, p: egui::Pos2) -> Option<(klipp_core::ClipId, klipp_timeline::TitleObjectId, String)> {
+    let dims = (frame.video_w.max(1.0) as u32, frame.video_h.max(1.0) as u32);
+    let at = state.playhead;
+    state.sequence().tracks.iter().find_map(|track| {
+        let (_, clip) = track.clip_at_timecode(at)?;
+        let mut td = clip.title_data().filter(|_| clip.enabled)?.clone();
+        tighten_text_editor_boxes(&mut td, dims);
+        let clip_time = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
+        td.objects.iter_mut().rev().find_map(|obj| {
+            obj.transform.center = obj.transform.evaluated_center(clip_time);
+            match &obj.content {
+                klipp_timeline::TitleObjectContent::TextBox(tb)
+                    if obj.visible && !obj.locked && object_contains_screen_point(obj, frame.image_rect, p) =>
+                {
+                    Some((clip.id, obj.id, tb.text.clone()))
+                }
+                _ => None,
+            }
+        })
+    })
+}
+
 /// Map a normalised `(0..1, 0..1)` clip-space point to the image
 /// rect's pixel coordinates. The viewer paints frame content into
 /// `image_rect`; gizmos that store positions in clip-space (focal
@@ -1469,10 +1495,12 @@ impl ViewerPanel {
     /// title-object editor reads its drags, so the box lands where it was
     /// drawn at any zoom or pan. A drag smaller than
     /// [`TEXT_TOOL_MIN_BOX`] either way is taken as a click where it
-    /// started.
+    /// started. A click on a title's text at the playhead edits that
+    /// title in place instead (#1714).
     fn handle_text_tool(
         &mut self,
         ui: &mut egui::Ui,
+        state: &mut AppState,
         theme: &KlippTheme,
         frame: &ViewerFrameState,
         cmds: &mut Vec<AppCommand>,
@@ -1526,7 +1554,21 @@ impl ViewerPanel {
             }
         } else if resp.clicked() {
             if let Some(p) = resp.interact_pointer_pos() {
-                cmds.push(point(p));
+                if let Some((clip_id, object_id, text)) = title_text_at(state, frame, p) {
+                    cmds.push(AppCommand::SelectClip(Some(clip_id)));
+                    cmds.push(AppCommand::BeginTitleEdit { clip_id });
+                    cmds.push(AppCommand::SelectTitleObject { clip_id, object_id: Some(object_id.0) });
+                    state.selected_clip = Some(clip_id);
+                    state.selected_clips = vec![clip_id];
+                    state.viewer_text_edit_object = Some(object_id);
+                    state.viewer_text_edit_request_focus = true;
+                    state.viewer_char_positions.clear();
+                    state.viewer_text_cursor = text.chars().count();
+                    state.viewer_text_select_anchor = None;
+                    state.viewer_text_edit_buffer = text;
+                } else {
+                    cmds.push(point(p));
+                }
             }
         }
     }
@@ -1633,6 +1675,11 @@ impl ViewerPanel {
         // first key typed replaces the placeholder (#1713).
         if std::mem::take(&mut state.viewer_text_edit_select_all) {
             set_range = Some((0, state.viewer_text_edit_buffer.chars().count()));
+        } else if state.viewer_text_edit_request_focus && set_range.is_none() {
+            // A new editing session starts at the caret it was given:
+            // the editor's own state still holds the last session's,
+            // whose selection would swallow the first key (#1714).
+            set_range = Some((state.viewer_text_cursor, state.viewer_text_cursor));
         }
         if let Some((a, b)) = set_range {
             let len = state.viewer_text_edit_buffer.chars().count();
@@ -1835,7 +1882,7 @@ impl ViewerPanel {
             && state.eyedropper_mode == crate::state::EyedropperMode::None
             && !state.has_modal_open()
         {
-            self.handle_text_tool(ui, theme, &frame, cmds);
+            self.handle_text_tool(ui, state, theme, &frame, cmds);
         }
 
         // ── On-screen transform controls ──
@@ -1887,6 +1934,15 @@ impl ViewerPanel {
         // editing affordance (bounding boxes + handles) that's
         // visually distinct from the clip-level transform handles.
         // Suppressed during text-edit mode and other modal flows.
+        // A handle drag ends with the button, whether or not the editor
+        // below is drawn to see it: one that stood down mid-drag would
+        // leave the drag's undo step open, and later edits folded in.
+        if let Some(drag) = &state.title_object_drag {
+            if !ui.input(|i| i.pointer.primary_down()) {
+                cmds.push(AppCommand::EndTitleObjectDrag { clip_id: drag.clip_id });
+                state.title_object_drag = None;
+            }
+        }
         if !state.viewer_text_edit
             && !text_tool
             && state.eyedropper_mode == crate::state::EyedropperMode::None
@@ -3869,10 +3925,19 @@ impl ViewerPanel {
     /// - Drag body → translate `transform.center`.
     /// - Drag corner handle → uniform scale (resize box AND
     ///   the TextBox's font_size, pro-NLE convention).
-    /// - Drag edge handle → resize the box on that axis only.
-    /// - Drag rotation handle → rotate around `transform.anchor_norm`.
+    /// - Drag edge handle → resize the box on that axis only, along
+    ///   the box's own sides when it is turned.
+    /// - Drag rotation handle → rotate around the box's centre; near a
+    ///   right angle it lands on it, Shift turns in 15° steps.
+    /// - Drag the diamond on a text set on an arc → where the arc starts.
     /// - Click empty image area → deselect the object (reverts to
     ///   clip-level transform handles).
+    ///
+    /// A move and an edge snap to the frame's edges and centre lines,
+    /// the safe areas and the other layers' edges and centres, with a
+    /// guide drawn along the line; Alt drags free. Each drag is one undo
+    /// step, between `BeginTitleObjectDrag` and `EndTitleObjectDrag`
+    /// (#1714).
     ///
     /// Coordinates: object transforms live in normalised 0..1 frame
     /// space; the editor maps to/from `image_rect` (the rendered
@@ -3999,6 +4064,17 @@ impl ViewerPanel {
                 [egui::pos2(an_x, an_y - an_r - 2.0), egui::pos2(an_x, an_y + an_r + 2.0)],
                 egui::Stroke::new(1.0_f32, accent),
             );
+
+            // The start of a text set on an arc (#1714): a diamond on
+            // the arc, dragged round the layer's centre.
+            if let Some(a) = arc_start_screen_point(obj, image_rect, (resolution.width, resolution.height)) {
+                let d = 5.5;
+                painter.add(egui::Shape::convex_polygon(
+                    vec![a + egui::vec2(0.0, -d), a + egui::vec2(d, 0.0), a + egui::vec2(0.0, d), a + egui::vec2(-d, 0.0)],
+                    handle_fill,
+                    handle_stroke,
+                ));
+            }
         }
 
         // ── Pointer interaction ──
@@ -4024,65 +4100,120 @@ impl ViewerPanel {
         if let Some(drag) = state.title_object_drag.clone() {
             if drag.clip_id != clip_id || td.object(drag.object_id).is_some_and(is_fitted_shape) {
                 state.title_object_drag = None;
+                cmds.push(AppCommand::EndTitleObjectDrag { clip_id: drag.clip_id });
+            } else if resp.dragged() && drag.handle == crate::state::TitleObjectHandle::PathStart {
+                // The arc starts where the pointer is, seen from the
+                // layer's centre (#1714).
+                if let Some(p) = pointer {
+                    let (nx, ny) = to_norm(p);
+                    let (frame_w, frame_h) = (resolution.width.max(1) as f32, resolution.height.max(1) as f32);
+                    let c = drag.initial_transform.center;
+                    let start_angle = ((ny - c.y) * frame_h).atan2((nx - c.x) * frame_w).to_degrees();
+                    cmds.push(AppCommand::SetTitleArcStart { clip_id, object_id: drag.object_id.0, start_angle });
+                }
             } else if resp.dragged() {
                 if let Some(p) = pointer {
+                    use crate::state::TitleObjectHandle as H;
                     let (nx, ny) = to_norm(p);
                     let (start_nx, start_ny) = to_norm(drag.drag_start_pos);
                     let dnx = nx - start_nx;
                     let dny = ny - start_ny;
+                    let free = ui.input(|i| i.modifiers.alt);
                     let mut new_t = compute_drag_transform(
                         &drag, dnx, dny,
                         (start_nx, start_ny), (nx, ny),
                     );
-                    // Snapping while the body moves: the frame's
-                    // centre lines, the title-safe edges and the other
-                    // layers' centres. Alt drags free.
-                    if drag.handle == crate::state::TitleObjectHandle::Body && !ui.input(|i| i.modifiers.alt) {
-                        let snap_x = 6.0 / image_rect.width().max(1.0);
-                        let snap_y = 6.0 / image_rect.height().max(1.0);
-                        let safe = state.viewer_prefs.title_safe_pct.clamp(0.5, 1.0);
-                        let (left, right) = (0.5 - safe * 0.5, 0.5 + safe * 0.5);
-                        let (top, bottom) = (0.5 - safe * 0.5, 0.5 + safe * 0.5);
-                        let (hw, hh) = (new_t.size.x * 0.5, new_t.size.y * 0.5);
-                        let mut guides: Vec<(bool, f32)> = Vec::new();
-                        // (value the centre lands on, where the guide is drawn)
-                        let mut xs: Vec<(f32, f32)> = vec![(0.5, 0.5), (left + hw, left), (right - hw, right)];
-                        let mut ys: Vec<(f32, f32)> = vec![(0.5, 0.5), (top + hh, top), (bottom - hh, bottom)];
-                        for o in td.objects.iter().filter(|o| o.id != drag.object_id && o.visible) {
-                            xs.push((o.transform.center.x, o.transform.center.x));
-                            ys.push((o.transform.center.y, o.transform.center.y));
+                    let mut guides: Vec<(bool, f32)> = Vec::new();
+                    // Snapping (#1714): the frame's edges and centre
+                    // lines, the safe areas and the other layers' edges
+                    // and centres, a guide drawn along each line snapped
+                    // to. A move snaps the layer's edges and centre; an
+                    // edge of an upright box snaps itself. Alt drags free.
+                    let (xs, ys) = title_snap_lines(&td, drag.object_id, &state.viewer_prefs, drag.frame_aspect);
+                    let (within_x, within_y) = (TITLE_SNAP_PX / image_rect.width().max(1.0), TITLE_SNAP_PX / image_rect.height().max(1.0));
+                    let upright = new_t.rotation.rem_euclid(360.0) == 0.0;
+                    match drag.handle {
+                        H::Body if !free => {
+                            // The layer as it is seen: its box hugs its text.
+                            let mut seen = td.object(drag.object_id).map(|o| o.transform.clone()).unwrap_or_else(|| new_t.clone());
+                            seen.center = new_t.center;
+                            let (hw, hh) = layer_half_extent(&seen, drag.frame_aspect);
+                            let c = new_t.center;
+                            if let Some((shift, line)) = snap_to_lines(&[c.x - hw, c.x, c.x + hw], &xs, within_x) {
+                                new_t.center.x += shift;
+                                guides.push((true, line));
+                            }
+                            if let Some((shift, line)) = snap_to_lines(&[c.y - hh, c.y, c.y + hh], &ys, within_y) {
+                                new_t.center.y += shift;
+                                guides.push((false, line));
+                            }
                         }
-                        let nearest = |cands: &[(f32, f32)], v: f32, snap: f32| {
-                            cands
-                                .iter()
-                                .filter(|(c, _)| (v - c).abs() < snap)
-                                .min_by(|a, b| (v - a.0).abs().partial_cmp(&(v - b.0).abs()).unwrap_or(std::cmp::Ordering::Equal))
-                                .copied()
-                        };
-                        if let Some((v, g)) = nearest(&xs, new_t.center.x, snap_x) {
-                            new_t.center.x = v;
-                            guides.push((true, g));
+                        H::EdgeLeft | H::EdgeRight if !free && upright => {
+                            let (left, right) = (new_t.center.x - new_t.size.x * 0.5, new_t.center.x + new_t.size.x * 0.5);
+                            let moving = if drag.handle == H::EdgeLeft { left } else { right };
+                            if let Some((shift, line)) = snap_to_lines(&[moving], &xs, within_x) {
+                                let (l, r) = if drag.handle == H::EdgeLeft { (left + shift, right) } else { (left, right + shift) };
+                                if r - l >= 0.01 {
+                                    new_t.center.x = (l + r) * 0.5;
+                                    new_t.size.x = r - l;
+                                    guides.push((true, line));
+                                }
+                            }
                         }
-                        if let Some((v, g)) = nearest(&ys, new_t.center.y, snap_y) {
-                            new_t.center.y = v;
-                            guides.push((false, g));
+                        H::EdgeTop | H::EdgeBottom if !free && upright => {
+                            let (top, bottom) = (new_t.center.y - new_t.size.y * 0.5, new_t.center.y + new_t.size.y * 0.5);
+                            let moving = if drag.handle == H::EdgeTop { top } else { bottom };
+                            if let Some((shift, line)) = snap_to_lines(&[moving], &ys, within_y) {
+                                let (t0, b0) = if drag.handle == H::EdgeTop { (top + shift, bottom) } else { (top, bottom + shift) };
+                                if b0 - t0 >= 0.01 {
+                                    new_t.center.y = (t0 + b0) * 0.5;
+                                    new_t.size.y = b0 - t0;
+                                    guides.push((false, line));
+                                }
+                            }
                         }
-                        let guide_stroke = egui::Stroke::new(1.0_f32, accent);
-                        for (vertical, g) in guides {
-                            if vertical {
-                                let x = to_screen(g, 0.0).x;
-                                painter.line_segment([egui::pos2(x, image_rect.min.y), egui::pos2(x, image_rect.max.y)], guide_stroke);
-                            } else {
-                                let y = to_screen(0.0, g).y;
-                                painter.line_segment([egui::pos2(image_rect.min.x, y), egui::pos2(image_rect.max.x, y)], guide_stroke);
+                        H::Rotation if !free => {
+                            // Shift turns in 15° steps; otherwise a turn
+                            // within 2° of a right angle lands on it.
+                            let step = if ui.input(|i| i.modifiers.shift) { 15.0 } else { 90.0 };
+                            let near = (new_t.rotation / step).round() * step;
+                            if step < 90.0 || (new_t.rotation - near).abs() <= 2.0 {
+                                new_t.rotation = near;
+                            }
+                        }
+                        _ => {}
+                    }
+                    let guide_stroke = egui::Stroke::new(1.0_f32, accent);
+                    for (vertical, g) in guides {
+                        if vertical {
+                            let x = to_screen(g, 0.0).x;
+                            painter.line_segment([egui::pos2(x, image_rect.min.y), egui::pos2(x, image_rect.max.y)], guide_stroke);
+                        } else {
+                            let y = to_screen(0.0, g).y;
+                            painter.line_segment([egui::pos2(image_rect.min.x, y), egui::pos2(image_rect.max.x, y)], guide_stroke);
+                        }
+                    }
+                    // A resize draws the box being drawn: the frame drawn
+                    // above hugs the text, which wraps to it once set.
+                    if !matches!(drag.handle, H::Body | H::Anchor) {
+                        if let Some(mut live) = td.object(drag.object_id).cloned() {
+                            live.transform = new_t.clone();
+                            let pts = object_screen_points(&live, image_rect);
+                            for i in 0..4 {
+                                painter.line_segment([pts[i], pts[(i + 1) % 4]], egui::Stroke::new(1.0_f32, accent));
                             }
                         }
                     }
                     // The readout: the layer's centre in frame pixels,
-                    // beside the pointer.
+                    // beside the pointer; its size for a resize, its
+                    // angle for a turn.
                     {
                         let res = state.sequence().resolution;
-                        let text = format!("x {:.0}  y {:.0}", new_t.center.x * res.width as f32, new_t.center.y * res.height as f32);
+                        let text = match drag.handle {
+                            H::Rotation => format!("{:.1}\u{b0}", new_t.rotation),
+                            H::Body | H::Anchor => format!("x {:.0}  y {:.0}", new_t.center.x * res.width as f32, new_t.center.y * res.height as f32),
+                            _ => format!("w {:.0}  h {:.0}", new_t.size.x * res.width as f32, new_t.size.y * res.height as f32),
+                        };
                         let galley = painter.layout_no_wrap(text, egui::FontId::monospace(crate::theme::type_scale::CAPTION), egui::Color32::WHITE);
                         let pad = egui::vec2(6.0, 3.0);
                         let size = galley.size() + pad * 2.0;
@@ -4152,6 +4283,7 @@ impl ViewerPanel {
             }
             if resp.drag_stopped() {
                 state.title_object_drag = None;
+                cmds.push(AppCommand::EndTitleObjectDrag { clip_id: drag.clip_id });
             }
             return;
         }
@@ -4160,19 +4292,37 @@ impl ViewerPanel {
         // pressed inside the image. Hit-test in priority order:
         // selected object's handles → any object's body → empty.
         if resp.drag_started() {
+            // Where the press was, not where the pointer has got to by
+            // the time the move counts as a drag: a handle is grabbed
+            // where it was pressed, and none of the move is lost.
+            let pointer = ui.input(|i| i.pointer.press_origin()).or(pointer);
             if let Some(p) = pointer {
                 if !image_rect.contains(p) {
                     return;
                 }
+                let frame_aspect = image_rect.width().max(1.0) / image_rect.height().max(1.0);
                 // 1. If we have a selected object, check its handles.
                 let selected = state.selected_title_object
                     .filter(|(c, _)| *c == clip_id)
                     .and_then(|(_, oid)| td.object(oid).cloned());
                 if let Some(obj) = &selected {
-                    if let Some(handle) = hit_test_handles(obj, image_rect, p) {
-                        let initial_transform = raw_title.object(obj.id)
+                    let on_arc_start = arc_start_screen_point(obj, image_rect, (resolution.width, resolution.height))
+                        .is_some_and(|a| a.distance(p) <= 10.0);
+                    let handle = if on_arc_start {
+                        Some(crate::state::TitleObjectHandle::PathStart)
+                    } else {
+                        hit_test_handles(obj, image_rect, p)
+                    };
+                    if let Some(handle) = handle {
+                        let mut initial_transform = raw_title.object(obj.id)
                             .map(|raw| raw.transform.clone())
                             .unwrap_or_else(|| obj.transform.clone());
+                        // A resize starts from the box as it is seen,
+                        // which hugs the text, not from the layout box
+                        // behind it, often the whole frame (#1714).
+                        if is_resize_handle(handle) && matches!(obj.content, klipp_timeline::TitleObjectContent::TextBox(_)) {
+                            initial_transform.size = obj.transform.size;
+                        }
                         let initial_font_size = match &obj.content {
                             klipp_timeline::TitleObjectContent::TextBox(tb) => tb.font_size,
                             _ => 0.0,
@@ -4184,7 +4334,9 @@ impl ViewerPanel {
                             initial_transform,
                             initial_font_size,
                             drag_start_pos: p,
+                            frame_aspect,
                         });
+                        cmds.push(AppCommand::BeginTitleObjectDrag { clip_id });
                         return;
                     }
                 }
@@ -4214,7 +4366,9 @@ impl ViewerPanel {
                             initial_transform,
                             initial_font_size,
                             drag_start_pos: p,
+                            frame_aspect,
                         });
+                        cmds.push(AppCommand::BeginTitleObjectDrag { clip_id });
                         return;
                     }
                 }
@@ -4263,10 +4417,14 @@ impl ViewerPanel {
                 .filter(|(c, _)| *c == clip_id)
                 .and_then(|(_, oid)| td.object(oid))
             {
-                if let Some(handle) = hit_test_handles(obj, image_rect, p) {
+                let on_arc_start = arc_start_screen_point(obj, image_rect, (resolution.width, resolution.height))
+                    .is_some_and(|a| a.distance(p) <= 10.0);
+                let handle = if on_arc_start { Some(crate::state::TitleObjectHandle::PathStart) } else { hit_test_handles(obj, image_rect, p) };
+                if let Some(handle) = handle {
                     let icon = match handle {
                         crate::state::TitleObjectHandle::Rotation => egui::CursorIcon::Alias,
                         crate::state::TitleObjectHandle::Anchor => egui::CursorIcon::Crosshair,
+                        crate::state::TitleObjectHandle::PathStart => egui::CursorIcon::Grab,
                         crate::state::TitleObjectHandle::Body => egui::CursorIcon::Move,
                         crate::state::TitleObjectHandle::EdgeLeft | crate::state::TitleObjectHandle::EdgeRight => egui::CursorIcon::ResizeHorizontal,
                         crate::state::TitleObjectHandle::EdgeTop | crate::state::TitleObjectHandle::EdgeBottom => egui::CursorIcon::ResizeVertical,
@@ -6004,6 +6162,17 @@ fn editor_title_geometry(
     resolved
 }
 
+/// A title layer as the viewer's editor draws it, its box hugging its
+/// text: where a test finds the handles it drags (#1714).
+#[cfg(test)]
+pub(crate) fn shown_title_layer(
+    title: &klipp_timeline::TitleData,
+    frame: (u32, u32),
+    object: klipp_timeline::TitleObjectId,
+) -> Option<klipp_timeline::TitleObject> {
+    editor_title_geometry(title, frame, 0.0, &mut None).object(object).cloned()
+}
+
 /// Match the editor frame to the renderer's measured glyph bounds while
 /// preserving the authored transform centre and wrapping constraint.
 fn tighten_text_editor_boxes(title: &mut klipp_timeline::TitleData, dimensions: (u32, u32)) {
@@ -6125,13 +6294,85 @@ fn hit_test_handles(
     None
 }
 
+/// How near, in screen points, a dragged title layer is pulled onto a
+/// snapping line (#1714).
+const TITLE_SNAP_PX: f32 = 6.0;
+
+fn is_resize_handle(handle: crate::state::TitleObjectHandle) -> bool {
+    use crate::state::TitleObjectHandle as H;
+    matches!(
+        handle,
+        H::EdgeLeft | H::EdgeRight | H::EdgeTop | H::EdgeBottom
+            | H::CornerTopLeft | H::CornerTopRight | H::CornerBottomLeft | H::CornerBottomRight
+    )
+}
+
+/// Where a text set on an arc starts, on screen: `None` for a layer that
+/// is not text on an arc. The arc is about the layer's centre, its
+/// radius in frame pixels, as the renderer lays it.
+fn arc_start_screen_point(obj: &klipp_timeline::TitleObject, image_rect: egui::Rect, frame: (u32, u32)) -> Option<egui::Pos2> {
+    let klipp_timeline::TitleObjectContent::TextBox(tb) = &obj.content else { return None };
+    let Some(klipp_timeline::TextPath::Arc { radius, start_angle, .. }) = &tb.text_path else { return None };
+    let (w, h) = (frame.0.max(1) as f32, frame.1.max(1) as f32);
+    let a = start_angle.to_radians();
+    let c = obj.transform.center;
+    Some(viewer_norm_to_screen(image_rect, c.x + radius * a.cos() / w, c.y + radius * a.sin() / h))
+}
+
+/// Half the width and height, in frame fractions, of the upright box
+/// around a layer's turned box; `aspect` is the frame's width over its
+/// height.
+fn layer_half_extent(t: &klipp_timeline::ObjectTransform, aspect: f32) -> (f32, f32) {
+    let aspect = aspect.max(0.01);
+    let (sin, cos) = t.rotation.to_radians().sin_cos();
+    let (sx, sy) = (t.size.x.abs(), t.size.y.abs());
+    ((sx * cos.abs() + sy * sin.abs() / aspect) * 0.5, (sx * sin.abs() * aspect + sy * cos.abs()) * 0.5)
+}
+
+/// The lines a dragged title layer snaps to (#1714), across and down in
+/// frame fractions: the frame's edges and centre lines, the title-safe
+/// and action-safe edges, and each other visible layer's edges and
+/// centre, as the layers are seen.
+fn title_snap_lines(
+    title: &klipp_timeline::TitleData,
+    moving: klipp_timeline::TitleObjectId,
+    prefs: &crate::prefs::ViewerPrefs,
+    aspect: f32,
+) -> (Vec<f32>, Vec<f32>) {
+    let mut xs = vec![0.0, 0.5, 1.0];
+    let mut ys = vec![0.0, 0.5, 1.0];
+    for safe in [prefs.title_safe_pct, prefs.action_safe_pct] {
+        let half = safe.clamp(0.5, 1.0) * 0.5;
+        xs.extend([0.5 - half, 0.5 + half]);
+        ys.extend([0.5 - half, 0.5 + half]);
+    }
+    for o in title.objects.iter().filter(|o| o.id != moving && o.visible) {
+        let (hw, hh) = layer_half_extent(&o.transform, aspect);
+        let c = o.transform.center;
+        xs.extend([c.x - hw, c.x, c.x + hw]);
+        ys.extend([c.y - hh, c.y, c.y + hh]);
+    }
+    (xs, ys)
+}
+
+/// The nearest of `lines` to any of `points`, within `within`: how far
+/// to move the points to land on it, and the line.
+fn snap_to_lines(points: &[f32], lines: &[f32], within: f32) -> Option<(f32, f32)> {
+    points
+        .iter()
+        .flat_map(|p| lines.iter().map(move |l| (l - p, *l)))
+        .filter(|(d, _)| d.abs() < within)
+        .min_by(|a, b| a.0.abs().total_cmp(&b.0.abs()))
+}
+
 /// Compute the new `ObjectTransform` produced by an in-progress
 /// drag, given the drag's normalised delta (drag-pos − drag-start
 /// in 0..1 frame coords), the current and start pointer positions
 /// in normalised coords (used by the rotation handle to compute
 /// angles), and the handle being dragged.
 ///
-/// Resize semantics:
+/// Resize semantics, in the box's own axes, so a turned box resizes
+/// along its sides as they are seen (#1714):
 /// - **Edge handles** (top / bottom / left / right) anchor the
 ///   opposite edge in place and pivot the box from there. Center
 ///   shifts by half the size delta.
@@ -6142,7 +6383,9 @@ fn hit_test_handles(
 /// - **Body** drag translates `transform.center` by the delta.
 /// - **Rotation** drag computes the angle change between the
 ///   pointer's start and current position relative to the box's
-///   centre, added to the initial rotation. The centre is the pivot.
+///   centre, added to the initial rotation, measured on the picture
+///   as it is seen (`frame_aspect`). The centre is the pivot.
+/// - **PathStart** leaves the box as it is; the caller sets the arc.
 fn compute_drag_transform(
     drag: &crate::state::TitleObjectDrag,
     dnx: f32,
@@ -6152,88 +6395,25 @@ fn compute_drag_transform(
 ) -> klipp_timeline::ObjectTransform {
     use crate::state::TitleObjectHandle as H;
     let mut t = drag.initial_transform.clone();
+    // x in frame heights, so both axes share a unit as seen on screen.
+    let aspect = if drag.frame_aspect.is_finite() && drag.frame_aspect > 0.0 { drag.frame_aspect } else { 1.0 };
+    // Which sides a handle moves: -1 the left / top, 1 the right /
+    // bottom, 0 neither.
+    let sides = match drag.handle {
+        H::EdgeLeft => Some((-1.0, 0.0)),
+        H::EdgeRight => Some((1.0, 0.0)),
+        H::EdgeTop => Some((0.0, -1.0)),
+        H::EdgeBottom => Some((0.0, 1.0)),
+        H::CornerTopLeft => Some((-1.0, -1.0)),
+        H::CornerTopRight => Some((1.0, -1.0)),
+        H::CornerBottomLeft => Some((-1.0, 1.0)),
+        H::CornerBottomRight => Some((1.0, 1.0)),
+        _ => None,
+    };
     match drag.handle {
         H::Body => {
             t.center.x = (t.center.x + dnx).clamp(-2.0, 3.0);
             t.center.y = (t.center.y + dny).clamp(-2.0, 3.0);
-        }
-        H::EdgeLeft => {
-            // Right edge stays put; left edge moves by dnx.
-            let right = t.center.x + t.size.x * 0.5;
-            let new_left = (t.center.x - t.size.x * 0.5) + dnx;
-            let lo = new_left.min(right - 0.01);
-            t.size.x = (right - lo).max(0.01);
-            t.center.x = (lo + right) * 0.5;
-        }
-        H::EdgeRight => {
-            let left = t.center.x - t.size.x * 0.5;
-            let new_right = (t.center.x + t.size.x * 0.5) + dnx;
-            let hi = new_right.max(left + 0.01);
-            t.size.x = (hi - left).max(0.01);
-            t.center.x = (left + hi) * 0.5;
-        }
-        H::EdgeTop => {
-            let bot = t.center.y + t.size.y * 0.5;
-            let new_top = (t.center.y - t.size.y * 0.5) + dny;
-            let lo = new_top.min(bot - 0.01);
-            t.size.y = (bot - lo).max(0.01);
-            t.center.y = (lo + bot) * 0.5;
-        }
-        H::EdgeBottom => {
-            let top = t.center.y - t.size.y * 0.5;
-            let new_bot = (t.center.y + t.size.y * 0.5) + dny;
-            let hi = new_bot.max(top + 0.01);
-            t.size.y = (hi - top).max(0.01);
-            t.center.y = (top + hi) * 0.5;
-        }
-        H::CornerTopLeft => {
-            // Pin bottom-right; new top-left moves by (dnx, dny).
-            let br_x = t.center.x + t.size.x * 0.5;
-            let br_y = t.center.y + t.size.y * 0.5;
-            let new_tl_x = (t.center.x - t.size.x * 0.5) + dnx;
-            let new_tl_y = (t.center.y - t.size.y * 0.5) + dny;
-            let lo_x = new_tl_x.min(br_x - 0.01);
-            let lo_y = new_tl_y.min(br_y - 0.01);
-            t.size.x = (br_x - lo_x).max(0.01);
-            t.size.y = (br_y - lo_y).max(0.01);
-            t.center.x = (lo_x + br_x) * 0.5;
-            t.center.y = (lo_y + br_y) * 0.5;
-        }
-        H::CornerTopRight => {
-            let bl_x = t.center.x - t.size.x * 0.5;
-            let br_y = t.center.y + t.size.y * 0.5;
-            let new_tr_x = (t.center.x + t.size.x * 0.5) + dnx;
-            let new_tr_y = (t.center.y - t.size.y * 0.5) + dny;
-            let hi_x = new_tr_x.max(bl_x + 0.01);
-            let lo_y = new_tr_y.min(br_y - 0.01);
-            t.size.x = (hi_x - bl_x).max(0.01);
-            t.size.y = (br_y - lo_y).max(0.01);
-            t.center.x = (bl_x + hi_x) * 0.5;
-            t.center.y = (lo_y + br_y) * 0.5;
-        }
-        H::CornerBottomLeft => {
-            let br_x = t.center.x + t.size.x * 0.5;
-            let tl_y = t.center.y - t.size.y * 0.5;
-            let new_bl_x = (t.center.x - t.size.x * 0.5) + dnx;
-            let new_bl_y = (t.center.y + t.size.y * 0.5) + dny;
-            let lo_x = new_bl_x.min(br_x - 0.01);
-            let hi_y = new_bl_y.max(tl_y + 0.01);
-            t.size.x = (br_x - lo_x).max(0.01);
-            t.size.y = (hi_y - tl_y).max(0.01);
-            t.center.x = (lo_x + br_x) * 0.5;
-            t.center.y = (tl_y + hi_y) * 0.5;
-        }
-        H::CornerBottomRight => {
-            let tl_x = t.center.x - t.size.x * 0.5;
-            let tl_y = t.center.y - t.size.y * 0.5;
-            let new_br_x = (t.center.x + t.size.x * 0.5) + dnx;
-            let new_br_y = (t.center.y + t.size.y * 0.5) + dny;
-            let hi_x = new_br_x.max(tl_x + 0.01);
-            let hi_y = new_br_y.max(tl_y + 0.01);
-            t.size.x = (hi_x - tl_x).max(0.01);
-            t.size.y = (hi_y - tl_y).max(0.01);
-            t.center.x = (tl_x + hi_x) * 0.5;
-            t.center.y = (tl_y + hi_y) * 0.5;
         }
         H::Anchor => {
             // Anchor delta in normalised frame coords → bbox-local
@@ -6256,47 +6436,48 @@ fn compute_drag_transform(
         }
         H::Rotation => {
             // Angle change = (angle from centre to current pointer)
-            //              − (angle from centre to start pointer).
-            // atan2 returns degrees CCW from +X; we add to the
-            // initial rotation so the gesture feels relative-to-
-            // grab-point rather than absolute. Aspect stretches
-            // would distort the angle, so we use raw normalised
-            // coords (image-rect aspect-correction is a polish
-            // pass — for typical 16:9 frames the visual error is
-            // a few degrees at most, and the gesture intent stays
-            // intuitive: clockwise drag = clockwise rotate).
+            //              − (angle from centre to start pointer),
+            // added to the initial rotation so the gesture is relative
+            // to where the handle was grabbed. Clockwise on screen is a
+            // positive turn, as the box is drawn.
             let cx = drag.initial_transform.center.x;
             let cy = drag.initial_transform.center.y;
-            let a_start = (start_norm.1 - cy).atan2(start_norm.0 - cx);
-            let a_cur = (cur_norm.1 - cy).atan2(cur_norm.0 - cx);
-            let delta_deg = (a_cur - a_start).to_degrees();
+            let a_start = (start_norm.1 - cy).atan2((start_norm.0 - cx) * aspect);
+            let a_cur = (cur_norm.1 - cy).atan2((cur_norm.0 - cx) * aspect);
+            let mut delta_deg = (a_cur - a_start).to_degrees();
+            if delta_deg > 180.0 {
+                delta_deg -= 360.0;
+            } else if delta_deg < -180.0 {
+                delta_deg += 360.0;
+            }
             t.rotation = drag.initial_transform.rotation + delta_deg;
         }
+        _ => {}
     }
-    // Corner handles are proportional by default. Preserve the authored
-    // aspect ratio even when the pointer moves farther on one axis; the
-    // opposite corner remains the fixed pivot for the resize.
-    if matches!(drag.handle, H::CornerTopLeft | H::CornerTopRight | H::CornerBottomLeft | H::CornerBottomRight) {
-        let iw = drag.initial_transform.size.x.max(0.01);
-        let ih = drag.initial_transform.size.y.max(0.01);
-        let sx = (t.size.x / iw).max(0.05);
-        let sy = (t.size.y / ih).max(0.05);
-        let scale = if (sx - 1.0).abs() >= (sy - 1.0).abs() { sx } else { sy };
-        let fixed_x = if matches!(drag.handle, H::CornerTopLeft | H::CornerBottomLeft) {
-            drag.initial_transform.center.x + iw * 0.5
-        } else {
-            drag.initial_transform.center.x - iw * 0.5
-        };
-        let fixed_y = if matches!(drag.handle, H::CornerTopLeft | H::CornerTopRight) {
-            drag.initial_transform.center.y + ih * 0.5
-        } else {
-            drag.initial_transform.center.y - ih * 0.5
-        };
-        let nw = iw * scale;
-        let nh = ih * scale;
-        t.size = klipp_timeline::TitlePosition { x: nw, y: nh };
-        t.center.x = if matches!(drag.handle, H::CornerTopLeft | H::CornerBottomLeft) { fixed_x - nw * 0.5 } else { fixed_x + nw * 0.5 };
-        t.center.y = if matches!(drag.handle, H::CornerTopLeft | H::CornerTopRight) { fixed_y - nh * 0.5 } else { fixed_y + nh * 0.5 };
+    if let Some((sx, sy)) = sides {
+        // The pointer's move in the box's own axes.
+        let (sin, cos) = drag.initial_transform.rotation.to_radians().sin_cos();
+        let (dx, dy) = (dnx * aspect, dny);
+        let (lx, ly) = (dx * cos + dy * sin, -dx * sin + dy * cos);
+        let (w, h) = (drag.initial_transform.size.x.max(0.01) * aspect, drag.initial_transform.size.y.max(0.01));
+        let (min_w, min_h) = (0.01 * aspect, 0.01);
+        let mut nw = if sx != 0.0 { (w + sx * lx).max(min_w) } else { w };
+        let mut nh = if sy != 0.0 { (h + sy * ly).max(min_h) } else { h };
+        // Corner handles are proportional. Preserve the authored aspect
+        // ratio even when the pointer moves farther on one axis; the
+        // opposite corner remains the fixed pivot for the resize.
+        if sx != 0.0 && sy != 0.0 {
+            let (kx, ky) = ((nw / w).max(0.05), (nh / h).max(0.05));
+            let k = if (kx - 1.0).abs() >= (ky - 1.0).abs() { kx } else { ky };
+            nw = w * k;
+            nh = h * k;
+        }
+        // The fixed side stays put: the centre moves half the growth,
+        // along the box's axes, turned back onto the frame's.
+        let (ox, oy) = (sx * (nw - w) * 0.5, sy * (nh - h) * 0.5);
+        t.center.x = drag.initial_transform.center.x + (ox * cos - oy * sin) / aspect;
+        t.center.y = drag.initial_transform.center.y + (ox * sin + oy * cos);
+        t.size = klipp_timeline::TitlePosition { x: nw / aspect, y: nh };
     }
     t
 }
@@ -6668,6 +6849,7 @@ mod title_object_drag_tests {
             initial_transform: baseline_transform(),
             initial_font_size: 72.0,
             drag_start_pos: egui::pos2(0.0, 0.0),
+            frame_aspect: 1.0,
         }
     }
 
