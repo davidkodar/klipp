@@ -364,6 +364,12 @@ impl Clip {
     /// Temporal Denoise's too, which the clip places at the head of its
     /// chain as a node of its own type (#1419).
     pub fn animated_effect_keys(&self) -> Vec<(klipp_graph_format::path::NodePath, klipp_graph_format::ParamKey, String)> {
+        self.effect_nodes().into_iter().flat_map(|(path, tag, keys)| keys.into_iter().map(move |k| (path.clone(), k, tag.clone()))).collect()
+    }
+
+    /// The clip's effect nodes, in the order the picture runs them: each
+    /// one's path, its tag and its animated parameters' keys.
+    pub fn effect_nodes(&self) -> Vec<(klipp_graph_format::path::NodePath, String, Vec<klipp_graph_format::ParamKey>)> {
         use klipp_graph_format::path::{NodePath, Root};
         let Ok(lifted) = self.picture_v2() else { return Vec::new() };
         let graph = &lifted.picture.graph;
@@ -383,13 +389,55 @@ impl Clip {
             let effect = |n: &&klipp_graph_format::Node| matches!(n.type_id.as_str(), klipp_graph_format::types::LEGACY_EFFECT | klipp_graph_format::lifted::types::TEMPORAL_DENOISE);
             let Some(n) = graph.nodes.iter().find(|n| n.id == id && n.origin.is_none() && effect(n)) else { continue };
             let Some(tag) = klipp_graph_lift::effect_params::tag(n) else { continue };
-            for (key, anim) in &n.anim {
-                if !anim.keys.is_empty() {
-                    out.push((NodePath::new(Root::Clip { clip: self.id.0 }, [n.id]), key.clone(), tag.to_owned()));
-                }
-            }
+            let keys = n.anim.iter().filter(|(_, a)| !a.keys.is_empty()).map(|(k, _)| k.clone()).collect();
+            out.push((NodePath::new(Root::Clip { clip: self.id.0 }, [n.id]), tag.to_owned(), keys));
         }
         out
+    }
+
+    /// The clip's grade nodes (#891), each by its path through the grade
+    /// group (`[group, node]`, and through a compound inside it), in the
+    /// grade's order: its name (its own, else its type's), its catalog
+    /// type's id, its stored entry, and the parameters its keyframe tracks
+    /// key (the bypass's track left out: the node's header keys that).
+    pub fn grade_nodes(&self) -> Vec<(klipp_graph_format::path::NodePath, String, String, serde_json::Value, Vec<String>)> {
+        use klipp_graph_format::lifted::types as lt;
+        use klipp_graph_format::path::{NodePath, Root};
+        let Ok(lifted) = self.picture_v2() else { return Vec::new() };
+        let Some(group) = lifted.picture.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::GROUP) else { return Vec::new() };
+        let mut out = Vec::new();
+        fn walk(graph: &klipp_graph_format::Graph, at: Vec<klipp_graph_format::NodeId>, clip: uuid::Uuid, out: &mut Vec<(NodePath, String, String, serde_json::Value, Vec<String>)>) {
+            for n in &graph.nodes {
+                let path: Vec<_> = at.iter().copied().chain([n.id]).collect();
+                if n.type_id.as_str() == lt::GROUP {
+                    if let Some(inner) = n.group.as_ref() {
+                        walk(&inner.graph, path, clip, out);
+                    }
+                    continue;
+                }
+                if !matches!(n.type_id.as_str(), klipp_graph_format::types::LEGACY_NODE | lt::MERGE) {
+                    continue;
+                }
+                let Some(legacy) = n.legacy.as_ref() else { continue };
+                let Ok(kind) = serde_json::from_value::<klipp_nodes::NodeKind>(legacy.payload.get("kind").cloned().unwrap_or_default()) else { continue };
+                let Some(ty) = klipp_nodes::registry::node_type(kind) else { continue };
+                let tracks: klipp_nodes::NodeKeyframeTracks = legacy.keyframes.clone().and_then(|k| serde_json::from_value(k).ok()).unwrap_or_default();
+                let keyed = tracks.tracks.into_iter().filter(|t| !t.keyframes.is_empty() && t.param_name != klipp_nodes::ENABLED_TRACK).map(|t| t.param_name).collect();
+                let label = legacy.payload.get("label").and_then(|l| l.as_str()).filter(|l| !l.is_empty()).unwrap_or(ty.desc.name).to_owned();
+                out.push((NodePath::new(Root::Clip { clip }, path), label, ty.desc.id.to_owned(), legacy.payload.clone(), keyed));
+            }
+        }
+        if let Some(inner) = group.group.as_ref() {
+            walk(&inner.graph, vec![group.id], self.id.0, &mut out);
+        }
+        out
+    }
+
+    /// Every keyed parameter of the clip's grade nodes (#891), by path and
+    /// key, with each node's catalog type id: the grade's tracks as the
+    /// curve editor lists them.
+    pub fn animated_grade_keys(&self) -> Vec<(klipp_graph_format::path::NodePath, klipp_graph_format::ParamKey, String)> {
+        self.grade_nodes().into_iter().flat_map(|(path, _, ty, _, keyed)| keyed.into_iter().map(move |k| (path.clone(), klipp_graph_format::ParamKey::from(k.as_str()), ty.clone()))).collect()
     }
 }
 

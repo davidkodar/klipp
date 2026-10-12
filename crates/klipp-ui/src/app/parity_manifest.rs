@@ -418,7 +418,7 @@ impl Manifest {
                     rules::GRAPH_INSPECTOR_EXCLUSION
                 ));
             }
-            if key.surface == Surface::CurveEditor && entry.grade {
+            if key.surface == Surface::CurveEditor && entry.grade && !rules::grade_curve_representative(entry) {
                 errors.push(format!("excluded surface registered as required: {key:?}: {}", rules::GRADE_CURVE_EXCLUSION));
             }
             if !contexts.insert((
@@ -545,6 +545,10 @@ pub(super) fn grade_key_variant() -> &'static str {
 
 /// Whether a curve-editor lane is one the central rules owe a drawn edit
 /// on (`rules::CURVE_PIXEL_REPRESENTATIVE`).
+pub(super) fn grade_curve_representative(type_id: &str, parameter: &str) -> bool {
+    rules::GRADE_CURVE_REPRESENTATIVE.iter().any(|(t, p)| *t == type_id && *p == parameter)
+}
+
 pub(super) fn curve_pixel_representative(type_id: &str, parameter: &str) -> bool {
     rules::CURVE_PIXEL_REPRESENTATIVE.iter().any(|(t, p)| *t == type_id && *p == parameter)
 }
@@ -1436,10 +1440,10 @@ mod tests {
             curves.require_fixture(&entry, Surface::CurveEditor, "track");
             let actions = [Interaction::AddKey, Interaction::EditKey, Interaction::RemoveKey];
             let key = |action| CoverageKey::new(entry.type_id, &entry.parameter, Surface::CurveEditor, "track", action);
-            if entry.grade {
-                // A grade track, a wheel's parts among them: keyed in no
-                // view today (#891), excluded centrally (kept in the
-                // manifest for audit, never earned).
+            if entry.grade && !rules::grade_curve_representative(&entry) {
+                // A grade track, a wheel's parts among them: one lane by
+                // path whatever its node (#891), owed on the
+                // representatives, excluded centrally here.
                 for action in actions.into_iter().filter(|a| curves.required.contains(&key(*a))) {
                     assert!(curves.excluded_keys.get(&key(action)).is_some_and(|r| r.contains("#891")), "{:?}", key(action));
                 }

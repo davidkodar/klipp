@@ -10,6 +10,7 @@
 # Clip::diverge_fields_for_test reaches the view to set a clip's lists apart
 # from its picture, and the two tests that do so read the list back. All go
 # in 12f with the lists.
+# Raised for #891: Clip::grade_nodes reads a grade node's kind and key tracks from its legacy record (LEGACY_NODE) to list grade tracks in the curve editor.
 builtin_effects 111
 builtin_effects_enabled 40
 ClipPictureFields 18
@@ -98,9 +99,9 @@ LegacyClipAnim 15
 MissingLegacy 5
 SetPayload 24
 SetPayloadAt 17
-legacy 166
+legacy 167
 legacy_flags 46
-LEGACY_NODE 54
+LEGACY_NODE 55
 LEGACY_GRADE 24
 LEGACY_OPACITY 25
 LEGACY_TRANSFORM 17

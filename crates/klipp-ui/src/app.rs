@@ -113,6 +113,8 @@ mod placement_row_tests;
 mod grade_inspector_tests;
 #[cfg(test)]
 mod grade_wheel_keys;
+#[cfg(test)]
+mod curve_editor_grade_tracks;
 mod media;
 mod compound;
 mod clips;
