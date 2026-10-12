@@ -1272,7 +1272,7 @@ pub struct Track {
     /// precomposition's sound from these and nowhere else.
     #[serde(skip)]
     pub precomposition_sound: bool,
-    /// Source file (for subtitle tracks imported from SRT/VTT/ASS/SSA).
+    /// Source file (for subtitle tracks imported from SRT/VTT/ASS/SSA/TTML).
     /// Set when a track is created via subtitle file import; displayed in
     /// the subtitle editor as a "Source: foo.srt" label.
     #[serde(default)]

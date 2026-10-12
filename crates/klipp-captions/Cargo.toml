@@ -5,6 +5,8 @@ edition = "2021"
 license.workspace = true
 
 [dependencies]
+# TTML, DFXP and IMSC read (#1516), as the media sidecars are.
+roxmltree = "0.20"
 
 [lints]
 workspace = true
