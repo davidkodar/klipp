@@ -168,6 +168,12 @@ mod tests {
         v.frame(vec![egui::Event::Text("!".into())]);
         v.frame(Vec::new());
         assert_eq!(text(v.titles()[0].title_data().unwrap()), "Title!", "typing goes on at its end");
+        // Tab types a tab, for the box's tab stops (#1721).
+        v.frame(vec![egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        v.frame(vec![egui::Event::Text("2".into())]);
+        v.frame(Vec::new());
+        assert_eq!(text(v.titles()[0].title_data().unwrap()), "Title!\t2", "a tab in the text");
+        assert!(v.state.viewer_text_edit, "still editing");
 
         v.click(r.max - egui::vec2(10.0, 10.0));
         v.click(r.min + egui::vec2(r.width() * 0.8, r.height() * 0.8));

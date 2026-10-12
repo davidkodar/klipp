@@ -5128,6 +5128,9 @@ fn paragraphs_px(tb: &klipp_timeline::TextBox, scale: f32) -> shaping::Paragraph
         first: p.indent_first.max(-p.indent_start.max(0.0)) * scale,
         before: p.space_before.max(0.0) * scale,
         after: p.space_after.max(0.0) * scale,
+        tabs: p.tabs.iter().filter(|t| t.at.is_finite()).map(|t| (t.at.max(0.0) * scale, t.align)).collect(),
+        // Every two ems of the box's type.
+        tab_step: tb.font_size.max(1.0) * 2.0 * scale,
     }
 }
 

@@ -847,6 +847,40 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitleTabStops { clip_id, stops } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                let mut tabs: Vec<klipp_timeline::TabStop> = stops
+                    .iter()
+                    .filter(|(at, _)| at.is_finite())
+                    .take(32)
+                    .map(|&(at, align)| klipp_timeline::TabStop {
+                        at: at.clamp(0.0, 4000.0),
+                        align: match align {
+                            1 => klipp_timeline::TabAlign::Center,
+                            2 => klipp_timeline::TabAlign::Right,
+                            3 => klipp_timeline::TabAlign::Decimal,
+                            _ => klipp_timeline::TabAlign::Left,
+                        },
+                    })
+                    .collect();
+                tabs.sort_by(|a, b| a.at.total_cmp(&b.at));
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) {
+                                tb.paragraph.tabs = tabs.clone();
+                            }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Tab Stops", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetTitleLastLine { clip_id, last_line } => {
                 let old = self.snapshot_title(*clip_id);
                 let target_oid = self.title_text_target_id(*clip_id);

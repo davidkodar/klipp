@@ -1701,6 +1701,9 @@ impl ViewerPanel {
             .frame(false)
             .margin(egui::Margin::ZERO)
             .text_color(egui::Color32::TRANSPARENT)
+            // Tab types a tab, for the box's tab stops (#1721), rather than
+            // moving focus out of the text.
+            .lock_focus(true)
             .show(&mut te_ui);
         if state.viewer_text_edit_request_focus || !te_output.response.has_focus() {
             state.viewer_text_edit_request_focus = false;

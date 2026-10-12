@@ -2613,6 +2613,10 @@ pub enum AppCommand {
     /// One of a text box's paragraph settings (#1721), by its key
     /// (`title_effect_keys::TEXT_SPACE_BEFORE` and on), in pixels at 1080p.
     SetTitleParagraph { clip_id: ClipId, key: String, value: f32 },
+    /// A text box's tab stops in place of its own (#1721): each at pixels
+    /// at 1080p from the start indent, and 0=Left, 1=Center, 2=Right,
+    /// 3=Decimal.
+    SetTitleTabStops { clip_id: ClipId, stops: Vec<(f32, u8)> },
     /// Toggle text underline rendering.
     SetTitleUnderline { clip_id: ClipId, underline: bool },
     /// The weight the text box is set in, `None` for its style's, and

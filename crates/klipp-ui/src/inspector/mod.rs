@@ -4959,6 +4959,61 @@ fn show_title_editor(
             handle_text_key_edit(cmds, clip_id, target_oid, key, v, keys(key), clip_time_secs, keyframe_tolerance, (&resp).into(),
                 |value| AppCommand::SetTitleParagraph { clip_id, key: key.into(), value });
         }
+        // Its tab stops (#1721): where a tab in the text moves what follows.
+        let tabs: Vec<(f32, u8)> = para
+            .tabs
+            .iter()
+            .map(|t| (t.at, match t.align {
+                klipp_timeline::TabAlign::Left => 0u8,
+                klipp_timeline::TabAlign::Center => 1,
+                klipp_timeline::TabAlign::Right => 2,
+                klipp_timeline::TabAlign::Decimal => 3,
+            }))
+            .collect();
+        let names = ["Left", "Center", "Right", "Decimal"];
+        let mut edited: Option<Vec<(f32, u8)>> = None;
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Tab stops").size(11.0).color(theme.text_secondary));
+            if ui.small_button("+ Stop").on_hover_text("A tab stop past the last, or at 200 px").clicked() {
+                let mut t = tabs.clone();
+                t.push((t.last().map_or(200.0, |l| l.0 + 200.0), 0));
+                edited = Some(t);
+            }
+        });
+        for (n, &(at, align)) in tabs.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let mut a = at;
+                let resp = ui.add(egui::DragValue::new(&mut a).range(0.0..=4000.0).speed(1.0).fixed_decimals(0).suffix(" px"));
+                if resp.drag_started() {
+                    cmds.push(AppCommand::BeginTitleObjectDrag { clip_id });
+                }
+                if resp.changed() && a != at {
+                    let mut t = tabs.clone();
+                    t[n].0 = a;
+                    edited = Some(t);
+                }
+                if resp.drag_stopped() {
+                    cmds.push(AppCommand::EndTitleObjectDrag { clip_id });
+                }
+                egui::ComboBox::from_id_salt(("tab_align", clip_id, n)).selected_text(names[align as usize % 4]).width(80.0).show_ui(ui, |ui| {
+                    for (v, name) in names.iter().enumerate() {
+                        if ui.selectable_label(align as usize == v, *name).clicked() && align as usize != v {
+                            let mut t = tabs.clone();
+                            t[n].1 = v as u8;
+                            edited = Some(t);
+                        }
+                    }
+                });
+                if ui.small_button("\u{00d7}").on_hover_text("Remove this tab stop").clicked() {
+                    let mut t = tabs.clone();
+                    t.remove(n);
+                    edited = Some(t);
+                }
+            });
+        }
+        if let Some(stops) = edited {
+            cmds.push(AppCommand::SetTitleTabStops { clip_id, stops });
+        }
     }
     let mut write_on = td.write_on();
     if ui.add(egui::Slider::new(&mut write_on, 0.0..=1.0).text("Write-On").step_by(0.01)).changed() {
@@ -8351,30 +8406,40 @@ mod selection_underline_tests {
         let mut tb = klipp_timeline::TextBox { text: "Title text".into(), font_name: "Inter".into(), ..Default::default() };
         tb.paragraph.indent_first = -36.0;
         tb.paragraph.indent_start = 36.0;
+        tb.paragraph.tabs = vec![klipp_timeline::TabStop { at: 240.0, align: klipp_timeline::TabAlign::Decimal }];
         let td = klipp_timeline::TitleData::single_text(tb);
         let clip = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(klipp_core::Timecode::zero(), klipp_core::Timecode { value: 48, rate: 24 }) };
         let state = AppState::default();
         let mut chips = title_tab::TitleChips::default();
-        let mut texts = Vec::new();
-        for _ in 0..2 {
+        let mut frame = |events: Vec<egui::Event>| {
             let mut cmds = Vec::new();
             let out = ctx.run(
-                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 6000.0))), ..Default::default() },
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 6000.0))), events, ..Default::default() },
                 |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         egui::ScrollArea::vertical().show(ui, |ui| show_title_editor(ui, &KlippTheme::default(), &clip, &state, &mut cmds, &mut chips));
                     });
                 },
             );
-            texts = out.shapes.iter().filter_map(|s| match &s.shape {
-                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+            let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
                 _ => None,
-            }).collect::<Vec<_>>();
+            }).collect();
+            (cmds, texts)
+        };
+        frame(Vec::new());
+        let (_, texts) = frame(Vec::new());
+        let has = |label: &str| texts.iter().any(|(t, _)| t == label);
+        for label in ["Space before", "Space after", "Indent", "End indent", "First line", "Tab stops", "240 px", "Decimal"] {
+            assert!(has(label), "no {label} in {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>());
         }
-        for label in ["Space before", "Space after", "Indent", "End indent", "First line"] {
-            assert!(texts.iter().any(|t| t == label), "no {label} row in {texts:?}");
-        }
-        assert!(texts.iter().any(|t| t.contains("-36")), "the hanging first line shows: {texts:?}");
+        assert!(texts.iter().any(|(t, _)| t.contains("-36")), "the hanging first line shows");
+        // + Stop adds one past the last.
+        let pos = texts.iter().find(|(t, _)| t == "+ Stop").expect("+ Stop is drawn").1;
+        let button = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut cmds = frame(vec![egui::Event::PointerMoved(pos), button(true)]).0;
+        cmds.extend(frame(vec![button(false)]).0);
+        assert!(matches!(&cmds[..], [AppCommand::SetTitleTabStops { stops, .. }] if stops == &vec![(240.0, 3), (440.0, 0)]), "{cmds:?}");
     }
 
     /// #1722: the box's fit is a row of its own: Shrink and Grow each set
