@@ -105,7 +105,8 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         | BuiltinEffect::LightRays { .. }
         | BuiltinEffect::Vignette { .. }
         | BuiltinEffect::Lut3D { .. }
-        | BuiltinEffect::ColourSpaceTransform { .. } => Some(1),
+        | BuiltinEffect::ColourSpaceTransform { .. }
+        | BuiltinEffect::PictureTransform { .. } => Some(1),
         _ => None,
     }
 }
@@ -143,6 +144,10 @@ impl GpuEffectsPipeline {
     ) -> Recorded {
         if slots_needed(effect).is_none() || self.is_device_lost() || self.refuse_recording {
             return Recorded::NotRecordable;
+        }
+        // A picture transform is the Transform effect's pass (#1746).
+        if let Some(t) = effect.picture_transform_as_transform() {
+            return self.record_effect(&t, src, dst, scratch, width, height, rec);
         }
         // Each arm checks its identity before its slots, so an effect that
         // records nothing never asks for a refill.

@@ -449,6 +449,10 @@ const EFFECTS_IN_A_LATER_BATCH: &[&str] = &[
     // recording on main.
     "Lut3D",
     "ColourSpaceTransform",
+    // Drawn on every path against the Transform effect's kernels in
+    // `picture_transform_render.rs`; its stored frames come with the next
+    // recording on main (#1746).
+    "PictureTransform",
 ];
 
 /// One moving, grainy clip carrying `fx` (#1024).

@@ -50,6 +50,8 @@ mod masked_grade_seeded;
 mod ofx_runs_after_the_grade;
 #[path = "../opacity_multiplies.rs"]
 mod opacity_multiplies;
+#[path = "../picture_transform_render.rs"]
+mod picture_transform_render;
 #[path = "../published_producer_masks.rs"]
 mod published_producer_masks;
 #[path = "../render_counters.rs"]

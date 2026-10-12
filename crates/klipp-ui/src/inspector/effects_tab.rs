@@ -370,6 +370,9 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::CornerPin { .. } => klipp_effects::corner_pin::still(),
         // The file stays: a reset is the look at full strength.
         BuiltinEffect::Lut3D { path, .. } => BuiltinEffect::Lut3D { path: path.clone(), opacity: 1.0, tetrahedral: true, prepared: None },
+        BuiltinEffect::PictureTransform { .. } => BuiltinEffect::PictureTransform {
+            position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5,
+        },
         BuiltinEffect::ColourSpaceTransform { .. } => BuiltinEffect::ColourSpaceTransform {
             input_gamut: 0, input_curve: 0, output_gamut: 0, output_curve: 0, prepared: None,
         },

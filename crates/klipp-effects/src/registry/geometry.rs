@@ -270,4 +270,25 @@ pub(super) static TYPES: &[EffectType] = &[
         tag: "corner_pin",
         sample: crate::corner_pin::still,
     },
+    EffectType {
+        desc: geometry(
+            "klipp.fx.picture_transform",
+            "Picture Transform",
+            &[
+                // A move inside the frame, not a placement across it: the
+                // slider keeps to a frame's width either way.
+                ParamDesc::float("position_x", "Pos X", 0.0, (-1000.0, 1000.0), Unit::CanvasPx),
+                ParamDesc::float("position_y", "Pos Y", 0.0, (-1000.0, 1000.0), Unit::CanvasPx),
+                ParamDesc::float("scale_x", "Scale X", 1.0, (0.0, 4.0), Unit::Ratio),
+                ParamDesc::float("scale_y", "Scale Y", 1.0, (0.0, 4.0), Unit::Ratio),
+                ParamDesc::float("rotation", "Rotation", 0.0, (-360.0, 360.0), Unit::Degrees),
+                ParamDesc::float("anchor_x", "Anchor X", 0.5, (0.0, 1.0), Unit::Normalised),
+                ParamDesc::float("anchor_y", "Anchor Y", 0.5, (0.0, 1.0), Unit::Normalised),
+            ],
+            Spatial::Geometric,
+            false,
+        ),
+        tag: "picture_transform",
+        sample: || BuiltinEffect::PictureTransform { position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5 },
+    },
 ];

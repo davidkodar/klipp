@@ -1049,6 +1049,39 @@ fn a_luma_keyed_gamma_exports_as_the_viewer_shows_it() {
     assert!(d > 20, "only {d} levels at the corner: the keyed gamma is not in the export");
 }
 
+/// The main timeline with a Picture Transform node on V1's clips (#1746),
+/// shrinking and turning each picture inside its frame: both run it
+/// alike, and it is in the picture (the corner it uncovers is black).
+#[test]
+fn a_picture_transform_exports_as_the_viewer_shows_it() {
+    let _decoders = decoders_at_speed();
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let mut t = timeline();
+    let fx = [BuiltinEffect::PictureTransform { position_x: 30.0, position_y: 10.0, scale_x: 0.6, scale_y: 0.6, rotation: 8.0, anchor_x: 0.5, anchor_y: 0.5 }];
+    for c in t.seq.tracks.iter_mut().find(|t| t.name == "V1").unwrap().clips.iter_mut() {
+        add_after_display(c, &fx);
+    }
+    let mut shown = t.clone();
+    shown.seq = klipp_timeline::flatten::flatten_sequence(&t.seq, std::slice::from_ref(&t.seq));
+    let out = exported(&shown);
+    let viewer = Viewer::start(&shown);
+    let mut worst = 0;
+    for n in [10, 60, 110] {
+        let (v, e) = (viewer.frame_at(n), exported_frame(&out, n));
+        worst = worst.max(compare(&format!("picture transform frame {n:3}"), &v, &e));
+    }
+    eprintln!("picture transform, viewer vs export: worst {worst} levels");
+    assert!(worst <= 3, "the export differs from the viewer by {worst} levels");
+    let (_, plain) = main_fixture();
+    let (g, p) = (exported_frame(&out, 10), exported_frame(plain, 10));
+    let (a, b) = (px(&g, 4, 4), px(&p, 4, 4));
+    let d = (0..3).map(|c| (a[c] - b[c]).abs()).max().unwrap_or(0);
+    assert!(d > 20, "only {d} levels at the corner: the picture transform is not in the export");
+}
+
 /// `fx` added to `c`'s picture as the Picture view adds them: each after
 /// the last, from the display step.
 fn add_after_display(c: &mut Clip, fx: &[BuiltinEffect]) {

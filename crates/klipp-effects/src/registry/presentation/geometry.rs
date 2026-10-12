@@ -17,6 +17,7 @@ const MIRROR: &str = "klipp.fx.mirror";
 const LENS: &str = "klipp.fx.lens_distortion";
 const LETTERBOX: &str = "klipp.fx.letterbox";
 const PIN: &str = "klipp.fx.corner_pin";
+const PICTURE_XF: &str = "klipp.fx.picture_transform";
 
 pub(super) static PARAMS: &[ParamEntry] = &[
     at(CROP, "left", P::scrub(0.005, 3)),
@@ -61,6 +62,13 @@ pub(super) static PARAMS: &[ParamEntry] = &[
     at(PIN, "br_y", P::scrub(0.002, 3).label("Bottom Right Y")),
     at(PIN, "bl_x", P::scrub(0.002, 3).label("Bottom Left X")),
     at(PIN, "bl_y", P::scrub(0.002, 3).label("Bottom Left Y")),
+    at(PICTURE_XF, "position_x", P::scrub(1.0, 1)),
+    at(PICTURE_XF, "position_y", P::scrub(1.0, 1)),
+    at(PICTURE_XF, "scale_x", P::scrub(0.01, 2)),
+    at(PICTURE_XF, "scale_y", P::scrub(0.01, 2)),
+    at(PICTURE_XF, "rotation", P::scrub(0.5, 1)),
+    at(PICTURE_XF, "anchor_x", P::scrub(0.005, 3)),
+    at(PICTURE_XF, "anchor_y", P::scrub(0.005, 3)),
 ];
 
 pub(super) static TYPES: &[TypeEntry] = &[TypeEntry {

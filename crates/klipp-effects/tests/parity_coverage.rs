@@ -107,6 +107,7 @@ const EFFECTS: &[(&str, Cover)] = &[
     ("CornerPin", Case("CornerPin")),
     ("Lut3D", Case("Lut3D")),
     ("ColourSpaceTransform", Case("ColourSpaceTransform")),
+    ("PictureTransform", Case("PictureTransform")),
 ];
 
 const SHADERS: &[(&str, Cover)] = &[

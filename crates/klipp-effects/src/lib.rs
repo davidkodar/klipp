@@ -838,6 +838,31 @@ pub enum BuiltinEffect {
         #[serde(skip)]
         prepared: Option<colour_transform::Prepared<colour_transform::CstTables>>,
     },
+
+    /// The picture moved, scaled and turned inside the clip's frame where
+    /// it sits among the clip's effects (#1746): a node of the picture,
+    /// never the clip's own move, which its placement makes. Drawn by the
+    /// Transform effect's kernels, flat (no tilt, no focal anchor). The
+    /// position is in pixels of the sequence's frame from where the picture
+    /// is; the anchor in fractions of it.
+    PictureTransform {
+        position_x: f32,
+        position_y: f32,
+        scale_x: f32,
+        scale_y: f32,
+        /// Degrees.
+        rotation: f32,
+        anchor_x: f32,
+        anchor_y: f32,
+    },
+}
+
+impl BuiltinEffect {
+    /// A picture transform as the Transform effect its kernels draw.
+    pub fn picture_transform_as_transform(&self) -> Option<BuiltinEffect> {
+        let BuiltinEffect::PictureTransform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y } = *self else { return None };
+        Some(BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None })
+    }
 }
 
 /// sRGB → linear-light (IEC 61966-2-1). Scalar helper mirroring
@@ -1090,6 +1115,10 @@ impl BuiltinEffect {
             }
             BuiltinEffect::Dilate { radius } | BuiltinEffect::Erode { radius } | BuiltinEffect::MedianFilter { radius } => whole(radius),
             BuiltinEffect::Denoise { spatial_sigma, .. } => px(spatial_sigma),
+            BuiltinEffect::PictureTransform { position_x, position_y, .. } => {
+                px(position_x);
+                px(position_y);
+            }
             _ => {}
         }
         self
@@ -1146,6 +1175,7 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
         }
         BuiltinEffect::CornerPin { tl, tr, br, bl } => corner_pin::is_still(&[*tl, *tr, *br, *bl]),
         BuiltinEffect::Lut3D { opacity, .. } => *opacity <= 0.0,
+        BuiltinEffect::PictureTransform { .. } => effect.picture_transform_as_transform().is_some_and(|t| is_identity_effect(&t)),
         BuiltinEffect::ColourSpaceTransform { input_gamut, input_curve, output_gamut, output_curve, .. } => {
             input_gamut == output_gamut && *input_curve == 0 && *output_curve == 0
         }

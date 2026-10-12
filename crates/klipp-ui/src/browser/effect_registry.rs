@@ -624,6 +624,16 @@ impl EffectRegistry {
                 grouping: "Colour".into(),
             },
             EffectEntry {
+                name: "Picture Transform".into(),
+                category: EffectCategory::Distort,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::PictureTransform {
+                    position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5,
+                }),
+                source_label: "Built-in",
+                description: "Moves, scales and turns the picture inside the clip's frame, where it sits".into(),
+                grouping: "Distort".into(),
+            },
+            EffectEntry {
                 name: "3D LUT".into(),
                 category: EffectCategory::Color,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Lut3D {

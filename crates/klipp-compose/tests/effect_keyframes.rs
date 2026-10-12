@@ -86,6 +86,7 @@ fn every_effect() -> Vec<E> {
         E::CornerPin { tl: [0.1, 0.1], tr: [0.9, 0.0], br: [1.0, 1.0], bl: [0.0, 0.9] },
         E::Lut3D { path: "look.cube".into(), opacity: 0.5, tetrahedral: true, prepared: None },
         E::ColourSpaceTransform { input_gamut: 5, input_curve: 2, output_gamut: 0, output_curve: 0, prepared: None },
+        E::PictureTransform { position_x: 4.0, position_y: 2.0, scale_x: 0.9, scale_y: 0.9, rotation: 5.0, anchor_x: 0.5, anchor_y: 0.5 },
     ];
     // Adding an effect stops this compiling until it is listed above.
     for e in &all {
@@ -103,7 +104,7 @@ fn every_effect() -> Vec<E> {
             | E::FilmGrain { .. } | E::TiltShift { .. } | E::OldFilm { .. } | E::Vhs { .. }
             | E::RollingShutterCorrection { .. } | E::TemporalDenoise { .. } | E::Deflicker { .. }
             | E::VideoStabilization { .. } | E::SpeedRamp { .. } | E::Frei0r { .. } | E::CornerPin { .. }
-            | E::Lut3D { .. } | E::ColourSpaceTransform { .. } => {}
+            | E::Lut3D { .. } | E::ColourSpaceTransform { .. } | E::PictureTransform { .. } => {}
         }
     }
     all
