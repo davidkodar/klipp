@@ -737,6 +737,11 @@ impl KlippApp {
     }
 
     fn handle_color_node_ops(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
+        // Duplicate, copy, paste and replace, from either canvas (#1745).
+        if let Some(changed) = self.state.node_edit(cmd) {
+            *needs_refresh |= changed;
+            return true;
+        }
         match cmd {
             AppCommand::AddNode { .. } | AppCommand::RemoveNode { .. } | AppCommand::GroupIntoCompound { .. } | AppCommand::UngroupCompound { .. } => {
                 // By path, one step (#1476).
@@ -811,15 +816,13 @@ impl KlippApp {
                 true
             }
             AppCommand::MoveStickyNote { clip_id, sticky_id, delta_x, delta_y } => {
-                let sticky_id = *sticky_id;
-                let delta_x = *delta_x;
-                let delta_y = *delta_y;
-                self.with_current_clip_graph_mut(*clip_id, needs_refresh, |graph| {
-                    if let Some(s) = graph.sticky_notes.iter_mut().find(|s| s.id == sticky_id) {
-                        s.pos.x += delta_x;
-                        s.pos.y += delta_y;
-                    }
-                });
+                // Inside the canvas's layout gesture the drag is one step,
+                // taken when it ends (#1745).
+                let record = !self.state.in_layout_gesture(*clip_id);
+                let path = self.state.graph_descent_path.clone();
+                if move_sticky_note(&mut self.state, *clip_id, &path, *sticky_id, (*delta_x, *delta_y), record) {
+                    *needs_refresh = true;
+                }
                 true
             }
             AppCommand::DeleteStickyNote { clip_id, sticky_id } => {
@@ -2876,6 +2879,18 @@ impl crate::state::AppState {
         self.dirty = true;
         Some(railed)
     }
+}
+
+/// A grade note moved by `delta` at the level `path`; recorded as its
+/// own step unless `record` is off, inside a layout gesture (#1745).
+pub(super) fn move_sticky_note(state: &mut AppState, clip_id: klipp_core::ClipId, path: &[klipp_nodes::NodeId], sticky_id: klipp_nodes::NodeStickyNoteId, delta: (f32, f32), record: bool) -> bool {
+    let moved = edit_clip_graph(state, clip_id, path, record, |graph| {
+        if let Some(s) = graph.sticky_notes.iter_mut().find(|s| s.id == sticky_id) {
+            s.pos.x += delta.0;
+            s.pos.y += delta.1;
+        }
+    });
+    matches!(moved, Some(Ok(())))
 }
 
 /// A node's settings at their defaults (#1742), keeping what the node

@@ -139,6 +139,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetNodeViewBookmark { .. }
         | AppCommand::JumpNodeViewBookmark { .. }
         | AppCommand::CopyColorNodes { .. }
+        | AppCommand::CopyNodes { .. }
+        | AppCommand::CopyPictureNodes { .. }
         | AppCommand::SampleNodeInput { .. }
         | AppCommand::SetScopeRenderMode { .. }
         | AppCommand::SetActiveScopeModes { .. }
@@ -415,6 +417,10 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::AddToNodeFrame { .. }
         | AppCommand::RemoveFromNodeFrame { .. }
         | AppCommand::PasteColorNodes { .. }
+        | AppCommand::DuplicateNodes { .. }
+        | AppCommand::PasteNodes { .. }
+        | AppCommand::ReplaceNode { .. }
+        | AppCommand::PastePictureNodes { .. }
         | AppCommand::RenameNode { .. }
         | AppCommand::SetNodeLut { .. }
         | AppCommand::CorrectTranscriptWord { .. }

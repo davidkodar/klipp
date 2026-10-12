@@ -349,6 +349,8 @@ impl KlippApp {
             });
         }
         app.state.audio_skimming_enabled = app.prefs.playback.skim_audio;
+        // The node editor's recent picks from the last session (#1745).
+        app.node_graph_v2_panel.restore_recents(&app.prefs.color.node_add_recents);
         app.state.file_browser_video_skim_enabled = app.prefs.file_browser.file_browser_video_skim;
         app.state.file_browser_audio_skim_enabled = app.prefs.file_browser.file_browser_audio_skim;
         app.state.show_recent_files = app.prefs.file_browser.show_recent_files;

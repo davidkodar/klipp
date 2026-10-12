@@ -138,7 +138,7 @@ impl CanvasKind for NodeKind {
 
 /// Presentation keeps today's labels and ordering. Only catalog types
 /// participate; the menu does not invent a second list of node types.
-fn grade_menu() -> &'static [MenuCategory] {
+pub(super) fn grade_menu() -> &'static [MenuCategory] {
     static MENU: std::sync::OnceLock<Vec<MenuCategory>> = std::sync::OnceLock::new();
     MENU.get_or_init(|| GRADE_MENU_PRESENTATION.iter().map(|(category, entries)| {
         let entries = entries.iter().copied().filter(|(_, name)| {

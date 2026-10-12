@@ -160,6 +160,20 @@ impl<'a> PictureCanvas<'a> {
         (if output { &n.outputs } else { &n.inputs }).get(index as usize).map(|p| PortKey::from(p.key.as_str()))
     }
 
+    /// A node of this level the editor copies, duplicates or replaces
+    /// (#1745): anything but the level's ends and a group.
+    fn copyable(&self, id: NodeId) -> Option<&Node> {
+        self.nodes.iter().find(|n| n.node.id == id).filter(|n| !n.kind().is_terminal() && !n.kind().is_group()).map(|n| n.node)
+    }
+
+    /// An effect's stored entry as a reset leaves it (#1745); `None` for
+    /// a node that is not an effect.
+    fn effect_reset(&self, id: NodeId) -> Option<serde_json::Value> {
+        let node = self.copyable(id)?;
+        let tag = klipp_graph_lift::effect_params::tag(node)?;
+        crate::inspector::stack_view::new_effect_node(tag)?.legacy.map(|l| l.payload)
+    }
+
     fn output(&self, node: NodeId) -> Option<NodeOutput> {
         Some(NodeOutput { path: self.path(node), port: self.port(node, 0, true)? })
     }
@@ -280,15 +294,24 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
     fn keyboard_enabled(&self) -> bool { self.keyboard_enabled }
     fn thumbnail_output(&self, _: klipp_core::ClipId, node: NodeId, _: &[NodeId]) -> Option<NodeOutput> { self.output(node) }
     fn refusal(&self, command: &AppCommand) -> Option<String> {
-        let AppCommand::AddNode { kind, .. } = command else { return None };
-        if crate::inspector::stack_view::new_effect_node(kind).is_none() {
-            return Some(format!("{kind} can't be added to a picture"));
-        }
-        self.after.is_none().then(|| if self.level.nodes.is_empty() {
+        let no_place = || if self.level.nodes.is_empty() {
             "This picture has no chain to add an effect to".to_owned()
         } else {
             "Effects go on the clip's picture chain, not inside this group: go up to Clip to add one".to_owned()
-        })
+        };
+        match command {
+            AppCommand::AddNode { kind, .. } | AppCommand::ReplaceNode { kind, .. } if crate::inspector::stack_view::new_effect_node(kind).is_none() => {
+                Some(format!("{kind} can't be added to a picture"))
+            }
+            AppCommand::AddNode { .. } | AppCommand::PasteNodes { .. } => self.after.is_none().then(no_place),
+            AppCommand::DuplicateNodes { node_ids, .. } | AppCommand::CopyNodes { node_ids, .. } if !node_ids.iter().any(|id| self.copyable(*id).is_some()) => {
+                Some("Only a picture's effects are copied here; a group is entered to copy what it holds".to_owned())
+            }
+            AppCommand::ResetNode { node_id, .. } if self.effect_reset(*node_id).is_none() => {
+                Some("Reset works on an effect here; the grade's nodes reset in the grade".to_owned())
+            }
+            _ => None,
+        }
     }
     fn command(&self, command: AppCommand) -> Option<AppCommand> {
         let single = |op, label: &str| Some(AppCommand::GraphOps { ops: vec![op], label: label.into() });
@@ -343,6 +366,39 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
                 if let Some(n) = notes.iter_mut().find(|n| n.id == sticky_id) { n.pos.x += delta_x; n.pos.y += delta_y; }
             }),
             AppCommand::DeleteStickyNote { sticky_id, .. } => self.annotate("Delete note", |_, notes| notes.retain(|n| n.id != sticky_id)),
+            // The node editor's own edits (#1745), by path at this level.
+            AppCommand::DuplicateNodes { node_ids, .. } => {
+                let mut ops = Vec::new();
+                for id in node_ids {
+                    let Some(node) = self.copyable(id) else { continue };
+                    let mut copy = node.clone();
+                    copy.id = NodeId::new_v4();
+                    let p = self.positions.get(&id).copied().unwrap_or_default();
+                    ops.push(GraphOp::AddNode { after: self.path(id), node: Box::new(copy.clone()) });
+                    ops.push(GraphOp::SetNodeMeta { path: self.path(copy.id), label: None, position: Some(serde_json::json!({"x": p.x + 40.0, "y": p.y + 40.0})) });
+                }
+                (!ops.is_empty()).then(|| AppCommand::GraphOps { ops, label: "Duplicate nodes".into() })
+            }
+            AppCommand::CopyNodes { node_ids, .. } => {
+                let nodes: Vec<Node> = node_ids.iter().filter_map(|id| self.copyable(*id).cloned()).collect();
+                (!nodes.is_empty()).then_some(AppCommand::CopyPictureNodes { nodes })
+            }
+            AppCommand::PasteNodes { position, .. } => Some(AppCommand::PastePictureNodes { after: self.path(self.after?), position }),
+            AppCommand::ReplaceNode { node_id, kind, .. } => {
+                self.copyable(node_id)?;
+                let node = crate::inspector::stack_view::new_effect_node(&kind)?;
+                let p = self.positions.get(&node_id).copied().unwrap_or_default();
+                let path = self.path(node.id);
+                // The new node after the old, then the old out: the new
+                // one reads what the old one read, and is read as it was.
+                Some(AppCommand::GraphOps { ops: vec![
+                    GraphOp::AddNode { after: self.path(node_id), node: Box::new(node) },
+                    GraphOp::SetNodeMeta { path, label: None, position: Some(serde_json::json!({"x": p.x, "y": p.y})) },
+                    GraphOp::RemoveNode { path: self.path(node_id) },
+                ], label: "Replace node".into() })
+            }
+            AppCommand::ResetNode { node_id, .. } => Some(AppCommand::SetPayloadAt { addr: self.path(node_id), payload: self.effect_reset(node_id)? }),
+            AppCommand::ShowPanel { .. } => Some(command),
             AppCommand::SetNodeSolo { at } => Some(AppCommand::SetNodeSolo { at: match at { Some(at) => Some(self.output(at.path.node()?)?), None => None } }),
             AppCommand::SetVisibleNodeThumbs { request, clip_id, at } => Some(AppCommand::SetVisibleNodeThumbs { request, clip_id, at: at.iter().filter_map(|at| self.output(at.path.node()?)).collect() }),
             // Grade-only clipboard and versions have no picture writer
@@ -356,7 +412,7 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
 /// into the canvas's layout gesture, one step for the drag (#1743).
 pub(super) const MOVE_NOTE: &str = "Move note";
 
-fn picture_menu() -> &'static [MenuCategory] {
+pub(super) fn picture_menu() -> &'static [MenuCategory] {
     static MENU: std::sync::OnceLock<Vec<MenuCategory>> = std::sync::OnceLock::new();
     MENU.get_or_init(|| {
         [Category::Colour, Category::BlurDetail, Category::LightGlow, Category::Geometry, Category::FilmTemporal, Category::Key, Category::PlugIn].into_iter().map(|category| {
@@ -867,6 +923,8 @@ mod tests {
         time: f64,
         texts: Vec<(String, egui::Pos2)>,
         sent: Vec<AppCommand>,
+        /// The keys held through the frames that follow.
+        mods: egui::Modifiers,
     }
 
     impl Dock {
@@ -875,7 +933,7 @@ mod tests {
             let mut state = crate::state::AppState::default();
             state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(c.clone());
             state.selected_clip = Some(c.id);
-            let mut d = Self { ctx: Default::default(), panel: Default::default(), state, clip: c.id, selected: None, set: Default::default(), time: 0.0, texts: Vec::new(), sent: Vec::new() };
+            let mut d = Self { ctx: Default::default(), panel: Default::default(), state, clip: c.id, selected: None, set: Default::default(), time: 0.0, texts: Vec::new(), sent: Vec::new(), mods: egui::Modifiers::NONE };
             d.settle();
             d
         }
@@ -893,7 +951,7 @@ mod tests {
             self.panel.picture_solo = self.state.solo_node;
             let mut cmds = Vec::new();
             let (panel, selected, set) = (&mut self.panel, &mut self.selected, &mut self.set);
-            let out = self.ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 700.0))), time: Some(self.time), events, ..Default::default() }, |ctx| {
+            let out = self.ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 700.0))), time: Some(self.time), events, modifiers: self.mods, ..Default::default() }, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     cmds = panel.show_picture(ui, &c, &mut level, selected, set, &crate::theme::KlippTheme::default(), 0.0, true, &Default::default(), 0, &mut Vec::new()).unwrap();
                 });
@@ -906,6 +964,14 @@ mod tests {
                 // dispatch does.
                 if let AppCommand::SetNodeSolo { at } = &cmd {
                     self.state.solo_node = at.as_ref().and_then(|a| a.path.node());
+                } else if let AppCommand::GraphOps { ops, label } = &cmd {
+                    // As the app applies a batch: one step, or refused.
+                    self.state.before_dispatch(&cmd);
+                    self.state.apply_path_ops(ops, label).unwrap_or_else(|why| panic!("{cmd:?} refused: {why}"));
+                } else if matches!(cmd, AppCommand::ShowPanel { .. }) {
+                    // The app's layout: nothing in the document.
+                } else if self.state.node_edit(&cmd).is_some() {
+                    assert_eq!(self.state.toast.message_for_test().filter(|m| !m.starts_with("Copied")), None, "{cmd:?} refused");
                 } else {
                     self.state.before_dispatch(&cmd);
                     assert!(self.state.path_command(&cmd).is_some(), "{cmd:?} unhandled");
@@ -1088,4 +1154,70 @@ mod tests {
         assert!(!cmds.iter().any(|c| matches!(c, AppCommand::GraphOps { .. })), "{cmds:?}");
         assert!(texts.iter().any(|(s, _)| s.contains("not inside this group")), "the reason shown: {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>());
     }
+
+    fn kinds(d: &Dock) -> Vec<String> {
+        d.graph().nodes.iter().filter_map(|n| klipp_graph_lift::effect_params::tag(n).map(str::to_owned)).collect()
+    }
+
+    fn blur_label(d: &Dock) -> String {
+        let graph = d.graph();
+        let model = PictureCanvas::new(&graph, root(&d.clip()), None).unwrap();
+        model.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n.node) == Some("gaussian_blur")).unwrap().label.clone()
+    }
+
+    /// Ctrl+D, Ctrl+C and Ctrl+V on the picture canvas (#1745): an
+    /// effect duplicated, copied and pasted, each edit one undo step.
+    #[test]
+    fn picture_canvas_duplicates_copies_and_pastes() {
+        let mut d = Dock::new();
+        let at = d.at(&blur_label(&d));
+        d.click(at, egui::PointerButton::Primary);
+        let count = |d: &Dock| kinds(d).iter().filter(|k| *k == "gaussian_blur").count();
+        assert_eq!(count(&d), 1);
+        d.mods = egui::Modifiers::COMMAND;
+        let key = |key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+        d.frame(vec![key(egui::Key::D)]);
+        d.settle();
+        assert_eq!(count(&d), 2, "duplicated: {:?}", d.sent);
+        assert_eq!(d.steps(), 1);
+        d.frame(vec![key(egui::Key::C)]);
+        assert_eq!(d.state.picture_node_clipboard.len(), 1, "copied: {:?}", d.sent);
+        d.frame(vec![key(egui::Key::V)]);
+        d.settle();
+        assert_eq!(count(&d), 3, "pasted: {:?}", d.sent);
+        assert_eq!(d.steps(), 2);
+    }
+
+    /// The node menu on the picture: Reset to defaults puts an effect's
+    /// settings back, "Replace with…" swaps it for another effect in its
+    /// place, and Show in Inspector opens the Effects tab; one step each.
+    #[test]
+    fn the_picture_node_menu_resets_replaces_and_shows() {
+        let mut d = Dock::new();
+        let label = blur_label(&d);
+        let blur = d.graph().nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+        // Compared as effects: the stored node holds its settings as
+        // parameters, a default left out.
+        let effect = |v: serde_json::Value| serde_json::from_value::<klipp_effects::BuiltinEffect>(v).ok();
+        let reset = effect(crate::inspector::stack_view::new_effect_node("gaussian_blur").unwrap().legacy.unwrap().payload);
+        let payload = |d: &Dock| d.graph().nodes.iter().find(|n| n.id == blur).and_then(|n| klipp_graph_lift::effect_params::effect_of(n).ok());
+        assert!(reset.is_some());
+        assert_ne!(payload(&d), reset, "the fixture's blur is not at its defaults");
+        d.menu(&label, "Reset to defaults");
+        assert_eq!(payload(&d), reset, "reset: {:?}", d.sent);
+        assert_eq!(d.steps(), 1);
+
+        d.menu(&label, "Show in Inspector");
+        assert!(d.sent.iter().any(|c| matches!(c, AppCommand::ShowPanel { inspector_tab: Some(t), .. } if t == "effects")));
+        assert_eq!(d.selected, Some(blur));
+
+        d.menu(&label, "Replace with\u{2026}");
+        d.frame(vec![egui::Event::Text("Sharpen".into())]);
+        d.frame(vec![egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        d.settle();
+        let now = kinds(&d);
+        assert!(!now.iter().any(|k| k == "gaussian_blur") && now.iter().any(|k| k == "sharpen"), "{now:?}: {:?}", d.sent);
+        assert_eq!(d.steps(), 2);
+    }
 }
+

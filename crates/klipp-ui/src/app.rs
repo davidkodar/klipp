@@ -124,6 +124,7 @@ mod path_commands;
 mod titles;
 mod text_tool;
 mod title_handles;
+mod node_edits;
 #[cfg(test)]
 mod viewer_harness;
 mod poster_frames;

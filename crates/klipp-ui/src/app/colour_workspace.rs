@@ -829,6 +829,7 @@ impl KlippApp {
                         ))
                     };
                     all_cmds.extend(panel_cmds);
+                    self.keep_node_recents();
                 } else {
                     ui.painter().text(
                         nodes_rect.center(),

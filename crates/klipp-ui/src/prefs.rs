@@ -1525,6 +1525,10 @@ pub struct ColorPrefs {
     /// 1): the step the printer-light keys move a channel by (#241).
     #[serde(default = "default_printer_point")]
     pub printer_point: f32,
+    /// The node editor's recent add-menu picks, newest first (#1745),
+    /// kept across sessions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub node_add_recents: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -1551,6 +1555,7 @@ impl Default for ColorPrefs {
             port_snap_enabled: default_port_snap_enabled(),
             port_snap_radius_px: default_port_snap_radius(),
             printer_point: default_printer_point(),
+            node_add_recents: Vec::new(),
         }
     }
 }
