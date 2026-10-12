@@ -5057,6 +5057,28 @@ fn show_title_editor(
         ui.add_space(6.0);
     }
 
+    // A title's look, copied, pasted, or taken from another title clicked
+    // in the timeline or viewer (#1718); a paste goes on every selected
+    // title, each keeping its words.
+    ui.horizontal_wrapped(|ui| {
+        if ui.small_button("Copy Style").on_hover_text("Keep this title's look to paste on others").clicked() {
+            cmds.push(AppCommand::CopyTitleStyle { clip_id });
+        }
+        let targets: Vec<klipp_core::ClipId> = if state.selected_clips.len() > 1 && state.selected_clips.contains(&clip_id) { state.selected_clips.clone() } else { vec![clip_id] };
+        if ui.add_enabled(state.title_style_clipboard.is_some(), egui::Button::new("Paste Style").small())
+            .on_hover_text(if targets.len() > 1 { "Give the selected titles the copied look, each keeping its words" } else { "Give this title the copied look, keeping its words" })
+            .on_disabled_hover_text("Copy a title's style first")
+            .clicked()
+        {
+            cmds.push(AppCommand::PasteTitleStyle { from: None, to: targets });
+        }
+        let picking = state.title_style_pick == Some(clip_id);
+        if ui.selectable_label(picking, "\u{1f489} Take Style From\u{2026}").on_hover_text("Click a title in the timeline or the viewer to give this one its look").clicked() {
+            cmds.push(AppCommand::PickTitleStyle { target: (!picking).then_some(clip_id) });
+        }
+    });
+    ui.add_space(6.0);
+
     // ── Motion and Style: the first tier, always open ──
     if let Some(tb) = tb_target {
         // The text travels its own size at 1080p, as the renderer

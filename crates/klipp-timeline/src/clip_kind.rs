@@ -1753,6 +1753,32 @@ impl TitleData {
         Some(out)
     }
 
+    /// `target` styled like this title (#1718), its words kept: this
+    /// title's look whole when the two have the same layers
+    /// ([`Self::with_texts_of`]); else this title's main text layer's
+    /// type, fill, effects, motion and animators on `target`'s main text
+    /// layer, which keeps its words, styled runs and place, and this
+    /// title's background. `None` when either has no text layer.
+    pub fn styled_like(&self, target: &TitleData) -> Option<TitleData> {
+        if let Some(whole) = self.with_texts_of(target) {
+            return Some(whole);
+        }
+        let from = self.primary_object()?;
+        let TitleObjectContent::TextBox(look) = &from.content else { return None };
+        let mut out = target.clone();
+        let to = out.primary_object_mut()?;
+        let TitleObjectContent::TextBox(tb) = &mut to.content else { return None };
+        // Its words, runs and the path it follows (a path names a layer
+        // of its own title) are its own.
+        let (text, runs, path) = (std::mem::take(&mut tb.text), std::mem::take(&mut tb.style_runs), tb.text_path.take());
+        *tb = TextBox { text, style_runs: runs, text_path: path, ..look.clone() };
+        to.fx = from.fx.clone();
+        to.opacity = from.opacity;
+        to.blend = from.blend;
+        out.background = self.background.clone();
+        Some(out)
+    }
+
     /// First TextBox object on the stack, or `None` if the title is
     /// shape-only. The "primary text" is the single-text-clip
     /// abstraction most legacy code reads through; new code that
@@ -4719,5 +4745,45 @@ mod text3d_key_tests {
         assert!(tb.effect_keyframes_for("text3d.spin").is_none());
         assert_eq!(tb.at(0.0).three_d.unwrap().rotation[1], 15.0);
         assert!(crate::TextBox::default().effect_keyframes_for("text3d.depth").is_none(), "no 3D, no keys");
+    }
+}
+
+#[cfg(test)]
+mod styled_like_tests {
+    use super::*;
+
+    fn titled(text: &str, font: &str, size: f32) -> TitleData {
+        TitleData::single_text(TextBox { text: text.into(), font_name: font.into(), font_size: size, ..Default::default() })
+    }
+
+    /// #1718: a title styled like another takes its look and keeps its
+    /// words: all of it when the two have the same layers, else the main
+    /// text layer's type and effects, its own place and path kept.
+    #[test]
+    fn a_title_styled_like_another_keeps_its_words() {
+        let mut look = titled("Look", "Libre Baskerville", 72.0);
+        look.objects[0].fx_mut().glows.push(TextGlow { enabled: true, color: [0, 255, 255, 255], radius: 18.0, radius_keyframes: Vec::new(), intensity: 0.7, intensity_keyframes: Vec::new() });
+        look.background = TitleBackground::Color { color: [0, 0, 0, 200], padding: 12.0 };
+        let mut target = titled("Ana Diaz", "Inter", 40.0);
+        if let TitleObjectContent::TextBox(tb) = &mut target.objects[0].content {
+            tb.style_runs = vec![StyleRun { color: Some([255, 0, 0, 255]), ..StyleRun::default_for_range(0, 3) }];
+        }
+        let styled = look.styled_like(&target).unwrap();
+        let tb = styled.primary_text().unwrap();
+        assert_eq!((tb.text.as_str(), tb.font_name.as_str(), tb.font_size), ("Ana Diaz", "Libre Baskerville", 72.0));
+        assert_eq!(tb.style_runs, target.primary_text().unwrap().style_runs, "its styled runs too");
+        assert_eq!(styled.primary_fx().glows.len(), 1);
+        assert_eq!(styled.background, look.background);
+
+        // A target with another layer: only the main text's look goes on it.
+        let mut two = titled("Ben Holt", "Inter", 40.0);
+        two.add_object(TitleObjectContent::TextBox(TextBox { text: "Producer".into(), ..Default::default() }), default_text_transform());
+        two.objects[0].transform.center.x = 0.2;
+        let styled = look.styled_like(&two).unwrap();
+        assert_eq!(styled.objects.len(), 2, "its layers kept");
+        let tb = styled.primary_text().unwrap();
+        assert_eq!((tb.text.as_str(), tb.font_name.as_str()), ("Ben Holt", "Libre Baskerville"));
+        assert_eq!(styled.objects[0].transform.center.x, 0.2, "its place kept");
+        assert!(matches!(&styled.objects[1].content, TitleObjectContent::TextBox(tb) if tb.text == "Producer" && tb.font_name != "Libre Baskerville"), "the other layer as it was");
     }
 }

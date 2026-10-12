@@ -412,6 +412,17 @@ impl KlippApp {
                     true
                 }
                 AppCommand::SelectClip(id) => {
+                    // With the style eyedropper up, a title clicked gives
+                    // its look to the one it was picked for, which stays
+                    // selected (#1718).
+                    if let (Some(target), Some(from)) = (self.state.title_style_pick, *id) {
+                        let is_title = self.state.sequence().all_clips().any(|c| c.id == from && c.title_data().is_some());
+                        if from != target && is_title {
+                            self.state.title_style_pick = None;
+                            self.send_commands(vec![AppCommand::PasteTitleStyle { from: Some(from), to: vec![target] }]);
+                            return true;
+                        }
+                    }
                     // A clip selected ends an edit point's (#913).
                     if id.is_some() {
                         self.state.selected_edits.clear();

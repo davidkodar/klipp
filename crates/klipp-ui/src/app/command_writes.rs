@@ -211,6 +211,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ForceExportSequence { .. }
         | AppCommand::ForceExportSequenceOverwrite { .. }
         | AppCommand::OpenBatchRenameDialog { .. }
+        | AppCommand::CopyTitleStyle { .. }
+        | AppCommand::PickTitleStyle { .. }
         | AppCommand::RegenerateFilmstrip { .. }
         | AppCommand::BrowserSkimFrame { .. }
         | AppCommand::BrowserSkimAudioStart { .. }
@@ -494,6 +496,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::UpdateTitleData { .. }
         | AppCommand::SetTitleField { .. }
         | AppCommand::RevertTitleToStyle { .. }
+        | AppCommand::PasteTitleStyle { .. }
         | AppCommand::UpdateTitlesLike { .. }
         | AppCommand::ReplaceInTitles { .. }
         | AppCommand::SetTitleAlignment { .. }

@@ -1499,6 +1499,11 @@ pub struct AppState {
     pub system_clipboard_text: Option<String>,
     /// Attributes clipboard for Paste Attributes (Ctrl+Shift+V).
     pub attributes_clipboard: Option<AttributesClipboard>,
+    /// A title's look copied to paste on others (#1718).
+    pub title_style_clipboard: Option<klipp_timeline::TitleData>,
+    /// The title the style eyedropper gives the next title clicked's
+    /// look to (#1718).
+    pub title_style_pick: Option<ClipId>,
     /// Whether to show the Paste Attributes dialog.
     pub show_paste_attributes_dialog: bool,
     /// Whether to show the Set Clip Speed dialog.
@@ -4194,6 +4199,8 @@ impl Default for AppState {
             clipboard: None,
             system_clipboard_text: None,
             attributes_clipboard: None,
+            title_style_clipboard: None,
+            title_style_pick: None,
             show_paste_attributes_dialog: false,
             show_speed_dialog: false,
             edit_helper: None,

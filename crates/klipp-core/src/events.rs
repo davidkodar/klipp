@@ -2308,6 +2308,15 @@ pub enum AppCommand {
     UpdateTitleData { clip_id: ClipId, text: String, font_size: f32, font_name: String, font_style: u8, color: [u8; 4] },
     /// Give a title every field of the brief style it follows again (#66).
     RevertTitleToStyle { clip_id: ClipId },
+    /// Keep this title's look to paste on others (#1718).
+    CopyTitleStyle { clip_id: ClipId },
+    /// Give the titles `to` a look, each keeping its words, as one undo
+    /// step (#1718): the title `from`'s, or the copied one's.
+    PasteTitleStyle { from: Option<ClipId>, to: Vec<ClipId> },
+    /// The Title tab's style eyedropper (#1718): the next title clicked in
+    /// the timeline or viewer gives `target` its look. `None` puts it
+    /// down.
+    PickTitleStyle { target: Option<ClipId> },
     /// Give every other title made from the template this title was made
     /// from (or following its style) this title's look, each keeping its
     /// own words, as one undo step (#1716).

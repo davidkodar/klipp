@@ -469,6 +469,17 @@ impl ToolbarPanel {
                 cmds.push(AppCommand::PasteClipInsert);
                 ui.close_menu();
             }
+            // A title's look (#1718).
+            let title_selected = state.selected_clip.is_some_and(|id| state.sequence().all_clips().any(|c| c.id == id && c.title_data().is_some()));
+            if ui.add_enabled(title_selected, egui::Button::new("Copy Title Style")).clicked() {
+                if let Some(clip_id) = state.selected_clip { cmds.push(AppCommand::CopyTitleStyle { clip_id }); }
+                ui.close_menu();
+            }
+            if ui.add_enabled(title_selected && state.title_style_clipboard.is_some(), egui::Button::new("Paste Title Style")).on_hover_text("Give the selected titles the copied look, each keeping its words").clicked() {
+                let to = if state.selected_clips.is_empty() { state.selected_clip.into_iter().collect() } else { state.selected_clips.clone() };
+                cmds.push(AppCommand::PasteTitleStyle { from: None, to });
+                ui.close_menu();
+            }
             if ui.add_enabled(state.selected_clip.is_some(), egui::Button::new("Copy Attributes").shortcut_text(kb.display_for("copy_attributes"))).clicked() {
                 if let Some(cid) = state.selected_clip { cmds.push(AppCommand::CopyAttributes { clip_id: cid }); }
                 ui.close_menu();
