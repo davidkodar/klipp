@@ -515,7 +515,7 @@ fn decode_until(clip: &AudioClipSnapshot, fps: f64, latency_secs: f64) -> Option
         Some(v) if v.speed.is_finite() && v.speed != 0.0 => (v.source_at(0.0).max(v.source_at(secs)), v.speed.abs()),
         Some(_) => return None,
     };
-    (fps > 0.0 && end.is_finite()).then(|| end + (latency_secs + DECODE_MARGIN_SECS) * speed)
+    (fps > 0.0 && end.is_finite()).then_some(end + (latency_secs + DECODE_MARGIN_SECS) * speed)
 }
 
 /// Decode a clip's audio from `source_start_secs` into interleaved stereo
