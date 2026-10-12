@@ -1779,6 +1779,12 @@ fn show_title_pinned_core_textbox(
     } else {
         (tb.underline, false)
     };
+    // And its reading gloss (#1704).
+    let (display_ruby, ruby_is_mixed) = if from_runs {
+        selection_run_value(tb, sel_range, |r| r.ruby.clone(), String::new())
+    } else {
+        (String::new(), false)
+    };
 
     // 1. Editable textarea — primary edit path. Wrapped in a Frame
     //    so the textarea reads as a pill matching the size / % / X / Y
@@ -2065,6 +2071,26 @@ fn show_title_pinned_core_textbox(
                 });
             }
             if baseline_is_mixed {
+                ui.label(egui::RichText::new("Mixed").size(10.0).color(theme.accent));
+            }
+        });
+        // Its reading (ruby, #1704): set small above it, or right of a
+        // vertical column; emptied, the gloss goes.
+        ui.horizontal(|ui| {
+            ui.label("Ruby");
+            let mut gloss = display_ruby.clone();
+            let edit = ui.add(egui::TextEdit::singleline(&mut gloss).hint_text("Reading").desired_width(160.0))
+                .on_hover_text("A reading set small beside the selection: above it, or to the right of a vertical column");
+            if edit.changed() {
+                cmds.push(AppCommand::ApplyTitleStyle {
+                    clip_id,
+                    range_start: sel_range.0,
+                    range_end: sel_range.1,
+                    property: "ruby".into(),
+                    value: gloss,
+                });
+            }
+            if ruby_is_mixed {
                 ui.label(egui::RichText::new("Mixed").size(10.0).color(theme.accent));
             }
         });
@@ -8500,6 +8526,45 @@ mod selection_underline_tests {
         let (cmds, texts) = click(&ctx, &td, (0, 0), "Grow");
         assert!(matches!(cmds[..], [AppCommand::SetTitleFit { fit: 2, .. }]), "{cmds:?}");
         assert!(texts.iter().any(|t| t == "min 30"), "a shrinking box shows its minimum: {texts:?}");
+    }
+
+    /// #1704: over a selection the Ruby field sets the selection's
+    /// reading: typed into, it sends the gloss for the selection's range;
+    /// a selection already glossed shows its gloss, and a key edits it;
+    /// a selection glossed in part reads as mixed.
+    #[test]
+    fn the_ruby_field_sets_the_selections_reading() {
+        let ctx = egui::Context::default();
+        let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Title text".into(), font_name: "Inter".into(), ..Default::default() });
+        let type_into = |td: &klipp_timeline::TitleData, at: &str, events: Vec<egui::Event>| {
+            let (_, texts) = click(&ctx, td, (0, 5), at);
+            assert!(texts.iter().any(|t| t == "Ruby"), "the row is drawn: {texts:?}");
+            let mut cmds = frame(&ctx, td, (0, 5), events).0;
+            cmds.extend(frame(&ctx, td, (0, 5), Vec::new()).0);
+            cmds
+        };
+        let cmds = type_into(&td, "Reading", vec![egui::Event::Text("かき".into())]);
+        match &cmds[..] {
+            [AppCommand::ApplyTitleStyle { range_start: 0, range_end: 5, property, value, .. }] => assert_eq!((property.as_str(), value.as_str()), ("ruby", "かき")),
+            other => panic!("one command, the selection's gloss: {other:?}"),
+        }
+        // Glossed already: it shows, and Backspace takes off what the
+        // caret is after or the click selected.
+        td.primary_text_mut().unwrap().style_runs = vec![klipp_timeline::StyleRun { ruby: Some("ふり".into()), ..klipp_timeline::StyleRun::default_for_range(0, 5) }];
+        let key = |pressed| egui::Event::Key { key: egui::Key::Backspace, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
+        let cmds = type_into(&td, "ふり", vec![key(true), key(false)]);
+        assert!(
+            matches!(&cmds[..], [AppCommand::ApplyTitleStyle { property, value, .. }] if property == "ruby" && value.len() < "ふり".len() && ("ふり".starts_with(value.as_str()) || "ふり".ends_with(value.as_str()))),
+            "{cmds:?}"
+        );
+        // Glossed in part: mixed.
+        td.primary_text_mut().unwrap().style_runs = vec![
+            klipp_timeline::StyleRun { ruby: Some("ふり".into()), ..klipp_timeline::StyleRun::default_for_range(0, 2) },
+            klipp_timeline::StyleRun::default_for_range(2, 5),
+        ];
+        let texts = frame(&ctx, &td, (0, 5), Vec::new()).1;
+        let row_y = texts.iter().find(|(t, _)| t == "Ruby").unwrap().1.y;
+        assert!(texts.iter().any(|(t, p)| t == "Mixed" && (p.y - row_y).abs() < 4.0), "{texts:?}");
     }
 
     /// #1710: over a selection U underlines the selection's run, in one

@@ -3899,8 +3899,9 @@ pub(super) fn title_rest_time(clip: &klipp_timeline::Clip, fps_rate: u32) -> Opt
 /// a tag and a value, set on the run's own axes tag by tag (#1504);
 /// `features` a JSON list of OpenType feature settings ("smcp",
 /// "-liga", "ss01=1"), each set over the run's own of its tag, and
-/// `underline` "true" or "false" (#1710). A value that does not read
-/// leaves the run as it was.
+/// `underline` "true" or "false" (#1710); `ruby` the reading gloss
+/// itself, empty for none (#1704). A value that does not read leaves the
+/// run as it was.
 fn set_run_property(run: &mut klipp_timeline::StyleRun, prop: &str, val: &str) {
     match prop {
         "color" => {
@@ -3966,6 +3967,7 @@ fn set_run_property(run: &mut klipp_timeline::StyleRun, prop: &str, val: &str) {
                 run.underline = Some(u);
             }
         }
+        "ruby" => run.ruby = (!val.trim().is_empty()).then(|| val.to_string()),
         _ => {}
     }
 }
@@ -4179,6 +4181,21 @@ mod style_run_property_tests {
             set_run_property(&mut run, prop, "");
         }
         assert_eq!(run, before);
+    }
+
+    /// #1704: a selection's ruby is its gloss, set as the inspector
+    /// writes it; empty takes it away. Over a selection that crosses two
+    /// runs each carries the one gloss (the renderer sets it once over
+    /// both).
+    #[test]
+    fn a_selections_ruby_reads_from_the_inspectors_value() {
+        let mut runs = vec![StyleRun { color: Some([255, 0, 0, 255]), ..StyleRun::default_for_range(0, 3) }];
+        klipp_timeline::apply_style_to_range(&mut runs, 9, 0, 6, |r| set_run_property(r, "ruby", "かき"));
+        let glossed: Vec<(usize, usize)> = runs.iter().filter(|r| r.ruby.as_deref() == Some("かき")).map(|r| (r.start, r.end)).collect();
+        assert_eq!(glossed, [(0, 3), (3, 6)], "{runs:?}");
+        klipp_timeline::apply_style_to_range(&mut runs, 9, 0, 6, |r| set_run_property(r, "ruby", " "));
+        assert!(runs.iter().all(|r| r.ruby.is_none()), "{runs:?}");
+        assert_eq!(runs[0].color, Some([255, 0, 0, 255]), "the rest of the style stays");
     }
 
     /// A selection's features are set over the run's own tag by tag,
