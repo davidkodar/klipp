@@ -995,6 +995,60 @@ fn a_lut_and_a_colour_space_transform_export_as_the_viewer_shows_them() {
     assert!(d > 20, "only {d} levels: the LUT and the transform are not in the export");
 }
 
+/// The main timeline with a gamma on V1's clips masked by a luma key beside
+/// each one's picture chain (#1746), as the Picture view's Mattes menu
+/// makes it: the key reads the clip's source and feeds the gamma's mask.
+/// Both run it alike, and the keyed gamma is in the picture (the sources
+/// are flat, so the key takes the whole of each from its low end).
+#[test]
+fn a_luma_keyed_gamma_exports_as_the_viewer_shows_it() {
+    let _decoders = decoders_at_speed();
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    use klipp_graph_format::path::{NodePath, Root};
+    use klipp_graph_format::ports::{input_key, output_key};
+    let mut t = timeline();
+    for c in t.seq.tracks.iter_mut().find(|t| t.name == "V1").unwrap().clips.iter_mut() {
+        add_after_display(c, &[BuiltinEffect::Gamma { gamma: 1.8 }]);
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let at = |id| NodePath::new(Root::Clip { clip: c.id.0 }, [id]);
+        let source = graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::SOURCE).unwrap().id;
+        let blur = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gamma")).unwrap().id;
+        let key = klipp_nodes::NodeParams { luma_key: Some(klipp_core::LumaKeySettings { enabled: true, low: 0.0, high: 1.0, soft: 0.05, invert: false }), ..Default::default() };
+        let node: klipp_graph_format::Node = serde_json::from_value(serde_json::json!({
+            "id": klipp_graph_format::NodeId::new_v4(),
+            "type_id": "klipp.legacy.node",
+            "legacy": { "payload": { "kind": "LumaKey", "label": "Luma Key", "params": key } },
+        }))
+        .unwrap();
+        let id = node.id;
+        c.apply_picture_ops(&[
+            klipp_graph_lift::ops::GraphOp::AddNodeBeside { at: at(source), node: Box::new(node) },
+            klipp_graph_lift::ops::GraphOp::Connect { from: at(source), from_port: "out".into(), to: at(id), to_port: input_key("LumaKey", 0) },
+            klipp_graph_lift::ops::GraphOp::Connect { from: at(id), from_port: output_key("LumaKey", 0), to: at(blur), to_port: "mask".into() },
+        ])
+        .unwrap();
+    }
+    let mut shown = t.clone();
+    shown.seq = klipp_timeline::flatten::flatten_sequence(&t.seq, std::slice::from_ref(&t.seq));
+    let out = exported(&shown);
+    let viewer = Viewer::start(&shown);
+    let mut worst = 0;
+    for n in [10, 60, 110] {
+        let (v, e) = (viewer.frame_at(n), exported_frame(&out, n));
+        worst = worst.max(compare(&format!("luma-keyed gamma frame {n:3}"), &v, &e));
+    }
+    eprintln!("luma-keyed gamma, viewer vs export: worst {worst} levels");
+    assert!(worst <= 3, "the export differs from the viewer by {worst} levels");
+    let (_, plain) = main_fixture();
+    let (g, p) = (exported_frame(&out, 10), exported_frame(plain, 10));
+    let (a, b) = (px(&g, 4, 4), px(&p, 4, 4));
+    let d = (0..3).map(|c| (a[c] - b[c]).abs()).max().unwrap_or(0);
+    assert!(d > 20, "only {d} levels at the corner: the keyed gamma is not in the export");
+}
+
 /// `fx` added to `c`'s picture as the Picture view adds them: each after
 /// the last, from the display step.
 fn add_after_display(c: &mut Clip, fx: &[BuiltinEffect]) {

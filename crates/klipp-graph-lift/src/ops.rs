@@ -150,7 +150,9 @@ fn as_v1(value: &ParamValue) -> Option<Value> {
 /// number `NodeParams::apply_override` takes, the way it takes it (a
 /// neutral value unset, a keyed struct field into its struct); a struct
 /// field named `struct.field` into its struct, made at its default when
-/// unset. `None` for a key neither names, or parameters that don't read.
+/// unset; a structure or list field (`masks`) whole, from its JSON as
+/// text. `None` for a key none of these names, or parameters that don't
+/// read.
 fn grade_param(params: &Value, key: &str, value: &ParamValue) -> Option<Value> {
     let before: klipp_nodes::NodeParams = serde_json::from_value(params.clone()).ok()?;
     let mut typed = before.clone();
@@ -163,6 +165,24 @@ fn grade_param(params: &Value, key: &str, value: &ParamValue) -> Option<Value> {
     };
     if number.is_some_and(|n| typed.apply_override(key, n)) {
         return written(params, &before, &typed);
+    }
+    // A setting that is a structure or a list (a mask stack, a key's
+    // settings), written whole as its JSON (#1746): what a node beside a
+    // picture's chain, outside its grade, is edited by. A plain string
+    // setting (a LUT's file) is left to the field write below.
+    if let (ParamValue::Text(json), false) = (value, key.contains('.')) {
+        let structured = |v: &Value| matches!(v, Value::Object(_) | Value::Array(_));
+        let mut whole = serde_json::to_value(&typed).ok()?;
+        let held = whole.get(key).cloned();
+        if let Some(new) = serde_json::from_str::<Value>(json).ok().filter(structured) {
+            if held.as_ref().is_none_or(|h| structured(h) || h.is_null()) {
+                whole.as_object_mut()?.insert(key.to_owned(), new);
+                let after: klipp_nodes::NodeParams = serde_json::from_value(whole).ok()?;
+                // Unset, the key must name a field, not be dropped as unknown.
+                serde_json::to_value(&after).ok()?.get(key).is_some().then_some(())?;
+                return written(params, &before, &after);
+            }
+        }
     }
     let (name, field) = key.split_once('.')?;
     let unset = serde_json::to_value(&typed).ok()?.get(name).is_none_or(Value::is_null);
@@ -941,5 +961,31 @@ mod tests {
             }
         }
         assert!(checked > 20, "only {checked} choice items");
+    }
+}
+
+#[cfg(test)]
+mod whole_struct_tests {
+    use super::*;
+
+    /// A grade node's mask stack, unset before, written whole by path from
+    /// its JSON (#1746); a key's settings replaced whole; a plain string
+    /// setting, or a name that is no field, is not taken this way.
+    #[test]
+    fn a_struct_setting_is_written_whole_from_its_json() {
+        let mut want = klipp_nodes::NodeParams { masks: Some(Default::default()), ..Default::default() };
+        want.masks.as_mut().unwrap().masks.push(Default::default());
+        let json = serde_json::to_string(&want.masks).unwrap();
+        let out = grade_param(&serde_json::json!({}), "masks", &ParamValue::Text(json)).expect("taken");
+        let back: klipp_nodes::NodeParams = serde_json::from_value(out.clone()).unwrap();
+        assert_eq!(back.masks, want.masks);
+        want.luma_key = Some(Default::default());
+        want.luma_key.as_mut().unwrap().low = 0.25;
+        let out = grade_param(&out, "luma_key", &ParamValue::Text(serde_json::to_string(&want.luma_key).unwrap())).expect("taken");
+        let back: klipp_nodes::NodeParams = serde_json::from_value(out).unwrap();
+        assert_eq!(back.luma_key, want.luma_key);
+        assert!(back.masks.is_some(), "the other settings kept");
+        assert_eq!(grade_param(&serde_json::json!({}), "not_a_field", &ParamValue::Text("{}".into())), None);
+        assert_eq!(grade_param(&serde_json::json!({}), "masks", &ParamValue::Text("\"a string\"".into())), None);
     }
 }

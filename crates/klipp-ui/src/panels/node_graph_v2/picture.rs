@@ -35,6 +35,8 @@ pub(super) struct PictureCanvas<'a> {
     frames: Vec<NodeFrame>,
     notes: Vec<NodeStickyNote>,
     after: Option<NodeId>,
+    /// The node picked on the canvas: an effect a matte added now masks.
+    selected: Option<NodeId>,
     pub(super) keyboard_enabled: bool,
 }
 
@@ -207,7 +209,7 @@ impl<'a> PictureCanvas<'a> {
             .or_else(|| add_after(graph));
         Ok(Self { graph, level, nodes, edges, positions,
             frames: graph.ui.frames.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect(),
-            notes: graph.ui.sticky_notes.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect(), after, keyboard_enabled: true })
+            notes: graph.ui.sticky_notes.iter().filter_map(|v| serde_json::from_value(v.clone()).ok()).collect(), after, selected, keyboard_enabled: true })
     }
 
     fn path(&self, node: NodeId) -> NodePath {
@@ -363,7 +365,16 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
         } else {
             "Effects go on the clip's picture chain, not inside this group: go up to Clip to add one".to_owned()
         };
+        let matte = |kind: &str| crate::picture_mattes::matte(kind).is_some();
         match command {
+            // A matte stands beside the chain at the clip's top, reading its
+            // source (#1746).
+            AppCommand::AddNode { kind, .. } if matte(kind) => {
+                (!self.graph.nodes.iter().any(|n| n.type_id.as_str() == lt::SOURCE)).then(|| "A matte goes beside the clip's picture chain: go up to Clip to add one".to_owned())
+            }
+            AppCommand::InsertNodeOnWire { kind, .. } | AppCommand::AddNodeWired { kind, .. } | AppCommand::ReplaceNode { kind, .. } if matte(kind) => {
+                Some("A matte stands beside the picture's chain: add it from the Mattes menu, then wire it to an effect's mask".to_owned())
+            }
             AppCommand::AddNode { kind, .. } | AppCommand::ReplaceNode { kind, .. } if crate::inspector::stack_view::new_effect_node(kind).is_none() => {
                 Some(format!("{kind} can't be added to a picture"))
             }
@@ -405,6 +416,11 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
                 Some(AppCommand::RevealGraph { path, select: false })
             },
             AppCommand::AutoLayoutNodeGraph { .. } => Some(AppCommand::GraphOps { ops: layout(self.graph).into_iter().map(|(id, p)| GraphOp::SetNodeMeta { path: self.path(id), label: None, position: Some(serde_json::json!({"x":p.x,"y":p.y})) }).collect(), label: "Arrange picture graph".into() }),
+            AppCommand::AddNode { kind, node_id, position, .. } if crate::picture_mattes::matte(&kind).is_some() => {
+                let m = crate::picture_mattes::matte(&kind)?;
+                let ops = crate::picture_mattes::add_ops(self.graph, &self.level, m, node_id.unwrap_or_else(NodeId::new_v4), position, self.selected)?;
+                Some(AppCommand::GraphOps { ops, label: format!("Add {}", m.name) })
+            }
             AppCommand::AddNode { kind, node_id, position, .. } => {
                 let mut node = crate::inspector::stack_view::new_effect_node(&kind)?;
                 if let Some(id) = node_id { node.id = id; }
@@ -516,7 +532,10 @@ pub(super) fn picture_menu() -> &'static [MenuCategory] {
             let mut entries: Vec<_> = klipp_effects::registry::effect_types().filter(|t| t.desc.category == category && !crate::inspector::stack_view::is_placed_kind(t.tag)).map(|t| (t.desc.name, t.tag)).collect();
             entries.sort_by_key(|e| e.0);
             (label, entries)
-        }).filter(|(_, entries)| !entries.is_empty()).collect()
+        }).filter(|(_, entries)| !entries.is_empty())
+        // Mattes beside the chain, for an effect's mask (#1746).
+        .chain([("Mattes", crate::picture_mattes::MATTES.iter().map(|m| (m.name, m.tag)).collect())])
+        .collect()
     })
 }
 
@@ -643,6 +662,29 @@ mod tests {
         assert_eq!(changed.picture.graph.nodes.len(), p.picture.graph.nodes.len() + 1);
         c.restore_picture(&edit.before);
         assert_eq!(*c.picture_v2().unwrap(), before);
+    }
+
+    /// A matte from the Mattes menu, with the blur picked, masks the blur
+    /// (#1746): beside the chain, reading the source, one undoable step.
+    /// Inside the grade, where there is no source, it is refused, said why.
+    #[test]
+    fn a_matte_added_with_an_effect_picked_masks_it() {
+        let mut c = clip();
+        let p = c.picture_v2().unwrap();
+        let blur = p.picture.graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+        let model = PictureCanvas::new(&p.picture.graph, root(&c), Some(blur)).unwrap();
+        assert!(picture_menu().iter().any(|(label, items)| *label == "Mattes" && items.iter().any(|(_, tag)| *tag == "matte.luma_key")));
+        let add = AppCommand::AddNode { clip_id: c.id, kind: "matte.luma_key".into(), node_id: None, position: (40.0, 300.0) };
+        assert_eq!(model.refusal(&add), None);
+        let AppCommand::GraphOps { ops, label } = model.command(add).unwrap() else { panic!("one graph batch") };
+        assert_eq!(label, "Add Luma Key");
+        c.apply_picture_ops(&ops).unwrap();
+        let graph = &c.picture_v2().unwrap().picture.graph;
+        let key = graph.edges.iter().find(|e| e.to == (blur, "mask".into())).expect("the blur is masked").from.0;
+        let source = graph.nodes.iter().find(|n| n.type_id.as_str() == lt::SOURCE).unwrap().id;
+        assert!(graph.edges.iter().any(|e| e.from.0 == source && e.to.0 == key), "the key reads the source");
+        let on_wire = AppCommand::AddNodeWired { clip_id: c.id, kind: "matte.window".into(), position: (0.0, 0.0), from: source, from_port: 0 };
+        assert!(model.refusal(&on_wire).is_some_and(|why| why.contains("Mattes menu")));
     }
 
     /// Every node of a clip's picture is on the canvas, in a wide strip

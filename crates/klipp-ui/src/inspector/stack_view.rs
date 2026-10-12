@@ -571,6 +571,16 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
         if ui.small_button(format!("Masked by: {}", chip.label)).on_hover_text("Show the mask in the graph").clicked() {
             cmds.push(AppCommand::RevealGraph { path: chip.source.clone(), select: true });
         }
+        // A matte beside the chain (#1746): its settings here, under the
+        // effect it masks.
+        if !row.read_only {
+            let frame = crate::inspector::keyframe_selection::FrameSelection {
+                time_secs: clip_time_secs,
+                tolerance: crate::inspector::keyframe_selection::frame_tolerance(state.sequence()),
+                clip_start: clip.timeline_in,
+            };
+            crate::inspector::side_matte::show(ui, theme, clip, graph, &chip.source, frame, cmds);
+        }
     }
     if let Some(n) = node.filter(|_| !row.mask_chips.is_empty()) {
         mask_channel_row(ui, n, &row.addr, row.read_only, cmds);

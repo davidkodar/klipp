@@ -106,6 +106,8 @@ mod parity_grade_wheels;
 #[cfg(test)]
 mod parity_specialists;
 #[cfg(test)]
+mod side_matte_cards;
+#[cfg(test)]
 mod placement_row_tests;
 #[cfg(test)]
 mod grade_inspector_tests;
