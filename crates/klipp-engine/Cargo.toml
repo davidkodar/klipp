@@ -22,6 +22,8 @@ klipp-color = { workspace = true }
 klipp-hdr-out = { workspace = true }
 klipp-plugin = { workspace = true }
 klipp-title = { workspace = true }
+# The export's loudness measurement, run for playback (#1565).
+klipp-render = { workspace = true }
 klipp-jobs = { path = "../klipp-jobs" }
 ffmpeg-next = { workspace = true }
 cpal = { workspace = true }
@@ -44,7 +46,6 @@ uuid = { workspace = true }
 klipp-timeline = { workspace = true, features = ["test-clip"] }
 klipp-testing = { workspace = true }
 pollster = "0.3"
-klipp-render = { workspace = true }
 kamadak-exif = "0.6"
 
 [lints]

@@ -287,6 +287,10 @@ impl OdtChoice {
     }
 }
 
+/// The true-peak ceiling a loudness-normalised delivery is held under
+/// when none is given, in dBTP.
+pub const DEFAULT_TRUE_PEAK_DBTP: f32 = -1.0;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportSettings {
     pub output_path: PathBuf,
@@ -1328,6 +1332,13 @@ pub enum AppCommand {
     SetTrackPan { track_index: usize, pan: f32 },
     SetMasterVolume(f32),
     SetMasterMute(bool),
+    /// The loudness an export would deliver the sequence at, and its
+    /// true-peak ceiling, for playback to be heard at (#1565); `None`
+    /// plays at unity.
+    SetDeliveryTarget(Option<(f32, f32)>),
+    /// Hear playback at the export's delivered loudness, or not: the
+    /// preference (#1565).
+    SetHearDeliveryLoudness(bool),
     /// Reset the BS.1770-4 LUFS meter in the mix thread.
     ResetLufsMeter,
     SetClipVolume(f32),
@@ -4020,6 +4031,11 @@ pub enum AppEvent {
     MasterPeakLevels { left: f32, right: f32 },
     /// BS.1770-4 loudness meter readings from the mix thread.
     LufsReadings { momentary: f32, short_term: f32, integrated: f32, loudness_range: f32, true_peak_dbfs: f32 },
+    /// The gain playback adds to be heard as the export will deliver
+    /// (#1565): `gain_db` once measured, the export's own gain beside it
+    /// (larger when the export limits the peaks), `measuring` while the
+    /// mix is measured.
+    DeliveryLoudness { target_lufs: Option<f32>, gain_db: Option<f32>, export_gain_db: Option<f32>, measuring: bool },
 
     // Performance stats
     /// `hw_decode` is `None` when no video decoder is currently open —

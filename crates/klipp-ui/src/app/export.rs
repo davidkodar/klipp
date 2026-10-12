@@ -359,6 +359,19 @@ pub(super) fn dialog_true_peak(dialog: &ExportDialogState) -> Option<f32> {
     (dialog.normalize_loudness && dialog.loudness_preset == 3).then_some(-2.0)
 }
 
+/// The loudness and true-peak ceiling playback is heard at (#1565): the
+/// export dialog's when it normalises, else the sequence brief's, else
+/// none; none too when the preference is off.
+pub(super) fn delivery_target(dialog: &ExportDialogState, brief_lufs: Option<f32>, enabled: bool) -> Option<(f32, f32)> {
+    if !enabled {
+        return None;
+    }
+    match dialog_target_lufs(dialog) {
+        Some(lufs) => Some((lufs, dialog_true_peak(dialog).unwrap_or(klipp_core::DEFAULT_TRUE_PEAK_DBTP))),
+        None => brief_lufs.map(|l| (l, klipp_core::DEFAULT_TRUE_PEAK_DBTP)),
+    }
+}
+
 pub(super) fn dialog_target_lufs(dialog: &ExportDialogState) -> Option<f32> {
     if !dialog.normalize_loudness { return None; }
     let lufs = match dialog.loudness_preset {

@@ -373,6 +373,9 @@ pub struct AudioOutput {
     chirp_active: Arc<AtomicBool>,
     /// Master volume applied in the cpal callback (lock-free, instant response).
     master_volume: Arc<AtomicU32>,
+    /// The linear gain that makes playback as loud as the export will
+    /// deliver (#1565); 1 when there is no loudness target.
+    delivery_gain: Arc<AtomicU32>,
     /// Consumer side of the skim audio ring buffer.
     /// Mixed into the cpal callback output alongside playback audio.
     skim_consumer: SkimConsumer,
@@ -426,6 +429,8 @@ impl AudioOutput {
         let chirp_flag = chirp_active.clone();
         let master_volume = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
         let master_vol_flag = master_volume.clone();
+        let delivery_gain = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
+        let delivery_gain_flag = delivery_gain.clone();
         let skim_consumer_flag = skim_consumer.clone();
 
         // Static dedup flag for the cpal output callback. cpal fires
@@ -521,15 +526,21 @@ impl AudioOutput {
                                 } else {
                                     LAST_CALLBACK_SHORT.store(short, Ordering::Relaxed);
                                 }
-                                // Master volume (lock-free, instant). Each clip's
-                                // volume, gain, pan and channel config are applied
-                                // to its own source in the mix thread.
-                                let vol = f32::from_bits(master_vol_flag.load(Ordering::Relaxed));
-                                if (vol - 1.0).abs() > 0.001 {
-                                    for x in data[..filled].iter_mut() {
-                                        *x *= vol;
-                                    }
+                                // Master volume times the delivery gain (lock-free).
+                                // Each clip's volume, gain, pan and channel config
+                                // are applied to its own source in the mix thread.
+                                // A change ramps across one callback, so a
+                                // delivery gain that lands mid-play doesn't click
+                                // (#1565).
+                                let vol = f32::from_bits(master_vol_flag.load(Ordering::Relaxed))
+                                    * f32::from_bits(delivery_gain_flag.load(Ordering::Relaxed));
+                                thread_local! {
+                                    static APPLIED_GAIN: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
                                 }
+                                APPLIED_GAIN.with(|g| {
+                                    apply_gain_ramp(&mut data[..filled], g.get(), vol);
+                                    g.set(vol);
+                                });
                                 // NO clock update — master clock is external
                             });
 
@@ -626,6 +637,7 @@ impl AudioOutput {
             seek_gen,
             chirp_active,
             master_volume,
+            delivery_gain,
             skim_consumer,
         })
     }
@@ -658,6 +670,12 @@ impl AudioOutput {
     /// Set master volume (applied instantly in cpal callback, no buffer lag).
     pub fn set_master_volume(&self, vol: f32) {
         self.master_volume.store(f32::to_bits(vol), Ordering::Relaxed);
+    }
+
+    /// Set the delivery gain, linear (#1565): applied after the master
+    /// volume, ramped over one callback.
+    pub fn set_delivery_gain(&self, gain: f32) {
+        self.delivery_gain.store(f32::to_bits(gain), Ordering::Relaxed);
     }
 
     /// Wire a skim audio consumer into the cpal callback for mixing.
@@ -695,6 +713,42 @@ impl std::fmt::Display for AudioOutputError {
             Self::Build(e) => write!(f, "build stream: {e}"),
             Self::Play(e) => write!(f, "play stream: {e}"),
         }
+    }
+}
+
+/// Scale `data` by a gain that moves from `from` to `to` across it, so a
+/// change of volume is a short fade rather than a step; untouched at
+/// unity.
+fn apply_gain_ramp(data: &mut [f32], from: f32, to: f32) {
+    if (from - 1.0).abs() <= 0.001 && (to - 1.0).abs() <= 0.001 {
+        return;
+    }
+    let n = data.len().max(1) as f32;
+    for (i, x) in data.iter_mut().enumerate() {
+        *x *= from + (to - from) * (i + 1) as f32 / n;
+    }
+}
+
+#[cfg(test)]
+mod gain_ramp_tests {
+    use super::apply_gain_ramp;
+
+    /// #1565: a delivery gain that lands mid-play fades in over the
+    /// buffer, no sample jumps by more than its share of the change, and
+    /// the buffer ends at the new gain.
+    #[test]
+    fn a_gain_change_ramps_across_the_buffer() {
+        let mut data = vec![1.0f32; 480];
+        apply_gain_ramp(&mut data, 1.0, 1.6);
+        assert!((data[0] - 1.0).abs() < 0.01, "starts at the old gain: {}", data[0]);
+        assert!((data[479] - 1.6).abs() < 1e-5, "ends at the new: {}", data[479]);
+        assert!(data.windows(2).all(|w| w[1] - w[0] < 0.6 / 479.0 + 1e-6), "no step");
+        let mut same = vec![0.5f32; 4];
+        apply_gain_ramp(&mut same, 1.0, 1.0);
+        assert_eq!(same, [0.5; 4], "unity leaves the samples alone");
+        let mut held = vec![1.0f32; 4];
+        apply_gain_ramp(&mut held, 0.5, 0.5);
+        assert_eq!(held, [0.5; 4], "a steady gain is applied in full");
     }
 }
 

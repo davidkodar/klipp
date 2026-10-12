@@ -62,7 +62,7 @@ pub mod pixel_check;
 pub use audio_mixdown::AudioMixdown;
 pub use clip_decoder::{detect_gpu, GpuVendor, RenderDecoder};
 pub use encoder::Encoder;
-pub use export_job::{partial_path_for, ExportJob};
+pub use export_job::{measure_delivery, partial_path_for, ExportJob, LoudnessAnalysis};
 /// The export's decoder of a snapshot's media, for tools that render
 /// frames as the export does (the real-project pixel check, #1089).
 pub use frame_source::{media_analysis_key, ExportFrameSource};

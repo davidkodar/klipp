@@ -773,6 +773,18 @@ pub fn show(
         egui::Align2::LEFT_CENTER, "Audio Mixer",
         egui::FontId::proportional(10.0), theme.text_secondary,
     );
+    // The loudness playback is heard at, as the export will deliver it;
+    // a click turns that off or on (#1565).
+    if let Some(label) = state.delivery_loudness.label() {
+        let rect = egui::Rect::from_min_max(egui::pos2(header_rect.center().x, header_rect.min.y), header_rect.max - egui::vec2(10.0, 0.0));
+        let response = ui.allocate_rect(rect, egui::Sense::click())
+            .on_hover_text("Playback is gained to the loudness the export normalises to, so it sounds as the file will. Click to turn it off or on.");
+        let colour = if response.hovered() { theme.text_primary } else { theme.text_secondary };
+        ui.painter().text(egui::pos2(rect.max.x, rect.center().y), egui::Align2::RIGHT_CENTER, label, egui::FontId::proportional(10.0), colour);
+        if response.clicked() {
+            cmds.push(AppCommand::SetHearDeliveryLoudness(!state.delivery_loudness.enabled));
+        }
+    }
     ui.painter().hline(full_rect.x_range(), header_rect.max.y, egui::Stroke::new(1.0_f32, theme.border));
 
     let content_rect = egui::Rect::from_min_max(

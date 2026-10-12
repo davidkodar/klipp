@@ -68,6 +68,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::RenameWorkspaceLayout { .. }
         | AppCommand::SetMasterVolume(..)
         | AppCommand::SetMasterMute(..)
+        | AppCommand::SetDeliveryTarget(..)
+        | AppCommand::SetHearDeliveryLoudness(..)
         | AppCommand::ResetLufsMeter
         | AppCommand::SetClipVolume(..)
         | AppCommand::SetClipPan(..)

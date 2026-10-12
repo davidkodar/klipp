@@ -11,6 +11,7 @@ use klipp_compose::eval::eval_with_modifiers;
 #[cfg(test)]
 use klipp_compose::eval::{resolve_clip_transform, ResolvedTransform};
 
+mod delivery;
 mod render_job;
 mod streams;
 mod view;
@@ -1168,6 +1169,8 @@ pub struct PlaybackEngine {
     mixer: std::sync::Arc<std::sync::Mutex<klipp_audio::AudioMixer>>,
     lufs_readings: Option<std::sync::Arc<std::sync::Mutex<klipp_audio::LufsReadings>>>,
     lufs_reset: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Playback heard at the export's delivered loudness (#1565).
+    delivery: delivery::Delivery,
     spectrum_buf: Option<std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<f32>>>>,
     spectrum_sample_rate: u32,
     cpal_sample_rate: u32,
@@ -2068,6 +2071,7 @@ impl PlaybackEngine {
             mixer,
             lufs_readings,
             lufs_reset,
+            delivery: Default::default(),
             spectrum_buf,
             spectrum_sample_rate,
             cpal_sample_rate,
@@ -2608,6 +2612,7 @@ impl PlaybackEngine {
                         });
                     }
                 }
+                self.poll_delivery_measure();
             }
 
             // Per-tick timing. Only log when a single tick exceeded the frame
@@ -2641,6 +2646,9 @@ impl PlaybackEngine {
 
             AppCommand::Play => {
                 debug!("Play command received, state={:?}", self.state);
+                // Heard at the export's loudness: measured now if the
+                // sequence changed since (#1565).
+                self.refresh_delivery_gain();
                 // A paused seek may still owe its audio.
                 self.flush_pending_audio_reposition();
                 // Mutual-exclusion: stop the source viewer if it owns
@@ -2980,6 +2988,7 @@ impl PlaybackEngine {
                     m.master_volume = vol;
                 }
             }
+            AppCommand::SetDeliveryTarget(target) => self.set_delivery_target(target),
             AppCommand::ResetLufsMeter => {
                 if let Some(ref flag) = self.lufs_reset {
                     flag.store(true, std::sync::atomic::Ordering::Relaxed);

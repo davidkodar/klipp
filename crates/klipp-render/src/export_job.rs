@@ -148,33 +148,11 @@ impl ExportJob {
         let ceiling_dbtp = self.settings.true_peak_dbtp.unwrap_or(DEFAULT_PEAK_CEILING_DBTP);
         let mut delivery = if let Some(target_lufs) = self.settings.target_lufs {
             Self::set_stage(&self.render_stage, "Measuring loudness\u{2026}");
-            let mut measure_mixdown = AudioMixdown::new(&self.snapshot)?;
-            // Always request 4× true-peak oversampling for export — the
-            // peak-ceiling check below relies on detecting inter-sample
-            // peaks so the rendered file stays within -1 dBFS true-peak.
-            let mut meter = klipp_audio::LufsMeter::new(self.snapshot.sample_rate as f32, true);
-            let measure_total = end_frame - start_frame;
-            for (i, frame_num) in (start_frame..end_frame).enumerate() {
-                if self.cancel.load(Ordering::Relaxed) {
-                    return Err(RenderError::Cancelled);
-                }
-                // R-3: feed the UN-clamped summed mix to the LUFS meter
-                // so over-1.0 energy is measured as-is. Clamping first
-                // (the old behaviour via get_frame_audio) capped the
-                // apparent loudness of hot mixes and caused
-                // loudness-normalize to over-shoot the requested target.
-                let audio = measure_mixdown.get_frame_audio_unclamped(frame_num);
-                meter.process(&audio);
-                // Report measurement progress (roughly first ~10-15% of total work)
-                if i % 100 == 0 && measure_total > 0 {
-                    self.progress.store((i as u64 * self.total_frames) / (measure_total * 10), Ordering::Relaxed);
-                }
-            }
-            let readings = meter.readings();
-            // Use the meter's true-peak (oversampled) for the -1 dBFS gate
-            // — same units as the old hand-rolled sample peak (linear 0..1+),
-            // but catches inter-sample peaks the previous code missed.
-            let analysis = LoudnessAnalysis::compute(target_lufs, readings.integrated, readings.true_peak_linear, ceiling_dbtp);
+            let total_frames = self.total_frames;
+            let analysis = measure_delivery(&self.snapshot, target_lufs, ceiling_dbtp, &self.cancel, |done, of| {
+                // Measurement is roughly the first tenth of the work.
+                self.progress.store((done * total_frames) / (of * 10), Ordering::Relaxed);
+            })?;
             info!(
                 "ExportJob {}: loudness measurement complete — integrated={:.1} LUFS, peak={:.3}, \
                  requested_gain={:.1} dB, applied_gain={:.1} dB, achieved={:.1} LUFS, peak_limited={}",
@@ -586,7 +564,7 @@ pub(crate) fn fit_to_target(src_w: u32, src_h: u32, target_w: u32, target_h: u32
 /// A/85 and Netflix ask -2, and say so through `true_peak_dbtp`. Gain
 /// that would push the measured peak past the ceiling is still applied
 /// in full, and a limiter holds the peaks under it.
-const DEFAULT_PEAK_CEILING_DBTP: f32 = -1.0;
+const DEFAULT_PEAK_CEILING_DBTP: f32 = klipp_core::DEFAULT_TRUE_PEAK_DBTP;
 
 /// The limiter that holds a normalised delivery under the ceiling. It
 /// detects sample peaks, so its ceiling sits under the true-peak one:
@@ -772,6 +750,37 @@ fn linear_to_db(linear: f32) -> f32 {
     if linear <= 0.0 { f32::NEG_INFINITY } else { 20.0 * linear.log10() }
 }
 
+/// The loudness of `snapshot`'s mix and the gain a delivery at
+/// `target_lufs` gives it: the export's measurement pass, which playback
+/// also runs to hear what the export will deliver (#1565). The meter
+/// takes the summed mix unclamped, with 4x true-peak oversampling, so a
+/// hot mix measures as it is and inter-sample peaks are caught.
+/// `progress` hears the frames measured and the frames in all, every
+/// hundred frames.
+pub fn measure_delivery(
+    snapshot: &SequenceSnapshot,
+    target_lufs: f32,
+    ceiling_dbtp: f32,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(u64, u64),
+) -> Result<LoudnessAnalysis, RenderError> {
+    let (start_frame, end_frame) = (snapshot.start_frame(), snapshot.end_frame());
+    let mut mixdown = AudioMixdown::new(snapshot)?;
+    let mut meter = klipp_audio::LufsMeter::new(snapshot.sample_rate as f32, true);
+    let total = end_frame - start_frame;
+    for (i, frame_num) in (start_frame..end_frame).enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(RenderError::Cancelled);
+        }
+        meter.process(&mixdown.get_frame_audio_unclamped(frame_num));
+        if i % 100 == 0 && total > 0 {
+            progress(i as u64, total);
+        }
+    }
+    let readings = meter.readings();
+    Ok(LoudnessAnalysis::compute(target_lufs, readings.integrated, readings.true_peak_linear, ceiling_dbtp))
+}
+
 /// Result of the loudness measurement pass.
 #[derive(Debug, Clone)]
 pub struct LoudnessAnalysis {
@@ -819,6 +828,21 @@ impl LoudnessAnalysis {
                 peak_limited: true,
             }
         }
+    }
+}
+
+impl LoudnessAnalysis {
+    /// The gain playback gives the mix to be heard as this delivery: the
+    /// export's gain, but held so the measured true peak stays under
+    /// `ceiling_dbtp`, since playback has no limiter. A peak-limited
+    /// delivery so plays a little under the export, and never clips
+    /// (#1565).
+    pub fn playback_gain_db(&self, ceiling_dbtp: f32) -> f32 {
+        // Nothing to hear, or nothing measured: unity.
+        if !self.applied_gain_db.is_finite() || self.peak_sample <= 0.0 || !self.peak_sample.is_finite() {
+            return 0.0;
+        }
+        self.applied_gain_db.min(ceiling_dbtp - 20.0 * self.peak_sample.log10())
     }
 }
 
@@ -922,6 +946,34 @@ mod tests {
         // Just verify the progress counter mechanism
         progress.store(42, Ordering::Relaxed);
         assert_eq!(progress.load(Ordering::Relaxed), 42);
+    }
+
+    /// #1565: playback takes the export's gain where the peaks fit under
+    /// the ceiling; where the export limits them, playback is held so its
+    /// true peak lands on the ceiling, and a silent mix plays at unity.
+    #[test]
+    fn playback_gain_is_the_exports_held_under_the_ceiling() {
+        let fits = LoudnessAnalysis::compute(-14.0, -18.1, 0.3, -1.0);
+        assert!((fits.playback_gain_db(-1.0) - 4.1).abs() < 1e-3, "{}", fits.playback_gain_db(-1.0));
+        let limited = LoudnessAnalysis::compute(-14.0, -20.0, 0.9, -1.0);
+        let gain = limited.playback_gain_db(-1.0);
+        assert!(gain < limited.applied_gain_db, "{gain} under the export's {}", limited.applied_gain_db);
+        assert!((0.9 * db_to_linear(gain) - db_to_linear(-1.0)).abs() < 1e-4, "the peak lands on the ceiling");
+        let silence = LoudnessAnalysis::compute(-14.0, f32::NEG_INFINITY, 0.0, -1.0);
+        assert_eq!(silence.playback_gain_db(-1.0), 0.0);
+    }
+
+    /// #1565: the measurement playback runs is the export's: a mix with
+    /// no sound measures as silence and gives unity, and it stops when
+    /// cancelled.
+    #[test]
+    fn measure_delivery_measures_and_stops_when_cancelled() {
+        let snap = make_test_snapshot();
+        let a = measure_delivery(&snap, -14.0, -1.0, &AtomicBool::new(false), |_, _| {}).unwrap();
+        assert!(!a.integrated_lufs.is_finite() || a.integrated_lufs < -70.0, "{}", a.integrated_lufs);
+        assert_eq!(a.playback_gain_db(-1.0), 0.0);
+        let cancelled = measure_delivery(&snap, -14.0, -1.0, &AtomicBool::new(true), |_, _| {});
+        assert!(matches!(cancelled, Err(RenderError::Cancelled)));
     }
 
     // ── LoudnessAnalysis math tests ─────────────────────────────────
