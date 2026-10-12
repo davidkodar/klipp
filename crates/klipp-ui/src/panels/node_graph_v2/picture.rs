@@ -1195,7 +1195,7 @@ mod tests {
         let blur = model.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n.node) == Some("gaussian_blur")).unwrap();
         let label = blur.label.clone();
         let id = blur.id();
-        d.menu(&label, "View in viewer (1)");
+        d.menu(&label, "View in viewer");
         assert_eq!(d.state.solo_node, Some(id), "{:?}", d.sent);
         assert!(d.texts.iter().any(|(s, _)| s.contains(&format!("Viewing: {label}"))), "the chip: {:?}", d.texts);
 
