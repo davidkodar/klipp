@@ -211,6 +211,15 @@ pub fn is_placed_kind(tag: &str) -> bool {
     matches!(tag, "transform" | "opacity" | "speed_ramp" | "temporal_denoise")
 }
 
+/// Whether `addr` names a placed kind's node of `clip`: one whose edits
+/// go through the clip's effect list ([`route_placed`]), not by path.
+pub fn is_placed_node(clip: &Clip, addr: &NodePath) -> bool {
+    let Ok(lifted) = clip.picture_v2() else { return false };
+    addr.root_clip() == Some(clip.id.0)
+        && addr.nodes.len() == 1
+        && lifted.picture.graph.nodes.iter().find(|n| Some(n.id) == addr.node()).and_then(klipp_graph_lift::effect_params::tag).is_some_and(is_placed_kind)
+}
+
 /// What adding the effect saved as `tag` sends: a placed kind through the
 /// clip's effect list, any other as a node after `after`.
 pub fn add_command(clip: &Clip, after: &NodePath, tag: &str) -> Option<AppCommand> {

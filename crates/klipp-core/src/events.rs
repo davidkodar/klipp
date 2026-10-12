@@ -1024,6 +1024,15 @@ pub enum AppCommand {
     /// Move the key at `time_secs` to `new_time_secs`, with `value`.
     MoveKeyAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey, time_secs: f64, new_time_secs: f64, value: f32 },
     SetInterpKeyAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey, time_secs: f64, interpolation: crate::keyframe::Interpolation },
+    /// Copy the keys of `(addr, key)` to the keyframe clipboard, with the
+    /// length of the clip they are on, as a video track's copy does.
+    CopyKeysAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey },
+    /// Put the clipboard's keys on `(addr, key)` in place of its own,
+    /// scaled from the clip they came from to this one: one undo step.
+    PasteKeysAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey },
+    /// Mirror the keys of `(addr, key)` in time over their own span: one
+    /// undo step.
+    ReverseKeysAt { addr: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey },
     /// Split-compare the effect node at `path`: the viewer's left half
     /// shows the clip with it bypassed, the right half with it applied.
     /// Mutually exclusive with the other compare modes; `None` clears it on

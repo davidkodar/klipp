@@ -143,6 +143,38 @@ fn animation_of(node: &Node, key: &ParamKey) -> Option<klipp_graph_format::Anima
     (!keys.is_empty()).then_some(klipp_graph_format::Animation { keys, modifiers: None })
 }
 
+/// `anim`'s keys as keyframes.
+fn decoded_keys(anim: &klipp_graph_format::Animation, key: &ParamKey) -> Result<Vec<klipp_core::Keyframe>, String> {
+    anim.keys.iter().map(|k| serde_json::from_value(k.clone()).map_err(|e| format!("a key of {key}: {e}"))).collect()
+}
+
+/// `keys` mirrored in time over their own span, each key's handles
+/// swapped and turned: Reverse Keyframes on any track. Fewer than two
+/// keys stay as they are.
+pub(crate) fn reversed_keys(mut keys: Vec<klipp_core::Keyframe>) -> Vec<klipp_core::Keyframe> {
+    if keys.len() < 2 {
+        return keys;
+    }
+    let max_time = keys.iter().map(|k| k.time_secs).fold(f64::MIN, f64::max);
+    for kf in keys.iter_mut() {
+        kf.time_secs = max_time - kf.time_secs;
+        let (old_in, old_out) = (kf.tangent_in, kf.tangent_out);
+        kf.tangent_in = (-old_out.0, old_out.1);
+        kf.tangent_out = (-old_in.0, old_in.1);
+    }
+    keys.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+    keys
+}
+
+/// The clipboard's keys scaled from the clip they were copied from to one
+/// `clip_dur` long: Paste Keyframes on any track.
+pub(crate) fn pasted_keys(cb: &crate::state::KeyframeClipboard, clip_dur: f64) -> Vec<klipp_core::Keyframe> {
+    let scale = if cb.source_duration_secs > 0.0 && clip_dur > 0.0 { clip_dur / cb.source_duration_secs } else { 1.0 };
+    let mut keys: Vec<klipp_core::Keyframe> = cb.keyframes.iter().map(|k| klipp_core::Keyframe { time_secs: k.time_secs * scale, ..k.clone() }).collect();
+    keys.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+    keys
+}
+
 impl crate::state::AppState {
     /// The node's implicit blend, distinct from an effect parameter named `mix`.
     pub(crate) const NODE_MIX_DRAG_KEY: &'static str = "@mix";
@@ -404,6 +436,19 @@ impl crate::state::AppState {
                 .interpolation_edit(addr, key, *time_secs, *interpolation)
                 .and_then(|ops| self.apply_path_ops(&ops, "Keyframe Interpolation"))
                 .map(|()| true),
+            AppCommand::CopyKeysAt { addr, key } => self.node_at(addr).and_then(|node| {
+                let keys = animation_of(&node, key).map_or(Ok(Vec::new()), |a| decoded_keys(&a, key))?;
+                self.keyframe_clipboard = Some(crate::state::KeyframeClipboard { keyframes: keys, source_duration_secs: self.clip_secs_at(addr) });
+                Ok(false)
+            }),
+            AppCommand::PasteKeysAt { addr, key } => match self.keyframe_clipboard.clone() {
+                None => Ok(false),
+                Some(cb) => {
+                    let clip_dur = self.clip_secs_at(addr);
+                    self.lane_edit(addr, key, |_| pasted_keys(&cb, clip_dur)).and_then(|ops| self.apply_path_ops(&ops, "Paste Keyframes")).map(|()| true)
+                }
+            },
+            AppCommand::ReverseKeysAt { addr, key } => self.lane_edit(addr, key, reversed_keys).and_then(|ops| self.apply_path_ops(&ops, "Reverse Keyframes")).map(|()| true),
             _ => {
                 let (ops, label) = path_ops(cmd)?;
                 self.with_pending_corrector(ops).and_then(|ops| self.apply_path_ops(&ops, label)).map(|()| true)
@@ -560,25 +605,9 @@ impl crate::state::AppState {
             C::ClearVideoParamKeyframes { .. } => (Vec::new(), "Clear Keyframes"),
             C::PasteVideoKeyframes { .. } => {
                 let Some(cb) = self.keyframe_clipboard.clone() else { return Some(Ok(false)) };
-                let scale = if cb.source_duration_secs > 0.0 { clip_dur / cb.source_duration_secs } else { 1.0 };
-                let mut pasted: Vec<Keyframe> = cb.keyframes.iter().map(|k| Keyframe { time_secs: k.time_secs * scale, ..k.clone() }).collect();
-                sort(&mut pasted);
-                (pasted, "Paste Video Keyframes")
+                (pasted_keys(&cb, clip_dur), "Paste Video Keyframes")
             }
-            C::ReverseVideoKeyframes { .. } => {
-                if keys.len() >= 2 {
-                    let max_time = keys.last().map_or(0.0, |k| k.time_secs);
-                    for kf in keys.iter_mut() {
-                        kf.time_secs = max_time - kf.time_secs;
-                        let (old_in, old_out) = (kf.tangent_in, kf.tangent_out);
-                        kf.tangent_in = (-old_out.0, old_out.1);
-                        kf.tangent_out = (-old_in.0, old_in.1);
-                    }
-                    keys.reverse();
-                    sort(&mut keys);
-                }
-                (keys, "Reverse Video Keyframes")
-            }
+            C::ReverseVideoKeyframes { .. } => (reversed_keys(keys), "Reverse Video Keyframes"),
             _ => return None,
         };
         let op = set_lane(&clip, &addr, key, keys);
@@ -989,6 +1018,26 @@ impl crate::state::AppState {
         klipp_core::keyframe::set_interpolation_at(&mut keys, at, interpolation);
         anim.keys = keys.iter().map(|k| serde_json::to_value(k).map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
         Ok(vec![GraphOp::SetAnim { path: addr.clone(), key: key.clone(), anim: Some(anim) }])
+    }
+
+    /// The one op that puts `edit`'s keys on `(addr, key)` in place of its
+    /// own, its modifier stack kept: a whole lane pasted or reversed.
+    fn lane_edit(&self, addr: &NodePath, key: &ParamKey, edit: impl FnOnce(Vec<klipp_core::Keyframe>) -> Vec<klipp_core::Keyframe>) -> Result<Vec<GraphOp>, String> {
+        let node = self.node_at(addr)?;
+        let anim = animation_of(&node, key);
+        let keys = edit(anim.as_ref().map_or(Ok(Vec::new()), |a| decoded_keys(a, key))?);
+        let modifiers = anim.and_then(|a| a.modifiers);
+        let keys: Vec<serde_json::Value> = keys.iter().map(|k| serde_json::to_value(k).map_err(|e| e.to_string())).collect::<Result<_, _>>()?;
+        let anim = (!keys.is_empty() || modifiers.is_some()).then_some(klipp_graph_format::Animation { keys, modifiers });
+        Ok(vec![GraphOp::SetAnim { path: addr.clone(), key: key.clone(), anim }])
+    }
+
+    /// How long the clip whose graph `addr` names is, for a copied lane's
+    /// keys to scale by when pasted; 0 for a graph that isn't a clip's.
+    fn clip_secs_at(&self, addr: &NodePath) -> f64 {
+        addr.root_clip()
+            .and_then(|id| self.sequences[self.active_sequence_idx].all_clips().find(|c| c.id.0 == id))
+            .map_or(0.0, |c| c.duration().to_secs_f64())
     }
 
     /// Whether `addr` names the Corrector the tabbed page reserved for the
@@ -2637,6 +2686,49 @@ mod tests {
         assert_eq!(s.path_command(&AppCommand::MoveKeyAt { addr, key: "radius".into(), time_secs: 3.0, new_time_secs: 1.0, value: 1.0 }), Some(false), "no key there: refused");
     }
 
+
+    /// An effect track's whole-lane keyframe menu items, by path (#1400):
+    /// Reverse mirrors its keys in time over their span, and Copy then
+    /// Paste puts one effect's keys on another's, each one undo step (a
+    /// copy none) that undo takes back. A placed kind's node, whose keys go
+    /// through the effect list, is told apart for the menu to leave them out.
+    #[test]
+    fn an_effect_lane_copies_pastes_and_reverses_by_path() {
+        let blur = || E::GaussianBlur { radius: 3.0 };
+        let c = fixture(&[blur(), blur()]);
+        let key = |t: f64, v: f32| klipp_core::Keyframe { time_secs: t, value: v, interpolation: klipp_core::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) };
+        let seeded = |lanes: [Vec<klipp_core::Keyframe>; 2]| {
+            let mut s = with(std::slice::from_ref(&c));
+            let clip = s.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(c.id)).unwrap();
+            for (i, keys) in lanes.into_iter().enumerate() {
+                let id = test_clip::effect_id(clip, i);
+                clip.edit_effect_keyframes_of(id, "radius", |v| *v = keys);
+            }
+            s
+        };
+        let mut s = seeded([vec![key(0.0, 2.0), key(1.0, 9.0), key(1.5, 4.0)], Vec::new()]);
+        let nodes = effects(&s, c.id);
+        let (first, second) = (at(c.id, &[nodes[0]]), at(c.id, &[nodes[1]]));
+        let reversed = vec![key(0.0, 4.0), key(0.5, 9.0), key(1.5, 2.0)];
+
+        run(&mut s, AppCommand::ReverseKeysAt { addr: first.clone(), key: "radius".into() });
+        assert_eq!(picture(&s, c.id), picture(&seeded([reversed.clone(), Vec::new()]), c.id), "reversed");
+        assert_eq!(s.active_history().undo_count(), 1, "one step");
+
+        assert_eq!(s.path_command(&AppCommand::CopyKeysAt { addr: first.clone(), key: "radius".into() }), Some(false), "a copy writes nothing");
+        assert_eq!(s.active_history().undo_count(), 1, "nor takes a step");
+        run(&mut s, AppCommand::PasteKeysAt { addr: second, key: "radius".into() });
+        assert_eq!(picture(&s, c.id), picture(&seeded([reversed.clone(), reversed.clone()]), c.id), "pasted");
+        assert_eq!(s.active_history().undo_count(), 2, "one step");
+        undo(&mut s);
+        assert_eq!(picture(&s, c.id), picture(&seeded([reversed, Vec::new()]), c.id), "undo takes the paste back");
+
+        assert!(!crate::inspector::stack_view::is_placed_node(clip(&s, c.id), &first), "a blur's keys go by path");
+        let d = fixture(&[E::TemporalDenoise { strength: 0.5, threshold: 0.02 }]);
+        let sd = with(std::slice::from_ref(&d));
+        let denoise = clip(&sd, d.id).picture_v2().unwrap().picture.graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("temporal_denoise")).map(|n| n.id).unwrap();
+        assert!(crate::inspector::stack_view::is_placed_node(clip(&sd, d.id), &at(d.id, &[denoise])), "a denoise's go through its effect list");
+    }
 
     /// Setting a key's interpolation by path is the keyframe editor's rule,
     /// as by index: the key and the one before it change, and Bezier gives
