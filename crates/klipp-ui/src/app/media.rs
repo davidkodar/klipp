@@ -592,6 +592,15 @@ impl KlippApp {
                     ));
                     true
                 }
+                AppCommand::SetViewerOverlay { overlay, on } => {
+                    let o = &mut self.state.viewer_overlays;
+                    match overlay {
+                        klipp_core::ViewerOverlay::SafeAreas => o.safe_areas = *on,
+                        klipp_core::ViewerOverlay::Grid => o.grid = *on,
+                        klipp_core::ViewerOverlay::Checkerboard => o.checkerboard = *on,
+                    }
+                    true
+                }
                 AppCommand::SetUseProxies(enabled) => {
                     self.state.use_proxies = *enabled;
                     // Forward to engine

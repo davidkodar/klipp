@@ -1650,6 +1650,9 @@ pub enum AppCommand {
     GenerateProxy { media_id: MediaId },
     CancelProxy { media_id: MediaId },
     SetUseProxies(bool),
+    /// Show or hide one of the viewer's overlays (the inspector's
+    /// switches; the keys and the palette toggle them in place).
+    SetViewerOverlay { overlay: ViewerOverlay, on: bool },
     /// Begin timeline scrubbing — engine may switch to proxy decode for speed.
     /// Enable or disable the smart render cache.
     SetRenderCacheEnabled(bool),
@@ -4943,4 +4946,12 @@ mod output_size_tests {
         assert_eq!(at(Some((1, 1)), (1920, 1080)), (2, 2), "never nothing");
         assert_eq!(at(Some((99999, 99999)), (1920, 1080)), (16384, 16384), "never past 16K (#658)");
     }
+}
+
+/// A viewer overlay the inspector can switch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ViewerOverlay {
+    SafeAreas,
+    Grid,
+    Checkerboard,
 }
