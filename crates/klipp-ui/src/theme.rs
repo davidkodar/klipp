@@ -7,6 +7,8 @@ mod registry;
 
 pub use color_serde::HexColor;
 pub use registry::{ThemeId, ThemeRegistry, ThemeSource, BUILTIN_DARK, BUILTIN_LIGHT};
+#[cfg(test)]
+pub(crate) use registry::parse_builtin;
 
 /// All design tokens for the Klipp GUI. Every colour, size, and spacing
 /// constant lives here — do not hardcode `Color32` literals elsewhere.
