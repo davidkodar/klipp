@@ -181,6 +181,25 @@ pub fn contours_of(raw: Vec<Vec<[f32; 2]>>) -> Vec<Contour> {
     polys.into_iter().zip(holes).map(|(points, hole)| Contour { points, hole }).collect()
 }
 
+/// The part of closed polygon `points` left of column `x` (#1735): a
+/// write-on's cut through a glyph. Empty when none of it is.
+pub fn clip_left_of(points: &[[f32; 2]], x: f32) -> Vec<[f32; 2]> {
+    let n = points.len();
+    let mut out = Vec::with_capacity(n + 2);
+    for i in 0..n {
+        let (a, b) = (points[i], points[(i + 1) % n]);
+        let (ina, inb) = (a[0] <= x, b[0] <= x);
+        if ina {
+            out.push(a);
+        }
+        if ina != inb {
+            let t = (x - a[0]) / (b[0] - a[0]);
+            out.push([x, a[1] + (b[1] - a[1]) * t]);
+        }
+    }
+    out
+}
+
 /// The unit normal of edge `a`→`b`, away from the ink.
 fn edge_normal(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
     let d = [b[0] - a[0], b[1] - a[1]];

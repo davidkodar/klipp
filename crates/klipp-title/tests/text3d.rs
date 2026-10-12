@@ -236,3 +236,281 @@ fn a_3d_text_keeps_its_shadow_glow_outline_and_backing() {
     let ((sl, sr), (ol, or)) = (solid_cols(&without), solid_cols(&with));
     assert!(ol + 3 <= sl && or >= sr + 3, "the outline round the turned word: solid {sl}..{sr}, with outline {ol}..{or}");
 }
+
+/// "WORD" in 3D, unturned and orthographic, lit by its ambient alone so
+/// a face shows its colours as they are, `set` on its box; and its
+/// flat self, without 3D (#1735).
+fn styled(three_d: bool, set: impl FnOnce(&mut TextBox)) -> TitleData {
+    let mut td = word(three_d, Default::default(), klipp_timeline::TitleBackground::None);
+    if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut td.objects[0].content {
+        tb.three_d.iter_mut().for_each(|t| t.side_color = [0, 160, 0, 255]);
+        set(tb);
+    }
+    td
+}
+
+fn turned(mut td: TitleData) -> TitleData {
+    if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut td.objects[0].content {
+        let t = tb.three_d.as_mut().unwrap();
+        t.rotation = [0.0, 50.0, 0.0];
+        t.camera.orthographic = false;
+    }
+    td
+}
+
+/// The inked box `(x0, y0, x1, y1)` and the inked pixel count.
+fn ink(buf: &[u8]) -> (u32, u32, u32, u32, usize) {
+    let (mut x0, mut y0, mut x1, mut y1, mut n) = (W, H, 0, 0, 0);
+    for y in 0..H {
+        for x in 0..W {
+            if px(buf, x, y)[3] > 128 {
+                (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+                n += 1;
+            }
+        }
+    }
+    (x0, y0, x1, y1, n)
+}
+
+/// The solid inked pixels of columns `xs` and rows `ys`.
+fn solid_in(buf: &[u8], xs: std::ops::Range<u32>, ys: std::ops::Range<u32>) -> Vec<[u8; 4]> {
+    ys.flat_map(|y| xs.clone().map(move |x| (x, y))).map(|(x, y)| px(buf, x, y)).filter(|p| p[3] == 255).collect()
+}
+
+fn draw_at(td: &TitleData, t: f32) -> Vec<u8> {
+    TitleRenderer::new().render_with_window(td, W, H, None, t, Some(4.0))
+}
+
+/// A gradient face goes on the solid's front face, top to bottom as
+/// the flat face has it; turned, the walls keep their own colour.
+#[test]
+fn a_3d_text_keeps_its_gradient_face_and_its_walls_their_colour() {
+    let red_to_blue = |tb: &mut TextBox| tb.gradient = Some(klipp_timeline::TextGradient::pair([255, 0, 0, 255], [0, 0, 255, 255], true));
+    let solid = draw_at(&styled(true, red_to_blue), 1.0);
+    let (x0, y0, x1, y1, _) = ink(&solid);
+    let band = (y1 - y0) / 5;
+    let (top, bottom) = (solid_in(&solid, x0..x1, y0..y0 + band), solid_in(&solid, x0..x1, y1 - band..y1));
+    let reddish = |ps: &[[u8; 4]]| ps.iter().filter(|p| p[0] as u16 > p[2] as u16 + 60).count() as f32 / ps.len().max(1) as f32;
+    let bluish = |ps: &[[u8; 4]]| ps.iter().filter(|p| p[2] as u16 > p[0] as u16 + 60).count() as f32 / ps.len().max(1) as f32;
+    assert!(top.len() > 500 && reddish(&top) > 0.9, "the top of the face is red: {} of {}", reddish(&top), top.len());
+    assert!(bottom.len() > 500 && bluish(&bottom) > 0.9, "the bottom of the face is blue: {} of {}", bluish(&bottom), bottom.len());
+    // No white face left anywhere: the fill is the face.
+    assert!(solid.chunks_exact(4).filter(|p| p[3] == 255 && p[0] > 200 && p[1] > 200 && p[2] > 200).count() == 0);
+    // Turned, the walls are green, and the face still red to blue.
+    let solid = draw_at(&turned(styled(true, red_to_blue)), 1.0);
+    let green = solid.chunks_exact(4).filter(|p| p[3] > 200 && p[1] as u16 > p[0] as u16 + 40 && p[1] as u16 > p[2] as u16 + 40).count();
+    assert!(green > 500, "the walls keep their colour: {green}");
+    let red = solid.chunks_exact(4).filter(|p| p[3] > 200 && p[0] as u16 > p[1] as u16 + 60 && p[0] as u16 > p[2] as u16 + 60).count();
+    assert!(red > 500, "the turned face keeps its fill: {red}");
+    // The control: a plain face is the face colour.
+    let plain = draw_at(&styled(true, |_| {}), 1.0);
+    let (x0, y0, x1, y1, _) = ink(&plain);
+    assert!(solid_in(&plain, x0..x1, y0..y1).iter().all(|p| p[0] > 230 && p[2] > 230));
+}
+
+/// A styled run's colour is its glyphs' faces' colour.
+#[test]
+fn a_3d_text_keeps_its_runs_colours() {
+    let solid = draw_at(
+        &styled(true, |tb| tb.style_runs.push(klipp_timeline::StyleRun { color: Some([255, 0, 0, 255]), ..klipp_timeline::StyleRun::default_for_range(0, 2) })),
+        1.0,
+    );
+    let (x0, y0, x1, y1, _) = ink(&solid);
+    let third = (x1 - x0) / 3;
+    let (left, right) = (solid_in(&solid, x0..x0 + third, y0..y1), solid_in(&solid, x1 - third..x1, y0..y1));
+    let red = |p: &&[u8; 4]| p[0] > 200 && p[1] < 60 && p[2] < 60;
+    let white = |p: &&[u8; 4]| p[0] > 200 && p[1] > 200 && p[2] > 200;
+    assert!(left.len() > 1000 && left.iter().filter(red).count() as f32 > left.len() as f32 * 0.95, "W is red");
+    assert!(right.len() > 1000 && right.iter().filter(white).count() as f32 > right.len() as f32 * 0.95, "D is white");
+}
+
+/// Underline and strikethrough are thin solids on the front plane,
+/// where and as long as the flat text draws them.
+#[test]
+fn a_3d_text_draws_its_underline_and_strikethrough() {
+    for (name, set) in [("underline", (|tb: &mut TextBox| tb.underline = true) as fn(&mut TextBox)), ("strikethrough", |tb: &mut TextBox| tb.strikethrough = true)] {
+        let gained = |three_d: bool| {
+            let (with, without) = (draw_at(&styled(three_d, set), 1.0), draw_at(&styled(three_d, |_| {}), 1.0));
+            let rows: Vec<u32> = (0..H).filter(|&y| (0..W).any(|x| px(&with, x, y)[3] > 128 && px(&without, x, y)[3] <= 128)).collect();
+            let count = with.chunks_exact(4).zip(without.chunks_exact(4)).filter(|(a, b)| a[3] > 128 && b[3] <= 128).count();
+            (count, rows.first().copied().unwrap_or(0), rows.last().copied().unwrap_or(0))
+        };
+        let ((s, s0, s1), (f, f0, f1)) = (gained(true), gained(false));
+        assert!(f > 500, "{name}: the flat text's stripe: {f}");
+        assert!((s as f32 - f as f32).abs() / f as f32 <= 0.1, "{name}: as much stripe in 3D as flat: {s} vs {f}");
+        assert!(s0.abs_diff(f0) <= 2 && s1.abs_diff(f1) <= 2, "{name}: at the flat stripe's rows: {s0}..{s1} vs {f0}..{f1}");
+    }
+    // Turned, the underline has depth too: a wall under the word.
+    let td = turned(styled(true, |tb| tb.underline = true));
+    let (with, without) = (draw_at(&td, 1.0), draw_at(&turned(styled(true, |_| {})), 1.0));
+    let (_, _, _, wy, _) = ink(&without);
+    let below = (wy + 2..H).flat_map(|y| (0..W).map(move |x| (x, y))).filter(|&(x, y)| px(&with, x, y)[3] > 128).count();
+    assert!(below > 300, "the turned underline is drawn below the word: {below}");
+}
+
+/// A write-on reveals the solids from the start as far as it reveals
+/// the flat text.
+#[test]
+fn a_3d_text_writes_on_as_the_flat_text_does() {
+    let half = |tb: &mut TextBox| tb.write_on = 0.45;
+    let (solid, flat, whole) = (draw_at(&styled(true, half), 1.0), draw_at(&styled(false, half), 1.0), draw_at(&styled(true, |_| {}), 1.0));
+    let ((sx0, _, sx1, _, sn), (fx0, _, fx1, _, fnn), (wx0, _, wx1, _, wn)) = (ink(&solid), ink(&flat), ink(&whole));
+    assert!(sx0.abs_diff(fx0) <= 2 && sx1.abs_diff(fx1) <= 2, "revealed to where the flat text is: 3D {sx0}..{sx1}, flat {fx0}..{fx1}");
+    assert!(sx0.abs_diff(wx0) <= 2 && sx1 + 100 < wx1, "from the start, not to the end: {sx0}..{sx1} of {wx0}..{wx1}");
+    assert!((sn as f32 - fnn as f32).abs() / fnn as f32 <= 0.05 && sn < wn * 3 / 5, "3D {sn}, flat {fnn}, whole {wn}");
+    // Turned, the cut solid shows its cut, and still stops short.
+    let (cut, all) = (draw_at(&turned(styled(true, half)), 1.0), draw_at(&turned(styled(true, |_| {})), 1.0));
+    assert!(ink(&cut).4 < ink(&all).4 * 3 / 5 && ink(&cut).4 > 1000);
+    // None written: nothing drawn.
+    assert_eq!(ink(&draw_at(&styled(true, |tb| tb.write_on = 0.0), 1.0)).4, 0);
+}
+
+/// A staggered rise poses each glyph's solid on its own: mid-entrance
+/// the first letters stand higher than the last, as on the flat text;
+/// settled, the word is its resting self. The viewer draws the frame
+/// the export does.
+#[test]
+fn a_3d_text_rises_letter_by_letter() {
+    use klipp_timeline::{Easing, LayerFx, Motion, MotionKind, StaggerUnit, TitleMotion};
+    let rising = |three_d: bool| {
+        let mut td = styled(three_d, |_| {});
+        td.objects[0].fx = Some(LayerFx { motion: TitleMotion::enter(Motion::new(MotionKind::Rise).duration(0.6).easing(Easing::Linear).stagger(StaggerUnit::Char, 0.2)), ..Default::default() });
+        td
+    };
+    let mut r = TitleRenderer::new();
+    let (td, flat) = (rising(true), rising(false));
+    let rest = draw_at(&styled(true, |_| {}), 3.0);
+    let (x0, _, x1, _, _) = ink(&rest);
+    let quarter = (x1 - x0) / 4;
+    // The top of the ink in the first and the last letter's columns.
+    let tops = |buf: &[u8]| {
+        let top = |xs: std::ops::Range<u32>| (0..H).find(|&y| xs.clone().any(|x| px(buf, x, y)[3] > 128));
+        (top(x0..x0 + quarter), top(x1 - quarter..x1))
+    };
+    for t in [0.35f32, 0.5] {
+        let export = r.render_with_window(&td, W, H, None, t, Some(4.0));
+        let viewer = match r.frame_with_window(&td, W, H, None, t, Some(4.0)) {
+            TitleFrame::Rendered { pixels, .. } => pixels,
+            _ => panic!("at t={t} a rising 3D text is drawn for its time"),
+        };
+        assert_eq!(viewer, export, "at t={t} the viewer's frame is the export's");
+        let ((first, last), (flat_first, flat_last)) = (tops(&export), tops(&draw_at(&flat, t)));
+        let (first, last) = (first.expect("the first letter shows"), last.unwrap_or(H));
+        assert!(first + 10 < last, "at t={t} the first letter has risen further: {first} vs {last}");
+        let (flat_first, flat_last) = (flat_first.unwrap(), flat_last.unwrap_or(H));
+        assert!(first.abs_diff(flat_first) <= 4, "at t={t} the first letter stands as the flat one does: {first} vs {flat_first}");
+        assert!(last.min(H).abs_diff(flat_last.min(H)) <= 6, "at t={t} so does the last: {last} vs {flat_last}");
+    }
+    assert_eq!(draw_at(&td, 3.0), rest, "settled, the word is at rest");
+}
+
+/// An animator turns each glyph's solid about its own centre, as it
+/// turns each flat glyph: the word takes the same room it takes flat.
+#[test]
+fn an_animator_turns_each_3d_glyph_on_its_own() {
+    use klipp_timeline::{Animator, AnimatorProps, LayerFx};
+    let spun = |three_d: bool| {
+        let mut td = styled(three_d, |_| {});
+        td.objects[0].fx = Some(LayerFx { animators: vec![Animator { props: AnimatorProps { rotation: 30.0, ..Default::default() }, ..Default::default() }], ..Default::default() });
+        td
+    };
+    let (solid, flat, still) = (draw_at(&spun(true), 1.0), draw_at(&spun(false), 1.0), draw_at(&styled(true, |_| {}), 1.0));
+    assert_ne!(solid, still, "the animator poses the solids");
+    let (s, f) = (ink(&solid), ink(&flat));
+    assert!(s.1.abs_diff(f.1) <= 4 && s.3.abs_diff(f.3) <= 4, "turned glyphs reach the rows flat ones do: 3D {s:?}, flat {f:?}");
+    assert!((s.4 as f32 - f.4 as f32).abs() / f.4 as f32 <= 0.05, "as much ink: 3D {}, flat {}", s.4, f.4);
+}
+
+/// On a path, each glyph's solid stands where its flat glyph does,
+/// turned along the path.
+#[test]
+fn a_3d_text_on_a_path_stands_each_glyph_on_it() {
+    let arc = |tb: &mut TextBox| tb.text_path = Some(klipp_timeline::TextPath::Arc { radius: 300.0, start_angle: 200.0, sweep: 140.0 });
+    let (solid, flat) = (draw_at(&styled(true, arc), 1.0), draw_at(&styled(false, arc), 1.0));
+    let (s, f) = (ink(&solid), ink(&flat));
+    let both = solid.chunks_exact(4).zip(flat.chunks_exact(4)).filter(|(a, b)| a[3] > 128 && b[3] > 128).count();
+    assert!(f.4 > 5000 && both as f32 >= f.4 as f32 * 0.9, "the solids cover the flat glyphs: {both} of {}", f.4);
+    assert!((s.4 as f32 - f.4 as f32).abs() / f.4 as f32 <= 0.06, "and not much more: 3D {}, flat {}", s.4, f.4);
+    // Not where the straight word stands.
+    let straight = draw_at(&styled(true, |_| {}), 1.0);
+    assert!(ink(&straight).1.abs_diff(s.1) > 20 || ink(&straight).3.abs_diff(s.3) > 20);
+}
+
+/// Chromatic aberration and glitch go on the drawn 3D layer as on a
+/// flat one.
+#[test]
+fn a_3d_text_keeps_its_post_effects() {
+    let (plain, split) = (draw_at(&styled(true, |_| {}), 1.0), draw_at(&styled(true, |tb| tb.chromatic_aberration_px = 8.0), 1.0));
+    let fringe = |buf: &[u8]| buf.chunks_exact(4).filter(|p| p[3] > 60 && p[0].abs_diff(p[2]) > 100).count();
+    assert_eq!(fringe(&plain), 0);
+    assert!(fringe(&split) > 500, "the channels split: {}", fringe(&split));
+    let glitched = draw_at(&styled(true, |tb| tb.glitch_intensity = 1.0), 1.0);
+    assert_ne!(glitched, plain, "the glitch shifts the drawn solid");
+}
+
+/// The done-when: a 3D word with a gradient face, a run in another
+/// colour, an underline, a write-on and a staggered rise draws each of
+/// them, the same in the viewer and the export; with 3D off, the text
+/// draws as it does without 3D.
+#[test]
+fn a_dressed_3d_word_draws_all_of_its_look() {
+    use klipp_timeline::{Easing, LayerFx, Motion, MotionKind, StaggerUnit, TitleMotion};
+    let dressed = |three_d: bool| {
+        let mut td = styled(three_d, |tb| {
+            tb.gradient = Some(klipp_timeline::TextGradient::pair([255, 255, 0, 255], [255, 120, 0, 255], true));
+            tb.style_runs.push(klipp_timeline::StyleRun { color: Some([0, 0, 255, 255]), ..klipp_timeline::StyleRun::default_for_range(3, 4) });
+            tb.underline = true;
+            tb.write_on = 0.8;
+        });
+        td.objects[0].fx = Some(LayerFx { motion: TitleMotion::enter(Motion::new(MotionKind::Rise).duration(0.6).easing(Easing::Linear).stagger(StaggerUnit::Char, 0.2)), ..Default::default() });
+        td
+    };
+    let td = dressed(true);
+    let mut r = TitleRenderer::new();
+    for t in [0.4f32, 2.0] {
+        let export = r.render_with_window(&td, W, H, None, t, Some(4.0));
+        let viewer = match r.frame_with_window(&td, W, H, None, t, Some(4.0)) {
+            TitleFrame::Rendered { pixels, .. } => pixels,
+            TitleFrame::Placed { .. } | TitleFrame::Glyphs { .. } => r.render_with_window(&td, W, H, None, t, Some(4.0)),
+        };
+        assert_eq!(viewer, export, "at t={t} the viewer's frame is the export's");
+    }
+    let settled = draw_at(&td, 2.0);
+    let count = |f: fn(&[u8]) -> bool| settled.chunks_exact(4).filter(|p| p[3] == 255 && f(p)).count();
+    assert!(count(|p| p[0] > 200 && p[1] > 200 && p[2] < 80) > 300, "the gradient's yellow top");
+    assert!(count(|p| p[0] > 200 && p[1] > 90 && p[1] < 170 && p[2] < 80) > 300, "its orange bottom");
+    // Each face pixel is the flat text's: its fill and its run as the
+    // flat text has them (a gradient over the run's colour), the write-on
+    // cutting both at the same column.
+    let flat = draw_at(&dressed(false), 2.0);
+    let (mut same, mut faces) = (0, 0);
+    for (a, b) in settled.chunks_exact(4).zip(flat.chunks_exact(4)) {
+        if a[3] == 255 && b[3] == 255 {
+            faces += 1;
+            same += usize::from((0..3).all(|k| a[k].abs_diff(b[k]) <= 12));
+        }
+    }
+    assert!(faces > 5000 && same as f32 >= faces as f32 * 0.97, "the face is the flat face: {same} of {faces}");
+    let (rest, underlined) = (ink(&draw_at(&dressed(true), 2.0)), ink(&draw_at(&{
+        let mut bare = td.clone();
+        if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut bare.objects[0].content {
+            tb.underline = false;
+        }
+        bare
+    }, 2.0)));
+    assert!(rest.3 > underlined.3 + 5, "the underline below the word: {} vs {}", rest.3, underlined.3);
+    // Mid-rise the first letter stands higher than the last.
+    let rising = draw_at(&td, 0.4);
+    let (x0, _, x1, _, _) = ink(&settled);
+    let q = (x1 - x0) / 5;
+    let top = |xs: std::ops::Range<u32>| (0..H).find(|&y| xs.clone().any(|x| px(&rising, x, y)[3] > 128)).unwrap_or(H);
+    assert!(top(x0..x0 + q) + 10 < top(x1 - q..x1), "staggered: {} vs {}", top(x0..x0 + q), top(x1 - q..x1));
+    // 3D off: the flat text, as drawn without any 3D settings.
+    let mut off = dressed(true);
+    if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut off.objects[0].content {
+        tb.three_d.as_mut().unwrap().enabled = false;
+    }
+    for t in [0.4f32, 2.0] {
+        assert_eq!(draw_at(&off, t), draw_at(&dressed(false), t), "at t={t} a text with 3D off draws flat");
+    }
+}
