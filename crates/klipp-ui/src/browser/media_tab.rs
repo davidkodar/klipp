@@ -790,7 +790,7 @@ fn paint_synthetic_title_thumb(
     let align = match data.alignment() {
         klipp_timeline::TextAlignment::Left => egui::Align2::LEFT_CENTER,
         klipp_timeline::TextAlignment::Right => egui::Align2::RIGHT_CENTER,
-        klipp_timeline::TextAlignment::Center => egui::Align2::CENTER_CENTER,
+        klipp_timeline::TextAlignment::Center | klipp_timeline::TextAlignment::Justify => egui::Align2::CENTER_CENTER,
     };
     // Scale the title's font_size into a card-friendly range. The
     // template stores e.g. 72 px which would dwarf the thumbnail; we

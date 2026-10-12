@@ -34,8 +34,8 @@ use fontdue::layout::{
 use fontdue::Font;
 use klipp_timeline::{LayerFx, TitleObject};
 use klipp_timeline::{
-    FontStyle, ImageFit, ImageLayer, ObjectTransform, Shape, ShapeKind, StyleRun,
-    TextAlignment, TextDirection, TextPath, TextPattern, TitleBackground, TitleData,
+    FontStyle, ImageFit, ImageLayer, LastLineAlign, ObjectTransform, Shape, ShapeKind, StyleRun,
+    TextAlignment, TextDirection, TextPath, TextPattern, TextVerticalAlign, TitleBackground, TitleData,
     TitleObjectContent,
 };
 use klipp_core::title_motion::{FocusBand, RampAxis, ScreenFade};
@@ -595,11 +595,7 @@ impl TitleRenderer {
         let font_px = tb.font_size * scale * case_scale;
 
         // Lay out text
-        let h_align = match tb.alignment {
-            TextAlignment::Left => HorizontalAlign::Left,
-            TextAlignment::Center => HorizontalAlign::Center,
-            TextAlignment::Right => HorizontalAlign::Right,
-        };
+        let h_align = h_align_of(tb.alignment);
 
         let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
         layout.reset(&LayoutSettings {
@@ -915,6 +911,20 @@ impl TitleRenderer {
             }
         }
 
+        // Justified lines fill the box (#1506). Only fontdue's own
+        // layout carries its lines; the drop-cap wrap, vertical and
+        // column paths set their lines from the left.
+        let alignment = if vertical_active && tb.alignment == TextAlignment::Justify {
+            TextAlignment::Center
+        } else {
+            tb.alignment
+        };
+        if alignment == TextAlignment::Justify && !drop_cap_wrap_eligible && !columns_active {
+            if let Some(lines) = layout.lines() {
+                justify_lines(&mut glyphs_owned, lines, &resolved_text, box_w, tb.last_line);
+            }
+        }
+
         let glyphs = &glyphs_owned;
 
         // ── Text on path: rasterize per-glyph with rotation ──
@@ -938,26 +948,16 @@ impl TitleRenderer {
         let text_w = text_max_x - text_min_x;
         let text_h = text_max_y - text_min_y;
 
-        // Position offset. `transform.center` is the textbox's anchor
-        // on the frame; alignment determines which edge of the
-        // rendered text rests at that anchor — Left = text's left
-        // edge at anchor, Center = text's centre at anchor, Right =
-        // text's right edge at anchor. This is the standard NLE model
-        // (matches DaVinci / FCP / Premiere) and is the *only* way
-        // dragging a Left/Right-aligned textbox actually moves the
-        // text — the previous implementation pinned Left/Right to a
-        // fixed frame-edge margin, silently dropping the user's drag.
+        // Position offset: which edge of the text rests on the anchor,
+        // and where it sits up and down its box (`text_offset_x`,
+        // `text_offset_y`).
         let anchor_x = title.position().x * width as f32;
-        let offset_x = match tb.alignment {
-            TextAlignment::Left => anchor_x - text_min_x,
-            TextAlignment::Center => anchor_x - text_w * 0.5 - text_min_x,
-            TextAlignment::Right => anchor_x - text_w - text_min_x,
-        };
+        let offset_x = text_offset_x(alignment, anchor_x, text_w, text_min_x, box_w);
         // Baseline shift is authored in 1080p reference pixels and
         // scales with the frame so a +20 px offset on a 1080p edit
         // looks the same on a 4K master. Positive shifts text DOWN.
         let baseline_shift_px = tb.baseline_shift * scale;
-        let offset_y = title.position().y * height as f32 - text_h * 0.5 - text_min_y
+        let offset_y = text_offset_y(tb.vertical_align, title.position().y * height as f32, box_h, text_h, text_min_y)
             + baseline_shift_px;
 
         // Compute the mask bounding box (padded for effects). When
@@ -2432,11 +2432,7 @@ impl TitleRenderer {
         let fit = fit_block_ratio(font, &resolved_text, |i| run_px_at(&tb.style_runs, i, font_px, scale * case_scale), box_w, box_h, tb.line_spacing);
         let font_px = font_px * fit;
 
-        let h_align = match tb.alignment {
-            TextAlignment::Left => HorizontalAlign::Left,
-            TextAlignment::Center => HorizontalAlign::Center,
-            TextAlignment::Right => HorizontalAlign::Right,
-        };
+        let h_align = h_align_of(tb.alignment);
 
         let mut layout = Layout::new(CoordinateSystem::PositiveYDown);
         layout.reset(&LayoutSettings {
@@ -2552,6 +2548,13 @@ impl TitleRenderer {
             }
         }
 
+        // Justify (same as render_layout, #1506)
+        if tb.alignment == TextAlignment::Justify {
+            if let Some(lines) = layout.lines() {
+                justify_lines(&mut glyphs_owned, lines, &resolved_text, box_w, tb.last_line);
+            }
+        }
+
         // Compute text bounding box and offset (same as render_layout)
         let mut text_min_x = f32::MAX;
         let mut text_min_y = f32::MAX;
@@ -2569,16 +2572,12 @@ impl TitleRenderer {
         // Mirrors render_layout's offset calc — kept in lockstep so
         // cursor hit-testing matches the rendered glyph positions.
         let anchor_x = title.position().x * width as f32;
-        let offset_x = match tb.alignment {
-            TextAlignment::Left => anchor_x - text_min_x,
-            TextAlignment::Center => anchor_x - text_w * 0.5 - text_min_x,
-            TextAlignment::Right => anchor_x - text_w - text_min_x,
-        };
+        let offset_x = text_offset_x(tb.alignment, anchor_x, text_w, text_min_x, box_w);
         // Baseline shift is authored in 1080p reference pixels and
         // scales with the frame so a +20 px offset on a 1080p edit
         // looks the same on a 4K master. Positive shifts text DOWN.
         let baseline_shift_px = tb.baseline_shift * scale;
-        let offset_y = title.position().y * height as f32 - text_h * 0.5 - text_min_y
+        let offset_y = text_offset_y(tb.vertical_align, title.position().y * height as f32, box_h, text_h, text_min_y)
             + baseline_shift_px;
 
         // Build character positions from glyph data.
@@ -3891,6 +3890,110 @@ fn run_px_at(runs: &[klipp_timeline::StyleRun], i: usize, base_px: f32, scale: f
         .find(|r| r.start <= i && i < r.end)
         .and_then(|r| r.font_size)
         .map_or(base_px, |pt| pt * scale)
+}
+
+/// fontdue's alignment for a text box's: a justified box is laid out
+/// from the left and [`justify_lines`] then spreads its lines (#1506).
+fn h_align_of(alignment: TextAlignment) -> HorizontalAlign {
+    match alignment {
+        TextAlignment::Left | TextAlignment::Justify => HorizontalAlign::Left,
+        TextAlignment::Center => HorizontalAlign::Center,
+        TextAlignment::Right => HorizontalAlign::Right,
+    }
+}
+
+/// How far laid-out text moves across the frame. `transform.center`
+/// is the textbox's anchor on the frame; alignment determines which
+/// edge of the rendered text rests at that anchor — Left = text's
+/// left edge at anchor, Center = text's centre at anchor, Right =
+/// text's right edge at anchor. This is the standard NLE model and is
+/// the *only* way dragging a Left/Right-aligned textbox actually moves
+/// the text. Justified text was laid out across the box's width from
+/// x = 0, so the box itself is centred on the anchor (#1506).
+fn text_offset_x(alignment: TextAlignment, anchor_x: f32, text_w: f32, text_min_x: f32, box_w: f32) -> f32 {
+    match alignment {
+        TextAlignment::Left => anchor_x - text_min_x,
+        TextAlignment::Center => anchor_x - text_w * 0.5 - text_min_x,
+        TextAlignment::Right => anchor_x - text_w - text_min_x,
+        TextAlignment::Justify => anchor_x - box_w * 0.5,
+    }
+}
+
+/// How far laid-out text moves down the frame: its block's top to the
+/// top of the box, its centre to the box's centre `anchor_y`, or its
+/// bottom to the box's bottom (#1506).
+fn text_offset_y(align: TextVerticalAlign, anchor_y: f32, box_h: f32, text_h: f32, text_min_y: f32) -> f32 {
+    match align {
+        TextVerticalAlign::Top => anchor_y - box_h * 0.5 - text_min_y,
+        TextVerticalAlign::Middle => anchor_y - text_h * 0.5 - text_min_y,
+        TextVerticalAlign::Bottom => anchor_y + box_h * 0.5 - text_h - text_min_y,
+    }
+}
+
+/// Spread each line of a justified text box across `box_w` (#1506):
+/// the gaps between its words widen until its last letter's right edge
+/// meets the box's right edge. A paragraph's last line — the one before
+/// a line break in `text`, or the last of all — follows `last` instead,
+/// and a line of one word has no gap to widen and stays where it is.
+/// `glyphs` were laid out from the left at x = 0 and `lines` are
+/// fontdue's for them; their byte offsets index `text`.
+fn justify_lines(
+    glyphs: &mut [fontdue::layout::GlyphPosition],
+    lines: &[fontdue::layout::LinePosition],
+    text: &str,
+    box_w: f32,
+    last: LastLineAlign,
+) {
+    let seen = |g: &fontdue::layout::GlyphPosition| !g.parent.is_whitespace();
+    for line in lines {
+        let start = line.glyph_start;
+        let end = line.glyph_end.min(glyphs.len().saturating_sub(1));
+        if start > end {
+            continue;
+        }
+        let Some(first) = (start..=end).find(|&i| seen(&glyphs[i])) else { continue };
+        let Some(final_) = (start..=end).rev().find(|&i| seen(&glyphs[i])) else { continue };
+        let right = glyphs[final_].x + glyphs[final_].width as f32;
+        // The paragraph ends here when a line break lies between this
+        // line's last letter and the next line's first.
+        let ends_paragraph = glyphs[end + 1..].iter().find(|g| seen(g)).is_none_or(|next| {
+            text.get(glyphs[final_].byte_offset..next.byte_offset).is_some_and(|between| between.contains('\n'))
+        });
+        if ends_paragraph && last != LastLineAlign::Justify {
+            if last == LastLineAlign::Center {
+                let shift = (box_w - right - glyphs[first].x) * 0.5;
+                for g in &mut glyphs[start..=end] {
+                    g.x += shift;
+                }
+            }
+            continue;
+        }
+        let mut gaps = 0usize;
+        let mut in_gap = false;
+        for g in &glyphs[first..=final_] {
+            if !seen(g) {
+                in_gap = true;
+            } else if in_gap {
+                gaps += 1;
+                in_gap = false;
+            }
+        }
+        let extra = box_w - right;
+        if gaps == 0 || extra <= 0.0 {
+            continue;
+        }
+        let step = extra / gaps as f32;
+        let (mut k, mut in_gap) = (0usize, false);
+        for g in &mut glyphs[first..=end] {
+            if !seen(g) {
+                in_gap = true;
+            } else if in_gap {
+                k += 1;
+                in_gap = false;
+            }
+            g.x += step * k as f32;
+        }
+    }
 }
 
 /// Full-frame text keeps the historical five-percent margin. Explicit
@@ -5297,7 +5400,7 @@ pub struct GlyphCacheEntry {
 ///
 /// * `text` (the source string)
 /// * `font_name`, `font_style`, `font_size`
-/// * `case_transform`, `alignment`
+/// * `case_transform`, `alignment`, `last_line`, `vertical_align`
 /// * `tracking`, `line_spacing`, `baseline_shift`
 /// * `style_runs[*]` — only `start`, `end`, `font_size` (per-run
 ///   `font_name` and `font_style` are silently dropped by
@@ -5322,6 +5425,8 @@ pub fn glyph_layout_hash(td: &TitleData, frame_w: u32, frame_h: u32) -> u64 {
     tb.font_size.to_bits().hash(&mut h);
     std::mem::discriminant(&tb.case_transform).hash(&mut h);
     std::mem::discriminant(&tb.alignment).hash(&mut h);
+    std::mem::discriminant(&tb.last_line).hash(&mut h);
+    std::mem::discriminant(&tb.vertical_align).hash(&mut h);
     tb.tracking.to_bits().hash(&mut h);
     tb.line_spacing.to_bits().hash(&mut h);
     tb.baseline_shift.to_bits().hash(&mut h);
@@ -8134,6 +8239,20 @@ mod tests {
         assert_ne!(baseline, modified, "alignment must invalidate cache");
     }
 
+    /// #1506: the last line and the vertical alignment move glyphs too.
+    #[test]
+    fn glyph_hash_changes_on_last_line_and_vertical_align() {
+        let baseline = baseline_glyph_hash();
+        let last = modify_baseline_and_glyph_hash(|td| {
+            glyph_hash_modify_text_box(td, |tb| tb.last_line = klipp_timeline::LastLineAlign::Justify)
+        });
+        let vertical = modify_baseline_and_glyph_hash(|td| {
+            glyph_hash_modify_text_box(td, |tb| tb.vertical_align = klipp_timeline::TextVerticalAlign::Top)
+        });
+        assert_ne!(baseline, last, "the last line must invalidate cache");
+        assert_ne!(baseline, vertical, "vertical alignment must invalidate cache");
+    }
+
     #[test]
     fn glyph_hash_changes_on_tracking() {
         let baseline = baseline_glyph_hash();
@@ -8301,5 +8420,211 @@ mod solid_point_tests {
         let centre = super::resolve_anchor(None, &rgba, w as u32, (10, 190), (10, 95));
         assert!((30.0..55.0).contains(&centre.1), "the box's centre is the gap: {centre:?}");
         assert_eq!(super::solid_point(&vec![0u8; w * h * 4], w as u32, (10, 190), (10, 95)), None);
+    }
+}
+
+#[cfg(test)]
+mod box_alignment_tests {
+    //! #1506: justified text and text set up and down its box.
+    use super::*;
+    use klipp_timeline::{LastLineAlign, TextBox, TextVerticalAlign, TitlePosition};
+
+    const W: u32 = 1920;
+    const H: u32 = 1080;
+    /// Two paragraphs, each long enough to wrap in a half-frame box; the
+    /// first one's last word is the only capital Z.
+    const TWO_PARAGRAPHS: &str = "the quick brown fox jumps over the lazy dog and runs far into the woods by the river Zed\nsome more words follow here so this second paragraph wraps onto a further line of its own end";
+
+    fn boxed(text: &str, alignment: TextAlignment, size: (f32, f32), adjust: impl FnOnce(&mut TextBox)) -> TitleData {
+        let mut tb = TextBox { text: text.to_string(), font_name: "sans-serif".into(), font_size: 48.0, alignment, ..Default::default() };
+        adjust(&mut tb);
+        let mut td = TitleData::single_text_fx(tb, LayerFx::default());
+        let o = td.objects.first_mut().unwrap();
+        o.transform.center = TitlePosition { x: 0.5, y: 0.5 };
+        o.transform.size = TitlePosition { x: size.0, y: size.1 };
+        td
+    }
+
+    /// The rendered lines, each as its letters' frame boxes and
+    /// characters, in reading order: a new line starts where a letter
+    /// sits left of the one before it.
+    fn lines(layout: &TitleLayout) -> Vec<Vec<([i32; 4], char)>> {
+        let mut out: Vec<Vec<([i32; 4], char)>> = Vec::new();
+        let mut last_x = i32::MIN;
+        for (b, c) in layout.glyph_boxes.iter().zip(&layout.glyph_parents) {
+            if c.is_whitespace() || b[2] == b[0] {
+                continue;
+            }
+            if b[0] < last_x || out.is_empty() {
+                out.push(Vec::new());
+            }
+            last_x = b[0];
+            out.last_mut().unwrap().push((*b, *c));
+        }
+        out
+    }
+
+    fn right(line: &[([i32; 4], char)]) -> i32 {
+        line.iter().map(|(b, _)| b[2]).max().unwrap()
+    }
+
+    fn left(line: &[([i32; 4], char)]) -> i32 {
+        line.iter().map(|(b, _)| b[0]).min().unwrap()
+    }
+
+    /// The space between each pair of words on a line, in pixels.
+    fn word_gaps(layout: &TitleLayout, line_no: usize) -> Vec<i32> {
+        // Words are the runs between whitespace glyphs, on the line.
+        let mut gaps = Vec::new();
+        let (mut seen_line, mut prev_right, mut after_space, mut last_x) = (0usize, None::<i32>, false, i32::MIN);
+        let mut line = 0usize;
+        for (b, c) in layout.glyph_boxes.iter().zip(&layout.glyph_parents) {
+            if c.is_whitespace() || b[2] == b[0] {
+                after_space = true;
+                continue;
+            }
+            if b[0] < last_x {
+                line += 1;
+                prev_right = None;
+            }
+            last_x = b[0];
+            if line == line_no {
+                seen_line += 1;
+                if let (true, Some(r)) = (after_space, prev_right) {
+                    gaps.push(b[0] - r);
+                }
+                prev_right = Some(b[2]);
+            }
+            after_space = false;
+        }
+        assert!(seen_line > 0, "no line {line_no}");
+        gaps
+    }
+
+    /// Justified lines but each paragraph's last fill the box's width,
+    /// by gaps wider than the same line set from the left; the
+    /// paragraphs' last lines stay set from the left.
+    #[test]
+    fn justified_lines_fill_the_box() {
+        let mut r = TitleRenderer::new();
+        let justified = r.render_layout(&boxed(TWO_PARAGRAPHS, TextAlignment::Justify, (0.5, 0.9), |_| {}), W, H);
+        let flush = r.render_layout(&boxed(TWO_PARAGRAPHS, TextAlignment::Left, (0.5, 0.9), |_| {}), W, H);
+        let (box_left, box_right) = (480, 1440);
+        let ls = lines(&justified);
+        assert!(ls.len() >= 4, "the two paragraphs should wrap to four lines or more, got {}", ls.len());
+        assert_eq!(ls.len(), lines(&flush).len(), "justifying moves no word to another line");
+        let ends: Vec<bool> = ls.iter().enumerate().map(|(i, l)| i + 1 == ls.len() || l.iter().any(|(_, c)| *c == 'Z')).collect();
+        assert_eq!(ends.iter().filter(|e| **e).count(), 2, "one line ends each paragraph");
+        for (i, line) in ls.iter().enumerate() {
+            assert!((left(line) - box_left).abs() <= 4, "line {i} starts at {} not the box's left {box_left}", left(line));
+            if ends[i] {
+                assert!(right(line) < box_right - 40, "paragraph's last line {i} was spread to {}", right(line));
+                continue;
+            }
+            assert!((right(line) - box_right).abs() <= 1, "line {i} ends at {} not the box's right {box_right}", right(line));
+            let (wide, narrow) = (word_gaps(&justified, i), word_gaps(&flush, i));
+            assert_eq!(wide.len(), narrow.len(), "line {i} keeps its words");
+            assert!(wide.iter().zip(&narrow).all(|(w, n)| w > n), "line {i}'s gaps did not widen: {wide:?} vs {narrow:?}");
+        }
+    }
+
+    /// The last line follows its choice: centred in the box, or spread
+    /// across it like the lines above.
+    #[test]
+    fn the_last_line_follows_its_choice() {
+        let mut r = TitleRenderer::new();
+        let mut last = |choice| {
+            let layout = r.render_layout(&boxed(TWO_PARAGRAPHS, TextAlignment::Justify, (0.5, 0.9), |tb| tb.last_line = choice), W, H);
+            let ls = lines(&layout);
+            let line = ls.last().unwrap().clone();
+            (left(&line), right(&line))
+        };
+        let (l, rt) = last(LastLineAlign::Center);
+        assert!(((l + rt) / 2 - 960).abs() <= 2, "a centred last line spans {l}..{rt}, not about the box's centre 960");
+        let (l, rt) = last(LastLineAlign::Justify);
+        assert!((l - 480).abs() <= 4 && (rt - 1440).abs() <= 1, "a justified last line spans {l}..{rt}, not the box 480..1440");
+    }
+
+    /// The cursor follows the justified letters, as it follows every
+    /// other alignment: each character sits where its glyph was drawn.
+    #[test]
+    fn the_cursor_follows_justified_letters() {
+        let mut r = TitleRenderer::new();
+        let td = boxed(TWO_PARAGRAPHS, TextAlignment::Justify, (0.5, 0.9), |_| {});
+        let layout = r.render_layout(&td, W, H);
+        let positions = r.compute_char_positions(&td, W, H);
+        let drawn: Vec<i32> = layout.glyph_boxes.iter().zip(&layout.glyph_parents).filter(|(b, c)| !c.is_whitespace() && b[2] > b[0]).map(|(b, _)| b[0]).collect();
+        let cursor: Vec<f32> = positions.iter().filter(|p| TWO_PARAGRAPHS[p.byte_offset..].chars().next().is_some_and(|c| !c.is_whitespace())).map(|p| p.x).collect();
+        assert_eq!(drawn.len(), cursor.len());
+        for (d, c) in drawn.iter().zip(&cursor) {
+            assert!((*d as f32 - c).abs() <= 6.0, "a letter drawn at {d} has its cursor at {c}");
+        }
+    }
+
+    /// Top, middle and bottom put the text's block at the top of its
+    /// box, about its centre and at its bottom, in the drawn pixels and
+    /// in the layout the cursor reads.
+    #[test]
+    fn text_sits_top_middle_or_bottom_of_its_box() {
+        let mut r = TitleRenderer::new();
+        // A 0.6-high box about the frame's centre: 216..864 of 1080.
+        let (top, bottom) = (216.0f32, 864.0f32);
+        let mut at = |v| {
+            let td = boxed("Hello\nworld", TextAlignment::Center, (0.5, 0.6), |tb| tb.vertical_align = v);
+            let layout = r.render_layout(&td, W, H);
+            let buf = r.render(&td, W, H);
+            let rows: Vec<usize> = (0..H as usize).filter(|y| (0..W as usize).any(|x| buf[(y * W as usize + x) * 4 + 3] > 128)).collect();
+            let cursor_y = r.compute_char_positions(&td, W, H)[0].y;
+            (layout.text_top, layout.text_bottom, *rows.first().unwrap() as f32, *rows.last().unwrap() as f32, cursor_y)
+        };
+        let (t, b, first, _, top_cursor) = at(TextVerticalAlign::Top);
+        assert!((t - top).abs() <= 1.0 && (first - top).abs() <= 2.0, "top: text {t}..{b}, pixels from {first}");
+        let (t, b, first, last, middle_cursor) = at(TextVerticalAlign::Middle);
+        assert!(((t + b) / 2.0 - 540.0).abs() <= 1.0, "middle: text {t}..{b}");
+        assert!(((first + last) / 2.0 - 540.0).abs() <= 2.0, "middle: pixels {first}..{last}");
+        let text_h = b - t;
+        let (t, b, _, last, bottom_cursor) = at(TextVerticalAlign::Bottom);
+        assert!((b - bottom).abs() <= 1.0 && (last - bottom).abs() <= 2.0, "bottom: text {t}..{b}, pixels to {last}");
+        // The cursor moves with the text.
+        let half = (bottom - top - text_h) / 2.0;
+        assert!((middle_cursor - top_cursor - half).abs() <= 1.0, "cursor {top_cursor} -> {middle_cursor}, text moved {half}");
+        assert!((bottom_cursor - middle_cursor - half).abs() <= 1.0, "cursor {middle_cursor} -> {bottom_cursor}, text moved {half}");
+    }
+
+    fn fnv(bytes: impl IntoIterator<Item = u8>) -> u64 {
+        bytes.into_iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
+    }
+
+    /// A text box saved before #1506 has neither field, loads at Middle
+    /// and a left last line, saves as it did, and draws and lays out
+    /// byte for byte as it did before them: the hashes were taken with
+    /// the renderer as it stood without them.
+    #[test]
+    fn a_box_saved_before_reads_and_draws_as_before() {
+        let mut r = TitleRenderer::new();
+        let mut hashes = Vec::new();
+        for (alignment, size, spacing) in [
+            (TextAlignment::Left, (0.5, 0.9), 1.0),
+            (TextAlignment::Center, (1.0, 1.0), 1.0),
+            (TextAlignment::Right, (0.4, 0.8), 1.3),
+        ] {
+            let td = boxed(TWO_PARAGRAPHS, alignment, size, |tb| tb.line_spacing = spacing);
+            let json = serde_json::to_string(&td).unwrap();
+            assert!(!json.contains("last_line") && !json.contains("vertical_align"), "a default box writes neither field");
+            let read: TitleData = serde_json::from_str(&json).unwrap();
+            assert_eq!(read, td);
+            let tb = read.primary_text().unwrap();
+            assert_eq!((tb.vertical_align, tb.last_line), (TextVerticalAlign::Middle, LastLineAlign::Left));
+            let pixels = fnv(r.render(&read, 640, 360));
+            let cursor = fnv(r.compute_char_positions(&read, 640, 360).iter().flat_map(|p| [p.x.to_bits(), p.y.to_bits()]).flat_map(u32::to_le_bytes));
+            hashes.push((pixels, cursor));
+        }
+        // Taken on main at f26cf5792, before #1506.
+        let before = [
+            (2089990751451958423, 15491691981405734563),
+            (16810429097172737439, 12119957885803439428),
+            (2560225096274464296, 2722093848623605274),
+        ];
+        assert_eq!(hashes, before, "a box saved before #1506 draws or lays out differently");
     }
 }

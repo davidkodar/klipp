@@ -1784,7 +1784,7 @@ fn show_title_pinned_core_textbox(
     });
     ui.add_space(8.0);
 
-    // 3. B / I / U / S pill buttons (left) + L / C / R alignment
+    // 3. B / I / U / S pill buttons (left) + L / C / R / J alignment
     //    pill buttons (right). Both groups share a consistent
     //    button height + inactive fill so the row reads as one
     //    coordinated control strip.
@@ -1844,14 +1844,16 @@ fn show_title_pinned_core_textbox(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             let cur = match tb.alignment {
-                klipp_timeline::TextAlignment::Right => 2u8,
+                klipp_timeline::TextAlignment::Justify => 3u8,
+                klipp_timeline::TextAlignment::Right => 2,
                 klipp_timeline::TextAlignment::Center => 1,
                 klipp_timeline::TextAlignment::Left => 0,
             };
-            // Right-to-left layout: order in the slice is R, C, L
+            // Right-to-left layout: order in the slice is J, R, C, L
             // because that's how they paint from the right edge
             // inward.
             for (val, icon) in [
+                (3u8, Icon::TextAlignJustify),
                 (2u8, Icon::TextAlignRight),
                 (1u8, Icon::TextAlignCenter),
                 (0u8, Icon::TextAlignLeft),
@@ -1863,6 +1865,48 @@ fn show_title_pinned_core_textbox(
                 }
             }
         });
+    });
+    ui.add_space(8.0);
+
+    // 3b. Where the text sits up and down its box (left) and, for
+    //     justified text, where each paragraph's last line goes
+    //     (right) (#1506).
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let cur = match tb.vertical_align {
+            klipp_timeline::TextVerticalAlign::Top => 0u8,
+            klipp_timeline::TextVerticalAlign::Middle => 1,
+            klipp_timeline::TextVerticalAlign::Bottom => 2,
+        };
+        for (val, label) in [(0u8, "Top"), (1u8, "Middle"), (2u8, "Bottom")] {
+            if pill_toggle_button(ui, theme, label, cur == val, |r| r.size(11.0)).clicked() && cur != val {
+                cmds.push(AppCommand::SetTitleVerticalAlign { clip_id, vertical_align: val });
+            }
+        }
+        if tb.alignment == klipp_timeline::TextAlignment::Justify {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let cur = match tb.last_line {
+                    klipp_timeline::LastLineAlign::Justify => 2u8,
+                    klipp_timeline::LastLineAlign::Center => 1,
+                    klipp_timeline::LastLineAlign::Left => 0,
+                };
+                for (val, icon) in [
+                    (2u8, Icon::TextAlignJustify),
+                    (1u8, Icon::TextAlignCenter),
+                    (0u8, Icon::TextAlignLeft),
+                ] {
+                    if pill_toggle_icon_button(ui, theme, icon, cur == val)
+                        .on_hover_text("Last line")
+                        .clicked()
+                        && cur != val
+                    {
+                        cmds.push(AppCommand::SetTitleLastLine { clip_id, last_line: val });
+                    }
+                }
+                ui.label(egui::RichText::new("Last").size(10.0).color(theme.text_secondary));
+            });
+        }
     });
     ui.add_space(8.0);
 

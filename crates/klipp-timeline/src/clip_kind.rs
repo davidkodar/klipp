@@ -856,6 +856,21 @@ pub struct TextBox {
     /// text by default.
     #[serde(default)]
     pub text_direction: TextDirection,
+    /// Where the last line of each paragraph sits when `alignment` is
+    /// [`TextAlignment::Justify`]; read by nothing else (#1506). Left
+    /// unwritten at its default, so a text box saved before it existed
+    /// saves the same.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub last_line: LastLineAlign,
+    /// Where the text sits up and down its box (#1506). `Middle`, the
+    /// default, is where a text box has always set its text: the block
+    /// centred on the box's centre. Left unwritten at its default.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub vertical_align: TextVerticalAlign,
+}
+
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
 }
 
 impl LayerFx {
@@ -1081,6 +1096,8 @@ impl Default for TextBox {
             columns: 1,
             vertical_layout: false,
             text_direction: TextDirection::Ltr,
+            last_line: LastLineAlign::Left,
+            vertical_align: TextVerticalAlign::Middle,
         }
     }
 }
@@ -2000,6 +2017,30 @@ pub enum TextAlignment {
     Left,
     Center,
     Right,
+    /// Every line but a paragraph's last fills the box's width, its
+    /// word gaps widened to do it; the last line follows
+    /// [`TextBox::last_line`] (#1506). Last, so a saved alignment
+    /// reads as it did.
+    Justify,
+}
+
+/// Where a justified paragraph's last line sits (#1506).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum LastLineAlign {
+    #[default]
+    Left,
+    Center,
+    /// Justified like the lines above it.
+    Justify,
+}
+
+/// Where a text box's text sits up and down the box (#1506).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum TextVerticalAlign {
+    Top,
+    #[default]
+    Middle,
+    Bottom,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]

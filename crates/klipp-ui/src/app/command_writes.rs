@@ -492,6 +492,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::UpdateTitleData { .. }
         | AppCommand::RevertTitleToStyle { .. }
         | AppCommand::SetTitleAlignment { .. }
+        | AppCommand::SetTitleLastLine { .. }
+        | AppCommand::SetTitleVerticalAlign { .. }
         | AppCommand::SetTitlePosition { .. }
         | AppCommand::SetTitleObjectTransform { .. }
         | AppCommand::AddTitleObject { .. }

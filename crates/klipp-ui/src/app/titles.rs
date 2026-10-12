@@ -769,6 +769,48 @@ impl KlippApp {
                 self.state.dirty = true;
                 true
             }
+            AppCommand::SetTitleLastLine { clip_id, last_line } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.last_line = match last_line {
+                                1 => klipp_timeline::LastLineAlign::Center,
+                                2 => klipp_timeline::LastLineAlign::Justify,
+                                _ => klipp_timeline::LastLineAlign::Left,
+                            }; }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Last Line", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
+            AppCommand::SetTitleVerticalAlign { clip_id, vertical_align } => {
+                let old = self.snapshot_title(*clip_id);
+                let target_oid = self.title_text_target_id(*clip_id);
+                for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
+                    if let Some(clip) = track.clips.iter_mut().find(|c| c.id == *clip_id) {
+                        if let klipp_timeline::ClipKind::Title(ref mut td) = clip.kind {
+                            if let Some(tb) = target_textbox_mut(td, target_oid) { tb.vertical_align = match vertical_align {
+                                0 => klipp_timeline::TextVerticalAlign::Top,
+                                2 => klipp_timeline::TextVerticalAlign::Bottom,
+                                _ => klipp_timeline::TextVerticalAlign::Middle,
+                            }; }
+                        }
+                    }
+                }
+                if let Some(old) = old { self.push_title_undo(*clip_id, "Title Vertical Alignment", old); }
+                self.render_title_to_viewer(*clip_id);
+                self.sync_sequence_to_engine();
+                let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetTitleUnderline { clip_id, underline } => {
                 let old = self.snapshot_title(*clip_id);
                 let target_oid = self.title_text_target_id(*clip_id);
@@ -1113,6 +1155,7 @@ impl KlippApp {
                             if let Some(tb) = target_textbox_mut(td, target_oid) { tb.alignment = match alignment {
                                 0 => klipp_timeline::TextAlignment::Left,
                                 2 => klipp_timeline::TextAlignment::Right,
+                                3 => klipp_timeline::TextAlignment::Justify,
                                 _ => klipp_timeline::TextAlignment::Center,
                             }; }
                         }
@@ -3150,6 +3193,8 @@ pub(super) fn title_edit_clip_id(cmd: &AppCommand) -> Option<klipp_core::ClipId>
         C::UpdateTitleData { clip_id, .. }
         | C::ApplyTitleStyle { clip_id, .. }
         | C::SetTitleAlignment { clip_id, .. }
+        | C::SetTitleLastLine { clip_id, .. }
+        | C::SetTitleVerticalAlign { clip_id, .. }
         | C::SetTitlePosition { clip_id, .. }
         | C::SetTitleBackground { clip_id, .. }
         | C::SetTitleShadow { clip_id, .. }

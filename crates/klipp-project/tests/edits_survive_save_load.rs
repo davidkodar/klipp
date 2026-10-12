@@ -116,6 +116,36 @@ fn a_title_saved_with_the_old_animation_opens_with_loops() {
     assert!(clip.transform_pos_y_keyframes().is_empty(), "the baked keyframes should go with it");
 }
 
+/// #1506: a justified text box's last-line choice and a text box's
+/// vertical alignment come back through a real save and a strict load;
+/// a box at the defaults writes neither, so it saves as it did before.
+#[test]
+fn a_text_boxs_justify_and_vertical_alignment_come_back() {
+    let mut seq = Sequence::new_default();
+    let set = TextBox {
+        text: "Set".into(),
+        alignment: klipp_timeline::TextAlignment::Justify,
+        last_line: klipp_timeline::LastLineAlign::Center,
+        vertical_align: klipp_timeline::TextVerticalAlign::Bottom,
+        ..TextBox::default()
+    };
+    let mut td = TitleData::single_text(set);
+    td.add_object(TitleObjectContent::TextBox(TextBox { text: "Plain".into(), ..TextBox::default() }), klipp_timeline::default_text_transform());
+    let mut c = Clip::gap(tc(0), tc(48));
+    c.kind = ClipKind::Title(td.clone());
+    seq.tracks[0].clips = vec![c];
+
+    let dir = project_dir("justify");
+    klipp_project::save_project(&dir, &[seq], &MediaPool::new()).unwrap();
+    let saved = std::fs::read_dir(&dir).unwrap().filter_map(|e| std::fs::read_to_string(e.unwrap().path()).ok()).collect::<String>();
+    let (seqs, ..) = klipp_project::load_project_strict(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(saved.matches("\"vertical_align\"").count(), 1, "only the set box writes its vertical alignment");
+    assert_eq!(saved.matches("\"last_line\"").count(), 1, "only the set box writes its last line");
+    let ClipKind::Title(loaded) = &seqs[0].tracks[0].clips[0].kind else { panic!("not a title") };
+    assert_eq!(loaded, &td, "the title did not round-trip whole");
+}
+
 #[test]
 fn magnetic_roles_and_anchors_come_back() {
     let mut seq = Sequence::new_default();
