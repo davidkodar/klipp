@@ -51,6 +51,9 @@ pub struct RenderJob {
     /// The sequence rendered, so Render Again renders that one whichever
     /// is open.
     pub sequence_id: klipp_core::SequenceId,
+    /// The media files the job plays the sound of: what its credits list,
+    /// written when it completes, is drawn from (#1604).
+    pub heard_media: Vec<PathBuf>,
 }
 
 impl RenderJob {
@@ -217,6 +220,7 @@ impl RenderQueue {
         let (width, height) = settings.resolution.as_ref().map(|r| (r.width, r.height)).unwrap_or((snapshot.sequence_snapshot.width, snapshot.sequence_snapshot.height));
         let export_range = snapshot.sequence_snapshot.export_range;
         let sequence_id = snapshot.sequence_snapshot.video.sequence.id;
+        let heard_media = snapshot.sequence_snapshot.heard_media();
         self.jobs.push(RenderJob {
             id,
             label,
@@ -238,6 +242,7 @@ impl RenderQueue {
             height,
             export_range,
             sequence_id,
+            heard_media,
         });
         self.snapshots.push((id, snapshot));
         self.start_next_jobs();
@@ -597,6 +602,7 @@ mod tests {
             height: 1080,
             export_range: None,
             sequence_id: klipp_core::SequenceId::new(),
+            heard_media: Vec::new(),
         }
     }
 

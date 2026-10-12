@@ -501,6 +501,30 @@ pub fn read_credit(audio: &std::path::Path) -> Option<Credit> {
     parse_credit(&std::fs::read_to_string(audio.with_extension("klipp-credit.txt")).ok()?)
 }
 
+/// The credits list's file, beside an export: `film.mp4` gets
+/// `film.credits.txt`.
+pub fn credits_path(export: &std::path::Path) -> std::path::PathBuf {
+    export.with_extension("credits.txt")
+}
+
+/// Write the credits of the files a finished export played (`heard`)
+/// beside it, and say where and how many (#1582, #1604). With nothing
+/// to credit, a list an earlier export left there is removed, so the
+/// file beside an export is always that export's.
+pub fn write_credits(export: &std::path::Path, heard: &[std::path::PathBuf]) -> std::io::Result<Option<(std::path::PathBuf, usize)>> {
+    let mut seen = std::collections::HashSet::new();
+    let credits: Vec<Credit> = heard.iter().filter(|p| seen.insert(*p)).filter_map(|p| read_credit(p)).collect();
+    let file = credits_path(export);
+    if credits.is_empty() {
+        match std::fs::remove_file(&file) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => return Ok(None),
+        }
+    }
+    std::fs::write(&file, credits_text(&credits))?;
+    Ok(Some((file, credits.len())))
+}
+
 /// A credit file's text: `"title" by author — licence (page)`, then
 /// `Licence: label (deed URL)` and `Source page: page`.
 fn parse_credit(text: &str) -> Option<Credit> {
@@ -715,6 +739,35 @@ pub fn download_dir() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
+    /// #1604: the list beside a finished export is the credits of what it
+    /// played, each once; a file with no credit adds nothing; and an
+    /// export that played nothing credited leaves no list, removing one
+    /// an earlier export left.
+    #[test]
+    fn a_finished_export_gets_the_credits_of_what_it_played() {
+        let dir = std::env::temp_dir().join(format!("klipp-write-credits-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str, credited: bool| {
+            let audio = dir.join(format!("{name}.mp3"));
+            std::fs::write(&audio, b"x").unwrap();
+            if credited {
+                let page = format!("https://freesound.org/people/a/sounds/{name}/");
+                std::fs::write(audio.with_extension("klipp-credit.txt"), format!("\"{name}\" by a — CC BY ({page})\nLicence: CC BY (https://creativecommons.org/licenses/by/4.0/)\nSource page: {page}\n")).unwrap();
+            }
+            audio
+        };
+        let film = dir.join("film.mp4");
+        assert_eq!(super::credits_path(&film), dir.join("film.credits.txt"));
+        let (whoosh, own) = (file("whoosh", true), file("own", false));
+        let (path, count) = super::write_credits(&film, &[whoosh.clone(), own.clone(), whoosh]).unwrap().unwrap();
+        assert_eq!((path.clone(), count), (dir.join("film.credits.txt"), 1));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("\"whoosh\" by a").count(), 1, "each once: {text}");
+        assert!(super::write_credits(&film, &[own]).unwrap().is_none());
+        assert!(!path.exists(), "a list left by an earlier export goes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// #1570: a no-derivatives licence forbids editing the music, as an
     /// editor does; the other Creative Commons licences don't.
     #[test]
