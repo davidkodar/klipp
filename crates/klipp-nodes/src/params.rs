@@ -512,7 +512,7 @@ impl NodeParams {
         match param_name {
             "exposure" => self.exposure = n,
             "contrast" => self.contrast = n,
-            "contrast_pivot" => self.contrast_pivot = n,
+            "contrast_pivot" => self.contrast_pivot = Some(value), // unset is the default pivot: 0 is a value
             "clarity" => self.clarity = n,
             "saturation" => self.saturation = Some(value), // default is 1.0, not 0.0
             "vibrance" => self.vibrance = n,
@@ -1096,4 +1096,18 @@ mod override_names_tests {
 pub struct EffectBlend {
     pub mix: f32,
     pub channel: klipp_effects::mask_mix::MaskChannel,
+}
+
+#[cfg(test)]
+mod pivot_zero_tests {
+    use super::NodeParams;
+
+    /// A contrast pivot set to 0 stays 0: stored as unset it read back as
+    /// the default pivot, as the mixes did before #1444 (#1038).
+    #[test]
+    fn a_contrast_pivot_at_zero_stays_zero() {
+        let mut p = NodeParams::default();
+        assert!(p.apply_override("contrast_pivot", 0.0));
+        assert_eq!(p.contrast_pivot, Some(0.0));
+    }
 }
