@@ -2636,6 +2636,9 @@ pub enum AppCommand {
     /// The targeted text layer's animators (#1510), all of them: a preset
     /// added, one removed or one edited is one step.
     SetTitleAnimators { clip_id: ClipId, animators: Vec<crate::title_motion::Animator> },
+    /// The targeted text layer's 3D settings (#1512), whole; `None` takes
+    /// 3D off it altogether.
+    SetTitleText3d { clip_id: ClipId, three_d: Option<crate::text3d::Text3d> },
     /// Set the targeted title layer's edge fade: how it fades out
     /// towards the frame's edges, by where it is on screen (#592).
     SetTitleEdgeFade { clip_id: ClipId, edge_fade: crate::title_motion::EdgeFade },

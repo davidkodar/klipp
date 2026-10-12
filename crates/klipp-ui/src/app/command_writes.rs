@@ -573,6 +573,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ClearTitleStyleRuns { .. }
         | AppCommand::SetTitleLoops { .. }
         | AppCommand::SetTitleAnimators { .. }
+        | AppCommand::SetTitleText3d { .. }
         | AppCommand::SetTitleEdgeFade { .. }
         | AppCommand::ImportMediaLinked { .. }
         | AppCommand::UnlinkClip { .. }

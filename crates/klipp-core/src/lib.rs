@@ -42,6 +42,7 @@ pub mod keyframe;
 pub mod layer_mask;
 pub mod title_effect_keys;
 pub mod title_motion;
+pub mod text3d;
 pub mod export_preset;
 pub mod id;
 pub mod media_extensions;
