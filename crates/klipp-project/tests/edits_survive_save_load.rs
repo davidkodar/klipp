@@ -146,6 +146,36 @@ fn a_text_boxs_justify_and_vertical_alignment_come_back() {
     assert_eq!(loaded, &td, "the title did not round-trip whole");
 }
 
+/// A style run's font, style, tracking and baseline offset (#1505) come
+/// back through a real save and a strict load, beside its size and
+/// colour.
+#[test]
+fn a_style_runs_font_style_tracking_and_offset_come_back() {
+    let mut seq = Sequence::new_default();
+    let styled = klipp_timeline::StyleRun {
+        font_name: Some("Libre Baskerville".into()),
+        font_style: Some(klipp_timeline::FontStyle::BoldItalic),
+        tracking: Some(6.5),
+        baseline_offset: Some(-12.0),
+        font_size: Some(90.0),
+        color: Some([200, 40, 10, 255]),
+        ..klipp_timeline::StyleRun::default_for_range(4, 9)
+    };
+    let raised = klipp_timeline::StyleRun { baseline_offset: Some(20.0), ..klipp_timeline::StyleRun::default_for_range(10, 14) };
+    let td = TitleData::single_text(TextBox { text: "the quick brown fox".into(), style_runs: vec![styled, raised], ..TextBox::default() });
+    let mut c = Clip::gap(tc(0), tc(48));
+    c.kind = ClipKind::Title(td.clone());
+    seq.tracks[0].clips = vec![c];
+
+    let dir = project_dir("style-runs");
+    klipp_project::save_project(&dir, &[seq], &MediaPool::new()).unwrap();
+    let (seqs, ..) = klipp_project::load_project_strict(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let ClipKind::Title(loaded) = &seqs[0].tracks[0].clips[0].kind else { panic!("not a title") };
+    assert_eq!(loaded.primary_text().unwrap().style_runs, td.primary_text().unwrap().style_runs, "the style runs did not come back whole");
+    assert_eq!(loaded, &td, "the title did not round-trip whole");
+}
+
 #[test]
 fn magnetic_roles_and_anchors_come_back() {
     let mut seq = Sequence::new_default();

@@ -1078,36 +1078,7 @@ impl KlippApp {
                                 text_len,
                                 *range_start,
                                 *range_end,
-                                |run| {
-                                    match prop {
-                                        "color" => {
-                                            if let Ok(c) = serde_json::from_str::<[u8; 4]>(val) {
-                                                run.color = Some(c);
-                                            }
-                                        }
-                                        "font_size" => {
-                                            if let Ok(s) = val.parse::<f32>() {
-                                                run.font_size = Some(s);
-                                            }
-                                        }
-                                        "font_style" => {
-                                            if let Ok(fs) = serde_json::from_str::<klipp_timeline::FontStyle>(val) {
-                                                run.font_style = Some(fs);
-                                            }
-                                        }
-                                        "tracking" => {
-                                            if let Ok(t) = val.parse::<f32>() {
-                                                run.tracking = Some(t);
-                                            }
-                                        }
-                                        "baseline_offset" => {
-                                            if let Ok(b) = val.parse::<f32>() {
-                                                run.baseline_offset = Some(b);
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                },
+                                |run| set_run_property(run, prop, val),
                             );
                         }
                     }
@@ -3405,6 +3376,47 @@ pub(super) fn title_rest_time(clip: &klipp_timeline::Clip, fps_rate: u32) -> Opt
     Some(klipp_core::RationalTime::from_secs_f64(clip.timeline_in.to_secs_f64() + settle, fps_rate))
 }
 
+/// One property of a title's style run, as `ApplyTitleStyle` names it,
+/// set from its value as the inspector writes it: `color` a JSON RGBA,
+/// `font_style` a JSON `FontStyle`, `font_name` the family itself, and
+/// `font_size`, `tracking` and `baseline_offset` numbers (#1505). A
+/// value that does not read leaves the run as it was.
+fn set_run_property(run: &mut klipp_timeline::StyleRun, prop: &str, val: &str) {
+    match prop {
+        "color" => {
+            if let Ok(c) = serde_json::from_str::<[u8; 4]>(val) {
+                run.color = Some(c);
+            }
+        }
+        "font_size" => {
+            if let Ok(s) = val.parse::<f32>() {
+                run.font_size = Some(s);
+            }
+        }
+        "font_name" => {
+            if !val.is_empty() {
+                run.font_name = Some(val.to_string());
+            }
+        }
+        "font_style" => {
+            if let Ok(fs) = serde_json::from_str::<klipp_timeline::FontStyle>(val) {
+                run.font_style = Some(fs);
+            }
+        }
+        "tracking" => {
+            if let Ok(t) = val.parse::<f32>() {
+                run.tracking = Some(t);
+            }
+        }
+        "baseline_offset" => {
+            if let Ok(b) = val.parse::<f32>() {
+                run.baseline_offset = Some(b);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Where to put the playhead when a title is selected: its rest pose if
 /// the playhead is outside the title, else nowhere (leave it).
 pub(super) fn title_seek_on_select(
@@ -3460,5 +3472,33 @@ mod title_rest_tests {
     fn a_clip_that_is_not_a_title_has_no_rest_pose() {
         let c = Clip::media(klipp_core::MediaId::new(), t(0), t(5), t(0), t(5));
         assert_eq!(title_rest_time(&c, 30), None);
+    }
+}
+
+#[cfg(test)]
+mod style_run_property_tests {
+    use super::set_run_property;
+    use klipp_timeline::{FontStyle, StyleRun};
+
+    /// Every field the inspector offers for a selection reads from the
+    /// value it writes (#1505); a value that does not read changes
+    /// nothing.
+    #[test]
+    fn each_field_of_a_selection_reads_from_the_inspectors_value() {
+        let mut run = StyleRun::default_for_range(0, 4);
+        set_run_property(&mut run, "font_name", "Libre Baskerville");
+        set_run_property(&mut run, "font_style", &serde_json::to_string(&FontStyle::BoldItalic).unwrap());
+        set_run_property(&mut run, "tracking", "12.5");
+        set_run_property(&mut run, "baseline_offset", "-8");
+        set_run_property(&mut run, "font_size", "64");
+        set_run_property(&mut run, "color", "[1,2,3,4]");
+        assert_eq!(run.font_name.as_deref(), Some("Libre Baskerville"));
+        assert_eq!(run.font_style, Some(FontStyle::BoldItalic));
+        assert_eq!((run.tracking, run.baseline_offset, run.font_size, run.color), (Some(12.5), Some(-8.0), Some(64.0), Some([1, 2, 3, 4])));
+        let before = run.clone();
+        for prop in ["font_name", "font_style", "tracking", "baseline_offset"] {
+            set_run_property(&mut run, prop, "");
+        }
+        assert_eq!(run, before);
     }
 }
