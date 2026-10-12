@@ -5735,16 +5735,20 @@ impl GraphExecutor {
             | NodeKind::Unknown => primary_input.to_vec(),
 
             // PrimariesMatrix applies a fixed 3×3 working-space
-            // conversion in linear-light RGB. Both `primaries_from`
-            // and `primaries_to` must be set; any other state
-            // (one missing, or a same-from-same-to pair, or an
-            // unsupported pair like BT.2020 stubs) falls through to
-            // a passthrough — that's also the default-params state
-            // the migration uses to mark wrappers as inert when it
-            // strips them.
+            // conversion in linear-light RGB. Neither side set (the
+            // default-params state the migration uses to mark wrappers
+            // as inert when it strips them) or the same space on both
+            // sides is a passthrough.
+            //
+            // One side set is a conversion: the other is the catalog's
+            // default, Rec.709 linear, which its row shows (#1351); a
+            // pick of one side used to leave the node inert.
             NodeKind::PrimariesMatrix => {
+                let default = klipp_core::WorkingColorspace::Rec709Linear;
                 match (params.primaries_from, params.primaries_to) {
-                    (Some(from), Some(to)) => {
+                    (None, None) => primary_input.to_vec(),
+                    (from, to) => {
+                        let (from, to) = (from.unwrap_or(default), to.unwrap_or(default));
                         match klipp_color::primaries::working_space_conversion_matrix(from, to) {
                             Some(m) => {
                                 let mut frame = primary_input.to_vec();
@@ -5754,7 +5758,6 @@ impl GraphExecutor {
                             None => primary_input.to_vec(),
                         }
                     }
-                    _ => primary_input.to_vec(),
                 }
             }
 
@@ -8313,6 +8316,20 @@ mod tests {
         let out = run_primaries_matrix(None, None, pixel);
         for (a, b) in out.iter().zip(pixel.iter()) {
             assert!((a - b).abs() < 1e-6, "expected passthrough, got {out:?}");
+        }
+    }
+
+    /// One side set is a conversion from or to the other's default,
+    /// Rec.709 linear, as the inspector shows it (#1351): picking only
+    /// From or only To changes the picture.
+    #[test]
+    fn primaries_matrix_node_one_side_set_converts_from_or_to_rec709() {
+        use klipp_core::WorkingColorspace::{AcesCG, Bt2020Linear, Rec709Linear};
+        let pixel = [0.7, 0.2, 0.1, 1.0];
+        for (one, both) in [((Some(Bt2020Linear), None), (Some(Bt2020Linear), Some(Rec709Linear))), ((None, Some(AcesCG)), (Some(Rec709Linear), Some(AcesCG)))] {
+            let out = run_primaries_matrix(one.0, one.1, pixel);
+            assert_eq!(out, run_primaries_matrix(both.0, both.1, pixel), "{one:?} is {both:?}");
+            assert!(out.iter().zip(pixel.iter()).any(|(a, b)| (a - b).abs() > 1e-3), "{one:?} changed the picture: {out:?}");
         }
     }
 
