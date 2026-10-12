@@ -1538,3 +1538,45 @@ fn auto_layout_is_one_step_by_path_at_any_depth() {
         }
     }
 }
+
+/// A grade node something masks has a Mask channel row on its page, and
+/// one nothing masks doesn't (#1348): the window wired into a Corrector's
+/// mask port; the channel picked is the node's by path, one step, and
+/// undo takes it back.
+#[test]
+fn a_masked_grade_node_s_page_picks_its_mask_channel() {
+    let mut run = Run::new(NodeKind::Corrector).unwrap();
+    let draws = |run: &mut Run| {
+        run.frame(Vec::new());
+        run.texts().iter().any(|t| t == "Mask channel")
+    };
+    assert!(!draws(&mut run), "no mask, no row");
+    // A window, from the source, into the Corrector's mask port.
+    let corrector = run.node;
+    let clip_id = run.clip;
+    run.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip_id)).unwrap().edit_grade(|g| {
+        let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
+        let window = Node { id: NodeId::new_v4(), kind: NodeKind::Mask, label: "Window".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() };
+        g.edges.push(klipp_nodes::Edge { from_node: source, from_port: 0, to_node: window.id, to_port: 0 });
+        g.edges.push(klipp_nodes::Edge { from_node: window.id, from_port: 0, to_node: corrector, to_port: 1 });
+        g.nodes.push(window);
+    });
+    assert!(draws(&mut run), "a masked Corrector has the row: {:?}", run.texts());
+    // The channel shown, right of the label, opened; Alpha picked.
+    let texts = run.frame(Vec::new()).2;
+    let label = texts.iter().find(|(t, _)| t == "Mask channel").unwrap().1;
+    let shown = texts.iter().filter(|(_, p)| (p.y - label.y).abs() < 6.0 && p.x > label.x).min_by(|a, b| a.1.x.total_cmp(&b.1.x)).unwrap_or_else(|| panic!("the channel shown: {texts:?}")).1;
+    run.click(shown);
+    let alpha = run.frame(Vec::new()).2.into_iter().find(|(t, _)| t == "Alpha").unwrap_or_else(|| panic!("no Alpha choice")).1;
+    let cmds = run.click(alpha);
+    let (addr, _) = crate::inspector::grade_view::grade_node(clip(&run.state, clip_id), corrector).unwrap();
+    assert!(matches!(cmds.as_slice(), [AppCommand::SetMaskChannelAt { addr: a, channel: Some(c) }] if *a == addr && c == "alpha"), "{cmds:?}");
+    let before = saved(&run.state, clip_id);
+    let steps = run.state.active_history().undo_count();
+    run.apply(&cmds);
+    let channel = |run: &Run| crate::inspector::grade_view::grade_node(clip(&run.state, clip_id), corrector).unwrap().1.params.get(&klipp_graph_format::ParamKey::from("mask.channel")).cloned();
+    assert_eq!(channel(&run), Some(klipp_graph_format::ParamValue::Text("alpha".into())));
+    assert_eq!(run.state.active_history().undo_count(), steps + 1, "one step");
+    undo_once(&mut run.state);
+    assert_eq!(saved(&run.state, clip_id), before, "undo takes it back");
+}
