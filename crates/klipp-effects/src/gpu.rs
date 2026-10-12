@@ -193,6 +193,11 @@ pub struct GpuEffectsPipeline {
     // Compute pipelines — new effects
     invert_pipeline: wgpu::ComputePipeline,
     posterize_pipeline: wgpu::ComputePipeline,
+    /// The colour-space transform effect's pass (#1746).
+    cst_pipeline: wgpu::ComputePipeline,
+    /// The LUT effects' tables on the GPU, the latest last, each kept with
+    /// the preparation it was uploaded from so a table is uploaded once.
+    effect_luts: std::cell::RefCell<Vec<(Arc<crate::colour_transform::LutTable>, Arc<wgpu::Buffer>)>>,
     mosaic_pipeline: wgpu::ComputePipeline,
     edge_detect_pipeline: wgpu::ComputePipeline,
     channel_mixer_pipeline: wgpu::ComputePipeline,
@@ -1137,6 +1142,7 @@ impl GpuEffectsPipeline {
         let lut3d_pipeline = create_pipeline(&device, &huesat_pl, "lut3d", SHADER_LUT3D);
         // Posterize reads its ladder's band edges from a table (#1443).
         let posterize_pipeline = create_pipeline(&device, &huesat_pl, "posterize", SHADER_POSTERIZE);
+        let cst_pipeline = create_pipeline(&device, &huesat_pl, "colour_space_transform", SHADER_CST);
         let equalize_pipeline = create_pipeline(&device, &huesat_pl, "equalize", SHADER_EQUALIZE);
         let rsc_pipeline = create_pipeline(&device, &huesat_pl, "rolling_shutter", SHADER_ROLLING_SHUTTER);
         let stabilization_pipeline = create_pipeline(&device, &huesat_pl, "stabilization", SHADER_STABILIZATION);
@@ -1505,6 +1511,8 @@ impl GpuEffectsPipeline {
             film_halation_blend_pipeline,
             invert_pipeline,
             posterize_pipeline,
+            cst_pipeline,
+            effect_luts: std::cell::RefCell::new(Vec::new()),
             mosaic_pipeline,
             edge_detect_pipeline,
             channel_mixer_pipeline,
@@ -8027,6 +8035,32 @@ struct InvertParams {
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct CstParams {
+    width: u32,
+    height: u32,
+    /// Bit 0: read through the input curve, 1: write through the output
+    /// curve, 2: convert by the matrix.
+    flags: u32,
+    _pad: u32,
+    /// The matrix's rows.
+    m: [[f32; 4]; 3],
+}
+
+impl CstParams {
+    fn new(width: u32, height: u32, t: &crate::colour_transform::CstTables) -> Self {
+        let m = t.matrix.unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+        Self {
+            width,
+            height,
+            flags: t.decode.is_some() as u32 | (t.encode.is_some() as u32) << 1 | (t.matrix.is_some() as u32) << 2,
+            _pad: 0,
+            m: m.map(|r| [r[0], r[1], r[2], 0.0]),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct PosterizeParams {
     width: u32,
     height: u32,
@@ -14252,6 +14286,82 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
+// The colour-space transform effect (#1746), as
+// `colour_transform::cst_pixel` computes it: the input curve's table is
+// the slot table's first 256 floats, the output curve's the next 256.
+const SHADER_CST: &str = concat!(
+    "
+struct Params {
+    width: u32,
+    height: u32,
+    flags: u32,
+    _pad: u32,
+    m0: vec4<f32>,
+    m1: vec4<f32>,
+    m2: vec4<f32>,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> tables: array<f32>;
+",
+    shader_linear_helpers_wgsl!(),
+    "
+// The table from `base`'s linear value at `code`, carried on past the
+// ends (`curve_decode`).
+fn curve_decode(base: u32, code: f32) -> f32 {
+    let x = code * 255.0;
+    let i = min(u32(max(floor(x), 0.0)), 254u);
+    let f = x - f32(i);
+    let a = tables[base + i];
+    return a + (tables[base + i + 1u] - a) * f;
+}
+
+// Its inverse, the segment found by halving (`curve_encode`).
+fn curve_encode(base: u32, v: f32) -> f32 {
+    var lo = 0u;
+    var hi = 255u;
+    loop {
+        if lo + 1u >= hi { break; }
+        let mid = (lo + hi) / 2u;
+        if tables[base + mid] <= v { lo = mid; } else { hi = mid; }
+    }
+    let a = tables[base + lo];
+    let b = tables[base + lo + 1u];
+    var f = 0.0;
+    if b != a { f = (v - a) / (b - a); }
+    return (f32(lo) + f) / 255.0;
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let p = unpack(input[idx]);
+    var c = p.xyz;
+    if (params.flags & 1u) != 0u {
+        c = vec3<f32>(
+            curve_decode(0u, linear_to_srgb_component(c.x)),
+            curve_decode(0u, linear_to_srgb_component(c.y)),
+            curve_decode(0u, linear_to_srgb_component(c.z)),
+        );
+    }
+    if (params.flags & 4u) != 0u {
+        c = vec3<f32>(dot(params.m0.xyz, c), dot(params.m1.xyz, c), dot(params.m2.xyz, c));
+    }
+    if (params.flags & 2u) != 0u {
+        c = vec3<f32>(
+            srgb_to_linear_component(curve_encode(256u, c.x)),
+            srgb_to_linear_component(curve_encode(256u, c.y)),
+            srgb_to_linear_component(curve_encode(256u, c.z)),
+        );
+    }
+    output[idx] = pack(vec4<f32>(c, p.w));
+}
+"
+);
+
 const SHADER_MOSAIC: &str = "
 struct Params {
     width: u32,
@@ -16532,6 +16642,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_LUT3D", SHADER_LUT3D),
         ("SHADER_INVERT", SHADER_INVERT),
         ("SHADER_POSTERIZE", SHADER_POSTERIZE),
+        ("SHADER_CST", SHADER_CST),
         ("SHADER_MOSAIC", SHADER_MOSAIC),
         ("SHADER_EDGE_DETECT", SHADER_EDGE_DETECT),
         ("SHADER_CHANNEL_MIXER", SHADER_CHANNEL_MIXER),

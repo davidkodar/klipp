@@ -15,7 +15,7 @@ pub trait CustomEditor: Sync {
 }
 
 /// The registered editors, by id; steps 6 and 11 add theirs.
-static EDITORS: &[(&str, &dyn CustomEditor)] = &[("frei0r_plugin", &super::adapters::Frei0rEditor)];
+static EDITORS: &[(&str, &dyn CustomEditor)] = &[("frei0r_plugin", &super::adapters::Frei0rEditor), ("effect_lut_file", &super::adapters::LutFileEditor)];
 
 /// The editor registered under `id`, if any: a table, not a node-kind
 /// match, so a new editor is one line.

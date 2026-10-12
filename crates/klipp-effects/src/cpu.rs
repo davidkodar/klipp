@@ -934,6 +934,9 @@ pub(crate) fn apply(
         // and passing through is right — the work is already done.
         RollingShutterCorrection { .. } | VideoStabilization { .. } | SpeedRamp { .. } | Frei0r { .. }
         | TemporalDenoise { .. } => p,
+        // Their prepared tables are run by the chain (`apply_chain`); a
+        // caller here has nothing to run them with.
+        Lut3D { .. } | ColourSpaceTransform { .. } => p,
     }
 }
 

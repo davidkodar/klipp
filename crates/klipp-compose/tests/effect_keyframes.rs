@@ -84,6 +84,8 @@ fn every_effect() -> Vec<E> {
         E::SpeedRamp { speed: 1.0, blend_mode: 0 },
         E::Frei0r { type_id: "test".into(), params: Vec::new() },
         E::CornerPin { tl: [0.1, 0.1], tr: [0.9, 0.0], br: [1.0, 1.0], bl: [0.0, 0.9] },
+        E::Lut3D { path: "look.cube".into(), opacity: 0.5, tetrahedral: true, prepared: None },
+        E::ColourSpaceTransform { input_gamut: 5, input_curve: 2, output_gamut: 0, output_curve: 0, prepared: None },
     ];
     // Adding an effect stops this compiling until it is listed above.
     for e in &all {
@@ -100,7 +102,8 @@ fn every_effect() -> Vec<E> {
             | E::Levels { .. } | E::Equalize { .. } | E::Letterbox { .. } | E::ChromaticAberration { .. }
             | E::FilmGrain { .. } | E::TiltShift { .. } | E::OldFilm { .. } | E::Vhs { .. }
             | E::RollingShutterCorrection { .. } | E::TemporalDenoise { .. } | E::Deflicker { .. }
-            | E::VideoStabilization { .. } | E::SpeedRamp { .. } | E::Frei0r { .. } | E::CornerPin { .. } => {}
+            | E::VideoStabilization { .. } | E::SpeedRamp { .. } | E::Frei0r { .. } | E::CornerPin { .. }
+            | E::Lut3D { .. } | E::ColourSpaceTransform { .. } => {}
         }
     }
     all

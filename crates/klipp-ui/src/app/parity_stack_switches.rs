@@ -207,7 +207,7 @@ fn eye_pixels(ty: &EffectType) -> Result<(), String> {
             let params = info.params.iter().enumerate().map(|(i, p)| if i == 0 { klipp_frei0r::Frei0rValue::Double(0.85) } else { klipp_frei0r::Frei0rValue::default_for(p.kind) }).collect();
             BuiltinEffect::Frei0r { type_id: info.type_id(), params }
         }
-        _ => (ty.sample)(),
+        _ => super::parity_numeric::acting_sample(ty),
     };
     let (mut start, index) = super::parity_numeric::pixel_fixture(ty, &sample, Surface::EffectsStack)?;
     if ty.tag == "opacity" {
@@ -495,7 +495,7 @@ pub(super) fn run(report: &mut Report) {
     }
     for (entry, ty) in entries("@mix") {
         let key = |i| CoverageKey::new(entry.type_id, &entry.parameter, Surface::EffectsStack, NEW_ONLY, i);
-        let effect = (ty.sample)();
+        let effect = super::parity_numeric::acting_sample(ty);
         report.case(&format!("{} Mix dragged", ty.tag), [key(Interaction::Drag), key(Interaction::UndoRedo)], || {
             mix_case(&effect, ty, |s| drag_mix(s, false)).map(drop)
         });

@@ -16,6 +16,7 @@ use super::{
     Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, Scaling, Spatial, Temporal, Unit,
     IMAGE_IN, IMAGE_OUT,
 };
+use crate::colour_transform::{CURVES, GAMUTS};
 use crate::{BuiltinEffect, ColorFadeMode};
 
 const fn colour(
@@ -230,4 +231,66 @@ pub(super) static TYPES: &[EffectType] = &[
         tag: "equalize",
         sample: || BuiltinEffect::Equalize { strength: 1.0 },
     },
+    EffectType {
+        desc: mixable(colour(
+            "klipp.fx.lut_3d",
+            "3D LUT",
+            &[
+                ParamDesc { kind: ParamKind::Other, soft: None, ..ParamDesc::float("path", "LUT file", f32::NAN, (0.0, 0.0), Unit::None).fixed() },
+                ParamDesc::float("opacity", "Opacity", 1.0, (0.0, 1.0), Unit::Ratio),
+                switch("tetrahedral", "Tetrahedral", true),
+                prepared(),
+            ],
+            ColourDomain::Linear,
+            Spatial::PerPixel,
+        )),
+        tag: "lut_3d",
+        sample: || BuiltinEffect::Lut3D { path: String::new(), opacity: 1.0, tetrahedral: true, prepared: None },
+    },
+    EffectType {
+        desc: mixable(colour(
+            "klipp.fx.colour_space_transform",
+            "Colour Space Transform",
+            &[
+                choice("input_gamut", "Input gamut", GAMUTS),
+                choice("input_curve", "Input curve", CURVES),
+                choice("output_gamut", "Output gamut", GAMUTS),
+                choice("output_curve", "Output curve", CURVES),
+                prepared(),
+            ],
+            ColourDomain::Linear,
+            Spatial::PerPixel,
+        )),
+        tag: "colour_space_transform",
+        sample: || BuiltinEffect::ColourSpaceTransform { input_gamut: 0, input_curve: 0, output_gamut: 0, output_curve: 0, prepared: None },
+    },
 ];
+
+/// An on or off switch.
+const fn switch(field: &'static str, label: &'static str, on: bool) -> ParamDesc {
+    ParamDesc {
+        kind: ParamKind::Bool,
+        soft: None,
+        ..ParamDesc::float(field, label, if on { 1.0 } else { 0.0 }, (0.0, 1.0), Unit::None).fixed()
+    }
+}
+
+/// One of `names`, saved by its index, the first by default.
+const fn choice(field: &'static str, label: &'static str, names: &'static [&'static str]) -> ParamDesc {
+    ParamDesc {
+        kind: ParamKind::Choice(names),
+        soft: None,
+        ..ParamDesc::float(field, label, 0.0, (0.0, 0.0), Unit::None).fixed()
+    }
+}
+
+/// What the renderer works out for a LUT or a transform before each run
+/// ([`crate::colour_transform`]): never saved, never shown.
+const fn prepared() -> ParamDesc {
+    ParamDesc {
+        kind: ParamKind::Other,
+        soft: None,
+        derived: true,
+        ..ParamDesc::float("prepared", "Prepared", f32::NAN, (0.0, 0.0), Unit::None).fixed()
+    }
+}

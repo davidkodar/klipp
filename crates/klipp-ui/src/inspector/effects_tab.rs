@@ -368,6 +368,11 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
             spill_method: klipp_effects::SpillMethod::ChannelClamp, spill_strength: 0.6,
         },
         BuiltinEffect::CornerPin { .. } => klipp_effects::corner_pin::still(),
+        // The file stays: a reset is the look at full strength.
+        BuiltinEffect::Lut3D { path, .. } => BuiltinEffect::Lut3D { path: path.clone(), opacity: 1.0, tetrahedral: true, prepared: None },
+        BuiltinEffect::ColourSpaceTransform { .. } => BuiltinEffect::ColourSpaceTransform {
+            input_gamut: 0, input_curve: 0, output_gamut: 0, output_curve: 0, prepared: None,
+        },
         BuiltinEffect::Bloom { .. } => BuiltinEffect::Bloom {
             threshold: 0.7, radius: 20.0, intensity: 0.5,
         },

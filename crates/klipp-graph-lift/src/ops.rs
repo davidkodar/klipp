@@ -217,7 +217,8 @@ fn shortest(v: &Value) -> Value {
 }
 
 /// Set a parameter on a node: a legacy node's v1 entry, which must still
-/// read as the frozen v1 types read it; any other node's own parameters.
+/// read (a grade node's as the frozen v1 types read it, an effect's as
+/// [`effect_entry_reads`] does); any other node's own parameters.
 fn set_param(n: &mut Node, key: &ParamKey, value: &ParamValue) -> Result<(), String> {
     let t = n.type_id.as_str().to_owned();
     // An effect's values are its map (M3-2): the value is written there,
@@ -238,7 +239,7 @@ fn set_param(n: &mut Node, key: &ParamKey, value: &ParamValue) -> Result<(), Str
         let mut params = n.params.clone();
         params.insert(key.clone(), crate::effect_params::held(&tag, key, &v));
         let entry = crate::effect_params::from_params(&tag, &params)?;
-        if serde_json::from_value::<crate::v1::effects::BuiltinEffect>(entry).is_err() {
+        if !effect_entry_reads(&entry) {
             return Err(format!("{key} doesn't take {value:?}"));
         }
         n.params = params;
@@ -281,7 +282,7 @@ fn set_param(n: &mut Node, key: &ParamKey, value: &ParamValue) -> Result<(), Str
     } else if t == types::LEGACY_OFX {
         true
     } else {
-        serde_json::from_value::<crate::v1::effects::BuiltinEffect>(entry.clone()).is_ok()
+        effect_entry_reads(&entry)
     };
     if !reads {
         return Err(format!("{key} doesn't take {value:?}"));
@@ -425,8 +426,16 @@ fn apply_anim(n: &mut Node, op: &GraphOp) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether an effect's entry reads as an effect: as the frozen v1 types
+/// read it, or as today's do, which also know the types made since (a 3D
+/// LUT, a colour-space transform, #1746).
+fn effect_entry_reads(entry: &Value) -> bool {
+    serde_json::from_value::<crate::v1::effects::BuiltinEffect>(entry.clone()).is_ok() || serde_json::from_value::<klipp_effects::BuiltinEffect>(entry.clone()).is_ok()
+}
+
 /// Replace a legacy entry's payload: the same kind (`kind` for a grade
-/// node, `type` for an effect), reading as the frozen v1 types read it.
+/// node, `type` for an effect), reading as the frozen v1 types read it
+/// (an effect's as [`effect_entry_reads`] does).
 fn set_payload(n: &mut Node, payload: &Value) -> Result<(), String> {
     let t = n.type_id.as_str().to_owned();
     let legacy = n.legacy.as_mut().filter(|_| t.starts_with("klipp.legacy.") || t == lt::MERGE).ok_or("only a stored entry has a payload to replace")?;
@@ -440,7 +449,7 @@ fn set_payload(n: &mut Node, payload: &Value) -> Result<(), String> {
     } else if t == types::LEGACY_OFX {
         true
     } else {
-        serde_json::from_value::<crate::v1::effects::BuiltinEffect>(payload.clone()).is_ok()
+        effect_entry_reads(payload)
     };
     if !reads {
         return Err("that payload doesn't read as the entry it replaces".into());

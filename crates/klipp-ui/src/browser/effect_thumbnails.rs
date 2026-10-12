@@ -468,6 +468,9 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
                 anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0,
                 focal_ref: None }
         }
+        // Nothing to show without a file, or the renderer's tables: the
+        // card shows the picture as it is.
+        klipp_effects::BuiltinEffect::Lut3D { .. } | klipp_effects::BuiltinEffect::ColourSpaceTransform { .. } => effect.clone(),
         klipp_effects::BuiltinEffect::CornerPin { .. } => {
             // A card leaning back into the frame: the pin as a picture
             // on a surface, not a rectangle.

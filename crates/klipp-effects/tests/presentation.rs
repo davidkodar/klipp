@@ -121,6 +121,10 @@ fn covered() -> Vec<&'static klipp_effects::registry::EffectType> {
     effect_types().filter(|t| presentation::params().any(|e| e.type_id == t.desc.id)).collect()
 }
 
+/// Types made after the old inspector was recorded (#1746): their rows
+/// are the tables' alone, with no old row to match.
+const AFTER_THE_RECORDING: &[&str] = &["klipp.fx.lut_3d", "klipp.fx.colour_space_transform"];
+
 #[test]
 fn a_covered_type_names_every_param() {
     for t in covered() {
@@ -183,7 +187,7 @@ fn presentation_matches_the_old_rows() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!("../../klipp-ui/tests/fixtures/old_rows.json")).unwrap();
     let mut differ = Vec::new();
     let mut compared = 0;
-    for t in covered() {
+    for t in covered().into_iter().filter(|t| !AFTER_THE_RECORDING.contains(&t.desc.id)) {
         let cases: Vec<&serde_json::Value> = fixture["cases"].as_array().unwrap().iter().filter(|c| c["kind"] == t.desc.id).collect();
         assert!(cases.iter().any(|c| c["variant"] == "sample"), "{}: not recorded", t.desc.id);
         for case in cases {
@@ -297,12 +301,13 @@ fn every_other_param_names_a_custom_editor() {
                 Widget::Custom(id) if !id.is_empty() => {
                     named.insert(id);
                 }
-                Widget::Hidden if HIDDEN.contains(&(t.desc.id, p.key)) => {}
+                // Worked out by the renderer each run, never edited.
+                Widget::Hidden if p.derived || HIDDEN.contains(&(t.desc.id, p.key)) => {}
                 w => panic!("{}/{}: {w:?}, not a named editor", t.desc.id, p.key),
             }
         }
     }
-    assert_eq!(named.into_iter().collect::<Vec<_>>(), ["frei0r_plugin"]);
+    assert_eq!(named.into_iter().collect::<Vec<_>>(), ["effect_lut_file", "frei0r_plugin"]);
 }
 
 /// The adapters drawing what rows can't, by type (M3 step 6): exactly the
@@ -349,6 +354,10 @@ const GROUPS: &[(&str, &str, &str)] = &[
     ("klipp.fx.channel_mixer", "blue_blue", "Blue Output"),
     ("klipp.fx.frei0r", "type_id", "Plug-in"),
     ("klipp.fx.frei0r", "params", "Plug-in"),
+    ("klipp.fx.colour_space_transform", "input_gamut", "Input"),
+    ("klipp.fx.colour_space_transform", "input_curve", "Input"),
+    ("klipp.fx.colour_space_transform", "output_gamut", "Output"),
+    ("klipp.fx.colour_space_transform", "output_curve", "Output"),
 ];
 
 /// Every choice drawn as a combo names today's labels, and every group is

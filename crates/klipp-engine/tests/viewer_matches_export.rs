@@ -948,6 +948,75 @@ fn a_tracks_effects_and_grade_export_as_the_viewer_shows_them() {
     assert!(darker(4, 4) < darker(W / 2, H / 2), "the vignette is not in the export: corner {} vs centre {}", darker(4, 4), darker(W / 2, H / 2));
 }
 
+/// The main timeline with a colour-space transform and a 3D LUT on V1's
+/// clips (#1746), added to each clip's picture as the Picture view adds
+/// them: the transform reads the picture's shown values as linear
+/// Rec.709 into Rec.2020, darker and paler; the LUT, a `.cube` on disk,
+/// warms and crushes it. Both run in the
+/// viewer and the export alike, and both are in the picture.
+#[test]
+fn a_lut_and_a_colour_space_transform_export_as_the_viewer_shows_them() {
+    let _decoders = decoders_at_speed();
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let cube = tmp(&format!("warm-{}.cube", uuid::Uuid::new_v4()));
+    let n = 9;
+    let rows: Vec<[f32; 3]> = (0..n * n * n)
+        .map(|i| {
+            let [r, g, b] = [i % n, (i / n) % n, i / (n * n)].map(|v| v as f32 / (n - 1) as f32);
+            [(r * 1.1 + 0.03).min(1.0), g.powf(1.2), b * 0.8]
+        })
+        .collect();
+    klipp_color::write_cube(&cube, &rows, n as u32, "warm").unwrap();
+    let mut t = timeline();
+    let fx = [
+        BuiltinEffect::ColourSpaceTransform { input_gamut: 1, input_curve: 1, output_gamut: 2, output_curve: 0, prepared: None },
+        BuiltinEffect::Lut3D { path: cube.to_string_lossy().into_owned(), opacity: 0.9, tetrahedral: true, prepared: None },
+    ];
+    for c in t.seq.tracks.iter_mut().find(|t| t.name == "V1").unwrap().clips.iter_mut() {
+        add_after_display(c, &fx);
+    }
+    let mut shown = t.clone();
+    shown.seq = klipp_timeline::flatten::flatten_sequence(&t.seq, std::slice::from_ref(&t.seq));
+    let out = exported(&shown);
+    let viewer = Viewer::start(&shown);
+    let mut worst = 0;
+    for n in [10, 60, 110] {
+        let (v, e) = (viewer.frame_at(n), exported_frame(&out, n));
+        worst = worst.max(compare(&format!("LUT and transform frame {n:3}"), &v, &e));
+    }
+    eprintln!("LUT and transform, viewer vs export: worst {worst} levels");
+    assert!(worst <= 3, "the export differs from the viewer by {worst} levels");
+    let (_, plain) = main_fixture();
+    let (g, p) = (exported_frame(&out, 60), exported_frame(plain, 60));
+    let d = g.iter().zip(&p).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
+    assert!(d > 20, "only {d} levels: the LUT and the transform are not in the export");
+}
+
+/// `fx` added to `c`'s picture as the Picture view adds them: each after
+/// the last, from the display step.
+fn add_after_display(c: &mut Clip, fx: &[BuiltinEffect]) {
+    use klipp_graph_format::path::{NodePath, Root};
+    let picture = c.picture_v2().unwrap().picture.clone();
+    let mut after = picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::SCENE_TO_DISPLAY).unwrap().id;
+    let mut ops = Vec::new();
+    for e in fx {
+        let payload = serde_json::to_value(e).unwrap();
+        let node: klipp_graph_format::Node = serde_json::from_value(serde_json::json!({
+            "id": klipp_graph_format::NodeId::new_v4(),
+            "type_id": klipp_graph_lift::names::effect_node_type(payload["type"].as_str().unwrap()),
+            "legacy": { "payload": payload },
+        }))
+        .unwrap();
+        let id = node.id;
+        ops.push(klipp_graph_lift::ops::GraphOp::AddNode { after: NodePath::new(Root::Clip { clip: c.id.0 }, [after]), node: Box::new(node) });
+        after = id;
+    }
+    c.apply_picture_ops(&ops).unwrap();
+}
+
 /// One clip, coded `coded` and turned by `rotation`, over this landscape
 /// sequence's first two seconds. The source is red on its coded left half
 /// and blue on its right.

@@ -806,6 +806,9 @@ pub struct Renderer {
     motion: klipp_effects::MotionData,
     /// Why the GPU stack last declined a frame, so the log says it once.
     last_gpu_stack_decline: Option<&'static str>,
+    /// The LUT files read and the colour-space transforms worked out for
+    /// the effects that need them (#1746).
+    colour_effects: std::sync::Mutex<crate::colour_effects::ColourEffects>,
     /// Why the GPU declined the last frame asked of it, or `None` when it
     /// took it; see [`Self::last_decline`].
     frame_decline: Option<&'static str>,
@@ -904,6 +907,7 @@ impl Renderer {
             grade_encoding: klipp_core::grade_encoding(),
             motion: klipp_effects::MotionData::default(),
             last_gpu_stack_decline: None,
+            colour_effects: Default::default(),
             frame_decline: None,
             cpu_layers_said: std::collections::HashSet::new(),
             nesting: 0,
@@ -1124,7 +1128,8 @@ impl Renderer {
     /// as bypassed (M4 step 10): it isn't run, so no node of it declines
     /// itself, and the frame still says it was passed over as asked. Never
     /// failing, and not shown in the viewer's chip. Noted once a frame, if
-    /// a layer's clip is drawn again on another route.
+    /// a layer's clip is drawn again on another route. And each LUT effect
+    /// whose file can't be read, declined as failing (#1746).
     fn note_switched_off(&mut self, clip: &Clip) {
         if let Ok(plugins) = clip.picture_ofx() {
             for p in plugins.into_iter().filter(|p| !p.entry.enabled) {
@@ -1143,6 +1148,26 @@ impl Renderer {
             }
         }
         let Ok(effects) = clip.picture_effects() else { return };
+        // A LUT whose file can't be read passes the picture: declined, so
+        // the viewer says why and an export refuses (#1746).
+        for e in effects.iter().filter(|e| e.enabled) {
+            let BuiltinEffect::Lut3D { path, opacity, .. } = &e.effect else { continue };
+            if *opacity <= 0.0 || self.found.declines.iter().any(|d| d.clip == Some(clip.id) && d.node == e.node && d.outcome == klipp_nodes::DeclineOutcome::FileMissing) {
+                continue;
+            }
+            let read = self.colour_effects.lock().unwrap_or_else(std::sync::PoisonError::into_inner).lut(path, self.working);
+            if let Err(why) = read {
+                self.found.declines.push(klipp_nodes::Decline {
+                    clip: Some(clip.id),
+                    node: e.node,
+                    kind: klipp_nodes::NodeKind::Effect,
+                    outcome: klipp_nodes::DeclineOutcome::FileMissing,
+                    name: klipp_nodes::decline::effect_name(&e.effect),
+                    reason: why.clone(),
+                    why,
+                });
+            }
+        }
         for e in effects.into_iter().filter(|e| !e.enabled) {
             if self.found.declines.iter().any(|d| d.clip == Some(clip.id) && d.node == e.node && d.outcome == klipp_nodes::DeclineOutcome::Bypass) {
                 continue;
@@ -3337,6 +3362,11 @@ impl Renderer {
     }
 
     fn authored_colours(&self, fx: &mut [BuiltinEffect]) {
+        // A LUT's table and a colour-space transform's, for this working
+        // space, on every route the effects take.
+        if fx.iter().any(|e| matches!(e, BuiltinEffect::Lut3D { .. } | BuiltinEffect::ColourSpaceTransform { .. })) {
+            self.colour_effects.lock().unwrap_or_else(std::sync::PoisonError::into_inner).prepare(fx, self.working);
+        }
         let Some(m) = klipp_color::primaries::working_space_conversion_matrix(
             WorkingColorspace::Rec709Linear,
             self.working,

@@ -103,7 +103,9 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         | BuiltinEffect::ChromaticAberration { .. }
         | BuiltinEffect::LensFlare { .. }
         | BuiltinEffect::LightRays { .. }
-        | BuiltinEffect::Vignette { .. } => Some(1),
+        | BuiltinEffect::Vignette { .. }
+        | BuiltinEffect::Lut3D { .. }
+        | BuiltinEffect::ColourSpaceTransform { .. } => Some(1),
         _ => None,
     }
 }
@@ -161,6 +163,41 @@ impl GpuEffectsPipeline {
             };
             let Some(slot) = rec.slots.claim_with_table(q, &params, u64::from(levels.to_bits()), table) else { return Recorded::OutOfSlots };
             self.record_with_table(rec, &self.posterize_pipeline, src, dst, slot, width, height);
+            return Recorded::Done;
+        }
+        if let BuiltinEffect::Lut3D { prepared, opacity, tetrahedral, .. } = effect {
+            // Nothing prepared (the file unread) passes, as on the CPU.
+            let Some(lut) = prepared.as_ref().filter(|l| *opacity > 0.0 && l.size >= 2 && l.data.len() >= l.size.pow(3) * 3) else {
+                return Recorded::Identity;
+            };
+            let params = GpuLut3dParams::new(width, height, lut.size as u32, *opacity, *tetrahedral, (lut.pre, lut.post));
+            let Some(slot) = rec.slots.claim(q, &params) else { return Recorded::OutOfSlots };
+            let table = self.effect_lut_buffer(&lut.0);
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("recorded_lut"),
+                layout: &self.huesat_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: src.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: dst.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: rec.slots.buffer(slot).as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: table.as_entire_binding() },
+                ],
+            });
+            Self::record_compute_dispatch(rec.encoder, &self.lut3d_pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
+            return Recorded::Done;
+        }
+        // The transform's two curve tables ride in its slot's table, keyed
+        // by the curves (the tables are the curves'), apart from
+        // Posterize's keys by the top bit.
+        if let BuiltinEffect::ColourSpaceTransform { prepared, input_curve, output_curve, .. } = effect {
+            let Some(t) = prepared.as_ref().filter(|t| t.matrix.is_some() || t.decode.is_some() || t.encode.is_some()) else {
+                return Recorded::Identity;
+            };
+            let used = |on: bool, curve: u32| if on { u64::from(curve) + 1 } else { 0 };
+            let key = 1 << 63 | used(t.decode.is_some(), *input_curve) << 16 | used(t.encode.is_some(), *output_curve);
+            let table = || crate::colour_transform::slot_table(t);
+            let Some(slot) = rec.slots.claim_with_table(q, &CstParams::new(width, height, t), key, table) else { return Recorded::OutOfSlots };
+            self.record_with_table(rec, &self.cst_pipeline, src, dst, slot, width, height);
             return Recorded::Done;
         }
         // One pass each: its pipeline, and its parameters in a slot of
@@ -1005,6 +1042,30 @@ impl GpuEffectsPipeline {
     /// One pass of a pipeline that reads its slot's table after its params
     /// (input, output, params, table).
     #[allow(clippy::too_many_arguments)]
+    /// `lut`'s table as a storage buffer, uploaded the first time it is
+    /// asked for; the last few are kept.
+    fn effect_lut_buffer(&self, lut: &Arc<crate::colour_transform::LutTable>) -> Arc<wgpu::Buffer> {
+        let mut kept = self.effect_luts.borrow_mut();
+        if let Some(i) = kept.iter().position(|(l, _)| Arc::ptr_eq(l, lut)) {
+            let entry = kept.remove(i);
+            let buffer = entry.1.clone();
+            kept.push(entry);
+            return buffer;
+        }
+        let buffer = Arc::new(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("effect_lut"),
+            size: (lut.data.len() * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        self.queue.write_buffer(&buffer, 0, bytemuck::cast_slice(&lut.data));
+        if kept.len() >= 4 {
+            kept.remove(0);
+        }
+        kept.push((lut.clone(), buffer.clone()));
+        buffer
+    }
+
     fn record_with_table(
         &self,
         rec: &mut EffectRecording<'_>,

@@ -26,6 +26,8 @@ mod clip_label_round_trip;
 mod clip_rates_round_trip;
 #[path = "../consolidate_integration.rs"]
 mod consolidate_integration;
+#[path = "../colour_effects_round_trip.rs"]
+mod colour_effects_round_trip;
 #[path = "../corner_pin_round_trip.rs"]
 mod corner_pin_round_trip;
 #[path = "../dangling_transition_heals.rs"]

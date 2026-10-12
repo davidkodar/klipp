@@ -44,6 +44,7 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 klipp-timeline = { workspace = true, features = ["test-clip"] }
+klipp-graph-lift = { workspace = true }
 klipp-testing = { workspace = true }
 pollster = "0.3"
 kamadak-exif = "0.6"

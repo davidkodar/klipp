@@ -228,6 +228,7 @@ impl BuiltinEffect {
             // the whole clip's analysis, not a frame, so they hold still.
             E::Deflicker { strength, .. } => real(f, "strength", strength),
             E::VideoStabilization { crop_ratio, .. } => real(f, "crop_ratio", crop_ratio),
+            E::Lut3D { opacity, .. } => real(f, "opacity", opacity),
             E::CornerPin { tl, tr, br, bl } => {
                 for (corner, names) in [tl, tr, br, bl].into_iter().zip(crate::corner_pin::PARAMS) {
                     real(f, names[0], &mut corner[0]);
@@ -242,6 +243,7 @@ impl BuiltinEffect {
             | E::Erode { .. }
             | E::MedianFilter { .. }
             | E::SpeedRamp { .. }
+            | E::ColourSpaceTransform { .. }
             | E::Frei0r { .. } => {}
         }
     }

@@ -16,6 +16,8 @@
 //!   nodes (M4 step 5). frei0r refuses a frame whose sides aren't multiples
 //!   of 8, so it draws at 320x176. A machine without the plug-in fails the
 //!   case, named: a GPU-like hard requirement for these tests, never a skip.
+//! - The 3D LUT effect's file editor (#1746): a bundled look picked through
+//!   it changes the frame, the CPU's within a level of the GPU's.
 
 use super::parity_manifest::{CoverageKey, Interaction, Manifest, Report, Surface};
 use super::parity_numeric::routes_for;
@@ -114,6 +116,25 @@ pub(super) fn run(report: &mut Report) {
         let keys: Vec<_> = entries.iter().map(|e| CoverageKey::new(e.type_id, &e.parameter, Surface::EffectsStack, VARIANT, Interaction::Pixels)).collect();
         report.case_cpu_by_design("frei0r editor / pixels", keys, FREI0R_ROUTE, frei0r_case);
     }
+    let keys: Vec<_> = super::parity_specialists::lut_file_entries().iter().map(|e| CoverageKey::new(e.type_id, &e.parameter, Surface::EffectsStack, VARIANT, Interaction::Pixels)).collect();
+    report.case_or_blocked("3D LUT file editor / pixels", keys, lut_file_case);
+}
+
+/// A bundled look picked through the 3D LUT effect's file editor, drawn:
+/// it changes the frame, the CPU's within a level of the GPU's.
+fn lut_file_case() -> Result<(), String> {
+    let (category, name, _) = super::parity_specialists::first_bundled_look().ok_or("no bundled look to pick")?;
+    let clip = super::parity_specialists::lut_clip("");
+    let mut run = super::parity_harness::Run::new(clip.clone());
+    for text in ["Bundled", category.as_str(), name.as_str()] {
+        if !run.click_last(text) {
+            return Err(format!("{text:?} isn't drawn"));
+        }
+    }
+    if !run.unapplied.is_empty() {
+        return Err(format!("unapplied: {:?}", run.unapplied));
+    }
+    clip_edit_drawn_on(Routes::Both, SMALL, &clip, run.clip())
 }
 
 /// Every effect specialist's Pixels key is earned, on its declared route.

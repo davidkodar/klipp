@@ -7,9 +7,11 @@
 
 mod analysis;
 mod frei0r;
+mod lut_file;
 mod quiet;
 
 pub use frei0r::Frei0rEditor;
+pub use lut_file::LutFileEditor;
 
 use super::{node_rows, NodeRows, RowCtx, RowOutcome};
 use crate::state::AppState;

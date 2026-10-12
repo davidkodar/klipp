@@ -95,8 +95,35 @@ pub(super) fn number(desc: &ParamDesc, value: f32) -> Value {
     }
 }
 
+/// `ty`'s sample, set to act where the sample alone can't (#1746): a 3D
+/// LUT reads a file, a two-point one whose corners aren't a straight map
+/// (so its interpolations differ too); a colour-space transform converts.
+pub(super) fn acting_sample(ty: &EffectType) -> BuiltinEffect {
+    match ty.tag {
+        "lut_3d" => {
+            static FILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+            let path = FILE.get_or_init(|| {
+                let path = std::env::temp_dir().join(format!("klipp-parity-lut-{}.cube", std::process::id()));
+                let mut text = String::from("LUT_3D_SIZE 2\n");
+                for b in 0..2u8 {
+                    for g in 0..2u8 {
+                        for r in 0..2u8 {
+                            text.push_str(&format!("{} {} {}\n", r & g, g & b, b | r));
+                        }
+                    }
+                }
+                std::fs::write(&path, text).expect("the parity LUT written");
+                path.to_string_lossy().into_owned()
+            });
+            BuiltinEffect::Lut3D { path: path.clone(), opacity: 1.0, tetrahedral: true, prepared: None }
+        }
+        "colour_space_transform" => BuiltinEffect::ColourSpaceTransform { input_gamut: 2, input_curve: 1, output_gamut: 1, output_curve: 0, prepared: None },
+        _ => (ty.sample)(),
+    }
+}
+
 pub(super) fn editable(ty: &EffectType, pres: &Presentation) -> Result<BuiltinEffect, String> {
-    let mut effect = (ty.sample)();
+    let mut effect = acting_sample(ty);
     for Cond::ParamIs { key, value } in [pres.visible_if, pres.enabled_if].into_iter().flatten() {
         let desc = ty
             .desc
