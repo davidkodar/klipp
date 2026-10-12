@@ -1241,8 +1241,10 @@ impl Renderer {
         opts: RenderOptions,
         target: klipp_effects::gpu::Yuv420Target,
     ) -> Option<(Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)> {
-        if opts.hdr_peak_nits.is_some() || target.hdr_op != 0 {
-            self.frame_decline = Some("HDR delivery");
+        // An HDR delivery's target encodes PQ or HLG; one asked for with
+        // the other's target is not a frame this can make.
+        if opts.hdr_peak_nits.is_some() != (target.hdr_op != 0) {
+            self.frame_decline = Some("a delivery its target does not encode");
             return None;
         }
         let composited = self.composite_on_gpu(seq, time, width, height, src, opts).is_some();
@@ -1253,7 +1255,9 @@ impl Renderer {
             return None;
         }
         self.executor.set_output_in_chain_slot_a();
-        let target = klipp_effects::gpu::Yuv420Target { scene: None, ..target };
+        // Every layer has had its own display step, so the encode runs
+        // none of its own; an HDR delivery is encoded at the frame's peak.
+        let target = klipp_effects::gpu::Yuv420Target { scene: None, peak_nits: opts.hdr_peak_nits.unwrap_or(target.peak_nits), ..target };
         let planes = self.executor.encode_output_to_yuv420(width, height, target);
         if planes.is_none() {
             self.gpu_export_declined_after_work = true;
@@ -1586,6 +1590,11 @@ impl Renderer {
         out: DisplayDelivery<'_>,
     ) -> Option<(Option<Vec<u8>>, RenderStats)> {
         let t0 = Instant::now();
+        // HDR monitoring's preview of a stack (#1279 takes the export's
+        // HDR delivery, not the viewer's).
+        if opts.hdr_peak_nits.is_some() {
+            return self.gpu_stack_declines("the viewer's HDR preview of a stack");
+        }
         // An ACES or BT.2020 project's display encode writes bytes, not
         // the viewer's texture (#1279).
         if self.working != WorkingColorspace::Rec709Linear && out.texture.is_some() {
@@ -1624,12 +1633,35 @@ impl Renderer {
         src: &mut dyn FrameSource,
         opts: RenderOptions,
     ) -> Option<RenderStats> {
+        // Under an HDR delivery a scene-referred layer's own display step
+        // is the delivery's display light, as `render_clip` gives it on the
+        // CPU (#1279): the frame's peak, for this frame only, cleared
+        // however it ends.
+        self.hdr_peak = opts.hdr_peak_nits;
+        let stats = self.composite_on_gpu_frame(seq, time, width, height, src, opts);
+        self.hdr_peak = None;
+        stats
+    }
+
+    fn composite_on_gpu_frame(
+        &mut self,
+        seq: &Sequence,
+        time: Timecode,
+        width: u32,
+        height: u32,
+        src: &mut dyn FrameSource,
+        opts: RenderOptions,
+    ) -> Option<RenderStats> {
         self.stack_work_started = false;
         if !self.allow_gpu || !gpu_composite_enabled() {
             return self.gpu_stack_declines("GPU off");
         }
-        if opts.hdr_peak_nits.is_some() {
-            return self.gpu_stack_declines("HDR delivery");
+        // The CPU applies a global LUT under an HDR delivery to the light
+        // up to SDR white only, the rest kept apart (`split_above_white`),
+        // which the stack has no twin of; the single-clip path declines it
+        // alike.
+        if opts.hdr_peak_nits.is_some() && self.global_lut.is_some() {
+            return self.gpu_stack_declines("global LUT with an HDR delivery");
         }
         let i = &self.inspect;
         if i.ungraded || i.thumbs.is_some() || i.scope_tap.is_some() || i.matte_view.is_some() || i.solo.is_some() || i.matte_of.is_some() || i.only.is_some() {

@@ -636,6 +636,97 @@ fn the_stack_exports_a_wide_working_space_as_the_renderer_does() {
     }
 }
 
+/// `px` encoded as the CPU export encodes an HDR delivery in `ws`: 10-bit
+/// luma at 16/219, and the frame's brightest and summed light in nits.
+fn hdr_luma(px: &[f32], ws: klipp_core::WorkingColorspace, mode: klipp_core::HdrMode, peak: f32) -> (Vec<u16>, f32, f64) {
+    let display = klipp_color::display::ExportDisplay::hdr(ws, mode, peak);
+    let k = [0.2627f32, 0.6780, 0.0593];
+    let (mut max, mut sum) = (0.0f32, 0.0f64);
+    let luma = px
+        .chunks_exact(4)
+        .map(|p| {
+            let (e, nits) = display.encode_light([p[0], p[1], p[2]]);
+            max = max.max(nits);
+            sum += nits as f64;
+            (((16.0 + (k[0] * e[0] + k[1] * e[1] + k[2] * e[2]) * 219.0) * 4.0) + 0.5).clamp(0.0, 1023.0) as u16
+        })
+        .collect();
+    (luma, max, sum)
+}
+
+/// #1279: an HDR delivery's stack is the renderer's frame: each
+/// scene-referred layer's own display step in the delivery's display
+/// light, the layers composited in it, PQ or HLG encoded at the frame's
+/// peak. Two SDR layers, a scene-referred layer over an SDR one, and a
+/// dissolve from a scene-referred clip, in a Rec.709 and a BT.2020
+/// project, luma within a level of 1023 and, for PQ, the frame's light
+/// within 1e-4. The control: the scene layer given its SDR step instead
+/// is more than a level off, so the bar sees display light.
+#[test]
+fn the_stack_takes_an_hdr_delivery_as_the_renderer_does() {
+    use klipp_color::hdr::HdrTransfer;
+    use klipp_core::{HdrMode, WorkingColorspace as Ws};
+    if !gpu_path_available() {
+        eprintln!("skipping: no usable GPU");
+        return;
+    }
+    let hlg_target = |peak: f32| klipp_effects::gpu::Yuv420Target { hdr_op: 2, ..pq_target(peak) };
+    for ws in [Ws::Rec709Linear, Ws::Bt2020Linear] {
+        for (mode, target) in [(HdrMode::Pq, pq_target(1000.0)), (HdrMode::Hlg, hlg_target(1000.0))] {
+            let (a, b) = (graded(0.0, 1.0, 0.5), graded(0.0, 1.0, 0.5));
+            let overlay = sequence(vec![vec![a.clone()], vec![b.clone()]]);
+            let overlay_src = Flat::default().with(&a, [80, 160, 220]).with(&b, [220, 90, 40]);
+            let (base, top) = (graded(0.0, 1.0, 0.0), graded(0.0, 1.0, 0.5));
+            let mut top = TestClip::of(top).effects([BuiltinEffect::Opacity { value: 0.6 }]).build();
+            top.blend_mode = BlendMode::Screen;
+            // The first track is the top one.
+            let scene_over = sequence(vec![vec![top.clone()], vec![base.clone()]]);
+            let scene_over_src = Flat::default().with(&base, [60, 120, 180]).scene_in(&top, HdrTransfer::Log(klipp_core::ColorTransfer::SLog3), SAME_PRIMARIES);
+            let (c, d) = (graded(0.0, 1.0, 0.5), graded(0.5, 1.5, 0.5));
+            let mut dissolve = sequence(vec![vec![c.clone(), d.clone()]]);
+            dissolve.tracks[0].transitions = vec![Transition {
+                id: TransitionId::new(),
+                kind: klipp_core::TransitionKind::CrossDissolve,
+                duration: tc(0.25),
+                clip_a_id: c.id,
+                clip_b_id: d.id,
+                user_params: Default::default(),
+                alignment: klipp_core::TransitionAlignment::Center,
+            }];
+            let dissolve_src = Flat::default().scene_in(&c, HdrTransfer::Pq, SAME_PRIMARIES).with(&d, [240, 120, 60]);
+            let opts = RenderOptions { hdr_peak_nits: Some(1000.0), ..Default::default() };
+            for (what, seq, mut src, scene) in [("two SDR layers", overlay, overlay_src, false), ("a log layer over an SDR one", scene_over, scene_over_src, true), ("a dissolve from PQ", dissolve, dissolve_src, true)] {
+                let case = format!("{ws:?}, {mode:?}, {what}");
+                let mut r = renderer();
+                r.set_working_colorspace(ws);
+                let (planes, light) = r
+                    .render_yuv420_on_gpu(&seq, tc(0.5), W, H, &mut src.clone_for_gpu(), opts, target)
+                    .unwrap_or_else(|| panic!("{case}: the GPU path refused: {:?}", r.last_decline()));
+                let mut cpu = renderer();
+                cpu.set_working_colorspace(ws);
+                let (want, max, sum) = hdr_luma(&cpu.render(&seq, tc(0.5), W, H, &mut src, opts), ws, mode, 1000.0);
+                let got: Vec<u16> = planes[..want.len() * 2].chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]]) >> 6).collect();
+                let worst = |a: &[u16], b: &[u16]| a.iter().zip(b).map(|(x, y)| (*x as i32 - *y as i32).abs()).max().unwrap_or(0);
+                let w = worst(&got, &want);
+                assert!(w <= 1, "{case}: the stack's luma differs from the renderer by {w} of 1023");
+                assert!(got.iter().any(|&v| v > 200), "{case}: rendered black");
+                if mode == HdrMode::Pq {
+                    let l = light.expect("a PQ delivery comes back with its light");
+                    assert!((l.max_nits - max).abs() <= max * 1e-4, "{case}: MaxCLL {} vs {max}", l.max_nits);
+                    let (gm, cm) = (l.sum_nits / l.pixels as f64, sum / l.pixels as f64);
+                    assert!((gm - cm).abs() <= 0.01 + cm.abs() * 1e-4, "{case}: MaxFALL {gm} vs {cm}");
+                }
+                if scene {
+                    let mut sdr = renderer();
+                    sdr.set_working_colorspace(ws);
+                    let (off, _, _) = hdr_luma(&sdr.render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default()), ws, mode, 1000.0);
+                    assert!(worst(&got, &off) > 1, "{case}: the SDR step is within a level, so the bar can't see display light");
+                }
+            }
+        }
+    }
+}
+
 /// A clip whose height is keyed apart from its width (#1471): halfway
 /// between its keys the width's lane gives 1 and the height's 0.5, so
 /// the picture fills the frame's width and the middle half of its rows.

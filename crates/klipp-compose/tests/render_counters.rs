@@ -133,7 +133,7 @@ fn a_decline_says_why_and_a_taken_frame_clears_it() {
         eprintln!("UNVERIFIED: the GPU stack declined ({:?})", r.last_decline());
         return;
     }
-    assert_eq!(why, "HDR delivery");
+    assert_eq!(why, "the viewer's HDR preview of a stack");
     assert_eq!(r.last_decline(), None, "a frame the stack took clears the last decline");
 
     // The export path says why too.
