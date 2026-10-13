@@ -1947,8 +1947,11 @@ impl ViewerPanel {
         let title_object_active = state
             .selected_title_object
             .is_some_and(|(selected_clip, _)| Some(selected_clip) == state.selected_clip);
-        // The surface tool, while it is up, has the viewer to itself.
-        if state.surface_tool.is_some() && !state.has_modal_open() {
+        // Frame Glide, while a clip is being framed, has the viewer to
+        // itself (#611); so does the surface tool while it is up.
+        if state.frame_glide_clip.is_some() && !state.has_modal_open() {
+            crate::panels::frame_glide_tool::show(ui, state, image_rect, cmds);
+        } else if state.surface_tool.is_some() && !state.has_modal_open() {
             self.draw_surface_tool(ui, state, image_rect, cmds);
         } else if state.show_transform_controls
             && !state.show_color_panel

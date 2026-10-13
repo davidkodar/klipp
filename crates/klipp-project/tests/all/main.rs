@@ -36,6 +36,8 @@ mod dangling_transition_heals;
 mod drop_frame_round_trip;
 #[path = "../edit_plan_round_trip.rs"]
 mod edit_plan_round_trip;
+#[path = "../frame_glide_round_trip.rs"]
+mod frame_glide_round_trip;
 #[path = "../edit_planner_corpus.rs"]
 mod edit_planner_corpus;
 #[path = "../edits_survive_save_load.rs"]

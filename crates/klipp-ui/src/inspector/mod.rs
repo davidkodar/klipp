@@ -374,6 +374,7 @@ impl NewInspectorPanel {
                             volume_keyframes: Vec::new(), pan_keyframes: Vec::new(), gain_keyframes: Vec::new(),
                             matte_feather_keyframes: Vec::new(), matte_choke_keyframes: Vec::new(),
                             clip_markers: Vec::new(),
+                            frame_glide: None,
                             role: klipp_core::ClipRole::default(),
                             speed: 1.0,
                             speed_keyframes: Vec::new(),

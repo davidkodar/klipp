@@ -478,6 +478,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                         transform_rotation_keyframes,
                         transform_tilt_x_keyframes,
                         transform_tilt_y_keyframes,
+                        frame_glide: c.frame_glide,
                         matte_feather_keyframes: if c.matte_feather_keyframes.is_empty() { None } else { Some(c.matte_feather_keyframes.clone()) },
                         matte_choke_keyframes: if c.matte_choke_keyframes.is_empty() { None } else { Some(c.matte_choke_keyframes.clone()) },
                         clip_markers: if c.clip_markers.is_empty() { None } else {

@@ -647,6 +647,7 @@ mod tests {
             pan_keyframes: Vec::new(),
             gain_keyframes: Vec::new(),
             clip_markers: Vec::new(),
+            frame_glide: None,
             role: Default::default(),
             speed: 1.0,
             speed_keyframes: Vec::new(),

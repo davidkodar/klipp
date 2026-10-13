@@ -388,6 +388,9 @@ pub struct ClipJson {
     pub transform_tilt_x_keyframes: Option<Vec<klipp_core::Keyframe>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transform_tilt_y_keyframes: Option<Vec<klipp_core::Keyframe>>,
+    /// The clip's Frame Glide (#611); absent for a clip without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_glide: Option<klipp_timeline::frame_glide::FrameGlide>,
     /// Phase 4D — keyframable feather radius for the track-matte
     /// binding. Optional + skip-if-empty so projects saved before
     /// this landed deserialise unchanged.
@@ -1014,7 +1017,7 @@ mod tests {
             volume_keyframes: None, pan_keyframes: None, gain_keyframes: None,
             opacity_keyframes: None,
             transform_pos_x_keyframes: None, transform_pos_y_keyframes: None,
-            transform_scale_keyframes: None, transform_scale_y_keyframes: None, transform_rotation_keyframes: None, transform_tilt_x_keyframes: None, transform_tilt_y_keyframes: None,
+            transform_scale_keyframes: None, transform_scale_y_keyframes: None, transform_rotation_keyframes: None, transform_tilt_x_keyframes: None, transform_tilt_y_keyframes: None, frame_glide: None,
             matte_feather_keyframes: None, matte_choke_keyframes: None,
             clip_markers: None,
             effect_keyframes: None,
@@ -1089,7 +1092,7 @@ mod tests {
             volume_keyframes: None, pan_keyframes: None, gain_keyframes: None,
             opacity_keyframes: None,
             transform_pos_x_keyframes: None, transform_pos_y_keyframes: None,
-            transform_scale_keyframes: None, transform_scale_y_keyframes: None, transform_rotation_keyframes: None, transform_tilt_x_keyframes: None, transform_tilt_y_keyframes: None,
+            transform_scale_keyframes: None, transform_scale_y_keyframes: None, transform_rotation_keyframes: None, transform_tilt_x_keyframes: None, transform_tilt_y_keyframes: None, frame_glide: None,
             matte_feather_keyframes: None, matte_choke_keyframes: None,
             clip_markers: None,
             effect_keyframes: None,
@@ -1287,7 +1290,7 @@ mod tests {
             volume_keyframes: None, pan_keyframes: None, gain_keyframes: None,
             opacity_keyframes: None,
             transform_pos_x_keyframes: None, transform_pos_y_keyframes: None,
-            transform_scale_keyframes: None, transform_scale_y_keyframes: None, transform_rotation_keyframes: None, transform_tilt_x_keyframes: None, transform_tilt_y_keyframes: None,
+            transform_scale_keyframes: None, transform_scale_y_keyframes: None, transform_rotation_keyframes: None, transform_tilt_x_keyframes: None, transform_tilt_y_keyframes: None, frame_glide: None,
             matte_feather_keyframes: None, matte_choke_keyframes: None,
             clip_markers: None, effect_keyframes: None,
             role: None, param_modifiers: None,

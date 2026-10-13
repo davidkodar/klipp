@@ -3369,6 +3369,14 @@ pub enum AppCommand {
         end_pos_x: f32,
         end_pos_y: f32,
     },
+    /// A clip's Frame Glide set, changed or (with `None`) taken off
+    /// (#611): one undo step. Position or scale animation the clip has of
+    /// its own is replaced only with `replace_animation`; without it the
+    /// edit is refused and says so.
+    SetFrameGlide { clip_id: ClipId, glide: Option<crate::frame_glide::FrameGlide>, replace_animation: bool },
+    /// The clip whose Frame Glide is being framed in the viewer, or none
+    /// (#611).
+    SetFrameGlideMode(Option<ClipId>),
     ClearTransformKeyframes { clip_id: ClipId },
     ClearVideoParamKeyframes { clip_id: ClipId, param: VideoParam },
 

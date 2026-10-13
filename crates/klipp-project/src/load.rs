@@ -927,6 +927,7 @@ fn load_sequence_from_json(
                     gain_keyframes: c.gain_keyframes.clone().unwrap_or_default(),
                     matte_feather_keyframes: c.matte_feather_keyframes.clone().unwrap_or_default(),
                     matte_choke_keyframes: c.matte_choke_keyframes.clone().unwrap_or_default(),
+                    frame_glide: c.frame_glide,
                     clip_markers: c.clip_markers.as_ref().map(|markers| {
                         markers.iter().map(|m| klipp_timeline::ClipMarker {
                             time_secs: m.time_secs,
