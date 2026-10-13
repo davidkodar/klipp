@@ -1,9 +1,12 @@
 //! A masked or mixed effect whose run is off its clip's grade (node-graph
 //! M2 9c-2, PR B2): after a plug-in, under the camera's shutter, and on an
-//! adjustment layer whose grade publishes the mask. The matte is made in
-//! the grade, and the effect runs where the grade's run doesn't reach, so
-//! the effect is drawn whole and blended with its input on the CPU
-//! (`effects_blended_on_cpu`), never left unmasked
+//! adjustment layer whose grade publishes the mask. The matte is the
+//! grade's, and the effect runs where the grade's run doesn't reach. A
+//! window reads no picture, so it is drawn in the effect's own plan and
+//! the effect blended there, on the GPU where there is one
+//! (`effects_blended_apart`, #1265); a matte that reads the grade's
+//! picture (a key's) is made in a side run and blended on the CPU
+//! (`effects_blended_on_cpu`). Never left unmasked
 //! (`effects_mask_unavailable` stays 0).
 //!
 //! Each case renders through the renderer only, on the GPU and on the CPU,
@@ -51,12 +54,12 @@ fn required() -> bool {
     std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_some_and(|v| v == "1")
 }
 
-/// B2's two counters for the effect the case masks: blended on the CPU
-/// (`effects_blended_on_cpu`) and left unmasked for want of its matte
-/// (`effects_mask_unavailable`, from B1). Filled by B2, which adds the
-/// first; until then the cases are ignored.
-fn blend_counters(stats: &RenderStats) -> (u32, u32) {
-    (stats.effects_blended_on_cpu, stats.effects_mask_unavailable)
+/// The counters for the effect the case masks: blended in its own plan
+/// (`effects_blended_apart`, #1265), blended on the CPU
+/// (`effects_blended_on_cpu`), and left unmasked for want of its matte
+/// (`effects_mask_unavailable`).
+fn blend_counters(stats: &RenderStats) -> (u32, u32, u32) {
+    (stats.effects_blended_apart, stats.effects_blended_on_cpu, stats.effects_mask_unavailable)
 }
 
 /// Edges and a gradient in both halves, so a blur shows inside and outside
@@ -242,9 +245,10 @@ fn oracle(input: &[f32], whole: &[f32], matte: Option<&[[f32; 4]]>) -> Vec<f32> 
 /// One case: `build(blend)` gives the sequence. The masked and the mixed
 /// render, on the CPU and the GPU, are each the oracle's over their own
 /// route's pieces, within a level (the CPU within float noise); the
-/// pieces differ (the case shows something); the counters say B2 blended
-/// the masked effect on the CPU and never left it unmasked, and that a mix
-/// with no mask needs no blend of its own (it runs in the plan).
+/// pieces differ (the case shows something); the counters say the masked
+/// effect's window was blended in its own plan, none on the CPU, never
+/// left unmasked, and that a mix with no mask needs no blend of its own
+/// (it runs in the plan).
 ///
 /// `cpu_bar`: the CPU route's bar. The pieces are renders of the clip with
 /// no mix or mask, which the CPU kernels draw, while the masked clip's
@@ -264,9 +268,13 @@ fn case(name: &str, build: impl Fn(Blend) -> Sequence, plugin: bool, keyed: bool
         for (blend, want) in [(Blend::Masked, oracle(&input, &whole, Some(&window))), (Blend::Mixed, oracle(&input, &whole, None))] {
             let (got, stats) = render(&build(blend), on_gpu, plugin);
             assert!(worst(&got, &want) <= bar, "{name} ({route}, {blend:?}): {} from the oracle", worst(&got, &want));
-            let (blended, unavailable) = blend_counters(&stats);
-            let want = if blend == Blend::Masked { (1, 0) } else { (0, 0) };
-            assert_eq!((blended, unavailable), want, "{name} ({route}, {blend:?}): a mask blended on the CPU once, a mix in the plan, never unmasked");
+            let want = if blend == Blend::Masked { (1, 0, 0) } else { (0, 0, 0) };
+            assert_eq!(blend_counters(&stats), want, "{name} ({route}, {blend:?}): a window blended in the plan once, none on the CPU, a mix in the plan, never unmasked");
+            // On the GPU the plan drew it whole: no effect run came down
+            // to the CPU kernels or the CPU executor (#1265).
+            if on_gpu {
+                assert_eq!((stats.effects_on_cpu, stats.effects_on_cpu_kernels), (0, 0), "{name} ({blend:?}): the plan ran on the GPU");
+            }
         }
     }
 }
@@ -274,7 +282,7 @@ fn case(name: &str, build: impl Fn(Blend) -> Sequence, plugin: bool, keyed: bool
 /// (a) A clip with a plug-in: its effects run as a plan after the plug-in
 /// (11c-2), off the grade's run, where the window is made.
 #[test]
-fn a_masked_effect_after_a_plugin_is_blended_on_the_cpu() {
+fn a_masked_effect_after_a_plugin_is_blended_in_its_plan() {
     let build = |blend| with_invert(sequence(vec![vec![media(vec![], blend, false)]]), true);
     case("after a plug-in", build, true, false, 1e-5);
 }
@@ -320,11 +328,11 @@ fn a_masked_effect_before_the_transform_under_the_shutter_smears_with_the_pictur
     let far = |v: &[f32]| (0..H).flat_map(|y| { let i = (y * W * 4) as usize; v[i..i + 3].to_vec() }).collect::<Vec<f32>>();
     assert!(worst(&far(&cpu), &far(&input)) <= 1e-5, "outside the window's sweep, the input");
     assert!(worst(&cpu, &input) > 0.02, "inside, the blur");
-    assert_eq!(blend_counters(&cpu_stats), (1, 0));
+    assert_eq!(blend_counters(&cpu_stats), (1, 0, 0));
     if gpu() {
         let (on_gpu, stats) = render(&build(Blend::Masked), true, false);
         assert!(worst(&on_gpu, &cpu) <= BAR, "the GPU route is the CPU's within a level ({})", worst(&on_gpu, &cpu));
-        assert_eq!(blend_counters(&stats), (1, 0));
+        assert_eq!(blend_counters(&stats), (1, 0, 0));
     }
 }
 
@@ -332,11 +340,62 @@ fn a_masked_effect_before_the_transform_under_the_shutter_smears_with_the_pictur
 /// masked by it, over a plain clip: the adjustment's effects run over the
 /// composite below, off any clip's grade run.
 #[test]
-fn a_masked_effect_on_an_adjustment_layer_is_blended_on_the_cpu() {
+fn a_masked_effect_on_an_adjustment_layer_is_blended_in_its_plan() {
     let build = |blend| {
         let below = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
         // The first track is the top one: the adjustment over the clip.
         sequence(vec![vec![graded(ClipKind::AdjustmentLayer, vec![], blend, false)], vec![below]])
     };
     case("an adjustment layer", build, false, false, 1e-5);
+}
+
+/// A grade whose matte reads its picture: a luma key beside the chain
+/// (Source -> Exposure -> Output, a LumaKey off the source that nothing in
+/// the grade reads), and the key's id.
+fn grade_with_key() -> (NodeGraph, NodeId) {
+    let (mut g, window) = grade_with_window(false);
+    let k = g.nodes.iter_mut().find(|n| n.id == window).unwrap();
+    k.kind = NodeKind::LumaKey;
+    k.params = NodeParams { luma_key: Some(klipp_core::LumaKeySettings { enabled: true, low: 0.3, high: 0.6, soft: 0.1, ..Default::default() }), ..Default::default() };
+    (g, window)
+}
+
+/// A media clip graded with a key beside its chain, its blur set as
+/// `blend` by the key, after the test plug-in.
+fn keyed_after_a_plugin(blend: Blend) -> Sequence {
+    let mut c = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+    let (grade, key) = grade_with_key();
+    c.set_grade(grade);
+    c = TestClip::of(c).effects(vec![E::GaussianBlur { radius: 5.0 }]).build();
+    set_blend(&mut c, blend, key);
+    with_invert(sequence(vec![vec![c]]), true)
+}
+
+/// #1265: a matte that reads the grade's picture (a key's) can't be drawn
+/// in a plan apart from that grade: it is still made in a side run and
+/// blended on the CPU, and counted so. And #1268's review: a mix that
+/// can't be blended (not finite, as a file can hold) is bypassed and said,
+/// the input left as it was, never counted as blended.
+#[test]
+fn a_key_apart_from_its_grade_is_blended_on_the_cpu_and_a_bad_mix_bypassed() {
+    for on_gpu in if gpu() { vec![false, true] } else { vec![false] } {
+        let (input, _) = render(&keyed_after_a_plugin(Blend::Off), on_gpu, true);
+        let (whole, _) = render(&keyed_after_a_plugin(Blend::Whole), on_gpu, true);
+        let (keyed, stats) = render(&keyed_after_a_plugin(Blend::Masked), on_gpu, true);
+        assert_eq!(blend_counters(&stats), (0, 1, 0), "gpu {on_gpu}: a key blended on the CPU");
+        // Control: the key keys some of the frame, so the blend is seen.
+        assert!(worst(&keyed, &input) > 0.01 && worst(&keyed, &whole) > 0.01, "gpu {on_gpu}: neither the input nor the effect whole");
+
+        let mut seq = keyed_after_a_plugin(Blend::Masked);
+        let c = &mut seq.tracks[0].clips[0];
+        let mut stored = (*c.picture_v2().unwrap()).clone();
+        // The blur, its only effect, by the picture's own node for it.
+        let blur_id = c.effect_node_at(false, 0).expect("the blur");
+        let blur = stored.picture.graph.nodes.iter_mut().find(|n| n.id == blur_id).unwrap();
+        blur.mix = Some(f32::NAN);
+        c.adopt_stored_picture(stored).expect("the picture is taken as stored");
+        let (bypassed, stats) = render(&seq, on_gpu, true);
+        assert_eq!(blend_counters(&stats), (0, 0, 1), "gpu {on_gpu}: a mix that can't be blended is unavailable, not blended");
+        assert!(worst(&bypassed, &input) <= 1e-5, "gpu {on_gpu}: the input as it was ({})", worst(&bypassed, &input));
+    }
 }
