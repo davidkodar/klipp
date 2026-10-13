@@ -75,6 +75,22 @@ pub fn look(theme: &KlippTheme) -> crate::widgets::scrubby_param::RowLook {
     crate::widgets::scrubby_param::RowLook { label_size: TEXT, label_colour: Some(theme.text_secondary), label_inset: 0.0, height: ROW_H - 4.0 }
 }
 
+/// A section's name with a hairline below, as the inspector's section
+/// headers look, for a page whose sections do not fold.
+pub fn heading(ui: &mut Ui, theme: &KlippTheme, title: &str) {
+    ui.add_space(8.0);
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), crate::widgets::inspector_group::SECTION_HEADER_H), egui::Sense::hover());
+    ui.painter().text(
+        egui::pos2(rect.left() + ROW_PAD, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        title,
+        egui::FontId::proportional(crate::theme::type_scale::CONTROL),
+        theme.text_primary,
+    );
+    ui.painter().hline(rect.x_range(), rect.max.y - 0.5, egui::Stroke::new(1.0_f32, theme.border));
+    ui.add_space(4.0);
+}
+
 /// A fact: its value as plain text, cut short with the whole of it on
 /// hover when the row is too narrow for it.
 pub fn text_row(ui: &mut Ui, theme: &KlippTheme, label: &str, value: impl Into<String>) {
