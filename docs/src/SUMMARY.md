@@ -65,6 +65,7 @@
 
 - [Exporting Projects](./export/exporting.md)
 - [Export Formats](./export/formats.md)
+- [Export Quality](./export/quality.md)
 - [Timeline Interchange](./export/interchange.md)
 
 # Preferences
