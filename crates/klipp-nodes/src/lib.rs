@@ -43,6 +43,7 @@ pub mod decline;
 pub mod fault;
 pub mod frame_context;
 pub mod frei0r_node;
+pub mod held;
 pub mod plugin;
 mod plan;
 pub mod auto_layout;

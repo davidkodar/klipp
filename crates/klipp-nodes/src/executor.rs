@@ -65,10 +65,24 @@ pub fn effective_enabled(node: &Node, clip_time_secs: f64) -> bool {
         .unwrap_or(node.enabled)
 }
 
+/// Whether a heavy node keeps history between frames, and so is never
+/// held (#1863): an OFX plug-in that renders in sequence, or one the
+/// host can't describe. A frei0r plug-in repaints its last frame from
+/// its own memo on the same frame and input, which a hold matches.
+fn held_history(node: &Node, host: Option<&dyn crate::plugin::OfxNodeHost>) -> bool {
+    match node.kind {
+        NodeKind::Ofx => match (node.params.ofx.as_ref(), host) {
+            (Some(entry), Some(host)) => host.describe(&entry.plugin).map_or(true, |d| d.sequential_render),
+            _ => true,
+        },
+        _ => false,
+    }
+}
+
 /// Return the effective params for `node` at `clip_time_secs`. When the node has
 /// no keyframes we borrow `node.params` directly, skipping the per-frame clone
 /// that would otherwise happen on every node in the graph.
-fn params_for_frame(node: &Node, clip_time_secs: f64) -> Cow<'_, NodeParams> {
+pub(crate) fn params_for_frame(node: &Node, clip_time_secs: f64) -> Cow<'_, NodeParams> {
     if node.keyframes.is_empty() {
         Cow::Borrowed(&node.params)
     } else {
@@ -445,6 +459,9 @@ pub struct GraphExecutor {
     /// scene-referred clip's grade before its display step
     /// ([`Self::set_source_domain`]).
     source_domain: crate::domains::PictureDomain,
+    /// Heavy nodes' outputs held for the parked frame (#1863): used only
+    /// by a run given the frame's source (`hold_outputs_for`).
+    held: crate::held::HeldOutputs,
     /// Track-points for the clip currently being graded. The engine
     /// calls [`set_current_clip_track_points`] before each
     /// `execute_linear*` call so the Mask-node handler can apply
@@ -841,6 +858,7 @@ impl GraphExecutor {
             last_chain_final_slot: None,
             compound_depth: 0,
             source_domain: crate::domains::PictureDomain::Display,
+            held: Default::default(),
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
             render_scale: 1.0,
             grade_encoding: klipp_color::grade_model::Encoding::Bt1886,
@@ -928,6 +946,7 @@ impl GraphExecutor {
             last_chain_final_slot: None,
             compound_depth: 0,
             source_domain: crate::domains::PictureDomain::Display,
+            held: Default::default(),
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
             render_scale: 1.0,
             grade_encoding: klipp_color::grade_model::Encoding::Bt1886,
@@ -2084,6 +2103,40 @@ impl GraphExecutor {
             Vec::new()
         };
 
+        // The parked frame's held outputs (#1863): for a top-level run of
+        // the clip the source was given for, with its frame context.
+        // Heavy nodes found held are taken as they are, and the nodes
+        // above them that only they read are not run.
+        let held_source = self.held.token.clone().filter(|t| self.compound_depth == 0 && ctx.as_ref().is_some_and(|c| c.clip == t.clip));
+        let held_run = match held_source {
+            Some(source) => {
+                let c = ctx.as_ref().expect("filtered above");
+                let env = crate::held::RunEnv {
+                    width,
+                    height,
+                    clip_time_secs,
+                    source_secs: c.source_secs,
+                    frame_number,
+                    working: self.working_colorspace,
+                    encoding: self.project_grade_encoding,
+                    lut_tetrahedral: self.lut_tetrahedral,
+                    render_scale: self.render_scale,
+                    gpu: self.gpu.is_some(),
+                    seeded: gpu_resident_source,
+                    source_domain: format!("{:?}", self.source_domain),
+                };
+                let host = c.ofx;
+                let solo = self.solo_node;
+                let analysed: HashSet<NodeId> = self.run_analysis.keys().copied().collect();
+                let looked_at = |id: NodeId| {
+                    Some(id) == matte_tap || Some(id) == matte_preview_node || Some(id) == solo || visible_nodes.is_some_and(|v| v.contains(&id)) || analysed.contains(&id)
+                };
+                let history = |n: &Node| held_history(n, host);
+                self.held.plan(graph, order, feeding, &source, &env, &looked_at, &history)
+            }
+            None => crate::held::HeldRun::default(),
+        };
+
         // 3. Execute nodes in topo order
         for &node_id in order {
             let t_node = std::time::Instant::now();
@@ -2092,6 +2145,22 @@ impl GraphExecutor {
                 None => continue,
             };
             if !feeding.contains(&node_id) && !matches!(node.kind, NodeKind::Source | NodeKind::Output) {
+                continue;
+            }
+            // Held (#1863): its output as the run that made it left it,
+            // with what it declined; above one, nothing to run.
+            if let Some((pixels, declines)) = held_run.hits.get(&node_id) {
+                self.run_declines.extend(declines.iter().cloned());
+                if !held_run.skip.contains(&node_id) {
+                    if Some(node_id) == matte_tap {
+                        tapped_output = Some(Arc::clone(pixels));
+                    }
+                    node_outputs.insert(node_id, Arc::clone(pixels));
+                }
+                per_node_ms.push((format!("{:?}#held", node.kind), t_node.elapsed().as_secs_f64() * 1000.0));
+                continue;
+            }
+            if held_run.skip.contains(&node_id) {
                 continue;
             }
             evaluations += 1;
@@ -3045,6 +3114,12 @@ impl GraphExecutor {
             }
 
             let output_arc = Arc::new(output);
+            // A heavy node the parked frame holds (#1863), with its own
+            // declines from this run.
+            if let Some(key) = held_run.store.get(&node_id) {
+                let declines = self.run_declines.iter().filter(|d| d.node == node_id).cloned().collect();
+                self.held.put(key.clone(), Arc::clone(&output_arc), declines);
+            }
 
             // Capture tapped node output for scopes (share via Arc, no copy).
             if Some(node_id) == matte_tap {
@@ -4582,6 +4657,38 @@ impl GraphExecutor {
     /// so a frame that ran one twice shows here.
     pub fn source_runs(&self) -> u64 {
         self.source_runs
+    }
+
+    /// Hold the outputs of heavy nodes (temporal noise reduction, frame
+    /// blends, OFX and frei0r) in the runs of `source`'s clip, and take
+    /// them held, until called with `None` (#1863). Only a viewer parked
+    /// on a frame calls it, around that clip's grade; playback and export
+    /// never do, so they never read or fill the cache. A run of another
+    /// clip, or one with no frame context, ignores it.
+    pub fn hold_outputs_for(&mut self, source: Option<crate::held::HeldSource>) {
+        self.held.token = source;
+    }
+
+    /// The held outputs' counts: hits, misses, heavy nodes not held,
+    /// entries stored.
+    pub fn held_counts(&self) -> crate::held::HeldCounts {
+        self.held.counts()
+    }
+
+    /// Entries held now.
+    pub fn held_len(&self) -> usize {
+        self.held.len()
+    }
+
+    /// Forget every held output: playback started or stopped, another
+    /// sequence or clip, the project closed.
+    pub fn clear_held(&mut self) {
+        self.held.clear();
+    }
+
+    /// The held outputs' budget in bytes; two entries always stay.
+    pub fn set_held_budget(&mut self, bytes: usize) {
+        self.held.set_budget(bytes);
     }
 
     /// Source-boundary nodes run with no context to read their source
