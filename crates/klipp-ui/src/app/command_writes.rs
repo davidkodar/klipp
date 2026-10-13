@@ -257,6 +257,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::WipeAgainstClip { .. }
         | AppCommand::SaveGradeToLibrary { .. }
         | AppCommand::DeleteGradeFromLibrary { .. }
+        | AppCommand::SetGradeLibraryLabels { .. }
         | AppCommand::SetSourceMedia { .. }
         | AppCommand::PlaySource
         | AppCommand::PauseSource
@@ -271,6 +272,14 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::RenameProjectTemplate { .. }
         | AppCommand::ExportProjectTemplate { .. }
         | AppCommand::ImportProjectTemplate { .. }
+        // The Shared Library is kept outside the project (#614).
+        | AppCommand::AddToSharedLibrary { .. }
+        | AppCommand::AddMediaToSharedLibrary { .. }
+        | AppCommand::RemoveFromSharedLibrary { .. }
+        | AppCommand::RelinkSharedLibraryItem { .. }
+        | AppCommand::CreateSharedCollection { .. }
+        | AppCommand::RenameSharedCollection { .. }
+        | AppCommand::DeleteSharedCollection { .. }
         // Which clip the viewer frames for its glide (#611).
         | AppCommand::SetFrameGlideMode(..) => false,
         // Write the picture, the project or the history, start a step of

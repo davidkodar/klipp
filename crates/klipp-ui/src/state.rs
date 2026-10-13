@@ -2583,6 +2583,14 @@ pub struct AppState {
     /// Where project templates are kept (#618); `None` for the user's
     /// configuration folder's.
     pub project_templates_dir: Option<std::path::PathBuf>,
+    /// The Shared Library's media collections, across projects (#614).
+    pub shared_library: crate::shared_library::SharedLibrary,
+    /// Where the Shared Library is kept (#614); `None` for the user's
+    /// configuration folder's.
+    pub shared_library_dir: Option<std::path::PathBuf>,
+    /// The collection the Library's SHARED view shows, and the one files
+    /// go to when none is named (#614).
+    pub shared_collection: String,
     /// The Save Project as Template dialog, when it is open (#618).
     pub save_template_dialog: Option<crate::panels::new_project_dialog::SaveTemplateDialog>,
     /// The clip whose Frame Glide is being framed in the viewer (#611):
@@ -4636,6 +4644,9 @@ impl Default for AppState {
             selects_drag: None,
             selects_height: 120.0,
             project_templates_dir: None,
+            shared_library: crate::shared_library::dir().map(|d| crate::shared_library::SharedLibrary::load(&d)).unwrap_or_default(),
+            shared_library_dir: None,
+            shared_collection: String::new(),
             save_template_dialog: None,
             frame_glide_clip: None,
             frame_glide_drag: None,

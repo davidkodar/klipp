@@ -221,6 +221,8 @@ pub enum LibraryCategory {
     Generators,
     /// Royalty-free music and sound-effect search (Jamendo, Freesound).
     Audio,
+    /// The Shared Library's collections of files, across projects (#614).
+    Shared,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -10,6 +10,7 @@ pub mod transition_previews;
 pub mod generator_previews;
 pub mod transitions_tab;
 pub mod generators_tab;
+pub mod shared_tab;
 
 use crate::icons::Icon;
 use crate::layout_state::{BrowserTab, LibraryCategory};
@@ -800,6 +801,8 @@ pub struct BrowserPanel {
     pub generators_selected: Option<String>,
     // Library tab category
     pub library_category: LibraryCategory,
+    /// The Library's SHARED view (#614).
+    pub shared_tab: shared_tab::SharedTabState,
     // Audio Library (royalty-free music / SFX search) state
     pub audio_search_query: String,
     /// false = music (Jamendo), true = sound effects (Freesound).
@@ -1051,6 +1054,7 @@ impl Default for BrowserPanel {
             audio_fx_auditioning: None,
             audio_fx_hide_unsupported: false,
             library_category: LibraryCategory::default(),
+            shared_tab: Default::default(),
             audio_search_query: String::new(),
             audio_search_sfx: false,
             audio_search_results: Vec::new(),
@@ -1344,7 +1348,7 @@ impl BrowserPanel {
                 LibraryCategory::Titles => "Search titles and graphics\u{2026}",
                 LibraryCategory::Transitions => "Search transitions\u{2026}",
                 LibraryCategory::Generators => "Search generators\u{2026}",
-                LibraryCategory::Audio => "",
+                LibraryCategory::Audio | LibraryCategory::Shared => "",
             },
         };
 
@@ -4638,13 +4642,14 @@ impl BrowserPanel {
         theme: &KlippTheme,
     ) -> Vec<AppCommand> {
         // ── Category tabs: the same strip as every other tab row ──
-        let categories: [(LibraryCategory, &str, &str); 6] = [
+        let categories: [(LibraryCategory, &str, &str); 7] = [
             (LibraryCategory::VideoFx, "VIDEO FX", "VFX"),
             (LibraryCategory::AudioFx, "AUDIO FX", "AFX"),
             (LibraryCategory::Titles, "TITLES & GRAPHICS", "T&G"),
             (LibraryCategory::Transitions, "TRANSITIONS", "TRN"),
             (LibraryCategory::Generators, "GENERATORS", "GEN"),
             (LibraryCategory::Audio, "MUSIC & SFX", "AUD"),
+            (LibraryCategory::Shared, "SHARED", "SHR"),
         ];
         let labels: Vec<&str> = categories.iter().map(|c| c.1).collect();
         let brief: Vec<&str> = categories.iter().map(|c| c.2).collect();
@@ -4923,6 +4928,7 @@ impl BrowserPanel {
                 )
             }
             LibraryCategory::Audio => self.show_audio_library(ui, state, theme),
+            LibraryCategory::Shared => shared_tab::show(ui, state, theme, &mut self.shared_tab, &mut self.library_category),
         }
     }
 

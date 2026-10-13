@@ -455,6 +455,15 @@ impl KlippApp {
                 self.new_project_dialog.load_templates(&dir);
                 true
             }
+            AppCommand::AddToSharedLibrary { .. }
+            | AppCommand::AddMediaToSharedLibrary { .. }
+            | AppCommand::RemoveFromSharedLibrary { .. }
+            | AppCommand::RelinkSharedLibraryItem { .. }
+            | AppCommand::CreateSharedCollection { .. }
+            | AppCommand::RenameSharedCollection { .. }
+            | AppCommand::DeleteSharedCollection { .. } => {
+                crate::shared_library::run_command(&mut self.state, cmd)
+            }
             AppCommand::SetActiveSequence { sequence_idx } => {
                 // Switching to a sequence opens its tab again (#906).
                 if let Some(seq) = self.state.sequences.get(*sequence_idx) {
