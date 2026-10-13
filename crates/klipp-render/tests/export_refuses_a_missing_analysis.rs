@@ -46,7 +46,7 @@ fn a_clip_without_its_analysis_refuses_the_export_by_name() {
         output_path: out.clone(), format: ExportFormat::Mp4, video_codec: ExportVideoCodec::H264,
         resolution: None, fps: None, crf: 18, preset: EncoderPreset::Fast, audio_codec: ExportAudioCodec::Copy,
         audio_bitrate_kbps: None, video_bitrate_kbps: None, rate_control: RateControl::Crf,
-        burn_in_subtitles: false, embed_subtitles: false, target_lufs: None, true_peak_dbtp: None, embed_chapters: false, captions_608: false,
+        burn_in_subtitles: false, embed_subtitles: false, target_lufs: None, true_peak_dbtp: None, embed_chapters: false, captions_608: false, hdr10plus: false,
         bit_depth: 0, hdr_mode: HdrMode::Sdr, tone_map_op: ToneMapOp::Hable, odt: OdtChoice::MatchViewer,
         mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS,
     };

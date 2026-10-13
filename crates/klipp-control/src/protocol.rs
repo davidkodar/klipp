@@ -829,6 +829,10 @@ pub enum ControlCommand {
         /// stream (#1663), as broadcast deliveries want; h264 and hevc.
         #[serde(default)]
         captions_608: Option<bool>,
+        /// HDR10+ dynamic metadata (ST 2094-40) per shot (#468); hevc
+        /// with a PQ delivery.
+        #[serde(default)]
+        hdr10plus: Option<bool>,
         /// One of the app's built-in export presets, by name ("ProRes 422",
         /// "YouTube 4K", ...) or id: its codecs, size, quality and
         /// loudness, under any field given here as well (#1583). The

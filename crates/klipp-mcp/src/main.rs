@@ -951,6 +951,9 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(b) = args.get("captions_608").and_then(|v| v.as_bool()) {
                 v["captions_608"] = json!(b);
             }
+            if let Some(b) = args.get("hdr10plus").and_then(|v| v.as_bool()) {
+                v["hdr10plus"] = json!(b);
+            }
             if let Some(b) = args.get("burn_captions").and_then(|v| v.as_bool()) {
                 v["burn_captions"] = json!(b);
             }
@@ -1938,6 +1941,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "true_peak_dbtp": { "type": "number", "description": "True-peak ceiling, -10 to 0 (default -1; ATSC A/85 -2)" },
                  "burn_captions": { "type": "boolean", "description": "Captions and titles burnt in (default on); the reply says which" },
                  "captions_608": { "type": "boolean", "description": "Captions as CEA-608 inside the video stream (h264/hevc)" },
+                 "hdr10plus": { "type": "boolean", "description": "Per-shot ST 2094-40 metadata (hevc, PQ)" },
                  "preset": { "type": "string" }, "codec": { "type": "string" }, "audio_codec": { "type": "string" },
                  "bit_depth": { "type": "integer" }, "bitrate_kbps": { "type": "integer" },
              }),

@@ -72,6 +72,8 @@ pub struct Encoder {
     /// The subtitle track as CEA-608 captions in the video stream
     /// (#1663), when the export carries them.
     captions: Option<crate::a53::Captions>,
+    /// HDR10+ dynamic metadata, per shot (#468), when the export carries it.
+    hdr10plus: Option<crate::hdr10plus::Hdr10Plus>,
     /// Linear picture → display-encoded RGB, per pixel: the viewer's
     /// transform, an ACES output transform, or an HDR delivery's PQ/HLG
     /// encode. Fixed at `open()` from the settings and the project's
@@ -325,6 +327,28 @@ impl FrameLight {
 /// A PQ signal's light, cd/m².
 fn pq_light(signal: f32) -> f32 {
     klipp_color::hdr::pq_decode_nits(signal)
+}
+
+/// An export's HDR10+ (#468), when the settings ask for it on an H.265 PQ
+/// delivery: its shots start where a clip starts on a video track, in
+/// export frames.
+fn hdr10plus(settings: &ExportSettings, snapshot: &SequenceSnapshot) -> Option<crate::hdr10plus::Hdr10Plus> {
+    if !(settings.hdr10plus && settings.renders_hdr() && settings.delivery() == klipp_core::HdrMode::Pq && matches!(settings.video_codec, ExportVideoCodec::H265)) {
+        return None;
+    }
+    let (fps, start, end) = (snapshot.fps.max(1.0), snapshot.start_frame(), snapshot.end_frame());
+    let frame = |t: &klipp_core::Timecode| (t.to_secs_f64() * fps).round() as u64;
+    let starts = snapshot
+        .video
+        .sequence
+        .tracks
+        .iter()
+        .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
+        .flat_map(|t| t.clips.iter().map(|c| frame(&c.timeline_in)))
+        .filter(|&f| f > start && f < end)
+        .map(|f| f - start)
+        .collect();
+    Some(crate::hdr10plus::Hdr10Plus::new(starts))
 }
 
 /// The captions an export carries in its video stream (#1663): its first
@@ -1074,6 +1098,7 @@ impl Encoder {
             light_stats: LightLevelStats::new(),
             hdr_peak_nits: settings.hdr_peak_nits(),
             captions: captions_608(settings, snapshot),
+            hdr10plus: hdr10plus(settings, snapshot),
             display: export_display(settings, snapshot.working_colorspace),
             gif_filter: if matches!(settings.format, ExportFormat::Gif) {
                 let fps_den = (snapshot.fps.max(1.0).round() as u32).max(1);
@@ -1308,6 +1333,11 @@ impl Encoder {
     /// Send one picture to the video encoder, by way of a VAAPI surface
     /// when the encoder takes those.
     fn send_video_frame(&mut self, frame: &ffmpeg_next::frame::Video) -> Result<(), RenderError> {
+        // Its light for HDR10+, from every fourth pixel of the planes the
+        // encoder is given (#468).
+        if let Some(h) = self.hdr10plus.as_mut() {
+            h.measured(crate::hdr10plus::measure(frame, 4));
+        }
         let sent = if crate::vaapi::is_attached(&self.video_encoder) {
             let surface = crate::vaapi::upload(&self.video_encoder, frame).map_err(RenderError::Encode)?;
             self.video_encoder.send_frame(&surface)
@@ -1696,6 +1726,7 @@ impl Encoder {
             .send_eof()
             .map_err(|e| RenderError::Encode(format!("video send_eof: {e}")))?;
         self.drain_video_packets()?;
+        self.release_held_packets()?;
 
         // HDR10 signalling side-data has to land on the video
         // stream's codecpar before write_trailer: for MP4/MOV the
@@ -1807,29 +1838,57 @@ impl Encoder {
             if packet.duration() == 0 {
                 packet.set_duration(1);
             }
-            // Its picture's captions, by its presentation time: a frame
-            // a tick (#1663).
-            if let (Some(captions), Some(pts), Some(data)) = (&self.captions, packet.pts(), packet.data()) {
-                let mut with = ffmpeg_next::Packet::copy(&captions.insert(data, pts.max(0) as u64));
-                with.set_stream(self.video_stream_idx);
-                with.set_pts(packet.pts());
-                with.set_dts(packet.dts());
-                with.set_duration(packet.duration());
-                with.set_flags(packet.flags());
-                packet = with;
+            // With HDR10+ a packet waits for its shot's light (#468).
+            match self.hdr10plus.as_mut() {
+                Some(h) => {
+                    h.hold(std::mem::replace(&mut packet, ffmpeg_next::Packet::empty()));
+                    for ready in h.ready(false) {
+                        self.write_video_packet(ready)?;
+                    }
+                }
+                None => {
+                    let p = std::mem::replace(&mut packet, ffmpeg_next::Packet::empty());
+                    self.write_video_packet(p)?;
+                }
             }
-            packet.rescale_ts(
-                self.video_time_base,
-                self.output_ctx
-                    .stream(self.video_stream_idx)
-                    .unwrap()
-                    .time_base(),
-            );
-            packet
-                .write_interleaved(&mut self.output_ctx)
-                .map_err(|e| RenderError::Encode(format!("write video packet: {e}")))?;
         }
         Ok(())
+    }
+
+    /// Every packet still waiting for its shot's HDR10+, the encoder
+    /// flushed (#468).
+    fn release_held_packets(&mut self) -> Result<(), RenderError> {
+        let ready = self.hdr10plus.as_mut().map(|h| h.ready(true)).unwrap_or_default();
+        for p in ready {
+            self.write_video_packet(p)?;
+        }
+        Ok(())
+    }
+
+    /// Write one encoded picture: its captions put in (#1663), its times
+    /// in the stream's time base.
+    fn write_video_packet(&mut self, mut packet: ffmpeg_next::Packet) -> Result<(), RenderError> {
+        // Its picture's captions, by its presentation time: a frame
+        // a tick (#1663).
+        if let (Some(captions), Some(pts), Some(data)) = (&self.captions, packet.pts(), packet.data()) {
+            let mut with = ffmpeg_next::Packet::copy(&captions.insert(data, pts.max(0) as u64));
+            with.set_stream(self.video_stream_idx);
+            with.set_pts(packet.pts());
+            with.set_dts(packet.dts());
+            with.set_duration(packet.duration());
+            with.set_flags(packet.flags());
+            packet = with;
+        }
+        packet.rescale_ts(
+            self.video_time_base,
+            self.output_ctx
+                .stream(self.video_stream_idx)
+                .unwrap()
+                .time_base(),
+        );
+        packet
+            .write_interleaved(&mut self.output_ctx)
+            .map_err(|e| RenderError::Encode(format!("write video packet: {e}")))
     }
 
     /// Attach HDR10 signalling side-data (Content Light Level +
@@ -2093,7 +2152,7 @@ mod tests {
             preset: EncoderPreset::Fast,
             audio_codec: ExportAudioCodec::Aac,
             audio_bitrate_kbps: Some(128), video_bitrate_kbps: None, rate_control: klipp_core::RateControl::Crf,
-            burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, true_peak_dbtp: None, embed_chapters: false, captions_608: false,
+            burn_in_subtitles: true, embed_subtitles: false, target_lufs: None, true_peak_dbtp: None, embed_chapters: false, captions_608: false, hdr10plus: false,
             bit_depth: 0, hdr_mode: klipp_core::HdrMode::Sdr, tone_map_op: klipp_core::ToneMapOp::Hable,
             odt: klipp_core::OdtChoice::MatchViewer,
             mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS }

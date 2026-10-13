@@ -104,6 +104,8 @@ pub(super) struct ExportDialogState {
     /// Carry the subtitle track as CEA-608 captions in the video stream
     /// (#1663); H.264 and H.265 only.
     pub(super) captions_608: bool,
+    /// HDR10+ dynamic metadata on an H.265 PQ export (#468).
+    pub(super) hdr10plus: bool,
     /// Write sequence markers as chapter metadata in the output container
     /// (MP4/MKV/MOV only — ignored for WebM). Opt-in; default false.
     pub(super) embed_chapters: bool,
@@ -155,7 +157,7 @@ impl Default for ExportDialogState {
             video_bitrate_kbps: 10000,
             burn_in_subtitles: true,
             embed_subtitles: false,
-            captions_608: false,
+            captions_608: false, hdr10plus: false,
             embed_chapters: false,
             normalize_loudness: false,
             loudness_preset: 0,
@@ -423,6 +425,7 @@ pub(super) fn build_export_settings(
         true_peak_dbtp: dialog_true_peak(dialog),
         embed_chapters: dialog.embed_chapters,
         captions_608: dialog.captions_608 && matches!(dialog.video_codec, klipp_core::ExportVideoCodec::H264 | klipp_core::ExportVideoCodec::H265),
+        hdr10plus: dialog.hdr10plus && dialog.video_codec == klipp_core::ExportVideoCodec::H265,
         bit_depth: dialog.bit_depth,
         hdr_mode: dialog.hdr_mode,
         tone_map_op: dialog.tone_map_op,
@@ -1247,6 +1250,14 @@ impl KlippApp {
                                         format!("{peak:.0} nits"),
                                     );
                                 }
+                            });
+                            ui.end_row();
+                            // Per-shot dynamic metadata (#468), H.265 only.
+                            ui.label("");
+                            let hevc = self.export_dialog.video_codec == klipp_core::ExportVideoCodec::H265;
+                            ui.add_enabled_ui(hevc, |ui| {
+                                ui.checkbox(&mut self.export_dialog.hdr10plus, "Dynamic metadata (ST 2094-40)")
+                                    .on_hover_text("Per-shot light levels in the video stream, so a display dimmer than the master tone-maps each shot by its own highlights. H.265 only.");
                             });
                             ui.end_row();
                         }

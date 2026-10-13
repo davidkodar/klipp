@@ -152,7 +152,7 @@ fn units(packet: &[u8]) -> Option<(Vec<(usize, usize)>, Option<usize>)> {
 /// `packet` with `nal` put in before its first slice, framed as the
 /// packet frames its units; `None` when the packet has no slice or
 /// cannot be read.
-fn insert_before_first_slice(packet: &[u8], nal: &[u8], codec: Codec) -> Option<Vec<u8>> {
+pub(crate) fn insert_before_first_slice(packet: &[u8], nal: &[u8], codec: Codec) -> Option<Vec<u8>> {
     let (units, len) = units(packet)?;
     let &(_, at) = units.iter().find(|&&(start, _)| packet.get(start).is_some_and(|&b| is_slice(codec, b)))?;
     let mut out = Vec::with_capacity(packet.len() + nal.len() + 4);

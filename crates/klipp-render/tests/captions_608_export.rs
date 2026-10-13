@@ -128,7 +128,7 @@ fn no_captions_unless_asked() {
     let out = dir.join("off.mp4");
     let seq = sequence(Fps::new(25, 1));
     let pool = MediaPool::new();
-    let settings = ExportSettings { output_path: out.clone(), video_codec: ExportVideoCodec::H264, format: ExportFormat::Mp4, audio_codec: ExportAudioCodec::Copy, burn_in_subtitles: false, captions_608: false, ..Default::default() };
+    let settings = ExportSettings { output_path: out.clone(), video_codec: ExportVideoCodec::H264, format: ExportFormat::Mp4, audio_codec: ExportAudioCodec::Copy, burn_in_subtitles: false, captions_608: false, hdr10plus: false, ..Default::default() };
     let snapshot = SequenceSnapshot::from_sequence(&seq, &pool, &settings, None, false, WorkingColorspace::Rec709Linear).unwrap();
     let frames = snapshot.duration_frames;
     ExportJob {

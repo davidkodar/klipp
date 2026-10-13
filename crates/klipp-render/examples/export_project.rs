@@ -115,7 +115,7 @@ fn main() {
         true_peak_dbtp: None,
         // Linear is the default; the app passes the user's preference.
         pan_law: Default::default(),
-        embed_chapters: false, captions_608: false,
+        embed_chapters: false, captions_608: false, hdr10plus: false,
         // KLIPP_EXPORT_BITS=10 for a 10-bit delivery, to measure the
         // slower path against the 8-bit one.
         bit_depth: std::env::var("KLIPP_EXPORT_BITS")

@@ -12,7 +12,7 @@ pub(crate) fn respond(
     let mut send = sender!(ctx, collect);
 
     match cmd {
-        ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions, captions_608, preset, codec, audio_codec, bitrate_kbps } => {
+        ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions, captions_608, hdr10plus, preset, codec, audio_codec, bitrate_kbps } => {
             let out = std::path::PathBuf::from(&path);
             if !out.is_absolute() {
                 return Err(format!("export path must be absolute (got {path:?})"));
@@ -133,11 +133,18 @@ pub(crate) fn respond(
                 }
                 settings.captions_608 = cc;
             }
+            if let Some(on) = hdr10plus {
+                if on && !(matches!(settings.video_codec, V::H265) && settings.delivery() == klipp_core::HdrMode::Pq) {
+                    return Err("hdr10plus needs a PQ delivery in hevc".into());
+                }
+                settings.hdr10plus = on;
+            }
             // Said, because it cannot be seen from the reply otherwise and
             // decides whether a sidecar file is needed.
             let said = json!({
                 "captions_and_titles_burnt_in": settings.burn_in_subtitles,
                 "captions_608": settings.captions_608,
+                "hdr10plus": settings.hdr10plus,
                 "target_lufs": settings.target_lufs,
                 "true_peak_dbtp": settings.target_lufs.map(|_| settings.true_peak_dbtp.unwrap_or(-1.0)),
                 // The size it is encoded at: an odd side is rounded down,
