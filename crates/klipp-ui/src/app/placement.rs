@@ -77,7 +77,7 @@ impl KlippApp {
                                 {
                                     c.source_rotation = rotation;
                                 }
-                                self.apply_detected_log_format(clip_id, mid);
+                                self.apply_input_defaults(clip_id, mid);
                                 // The file's audio, linked to it.
                                 let audio = self.append_linked_audio(mid, clip_id);
                                 let clip = self.state.sequences[self.state.active_sequence_idx].tracks[*track_index].find_clip(clip_id).unwrap().clone();
@@ -342,7 +342,7 @@ impl KlippApp {
             let cid = clip.id;
             Self::overwrite_insert_clip_on_track(&mut seq.tracks[vi], clip);
             video_clip_id = Some(cid);
-            self.apply_detected_log_format(cid, media_id);
+            self.apply_input_defaults(cid, media_id);
             if let Some(c) = self.state.sequences[seq_idx].tracks[vi].find_clip(cid) {
                 hist_video = Some((c.clone(), vi));
             }

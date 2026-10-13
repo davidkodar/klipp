@@ -772,6 +772,8 @@ impl KlippApp {
                     working_colorspace: self.state.project_working_colorspace,
                     grade_encoding: self.state.project_grade_encoding,
                     default_odt: self.state.project_default_odt,
+                    default_input_format: self.state.project_default_input_format,
+                    default_input_lut: self.state.project_default_input_lut.clone(),
                 };
                 let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
 

@@ -687,6 +687,8 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
         working_colorspace: project.working_colorspace,
         grade_encoding: project.grade_encoding,
         default_odt: project.default_odt,
+        default_input_format: project.default_input_format,
+        default_input_lut: project.default_input_lut.as_ref().map(|p| resolve_media_path(dir, Path::new(p))),
     };
 
     // Decode the synthetic title-asset list into a MediaId-keyed

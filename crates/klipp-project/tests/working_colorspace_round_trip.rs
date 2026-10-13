@@ -31,6 +31,8 @@ fn acescg_setting_round_trips_through_save_load() {
         working_colorspace: WorkingColorspace::AcesCG,
         grade_encoding: klipp_core::GradeEncoding::AcesCct,
         default_odt: klipp_core::OdtChoice::Rec2100Pq1000,
+        default_input_format: Some(klipp_core::LogFormat::SLog3),
+        default_input_lut: Some(std::path::PathBuf::from("/luts/in.cube")),
         ..Default::default()
     };
 
@@ -45,6 +47,8 @@ fn acescg_setting_round_trips_through_save_load() {
     );
     assert_eq!(loaded_color.grade_encoding, klipp_core::GradeEncoding::AcesCct, "the grade encoding with it (#467)");
     assert_eq!(loaded_color.default_odt, klipp_core::OdtChoice::Rec2100Pq1000, "the default output transform with it (#466)");
+    assert_eq!(loaded_color.default_input_format, Some(klipp_core::LogFormat::SLog3), "the default input format (#466)");
+    assert_eq!(loaded_color.default_input_lut.as_deref(), Some(std::path::Path::new("/luts/in.cube")), "the default input LUT (#466)");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -69,6 +73,7 @@ fn default_setting_round_trips_as_rec709_linear() {
         WorkingColorspace::Rec709Linear,
     );
     assert_eq!(loaded_color.default_odt, klipp_core::OdtChoice::MatchViewer, "new exports start at Match Viewer, as they did (#466)");
+    assert_eq!((loaded_color.default_input_format, loaded_color.default_input_lut), (None, None), "no input defaults");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

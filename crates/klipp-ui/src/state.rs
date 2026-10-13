@@ -2534,6 +2534,10 @@ pub struct AppState {
     pub project_grade_encoding: klipp_core::GradeEncoding,
     /// The output transform new exports start from (#466).
     pub project_default_odt: klipp_core::OdtChoice,
+    /// The input format new clips take when their file says none (#466).
+    pub project_default_input_format: Option<klipp_core::LogFormat>,
+    /// The LUT new clips start their grade with (#466).
+    pub project_default_input_lut: Option<std::path::PathBuf>,
     /// The Colour Management window is open (#466).
     pub show_colour_management: bool,
 
@@ -4681,6 +4685,8 @@ impl Default for AppState {
             project_working_colorspace: klipp_core::WorkingColorspace::default(),
             project_grade_encoding: klipp_core::GradeEncoding::default(),
             project_default_odt: klipp_core::OdtChoice::default(),
+            project_default_input_format: None,
+            project_default_input_lut: None,
             show_colour_management: false,
             show_media_panel: false,
             show_remove_media_confirm: None,
