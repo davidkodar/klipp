@@ -4,6 +4,7 @@ mod gradient_editor;
 pub mod letter_picker;
 pub mod tracker_picker;
 pub mod video_tab;
+pub mod piece_transition;
 pub mod sequence_view;
 pub(crate) mod rows;
 pub mod placement_by_path;
@@ -7367,6 +7368,11 @@ fn show_transition_inspector(
                         });
                     }
                 });
+            }
+            if klipp_core::piece_transition::is_piece_kind(transition.kind) {
+                if let Some(user_params) = piece_transition::show(ui, theme, transition.kind, &transition.user_params) {
+                    cmds.push(AppCommand::SetTransitionParam { track_index: track_idx, transition_id: transition.id, user_params });
+                }
             }
             if matches!(transition.kind, klipp_timeline::TransitionKind::WaterDrop) {
                 ui.add_space(6.0);

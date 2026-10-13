@@ -97,6 +97,13 @@ pub enum TransitionKind {
     /// A whip pan: the outgoing picture is flung off and the incoming one
     /// follows, fastest at the cut, smeared by a blur along the move.
     WhipPan,
+    /// The picture breaks into strips that slide away along their length,
+    /// one after another, to reveal the next shot (#985).
+    SlideStrips,
+    /// The picture breaks into a grid of panels that slide away (#985).
+    SlidePanels,
+    /// The picture splits down a line, and the halves part (#985).
+    PartHalves,
 }
 
 // ---------------------------------------------------------------------------
@@ -115,10 +122,10 @@ pub struct TransitionSpec {
 }
 
 // ---------------------------------------------------------------------------
-// Registry — const array of all 68 specs
+// Registry — const array of all 71 specs
 // ---------------------------------------------------------------------------
 
-pub const TRANSITION_SPECS: [TransitionSpec; 68] = [
+pub const TRANSITION_SPECS: [TransitionSpec; 71] = [
     TransitionSpec {
         kind: TransitionKind::CrossDissolve,
         kind_id: 0,
@@ -666,10 +673,39 @@ pub const TRANSITION_SPECS: [TransitionSpec; 68] = [
         // direction (0 left, 1 right, 2 up, 3 down), blur strength.
         default_params: TransitionUserParams { param0: 0.0, param1: 1.0, param2: 0.0, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
     },
+    // The piece transitions (#985): their four slots hold the typed
+    // settings of `piece_transition::PieceParams`.
+    TransitionSpec {
+        kind: TransitionKind::SlideStrips,
+        kind_id: 68,
+        string_key: "SlideStrips",
+        display_name: "Slide Strips",
+        short_label: "Strips",
+        // 8 strips sliding sideways, neighbours opposite ways, staggered.
+        default_params: TransitionUserParams { param0: 8.0, param1: 0.0, param2: 0.35, param3: 64.0, color: [1.0, 1.0, 1.0, 1.0] },
+    },
+    TransitionSpec {
+        kind: TransitionKind::SlidePanels,
+        kind_id: 69,
+        string_key: "SlidePanels",
+        display_name: "Slide Panels",
+        short_label: "Panels",
+        // 3 rows of square panels leaving to the right, in a sweep.
+        default_params: TransitionUserParams { param0: 3.0, param1: 0.0, param2: 0.5, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+    },
+    TransitionSpec {
+        kind: TransitionKind::PartHalves,
+        kind_id: 70,
+        string_key: "PartHalves",
+        display_name: "Part Halves",
+        short_label: "Halves",
+        // Split down a steep diagonal, the halves parting across it.
+        default_params: TransitionUserParams { param0: 0.0, param1: 70.0, param2: 0.15, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
+    },
 ];
 
-// Compile-time assertion: exactly 68 entries.
-const _: () = assert!(TRANSITION_SPECS.len() == 68);
+// Compile-time assertion: exactly 71 entries.
+const _: () = assert!(TRANSITION_SPECS.len() == 71);
 
 // ---------------------------------------------------------------------------
 // Lookup helpers
@@ -742,7 +778,7 @@ mod tests {
 
     #[test]
     fn test_spec_count() {
-        assert_eq!(TRANSITION_SPECS.len(), 68);
+        assert_eq!(TRANSITION_SPECS.len(), 71);
     }
 
     #[test]
@@ -964,6 +1000,9 @@ mod tests {
             TransitionKind::CrossZoom => check(TransitionKind::CrossZoom),
             TransitionKind::WaterDrop => check(TransitionKind::WaterDrop),
             TransitionKind::WhipPan => check(TransitionKind::WhipPan),
+            TransitionKind::SlideStrips => check(TransitionKind::SlideStrips),
+            TransitionKind::SlidePanels => check(TransitionKind::SlidePanels),
+            TransitionKind::PartHalves => check(TransitionKind::PartHalves),
         }
     }
 

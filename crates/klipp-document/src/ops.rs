@@ -1404,6 +1404,16 @@ pub enum Op {
         /// crossfade on its linked sound with it; undo puts both back.
         #[serde(default)]
         remove: bool,
+        /// For `slide_strips`, `slide_panels` and `part_halves` (#985),
+        /// how their pieces move: `count` (strips, or panel rows),
+        /// `angle` in degrees, `stagger` 0 to 0.9, `order` (in_sequence,
+        /// reversed, centre_out, edges_in, random, all_at_once), `ease`
+        /// (smooth, linear, accelerate, overshoot), `assemble` (the next
+        /// shot's pieces arrive), `alternate`, `gap` in pixels, `shear`
+        /// (halves slide along the line). What is left out keeps its
+        /// default.
+        #[serde(default)]
+        pieces: Option<klipp_core::piece_transition::PieceParams>,
     },
     /// The look and place of titles: one clip, or every title on a track
     /// (the captions, all at once), between `from` and `to` when given —
@@ -2846,9 +2856,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
             remove_transition(seq, pool, i, ti, clip)
         }
-        Op::Transition { clip_id, kind, secs, .. } => {
+        Op::Transition { clip_id, kind, secs, pieces, .. } => {
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            transition(seq, pool, fps, i, ti, ci, clip, kind, *secs)
+            transition(seq, pool, fps, i, ti, ci, clip, kind, *secs, pieces.as_ref())
         }
         Op::Effect { clip_id, on, kind, amount, color, tolerance, softness, spill, low, high, invert } => match (on, clip_id) {
             (Some(_), _) if is_key(kind) => Err(refuse(i, format!("{kind} keys one clip, not every one of a group"), "give clip_id for each clip to key")),
@@ -7243,6 +7253,7 @@ fn transition(
     clip: &Clip,
     kind: &str,
     secs: f64,
+    pieces: Option<&klipp_core::piece_transition::PieceParams>,
 ) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     if seq.tracks[ti].locked {
         return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
@@ -7259,6 +7270,9 @@ fn transition(
     if !(0.06..=4.0).contains(&secs) {
         return Err(refuse(i, format!("a transition of {secs} s"), "give secs between 0.06 and 4"));
     }
+    if pieces.is_some() && !klipp_core::piece_transition::is_piece_kind(spec.kind) {
+        return Err(refuse(i, format!("{} has no pieces", spec.display_name), "pieces go with slide_strips, slide_panels or part_halves"));
+    }
     let dur = snap(secs, fps).max(one_frame(fps));
     let alignment = klipp_core::TransitionAlignment::default();
     transition_fits(seq, pool, fps, i, clip, next, dur, alignment)?;
@@ -7269,7 +7283,7 @@ fn transition(
         duration: dur,
         clip_a_id: clip.id,
         clip_b_id: next.id,
-        user_params: klipp_core::TransitionUserParams::default_for_kind(spec.kind_id),
+        user_params: pieces.map(|p| p.to_user(spec.kind)).unwrap_or_else(|| klipp_core::TransitionUserParams::default_for_kind(spec.kind_id)),
         alignment,
     };
     let at = clip.timeline_out.to_secs_f64();
@@ -7469,6 +7483,9 @@ fn resolve_transition_kind(name: &str) -> Option<&'static klipp_core::Transition
         "vanish" | "dip" => "DipToBlack",
         "blur" => "BlurDissolve",
         "spin" => "Spin",
+        "strips" | "slide_strips" => "SlideStrips",
+        "panels" | "slide_panels" | "grid" => "SlidePanels",
+        "halves" | "part_halves" | "split" => "PartHalves",
         other => {
             // The registry key itself, matched without case.
             return klipp_core::TRANSITION_SPECS.iter().find(|s| s.string_key.eq_ignore_ascii_case(&other.replace('_', "")));
@@ -10138,7 +10155,7 @@ mod tests {
     #[test]
     fn a_transition_comes_off_with_its_crossfade() {
         let (seq, pool, _, a, _) = fixture();
-        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.4, remove: false }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.4, remove: false, pieces: None }]).unwrap();
         let mut seqs = vec![seq.clone()];
         let mut p = pool.clone();
         let mut fps = seq.fps;
@@ -10161,7 +10178,7 @@ mod tests {
         seq.tracks.insert(0, Track::new("V2", TrackKind::Video));
         // A dissolve on the cut out of it, crossfading its sound too: both
         // must come off with the move, not be left naming a clip gone.
-        let dissolve = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.4, remove: false }]).unwrap();
+        let dissolve = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.4, remove: false, pieces: None }]).unwrap();
         {
             let mut seqs = vec![seq.clone()];
             let mut p = pool.clone();
@@ -10225,7 +10242,7 @@ mod tests {
             seq.tracks.iter().map(|t| t.transitions.iter().filter(|tr| !t.clips.iter().any(|c| c.id == tr.clip_a_id) || !t.clips.iter().any(|c| c.id == tr.clip_b_id)).count()).sum()
         };
         let count = |seq: &Sequence| -> usize { seq.tracks.iter().map(|t| t.transitions.len()).sum() };
-        run(&mut sequences, &mut pool, &[Op::Transition { clip_id: ClipRef::Id(ia), kind: "dissolve".into(), secs: 1.0, remove: false }]);
+        run(&mut sequences, &mut pool, &[Op::Transition { clip_id: ClipRef::Id(ia), kind: "dissolve".into(), secs: 1.0, remove: false, pieces: None }]);
         let with = count(&sequences[0]);
         assert!(with >= 1, "a dissolve on the cut");
         let before = sequences[0].clone();
@@ -10259,7 +10276,7 @@ mod tests {
         // Removing only one of the two clips takes the transition too.
         let (seq, mut pool, _, ia, _) = fixture();
         let mut sequences = vec![seq];
-        run(&mut sequences, &mut pool, &[Op::Transition { clip_id: ClipRef::Id(ia), kind: "dissolve".into(), secs: 1.0, remove: false }]);
+        run(&mut sequences, &mut pool, &[Op::Transition { clip_id: ClipRef::Id(ia), kind: "dissolve".into(), secs: 1.0, remove: false, pieces: None }]);
         run(&mut sequences, &mut pool, &[remove(ia)]);
         assert_eq!((count(&sequences[0]), dangling(&sequences[0])), (0, 0));
     }
@@ -11582,7 +11599,7 @@ mod tests {
     fn a_transition_goes_between_two_clips_and_undo_removes_it() {
         let (seq, pool, _, a, b) = fixture();
         // The two clips meet at 4 s and each is 4 s long with source beyond.
-        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.4, remove: false }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.4, remove: false, pieces: None }]).unwrap();
         assert!(plan.steps[0].what.starts_with("Cross Dissolve of 0.40 s") && plan.steps[0].what.contains("at 4.00 s"), "{}", plan.steps[0].what);
         // The picture's transition, and its linked sound crossfaded with it.
         let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("a batch: {:?}", plan.steps[0].edit) };
@@ -11608,16 +11625,32 @@ mod tests {
         assert_eq!(view.sequences[0].tracks[0].clips[0].fade_out_secs, 0.0);
 
         // A stylised name by its alias.
-        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "whip".into(), secs: 0.4, remove: false }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "whip".into(), secs: 0.4, remove: false, pieces: None }]).unwrap();
         let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!() };
         let EditCommand::AddTransition { transition, .. } = &edits[0] else { panic!() };
         assert_eq!(transition.kind, klipp_core::TransitionKind::WhipPan, "a whip is a whip pan, not a zoom (#512)");
 
+        // A piece transition, with its pieces given as JSON as an
+        // assistant sends them (#985); what is left out keeps its default.
+        let op: Op = serde_json::from_value(serde_json::json!({ "op": "transition", "clip_id": a, "kind": "strips", "secs": 0.4, "pieces": { "count": 12, "angle": 90, "order": "random", "assemble": true } })).unwrap();
+        let plan = resolve(&seq, &pool, &[op]).unwrap();
+        let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!() };
+        let EditCommand::AddTransition { transition, .. } = &edits[0] else { panic!() };
+        assert_eq!(transition.kind, klipp_core::TransitionKind::SlideStrips);
+        let pieces = klipp_core::piece_transition::PieceParams::read(transition.kind, &transition.user_params);
+        assert_eq!((pieces.count, pieces.angle, pieces.order, pieces.assemble), (12, 90.0, klipp_core::piece_transition::PieceOrder::Random, true));
+        assert_eq!(pieces.stagger, klipp_core::piece_transition::PieceParams::default().stagger, "the rest at its default");
+        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "halves".into(), secs: 0.4, remove: false, pieces: None }]).unwrap();
+        let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!() };
+        let EditCommand::AddTransition { transition, .. } = &edits[0] else { panic!() };
+        assert_eq!((transition.kind, transition.user_params), (klipp_core::TransitionKind::PartHalves, klipp_core::spec_for_kind(klipp_core::TransitionKind::PartHalves).default_params));
+
         // Refusals: the last clip has no next; an unknown kind; too long.
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
-        assert!(bad(Op::Transition { clip_id: ClipRef::Id(b), kind: "dissolve".into(), secs: 0.5, remove: false }).why.contains("no clip after"));
-        assert!(bad(Op::Transition { clip_id: ClipRef::Id(a), kind: "sparkle".into(), secs: 0.5, remove: false }).why.contains("not a transition"));
-        assert!(bad(Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 4.0, remove: false }).why.contains("as long as one of its clips"));
+        assert!(bad(Op::Transition { clip_id: ClipRef::Id(b), kind: "dissolve".into(), secs: 0.5, remove: false, pieces: None }).why.contains("no clip after"));
+        assert!(bad(Op::Transition { clip_id: ClipRef::Id(a), kind: "sparkle".into(), secs: 0.5, remove: false, pieces: None }).why.contains("not a transition"));
+        assert!(bad(Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.5, remove: false, pieces: Some(Default::default()) }).why.contains("has no pieces"));
+        assert!(bad(Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 4.0, remove: false, pieces: None }).why.contains("as long as one of its clips"));
 
         // As the tools send it, kind and secs optional.
         let ops: Vec<Op> = serde_json::from_str(r#"[{"op":"transition","clip_id":{"track":0,"secs":2.0}}]"#).unwrap();
@@ -11628,7 +11661,7 @@ mod tests {
     fn a_transition_on_an_audio_track_is_a_crossfade_and_fades_nothing() {
         let (seq, pool, _, _, _) = fixture();
         let sound_a = seq.tracks[1].clips[0].id;
-        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(sound_a), kind: "dip_to_black".into(), secs: 0.4, remove: false }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(sound_a), kind: "dip_to_black".into(), secs: 0.4, remove: false, pieces: None }]).unwrap();
         assert!(plan.steps[0].what.starts_with("Crossfade of 0.40 s"), "{}", plan.steps[0].what);
         let EditCommand::AddTransition { track_index, .. } = &plan.steps[0].edit else { panic!("one transition, no batch") };
         assert_eq!(*track_index, 1);
@@ -11773,10 +11806,10 @@ mod tests {
         ab.source_in = tc(0.0);
         ab.source_out = tc(4.0);
         let sound_a = seq.tracks[1].clips[0].id;
-        let err = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(sound_a), kind: "crossfade".into(), secs: 0.4, remove: false }]).unwrap_err();
+        let err = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(sound_a), kind: "crossfade".into(), secs: 0.4, remove: false, pieces: None }]).unwrap_err();
         assert!(err.why.contains("no footage beyond the cut"), "{err}");
         // The picture still dissolves, its sound dipped as before.
-        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.4, remove: false }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.4, remove: false, pieces: None }]).unwrap();
         assert!(matches!(plan.steps[0].edit, EditCommand::AddTransition { track_index: 0, .. }), "{:?}", plan.steps[0].edit);
     }
 

@@ -11670,6 +11670,55 @@ fn bilinear(buf_is_to: bool, sx: f32, sy: f32) -> vec4<f32> {
     return to_bytes(mix(mix(c00, c10, tx), mix(c01, c11, tx), ty));
 }
 
+// Piece transitions (#985): the settings `PieceParams` packs into param3.
+// Bits 0-2 the order, 3-4 the easing, 5 assemble, 6 alternate, 7-11 the
+// gap in pixels.
+fn piece_bits() -> u32 {
+    return u32(max(params.param3, 0.0) + 0.5);
+}
+
+// A piece's place in the order, 0 moving first and 1 last: `along` is
+// its place along the move (0 nearest the way out), `centre` its
+// distance from the middle (0 to 1), `id` what shuffles it.
+fn piece_key(id: u32, along: f32, centre: f32) -> f32 {
+    let order = piece_bits() & 7u;
+    if order == 1u {
+        return 1.0 - along;
+    } else if order == 2u {
+        return centre;
+    } else if order == 3u {
+        return 1.0 - centre;
+    } else if order == 4u {
+        return rand3(id, 985u, 3u);
+    } else if order == 5u {
+        return 0.0;
+    }
+    return along;
+}
+
+// How far a piece with key `k` has gone, eased: 0 at rest, 1 gone. Each
+// piece's start is put off by the stagger times its key.
+fn piece_travel(k: f32) -> f32 {
+    let s = clamp(params.param2, 0.0, 0.9);
+    let t = clamp((params.progress - s * k) / (1.0 - s), 0.0, 1.0);
+    let ease = (piece_bits() >> 3u) & 3u;
+    if ease == 1u {
+        return t;
+    } else if ease == 2u {
+        return t * t;
+    } else if ease == 3u {
+        let u = t - 1.0;
+        return 1.0 + 2.70158 * u * u * u + 1.70158 * u * u;
+    }
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// Half the gap open around a piece that has gone `e`: none at rest or
+// gone, all of it on the way.
+fn piece_gap(e: f32) -> f32 {
+    return f32((piece_bits() >> 7u) & 31u) * 0.5 * clamp(8.0 * e * (1.0 - e), 0.0, 1.0);
+}
+
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
@@ -12450,6 +12499,203 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             acc = acc + bilinear(to_side, sx, sy);
         }
         result = acc / 24.0;
+    } else if params.kind_id == 68u {
+        // Slide Strips (#985): strips across the move slide away along
+        // their length, each in its turn, uncovering the incoming picture
+        // (or the incoming strips slide in over the outgoing). Each output
+        // pixel finds its strip and where that strip's picture came from.
+        // param0 = strips, param1 = direction in degrees, param2 = stagger.
+        let bits = piece_bits();
+        let w = f32(params.width);
+        let h = f32(params.height);
+        let n = clamp(round(params.param0), 1.0, 64.0);
+        let ang = params.param1 * 0.017453292;
+        let mx = cos(ang);
+        let my = sin(ang);
+        let qx = f32(x) + 0.5 - w * 0.5;
+        let qy = f32(y) + 0.5 - h * 0.5;
+        let u = qx * mx + qy * my;
+        let v = qy * mx - qx * my;
+        // Which strip, and the gap, are judged a hair off the pixel's
+        // centre: a centre exactly on an edge would fall either way with
+        // the last bit of rounding, and differently on each GPU.
+        let uc = (qx + 0.001953125) * mx + (qy + 0.0029296875) * my;
+        let vc = (qy + 0.0029296875) * mx - (qx + 0.001953125) * my;
+        let ln = abs(w * my) + abs(h * mx);
+        let lm = abs(w * mx) + abs(h * my);
+        let bw = ln / n;
+        let fi = clamp(floor((vc + ln * 0.5) / bw), 0.0, n - 1.0);
+        var sgn: f32 = 1.0;
+        if (bits & 64u) != 0u && (u32(fi) & 1u) == 1u {
+            sgn = -1.0;
+        }
+        let mid = (n - 1.0) * 0.5;
+        let e = piece_travel(piece_key(u32(fi), fi / max(n - 1.0, 1.0), abs(fi - mid) / max(mid, 0.5)));
+        let assemble = (bits & 32u) != 0u;
+        var t: f32 = e;
+        if assemble {
+            t = 1.0 - e;
+        }
+        let su = u - sgn * t * lm;
+        let gh = piece_gap(e);
+        let fv = vc + ln * 0.5 - fi * bw;
+        let sx = su * mx - v * my + w * 0.5;
+        let sy = su * my + v * mx + h * 0.5;
+        let suc = uc - sgn * t * lm;
+        let sxc = suc * mx - vc * my + w * 0.5;
+        let syc = suc * my + vc * mx + h * 0.5;
+        // The gap is only tested once open: at rest, a pixel's own strip
+        // always holds it, whatever the rounding at a strip's edge.
+        let in_strip = gh <= 0.0 || (fv >= gh && fv <= bw - gh);
+        if in_strip && sxc >= 0.0 && sxc < w && syc >= 0.0 && syc < h {
+            result = bilinear(assemble, sx - 0.5, sy - 0.5);
+        } else if assemble {
+            result = from_px;
+        } else {
+            result = to_px;
+        }
+    } else if params.kind_id == 69u {
+        // Slide Panels (#985): a grid of square panels slides away along
+        // the nearest of right, down, left and up. A pixel's row (across
+        // the move) is fixed, so it looks along the row for the panel
+        // over it now, the one that has moved furthest on top.
+        // param0 = rows, param1 = direction in degrees, param2 = stagger.
+        let bits = piece_bits();
+        let w = f32(params.width);
+        let h = f32(params.height);
+        let rows = clamp(round(params.param0), 1.0, 16.0);
+        let cols = clamp(round(rows * w / h), 1.0, 32.0);
+        let q4 = round(params.param1 / 90.0);
+        let quarter = u32(q4 - 4.0 * floor(q4 / 4.0));
+        let vertical = quarter == 1u || quarter == 3u;
+        var dir: f32 = 1.0;
+        if quarter >= 2u {
+            dir = -1.0;
+        }
+        var a: f32 = f32(x) + 0.5;
+        var b: f32 = f32(y) + 0.5;
+        var la: f32 = w;
+        var lb: f32 = h;
+        var na: f32 = cols;
+        var nb: f32 = rows;
+        if vertical {
+            a = f32(y) + 0.5;
+            b = f32(x) + 0.5;
+            la = h;
+            lb = w;
+            na = rows;
+            nb = cols;
+        }
+        let pa = la / na;
+        let pb = lb / nb;
+        // Judged a hair off the pixel's centre, as the strips are.
+        let ac = a + 0.001953125;
+        let bc = b + 0.0029296875;
+        let fr = clamp(floor(bc / pb), 0.0, nb - 1.0);
+        let fb = bc - fr * pb;
+        var sgn: f32 = dir;
+        if (bits & 64u) != 0u && (u32(fr) & 1u) == 1u {
+            sgn = -dir;
+        }
+        let assemble = (bits & 32u) != 0u;
+        let across = fr / max(nb - 1.0, 1.0);
+        var best: f32 = -1.0;
+        var best_a: f32 = 0.0;
+        for (var j: u32 = 0u; j < 32u; j = j + 1u) {
+            let fj = f32(j);
+            if fj >= na {
+                break;
+            }
+            var along = fj / max(na - 1.0, 1.0);
+            if sgn > 0.0 {
+                along = 1.0 - along;
+            }
+            let ca = (fj + 0.5) / na - 0.5;
+            let cb = (fr + 0.5) / nb - 0.5;
+            let centre = clamp(sqrt(ca * ca + cb * cb) / 0.7072, 0.0, 1.0);
+            let e = piece_travel(piece_key(u32(fr) * 32u + j, (along + across) * 0.5, centre));
+            var t: f32 = e;
+            if assemble {
+                t = 1.0 - e;
+            }
+            let d = sgn * t * la;
+            let gh = piece_gap(e);
+            let sa = a - d;
+            let sac = ac - d;
+            let lo = fj * pa;
+            // Its own panel by index, as the pixel's row was found, so at
+            // rest every pixel is in exactly one; the gap once open.
+            let in_panel = floor(sac / pa) == fj && (gh <= 0.0 || (sac >= lo + gh && sac < lo + pa - gh && fb >= gh && fb < pb - gh));
+            if in_panel && abs(d) >= best {
+                best = abs(d);
+                best_a = sa;
+            }
+        }
+        if best >= 0.0 {
+            var sx: f32 = best_a;
+            var sy: f32 = b;
+            if vertical {
+                sx = b;
+                sy = best_a;
+            }
+            result = bilinear(assemble, sx - 0.5, sy - 0.5);
+        } else if assemble {
+            result = from_px;
+        } else {
+            result = to_px;
+        }
+    } else if params.kind_id == 70u {
+        // Part Halves (#985): the picture splits down a line through the
+        // middle, and the halves part across it (or slide along it, the
+        // ways apart). A half only ever covers its own side of the line.
+        // param0 = 0 part / 1 slide along, param1 = the line's angle in
+        // degrees, param2 = stagger.
+        let bits = piece_bits();
+        let w = f32(params.width);
+        let h = f32(params.height);
+        let ang = params.param1 * 0.017453292;
+        let lx = cos(ang);
+        let ly = sin(ang);
+        let qx = f32(x) + 0.5 - w * 0.5;
+        let qy = f32(y) + 0.5 - h * 0.5;
+        // The side, judged a hair off the pixel's centre, as the strips are.
+        let cx = qx + 0.001953125;
+        let cy = qy + 0.0029296875;
+        let v = cy * lx - cx * ly;
+        var side: f32 = 1.0;
+        var i: u32 = 1u;
+        if v < 0.0 {
+            side = -1.0;
+            i = 0u;
+        }
+        var dx: f32 = -ly * side;
+        var dy: f32 = lx * side;
+        var dist: f32 = (abs(w * ly) + abs(h * lx)) * 0.5 + 1.0;
+        if params.param0 > 0.5 {
+            dx = lx * side;
+            dy = ly * side;
+            dist = abs(w * lx) + abs(h * ly);
+        }
+        let e = piece_travel(piece_key(i, f32(i), 0.0));
+        let assemble = (bits & 32u) != 0u;
+        var t: f32 = e;
+        if assemble {
+            t = 1.0 - e;
+        }
+        let spx = qx - dx * t * dist;
+        let spy = qy - dy * t * dist;
+        let sv = ((cy - dy * t * dist) * lx - (cx - dx * t * dist) * ly) * side;
+        let sx = spx + w * 0.5;
+        let sy = spy + h * 0.5;
+        let sxc = cx - dx * t * dist + w * 0.5;
+        let syc = cy - dy * t * dist + h * 0.5;
+        if sv >= piece_gap(e) && sxc >= 0.0 && sxc < w && syc >= 0.0 && syc < h {
+            result = bilinear(assemble, sx - 0.5, sy - 0.5);
+        } else if assemble {
+            result = from_px;
+        } else {
+            result = to_px;
+        }
     } else if params.kind_id == 63u || params.kind_id == 64u || params.kind_id == 65u {
         // Zoom family: scale from/to around frame center.
         let zoom_amount = max(params.param0, 1.001);

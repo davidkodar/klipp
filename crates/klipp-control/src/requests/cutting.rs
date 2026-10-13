@@ -368,7 +368,7 @@ fn music_shape(v: &mut serde_json::Value, path: &std::path::Path, id: klipp_core
         // clip its place step made ("@N").
         let joins = fit.segments.len().saturating_sub(1);
         ops.extend((0..joins).map(|n| {
-            let op = klipp_document::ops::Op::Transition { clip_id: klipp_document::ops::ClipRef::Made(klipp_document::ops::StepRef(n)), kind: "cross_dissolve".into(), secs: JOIN_CROSSFADE_SECS, remove: false };
+            let op = klipp_document::ops::Op::Transition { clip_id: klipp_document::ops::ClipRef::Made(klipp_document::ops::StepRef(n)), kind: "cross_dissolve".into(), secs: JOIN_CROSSFADE_SECS, remove: false, pieces: None };
             serde_json::to_value(op).unwrap_or_default()
         }));
         let how = match fit.bars_changed {

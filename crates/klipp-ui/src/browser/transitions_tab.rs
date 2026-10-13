@@ -1398,6 +1398,21 @@ const TRANSITIONS: &[TransitionDef] = &[
         },
     },
     TransitionDef {
+        kind: klipp_core::TransitionKind::SlideStrips,
+        category: TransitionCategory::Slide,
+        preview: |p, r, _, progress| paint_pieces(p, r, klipp_core::TransitionKind::SlideStrips, progress, PREVIEW_A, PREVIEW_B),
+    },
+    TransitionDef {
+        kind: klipp_core::TransitionKind::SlidePanels,
+        category: TransitionCategory::Slide,
+        preview: |p, r, _, progress| paint_pieces(p, r, klipp_core::TransitionKind::SlidePanels, progress, PREVIEW_A, PREVIEW_B),
+    },
+    TransitionDef {
+        kind: klipp_core::TransitionKind::PartHalves,
+        category: TransitionCategory::Slide,
+        preview: |p, r, _, progress| paint_pieces(p, r, klipp_core::TransitionKind::PartHalves, progress, PREVIEW_A, PREVIEW_B),
+    },
+    TransitionDef {
         kind: klipp_core::TransitionKind::WhipPan,
         category: TransitionCategory::Slide,
         preview: |p, r, _, _progress| {
@@ -2195,6 +2210,56 @@ fn paint_ab_canvas(painter: &egui::Painter, rect: egui::Rect, _progress: f32) {
     painter.rect_filled(right, egui::Rounding::same(4.0), b);
 }
 
+/// The piece transitions' card at `t` (#985), drawn as their defaults
+/// move: strips sliding off ways apart, panels leaving in a sweep, two
+/// halves parting down a diagonal, each uncovering `b`. The card the
+/// real renderer draws replaces it once ready.
+fn paint_pieces(p: &egui::Painter, r: egui::Rect, kind: klipp_core::TransitionKind, t: f32, a: egui::Color32, b: egui::Color32) {
+    use klipp_core::TransitionKind as K;
+    let t = t.clamp(0.0, 1.0);
+    let ease = |k: f32, stagger: f32| {
+        let lt = ((t - stagger * k) / (1.0 - stagger)).clamp(0.0, 1.0);
+        lt * lt * (3.0 - 2.0 * lt)
+    };
+    let p = p.with_clip_rect(r);
+    p.rect_filled(r, 0.0, b);
+    match kind {
+        K::SlideStrips => {
+            let n = 6;
+            let bh = r.height() / n as f32;
+            for i in 0..n {
+                let sgn = if i % 2 == 0 { 1.0 } else { -1.0 };
+                let off = sgn * ease(i as f32 / (n - 1) as f32, 0.35) * r.width();
+                let band = egui::Rect::from_min_size(egui::pos2(r.min.x + off, r.min.y + i as f32 * bh), egui::vec2(r.width(), bh));
+                p.rect_filled(band, 0.0, a);
+            }
+        }
+        K::SlidePanels => {
+            let (rows, cols) = (3, 5);
+            let (pw, ph) = (r.width() / cols as f32, r.height() / rows as f32);
+            for row in 0..rows {
+                for col in 0..cols {
+                    let along = (cols - 1 - col) as f32 / (cols - 1) as f32;
+                    let key = (along + row as f32 / (rows - 1) as f32) * 0.5;
+                    let off = ease(key, 0.5) * r.width();
+                    let panel = egui::Rect::from_min_size(egui::pos2(r.min.x + col as f32 * pw + off, r.min.y + row as f32 * ph), egui::vec2(pw, ph));
+                    p.rect_filled(panel.shrink(0.5), 0.0, a);
+                }
+            }
+        }
+        _ => {
+            // Down a steep diagonal, the halves parting across it.
+            let (top, bottom) = (r.center().x + r.height() * 0.18, r.center().x - r.height() * 0.18);
+            for (side, k) in [(-1.0f32, 0.0), (1.0, 1.0)] {
+                let off = egui::vec2(side * ease(k, 0.15) * r.width() * 0.6, 0.0);
+                let edge = if side < 0.0 { r.min.x - r.width() } else { r.max.x + r.width() };
+                let pts = vec![egui::pos2(top, r.min.y) + off, egui::pos2(edge, r.min.y) + off, egui::pos2(edge, r.max.y) + off, egui::pos2(bottom, r.max.y) + off];
+                p.add(egui::Shape::convex_polygon(pts, a, egui::Stroke::NONE));
+            }
+        }
+    }
+}
+
 /// Per-kind motion overlay. Each transition gets its own visual
 /// signature — wipes name their direction, box wipes shrink/grow,
 /// barn doors split/close, slides push from a specific edge, etc.
@@ -2925,6 +2990,7 @@ fn paint_kind_motion_overlay(
         K::SlideDown => slide_in_from(0.0, -1.0),
         K::PushLeft => push(-1.0, 0.0),
         K::WhipPan => push(-1.0, 0.0),
+        K::SlideStrips | K::SlidePanels | K::PartHalves => paint_pieces(p, rect, kind, t, a, b),
         K::CoverLeft => slide_in_from(1.0, 0.0),
         K::CoverRight => slide_in_from(-1.0, 0.0),
         K::UncoverLeft => {
