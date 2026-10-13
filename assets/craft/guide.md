@@ -309,8 +309,13 @@ exist until the plan runs.
   A key is `chroma_key` (`green_screen`, `blue_screen`) on one clip, the
   app's Chroma Key: `color` `#rrggbb` (green, or blue for `blue_screen`),
   `tolerance` (0.2), `softness` (0.1) and `spill` (0.6), each 0 to 1; a
-  second key on the clip replaces the first. Put the keyed clip on a
-  track above what shows through it.
+  second key on the clip replaces the first. `luma_key` keys by
+  brightness, the app's Luma Key: `low` to `high` is keyed out (0 to
+  0.1, a black background), `softness` (0.05) fades it back in past
+  them, each 0 to 1, and `invert: true` keeps that range and keys out
+  the rest (fire or sparks shot on black over a picture: `low` 0.6,
+  `high` 1, `invert`). Put the keyed clip on a track above what shows
+  through it.
   `fill_bars` (`blanking_fill`, `blur_fill`, `blurred_background`) fills
   the black bars round a picture that does not fill the frame (an
   upright phone shot in a wide sequence, a wide one in a vertical

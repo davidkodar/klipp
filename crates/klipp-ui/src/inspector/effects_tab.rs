@@ -367,6 +367,7 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
             key_color: [0, 255, 0], tolerance: 0.2, soft_edge: 0.1,
             spill_method: klipp_effects::SpillMethod::ChannelClamp, spill_strength: 0.6,
         },
+        BuiltinEffect::LumaKey { .. } => BuiltinEffect::LumaKey { low: 0.0, high: 0.1, soft: 0.05, invert: false },
         BuiltinEffect::CornerPin { .. } => klipp_effects::corner_pin::still(),
         // The file stays: a reset is the look at full strength.
         BuiltinEffect::Lut3D { path, .. } => BuiltinEffect::Lut3D { path: path.clone(), opacity: 1.0, tetrahedral: true, prepared: None },
@@ -506,7 +507,7 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
 #[allow(dead_code)]
 fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> bool {
     use klipp_effects::BuiltinEffect;
-    matches!(effect, BuiltinEffect::Crop { .. } | BuiltinEffect::Transform { .. } | BuiltinEffect::ChromaKey { .. } | BuiltinEffect::Bloom { .. } | BuiltinEffect::LightRays { .. }
+    matches!(effect, BuiltinEffect::Crop { .. } | BuiltinEffect::Transform { .. } | BuiltinEffect::ChromaKey { .. } | BuiltinEffect::LumaKey { .. } | BuiltinEffect::Bloom { .. } | BuiltinEffect::LightRays { .. }
         | BuiltinEffect::Vignette { .. } | BuiltinEffect::Diffusion { .. } | BuiltinEffect::LensFlare { .. }
         | BuiltinEffect::LightWrap { .. } | BuiltinEffect::AnamorphicStreak { .. } | BuiltinEffect::FilmHalation { .. }
         | BuiltinEffect::EdgeDetect { .. } | BuiltinEffect::ChannelMixer { .. } | BuiltinEffect::DirectionalBlur { .. }

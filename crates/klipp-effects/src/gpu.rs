@@ -4053,7 +4053,7 @@ impl GpuEffectsPipeline {
             high,
             soft,
             invert: if invert { 1 } else { 0 },
-            _pad0: 0,
+            into_alpha: 0,
             _pad1: 0,
             luma: [self.luma_coefs[0], self.luma_coefs[1], self.luma_coefs[2], 0.0],
         });
@@ -6222,7 +6222,7 @@ impl GpuEffectsPipeline {
                 self.write_chain_params(slot, &GpuLumaKeyParams {
                     width, height, low, high, soft,
                     invert: invert as u32,
-                    _pad0: 0,
+                    into_alpha: 0,
                     _pad1: 0,
                     luma: [self.luma_coefs[0], self.luma_coefs[1], self.luma_coefs[2], 0.0],
                 });
@@ -7989,7 +7989,9 @@ struct GpuLumaKeyParams {
     high: f32,
     soft: f32,
     invert: u32,
-    _pad0: u32,
+    /// 1: the matte multiplies the picture's alpha, the colour kept (the
+    /// Luma Key clip effect, #1638); 0: the greyscale matte (the node).
+    into_alpha: u32,
     _pad1: u32,
     /// Working-space luma coefficients, `klipp_color::linear::luma_coefs`.
     /// A vec4 because WGSL aligns vec3 to 16 bytes anyway; `.w` unused.
@@ -13511,7 +13513,7 @@ struct Params {
     high: f32,
     soft: f32,
     invert: u32,
-    _pad0: u32,
+    into_alpha: u32,
     _pad1: u32,
     luma: vec4<f32>,
 }
@@ -13560,6 +13562,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var matte = soft_range(y, params.low, params.high, params.soft);
     if params.invert != 0u { matte = 1.0 - matte; }
+
+    // The Luma Key clip effect (#1638): the matte multiplies the
+    // picture's alpha, its colour untouched, as the CPU twin does.
+    if params.into_alpha != 0u {
+        output[idx] = pack(vec4<f32>(orig.xyz, orig.w * matte));
+        return;
+    }
 
     // A matte is opaque, as the CPU writes it (#1037): the input's alpha
     // made the two disagree over a part-transparent picture.

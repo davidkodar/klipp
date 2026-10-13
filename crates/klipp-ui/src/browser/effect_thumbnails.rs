@@ -493,6 +493,10 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
                 spill_strength: 0.6,
             }
         }
+        // The darker third keyed out, so the card shows a key at all.
+        klipp_effects::BuiltinEffect::LumaKey { .. } => {
+            klipp_effects::BuiltinEffect::LumaKey { low: 0.0, high: 0.3, soft: 0.1, invert: false }
+        }
         klipp_effects::BuiltinEffect::Bloom { .. } => {
             klipp_effects::BuiltinEffect::Bloom { threshold: 0.5, radius: 25.0, intensity: 1.0 }
         }

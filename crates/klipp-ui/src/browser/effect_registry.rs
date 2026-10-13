@@ -198,6 +198,14 @@ impl EffectRegistry {
                 description: String::new(),
                 grouping: "Keying".into(),
             },
+            EffectEntry {
+                name: "Luma Key".into(),
+                category: EffectCategory::Keying,
+                source: EffectSource::Builtin(klipp_effects::BuiltinEffect::LumaKey { low: 0.0, high: 0.1, soft: 0.05, invert: false }),
+                source_label: "Built-in",
+                description: "Key out a range of brightness, black by default: Low to High is see-through.".into(),
+                grouping: "Keying".into(),
+            },
             // Light effects
             EffectEntry {
                 name: "Bloom".into(),

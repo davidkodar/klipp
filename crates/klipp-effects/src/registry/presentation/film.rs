@@ -15,6 +15,7 @@ const OLD_FILM: &str = "klipp.fx.old_film";
 const VHS: &str = "klipp.fx.vhs";
 const NOISE: &str = "klipp.fx.noise_generator";
 const CHROMA_KEY: &str = "klipp.fx.chroma_key";
+const LUMA_KEY: &str = "klipp.fx.luma_key";
 const SHUTTER: &str = "klipp.fx.rolling_shutter_correction";
 const TEMPORAL: &str = "klipp.fx.temporal_denoise";
 const DEFLICKER: &str = "klipp.fx.deflicker";
@@ -66,6 +67,11 @@ pub(super) static PARAMS: &[ParamEntry] = &[
     at(CHROMA_KEY, "spill", P::scrub(0.005, 3)),
     at(CHROMA_KEY, "spill_method", combo().label("Spill Method").labels(&["None", "Channel Clamp", "Hawk"])),
     at(CHROMA_KEY, "spill_strength", P::scrub(0.005, 3)),
+    // Luma Key (#1638): the range, its softness, then the invert.
+    at(LUMA_KEY, "low", P::scrub(0.005, 3).order(0).help("The darkest brightness keyed out, 0 black to 1 white.")),
+    at(LUMA_KEY, "high", P::scrub(0.005, 3).order(1).help("The brightest brightness keyed out: Low to High is see-through.")),
+    at(LUMA_KEY, "soft", P::scrub(0.005, 3).order(2).help("How far past Low and High the key fades back in, for a soft edge.")),
+    at(LUMA_KEY, "invert", toggle().order(3).help("Keep Low to High and key out the rest.")),
     at(SHUTTER, "strength", P::scrub(0.005, 2)),
     at(SHUTTER, "readout_ratio", P::scrub(0.005, 2).label("Readout Ratio")),
     at(TEMPORAL, "strength", P::scrub(0.01, 2)),

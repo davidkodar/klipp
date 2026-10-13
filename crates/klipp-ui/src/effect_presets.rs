@@ -309,6 +309,14 @@ impl PresetManager {
                 spill_method: klipp_effects::SpillMethod::ChannelClamp, spill_strength: 0.6,
             });
 
+        // ── Luma Key (#1638) ──────────────────────────────────
+        self.bi("klipp.fx.luma_key", "Key Out Black", "A black background keyed out, soft at its edge",
+            klipp_effects::BuiltinEffect::LumaKey { low: 0.0, high: 0.1, soft: 0.05, invert: false });
+        self.bi("klipp.fx.luma_key", "Key Out White", "A white background keyed out, soft at its edge",
+            klipp_effects::BuiltinEffect::LumaKey { low: 0.9, high: 1.0, soft: 0.05, invert: false });
+        self.bi("klipp.fx.luma_key", "Keep the Highlights", "Only the brightest parts kept, as for fire, sparks or light leaks over a picture",
+            klipp_effects::BuiltinEffect::LumaKey { low: 0.6, high: 1.0, soft: 0.2, invert: true });
+
         // ── Posterize ─────────────────────────────────────────
         self.bi("klipp.fx.posterize", "Pop Art", "Bold 4-level poster look",
             klipp_effects::BuiltinEffect::Posterize { levels: 4.0 });
@@ -534,6 +542,7 @@ pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str
         klipp_effects::BuiltinEffect::Crop { .. } => "crop",
         klipp_effects::BuiltinEffect::Transform { .. } => "transform",
         klipp_effects::BuiltinEffect::ChromaKey { .. } => "chroma_key",
+        klipp_effects::BuiltinEffect::LumaKey { .. } => "luma_key",
         klipp_effects::BuiltinEffect::CornerPin { .. } => "corner_pin",
         klipp_effects::BuiltinEffect::Lut3D { .. } => "lut_3d",
         klipp_effects::BuiltinEffect::ColourSpaceTransform { .. } => "colour_space_transform",
@@ -610,7 +619,7 @@ mod tests {
     fn every_built_in_preset_is_keyed_by_its_type_id() {
         let m = manager(std::path::Path::new("/nonexistent/klipp-presets"));
         let builtins: Vec<_> = m.presets.iter().filter(|p| p.is_builtin).collect();
-        assert_eq!(builtins.len(), 133);
+        assert_eq!(builtins.len(), 136);
         for p in &builtins {
             let id = p.builtin.as_ref().and_then(preset_type_id);
             assert_eq!(Some(p.effect_key.as_str()), id, "{}", p.name);

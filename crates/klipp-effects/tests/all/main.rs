@@ -36,6 +36,8 @@ mod gpu_pipelines_build;
 mod gpu_scopes;
 #[path = "../gpu_stack_parity.rs"]
 mod gpu_stack_parity;
+#[path = "../luma_key_effect.rs"]
+mod luma_key_effect;
 #[path = "../luma_key_gpu_parity.rs"]
 mod luma_key_gpu_parity;
 #[path = "../lut_node_cpu_gpu_parity.rs"]
