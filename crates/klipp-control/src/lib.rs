@@ -694,6 +694,7 @@ fn handle(
             | ControlCommand::AppendClip { .. }
             | ControlCommand::RemoveClip { .. }
             | ControlCommand::AttachAudio { .. }
+            | ControlCommand::NormalizeClips { .. }
             | ControlCommand::SetAppendAudio { .. }
             | ControlCommand::DetectSceneCuts { .. }
             | ControlCommand::TrackSurface { .. }

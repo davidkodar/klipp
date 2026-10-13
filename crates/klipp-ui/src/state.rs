@@ -2328,6 +2328,8 @@ pub struct AppState {
     pub title_template_dialog: Option<crate::title_templates::TemplateDialog>,
     /// The open credits-from-a-list dialog (#1514).
     pub credits_dialog: Option<crate::credits_dialog::CreditsDialog>,
+    /// The open Normalize dialog (#1843).
+    pub normalize_dialog: Option<crate::normalize_dialog::NormalizeDialog>,
     pub effect_thumbnails: crate::browser::effect_thumbnails::ThumbnailRenderer,
 
     // Render queue
@@ -4556,6 +4558,7 @@ impl Default for AppState {
             composition_templates: crate::parameterized_templates::CompositionTemplateStore::load_default(),
             title_template_dialog: None,
             credits_dialog: None,
+            normalize_dialog: None,
             effect_thumbnails: crate::browser::effect_thumbnails::ThumbnailRenderer::default(),
             render_queue: {
                 // An export runs an analysis its clips need and haven't

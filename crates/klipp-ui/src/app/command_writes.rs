@@ -272,6 +272,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ExportOtio { .. }
         | AppCommand::ExportAaf { .. }
         | AppCommand::ShowToast { .. }
+        | AppCommand::OpenNormalizeDialog { .. }
+        | AppCommand::NormalizeClips { .. }
         // A template is kept outside the project (#618).
         | AppCommand::SaveProjectTemplate { .. }
         | AppCommand::DeleteProjectTemplate { .. }
@@ -777,6 +779,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::EndSpeedKeyframeDrag { .. }
         | AppCommand::SetSourceRotation { .. }
         | AppCommand::UpdateClipAudio { .. }
+        | AppCommand::ApplyClipGains { .. }
         | AppCommand::BeginAudioDrag { .. }
         | AppCommand::EndAudioDrag { .. }
         | AppCommand::ScaleAudioKeyframeTiming { .. }

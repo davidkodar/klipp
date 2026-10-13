@@ -53,7 +53,7 @@ static PENDING_WRITE_GENERATION: std::sync::atomic::AtomicU64 =
 const WRITE_TOOLS: &[&str] = &[
     "klipp_graph",
     "klipp_play", "klipp_pause", "klipp_stop", "klipp_seek",
-    "klipp_append_clip", "klipp_remove_clip", "klipp_attach_audio", "klipp_set_append_audio", "klipp_select_clip",
+    "klipp_append_clip", "klipp_remove_clip", "klipp_attach_audio", "klipp_normalize", "klipp_set_append_audio", "klipp_select_clip",
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
     "klipp_generator", "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_import_subtitles", "klipp_apply",
@@ -67,7 +67,7 @@ const RETRYABLE_TOOLS: &[&str] = &[
     "klipp_analyze", "klipp_analysis_queue", "klipp_import_media", "klipp_grade_to_target",
     "klipp_adopt_look", "klipp_match_scenes", "klipp_grade_chain", "klipp_review",
     "klipp_narrate", "klipp_record", "klipp_auto_sfx", "klipp_auto_redact",
-    "klipp_add_music", "klipp_match_grade", "klipp_align_audio", "klipp_look",
+    "klipp_add_music", "klipp_match_grade", "klipp_align_audio", "klipp_normalize", "klipp_look",
     "klipp_orient", "klipp_set_brief", "klipp_set_edit_plan", "klipp_approve_edit_plan",
     "klipp_build_edit_plan", "klipp_rename_sequence", "klipp_create_multicam",
     "klipp_switch_angle", "klipp_set_multicam_sound", "klipp_add_marker",
@@ -572,6 +572,16 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         "klipp_attach_audio" => json!({
             "method": "attach_audio", "clip_id": arg_str(args, "clip_id")?,
         }),
+        "klipp_normalize" => {
+            let ids = args.get("clip_ids").and_then(|v| v.as_array()).ok_or("clip_ids must be a list of clip ids")?;
+            let mut v = json!({ "method": "normalize_clips", "clip_ids": ids });
+            for key in ["mode", "target", "ceiling_dbtp", "group", "apply"] {
+                if let Some(x) = args.get(key) {
+                    v[key] = x.clone();
+                }
+            }
+            v
+        }
         "klipp_set_append_audio" => json!({
             "method": "set_append_audio",
             "enabled": args.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
@@ -1691,6 +1701,17 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Give a clip its own media file's audio, linked and spanning the clip; refused if it has it already. Details: klipp_guide topic attach_audio.",
              json!({ "clip_id": { "type": "string", "description": "From klipp_list_clips" } }),
              vec!["clip_id"]),
+        tool("klipp_normalize",
+             "Bring clips to a loudness or peak target by their gain (one undo step; the media is not changed): each on its own, or group true for one gain that keeps their balance. Never raises a clip past the true-peak ceiling. Answers each clip's measured LUFS, sample peak and true peak and the gain set; apply false only answers.",
+             json!({
+                 "clip_ids": { "type": "array", "items": { "type": "string" }, "description": "From klipp_list_clips" },
+                 "mode": { "type": "string", "enum": ["loudness", "peak"], "description": "loudness: integrated LUFS (ITU-R BS.1770); peak: sample peak dBFS. Default loudness" },
+                 "target": { "type": "number", "description": "LUFS or dBFS. Default -14 LUFS (web) or -1 dBFS; -16 podcast, -23 EBU R128, -24 ATSC A/85" },
+                 "ceiling_dbtp": { "type": "number", "description": "True-peak ceiling, default -1 dBTP" },
+                 "group": { "type": "boolean", "description": "One gain for all the clips. Default false" },
+                 "apply": { "type": "boolean", "description": "false answers what it would set. Default true" }
+             }),
+             vec!["clip_ids"]),
         tool("klipp_remove_clip", "Remove a clip from the timeline.",
              json!({ "clip_id": { "type": "string", "description": "From klipp_list_clips" } }),
              vec!["clip_id"]),

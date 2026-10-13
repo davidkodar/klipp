@@ -835,6 +835,33 @@ mod menu_smoke_tests {
         }
     }
 
+    /// A clip with sound has Normalize in its menu (#1843), which opens the
+    /// dialog for that clip; one with none doesn't offer it.
+    #[test]
+    fn a_sounding_clips_menu_normalizes_it() {
+        for has_audio in [true, false] {
+            let mut timeline = Timeline::new();
+            let media = timeline.state.media_pool.all().next().unwrap().id;
+            timeline.state.media_pool.get_mut(&media).unwrap().has_audio = has_audio;
+            let clip_id = timeline.state.sequences[0].all_clips().next().unwrap().id;
+            let drawn = timeline.frame(Vec::new());
+            let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
+            let menu = timeline.right_click(at);
+            let item = timeline.frame(Vec::new()).into_iter().find(|(t, _)| t == "Normalize\u{2026}").map(|(_, p)| p);
+            let Some(item) = item else {
+                assert!(!has_audio, "a clip with sound offers Normalize: {menu:?}");
+                continue;
+            };
+            assert!(has_audio, "a clip with no sound doesn't offer Normalize");
+            let button = |pressed| egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            timeline.frame(vec![egui::Event::PointerMoved(item), button(true)]);
+            let mut sent = std::mem::take(&mut timeline.sent);
+            timeline.frame(vec![button(false)]);
+            sent.extend(std::mem::take(&mut timeline.sent));
+            assert!(sent.iter().any(|c| matches!(c, AppCommand::OpenNormalizeDialog { clip_id: Some(id) } if *id == clip_id)), "{sent:?}");
+        }
+    }
+
     /// On the Colour page's strip, a clip's menu flags where its grade
     /// stands (#899): Grade Flag, then a flag, sends that flag for the
     /// clip; a flagged clip shows a pennant in the flag's colour.

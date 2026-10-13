@@ -550,7 +550,7 @@ fn decode_until(clip: &AudioClipSnapshot, fps: f64, latency_secs: f64) -> Option
 /// the end of the file: a clip holds what it plays, not the rest of its
 /// file (#1594: 120 MB for ten seconds of a five-minute track).
 /// Uses ffmpeg-next's `packets()` iterator (which properly handles stream association).
-fn decode_clip_audio(
+pub(crate) fn decode_clip_audio(
     path: &std::path::Path,
     source_start_secs: f64,
     until: Option<f64>,

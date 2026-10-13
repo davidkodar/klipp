@@ -457,6 +457,10 @@ pub struct AudioPrefs {
     /// cost of under-reading inter-sample peaks by up to ~3 dB.
     #[serde(default = "default_true")]
     pub tp_oversample: bool,
+    /// The Normalize dialog's last mode, target, ceiling and grouping
+    /// (#1843), offered the next time it opens.
+    #[serde(default)]
+    pub normalize: klipp_core::normalize::NormalizeSettings,
 }
 
 fn default_peak_hold() -> f32 { 3.0 }
@@ -484,6 +488,7 @@ impl Default for AudioPrefs {
             duck_release_secs: default_duck_release(),
             duck_threshold: default_duck_threshold(),
             tp_oversample: true,
+            normalize: Default::default(),
         }
     }
 }

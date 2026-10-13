@@ -195,6 +195,7 @@ impl KlippApp {
     pub(super) fn show_modal_dialogs(&mut self, ctx: &egui::Context, cmds: &mut Vec<AppCommand>) {
         crate::title_templates::show_dialog(ctx, &mut self.state);
         cmds.extend(crate::credits_dialog::show_dialog(ctx, &mut self.state));
+        cmds.extend(crate::normalize_dialog::show_dialog(ctx, &mut self.state));
         cmds.extend(crate::missing_fonts::show_dialog(ctx, &mut self.state, &self.theme));
 
         // 4a0. Paste Attributes dialog
