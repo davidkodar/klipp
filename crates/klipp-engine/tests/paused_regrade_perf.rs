@@ -57,3 +57,100 @@ fn paused_4k_pq_regrade() {
     parked.settle();
     drag("node editor open");
 }
+
+/// What a slider step costs below a heavy node (#901): the parked 4K PQ
+/// frame graded by an Exposure node, with temporal noise reduction on the
+/// clip (run at the source, before the grade, reading the frames either
+/// side) or an OFX node between the source and the Exposure node, and
+/// both. Whether a cache of the picture above the edited node would pay:
+/// it would, where a step here is well over a 60 fps frame (16.7 ms).
+///
+/// The OFX node is the repository's C fixture (`org.klipp.fixture.channels`,
+/// an 8-bit channel swap), compiled into a bundle in a scratch folder and
+/// found through `OFX_PLUGIN_PATH`: what it measures is the host's round
+/// trip — the picture leaving the GPU chain, converted for the plug-in and
+/// back — not a real plug-in's own work, which comes on top. Needs a C
+/// compiler; without one the OFX cases are skipped and said so.
+#[test]
+#[ignore = "perf probe: run explicitly"]
+fn paused_4k_regrade_below_heavy_nodes() {
+    let height = std::env::var("KLIPP_PROBE_HEIGHT").ok().and_then(|v| v.parse().ok()).unwrap_or(2160);
+    klipp_engine::video_decoder::set_max_playback_height(height);
+    let Some(src) = common::source("pq", 3840, 2160, common::PQ_TAGS) else {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    };
+    let ofx = fixture_bundle();
+    match &ofx {
+        // Read once, when the engine discovers its plug-ins, which the
+        // first `Parked` below does; no other thread reads it meanwhile.
+        Some(dir) => std::env::set_var("OFX_PLUGIN_PATH", dir),
+        None => eprintln!("no C compiler: the OFX cases are skipped"),
+    }
+    let tnr = |clip: &mut klipp_timeline::Clip| {
+        *clip = klipp_timeline::test_clip::TestClip::of(clip.clone())
+            .effect(klipp_effects::BuiltinEffect::TemporalDenoise { strength: 0.8, threshold: 0.05 })
+            .build();
+    };
+    let ofx_node = |clip: &mut klipp_timeline::Clip| {
+        use klipp_timeline::GradeAccess;
+        let mut g = clip.grade().clone();
+        let id = klipp_nodes::NodeId::new_v4();
+        let params = klipp_nodes::NodeParams {
+            ofx: Some(klipp_nodes::plugin::OfxNodeParams { plugin: "org.klipp.fixture.channels".into(), values: Default::default(), filter: true }),
+            ..Default::default()
+        };
+        g.nodes.insert(1, klipp_nodes::Node { id, kind: klipp_nodes::NodeKind::Ofx, label: "OFX".into(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![] });
+        // Source → OFX → Exposure, where it was Source → Exposure.
+        let (source, exposure) = (g.nodes[0].id, g.nodes[2].id);
+        g.edges.retain(|e| !(e.from_node == source && e.to_node == exposure));
+        g.edges.push(klipp_nodes::Edge { from_node: source, from_port: 0, to_node: id, to_port: 0 });
+        g.edges.push(klipp_nodes::Edge { from_node: id, from_port: 0, to_node: exposure, to_port: 0 });
+        g.node_positions.insert(id, klipp_nodes::NodePos { x: 50.0, y: 0.0 });
+        clip.set_grade(g);
+    };
+    type Tweak = Box<dyn Fn(&mut klipp_timeline::Clip)>;
+    let mut cases: Vec<(&str, Tweak)> = vec![("plain", Box::new(|_: &mut klipp_timeline::Clip| {})), ("temporal NR", Box::new(tnr))];
+    if ofx.is_some() {
+        cases.push(("OFX node", Box::new(ofx_node)));
+        cases.push(("temporal NR + OFX node", Box::new(move |c: &mut klipp_timeline::Clip| { tnr(c); ofx_node(c) })));
+    }
+    for (label, tweak) in cases {
+        let parked = common::Parked::start_with(src.clone(), 3840, 2160, |c| tweak(c));
+        parked.begin_drag();
+        let steps: Vec<f64> = (0..16).filter_map(|i| parked.step(0.5 + i as f32 * 0.05)).collect();
+        let release = parked.end_drag();
+        parked.settle();
+        if let Some(s) = parked.perf().last() {
+            eprintln!(
+                "  engine: {}x{} total {:6.1} ms | grade {:5.1} fx {:4.1} lut {:4.1} composite {:5.1} | encode {:5.1} scope {:4.1}",
+                s.width, s.height, s.total_ms, s.grade_ms, s.builtin_ms, s.lut_ms, s.composite_ms, s.reencode_ms, s.scope_ms,
+            );
+        }
+        let mut sorted = steps[1..].to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        eprintln!(
+            "{label}: slider step to new frame median {:.1} ms (best {:.1}, worst {:.1}); release {release:.1?} ms",
+            sorted[sorted.len() / 2], sorted[0], sorted[sorted.len() - 1],
+        );
+    }
+}
+
+/// The C OFX fixture built into a bundle under a scratch folder; the
+/// folder, or `None` without a C compiler.
+fn fixture_bundle() -> Option<std::path::PathBuf> {
+    let root = std::env::temp_dir().join(format!("klipp-probe-ofx-{}", std::process::id()));
+    let binary = root.join("KlippFixture.ofx.bundle/Contents/Linux-x86-64/KlippFixture.ofx");
+    std::fs::create_dir_all(binary.parent()?).ok()?;
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../klipp-plugin/tests/fixtures/ofx/fixture.c");
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    let ok = std::process::Command::new(cc)
+        .args(["-std=c11", "-O2", "-shared", "-fPIC"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .status()
+        .ok()?
+        .success();
+    ok.then_some(root)
+}
