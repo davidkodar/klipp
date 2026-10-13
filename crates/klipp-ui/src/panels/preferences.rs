@@ -1150,6 +1150,23 @@ impl PreferencesPanel {
             }
         });
 
+        Self::setting_row_with_subtitle(ui, "Default sync method", "How Create Synced Multicam puts the angles on one clock", theme, |ui| {
+            use crate::prefs::MulticamSyncMethod;
+            let label = |m: MulticamSyncMethod| match m {
+                MulticamSyncMethod::Manual => "Timecode, then sound",
+                MulticamSyncMethod::Timecode => "Timecode",
+                MulticamSyncMethod::AudioWaveform => "Sound",
+            };
+            egui::ComboBox::from_id_salt("multicam_sync")
+                .selected_text(label(prefs.editing.multicam_sync_method))
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    for m in [MulticamSyncMethod::Manual, MulticamSyncMethod::Timecode, MulticamSyncMethod::AudioWaveform] {
+                        if ui.selectable_value(&mut prefs.editing.multicam_sync_method, m, label(m)).changed() { *dirty = true; }
+                    }
+                });
+        });
+
         // ── TRACKING section ──
         Self::section_header(ui, "TRACKING", theme);
 
@@ -4865,7 +4882,7 @@ mod layout_tests {
     /// nothing, so they are out of view until they are wired. "Render
     /// cache" here is the folder row; the cache's size row keeps the name.
     const HIDDEN: &[&str] = &[
-        "Monitoring mode", "Normalize target", "Default sync method",
+        "Monitoring mode", "Normalize target",
         "Colour space tagging", "Default encoder preset",
         "Clip corner radius", "Max track height", "Ruler height",
         "Title-safe area overlay",

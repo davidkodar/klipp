@@ -1178,6 +1178,9 @@ pub struct AppState {
     /// The search radius a new track point starts with, in pixels: the
     /// editing preferences' tracking search radius.
     pub track_search_radius: u32,
+    /// How Create Synced Multicam syncs its angles in one click: the
+    /// editing preferences' default sync method.
+    pub multicam_default_sync: klipp_core::MulticamSync,
     pub loop_playback_enabled: bool,
 
     // Active workspace
@@ -4171,6 +4174,7 @@ impl Default for AppState {
             playback_speed: 1.0,
             jkl_speed_step: 2.0,
             track_search_radius: 32,
+            multicam_default_sync: klipp_core::MulticamSync::TimecodeThenAudio,
             loop_playback_enabled: false,
             active_workspace: Workspace::default(),
             custom_workspaces: Vec::new(),

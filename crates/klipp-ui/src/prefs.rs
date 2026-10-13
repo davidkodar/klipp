@@ -357,10 +357,23 @@ impl OptimisedPlayback {
 /// Default multicam sync method for aligning angles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum MulticamSyncMethod {
+    /// Timecode where a clip has it, the sound for the rest. (Named
+    /// `Manual` in files written before it acted.)
     #[default]
     Manual,
     Timecode,
     AudioWaveform,
+}
+
+impl MulticamSyncMethod {
+    /// How a multicam made by Create Synced Multicam syncs its angles.
+    pub fn sync(self) -> klipp_core::MulticamSync {
+        match self {
+            Self::Manual => klipp_core::MulticamSync::TimecodeThenAudio,
+            Self::Timecode => klipp_core::MulticamSync::Timecode,
+            Self::AudioWaveform => klipp_core::MulticamSync::Audio,
+        }
+    }
 }
 
 /// Where to show audio fade overlays on the timeline.
