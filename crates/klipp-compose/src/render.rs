@@ -652,6 +652,10 @@ pub fn frame_snapshot(seq: &Sequence, time: Timecode) -> Sequence {
             muted: t.muted,
             solo: t.solo,
             visible: t.visible,
+            // Its clips carry them already when `seq` is a render copy (the
+            // renderer reads them there), but inspection by path finds a
+            // node of the track's grade by them (#1655).
+            effects: t.effects.clone(),
             ..Track::new(&t.name, t.kind)
         })
         .collect();

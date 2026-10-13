@@ -8691,7 +8691,8 @@ impl PlaybackEngine {
     /// grade node is read from that clip's render; the timeline grade's
     /// from its proxy's, which grades the composite; a grade group stage's
     /// from the render of the group's topmost member on the frame, whose
-    /// grade runs the stage. The render that answers inspects that clip
+    /// grade runs the stage; a track grade's from the render of the
+    /// track's picture clip on the frame (#1655). The render that answers inspects that clip
     /// and taps the node feeding the asked one (`show_inspection`).
     fn sample_node_input(&mut self, clip_id: klipp_core::ClipId, node_id: klipp_nodes::NodeId, at: &klipp_graph_format::path::NodePath, nx: f32, ny: f32) {
         use klipp_graph_format::path::{NodePath, Root};
@@ -8751,7 +8752,22 @@ impl PlaybackEngine {
                         (Some(tap), Some(m)) => on_frame(m).map(|()| (m.id, klipp_compose::inspect::InspectAt::out(NodePath::new(Root::GroupStage { group, stage }, [tap])))),
                     }
                 }
-                Root::Track { .. } => why("a track's grade can't be sampled yet: pick on a clip's own grade instead"),
+                // A track's grade runs after the grade of each picture clip
+                // of the track (#1655): read from the render of the one on
+                // the frame, its node's input as that clip runs it.
+                Root::Track { track, part } => match seq.tracks.iter().find(|t| t.id.0 == track) {
+                    None => why("the track is no longer in the sequence"),
+                    Some(_) if part != klipp_graph_format::path::TrackPart::Grade => why("a track's effect list has no node input to read: pick on a node of its grade"),
+                    Some(t) => {
+                        let tap = t.effects.track_grade().and_then(|g| g.input_of(node, 0));
+                        let member = t.clips.iter().find(|c| self.playhead >= c.timeline_in && self.playhead < c.timeline_out && t.effects.grade_onto(t.kind, c).is_some());
+                        match (tap, member) {
+                            (None, _) => why("the node has no input to read"),
+                            (_, None) => why("no picture clip of the track is on this frame — park the playhead on one first"),
+                            (Some(tap), Some(m)) => on_frame(m).map(|()| (m.id, klipp_compose::inspect::InspectAt::out(NodePath::new(Root::Track { track, part }, [tap])))),
+                        }
+                    }
+                },
             }
         };
         let (inspected, tap) = match found {

@@ -547,6 +547,12 @@ impl Sequence {
                 let inner = one(&path.nodes)?;
                 let grade = track.effects.grade_onto(track.kind, clip).ok_or("the track's grade doesn't run on this clip")?;
                 let mut base = group.map_or_else(|| own.clone(), |g| g.wrap(own));
+                // The track grade's Source is what it receives: the clip's
+                // grade before it, ended by the node feeding its Output
+                // (#1655).
+                if grade.nodes.iter().any(|n| n.id == inner && n.kind == klipp_nodes::NodeKind::Source) {
+                    return base.input_of(base.output_node_id, 0).ok_or_else(|| "the clip's grade gives the track's grade no picture".into());
+                }
                 append_track_grade(&mut base, track.id, grade).get(&inner).copied().ok_or_else(|| format!("{inner} doesn't run in the track's grade"))
             }
             Root::TimelineGrade { .. } => Err("the timeline grade runs after the clips, not in a clip's grade".into()),

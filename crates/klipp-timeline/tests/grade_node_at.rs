@@ -134,3 +134,25 @@ fn a_node_inside_a_compound_is_unavailable() {
     let e = seq.grade_node_at(clip.id, &at(Root::Clip { clip: clip.id.0 }, &[grade_group, x, NodeId::new_v4()])).unwrap_err();
     assert!(e.contains("compound"), "{e}");
 }
+
+/// #1655: the track grade's Source is what the track's grade receives:
+/// the node feeding the clip's grade's Output (its group's post stage
+/// here), the node a pick on the track grade's first node reads, on the
+/// sequence and on its render copy alike.
+#[test]
+fn the_track_grades_source_is_the_clips_grade_before_it() {
+    let (seq, clip, x, group) = fixture();
+    let v1 = seq.tracks.iter().find(|t| t.clips.iter().any(|c| c.id == clip.id)).unwrap();
+    let source = v1.effects.track_grade().unwrap().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source).unwrap().id;
+    let path = at(Root::Track { track: v1.id.0, part: TrackPart::Grade }, &[source]);
+    let got = seq.grade_node_at(clip.id, &path).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(seq.baked_for_render().grade_node_at(clip.id, &path), Ok(got), "on the render copy");
+    // The post stage's Corrector ends the clip's grade, the track's next.
+    let post = at(Root::GroupStage { group: group.id.0, stage: Stage::Post }, &[x]);
+    assert_eq!(Ok(got), seq.grade_node_at(clip.id, &post), "the post stage's last node");
+    // Control: the track grade's own Corrector is another node, after it.
+    let track_x = seq.grade_node_at(clip.id, &at(Root::Track { track: v1.id.0, part: TrackPart::Grade }, &[x])).unwrap();
+    assert_ne!(got, track_x);
+    let render = seq.render_grade(clip.id).unwrap();
+    assert_eq!(render.input_of(track_x, 0), Some(got), "the track's first node is fed by it");
+}
