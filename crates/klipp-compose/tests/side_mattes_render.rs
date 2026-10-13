@@ -79,7 +79,7 @@ fn mattes() -> Vec<(&'static str, &'static str, NodeParams)> {
         ("window", "Mask", window(MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 })),
         ("rectangle", "Mask", window(MaskShape::Rectangle { center_x: 0.5, center_y: 0.5, width: 0.5, height: 0.4, rotation: 0.0 })),
         ("gradient", "Mask", window(MaskShape::LinearGradient { start_x: 0.2, start_y: 0.5, end_x: 0.8, end_y: 0.5 })),
-        ("roto", "Mask", window(MaskShape::Bezier { points: vec![(0.5, 0.2), (0.8, 0.5), (0.5, 0.8), (0.2, 0.5)] })),
+        ("roto", "Mask", window(MaskShape::polygon(vec![(0.5, 0.2), (0.8, 0.5), (0.5, 0.8), (0.2, 0.5)]))),
         ("luma key", "LumaKey", NodeParams { luma_key: Some(LumaKeySettings { enabled: true, low: 0.5, high: 1.0, soft: 0.1, invert: false }), ..NodeParams::default() }),
         (
             "difference key",

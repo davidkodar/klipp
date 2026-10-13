@@ -16,7 +16,7 @@
 //! CI run on the wrong machine doesn't look identical to a real pass.
 
 use klipp_color::masks::generate_mask_matte;
-use klipp_core::{Mask, MaskShape, MaskStack};
+use klipp_core::{Mask, MaskCombine, MaskShape, MaskStack};
 use klipp_effects::gpu::{GpuEffectsPipeline, GpuMaskDef};
 use klipp_testing::snapshot::{assert_matches_golden_png_in, Tolerance};
 use std::path::PathBuf;
@@ -32,7 +32,7 @@ fn goldens_root() -> PathBuf {
 /// Convert a single CPU `Mask` to a `GpuMaskDef`. Returns `None` for
 /// shapes the GPU pipeline doesn't support yet — the parity test
 /// uses that to detect "GPU is missing this case, expected to fail."
-fn mask_to_gpu_def(mask: &Mask) -> Option<GpuMaskDef> {
+fn mask_to_gpu_def(mask: &Mask, width: u32, height: u32) -> Option<GpuMaskDef> {
     if !mask.enabled {
         return None;
     }
@@ -53,12 +53,14 @@ fn mask_to_gpu_def(mask: &Mask) -> Option<GpuMaskDef> {
                 mask.feather, mask.invert, mask.opacity,
             ))
         }
+        // Its outline, flattened for this size, as the executor sends it
+        // (#74).
         MaskShape::Bezier { points } => Some(GpuMaskDef::bezier(
-            points.clone(),
+            klipp_core::mask_path::outline(points, width, height).to_vec(),
             mask.feather, mask.invert, mask.opacity,
         )),
     };
-    def.map(|d| d.with_warp(mask.keyframes.warp.map(|w| w.0)))
+    def.map(|d| d.with_warp(mask.keyframes.warp.map(|w| w.0)).with_feather_inner(mask.feather_inner).with_combine(mask.combine.code()))
 }
 
 /// Convert an f32 single-channel matte (0..1) to RGBA8 (R=G=B=matte,
@@ -86,13 +88,75 @@ struct ParityCase {
     expects_gpu_gap: bool,
 }
 
+/// A circle of radius `r` about (`cx`, `cy`) drawn as four curved points
+/// (#74), on a frame `aspect` tall: round on the picture.
+fn curved_circle(cx: f32, cy: f32, r: f32, aspect: f32) -> MaskShape {
+    let k = 0.552_284_8 * r;
+    let p = |dx: f32, dy: f32, hx: f32, hy: f32| klipp_core::mask_path::BezierPoint {
+        x: cx + dx, y: cy + dy / aspect, in_dx: hx, in_dy: hy / aspect, out_dx: -hx, out_dy: -hy / aspect, smooth: true,
+    };
+    MaskShape::Bezier { points: vec![p(r, 0.0, 0.0, -k), p(0.0, r, k, 0.0), p(-r, 0.0, 0.0, k), p(0.0, -r, -k, 0.0)] }
+}
+
+/// The #74 cases: curves, the soft edge inside the line, and each way a
+/// mask joins the ones before it.
+fn curve_fixtures() -> Vec<ParityCase> {
+    let aspect = 64.0 / 96.0;
+    let mask = |shape: MaskShape| Mask { shape, feather: 0.0, ..Mask::default() };
+    let rect = MaskShape::Rectangle { center_x: 0.5, center_y: 0.5, width: 0.6, height: 0.5, rotation: 0.0 };
+    vec![
+        ParityCase {
+            name: "bezier_curved_circle",
+            width: 96, height: 64,
+            masks: MaskStack { masks: vec![Mask { feather: 0.04, ..mask(curved_circle(0.5, 0.5, 0.25, aspect)) }] },
+            expects_gpu_gap: false,
+        },
+        ParityCase {
+            name: "inner_feather",
+            width: 96, height: 64,
+            masks: MaskStack { masks: vec![Mask { feather: 0.03, feather_inner: 0.08, ..mask(curved_circle(0.5, 0.5, 0.25, aspect)) }] },
+            expects_gpu_gap: false,
+        },
+        ParityCase {
+            name: "combine_subtract",
+            width: 96, height: 64,
+            masks: MaskStack { masks: vec![
+                Mask { feather: 0.02, ..mask(rect.clone()) },
+                Mask { feather: 0.03, combine: MaskCombine::Subtract, ..mask(curved_circle(0.55, 0.5, 0.12, aspect)) },
+            ] },
+            expects_gpu_gap: false,
+        },
+        ParityCase {
+            name: "combine_intersect",
+            width: 96, height: 64,
+            masks: MaskStack { masks: vec![
+                Mask { feather: 0.02, ..mask(rect.clone()) },
+                Mask { feather: 0.03, combine: MaskCombine::Intersect, ..mask(curved_circle(0.7, 0.5, 0.2, aspect)) },
+            ] },
+            expects_gpu_gap: false,
+        },
+        ParityCase {
+            name: "combine_subtract_first",
+            width: 96, height: 64,
+            masks: MaskStack { masks: vec![
+                Mask { feather: 0.05, opacity: 0.8, combine: MaskCombine::Subtract, ..mask(curved_circle(0.5, 0.5, 0.2, aspect)) },
+            ] },
+            expects_gpu_gap: false,
+        },
+    ]
+}
+
 fn fixtures() -> Vec<ParityCase> {
+    curve_fixtures().into_iter().chain(old_fixtures()).collect()
+}
+
+fn old_fixtures() -> Vec<ParityCase> {
     vec![
         // ── Single-shape sanity ──
         ParityCase {
             name: "circle_centered_no_feather",
             width: 96, height: 64,
-            masks: MaskStack { masks: vec![Mask {
+            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                 shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.25 },
                 feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                 keyframes: Default::default(),
@@ -102,7 +166,7 @@ fn fixtures() -> Vec<ParityCase> {
         ParityCase {
             name: "circle_with_feather",
             width: 96, height: 64,
-            masks: MaskStack { masks: vec![Mask {
+            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                 shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.2 },
                 feather: 0.1, invert: false, opacity: 1.0, enabled: true,
                 keyframes: Default::default(),
@@ -112,7 +176,7 @@ fn fixtures() -> Vec<ParityCase> {
         ParityCase {
             name: "rectangle_rotated",
             width: 96, height: 64,
-            masks: MaskStack { masks: vec![Mask {
+            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                 shape: MaskShape::Rectangle {
                     center_x: 0.5, center_y: 0.5,
                     width: 0.4, height: 0.3, rotation: 30.0,
@@ -125,7 +189,7 @@ fn fixtures() -> Vec<ParityCase> {
         ParityCase {
             name: "linear_gradient",
             width: 96, height: 64,
-            masks: MaskStack { masks: vec![Mask {
+            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                 shape: MaskShape::LinearGradient {
                     start_x: 0.2, start_y: 0.5, end_x: 0.8, end_y: 0.5,
                 },
@@ -137,7 +201,7 @@ fn fixtures() -> Vec<ParityCase> {
         ParityCase {
             name: "circle_inverted",
             width: 96, height: 64,
-            masks: MaskStack { masks: vec![Mask {
+            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                 shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 },
                 feather: 0.05, invert: true, opacity: 1.0, enabled: true,
                 keyframes: Default::default(),
@@ -148,12 +212,12 @@ fn fixtures() -> Vec<ParityCase> {
         ParityCase {
             name: "bezier_triangle",
             width: 96, height: 64,
-            masks: MaskStack { masks: vec![Mask {
-                shape: MaskShape::Bezier { points: vec![
+            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                shape: MaskShape::polygon(vec![
                     (0.5, 0.2),
                     (0.2, 0.8),
                     (0.8, 0.8),
-                ] },
+                ]),
                 feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                 keyframes: Default::default(),
             }] },
@@ -162,13 +226,13 @@ fn fixtures() -> Vec<ParityCase> {
         ParityCase {
             name: "bezier_square_with_feather",
             width: 96, height: 64,
-            masks: MaskStack { masks: vec![Mask {
-                shape: MaskShape::Bezier { points: vec![
+            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                shape: MaskShape::polygon(vec![
                     (0.3, 0.3),
                     (0.7, 0.3),
                     (0.7, 0.7),
                     (0.3, 0.7),
-                ] },
+                ]),
                 feather: 0.08, invert: false, opacity: 1.0, enabled: true,
                 keyframes: Default::default(),
             }] },
@@ -181,15 +245,15 @@ fn fixtures() -> Vec<ParityCase> {
             name: "circle_union_bezier",
             width: 96, height: 64,
             masks: MaskStack { masks: vec![
-                Mask {
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                     shape: MaskShape::Circle { center_x: 0.3, center_y: 0.5, radius: 0.15 },
                     feather: 0.05, invert: false, opacity: 1.0, enabled: true,
                     keyframes: Default::default(),
                 },
-                Mask {
-                    shape: MaskShape::Bezier { points: vec![
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                    shape: MaskShape::polygon(vec![
                         (0.6, 0.3), (0.85, 0.5), (0.6, 0.7),
-                    ] },
+                    ]),
                     feather: 0.05, invert: false, opacity: 1.0, enabled: true,
                     keyframes: Default::default(),
                 },
@@ -203,45 +267,45 @@ fn fixtures() -> Vec<ParityCase> {
             name: "eight_mask_stack_no_cap",
             width: 96, height: 64,
             masks: MaskStack { masks: vec![
-                Mask {
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                     shape: MaskShape::Circle { center_x: 0.15, center_y: 0.3, radius: 0.06 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                     keyframes: Default::default(),
                 },
-                Mask {
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                     shape: MaskShape::Circle { center_x: 0.35, center_y: 0.3, radius: 0.06 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                     keyframes: Default::default(),
                 },
-                Mask {
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                     shape: MaskShape::Circle { center_x: 0.55, center_y: 0.3, radius: 0.06 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                     keyframes: Default::default(),
                 },
-                Mask {
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                     shape: MaskShape::Circle { center_x: 0.75, center_y: 0.3, radius: 0.06 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                     keyframes: Default::default(),
                 },
-                Mask {
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                     shape: MaskShape::Rectangle { center_x: 0.2, center_y: 0.7, width: 0.1, height: 0.1, rotation: 0.0 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                     keyframes: Default::default(),
                 },
-                Mask {
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                     shape: MaskShape::Rectangle { center_x: 0.5, center_y: 0.7, width: 0.1, height: 0.1, rotation: 0.0 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                     keyframes: Default::default(),
                 },
-                Mask {
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                     shape: MaskShape::Rectangle { center_x: 0.8, center_y: 0.7, width: 0.1, height: 0.1, rotation: 0.0 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                     keyframes: Default::default(),
                 },
-                Mask {
-                    shape: MaskShape::Bezier { points: vec![
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                    shape: MaskShape::polygon(vec![
                         (0.05, 0.05), (0.95, 0.05), (0.95, 0.15), (0.05, 0.15),
-                    ] },
+                    ]),
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                     keyframes: Default::default(),
                 },
@@ -266,7 +330,7 @@ fn fixtures() -> Vec<ParityCase> {
             name: "bezier_in_perspective_past_the_horizon",
             width: 96, height: 64,
             masks: MaskStack { masks: vec![Mask { invert: true, ..in_perspective(
-                MaskShape::Bezier { points: vec![(0.4, 0.4), (0.6, 0.42), (0.55, 0.6), (0.42, 0.58)] },
+                MaskShape::polygon(vec![(0.4, 0.4), (0.6, 0.42), (0.55, 0.6), (0.42, 0.58)]),
                 0.02,
                 [[0.45, 0.45], [0.55, 0.45], [0.55, 0.55], [0.45, 0.55]],
                 [[0.40, 0.40], [0.52, 0.49], [0.52, 0.51], [0.40, 0.60]],
@@ -279,7 +343,7 @@ fn fixtures() -> Vec<ParityCase> {
 /// A window drawn as `shape`, tracked in perspective from the corners
 /// `from` to `to`, evaluated where it has gone.
 fn in_perspective(shape: MaskShape, feather: f32, from: [[f32; 2]; 4], to: [[f32; 2]; 4]) -> Mask {
-    let mut m = Mask { shape, feather, invert: false, opacity: 1.0, enabled: true, keyframes: Default::default() };
+    let mut m = Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, shape, feather, invert: false, opacity: 1.0, enabled: true, keyframes: Default::default() };
     m.keyframes.track_perspective = Some(klipp_core::PerspectiveTrack { from, keys: vec![klipp_core::CornerKey { time_secs: 0.0, corners: to }] });
     let e = m.evaluated_in(0.0, 64.0 / 96.0);
     assert!(e.keyframes.warp.is_some());
@@ -308,7 +372,7 @@ fn gpu_matches_cpu_oracle_across_fixtures() {
 
         // GPU dispatch — drop unsupported shapes (today: bezier).
         let gpu_defs: Vec<GpuMaskDef> = case.masks.masks.iter()
-            .filter_map(mask_to_gpu_def)
+            .filter_map(|m| mask_to_gpu_def(m, case.width, case.height))
             .collect();
         let stack_was_truncated = gpu_defs.len()
             != case.masks.masks.iter().filter(|m| m.enabled).count();

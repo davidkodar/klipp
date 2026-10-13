@@ -85,9 +85,12 @@ pub struct GpuMaskDef {
     pub p2: f32,  // rect: height, grad: end_y
     pub p3: f32,  // rect: rotation (degrees)
     pub feather: f32,
-    /// bit 0 = invert, bit 1 = `warp` applies, bits 8-15 = opacity
-    /// (0-255)
+    /// bit 0 = invert, bit 1 = `warp` applies, bits 2-3 = how it joins
+    /// the masks before it (`klipp_core::MaskCombine::code`), bits 8-15 =
+    /// opacity (0-255)
     pub flags: u32,
+    /// The soft edge's width inside the line (#74); `feather` is outside.
+    pub feather_inner: f32,
     /// Closed-polygon control points for bezier shapes. Empty for
     /// every other shape. Coords are normalised (0..1) on width.
     pub bezier_points: Vec<(f32, f32)>,
@@ -104,6 +107,7 @@ impl GpuMaskDef {
             flags: Self::make_flags(invert, opacity),
             bezier_points: Vec::new(),
             warp: [0.0; 9],
+            feather_inner: 0.0,
         }
     }
     pub fn rectangle(cx: f32, cy: f32, w: f32, h: f32, rotation: f32, feather: f32, invert: bool, opacity: f32) -> Self {
@@ -112,6 +116,7 @@ impl GpuMaskDef {
             flags: Self::make_flags(invert, opacity),
             bezier_points: Vec::new(),
             warp: [0.0; 9],
+            feather_inner: 0.0,
         }
     }
     pub fn linear_gradient(sx: f32, sy: f32, ex: f32, ey: f32, feather: f32, invert: bool, opacity: f32) -> Self {
@@ -120,6 +125,7 @@ impl GpuMaskDef {
             flags: Self::make_flags(invert, opacity),
             bezier_points: Vec::new(),
             warp: [0.0; 9],
+            feather_inner: 0.0,
         }
     }
     /// `points` are closed-polygon control vertices in normalised
@@ -132,6 +138,7 @@ impl GpuMaskDef {
             flags: Self::make_flags(invert, opacity),
             bezier_points: points,
             warp: [0.0; 9],
+            feather_inner: 0.0,
         }
     }
     /// This window measured through `warp`, a plane map row by row (an
@@ -143,6 +150,18 @@ impl GpuMaskDef {
             self.warp = w;
             self.flags |= 2;
         }
+        self
+    }
+    /// This window's soft edge reaching `inner` inside its line as well
+    /// (#74).
+    pub fn with_feather_inner(mut self, inner: f32) -> Self {
+        self.feather_inner = inner.max(0.0);
+        self
+    }
+    /// This window joining the ones before it as `code` says
+    /// (`klipp_core::MaskCombine::code`: 0 add, 1 subtract, 2 intersect).
+    pub fn with_combine(mut self, code: u32) -> Self {
+        self.flags = (self.flags & !0b1100) | ((code & 3) << 2);
         self
     }
     fn make_flags(invert: bool, opacity: f32) -> u32 {
@@ -3739,7 +3758,7 @@ impl GpuEffectsPipeline {
                 bezier_offset: offset,
                 bezier_count: count,
                 cx: m.cx, cy: m.cy, p1: m.p1, p2: m.p2,
-                p3: m.p3, feather: m.feather, _pad0: 0, _pad1: 0,
+                p3: m.p3, feather: m.feather, feather_inner: m.feather_inner, _pad1: 0,
                 w0: [m.warp[0], m.warp[1], m.warp[2], 0.0],
                 w1: [m.warp[3], m.warp[4], m.warp[5], 0.0],
                 w2: [m.warp[6], m.warp[7], m.warp[8], 0.0],
@@ -3807,7 +3826,7 @@ impl GpuEffectsPipeline {
         let placeholder_record = [MaskRecord {
             shape_type: 0, flags: 0, bezier_offset: 0, bezier_count: 0,
             cx: 0.0, cy: 0.0, p1: 0.0, p2: 0.0,
-            p3: 0.0, feather: 0.0, _pad0: 0, _pad1: 0,
+            p3: 0.0, feather: 0.0, feather_inner: 0.0, _pad1: 0,
             w0: [0.0; 4], w1: [0.0; 4], w2: [0.0; 4],
         }];
         let placeholder_point = [[0.0_f32, 0.0_f32]];
@@ -8052,11 +8071,11 @@ struct GpuMaskParams {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct MaskRecord {
     shape_type: u32,     // 0=circle, 1=rect, 2=gradient, 3=bezier
-    flags: u32,          // bit 0 invert, bits 8-15 opacity (0-255)
+    flags: u32,          // bit 0 invert, bit 1 warp, bits 2-3 combine, bits 8-15 opacity (0-255)
     bezier_offset: u32,  // index into points buffer (bezier only)
     bezier_count: u32,   // number of points (bezier only)
     cx: f32, cy: f32, p1: f32, p2: f32,
-    p3: f32, feather: f32, _pad0: u32, _pad1: u32,
+    p3: f32, feather: f32, feather_inner: f32, _pad1: u32,
     w0: [f32; 4], w1: [f32; 4], w2: [f32; 4],  // warp rows (flag bit 1)
 }
 
@@ -9018,18 +9037,42 @@ struct MaskRecord {
     bezier_offset: u32,
     bezier_count: u32,
     cx: f32, cy: f32, p1: f32, p2: f32,
-    p3: f32, feather: f32, _pad0: u32, _pad1: u32,
+    p3: f32, feather: f32, feather_inner: f32, _pad1: u32,
     w0: vec4<f32>, w1: vec4<f32>, w2: vec4<f32>,
 }
 
 
-fn smooth_step_sdf(dist: f32, feather: f32) -> f32 {
-    if dist <= 0.0 { return 1.0; }
-    if feather > 0.0001 && dist < feather {
-        let t = dist / feather;
+// As klipp_core::soft_edge: covered inside `inner` past the line, falling
+// off to `outer` outside it.
+fn soft_edge_sdf(dist: f32, inner_in: f32, outer_in: f32) -> f32 {
+    let inner = max(inner_in, 0.0);
+    let outer = max(outer_in, 0.0);
+    let span = inner + outer;
+    if dist <= -inner { return 1.0; }
+    if span > 0.0001 && dist < outer {
+        let t = (dist + inner) / span;
         return 1.0 - t * t * (3.0 - 2.0 * t);
     }
     return 0.0;
+}
+
+// Every record joined in order, as klipp_core::MaskCombine::apply: the
+// matte starts empty, or whole when the first record doesn't add (#74).
+fn window_matte(nx: f32, ny: f32, aspect: f32, count: u32) -> f32 {
+    var matte: f32 = 0.0;
+    if count > 0u && ((records[0].flags >> 2u) & 3u) != 0u { matte = 1.0; }
+    for (var i: u32 = 0u; i < count; i = i + 1u) {
+        let m = eval_record(records[i], nx, ny, aspect);
+        let c = (records[i].flags >> 2u) & 3u;
+        if c == 1u {
+            matte = min(matte, 1.0 - m);
+        } else if c == 2u {
+            matte = min(matte, m);
+        } else {
+            matte = max(matte, m);
+        }
+    }
+    return matte;
 }
 
 // Signed-distance to a closed polygon using the same winding-
@@ -9146,7 +9189,7 @@ fn eval_record(rec: MaskRecord, px: f32, py: f32, aspect: f32) -> f32 {
         default: { dist = 1.0; }
     }
     }
-    var m = smooth_step_sdf(dist, rec.feather);
+    var m = soft_edge_sdf(dist, rec.feather_inner, rec.feather);
     if (rec.flags & 1u) != 0u { m = 1.0 - m; }
     let opacity = f32((rec.flags >> 8u) & 0xFFu) / 255.0;
     return m * opacity;
@@ -16999,12 +17042,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let ny = f32(y) / f32(max(params.height - 1u, 1u));
     let aspect = f32(params.height) / f32(params.width);
 
-    var matte: f32 = 0.0;
-    for (var i: u32 = 0u; i < params.mask_count; i = i + 1u) {
-        let m = eval_record(records[i], nx, ny, aspect);
-        matte = max(matte, m);
-    }
-    let m = clamp(matte, 0.0, 1.0);
+    let m = clamp(window_matte(nx, ny, aspect, params.mask_count), 0.0, 1.0);
     output[idx] = pack(vec4<f32>(m, m, m, 1.0));
 }
 "

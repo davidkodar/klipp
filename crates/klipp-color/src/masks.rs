@@ -12,11 +12,20 @@ pub fn generate_mask_matte(
     masks: &MaskStack,
 ) -> Vec<f32> {
     let pixel_count = (width * height) as usize;
-    let mut matte = vec![0.0f32; pixel_count];
+    // Empty, or the whole frame when the first mask takes away from it
+    // or keeps only what it shares (#74).
+    let start = masks.masks.iter().find(|m| m.enabled).map_or(0.0, |m| if m.combine.is_add() { 0.0 } else { 1.0 });
+    let mut matte = vec![start; pixel_count];
     let aspect = height as f32 / width as f32;
 
     for mask in &masks.masks {
         if !mask.enabled { continue; }
+        // A freeform shape's outline, flattened once for this size.
+        let outline = match &mask.shape {
+            MaskShape::Bezier { points } => Some(klipp_core::mask_path::outline(points, width, height)),
+            _ => None,
+        };
+        let outline = outline.as_deref().map(Vec::as_slice);
 
         for y in 0..height {
             let ny = y as f32 / (height - 1).max(1) as f32;
@@ -28,17 +37,16 @@ pub fn generate_mask_matte(
                 // pixel was on the frame it was drawn on (#238); a pixel
                 // past the surface's horizon is outside it.
                 let dist = match mask.keyframes.warp {
-                    Some(warp) => warp.apply((nx, ny)).map_or(f32::MAX, |(wx, wy)| shape_sdf(wx, wy, &mask.shape, aspect)),
-                    None => shape_sdf(nx, ny, &mask.shape, aspect),
+                    Some(warp) => warp.apply((nx, ny)).map_or(f32::MAX, |(wx, wy)| shape_sdf(wx, wy, &mask.shape, outline, aspect)),
+                    None => shape_sdf(nx, ny, &mask.shape, outline, aspect),
                 };
-                let mut m = smooth_step(dist, mask.feather);
+                let mut m = klipp_core::soft_edge(dist, mask.feather_inner, mask.feather);
                 if mask.invert {
                     m = 1.0 - m;
                 }
                 m *= mask.opacity;
 
-                // Additive combine: union of masks (max)
-                matte[idx] = matte[idx].max(m);
+                matte[idx] = mask.combine.apply(matte[idx], m);
             }
         }
     }
@@ -49,7 +57,7 @@ pub fn generate_mask_matte(
 /// Signed distance function for a mask shape.
 /// Returns negative inside the shape, positive outside.
 /// Distance is in normalized frame-width units.
-fn shape_sdf(nx: f32, ny: f32, shape: &MaskShape, aspect: f32) -> f32 {
+fn shape_sdf(nx: f32, ny: f32, shape: &MaskShape, outline: Option<&[(f32, f32)]>, aspect: f32) -> f32 {
     match shape {
         MaskShape::Circle { center_x, center_y, radius } => {
             let dx = nx - center_x;
@@ -85,7 +93,9 @@ fn shape_sdf(nx: f32, ny: f32, shape: &MaskShape, aspect: f32) -> f32 {
             let t = (dx * gx + dy * gy) / (glen * glen);
             t - 0.5
         }
-        MaskShape::Bezier { points } => {
+        MaskShape::Bezier { .. } => {
+            // The path's outline, flattened by the caller (#74).
+            let points = outline.unwrap_or(&[]);
             if points.len() < 3 { return 1.0; } // need at least a triangle
             // Signed distance to closed polygon (winding number for inside/outside)
             let px = nx;
@@ -124,19 +134,6 @@ fn shape_sdf(nx: f32, ny: f32, shape: &MaskShape, aspect: f32) -> f32 {
     }
 }
 
-/// Smooth step from 1.0 (inside) to 0.0 (outside) over feather distance.
-fn smooth_step(dist: f32, feather: f32) -> f32 {
-    if dist <= 0.0 {
-        1.0
-    } else if feather > 0.0001 && dist < feather {
-        let t = dist / feather;
-        // Smooth hermite interpolation
-        1.0 - t * t * (3.0 - 2.0 * t)
-    } else {
-        0.0
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,7 +141,7 @@ mod tests {
 
     fn make_circle_mask(cx: f32, cy: f32, r: f32, feather: f32) -> MaskStack {
         MaskStack {
-            masks: vec![Mask {
+            masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                 shape: MaskShape::Circle { center_x: cx, center_y: cy, radius: r },
                 feather,
                 invert: false,
@@ -211,7 +208,7 @@ mod tests {
     #[test]
     fn rectangle_mask_inside() {
         let masks = MaskStack {
-            masks: vec![Mask {
+            masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                 shape: MaskShape::Rectangle {
                     center_x: 0.5, center_y: 0.5,
                     width: 0.4, height: 0.4, rotation: 0.0,
@@ -226,7 +223,7 @@ mod tests {
     #[test]
     fn rectangle_mask_outside() {
         let masks = MaskStack {
-            masks: vec![Mask {
+            masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                 shape: MaskShape::Rectangle {
                     center_x: 0.5, center_y: 0.5,
                     width: 0.4, height: 0.4, rotation: 0.0,
@@ -243,11 +240,11 @@ mod tests {
         // Two non-overlapping circles
         let masks = MaskStack {
             masks: vec![
-                Mask {
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                     shape: MaskShape::Circle { center_x: 0.2, center_y: 0.5, radius: 0.1 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true, keyframes: Default::default(),
                 },
-                Mask {
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                     shape: MaskShape::Circle { center_x: 0.8, center_y: 0.5, radius: 0.1 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true, keyframes: Default::default(),
                 },
@@ -292,12 +289,21 @@ mod tests {
 
     /// Helper: evaluate shape_sdf with aspect=1 (square frame) for simplicity.
     fn sdf(nx: f32, ny: f32, shape: &MaskShape) -> f32 {
-        shape_sdf(nx, ny, shape, 1.0)
+        sdf_aspect(nx, ny, shape, 1.0)
+    }
+
+    /// The edge as masks always had it: all inside, a fall-off outside.
+    fn smooth_step(dist: f32, feather: f32) -> f32 {
+        klipp_core::soft_edge(dist, 0.0, feather)
     }
 
     /// Helper: evaluate shape_sdf with a non-square aspect ratio.
     fn sdf_aspect(nx: f32, ny: f32, shape: &MaskShape, aspect: f32) -> f32 {
-        shape_sdf(nx, ny, shape, aspect)
+        let outline = match shape {
+            MaskShape::Bezier { points } => klipp_core::mask_path::flatten(points, 1e-5, aspect),
+            _ => Vec::new(),
+        };
+        shape_sdf(nx, ny, shape, Some(&outline), aspect)
     }
 
     // ── 1. Circle: center inside, far away outside ───────────────────────
@@ -465,9 +471,7 @@ mod tests {
     #[test]
     fn sdf_bezier_triangle_inside() {
         // Triangle with vertices at (0.5, 0.2), (0.2, 0.8), (0.8, 0.8)
-        let shape = MaskShape::Bezier {
-            points: vec![(0.5, 0.2), (0.2, 0.8), (0.8, 0.8)],
-        };
+        let shape = MaskShape::polygon(vec![(0.5, 0.2), (0.2, 0.8), (0.8, 0.8)]);
         // Centroid at (0.5, 0.6) should be inside
         let d = sdf(0.5, 0.6, &shape);
         assert!(d < 0.0, "centroid of triangle should be inside: got {d}");
@@ -475,9 +479,7 @@ mod tests {
 
     #[test]
     fn sdf_bezier_triangle_outside() {
-        let shape = MaskShape::Bezier {
-            points: vec![(0.5, 0.2), (0.2, 0.8), (0.8, 0.8)],
-        };
+        let shape = MaskShape::polygon(vec![(0.5, 0.2), (0.2, 0.8), (0.8, 0.8)]);
         // Point far above apex should be outside
         let d = sdf(0.5, 0.05, &shape);
         assert!(d > 0.0, "point above triangle apex should be outside: got {d}");
@@ -488,9 +490,7 @@ mod tests {
 
     #[test]
     fn sdf_bezier_triangle_vertex_approximately_zero() {
-        let shape = MaskShape::Bezier {
-            points: vec![(0.5, 0.2), (0.2, 0.8), (0.8, 0.8)],
-        };
+        let shape = MaskShape::polygon(vec![(0.5, 0.2), (0.2, 0.8), (0.8, 0.8)]);
         // A vertex is on the boundary, so distance should be ~0
         let d = sdf(0.5, 0.2, &shape);
         assert!(d.abs() < 1e-4, "vertex of triangle should be ~0: got {d}");
@@ -501,27 +501,21 @@ mod tests {
     #[test]
     fn sdf_bezier_square_inside() {
         // Square from (0.3,0.3) to (0.7,0.7) — CCW winding
-        let shape = MaskShape::Bezier {
-            points: vec![(0.3, 0.3), (0.7, 0.3), (0.7, 0.7), (0.3, 0.7)],
-        };
+        let shape = MaskShape::polygon(vec![(0.3, 0.3), (0.7, 0.3), (0.7, 0.7), (0.3, 0.7)]);
         let d = sdf(0.5, 0.5, &shape);
         assert!(d < 0.0, "center of bezier square should be inside: got {d}");
     }
 
     #[test]
     fn sdf_bezier_square_outside() {
-        let shape = MaskShape::Bezier {
-            points: vec![(0.3, 0.3), (0.7, 0.3), (0.7, 0.7), (0.3, 0.7)],
-        };
+        let shape = MaskShape::polygon(vec![(0.3, 0.3), (0.7, 0.3), (0.7, 0.7), (0.3, 0.7)]);
         let d = sdf(0.1, 0.1, &shape);
         assert!(d > 0.0, "point outside bezier square should be positive: got {d}");
     }
 
     #[test]
     fn sdf_bezier_square_near_edge() {
-        let shape = MaskShape::Bezier {
-            points: vec![(0.3, 0.3), (0.7, 0.3), (0.7, 0.7), (0.3, 0.7)],
-        };
+        let shape = MaskShape::polygon(vec![(0.3, 0.3), (0.7, 0.3), (0.7, 0.7), (0.3, 0.7)]);
         // Point on edge midpoint: (0.7, 0.5) should be ~0
         let d = sdf(0.7, 0.5, &shape);
         assert!(d.abs() < 1e-4, "edge midpoint of bezier square should be ~0: got {d}");
@@ -530,16 +524,12 @@ mod tests {
     #[test]
     fn sdf_bezier_square_winding_both_orderings() {
         // CW winding order
-        let shape_cw = MaskShape::Bezier {
-            points: vec![(0.3, 0.3), (0.3, 0.7), (0.7, 0.7), (0.7, 0.3)],
-        };
+        let shape_cw = MaskShape::polygon(vec![(0.3, 0.3), (0.3, 0.7), (0.7, 0.7), (0.7, 0.3)]);
         let d_cw = sdf(0.5, 0.5, &shape_cw);
         assert!(d_cw < 0.0, "CW square center should be inside: got {d_cw}");
 
         // CCW winding order
-        let shape_ccw = MaskShape::Bezier {
-            points: vec![(0.3, 0.3), (0.7, 0.3), (0.7, 0.7), (0.3, 0.7)],
-        };
+        let shape_ccw = MaskShape::polygon(vec![(0.3, 0.3), (0.7, 0.3), (0.7, 0.7), (0.3, 0.7)]);
         let d_ccw = sdf(0.5, 0.5, &shape_ccw);
         assert!(d_ccw < 0.0, "CCW square center should be inside: got {d_ccw}");
     }
@@ -549,7 +539,7 @@ mod tests {
     #[test]
     fn feather_zone_has_intermediate_values() {
         let masks = MaskStack {
-            masks: vec![Mask {
+            masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                 shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.2 },
                 feather: 0.15,
                 invert: false,
@@ -630,7 +620,7 @@ mod tests {
     #[test]
     fn invert_rectangle() {
         let masks = MaskStack {
-            masks: vec![Mask {
+            masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                 shape: MaskShape::Rectangle {
                     center_x: 0.5, center_y: 0.5,
                     width: 0.4, height: 0.4, rotation: 0.0,
@@ -690,11 +680,11 @@ mod tests {
         // Two circles with different opacities overlapping at center
         let masks = MaskStack {
             masks: vec![
-                Mask {
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                     shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 },
                     feather: 0.0, invert: false, opacity: 0.3, enabled: true, keyframes: Default::default(),
                 },
-                Mask {
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                     shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 },
                     feather: 0.0, invert: false, opacity: 0.7, enabled: true, keyframes: Default::default(),
                 },
@@ -710,11 +700,11 @@ mod tests {
         // Left circle and right rectangle — no overlap
         let masks = MaskStack {
             masks: vec![
-                Mask {
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                     shape: MaskShape::Circle { center_x: 0.15, center_y: 0.5, radius: 0.1 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true, keyframes: Default::default(),
                 },
-                Mask {
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                     shape: MaskShape::Rectangle {
                         center_x: 0.85, center_y: 0.5, width: 0.2, height: 0.2, rotation: 0.0,
                     },
@@ -736,7 +726,7 @@ mod tests {
     #[test]
     fn disabled_mask_is_ignored() {
         let masks = MaskStack {
-            masks: vec![Mask {
+            masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
                 shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 },
                 feather: 0.0, invert: false, opacity: 1.0, enabled: false, keyframes: Default::default(),
             }],
@@ -757,7 +747,7 @@ mod tests {
 
     #[test]
     fn bezier_with_fewer_than_3_points_returns_outside() {
-        let shape = MaskShape::Bezier { points: vec![(0.5, 0.5), (0.6, 0.6)] };
+        let shape = MaskShape::polygon(vec![(0.5, 0.5), (0.6, 0.6)]);
         let d = sdf(0.5, 0.5, &shape);
         assert!(d > 0.0, "degenerate bezier (2 points) should return outside: got {d}");
     }
@@ -780,5 +770,85 @@ mod tests {
         // Single pixel at (0,0) → normalized (0,0), circle at (0.5,0.5) with r=0.3
         // Distance = sqrt(0.25+0.25) - 0.3 = 0.707 - 0.3 = 0.407 > 0 → outside
         assert!(matte[0] < 0.01, "single pixel outside circle: got {}", matte[0]);
+    }
+
+    // ── #74: curves, the soft edge inside the line, joining masks ─────
+
+    /// A circle of radius `r` about the middle as four curved points, on a
+    /// square frame.
+    fn curved_circle(r: f32) -> MaskShape {
+        let k = 0.552_284_8 * r;
+        let p = |x: f32, y: f32, ix: f32, iy: f32| klipp_core::mask_path::BezierPoint { x: 0.5 + x, y: 0.5 + y, in_dx: ix, in_dy: iy, out_dx: -ix, out_dy: -iy, smooth: true };
+        MaskShape::Bezier { points: vec![p(r, 0.0, 0.0, -k), p(0.0, r, k, 0.0), p(-r, 0.0, 0.0, k), p(0.0, -r, -k, 0.0)] }
+    }
+
+    fn stack(masks: Vec<Mask>) -> MaskStack {
+        MaskStack { masks }
+    }
+
+    fn hard(shape: MaskShape) -> Mask {
+        Mask { shape, feather: 0.0, ..Mask::default() }
+    }
+
+    /// A curved shape is filled to its curve, not its points' polygon: a
+    /// pixel on the circle's diagonal just inside it is in, though the
+    /// diamond through its four points leaves it out; one just outside
+    /// is out.
+    #[test]
+    fn a_curved_shape_fills_to_its_curve() {
+        let n = 201;
+        let matte = generate_mask_matte(n, n, &stack(vec![hard(curved_circle(0.3))]));
+        let at = |x: f32, y: f32| matte[((y * (n - 1) as f32).round() as u32 * n + (x * (n - 1) as f32).round() as u32) as usize];
+        let d = 0.3 / 2f32.sqrt();
+        assert_eq!(at(0.5 + d * 0.95, 0.5 + d * 0.95), 1.0, "inside the curve, outside the diamond");
+        assert_eq!(at(0.5 + d * 1.06, 0.5 + d * 1.06), 0.0, "outside the curve");
+        assert_eq!(at(0.5, 0.5), 1.0);
+    }
+
+    /// The soft edge reaches inside the line as far as `feather_inner`:
+    /// full well inside, partway at the line, nothing past the outer
+    /// feather; with none inside, the line itself is full, as before.
+    #[test]
+    fn an_inner_feather_softens_inside_the_line() {
+        let circle = MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 };
+        let n = 201;
+        let at = |m: &Vec<f32>, x: f32| m[(100 * n + (x * (n - 1) as f32).round() as u32) as usize];
+        let soft = generate_mask_matte(n, n, &stack(vec![Mask { feather: 0.05, feather_inner: 0.1, ..hard(circle.clone()) }]));
+        assert_eq!(at(&soft, 0.5), 1.0);
+        let line = at(&soft, 0.8);
+        assert!(line > 0.2 && line < 0.9, "at the line: {line}");
+        assert!(at(&soft, 0.75) > line, "further in, more covered");
+        assert_eq!(at(&soft, 0.86), 0.0);
+        let before = generate_mask_matte(n, n, &stack(vec![Mask { feather: 0.05, ..hard(circle) }]));
+        assert_eq!(at(&before, 0.8), 1.0, "no inner feather: the line is full");
+        assert_eq!(klipp_core::soft_edge(0.02, 0.0, 0.05), 1.0 - 0.4 * 0.4 * (3.0 - 0.8));
+    }
+
+    /// Masks join in order: a subtracted one cuts a hole in what is
+    /// there, an intersected one keeps only what both cover, and a stack
+    /// that starts by subtracting takes it out of the whole frame.
+    #[test]
+    fn masks_join_as_their_combine_says() {
+        let n = 101;
+        let at = |m: &Vec<f32>, x: f32, y: f32| m[((y * (n - 1) as f32).round() as u32 * n + (x * (n - 1) as f32).round() as u32) as usize];
+        let rect = hard(MaskShape::Rectangle { center_x: 0.5, center_y: 0.5, width: 0.6, height: 0.6, rotation: 0.0 });
+        let small = |cx: f32| MaskShape::Circle { center_x: cx, center_y: 0.5, radius: 0.1 };
+
+        let sub = generate_mask_matte(n, n, &stack(vec![rect.clone(), Mask { combine: klipp_core::MaskCombine::Subtract, ..hard(small(0.5)) }]));
+        assert_eq!(at(&sub, 0.5, 0.5), 0.0, "the hole");
+        assert_eq!(at(&sub, 0.3, 0.5), 1.0, "the rest of the rectangle");
+        assert_eq!(at(&sub, 0.05, 0.05), 0.0);
+
+        let both = generate_mask_matte(n, n, &stack(vec![rect.clone(), Mask { combine: klipp_core::MaskCombine::Intersect, ..hard(small(0.8)) }]));
+        assert_eq!(at(&both, 0.75, 0.5), 1.0, "in both");
+        assert_eq!(at(&both, 0.85, 0.5), 0.0, "in the circle only");
+        assert_eq!(at(&both, 0.3, 0.5), 0.0, "in the rectangle only");
+
+        let first = generate_mask_matte(n, n, &stack(vec![Mask { combine: klipp_core::MaskCombine::Subtract, ..hard(small(0.5)) }]));
+        assert_eq!(at(&first, 0.5, 0.5), 0.0);
+        assert_eq!(at(&first, 0.05, 0.05), 1.0, "taken out of the whole frame");
+
+        let added = generate_mask_matte(n, n, &stack(vec![rect, hard(small(0.9))]));
+        assert_eq!(at(&added, 0.95, 0.5), 1.0, "added, as always");
     }
 }

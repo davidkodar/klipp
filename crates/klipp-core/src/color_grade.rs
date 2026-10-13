@@ -421,12 +421,77 @@ pub enum MaskShape {
         end_x: f32,
         end_y: f32,
     },
-    /// Freeform bezier path mask. Points are in normalized coords (0-1).
-    /// The path is closed (last point connects to first).
+    /// Freeform path mask (#74): points in frame fractions, each with
+    /// curve handles, the path closed (the last point joins the first).
+    /// A point without handles is a corner; a path of corners is a
+    /// polygon. Filled as its outline, flattened at the render's size
+    /// ([`crate::mask_path::outline`]).
     Bezier {
-        /// Control points as (x, y) pairs in normalized coordinates.
-        points: Vec<(f32, f32)>,
+        points: Vec<crate::mask_path::BezierPoint>,
     },
+}
+
+impl MaskShape {
+    /// The freeform shape with corners at `points`: a polygon.
+    pub fn polygon(points: impl IntoIterator<Item = (f32, f32)>) -> MaskShape {
+        MaskShape::Bezier { points: points.into_iter().map(crate::mask_path::BezierPoint::from).collect() }
+    }
+}
+
+/// How a mask joins the ones before it in its stack (#74). The stack's
+/// matte starts empty, or, when its first mask isn't added, as the whole
+/// frame, so a stack that starts by subtracting cuts a hole in
+/// everything.
+#[derive(PartialEq, Eq, Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub enum MaskCombine {
+    /// The union: the more covered of the two.
+    #[default]
+    Add,
+    /// Takes this mask out of what is there.
+    Subtract,
+    /// Keeps only what both cover.
+    Intersect,
+}
+
+impl MaskCombine {
+    pub fn is_add(&self) -> bool {
+        *self == MaskCombine::Add
+    }
+
+    /// The matte where `before` was and this mask covers `m`.
+    pub fn apply(self, before: f32, m: f32) -> f32 {
+        match self {
+            MaskCombine::Add => before.max(m),
+            MaskCombine::Subtract => before.min(1.0 - m),
+            MaskCombine::Intersect => before.min(m),
+        }
+    }
+
+    /// Its number in a GPU mask record's flags (bits 2-3).
+    pub fn code(self) -> u32 {
+        match self {
+            MaskCombine::Add => 0,
+            MaskCombine::Subtract => 1,
+            MaskCombine::Intersect => 2,
+        }
+    }
+}
+
+/// How covered a pixel `dist` from a mask's edge is (negative inside), its
+/// soft edge running from `inner` inside the line to `outer` outside it
+/// (#74), on a smooth step. With no inner feather, as masks always were:
+/// all inside the line, falling off outside it.
+pub fn soft_edge(dist: f32, inner: f32, outer: f32) -> f32 {
+    let (inner, outer) = (inner.max(0.0), outer.max(0.0));
+    let span = inner + outer;
+    if dist <= -inner {
+        1.0
+    } else if span > 0.0001 && dist < outer {
+        let t = (dist + inner) / span;
+        1.0 - t * t * (3.0 - 2.0 * t)
+    } else {
+        0.0
+    }
 }
 
 /// A window's tracked motion at one moment (#238): its pivot moved by
@@ -464,7 +529,7 @@ impl MaskShape {
             MaskShape::LinearGradient { start_x, start_y, end_x, end_y } => ((start_x + end_x) * 0.5, (start_y + end_y) * 0.5),
             MaskShape::Bezier { points } if !points.is_empty() => {
                 let n = points.len() as f32;
-                (points.iter().map(|p| p.0).sum::<f32>() / n, points.iter().map(|p| p.1).sum::<f32>() / n)
+                (points.iter().map(|p| p.x).sum::<f32>() / n, points.iter().map(|p| p.y).sum::<f32>() / n)
             }
             MaskShape::Bezier { .. } => (0.5, 0.5),
         }
@@ -501,7 +566,23 @@ impl MaskShape {
                 let (ex, ey) = point(*end_x, *end_y);
                 MaskShape::LinearGradient { start_x: sx, start_y: sy, end_x: ex, end_y: ey }
             }
-            MaskShape::Bezier { points } => MaskShape::Bezier { points: points.iter().map(|&(x, y)| point(x, y)).collect() },
+            // Each point moves; its handles turn and scale with it, as
+            // offsets.
+            MaskShape::Bezier { points } => MaskShape::Bezier {
+                points: points
+                    .iter()
+                    .map(|p| {
+                        let (x, y) = point(p.x, p.y);
+                        let offset = |dx: f32, dy: f32| {
+                            let (ux, uy) = (dx, dy * aspect);
+                            (m.scale * (ux * cos - uy * sin), m.scale * (ux * sin + uy * cos) / aspect)
+                        };
+                        let (in_dx, in_dy) = offset(p.in_dx, p.in_dy);
+                        let (out_dx, out_dy) = offset(p.out_dx, p.out_dy);
+                        crate::mask_path::BezierPoint { x, y, in_dx, in_dy, out_dx, out_dy, smooth: p.smooth }
+                    })
+                    .collect(),
+            },
         }
     }
 }
@@ -780,12 +861,23 @@ impl MaskKeyframes {
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub struct Mask {
     pub shape: MaskShape,
-    pub feather: f32,   // 0-1, soft edge width
+    pub feather: f32,   // 0-1, soft edge width outside the line
     pub invert: bool,
     pub opacity: f32,   // 0-1
     pub enabled: bool,
     #[serde(default)]
     pub keyframes: MaskKeyframes,
+    /// The soft edge's width inside the line (#74), in frame widths as
+    /// `feather` is: none, as masks always were, keeps the inside whole.
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub feather_inner: f32,
+    /// How it joins the masks before it (#74).
+    #[serde(default, skip_serializing_if = "MaskCombine::is_add")]
+    pub combine: MaskCombine,
+}
+
+fn is_zero_f32(v: &f32) -> bool {
+    *v == 0.0
 }
 
 impl Default for Mask {
@@ -797,6 +889,8 @@ impl Default for Mask {
             opacity: 1.0,
             enabled: true,
             keyframes: MaskKeyframes::default(),
+            feather_inner: 0.0,
+            combine: MaskCombine::Add,
         }
     }
 }
@@ -1128,14 +1222,26 @@ mod window_motion_tests {
         assert!(close((end_x, end_y), (0.5, 0.5 + 0.2 / aspect)), "{end_x} {end_y}");
         assert!(close((start_x, start_y), (0.5, 0.5 - 0.2 / aspect)));
         // A free shape moves with its centroid.
-        let b = MaskShape::Bezier { points: vec![(0.4, 0.4), (0.6, 0.4), (0.5, 0.6)] };
+        let b = MaskShape::polygon([(0.4, 0.4), (0.6, 0.4), (0.5, 0.6)]);
         let MaskShape::Bezier { points } = b.moved(WindowMotion { dx: 0.1, dy: 0.2, scale: 1.0, rotation: 0.0 }, aspect) else { panic!() };
-        assert!(close(points[0], (0.5, 0.6)) && close(points[2], (0.6, 0.8)));
+        assert!(close(points[0].pos(), (0.5, 0.6)) && close(points[2].pos(), (0.6, 0.8)));
         // And a point on the moved window goes back where it was.
         let m = WindowMotion { dx: 0.05, dy: -0.02, scale: 1.4, rotation: 33.0 };
-        let MaskShape::Bezier { points: moved } = (MaskShape::Bezier { points: vec![(0.3, 0.2), (0.7, 0.3), (0.5, 0.8)] }).moved(m, aspect) else { panic!() };
+        let MaskShape::Bezier { points: moved } = (MaskShape::polygon([(0.3, 0.2), (0.7, 0.3), (0.5, 0.8)])).moved(m, aspect) else { panic!() };
         let pivot = (0.5, 0.4333333);
-        assert!(close(m.undo(moved[1], pivot, aspect), (0.7, 0.3)), "{:?}", m.undo(moved[1], pivot, aspect));
+        assert!(close(m.undo(moved[1].pos(), pivot, aspect), (0.7, 0.3)), "{:?}", m.undo(moved[1].pos(), pivot, aspect));
+        // A point's handles turn and scale with it: its handle's end lands
+        // where that end, moved as a point, does.
+        let curved = MaskShape::Bezier { points: vec![
+            crate::mask_path::BezierPoint { x: 0.3, y: 0.2, out_dx: 0.1, out_dy: 0.05, in_dx: -0.05, in_dy: 0.02, smooth: false },
+            (0.7, 0.3).into(),
+            (0.5, 0.8).into(),
+        ] };
+        let MaskShape::Bezier { points: turned } = curved.moved(m, aspect) else { panic!() };
+        let end = m.undo(turned[0].out_handle(), pivot, aspect);
+        assert!(close(end, (0.4, 0.25)), "{end:?}");
+        let end = m.undo(turned[0].in_handle(), pivot, aspect);
+        assert!(close(end, (0.25, 0.22)), "{end:?}");
     }
 
     /// The motion is keyframed, evaluated with the rest, and the window
