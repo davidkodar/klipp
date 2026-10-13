@@ -24,6 +24,8 @@ mod export_odt_round_trip;
 mod export_refuses_a_missing_analysis;
 #[path = "../frame_blend_reads_the_stream.rs"]
 mod frame_blend_reads_the_stream;
+#[path = "../graded_still.rs"]
+mod graded_still;
 #[path = "../hdr_export.rs"]
 mod hdr_export;
 #[path = "../keyer_op_matches_the_app.rs"]

@@ -1381,6 +1381,8 @@ pub struct AppState {
     pub thumbnail_textures: std::collections::HashMap<MediaId, egui::TextureHandle>,
     /// Filmstrip textures: media_id → Vec of (time_secs, texture_handle)
     pub filmstrip_textures: std::collections::HashMap<MediaId, Vec<(f64, egui::TextureHandle)>>,
+    /// The Colour page strip's graded thumbnails, by clip (#899).
+    pub graded_thumbs: crate::graded_thumbs::GradedThumbs,
 
     // Export
     pub show_export_dialog: bool,
@@ -4185,6 +4187,7 @@ impl Default for AppState {
             thumbnail_cache: ThumbnailCache::new(),
             thumbnail_textures: std::collections::HashMap::new(),
             filmstrip_textures: std::collections::HashMap::new(),
+            graded_thumbs: Default::default(),
             show_export_dialog: false,
             jog_wheel_state: crate::widgets::jog_wheel::JogWheelState::new(),
             show_preset_manager: false,

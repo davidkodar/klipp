@@ -43,6 +43,7 @@ klipp-validation = { workspace = true }
 klipp-audio = { workspace = true }
 klipp-plugin = { workspace = true }
 klipp-export = { workspace = true }
+klipp-render = { workspace = true }
 klipp-ml = { workspace = true }
 klipp-audio-search = { workspace = true }
 klipp-ml-candle = { workspace = true, optional = true }

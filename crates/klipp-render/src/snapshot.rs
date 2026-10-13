@@ -117,6 +117,20 @@ pub struct MediaFile {
 /// A media item's camera log format for its export decoder: the same
 /// effective format (the user's choice, else detection) the viewer's
 /// decoder registry holds, or `None` for anything that is not a camera log.
+impl MediaFile {
+    /// A media item's file, as export decodes it.
+    pub fn of(item: &klipp_media::MediaItem) -> Self {
+        MediaFile {
+            path: item.path.clone(),
+            log_format: camera_log_format(item),
+            source_rotation: item.source_rotation,
+            duration_secs: Some(item.duration.to_secs_f64()),
+            fps: Some((item.fps.num, item.fps.den)),
+            resolution: Some((item.resolution.width, item.resolution.height)),
+        }
+    }
+}
+
 fn camera_log_format(media: &klipp_media::MediaItem) -> Option<klipp_core::LogFormat> {
     Some(media.effective_log_format()).filter(|f| f.camera_colourspace().is_some())
 }
@@ -524,14 +538,7 @@ impl SequenceSnapshot {
                 let item = media_pool
                     .get(media_id)
                     .ok_or_else(|| RenderError::Snapshot(format!("media {media_id:?} not in pool")))?;
-                media.insert(*media_id, MediaFile {
-                    path: item.path.clone(),
-                    log_format: camera_log_format(item),
-                    source_rotation: item.source_rotation,
-                    duration_secs: Some(item.duration.to_secs_f64()),
-                    fps: Some((item.fps.num, item.fps.den)),
-                    resolution: Some((item.resolution.width, item.resolution.height)),
-                });
+                media.insert(*media_id, MediaFile::of(item));
             }
         }
 

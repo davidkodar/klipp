@@ -101,6 +101,13 @@ impl KlippApp {
                     if self.state.show_color_panel && rects.timeline_rect.height() + 0.5 < self.layout.color_timeline_height {
                         self.layout.color_timeline_height = rects.timeline_rect.height();
                     }
+                    // The strip's graded thumbnails, drawn off the UI
+                    // thread and taken as they land (#899).
+                    if self.state.show_color_panel {
+                        let s = &mut self.state;
+                        let now = ctx.input(|i| i.time);
+                        s.graded_thumbs.update(ctx, now, &s.sequences[s.active_sequence_idx], &s.media_pool, klipp_engine::video_decoder::working_colorspace());
+                    }
                     let crate::layout::LayoutRects {
                         full: _,
                         toolbar_rect,

@@ -72,6 +72,7 @@ pub use klipp_document::history;
 pub mod cut_templates;
 pub mod hyperzoom;
 pub mod hyperzoom_presets;
+pub mod graded_thumbs;
 pub mod icons;
 pub mod inspector;
 pub mod keybindings;

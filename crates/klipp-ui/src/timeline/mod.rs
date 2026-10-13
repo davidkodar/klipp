@@ -818,6 +818,74 @@ mod menu_smoke_tests {
         assert!(pennant(&mut timeline, klipp_timeline::GradeFlag::NeedsWork), "no pennant on the flagged clip");
     }
 
+    /// A grey ramp, 2 s at 24 fps, written once with the ffmpeg CLI; `None`
+    /// without it.
+    fn ramp() -> Option<std::path::PathBuf> {
+        static RAMP: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+        RAMP.get_or_init(|| {
+            let path = std::env::temp_dir().join(format!("klipp-graded-strip-{}.mkv", std::process::id()));
+            let ok = std::process::Command::new("ffmpeg")
+                .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=64x36:r=24:d=2,geq=lum='60+2*N':cb=128:cr=128", "-c:v", "ffv1", "-pix_fmt", "yuv420p"])
+                .arg(&path)
+                .status()
+                .is_ok_and(|s| s.success());
+            ok.then_some(path)
+        })
+        .clone()
+    }
+
+    /// The Colour page's strip shows each clip graded (#899): its graded
+    /// thumbnail is drawn along the clip; a change to its grade makes a
+    /// new one, drawn once the change settles, the old one up meanwhile.
+    #[test]
+    fn the_colour_strip_shows_each_clip_graded() {
+        let Some(path) = ramp() else {
+            eprintln!("skipping: ffmpeg could not write the source");
+            return;
+        };
+        let mut timeline = Timeline::new();
+        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let mut item = klipp_media::MediaItem::synthetic_for_test(path, None);
+        let rt = |f| RationalTime { value: f, rate: 24 };
+        item.duration = rt(48);
+        item.fps = klipp_core::Fps::new(24, 1);
+        item.resolution = klipp_core::Resolution { width: 64, height: 36 };
+        let media = timeline.state.media_pool.add(item);
+        timeline.state.sequences[0].tracks[v1].clips = vec![Clip::media(media, rt(0), rt(48), rt(0), rt(48))];
+        let clip = timeline.state.sequences[0].tracks[v1].clips[0].id;
+        timeline.state.show_color_panel = true;
+        let ws = klipp_core::WorkingColorspace::Rec709Linear;
+        let update = |t: &mut Timeline, now: f64| {
+            let s = &mut t.state;
+            s.graded_thumbs.update(&t.ctx, now, &s.sequences[0], &s.media_pool, ws);
+            s.graded_thumbs.settle(&t.ctx);
+        };
+        update(&mut timeline, 0.0);
+        let texture = timeline.state.graded_thumbs.texture(clip).expect("the clip's graded thumbnail").id();
+        timeline.frame(Vec::new());
+        let drawn = |t: &Timeline, id: egui::TextureId| t.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.fill_texture_id == id) || matches!(&s.shape, egui::Shape::Mesh(m) if m.texture_id == id));
+        assert!(drawn(&timeline, texture), "the graded thumbnail isn't drawn on the strip");
+
+        // A grade change: the thumbnail is stale until it is drawn again.
+        let c = timeline.state.sequences[0].tracks[v1].clips.iter_mut().find(|c| c.id == clip).unwrap();
+        klipp_timeline::GradeAccess::edit_grade(c, |g| {
+            let id = g.ensure_corrector();
+            g.nodes.iter_mut().find(|n| n.id == id).unwrap().params.exposure = Some(1.0);
+        });
+        let graded = timeline.state.sequences[0].tracks[v1].clips[0].clone();
+        assert!(!timeline.state.graded_thumbs.is_current(&graded, ws));
+        update(&mut timeline, 1.0);
+        assert!(timeline.state.graded_thumbs.is_current(&graded, ws), "the new grade's thumbnail wasn't drawn");
+        let new = timeline.state.graded_thumbs.texture(clip).unwrap().id();
+        timeline.frame(Vec::new());
+        assert!(drawn(&timeline, new));
+
+        // On the Edit page, the media's own filmstrip, not the grade.
+        timeline.state.show_color_panel = false;
+        timeline.frame(Vec::new());
+        assert!(!drawn(&timeline, new), "the Edit page's timeline shows the graded thumbnail");
+    }
+
     /// A right-click on the cut between two clips opens the edit point's
     /// menu (#925), not either clip's.
     #[test]
