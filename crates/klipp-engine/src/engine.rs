@@ -1442,6 +1442,8 @@ pub struct PlaybackEngine {
     /// Whether the waveform and parade measure a low-passed copy of the
     /// picture. Pushed by `AppCommand::SetScopeLowPass`.
     scope_low_pass_enabled: bool,
+    /// The viewing LUT the scopes measure after (#466); none, before it.
+    scope_lut: Option<klipp_core::ScopeLut>,
     /// Union of scope modes the UI currently needs rendered per tick:
     /// (main dock active mode) ∪ (each floating-window pane's mode).
     /// Updated by `AppCommand::SetActiveScopeModes`. The engine draws
@@ -2207,6 +2209,7 @@ impl PlaybackEngine {
             // Off: at a large scope's size a glow washes the trace out.
             scope_bloom_enabled: false,
             scope_low_pass_enabled: true,
+            scope_lut: None,
             active_scope_modes: std::collections::BTreeSet::new(),
             scope_sizes: std::collections::BTreeMap::new(),
             scopes_visible: false,
@@ -3288,6 +3291,11 @@ impl PlaybackEngine {
             }
             AppCommand::SetScopeLowPass { enabled } => {
                 self.scope_low_pass_enabled = enabled;
+                self.scope_render_owed = true;
+                self.current_grade_hash = 0;
+            }
+            AppCommand::SetScopeLut { lut } => {
+                self.scope_lut = lut;
                 self.scope_render_owed = true;
                 self.current_grade_hash = 0;
             }
@@ -8948,12 +8956,14 @@ impl PlaybackEngine {
         let step = self.scope_sample_step();
         let jobs = self.scope_jobs(&modes);
         let low_pass = self.scope_low_pass_enabled;
+        let scope_lut = self.scope_lut.clone();
         let renders: Vec<(u8, Option<(Vec<u8>, u32, u32)>)> = match self
             .renderer
             .executor()
             .gpu_pipeline_or_init()
             .and_then(|gpu| {
                 gpu.scopes().set_low_pass(low_pass);
+                gpu.scopes().set_lut(scope_lut.as_ref().map(|l| (l.key, l.size, l.table.as_slice())));
                 gpu.render_scopes_from_display(w, h, luma, step, &jobs)
             })
         {
@@ -9133,9 +9143,12 @@ impl PlaybackEngine {
         let jobs = self.scope_jobs(modes);
         let step = self.scope_sample_step();
         let low_pass = self.scope_low_pass_enabled;
+        // The viewing LUT is an SDR display LUT: not under HDR monitoring.
+        let scope_lut = self.scope_lut.clone().filter(|_| !hdr);
         let gpu = self.renderer.executor().gpu_pipeline_or_init()?;
         let sizes: Vec<(u32, u32)> = jobs.iter().map(ScopeJob::out_size).collect();
         gpu.scopes().set_low_pass(low_pass);
+        gpu.scopes().set_lut(scope_lut.as_ref().map(|l| (l.key, l.size, l.table.as_slice())));
         let results = gpu.scopes().render(&input, step, &jobs);
         Some(results.into_iter().zip(sizes).map(|(r, (w, h))| r.map(|bytes| (bytes, w, h))).collect())
     }

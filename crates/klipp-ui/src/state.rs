@@ -2538,6 +2538,10 @@ pub struct AppState {
     pub project_default_input_format: Option<klipp_core::LogFormat>,
     /// The LUT new clips start their grade with (#466).
     pub project_default_input_lut: Option<std::path::PathBuf>,
+    /// The look the viewer shows through, on screen only (#466).
+    pub project_viewing_lut: Option<std::path::PathBuf>,
+    /// The scopes measure after the viewing LUT (#466).
+    pub project_scopes_after_viewing_lut: bool,
     /// The Colour Management window is open (#466).
     pub show_colour_management: bool,
 
@@ -4725,6 +4729,8 @@ impl Default for AppState {
             project_default_odt: klipp_core::OdtChoice::default(),
             project_default_input_format: None,
             project_default_input_lut: None,
+            project_viewing_lut: None,
+            project_scopes_after_viewing_lut: false,
             show_colour_management: false,
             show_media_panel: false,
             show_remove_media_confirm: None,

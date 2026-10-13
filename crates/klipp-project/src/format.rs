@@ -87,6 +87,14 @@ pub struct ProjectJson {
     /// A LUT new clips start their grade with (#466); absent, none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_input_lut: Option<String>,
+    /// A look the viewer shows the picture through, on screen only and
+    /// never exported (#466); absent, none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewing_lut: Option<String>,
+    /// The scopes measure the picture after the viewing LUT rather than
+    /// before it (#466); absent, before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scopes_after_viewing_lut: bool,
     /// Project-scoped synthetic title assets. Each entry is keyed by
     /// the `MediaId` of its synthetic `MediaItem` (the entry that
     /// shows up in the Media tab) and carries the canonical
@@ -936,6 +944,8 @@ mod tests {
             default_odt: klipp_core::OdtChoice::Rec2100Pq1000,
             default_input_format: Some(klipp_core::LogFormat::SLog3),
             default_input_lut: Some("/luts/in.cube".into()),
+            viewing_lut: Some("/luts/look.cube".into()),
+            scopes_after_viewing_lut: true,
             title_assets: Vec::new(),
         };
         let serialised = serde_json::to_string(&project).expect("serialise");

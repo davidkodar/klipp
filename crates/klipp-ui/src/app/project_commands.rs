@@ -370,6 +370,11 @@ impl KlippApp {
                 self.prefs_dirty = true;
                 true
             }
+            AppCommand::SetProjectViewingLut { path } => {
+                self.state.project_viewing_lut = path.clone();
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetProjectInputLut { path } => {
                 self.state.project_default_input_lut = path.clone();
                 self.state.dirty = true;

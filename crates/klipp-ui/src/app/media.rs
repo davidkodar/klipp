@@ -1825,6 +1825,8 @@ impl KlippApp {
             default_odt: self.state.project_default_odt,
             default_input_format: self.state.project_default_input_format,
             default_input_lut: self.state.project_default_input_lut.clone(),
+            viewing_lut: self.state.project_viewing_lut.clone(),
+            scopes_after_viewing_lut: self.state.project_scopes_after_viewing_lut,
         };
         let options = klipp_project::consolidate::ConsolidateOptions {
             dest_dir,

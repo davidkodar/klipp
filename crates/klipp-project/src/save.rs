@@ -29,6 +29,10 @@ pub struct ColorSettings {
     pub default_input_format: Option<klipp_core::LogFormat>,
     /// The LUT new clips start their grade with (#466).
     pub default_input_lut: Option<std::path::PathBuf>,
+    /// The look the viewer shows through, on screen only (#466).
+    pub viewing_lut: Option<std::path::PathBuf>,
+    /// The scopes measure after the viewing LUT (#466).
+    pub scopes_after_viewing_lut: bool,
 }
 
 impl Default for ColorSettings {
@@ -45,6 +49,8 @@ impl Default for ColorSettings {
             default_odt: klipp_core::OdtChoice::default(),
             default_input_format: None,
             default_input_lut: None,
+            viewing_lut: None,
+            scopes_after_viewing_lut: false,
         }
     }
 }
@@ -190,6 +196,8 @@ fn save_project_full_as(
         default_odt: color.default_odt,
         default_input_format: color.default_input_format,
         default_input_lut: color.default_input_lut.as_deref().map(|p| to_project_relative(dir, p).to_string_lossy().into_owned()),
+        viewing_lut: color.viewing_lut.as_deref().map(|p| to_project_relative(dir, p).to_string_lossy().into_owned()),
+        scopes_after_viewing_lut: color.scopes_after_viewing_lut,
         title_assets: title_assets_json,
     };
 

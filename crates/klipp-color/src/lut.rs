@@ -599,6 +599,31 @@ pub fn apply_3d_lut(rgba: &mut [u8], lut: &LutData, opacity: f32) {
     }
 }
 
+/// The value `lut` gives `rgb` (each 0..1), trilinearly, as
+/// [`apply_3d_lut`] reads it.
+pub fn lookup_3d(lut: &LutData, rgb: [f32; 3]) -> [f32; 3] {
+    sample_3d(&lut.data, lut.size.max(2), rgb)
+}
+
+/// One LUT that does `first` and then `then`: sampled on a grid as fine
+/// as the finer of the two. For a viewer that runs a look and then a
+/// monitor's calibration in one pass.
+pub fn compose(first: &LutData, then: &LutData) -> LutData {
+    let size = first.size.max(then.size).clamp(2, 65);
+    let n1 = (size - 1) as f32;
+    let mut data = Vec::with_capacity(size * size * size * 3);
+    for b in 0..size {
+        for g in 0..size {
+            for r in 0..size {
+                let mid = lookup_3d(first, [r as f32 / n1, g as f32 / n1, b as f32 / n1]);
+                let out = lookup_3d(then, [mid[0].clamp(0.0, 1.0), mid[1].clamp(0.0, 1.0), mid[2].clamp(0.0, 1.0)]);
+                data.extend_from_slice(&out);
+            }
+        }
+    }
+    LutData { size, data, input_space: first.input_space, output_space: then.output_space }
+}
+
 /// Apply a 3D LUT with tetrahedral interpolation to an RGBA buffer.
 /// Tetrahedral is more perceptually accurate than trilinear for steep gradients.
 /// `opacity` controls blend: 0.0 = original, 1.0 = fully graded.
@@ -769,6 +794,40 @@ pub fn write_cube(
 
 #[cfg(test)]
 mod tests {
+
+    /// A LUT that inverts each channel, on a 5-point grid.
+    fn invert(size: usize) -> LutData {
+        let mut lut = LutData::identity(size);
+        for v in &mut lut.data {
+            *v = 1.0 - *v;
+        }
+        lut
+    }
+
+    /// One LUT for a look then a calibration: the same as running the
+    /// two in turn, and a LUT composed with identity is itself.
+    #[test]
+    fn a_composed_lut_runs_both_in_turn() {
+        let look = invert(5);
+        let mut calibration = LutData::identity(9);
+        for v in &mut calibration.data {
+            *v = (*v * 0.8 + 0.1).min(1.0);
+        }
+        let both = compose(&look, &calibration);
+        assert_eq!(both.size, 9);
+        for rgb in [[0.0, 0.0, 0.0], [0.25, 0.5, 0.75], [1.0, 0.3, 0.6], [0.9, 0.9, 0.1]] {
+            let in_turn = lookup_3d(&calibration, lookup_3d(&look, rgb));
+            let at_once = lookup_3d(&both, rgb);
+            for ch in 0..3 {
+                assert!((in_turn[ch] - at_once[ch]).abs() < 1e-3, "{rgb:?}: {in_turn:?} vs {at_once:?}");
+            }
+        }
+        let same = compose(&look, &LutData::identity(2));
+        for rgb in [[0.1, 0.2, 0.3], [0.8, 0.5, 0.0]] {
+            let (a, b) = (lookup_3d(&look, rgb), lookup_3d(&same, rgb));
+            assert!((0..3).all(|c| (a[c] - b[c]).abs() < 1e-4), "{a:?} vs {b:?}");
+        }
+    }
     use super::*;
 
     /// #824: a LUT is read only up to the limit, and one past it is

@@ -47,18 +47,21 @@ pub fn summary(state: &AppState) -> String {
     if state.global_lut_path.is_some() && state.global_lut_enabled {
         parts.push("output LUT".into());
     }
+    if state.project_viewing_lut.is_some() {
+        parts.push("viewing LUT".into());
+    }
     parts.join(" \u{00B7} ")
 }
 
 /// The window around the page.
-pub fn show_window(ctx: &egui::Context, state: &mut AppState, theme: &KlippTheme, open: &mut bool, cmds: &mut Vec<AppCommand>) {
+pub fn show_window(ctx: &egui::Context, state: &mut AppState, theme: &KlippTheme, calibration: Option<&std::path::Path>, open: &mut bool, cmds: &mut Vec<AppCommand>) {
     egui::Window::new("Colour Management")
         .open(open)
         .collapsible(false)
         .resizable(false)
         .default_width(460.0)
         .order(egui::Order::Foreground)
-        .show(ctx, |ui| show_page(ui, state, theme, cmds));
+        .show(ctx, |ui| show_page(ui, state, theme, calibration, cmds));
 }
 
 /// A group's heading and the sentence under it.
@@ -81,7 +84,8 @@ fn row<R>(ui: &mut egui::Ui, theme: &KlippTheme, label: &str, add: impl FnOnce(&
 
 /// The page: the working space and grade encoding, then the output
 /// transform new exports start from and the output LUT.
-pub fn show_page(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &mut Vec<AppCommand>) {
+/// `calibration` is this monitor's calibration LUT, from Preferences.
+pub fn show_page(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, calibration: Option<&std::path::Path>, cmds: &mut Vec<AppCommand>) {
     ui.spacing_mut().item_spacing = egui::vec2(8.0, 5.0);
 
     // ── Input ──
@@ -244,6 +248,52 @@ pub fn show_page(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cm
             crate::file_dialog::spawn(crate::inspector::color_and_luts::pick_global_lut);
         }
     });
+
+    // ── Monitoring ──
+    group(ui, theme, "MONITORING", "What the viewer shows the picture through, on screen only: never in exports. The project's viewing LUT comes first, then this monitor's calibration.");
+    row(ui, theme, "Viewing LUT", |ui| {
+        match state.project_viewing_lut.clone() {
+            Some(path) => {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                ui.label(egui::RichText::new(name).color(theme.text_primary)).on_hover_text(path.display().to_string());
+                if ui.small_button("Clear").clicked() {
+                    cmds.push(AppCommand::SetProjectViewingLut { path: None });
+                }
+            }
+            None => {
+                ui.label(egui::RichText::new("None").color(theme.text_dim));
+            }
+        }
+        if ui.small_button("Choose\u{2026}").clicked() {
+            crate::file_dialog::spawn(|| {
+                rfd::FileDialog::new()
+                    .set_title("Viewing LUT")
+                    .add_filter("LUT files", &["cube", "3dl", "csp"])
+                    .pick_file()
+                    .map(|path| vec![AppCommand::SetProjectViewingLut { path: Some(path) }])
+                    .unwrap_or_default()
+            });
+        }
+    });
+    row(ui, theme, "Calibration LUT", |ui| {
+        let name = calibration.and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
+        ui.label(egui::RichText::new(name.as_deref().unwrap_or("None")).color(theme.text_secondary))
+            .on_hover_text("This monitor's, not the project's: it is set in Preferences");
+        if ui.add(egui::Button::new(egui::RichText::new("Preferences\u{2026}").color(theme.text_secondary)).frame(false)).clicked() {
+            cmds.push(AppCommand::OpenPreferences { page: Some("colour".into()) });
+        }
+    });
+    let mut after = state.project_scopes_after_viewing_lut;
+    row(ui, theme, "Scopes read", |ui| {
+        let font = egui::FontId::proportional(crate::theme::type_scale::CONTROL);
+        if let Some(i) = crate::widgets::segmented::segmented(ui, &["Before the viewing LUT", "After it"], usize::from(after), theme, font, crate::theme::control::COMPACT) {
+            after = i == 1;
+        }
+    });
+    if after != state.project_scopes_after_viewing_lut {
+        state.project_scopes_after_viewing_lut = after;
+        state.dirty = true;
+    }
 }
 
 /// The input format a clip of `media` starts with: what its file says or
@@ -336,7 +386,7 @@ mod tests {
     fn page(state: &mut AppState) -> impl FnMut(&egui::Context, &mut Vec<AppCommand>) + '_ {
         let theme = KlippTheme::default();
         move |ctx, cmds| {
-            egui::CentralPanel::default().show(ctx, |ui| show_page(ui, state, &theme, cmds));
+            egui::CentralPanel::default().show(ctx, |ui| show_page(ui, state, &theme, None, cmds));
         }
     }
 
@@ -530,5 +580,32 @@ mod tests {
         assert_eq!(lut.label, "Input LUT");
         assert!(g.edges.iter().any(|e| e.from_node == lut.id && e.to_node == g.output_node_id), "it feeds the Output");
         assert!(!g.is_identity(), "the grade now does something");
+    }
+
+    /// #466 (c): the project's viewing LUT is shown and cleared here, the
+    /// monitor's calibration LUT shown and opened in Preferences, and
+    /// where the scopes read is set with the shared segmented control.
+    #[test]
+    fn monitoring_sets_the_viewing_lut_and_where_the_scopes_read() {
+        let ctx = egui::Context::default();
+        let mut state = AppState { project_viewing_lut: Some(PathBuf::from("/luts/Show Look.cube")), ..Default::default() };
+        let theme = KlippTheme::default();
+        let cal = PathBuf::from("/monitors/Studio Cal.cube");
+        {
+            let mut run = |ctx: &egui::Context, cmds: &mut Vec<AppCommand>| {
+                egui::CentralPanel::default().show(ctx, |ui| show_page(ui, &mut state, &theme, Some(&cal), cmds));
+            };
+            let texts = frame(&ctx, Vec::new(), &mut run).1;
+            let look = at(&texts, "Show Look.cube");
+            at(&texts, "Studio Cal.cube");
+            let clear = texts.iter().filter(|(t, _)| t == "Clear").map(|(_, r)| r.center()).min_by(|a, b| (a.y - look.y).abs().total_cmp(&(b.y - look.y).abs())).expect("Clear");
+            let cmds = click(&ctx, clear, &mut run);
+            assert!(matches!(&cmds[..], [AppCommand::SetProjectViewingLut { path: None }]), "{cmds:?}");
+            let cmds = click(&ctx, at(&texts, "Preferences\u{2026}"), &mut run);
+            assert!(matches!(&cmds[..], [AppCommand::OpenPreferences { page: Some(p) }] if p == "colour"), "{cmds:?}");
+            click(&ctx, at(&texts, "After it"), &mut run);
+        }
+        assert!(state.project_scopes_after_viewing_lut && state.dirty);
+        assert!(summary(&state).ends_with("viewing LUT"), "{}", summary(&state));
     }
 }

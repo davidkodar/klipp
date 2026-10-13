@@ -155,6 +155,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetScopeSettings { .. }
         | AppCommand::SetScopeBloom { .. }
         | AppCommand::SetScopeLowPass { .. }
+        | AppCommand::SetScopeLut { .. }
         | AppCommand::SetScopesVisible(..)
         | AppCommand::RenderScopesForFrame { .. }
         | AppCommand::RenderScopeSnapshot { .. }
@@ -510,6 +511,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetGlobalLutOpacity(..)
         | AppCommand::SetGlobalLutEnabled(..)
         | AppCommand::SetProjectInputLut { .. }
+        | AppCommand::SetProjectViewingLut { .. }
         | AppCommand::AddEffect { .. }
         | AppCommand::RemoveEffect { .. }
         | AppCommand::SetEffectEnabled { .. }
