@@ -630,6 +630,7 @@ fn handle(
             | ControlCommand::ListClips { .. }
         ) => requests::session::respond(ctx, cmd, collect),
         cmd @ (ControlCommand::Analyze { .. }
+            | ControlCommand::TrackSubject { .. }
             | ControlCommand::SearchTranscripts { .. }
             | ControlCommand::ScreenText { .. }
             | ControlCommand::SearchScreenText { .. }

@@ -38,6 +38,19 @@ pub(crate) fn respond(
             if pool.all().any(|m| m.path == out) {
                 return Err(format!("{path} is a media file of this project; an export cannot overwrite its own source"));
             }
+            // A tracked subject matte short of the clip would render its
+            // missing frames with a neighbour's matte (#239).
+            let short: Vec<String> = klipp_compose::subject_matte::uncovered(&seq)
+                .iter()
+                .filter_map(|g| {
+                    let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == g.clip)?;
+                    let name = clip.media_id().and_then(|m| pool.get(&m)).map_or("a clip", |m| m.filename.as_str());
+                    Some(format!("{name} (clip {}): {} of {} frames tracked", g.clip.0, g.covered, g.needed))
+                })
+                .collect();
+            if !short.is_empty() {
+                return Err(format!("subject mattes aren't finished, export refused: {}. Run klipp_track_subject on each clip and wait for its job.", short.join("; ")));
+            }
             // What the export does not say for itself, the brief says.
             let brief = seq.brief.clone();
             // Whether what this sequence uses has credits (#1582): the list

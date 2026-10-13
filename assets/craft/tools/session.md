@@ -8,7 +8,7 @@ Several write tools applied together in one frame and recorded as ONE undo step:
 
 ## klipp_cancel_job
 
-Cancel the named render or one queued analysis job. Running analysis, import and sync cannot be interrupted safely. A queued UI cancellation has its own operation_id; confirm its outcome before saying the job stopped.
+Cancel the named render or one queued analysis job. Running analysis, import and sync cannot be interrupted safely; a subject matte pass (`<media id>:subject_matte`, from klipp_track_subject) can, and keeps the frames it made. A queued UI cancellation has its own operation_id; confirm its outcome before saying the job stopped.
 
 ## klipp_export
 

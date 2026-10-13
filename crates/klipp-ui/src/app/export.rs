@@ -550,6 +550,33 @@ pub(super) fn export_step(confirmed: Confirmed, offline: Vec<(String, String)>, 
     }
 }
 
+/// One line per clip whose tracked subject matte falls short of what a
+/// render reads (#239): its media's name and place, and how far the
+/// matte is, or the pass's percent while it runs (`running`); with the
+/// model that made it, for tracking the rest the same way.
+pub(super) fn matte_gap_lines(
+    gaps: &[klipp_compose::subject_matte::Uncovered],
+    seq: &klipp_timeline::Sequence,
+    pool: &klipp_media::MediaPool,
+    running: impl Fn(klipp_core::ClipId) -> Option<f32>,
+) -> Vec<(klipp_core::ClipId, &'static str, String)> {
+    let mut out: Vec<(klipp_core::ClipId, &'static str, String)> = Vec::new();
+    for gap in gaps {
+        if out.iter().any(|(c, _, _)| *c == gap.clip) {
+            continue;
+        }
+        let Some(clip) = seq.all_clips().find(|c| c.id == gap.clip) else { continue };
+        let name = clip.media_id().and_then(|m| pool.get(&m)).map_or_else(|| "Clip".to_string(), |i| i.filename.clone());
+        let how = match running(gap.clip) {
+            Some(p) => format!("tracking, {:.0}%", (p * 100.0).clamp(0.0, 100.0)),
+            None => format!("{} of {} frames tracked", gap.covered, gap.needed),
+        };
+        let model = klipp_nodes::matte_sequence::read_manifest(&gap.folder).map_or("subject", |m| crate::subject_track::model_name(&m.model));
+        out.push((gap.clip, model, format!("{name} at {}: {how}", clip.timeline_in.to_timecode_string())));
+    }
+    out
+}
+
 /// The clips of `seq` whose media is offline, by file name and timeline
 /// position, for the warning before a render.
 pub(super) fn offline_clips(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool) -> Vec<(String, String)> {
@@ -847,6 +874,9 @@ impl KlippApp {
     /// offline, or a source about to be written over, when that is the
     /// next question (see [`export_step`]); otherwise queue the render.
     pub(super) fn export_or_ask(&mut self, settings: &klipp_core::ExportSettings, confirmed: Confirmed) {
+        if self.ask_matte_gaps() {
+            return;
+        }
         let offline = if confirmed == Confirmed::Nothing {
             offline_clips(&self.state.sequences[self.state.active_sequence_idx], &self.state.media_pool)
         } else {
@@ -858,6 +888,26 @@ impl KlippApp {
             ExportStep::AskOverwrite(name) => self.state.export_source_overwrite_warning = Some((name, Box::new(settings.clone()))),
             ExportStep::Queue => self.queue_export(settings),
         }
+    }
+
+    /// Whether a tracked subject matte in the active sequence falls short
+    /// of what a render reads, putting up the question when it does. No
+    /// export goes ahead past it: a missing frame would otherwise render
+    /// with its neighbour's matte (#239).
+    pub(super) fn ask_matte_gaps(&mut self) -> bool {
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let gaps = klipp_compose::subject_matte::uncovered(seq);
+        if gaps.is_empty() {
+            return false;
+        }
+        let tracking = &self.state.tracking_subjects;
+        let lines = matte_gap_lines(&gaps, seq, &self.state.media_pool, |clip| {
+            let t = tracking.get(&clip)?;
+            let s = klipp_analysis::service::subject_matte_status(t.media)?;
+            matches!(s.state, klipp_analysis::service::State::Running | klipp_analysis::service::State::Queued).then(|| s.progress.unwrap_or(0.0))
+        });
+        self.state.export_matte_warning = Some(lines);
+        true
     }
 
     /// Put the render of `settings` on the queue for the range the dialog
@@ -1912,6 +1962,9 @@ impl KlippApp {
                 .on_disabled_hover_text(disabled_reason)
                 .clicked()
             {
+                if self.ask_matte_gaps() {
+                    return;
+                }
                 let path = PathBuf::from(&self.export_dialog.output_path);
                 let settings = build_export_settings(&self.export_dialog, self.prefs.audio.pan_law);
                 let use_marked = self.export_dialog.range_mode == 1;
@@ -2542,7 +2595,7 @@ mod true_peak_tests {
 
 #[cfg(test)]
 mod export_rule_tests {
-    use super::{export_step, next_free_name, offline_clips, segment_outputs, source_written_over, Confirmed, ExportStep};
+    use super::{export_step, matte_gap_lines, next_free_name, offline_clips, segment_outputs, source_written_over, Confirmed, ExportStep};
     use std::path::{Path, PathBuf};
 
     fn offline() -> Vec<(String, String)> {
@@ -2575,6 +2628,29 @@ mod export_rule_tests {
         let named = offline_clips(&seq, &pool);
         assert_eq!(named.len(), 1);
         assert_eq!(named[0].0, "gone.mov");
+    }
+
+    /// #239: a clip whose tracked matte falls short is named once, with
+    /// how far it got, or its pass's percent while one runs.
+    #[test]
+    fn short_mattes_are_named_with_how_far_they_got() {
+        let mut pool = klipp_media::MediaPool::new();
+        let a = pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/walk.mov".into(), None));
+        let b = pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/run.mov".into(), None));
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.tracks[0].clips = vec![klipp_timeline::Clip::media(a, tc(0.0), tc(2.0), tc(0.0), tc(2.0)), klipp_timeline::Clip::media(b, tc(2.0), tc(4.0), tc(0.0), tc(2.0))];
+        let (ca, cb) = (seq.tracks[0].clips[0].id, seq.tracks[0].clips[1].id);
+        let gap = |clip, folder: &str| klipp_compose::subject_matte::Uncovered { clip, folder: PathBuf::from(folder), covered: 20, needed: 50, from_secs: 0.0, to_secs: 2.0 };
+        // Two folders on the first clip: one line for it.
+        let gaps = [gap(ca, "/nowhere/a"), gap(ca, "/nowhere/b"), gap(cb, "/nowhere/c")];
+        let lines = matte_gap_lines(&gaps, &seq, &pool, |c| (c == cb).then_some(0.42));
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].0, ca);
+        assert_eq!(lines[0].1, "subject");
+        assert!(lines[0].2.starts_with("walk.mov at "), "{}", lines[0].2);
+        assert!(lines[0].2.ends_with("20 of 50 frames tracked"), "{}", lines[0].2);
+        assert!(lines[1].2.ends_with("tracking, 42%"), "{}", lines[1].2);
     }
 
     #[test]
@@ -2829,6 +2905,10 @@ impl KlippApp {
         }
         if let Some(name) = self.find_export_overwrite_conflict(&settings.output_path) {
             self.state.toast.show(format!("{} is source media in this project; rendering over it would destroy it", name));
+            return;
+        }
+        if !klipp_compose::subject_matte::uncovered(&self.state.sequences[seq_idx]).is_empty() {
+            self.state.toast.show("A tracked subject matte in it isn't finished; track the rest before rendering again");
             return;
         }
         let snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(

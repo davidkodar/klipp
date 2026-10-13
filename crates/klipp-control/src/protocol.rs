@@ -457,6 +457,21 @@ pub enum ControlCommand {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+    /// Track the subject through a clip (#239): a matte that follows it
+    /// frame by frame, made in the background and bound to the clip's
+    /// grade (gating its correction) in one undo step. Its job is
+    /// `<media id>:subject_matte`, read with job_status and stopped with
+    /// cancel_job; frames already made are kept.
+    TrackSubject {
+        clip_id: String,
+        /// "subject" (one detected subject, followed) or "foreground"
+        /// (the whole foreground); "subject" when left out.
+        #[serde(default)]
+        model: Option<String>,
+        /// Fetch the model first when it isn't there; refused otherwise.
+        #[serde(default)]
+        download_model: bool,
+    },
     /// Segments of every analysed item's transcript containing `query`,
     /// case-insensitively, with where they are in the file.
     SearchTranscripts {

@@ -47,6 +47,36 @@ pub(crate) fn respond(
             Ok(json!({ "items": statuses, "models_downloaded": downloaded, "next": next }))
         }
 
+        ControlCommand::TrackSubject { clip_id, model, download_model } => {
+            use klipp_analysis::subject_matte::MatteModel;
+            let name = model.as_deref().unwrap_or("subject").trim().to_ascii_lowercase();
+            let which = match name.as_str() {
+                "subject" => MatteModel::Subject,
+                "foreground" => MatteModel::Foreground,
+                other => return Err(format!("no model \"{other}\"; use subject or foreground")),
+            };
+            let clip = existing_clip_id(ctx, &clip_id)?;
+            let media = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let media = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == clip).and_then(|c| c.media_id()).and_then(|m| pool.get(&m)).ok_or("track_subject needs a clip with a picture from a file")?;
+                if media.is_still || media.video_codec.is_empty() {
+                    return Err("track_subject needs a video clip".into());
+                }
+                media.id
+            };
+            // Never fetched unasked: the model is named when it is missing.
+            if download_model && in_batch {
+                return Err("track_subject with download_model fetches the model first; send it on its own".into());
+            }
+            klipp_analysis::subject_matte::ensure_model(which, download_model).map_err(|e| format!("{e} (pass download_model: true to fetch it)"))?;
+            let mut send = sender!(ctx, collect);
+            let mut reply = send(AppCommand::TrackSubject { clip_id: clip, model: name })?;
+            reply["job_id"] = json!(format!("{}:{}", media.0, klipp_analysis::subject_matte::ID));
+            reply["next"] = json!("The matte is made in the background and shows on the clip's grade as it goes. Read job_status with this job_id for its progress; cancel_job stops it and keeps the frames made.");
+            Ok(reply)
+        }
+
         ControlCommand::SearchTranscripts { query, max_hits } => {
             if in_batch {
                 return read_in_batch("search_transcripts");

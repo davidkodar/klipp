@@ -57,7 +57,7 @@ const WRITE_TOOLS: &[&str] = &[
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
     "klipp_generator", "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_import_subtitles", "klipp_apply",
-    "klipp_open_project", "klipp_switch_sequence",
+    "klipp_open_project", "klipp_switch_sequence", "klipp_track_subject",
 ];
 
 /// Calls with side effects may be replayed after a lost socket reply. The
@@ -721,6 +721,16 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             if let Some(d) = args.get("download_models").and_then(|v| v.as_bool()) {
                 v["download_models"] = json!(d);
+            }
+            v
+        }
+        "klipp_track_subject" => {
+            let mut v = json!({ "method": "track_subject", "clip_id": arg_str(args, "clip_id")? });
+            if let Some(m) = args.get("model").and_then(|v| v.as_str()) {
+                v["model"] = json!(m);
+            }
+            if let Some(d) = args.get("download_model").and_then(|v| v.as_bool()) {
+                v["download_model"] = json!(d);
             }
             v
         }
@@ -1654,7 +1664,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "job_id": { "type": "string" },
                      "max_wait_ms": { "type": "integer", "minimum": 1, "maximum": 3600000 } }), vec!["job_id"]),
         tool("klipp_cancel_job",
-             "Cancel a render or a queued analysis job; running analysis, import and sync cannot be stopped. Details: klipp_guide topic cancel_job.",
+             "Cancel a render, a queued analysis job or a subject matte pass; other running analysis, import and sync cannot be stopped. Details: klipp_guide topic cancel_job.",
              json!({ "job_id": { "type": "string" } }), vec!["job_id"]),
         tool("klipp_play", "Start playback.", json!({}), vec![]),
         tool("klipp_pause", "Pause playback.", json!({}), vec![]),
@@ -1837,6 +1847,14 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "download_models": { "type": "boolean", "description": "Fetch missing models first (the user should know a download happens)" },
              }),
              vec![]),
+        tool("klipp_track_subject",
+             "Track the subject through a clip: a matte that follows it, made in the background and added to the clip's grade as one undo step; returns a job_id. The model is fetched only with download_model. Details: klipp_guide topic track_subject.",
+             json!({
+                 "clip_id": { "type": "string", "description": "From klipp_list_clips" },
+                 "model": { "type": "string", "enum": ["subject", "foreground"], "description": "subject: one detected subject, followed (default); foreground: the whole foreground" },
+                 "download_model": { "type": "boolean", "description": "Fetch the model first when missing (the user should know a download happens)" },
+             }),
+             vec!["clip_id"]),
         tool("klipp_search_transcripts",
              "Find where something is said: every transcript segment containing the query, \
               case-insensitively, with its media item and its start and end in the file.",
@@ -2624,6 +2642,17 @@ mod wait_tests {
         let queue = tool_to_command("klipp_analysis_queue", &json!({ "media_id": "take", "cancel_pending": true })).unwrap();
         assert_eq!(queue["media_id"], "take");
         assert_eq!(queue["cancel_pending"], true);
+    }
+
+    /// #239: Track Subject reaches the socket as a request it parses.
+    #[test]
+    fn track_subject_reaches_the_socket() {
+        let call = tool_to_command("klipp_track_subject", &json!({ "clip_id": "c1", "model": "foreground", "download_model": true })).unwrap();
+        assert_eq!(call, json!({ "method": "track_subject", "clip_id": "c1", "model": "foreground", "download_model": true }));
+        assert_eq!(tool_to_command("klipp_track_subject", &json!({ "clip_id": "c1" })).unwrap(), json!({ "method": "track_subject", "clip_id": "c1" }));
+        assert!(tool_to_command("klipp_track_subject", &json!({})).is_err(), "a clip is needed");
+        let request: klipp_control::protocol::Request = serde_json::from_value(json!({ "id": 1, "method": "track_subject", "clip_id": "c1" })).unwrap_or_else(|e| panic!("{e}"));
+        assert!(matches!(request.command, klipp_control::protocol::ControlCommand::TrackSubject { model: None, download_model: false, .. }));
     }
 
     #[test]

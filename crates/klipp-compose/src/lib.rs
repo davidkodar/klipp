@@ -15,6 +15,7 @@ pub mod synth;
 pub mod render;
 pub mod resolve;
 pub mod selfcheck;
+pub mod subject_matte;
 
 /// The most media sources' readers (#1746) a frame source keeps open, the
 /// one read longest ago closed first.

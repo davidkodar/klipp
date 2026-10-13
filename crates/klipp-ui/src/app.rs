@@ -22,6 +22,7 @@ use klipp_engine::{PlaybackState, SharedFrameBuffer};
 
 mod export;
 mod frame_glide;
+mod track_subject;
 mod project_io;
 mod appearance;
 mod tips;

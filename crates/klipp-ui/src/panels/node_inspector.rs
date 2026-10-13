@@ -2791,8 +2791,15 @@ impl NodeInspectorPanel {
     ) {
         #[cfg(any(test, feature = "row-recorder"))]
         crate::widgets::row_recorder::control(ui.next_auto_id(), "image_picker", "matte_image_path", "Choose image…", &params.matte_image_path);
+        // A tracked subject (#239): where its matte stands, and its one
+        // action; its own channel is the matte, so only Invert follows.
+        let tracked = params.matte_image_path.as_ref().filter(|p| klipp_nodes::matte_sequence::is_sequence(p)).cloned();
+        if let Some(dir) = &tracked {
+            cmds.extend(crate::subject_track::card_ui(ui, crate::subject_track::card(dir).as_ref(), clip_id, theme));
+            ui.add_space(4.0);
+        }
         // File picker.
-        ui.horizontal(|ui| {
+        if tracked.is_none() { ui.horizontal(|ui| {
             ui.add_space(8.0);
             let label = match &params.matte_image_path {
                 Some(p) => p.file_name().map(|f| f.to_string_lossy().to_string())
@@ -2802,7 +2809,7 @@ impl NodeInspectorPanel {
             ui.label(
                 egui::RichText::new(label).small().color(theme.text_dim)
             );
-        });
+        }); }
         ui.horizontal(|ui| {
             ui.add_space(8.0);
             if ui.button("Choose image…").clicked() {
@@ -2826,7 +2833,7 @@ impl NodeInspectorPanel {
         // Channel selector.
         let current_channel = params.matte_channel.unwrap_or_default();
         let invert = params.matte_invert.unwrap_or(false);
-        ui.horizontal(|ui| {
+        if tracked.is_none() { ui.horizontal(|ui| {
             ui.add_space(8.0);
             ui.label(egui::RichText::new("Source").small().color(theme.text_dim));
             let mut new_channel = current_channel;
@@ -2849,7 +2856,7 @@ impl NodeInspectorPanel {
                     invert,
                 });
             }
-        });
+        }); }
         ui.horizontal(|ui| {
             ui.add_space(8.0);
             let mut inv = invert;

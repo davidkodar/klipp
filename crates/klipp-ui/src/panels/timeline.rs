@@ -8977,6 +8977,19 @@ impl TimelinePanel {
                         cmds.push(AppCommand::DetectScenes { clip_id });
                         ui.close_menu();
                     }
+                    // A matte that follows the subject through the clip,
+                    // gating its grade (#239).
+                    if let Some(t) = state.tracking_subjects.get(&clip_id) {
+                        let pct = klipp_analysis::service::subject_matte_status(t.media).and_then(|s| s.progress).unwrap_or(0.0) * 100.0;
+                        ui.label(format!("Tracking subject\u{2026} {pct:.0}%"));
+                        if ui.small_button("Stop Tracking").clicked() {
+                            cmds.push(AppCommand::CancelTrackSubject { clip_id });
+                            ui.close_menu();
+                        }
+                    } else if ui.button("Track Subject").on_hover_text("A matte that follows the person through the clip, gating its grade. Made in the background.").clicked() {
+                        cmds.push(AppCommand::TrackSubject { clip_id, model: "subject".into() });
+                        ui.close_menu();
+                    }
                     // Offer the razor-split once markers exist. One atomic
                     // undo step restores the original clip.
                     let marker_count = state.sequence().tracks.iter()

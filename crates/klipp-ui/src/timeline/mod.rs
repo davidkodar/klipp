@@ -651,6 +651,8 @@ mod menu_smoke_tests {
         sent: Vec<AppCommand>,
         /// The last frame's shapes.
         shapes: Vec<egui::epaint::ClippedShape>,
+        /// The window's height.
+        height: f32,
     }
 
     impl Timeline {
@@ -665,7 +667,7 @@ mod menu_smoke_tests {
             state.sequences[0].tracks[v1].clips.push(Clip::media(media, zero, long, zero, long));
             let mut old = crate::panels::timeline::TimelinePanel::default();
             old.embedded = true;
-            Self { ctx: egui::Context::default(), state, panel: NewTimelinePanel::default(), old, time: 0.0, sent: Vec::new(), shapes: Vec::new() }
+            Self { ctx: egui::Context::default(), state, panel: NewTimelinePanel::default(), old, time: 0.0, sent: Vec::new(), shapes: Vec::new(), height: 600.0 }
         }
 
         /// One frame with `events`: the text drawn, with where.
@@ -673,7 +675,7 @@ mod menu_smoke_tests {
             self.time += 0.5;
             let input = egui::RawInput {
                 // Tall enough for the whole clip menu, as any real window is.
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 600.0))),
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, self.height))),
                 time: Some(self.time),
                 events,
                 ..Default::default()
@@ -800,6 +802,35 @@ mod menu_smoke_tests {
         let menu = timeline.right_click(at);
         let lacking = missing(&menu, &["Rename Clip", "Clip Colour", "Grade Flag", "Rhythm Edits", "Speed", "Make Subclip", "Select Same Source", "Cut", "Copy", "Paste at Playhead", "Paste Insert at Playhead", "Duplicate Clip"]);
         assert!(lacking.is_empty(), "the clip's menu lacks {lacking:?}; it shows {menu:?}");
+    }
+
+    /// #239: a video clip whose file is there offers Track Subject, and
+    /// clicking it asks for the subject's matte on that clip.
+    #[test]
+    fn a_clips_menu_tracks_its_subject() {
+        let dir = std::env::temp_dir().join(format!("klipp-track-menu-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("smoke.mov");
+        std::fs::write(&file, b"x").unwrap();
+        let mut timeline = Timeline::new();
+        // The analysis items sit low in a long menu.
+        timeline.height = 1400.0;
+        let media = timeline.state.media_pool.all().next().unwrap().id;
+        timeline.state.media_pool.get_mut(&media).unwrap().path = file;
+        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+        let id = timeline.state.sequences[0].tracks[v1].clips[0].id;
+        let drawn = timeline.frame(Vec::new());
+        let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
+        timeline.right_click(at);
+        let drawn = timeline.frame(Vec::new());
+        let item = drawn.iter().find(|(t, _)| t == "Track Subject").unwrap_or_else(|| panic!("Track Subject in the menu: {drawn:?}")).1;
+        let button = |pressed| egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        timeline.frame(vec![egui::Event::PointerMoved(item), button(true)]);
+        let mut sent = std::mem::take(&mut timeline.sent);
+        timeline.frame(vec![button(false)]);
+        sent.extend(std::mem::take(&mut timeline.sent));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::TrackSubject { clip_id, model } if *clip_id == id && model == "subject")), "{sent:?}");
     }
 
     /// #1844: double-clicking a multicam clip on the timeline turns

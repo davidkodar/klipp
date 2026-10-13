@@ -62,6 +62,10 @@ Cut a long take down to its selects: the runs of speech between the real pauses,
 
 A reference video's editing style as facts, to build a clip in its feel from other footage: its cut cadence (shots, their lengths, cuts a minute, on the beat or not), its tempo, its look off the scopes (blacks, whites, contrast, saturation, warmth), its motion and detected holds. Cut cadence is not animation pacing: look at changes within shots before choosing hold lengths, as motion statistics name no animation events. Read only. Match the feel with your own footage and your own or licensed music, never the reference's track. Import and analyse the reference first.
 
+## klipp_track_subject
+
+A matte that follows the subject through one clip, frame by frame: model subject (one detected subject, followed; the default) or foreground (everything in front). It is added to the clip's grade as an External Matte gating its correction (the selected one, else the first, a new one when there is none), as one undo step, and filled in the background; the viewer shows each part as it is made. Its job_id is `<media id>:subject_matte`: klipp_job_status reads its progress, klipp_cancel_job stops it after the frame it is on and keeps the frames made. Running it again tracks only what is missing. An export is refused until the matte covers every frame the clip shows. The model is never fetched unasked: without it the call is refused, naming it; download_model true fetches it (tell the person, it is large).
+
 ## klipp_transcript
 
 What is said in a media file between two times, with when, in seconds of the file: the segments, and with words true every word with its start and end, and the stretches measured silent in that range. Use it to put a cut on the edge of a word or in a silence (a cut in measured silence is clean), and to read a stretch the analysis text cut short.

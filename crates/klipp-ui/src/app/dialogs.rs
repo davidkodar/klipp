@@ -642,6 +642,41 @@ impl KlippApp {
                 });
         }
 
+        // A tracked subject matte short of what the export reads (#239):
+        // the export waits for it. Track the rest, or cancel; there is no
+        // "anyway", since a missing frame would take its neighbour's matte.
+        if let Some(lines) = self.state.export_matte_warning.clone() {
+            let mut close = false;
+            egui::Window::new("Subject mattes aren't finished")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("These clips are graded by a tracked subject that doesn't cover every frame yet:");
+                    ui.add_space(4.0);
+                    for (_, _, line) in &lines {
+                        ui.label(format!("  \u{2022} {line}"));
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            close = true;
+                        }
+                        if ui.button("Track the rest").clicked() {
+                            for (clip_id, model, _) in &lines {
+                                if !self.state.tracking_subjects.contains_key(clip_id) {
+                                    cmds.push(AppCommand::TrackSubject { clip_id: *clip_id, model: (*model).into() });
+                                }
+                            }
+                            close = true;
+                        }
+                    });
+                });
+            if close {
+                self.state.export_matte_warning = None;
+            }
+        }
+
         // Export offline media warning dialog
         if self.state.export_offline_warning.is_some() {
             let mut dismiss = false;
