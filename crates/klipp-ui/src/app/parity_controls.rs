@@ -1166,7 +1166,11 @@ pub(super) fn visibility_case(start: &Grade, ty: &klipp_nodes::registry::NodeTyp
     if shown == 0 {
         return Err(format!("{name:?} isn't drawn with {key} met"));
     }
-    let mut unmet = with_node(start, |n| set_switch(&mut n.params, cond.field, value == 0.0))?;
+    let mut unmet = with_node(start, |n| match cond.kind {
+        // A menu's: another of its items (#895).
+        ParamKind::Choice(_) => n.params.apply_override(key, if value == 0.0 { 1.0 } else { 0.0 }).then_some(()).ok_or_else(|| format!("{key} can't be set")),
+        _ => set_switch(&mut n.params, cond.field, value == 0.0),
+    })?;
     let hidden = drawn(&mut unmet)?;
     if hidden >= shown {
         return Err(format!("{name:?} is drawn {hidden} times with {key} unmet, {shown} with it met"));
@@ -1360,9 +1364,21 @@ pub(super) fn meet_conditions(base: &Grade, ty: &klipp_nodes::registry::NodeType
     let mut variant = "sample";
     for Cond::ParamIs { key, value } in [pres.visible_if, pres.enabled_if].into_iter().flatten() {
         let cond = ty.desc.params.iter().find(|p| p.key == key).ok_or_else(|| format!("its condition names {key:?}, not a parameter"))?;
-        if shown_index(cond, &shown.value(cond)) != Some(value as usize) {
-            let cond_label = ty.presentation(cond).label.unwrap_or(cond.label);
-            shown.switch(cond_label)?;
+        let at = shown_index(cond, &shown.value(cond));
+        if at != Some(value as usize) {
+            let cond_pres = ty.presentation(cond);
+            let cond_label = cond_pres.label.unwrap_or(cond.label);
+            match cond.kind {
+                // A menu's condition (a qualifier's mode, #895): its item
+                // picked from the menu, as a user picks it.
+                ParamKind::Choice(_) => {
+                    let labels = menu_labels(cond, &cond_pres);
+                    let shows = at.and_then(|i| labels.get(i)).ok_or_else(|| format!("{key} shows no item"))?;
+                    let item = labels.get(value as usize).ok_or_else(|| format!("{key} has no item {value}"))?;
+                    shown.pick(cond_label, shows, item)?;
+                }
+                _ => shown.switch(cond_label)?,
+            }
             variant = "conditions met";
         }
     }

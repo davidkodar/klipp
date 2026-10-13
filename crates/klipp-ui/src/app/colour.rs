@@ -2426,6 +2426,21 @@ pub(super) fn hue_range_points(points: &[[f32; 2]], hue: f32) -> Vec<[f32; 2]> {
 /// a pixel (`picture_hsl`): its hue centred there, its saturation range
 /// around it.
 pub(super) fn qualifier_keyed_on(rgb: [f32; 3], base: klipp_core::QualifierSettings) -> klipp_core::QualifierSettings {
+    // In RGB mode (#895), each channel within 0.1 of the picked colour's.
+    if base.mode == klipp_core::QualifierMode::Rgb {
+        let e = klipp_effects::cpu_grade::qualifier_rgb(rgb);
+        let (lo, hi) = (|v: f32| (v - 0.1).max(0.0), |v: f32| (v + 0.1).min(1.0));
+        return klipp_core::QualifierSettings {
+            enabled: true,
+            red_low: lo(e[0]),
+            red_high: hi(e[0]),
+            green_low: lo(e[1]),
+            green_high: hi(e[1]),
+            blue_low: lo(e[2]),
+            blue_high: hi(e[2]),
+            ..base
+        };
+    }
     let hsl = klipp_effects::cpu_grade::picture_hsl(rgb);
     klipp_core::QualifierSettings {
         enabled: true,
@@ -2434,6 +2449,25 @@ pub(super) fn qualifier_keyed_on(rgb: [f32; 3], base: klipp_core::QualifierSetti
         sat_low: (hsl.s - 0.2).max(0.0),
         sat_high: (hsl.s + 0.2).min(1.0),
         ..base
+    }
+}
+
+#[cfg(test)]
+mod qualifier_mode_pick_tests {
+    /// The eyedropper keys by the qualifier's mode (#895): in RGB mode each
+    /// channel within 0.1 of the picked colour's, the HSL window left as it
+    /// was; in HSL mode the hue and saturation, the RGB ranges left.
+    #[test]
+    fn a_pick_keys_by_the_qualifiers_mode() {
+        let picked = [0.6f32, 0.2, 0.05];
+        let e = klipp_effects::cpu_grade::qualifier_rgb(picked);
+        let rgb = super::qualifier_keyed_on(picked, klipp_core::QualifierSettings { mode: klipp_core::QualifierMode::Rgb, ..Default::default() });
+        assert!(rgb.enabled);
+        assert!((rgb.red_low - (e[0] - 0.1)).abs() < 1e-6 && (rgb.red_high - (e[0] + 0.1).min(1.0)).abs() < 1e-6);
+        assert!((rgb.green_low - (e[1] - 0.1).max(0.0)).abs() < 1e-6 && (rgb.blue_low - (e[2] - 0.1).max(0.0)).abs() < 1e-6);
+        assert_eq!(rgb.hue_center, klipp_core::QualifierSettings::default().hue_center, "the HSL window is left");
+        let hsl = super::qualifier_keyed_on(picked, Default::default());
+        assert!(hsl.hue_center > 0.0 && hsl.red_low == 0.0 && hsl.red_high == 1.0, "HSL mode keys the hue, the RGB ranges left");
     }
 }
 

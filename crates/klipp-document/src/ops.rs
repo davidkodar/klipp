@@ -1247,7 +1247,10 @@ pub enum Op {
     /// an explicit `hue` with `hue_width`, and optional saturation and
     /// luminance windows — then correct only what is keyed with
     /// `exposure`, `saturation`, `hue_shift` or `temperature`. `invert`
-    /// grades everything but the key; `remove` clears it.
+    /// grades everything but the key; `remove` clears it. `rgb` keys by
+    /// red, green and blue instead (#895): `[red_low, red_high,
+    /// green_low, green_high, blue_low, blue_high]`, each 0-1 on the
+    /// picture as shown, for a colour hue separates poorly.
     Qualify {
         clip_id: ClipRef,
         #[serde(default)]
@@ -1293,6 +1296,8 @@ pub enum Op {
         /// the subject moves at all.
         #[serde(default)]
         window_feather: Option<f32>,
+        #[serde(default)]
+        rgb: Option<[f32; 6]>,
     },
     /// Change a clip's speed. `speed` above 1 is faster and shorter, below
     /// 1 slower and longer (0.5 is half speed); negative plays the clip
@@ -3037,9 +3042,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             ]);
             Ok((format!("remove grade group \"{}\"; its clips keep their own grades", g.name), edit, touched))
         }
-        Op::Qualify { clip_id, target, hue, hue_width, sat_low, sat_high, lum_low, lum_high, invert, exposure, saturation, hue_shift, temperature, remove, window, window_feather } => {
+        Op::Qualify { clip_id, target, hue, hue_width, sat_low, sat_high, lum_low, lum_high, invert, exposure, saturation, hue_shift, temperature, remove, window, window_feather, rgb } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            let q = QualifyArgs { target: target.as_deref(), hue: *hue, hue_width: *hue_width, sat_low: *sat_low, sat_high: *sat_high, lum_low: *lum_low, lum_high: *lum_high, invert: *invert, exposure: *exposure, saturation: *saturation, hue_shift: *hue_shift, temperature: *temperature, remove: *remove, window: window.as_deref(), window_feather: *window_feather };
+            let q = QualifyArgs { target: target.as_deref(), hue: *hue, hue_width: *hue_width, sat_low: *sat_low, sat_high: *sat_high, lum_low: *lum_low, lum_high: *lum_high, invert: *invert, exposure: *exposure, saturation: *saturation, hue_shift: *hue_shift, temperature: *temperature, remove: *remove, window: window.as_deref(), window_feather: *window_feather, rgb: *rgb };
             qualify(seq, pool, i, ti, clip, q)
         }
         Op::Retime { clip_id, speed, fit, ripple } => {
@@ -6605,6 +6610,7 @@ struct QualifyArgs<'a> {
     remove: bool,
     window: Option<&'a [WindowKey]>,
     window_feather: Option<f32>,
+    rgb: Option<[f32; 6]>,
 }
 
 /// A named colour target for the qualifier: its hue centre and width in
@@ -6666,7 +6672,15 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
         hue_width.get_or_insert(w);
     }
 
-    let key_given = hue_center.is_some() || a.sat_low.is_some() || a.sat_high.is_some() || a.lum_low.is_some() || a.lum_high.is_some();
+    if let Some(rgb) = a.rgb {
+        if hue_center.is_some() || a.sat_low.is_some() || a.sat_high.is_some() || a.lum_low.is_some() || a.lum_high.is_some() {
+            return Err(refuse(i, "an RGB key and an HSL key at once", "give rgb, or a target, hue and saturation or luminance windows, not both"));
+        }
+        if rgb.iter().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v)) || rgb[0] > rgb[1] || rgb[2] > rgb[3] || rgb[4] > rgb[5] {
+            return Err(refuse(i, format!("rgb {rgb:?} is not three ranges"), "give [red_low, red_high, green_low, green_high, blue_low, blue_high], each 0 to 1, low before high"));
+        }
+    }
+    let key_given = a.rgb.is_some() || hue_center.is_some() || a.sat_low.is_some() || a.sat_high.is_some() || a.lum_low.is_some() || a.lum_high.is_some();
     let corr_given = a.exposure.is_some() || a.saturation.is_some() || a.hue_shift.is_some() || a.temperature.is_some();
     if !key_given {
         return Err(refuse(i, "nothing keyed", "say what to key: a target, a hue, or a saturation or luminance window"));
@@ -6750,6 +6764,12 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
                 if !node.params.apply_override(name, *v) {
                     return Err(refuse(i, format!("the qualifier has no \"{name}\""), "this is a bug: tell the user the secondary key went nowhere"));
                 }
+            }
+        }
+        if let Some(rgb) = a.rgb {
+            node.params.apply_override("qual_mode", f32::from(klipp_core::QualifierMode::Rgb.index()));
+            for (name, v) in ["qual_red_low", "qual_red_high", "qual_green_low", "qual_green_high", "qual_blue_low", "qual_blue_high"].into_iter().zip(rgb) {
+                node.params.apply_override(name, v);
             }
         }
         node.params.apply_override("qual_enabled", 1.0);
@@ -9543,7 +9563,7 @@ mod tests {
         let op = |hue_shift: Option<f32>, saturation: Option<f32>| Op::Qualify {
             clip_id: ClipRef::Id(a), target: Some("skin".into()), hue: None, hue_width: None,
             sat_low: None, sat_high: None, lum_low: None, lum_high: None, invert: false,
-            exposure: None, saturation, hue_shift, temperature: None, remove: false, window: None, window_feather: None };
+            exposure: None, saturation, hue_shift, temperature: None, remove: false, window: None, window_feather: None, rgb: None };
         let plan = resolve(&seq, &pool, &[op(Some(20.0), None)]).unwrap();
         let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("a graph edit") };
         let qual = new_graph.nodes.iter().find(|n| n.kind == NodeKind::Qualifier).expect("a keyer");
@@ -12462,7 +12482,7 @@ mod tests {
             clip_id: ClipRef::Id(a), target: target.map(|s| s.to_string()), hue, hue_width: None,
             sat_low: None, sat_high: None, lum_low: None, lum_high: None, invert: false,
             exposure, saturation, hue_shift: None, temperature: None, remove,
-            window: None, window_feather: None,
+            window: None, window_feather: None, rgb: None,
         };
 
         // Key the sky and cool it down.
@@ -12502,6 +12522,29 @@ mod tests {
         assert!(bad(q(None, None, None, None, true)).why.contains("no secondary to remove"));
     }
 
+    /// An RGB key (#895): the keyer in RGB mode with the ranges given and
+    /// the gated correction; an RGB key with an HSL one, or ranges that
+    /// aren't three, refused.
+    #[test]
+    fn a_secondary_can_key_by_red_green_and_blue() {
+        let (seq, pool, _media, a, _) = fixture();
+        let q = |rgb: Option<[f32; 6]>, hue: Option<f32>| Op::Qualify {
+            clip_id: ClipRef::Id(a),
+            target: None,
+            hue, hue_width: None, sat_low: None, sat_high: None, lum_low: None, lum_high: None,
+            invert: false, exposure: Some(-0.5), saturation: None, hue_shift: None, temperature: None, remove: false,
+            window: None, window_feather: None, rgb,
+        };
+        let plan = resolve(&seq, &pool, &[q(Some([0.5, 1.0, 0.0, 0.4, 0.0, 0.3]), None)]).unwrap();
+        let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("node-graph edit") };
+        let key = new_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Qualifier).and_then(|n| n.params.qualifier.clone()).expect("a key");
+        assert!(key.enabled && key.mode == klipp_core::QualifierMode::Rgb);
+        assert_eq!([key.red_low, key.red_high, key.green_low, key.green_high, key.blue_low, key.blue_high], [0.5, 1.0, 0.0, 0.4, 0.0, 0.3]);
+        assert!(new_graph.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Corrector && n.params.exposure == Some(-0.5)), "the correction it gates");
+        assert!(resolve(&seq, &pool, &[q(Some([0.5, 1.0, 0.0, 0.4, 0.0, 0.3]), Some(20.0))]).unwrap_err().why.contains("at once"));
+        assert!(resolve(&seq, &pool, &[q(Some([0.8, 0.2, 0.0, 0.4, 0.0, 0.3]), None)]).unwrap_err().why.contains("three ranges"));
+    }
+
     #[test]
     fn a_skin_secondary_can_be_held_inside_a_tracked_window() {
         // The fault this exists to fix: a hue key on skin also keys a
@@ -12515,7 +12558,7 @@ mod tests {
             hue: None, hue_width: None, sat_low: None, sat_high: None, lum_low: None, lum_high: None,
             invert: false, exposure: None, saturation: None, hue_shift: Some(6.0), temperature: None, remove: false,
             window: Some(vec![face(0.0, 0.20), face(1.0, 0.44), face(2.0, 0.62)]),
-            window_feather: None,
+            window_feather: None, rgb: None,
         };
         let plan = resolve(&seq, &pool, &[op]).unwrap();
         assert!(plan.steps[0].what.contains("window tracked over 3 samples"), "{}", plan.steps[0].what);
@@ -12543,7 +12586,7 @@ mod tests {
                 clip_id: ClipRef::Id(a), target: Some("skin".into()),
                 hue: None, hue_width: None, sat_low: None, sat_high: None, lum_low: None, lum_high: None,
                 invert: false, exposure: None, saturation: None, hue_shift: Some(6.0), temperature: None, remove: false,
-                window: Some(w), window_feather: None,
+                window: Some(w), window_feather: None, rgb: None,
             }]).unwrap_err()
         };
         assert!(bad(vec![WindowKey { at: 0.0, x: 0.2, y: 0.2, w: 0.0, h: 0.2 }]).why.contains("not a box"));

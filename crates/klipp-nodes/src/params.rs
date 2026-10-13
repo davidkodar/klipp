@@ -655,6 +655,15 @@ impl NodeParams {
                     "clean_white" => q.clean_white = value,
                     "shrink_grow" => q.shrink_grow = value,
                     "blur" => q.blur = value,
+                    // The key's mode and the RGB mode's ranges (#895).
+                    "mode" => { q.mode = klipp_core::QualifierMode::from_index(value); q.enabled = true }
+                    "red_low" => { q.red_low = value; q.enabled = true }
+                    "red_high" => { q.red_high = value; q.enabled = true }
+                    "green_low" => { q.green_low = value; q.enabled = true }
+                    "green_high" => { q.green_high = value; q.enabled = true }
+                    "blue_low" => { q.blue_low = value; q.enabled = true }
+                    "blue_high" => { q.blue_high = value; q.enabled = true }
+                    "rgb_soft" => { q.rgb_soft = value; q.enabled = true }
                     _ => return false,
                 }
             }

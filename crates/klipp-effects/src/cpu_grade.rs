@@ -586,6 +586,43 @@ pub fn qualifier_matte(
     });
 }
 
+/// A colour's display-encoded channels, 0-1, as the RGB qualifier keys
+/// them (#895).
+pub fn qualifier_rgb(c: [f32; 3]) -> [f32; 3] {
+    c.map(|v| enc_signed(v).clamp(0.0, 1.0))
+}
+
+/// The qualifier's RGB mode (#895), as `SHADER_QUALIFIER` computes it:
+/// each display-encoded channel (0-1) within its range `[low, high]`,
+/// with `soft` falloff outside it, the three multiplied; a greyscale
+/// matte (R=G=B=matte, alpha kept). `rgb` is red, green and blue low and
+/// high, then the soft edge.
+pub fn qualifier_matte_rgb(px: &mut [f32], rgb: [f32; 7], invert: bool) {
+    let soft_range = |val: f32, lo: f32, hi: f32, soft: f32| {
+        if val >= lo && val <= hi {
+            return 1.0;
+        }
+        if soft <= 0.0001 {
+            return 0.0;
+        }
+        if val < lo {
+            (1.0 - (lo - val) / soft).clamp(0.0, 1.0)
+        } else {
+            (1.0 - (val - hi) / soft).clamp(0.0, 1.0)
+        }
+    };
+    px.par_chunks_exact_mut(4).for_each(|p| {
+        let e = qualifier_rgb([p[0], p[1], p[2]]);
+        let mut matte = soft_range(e[0], rgb[0], rgb[1], rgb[6]) * soft_range(e[1], rgb[2], rgb[3], rgb[6]) * soft_range(e[2], rgb[4], rgb[5], rgb[6]);
+        if invert {
+            matte = 1.0 - matte;
+        }
+        p[0] = matte;
+        p[1] = matte;
+        p[2] = matte;
+    });
+}
+
 /// Matte finesse on a qualifier's matte (the same value in R, G and B):
 /// clean black and clean white clip and rescale the matte, shrink/grow
 /// erodes or dilates it by a square of `|shrink_grow|` pixels, and blur

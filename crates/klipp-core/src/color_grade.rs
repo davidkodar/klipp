@@ -104,6 +104,62 @@ pub struct QualifierSettings {
     /// Blur radius in pixels, after shrink/grow.
     #[serde(default)]
     pub blur: f32,
+    /// What the key selects by (#895): hue, saturation and luminance, or
+    /// each of red, green and blue on its own.
+    #[serde(default)]
+    pub mode: QualifierMode,
+    /// The RGB mode's ranges, each 0-1 on the display-encoded picture:
+    /// red, green and blue low and high, and the soft edge outside them.
+    #[serde(default = "zero")]
+    pub red_low: f32,
+    #[serde(default = "one")]
+    pub red_high: f32,
+    #[serde(default = "zero")]
+    pub green_low: f32,
+    #[serde(default = "one")]
+    pub green_high: f32,
+    #[serde(default = "zero")]
+    pub blue_low: f32,
+    #[serde(default = "one")]
+    pub blue_high: f32,
+    #[serde(default = "tenth")]
+    pub rgb_soft: f32,
+}
+
+fn zero() -> f32 {
+    0.0
+}
+fn one() -> f32 {
+    1.0
+}
+fn tenth() -> f32 {
+    0.1
+}
+
+/// What a qualifier selects by (#895).
+#[derive(PartialEq, Eq, Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub enum QualifierMode {
+    /// Hue, saturation and luminance ranges: the usual key.
+    #[default]
+    Hsl,
+    /// Red, green and blue ranges, each on its own: for a colour HSL
+    /// separates poorly.
+    Rgb,
+}
+
+impl QualifierMode {
+    /// Its index as the node's `qual_mode` choice stores it.
+    pub fn index(self) -> u8 {
+        match self {
+            QualifierMode::Hsl => 0,
+            QualifierMode::Rgb => 1,
+        }
+    }
+
+    /// The mode a `qual_mode` index names; HSL for any other.
+    pub fn from_index(i: f32) -> Self {
+        if i.round() as i32 == 1 { QualifierMode::Rgb } else { QualifierMode::Hsl }
+    }
 }
 
 impl QualifierSettings {
@@ -136,6 +192,14 @@ impl Default for QualifierSettings {
             clean_white: 0.0,
             shrink_grow: 0.0,
             blur: 0.0,
+            mode: QualifierMode::Hsl,
+            red_low: 0.0,
+            red_high: 1.0,
+            green_low: 0.0,
+            green_high: 1.0,
+            blue_low: 0.0,
+            blue_high: 1.0,
+            rgb_soft: 0.1,
         }
     }
 }
