@@ -296,7 +296,8 @@ fn task_tile(
     registry: &AiToolsRegistry,
     theme: &KlippTheme,
 ) {
-    let has_model = registry.has_model_for(task);
+    // Track Subject asks for its model itself, when it runs (#239).
+    let has_model = registry.has_model_for(task) || task == AiTask::TrackObject;
     let active = state.active_task == Some(task);
 
     let (rect, response) = ui.allocate_exact_size(
@@ -1001,8 +1002,9 @@ fn prompt_help_text(task: Option<AiTask>, mode: PromptMode) -> &'static str {
              Generate Mask to find every object in frame."
         }
         (Some(AiTask::TrackObject), _) => {
-            "Track Object isn't enabled — install a temporal model from AI \
-             Models first."
+            "Track Subject follows the person through the selected clip and \
+             gates its grade with them. It runs in the background; its progress \
+             shows on the matte's card and in the status bar."
         }
         (_, PromptMode::PointPrompt) => {
             "Click in the viewport to add a positive point. Hold Alt for \
@@ -1031,6 +1033,17 @@ fn run_section(
     let running = matches!(state.inference, InferenceState::Running { .. });
     if running {
         running_progress_section(ui, state, theme);
+        return;
+    }
+    // Track Subject is one action on the selected clip (#239).
+    if state.active_task == Some(AiTask::TrackObject) {
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            if ui.button("Track Subject").on_hover_text("Track the subject through the selected clip, in the background").clicked() {
+                state.pending_track_subject = true;
+            }
+        });
+        let _ = (registry, theme);
         return;
     }
 

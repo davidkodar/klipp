@@ -2589,6 +2589,11 @@ pub struct AppState {
     /// dialog with three options: pick another file, auto-rename
     /// with a numeric suffix, or overwrite anyway.
     pub export_source_overwrite_warning: Option<(String, Box<klipp_core::ExportSettings>)>,
+    /// Clips whose tracked subject matte doesn't cover what an export
+    /// would read, one line each: the export waits for them, never
+    /// shipping a stale matte (#239). Each: the clip, the model its
+    /// matte was made by ("subject" | "foreground"), the line.
+    pub export_matte_warning: Option<Vec<(klipp_core::ClipId, &'static str, String)>>,
 
     // Usage count cache: MediaId → number of clips referencing it.
     // Rebuilt lazily when media_usage_cache_dirty is set (after any timeline edit).
@@ -2625,6 +2630,17 @@ pub struct AppState {
     /// The clip whose Frame Glide is being framed in the viewer (#611):
     /// the viewer shows it without its move, its Start and End over it.
     pub frame_glide_clip: Option<ClipId>,
+    /// A Track Subject waiting on its model's download (#239): the clip
+    /// and the model, started once the model is there.
+    pub pending_track_subject: Option<(ClipId, String)>,
+    /// The clips whose subject is being tracked (#239), with their media
+    /// and folder, and how many frames the render could see when last
+    /// looked (to refresh the picture as more come).
+    pub tracking_subjects: std::collections::HashMap<ClipId, Tracking>,
+    /// When the running passes were last looked at.
+    pub track_subject_looked: Option<std::time::Instant>,
+    /// The status bar's lines, one a running subject pass.
+    pub status_tracking: Vec<String>,
     /// A Frame Glide drag in the viewer, sent when it is let go.
     pub frame_glide_drag: Option<crate::panels::frame_glide_tool::GlideDrag>,
     // Batch rename dialog (for bin media items).
@@ -4693,6 +4709,7 @@ impl Default for AppState {
             ai_models_dialog: crate::panels::ai_models::AiModelsDialogState::default(),
             export_offline_warning: None,
             export_source_overwrite_warning: None,
+            export_matte_warning: None,
             media_usage_cache: std::collections::HashMap::new(),
             media_usage_cache_dirty: true,
             analysis_generation: 0,
@@ -4707,6 +4724,10 @@ impl Default for AppState {
             shared_collection: String::new(),
             save_template_dialog: None,
             frame_glide_clip: None,
+            pending_track_subject: None,
+            tracking_subjects: Default::default(),
+            track_subject_looked: None,
+            status_tracking: Vec::new(),
             frame_glide_drag: None,
             show_batch_rename_dialog: false,
             show_title_find: false,
@@ -6609,4 +6630,16 @@ mod delivery_loudness_tests {
         let off = DeliveryLoudness { available: true, enabled: false, ..Default::default() };
         assert_eq!(off.label().unwrap(), "Delivery loudness off");
     }
+}
+
+/// A subject being tracked through a clip (#239).
+#[derive(Debug, Clone)]
+pub struct Tracking {
+    pub media: klipp_core::MediaId,
+    pub folder: std::path::PathBuf,
+    /// The frames the render could see when last looked, in order.
+    pub seen: Vec<i64>,
+    pub started: std::time::Instant,
+    /// The media's file name, for the status bar and the toast.
+    pub name: String,
 }

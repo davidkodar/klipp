@@ -292,7 +292,9 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::RenameSharedCollection { .. }
         | AppCommand::DeleteSharedCollection { .. }
         // Which clip the viewer frames for its glide (#611).
-        | AppCommand::SetFrameGlideMode(..) => false,
+        | AppCommand::SetFrameGlideMode(..)
+        // The pass runs beside the document (#239).
+        | AppCommand::CancelTrackSubject { .. } => false,
         // Write the picture, the project or the history, start a step of
         // their own, or aren't known to write nothing. The path edits are
         // among them; a path drag takes its own (`closes_path_drag`).
@@ -483,6 +485,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetNodeMasks { .. }
         | AppCommand::SetNodeColorMatch { .. }
         | AppCommand::SetExternalMattePath { .. }
+        | AppCommand::TrackSubject { .. }
         | AppCommand::SetExternalMatteChannel { .. }
         | AppCommand::SetMatteCombineOp { .. }
         | AppCommand::SetNodeLayerMixerInput { .. }

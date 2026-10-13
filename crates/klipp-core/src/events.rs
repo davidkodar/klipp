@@ -2140,6 +2140,15 @@ pub enum AppCommand {
     SetNodeColorMatch { clip_id: ClipId, node_id: uuid::Uuid, settings: crate::color_grade::ColorMatchSettings },
     /// Point an ExternalMatte node at a new image file.
     SetExternalMattePath { clip_id: ClipId, node_id: uuid::Uuid, path: Option<std::path::PathBuf> },
+    /// Track the subject through `clip_id` (#239): its grade gated by a
+    /// matte that follows the subject, made in the background over every
+    /// frame the render reads. `model` is "subject" (one detected person
+    /// or thing) or "foreground" (everything in front). The model is
+    /// downloaded only after the person agrees to it.
+    TrackSubject { clip_id: ClipId, model: String },
+    /// Stop tracking the subject through `clip_id`: the frames made so far
+    /// are kept (#239).
+    CancelTrackSubject { clip_id: ClipId },
     /// Tell the engine which nodes the V2 canvas currently has
     /// visible — the executor captures a downsampled thumbnail of
     /// each of them on the paused / post-seek re-grade so the canvas

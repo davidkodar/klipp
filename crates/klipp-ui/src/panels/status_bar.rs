@@ -139,6 +139,12 @@ pub fn show(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme) {
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
             }
 
+            // A subject being tracked (#239): a line each pass, how far
+            // and about how long is left.
+            for line in &state.status_tracking {
+                ui.label(egui::RichText::new(line).size(10.0).color(theme.text_secondary));
+            }
+
             // Render progress (if active)
             if let Some((label, progress)) = state.render_queue.active_job_progress() {
                 let pct = (progress * 100.0) as u32;

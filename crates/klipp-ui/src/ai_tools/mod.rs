@@ -97,6 +97,9 @@ pub struct AiToolsState {
     /// Set to `true` by the panel's "Cancel" button. Drained by the
     /// app dispatcher, which calls [`InferenceState::cancel`].
     pub pending_cancel: bool,
+    /// "Track Subject" pressed (#239): the app starts it on the selected
+    /// clip.
+    pub pending_track_subject: bool,
     /// User-prompt capture. The viewer mutates this on click / drag
     /// when the panel is open and `active_task.is_some()`. Snapshotted
     /// via [`PromptCapture::build`] when the dispatcher fires the
@@ -292,6 +295,7 @@ impl Default for AiToolsState {
             inference: InferenceState::default(),
             pending_run: false,
             pending_cancel: false,
+            pending_track_subject: false,
             prompts: PromptCapture::default(),
             mask_overlay_color: DEFAULT_MASK_OVERLAY_COLOR,
             mask_overlay_texture: None,
@@ -376,7 +380,7 @@ impl AiTask {
             AiTask::RemoveBackground => "Remove BG",
             AiTask::IsolateObject => "Isolate Object",
             AiTask::DetectObjects => "Detect Objects",
-            AiTask::TrackObject => "Track Object",
+            AiTask::TrackObject => "Track Subject",
         }
     }
 
@@ -388,7 +392,7 @@ impl AiTask {
             AiTask::RemoveBackground => "Mask the subject, drop the background",
             AiTask::IsolateObject => "Click or box-select a subject",
             AiTask::DetectObjects => "Find and label everything in frame",
-            AiTask::TrackObject => "Follow a subject across frames",
+            AiTask::TrackObject => "A matte that follows the subject through the clip",
         }
     }
 

@@ -57,6 +57,7 @@ impl KlippApp {
         // and polls the worker channel.
         klipp_engine::ui_stage::mark(klipp_engine::ui_stage::AI_TOOLS_TICK);
         self.tick_ai_tools(ctx);
+        self.tick_track_subject(ctx);
 
         // Bump the foreground-activity signal whenever the user
         // *interacts* — clicks, keys, scrolls, drags. Plain pointer
