@@ -212,29 +212,27 @@ enum TemplateSource {
 }
 
 impl TemplateEntry {
-    /// The command that makes a project from it in `location`, under the
-    /// template's name, or that name and a number when it is taken.
-    fn create(&self, location: &std::path::Path) -> AppCommand {
-        use crate::panels::new_project_dialog::{FPS_PRESETS, RESOLUTION_PRESETS, TEMPLATES};
-        let name = free_project_name(location, &self.name);
-        let (width, height, fps_num, fps_den, template) = match &self.source {
-            TemplateSource::BuiltIn(i) => {
-                let (_, res, fps) = TEMPLATES[*i];
-                (RESOLUTION_PRESETS[res].1, RESOLUTION_PRESETS[res].2, FPS_PRESETS[fps].1, FPS_PRESETS[fps].2, None)
-            }
-            TemplateSource::User(path) => (0, 0, 0, 0, Some(path.clone())),
-        };
-        AppCommand::CreateProject { sequence_name: name.clone(), name, location: location.to_path_buf(), fps_num, fps_den, width, height, template }
+    /// The built-in format it is, when it is one.
+    fn format(&self) -> Option<&'static crate::panels::new_project_dialog::Format> {
+        match self.source {
+            TemplateSource::BuiltIn(i) => crate::panels::new_project_dialog::FORMATS.get(i),
+            TemplateSource::User(_) => None,
+        }
     }
-}
 
-/// `base`, or `base 2`, `base 3` and on: the first with no project of
-/// that name in `dir`.
-fn free_project_name(dir: &std::path::Path, base: &str) -> String {
-    (1..1000)
-        .map(|n| if n == 1 { base.to_string() } else { format!("{base} {n}") })
-        .find(|name| !dir.join(format!("{name}.klipp")).exists())
-        .unwrap_or_else(|| base.to_string())
+    /// The command that opens an unsaved Untitled project from it, at
+    /// `rate` where the format offers that: nothing is written until the
+    /// project is edited or saved (#1864).
+    fn create(&self, rate: Option<crate::panels::new_project_dialog::Rate>) -> AppCommand {
+        match (&self.source, self.format()) {
+            (TemplateSource::User(path), _) => AppCommand::NewUntitledProject { fps_num: 0, fps_den: 0, width: 0, height: 0, template: Some(path.clone()), hdr: false },
+            (TemplateSource::BuiltIn(_), Some(f)) => {
+                let (fps_num, fps_den) = crate::panels::new_project_dialog::format_rate(f, rate).unwrap_or((0, 0));
+                AppCommand::NewUntitledProject { fps_num, fps_den, width: f.width, height: f.height, template: None, hdr: f.hdr }
+            }
+            (TemplateSource::BuiltIn(_), None) => AppCommand::NewProject,
+        }
+    }
 }
 
 /// What the footer says of the disk: room on the projects drive and the
@@ -333,6 +331,9 @@ pub struct LaunchScreen {
     storage_rx: Option<std::sync::mpsc::Receiver<Storage>>,
     /// What's New is open.
     show_whats_new: bool,
+    /// The frame rate last chosen in a format's rate menu, which every
+    /// format offering it starts at (#1864).
+    pub last_rate: Option<crate::panels::new_project_dialog::Rate>,
     #[cfg(test)]
     seen: Seen,
     /// Links opened outside Klipp, kept across frames for the tests.
@@ -362,13 +363,12 @@ impl LaunchScreen {
             .collect();
     }
 
-    /// The templates offered: the user's own first, then the built-in.
+    /// The templates offered: the user's own first, then the built-in
+    /// formats, the same list the New Project dialog has.
     fn template_entries(&self) -> Vec<TemplateEntry> {
-        use crate::panels::new_project_dialog::{FPS_PRESETS, RESOLUTION_PRESETS, TEMPLATES};
-        let built_in = TEMPLATES.iter().enumerate().skip(1).map(|(i, (name, res, fps))| {
-            let (_, w, h) = RESOLUTION_PRESETS[*res];
-            let rate = FPS_PRESETS[*fps].0.trim_end_matches(" fps");
-            TemplateEntry { name: name.to_string(), detail: format!("{w}\u{00D7}{h} \u{00B7} {rate}"), source: TemplateSource::BuiltIn(i) }
+        let built_in = crate::panels::new_project_dialog::FORMATS.iter().enumerate().map(|(i, f)| {
+            let detail = if f.width == 0 { "From the clip".to_string() } else { format!("{}\u{00D7}{}", f.width, f.height) };
+            TemplateEntry { name: f.name.to_string(), detail, source: TemplateSource::BuiltIn(i) }
         });
         self.user_templates.iter().cloned().chain(built_in).collect()
     }
@@ -940,13 +940,12 @@ impl LaunchScreen {
         }
 
         // ── Start from a template ──
-        // The built-in formats and the user's own templates (#618), each
-        // a ready project in one click, named after it in the projects
-        // folder. More… opens the full chooser.
+        // The user's own templates (#618) and the built-in formats, each
+        // an Untitled project in one click, written only once it is
+        // edited or saved (#1864). A format made at several rates has a
+        // menu of them, set at the last rate chosen. More… opens the full
+        // chooser.
         self.refresh_templates();
-        let location = projects_folder.map(std::path::Path::to_path_buf)
-            .or_else(|| dirs::home_dir().map(|h| h.join("Projects")))
-            .unwrap_or_else(|| PathBuf::from("."));
         let rows_fit = ((footer_top - y - 20.0 - TEMPLATE_ROW_H - 8.0) / TEMPLATE_ROW_H).floor().max(0.0) as usize;
         if footer_top - y > 20.0 + TEMPLATE_ROW_H {
             heading(ui, y, "START FROM A TEMPLATE");
@@ -963,9 +962,49 @@ impl LaunchScreen {
                 if resp.hovered() {
                     ui.painter().rect_filled(row, 4.0, theme.bg_hover);
                 }
+                // The rate, at the row's end: a menu where there is a
+                // choice.
+                let rates = entry.format().map_or(&[][..], |f| f.rates);
+                let rate = entry.format().and_then(|f| crate::panels::new_project_dialog::format_rate(f, self.last_rate));
+                let mut right = row.max.x - 8.0;
+                if let Some(r) = rate {
+                    let label = if rates.len() > 1 {
+                        format!("{} \u{25BE}", crate::panels::new_project_dialog::rate_label(r))
+                    } else {
+                        crate::panels::new_project_dialog::rate_label(r)
+                    };
+                    let g = ui.painter().layout_no_wrap(label, egui::FontId::proportional(10.0), theme.text_secondary);
+                    let rate_rect = egui::Rect::from_min_size(egui::pos2(right - g.size().x, row.center().y - g.size().y / 2.0), g.size());
+                    right = rate_rect.min.x - 8.0;
+                    if rates.len() > 1 {
+                        let rate_resp = ui.interact(rate_rect.expand(3.0), ui.id().with(("launch_rate", i)), egui::Sense::click())
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text("Frame rate");
+                        let colour = if rate_resp.hovered() { theme.text_primary } else { theme.text_secondary };
+                        ui.painter().galley_with_override_text_color(rate_rect.min, g, colour);
+                        let popup = ui.id().with(("launch_rate_menu", i));
+                        if rate_resp.clicked() {
+                            ui.memory_mut(|m| m.toggle_popup(popup));
+                        }
+                        egui::popup_below_widget(ui, popup, &rate_resp, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+                            crate::widgets::menu::menu_body(ui, |ui| {
+                                ui.set_min_width(90.0);
+                                for r in rates {
+                                    let label = format!("{} fps", crate::panels::new_project_dialog::rate_label(*r));
+                                    if crate::widgets::menu::menu_choice(ui, &label, "", Some(*r) == rate).clicked() {
+                                        self.last_rate = Some(*r);
+                                        cmds.push(AppCommand::SetFormatRate { rate: *r });
+                                    }
+                                }
+                            });
+                        });
+                    } else {
+                        ui.painter().galley(rate_rect.min, g, theme.text_dim);
+                    }
+                }
                 let detail_g = ui.painter().layout_no_wrap(entry.detail.clone(), egui::FontId::proportional(10.0), theme.text_dim);
-                let detail_w = detail_g.size().x;
-                ui.painter().galley(egui::pos2(row.max.x - 8.0 - detail_w, row.center().y - detail_g.size().y / 2.0), detail_g, theme.text_dim);
+                let detail_w = row.max.x - 8.0 - right + detail_g.size().x;
+                ui.painter().galley(egui::pos2(right - detail_g.size().x, row.center().y - detail_g.size().y / 2.0), detail_g, theme.text_dim);
                 let name_g = layout_truncated(
                     ui.painter(),
                     &entry.name,
@@ -975,7 +1014,7 @@ impl LaunchScreen {
                 );
                 ui.painter().galley(egui::pos2(row.min.x + 8.0, row.center().y - name_g.size().y / 2.0), name_g, theme.text_secondary);
                 if resp.clicked() {
-                    cmds.push(entry.create(&location));
+                    cmds.push(entry.create(self.last_rate));
                 }
             }
             let more_y = y + 18.0 + shown as f32 * TEMPLATE_ROW_H;
@@ -2949,15 +2988,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// A template entry makes a ready project in one click: a built-in
-    /// one its format, under a name not yet taken in the projects folder;
-    /// one of the user's from its file. More… opens the chooser.
+    /// #1864: a template entry opens an Untitled project in one click and
+    /// writes nothing: the command names no place, and the projects folder
+    /// is as it was. A built-in format is made at its rate, a format with
+    /// several has a menu of them, and the rate chosen is where the next
+    /// one starts. The user's own come first; More… opens the chooser.
     #[test]
-    fn a_template_entry_creates_a_project_from_it() {
+    fn a_template_entry_opens_an_untitled_project_and_writes_nothing() {
         use klipp_project::template::{ProjectSetup, ProjectTemplate, TemplateColour};
         let dir = temp_dir();
-        let folder = dir.join("Projects");
-        std::fs::create_dir_all(folder.join("Instagram Vertical.klipp")).unwrap();
+        let folder = dir.join("Videos");
+        std::fs::create_dir_all(&folder).unwrap();
         let templates = dir.join("templates");
         let colour = TemplateColour { working_colorspace: Default::default(), grade_encoding: Default::default(), global_lut_path: None, global_lut_opacity: 1.0, global_lut_enabled: false };
         ProjectTemplate::capture("Weekly Series", "", &ProjectSetup { sequences: &[klipp_timeline::Sequence::new_default()], pool: &klipp_media::MediaPool::new(), colour }).save(&templates).unwrap();
@@ -2965,21 +3006,40 @@ mod tests {
         let ctx = egui::Context::default();
         let mut screen = screen_with(&[]);
         screen.templates_dir = Some(templates.clone());
-        frame(&ctx, &mut screen, &recent, Some(&folder), Vec::new());
-        let (_, shapes) = frame(&ctx, &mut screen, &recent, Some(&folder), Vec::new());
-        assert!(at(&shapes, "Weekly Series").y < at(&shapes, "YouTube 1080p 24fps").y, "the user's own first");
-        at(&shapes, "1080\u{00D7}1920 \u{00B7} 30");
-        let cmds = click_with(&ctx, &mut screen, &recent, Some(&folder), at(&shapes, "Instagram Vertical"), egui::PointerButton::Primary);
-        match &cmds[..] {
-            [AppCommand::CreateProject { name, location, width: 1080, height: 1920, fps_num: 30, fps_den: 1, template: None, .. }] => {
-                assert_eq!(name, "Instagram Vertical 2", "the name taken, the next");
-                assert_eq!(location, &folder);
-            }
-            other => panic!("one CreateProject: {other:?}"),
+        let run = |screen: &mut LaunchScreen, events| frame(&ctx, screen, &recent, Some(&folder), events).1;
+        run(&mut screen, Vec::new());
+        let shapes = run(&mut screen, Vec::new());
+        assert!(at(&shapes, "Weekly Series").y < at(&shapes, "Match first clip").y, "the user's own first");
+        let press = |screen: &mut LaunchScreen, at: egui::Pos2| click_with(&ctx, screen, &recent, Some(&folder), at, egui::PointerButton::Primary);
+
+        let cmds = press(&mut screen, at(&shapes, "Vertical (social)"));
+        assert!(matches!(&cmds[..], [AppCommand::NewUntitledProject { width: 1080, height: 1920, fps_num: 30, fps_den: 1, template: None, hdr: false }]), "{cmds:?}");
+        let cmds = press(&mut screen, at(&shapes, "HDR UHD (HLG / PQ)"));
+        assert!(matches!(&cmds[..], [AppCommand::NewUntitledProject { width: 3840, height: 2160, fps_num: 25, fps_den: 1, hdr: true, .. }]), "{cmds:?}");
+        let cmds = press(&mut screen, at(&shapes, "Weekly Series"));
+        assert!(matches!(&cmds[..], [AppCommand::NewUntitledProject { template: Some(p), .. }] if p.parent() == Some(templates.as_path())), "{cmds:?}");
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0, "nothing is written");
+
+        // HD's rate menu: 23.976 chosen, HD is made at it, and UHD, which
+        // offers it, starts there too.
+        let hd_row = at(&shapes, "HD 1080p").y;
+        let rate = texts(&shapes).into_iter().find(|(t, r)| t == "25 \u{25BE}" && (r.center().y - hd_row).abs() < 6.0).expect("HD's rate menu").1.center();
+        assert!(press(&mut screen, rate).is_empty(), "the menu opens, nothing is made");
+        let shapes = run(&mut screen, Vec::new());
+        for r in ["25 fps", "29.97 fps", "23.976 fps"] {
+            at(&shapes, r);
         }
-        let cmds = click_with(&ctx, &mut screen, &recent, Some(&folder), at(&shapes, "Weekly Series"), egui::PointerButton::Primary);
-        assert!(matches!(&cmds[..], [AppCommand::CreateProject { name, template: Some(p), .. }] if name == "Weekly Series" && p.parent() == Some(templates.as_path())), "{cmds:?}");
-        let cmds = click_with(&ctx, &mut screen, &recent, Some(&folder), at(&shapes, "More\u{2026}"), egui::PointerButton::Primary);
+        let cmds = press(&mut screen, at(&shapes, "23.976 fps"));
+        assert!(matches!(&cmds[..], [AppCommand::SetFormatRate { rate: (24000, 1001) }]), "kept in the preferences: {cmds:?}");
+        let shapes = run(&mut screen, Vec::new());
+        let cmds = press(&mut screen, at(&shapes, "HD 1080p"));
+        assert!(matches!(&cmds[..], [AppCommand::NewUntitledProject { width: 1920, height: 1080, fps_num: 24000, fps_den: 1001, .. }]), "{cmds:?}");
+        let cmds = press(&mut screen, at(&shapes, "UHD 4K"));
+        assert!(matches!(&cmds[..], [AppCommand::NewUntitledProject { width: 3840, fps_num: 24000, fps_den: 1001, .. }]), "{cmds:?}");
+        let cmds = press(&mut screen, at(&shapes, "Vertical (social)"));
+        assert!(matches!(&cmds[..], [AppCommand::NewUntitledProject { fps_num: 30, .. }]), "a format without it keeps its own: {cmds:?}");
+
+        let cmds = press(&mut screen, at(&shapes, "More\u{2026}"));
         assert!(matches!(&cmds[..], [AppCommand::NewProject]), "{cmds:?}");
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -1300,6 +1300,21 @@ pub enum AppCommand {
         /// A project template to start from (#618): its sequences, tracks,
         /// bins and colour setup in place of the format above.
         template: Option<PathBuf>,
+        /// Graded in a wide-gamut working space for HLG or PQ delivery.
+        hdr: bool,
+    },
+    /// Remember the frame rate chosen for a welcome-screen format (#1864).
+    SetFormatRate { rate: (u32, u32) },
+    /// Open a new, unsaved Untitled project in this format, or from the
+    /// template file. Nothing is written until its first edit or a save
+    /// (#1864); 0×0 and 0/0 take picture and rate from the first clip.
+    NewUntitledProject {
+        fps_num: u32,
+        fps_den: u32,
+        width: u32,
+        height: u32,
+        template: Option<PathBuf>,
+        hdr: bool,
     },
     /// Keep the open project's structure as a project template called
     /// `name` (#618): its sequences' formats and tracks, its bins and

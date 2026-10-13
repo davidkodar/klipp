@@ -260,6 +260,18 @@ enum AudioConformResult {
 /// `klipp_control::respond_local` over the app's own control context.
 pub type LocalControl = std::sync::Arc<dyn Fn(serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
 
+/// A project being copied to another filesystem by Save As (#1864).
+struct ProjectCopy {
+    from: PathBuf,
+    to: PathBuf,
+    done: std::sync::mpsc::Receiver<std::io::Result<()>>,
+    /// Bytes copied so far, of `total`.
+    copied: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    total: u64,
+    /// When progress was last shown.
+    shown_at: std::time::Instant,
+}
+
 pub struct KlippApp {
     /// The playback engine's channel, taking only what it acts on: a UI
     /// command sent there did nothing, silently (#437).
@@ -361,6 +373,18 @@ pub struct KlippApp {
     proxy_progress_rx: Receiver<(MediaId, f32)>,
     // Auto-save
     last_autosave: std::time::Instant,
+    /// An Untitled project's template media, held in the cache until the
+    /// project is first written (#1864).
+    untitled_staging: Option<PathBuf>,
+    /// A project written under "Untitled" on its first edit: an explicit
+    /// save asks for its name and place, and moves it there.
+    unnamed_project: Option<PathBuf>,
+    /// The projects root, worked out for the preference it came from
+    /// (#1864): it looks at the chosen folder, so not every frame.
+    projects_root: Option<(Option<PathBuf>, PathBuf)>,
+    /// A Save As copying the project to another filesystem, on its own
+    /// thread.
+    project_copy: Option<ProjectCopy>,
     /// Result channel for the in-flight background auto-save.
     ///
     /// `Some` from the moment a writer thread is spawned until the UI

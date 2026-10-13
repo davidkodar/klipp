@@ -653,11 +653,12 @@ impl PreferencesPanel {
             }
         });
 
-        Self::setting_row(ui, "Default project folder", theme, |ui| {
+        // Where new projects go (#1864): ~/Videos until one is chosen.
+        Self::setting_row(ui, "Projects root", theme, |ui| {
             let picker = egui::Id::new("prefs-default-project-dir");
             if ui.button("Browse...").clicked() {
                 crate::file_dialog::pick_path(picker, || {
-                    rfd::FileDialog::new().set_title("Default Project Folder").pick_folder()
+                    rfd::FileDialog::new().set_title("Projects Root").pick_folder()
                 });
             }
             if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(picker) {
@@ -666,7 +667,7 @@ impl PreferencesPanel {
             }
             let dir_text = prefs.general.default_project_dir.as_ref()
                 .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|| "(not set)".into());
+                .unwrap_or_else(|| "~/Videos".into());
             ui.label(egui::RichText::new(&dir_text).size(11.0).color(theme.text_dim));
         });
 
@@ -4701,7 +4702,6 @@ mod layout_tests {
         "Default fade curve",
         "Default fade duration",
         "Default font",
-        "Default project folder",
         "Default size",
         "Default sort",
         "Default sync method",
@@ -4789,6 +4789,7 @@ mod layout_tests {
         "Pre-roll duration",
         "Preset",
         "Printer point",
+        "Projects root",
         "Proxy cache",
         "Proxy files",
         "Proxy resolution",

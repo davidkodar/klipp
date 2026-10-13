@@ -186,6 +186,10 @@ impl KlippApp {
             proxy_progress_tx,
             proxy_progress_rx,
             last_autosave: std::time::Instant::now(),
+            untitled_staging: None,
+            unnamed_project: None,
+            projects_root: None,
+            project_copy: None,
             autosave_rx: None,
             last_heartbeat: std::time::Instant::now(),
             frame_count: 0,
@@ -288,6 +292,9 @@ impl KlippApp {
             let _t = LogTimer::new("ui: cpal probe_audio_available (duplicate)");
             klipp_engine::audio_output::probe_audio_available()
         };
+
+        // Untitled projects' staged media a crash left behind, a day on.
+        crate::project_paths::cleanup_untitled_cache(&crate::project_paths::untitled_cache_dir(), &app.lock_holder, std::time::SystemTime::now(), std::time::Duration::from_secs(24 * 3600));
 
         // Load saved workspaces
         let ws_path = dirs::config_dir().unwrap_or_default().join("klipp/workspaces.json");

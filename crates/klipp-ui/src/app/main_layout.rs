@@ -49,8 +49,9 @@ impl KlippApp {
                         .filter(|rp| !is_autosave_path(&rp.path))
                         .cloned()
                         .collect();
-                    let folder = crate::project_paths::projects_folder(self.prefs.general.default_project_dir.as_ref());
+                    let folder = Some(self.projects_root());
                     self.launch_screen.templates_dir = Some(self.project_templates_dir());
+                    self.launch_screen.last_rate = self.prefs.general.last_format_rate;
                     let panel_cmds = self.launch_screen.show(ctx, ui, &recent, folder.as_deref(), &self.theme);
                     all_cmds.extend(panel_cmds);
                 });

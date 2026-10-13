@@ -30,18 +30,54 @@ pub const FPS_PRESETS: &[(&str, u32, u32)] = &[
     ("120 fps", 120, 1),
 ];
 
-/// Project templates that pre-fill resolution and frame rate.
-pub const TEMPLATES: &[(&str, usize, usize)] = &[
-    ("Custom", 0, 0),           // no preset
-    ("YouTube 1080p 24fps", 2, 2),   // 1080p, 24fps
-    ("YouTube 4K 30fps", 5, 5),      // 4K UHD, 30fps
-    ("Instagram Square", 8, 5),      // 1080x1080, 30fps
-    ("Instagram Vertical", 7, 5),    // 1080x1920, 30fps
-    ("Broadcast PAL", 2, 3),         // 1080p, 25fps
-    ("Broadcast NTSC", 2, 4),        // 1080p, 29.97fps
-    ("Cinema 24fps", 2, 2),          // 1080p, 24fps
-    ("Cinema 4K DCI", 6, 2),         // 4096x2160, 24fps
+/// A frame rate, as numerator and denominator.
+pub type Rate = (u32, u32);
+
+const R25: Rate = (25, 1);
+const R2997: Rate = (30000, 1001);
+const R23976: Rate = (24000, 1001);
+
+/// A built-in project format: what it is for, its picture, and the rates
+/// it is made at, the first the usual one. Shared by the New Project
+/// dialog and the welcome screen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Format {
+    pub name: &'static str,
+    /// 0×0 takes the picture from the first clip.
+    pub width: u32,
+    pub height: u32,
+    /// Empty takes the rate from the first clip.
+    pub rates: &'static [Rate],
+    /// Graded in a wide-gamut space for HLG or PQ delivery.
+    pub hdr: bool,
+}
+
+/// The built-in formats, one each, named for what they are for.
+pub const FORMATS: &[Format] = &[
+    Format { name: "Match first clip", width: 0, height: 0, rates: &[], hdr: false },
+    Format { name: "HD 1080p", width: 1920, height: 1080, rates: &[R25, R2997, R23976], hdr: false },
+    Format { name: "UHD 4K", width: 3840, height: 2160, rates: &[R25, R2997, R23976], hdr: false },
+    Format { name: "DCI 4K (cinema)", width: 4096, height: 2160, rates: &[(24, 1)], hdr: false },
+    Format { name: "Vertical (social)", width: 1080, height: 1920, rates: &[(30, 1)], hdr: false },
+    Format { name: "Square (social)", width: 1080, height: 1080, rates: &[(30, 1)], hdr: false },
+    Format { name: "HDR UHD (HLG / PQ)", width: 3840, height: 2160, rates: &[R25, R2997], hdr: true },
 ];
+
+/// A rate as people say it: "25", "29.97", "23.976".
+pub fn rate_label((num, den): Rate) -> String {
+    if den == 1 {
+        num.to_string()
+    } else {
+        let s = format!("{:.3}", num as f64 / den as f64);
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+/// The rate a format is made at: `wanted` when it offers that, else its
+/// usual one; none for one that takes the first clip's.
+pub fn format_rate(format: &Format, wanted: Option<Rate>) -> Option<Rate> {
+    wanted.filter(|r| format.rates.contains(r)).or_else(|| format.rates.first().copied())
+}
 
 pub struct NewProjectDialog {
     pub project_name: String,
@@ -69,7 +105,7 @@ impl NewProjectDialog {
     pub fn new(default_location: Option<&PathBuf>) -> Self {
         let location = default_location
             .cloned()
-            .or_else(|| dirs::home_dir().map(|h| h.join("Projects")))
+            .or_else(|| dirs::home_dir().map(|h| h.join("Videos")))
             .unwrap_or_else(|| PathBuf::from("."));
         Self {
             project_name: String::new(),
@@ -233,7 +269,7 @@ impl NewProjectDialog {
                     let old_idx = self.template_idx;
                     let selected = match self.chosen_template() {
                         Some((_, t)) => t.name.clone(),
-                        None => TEMPLATES[self.template_idx].0.to_string(),
+                        None => FORMATS[self.template_idx].name.to_string(),
                     };
                     egui::ComboBox::from_id_salt("project_template")
                         .selected_text(selected)
@@ -242,8 +278,8 @@ impl NewProjectDialog {
                         .height(480.0 * control_scale)
                         .show_ui(ui, |ui| {
                             scale_dialog_style(ui, control_scale);
-                            for (i, (label, _, _)) in TEMPLATES.iter().enumerate() {
-                                if ui.selectable_label(self.user_template.is_none() && self.template_idx == i, *label).clicked() {
+                            for (i, format) in FORMATS.iter().enumerate() {
+                                if ui.selectable_label(self.user_template.is_none() && self.template_idx == i, format.name).clicked() {
                                     self.template_idx = i;
                                     self.user_template = None;
                                 }
@@ -280,10 +316,8 @@ impl NewProjectDialog {
                         });
                     }
                     // Apply template when changed
-                    if self.user_template.is_none() && self.template_idx != old_idx && self.template_idx > 0 {
-                        let (_, res_idx, fps_idx) = TEMPLATES[self.template_idx];
-                        self.resolution_idx = res_idx;
-                        self.fps_idx = fps_idx;
+                    if self.user_template.is_none() && self.template_idx != old_idx {
+                        self.apply_format(self.template_idx);
                     }
                 });
                 ui.add_space(2.0);
@@ -478,6 +512,7 @@ impl NewProjectDialog {
                                 height,
                                 sequence_name: seq_name,
                                 template: self.chosen_template().map(|(p, _)| p.clone()),
+                                hdr: self.user_template.is_none() && FORMATS.get(self.template_idx).is_some_and(|f| f.hdr),
                             });
                             close = true;
                         }
@@ -506,6 +541,17 @@ impl NewProjectDialog {
             *open = false;
         }
         cmds.extend(result);
+    }
+
+    /// Set the format rows from built-in format `i`: its picture and
+    /// usual rate, or both from the first clip.
+    pub fn apply_format(&mut self, i: usize) {
+        let Some(format) = FORMATS.get(i) else { return };
+        self.template_idx = i;
+        self.resolution_idx = RESOLUTION_PRESETS.iter().position(|(_, w, h)| (*w, *h) == (format.width, format.height) && *w > 0).unwrap_or(0);
+        self.fps_idx = format_rate(format, None)
+            .and_then(|r| FPS_PRESETS.iter().position(|(_, n, d)| (*n, *d) == r))
+            .unwrap_or(0);
     }
 
     fn resolved_resolution(&self) -> (u32, u32) {
@@ -721,6 +767,53 @@ mod template_tests {
         dir
     }
 
+    /// #1864: the built-in formats are the purpose-named list, and no two
+    /// are the same format: the same picture, gamut and a rate in common.
+    #[test]
+    fn the_formats_are_named_for_their_purpose_and_never_repeat() {
+        let names: Vec<_> = FORMATS.iter().map(|f| f.name).collect();
+        assert_eq!(names, ["Match first clip", "HD 1080p", "UHD 4K", "DCI 4K (cinema)", "Vertical (social)", "Square (social)", "HDR UHD (HLG / PQ)"]);
+        for (i, a) in FORMATS.iter().enumerate() {
+            for b in &FORMATS[i + 1..] {
+                let same_picture = (a.width, a.height, a.hdr) == (b.width, b.height, b.hdr);
+                let shared_rate = a.rates.iter().any(|r| b.rates.contains(r)) || (a.rates.is_empty() && b.rates.is_empty());
+                assert!(!(same_picture && shared_rate), "{} and {} are the same format", a.name, b.name);
+            }
+        }
+        assert!(FORMATS[1].rates.contains(&(24000, 1001)), "23.976 is offered");
+        assert_eq!(rate_label((30000, 1001)), "29.97");
+        assert_eq!(rate_label((24000, 1001)), "23.976");
+        assert_eq!(rate_label((25, 1)), "25");
+    }
+
+    /// #1864: the dialog offers the same formats, and one chosen sets
+    /// the project made: its picture, its usual rate, and HDR.
+    #[test]
+    fn the_dialog_makes_the_chosen_format() {
+        let mut dialog = NewProjectDialog::new(None);
+        dialog.project_name = "Clip".into();
+        for (i, f) in FORMATS.iter().enumerate() {
+            dialog.apply_format(i);
+            assert_eq!(dialog.resolved_resolution(), (f.width, f.height), "{}", f.name);
+            assert_eq!(dialog.resolved_fps(), f.rates.first().copied().unwrap_or((0, 0)), "{}", f.name);
+        }
+        // And drawn: HDR UHD chosen from the list, Create makes it.
+        let ctx = egui::Context::default();
+        let mut dialog = NewProjectDialog::new(None);
+        dialog.project_name = "Clip".into();
+        let mut open = true;
+        let theme = KlippTheme::default();
+        let mut run = |ctx: &egui::Context, cmds: &mut Vec<AppCommand>| dialog.show(ctx, &mut open, &theme, cmds);
+        frame(&ctx, Vec::new(), &mut run);
+        let (_, texts) = frame(&ctx, Vec::new(), &mut run);
+        click(&ctx, at(&texts, "Match first clip"), &mut run);
+        let (_, texts) = frame(&ctx, Vec::new(), &mut run);
+        click(&ctx, at(&texts, "HDR UHD (HLG / PQ)"), &mut run);
+        let (_, texts) = frame(&ctx, Vec::new(), &mut run);
+        let cmds = click(&ctx, at(&texts, "Create Project"), &mut run);
+        assert!(matches!(&cmds[..], [AppCommand::CreateProject { width: 3840, height: 2160, fps_num: 25, fps_den: 1, hdr: true, template: None, .. }]), "{cmds:?}");
+    }
+
     /// #618: New Project lists the user's templates; chosen, one shows
     /// what it holds in place of the format rows, and Create starts the
     /// project from it. Delete Template deletes it.
@@ -739,7 +832,7 @@ mod template_tests {
         let (_, texts) = frame(&ctx, Vec::new(), &mut run);
         assert!(texts.iter().any(|(t, _)| t == "Resolution"), "the format rows show for a built-in choice");
         // The template combo, then the user's template in it.
-        click(&ctx, at(&texts, "Custom"), &mut run);
+        click(&ctx, at(&texts, "Match first clip"), &mut run);
         let (_, texts) = frame(&ctx, Vec::new(), &mut run);
         assert!(texts.iter().any(|(t, _)| t == "Your templates"));
         click(&ctx, at(&texts, "Weekly Series"), &mut run);
