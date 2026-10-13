@@ -94,10 +94,11 @@ pub fn add_ops(graph: &Graph, level: &NodePath, m: &Matte, id: NodeId, position:
 }
 
 /// A picture the Sources menu makes beside the chain (#1746): its menu
-/// tag, its name, and the effect that draws it.
+/// tag, its name, and the effect that draws it, saved as `kind`.
 pub struct Source {
     pub tag: &'static str,
     pub name: &'static str,
+    kind: &'static str,
     effect: fn() -> klipp_effects::BuiltinEffect,
 }
 
@@ -106,12 +107,21 @@ pub const SOURCES: &[Source] = &[
     Source {
         tag: "source.solid",
         name: "Solid Colour",
+        kind: "generator",
         effect: || klipp_effects::BuiltinEffect::Generator { shape: 0, color_a: [40, 90, 200, 255], color_b: [255, 255, 255, 255], angle: 0.0, center_x: 0.5, center_y: 0.5, radius: 0.5 },
     },
     Source {
         tag: "source.gradient",
         name: "Gradient",
+        kind: "generator",
         effect: || klipp_effects::BuiltinEffect::Generator { shape: 1, color_a: [20, 30, 90, 255], color_b: [250, 180, 90, 255], angle: 30.0, center_x: 0.5, center_y: 0.5, radius: 0.5 },
+    },
+    // Another media item's picture; the item is picked on its card.
+    Source {
+        tag: "source.media",
+        name: "Media",
+        kind: "media_source",
+        effect: || klipp_effects::BuiltinEffect::MediaSource { media: String::new(), offset: 0.0 },
     },
 ];
 
@@ -127,7 +137,7 @@ pub fn source(tag: &str) -> Option<&'static Source> {
 pub fn source_ops(graph: &Graph, level: &NodePath, s: &Source, id: NodeId, position: (f32, f32), merge: Option<NodeId>) -> Option<Vec<GraphOp>> {
     let at = |node: NodeId| NodePath::new(level.root, level.nodes.iter().copied().chain([node]));
     let source = graph.nodes.iter().find(|n| n.type_id.as_str() == lt::SOURCE)?.id;
-    let mut node = crate::inspector::stack_view::effect_node("generator", &(s.effect)())?;
+    let mut node = crate::inspector::stack_view::effect_node(s.kind, &(s.effect)())?;
     node.id = id;
     let mut ops = vec![
         GraphOp::AddNodeBeside { at: at(source), node: Box::new(node) },
@@ -206,6 +216,28 @@ mod tests {
         let fx = klipp_compose::resolve::resolve_effects_blended(&c, &c.picture_v2().unwrap().picture, t(1.0), 25.0, None, None, 1.0).unwrap();
         let fg = fx.iter().find_map(|(_, b)| b.as_ref().and_then(|b| b.fg.clone()));
         assert!(matches!(fg, Some(klipp_compose::resolve::MaskSource::Side { input: klipp_compose::resolve::SideInput::Source, .. })), "{fg:?}");
+    }
+
+    /// The Sources menu's Media adds a media source with no item yet,
+    /// wired into the merge picked, which the render reads once an item
+    /// is chosen on its card (#1746).
+    #[test]
+    fn a_media_source_added_with_a_merge_picked_waits_for_its_item() {
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut c = TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))).effect(klipp_effects::BuiltinEffect::Merge { blend_mode: klipp_effects::BlendMode::Normal, opacity: 1.0 }).build();
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let merge = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("merge")).unwrap().id;
+        let id = NodeId::new_v4();
+        let ops = source_ops(&graph, &NodePath::new(Root::Clip { clip: c.id.0 }, []), source("source.media").unwrap(), id, (0.0, 0.0), Some(merge)).unwrap();
+        c.apply_picture_ops(&ops).unwrap();
+        let graph = &c.picture_v2().unwrap().picture.graph;
+        let node = graph.nodes.iter().find(|n| n.id == id).unwrap();
+        assert_eq!(klipp_graph_lift::effect_params::tag(node), Some("media_source"));
+        assert!(graph.edges.iter().any(|e| e.from.0 == id && e.to == (merge, "fg".into())));
+        assert!(klipp_compose::resolve::media_sources(&c).is_empty(), "no item yet: nothing to read");
+        let item = klipp_core::MediaId::new().0.to_string();
+        c.apply_picture_ops(&[GraphOp::SetParam { path: NodePath::new(Root::Clip { clip: c.id.0 }, [id]), key: "media".into(), value: klipp_graph_format::ParamValue::Text(item.clone()) }]).unwrap();
+        assert_eq!(klipp_compose::resolve::media_sources(&c), vec![(item, 0.0)]);
     }
 
     /// Added with nothing to mask, a matte stands beside the chain, read by

@@ -365,6 +365,8 @@ pub struct GraphExecutor {
     run_frei0r_refused: u32,
     /// The run's declines so far (step 10), and the last run's.
     run_declines: Vec<crate::Decline>,
+    /// The pictures the render handed the run beside its source (#1746).
+    side_pictures: crate::side_picture::SidePictures,
     last_run_declines: Vec<crate::Decline>,
     /// The picture `start_chain` kept for a composite before its first
     /// dispatch, handed to the run (M3 step 17b).
@@ -808,6 +810,7 @@ impl GraphExecutor {
             run_frei0r_fallbacks: 0,
             run_frei0r_refused: 0,
             run_declines: Vec::new(),
+            side_pictures: Default::default(),
             last_run_declines: Vec::new(),
             ofx_runs: 0,
             ofx_refused: 0,
@@ -893,6 +896,7 @@ impl GraphExecutor {
             run_frei0r_fallbacks: 0,
             run_frei0r_refused: 0,
             run_declines: Vec::new(),
+            side_pictures: Default::default(),
             last_run_declines: Vec::new(),
             ofx_runs: 0,
             ofx_refused: 0,
@@ -968,6 +972,27 @@ impl GraphExecutor {
     /// tetrahedral.
     pub fn set_lut_tetrahedral(&mut self, tetrahedral: bool) {
         self.lut_tetrahedral = tetrahedral;
+    }
+
+    /// The pictures the render hands this frame's runs beside their source
+    /// (#1746), by key: a `SidePicture` node without one draws a clear
+    /// picture.
+    pub fn set_side_pictures(&mut self, pictures: crate::side_picture::SidePictures) {
+        self.side_pictures = pictures;
+    }
+
+    /// The pictures [`Self::set_side_pictures`] set.
+    pub fn side_pictures(&self) -> crate::side_picture::SidePictures {
+        std::sync::Arc::clone(&self.side_pictures)
+    }
+
+    /// The side picture `key` names in a kept picture on the GPU, for a
+    /// node that reads one: `None` without a GPU, the picture, or a pool
+    /// slot for it.
+    pub fn upload_side_picture(&mut self, key: &crate::side_picture::SideKey, width: u32, height: u32) -> Option<klipp_effects::gpu::KeptPicture> {
+        let picture = self.side_pictures.get(key)?.as_ref().ok()?.clone();
+        (picture.len() == (width as usize) * (height as usize) * 4).then_some(())?;
+        self.gpu.as_mut()?.upload_picture(&picture, width, height)
     }
 
     /// Grade a buffer `scale` times the sequence's size: the settings
@@ -3119,6 +3144,9 @@ impl GraphExecutor {
                     && !params.effects.iter().any(klipp_effects::registry::needs_source_neighbours)
             }
             NodeKind::SceneToDisplay => params.scene_to_display.is_some(),
+            // Its picture is the render's, on the CPU: a node reading it
+            // uploads it (`upload_side_picture`, or a composite's port).
+            NodeKind::SidePicture => false,
             // A plug-in takes 8-bit sRGB on the CPU: never on the chain.
             NodeKind::Ofx => false,
             // Records the source format; never touches the pixels.
@@ -4529,6 +4557,31 @@ impl GraphExecutor {
         (self.ofx_runs, self.ofx_refused)
     }
 
+    /// A side picture node's picture (#1746): the one its key names that
+    /// the render handed the run ([`Self::set_side_pictures`]). With none,
+    /// the picture is clear, declined: a file that's missing is named.
+    fn side_picture(&mut self, node_id: NodeId, params: &NodeParams, input: &[f32]) -> Vec<f32> {
+        use crate::side_picture::{SideKey, SideMissing};
+        let Some(key) = params.side_picture.clone().or_else(|| params.effects.iter().find_map(SideKey::of)) else {
+            self.decline(node_id, NodeKind::SidePicture, crate::DeclineOutcome::Fallback, "Side Picture".into(), "no picture named", String::new());
+            return vec![0.0; input.len()];
+        };
+        let name = key.name();
+        if matches!(&key, SideKey::Media { item, .. } if item.is_empty()) {
+            self.decline(node_id, NodeKind::SidePicture, crate::DeclineOutcome::Fallback, name, "no media chosen", String::new());
+            return vec![0.0; input.len()];
+        }
+        let got = self.side_pictures.get(&key).cloned().unwrap_or(Err(SideMissing::Unavailable));
+        let (outcome, reason, why) = match got {
+            Ok(p) if p.len() == input.len() => return p.to_vec(),
+            Ok(p) => (crate::DeclineOutcome::NeighbourMissing, "its picture came at another size", format!("{} values for {}", p.len(), input.len())),
+            Err(SideMissing::File(item)) => (crate::DeclineOutcome::FileMissing, "its media file is missing", item),
+            Err(SideMissing::Unavailable) => (crate::DeclineOutcome::NeighbourMissing, "its picture has no frame here", format!("{key:?}")),
+        };
+        self.decline(node_id, NodeKind::SidePicture, outcome, name, reason, why);
+        vec![0.0; input.len()]
+    }
+
     /// A source-boundary node (M4 steps 6 and 7), its effects in the
     /// catalog's order (`SOURCE_BOUNDARY_ORDER`): the frame blend, then
     /// temporal noise reduction, on the source before the grade, against
@@ -4754,6 +4807,8 @@ impl GraphExecutor {
                 }
             }
 
+            // A picture handed to the run (#1746), as the render read it.
+            NodeKind::SidePicture => self.side_picture(node_id, params, primary_input),
             // A source-boundary node (M4 step 6): it reads the clip's
             // source at other times, which only its context gives it.
             NodeKind::Effect | NodeKind::EffectSegment if params.effects.iter().any(klipp_effects::registry::needs_source_neighbours) => {

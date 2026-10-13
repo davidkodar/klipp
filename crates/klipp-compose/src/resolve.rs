@@ -447,18 +447,63 @@ fn mask_source(picture: &ClipPicture, from: &NodeId, port: &str, t: f64, ctx: &k
     }
 }
 
+/// The items and offsets `clip`'s media source nodes read (#1746), on
+/// its chain or beside it: each enabled one with an item chosen, once.
+pub fn media_sources(clip: &Clip) -> Vec<(String, f32)> {
+    let Ok(lifted) = clip.picture_v2() else { return Vec::new() };
+    let mut found: Vec<(String, f32)> = Vec::new();
+    for n in lifted.picture.graph.nodes.iter().filter(|n| n.enabled && klipp_graph_lift::effect_params::tag(n) == Some("media_source")) {
+        if let Ok(BuiltinEffect::MediaSource { media, offset }) = klipp_graph_lift::effect_params::effect_of(n) {
+            if !media.is_empty() && !found.iter().any(|(m, o)| *m == media && o.to_bits() == offset.to_bits()) {
+                found.push((media, offset));
+            }
+        }
+    }
+    found
+}
+
+/// `clip`'s media source nodes (#1746) that feed a node after its display
+/// step, enabled and with an item chosen, each with its item: its frame is
+/// mixed into a display-referred picture there (#1857).
+pub fn media_mixed_after_display(clip: &Clip) -> Vec<(NodeId, String)> {
+    let Ok(lifted) = clip.picture_v2() else { return Vec::new() };
+    let picture = &lifted.picture;
+    let Ok(chain) = chain(picture) else { return Vec::new() };
+    let Some(display) = chain.iter().position(|n| n.type_id.as_str() == lt::SCENE_TO_DISPLAY) else { return Vec::new() };
+    let after = |id: NodeId| chain.iter().position(|n| n.id == id).is_some_and(|i| i > display);
+    picture
+        .graph
+        .nodes
+        .iter()
+        .filter(|n| n.enabled && klipp_graph_lift::effect_params::tag(n) == Some("media_source"))
+        .filter(|n| picture.graph.edges.iter().any(|e| e.from.0 == n.id && after(e.to.0)))
+        .filter_map(|n| match klipp_graph_lift::effect_params::effect_of(n) {
+            Ok(BuiltinEffect::MediaSource { media, .. }) if !media.is_empty() => Some((n.id, media)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A media source's item id as the pool keys it.
+pub fn media_id(media: &str) -> Option<klipp_core::MediaId> {
+    media.parse().ok().map(klipp_core::MediaId)
+}
+
 /// A node beside the chain as the run's node: through the lift's own way
 /// back for a grade's nodes, as the one node of a grade; an effect (a
-/// generator, #1746) as an effect node, animated for the frame.
+/// generator, #1746) as an effect node, animated for the frame, and a
+/// media source as the side picture node that draws its frame.
 fn side_node(n: &Node, t: f64, ctx: &klipp_core::EvalContext) -> Result<klipp_nodes::Node, String> {
     if klipp_graph_lift::effect_params::tag(n).is_none() {
         return klipp_timeline::grade_node_for_run(n);
     }
     let mut effect = klipp_graph_lift::effect_params::effect_of(n)?;
     EffectNodeAnim::of(n)?.animate(&mut effect, t, ctx);
+    // A media source's frame is handed to the run (#1746).
+    let kind = if klipp_effects::reads_media(&effect) { klipp_nodes::NodeKind::SidePicture } else { klipp_nodes::NodeKind::Effect };
     Ok(klipp_nodes::Node {
         id: n.id,
-        kind: klipp_nodes::NodeKind::Effect,
+        kind,
         label: n.label.clone(),
         enabled: n.enabled,
         params: klipp_nodes::NodeParams { effects: vec![effect], ..Default::default() },

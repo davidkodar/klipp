@@ -188,6 +188,11 @@ pub enum NodeKind {
     /// spliced by the renderer after the grade and before the effects.
     /// Made by the renderer for a run, never by the user or saved.
     SceneToDisplay,
+    /// A picture handed to the run beside its source (#1746): a media
+    /// source's frame, by `NodeParams::side_picture` or the effect it
+    /// holds ([`crate::side_picture`]). It reads nothing. Made by the
+    /// renderer for a run, never by the user or saved.
+    SidePicture,
 
     // ── Future ──────────────────────────────────────────────────
     #[serde(other)]
@@ -485,6 +490,7 @@ impl NodeKind {
             NodeKind::Frei0r => "frei0r Plug-in",
             NodeKind::Ofx => "OFX Plug-in",
             NodeKind::SceneToDisplay => "Scene to Display",
+            NodeKind::SidePicture => "Side Picture",
             NodeKind::Unknown => "Unknown",
         }
     }

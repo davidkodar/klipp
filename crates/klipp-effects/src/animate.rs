@@ -32,7 +32,7 @@ impl BuiltinEffect {
     /// parameters, a speed ramp (it acts on time; its keyframes would be
     /// a speed curve, which is the clip's speed keyframes), the settings
     /// that shape a whole-clip analysis, and the effects whose parameters
-    /// are whole pixel radii.
+    /// are whole pixel radii, and a media source's offset.
     pub fn animate(&mut self, f: &mut ParamFn) {
         use BuiltinEffect as E;
         match self {
@@ -289,6 +289,8 @@ impl BuiltinEffect {
             | E::MedianFilter { .. }
             | E::SpeedRamp { .. }
             | E::ColourSpaceTransform { .. }
+            // Its offset is a time; keyed, it would be a speed curve.
+            | E::MediaSource { .. }
             | E::Frei0r { .. } => {}
         }
     }

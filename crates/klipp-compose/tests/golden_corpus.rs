@@ -473,6 +473,10 @@ const EFFECTS_IN_A_LATER_BATCH: &[&str] = &[
     // CPU/GPU parity (#1746).
     "Merge",
     "Generator",
+    // Another media item's frame, read by the frame source, which the
+    // corpus's has none of: drawn against its item in
+    // `media_source_render.rs`.
+    "MediaSource",
 ];
 
 /// One moving, grainy clip carrying `fx` (#1024).

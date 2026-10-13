@@ -98,7 +98,8 @@ pub(super) fn number(desc: &ParamDesc, value: f32) -> Value {
 /// `ty`'s sample, set to act where the sample alone can't (#1746): a 3D
 /// LUT reads a file, a two-point one whose corners aren't a straight map
 /// (so its interpolations differ too); a colour-space transform converts;
-/// a picture transform is shrunk and turned.
+/// a picture transform is shrunk and turned; a media source reads the
+/// harness's item.
 pub(super) fn acting_sample(ty: &EffectType) -> BuiltinEffect {
     match ty.tag {
         "lut_3d" => {
@@ -126,6 +127,8 @@ pub(super) fn acting_sample(ty: &EffectType) -> BuiltinEffect {
         "generator" => BuiltinEffect::Generator { shape: 1, color_a: [240, 200, 80, 255], color_b: [30, 60, 160, 160], angle: 20.0, center_x: 0.45, center_y: 0.55, radius: 0.4 },
         // Over its gradient at half, so the mode and the opacity both show.
         "merge" => BuiltinEffect::Merge { blend_mode: klipp_effects::BlendMode::Screen, opacity: 0.5 },
+        // The item the harness's sources hold, a little on.
+        "media_source" => BuiltinEffect::MediaSource { media: super::parity_pixels::MEDIA_ITEM.into(), offset: 0.25 },
         _ => (ty.sample)(),
     }
 }

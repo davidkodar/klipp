@@ -1135,6 +1135,77 @@ fn a_merged_gradient_exports_as_the_viewer_shows_it() {
     assert!(d > 20, "only {d} levels at the corner: the merge is not in the export");
 }
 
+/// The main timeline with a Merge on V1's clips (#1746) laying another
+/// media item over each picture, twelve frames on: a Media Source beside
+/// the chain, wired into the merge's `fg`, as the Picture view's Sources
+/// menu makes it. The item is no clip's, and moves: a bar along its top
+/// says which of its frames each route drew, the same, the one the time
+/// names, and it is in the picture.
+#[test]
+fn a_merged_media_item_exports_as_the_viewer_shows_it() {
+    let _decoders = decoders_at_speed();
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    use klipp_graph_format::path::{NodePath, Root};
+    let mut t = timeline();
+    let item = MediaId::new();
+    // A smooth ramp across, so the export's 4:2:0 chroma has no edge to
+    // blur at a sample point, and red that moves frame to frame.
+    // Its frame number as a place: a bright bar across a band at the top,
+    // 8 pixels on a frame, which no colour transform moves. Below the
+    // band a smooth ramp, red that moves.
+    let bar = "if(lt(Y,24),if(between(X,N*8,N*8+7),235,30)";
+    let item_file = rgb_source("item.mkv", &format!("{bar},mod(N*9,200)+20)"), &format!("{bar},X/3+20)"), &format!("{bar},90)"));
+    t.files.insert(item, item_file);
+    for c in t.seq.tracks.iter_mut().find(|t| t.name == "V1").unwrap().clips.iter_mut() {
+        add_after_display(c, &[BuiltinEffect::Merge { blend_mode: klipp_effects::BlendMode::Normal, opacity: 1.0 }]);
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let at = |id| NodePath::new(Root::Clip { clip: c.id.0 }, [id]);
+        let source = graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::SOURCE).unwrap().id;
+        let merge = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("merge")).unwrap().id;
+        // A whole number of frames, so no time falls between two.
+        let media = BuiltinEffect::MediaSource { media: item.0.to_string(), offset: 12.0 / FPS as f32 };
+        let payload = serde_json::to_value(&media).unwrap();
+        let node: klipp_graph_format::Node = serde_json::from_value(serde_json::json!({
+            "id": klipp_graph_format::NodeId::new_v4(),
+            "type_id": klipp_graph_lift::names::effect_node_type("media_source"),
+            "legacy": { "payload": payload },
+        }))
+        .unwrap();
+        let id = node.id;
+        c.apply_picture_ops(&[
+            klipp_graph_lift::ops::GraphOp::AddNodeBeside { at: at(source), node: Box::new(node) },
+            klipp_graph_lift::ops::GraphOp::Connect { from: at(source), from_port: "out".into(), to: at(id), to_port: "in".into() },
+            klipp_graph_lift::ops::GraphOp::Connect { from: at(id), from_port: "out".into(), to: at(merge), to_port: "fg".into() },
+        ])
+        .unwrap();
+    }
+    let mut shown = t.clone();
+    shown.seq = klipp_timeline::flatten::flatten_sequence(&t.seq, std::slice::from_ref(&t.seq));
+    let out = exported(&shown);
+    let viewer = Viewer::start(&shown);
+    let mut worst = 0;
+    let mut frames = Vec::new();
+    // The item's frame its bar names: where along the band it is brightest.
+    let item_frame = |rgb: &[u8]| (2..W - 2).max_by_key(|x| px(rgb, *x, 12).iter().sum::<i32>()).map_or(-1, |x| i64::from(x / 8));
+    // V1's clips start at 0 and at 100, from their sources' 0 and 25.
+    for (n, clip_frame) in [(10, 10), (60, 60), (110, 10)] {
+        let (v, e) = (viewer.frame_at(n), exported_frame(&out, n));
+        worst = worst.max(compare(&format!("merged media item frame {n:3}"), &v, &e));
+        frames.push((n, clip_frame + 12, item_frame(&v), item_frame(&e)));
+    }
+    eprintln!("merged media item, viewer vs export: worst {worst} levels; (frame, item frame wanted, viewer's, export's): {frames:?}");
+    assert!(frames.iter().all(|(_, want, v, e)| v == want && e == want), "the item's frame drawn, (frame, wanted, viewer's, export's): {frames:?}");
+    assert!(worst <= 3, "the export differs from the viewer by {worst} levels; (frame, item frame wanted, viewer's, export's): {frames:?}");
+    let (_, plain) = main_fixture();
+    let (g, p) = (exported_frame(&out, 10), exported_frame(plain, 10));
+    let (a, b) = (px(&g, 4, 40), px(&p, 4, 40));
+    let d = (0..3).map(|c| (a[c] - b[c]).abs()).max().unwrap_or(0);
+    assert!(d > 20, "only {d} levels below the band: the item is not in the export");
+}
+
 /// `fx` added to `c`'s picture as the Picture view adds them: each after
 /// the last, from the display step.
 fn add_after_display(c: &mut Clip, fx: &[BuiltinEffect]) {

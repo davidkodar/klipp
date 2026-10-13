@@ -108,12 +108,13 @@ pub(super) fn effect_type(tag: &str) -> &'static EffectType {
 }
 
 /// Every specialist entry this family covers, required on the effects
-/// stack: the analysis effects' workflows, the frei0r plug-in editor and
-/// the 3D LUT effect's file.
+/// stack: the analysis effects' workflows, the frei0r plug-in editor, the
+/// 3D LUT effect's file and a media source's item.
 pub(super) fn require(manifest: &mut Manifest) {
     require_analyses(manifest);
     require_frei0r(manifest);
     require_lut_file(manifest);
+    require_media_item(manifest);
 }
 
 fn require_analyses(manifest: &mut Manifest) {
@@ -561,6 +562,7 @@ pub(super) fn run(report: &mut Report) {
     }
     report.family("frei0r", run_frei0r);
     report.family("3D LUT file", run_lut_file);
+    report.family("media source item", run_media_item);
 }
 
 /// The 3D LUT effect's file editor (#1746): the catalog entry its custom
@@ -694,6 +696,121 @@ fn run_lut_file(report: &mut Report) {
     report.case("3D LUT file cleared", [key(Interaction::FileClear), key(Interaction::UndoRedo)].concat(), || {
         lut_file_edit(&lut_clip(gone), "", |r| if r.click_last("Clear") { Ok(()) } else { Err("no Clear".into()) })
     });
+}
+
+/// A media source's item editor (#1746): the catalog entry its custom
+/// widget draws.
+fn media_item_entries() -> Vec<super::parity_manifest::CatalogEntry> {
+    catalog().into_iter().filter(|e| matches!(e.value, CatalogValue::Parameter { presentation, .. } if presentation.widget == klipp_effects::registry::presentation::Widget::Custom("effect_media"))).collect()
+}
+
+fn require_media_item(manifest: &mut Manifest) {
+    for entry in media_item_entries() {
+        manifest.require_fixture(&entry, Surface::EffectsStack, VARIANT);
+    }
+}
+
+/// A clip with a media source reading `media`.
+fn media_clip(media: &str) -> klipp_timeline::Clip {
+    fixture(&BuiltinEffect::MediaSource { media: media.into(), offset: 0.0 })
+}
+
+/// The media source's stored item.
+fn media_of(run: &Run) -> Option<String> {
+    test_clip::effects(run.clip()).iter().find_map(|e| match e {
+        BuiltinEffect::MediaSource { media, .. } => Some(media.clone()),
+        _ => None,
+    })
+}
+
+/// A video item `id` in the pool, named `name`, its file at `path`.
+fn pool_item(run: &mut Run, id: klipp_core::MediaId, name: &str, path: &str) {
+    let mut item = klipp_media::MediaItem::new_synthetic_title(id, name.into(), klipp_core::Timecode::from_secs_f64(4.0, 24), klipp_core::Fps::new(24, 1));
+    item.kind = klipp_media::MediaItemKind::File;
+    item.path = path.into();
+    item.video_codec = "h264".into();
+    run.state.media_pool.add(item);
+}
+
+/// A media source's item editor's cases: opened, an item gone from the
+/// pool and a file gone from the machine said, an item picked in one step,
+/// undone and redone exactly.
+fn run_media_item(report: &mut Report) {
+    let entries = media_item_entries();
+    if entries.is_empty() {
+        report.case("media source item", [], || Err("no catalog entry draws the media item editor".into()));
+        return;
+    }
+    let key = |interaction| entries.iter().map(|e| CoverageKey::new(e.type_id, &e.parameter, Surface::EffectsStack, VARIANT, interaction)).collect::<Vec<_>>();
+    let gone = "/nonexistent/klipp-parity/plate.mov";
+    let item = klipp_core::MediaId::new();
+    let with_item = |r: &mut Run| pool_item(r, item, "plate.mov", gone);
+
+    report.case("media source item opened", key(Interaction::OpenWithoutWrite), || {
+        let mut new = one(&media_clip(""), with_item);
+        let before = new.clip().picture_v2()?;
+        let drawn = new.frame(Vec::new(), egui::Modifiers::NONE);
+        if !drawn.iter().any(|(t, _)| t == "None chosen") {
+            return Err("an item not chosen isn't said".into());
+        }
+        holds(&new, 0, &[])?;
+        if new.clip().picture_v2()? != before {
+            return Err("opening it wrote the picture".into());
+        }
+        Ok(())
+    });
+    // An item the pool hasn't, and one whose file isn't here: named, said,
+    // nothing written.
+    report.case("media source item missing", key(Interaction::MissingAsset), || {
+        let mut new = one(&media_clip(&klipp_core::MediaId::new().0.to_string()), with_item);
+        let drawn = new.frame(Vec::new(), egui::Modifiers::NONE);
+        if !drawn.iter().any(|(t, _)| t == "\u{26a0} Media not in the project") {
+            return Err("an item gone from the pool isn't said".into());
+        }
+        holds(&new, 0, &[])?;
+        let mut new = one(&media_clip(&item.0.to_string()), with_item);
+        let drawn = new.frame(Vec::new(), egui::Modifiers::NONE);
+        if !drawn.iter().any(|(t, _)| t == "plate.mov") || !drawn.iter().any(|(t, _)| t == "\u{26a0} Media file not found") {
+            return Err("an item whose file is gone isn't named and said".into());
+        }
+        holds(&new, 0, &[])
+    });
+    report.case("media source item picked", [key(Interaction::FileSelect), key(Interaction::UndoRedo)].concat(), || {
+        let mut new = one(&media_clip(""), with_item);
+        let want = item.0.to_string();
+        let before = new.clip().picture_v2()?;
+        for text in ["None chosen", "plate.mov"] {
+            if !new.click_last(text) {
+                return Err(format!("{text:?} isn't drawn"));
+            }
+        }
+        if media_of(&new).as_deref() != Some(want.as_str()) {
+            return Err(format!("stored {:?}, want {want:?}", media_of(&new)));
+        }
+        holds(&new, 1, &[])?;
+        let after = new.clip().picture_v2()?;
+        if !new.step(false) || new.clip().picture_v2()? != before {
+            return Err("undo doesn't give back the picture before".into());
+        }
+        if !new.step(true) || new.clip().picture_v2()? != after {
+            return Err("redo doesn't give back the picture after".into());
+        }
+        Ok(())
+    });
+}
+
+/// The media source's item editor's required keys, but Pixels: its frame
+/// is another media item's, which the harness's source hasn't; it is drawn
+/// against its item in klipp-compose's `media_source_render`.
+#[test]
+fn a_media_sources_item_edits_as_expected() {
+    let mut report = Report::default();
+    report.family("media source item", run_media_item);
+    report.family_result().unwrap();
+    let mut manifest = Manifest::default();
+    require_media_item(&mut manifest);
+    let missing: Vec<_> = manifest.required.iter().filter(|k| !matches!(k.interaction, Interaction::Pixels) && !report.passed.contains(k)).collect();
+    assert!(!manifest.required.is_empty() && missing.is_empty(), "required and not earned: {missing:#?}");
 }
 
 /// The 3D LUT file editor's required keys, but Pixels (the picture

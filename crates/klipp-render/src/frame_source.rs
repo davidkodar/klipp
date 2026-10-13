@@ -162,6 +162,8 @@ pub struct ExportFrameSource<'a> {
     /// sequential export opens one a clip; a frame blend reads its next
     /// frame from the stream, opening none (M4 step 7).
     opened: std::cell::Cell<usize>,
+    /// Media sources' readers (#1746), kept across frames.
+    media_readers: klipp_media::frame_reader::MediaReaders,
 }
 
 impl<'a> ExportFrameSource<'a> {
@@ -172,6 +174,7 @@ impl<'a> ExportFrameSource<'a> {
             working,
             streams: HashMap::new(),
             reversed: HashMap::new(),
+            media_readers: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS),
             used: HashSet::new(),
             gpu: crate::clip_decoder::GpuConverters::shared(),
             t_decode: std::time::Duration::ZERO,
@@ -373,6 +376,26 @@ impl FrameSource for ExportFrameSource<'_> {
     fn temporal_frames_linear_at_size(&mut self, clip: &Clip, working: WorkingColorspace, width: u32, height: u32) -> Option<klipp_compose::LinearFrameProviderFn> {
         self.temporal_frames_linear(clip, working)
             .map(|reader| klipp_compose::render::fit_linear_reader(reader, width, height))
+    }
+
+    /// The file's name, when the snapshot says its frames are scene-referred.
+    fn media_scene_referred(&mut self, media: &str) -> Option<String> {
+        let file = klipp_compose::resolve::media_id(media).and_then(|id| self.media.get(&id))?;
+        file.scene_referred.then(|| file.path.file_name().map_or_else(|| file.path.display().to_string(), |n| n.to_string_lossy().into_owned()))
+    }
+
+    /// From the snapshot's media and readers kept across the export.
+    fn media_frame(&mut self, media: &str, secs: f64, working: WorkingColorspace, width: u32, height: u32) -> Result<Vec<f32>, klipp_nodes::side_picture::SideMissing> {
+        use klipp_nodes::side_picture::SideMissing;
+        let file = klipp_compose::resolve::media_id(media).and_then(|id| self.media.get(&id)).ok_or_else(|| SideMissing::File(media.to_owned()))?;
+        if !file.path.exists() {
+            return Err(SideMissing::File(file.path.display().to_string()));
+        }
+        if !self.media_readers.is_open(&file.path) {
+            self.opened.set(self.opened.get() + 1);
+        }
+        let (pixels, w, h) = self.media_readers.read(&file.path, file.log_format, working, secs).ok_or(SideMissing::Unavailable)?;
+        klipp_compose::render::fit_linear(pixels, w, h, width, height).ok_or(SideMissing::Unavailable)
     }
 
     /// The same frames in linear light, for the renderer's own use.

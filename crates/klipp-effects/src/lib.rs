@@ -953,6 +953,22 @@ pub enum BuiltinEffect {
         center_y: f32,
         radius: f32,
     },
+
+    /// Another media item's picture, at the clip's time plus `offset`
+    /// seconds (#1746): beside a picture's chain, the foreground a Merge
+    /// lays over it. `media` is the pool item's id. The executor reads the
+    /// frame through its frame context ([`reads_media`]); these kernels
+    /// pass the picture they are given.
+    MediaSource {
+        media: String,
+        offset: f32,
+    },
+}
+
+/// Whether `effect` draws another media item's picture: the executor reads
+/// it from its frame context, never from this crate's kernels.
+pub fn reads_media(effect: &BuiltinEffect) -> bool {
+    matches!(effect, BuiltinEffect::MediaSource { .. })
 }
 
 impl BuiltinEffect {
@@ -1157,6 +1173,13 @@ fn apply_chain(
 /// GPU display stack doesn't draw.
 pub fn has_frei0r(effects: &[BuiltinEffect]) -> bool {
     effects.iter().any(|e| matches!(e, BuiltinEffect::Frei0r { .. }))
+}
+
+/// Whether the list holds an effect that only a node draws: a frei0r
+/// plug-in, or a media source (#1746), whose frame the render reads for
+/// the executor. These kernels would pass the picture instead.
+pub fn runs_only_as_a_node(effects: &[BuiltinEffect]) -> bool {
+    has_frei0r(effects) || effects.iter().any(reads_media)
 }
 
 impl BuiltinEffect {

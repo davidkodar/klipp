@@ -16,6 +16,10 @@ pub mod render;
 pub mod resolve;
 pub mod selfcheck;
 
+/// The most media sources' readers (#1746) a frame source keeps open, the
+/// one read longest ago closed first.
+pub const MEDIA_READERS: usize = 4;
+
 pub use render::{
     LinearFrameProviderFn,
     active_layers, frame_snapshot, ActiveLayer, DisplayDelivery, FrameSource, GlobalLut, GpuPixels, Inspect, InspectAt, Inspection, RenderOptions,

@@ -1007,8 +1007,9 @@ pub(crate) fn apply(
             None => p,
         },
         // A merge is drawn by the plan's layer mixer, with its foreground;
-        // the generator by the chain (`apply_chain`).
-        Merge { .. } | Generator { .. } => p,
+        // the generator by the chain (`apply_chain`), a media source's
+        // picture by the executor (`reads_media`).
+        Merge { .. } | Generator { .. } | MediaSource { .. } => p,
     }
 }
 

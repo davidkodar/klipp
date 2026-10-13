@@ -340,11 +340,13 @@ pub(crate) struct ClipStreams {
     reversed: HashMap<ClipId, Reversed>,
     /// At most this many decoders at once.
     cap: usize,
+    /// Media sources' readers (#1746), kept across frames.
+    pub(crate) media: klipp_media::frame_reader::MediaReaders,
 }
 
 impl ClipStreams {
     pub fn new(cap: usize) -> Self {
-        Self { streams: HashMap::new(), reversed: HashMap::new(), cap }
+        Self { streams: HashMap::new(), reversed: HashMap::new(), cap, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS) }
     }
 
     /// Follow `wants`: open streams for new clips, close those no longer

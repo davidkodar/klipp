@@ -108,8 +108,11 @@ impl<T: Clone> SeekableFrameReader<T> {
         // `||` rather than a chain of `if .. { true } else if ..`: there
         // is then no per-arm boolean to get wrong, and the reason for
         // each case still sits beside it.
+        // Backwards is any frame before the one the decoder sits on: it
+        // was read and passed (not kept, above), so reading on gives a
+        // later frame, never it.
         let need_seek = self.current_pts < 0.0                                  // first access
-            || seek_secs < self.current_pts - self.frame_duration               // backwards
+            || seek_secs < self.current_pts - self.frame_duration * 0.5         // backwards
             || seek_secs > self.current_pts + self.frame_duration * 30.0;       // far forward
 
         if need_seek {
@@ -350,6 +353,56 @@ impl SeekableFrameReader<Vec<f32>> {
         working: klipp_core::WorkingColorspace,
     ) -> Option<Self> {
         Self::open_with(path, move |format_ctx, stream_index| linear_convert(format_ctx, stream_index, log_format, working))
+    }
+}
+
+/// Linear readers of other media items' files, held across frames (a
+/// media source, #1746): a render walking forward reads each one on
+/// without a seek. At most `cap` are open, the one read longest ago
+/// closed first, so a project with many sources holds few decoders.
+pub struct MediaReaders {
+    cap: usize,
+    /// Least recently read first.
+    open: Vec<(std::path::PathBuf, Option<klipp_core::LogFormat>, klipp_core::WorkingColorspace, SeekableFrameReader<Vec<f32>>)>,
+}
+
+impl MediaReaders {
+    pub fn new(cap: usize) -> Self {
+        Self { cap: cap.max(1), open: Vec::new() }
+    }
+
+    /// `path`'s frame at `secs`, linear in `working`, as
+    /// [`SeekableFrameReader::open_linear`] decodes it. `None` when the
+    /// file won't open or has no frame there.
+    pub fn read(&mut self, path: &Path, log_format: Option<klipp_core::LogFormat>, working: klipp_core::WorkingColorspace, secs: f64) -> Option<(Vec<f32>, u32, u32)> {
+        match self.open.iter().position(|(p, l, w, _)| p == path && *l == log_format && *w == working) {
+            Some(i) => {
+                let held = self.open.remove(i);
+                self.open.push(held);
+            }
+            None => {
+                let reader = SeekableFrameReader::open_linear(path, log_format, working)?;
+                if self.open.len() >= self.cap {
+                    self.open.remove(0);
+                }
+                self.open.push((path.to_owned(), log_format, working, reader));
+            }
+        }
+        self.open.last_mut()?.3.decode_at(secs.max(0.0))
+    }
+
+    /// Whether a reader of `path` is open.
+    pub fn is_open(&self, path: &Path) -> bool {
+        self.open.iter().any(|(p, ..)| p == path)
+    }
+
+    /// How many readers are open.
+    pub fn len(&self) -> usize {
+        self.open.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.open.is_empty()
     }
 }
 
@@ -1008,6 +1061,13 @@ mod forward_tests {
             assert_eq!(grey(&mut r, 60), None, "{name}: none past the end");
             assert_eq!(grey(&mut r, 0), Some(greys[0]), "{name}: the first frame again, after the end");
             assert_eq!(grey(&mut r, 47), Some(greys[47]), "{name}: and the last again");
+            // Out of order, as a viewer warming the next frame first asks:
+            // a frame or two back from where the decoder sits, past ones
+            // read forward and not kept, is that frame, never a later one.
+            let mut r = SeekableFrameReader::open_rgba(&path).expect("opens");
+            for k in [5, 10, 9, 8, 12, 11, 20, 18, 19, 30, 29, 31, 28] {
+                assert_eq!(grey(&mut r, k), Some(greys[k as usize]), "{name}: frame {k} out of order");
+            }
             std::fs::remove_file(&path).ok();
         }
     }

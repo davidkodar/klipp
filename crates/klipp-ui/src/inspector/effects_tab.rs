@@ -379,6 +379,8 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::Generator { color_a, color_b, .. } => BuiltinEffect::Generator {
             shape: 0, color_a: *color_a, color_b: *color_b, angle: 0.0, center_x: 0.5, center_y: 0.5, radius: 0.5,
         },
+        // The item stays: a reset is its time.
+        BuiltinEffect::MediaSource { media, .. } => BuiltinEffect::MediaSource { media: media.clone(), offset: 0.0 },
         BuiltinEffect::ColourSpaceTransform { .. } => BuiltinEffect::ColourSpaceTransform {
             input_gamut: 0, input_curve: 0, output_gamut: 0, output_curve: 0, prepared: None,
         },
