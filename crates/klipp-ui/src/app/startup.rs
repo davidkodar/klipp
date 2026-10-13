@@ -240,6 +240,7 @@ impl KlippApp {
             node_graph_v2_panel: crate::panels::node_graph_v2::NodeGraphV2Panel::default(),
             node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel::default(),
             looks_panel_state: crate::panels::looks::LooksPanelState::default(),
+            grade_library_panel_state: Default::default(),
             node_param_edit_snapshot: None,
             graph_before_input: None,
             timeline_grade_fresh: None,

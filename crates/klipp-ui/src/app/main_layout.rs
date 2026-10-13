@@ -1266,6 +1266,17 @@ impl KlippApp {
                             &theme,
                         );
                         all_cmds.extend(looks_cmds);
+
+                        // The grade library, across projects (#899).
+                        let library_cmds = crate::panels::grade_library::show(
+                            ui,
+                            &mut self.grade_library_panel_state,
+                            &mut self.state.grade_library,
+                            Some(clip_id),
+                            &grade_targets,
+                            &theme,
+                        );
+                        all_cmds.extend(library_cmds);
                     });
 
                     // Swap between tabbed grade inspector and per-node

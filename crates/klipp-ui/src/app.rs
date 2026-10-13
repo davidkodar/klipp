@@ -516,6 +516,7 @@ pub struct KlippApp {
     node_graph_v2_panel: crate::panels::node_graph_v2::NodeGraphV2Panel,
     node_inspector_panel: crate::panels::node_inspector::NodeInspectorPanel,
     looks_panel_state: crate::panels::looks::LooksPanelState,
+    grade_library_panel_state: crate::panels::grade_library::GradeLibraryPanelState,
     /// Pre-edit snapshot for the current color-grading parameter gesture.
     /// Set by `BeginNodeParamEdit`, consumed by `EndNodeParamEdit`. `None`
     /// when no gesture is in progress.

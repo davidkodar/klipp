@@ -3566,6 +3566,14 @@ pub enum AppCommand {
 
     // Grade stills (reference frame comparison)
     /// Capture the current viewer frame as a grade reference still.
+    /// Keep `clip_id`'s whole grade in the grade library as `name`, with
+    /// its graded thumbnail, for every project (#899).
+    SaveGradeToLibrary { clip_id: ClipId, name: String },
+    /// Put the library's grade `name` on `clip_ids`: in place of each one's
+    /// grade, or after it with `append`, as one undo step.
+    ApplyGradeFromLibrary { name: String, clip_ids: Vec<ClipId>, append: bool },
+    /// Take `name` out of the grade library.
+    DeleteGradeFromLibrary { name: String },
     CaptureGradeStill { name: String },
     /// Delete a saved grade still by index.
     DeleteGradeStill { index: usize },
