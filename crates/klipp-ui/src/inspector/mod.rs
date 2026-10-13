@@ -2465,14 +2465,14 @@ fn show_title_quick_style_subsection(
     ui.add_space(4.0);
     ui.label(
         egui::RichText::new("Quick Style")
-            .size(10.0)
+            .size(rows::TEXT)
             .color(theme.text_secondary)
             .strong(),
     );
     ui.add_space(2.0);
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Quick").size(10.0).color(theme.text_dim));
+        ui.label(egui::RichText::new("Quick").size(rows::TEXT).color(theme.text_secondary));
         let preset_colors: &[(&str, [u8; 4])] = &[
             ("W", [255, 255, 255, 255]),
             ("R", [255, 60, 60, 255]),
@@ -2521,7 +2521,7 @@ fn show_title_quick_style_subsection(
     if has_selection && sel_range.1 > sel_range.0 {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Effects:").size(10.0).color(theme.text_dim));
+            ui.label(egui::RichText::new("Effects").size(rows::TEXT).color(theme.text_secondary));
             if ui.small_button("Rainbow").clicked() {
                 let rainbow: &[[u8; 4]] = &[
                     [255, 50, 50, 255], [255, 150, 0, 255], [255, 230, 0, 255],
@@ -2779,7 +2779,7 @@ fn show_title_effects_group(
                 let kfs_r: &[klipp_core::Keyframe] = g.radius_keyframes.as_slice();
                 let kfs_i: &[klipp_core::Keyframe] = g.intensity_keyframes.as_slice();
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
+                    ui.label(egui::RichText::new(format!("#{}", i)).size(rows::TEXT).color(theme.text_secondary));
                     let mut col = egui::Color32::from_rgba_premultiplied(g.color[0], g.color[1], g.color[2], g.color[3]);
                     if ui.color_edit_button_srgba(&mut col).changed() {
                         cmds.push(AppCommand::SetTitleGlowLayer {
@@ -2792,8 +2792,8 @@ fn show_title_effects_group(
                         });
                     }
                     let mut radius = display_radius;
-                    let r_radius = crate::widgets::scrubby_param::scrubby_param_row(
-                        ui, "r", &mut radius, 1.0..=80.0, 10.0, 0.5, 1, " px",
+                    let r_radius = rows::param_row(
+                        ui, theme, "r", &mut radius, 1.0..=80.0, 10.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_r, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_glow_layer_axis_response(
@@ -2802,8 +2802,8 @@ fn show_title_effects_group(
                         keyframe_tolerance,
                     );
                     let mut intensity = display_intensity;
-                    let r_intensity = crate::widgets::scrubby_param::scrubby_param_row(
-                        ui, "i", &mut intensity, 0.0..=2.0, 1.0, 0.02, 2, "",
+                    let r_intensity = rows::param_row(
+                        ui, theme, "i", &mut intensity, 0.0..=2.0, 1.0, 0.02, 2, "",
                         target_oid.map(|_| title_object_keyframe_state(kfs_i, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_glow_layer_axis_response(
@@ -2928,7 +2928,7 @@ fn show_title_effects_group(
                 let kfs_width: &[klipp_core::Keyframe] = ol.width_keyframes.as_slice();
                 let ks_width = title_object_keyframe_state(kfs_width, clip_time_secs, keyframe_tolerance);
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
+                    ui.label(egui::RichText::new(format!("#{}", i)).size(rows::TEXT).color(theme.text_secondary));
                     let mut col = egui::Color32::from_rgba_premultiplied(ol.color[0], ol.color[1], ol.color[2], ol.color[3]);
                     if ui.color_edit_button_srgba(&mut col).changed() {
                         cmds.push(AppCommand::SetTitleOutlineLayer {
@@ -2940,8 +2940,8 @@ fn show_title_effects_group(
                         });
                     }
                     let mut w_val = display_width;
-                    let resp_width = crate::widgets::scrubby_param::scrubby_param_row(
-                        ui, "", &mut w_val, 0.5..=20.0, 4.0, 0.5, 1, " px",
+                    let resp_width = rows::param_row(
+                        ui, theme, "", &mut w_val, 0.5..=20.0, 4.0, 0.5, 1, " px",
                         target_oid.map(|_| ks_width),
                     );
                     handle_outline_axis_response(
@@ -3111,7 +3111,7 @@ fn show_title_effects_group(
                 let kfs_oy: &[klipp_core::Keyframe] = sh.offset_y_keyframes.as_slice();
                 let kfs_bl: &[klipp_core::Keyframe] = sh.blur_keyframes.as_slice();
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
+                    ui.label(egui::RichText::new(format!("#{}", i)).size(rows::TEXT).color(theme.text_secondary));
                     let mut col = egui::Color32::from_rgba_premultiplied(sh.color[0], sh.color[1], sh.color[2], sh.color[3]);
                     if ui.color_edit_button_srgba(&mut col).changed() {
                         cmds.push(AppCommand::SetTitleShadowLayer {
@@ -3125,8 +3125,8 @@ fn show_title_effects_group(
                         });
                     }
                     let mut ox = display_ox;
-                    let r_ox = crate::widgets::scrubby_param::scrubby_param_row(
-                        ui, "x", &mut ox, -20.0..=20.0, 4.0, 0.5, 1, " px",
+                    let r_ox = rows::param_row(
+                        ui, theme, "x", &mut ox, -20.0..=20.0, 4.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_ox, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_shadow_layer_axis_response(
@@ -3135,8 +3135,8 @@ fn show_title_effects_group(
                         keyframe_tolerance,
                     );
                     let mut oy = display_oy;
-                    let r_oy = crate::widgets::scrubby_param::scrubby_param_row(
-                        ui, "y", &mut oy, -20.0..=20.0, 4.0, 0.5, 1, " px",
+                    let r_oy = rows::param_row(
+                        ui, theme, "y", &mut oy, -20.0..=20.0, 4.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_oy, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_shadow_layer_axis_response(
@@ -3145,8 +3145,8 @@ fn show_title_effects_group(
                         keyframe_tolerance,
                     );
                     let mut bl = display_bl;
-                    let r_bl = crate::widgets::scrubby_param::scrubby_param_row(
-                        ui, "blur", &mut bl, 0.0..=60.0, 4.0, 0.5, 1, " px",
+                    let r_bl = rows::param_row(
+                        ui, theme, "blur", &mut bl, 0.0..=60.0, 4.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_bl, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_shadow_layer_axis_response(
@@ -3321,7 +3321,7 @@ fn show_title_effects_group(
                 let kfs_oy: &[klipp_core::Keyframe] = sh.offset_y_keyframes.as_slice();
                 let kfs_bl: &[klipp_core::Keyframe] = sh.blur_keyframes.as_slice();
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
+                    ui.label(egui::RichText::new(format!("#{}", i)).size(rows::TEXT).color(theme.text_secondary));
                     let mut col = egui::Color32::from_rgba_premultiplied(sh.color[0], sh.color[1], sh.color[2], sh.color[3]);
                     if ui.color_edit_button_srgba(&mut col).changed() {
                         cmds.push(AppCommand::SetTitleInnerShadowLayer {
@@ -3335,8 +3335,8 @@ fn show_title_effects_group(
                         });
                     }
                     let mut ox = display_ox;
-                    let r_ox = crate::widgets::scrubby_param::scrubby_param_row(
-                        ui, "x", &mut ox, -20.0..=20.0, 2.0, 0.5, 1, " px",
+                    let r_ox = rows::param_row(
+                        ui, theme, "x", &mut ox, -20.0..=20.0, 2.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_ox, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_inner_shadow_layer_axis_response(
@@ -3345,8 +3345,8 @@ fn show_title_effects_group(
                         keyframe_tolerance,
                     );
                     let mut oy = display_oy;
-                    let r_oy = crate::widgets::scrubby_param::scrubby_param_row(
-                        ui, "y", &mut oy, -20.0..=20.0, 2.0, 0.5, 1, " px",
+                    let r_oy = rows::param_row(
+                        ui, theme, "y", &mut oy, -20.0..=20.0, 2.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_oy, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_inner_shadow_layer_axis_response(
@@ -3355,8 +3355,8 @@ fn show_title_effects_group(
                         keyframe_tolerance,
                     );
                     let mut bl = display_bl;
-                    let r_bl = crate::widgets::scrubby_param::scrubby_param_row(
-                        ui, "blur", &mut bl, 0.0..=60.0, 3.0, 0.5, 1, " px",
+                    let r_bl = rows::param_row(
+                        ui, theme, "blur", &mut bl, 0.0..=60.0, 3.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_bl, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_inner_shadow_layer_axis_response(
@@ -3885,7 +3885,7 @@ fn show_title_shape_editor(
     }
     if fill_enabled {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Colour").size(11.0).color(theme.text_secondary));
+            ui.label(egui::RichText::new("Colour").size(rows::TEXT).color(theme.text_secondary));
             let mut c = egui::Color32::from_rgba_premultiplied(
                 cur_fill[0], cur_fill[1], cur_fill[2], cur_fill[3],
             );
@@ -3919,7 +3919,7 @@ fn show_title_shape_editor(
     }
     if stroke_enabled {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Colour").size(11.0).color(theme.text_secondary));
+            ui.label(egui::RichText::new("Colour").size(rows::TEXT).color(theme.text_secondary));
             let mut c = egui::Color32::from_rgba_premultiplied(
                 cur_stroke_color[0], cur_stroke_color[1], cur_stroke_color[2], cur_stroke_color[3],
             );
@@ -4184,8 +4184,8 @@ fn effect_color_row(
             egui::pos2(label_rect.min.x, label_rect.center().y),
             egui::Align2::LEFT_CENTER,
             label,
-            egui::FontId::proportional(11.0),
-            theme.text_dim,
+            egui::FontId::proportional(rows::TEXT),
+            theme.text_secondary,
         );
 
         // Swatch — opens egui's colour picker on click; live-applies.
@@ -4324,8 +4324,8 @@ fn effect_param_row(
             egui::pos2(label_rect.min.x, label_rect.center().y),
             egui::Align2::LEFT_CENTER,
             label,
-            egui::FontId::proportional(11.0),
-            theme.text_dim,
+            egui::FontId::proportional(rows::TEXT),
+            theme.text_secondary,
         );
 
         // Reserve room for value pill + optional diamond on the
@@ -4562,8 +4562,8 @@ fn show_title_motion_blur_group(
             let ks_shutter = title_object_keyframe_state(kfs_shutter, clip_time_secs, keyframe_tolerance);
 
             let mut shutter = display_shutter;
-            let resp_shutter = crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Shutter Angle", &mut shutter, 1.0..=360.0, 180.0, 1.0, 0, "\u{00b0}",
+            let resp_shutter = rows::param_row(
+                ui, theme, "Shutter Angle", &mut shutter, 1.0..=360.0, 180.0, 1.0, 0, "\u{00b0}",
                 target_oid.map(|_| ks_shutter),
             );
             handle_motion_blur_axis_response(
@@ -4947,7 +4947,7 @@ fn show_title_editor(
         let status = crate::widgets::inspector_group::GroupStatus { count: None, active: false };
     ui.label(
         egui::RichText::new("More text effects, typography and layer controls")
-            .size(10.0)
+            .size(rows::TEXT)
             .color(theme.text_secondary),
     );
     if !title_group_is_open(ui, theme, clip_id, "Advanced title tools", status) {
@@ -4981,11 +4981,11 @@ fn show_title_editor(
         let keys = |key: &str| tb_target.and_then(|tb| tb.effect_keyframes_for(key)).unwrap_or(no_keys);
         let ks = |key: &str| target_oid.map(|_| title_object_keyframe_state(keys(key), clip_time_secs, keyframe_tolerance));
         let mut tracking = keyed.as_ref().map_or(td.tracking(), |tb| tb.tracking);
-        let resp = crate::widgets::scrubby_param::scrubby_param_row(ui, "Tracking", &mut tracking, -10.0..=200.0, 0.0, 0.2, 1, " px", ks(k::TEXT_TRACKING));
+        let resp = rows::param_row(ui, theme, "Tracking", &mut tracking, -10.0..=200.0, 0.0, 0.2, 1, " px", ks(k::TEXT_TRACKING));
         handle_text_key_edit(cmds, clip_id, target_oid, k::TEXT_TRACKING, tracking, keys(k::TEXT_TRACKING), clip_time_secs, keyframe_tolerance, (&resp).into(),
             |tracking| AppCommand::SetTitleTracking { clip_id, tracking });
         let mut line_sp = keyed.as_ref().map_or(td.line_spacing(), |tb| tb.line_spacing);
-        let resp = crate::widgets::scrubby_param::scrubby_param_row(ui, "Line spacing", &mut line_sp, 0.5..=4.0, 1.0, 0.05, 2, "x", ks(k::TEXT_LINE_SPACING));
+        let resp = rows::param_row(ui, theme, "Line spacing", &mut line_sp, 0.5..=4.0, 1.0, 0.05, 2, "x", ks(k::TEXT_LINE_SPACING));
         handle_text_key_edit(cmds, clip_id, target_oid, k::TEXT_LINE_SPACING, line_sp, keys(k::TEXT_LINE_SPACING), clip_time_secs, keyframe_tolerance, (&resp).into(),
             |line_spacing| AppCommand::SetTitleLineSpacing { clip_id, line_spacing });
         // The box's paragraphs (#1721), keyable as the type is.
@@ -4999,14 +4999,14 @@ fn show_title_editor(
             ("First line", k::TEXT_INDENT_FIRST, para.indent_first, -1000.0..=1000.0),
         ] {
             let mut v = value;
-            let resp = crate::widgets::scrubby_param::scrubby_param_row(ui, label, &mut v, range, 0.0, 0.5, 0, " px", ks(key));
+            let resp = rows::param_row(ui, theme, label, &mut v, range, 0.0, 0.5, 0, " px", ks(key));
             handle_text_key_edit(cmds, clip_id, target_oid, key, v, keys(key), clip_time_secs, keyframe_tolerance, (&resp).into(),
                 |value| AppCommand::SetTitleParagraph { clip_id, key: key.into(), value });
         }
         // Fewer one-word last lines (#1721): the fewest words a wrapped
         // paragraph ends on.
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Last line").size(11.0).color(theme.text_secondary));
+            ui.label(egui::RichText::new("Last line").size(rows::TEXT).color(theme.text_secondary));
             let cur = para.min_last_words.min(4);
             for (v, label, tip) in [(0u8, "Any", "Lines break where they fall"), (2, "2+ words", "A paragraph never ends on one word alone"), (3, "3+ words", "A paragraph ends on three words or more")] {
                 if pill_toggle_button(ui, theme, label, cur == v || (v == 0 && cur == 1), |r| r.size(11.0)).on_hover_text(tip).clicked() && cur != v {
@@ -5033,7 +5033,7 @@ fn show_title_editor(
             };
             let styles = ["None", "Bullets", "1. 2. 3.", "a. b. c.", "A. B. C.", "i. ii. iii.", "I. II. III."];
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("List").size(11.0).color(theme.text_secondary));
+                ui.label(egui::RichText::new("List").size(rows::TEXT).color(theme.text_secondary));
                 egui::ComboBox::from_id_salt(("title_list", clip_id)).selected_text(styles[style as usize % styles.len()]).width(110.0).show_ui(ui, |ui| {
                     for (v, name) in styles.iter().enumerate() {
                         if ui.selectable_label(style as usize == v, *name).clicked() && style as usize != v {
@@ -5070,7 +5070,7 @@ fn show_title_editor(
         let names = ["Left", "Center", "Right", "Decimal"];
         let mut edited: Option<Vec<(f32, u8)>> = None;
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Tab stops").size(11.0).color(theme.text_secondary));
+            ui.label(egui::RichText::new("Tab stops").size(rows::TEXT).color(theme.text_secondary));
             if ui.small_button("+ Stop").on_hover_text("A tab stop past the last, or at 200 px").clicked() {
                 let mut t = tabs.clone();
                 t.push((t.last().map_or(200.0, |l| l.0 + 200.0), 0));
@@ -5113,43 +5113,50 @@ fn show_title_editor(
         }
     }
     let mut write_on = td.write_on();
-    if ui.add(egui::Slider::new(&mut write_on, 0.0..=1.0).text("Write-On").step_by(0.01)).changed() {
-        cmds.push(AppCommand::SetTitleWriteOn { clip_id, write_on });
-    }
+    rows::rail_row(ui, theme, "Write-on", |ui| {
+        if ui.add(egui::Slider::new(&mut write_on, 0.0..=1.0).step_by(0.01)).changed() {
+            cmds.push(AppCommand::SetTitleWriteOn { clip_id, write_on });
+        }
+    });
     let mut baseline = td.baseline_shift();
-    if ui.add(
-        egui::DragValue::new(&mut baseline)
-            .range(-200.0..=200.0)
-            .speed(0.5)
-            .suffix(" px")
-            .prefix("Baseline shift: ")
-            .fixed_decimals(0),
-    ).changed() {
-        cmds.push(AppCommand::SetTitleBaselineShift { clip_id, shift_px: baseline });
-    }
-    ui.horizontal(|ui| {
-        // Columns: 1..=8 with reset.
+    rows::rail_row(ui, theme, "Baseline shift", |ui| {
+        if ui.add(
+            egui::DragValue::new(&mut baseline)
+                .range(-200.0..=200.0)
+                .speed(0.5)
+                .suffix(" px")
+                .fixed_decimals(0),
+        ).changed() {
+            cmds.push(AppCommand::SetTitleBaselineShift { clip_id, shift_px: baseline });
+        }
+    });
+    rows::rail_row(ui, theme, "Columns", |ui| {
         let mut cols = td.primary_text().map_or(1u8, |tb| tb.columns) as i32;
         if ui.add(
             egui::DragValue::new(&mut cols)
                 .range(1..=8)
-                .speed(0.05)
-                .prefix("Columns: "),
+                .speed(0.05),
         ).changed() {
             cmds.push(AppCommand::SetTitleColumns { clip_id, columns: cols.clamp(1, 8) as u8 });
         }
-        let mut vertical = td.primary_text().is_some_and(|tb| tb.vertical_layout);
-        if ui.checkbox(&mut vertical, "Vertical").changed() {
-            cmds.push(AppCommand::SetTitleVerticalLayout { clip_id, vertical });
+    });
+    let vertical = td.primary_text().is_some_and(|tb| tb.vertical_layout);
+    rows::rail_row(ui, theme, "Vertical", |ui| {
+        if rows::switch(ui, theme, vertical).clicked() {
+            cmds.push(AppCommand::SetTitleVerticalLayout { clip_id, vertical: !vertical });
         }
-        // Vertical text's columns run from the right, as Japanese and
-        // Chinese are set, unless asked otherwise (#1507).
-        if vertical {
-            let mut from_left = td.primary_text().is_some_and(|tb| tb.vertical_columns_ltr);
-            if ui.checkbox(&mut from_left, "Columns from the left").changed() {
-                cmds.push(AppCommand::SetTitleVerticalColumnsLtr { clip_id, left_to_right: from_left });
+    });
+    // Vertical text's columns run from the right, as Japanese and
+    // Chinese are set, unless asked otherwise (#1507).
+    if vertical {
+        let from_left = td.primary_text().is_some_and(|tb| tb.vertical_columns_ltr);
+        rows::rail_row(ui, theme, "Columns from the left", |ui| {
+            if rows::switch(ui, theme, from_left).clicked() {
+                cmds.push(AppCommand::SetTitleVerticalColumnsLtr { clip_id, left_to_right: !from_left });
             }
-        }
+        });
+    }
+    rows::rail_row(ui, theme, "Direction", |ui| {
         let dir_idx = match td.primary_text().map_or(klipp_timeline::TextDirection::Ltr, |tb| tb.text_direction) {
             klipp_timeline::TextDirection::Ltr => 0u8,
             klipp_timeline::TextDirection::Rtl => 1u8,
@@ -5165,19 +5172,17 @@ fn show_title_editor(
             cmds.push(AppCommand::SetTitleDirection { clip_id, direction: sel });
         }
     });
-    ui.add_space(4.0);
     {
         // Drop cap scale: 0 = off, >=1 enlarges first character.
         // Surface as a normal numeric drag clamped to a useful
         // range; the handler folds anything below 1.0 back to 0.0
         // so an off→on→off toggle is a single drag.
         let mut dc = td.drop_cap_scale();
-        let resp = ui.add(
+        let resp = rows::rail_row_inner(ui, theme, "Drop cap", |ui| ui.add(
             egui::DragValue::new(&mut dc)
                 .range(0.0..=8.0)
                 .speed(0.05)
                 .fixed_decimals(2)
-                .prefix("Drop cap: ")
                 .custom_formatter(|n, _| {
                     if n < 1.0 { "off".to_string() } else { format!("{n:.2}\u{00d7}") }
                 })
@@ -5186,19 +5191,21 @@ fn show_title_editor(
                     if t == "off" || t.is_empty() { Some(0.0) }
                     else { t.trim_end_matches('×').trim_end_matches("x").trim().parse::<f64>().ok() }
                 }),
-        );
+        ));
         if resp.changed() {
             cmds.push(AppCommand::SetTitleDropCap { clip_id, scale: dc });
         }
     }
-    ui.horizontal(|ui| {
-        let mut underline = td.underline();
-        if ui.checkbox(&mut underline, "Underline").changed() {
-            cmds.push(AppCommand::SetTitleUnderline { clip_id, underline });
+    let underline = td.underline();
+    rows::rail_row(ui, theme, "Underline", |ui| {
+        if rows::switch(ui, theme, underline).clicked() {
+            cmds.push(AppCommand::SetTitleUnderline { clip_id, underline: !underline });
         }
-        let mut strikethrough = td.strikethrough();
-        if ui.checkbox(&mut strikethrough, "Strikethrough").changed() {
-            cmds.push(AppCommand::SetTitleStrikethrough { clip_id, strikethrough });
+    });
+    let strikethrough = td.strikethrough();
+    rows::rail_row(ui, theme, "Strikethrough", |ui| {
+        if rows::switch(ui, theme, strikethrough).clicked() {
+            cmds.push(AppCommand::SetTitleStrikethrough { clip_id, strikethrough: !strikethrough });
         }
     });
     {
@@ -5216,8 +5223,7 @@ fn show_title_editor(
             klipp_timeline::TextCase::SmallCaps => "Small Caps",
         };
         let mut sel = case_idx;
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Case:").size(11.0).color(theme.text_secondary));
+        rows::rail_row(ui, theme, "Case", |ui| {
             egui::ComboBox::from_id_salt("title_case_transform")
                 .selected_text(case_label)
                 .show_ui(ui, |ui| {
@@ -5264,8 +5270,9 @@ fn show_title_editor(
             let keyframes = obj.opacity_keyframes.as_slice();
             let mut op = obj.evaluated_opacity(clip_time_secs);
             let keyframe_state = title_object_keyframe_state(keyframes, clip_time_secs, keyframe_tolerance);
-            let response = crate::widgets::scrubby_param::scrubby_param_row(
+            let response = rows::param_row(
                 ui,
+                theme,
                 "Layer opacity",
                 &mut op,
                 0.0..=1.0,
@@ -5291,8 +5298,7 @@ fn show_title_editor(
             // How the layer mixes with the layers below it, and the
             // layer that masks it (#1513).
             let mut blend = obj.blend;
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Blend:").size(11.0).color(theme.text_secondary));
+            rows::rail_row(ui, theme, "Blend", |ui| {
                 egui::ComboBox::from_id_salt(("title_layer_blend", object_id))
                     .selected_text(blend.display_name())
                     .show_ui(ui, |ui| {
@@ -5309,7 +5315,7 @@ fn show_title_editor(
             let mut source = current.map(|(id, _)| id);
             let mut kind = current.map_or(klipp_core::layer_mask::LayerMaskKind::Alpha, |(_, k)| k);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Mask with:").size(11.0).color(theme.text_secondary));
+                ui.label(egui::RichText::new("Mask with").size(rows::TEXT).color(theme.text_secondary));
                 let selected = source.and_then(|id| td.object(klipp_timeline::TitleObjectId(id))).map_or_else(|| "None".to_string(), label);
                 egui::ComboBox::from_id_salt(("title_layer_mask", object_id))
                     .selected_text(selected)
@@ -5433,12 +5439,12 @@ fn show_title_editor(
         let mut depth = display_depth;
         let mut angle = display_angle;
         let mut lighting = display_lighting;
-        let resp_depth = crate::widgets::scrubby_param::scrubby_param_row(
-            ui, "Depth", &mut depth, 1.0..=50.0, 10.0, 0.5, 1, " px",
+        let resp_depth = rows::param_row(
+            ui, theme, "Depth", &mut depth, 1.0..=50.0, 10.0, 0.5, 1, " px",
             target_oid.map(|_| ks_depth),
         );
-        let resp_angle = crate::widgets::scrubby_param::scrubby_param_row(
-            ui, "Angle", &mut angle, 0.0..=360.0, 135.0, 1.0, 0, "\u{00b0}",
+        let resp_angle = rows::param_row(
+            ui, theme, "Angle", &mut angle, 0.0..=360.0, 135.0, 1.0, 0, "\u{00b0}",
             target_oid.map(|_| ks_angle),
         );
         let mut face_col = egui::Color32::from_rgba_premultiplied(ext.face_color[0], ext.face_color[1], ext.face_color[2], ext.face_color[3]);
@@ -5452,8 +5458,8 @@ fn show_title_editor(
             ui.label("Side:");
             color_changed |= ui.color_edit_button_srgba(&mut side_col).changed();
         });
-        let resp_lighting = crate::widgets::scrubby_param::scrubby_param_row(
-            ui, "Lighting", &mut lighting, 0.0..=1.0, 0.5, 0.05, 2, "",
+        let resp_lighting = rows::param_row(
+            ui, theme, "Lighting", &mut lighting, 0.0..=1.0, 0.5, 0.05, 2, "",
             target_oid.map(|_| ks_lighting),
         );
         // Color edit always goes through the static SetTitleExtrusion
@@ -5491,14 +5497,13 @@ fn show_title_editor(
     {
         // Chromatic aberration: 0 = off, sub-pixel = silent, max ~40px.
         let mut ca = td.primary_text().map_or(0.0, |tb| tb.chromatic_aberration_px);
-        let resp = ui.add(
+        let resp = rows::rail_row_inner(ui, theme, "Chromatic aberration", |ui| ui.add(
             egui::DragValue::new(&mut ca)
                 .range(0.0..=40.0)
                 .speed(0.1)
                 .fixed_decimals(1)
-                .prefix("Chromatic aberration: ")
                 .suffix(" px"),
-        );
+        ));
         if resp.changed() {
             cmds.push(AppCommand::SetTitleChromaticAberration { clip_id, offset_px: ca });
         }
@@ -5506,11 +5511,10 @@ fn show_title_editor(
     {
         // Glitch intensity 0..1.
         let mut g = td.primary_text().map_or(0.0, |tb| tb.glitch_intensity);
-        let resp = ui.add(
+        let resp = rows::rail_row_inner(ui, theme, "Glitch", |ui| ui.add(
             egui::Slider::new(&mut g, 0.0..=1.0)
-                .step_by(0.01)
-                .text("Glitch"),
-        );
+                .step_by(0.01),
+        ));
         if resp.changed() {
             cmds.push(AppCommand::SetTitleGlitch { clip_id, intensity: g });
         }
@@ -5611,7 +5615,7 @@ fn show_title_editor(
                     let mut at = path.offset_at(clip_time_secs);
                     let align_id = match align { klipp_timeline::PathTextAlign::Start => 0u8, klipp_timeline::PathTextAlign::Center => 1, klipp_timeline::PathTextAlign::End => 2 };
                     let (layer, contour, offset, flip) = (layer.0, *contour, *offset, *flip);
-                    let resp = crate::widgets::scrubby_param::scrubby_param_row(ui, "Start", &mut at, 0.0..=1.0, 0.0, 0.005, 3, "", ks);
+                    let resp = rows::param_row(ui, theme, "Start", &mut at, 0.0..=1.0, 0.0, 0.005, 3, "", ks);
                     handle_text_key_edit(cmds, clip_id, target_oid, k::TEXT_PATH_OFFSET, at, keys, clip_time_secs, keyframe_tolerance, (&resp).into(),
                         |offset| AppCommand::SetTitleTextPathLayer { clip_id, layer, contour, offset, align: align_id, flip });
                     let mut new_align = align_id;
@@ -8734,6 +8738,52 @@ mod title_row_style_tests {
         }
     }
 
+    /// The advanced groups opened: every row they had is drawn, a value
+    /// is no longer its own label ("Columns: 1", "Case:"), the switches
+    /// that replaced checkboxes answer real clicks, and the only rules
+    /// are the groups' headers'.
+    #[test]
+    fn the_advanced_groups_keep_every_row() {
+        let ctx = egui::Context::default();
+        ctx.data_mut(|d| {
+            let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(egui::Id::new(TITLE_EXPANDED_GROUPS_KEY));
+            for g in ["Advanced title tools", "Typography", "Text effects", "Background & Layer Opacity", "Motion Blur", "3D & Distortion", "Text Path"] {
+                set.insert(g.to_string());
+            }
+        });
+        let (clip, state) = title();
+        let (_, texts, rules) = frame(&ctx, &clip, &state, Vec::new());
+        let all: Vec<&str> = texts.iter().map(|(t, _)| t.as_str()).collect();
+        for label in [
+            "Tracking", "Line spacing", "Space before", "Space after", "Indent", "End indent", "First line", "Last line", "List", "Tab stops",
+            "Write-on", "Baseline shift", "Columns", "Vertical", "Direction", "Drop cap", "off", "Underline", "Strikethrough", "Case",
+            "Quick Style", "Quick", "Layer opacity", "Blend", "Mask with", "Chromatic aberration", "Glitch",
+            "Glow", "Outline", "Drop Shadow", "Inner Shadow", "Gradient Fill", "Pattern Fill", "Texture Fill", "3D text",
+        ] {
+            assert!(all.contains(&label), "{label} is no longer shown: {all:?}");
+        }
+        for old in ["Columns: 1", "Drop cap: off", "Baseline shift: 0 px", "Case:", "Blend:", "Mask with:", "Write-On"] {
+            assert!(!all.contains(&old), "{old} is a label inside its value: {all:?}");
+        }
+        let y = |l: &str| texts.iter().find(|(t, _)| t == l).unwrap().1.y;
+        let groups = ["Advanced title tools", "Text effects", "Typography", "Background & Layer Opacity", "Motion Blur", "3D & Distortion", "Text Path"];
+        for r in rules.iter().filter(|r| **r > y("Advanced title tools") - 10.0) {
+            assert!(groups.iter().any(|g| (r - y(g)).abs() < 24.0), "a rule at {r} is not a group header's: {rules:?}");
+        }
+
+        let switch_of = |l: &str| egui::pos2(380.0 - 8.0 - rows::RAIL_PAD - 16.0, y(l));
+        let click = |at: egui::Pos2| {
+            let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            let mut cmds = frame(&ctx, &clip, &state, vec![egui::Event::PointerMoved(at), press(true)]).0;
+            cmds.extend(frame(&ctx, &clip, &state, vec![press(false)]).0);
+            cmds
+        };
+        let cmds = click(switch_of("Underline"));
+        assert!(matches!(cmds.as_slice(), [AppCommand::SetTitleUnderline { underline: true, .. }]), "{cmds:?}");
+        let cmds = click(switch_of("Vertical"));
+        assert!(matches!(cmds.as_slice(), [AppCommand::SetTitleVerticalLayout { vertical: true, .. }]), "{cmds:?}");
+    }
+
     /// The transform's keyframe marks and the template button answer
     /// real clicks with the commands they sent before.
     #[test]
@@ -8756,3 +8806,4 @@ mod title_row_style_tests {
         assert!(matches!(cmds.as_slice(), [AppCommand::SaveTitleTemplate { .. }]), "{cmds:?}");
     }
 }
+

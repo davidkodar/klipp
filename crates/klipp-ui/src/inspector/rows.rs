@@ -44,6 +44,13 @@ pub fn rail_row(ui: &mut Ui, theme: &KlippTheme, label: &str, value: impl FnOnce
     row_padded(ui, theme, label, RAIL_PAD, value);
 }
 
+/// [`rail_row`] whose control's response comes back.
+pub fn rail_row_inner<R>(ui: &mut Ui, theme: &KlippTheme, label: &str, value: impl FnOnce(&mut Ui) -> R) -> R {
+    let mut out = None;
+    rail_row(ui, theme, label, |ui| out = Some(value(ui)));
+    out.expect("the row draws its value")
+}
+
 /// A numeric row in the shared style: the scrubby label in the
 /// secondary colour on the left, the value, reset and keyframe controls
 /// on the right. It behaves as `scrubby_param_row` does.
