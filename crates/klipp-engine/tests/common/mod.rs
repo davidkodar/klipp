@@ -171,23 +171,32 @@ impl Parked {
     /// two seconds, parked 1.6 s from its end, and a loaded machine can
     /// spend that on one slow pass before a watch has begun (#1828).
     pub fn start_long(src: PathBuf, width: u32, height: u32, secs: u32) -> Self {
-        Self::start_spanning(src, width, height, Fps::new(FPS, 1), true, (secs * FPS) as i64)
+        Self::start_spanning(src, width, height, Fps::new(FPS, 1), true, (secs * FPS) as i64, |_| {})
+    }
+
+    /// [`Self::start`] with the clip changed by `tweak` before the engine
+    /// sees it: an effect added, a node put above the Exposure node. The
+    /// slider still moves that Exposure node.
+    pub fn start_with(src: PathBuf, width: u32, height: u32, tweak: impl FnOnce(&mut Clip)) -> Self {
+        Self::start_spanning(src, width, height, Fps::new(FPS, 1), true, 50, tweak)
     }
 
     /// [`Self::start`] on a timeline at `fps`, for a source at that rate.
     pub fn start_at(src: PathBuf, width: u32, height: u32, fps: Fps, graded: bool) -> Self {
-        Self::start_spanning(src, width, height, fps, graded, 50)
+        Self::start_spanning(src, width, height, fps, graded, 50, |_| {})
     }
 
     /// [`Self::start_at`] with a clip `frames` long.
-    fn start_spanning(src: PathBuf, width: u32, height: u32, fps: Fps, graded: bool, frames: i64) -> Self {
+    fn start_spanning(src: PathBuf, width: u32, height: u32, fps: Fps, graded: bool, frames: i64, tweak: impl FnOnce(&mut Clip)) -> Self {
         let tc = |f: i64| frame_tc(f, fps);
         let id = MediaId::new();
         let mut clip = Clip { kind: ClipKind::Media { media_id: id }, ..Clip::gap(tc(0), tc(frames)) };
         clip.source_in = tc(0);
         clip.source_out = tc(frames);
         clip.set_grade(exposure_graph(if graded { 0.5 } else { 0.0 }));
-        let (clip_id, source_node, exposure_node) = (clip.id, clip.grade().nodes[0].id, clip.grade().nodes[1].id);
+        tweak(&mut clip);
+        let of = |kind: NodeKind| clip.grade().nodes.iter().find(|n| n.kind == kind).map(|n| n.id).expect("the grade keeps its node");
+        let (clip_id, source_node, exposure_node) = (clip.id, of(NodeKind::Source), of(NodeKind::Exposure));
         let mut seq = Sequence::new_default();
         seq.fps = fps;
         seq.resolution = Resolution { width, height };
