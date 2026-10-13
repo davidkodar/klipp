@@ -12,7 +12,7 @@ A fixed test project, made from generated sources with no footage: a moving test
 - **Chroma, range and tags**: the pixel format's subsampling, and the primaries, transfer and matrix the stream carries. These agree with the picture's own frame tags; ProRes carries them in every frame header.
 - **PQ light**: a second project of four patches at 5, 100, 203 and 1000 cd/m², read back from the file's codes through the PQ curve.
 
-The Animated GIF preset is a palette at its own rate (15 fps), so it is checked for its size, rate and frame count rather than scored. "Audio Only MP3" writes a video file today and is measured with the audio exports instead (#1813).
+The Animated GIF preset is a palette at its own rate (15 fps), so it is checked for its size, rate and frame count rather than scored. "Audio Only MP3" writes the sound alone: it is checked for one MP3 stream and no video stream, and its loudness is held by the audio export's tests.
 
 ## Results
 
@@ -28,7 +28,7 @@ The Animated GIF preset is a palette at its own rate (15 fps), so it is checked 
 | DNxHD 115 | dnxhd | 1920x1080 | yuv422p | 4:2:2 | tv | bt709 / bt709 / bt709 | 218 | 98.7 / 97.3 | 57.6 | 98.0 / 95.0 | pass |
 | H.265 4K | hevc | 3840x2160 | yuv420p | 4:2:0 | tv | bt709 / bt709 / bt709 | 218 | 99.7 / 98.4 | 52.0 | 93.0 / 85.0 | pass |
 | H.265 HQ (GPU) | hevc | 1920x1080 | yuv420p | 4:2:0 | tv | bt709 / bt709 / bt709 | 218 | 98.3 / 97.1 | 54.3 | 95.0 / 90.0 | pass |
-| Audio Only MP3 | h264 | 1920x1080 | yuv420p | 4:2:0 | tv | bt709 / bt709 / bt709 | – | – | – | – | audio-only preset, measured separately |
+| Audio Only MP3 | mp3 | – | – | – | – | – | – | – | – | – | pass (audio only, no video stream) |
 | Broadcast master (EBU R128) | prores | 1920x1080 | yuv422p10le | 4:2:2 | tv | bt709 / bt709 / bt709 | 873 | 98.3 / 97.3 | 55.2 | 98.0 / 95.0 | pass |
 | Web 1080p (-14 LUFS) | h264 | 1920x1080 | yuv420p | 4:2:0 | tv | bt709 / bt709 / bt709 | 222 | 98.5 / 97.3 | 57.3 | 93.0 / 85.0 | pass |
 | Animated GIF (480p, 15fps) | gif | 854x480 | bgra | ? | – | – / – / – | – | – | – | – | pass (120 frames at 15/1) |

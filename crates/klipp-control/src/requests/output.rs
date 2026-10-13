@@ -57,7 +57,11 @@ pub(crate) fn respond(
                 Some("mov") => klipp_core::ExportFormat::Mov,
                 Some("mkv") => klipp_core::ExportFormat::Mkv,
                 Some("webm") => klipp_core::ExportFormat::WebM,
-                Some(other) => return Err(format!("unsupported container .{other}; use mp4, mov, mkv or webm")),
+                // The sound alone, no picture (#1813).
+                Some("mp3") => klipp_core::ExportFormat::Mp3,
+                Some("wav") => klipp_core::ExportFormat::Wav,
+                Some("m4a") => klipp_core::ExportFormat::M4a,
+                Some(other) => return Err(format!("unsupported container .{other}; use mp4, mov, mkv or webm, or mp3, wav or m4a for the sound alone")),
             };
             let mut settings = klipp_core::ExportSettings { output_path: out.clone(), format, ..Default::default() };
             // The default H.264 and AAC do not go in WebM.

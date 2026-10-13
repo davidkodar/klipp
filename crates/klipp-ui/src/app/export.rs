@@ -1040,6 +1040,11 @@ impl KlippApp {
                                 for format in [ExportFormat::Mp4, ExportFormat::Mkv, ExportFormat::Mov, ExportFormat::WebM, ExportFormat::Gif] {
                                     ui.selectable_value(&mut self.export_dialog.format, format, format.label());
                                 }
+                                // The sound alone, no picture (#1813).
+                                ui.separator();
+                                for format in [ExportFormat::Mp3, ExportFormat::Wav, ExportFormat::M4a] {
+                                    ui.selectable_value(&mut self.export_dialog.format, format, format.label());
+                                }
                             });
                         // A codec the new container cannot hold gives way to
                         // the container's default, so every pair the dialog
@@ -1047,6 +1052,18 @@ impl KlippApp {
                         if self.export_dialog.format != prev_format {
                             (self.export_dialog.video_codec, self.export_dialog.audio_codec) =
                                 self.export_dialog.format.fit(self.export_dialog.video_codec, self.export_dialog.audio_codec);
+                        }
+                        // Sound alone: what is and isn't used, and a WAV in
+                        // place of an MP3 this FFmpeg can't write (#1813).
+                        if self.export_dialog.format.is_audio_only() {
+                            ui.end_row();
+                            ui.label("");
+                            let note = if self.export_dialog.format == ExportFormat::Mp3 && !klipp_render::audio_only::has_encoder(klipp_core::ExportAudioCodec::Mp3) {
+                                "This FFmpeg has no MP3 encoder: the sound is written as WAV, with .wav."
+                            } else {
+                                "Sound only: the picture settings below are not used."
+                            };
+                            ui.label(egui::RichText::new(note).small().italics());
                         }
                         // Update file extension when format changes
                         if self.export_dialog.format != prev_format {

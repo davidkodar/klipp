@@ -309,6 +309,17 @@ fn main() {
         }
         let p = probe(&file);
         let streams = p["streams"].as_array().cloned().unwrap_or_default();
+        // Sound alone (#1813): one audio stream and no picture, measured by
+        // the audio export's own tests.
+        if settings.format.is_audio_only() {
+            let audio: Vec<Value> = streams.iter().filter(|s| s["codec_type"] == "audio").map(|s| s["codec_name"].clone()).collect();
+            let video = streams.iter().any(|s| s["codec_type"] == "video");
+            row["codec_name"] = audio.first().cloned().unwrap_or(Value::Null);
+            row["pass"] = json!(audio.len() == 1 && !video);
+            row["note"] = json!("audio only, no video stream");
+            results.push(row);
+            continue;
+        }
         let Some(v) = streams.iter().find(|s| s["codec_type"] == "video").cloned() else {
             row["streams"] = json!(streams.iter().map(|s| s["codec_name"].clone()).collect::<Vec<_>>());
             row["error"] = json!("no video stream");
@@ -322,10 +333,7 @@ fn main() {
         }
         row["size"] = json!(format!("{w}x{h}"));
         row["chroma"] = json!(subsampling(&pix));
-        if name.starts_with("Audio Only") {
-            // Named for sound and measured with it, not as a picture.
-            row["note"] = json!("audio-only preset, measured separately");
-        } else if settings.format == ExportFormat::Gif {
+        if settings.format == ExportFormat::Gif {
             // A palette at its own rate: its size, rate and frames, no score.
             let want = settings.fps.map_or(FPS, |f| f.num / f.den.max(1));
             let frames = v["nb_read_frames"].as_str().and_then(|n| n.parse::<f64>().ok()).unwrap_or(0.0);

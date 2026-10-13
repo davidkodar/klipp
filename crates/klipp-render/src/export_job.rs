@@ -137,8 +137,6 @@ impl ExportJob {
         // encoder opens cleanly instead of refusing because the file
         // already exists on some muxer backends.
         let _ = std::fs::remove_file(&partial_path);
-        let mut encoder =
-            Encoder::open(&partial_path, &self.settings, &self.snapshot)?;
 
         // Determine frame range
         let start_frame = self.snapshot.start_frame();
@@ -193,6 +191,14 @@ impl ExportJob {
         } else {
             DeliveryChain::unity()
         };
+
+        // Sound alone: the same mix and delivery, no picture (#1813).
+        if self.settings.format.is_audio_only() {
+            return self.write_audio_only(audio_mixdown, delivery, start_frame, end_frame);
+        }
+
+        let mut encoder =
+            Encoder::open(&partial_path, &self.settings, &self.snapshot)?;
 
         let mut export_frame_num: u64 = 0;
 
@@ -360,6 +366,49 @@ impl ExportJob {
             self.id, export_frame_num, self.output_path
         );
 
+        Ok(())
+    }
+
+    /// The mix alone, frame by frame through `delivery`, as MP3, WAV or
+    /// M4A (#1813), then published as the video export is. Without an MP3
+    /// encoder the file is WAV, at the same name with `.wav`, and the
+    /// export's hardware line says so.
+    fn write_audio_only(&self, mut mixdown: AudioMixdown, mut delivery: DeliveryChain, start_frame: u64, end_frame: u64) -> Result<(), RenderError> {
+        let (format, codec, fallback) = crate::audio_only::resolve(self.settings.format, self.settings.audio_codec);
+        let output_path = if format == self.settings.format { self.output_path.clone() } else { self.output_path.with_extension(format.extension()) };
+        if let Some(note) = &fallback {
+            tracing::warn!("ExportJob {}: {note} → {:?}", self.id, output_path);
+        }
+        if let Ok(mut hw) = self.hw_info.lock() {
+            *hw = fallback.clone().unwrap_or_else(|| format!("{} audio", codec.label()));
+        }
+        let partial_path = partial_path_for(&output_path);
+        let _ = std::fs::remove_file(&partial_path);
+        Self::set_stage(&self.render_stage, &format!("Encoding audio ({})\u{2026}", codec.label()));
+        let mut writer = crate::audio_only::AudioOnly::open(&partial_path, format, codec, self.settings.audio_bitrate_kbps, self.snapshot.sample_rate)?;
+        let mut done: u64 = 0;
+        for frame_num in start_frame..end_frame {
+            if self.cancel.load(Ordering::Relaxed) {
+                return Err(RenderError::Cancelled);
+            }
+            let mut audio = mixdown.get_frame_audio(frame_num);
+            delivery.process(&mut audio);
+            writer.write(&audio)?;
+            done += 1;
+            self.progress.store(done, Ordering::Relaxed);
+        }
+        if let Some(report) = delivery.report() {
+            info!("ExportJob {}: {report}", self.id);
+            if let Ok(mut r) = self.loudness_result.lock() {
+                *r = Some(report);
+            }
+        }
+        Self::set_stage(&self.render_stage, "Finalizing file\u{2026}");
+        writer.finish()?;
+        if let Err(e) = std::fs::rename(&partial_path, &output_path) {
+            return Err(RenderError::Publish(format!("{e} (encode complete at {partial_path:?})")));
+        }
+        info!("ExportJob {}: complete, {done} frames of sound → {output_path:?}", self.id);
         Ok(())
     }
 
