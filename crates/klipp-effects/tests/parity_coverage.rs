@@ -224,6 +224,7 @@ const SHADERS: &[(&str, Cover)] = &[
     ("SHADER_HDR16_TO_LINEAR", Test("klipp-engine/tests/hdr_gpu_graded_path.rs", "a_deep_source_seeded_on_the_gpu_grades_like_the_cpu_path")),
     ("SHADER_SCENE_TO_DISPLAY", Test("klipp-nodes/tests/scene_to_display_node.rs", "the_display_step_on_the_chain_draws_the_cpu_step")),
     ("SHADER_SPRITE_ROWS_F16", Test(COMPOSITE, "the_gpu_stack_is_the_renderers_frame")),
+    ("SHADER_SPRITE_BOX_F16", Test("klipp-compose/tests/title_routes_f16.rs", "each_route_lands_within_a_level_of_the_byte_frame")),
     ("SHADER_DIFFERENCE_KEY", Test(SECONDARY, "the_other_matte_sources_ride_the_chain_too")),
     ("SHADER_FILM_GRAIN", EVERY_EFFECT),
     ("SHADER_FOCUS_BLUR_BLEND", EVERY_EFFECT),

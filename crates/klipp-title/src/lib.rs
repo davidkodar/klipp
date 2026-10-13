@@ -33,6 +33,8 @@
 //! bitmap fonts draw in their colours (`colour`).
 
 mod colour;
+pub mod raster;
+pub use raster::BoxRaster;
 mod fallback;
 mod shaping;
 mod text_on_path;
@@ -236,7 +238,7 @@ impl GlyphPose {
 /// which glyph each pixel is: what `render_resting` makes and `adopt`
 /// takes.
 pub struct RestingRender {
-    pub pixels: Vec<u8>,
+    pub pixels: BoxRaster,
     pub units: Option<std::sync::Arc<UnitMap>>,
 }
 
@@ -305,7 +307,7 @@ struct CachedRender {
     title: TitleData,
     width: u32,
     height: u32,
-    buffer: std::sync::Arc<Vec<u8>>,
+    buffer: std::sync::Arc<BoxRaster>,
     /// The rows with any coverage, `y0..y1`.
     rows: (u32, u32),
     /// The columns with any coverage, `x0..x1`.
@@ -316,11 +318,12 @@ struct CachedRender {
     id: u64,
 }
 
-/// A title's resting render, as cached: frame-sized straight-alpha
-/// sRGB RGBA8, the rows with any coverage, and an id that names it.
+/// A title's resting render, as cached: the box it covers as
+/// straight-alpha sRGB half floats (#190), the rows and columns with any
+/// coverage, and an id that names it.
 #[derive(Clone)]
 pub struct RestingSprite {
-    pub pixels: std::sync::Arc<Vec<u8>>,
+    pub pixels: std::sync::Arc<BoxRaster>,
     pub rows: (u32, u32),
     /// The columns with any coverage, `x0..x1`; with `rows`, the box a
     /// pose scales about.
@@ -345,7 +348,7 @@ pub enum TitleFrame {
     /// scaled by `opacity`: a static title, or one whose only motion at
     /// this time is a scroll, crawl, shake, blink, pulse or fade. `rows`
     /// are the destination rows the moved sprite covers. The frame's
-    /// bytes are those `shift_and_fade` would make; a compositor that
+    /// bytes are the resting render shifted and faded; a compositor that
     /// keeps the sprite can make them where it composites.
     /// `scale` grows or shrinks it about `anchor` (an entrance that
     /// scales); `under` is a full-frame background laid beneath the
@@ -372,7 +375,7 @@ pub enum TitleFrame {
     /// those `pose_sprite_glyphs` makes from the sprite's `units`.
     Glyphs { sprite: RestingSprite, poses: Vec<GlyphPose>, rows: (u32, u32) },
     /// Rendered for this time alone.
-    Rendered { pixels: Vec<u8>, rows: (u32, u32) },
+    Rendered { pixels: BoxRaster, rows: (u32, u32) },
 }
 
 /// The title whose resting render is the sprite: a full-frame card's
@@ -413,6 +416,46 @@ fn alpha_cols(buf: &[u8], width: u32, height: u32, rows: (u32, u32)) -> (u32, u3
         }
     }
     if hi <= lo { (0, 0) } else { (lo as u32, hi as u32) }
+}
+
+/// [`alpha_rows`] of a layer stack in byte units: a pixel carries alpha
+/// when it would round to at least one level.
+fn stack_rows(stack: &[f32], width: u32, height: u32) -> (u32, u32) {
+    use rayon::prelude::*;
+    let row = (width as usize) * 4;
+    if row == 0 || stack.len() < row * height as usize {
+        return (0, 0);
+    }
+    let (lo, hi) = stack
+        .par_chunks(row)
+        .enumerate()
+        .filter(|(_, r)| r.chunks_exact(4).any(|p| p[3] >= 0.5))
+        .map(|(y, _)| (y as u32, y as u32 + 1))
+        .reduce(|| (u32::MAX, 0), |a, b| (a.0.min(b.0), a.1.max(b.1)));
+    if lo == u32::MAX { (0, 0) } else { (lo, hi) }
+}
+
+/// [`alpha_cols`] of a layer stack in byte units.
+fn stack_cols(stack: &[f32], width: u32, height: u32, rows: (u32, u32)) -> (u32, u32) {
+    let (w, h) = (width as usize, height as usize);
+    if w == 0 || stack.len() < w * h * 4 || rows.1 <= rows.0 {
+        return (0, 0);
+    }
+    let (mut lo, mut hi) = (w, 0usize);
+    for y in rows.0 as usize..(rows.1 as usize).min(h) {
+        let row = &stack[y * w * 4..(y + 1) * w * 4];
+        if let Some(first) = row.chunks_exact(4).position(|p| p[3] >= 0.5) {
+            lo = lo.min(first);
+            let last = row.chunks_exact(4).rposition(|p| p[3] >= 0.5).unwrap_or(first);
+            hi = hi.max(last + 1);
+        }
+    }
+    if hi <= lo { (0, 0) } else { (lo as u32, hi as u32) }
+}
+
+/// The rows a raster's box covers, `y0..y1`.
+fn raster_rows(r: &BoxRaster) -> (u32, u32) {
+    if r.is_empty() { (0, 0) } else { (r.y0, r.y0 + r.h) }
 }
 
 /// The rows of a frame-sized RGBA8 buffer that carry any alpha, as
@@ -463,7 +506,7 @@ pub struct TitleRenderer {
     /// (#787): the sprite is fixed while it moves, so the box scan and
     /// distance pass run once per sprite, not once a frame.
     solid_point: Option<(u64, Option<(f32, f32)>)>,
-    /// The unit map the last `render_inner` made, for `cache_store`.
+    /// The unit map the last `render_stack` made, for `cache_store`.
     last_units: Option<std::sync::Arc<UnitMap>>,
     /// The glyphs the last layout of a 3D text placed (#1512): what
     /// `render_text_layer` builds the solids from. Filled while the
@@ -475,13 +518,13 @@ pub struct TitleRenderer {
     /// which exit motion counts back from. `None` outside a clip.
     motion_window: Option<f32>,
     /// Per-glyph wave of the layer being rendered, from its `Wave`
-    /// loop: (amplitude px, rate Hz). Set by `render_inner` per object.
+    /// loop: (amplitude px, rate Hz). Set by `render_stack` per object.
     loop_wave: Option<(f32, f32)>,
     /// The waves of every layer of the title being rendered, by
     /// object id; filled by `render_with_time`.
     loop_waves: HashMap<u32, (f32, f32)>,
     /// The drawn path the text layer being rendered follows, resolved
-    /// from its title by `render_inner` (#1508).
+    /// from its title by `render_stack` (#1508).
     bound_path: Option<text_on_path::PathLine>,
     /// A roll's focus band per layer for the frame being rastered,
     /// applied with the layer's edge fade where it has been placed (#592).
@@ -489,7 +532,7 @@ pub struct TitleRenderer {
     /// The resting render of a one-layer title leaves its fade to the
     /// placement, which knows where the layer has moved to.
     defer_layer_fades: bool,
-    /// The one layer `render_inner` draws while it makes a matte: the
+    /// The one layer `render_stack` draws while it makes a matte: the
     /// mask source alone, shown or not, at the masked layer's time
     /// (#1513).
     matte_only: Option<TitleObjectId>,
@@ -506,6 +549,10 @@ pub struct TitleRenderer {
 }
 
 const RENDER_CACHE_CAP: usize = 4;
+/// The most the cache's rasters take together (#190): a guard, since a
+/// title's box is usually far smaller than its frame. Three full-frame
+/// 4K cards in half floats fit; the newest render is always kept.
+const RENDER_CACHE_BYTES: usize = 200 << 20;
 
 impl Default for TitleRenderer {
     fn default() -> Self {
@@ -1996,9 +2043,12 @@ impl TitleRenderer {
         }
         let at_rest = (pose.0 - 1.0).abs() < 1e-6 && pose.1.abs() < 0.5 && pose.2.abs() < 0.5 && (pose.3 - 1.0).abs() < 1e-6 && !pose.5;
         if !at_rest {
-            let anchor = resolve_anchor(anchor_at, &layer, width, (x0 as u32, x1 as u32), (y0 as u32, y1 as u32));
+            // The dressed layer as the box it covers, posed, rounded once.
+            let covered = alpha_rows(&layer, width, height);
+            let rest = BoxRaster::from_bytes(&layer, (width, height), covered, alpha_cols(&layer, width, height, covered));
+            let anchor = resolve_anchor(anchor_at, &rest, (x0 as u32, x1 as u32), (y0 as u32, y1 as u32));
             let rows = if pose.5 { (y0 as u32, y1 as u32) } else { (0, height) };
-            layer = pose_sprite(&layer, width, height, pose.1.round() as i32, pose.2.round() as i32, pose.0, pose.3, anchor, None, None, rows);
+            layer = to_bytes(&pose_sprite(&rest, width, height, pose.1.round() as i32, pose.2.round() as i32, pose.0, pose.3, anchor, None, None, rows));
         }
         layer
     }
@@ -2032,13 +2082,13 @@ impl TitleRenderer {
     ) -> Vec<u8> {
         if let Some(hit) = self.cache_lookup(title, width, height) {
             self.last_rows = hit.rows;
-            return (*hit.pixels).clone();
+            return hit.pixels.to_bytes();
         }
-        let buf = self.render_inner(title, width, height, gpu, None);
-        let rows = alpha_rows(&buf, width, height);
-        self.last_rows = rows;
-        self.cache_store(title.clone(), width, height, buf.clone(), rows);
-        buf
+        let raster = self.raster_at(title, width, height, gpu, None);
+        self.last_rows = raster_rows(&raster);
+        let bytes = raster.to_bytes();
+        self.cache_store(title.clone(), width, height, raster);
+        bytes
     }
 
     /// Render at a specific clip-relative time for time-aware
@@ -2060,8 +2110,23 @@ impl TitleRenderer {
         time_secs: f32,
         window_secs: Option<f32>,
     ) -> Vec<u8> {
+        to_bytes(&self.render_with_window_stack(title, width, height, gpu, time_secs, window_secs))
+    }
+
+    /// [`Self::render_with_window`] unrounded (#190): straight-alpha sRGB
+    /// in byte units 0..255, as the layers were stacked and the frame
+    /// posed, for a compositor that keeps more than eight bits.
+    pub fn render_with_window_stack(
+        &mut self,
+        title: &TitleData,
+        width: u32,
+        height: u32,
+        gpu: Option<&mut dyn AlphaMaskProcessor>,
+        time_secs: f32,
+        window_secs: Option<f32>,
+    ) -> Vec<f32> {
         self.motion_window = window_secs;
-        let out = self.render_with_time(title, width, height, gpu, time_secs);
+        let out = self.stack_with_time(title, width, height, gpu, time_secs);
         self.motion_window = None;
         out
     }
@@ -2167,15 +2232,20 @@ impl TitleRenderer {
         gpu: Option<&mut dyn AlphaMaskProcessor>,
         time_secs: f32,
     ) -> Vec<u8> {
+        to_bytes(&self.stack_with_time(title, width, height, gpu, time_secs))
+    }
+
+    /// [`Self::render_with_time`] unrounded, in byte units.
+    fn stack_with_time(&mut self, title: &TitleData, width: u32, height: u32, gpu: Option<&mut dyn AlphaMaskProcessor>, time_secs: f32) -> Vec<f32> {
         match self.frame_at(title, width, height, gpu, time_secs) {
             TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, shape, rows, .. } => {
                 pose_sprite(&sprite.pixels, width, height, dx, dy, opacity, scale, anchor, under, shape, rows)
             }
             TitleFrame::Glyphs { sprite, poses, rows } => match &sprite.units {
                 Some(units) => pose_sprite_glyphs(&sprite.pixels, width, height, units, &poses, rows),
-                None => vec![0u8; (width as usize) * (height as usize) * 4],
+                None => vec![0.0; (width as usize) * (height as usize) * 4],
             },
-            TitleFrame::Rendered { pixels, .. } => pixels,
+            TitleFrame::Rendered { pixels, .. } => pixels.to_stack(),
         }
     }
 
@@ -2485,14 +2555,14 @@ impl TitleRenderer {
                     let solid = match self.solid_point {
                         Some((id, p)) if id == sprite.id => p,
                         _ => {
-                            let p = solid_point(&sprite.pixels, width, sprite.cols, sprite.rows);
+                            let p = solid_point(&sprite.pixels, sprite.cols, sprite.rows);
                             self.solid_point = Some((sprite.id, p));
                             p
                         }
                     };
                     solid.unwrap_or_else(|| sprite.anchor())
                 }
-                Some(a) => resolve_anchor(Some(a), &sprite.pixels, width, sprite.cols, sprite.rows),
+                Some(a) => resolve_anchor(Some(a), &sprite.pixels, sprite.cols, sprite.rows),
                 None => sprite.anchor(),
             };
             // One layer: its fade goes on where it is placed; the resting
@@ -2571,16 +2641,25 @@ impl TitleRenderer {
         // it — char_animation drives per-glyph staggering, glitch
         // seeds its stripe pattern from the clip clock, per-layer
         // position keyframes evaluate against this time inside
-        // `render_inner`, and per-effect keyframes (e.g. TextGlow
+        // `render_stack`, and per-effect keyframes (e.g. TextGlow
         // radius/intensity) sample inside `compose`.
         // The one decision, made once above: a frame that depends on
         // its time is rastered at its time.
         let time_arg = any_render_time_override.then_some(time_secs);
-        let out = self.render_inner(&derived, width, height, gpu, time_arg);
+        let out = self.raster_at(&derived, width, height, gpu, time_arg);
         self.loop_waves.clear();
         self.loop_focus.clear();
-        self.last_rows = alpha_rows(&out, width, height);
+        self.last_rows = raster_rows(&out);
         TitleFrame::Rendered { rows: self.last_rows, pixels: out }
+    }
+
+
+    /// [`Self::render_stack`] kept as the box it covers (#190).
+    fn raster_at(&mut self, title: &TitleData, width: u32, height: u32, gpu: Option<&mut dyn AlphaMaskProcessor>, time_secs: Option<f32>) -> BoxRaster {
+        let stack = self.render_stack(title, width, height, gpu, time_secs);
+        let rows = stack_rows(&stack, width, height);
+        let cols = stack_cols(&stack, width, height, rows);
+        BoxRaster::from_stack(&stack, (width, height), rows, cols)
     }
 
     /// Object-model composition: walk every layer in the title (back
@@ -2593,21 +2672,7 @@ impl TitleRenderer {
     /// animation, motion blur) work per-object without duplicating
     /// the whole pipeline. `Shape` objects are painted directly.
     /// Hidden objects (`visible == false`) are skipped.
-    fn render_inner(
-        &mut self,
-        title: &TitleData,
-        width: u32,
-        height: u32,
-        gpu: Option<&mut dyn AlphaMaskProcessor>,
-        time_secs: Option<f32>,
-    ) -> Vec<u8> {
-        let stack = self.render_stack(title, width, height, gpu, time_secs);
-        if stack.is_empty() {
-            return vec![0u8; (width as usize) * (height as usize) * 4];
-        }
-        to_bytes(&stack)
-    }
-
+    ///
     /// The layers of `title` stacked in byte units but not rounded, so
     /// that each layer is rounded once, where it was drawn, and the
     /// stack once, where it leaves (#190). Empty when nothing is drawn.
@@ -2919,7 +2984,7 @@ impl TitleRenderer {
     /// Single-text rasterisation: layout → compose → texture-fill,
     /// returns a frame-sized RGBA buffer with the text composited
     /// onto a transparent canvas. The synthesised `TitleData` from
-    /// `render_inner` always has exactly one `TextBox` object, so
+    /// `render_stack` always has exactly one `TextBox` object, so
     /// the existing single-text helpers stay unchanged.
     fn render_text_layer(
         &mut self,
@@ -3183,7 +3248,7 @@ impl TitleRenderer {
     /// `width`×`height`, made here on the CPU: for a warm-up on another
     /// thread, handed to the renderer that will place it by `adopt`.
     pub fn render_resting(&mut self, title: &TitleData, width: u32, height: u32) -> RestingRender {
-        let pixels = self.render_inner(&resting_title(title), width, height, None, None);
+        let pixels = self.raster_at(&resting_title(title), width, height, None, None);
         RestingRender { pixels, units: self.last_units.take() }
     }
 
@@ -3194,12 +3259,11 @@ impl TitleRenderer {
     pub fn adopt(&mut self, title: &TitleData, width: u32, height: u32, render: RestingRender) {
         let key = resting_title(title);
         let RestingRender { pixels, units } = render;
-        if pixels.len() != (width as usize) * (height as usize) * 4 || self.cache_lookup(&key, width, height).is_some() {
+        if pixels.frame != (width, height) || self.cache_lookup(&key, width, height).is_some() {
             return;
         }
-        let rows = alpha_rows(&pixels, width, height);
         self.last_units = units;
-        self.cache_store(key.into_owned(), width, height, pixels, rows);
+        self.cache_store(key.into_owned(), width, height, pixels);
     }
 
     /// The focus blur the last placed frame asked for: (radius in frame
@@ -3262,10 +3326,9 @@ impl TitleRenderer {
             Some(hit) => hit,
             None => {
                 self.defer_layer_fades = title.objects.iter().filter(|o| o.visible).count() == 1 && !title.mixes_layers();
-                let buf = self.render_inner(title, width, height, gpu, None);
+                let raster = self.raster_at(title, width, height, gpu, None);
                 self.defer_layer_fades = false;
-                let rows = alpha_rows(&buf, width, height);
-                self.cache_store(title.clone(), width, height, buf, rows)
+                self.cache_store(title.clone(), width, height, raster)
             }
         }
     }
@@ -3283,15 +3346,20 @@ impl TitleRenderer {
 
     /// Insert a freshly-rendered buffer into the cache, evicting the
     /// least-recently-used entry if at capacity.
-    fn cache_store(&mut self, title: TitleData, width: u32, height: u32, buffer: Vec<u8>, rows: (u32, u32)) -> RestingSprite {
-        if self.render_cache.len() >= RENDER_CACHE_CAP {
+    fn cache_store(&mut self, title: TitleData, width: u32, height: u32, raster: BoxRaster) -> RestingSprite {
+        // A guard on memory as well as the count: the box a title covers
+        // is usually far smaller than its frame, but a full-frame card is
+        // not (#190).
+        let size = raster.byte_size();
+        while !self.render_cache.is_empty() && (self.render_cache.len() >= RENDER_CACHE_CAP || self.render_cache.iter().map(|c| c.buffer.byte_size()).sum::<usize>() + size > RENDER_CACHE_BYTES) {
             self.render_cache.pop();
         }
         let id = self.next_cache_id;
         self.next_cache_id += 1;
-        let cols = alpha_cols(&buffer, width, height, rows);
+        let rows = raster_rows(&raster);
+        let cols = if raster.is_empty() { (0, 0) } else { (raster.x0, raster.x0 + raster.w) };
         let units = self.last_units.take();
-        let pixels = std::sync::Arc::new(buffer);
+        let pixels = std::sync::Arc::new(raster);
         self.render_cache.insert(
             0,
             CachedRender {
@@ -4625,11 +4693,11 @@ fn path_traveller(title: &TitleData) -> Option<&TitleObject> {
 /// scaled about its own box and faded by its pose, laid over the
 /// glyphs before it; only within `rows`. The GPU glyph pass is its
 /// twin.
-pub fn pose_sprite_glyphs(rest: &[u8], width: u32, height: u32, units: &UnitMap, poses: &[GlyphPose], rows: (u32, u32)) -> Vec<u8> {
+pub fn pose_sprite_glyphs(rest: &BoxRaster, width: u32, height: u32, units: &UnitMap, poses: &[GlyphPose], rows: (u32, u32)) -> Vec<f32> {
     use rayon::prelude::*;
     let (w, h) = (width as usize, height as usize);
-    let mut out = vec![0u8; w * h * 4];
-    if rest.len() < w * h * 4 || w == 0 {
+    let mut out = vec![0.0f32; w * h * 4];
+    if w == 0 || rest.frame != (width, height) {
         return out;
     }
     let (y0, y1) = ((rows.0 as usize).min(h), (rows.1 as usize).min(h));
@@ -4639,9 +4707,9 @@ pub fn pose_sprite_glyphs(rest: &[u8], width: u32, height: u32, units: &UnitMap,
         if x < 0 || y < 0 || x >= w as i64 || y >= h as i64 || units.at(x, y) != g {
             return [0.0; 4];
         }
-        let p = &rest[(y as usize * w + x as usize) * 4..][..4];
-        let a = p[3] as f32 / 255.0;
-        [p[0] as f32 * a, p[1] as f32 * a, p[2] as f32 * a, a]
+        let p = rest.at(x, y);
+        let a = p[3] / 255.0;
+        [p[0] * a, p[1] * a, p[2] * a, a]
     };
     out.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
         if y < y0 || y >= y1 {
@@ -4681,13 +4749,12 @@ pub fn pose_sprite_glyphs(rest: &[u8], width: u32, height: u32, units: &UnitMap,
                 if s[3] <= 0.0 {
                     continue;
                 }
-                // The glyph's alpha to whole levels, as a placed sprite's.
-                let a8 = (s[3] * 255.0 * p.alpha + 0.5).floor().clamp(0.0, 255.0);
-                if a8 <= 0.0 {
+                // Unrounded (#190), the pose's alpha applied.
+                let a = (s[3] * p.alpha).clamp(0.0, 1.0);
+                if a * 255.0 < 0.5 {
                     continue;
                 }
-                let a = a8 / 255.0;
-                let rgb = [(s[0] / s[3] + 0.5).floor(), (s[1] / s[3] + 0.5).floor(), (s[2] / s[3] + 0.5).floor()];
+                let rgb = [s[0] / s[3], s[1] / s[3], s[2] / s[3]];
                 // Over the glyphs before it, premultiplied.
                 for k in 0..3 {
                     acc[k] = rgb[k] * a + acc[k] * (1.0 - a);
@@ -4695,10 +4762,10 @@ pub fn pose_sprite_glyphs(rest: &[u8], width: u32, height: u32, units: &UnitMap,
                 acc[3] = a + acc[3] * (1.0 - a);
             }
             if acc[3] > 0.0 {
-                px[0] = (acc[0] / acc[3]).round().clamp(0.0, 255.0) as u8;
-                px[1] = (acc[1] / acc[3]).round().clamp(0.0, 255.0) as u8;
-                px[2] = (acc[2] / acc[3]).round().clamp(0.0, 255.0) as u8;
-                px[3] = (acc[3] * 255.0).round().clamp(0.0, 255.0) as u8;
+                px[0] = acc[0] / acc[3];
+                px[1] = acc[1] / acc[3];
+                px[2] = acc[2] / acc[3];
+                px[3] = acc[3] * 255.0;
             }
         }
     });
@@ -4712,10 +4779,10 @@ pub fn pose_sprite_glyphs(rest: &[u8], width: u32, height: u32, units: &UnitMap,
 /// `rows` (a mask motion shows the words inside their resting box).
 /// The GPU sprite pass (`stack_layer_place_sprite_posed`) is its twin;
 /// the parity tests hold the two to a level. With no scale, no `under`
-/// and every row, it is `shift_and_fade`.
+/// and every row, it is the resting render shifted and faded.
 #[allow(clippy::too_many_arguments)]
 pub fn pose_sprite(
-    rest: &[u8],
+    rest: &BoxRaster,
     width: u32,
     height: u32,
     dx: i32,
@@ -4726,19 +4793,12 @@ pub fn pose_sprite(
     under: Option<[u8; 4]>,
     shape: Option<ScreenFade>,
     rows: (u32, u32),
-) -> Vec<u8> {
+) -> Vec<f32> {
     use rayon::prelude::*;
     let plain = (scale - 1.0).abs() < 1e-6;
     let (w, h) = (width as usize, height as usize);
-    if plain && under.is_none() && shape.is_none() {
-        let mut out = shift_and_fade(rest.to_vec(), width, height, dx, dy, opacity);
-        let (y0, y1) = ((rows.0 as usize).min(h), (rows.1 as usize).min(h));
-        out[..y0 * w * 4].fill(0);
-        out[y1.max(y0) * w * 4..].fill(0);
-        return out;
-    }
-    let mut out = vec![0u8; w * h * 4];
-    if rest.len() < w * h * 4 || w == 0 {
+    let mut out = vec![0.0f32; w * h * 4];
+    if w == 0 || rest.frame != (width, height) {
         return out;
     }
     let (y0, y1) = ((rows.0 as usize).min(h), (rows.1 as usize).min(h));
@@ -4750,12 +4810,9 @@ pub fn pose_sprite(
     let under_lin = under.map(|c| [srgb_u8_to_linear(c[0]), srgb_u8_to_linear(c[1]), srgb_u8_to_linear(c[2]), c[3] as f32 / 255.0]);
     // A tap: the sprite's pixel, premultiplied, in sRGB-encoded units.
     let tap = |x: i64, y: i64| -> [f32; 4] {
-        if x < 0 || y < 0 || x >= w as i64 || y >= h as i64 {
-            return [0.0; 4];
-        }
-        let p = &rest[(y as usize * w + x as usize) * 4..][..4];
-        let a = p[3] as f32 / 255.0;
-        [p[0] as f32 * a, p[1] as f32 * a, p[2] as f32 * a, a]
+        let p = rest.at(x, y);
+        let a = p[3] / 255.0;
+        [p[0] * a, p[1] * a, p[2] * a, a]
     };
     out.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
         if y < y0 || y >= y1 {
@@ -4767,8 +4824,12 @@ pub fn pose_sprite(
         };
         for (x, px) in row.chunks_exact_mut(4).enumerate() {
             let f = columns.as_ref().map_or(row_k, |c| row_k * c[x]);
-            let s = if plain {
-                tap(x as i64 - dx as i64, y as i64 - dy as i64)
+            // Unscaled, the pixel as it is: its colour kept even under no
+            // alpha, as the frame it was shifted from had it.
+            let straight = plain.then(|| rest.at(x as i64 - dx as i64, y as i64 - dy as i64));
+            let s = if let Some(t) = straight {
+                let a = t[3] / 255.0;
+                [t[0] * a, t[1] * a, t[2] * a, a]
             } else {
                 let fx = (x as f32 + 0.5 - dx as f32 - anchor.0) / scale + anchor.0 - 0.5;
                 let fy = (y as f32 + 0.5 - dy as f32 - anchor.1) / scale + anchor.1 - 0.5;
@@ -4789,27 +4850,30 @@ pub fn pose_sprite(
                 }
                 acc
             };
+            // Unrounded (#190): the alpha and colour as the sprite holds
+            // them, the opacity and the fade applied.
             let a = s[3];
-            let a8 = (a * 255.0 * f + 0.5).floor().clamp(0.0, 255.0);
-            // No colour under no alpha: what a tie in the sum rounds to
-            // must not show as a colour difference.
-            let rgb = if a > 0.0 && (plain || a8 > 0.0) { [s[0] / a, s[1] / a, s[2] / a] } else { [0.0; 3] };
+            let sa = (a * f).clamp(0.0, 1.0);
+            // Scaled, no colour under an alpha that rounds to nothing, as
+            // the byte path had it.
+            let rgb = match straight {
+                Some(t) => [t[0], t[1], t[2]],
+                None if a > 0.0 && sa * 255.0 >= 0.5 => [s[0] / a, s[1] / a, s[2] / a],
+                None => [0.0; 3],
+            };
             match under_lin {
                 None => {
-                    px[0] = rgb[0].round().clamp(0.0, 255.0) as u8;
-                    px[1] = rgb[1].round().clamp(0.0, 255.0) as u8;
-                    px[2] = rgb[2].round().clamp(0.0, 255.0) as u8;
-                    px[3] = a8 as u8;
+                    px[..3].copy_from_slice(&rgb);
+                    px[3] = sa * 255.0;
                 }
                 Some(u) => {
-                    let sa = a8 / 255.0;
                     let sl = [srgb_to_linear_f(rgb[0] / 255.0), srgb_to_linear_f(rgb[1] / 255.0), srgb_to_linear_f(rgb[2] / 255.0)];
                     let oa = sa + u[3] * (1.0 - sa);
                     for k in 0..3 {
                         let c = if oa > 0.0 { (sl[k] * sa + u[k] * u[3] * (1.0 - sa)) / oa } else { 0.0 };
-                        px[k] = (linear_to_srgb_f(c) * 255.0).round().clamp(0.0, 255.0) as u8;
+                        px[k] = linear_to_srgb_f(c) * 255.0;
                     }
-                    px[3] = (oa * 255.0).round().clamp(0.0, 255.0) as u8;
+                    px[3] = oa * 255.0;
                 }
             }
         }
@@ -4830,47 +4894,6 @@ fn srgb_u8_to_linear(v: u8) -> f32 {
     srgb_to_linear_f(v as f32 / 255.0)
 }
 
-/// The resting render moved by `(dx, dy)` pixels and faded to
-/// `opacity`: what a scroll, crawl, shake, blink or pulse frame is,
-/// without rasterising again. Rows are copied in parallel; what moves
-/// out of the frame is dropped, what moves in is empty.
-fn shift_and_fade(rest: Vec<u8>, width: u32, height: u32, dx: i32, dy: i32, opacity: f32) -> Vec<u8> {
-    use rayon::prelude::*;
-    if opacity <= 0.001 {
-        return vec![0u8; rest.len()];
-    }
-    if dx == 0 && dy == 0 {
-        let mut out = rest;
-        scale_layer_alpha(&mut out, opacity);
-        return out;
-    }
-    let (w, h) = (width as usize, height as usize);
-    let row_bytes = w * 4;
-    let mut out = vec![0u8; rest.len()];
-    let f = opacity.clamp(0.0, 1.0);
-    out.par_chunks_mut(row_bytes).enumerate().for_each(|(y, row)| {
-        let sy = y as i64 - dy as i64;
-        if sy < 0 || sy >= h as i64 {
-            return;
-        }
-        let src = &rest[sy as usize * row_bytes..(sy as usize + 1) * row_bytes];
-        // Destination columns [dx0, dx1) come from source [dx0 - dx, dx1 - dx).
-        let dx0 = dx.max(0) as usize;
-        let dx1 = (w as i64 + (dx as i64).min(0)).max(0) as usize;
-        if dx1 <= dx0 {
-            return;
-        }
-        let sx0 = (dx0 as i64 - dx as i64) as usize;
-        let n = dx1 - dx0;
-        row[dx0 * 4..dx1 * 4].copy_from_slice(&src[sx0 * 4..(sx0 + n) * 4]);
-        if f < 0.9999 {
-            for px in row[dx0 * 4..dx1 * 4].chunks_exact_mut(4) {
-                px[3] = ((px[3] as f32) * f).round().clamp(0.0, 255.0) as u8;
-            }
-        }
-    });
-    out
-}
 
 /// One channel of a frame being drawn, in byte units: a byte, rounded
 /// at every write, as a single layer is drawn, or an `f32`, as the
@@ -6654,20 +6677,20 @@ fn blur_rgba(layer: &mut [u8], width: u32, height: u32, sigma: f32) {
 /// chamfer distance gives the cell furthest from any gap. Grown past the
 /// frame about it, the word fills the frame with a stroke, never with the
 /// gap between its lines or words.
-fn resolve_anchor(anchor: Option<klipp_core::title_motion::MotionAnchor>, rgba: &[u8], width: u32, cols: (u32, u32), rows: (u32, u32)) -> (f32, f32) {
+fn resolve_anchor(anchor: Option<klipp_core::title_motion::MotionAnchor>, rgba: &BoxRaster, cols: (u32, u32), rows: (u32, u32)) -> (f32, f32) {
     use klipp_core::title_motion::MotionAnchor;
     let (x0, x1, y0, y1) = (cols.0 as f32, cols.1 as f32, rows.0 as f32, rows.1 as f32);
     let centre = ((x0 + x1) * 0.5, (y0 + y1) * 0.5);
     match anchor {
         None => centre,
         Some(MotionAnchor::Point { x, y }) => (x0 + x.clamp(0.0, 1.0) * (x1 - x0), y0 + y.clamp(0.0, 1.0) * (y1 - y0)),
-        Some(MotionAnchor::Solid) => solid_point(rgba, width, cols, rows).unwrap_or(centre),
+        Some(MotionAnchor::Solid) => solid_point(rgba, cols, rows).unwrap_or(centre),
     }
 }
 
 /// The centre of the most covered cell furthest from any uncovered one,
 /// in frame pixels; `None` for a box with nothing in it.
-fn solid_point(rgba: &[u8], width: u32, cols: (u32, u32), rows: (u32, u32)) -> Option<(f32, f32)> {
+fn solid_point(rgba: &BoxRaster, cols: (u32, u32), rows: (u32, u32)) -> Option<(f32, f32)> {
     let (bw, bh) = (cols.1.saturating_sub(cols.0) as usize, rows.1.saturating_sub(rows.0) as usize);
     if bw == 0 || bh == 0 {
         return None;
@@ -6675,8 +6698,7 @@ fn solid_point(rgba: &[u8], width: u32, cols: (u32, u32), rows: (u32, u32)) -> O
     // About 160 cells across the longer side: a stroke is several cells.
     let cell = (bw.max(bh) / 160).max(1);
     let (gw, gh) = (bw.div_ceil(cell), bh.div_ceil(cell));
-    let w = width as usize;
-    let alpha = |x: usize, y: usize| rgba.get(((rows.0 as usize + y) * w + cols.0 as usize + x) * 4 + 3).copied().unwrap_or(0);
+    let alpha = |x: usize, y: usize| rgba.alpha8((cols.0 as usize + x) as i64, (rows.0 as usize + y) as i64);
     // Distance to the nearest uncovered cell, 3 a step and 4 a diagonal;
     // outside the box counts as uncovered.
     const FAR: u32 = u32::MAX / 4;
@@ -10330,11 +10352,14 @@ mod solid_point_tests {
         };
         fill(10, 30);
         fill(55, 95);
-        let (x, y) = super::solid_point(&rgba, w as u32, (10, 190), (10, 95)).unwrap();
+        let frame = (w as u32, h as u32);
+        let raster = super::BoxRaster::from_bytes(&rgba, frame, (10, 95), (10, 190));
+        let (x, y) = super::solid_point(&raster, (10, 190), (10, 95)).unwrap();
         assert!((55.0..95.0).contains(&y) && (10.0..190.0).contains(&x), "({x}, {y}) is not in the thick bar");
-        let centre = super::resolve_anchor(None, &rgba, w as u32, (10, 190), (10, 95));
+        let centre = super::resolve_anchor(None, &raster, (10, 190), (10, 95));
         assert!((30.0..55.0).contains(&centre.1), "the box's centre is the gap: {centre:?}");
-        assert_eq!(super::solid_point(&vec![0u8; w * h * 4], w as u32, (10, 190), (10, 95)), None);
+        let empty = super::BoxRaster::from_bytes(&vec![0u8; w * h * 4], frame, (10, 95), (10, 190));
+        assert_eq!(super::solid_point(&empty, (10, 190), (10, 95)), None);
     }
 }
 

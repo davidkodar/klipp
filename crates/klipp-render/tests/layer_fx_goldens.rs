@@ -62,7 +62,11 @@ fn a_project_from_before_the_stacks_moved_renders_the_same() {
     let mut r = klipp_title::TitleRenderer::new();
     // Re-pinned for OpenType shaping (#1501): the title's letters now
     // kern, which moves them; nothing else in the fixture changed.
-    let goldens = [(0.1f32, 0x1c6eacdcac890cc9u64), (0.5, 0x017c7c10ac3d7544), (2.0, 0x5b8da107b3bde411)];
+    // Re-pinned when a posed or faded title stopped being rounded to whole
+    // levels before the frame's own rounding (#190): against the frames
+    // before, at most 1 level premultiplied, on 131 to 234 of 129,600
+    // pixels.
+    let goldens = [(0.1f32, 0xc4a78c449354acbau64), (0.5, 0xf255e760b78eeba6), (2.0, 0x0ea2e8e8569d4ee0)];
     for (t, want) in goldens {
         let px = r.render_with_window(td, 480, 270, None, t, Some(4.0));
         assert_eq!(fnv(&px), want, "frame at {t} s differs from the build before the move");

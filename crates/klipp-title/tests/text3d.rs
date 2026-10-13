@@ -67,7 +67,7 @@ fn an_extruded_bevelled_word_turns_in_perspective_and_lights_across_the_turn() {
     for t in [0.0f32, 0.5, 1.0, 1.5, 2.0] {
         let export = r.render_with_window(&td, W, H, None, t, Some(4.0));
         let viewer = match r.frame_with_window(&td, W, H, None, t, Some(4.0)) {
-            TitleFrame::Rendered { pixels, .. } => pixels,
+            TitleFrame::Rendered { pixels, .. } => pixels.to_bytes(),
             _ => panic!("at t={t} a turning 3D text is drawn for its time"),
         };
         assert_eq!(viewer, export, "at t={t} the viewer's frame is the export's");
@@ -390,7 +390,7 @@ fn a_3d_text_rises_letter_by_letter() {
     for t in [0.35f32, 0.5] {
         let export = r.render_with_window(&td, W, H, None, t, Some(4.0));
         let viewer = match r.frame_with_window(&td, W, H, None, t, Some(4.0)) {
-            TitleFrame::Rendered { pixels, .. } => pixels,
+            TitleFrame::Rendered { pixels, .. } => pixels.to_bytes(),
             _ => panic!("at t={t} a rising 3D text is drawn for its time"),
         };
         assert_eq!(viewer, export, "at t={t} the viewer's frame is the export's");
@@ -470,7 +470,7 @@ fn a_dressed_3d_word_draws_all_of_its_look() {
     for t in [0.4f32, 2.0] {
         let export = r.render_with_window(&td, W, H, None, t, Some(4.0));
         let viewer = match r.frame_with_window(&td, W, H, None, t, Some(4.0)) {
-            TitleFrame::Rendered { pixels, .. } => pixels,
+            TitleFrame::Rendered { pixels, .. } => pixels.to_bytes(),
             TitleFrame::Placed { .. } | TitleFrame::Glyphs { .. } => r.render_with_window(&td, W, H, None, t, Some(4.0)),
         };
         assert_eq!(viewer, export, "at t={t} the viewer's frame is the export's");

@@ -92,7 +92,8 @@ fn a_placed_frame_is_the_rendered_frame() {
         let klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, rows, .. } = frame else {
             panic!("a scroll is the resting render moved, not a render of its own");
         };
-        assert_eq!(sprite.pixels.len(), want.len());
+        let rest = sprite.pixels.to_bytes();
+        assert_eq!(rest.len(), want.len());
         ids.push(sprite.id);
         // Apply the placement here and compare.
         let mut got = vec![0u8; want.len()];
@@ -104,7 +105,7 @@ fn a_placed_frame_is_the_rendered_frame() {
                 }
                 let d = ((y * w as i32 + x) * 4) as usize;
                 let so = ((sy * w as i32 + sx) * 4) as usize;
-                got[d..d + 4].copy_from_slice(&sprite.pixels[so..so + 4]);
+                got[d..d + 4].copy_from_slice(&rest[so..so + 4]);
                 if opacity < 0.9999 {
                     got[d + 3] = ((got[d + 3] as f32) * opacity).round().clamp(0.0, 255.0) as u8;
                 }
@@ -337,6 +338,7 @@ fn a_custom_curve_shapes_a_slide_the_same_placed_or_rendered() {
         assert_eq!(dy, 0);
         assert!((opacity - p).abs() < 1e-4, "at t={t} the slide fades in with the curve: {opacity} vs {p}");
         offsets.push((dx, 1.0 - p));
+        let rest = sprite.pixels.to_bytes();
         let mut got = vec![0u8; want.len()];
         for y in 0..h as i32 {
             for x in 0..w as i32 {
@@ -346,7 +348,7 @@ fn a_custom_curve_shapes_a_slide_the_same_placed_or_rendered() {
                 }
                 let d = ((y * w as i32 + x) * 4) as usize;
                 let so = ((sy * w as i32 + sx) * 4) as usize;
-                got[d..d + 4].copy_from_slice(&sprite.pixels[so..so + 4]);
+                got[d..d + 4].copy_from_slice(&rest[so..so + 4]);
                 got[d + 3] = ((got[d + 3] as f32) * opacity).round().clamp(0.0, 255.0) as u8;
             }
         }
