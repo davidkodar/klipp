@@ -66,6 +66,13 @@ impl Engine {
         while asked.elapsed() < Duration::from_secs(30) && !landed(&self.moves.lock().unwrap()) {
             std::thread::sleep(Duration::from_millis(5));
         }
+        // And settled: a seek can report again as its frame arrives, and on
+        // a loaded machine that report could come after Play, reading as a
+        // step back (#1806). Quiet for 200 ms since its last report.
+        let last_report = || self.moves.lock().unwrap().last().map(|m| m.0);
+        while asked.elapsed() < Duration::from_secs(30) && last_report().is_some_and(|t| t.elapsed() < Duration::from_millis(200)) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         let t0 = Instant::now();
         self.cmd.send(AppCommand::Play).unwrap();
         let advanced = |m: &[(Instant, f64)]| m.iter().find(|(t, p)| *t >= t0 && *p > secs + 0.5 / fps.as_f64()).map(|m| m.0);
@@ -149,8 +156,13 @@ fn the_shot_after_a_gap_is_taken_over_warm() {
     // Taken over a tick late at most, and anchored where the sound is:
     // the playhead never steps back, not even at the end (every report is
     // clamped to it, the stop's included).
-    let back = moves.windows(2).find(|w| w[1].1 < w[0].1 - 1e-6);
-    assert!(back.is_none(), "the playhead stepped back: {back:?}");
+    let back = moves.windows(2).position(|w| w[1].1 < w[0].1 - 1e-6);
+    // Every report, ms from Play, so a failure says where (#1806).
+    let reports = || {
+        let t0 = moves.first().map(|m| m.0);
+        moves.iter().map(|(t, p)| format!("{:.0} ms {p:.3}", t0.map_or(0.0, |s| t.duration_since(s).as_secs_f64() * 1000.0))).collect::<Vec<_>>()
+    };
+    assert!(back.is_none(), "the playhead stepped back after report {back:?}: {:?}", reports());
     drop(e);
 
     let seq = sequence(vec![track("V1", TrackKind::Video, vec![shot(id, 0, 15, fps), shot(id, 16, 30, fps)])], fps);
