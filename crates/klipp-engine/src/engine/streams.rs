@@ -131,7 +131,7 @@ impl HeldFrame {
             super::PregradePixels::Srgb8(u8s) => Held::Srgb8(Arc::clone(u8s)),
             super::PregradePixels::Hdr(h) => Held::Hdr(h.clone()),
         };
-        let mut f = Self::new(pixels, width, height, None);
+        let mut f = Self::new(pixels, width, height, p.pts);
         f.pregrade = Some(p.clone());
         f
     }
@@ -167,6 +167,7 @@ impl HeldFrame {
                 ..h.clone()
             }),
         })
+        .with_pts(self.pts)
     }
 
     fn cpu_codes(&self, h: &HdrInput) -> Arc<klipp_color::hdr::SceneCodes> {

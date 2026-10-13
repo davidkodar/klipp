@@ -42,6 +42,8 @@ mod grade_keys_render;
 mod grade_mix;
 #[path = "../grade_render_scale.rs"]
 mod grade_render_scale;
+#[path = "../held_outputs_parked.rs"]
+mod held_outputs_parked;
 #[path = "../inspect_by_path.rs"]
 mod inspect_by_path;
 #[path = "../legacy_route_gone.rs"]

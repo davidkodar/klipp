@@ -4669,6 +4669,12 @@ impl GraphExecutor {
         self.held.token = source;
     }
 
+    /// The parked frame's source runs hold outputs for now, if any: set
+    /// around one clip's grade, and none outside it.
+    pub fn holding_for(&self) -> Option<&crate::held::HeldSource> {
+        self.held.token.as_ref()
+    }
+
     /// The held outputs' counts: hits, misses, heavy nodes not held,
     /// entries stored.
     pub fn held_counts(&self) -> crate::held::HeldCounts {

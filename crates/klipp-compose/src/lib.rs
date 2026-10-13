@@ -21,7 +21,7 @@ pub mod selfcheck;
 pub const MEDIA_READERS: usize = 4;
 
 pub use render::{
-    LinearFrameProviderFn,
+    HeldFile, LinearFrameProviderFn,
     active_layers, frame_snapshot, ActiveLayer, DisplayDelivery, FrameSource, GlobalLut, GpuPixels, Inspect, InspectAt, Inspection, RenderOptions,
     RenderStats, Renderer, EFFECTS_BLENDED_APART, EFFECTS_BLENDED_ON_CPU, EFFECTS_ON_CPU, EFFECTS_ON_CPU_KERNELS, EFFECT_MASKS_UNAVAILABLE, GPU_STACK_DECLINES, PLAN_EFFECT_CLIPS, PLAN_EFFECT_FALLBACKS,
     SourceFrame, SourcePixels, frame_index, frame_blends, over_u8_straight, gpu_composite_enabled};

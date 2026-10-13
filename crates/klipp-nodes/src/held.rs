@@ -74,6 +74,10 @@ pub struct HeldSource {
     /// The decoded frame's size before it was fitted to the render.
     pub decoded: (u32, u32),
     pub retime: Retime,
+    /// The proxy the frame is shown from, when it is: its path, length
+    /// and modification time. The neighbours a denoiser reads are the
+    /// original's (`path`), so both files are the picture.
+    pub proxy: Option<(PathBuf, u64, SystemTime)>,
 }
 
 /// What else a run's output depends on.
@@ -536,6 +540,7 @@ mod tests {
             pts_micros: 400_000,
             decoded: (4, 2),
             retime: Retime { speed: 1.0, reverse: false, source_at_clip_time: 0.4, media_fps: Some(25.0), conform_fps: None },
+            proxy: None,
         }
     }
 
@@ -591,6 +596,7 @@ mod tests {
         assert_ne!(with(&|s| s.retime.reverse = true), base, "reversed");
         assert_ne!(with(&|s| s.retime.source_at_clip_time = 0.41), base, "a varispeed's other sample");
         assert_ne!(with(&|s| s.retime.conform_fps = Some(24.0)), base, "conformed");
+        assert_ne!(with(&|s| s.proxy = Some(("/m.proxy.mov".into(), 5, SystemTime::UNIX_EPOCH))), base, "shown from a proxy");
 
         let run = |f: &dyn Fn(&mut RunEnv)| {
             let mut e = env();

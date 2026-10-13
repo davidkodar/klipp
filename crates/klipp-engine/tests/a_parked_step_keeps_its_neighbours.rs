@@ -43,6 +43,65 @@ fn a_step_with_held_neighbours_draws_the_fresh_frame() {
     assert_eq!(a.len(), b.len());
     let differ = a.iter().zip(&b).filter(|(x, y)| x != y).count();
     assert_eq!(differ, 0, "{differ} bytes differ from a render without the hold");
+    // The denoise's output was held between the steps (#1863): taken, not
+    // run, on the steps after the first; the engine without the hold
+    // never holds one.
+    assert!(held_hits(&dragged) >= 2, "the drag took the denoise held: {:#?}", dragged.trail());
+    assert_eq!(held_hits(&fresh), 0, "{:?}", fresh.trail().last());
+}
+
+/// The renderer's held-output hits the engine last noted, 0 if none.
+fn held_hits(parked: &common::Parked) -> u64 {
+    held_counts(parked).0
+}
+
+/// The renderer's held-output hits and misses the engine last noted.
+fn held_counts(parked: &common::Parked) -> (u64, u64) {
+    parked
+        .trail()
+        .iter()
+        .rev()
+        .find_map(|l| {
+            let mut words = l.split("held outputs ").nth(1)?.split(' ');
+            let hits = words.next()?.parse().ok()?;
+            let misses = words.nth(1)?.parse().ok()?;
+            Some((hits, misses))
+        })
+        .unwrap_or((0, 0))
+}
+
+/// Playing empties the held outputs (#1863): back on the same parked
+/// frame, the next step runs the denoise again, a miss, though its key
+/// is the one held before.
+#[test]
+fn playing_empties_the_held_outputs() {
+    let Some(src) = common::source("tnr-held-play", 320, 180, common::PQ_TAGS) else {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    };
+    let parked = common::Parked::start_with(src, 320, 180, denoised(0.5));
+    parked.begin_drag();
+    for stops in [0.6, 0.7] {
+        parked.step(stops).expect("a step shows a frame");
+    }
+    parked.end_drag().expect("the release shows a frame");
+    parked.settle();
+    let (hits, _) = held_counts(&parked);
+    assert!(hits >= 1, "the drag hit: {:#?}", parked.trail());
+    parked.send(klipp_core::AppCommand::Play);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    parked.send(klipp_core::AppCommand::Pause);
+    parked.settle();
+    let g = parked.generation();
+    parked.send(klipp_core::AppCommand::SetPlayhead(common::frame_tc(10, parked.fps)));
+    parked.settle_after(g, std::time::Duration::from_secs(20)).expect("the frame parked again");
+    let (_, misses) = held_counts(&parked);
+    parked.begin_drag();
+    parked.step(0.8).expect("a step shows a frame");
+    parked.end_drag().expect("the release shows a frame");
+    parked.settle();
+    let (_, after) = held_counts(&parked);
+    assert!(after > misses, "the step after playing missed: {misses} -> {after} {:#?}", parked.trail());
 }
 
 /// A file rewritten on disk while parked (#1863): the next step reads the
