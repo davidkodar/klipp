@@ -25,7 +25,7 @@ fn title(tb: TextBox) -> TitleData {
 /// rendered for its time, never a resting render placed.
 fn viewer(r: &mut TitleRenderer, td: &TitleData, t: f32) -> Vec<u8> {
     match r.frame_with_window(td, W, H, None, t, Some(4.0)) {
-        TitleFrame::Rendered { pixels, .. } => pixels,
+        TitleFrame::Rendered { pixels, .. } => pixels.to_bytes(),
         _ => panic!("at t={t} a keyed text is rendered for its time"),
     }
 }

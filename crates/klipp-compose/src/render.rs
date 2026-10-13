@@ -2246,7 +2246,7 @@ impl Renderer {
                                 band: s.focus.map_or(0.5, |(_, f)| f.band),
                                 edge_opacity: s.focus.map_or(1.0, |(_, f)| f.edge_opacity),
                             });
-                            p.stack_layer_place_sprite_posed(slot, sprite.id, &sprite.pixels, dx, dy, opacity, scale, anchor, under, shape, r.0, r.1)
+                            p.stack_layer_place_sprite_posed(slot, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), dx, dy, opacity, scale, anchor, under, shape, r.0, r.1)
                         })
                     }
                     klipp_title::TitleFrame::Glyphs { sprite, poses, rows: r } => {
@@ -2254,14 +2254,15 @@ impl Renderer {
                         let packed: Vec<[f32; 16]> = poses.iter().map(|p| p.packed()).collect();
                         match &sprite.units {
                             Some(u) => self.executor.gpu_pipeline_or_init().is_some_and(|p| {
-                                p.stack_layer_place_glyphs(slot, sprite.id, &sprite.pixels, (u.x0, u.y0, u.w, u.h, &u.index), &packed, r.0, r.1)
+                                p.stack_layer_place_glyphs(slot, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), (u.x0, u.y0, u.w, u.h, &u.index), &packed, r.0, r.1)
                             }),
                             None => false,
                         }
                     }
                     klipp_title::TitleFrame::Rendered { pixels, rows: r } => {
                         rows = r;
-                        self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_u8_rows(slot, &pixels, r.0, r.1))
+                        // Only the box the title covers goes up (#190).
+                        self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_f16_box(slot, &pixels.texels, sprite_box(&pixels)))
                     }
                 }
             }
@@ -3368,19 +3369,21 @@ impl Renderer {
     /// start here, so the title-specific steps exist once.
     fn title_linear_at(&mut self, clip: &Clip, td: &klipp_timeline::TitleData, t: f64, width: u32, height: u32) -> Vec<f32> {
         let total = (clip.timeline_out - clip.timeline_in).to_secs_f64() as f32;
-        let u8s = {
+        // Unrounded (#190): the title's layers as stacked and posed, in
+        // byte units, decoded once here.
+        let stack = {
             let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
             let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
-            self.titles.render_with_window(td, width, height, gpu, t as f32, Some(total))
+            self.titles.render_with_window_stack(td, width, height, gpu, t as f32, Some(total))
         };
         if tracing::enabled!(tracing::Level::DEBUG) {
-            let opaque = u8s.chunks_exact(4).step_by(64).filter(|p| p[3] > 0).count() * 64;
+            let opaque = stack.chunks_exact(4).step_by(64).filter(|p| p[3] >= 0.5).count() * 64;
             tracing::debug!(
                 "TITLE_LAYER clip={} t={t:.2}/{total:.2} {width}x{height} objects={} text={:?} font={} size={} opaque_px~{opaque}",
                 clip.id, td.objects.len(), td.text(), td.font_name(), td.font_size(),
             );
         }
-        let mut linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s);
+        let mut linear = srgb_stack_to_linear(&stack);
         let blur = self.titles.last_blur();
         if blur > 0.5 {
             // The blur entrance, as the GPU stack blurs the placed sprite.
@@ -4896,6 +4899,22 @@ pub fn clip_effects(
             list_effects(clip, time, fps, resolved, pin)
         }
     }
+}
+
+/// A title raster's box as the GPU stack takes it (#190).
+fn sprite_box(r: &klipp_title::BoxRaster) -> klipp_effects::gpu::SpriteBox {
+    klipp_effects::gpu::SpriteBox { x0: r.x0, y0: r.y0, w: r.w, h: r.h }
+}
+
+/// A title's stack in byte units (straight-alpha sRGB 0..255) as linear
+/// light, alpha 0..1: what the GPU stack's sprite decode does, on the CPU.
+fn srgb_stack_to_linear(stack: &[f32]) -> Vec<f32> {
+    use rayon::prelude::*;
+    let decode = |v: f32| {
+        let c = (v / 255.0).max(0.0);
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    stack.par_chunks(4).flat_map_iter(|p| [decode(p[0]), decode(p[1]), decode(p[2]), (p[3] / 255.0).clamp(0.0, 1.0)]).collect()
 }
 
 /// The gain on a title's light for a white of `nits` in a delivery

@@ -45,6 +45,23 @@ fn all_modes() -> [BlendMode; 13] {
     ]
 }
 
+/// A frame of bytes as the title renderer hands a sprite on: the box it
+/// covers in half floats (#190).
+fn raster(rgba: &[u8]) -> klipp_title::BoxRaster {
+    klipp_title::BoxRaster::from_bytes(rgba, (W, H), (0, H), (0, W))
+}
+
+fn sprite_box(r: &klipp_title::BoxRaster) -> klipp_effects::gpu::SpriteBox {
+    klipp_effects::gpu::SpriteBox { x0: r.x0, y0: r.y0, w: r.w, h: r.h }
+}
+
+/// A CPU twin's frame (byte units, unrounded) as a layer, through the
+/// half-float box upload.
+fn upload_stack(gpu: &mut klipp_effects::gpu::GpuEffectsPipeline, stack: &[f32]) -> bool {
+    let r = klipp_title::BoxRaster::from_stack(stack, (W, H), (0, H), (0, W));
+    gpu.stack_layer_from_srgb_f16_box(0, &r.texels, sprite_box(&r))
+}
+
 fn worst_level(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max) * 255.0
 }
@@ -149,13 +166,19 @@ fn a_placed_sprite_is_the_shifted_and_faded_upload() {
         let want = gpu.stack_download_linear();
 
         assert!(gpu.stack_begin(W, H, 1));
-        assert!(gpu.stack_layer_place_sprite(0, 77, &rgba, dx, dy, opacity, y0, y1));
+        let r = raster(&rgba);
+        assert!(gpu.stack_layer_place_sprite(0, 77, &r.texels, sprite_box(&r), dx, dy, opacity, y0, y1));
         assert!(gpu.stack_sprite_resident(77));
         assert!(gpu.stack_blend(0, 1.0, 0));
         assert!(gpu.stack_finish_into_chain(true));
         let got = gpu.stack_download_linear();
-        let worst = want.iter().zip(&got).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
-        assert!(worst < 1e-5, "placed sprite ({dx}, {dy}, {opacity}) differs from the shifted upload by {worst}");
+        // The sprite's bytes in half floats, and its alpha faded unrounded
+        // where the reference above rounds it to a whole level: half a
+        // level from that rounding, a little more from the half floats.
+        let worst = worst_level(&want, &got);
+        let at = want.iter().zip(&got).enumerate().max_by(|a, b| (a.1 .0 - a.1 .1).abs().total_cmp(&(b.1 .0 - b.1 .1).abs())).map(|(i, _)| i).unwrap_or(0);
+        let px = at / 4;
+        assert!(worst <= 0.6, "placed sprite ({dx}, {dy}, {opacity}) differs from the shifted upload by {worst:.3} levels at {px}: want {:?} got {:?} bytes {:?}", &want[px * 4..px * 4 + 4], &got[px * 4..px * 4 + 4], &shifted[px * 4..px * 4 + 4]);
     }
 }
 
@@ -186,35 +209,34 @@ fn a_posed_sprite_is_the_cpu_pose_uploaded() {
         (0, 6, 1.0, 1.0, None, (8, 16)),
     ];
     for (dx, dy, opacity, scale, under, rows) in cases {
-        let want_u8 = klipp_title::pose_sprite(&rgba, W, H, dx, dy, opacity, scale, anchor, under, None, rows);
+        let r = raster(&rgba);
+        let want_stack = klipp_title::pose_sprite(&r, W, H, dx, dy, opacity, scale, anchor, under, None, rows);
         assert!(gpu.stack_begin(W, H, 1));
-        assert!(gpu.stack_layer_from_srgb_u8_rows(0, &want_u8, 0, H));
+        assert!(upload_stack(&mut gpu, &want_stack));
         assert!(gpu.stack_blend(0, 1.0, 0));
         assert!(gpu.stack_finish_into_chain(true));
         let want = gpu.stack_download_linear();
 
         assert!(gpu.stack_begin(W, H, 1));
-        assert!(gpu.stack_layer_place_sprite_posed(0, 91, &rgba, dx, dy, opacity, scale, anchor, under, None, rows.0, rows.1));
+        assert!(gpu.stack_layer_place_sprite_posed(0, 91, &r.texels, sprite_box(&r), dx, dy, opacity, scale, anchor, under, None, rows.0, rows.1));
         assert!(gpu.stack_blend(0, 1.0, 0));
         assert!(gpu.stack_finish_into_chain(true));
         let got = gpu.stack_download_linear();
         let worst = worst_level(&want, &got);
-        // Unscaled with nothing under: the same bytes, decoded. Scaled
-        // or blended: the twin stores whole sRGB codes and a bilinear
-        // sum that lands on a tie can round either way — one code, which
-        // at the bright end is 2.2 levels of linear light.
-        let tolerance = if scale == 1.0 && under.is_none() { 1e-3 } else { 2.3 };
+        // Both unrounded (#190): what is left is the twin's frame going up
+        // in half floats and the GPU's float against the CPU's.
+        let tolerance = 0.5;
         let at = want.iter().zip(&got).enumerate().max_by(|a, b| (a.1 .0 - a.1 .1).abs().total_cmp(&(b.1 .0 - b.1 .1).abs())).map(|(i, _)| i).unwrap_or(0);
         let px = at / 4;
         assert!(
             worst <= tolerance,
-            "posed sprite ({dx}, {dy}, {opacity}, ×{scale}, {under:?}, rows {rows:?}) differs by {worst:.3} levels at pixel ({}, {}) channel {}: twin {:?} gpu {:?}, twin bytes {:?}",
+            "posed sprite ({dx}, {dy}, {opacity}, ×{scale}, {under:?}, rows {rows:?}) differs by {worst:.3} levels at pixel ({}, {}) channel {}: twin {:?} gpu {:?}, twin stack {:?}",
             px % W as usize,
             px / W as usize,
             at % 4,
             &want[px * 4..px * 4 + 4],
             &got[px * 4..px * 4 + 4],
-            &want_u8[px * 4..px * 4 + 4],
+            &want_stack[px * 4..px * 4 + 4],
         );
     }
 }
@@ -248,9 +270,10 @@ fn a_faded_sprite_is_the_cpu_fade_uploaded() {
         let fade = ScreenFade::new(edges, focus).unwrap();
         let rows = (0, H);
         let anchor = (W as f32 / 2.0, H as f32 / 2.0);
-        let want_u8 = klipp_title::pose_sprite(&rgba, W, H, dx, dy, opacity, scale, anchor, under, Some(fade), rows);
+        let r = raster(&rgba);
+        let want_stack = klipp_title::pose_sprite(&r, W, H, dx, dy, opacity, scale, anchor, under, Some(fade), rows);
         assert!(gpu.stack_begin(W, H, 1));
-        assert!(gpu.stack_layer_from_srgb_u8_rows(0, &want_u8, 0, H));
+        assert!(upload_stack(&mut gpu, &want_stack));
         assert!(gpu.stack_blend(0, 1.0, 0));
         assert!(gpu.stack_finish_into_chain(true));
         let want = gpu.stack_download_linear();
@@ -265,14 +288,13 @@ fn a_faded_sprite_is_the_cpu_fade_uploaded() {
             edge_opacity: focus.map_or(1.0, |(_, f)| f.edge_opacity),
         };
         assert!(gpu.stack_begin(W, H, 1));
-        assert!(gpu.stack_layer_place_sprite_posed(0, 93, &rgba, dx, dy, opacity, scale, anchor, under, Some(sprite_shape), rows.0, rows.1));
+        assert!(gpu.stack_layer_place_sprite_posed(0, 93, &r.texels, sprite_box(&r), dx, dy, opacity, scale, anchor, under, Some(sprite_shape), rows.0, rows.1));
         assert!(gpu.stack_blend(0, 1.0, 0));
         assert!(gpu.stack_finish_into_chain(true));
         let got = gpu.stack_download_linear();
-        // One smoothstep on both sides; where alpha lands on a half code
-        // the GPU's float can round the other way.
+        // One smoothstep on both sides, unrounded on both (#190).
         let worst = worst_level(&want, &got);
-        assert!(worst <= 2.3, "faded sprite ({edges:?}, {focus:?}, {dx}, {dy}, {opacity}, ×{scale}, {under:?}) differs by {worst:.3} levels");
+        assert!(worst <= 0.5, "faded sprite ({edges:?}, {focus:?}, {dx}, {dy}, {opacity}, ×{scale}, {under:?}) differs by {worst:.3} levels");
         if under.is_none() {
             // And it shows: an edge that fades is fainter than the middle.
             let alpha = |x: u32, y: u32| got[((y * W + x) * 4 + 3) as usize];
@@ -418,16 +440,17 @@ fn posed_glyphs_are_the_cpu_glyph_pose_uploaded() {
         vec![turned(0, 0.6, 1.0, 0.0), turned(1, -1.2, 1.4, 3.0), turned(2, std::f32::consts::FRAC_PI_2, 0.8, -2.0)],
     ];
     for (n, poses) in cases.iter().enumerate() {
-        let want_u8 = klipp_title::pose_sprite_glyphs(&rgba, W, H, &units, poses, (0, H));
+        let r = raster(&rgba);
+        let want_stack = klipp_title::pose_sprite_glyphs(&r, W, H, &units, poses, (0, H));
         assert!(gpu.stack_begin(W, H, 1));
-        assert!(gpu.stack_layer_from_srgb_u8_rows(0, &want_u8, 0, H));
+        assert!(upload_stack(&mut gpu, &want_stack));
         assert!(gpu.stack_blend(0, 1.0, 0));
         assert!(gpu.stack_finish_into_chain(true));
         let want = gpu.stack_download_linear();
 
         let packed: Vec<[f32; 16]> = poses.iter().map(|p| p.packed()).collect();
         assert!(gpu.stack_begin(W, H, 1));
-        assert!(gpu.stack_layer_place_glyphs(0, 93, &rgba, (units.x0, units.y0, units.w, units.h, &units.index), &packed, 0, H));
+        assert!(gpu.stack_layer_place_glyphs(0, 93, &r.texels, sprite_box(&r), (units.x0, units.y0, units.w, units.h, &units.index), &packed, 0, H));
         assert!(gpu.stack_blend(0, 1.0, 0));
         assert!(gpu.stack_finish_into_chain(true));
         let got = gpu.stack_download_linear();
@@ -435,14 +458,14 @@ fn posed_glyphs_are_the_cpu_glyph_pose_uploaded() {
         let at = want.iter().zip(&got).enumerate().max_by(|a, b| (a.1 .0 - a.1 .1).abs().total_cmp(&(b.1 .0 - b.1 .1).abs())).map(|(i, _)| i).unwrap_or(0);
         let px = at / 4;
         assert!(
-            worst <= 2.3,
-            "posed glyphs case {n} differ by {worst:.3} levels at pixel ({}, {}) channel {}: twin {:?} gpu {:?}, twin bytes {:?}",
+            worst <= 0.5,
+            "posed glyphs case {n} differ by {worst:.3} levels at pixel ({}, {}) channel {}: twin {:?} gpu {:?}, twin stack {:?}",
             px % W as usize,
             px / W as usize,
             at % 4,
             &want[px * 4..px * 4 + 4],
             &got[px * 4..px * 4 + 4],
-            &want_u8[px * 4..px * 4 + 4],
+            &want_stack[px * 4..px * 4 + 4],
         );
     }
 }

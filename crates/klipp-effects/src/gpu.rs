@@ -424,6 +424,7 @@ pub struct GpuEffectsPipeline {
     alpha_form_pipeline: wgpu::ComputePipeline,
     sprite_rows_pipeline: wgpu::ComputePipeline,
     sprite_rows_f16_pipeline: wgpu::ComputePipeline,
+    sprite_box_f16_pipeline: wgpu::ComputePipeline,
     matte_extract_pipeline: wgpu::ComputePipeline,
     mask_min_h_pipeline: wgpu::ComputePipeline,
     mask_min_v_pipeline: wgpu::ComputePipeline,
@@ -1453,6 +1454,7 @@ impl GpuEffectsPipeline {
         let alpha_form_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_form", SHADER_ALPHA_FORM);
         let sprite_rows_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_rows", SHADER_SPRITE_ROWS);
         let sprite_rows_f16_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_rows_f16", SHADER_SPRITE_ROWS_F16);
+        let sprite_box_f16_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_box_f16", SHADER_SPRITE_BOX_F16);
         let sprite_place_pipeline = create_pipeline(&device, &pipeline_layout, "sprite_place", SHADER_SPRITE_PLACE);
         let storage_entry = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
             binding,
@@ -1674,6 +1676,7 @@ impl GpuEffectsPipeline {
             alpha_form_pipeline,
             sprite_rows_pipeline,
             sprite_rows_f16_pipeline,
+            sprite_box_f16_pipeline,
             matte_extract_pipeline,
             mask_min_h_pipeline,
             mask_min_v_pipeline,
@@ -5514,8 +5517,8 @@ impl GpuEffectsPipeline {
     /// when `id` is not resident; rows `y0..y1` are the destination rows
     /// it covers, the rest of the layer is cleared.
     #[allow(clippy::too_many_arguments)]
-    pub fn stack_layer_place_sprite(&mut self, i: usize, id: u64, pixels: &[u8], dx: i32, dy: i32, opacity: f32, y0: u32, y1: u32) -> bool {
-        self.stack_layer_place_sprite_posed(i, id, pixels, dx, dy, opacity, 1.0, (0.0, 0.0), None, None, y0, y1)
+    pub fn stack_layer_place_sprite(&mut self, i: usize, id: u64, texels: &[u32], bx: SpriteBox, dx: i32, dy: i32, opacity: f32, y0: u32, y1: u32) -> bool {
+        self.stack_layer_place_sprite_posed(i, id, texels, bx, dx, dy, opacity, 1.0, (0.0, 0.0), None, None, y0, y1)
     }
 
     /// [`Self::stack_layer_place_sprite`] with the whole pose: the
@@ -5529,7 +5532,8 @@ impl GpuEffectsPipeline {
         &mut self,
         i: usize,
         id: u64,
-        pixels: &[u8],
+        texels: &[u32],
+        bx: SpriteBox,
         dx: i32,
         dy: i32,
         opacity: f32,
@@ -5545,7 +5549,7 @@ impl GpuEffectsPipeline {
         }
         let (width, height) = self.stack_dims;
         let pixel_count = self.stack_pixel_count();
-        if pixels.len() as u64 != pixel_count * 4 {
+        if !bx.fits(texels, width, height) {
             return false;
         }
         let y0 = y0.min(height);
@@ -5562,27 +5566,7 @@ impl GpuEffectsPipeline {
             if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
         };
         let under = under.map(|c| [srgb(c[0]), srgb(c[1]), srgb(c[2]), c[3] as f32 / 255.0]).unwrap_or([0.0; 4]);
-        self.stack_sprite_tick += 1;
-        let tick = self.stack_sprite_tick;
-        let pos = match self.stack_sprites.iter().position(|r| r.id == id) {
-            Some(pos) => pos,
-            None => {
-                if self.stack_sprites.len() >= STACK_SPRITE_CAP {
-                    let oldest = self.stack_sprites.iter().enumerate().min_by_key(|(_, r)| r.used).map(|(i, _)| i).unwrap();
-                    self.stack_sprites.remove(oldest);
-                }
-                let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("stack_resident_sprite"),
-                    size: pixel_count * 4,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-                self.upload(&buffer, 0, pixels);
-                self.stack_sprites.push(ResidentSprite { id, buffer, used: tick, units: None });
-                self.stack_sprites.len() - 1
-            }
-        };
-        self.stack_sprites[pos].used = tick;
+        let pos = self.resident_sprite(id, texels);
         self.write_params(&SpritePlaceParams {
             width,
             height,
@@ -5609,6 +5593,10 @@ impl GpuEffectsPipeline {
             fade_bottom: shape.map_or(0.0, |s| s.bottom),
             fade_left: shape.map_or(0.0, |s| s.left),
             fade_right: shape.map_or(0.0, |s| s.right),
+            bx0: bx.x0,
+            by0: bx.y0,
+            bw: bx.w,
+            bh: bx.h,
             _pad0: 0,
             _pad1: 0,
             _pad2: 0,
@@ -5632,7 +5620,8 @@ impl GpuEffectsPipeline {
         &mut self,
         i: usize,
         id: u64,
-        pixels: &[u8],
+        texels: &[u32],
+        bx: SpriteBox,
         units: (u32, u32, u32, u32, &[u16]),
         glyphs: &[[f32; 16]],
         y0: u32,
@@ -5644,7 +5633,7 @@ impl GpuEffectsPipeline {
         let (width, height) = self.stack_dims;
         let pixel_count = self.stack_pixel_count();
         let (ux0, uy0, uw, uh, index) = units;
-        if pixels.len() as u64 != pixel_count * 4 || index.len() as u64 != (uw as u64) * (uh as u64) || glyphs.is_empty() {
+        if !bx.fits(texels, width, height) || index.len() as u64 != (uw as u64) * (uh as u64) || glyphs.is_empty() {
             return false;
         }
         let y0 = y0.min(height);
@@ -5656,27 +5645,7 @@ impl GpuEffectsPipeline {
         if y1 <= y0 {
             return true;
         }
-        self.stack_sprite_tick += 1;
-        let tick = self.stack_sprite_tick;
-        let pos = match self.stack_sprites.iter().position(|r| r.id == id) {
-            Some(pos) => pos,
-            None => {
-                if self.stack_sprites.len() >= STACK_SPRITE_CAP {
-                    let oldest = self.stack_sprites.iter().enumerate().min_by_key(|(_, r)| r.used).map(|(i, _)| i).unwrap();
-                    self.stack_sprites.remove(oldest);
-                }
-                let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("stack_resident_sprite"),
-                    size: pixel_count * 4,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-                self.upload(&buffer, 0, pixels);
-                self.stack_sprites.push(ResidentSprite { id, buffer, used: tick, units: None });
-                self.stack_sprites.len() - 1
-            }
-        };
-        self.stack_sprites[pos].used = tick;
+        let pos = self.resident_sprite(id, texels);
         if self.stack_sprites[pos].units.as_ref().is_none_or(|u| (u.0, u.1, u.2, u.3) != (ux0, uy0, uw, uh)) {
             let mut packed: Vec<u32> = Vec::with_capacity(index.len().div_ceil(2));
             for pair in index.chunks(2) {
@@ -5703,7 +5672,7 @@ impl GpuEffectsPipeline {
         let flat: Vec<f32> = glyphs.iter().flatten().copied().collect();
         let table = self.sprite_glyph_table.as_ref().unwrap();
         self.upload(table, 0, bytemuck::cast_slice(&flat));
-        self.write_params(&SpriteGlyphsParams { width, height, y0, y1, n: glyphs.len() as u32, ux0, uy0, uw, uh, _p0: 0, _p1: 0, _p2: 0, to_working: self.authored_to_working });
+        self.write_params(&SpriteGlyphsParams { width, height, y0, y1, n: glyphs.len() as u32, ux0, uy0, uw, uh, bx0: bx.x0, by0: bx.y0, bw: bx.w, bh: bx.h, _p0: 0, _p1: 0, _p2: 0, to_working: self.authored_to_working });
         let sprite = &self.stack_sprites[pos];
         let units_buf = &sprite.units.as_ref().unwrap().4;
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -5726,6 +5695,75 @@ impl GpuEffectsPipeline {
             pass.dispatch_workgroups(rows_px.div_ceil(WORKGROUP_SIZE), 1, 1);
         }
         self.submit(enc);
+        true
+    }
+
+    /// The resident sprite `id`, put on the GPU from `texels` when it is
+    /// not there yet: the oldest go first when the count or the bytes
+    /// would pass their caps (#190). Its index in `stack_sprites`.
+    fn resident_sprite(&mut self, id: u64, texels: &[u32]) -> usize {
+        self.stack_sprite_tick += 1;
+        let tick = self.stack_sprite_tick;
+        if let Some(pos) = self.stack_sprites.iter().position(|r| r.id == id) {
+            self.stack_sprites[pos].used = tick;
+            return pos;
+        }
+        let size = ((texels.len().max(2)) * 4) as u64;
+        while !self.stack_sprites.is_empty()
+            && (self.stack_sprites.len() >= STACK_SPRITE_CAP || self.stack_sprites.iter().map(|r| r.buffer.size()).sum::<u64>() + size > STACK_SPRITE_BYTES)
+        {
+            let oldest = self.stack_sprites.iter().enumerate().min_by_key(|(_, r)| r.used).map(|(i, _)| i).unwrap();
+            self.stack_sprites.remove(oldest);
+        }
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("stack_resident_sprite"),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        if !texels.is_empty() {
+            self.upload(&buffer, 0, bytemuck::cast_slice(texels));
+        }
+        self.stack_sprites.push(ResidentSprite { id, buffer, used: tick, units: None });
+        self.stack_sprites.len() - 1
+    }
+
+    /// The bytes the resident sprites take on the GPU.
+    pub fn stack_sprite_bytes(&self) -> u64 {
+        self.stack_sprites.iter().map(|r| r.buffer.size()).sum()
+    }
+
+    /// Layer `i` is a title's box of packed sRGB half floats (`bx`), the
+    /// rest of the layer cleared (#190): only the box goes up.
+    pub fn stack_layer_from_srgb_f16_box(&mut self, i: usize, texels: &[u32], bx: SpriteBox) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() {
+            return false;
+        }
+        let (width, height) = self.stack_dims;
+        if !bx.fits(texels, width, height) {
+            return false;
+        }
+        let pixel_count = self.stack_pixel_count();
+        let layer = std::sync::Arc::clone(&self.stack_layers[i]);
+        let mut enc = self.encoder(Some("stack_sprite_clear"));
+        enc.clear_buffer(&layer, 0, Some(pixel_count * 16));
+        self.submit(enc);
+        if bx.w == 0 || bx.h == 0 {
+            return true;
+        }
+        let bytes = (texels.len() * 4) as u64;
+        if self.stack_sprite_f16.as_ref().is_none_or(|b| b.size() < bytes) {
+            self.stack_sprite_f16 = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("stack_sprite_f16"),
+                size: bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let sprite = self.stack_sprite_f16.as_ref().unwrap();
+        self.upload(sprite, 0, bytemuck::cast_slice(texels));
+        self.write_params(&SpriteBoxParams { width, height, bx0: bx.x0, by0: bx.y0, bw: bx.w, bh: bx.h, _p0: 0, _p1: 0, to_working: self.authored_to_working });
+        self.stack_pass(&self.sprite_box_f16_pipeline, sprite, &layer, (bx.w * bx.h).div_ceil(WORKGROUP_SIZE), "stack_sprite_box_f16");
         true
     }
 
@@ -7131,9 +7169,29 @@ struct SpriteGlyphsParams {
     uy0: u32,
     uw: u32,
     uh: u32,
+    /// The box of the frame the sprite's half floats cover (#190).
+    bx0: u32,
+    by0: u32,
+    bw: u32,
+    bh: u32,
     _p0: u32,
     _p1: u32,
     _p2: u32,
+    /// BT.709 → working space, rows padded to four (#1279).
+    to_working: [[f32; 4]; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct SpriteBoxParams {
+    width: u32,
+    height: u32,
+    bx0: u32,
+    by0: u32,
+    bw: u32,
+    bh: u32,
+    _p0: u32,
+    _p1: u32,
     /// BT.709 → working space, rows padded to four (#1279).
     to_working: [[f32; 4]; 3],
 }
@@ -7177,6 +7235,11 @@ struct SpritePlaceParams {
     fade_bottom: f32,
     fade_left: f32,
     fade_right: f32,
+    /// The box of the frame the sprite's half floats cover (#190).
+    bx0: u32,
+    by0: u32,
+    bw: u32,
+    bh: u32,
     _pad0: u32,
     _pad1: u32,
     _pad2: u32,
@@ -7199,7 +7262,25 @@ pub struct SpriteShape {
     pub edge_opacity: f32,
 }
 
-/// A title's resting render on the GPU; see `stack_sprites`.
+/// The box of the frame a title sprite's half floats cover (#190):
+/// `w * h` pixels from `(x0, y0)`, two `u32` each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SpriteBox {
+    pub x0: u32,
+    pub y0: u32,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl SpriteBox {
+    /// Whether `texels` are this box's and the box lies in the frame.
+    pub fn fits(&self, texels: &[u32], width: u32, height: u32) -> bool {
+        texels.len() as u64 == (self.w as u64) * (self.h as u64) * 2 && self.x0 + self.w <= width && self.y0 + self.h <= height
+    }
+}
+
+/// A title's resting render on the GPU, the box it covers as packed
+/// sRGB half floats (#190); see `stack_sprites`.
 struct ResidentSprite {
     id: u64,
     buffer: wgpu::Buffer,
@@ -7209,8 +7290,13 @@ struct ResidentSprite {
     units: Option<(u32, u32, u32, u32, wgpu::Buffer)>,
 }
 
-/// Sprites kept on the GPU at once: a frame-sized RGBA8 buffer each.
+/// Sprites kept on the GPU at once: the box each covers, eight bytes a
+/// pixel.
 const STACK_SPRITE_CAP: usize = 4;
+/// The most the resident sprites take together (#190): a guard, since a
+/// title's box is usually far smaller than its frame; the sprite being
+/// placed is always kept.
+const STACK_SPRITE_BYTES: u64 = 200 << 20;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -10106,6 +10192,38 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
+// A title's box of packed sRGB half floats into its place in a cleared
+// layer (#190): one invocation a box pixel.
+const SHADER_SPRITE_BOX_F16: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params { width: u32, height: u32, bx0: u32, by0: u32, bw: u32, bh: u32, _p0: u32, _p1: u32, m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32> }
+@group(0) @binding(0) var<storage, read> input: array<u32>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+fn to_ws(c: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(dot(params.m0.xyz, c), dot(params.m1.xyz, c), dot(params.m2.xyz, c));
+}
+
+fn srgb_to_linear_c(c: f32) -> f32 {
+    if (c <= 0.04045) { return c / 12.92; }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if i >= params.bw * params.bh { return; }
+    let x = params.bx0 + i % params.bw;
+    let y = params.by0 + i / params.bw;
+    if x >= params.width || y >= params.height { return; }
+    let rg = unpack2x16float(input[i * 2u]);
+    let ba = unpack2x16float(input[i * 2u + 1u]);
+    output[y * params.width + x] = pack(vec4<f32>(to_ws(vec3<f32>(srgb_to_linear_c(rg.x), srgb_to_linear_c(rg.y), srgb_to_linear_c(ba.x))), ba.y));
+}
+"
+);
+
 const SHADER_SPRITE_ROWS: &str = concat!(
     shader_pixel_storage_wgsl!(),
     "
@@ -10151,7 +10269,8 @@ struct Params {
     anchor_x: f32, anchor_y: f32, under_r: f32, under_g: f32,
     under_b: f32, under_a: f32, focus_axis: u32, band: f32,
     edge_opacity: f32, fade_top: f32, fade_bottom: f32, fade_left: f32,
-    fade_right: f32, _pad0: u32, _pad1: u32, _pad2: u32,
+    fade_right: f32, bx0: u32, by0: u32, bw: u32,
+    bh: u32, _pad0: u32, _pad1: u32, _pad2: u32,
     m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>,
 }
 @group(0) @binding(0) var<storage, read> sprite: array<u32>;
@@ -10190,20 +10309,25 @@ fn shape_alpha(x: i32, y: i32) -> f32 {
     return ay * ax;
 }
 
-// A tap of the sprite, premultiplied, in its sRGB-encoded 0..255 units
-// (alpha 0..1); nothing outside the frame.
-fn tap(x: i32, y: i32) -> vec4<f32> {
-    if x < 0 || y < 0 || x >= i32(params.width) || y >= i32(params.height) {
+// The sprite at frame pixel (x, y), straight: colour in sRGB-encoded
+// 0..255 units, alpha 0..1; nothing outside its box (#190).
+fn texel(x: i32, y: i32) -> vec4<f32> {
+    let bx = x - i32(params.bx0);
+    let by = y - i32(params.by0);
+    if bx < 0 || by < 0 || bx >= i32(params.bw) || by >= i32(params.bh) {
         return vec4<f32>(0.0);
     }
-    let packed = sprite[u32(y) * params.width + u32(x)];
-    let a = f32((packed >> 24u) & 0xFFu) / 255.0;
-    return vec4<f32>(
-        f32((packed >> 0u) & 0xFFu) * a,
-        f32((packed >> 8u) & 0xFFu) * a,
-        f32((packed >> 16u) & 0xFFu) * a,
-        a,
-    );
+    let i = u32(by) * params.bw + u32(bx);
+    let rg = unpack2x16float(sprite[i * 2u]);
+    let ba = unpack2x16float(sprite[i * 2u + 1u]);
+    return vec4<f32>(rg.x * 255.0, rg.y * 255.0, ba.x * 255.0, ba.y);
+}
+
+// A tap of the sprite, premultiplied, in its sRGB-encoded 0..255 units
+// (alpha 0..1).
+fn tap(x: i32, y: i32) -> vec4<f32> {
+    let t = texel(x, y);
+    return vec4<f32>(t.xyz * t.w, t.w);
 }
 
 @compute @workgroup_size(256)
@@ -10215,15 +10339,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var rgb = vec3<f32>(0.0);
     var a8 = 0.0;
     if params.scale == 1.0 {
-        // Unscaled: the pixel as it is, colour kept under zero alpha,
-        // exactly what the upload of the same bytes decodes to.
-        let sx = x - params.dx;
-        let sy = y - params.dy;
-        if sx >= 0 && sy >= 0 && sx < i32(params.width) && sy < i32(params.height) {
-            let packed = sprite[u32(sy) * params.width + u32(sx)];
-            rgb = vec3<f32>(f32((packed >> 0u) & 0xFFu), f32((packed >> 8u) & 0xFFu), f32((packed >> 16u) & 0xFFu));
-            a8 = f32((packed >> 24u) & 0xFFu);
-        }
+        // Unscaled: the pixel as it is.
+        let t = texel(x - params.dx, y - params.dy);
+        rgb = t.xyz;
+        a8 = t.w * 255.0;
     } else {
         // The sprite scaled about the anchor: the source position of
         // this pixel's centre, sampled bilinearly, as the CPU twin does.
@@ -10240,16 +10359,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
           + tap(x0, y0 + 1) * ((1.0 - tx) * ty)
           + tap(x0 + 1, y0 + 1) * (tx * ty);
         if s.w > 0.0 {
-            // To whole sRGB levels, as the CPU twin stores them.
-            rgb = floor(s.xyz / s.w + vec3<f32>(0.5));
+            rgb = s.xyz / s.w;
         }
         a8 = s.w * 255.0;
     }
-    let k = params.opacity * shape_alpha(x, y);
-    if k < 0.9999 || params.scale != 1.0 {
-        a8 = clamp(floor(a8 * k + 0.5), 0.0, 255.0);
-    }
-    if params.scale != 1.0 && a8 <= 0.0 {
+    // Unrounded (#190), as the CPU twin: the opacity and the fade
+    // applied; scaled, no colour under an alpha that rounds to nothing.
+    a8 = clamp(a8 * params.opacity * shape_alpha(x, y), 0.0, 255.0);
+    if params.scale != 1.0 && a8 < 0.5 {
         rgb = vec3<f32>(0.0);
     }
     let lin = vec3<f32>(srgb_to_linear_c(rgb.x / 255.0), srgb_to_linear_c(rgb.y / 255.0), srgb_to_linear_c(rgb.z / 255.0));
@@ -10279,7 +10396,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 const SHADER_SPRITE_GLYPHS: &str = concat!(
     shader_pixel_storage_wgsl!(),
     "
-struct Params { width: u32, height: u32, y0: u32, y1: u32, n: u32, ux0: u32, uy0: u32, uw: u32, uh: u32, _p0: u32, _p1: u32, _p2: u32, m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32> }
+struct Params { width: u32, height: u32, y0: u32, y1: u32, n: u32, ux0: u32, uy0: u32, uw: u32, uh: u32, bx0: u32, by0: u32, bw: u32, bh: u32, _p0: u32, _p1: u32, _p2: u32, m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32> }
 @group(0) @binding(0) var<storage, read> sprite: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
@@ -10307,13 +10424,19 @@ fn unit_at(x: i32, y: i32) -> u32 {
     return (word >> 16u) & 0xFFFFu;
 }
 
+// Glyph `g`'s pixel at (x, y), premultiplied, colour in sRGB-encoded
+// 0..255 units; nothing outside the sprite's box or the glyph (#190).
 fn tap(x: i32, y: i32, g: u32) -> vec4<f32> {
-    if x < 0 || y < 0 || x >= i32(params.width) || y >= i32(params.height) || unit_at(x, y) != g {
+    let bx = x - i32(params.bx0);
+    let by = y - i32(params.by0);
+    if bx < 0 || by < 0 || bx >= i32(params.bw) || by >= i32(params.bh) || unit_at(x, y) != g {
         return vec4<f32>(0.0);
     }
-    let packed = sprite[u32(y) * params.width + u32(x)];
-    let a = f32((packed >> 24u) & 0xFFu) / 255.0;
-    return vec4<f32>(f32((packed >> 0u) & 0xFFu) * a, f32((packed >> 8u) & 0xFFu) * a, f32((packed >> 16u) & 0xFFu) * a, a);
+    let i = u32(by) * params.bw + u32(bx);
+    let rg = unpack2x16float(sprite[i * 2u]);
+    let ba = unpack2x16float(sprite[i * 2u + 1u]);
+    let a = ba.y;
+    return vec4<f32>(rg.x * 255.0 * a, rg.y * 255.0 * a, ba.x * 255.0 * a, a);
 }
 
 @compute @workgroup_size(256)
@@ -10352,20 +10475,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
               + tap(x0, y0 + 1, g) * ((1.0 - tx) * ty)
               + tap(x0 + 1, y0 + 1, g) * (tx * ty);
         if s.w <= 0.0 { continue; }
-        let a8 = clamp(floor(s.w * 255.0 * pose.w + 0.5), 0.0, 255.0);
-        if a8 <= 0.0 { continue; }
-        let a = a8 / 255.0;
-        let rgb = floor(s.xyz / s.w + vec3<f32>(0.5));
+        // Unrounded (#190), as the CPU twin.
+        let a = clamp(s.w * pose.w, 0.0, 1.0);
+        if a * 255.0 < 0.5 { continue; }
+        let rgb = s.xyz / s.w;
         acc = vec4<f32>(rgb * a + acc.xyz * (1.0 - a), a + acc.w * (1.0 - a));
     }
     if acc.w <= 0.0 {
         output[idx] = pack(vec4<f32>(0.0));
         return;
     }
-    // To the bytes the CPU twin stores, then decoded as an upload is.
-    let rgb8 = clamp(floor(acc.xyz / acc.w + vec3<f32>(0.5)), vec3<f32>(0.0), vec3<f32>(255.0));
-    let a8 = clamp(floor(acc.w * 255.0 + 0.5), 0.0, 255.0);
-    output[idx] = pack(vec4<f32>(to_ws(vec3<f32>(srgb_to_linear_c(rgb8.x / 255.0), srgb_to_linear_c(rgb8.y / 255.0), srgb_to_linear_c(rgb8.z / 255.0))), a8 / 255.0));
+    let rgb = acc.xyz / acc.w;
+    output[idx] = pack(vec4<f32>(to_ws(vec3<f32>(srgb_to_linear_c(rgb.x / 255.0), srgb_to_linear_c(rgb.y / 255.0), srgb_to_linear_c(rgb.z / 255.0))), acc.w));
 }
 "
 );
@@ -17652,6 +17773,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_HDR16_TO_LINEAR", shader_hdr16_to_linear()),
         ("SHADER_SCENE_TO_DISPLAY", shader_scene_to_display()),
         ("SHADER_SPRITE_ROWS_F16", SHADER_SPRITE_ROWS_F16),
+        ("SHADER_SPRITE_BOX_F16", SHADER_SPRITE_BOX_F16),
         ("SHADER_DIFFERENCE_KEY", SHADER_DIFFERENCE_KEY),
         ("SHADER_FILM_GRAIN", SHADER_FILM_GRAIN),
         ("SHADER_FOCUS_BLUR_BLEND", SHADER_FOCUS_BLUR_BLEND),

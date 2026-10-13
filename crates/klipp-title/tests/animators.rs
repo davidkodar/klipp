@@ -195,10 +195,13 @@ fn a_title_without_animators_draws_as_before() {
 }
 
 /// The frames above, still twice and at 0.3 s and 0.6 s of each motion,
-/// on the renderer before animators and on this one.
+/// on the renderer before animators and on this one. The staggered
+/// frames moved when posed glyphs stopped being rounded to whole levels
+/// before the frame's own rounding (#190): measured against the frames
+/// before, at most 1 level premultiplied, on 5 to 17 pixels of each.
 const PINNED: [u64; 8] = [
     8183618076000127518, 8183618076000127518,
-    2288517196394469482, 12327069427409248824,
-    10112160826128640253, 2606655398727467395,
+    7048149134191800083, 16027533902423877051,
+    3315793853365973377, 9774031115400215890,
     12440695226491045076, 9925683632799315884,
 ];

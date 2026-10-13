@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 klipp-core = { path = "../klipp-core" }
 klipp-timeline = { path = "../klipp-timeline" }
+# Half floats for the raster the renderer hands on (#190).
+half = { workspace = true }
 fontdue = "0.9"
 # OpenType shaping for titles (#1501): kerning, ligatures and per-run
 # features. Pure Rust; both forbid unsafe code.
