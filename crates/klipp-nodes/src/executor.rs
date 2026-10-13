@@ -3019,7 +3019,8 @@ impl GraphExecutor {
         chain_stats_ledger(&self.last_run_chain_stats);
         self.last_run_declines = std::mem::take(&mut self.run_declines);
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
-        if total_ms > 5.0 {
+        // Only when it is printed: it builds a map and formats every entry.
+        if total_ms > 5.0 && tracing::enabled!(tracing::Level::DEBUG) {
             // Roll up per-node timings: kind#path → total ms across this frame.
             let mut by_kind: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
             for (k, ms) in &per_node_ms {

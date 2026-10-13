@@ -1,10 +1,12 @@
 //! L6, the effect chain's cost (the M2 acceptance spec): an 8-effect
-//! chain at 4K, through the legacy pipeline loop
-//! (`GpuEffectsPipeline::apply_effects`: upload, `run_effects_in_chain`,
-//! download) against the native plan (eight `Effect` nodes in one
-//! submit, seeded from the same pixels and read back the same way). The
-//! native plan must be no slower: a regression here means effects fell
-//! back to per-effect submits (R20).
+//! chain at 4K, through the pipeline's own entry
+//! (`GpuEffectsPipeline::apply_effects`: upload, the eight recorded in
+//! one `chain_run_effects` call and submitted, then a download of its
+//! own) against the native plan (eight `Effect` nodes recorded one by
+//! one, the readback in the same submit, seeded from the same pixels).
+//! "Legacy loop" below is the first. The native plan must be no slower:
+//! a regression here means effects fell back to per-effect submits
+//! (R20).
 //!
 //! A manual probe, like `composite_cost.rs` and `secondary_cost.rs`: it
 //! needs a GPU and prints milliseconds, so it is ignored in the gate.
@@ -23,7 +25,7 @@ use klipp_nodes::GraphExecutor;
 
 const W: u32 = 3840;
 const H: u32 = 2160;
-const RUNS: usize = 20;
+const RUNS: usize = 40;
 
 fn chain() -> Vec<E> {
     vec![
@@ -84,27 +86,47 @@ fn the_native_effect_plan_is_no_slower_than_the_legacy_loop() {
         let _ = legacy.apply_effects(&fx, &px, W, H);
         let _ = native_run(&mut ex);
     }
-    let (mut l, mut n) = (Vec::new(), Vec::new());
-    for _ in 0..RUNS {
-        let t = Instant::now();
-        let a = legacy.apply_effects(&fx, &px, W, H);
-        l.push(t.elapsed().as_secs_f64() * 1000.0);
-        let t = Instant::now();
-        let b = native_run(&mut ex);
-        n.push(t.elapsed().as_secs_f64() * 1000.0);
-        std::hint::black_box((a, b));
+    // The run second in a pair measured 1 to 5% slower, whichever path it
+    // was (#1249): it starts with the first's 133 MB frame just written
+    // and still held. So each goes first in every other pair, and each is
+    // compared with the other in the same place: first with first,
+    // second with second.
+    let (mut l, mut n) = ([Vec::new(), Vec::new()], [Vec::new(), Vec::new()]);
+    for i in 0..RUNS {
+        let legacy_first = i % 2 == 0;
+        let mut legacy_run = || {
+            let t = Instant::now();
+            let a = legacy.apply_effects(&fx, &px, W, H);
+            l[usize::from(!legacy_first)].push(t.elapsed().as_secs_f64() * 1000.0);
+            a
+        };
+        let mut plan_run = || {
+            let t = Instant::now();
+            let b = native_run(&mut ex);
+            n[usize::from(legacy_first)].push(t.elapsed().as_secs_f64() * 1000.0);
+            b
+        };
+        let pair = if legacy_first { (legacy_run(), plan_run()) } else { (plan_run(), legacy_run()) };
+        std::hint::black_box(pair);
     }
     let stats = ex.last_run_chain_stats();
-    let (lm, nm) = (median(l), median(n));
-    eprintln!("L6 at {W}x{H}, 8 effects, median of {RUNS}: legacy loop {lm:.2} ms, native plan {nm:.2} ms ({:+.1}%); native submits {}, flushes {}, effect breaks {}", (nm / lm - 1.0) * 100.0, stats.submits, stats.flushes, stats.effect_breaks);
+    let [l_first, l_second] = l.map(median);
+    let [n_first, n_second] = n.map(median);
+    // The two places' ratios, averaged: the native plan's cost against the
+    // loop's, with the order taken out.
+    let ratio = (n_first / l_first * (n_second / l_second)).sqrt();
+    let (lm, nm) = ((l_first * l_second).sqrt(), (l_first * l_second).sqrt() * ratio);
+    eprintln!(
+        "L6 at {W}x{H}, 8 effects, {RUNS} pairs: legacy loop {l_first:.2} ms first, {l_second:.2} ms second; native plan {n_first:.2} ms first, {n_second:.2} ms second ({:+.1}%); native submits {}, flushes {}, effect breaks {}",
+        (ratio - 1.0) * 100.0, stats.submits, stats.flushes, stats.effect_breaks,
+    );
     assert_eq!((stats.submits, stats.effect_breaks), (1, 0), "the native plan is one submit with no breaks: {stats:?}");
     // Both runs move the frame up and back (about 27 of 28.5 ms at 4K), so
-    // the medians agree to within about a percent and move by that much
-    // between runs; 3% is the noise band. The structural check above is the
-    // sharper one: per-effect submits would show there first. On a quiet
-    // machine the native plan measures about 1.5% slower, in its flush and
-    // copy-out (#1249); the band holds that until it is fixed.
-    assert!(nm <= lm * 1.03, "the native plan ({nm:.2} ms) is slower than the legacy loop ({lm:.2} ms)");
+    // they agree to within about a percent. Compared place for place, on a
+    // quiet machine the native plan measured +0.3 to +1.8%, once +5.1%
+    // (#1249); 3% is the noise band. The structural check above is the
+    // sharper one: per-effect submits would show there first.
+    assert!(ratio <= 1.03, "the native plan ({nm:.2} ms) is slower than the legacy loop ({lm:.2} ms)");
 }
 
 /// L7, the GPU memory the effects' scratch takes (the M2 acceptance spec):
