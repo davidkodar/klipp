@@ -357,6 +357,17 @@ impl DiskRenderCache {
         me
     }
 
+    /// The cap in GB; past it the least recently used frames go, at
+    /// once when the cap shrinks below what is held.
+    pub fn set_max_size_gb(&mut self, gb: u32) {
+        self.max_size_bytes = gb as u64 * 1_073_741_824;
+        self.evict_if_needed();
+    }
+
+    pub fn max_size_gb(&self) -> f64 {
+        self.max_size_bytes as f64 / 1_073_741_824.0
+    }
+
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
@@ -735,6 +746,36 @@ mod tests {
             grade_hash: 0xdead_beef,
             size: (4, 4),
         }
+    }
+
+    /// #1816: the cap set in GB is the cap the cache keeps to. Shrunk
+    /// to 0 below what it holds, it lets everything go at once; raised
+    /// to 1 GB, what it holds stays.
+    #[test]
+    fn the_cap_set_is_the_cap_kept() {
+        let tmp = TmpDir::new("cap");
+        let mut cache = DiskRenderCache::new(tmp.path().to_path_buf(), 1);
+        let mut rgba = vec![0u8; 256 * 256 * 4];
+        let mut x: u32 = 1;
+        for b in rgba.iter_mut() {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *b = x as u8;
+        }
+        cache.put(&make_key(1), &rgba, 256, 256);
+        cache.put(&make_key(2), &rgba, 256, 256);
+        if cache.total_bytes == 0 {
+            eprintln!("SKIP the_cap_set_is_the_cap_kept: the temp dir took no writes");
+            return;
+        }
+        let held = cache.total_bytes;
+        cache.set_max_size_gb(1);
+        assert_eq!(cache.total_bytes, held, "under the cap: kept");
+        assert_eq!(cache.max_size_gb(), 1.0);
+        cache.set_max_size_gb(0);
+        assert_eq!(cache.total_bytes, 0, "over the cap: let go at once");
+        assert!(cache.index.is_empty());
     }
 
     #[test]

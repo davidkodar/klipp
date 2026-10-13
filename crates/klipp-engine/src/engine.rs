@@ -3058,6 +3058,10 @@ impl PlaybackEngine {
                 }
                 self.use_proxies = enabled;
             }
+            AppCommand::SetRenderCacheLimitGb(gb) => {
+                self.render_cache_disk.set_max_size_gb(gb);
+                debug!("Render cache cap {gb} GB");
+            }
             AppCommand::SetRenderCacheEnabled(enabled) => {
                 self.render_cache_disk.set_enabled(enabled);
                 if !enabled {

@@ -1060,6 +1060,13 @@ impl Preferences {
                     title.insert("default_size_pt".into(), serde_json::Value::from(default_title_size()));
                 }
             }
+            // The thumbnail size was a height of 128 to 320 that sized
+            // nothing; thumbnails were always 480 wide, now its default.
+            if let Some(mc) = root.get_mut("media_cache").and_then(|v| v.as_object_mut()) {
+                if mc.contains_key("thumbnail_height") {
+                    mc.insert("thumbnail_height".into(), serde_json::Value::from(default_thumb_h()));
+                }
+            }
             // A fade of 0 ms is no fade: Add Fade In would do nothing.
             if let Some(audio) = root.get_mut("audio").and_then(|v| v.as_object_mut()) {
                 if audio.get("default_fade_duration_ms").and_then(|v| v.as_u64()) == Some(0) {
@@ -1516,7 +1523,9 @@ pub struct MediaCachePrefs {
     /// Skim transcode quality (CRF value, lower = better quality, larger files).
     #[serde(default = "default_skim_quality")]
     pub skim_transcode_quality: u32,
-    /// Poster thumbnail height in pixels.
+    /// How wide a media item's thumbnail is decoded, in pixels: wider
+    /// is sharper on large tiles and costs more to make and keep.
+    /// (Named for the height it was once meant to be.)
     #[serde(default = "default_thumb_h")]
     pub thumbnail_height: u32,
     /// Filmstrip tile height in pixels. Each tile in the timeline clip's
@@ -1539,7 +1548,8 @@ fn default_cache_size_gb() -> u32 { 20 }
 // clip. Users who want finer detail can still select High (24) in
 // the Cache prefs.
 fn default_skim_quality() -> u32 { 30 }
-fn default_thumb_h() -> u32 { 256 }
+/// The width media thumbnails were always decoded at.
+fn default_thumb_h() -> u32 { 480 }
 fn default_filmstrip_h() -> u32 { 128 }
 impl Default for MediaCachePrefs {
     fn default() -> Self {
@@ -2218,7 +2228,7 @@ mod tests {
         assert!(rt.media_cache.audio_cache_dir.is_none());
         assert_eq!(rt.media_cache.max_cache_size_gb, 20);
         assert_eq!(rt.media_cache.skim_transcode_quality, 30);
-        assert_eq!(rt.media_cache.thumbnail_height, 256);
+        assert_eq!(rt.media_cache.thumbnail_height, 480);
 
         // ColorPrefs
         assert!(rt.color.viewer_lut_path.is_none());
@@ -2359,7 +2369,7 @@ mod tests {
         assert_eq!(prefs.system.gpu_preference, klipp_core::GpuPreference::Auto);
         assert_eq!(prefs.audio_hardware.buffer_size, 256);
         assert_eq!(prefs.appearance.accent_color, [0x4a, 0x8f, 0xe7]);
-        assert_eq!(prefs.media_cache.thumbnail_height, 256);
+        assert_eq!(prefs.media_cache.thumbnail_height, 480);
         assert_eq!(prefs.color.scope_update_interval_ms, 32);
         assert_eq!(prefs.title.default_size_pt, 72.0);
         assert_eq!(prefs.timeline.trim_handle_width, 14.0);
@@ -3248,5 +3258,15 @@ mod revision_tests {
     fn an_old_default_title_size_becomes_the_titles_own() {
         assert_eq!(old_file(|v| v["title"]["default_size_pt"] = 48.0.into()).title.default_size_pt, 72.0);
         assert_eq!(old_file(|v| v["title"]["default_size_pt"] = 60.0.into()).title.default_size_pt, 60.0);
+    }
+
+    /// The thumbnail size sized nothing before it acted; an old file's
+    /// value becomes the width thumbnails always had, once.
+    #[test]
+    fn an_old_thumbnail_size_becomes_the_width_they_had() {
+        assert_eq!(old_file(|v| v["media_cache"]["thumbnail_height"] = 192.into()).media_cache.thumbnail_height, 480);
+        let mut current = serde_json::to_value(Preferences::default()).unwrap();
+        current["media_cache"]["thumbnail_height"] = 640.into();
+        assert_eq!(Preferences::from_json_str(&current.to_string()).media_cache.thumbnail_height, 640);
     }
 }

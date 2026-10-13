@@ -1735,6 +1735,10 @@ pub enum AppCommand {
     /// Begin timeline scrubbing — engine may switch to proxy decode for speed.
     /// Enable or disable the smart render cache.
     SetRenderCacheEnabled(bool),
+    /// The render cache's size cap in GB (the cache preferences' Max
+    /// cache size): past it the least recently used frames go, at once
+    /// when it shrinks.
+    SetRenderCacheLimitGb(u32),
     /// Scan cache directories and remove files not referenced by any media in the pool.
     CleanOrphanedCaches,
     /// Cache Manager (feature #78): clear a single cache category by wiping

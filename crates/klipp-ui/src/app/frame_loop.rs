@@ -665,6 +665,7 @@ impl KlippApp {
                 self.prefs.color.lut_interpolation == crate::prefs::LutInterpolation::Tetrahedral,
             ));
             let _ = self.cmd_tx.send(AppCommand::SetSdrTransfer(self.prefs.color.sdr_display_transfer));
+            let _ = self.cmd_tx.send(AppCommand::SetRenderCacheLimitGb(self.prefs.media_cache.max_cache_size_gb));
             // Push the background-performance pref into the live
             // scheduler so user changes take effect immediately
             // (without waiting for the next app launch).

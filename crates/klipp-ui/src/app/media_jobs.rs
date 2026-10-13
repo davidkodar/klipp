@@ -3,6 +3,12 @@
 
 use super::*;
 
+/// How wide a media item's poster thumbnail is decoded: the cache
+/// preferences' thumbnail size, kept to a sane range.
+pub(super) fn poster_width(prefs: &crate::prefs::MediaCachePrefs) -> u32 {
+    prefs.thumbnail_height.clamp(160, 1920)
+}
+
 impl KlippApp {
     pub(super) fn spawn_thumbnail(
         &mut self,
@@ -15,11 +21,11 @@ impl KlippApp {
         let duration_secs = duration.to_secs_f64();
         let seek_secs = duration_secs * 0.1;
         let cache_key = klipp_engine::video_decoder::picture_cache_key(&path);
-        // Decode the media-pool poster at the same resolution the Files
-        // browser already uses. The previous default (160 px on the long
-        // edge) gave 50×90 thumbs for 4K portrait clips, which then
+        // Decode the media-pool poster at the cache preferences' size,
+        // 480 wide unless changed, the Files browser's size. A small size
+        // (160 px once) gave 50×90 thumbs for 4K portrait clips, which then
         // bilinear-upscaled to ~300×500 in the UI — visibly blurry.
-        let max_width = crate::browser::FILE_THUMB_MAX_WIDTH;
+        let max_width = poster_width(&self.prefs.media_cache);
         std::thread::spawn(move || {
             // Try loading from disk cache first (skip if file has rotation — regenerate to apply it)
             let has_rotation = klipp_engine::detect_rotation_from_path(&path) != 0;
@@ -1561,5 +1567,30 @@ mod skim_decode_height_tests {
     fn a_nonsense_preference_cannot_decode_a_two_pixel_frame() {
         assert_eq!(KlippApp::skim_decode_height(1080, 2), 240);
         assert_eq!(KlippApp::skim_decode_height(1080, 0), 240);
+    }
+}
+
+#[cfg(test)]
+mod poster_width_tests {
+    use super::*;
+
+    /// #1816: a media item's thumbnail is decoded as wide as the cache
+    /// preferences' thumbnail size: 320 gives a 320-wide picture, 640 a
+    /// 640-wide one, from the same file.
+    #[test]
+    fn the_thumbnail_is_as_wide_as_the_preference() {
+        let dir = std::env::temp_dir().join(format!("klipp-poster-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("still.png");
+        let img = image::RgbImage::from_fn(1600, 900, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, 128]));
+        img.save(&path).unwrap();
+        let decoded = |size: u32| {
+            let prefs = crate::prefs::MediaCachePrefs { thumbnail_height: size, ..Default::default() };
+            klipp_engine::generate_thumbnail_at_size_non_black(&path, 0.0, 0.0, poster_width(&prefs)).map(|(_, w, _)| w)
+        };
+        let (small, large) = (decoded(320), decoded(640));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(small, Ok(320));
+        assert_eq!(large, Ok(640));
     }
 }

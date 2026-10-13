@@ -2988,6 +2988,31 @@ impl PreferencesPanel {
         // ── LIMITS section ──
         Self::section_header(ui, "LIMITS", theme);
 
+        Self::setting_row_with_subtitle(ui, "Max cache size", "The render cache's cap: past it the least recently used frames go", theme, |ui| {
+            let mut v = prefs.media_cache.max_cache_size_gb;
+            if ui.add(egui::DragValue::new(&mut v).range(1..=500).speed(1.0).suffix(" GB")).changed() {
+                prefs.media_cache.max_cache_size_gb = v; *dirty = true;
+            }
+        });
+
+        Self::setting_row_with_subtitle(ui, "Thumbnail resolution", "How wide a media item's thumbnail is made; wider is sharper on large tiles", theme, |ui| {
+            let sizes = [(320_u32, "320 px"), (480, "480 px"), (640, "640 px"), (960, "960 px")];
+            let current = sizes.iter()
+                .find(|(v, _)| *v == prefs.media_cache.thumbnail_height)
+                .map(|(_, l)| (*l).to_string())
+                .unwrap_or_else(|| format!("{} px", prefs.media_cache.thumbnail_height));
+            egui::ComboBox::from_id_salt("thumb_res")
+                .selected_text(current)
+                .width(80.0)
+                .show_ui(ui, |ui| {
+                    for (val, label) in &sizes {
+                        if ui.selectable_value(&mut prefs.media_cache.thumbnail_height, *val, *label).changed() {
+                            *dirty = true;
+                        }
+                    }
+                });
+        });
+
         Self::setting_row_with_subtitle(
             ui,
             "Filmstrip tile resolution",
@@ -4835,7 +4860,7 @@ mod layout_tests {
     const HIDDEN: &[&str] = &[
         "Monitoring mode", "Normalize target", "Default sync method",
         "Search radius", "Colour space tagging", "Default encoder preset",
-        "Max cache size", "Thumbnail resolution", "Clip corner radius", "Max track height", "Ruler height",
+        "Clip corner radius", "Max track height", "Ruler height",
         "Title-safe area overlay",
         "Show keyboard shortcut hints", "Recent projects to show",
     ];
