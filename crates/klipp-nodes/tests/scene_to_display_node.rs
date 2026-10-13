@@ -63,6 +63,10 @@ fn steps() -> Vec<(String, SceneToDisplay)> {
 fn the_display_step_on_the_chain_draws_the_cpu_step() {
     let mut cpu = GraphExecutor::new_cpu_only();
     let mut gpu = GraphExecutor::new();
+    // A scene-referred clip's run, as the renderer says it is (#1867).
+    for ex in [&mut cpu, &mut gpu] {
+        ex.set_source_domain(klipp_nodes::domains::PictureDomain::Scene);
+    }
     let on_gpu = gpu.gpu_pipeline_or_init().is_some();
     assert!(on_gpu || !required(), "required, but there is no GPU");
     let input = frame();

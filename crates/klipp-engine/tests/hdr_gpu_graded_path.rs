@@ -289,9 +289,13 @@ fn a_masked_effect_on_an_hdr_clip_takes_the_graded_path() {
     graph.splice_before_output(glow);
     assert_eq!(graph.input_of(glow_id, 1), Some(window_id), "the glow reads the window");
 
+    // A scene-referred clip's run, as the renderer says it is (#1867).
+    let scene = klipp_nodes::domains::PictureDomain::Scene;
     let mut cpu = GraphExecutor::new_cpu_only();
+    cpu.set_source_domain(scene);
     let want = cpu.execute_linear(&frame.cpu_scene_linear, &graph, W, H, 0.0, 0, None, None).expect("CPU run").0;
     let mut gpu = GraphExecutor::new();
+    gpu.set_source_domain(scene);
     if gpu.gpu_pipeline_or_init().is_none() {
         assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none_or(|v| v != "1"), "required, but there is no GPU");
         eprintln!("UNVERIFIED: no GPU");
