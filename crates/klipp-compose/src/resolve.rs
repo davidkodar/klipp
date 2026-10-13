@@ -58,14 +58,17 @@ pub fn resolve_effects_at(
 }
 
 /// What an effect node of a picture-truth clip is blended by (node-graph
-/// M2 step 9c): its mix, and the matte its mask port reads, by channel.
+/// M2 step 9c): its mix, and the matte its mask port reads, by channel;
+/// and for a Merge, the picture its `fg` port lays over (#1746).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Blend {
     pub blend: klipp_nodes::params::EffectBlend,
     pub mask: Option<MaskSource>,
+    pub fg: Option<MaskSource>,
 }
 
-/// Where a masked effect's matte comes from, for the run that draws it.
+/// Where a masked effect's matte comes from, for the run that draws it;
+/// or a Merge's picture (#1746).
 #[derive(Clone, Debug, PartialEq)]
 pub enum MaskSource {
     /// A node inside the clip's grade, published by the grade group: the
@@ -242,7 +245,7 @@ fn walk(clip: &Clip, picture: &ClipPicture, time: Timecode, fps: f64, resolved: 
         frame_inputs(clip, &mut effect, t, fps, pin, &mut pinned);
         fx.push(effect);
         nodes.push(node.id);
-        blends.push(blend_of(picture, node));
+        blends.push(blend_of(picture, node, t, &ctx));
     }
     let xf = resolved.unwrap_or_else(|| eval::evaluate_clip_own_transform(clip, t, &ctx));
     let fixed = placement.as_ref().and_then(|(_, f)| f.clone());
@@ -373,10 +376,12 @@ fn plan_revision(w: &Walk, addresses: &[(klipp_graph_format::path::NodePath, Opt
 }
 
 /// `node`'s mix and mask, if it has either.
-fn blend_of(picture: &ClipPicture, node: &Node) -> Option<Blend> {
+fn blend_of(picture: &ClipPicture, node: &Node, t: f64, ctx: &klipp_core::EvalContext) -> Option<Blend> {
     use klipp_effects::mask_mix::MaskChannel;
     let edge = picture.graph.edges.iter().find(|e| e.to == (node.id, "mask".into()));
-    if node.mix.is_none() && edge.is_none() {
+    // A Merge's picture (#1746), from beside the chain as a matte is.
+    let fg = picture.graph.edges.iter().find(|e| e.to == (node.id, "fg".into())).map(|e| mask_source(picture, &e.from.0, e.from.1.as_str(), t, ctx));
+    if node.mix.is_none() && edge.is_none() && fg.is_none() {
         return None;
     }
     // A lifted mask edge with no channel reads red (the migrated read); a
@@ -393,13 +398,14 @@ fn blend_of(picture: &ClipPicture, node: &Node) -> Option<Blend> {
     let blend = klipp_nodes::params::EffectBlend { mix: node.mix.unwrap_or(1.0), channel };
     let mask = edge.map(|e| match &unknown {
         Some(why) => MaskSource::Unavailable(why.clone()),
-        None => mask_source(picture, &e.from.0, e.from.1.as_str()),
+        None => mask_source(picture, &e.from.0, e.from.1.as_str(), t, ctx),
     });
-    Some(Blend { blend, mask })
+    Some(Blend { blend, mask, fg })
 }
 
-/// Where the matte an edge from `from`'s `port` brings comes from.
-fn mask_source(picture: &ClipPicture, from: &NodeId, port: &str) -> MaskSource {
+/// Where the matte (or a Merge's picture) an edge from `from`'s `port`
+/// brings comes from, at clip time `t`.
+fn mask_source(picture: &ClipPicture, from: &NodeId, port: &str, t: f64, ctx: &klipp_core::EvalContext) -> MaskSource {
     let by_id = |id: &NodeId| picture.graph.nodes.iter().find(|n| n.id == *id);
     let Some(producer) = by_id(from) else {
         return MaskSource::Unavailable(format!("{from} isn't in the clip's picture"));
@@ -435,16 +441,31 @@ fn mask_source(picture: &ClipPicture, from: &NodeId, port: &str) -> MaskSource {
         Ok(port) => port,
         Err(why) => return MaskSource::Unavailable(why),
     };
-    match side_node(producer) {
+    match side_node(producer, t, ctx) {
         Ok(node) => MaskSource::Side { node: Box::new(node), port, input },
         Err(why) => MaskSource::Unavailable(format!("{}: {why}", producer.id)),
     }
 }
 
 /// A node beside the chain as the run's node: through the lift's own way
-/// back for a grade's nodes, as the one node of a grade.
-fn side_node(n: &Node) -> Result<klipp_nodes::Node, String> {
-    klipp_timeline::grade_node_for_run(n)
+/// back for a grade's nodes, as the one node of a grade; an effect (a
+/// generator, #1746) as an effect node, animated for the frame.
+fn side_node(n: &Node, t: f64, ctx: &klipp_core::EvalContext) -> Result<klipp_nodes::Node, String> {
+    if klipp_graph_lift::effect_params::tag(n).is_none() {
+        return klipp_timeline::grade_node_for_run(n);
+    }
+    let mut effect = klipp_graph_lift::effect_params::effect_of(n)?;
+    EffectNodeAnim::of(n)?.animate(&mut effect, t, ctx);
+    Ok(klipp_nodes::Node {
+        id: n.id,
+        kind: klipp_nodes::NodeKind::Effect,
+        label: n.label.clone(),
+        enabled: n.enabled,
+        params: klipp_nodes::NodeParams { effects: vec![effect], ..Default::default() },
+        keyframes: Default::default(),
+        output_link: None,
+        input_links: Vec::new(),
+    })
 }
 
 /// A fixed placement's Transform entry as its effect, animated for the

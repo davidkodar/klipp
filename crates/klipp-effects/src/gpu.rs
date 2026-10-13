@@ -181,6 +181,8 @@ pub struct GpuEffectsPipeline {
     glow_blend_pipeline: wgpu::ComputePipeline,
     light_rays_pipeline: wgpu::ComputePipeline,
     vignette_pipeline: wgpu::ComputePipeline,
+    /// The generator effect's pass (#1746).
+    generator_pipeline: wgpu::ComputePipeline,
     film_grain_pipeline: wgpu::ComputePipeline,
     tilt_shift_blend_pipeline: wgpu::ComputePipeline,
     focus_blur_blend_pipeline: wgpu::ComputePipeline,
@@ -927,6 +929,7 @@ impl GpuEffectsPipeline {
         let glow_blend_pipeline = create_pipeline(&device, &transition_pl, "glow_blend", SHADER_GLOW_BLEND);
         let light_rays_pipeline = create_pipeline(&device, &pipeline_layout, "light_rays", SHADER_LIGHT_RAYS);
         let vignette_pipeline = create_pipeline(&device, &pipeline_layout, "vignette", SHADER_VIGNETTE);
+        let generator_pipeline = create_pipeline(&device, &pipeline_layout, "generator", SHADER_GENERATOR);
         let film_grain_pipeline = create_pipeline(&device, &pipeline_layout, "film_grain", SHADER_FILM_GRAIN);
         let tilt_shift_blend_pipeline = create_pipeline(&device, &transition_pl, "tilt_shift_blend", SHADER_TILT_SHIFT_BLEND);
         let focus_blur_blend_pipeline = create_pipeline(&device, &transition_pl, "focus_blur_blend", SHADER_FOCUS_BLUR_BLEND);
@@ -1502,6 +1505,7 @@ impl GpuEffectsPipeline {
             glow_blend_pipeline,
             light_rays_pipeline,
             vignette_pipeline,
+            generator_pipeline,
             film_grain_pipeline,
             tilt_shift_blend_pipeline,
             focus_blur_blend_pipeline,
@@ -7525,6 +7529,21 @@ struct LightRaysParams {
     luma_yg: f32,
     luma_yb: f32,
     _pad_luma: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GeneratorParams {
+    width: u32,
+    height: u32,
+    shape: u32,
+    _pad: u32,
+    a: [f32; 4],
+    b: [f32; 4],
+    dir: [f32; 2],
+    centre: [f32; 2],
+    radius: f32,
+    _pad2: [u32; 3],
 }
 
 #[repr(C)]
@@ -13895,6 +13914,38 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // `factor` scalar applies in linear-light so `amount = -1.0` really
 // means "half the photons reach the edge" rather than "half the
 // sRGB byte value" (which the u8 version did — visibly darker).
+// The generator effect (#1746), as `generator::Gen::at` computes it.
+const SHADER_GENERATOR: &str = concat!(
+    "
+struct Params {
+    width: u32, height: u32, shape: u32, _pad: u32,
+    a: vec4<f32>, b: vec4<f32>,
+    dir: vec2<f32>, centre: vec2<f32>,
+    radius: f32, _p0: u32, _p1: u32, _p2: u32,
+}
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+",
+    shader_linear_helpers_wgsl!(),
+    "
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let d = vec2<f32>(f32(idx % params.width) + 0.5, f32(idx / params.width) + 0.5) - params.centre;
+    var t = 0.0;
+    if params.shape == 1u {
+        t = 0.5 + dot(d, params.dir) / (2.0 * params.radius);
+    } else if params.shape == 2u {
+        t = length(d) / params.radius;
+    }
+    t = clamp(t, 0.0, 1.0);
+    output[idx] = pack(params.a + (params.b - params.a) * t);
+}
+"
+);
+
 const SHADER_VIGNETTE: &str = concat!(
     "
 struct Params { width: u32, height: u32, amount: f32, size: f32, softness: f32, roundness: f32, _pad: u32, _pad2: u32 }
@@ -16729,6 +16780,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_INVERT", SHADER_INVERT),
         ("SHADER_POSTERIZE", SHADER_POSTERIZE),
         ("SHADER_CST", SHADER_CST),
+        ("SHADER_GENERATOR", SHADER_GENERATOR),
         ("SHADER_MOSAIC", SHADER_MOSAIC),
         ("SHADER_EDGE_DETECT", SHADER_EDGE_DETECT),
         ("SHADER_CHANNEL_MIXER", SHADER_CHANNEL_MIXER),

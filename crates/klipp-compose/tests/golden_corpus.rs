@@ -459,6 +459,11 @@ const EFFECTS_IN_A_LATER_BATCH: &[&str] = &[
     // stored frames come with the next recording on main.
     "Flicker",
     "BinocularVignette",
+    // Drawn with a generator beside the chain against the blend's formula
+    // in `merge_render.rs`, and the generator's kernels in klipp-effects'
+    // CPU/GPU parity (#1746).
+    "Merge",
+    "Generator",
 ];
 
 /// One moving, grainy clip carrying `fx` (#1024).

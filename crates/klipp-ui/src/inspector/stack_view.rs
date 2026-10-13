@@ -203,7 +203,7 @@ pub fn new_effect_node(tag: &str) -> Option<Node> {
 }
 
 /// A new effect node for `effect`, with its values, saved as `tag`.
-fn effect_node(tag: &str, effect: &klipp_effects::BuiltinEffect) -> Option<Node> {
+pub(crate) fn effect_node(tag: &str, effect: &klipp_effects::BuiltinEffect) -> Option<Node> {
     let payload = serde_json::to_value(effect).ok()?;
     serde_json::from_value(serde_json::json!({
         "id": uuid::Uuid::new_v4(),
@@ -586,9 +586,32 @@ fn row_card(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip
         mask_channel_row(ui, n, &row.addr, row.read_only, cmds);
     }
     for branch in &row.sub_stacks {
-        let from = display_name(graph, &branch.source, "", false);
+        // By its own name where it has one (a merge's "Gradient").
+        let named = node_at(graph, &branch.source).map_or("", |n| n.label.as_str());
+        let from = display_name(graph, &branch.source, named, false);
         if ui.small_button(format!("{} ← {from}", branch.input.as_str())).on_hover_text("Show the branch in the graph").clicked() {
             cmds.push(AppCommand::RevealGraph { path: branch.source.clone(), select: true });
+        }
+        // An effect beside the chain feeding it (a merge's generator,
+        // #1746): its card here, under what it feeds.
+        let beside = node_at(graph, &branch.source).filter(|n| branch.source.nodes.len() == 1 && klipp_graph_lift::effect_params::tag(n).is_some());
+        if let Some(n) = beside.filter(|_| !row.read_only) {
+            let side = Row {
+                addr: branch.source.clone(),
+                type_id: n.type_id.clone(),
+                label: n.label.clone(),
+                section: row.section,
+                enabled: n.enabled,
+                placed: false,
+                mixable: false,
+                mask_chips: Vec::new(),
+                sub_stacks: Vec::new(),
+                is_group: false,
+                provenance: None,
+                read_only: false,
+                placement: None,
+            };
+            ui.indent(("side_effect", branch.source.clone()), |ui| row_card(ui, theme, state, clip, graph, &side, cmds, clip_time_secs));
         }
     }
     let effect = node.and_then(|n| klipp_graph_lift::effect_params::tag(n).map(|tag| (n, tag))).and_then(|(n, tag)| effect_types().find(|t| t.tag == tag).map(|t| (n, t)));

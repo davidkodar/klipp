@@ -976,6 +976,9 @@ pub(crate) fn apply(
             Some(t) => apply(&t, p, w, h, yw),
             None => p,
         },
+        // A merge is drawn by the plan's layer mixer, with its foreground;
+        // the generator by the chain (`apply_chain`).
+        Merge { .. } | Generator { .. } => p,
     }
 }
 

@@ -25,6 +25,8 @@ use crate::BuiltinEffect;
 
 mod blur;
 mod colour;
+mod composite;
+pub use composite::{BLEND_MODES, MERGE_IN};
 mod film;
 mod geometry;
 mod light;
@@ -48,6 +50,8 @@ pub enum Category {
     Key,
     /// Runs a plug-in.
     PlugIn,
+    /// Brings a second picture in: makes one, or lays one over (#1746).
+    Composite,
     /// A grade node.
     Grade,
 }
@@ -405,7 +409,7 @@ pub struct EffectType {
 
 /// Every built-in effect described so far.
 pub fn effect_types() -> impl Iterator<Item = &'static EffectType> {
-    colour::TYPES.iter().chain(geometry::TYPES).chain(film::TYPES).chain(blur::TYPES).chain(light::TYPES)
+    colour::TYPES.iter().chain(geometry::TYPES).chain(film::TYPES).chain(blur::TYPES).chain(light::TYPES).chain(composite::TYPES)
 }
 
 /// The description of the effect saved under `tag`, if it is described.

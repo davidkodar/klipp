@@ -673,9 +673,12 @@ fn colour_row(ui: &mut egui::Ui, ctx: &mut RowCtx, desc: &ParamDesc, pres: &Pres
     ui.horizontal(|ui| {
         ui.label(label);
         if alpha {
-            let mut c = egui::Color32::from_rgba_premultiplied(bytes[0], bytes[1], bytes[2], bytes[3]);
-            if ui.color_edit_button_srgba(&mut c).changed() {
-                changed = Some(vec![c.r(), c.g(), c.b(), c.a()]);
+            // The bytes are straight colour and alpha: an alpha edit leaves
+            // the colour as it is. Edited as premultiplied, lowering the
+            // alpha darkened the stored colour with it.
+            let mut c = [bytes[0], bytes[1], bytes[2], bytes[3]];
+            if ui.color_edit_button_srgba_unmultiplied(&mut c).changed() {
+                changed = Some(c.to_vec());
             }
         } else {
             let mut c = [bytes[0], bytes[1], bytes[2]];

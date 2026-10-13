@@ -50,6 +50,7 @@ pub mod colour_transform;
 pub mod composite;
 pub mod corner_pin;
 pub mod frei0r_effect;
+pub mod generator;
 pub mod gpu;
 pub mod gpu_context;
 pub mod gpu_scopes;
@@ -888,6 +889,33 @@ pub enum BuiltinEffect {
         softness: f32,
         fringe: f32,
     },
+
+    /// A second picture laid over the clip's, by `blend_mode` and
+    /// `opacity` (#1746): the one wired into its `fg` port from beside the
+    /// picture's chain (a generator, another picture). The renderer draws
+    /// it with the grade's layer mixer; with nothing wired the picture
+    /// passes as it is.
+    Merge {
+        blend_mode: BlendMode,
+        opacity: f32,
+    },
+
+    /// A solid colour or a gradient that replaces the picture it is given
+    /// ([`generator::SHAPES`]): beside a picture's chain, the foreground a
+    /// Merge lays over it (#1746). The colours are authored sRGB bytes,
+    /// alpha straight. A gradient is centred at `center_*` (fractions of
+    /// the frame): a linear one runs at `angle` degrees, `radius` (a
+    /// fraction of the frame's height) either side of its centre; a radial
+    /// one runs out from its centre to `radius`.
+    Generator {
+        shape: u32,
+        color_a: [u8; 4],
+        color_b: [u8; 4],
+        angle: f32,
+        center_x: f32,
+        center_y: f32,
+        radius: f32,
+    },
 }
 
 impl BuiltinEffect {
@@ -1090,6 +1118,11 @@ fn apply_chain(
                 }
                 frame
             }
+            &BuiltinEffect::Generator { shape, color_a, color_b, angle, center_x, center_y, radius } => {
+                let mut frame = frame;
+                generator::fill(&mut frame, &generator::Gen::new(shape, color_a, color_b, angle, center_x, center_y, radius, width, height), width);
+                frame
+            }
             e => cpu::apply(e, frame, width, height, luma),
         };
         i += 1;
@@ -1212,6 +1245,7 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
         BuiltinEffect::PictureTransform { .. } => effect.picture_transform_as_transform().is_some_and(|t| is_identity_effect(&t)),
         // A flicker of nothing, or one whose every jump holds (#989).
         BuiltinEffect::Flicker { amount, hold, .. } => amount.abs() < f32::EPSILON || *hold >= 1.0,
+        BuiltinEffect::Merge { opacity, .. } => *opacity <= 0.0,
         BuiltinEffect::ColourSpaceTransform { input_gamut, input_curve, output_gamut, output_curve, .. } => {
             input_gamut == output_gamut && *input_curve == 0 && *output_curve == 0
         }

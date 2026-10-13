@@ -95,3 +95,28 @@ fn a_difference_keys_plate_is_cleared() {
     assert_eq!(params(&run, id).difference_key.unwrap().plate_path, None);
     one_step(&mut run, &before).unwrap();
 }
+
+/// A merge's gradient beside the chain shows its card under the merge
+/// (#1746): its angle typed there is the gradient's, one step, drawn.
+#[test]
+fn a_merges_gradient_is_edited_under_the_merge() {
+    let t = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+    let mut c = TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))).effect(klipp_effects::BuiltinEffect::Merge { blend_mode: klipp_effects::BlendMode::Normal, opacity: 1.0 }).build();
+    let graph = c.picture_v2().unwrap().picture.graph.clone();
+    let merge = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("merge")).unwrap().id;
+    let id = NodeId::new_v4();
+    let gradient = crate::picture_mattes::source("source.gradient").unwrap();
+    let ops = crate::picture_mattes::source_ops(&graph, &NodePath::new(Root::Clip { clip: c.id.0 }, []), gradient, id, (0.0, 0.0), Some(merge)).unwrap();
+    c.apply_picture_ops(&ops).unwrap();
+    let mut run = Run::new(c.clone());
+    let drawn = run.frame(Vec::new(), egui::Modifiers::NONE);
+    assert!(drawn.iter().any(|(t, _)| t == "fg ← Gradient"), "the branch: {:?}", drawn.iter().map(|d| &d.0).collect::<Vec<_>>());
+    let before = run.clip().picture_v2().unwrap().picture.clone();
+    let at = number_right_of(&mut run, "Angle").expect("the gradient's Angle row");
+    type_into(&mut run, at, "75");
+    let picture = run.clip().picture_v2().unwrap();
+    let node = picture.picture.graph.nodes.iter().find(|n| n.id == id).unwrap();
+    assert!(matches!(klipp_graph_lift::effect_params::effect_of(node).unwrap(), klipp_effects::BuiltinEffect::Generator { angle, .. } if angle == 75.0));
+    one_step(&mut run, &before).unwrap();
+    super::parity_pixels::clip_edit_drawn_on(super::parity_pixels::Routes::Both, super::parity_pixels::SMALL, &c, run.clip()).unwrap();
+}

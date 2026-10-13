@@ -123,7 +123,7 @@ fn covered() -> Vec<&'static klipp_effects::registry::EffectType> {
 
 /// Types made after the old inspector was recorded (#1746, #989): their rows
 /// are the tables' alone, with no old row to match.
-const AFTER_THE_RECORDING: &[&str] = &["klipp.fx.lut_3d", "klipp.fx.colour_space_transform", "klipp.fx.picture_transform", "klipp.fx.flicker", "klipp.fx.binocular_vignette"];
+const AFTER_THE_RECORDING: &[&str] = &["klipp.fx.lut_3d", "klipp.fx.colour_space_transform", "klipp.fx.picture_transform", "klipp.fx.flicker", "klipp.fx.binocular_vignette", "klipp.fx.merge", "klipp.fx.generator"];
 
 #[test]
 fn a_covered_type_names_every_param() {
@@ -342,6 +342,7 @@ const CHOICE_LABELS: &[(&str, &str, &[&str])] = &[
     ("klipp.fx.speed_ramp", "blend_mode", &["Nearest", "Linear"]),
     ("klipp.fx.radial_blur", "mode", &["Zoom", "Spin"]),
     ("klipp.fx.flicker", "target", &["Opacity", "Exposure", "Gamma"]),
+    ("klipp.fx.merge", "blend_mode", &["Normal", "Add", "Multiply", "Screen", "Overlay", "Soft Light", "Hard Light", "Difference", "Exclusion", "Colour Dodge", "Colour Burn", "Darken", "Lighten"]),
 ];
 
 /// Today's sub-headers (the channel mixer's per-output groups).

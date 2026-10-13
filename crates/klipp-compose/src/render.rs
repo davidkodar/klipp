@@ -3135,6 +3135,16 @@ impl Renderer {
                 }
                 self.authored_colours(&mut fx);
                 self.at_render_scale(&mut fx);
+                // An effect beside the chain (a generator a merge lays
+                // over, #1746) is authored as the chain's are.
+                for b in blends.iter_mut().flatten() {
+                    for side in [&mut b.mask, &mut b.fg].into_iter().flatten() {
+                        if let crate::resolve::MaskSource::Side { node, .. } = side {
+                            self.authored_colours(&mut node.params.effects);
+                            self.at_render_scale(&mut node.params.effects);
+                        }
+                    }
+                }
                 // A title's HDR brightness is the render's, not a node of
                 // its picture: put first, as on the list route.
                 if let Some(gain) = self.title_gain_effect(clip) {
@@ -3383,6 +3393,10 @@ impl Renderer {
             match effect {
                 BuiltinEffect::ChromaKey { key_color, .. } => convert(key_color),
                 BuiltinEffect::ColorFade { color, .. } => convert(color),
+                BuiltinEffect::Generator { color_a, color_b, .. } => {
+                    convert(color_a);
+                    convert(color_b);
+                }
                 _ => {}
             }
         }
@@ -4538,6 +4552,9 @@ fn splice_blended(
         let kind = match &fx[i] {
             // A plug-in of its own, its instances kept (M4 step 5).
             BuiltinEffect::Frei0r { .. } => klipp_nodes::NodeKind::Frei0r,
+            // A merge with a picture to lay over: the grade's layer mixer
+            // draws it, that picture on top (#1746).
+            BuiltinEffect::Merge { .. } if blend(i).is_some_and(|b| b.fg.is_some()) => klipp_nodes::NodeKind::LayerMixer,
             e if spills(e) => klipp_nodes::NodeKind::EffectSegment,
             _ => klipp_nodes::NodeKind::Effect,
         };
@@ -4551,35 +4568,60 @@ fn splice_blended(
     let plain: Vec<_> = groups.iter().map(|(k, e, _)| (*k, *e)).collect();
     graph.splice_effects_before_output(&plain, id);
     let mut unavailable = Vec::new();
-    for (g, (_, _, b)) in groups.iter().enumerate() {
+    // Where a matte or a merge's picture comes from in this run: a node
+    // of the grade's, or one beside the chain built into the run.
+    let producer_of = |graph: &mut klipp_nodes::NodeGraph, source_of: &MaskSource, what: &str, unavailable: &mut Vec<String>| match source_of {
+        MaskSource::Grade { node: p, port } if graph.nodes.iter().any(|n| n.id == *p) => Some((*p, *port)),
+        MaskSource::Grade { node: p, .. } => {
+            unavailable.push(format!("its {what} comes from the grade's {p}, which isn't in this run"));
+            None
+        }
+        MaskSource::Side { node: side, port, input } => match (input, source, graded) {
+            (SideInput::Source, Some(from), _) | (SideInput::Graded, _, Some(from)) => {
+                if !graph.nodes.iter().any(|n| n.id == side.id) {
+                    graph.nodes.push((**side).clone());
+                    graph.edges.push(klipp_nodes::Edge { from_node: from, from_port: 0, to_node: side.id, to_port: 0 });
+                }
+                Some((side.id, *port))
+            }
+            _ => {
+                unavailable.push(format!("its {what} reads {}, which this run hasn't", if *input == SideInput::Graded { "the grade's picture" } else { "the clip's source" }));
+                None
+            }
+        },
+        MaskSource::Unavailable(why) => {
+            unavailable.push(why.clone());
+            None
+        }
+    };
+    for (g, (kind, effects, b)) in groups.iter().enumerate() {
         let Some(b) = b else { continue };
         let node = id(g);
-        let mut params = b.blend;
-        let producer = match &b.mask {
-            None => None,
-            Some(MaskSource::Grade { node: p, port }) if graph.nodes.iter().any(|n| n.id == *p) => Some((*p, *port)),
-            Some(MaskSource::Grade { node: p, .. }) => {
-                unavailable.push(format!("its matte comes from the grade's {p}, which isn't in this run"));
-                None
-            }
-            Some(MaskSource::Side { node: side, port, input }) => match (input, source, graded) {
-                (SideInput::Source, Some(from), _) | (SideInput::Graded, _, Some(from)) => {
-                    if !graph.nodes.iter().any(|n| n.id == side.id) {
-                        graph.nodes.push((**side).clone());
-                        graph.edges.push(klipp_nodes::Edge { from_node: from, from_port: 0, to_node: side.id, to_port: 0 });
+        // A merge's picture on the mixer's top port, the picture so far
+        // under it; its blend and opacity on the top one (#1746).
+        if let (klipp_nodes::NodeKind::LayerMixer, Some(fg), Some(BuiltinEffect::Merge { blend_mode, opacity })) = (kind, &b.fg, effects.first()) {
+            match producer_of(graph, fg, "picture", &mut unavailable) {
+                Some((p, port)) => {
+                    for e in graph.edges.iter_mut().filter(|e| e.to_node == node && e.to_port == 0) {
+                        e.to_port = 1;
                     }
-                    Some((side.id, *port))
+                    graph.edges.push(klipp_nodes::Edge { from_node: p, from_port: port, to_node: node, to_port: 0 });
+                    if let Some(n) = graph.nodes.iter_mut().find(|n| n.id == node) {
+                        let top = klipp_nodes::LayerMixerInput { opacity: *opacity, blend_mode: *blend_mode };
+                        n.params.layer_mixer = Some(klipp_nodes::LayerMixerParams { inputs: vec![top, klipp_nodes::LayerMixerInput::default()] });
+                    }
                 }
-                _ => {
-                    unavailable.push(format!("its matte reads {}, which this run hasn't", if *input == SideInput::Graded { "the grade's picture" } else { "the clip's source" }));
-                    None
+                // No picture to lay over: the picture passes.
+                None => {
+                    if let Some(n) = graph.nodes.iter_mut().find(|n| n.id == node) {
+                        n.kind = klipp_nodes::NodeKind::Effect;
+                    }
                 }
-            },
-            Some(MaskSource::Unavailable(why)) => {
-                unavailable.push(why.clone());
-                None
             }
-        };
+            continue;
+        }
+        let mut params = b.blend;
+        let producer = b.mask.as_ref().and_then(|m| producer_of(graph, m, "matte", &mut unavailable));
         if b.mask.is_some() && producer.is_none() {
             // Bypassed: no matte, no effect.
             params.mix = 0.0;

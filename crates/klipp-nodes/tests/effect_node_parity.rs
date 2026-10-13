@@ -37,6 +37,7 @@ const EXEMPT: &[(&str, &str)] = &[
     // and klipp-compose's colour_effects_render.
     ("lut_3d", "reads a file the renderer prepares (#1746)"),
     ("colour_space_transform", "takes tables the renderer prepares (#1746)"),
+    ("merge", "draws its fg port's picture with the layer mixer; alone it passes the picture (#1746)"),
 ];
 
 /// A2's one named exemption: Equalize builds its histogram from a
@@ -130,7 +131,7 @@ fn mean_change(a: &[f32], b: &[f32]) -> f32 {
 fn every_effect_node_matches_the_legacy_chain_on_the_cpu() {
     let (cases, exempt) = cases();
     assert_eq!(cases.len() / 2 + exempt, effect_types().count(), "covered + exempt is every type");
-    assert_eq!(effect_types().count(), 59, "the registry's size the spec counts");
+    assert_eq!(effect_types().count(), 61, "the registry's size the spec counts");
     let mut unchanged = Vec::new();
     for (tag, effect) in &cases {
         let mut ex = GraphExecutor::new_cpu_only();

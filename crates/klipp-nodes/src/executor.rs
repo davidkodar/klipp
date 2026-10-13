@@ -6266,7 +6266,11 @@ fn layer_mixer_compose(
                 BlendMode::Darken     => (br.min(tr), bg.min(tg), bb.min(tb)),
                 BlendMode::Lighten    => (br.max(tr), bg.max(tg), bb.max(tb)),
             };
-            // Mix blended colour over the current base by opacity.
+            // Mix blended colour over the current base by opacity, where
+            // the layer is (its alpha): a layer with clear parts shows
+            // the base through them (#1746), as an opaque one never did
+            // differently.
+            let op = op * top[o + 3].clamp(0.0, 1.0);
             out[o]     = br + (mr - br) * op;
             out[o + 1] = bg + (mg - bg) * op;
             out[o + 2] = bb + (mb - bb) * op;

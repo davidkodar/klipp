@@ -16,6 +16,7 @@ use klipp_grade_model::Encoding;
 
 mod blur;
 mod colour;
+mod composite;
 mod film;
 mod geometry;
 mod light;
@@ -210,8 +211,8 @@ pub struct TypeEntry {
 
 /// The effects' entries, one table per family (M3 step 0b), transcribed
 /// from today's hand-written rows.
-pub static PARAMS: &[&[ParamEntry]] = &[colour::PARAMS, geometry::PARAMS, film::PARAMS, blur::PARAMS, light::PARAMS];
-pub static TYPES: &[&[TypeEntry]] = &[colour::TYPES, geometry::TYPES, film::TYPES, blur::TYPES, light::TYPES];
+pub static PARAMS: &[&[ParamEntry]] = &[colour::PARAMS, geometry::PARAMS, film::PARAMS, blur::PARAMS, light::PARAMS, composite::PARAMS];
+pub static TYPES: &[&[TypeEntry]] = &[colour::TYPES, geometry::TYPES, film::TYPES, blur::TYPES, light::TYPES, composite::TYPES];
 
 /// Every effect entry, family by family.
 pub fn params() -> impl Iterator<Item = &'static ParamEntry> {

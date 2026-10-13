@@ -54,6 +54,8 @@ mod manifest_order;
 mod media_kind_round_trip;
 #[path = "../media_state_round_trip.rs"]
 mod media_state_round_trip;
+#[path = "../merge_round_trip.rs"]
+mod merge_round_trip;
 #[path = "../newer_format_refused.rs"]
 mod newer_format_refused;
 #[path = "../picture_cache_keys.rs"]

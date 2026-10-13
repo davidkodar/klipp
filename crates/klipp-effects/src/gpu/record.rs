@@ -57,7 +57,7 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
     match effect {
         // Done elsewhere, or not by the GPU at all: they pass the frame
         // through here, as they did, without breaking a run.
-        BuiltinEffect::SpeedRamp { .. } | BuiltinEffect::TemporalDenoise { .. } | BuiltinEffect::Frei0r { .. } => Some(0),
+        BuiltinEffect::SpeedRamp { .. } | BuiltinEffect::TemporalDenoise { .. } | BuiltinEffect::Frei0r { .. } | BuiltinEffect::Merge { .. } => Some(0),
         BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. } => Some(1),
         // A bright or copied layer, three box passes over it (zero boxes
         // too, as before) and the blend: see `record_light_layer`.
@@ -111,7 +111,8 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         | BuiltinEffect::BinocularVignette { .. }
         | BuiltinEffect::Lut3D { .. }
         | BuiltinEffect::ColourSpaceTransform { .. }
-        | BuiltinEffect::PictureTransform { .. } => Some(1),
+        | BuiltinEffect::PictureTransform { .. }
+        | BuiltinEffect::Generator { .. } => Some(1),
         _ => None,
     }
 }
@@ -690,6 +691,16 @@ impl GpuEffectsPipeline {
                 });
                 (&self.binocular_vignette_pipeline, slot)
             }
+            &BuiltinEffect::Generator { shape, color_a, color_b, angle, center_x, center_y, radius } => {
+                let g = crate::generator::Gen::new(shape, color_a, color_b, angle, center_x, center_y, radius, width, height);
+                let slot = rec.slots.claim(q, &GeneratorParams {
+                    width, height, shape: g.shape, _pad: 0,
+                    a: g.a, b: g.b,
+                    dir: g.dir, centre: g.centre,
+                    radius: g.radius, _pad2: [0; 3],
+                });
+                (&self.generator_pipeline, slot)
+            }
             BuiltinEffect::Vignette { amount, size, softness, roundness } => {
                 let slot = rec.slots.claim(q, &VignetteParams {
                     width, height,
@@ -760,6 +771,8 @@ impl GpuEffectsPipeline {
             // denoise runs at the head of the clip's pipeline before the
             // grade, and a Frei0r plug-in has no GPU surface.
             BuiltinEffect::SpeedRamp { .. } | BuiltinEffect::TemporalDenoise { .. } | BuiltinEffect::Frei0r { .. } => Recorded::Identity,
+            // Drawn by the plan's layer mixer, with its foreground (#1746).
+            BuiltinEffect::Merge { .. } => Recorded::Identity,
             // The motion data is the node's analysis for the frame, uploaded
             // before it records (M4 step 9); without it the frame passes
             // through.
