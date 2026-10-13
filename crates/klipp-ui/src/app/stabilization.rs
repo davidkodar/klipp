@@ -534,27 +534,7 @@ impl KlippApp {
                 true
             }
             AppCommand::AddTrackPoint { clip_id, x, y } => {
-                // Create a new track point at the given normalized position
-                let fps = self.state.fps.as_f64();
-                let playhead_secs = self.state.playhead_smooth_secs;
-                let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-                if let Some(clip) = seq.all_clips_mut().find(|c| c.id == *clip_id) {
-                    let clip_in_secs = clip.timeline_in.to_secs_f64();
-                    let source_in_secs = clip.source_in.to_secs_f64();
-                    let clip_time = playhead_secs - clip_in_secs + source_in_secs;
-                    let frame_idx = (clip_time * fps).round() as usize;
-                    let count = clip.track_points.len();
-                    let tp = klipp_core::TrackPoint {
-                        name: format!("Tracker {}", count + 1),
-                        start_frame: frame_idx,
-                        positions: vec![(*x, *y)],
-                        ..Default::default()
-                    };
-                    clip.track_points.push(tp);
-                    self.state.active_track_point = Some(count);
-                }
-                self.state.tracking_mode = false;
-                self.state.dirty = true;
+                add_track_point(&mut self.state, *clip_id, *x, *y);
                 true
             }
             AppCommand::RemoveTrackPoint { clip_id, index } => {
@@ -1077,5 +1057,55 @@ mod analysis_tests {
         assert_eq!(uses.len(), 1, "{uses:?}");
         assert_eq!((uses[0].kind, uses[0].clip, uses[0].running), (AssetKind::Deflicker, on_id, false));
         assert_ne!(uses[0].clip, off_id);
+    }
+}
+
+/// A track point added on `clip_id` at (`x`, `y`), normalised, on the
+/// frame at the playhead, searching as far as the tracking preferences
+/// say; it becomes the active point and the point-placing mode ends.
+pub(super) fn add_track_point(state: &mut AppState, clip_id: klipp_core::ClipId, x: f64, y: f64) {
+    let fps = state.fps.as_f64();
+    let playhead_secs = state.playhead_smooth_secs;
+    let search_radius = state.track_search_radius;
+    let seq = &mut state.sequences[state.active_sequence_idx];
+    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
+        let clip_in_secs = clip.timeline_in.to_secs_f64();
+        let source_in_secs = clip.source_in.to_secs_f64();
+        let clip_time = playhead_secs - clip_in_secs + source_in_secs;
+        let frame_idx = (clip_time * fps).round() as usize;
+        let count = clip.track_points.len();
+        clip.track_points.push(klipp_core::TrackPoint {
+            name: format!("Tracker {}", count + 1),
+            start_frame: frame_idx,
+            positions: vec![(x, y)],
+            search_radius,
+            ..Default::default()
+        });
+        state.active_track_point = Some(count);
+    }
+    state.tracking_mode = false;
+    state.dirty = true;
+}
+
+#[cfg(test)]
+mod track_point_radius_tests {
+    use super::*;
+
+    /// #1816: a new track point searches as far as the tracking
+    /// preference says: 48 gives 48, 16 gives 16.
+    #[test]
+    fn a_new_point_takes_the_preferences_search_radius() {
+        for radius in [48, 16] {
+            let mut state = AppState::default();
+            let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+            let clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0));
+            let id = clip.id;
+            state.sequences[0].tracks[0].clips.push(clip);
+            state.track_search_radius = radius;
+            add_track_point(&mut state, id, 0.25, 0.75);
+            let points = &state.sequence().all_clips().find(|c| c.id == id).unwrap().track_points;
+            assert_eq!(points.len(), 1);
+            assert_eq!((points[0].search_radius, points[0].positions[0]), (radius, (0.25, 0.75)));
+        }
     }
 }

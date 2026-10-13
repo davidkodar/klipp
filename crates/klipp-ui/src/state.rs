@@ -1175,6 +1175,9 @@ pub struct AppState {
     /// What each further J or L press multiplies the speed by: the
     /// playback preferences' JKL speed steps.
     pub jkl_speed_step: f64,
+    /// The search radius a new track point starts with, in pixels: the
+    /// editing preferences' tracking search radius.
+    pub track_search_radius: u32,
     pub loop_playback_enabled: bool,
 
     // Active workspace
@@ -4167,6 +4170,7 @@ impl Default for AppState {
             fps: Fps::film_24(),
             playback_speed: 1.0,
             jkl_speed_step: 2.0,
+            track_search_radius: 32,
             loop_playback_enabled: false,
             active_workspace: Workspace::default(),
             custom_workspaces: Vec::new(),

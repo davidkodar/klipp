@@ -1153,6 +1153,13 @@ impl PreferencesPanel {
         // ── TRACKING section ──
         Self::section_header(ui, "TRACKING", theme);
 
+        Self::setting_row_with_subtitle(ui, "Search radius", "How far a new track point looks for its match, in pixels", theme, |ui| {
+            let mut v = prefs.editing.track_search_radius;
+            if ui.add(egui::DragValue::new(&mut v).range(8..=128).speed(1.0).suffix(" px")).changed() {
+                prefs.editing.track_search_radius = v; *dirty = true;
+            }
+        });
+
         Self::setting_row_with_subtitle(ui, "Patch size", "Half-width of matching patch", theme, |ui| {
             let mut v = prefs.editing.track_patch_size;
             if ui.add(egui::DragValue::new(&mut v).range(2..=16).speed(1.0).suffix(" px")).changed() {
@@ -4859,7 +4866,7 @@ mod layout_tests {
     /// cache" here is the folder row; the cache's size row keeps the name.
     const HIDDEN: &[&str] = &[
         "Monitoring mode", "Normalize target", "Default sync method",
-        "Search radius", "Colour space tagging", "Default encoder preset",
+        "Colour space tagging", "Default encoder preset",
         "Clip corner radius", "Max track height", "Ruler height",
         "Title-safe area overlay",
         "Show keyboard shortcut hints", "Recent projects to show",
