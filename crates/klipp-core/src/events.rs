@@ -1416,6 +1416,12 @@ pub enum AppCommand {
     CutClip { clip_id: ClipId },
     CopyClip { clip_id: ClipId },
     PasteClip,
+    /// What lies from `range_in` to `range_out` in the selects sequence
+    /// `sequence_id` (another than the one being cut) put into the active
+    /// sequence at `at` (#82): with every track cut and moved along, or
+    /// over what is there with `overwrite`. `at` left out is the cut's In
+    /// point, else its playhead.
+    EditFromSelects { sequence_id: crate::SequenceId, range_in: Timecode, range_out: Timecode, at: Option<Timecode>, overwrite: bool },
     /// Paste at the playhead as an insert: every unlocked track is cut
     /// there and what follows moves along by the paste's length (#845).
     PasteClipInsert,

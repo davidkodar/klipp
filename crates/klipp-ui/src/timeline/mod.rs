@@ -101,9 +101,28 @@ impl NewTimelinePanel {
             });
         }
 
-        // Content area below tabs
+        // ── The selects strip, stacked above the cut (#82) ──
+        let strip_h = if strip || state.selects_sequence.is_none() {
+            0.0
+        } else {
+            state.selects_height.clamp(60.0, (full_rect.height() - tabs_rect.max.y + full_rect.min.y - 80.0).max(60.0))
+        };
+        if strip_h > 0.0 {
+            let strip_rect = egui::Rect::from_min_size(egui::pos2(full_rect.min.x, tabs_rect.max.y), egui::vec2(full_rect.width(), strip_h));
+            crate::ui_util::allocate_clipped_ui(ui, strip_rect, |ui| {
+                crate::panels::selects_strip::show(ui, state, theme, strip_rect, &mut cmds);
+            });
+            // Its foot drags to resize it.
+            let grip = egui::Rect::from_min_size(egui::pos2(strip_rect.min.x, strip_rect.max.y - 3.0), egui::vec2(strip_rect.width(), 6.0));
+            let resize = ui.interact(grip, ui.id().with("selects_resize"), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeVertical);
+            if resize.dragged() {
+                state.selects_height = (state.selects_height + resize.drag_delta().y).clamp(60.0, 400.0);
+            }
+        }
+
+        // Content area below tabs (and the selects strip)
         let content_rect = egui::Rect::from_min_max(
-            egui::pos2(full_rect.min.x, tabs_rect.max.y),
+            egui::pos2(full_rect.min.x, tabs_rect.max.y + strip_h),
             full_rect.max,
         );
 

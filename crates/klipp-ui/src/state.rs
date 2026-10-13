@@ -2571,6 +2571,15 @@ pub struct AppState {
 
     // New Project dialog
     pub show_new_project_dialog: bool,
+    /// The selects sequence stacked above the cut (#82), read-only, to
+    /// skim and take ranges from; `None` when the strip is closed.
+    pub selects_sequence: Option<klipp_core::SequenceId>,
+    /// The range marked in the selects, in its own time.
+    pub selects_range: Option<(Timecode, Timecode)>,
+    /// The selects range being dragged down into the cut.
+    pub selects_drag: Option<(klipp_core::SequenceId, Timecode, Timecode)>,
+    /// The selects strip's height, in points.
+    pub selects_height: f32,
     /// Where project templates are kept (#618); `None` for the user's
     /// configuration folder's.
     pub project_templates_dir: Option<std::path::PathBuf>,
@@ -4622,6 +4631,10 @@ impl Default for AppState {
             media_usage_cache_dirty: true,
             analysis_generation: 0,
             show_new_project_dialog: false,
+            selects_sequence: None,
+            selects_range: None,
+            selects_drag: None,
+            selects_height: 120.0,
             project_templates_dir: None,
             save_template_dialog: None,
             frame_glide_clip: None,

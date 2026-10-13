@@ -1519,6 +1519,7 @@ impl TimelinePanel {
             );
 
             self.handle_media_dnd_over_track(ui, state, track_idx, track_kind, &track_name, track_rect, &painter, &mut cmds);
+            Self::handle_selects_drop_over_track(ui, state, track_rect, content_rect, &painter, &mut cmds);
             self.handle_file_browser_dnd_over_track(ui, state, track_idx, track_kind, track_rect, &painter, &mut cmds);
 
             self.handle_effect_dnd_over_track(ui, state, track_idx, track_rect, content_rect, &painter, &mut cmds);
@@ -2847,6 +2848,33 @@ impl TimelinePanel {
                     state.automation_lane_param_menu = None;
                 }
             }
+        }
+    }
+
+    /// A range dragged down from the selects strip (#82), let go over a
+    /// track: put into the cut where it is let go, an insert, or an
+    /// overwrite with Alt held.
+    fn handle_selects_drop_over_track(
+        ui: &mut egui::Ui,
+        state: &mut AppState,
+        track_rect: egui::Rect,
+        content_rect: egui::Rect,
+        painter: &egui::Painter,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        let Some((sequence_id, range_in, range_out)) = state.selects_drag else { return };
+        let Some(pos) = ui.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos())) else { return };
+        if !track_rect.contains(pos) {
+            return;
+        }
+        let secs = ((pos.x - content_rect.left() + state.timeline_scroll_x) / state.timeline_zoom.max(1e-6)).max(0.0) as f64;
+        let at = Timecode::from_secs_f64(secs, state.sequence().fps.rate());
+        let x = content_rect.left() + secs as f32 * state.timeline_zoom - state.timeline_scroll_x;
+        painter.vline(x, track_rect.y_range(), egui::Stroke::new(2.0_f32, theme().marker_info));
+        if !ui.input(|i| i.pointer.any_down()) {
+            state.selects_drag = None;
+            let overwrite = ui.input(|i| i.modifiers.alt);
+            cmds.push(AppCommand::EditFromSelects { sequence_id, range_in, range_out, at: Some(at), overwrite });
         }
     }
 
@@ -19390,5 +19418,54 @@ mod track_effects_menu_tests {
     fn the_ops_name_every_audio_effect_the_engine_has() {
         let engine: Vec<&str> = klipp_audio::dsp::available_effects().into_iter().map(|(t, _)| t).collect();
         assert_eq!(klipp_document::ops::AUDIO_EFFECT_TYPES, engine.as_slice());
+    }
+}
+
+#[cfg(test)]
+mod selects_drop_tests {
+    use super::*;
+
+    /// #82: a range carried down from the selects strip, let go over a
+    /// track of the cut, goes in where it is let go: an insert, or an
+    /// overwrite with Alt; moved over without being let go, nothing.
+    #[test]
+    fn a_selects_range_dropped_on_the_cut_goes_in_where_it_lands() {
+        let selects = klipp_core::SequenceId::new();
+        let range = (Timecode::from_secs_f64(10.0, 25), Timecode::from_secs_f64(20.0, 25));
+        let content = egui::Rect::from_min_size(egui::pos2(100.0, 0.0), egui::vec2(800.0, 200.0));
+        let track = egui::Rect::from_min_size(egui::pos2(100.0, 40.0), egui::vec2(800.0, 40.0));
+        let run = |events: Vec<egui::Event>, modifiers: egui::Modifiers| {
+            let ctx = egui::Context::default();
+            let mut state = AppState { selects_drag: Some((selects, range.0, range.1)), timeline_zoom: 50.0, timeline_scroll_x: 100.0, ..Default::default() };
+            let mut cmds = Vec::new();
+            let _ = ctx.run(egui::RawInput { events, modifiers, screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 400.0))), ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let painter = ui.painter().clone();
+                    TimelinePanel::handle_selects_drop_over_track(ui, &mut state, track, content, &painter, &mut cmds);
+                });
+            });
+            (cmds, state.selects_drag)
+        };
+        // At x = 400: (400 - 100 + 100) / 50 = 8 s.
+        let at = egui::pos2(400.0, 60.0);
+        let release = |m| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: m };
+        let (cmds, left) = run(vec![egui::Event::PointerMoved(at), release(egui::Modifiers::NONE)], egui::Modifiers::NONE);
+        assert!(left.is_none());
+        match &cmds[..] {
+            [AppCommand::EditFromSelects { sequence_id, range_in, range_out, at: Some(t), overwrite: false }] => {
+                assert_eq!((*sequence_id, *range_in, *range_out), (selects, range.0, range.1));
+                assert!((t.to_secs_f64() - 8.0).abs() < 0.05, "{t:?}");
+            }
+            other => panic!("an insert where it landed: {other:?}"),
+        }
+        let (cmds, _) = run(vec![egui::Event::PointerMoved(at), release(egui::Modifiers::ALT)], egui::Modifiers::ALT);
+        assert!(matches!(&cmds[..], [AppCommand::EditFromSelects { overwrite: true, .. }]), "{cmds:?}");
+        // Held down over it: nothing yet; over another place: nothing.
+        let press = egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE };
+        let (cmds, left) = run(vec![egui::Event::PointerMoved(at), press], egui::Modifiers::NONE);
+        assert!(cmds.is_empty() && left.is_some());
+        let away = egui::pos2(400.0, 150.0);
+        let (cmds, left) = run(vec![egui::Event::PointerMoved(away), egui::Event::PointerButton { pos: away, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }], egui::Modifiers::NONE);
+        assert!(cmds.is_empty() && left.is_some(), "not over this track");
     }
 }
