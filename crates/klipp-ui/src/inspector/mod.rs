@@ -5,6 +5,7 @@ pub mod letter_picker;
 pub mod tracker_picker;
 pub mod video_tab;
 pub mod sequence_view;
+pub(crate) mod rows;
 pub mod placement_by_path;
 pub mod audio_tab;
 pub mod audio_fx_inspector;

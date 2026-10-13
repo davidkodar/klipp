@@ -1,335 +1,165 @@
+//! The Info tab: what the project, a bin item or a timeline clip is,
+//! each fact a plain row and each setting a control, in the inspector's
+//! one row style (`super::rows`).
+
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use klipp_core::AppCommand;
 use klipp_timeline::Clip;
 
-/// State 1: Nothing selected — PROJECT, MEDIA, SEQUENCE, STORAGE
+use super::rows::{colour_row, mono_row, note, row, text_row, TEXT};
+use crate::widgets::inspector_group::section_card;
+
+/// Nothing selected: the sequence camera, the project, the media pool,
+/// the sequence's make-up and the storage the project uses.
 pub fn show_no_selection(
     ui: &mut egui::Ui,
     state: &AppState,
     theme: &KlippTheme,
     cmds: &mut Vec<klipp_core::AppCommand>,
 ) {
-    let pad = 14.0;
-    let row_h = 30.0;
     let seq = state.sequence();
 
     camera_section(ui, state, theme, cmds);
 
-    // ── PROJECT ──
-    section_card(ui, "PROJECT", None, theme.bg_deep, theme.bg_panel, theme, |ui| {
-        let w = ui.available_width();
-
-        let project_name = state.project_path.as_ref()
+    section_card(ui, "PROJECT", None, theme, |ui| {
+        let name = state.project_path.as_ref()
             .and_then(|p| p.file_stem())
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "Untitled".into());
-        info_row_custom(ui, theme, pad, row_h, w, "Name", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                &project_name, egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
+        text_row(ui, theme, "Name", name);
 
-        // Created date
-        let created_text = state.created_at.as_deref()
-            .map(|iso| {
-                let clean = iso.trim_end_matches('Z');
-                chrono::NaiveDateTime::parse_from_str(clean, "%Y-%m-%dT%H:%M:%S%.f")
-                    .or_else(|_| chrono::NaiveDateTime::parse_from_str(clean, "%Y-%m-%dT%H:%M:%S"))
-                    .map(|dt| dt.format("%d %b %Y, %H:%M").to_string())
-                    .unwrap_or_else(|_| iso.to_string())
-            })
-            .unwrap_or_else(|| "Unknown".into());
-        info_row_custom(ui, theme, pad, row_h, w, "Created", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                &created_text, egui::FontId::proportional(13.0), theme.text_primary,
-            );
+        let created = state.created_at.as_deref().map(|iso| {
+            let clean = iso.trim_end_matches('Z');
+            chrono::NaiveDateTime::parse_from_str(clean, "%Y-%m-%dT%H:%M:%S%.f")
+                .or_else(|_| chrono::NaiveDateTime::parse_from_str(clean, "%Y-%m-%dT%H:%M:%S"))
+                .map(|dt| dt.format("%d %b %Y, %H:%M").to_string())
+                .unwrap_or_else(|_| iso.to_string())
         });
+        match created {
+            Some(created) => text_row(ui, theme, "Created", created),
+            None => colour_row(ui, theme, "Created", "Unknown", theme.text_secondary),
+        }
 
-        // Last modified — use relative time from the most recent save
-        let last_modified = state.project_path.as_ref()
+        // How long ago the file was last written.
+        let modified = state.project_path.as_ref()
             .and_then(|p| std::fs::metadata(p).ok())
             .and_then(|m| m.modified().ok())
-            .map(|t| {
-                let elapsed = t.elapsed().unwrap_or_default();
-                let secs = elapsed.as_secs();
-                if secs < 60 { "just now".into() }
-                else if secs < 3600 { format!("{} mins ago", secs / 60) }
-                else if secs < 86400 { format!("{} hours ago", secs / 3600) }
-                else { format!("{} days ago", secs / 86400) }
-            })
-            .unwrap_or_else(|| "Unknown".into());
-        info_row_custom(ui, theme, pad, row_h, w, "Last modified", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                &last_modified, egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        info_row_custom(ui, theme, pad, row_h, w, "Format version", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                "klipp-v2", egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        info_row_custom(ui, theme, pad, row_h, w, "Klipp version", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                klipp_core::build_info::get().version, egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        // Project path (small, dim, padded)
-        if let Some(ref path) = state.project_path {
-            ui.add_space(4.0);
-            egui::Frame::default()
-                .outer_margin(egui::Margin { left: pad, right: pad, top: 0.0, bottom: 0.0 })
-                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
-                .fill(theme.bg_raised)
-                .rounding(4.0)
-                .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(path.to_string_lossy().as_ref())
-                            .size(10.0)
-                            .color(theme.text_dim),
-                    );
-                });
-            ui.add_space(4.0);
+            .map(|t| ago(t.elapsed().unwrap_or_default().as_secs()));
+        match modified {
+            Some(modified) => text_row(ui, theme, "Last modified", modified),
+            None => colour_row(ui, theme, "Last modified", "Not saved", theme.text_secondary),
         }
+
+        // The revision a save writes; an older file is refused on load,
+        // so an open project is at this one.
+        text_row(ui, theme, "Format version", format!("Revision {}", klipp_project::FORMAT_REVISION));
+        text_row(ui, theme, "Klipp version", klipp_core::build_info::get().version);
+        if let Some(path) = &state.project_path {
+            note(ui, theme, &path.to_string_lossy());
+        }
+        ui.add_space(4.0);
     });
 
-    ui.add_space(8.0);
-
-    // ── MEDIA ──
-    section_card(ui, "MEDIA", None, theme.bg_deep, theme.bg_panel, theme, |ui| {
-        let w = ui.available_width();
-
-        // Count media items
-        let all_media: Vec<_> = state.media_pool.all().collect();
-        let total_bin = all_media.len();
-        let video_count = all_media.iter().filter(|m| !m.video_codec.is_empty()).count();
-        let audio_count = all_media.iter().filter(|m| m.video_codec.is_empty() && m.has_audio).count();
-        let total_duration_secs: f64 = all_media.iter().map(|m| m.duration.to_secs_f64()).sum();
-        let dur_h = (total_duration_secs / 3600.0) as u32;
-        let dur_m = ((total_duration_secs % 3600.0) / 60.0) as u32;
-        let dur_s = (total_duration_secs % 60.0) as u32;
-        let dur_text = format!("{dur_h}:{dur_m:02}:{dur_s:02}");
-        let missing_count = state.offline_media_ids.len();
-        let offline_count = all_media.iter().filter(|m| m.offline).count();
-
-        // 2x2 stat grid
-        ui.add_space(6.0);
-        egui::Frame::default()
-            .inner_margin(egui::Margin { left: pad, right: pad, top: 0.0, bottom: 0.0 })
-            .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::NONE)
-            .shadow(egui::Shadow::NONE)
-            .show(ui, |ui| {
-                let card_w = (w - pad * 2.0 - 8.0) / 2.0;
-                let card_h = 60.0;
-
-                // Row 1
-                ui.horizontal(|ui| {
-                    // CLIPS IN BIN
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(card_w, card_h), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 4.0, theme.bg_raised);
-                    ui.painter().text(
-                        egui::pos2(rect.min.x + 10.0, rect.min.y + 14.0), egui::Align2::LEFT_CENTER,
-                        "CLIPS IN BIN", egui::FontId::proportional(10.0), theme.text_dim,
-                    );
-                    ui.painter().text(
-                        egui::pos2(rect.min.x + 10.0, rect.min.y + 32.0), egui::Align2::LEFT_CENTER,
-                        format!("{total_bin}"), egui::FontId::proportional(16.0), theme.text_primary,
-                    );
-                    ui.painter().text(
-                        egui::pos2(rect.min.x + 10.0, rect.min.y + 50.0), egui::Align2::LEFT_CENTER,
-                        format!("{video_count} video \u{00B7} {audio_count} audio"), egui::FontId::proportional(10.0), theme.text_dim,
-                    );
-
-                    ui.add_space(8.0);
-
-                    // TOTAL BIN DURATION
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(card_w, card_h), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 4.0, theme.bg_raised);
-                    ui.painter().text(
-                        egui::pos2(rect.min.x + 10.0, rect.min.y + 14.0), egui::Align2::LEFT_CENTER,
-                        "TOTAL BIN DURATION", egui::FontId::proportional(10.0), theme.text_dim,
-                    );
-                    ui.painter().text(
-                        egui::pos2(rect.min.x + 10.0, rect.min.y + 32.0), egui::Align2::LEFT_CENTER,
-                        &dur_text, egui::FontId::proportional(16.0), theme.text_primary,
-                    );
-                    ui.painter().text(
-                        egui::pos2(rect.min.x + 10.0, rect.min.y + 50.0), egui::Align2::LEFT_CENTER,
-                        "hh:mm:ss", egui::FontId::proportional(10.0), theme.text_dim,
-                    );
-                });
-
-                ui.add_space(6.0);
-
-                // Row 2
-                ui.horizontal(|ui| {
-                    // MISSING MEDIA
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(card_w, card_h - 14.0), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 4.0, theme.bg_raised);
-                    ui.painter().text(
-                        egui::pos2(rect.min.x + 10.0, rect.min.y + 12.0), egui::Align2::LEFT_CENTER,
-                        "MISSING MEDIA", egui::FontId::proportional(10.0), theme.text_dim,
-                    );
-                    let mc = if missing_count == 0 { theme.marker_success } else { theme.marker_error };
-                    ui.painter().text(
-                        egui::pos2(rect.min.x + 10.0, rect.min.y + 30.0), egui::Align2::LEFT_CENTER,
-                        format!("{missing_count}"), egui::FontId::proportional(16.0), mc,
-                    );
-
-                    ui.add_space(8.0);
-
-                    // OFFLINE CLIPS
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(card_w, card_h - 14.0), egui::Sense::hover());
-                    ui.painter().rect_filled(rect, 4.0, theme.bg_raised);
-                    ui.painter().text(
-                        egui::pos2(rect.min.x + 10.0, rect.min.y + 12.0), egui::Align2::LEFT_CENTER,
-                        "OFFLINE CLIPS", egui::FontId::proportional(10.0), theme.text_dim,
-                    );
-                    let oc = if offline_count == 0 { theme.marker_success } else { theme.marker_error };
-                    ui.painter().text(
-                        egui::pos2(rect.min.x + 10.0, rect.min.y + 30.0), egui::Align2::LEFT_CENTER,
-                        format!("{offline_count}"), egui::FontId::proportional(16.0), oc,
-                    );
-                });
-            });
-        ui.add_space(6.0);
+    section_card(ui, "MEDIA", None, theme, |ui| {
+        let all: Vec<_> = state.media_pool.all().collect();
+        let video = all.iter().filter(|m| !m.video_codec.is_empty()).count();
+        let audio = all.iter().filter(|m| m.video_codec.is_empty() && m.has_audio).count();
+        text_row(ui, theme, "Clips in bin", format!("{} \u{00B7} {video} video \u{00B7} {audio} audio", all.len()));
+        let secs: f64 = all.iter().map(|m| m.duration.to_secs_f64()).sum();
+        mono_row(ui, theme, "Total bin duration", hms(secs));
+        // A file is offline when the pool marks it so or the file watcher
+        // saw it go; both are the one fact, counted once.
+        let offline = all.iter().filter(|m| m.offline || state.offline_media_ids.contains(&m.id)).count();
+        let status = if offline == 0 { theme.marker_success } else { theme.marker_error };
+        colour_row(ui, theme, "Offline media", format!("{offline}"), status);
+        ui.add_space(4.0);
     });
 
-    ui.add_space(8.0);
-
-    // ── SEQUENCE ──
-    section_card(ui, "SEQUENCE", None, theme.bg_deep, theme.bg_panel, theme, |ui| {
-        let w = ui.available_width();
-
-        info_row_custom(ui, theme, pad, row_h, w, "Resolution", |ui, rx, cy| {
-            let text = format!("{} \u{00D7} {}", seq.resolution.width, seq.resolution.height);
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                text, egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        info_row_custom(ui, theme, pad, row_h, w, "Frame rate", |ui, rx, cy| {
-            let fps = seq.fps.num as f64 / seq.fps.den.max(1) as f64;
-            let text = if (fps - fps.round()).abs() < 0.01 {
-                format!("{}  fps", fps.round() as u32)
-            } else {
-                format!("{:.3}  fps", fps)
-            };
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                text, egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        info_row_custom(ui, theme, pad, row_h, w, "Duration", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                state.sequence_duration().to_timecode_string(),
-                egui::FontId::monospace(13.0), theme.accent,
-            );
-        });
-
-        let video_tracks = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).count();
-        let audio_tracks = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Audio).count();
-        let total_clips: usize = seq.tracks.iter().map(|t| t.clips.len()).sum();
-
-        info_row_custom(ui, theme, pad, row_h, w, "Video tracks", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                format!("{video_tracks}"), egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        info_row_custom(ui, theme, pad, row_h, w, "Audio tracks", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                format!("{audio_tracks}"), egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        info_row_custom(ui, theme, pad, row_h, w, "Total clips", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                format!("{total_clips}"), egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
+    section_card(ui, "SEQUENCE", None, theme, |ui| {
+        text_row(ui, theme, "Resolution", format!("{} \u{00D7} {}", seq.resolution.width, seq.resolution.height));
+        text_row(ui, theme, "Frame rate", fps_text(seq.fps.num as f64 / seq.fps.den.max(1) as f64));
+        mono_row(ui, theme, "Duration", state.sequence_duration().to_timecode_string());
+        let count = |kind| seq.tracks.iter().filter(|t| t.kind == kind).count();
+        text_row(ui, theme, "Video tracks", format!("{}", count(klipp_timeline::TrackKind::Video)));
+        text_row(ui, theme, "Audio tracks", format!("{}", count(klipp_timeline::TrackKind::Audio)));
+        text_row(ui, theme, "Total clips", format!("{}", seq.tracks.iter().map(|t| t.clips.len()).sum::<usize>()));
+        ui.add_space(4.0);
     });
 
-    ui.add_space(8.0);
+    section_card(ui, "STORAGE", None, theme, |ui| {
+        let project_file = state.project_path.as_ref().and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len());
+        match project_file {
+            Some(bytes) => text_row(ui, theme, "Project file", format_size(bytes)),
+            None => colour_row(ui, theme, "Project file", "Not saved", theme.text_secondary),
+        }
+        text_row(ui, theme, "Media files", format_size(state.media_pool.all().map(|m| m.file_size_bytes).sum()));
 
-    // ── STORAGE ──
-    section_card(ui, "STORAGE", None, theme.bg_deep, theme.bg_panel, theme, |ui| {
-        let w = ui.available_width();
-        let project_bytes: u64 = state.media_pool.all().map(|m| m.file_size_bytes).sum();
-
-        let (cache_bytes, proxy_bytes) = cache_sizes();
-        if cache_bytes == 0 && proxy_bytes == 0 {
-            // Measured on a thread; drawn again when it is in.
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+        match cache_sizes() {
+            Some((cache, proxies)) => {
+                text_row(ui, theme, "Cache", format_size(cache));
+                if proxies > 0 {
+                    text_row(ui, theme, "Proxies", format_size(proxies));
+                } else {
+                    colour_row(ui, theme, "Proxies", "None generated", theme.text_secondary);
+                }
+            }
+            None => {
+                // Measured on a thread; drawn again when it is in.
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+                colour_row(ui, theme, "Cache", "Measuring\u{2026}", theme.text_secondary);
+                colour_row(ui, theme, "Proxies", "Measuring\u{2026}", theme.text_secondary);
+            }
         }
 
         let home = dirs::home_dir();
-        let free_bytes: u64 = state.project_path.as_deref()
-            .or(home.as_deref())
-            .and_then(disk_free_bytes)
-            .unwrap_or(0);
-
-        info_row_custom(ui, theme, pad, row_h, w, "Project file", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                format_size(project_bytes), egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        info_row_custom(ui, theme, pad, row_h, w, "Cache", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                format_size(cache_bytes), egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        info_row_custom(ui, theme, pad, row_h, w, "Proxies", |ui, rx, cy| {
-            let text = if proxy_bytes > 0 { format_size(proxy_bytes) } else { "None generated".into() };
-            let color = if proxy_bytes > 0 { theme.text_primary } else { theme.text_dim };
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                text, egui::FontId::proportional(13.0), color,
-            );
-        });
-
-        let free_color = if free_bytes < 1_000_000_000 {
-            theme.marker_error
-        } else if free_bytes < 10_000_000_000 {
-            theme.accent
-        } else {
-            theme.marker_success
-        };
-        info_row_custom(ui, theme, pad, row_h, w, "Free disk space", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                format_size(free_bytes), egui::FontId::proportional(13.0), free_color,
-            );
-        });
+        match state.project_path.as_deref().or(home.as_deref()).and_then(disk_free_bytes) {
+            Some(free) => {
+                let status = if free < 1_000_000_000 {
+                    theme.marker_error
+                } else if free < 10_000_000_000 {
+                    theme.marker_warning
+                } else {
+                    theme.marker_success
+                };
+                colour_row(ui, theme, "Free disk space", format_size(free), status);
+            }
+            None => colour_row(ui, theme, "Free disk space", "Unknown", theme.text_secondary),
+        }
+        ui.add_space(4.0);
     });
 
     ui.add_space(16.0);
 }
 
-/// State 2: Bin media selected — CLIP INFO, TAGS, TIMELINE USAGE
+/// "just now", "5 mins ago", "3 hours ago", "2 days ago".
+fn ago(secs: u64) -> String {
+    if secs < 60 {
+        "just now".into()
+    } else if secs < 3600 {
+        format!("{} mins ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{} hours ago", secs / 3600)
+    } else {
+        format!("{} days ago", secs / 86400)
+    }
+}
+
+/// Seconds as "h:mm:ss".
+fn hms(secs: f64) -> String {
+    let (h, m, s) = ((secs / 3600.0) as u32, ((secs % 3600.0) / 60.0) as u32, (secs % 60.0) as u32);
+    format!("{h}:{m:02}:{s:02}")
+}
+
+/// "24 fps", or "29.970 fps" for a rate that is not whole.
+fn fps_text(fps: f64) -> String {
+    if (fps - fps.round()).abs() < 0.01 { format!("{} fps", fps.round() as u32) } else { format!("{fps:.3} fps") }
+}
+
 /// The cache's and the proxies' sizes in bytes, measured on a thread at
 /// most every ten seconds: walking a cache of many gigabytes on every
-/// repaint held the inspector up. (0, 0) until the first measure is in.
-fn cache_sizes() -> (u64, u64) {
+/// repaint held the inspector up. `None` until the first measure is in.
+fn cache_sizes() -> Option<(u64, u64)> {
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
     static SIZES: Mutex<(Option<Instant>, bool, u64, u64)> = Mutex::new((None, false, 0, 0));
@@ -348,9 +178,11 @@ fn cache_sizes() -> (u64, u64) {
             s.1 = false;
         }
     }
-    (s.2, s.3)
+    s.0.map(|_| (s.2, s.3))
 }
 
+/// A bin item selected: what the file is, its log and marks, its tags,
+/// and where the timeline uses it.
 pub fn show_bin_media(
     ui: &mut egui::Ui,
     state: &AppState,
@@ -359,316 +191,30 @@ pub fn show_bin_media(
     tag_input: &mut String,
     cmds: &mut Vec<AppCommand>,
 ) {
-    let pad = 14.0;
-    let row_h = 30.0;
-    let accent = theme.accent;
-    let dim = theme.text_dim;
+    media_section(ui, state, theme, media);
+    logging_section(ui, theme, media, cmds);
+    markers_section(ui, theme, media, cmds);
+    tags_section(ui, theme, media, tag_input, cmds);
 
-    // ── CLIP INFO ──
-    section_card(ui, "CLIP INFO", None, theme.bg_deep, theme.bg_panel, theme, |ui| {
-        let w = ui.available_width();
-
-        info_row_custom(ui, theme, pad, row_h, w, "Resolution", |ui, rx, cy| {
-            let text = format!("{} \u{00D7} {}", media.resolution.width, media.resolution.height);
-            ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(13.0), theme.text_primary);
-        });
-
-        if !media.is_still {
-            info_row_custom(ui, theme, pad, row_h, w, "Frame rate", |ui, rx, cy| {
-                let fps = media.fps.as_f64();
-                let text = if (fps - fps.round()).abs() < 0.01 { format!("{}  fps", fps.round() as u32) } else { format!("{:.3}  fps", fps) };
-                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(13.0), theme.text_primary);
-            });
-        }
-
-        // Codec pills
-        info_row_custom(ui, theme, pad, row_h, w, "Codec", |ui, rx, cy| {
-            let pill_h = 20.0;
-            let pill_bg = theme.bg_raised;
-            let pill_border = theme.border_light;
-            let mut x = rx;
-            if !media.audio_codec.is_empty() {
-                let codec = media.audio_codec.to_uppercase();
-                let galley = ui.painter().layout_no_wrap(codec.clone(), egui::FontId::monospace(11.0), theme.text_primary);
-                let pw = galley.size().x + 12.0;
-                let pr = egui::Rect::from_min_size(egui::pos2(x - pw, cy - pill_h / 2.0), egui::vec2(pw, pill_h));
-                ui.painter().rect(pr, 4.0, pill_bg, egui::Stroke::new(1.0_f32, pill_border));
-                ui.painter().text(pr.center(), egui::Align2::CENTER_CENTER, codec, egui::FontId::monospace(11.0), theme.text_primary);
-                x -= pw + 6.0;
-            }
-            if !media.video_codec.is_empty() {
-                let codec = media.video_codec.to_uppercase();
-                let galley = ui.painter().layout_no_wrap(codec.clone(), egui::FontId::monospace(11.0), theme.text_primary);
-                let pw = galley.size().x + 12.0;
-                let pr = egui::Rect::from_min_size(egui::pos2(x - pw, cy - pill_h / 2.0), egui::vec2(pw, pill_h));
-                ui.painter().rect(pr, 4.0, pill_bg, egui::Stroke::new(1.0_f32, pill_border));
-                ui.painter().text(pr.center(), egui::Align2::CENTER_CENTER, codec, egui::FontId::monospace(11.0), theme.text_primary);
-            }
-        });
-
-        // Audio
-        if media.has_audio {
-            info_row_custom(ui, theme, pad, row_h, w, "Audio", |ui, rx, cy| {
-                let channels = media.audio_channels.unwrap_or(2);
-                let sample_rate = media.sample_rate.unwrap_or(48000);
-                let ch_label = match channels { 1 => "Mono", 2 => "Stereo", 6 => "5.1", 8 => "7.1", _ => "" };
-                let sr_khz = sample_rate / 1000;
-                let label = format!("{ch_label} \u{00B7} {sr_khz} kHz");
-                let label_galley = ui.painter().layout_no_wrap(label.clone(), egui::FontId::proportional(12.0), dim);
-                let label_w = label_galley.size().x;
-                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, &label, egui::FontId::proportional(12.0), dim);
-                // Channel bars
-                let bar_heights: &[f32] = match channels { 1 => &[0.8], 2 => &[0.9, 0.7], 6 => &[0.7, 0.9, 1.0, 0.8, 0.6, 0.5], 8 => &[0.7, 0.9, 1.0, 0.8, 0.6, 0.5, 0.7, 0.6], _ => &[0.8, 0.7] };
-                let bar_w = 4.0; let bar_gap = 2.0; let max_bar_h = 14.0;
-                let total_bars_w = bar_heights.len() as f32 * (bar_w + bar_gap) - bar_gap;
-                let bx = rx - label_w - 10.0 - total_bars_w;
-                for (i, &h_frac) in bar_heights.iter().enumerate() {
-                    let bh = max_bar_h * h_frac;
-                    ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(bx + i as f32 * (bar_w + bar_gap), cy - bh / 2.0), egui::vec2(bar_w, bh)), 1.0, accent);
-                }
-            });
-        }
-
-        info_row_custom(ui, theme, pad, row_h, w, "Duration", |ui, rx, cy| {
-            ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, media.duration.to_timecode_string(), egui::FontId::proportional(13.0), theme.text_primary);
-        });
-
-        info_row_custom(ui, theme, pad, row_h, w, "File size", |ui, rx, cy| {
-            ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, format_size(media.file_size_bytes), egui::FontId::proportional(13.0), theme.text_primary);
-        });
-
-        // Colour
-        info_row_custom(ui, theme, pad, row_h, w, "Colour", |ui, rx, cy| {
-            use klipp_media::ColourSpace;
-            let (badge_text, badge_color, sub_text) = match media.colour_space {
-                ColourSpace::Sdr => ("SDR", theme.marker_info, "BT.709"),
-                ColourSpace::Hdr10 => ("HDR10", theme.marker_warning, "BT.2020"),
-                ColourSpace::Hlg => ("HLG", theme.accent, "BT.2020"),
-                ColourSpace::Unknown => ("SDR", theme.marker_info, "BT.709"),
-            };
-            let sub_galley = ui.painter().layout_no_wrap(sub_text.to_string(), egui::FontId::proportional(12.0), dim);
-            let sub_w = sub_galley.size().x;
-            ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, sub_text, egui::FontId::proportional(12.0), dim);
-            let badge_galley = ui.painter().layout_no_wrap(badge_text.to_string(), egui::FontId::proportional(11.0), egui::Color32::WHITE);
-            let bw = badge_galley.size().x + 10.0;
-            let bh = 18.0;
-            let badge_rect = egui::Rect::from_min_size(egui::pos2(rx - sub_w - 8.0 - bw, cy - bh / 2.0), egui::vec2(bw, bh));
-            ui.painter().rect_filled(badge_rect, 2.0, badge_color);
-            ui.painter().text(badge_rect.center(), egui::Align2::CENTER_CENTER, badge_text, egui::FontId::proportional(11.0), egui::Color32::WHITE);
-        });
-
-        // Shoot date
-        let shoot_date = media.media_created_at.or(media.file_modified_at);
-        if let Some(epoch_secs) = shoot_date.filter(|&t| t > 0) {
-            info_row_custom(ui, theme, pad, row_h, w, "Shoot date", |ui, rx, cy| {
-                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, format_epoch_date(epoch_secs), egui::FontId::proportional(13.0), theme.text_primary);
-            });
-        }
-
-        // Camera info (if available from metadata)
-        if media.camera_make.is_some() || media.camera_model.is_some() {
-            info_row_custom(ui, theme, pad, row_h, w, "Camera", |ui, rx, cy| {
-                let make = media.camera_make.as_deref().unwrap_or("");
-                let model = media.camera_model.as_deref().unwrap_or("");
-                let text = if !make.is_empty() && !model.is_empty() {
-                    format!("{make} {model}")
-                } else {
-                    format!("{make}{model}")
-                };
-                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(13.0), theme.text_primary);
-            });
-        }
-
-        truncated_row(ui, theme, pad, row_h, w, media);
-        synced_audio_row(ui, theme, pad, row_h, w, state, media);
-        span_row(ui, theme, pad, row_h, w, media);
-        shot_rows(ui, theme, pad, row_h, w, dim, &media.shot);
-
-        // Encoder
-        if let Some(ref enc) = media.encoder {
-            info_row_custom(ui, theme, pad, row_h, w, "Encoder", |ui, rx, cy| {
-                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, enc, egui::FontId::proportional(12.0), dim);
-            });
-        }
-
-        // Bit depth + pixel format
-        if media.bit_depth.is_some() || media.pixel_format.is_some() {
-            info_row_custom(ui, theme, pad, row_h, w, "Format", |ui, rx, cy| {
-                let mut parts = Vec::new();
-                if let Some(bd) = media.bit_depth { parts.push(format!("{bd}-bit")); }
-                if let Some(ref pf) = media.pixel_format { parts.push(pf.clone()); }
-                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, parts.join(" \u{00B7} "), egui::FontId::proportional(12.0), dim);
-            });
-        }
-
-        // Video bitrate
-        if let Some(vbr) = media.video_bitrate_kbps {
-            info_row_custom(ui, theme, pad, row_h, w, "Bitrate", |ui, rx, cy| {
-                let text = if vbr >= 1000 { format!("{:.1} Mbps", vbr as f64 / 1000.0) } else { format!("{vbr} kbps") };
-                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(12.0), dim);
-            });
-        }
-
-        // Color transfer / primaries
-        if media.color_transfer.is_some() || media.color_primaries.is_some() {
-            info_row_custom(ui, theme, pad, row_h, w, "Colour", |ui, rx, cy| {
-                let transfer = media.color_transfer.as_deref().unwrap_or("Unspecified");
-                let primaries = media.color_primaries.as_deref().unwrap_or("");
-                let text = if !primaries.is_empty() && primaries != "Unspecified" && primaries != transfer {
-                    format!("{transfer} / {primaries}")
-                } else {
-                    transfer.to_string()
-                };
-                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(12.0), dim);
-            });
-        }
-
-        tag_list(ui, theme, &media.shot);
-
-        // Proxy
-        info_row_custom(ui, theme, pad, row_h, w, "Proxy", |ui, rx, cy| {
-            if media.proxy_ready {
-                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, "Ready", egui::FontId::proportional(13.0), theme.marker_success);
-            } else {
-                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, "None", egui::FontId::proportional(13.0), dim);
-            }
-        });
-
-        // File path
-        ui.add_space(4.0);
-        egui::Frame::default()
-            .outer_margin(egui::Margin { left: pad, right: pad, top: 0.0, bottom: 0.0 })
-            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
-            .fill(theme.bg_raised)
-            .rounding(4.0)
-            .show(ui, |ui| {
-                ui.label(egui::RichText::new(media.path.to_string_lossy().as_ref()).size(10.0).color(dim));
-            });
-        ui.add_space(4.0);
-    });
-
-    ui.add_space(8.0);
-
-    logging_section(ui, theme, theme.bg_deep, theme.bg_panel, media, cmds);
-    ui.add_space(8.0);
-    markers_section(ui, theme, theme.bg_deep, theme.bg_panel, media, cmds);
-    ui.add_space(8.0);
-
-    // ── TAGS ──
-    let tag_count = media.tags.len();
-    section_card(ui, "TAGS", Some(format!("{tag_count}")), theme.bg_deep, theme.bg_panel, theme, |ui| {
-        if media.tags.is_empty() {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.add_space(pad);
-                ui.label(egui::RichText::new("No tags added").italics().size(12.0).color(dim));
-            });
-            ui.add_space(6.0);
-        } else {
-            ui.add_space(4.0);
-            let mut tag_to_remove: Option<usize> = None;
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(pad);
-                ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-                for (i, tag) in media.tags.iter().enumerate() {
-                    egui::Frame::default()
-                        .fill(theme.bg_raised)
-                        .rounding(4.0)
-                        .inner_margin(egui::Margin { left: 8.0, right: 4.0, top: 3.0, bottom: 3.0 })
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 3.0;
-                                ui.label(egui::RichText::new(tag.as_str()).size(11.0).color(theme.text_primary));
-                                if ui.add(egui::Button::new(egui::RichText::new("\u{00D7}").size(12.0).color(dim)).frame(false)).clicked() {
-                                    tag_to_remove = Some(i);
-                                }
-                            });
-                        });
-                }
-            });
-            if let Some(idx) = tag_to_remove {
-                let mut new_tags = media.tags.clone();
-                new_tags.remove(idx);
-                cmds.push(AppCommand::SetMediaTags { media_id: media.id, tags: new_tags });
-            }
-            ui.add_space(6.0);
-        }
-
-        // Add tag input
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.add_space(pad);
-            let w = ui.available_width() - pad;
-            let resp = ui.add(
-                egui::TextEdit::singleline(tag_input)
-                    .hint_text("+  Add tag\u{2026}")
-                    .desired_width(w)
-                    .font(egui::TextStyle::Small),
-            );
-            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !tag_input.trim().is_empty() {
-                let new_tag = tag_input.trim().to_lowercase();
-                if !media.tags.contains(&new_tag) {
-                    let mut new_tags = media.tags.clone();
-                    new_tags.push(new_tag);
-                    cmds.push(AppCommand::SetMediaTags { media_id: media.id, tags: new_tags });
-                }
-                tag_input.clear();
-            }
-        });
-        ui.add_space(8.0);
-    });
-
-    ui.add_space(8.0);
-
-    // ── TIMELINE USAGE ──
-    // Find all clips on the timeline that reference this media
+    // Every clip on the timeline that uses this file.
+    let seq = state.sequence();
     let mut usages: Vec<(String, String)> = Vec::new();
-    let mut total_used_secs = 0.0_f64;
-    for track in &state.sequence().tracks {
-        for clip in &track.clips {
-            if clip.media_id() == Some(media.id) {
-                let in_tc = clip.timeline_in.to_timecode_string();
-                let out_tc = clip.timeline_out.to_timecode_string();
-                let track_name = if track.name.is_empty() {
-                    format!("{:?} {}", track.kind, track.clips.iter().position(|c| c.id == clip.id).unwrap_or(0) + 1)
-                } else {
-                    track.name.clone()
-                };
-                usages.push((track_name, format!("{in_tc} \u{2013} {out_tc}")));
-                total_used_secs += clip.duration().to_secs_f64();
-            }
+    let mut used_secs = 0.0_f64;
+    for (idx, track) in seq.tracks.iter().enumerate() {
+        for clip in track.clips.iter().filter(|c| c.media_id() == Some(media.id)) {
+            usages.push((track_name(seq, idx), format!("{} \u{2013} {}", clip.timeline_in.to_timecode_string(), clip.timeline_out.to_timecode_string())));
+            used_secs += clip.duration().to_secs_f64();
         }
     }
-    let usage_count = usages.len();
-    let total_used_tc = klipp_core::Timecode::from_secs_f64(total_used_secs, state.sequence().fps.num);
-
-    section_card(ui, "TIMELINE USAGE", Some(format!("{usage_count}")), theme.bg_deep, theme.bg_panel, theme, |ui| {
-        let w = ui.available_width();
-
-        info_row_custom(ui, theme, pad, row_h, w, "Used in", |ui, rx, cy| {
-            let text = if usage_count == 0 { "Not used".into() } else { format!("{usage_count} place{}", if usage_count == 1 { "" } else { "s" }) };
-            ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(13.0), theme.text_primary);
-        });
-
-        if usage_count > 0 {
-            info_row_custom(ui, theme, pad, row_h, w, "Total used", |ui, rx, cy| {
-                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, total_used_tc.to_timecode_string(), egui::FontId::monospace(13.0), theme.text_primary);
-            });
-
-            // Usage list
-            ui.add_space(4.0);
-            for (track_name, range) in &usages {
-                let (usage_rect, _) = ui.allocate_exact_size(egui::vec2(w, row_h), egui::Sense::hover());
-                ui.painter().hline(usage_rect.min.x + pad..=usage_rect.max.x - pad, usage_rect.max.y, egui::Stroke::new(0.5_f32, theme.border));
-                // Colored dot
-                ui.painter().circle_filled(egui::pos2(usage_rect.min.x + pad + 4.0, usage_rect.center().y), 3.5, accent);
-                // Track name + range
-                ui.painter().text(
-                    egui::pos2(usage_rect.min.x + pad + 14.0, usage_rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    format!("{track_name} \u{00B7} {range}"),
-                    egui::FontId::proportional(11.0), dim,
-                );
+    let count = usages.len();
+    section_card(ui, "TIMELINE USAGE", Some(format!("{count}")), theme, |ui| {
+        if count == 0 {
+            colour_row(ui, theme, "Used in", "Not used", theme.text_secondary);
+        } else {
+            text_row(ui, theme, "Used in", format!("{count} place{}", if count == 1 { "" } else { "s" }));
+            mono_row(ui, theme, "Total used", klipp_core::Timecode::from_secs_f64(used_secs, seq.fps.num).to_timecode_string());
+            for (track, range) in usages {
+                mono_row(ui, theme, &track, range);
             }
         }
         ui.add_space(4.0);
@@ -677,7 +223,9 @@ pub fn show_bin_media(
     ui.add_space(16.0);
 }
 
-/// State 3: Timeline clip selected — full clip info
+/// A timeline clip selected: what its file is, its log and marks, its
+/// tags, and where the clip sits.
+#[allow(clippy::too_many_arguments)]
 pub fn show_clip(
     ui: &mut egui::Ui,
     state: &AppState,
@@ -688,319 +236,174 @@ pub fn show_clip(
     tag_input: &mut String,
     cmds: &mut Vec<AppCommand>,
 ) {
-    let pad = 14.0;
-    let row_h = 30.0;
-    let value_color = theme.text_primary;
-    let accent = theme.accent;
-    let dim = theme.text_dim;
-    let section_bg = theme.bg_deep;
-    let card_bg = theme.bg_panel;
+    media_section(ui, state, theme, media);
+    logging_section(ui, theme, media, cmds);
+    markers_section(ui, theme, media, cmds);
+    tags_section(ui, theme, media, tag_input, cmds);
 
-    // ════════════════════════════════════════
-    // CLIP INFO
-    // ════════════════════════════════════════
-    section_card(ui, "CLIP INFO", None, section_bg, card_bg, theme, |ui| {
-        let w = ui.available_width();
-
-        // Resolution
-        info_row_custom(ui, theme, pad, row_h, w, "Resolution", |ui, rx, cy| {
-            let text = format!("{} \u{00D7} {}", media.resolution.width, media.resolution.height);
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                text, egui::FontId::proportional(13.0), value_color,
-            );
-        });
-
-        // Frame rate
-        if !media.is_still {
-            info_row_custom(ui, theme, pad, row_h, w, "Frame rate", |ui, rx, cy| {
-                let fps_val = media.fps.as_f64();
-                let text = if (fps_val - fps_val.round()).abs() < 0.01 {
-                    format!("{}  fps", fps_val.round() as u32)
-                } else {
-                    format!("{:.3}  fps", fps_val)
-                };
-                ui.painter().text(
-                    egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                    text, egui::FontId::proportional(13.0), value_color,
+    section_card(ui, "TIMELINE", None, theme, |ui| {
+        // Where the clip sits in the sequence, as a bar.
+        let seq_dur = state.sequence_duration().to_secs_f64();
+        if seq_dur > 0.0 {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.add_space(super::rows::ROW_PAD);
+                let w = ui.available_width() - super::rows::ROW_PAD;
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 4.0), egui::Sense::hover());
+                ui.painter().rect_filled(rect, 2.0, theme.bg_raised);
+                let frac = |t: f64| (t / seq_dur).clamp(0.0, 1.0) as f32;
+                let span = egui::Rect::from_min_max(
+                    egui::pos2(rect.min.x + rect.width() * frac(clip.timeline_in.to_secs_f64()), rect.min.y),
+                    egui::pos2(rect.min.x + rect.width() * frac(clip.timeline_out.to_secs_f64()), rect.max.y),
                 );
+                ui.painter().rect_filled(span, 2.0, theme.text_secondary);
             });
+            ui.add_space(4.0);
+        }
+        mono_row(ui, theme, "In", clip.timeline_in.to_timecode_string());
+        mono_row(ui, theme, "Out", clip.timeline_out.to_timecode_string());
+        mono_row(ui, theme, "Duration", clip.duration().to_timecode_string());
+        text_row(ui, theme, "Track", track_name(state.sequence(), track_idx));
+        text_row(ui, theme, "Speed", format!("{:.0}%", clip.speed * 100.0));
+        ui.add_space(4.0);
+    });
+}
+
+/// A track's name, or its kind and number when it has none ("V1", "A2").
+fn track_name(seq: &klipp_timeline::Sequence, idx: usize) -> String {
+    let Some(track) = seq.tracks.get(idx) else { return String::new() };
+    if !track.name.is_empty() {
+        return track.name.clone();
+    }
+    let n = seq.tracks[..=idx].iter().filter(|t| t.kind == track.kind).count();
+    let letter = if track.kind == klipp_timeline::TrackKind::Audio { 'A' } else { 'V' };
+    format!("{letter}{n}")
+}
+
+/// What the file is: its picture, sound, colour and size, the camera's
+/// record of the shot, its proxy and where it is on disk. Shown alike
+/// for a bin item and a timeline clip.
+fn media_section(ui: &mut egui::Ui, state: &AppState, theme: &KlippTheme, media: &klipp_media::MediaItem) {
+    let dim = theme.text_secondary;
+    section_card(ui, "CLIP INFO", None, theme, |ui| {
+        text_row(ui, theme, "Resolution", format!("{} \u{00D7} {}", media.resolution.width, media.resolution.height));
+        if media.is_still {
+            text_row(ui, theme, "Type", "Still image");
         } else {
-            info_row_custom(ui, theme, pad, row_h, w, "Type", |ui, rx, cy| {
-                ui.painter().text(
-                    egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                    "Still image", egui::FontId::proportional(13.0), value_color,
-                );
-            });
+            text_row(ui, theme, "Frame rate", fps_text(media.fps.as_f64()));
         }
-
-        // Codec (pill badges)
-        info_row_custom(ui, theme, pad, row_h, w, "Codec", |ui, rx, cy| {
-            let pill_h = 20.0;
-            let pill_bg = theme.bg_raised;
-            let pill_border = theme.border_light;
-            let mut x = rx;
-
-            // Audio codec pill
-            if !media.audio_codec.is_empty() {
-                let codec = media.audio_codec.to_uppercase();
-                let galley = ui.painter().layout_no_wrap(
-                    codec.clone(), egui::FontId::monospace(11.0), value_color,
-                );
-                let pw = galley.size().x + 12.0;
-                let pill_rect = egui::Rect::from_min_size(
-                    egui::pos2(x - pw, cy - pill_h / 2.0),
-                    egui::vec2(pw, pill_h),
-                );
-                ui.painter().rect(pill_rect, 4.0, pill_bg, egui::Stroke::new(1.0_f32, pill_border));
-                ui.painter().text(
-                    pill_rect.center(), egui::Align2::CENTER_CENTER,
-                    codec, egui::FontId::monospace(11.0), value_color,
-                );
-                x -= pw + 6.0;
-            }
-
-            // Video codec pill
-            if !media.video_codec.is_empty() {
-                let codec = media.video_codec.to_uppercase();
-                let galley = ui.painter().layout_no_wrap(
-                    codec.clone(), egui::FontId::monospace(11.0), value_color,
-                );
-                let pw = galley.size().x + 12.0;
-                let pill_rect = egui::Rect::from_min_size(
-                    egui::pos2(x - pw, cy - pill_h / 2.0),
-                    egui::vec2(pw, pill_h),
-                );
-                ui.painter().rect(pill_rect, 4.0, pill_bg, egui::Stroke::new(1.0_f32, pill_border));
-                ui.painter().text(
-                    pill_rect.center(), egui::Align2::CENTER_CENTER,
-                    codec, egui::FontId::monospace(11.0), value_color,
-                );
-            }
-        });
-
-        // Audio (channel bars + label)
+        let codecs: Vec<String> = [&media.video_codec, &media.audio_codec].into_iter().filter(|c| !c.is_empty()).map(|c| c.to_uppercase()).collect();
+        if codecs.is_empty() {
+            colour_row(ui, theme, "Codec", "Unknown", dim);
+        } else {
+            text_row(ui, theme, "Codec", codecs.join(" \u{00B7} "));
+        }
         if media.has_audio {
-            info_row_custom(ui, theme, pad, row_h, w, "Audio", |ui, rx, cy| {
-                let channels = media.audio_channels.unwrap_or(2);
-                let sample_rate = media.sample_rate.unwrap_or(48000);
-                let ch_label = match channels {
-                    1 => "Mono",
-                    2 => "Stereo",
-                    6 => "5.1",
-                    8 => "7.1",
-                    _ => "",
-                };
-                let sr_khz = sample_rate as f64 / 1000.0;
-                let sr_text = if sr_khz == sr_khz.floor() {
-                    format!("{} kHz", sr_khz as u32)
-                } else {
-                    format!("{:.1} kHz", sr_khz)
-                };
-                let label = format!("{ch_label} \u{00B7} {sr_text}");
-
-                let label_galley = ui.painter().layout_no_wrap(
-                    label.clone(), egui::FontId::proportional(12.0), dim,
-                );
-                let label_w = label_galley.size().x;
-
-                ui.painter().text(
-                    egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                    &label, egui::FontId::proportional(12.0), dim,
-                );
-
-                // Channel bars
-                let bars_x = rx - label_w - 10.0;
-                let bar_w = 4.0;
-                let bar_gap = 2.0;
-                let max_bar_h = 14.0;
-                let bar_heights: &[f32] = match channels {
-                    1 => &[0.8],
-                    2 => &[0.9, 0.7],
-                    6 => &[0.7, 0.9, 1.0, 0.8, 0.6, 0.5],
-                    8 => &[0.7, 0.9, 1.0, 0.8, 0.6, 0.5, 0.7, 0.6],
-                    _ => &[0.8, 0.7],
-                };
-                let total_bars_w = bar_heights.len() as f32 * (bar_w + bar_gap) - bar_gap;
-                let bx = bars_x - total_bars_w;
-                for (i, &h_frac) in bar_heights.iter().enumerate() {
-                    let bh = max_bar_h * h_frac;
-                    let bar_rect = egui::Rect::from_min_size(
-                        egui::pos2(bx + i as f32 * (bar_w + bar_gap), cy - bh / 2.0),
-                        egui::vec2(bar_w, bh),
-                    );
-                    ui.painter().rect_filled(bar_rect, 1.0, accent);
-                }
-            });
+            match audio_text(media) {
+                Some(text) => text_row(ui, theme, "Audio", text),
+                None => colour_row(ui, theme, "Audio", "Format unknown", dim),
+            }
         }
+        mono_row(ui, theme, "Duration", media.duration.to_timecode_string());
+        text_row(ui, theme, "File size", format_size(media.file_size_bytes));
 
-        // Duration
-        info_row_custom(ui, theme, pad, row_h, w, "Duration", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                media.duration.to_timecode_string(),
-                egui::FontId::proportional(13.0), value_color,
-            );
-        });
-
-        // File size
-        info_row_custom(ui, theme, pad, row_h, w, "File size", |ui, rx, cy| {
-            let size_str = if media.file_size_bytes > 1_000_000_000 {
-                format!("{:.1} GB", media.file_size_bytes as f64 / 1_000_000_000.0)
+        // The colour class the file was read as, then the transfer and
+        // primaries its stream is tagged with, when it is.
+        if media.colour_space == klipp_media::ColourSpace::Unknown {
+            colour_row(ui, theme, "Colour", media.colour_space.label(), dim);
+        } else {
+            text_row(ui, theme, "Colour", media.colour_space.label());
+        }
+        if media.color_transfer.is_some() || media.color_primaries.is_some() {
+            let transfer = media.color_transfer.as_deref().unwrap_or("Unspecified");
+            let primaries = media.color_primaries.as_deref().unwrap_or("");
+            let text = if !primaries.is_empty() && primaries != "Unspecified" && primaries != transfer {
+                format!("{transfer} / {primaries}")
             } else {
-                format!("{:.1} MB", media.file_size_bytes as f64 / 1_000_000.0)
+                transfer.to_string()
             };
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                size_str, egui::FontId::proportional(13.0), value_color,
-            );
-        });
-
-        // Colour space
-        info_row_custom(ui, theme, pad, row_h, w, "Colour", |ui, rx, cy| {
-            use klipp_media::ColourSpace;
-            let (badge_text, badge_color, sub_text) = match media.colour_space {
-                ColourSpace::Sdr => ("SDR", theme.marker_info, "BT.709"),
-                ColourSpace::Hdr10 => ("HDR10", theme.marker_warning, "BT.2020"),
-                ColourSpace::Hlg => ("HLG", theme.accent, "BT.2020"),
-                ColourSpace::Unknown => ("SDR", theme.marker_info, "BT.709"),
-            };
-
-            // Sub-text
-            let sub_galley = ui.painter().layout_no_wrap(
-                sub_text.to_string(), egui::FontId::proportional(12.0), dim,
-            );
-            let sub_w = sub_galley.size().x;
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                sub_text, egui::FontId::proportional(12.0), dim,
-            );
-
-            // Badge
-            let badge_galley = ui.painter().layout_no_wrap(
-                badge_text.to_string(), egui::FontId::proportional(11.0), egui::Color32::WHITE,
-            );
-            let bw = badge_galley.size().x + 10.0;
-            let bh = 18.0;
-            let badge_rect = egui::Rect::from_min_size(
-                egui::pos2(rx - sub_w - 8.0 - bw, cy - bh / 2.0),
-                egui::vec2(bw, bh),
-            );
-            ui.painter().rect_filled(badge_rect, 2.0, badge_color);
-            ui.painter().text(
-                badge_rect.center(), egui::Align2::CENTER_CENTER,
-                badge_text, egui::FontId::proportional(11.0),
-                egui::Color32::WHITE,
-            );
-        });
-
-        // Shoot date
-        let shoot_date = media.media_created_at.or(media.file_modified_at);
-        if let Some(epoch_secs) = shoot_date.filter(|&t| t > 0) {
-            info_row_custom(ui, theme, pad, row_h, w, "Shoot date", |ui, rx, cy| {
-                ui.painter().text(
-                    egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                    format_epoch_date(epoch_secs),
-                    egui::FontId::proportional(13.0), value_color,
-                );
-            });
+            text_row(ui, theme, "Transfer", text);
         }
 
-        // Camera info (if available from metadata)
+        if let Some(epoch_secs) = media.media_created_at.or(media.file_modified_at).filter(|&t| t > 0) {
+            text_row(ui, theme, "Shoot date", format_epoch_date(epoch_secs));
+        }
         if media.camera_make.is_some() || media.camera_model.is_some() {
-            info_row_custom(ui, theme, pad, row_h, w, "Camera", |ui, rx, cy| {
-                let make = media.camera_make.as_deref().unwrap_or("");
-                let model = media.camera_model.as_deref().unwrap_or("");
-                let text = if !make.is_empty() && !model.is_empty() {
-                    format!("{make} {model}")
-                } else {
-                    format!("{make}{model}")
-                };
-                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(13.0), theme.text_primary);
-            });
+            let make = media.camera_make.as_deref().unwrap_or("");
+            let model = media.camera_model.as_deref().unwrap_or("");
+            let sep = if !make.is_empty() && !model.is_empty() { " " } else { "" };
+            text_row(ui, theme, "Camera", format!("{make}{sep}{model}"));
         }
-        truncated_row(ui, theme, pad, row_h, w, media);
-        synced_audio_row(ui, theme, pad, row_h, w, state, media);
-        span_row(ui, theme, pad, row_h, w, media);
-        shot_rows(ui, theme, pad, row_h, w, dim, &media.shot);
-
-        if let Some(ref enc) = media.encoder {
-            info_row_custom(ui, theme, pad, row_h, w, "Encoder", |ui, rx, cy| {
-                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, enc, egui::FontId::proportional(12.0), dim);
-            });
+        if let Some(claimed) = media.truncated_from_secs {
+            let text = format!("{} of {} the header claims", klipp_media::describe_secs(media.duration.to_secs_f64()), klipp_media::describe_secs(claimed));
+            colour_row(ui, theme, "Cut short", text, theme.marker_warning);
+        }
+        if let Some(sync) = &media.synced_audio {
+            let name = state.media_pool.get(&sync.audio_media_id).map(|m| m.filename.clone()).unwrap_or_else(|| "missing recording".to_string());
+            text_row(ui, theme, "Synced audio", format!("{name} ({})", sync.describe()));
+        }
+        if let Some(span) = media.span {
+            text_row(ui, theme, "Split take", span.label());
+        }
+        shot_rows(ui, theme, &media.shot);
+        if let Some(enc) = &media.encoder {
+            text_row(ui, theme, "Encoder", enc.clone());
         }
         if media.bit_depth.is_some() || media.pixel_format.is_some() {
-            info_row_custom(ui, theme, pad, row_h, w, "Format", |ui, rx, cy| {
-                let mut parts = Vec::new();
-                if let Some(bd) = media.bit_depth { parts.push(format!("{bd}-bit")); }
-                if let Some(ref pf) = media.pixel_format { parts.push(pf.clone()); }
-                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, parts.join(" \u{00B7} "), egui::FontId::proportional(12.0), dim);
-            });
+            let mut parts = Vec::new();
+            if let Some(bd) = media.bit_depth { parts.push(format!("{bd}-bit")); }
+            if let Some(pf) = &media.pixel_format { parts.push(pf.clone()); }
+            text_row(ui, theme, "Format", parts.join(" \u{00B7} "));
         }
         if let Some(vbr) = media.video_bitrate_kbps {
-            info_row_custom(ui, theme, pad, row_h, w, "Bitrate", |ui, rx, cy| {
-                let text = if vbr >= 1000 { format!("{:.1} Mbps", vbr as f64 / 1000.0) } else { format!("{vbr} kbps") };
-                ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(12.0), dim);
-            });
+            text_row(ui, theme, "Bitrate", if vbr >= 1000 { format!("{:.1} Mbps", vbr as f64 / 1000.0) } else { format!("{vbr} kbps") });
         }
-
         tag_list(ui, theme, &media.shot);
 
-        // Proxy
-        info_row_custom(ui, theme, pad, row_h, w, "Proxy", |ui, rx, cy| {
-            let is_generating = state.proxy_generating.contains(&media.id);
-            if media.proxy_ready {
-                ui.painter().text(
-                    egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                    "Ready", egui::FontId::proportional(13.0),
-                    theme.marker_success,
-                );
-            } else if is_generating {
-                let progress = state.proxy_progress.get(&media.id).copied().unwrap_or(0.0);
-                ui.painter().text(
-                    egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                    format!("{:.0}%", progress * 100.0),
-                    egui::FontId::proportional(13.0),
-                    theme.marker_warning,
-                );
-                ui.ctx().request_repaint();
-            } else {
-                ui.painter().text(
-                    egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                    "None", egui::FontId::proportional(13.0), dim,
-                );
-            }
-        });
+        if media.proxy_ready {
+            colour_row(ui, theme, "Proxy", "Ready", theme.marker_success);
+        } else if state.proxy_generating.contains(&media.id) {
+            let progress = state.proxy_progress.get(&media.id).copied().unwrap_or(0.0);
+            text_row(ui, theme, "Proxy", format!("Making, {:.0}%", progress * 100.0));
+            ui.ctx().request_repaint();
+        } else {
+            colour_row(ui, theme, "Proxy", "None", dim);
+        }
+        note(ui, theme, &media.path.to_string_lossy());
+        ui.add_space(4.0);
     });
+}
 
-    ui.add_space(8.0);
+/// "Stereo · 48 kHz" from what the file says; `None` when it says
+/// neither its channels nor its rate.
+fn audio_text(media: &klipp_media::MediaItem) -> Option<String> {
+    let channels = media.audio_channels.map(|n| match n {
+        1 => "Mono".to_string(),
+        2 => "Stereo".to_string(),
+        6 => "5.1".to_string(),
+        8 => "7.1".to_string(),
+        n => format!("{n} channels"),
+    });
+    let rate = media.sample_rate.map(|r| {
+        let khz = r as f64 / 1000.0;
+        if khz == khz.floor() { format!("{} kHz", khz as u32) } else { format!("{khz:.1} kHz") }
+    });
+    let parts: Vec<String> = channels.into_iter().chain(rate).collect();
+    (!parts.is_empty()).then(|| parts.join(" \u{00B7} "))
+}
 
-    logging_section(ui, theme, section_bg, card_bg, media, cmds);
-    ui.add_space(8.0);
-    markers_section(ui, theme, section_bg, card_bg, media, cmds);
-    ui.add_space(8.0);
-
-    // ════════════════════════════════════════
-    // TAGS
-    // ════════════════════════════════════════
-    let tag_count = media.tags.len();
-    section_card(ui, "TAGS", Some(format!("{tag_count}")), section_bg, card_bg, theme, |ui| {
+/// The file's tags as removable chips, and a field to add one.
+fn tags_section(ui: &mut egui::Ui, theme: &KlippTheme, media: &klipp_media::MediaItem, tag_input: &mut String, cmds: &mut Vec<AppCommand>) {
+    let pad = super::rows::ROW_PAD;
+    section_card(ui, "TAGS", Some(format!("{}", media.tags.len())), theme, |ui| {
+        ui.add_space(4.0);
         if media.tags.is_empty() {
-            ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.add_space(pad);
-                ui.label(
-                    egui::RichText::new("No tags added")
-                        .italics()
-                        .size(12.0)
-                        .color(dim),
-                );
+                ui.label(egui::RichText::new("No tags added").size(TEXT).color(theme.text_secondary));
             });
-            ui.add_space(6.0);
         } else {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| { ui.add_space(pad); });
-            let mut tag_to_remove: Option<usize> = None;
+            let mut remove: Option<usize> = None;
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(pad);
                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
@@ -1012,187 +415,55 @@ pub fn show_clip(
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 3.0;
-                                ui.label(
-                                    egui::RichText::new(tag.as_str())
-                                        .size(11.0)
-                                        .color(theme.text_primary),
-                                );
-                                let x_btn = ui.add(
-                                    egui::Button::new(
-                                        egui::RichText::new("\u{00D7}")
-                                            .size(12.0)
-                                            .color(theme.text_dim)
-                                    )
-                                    .frame(false)
-                                );
-                                if x_btn.clicked() {
-                                    tag_to_remove = Some(i);
+                                ui.label(egui::RichText::new(tag.as_str()).size(11.5).color(theme.text_primary));
+                                if ui.add(egui::Button::new(egui::RichText::new("\u{00D7}").size(12.0).color(theme.text_secondary)).frame(false))
+                                    .on_hover_text(format!("Remove the tag {tag}"))
+                                    .clicked()
+                                {
+                                    remove = Some(i);
                                 }
                             });
                         });
                 }
             });
-            if let Some(idx) = tag_to_remove {
-                let mut new_tags = media.tags.clone();
-                new_tags.remove(idx);
-                cmds.push(AppCommand::SetMediaTags {
-                    media_id: media.id,
-                    tags: new_tags,
-                });
+            if let Some(idx) = remove {
+                let mut tags = media.tags.clone();
+                tags.remove(idx);
+                cmds.push(AppCommand::SetMediaTags { media_id: media.id, tags });
             }
-            ui.add_space(6.0);
         }
-
-        // Add tag button / input
-        ui.add_space(2.0);
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.add_space(pad);
             let w = ui.available_width() - pad;
-            let resp = ui.add(
-                egui::TextEdit::singleline(tag_input)
-                    .hint_text("+  Add tag\u{2026}")
-                    .desired_width(w)
-                    .font(egui::TextStyle::Small),
-            );
-            if resp.lost_focus()
-                && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                && !tag_input.trim().is_empty()
-            {
-                let new_tag = tag_input.trim().to_lowercase();
-                if !media.tags.contains(&new_tag) {
-                    let mut new_tags = media.tags.clone();
-                    new_tags.push(new_tag);
-                    cmds.push(AppCommand::SetMediaTags {
-                        media_id: media.id,
-                        tags: new_tags,
-                    });
+            let resp = ui.add(egui::TextEdit::singleline(tag_input).hint_text("+  Add tag\u{2026}").desired_width(w).font(egui::TextStyle::Small));
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !tag_input.trim().is_empty() {
+                let tag = tag_input.trim().to_lowercase();
+                if !media.tags.contains(&tag) {
+                    let mut tags = media.tags.clone();
+                    tags.push(tag);
+                    cmds.push(AppCommand::SetMediaTags { media_id: media.id, tags });
                 }
                 tag_input.clear();
             }
         });
         ui.add_space(8.0);
     });
-
-    ui.add_space(8.0);
-
-    // ════════════════════════════════════════
-    // TIMELINE
-    // ════════════════════════════════════════
-    section_card(ui, "TIMELINE", None, section_bg, card_bg, theme, |ui| {
-        let w = ui.available_width();
-
-        // Progress bar — clip position in sequence
-        let seq_dur = state.sequence_duration().to_secs_f64();
-        let clip_in = clip.timeline_in.to_secs_f64();
-        let clip_out = clip.timeline_out.to_secs_f64();
-        if seq_dur > 0.0 {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.add_space(pad);
-                let bar_w = w - pad * 2.0;
-                let (rect, _) = ui.allocate_exact_size(
-                    egui::vec2(bar_w, 6.0), egui::Sense::hover(),
-                );
-                // Background
-                ui.painter().rect_filled(rect, 2.0, theme.bg_raised);
-                // Clip range highlight
-                let start_frac = (clip_in / seq_dur).clamp(0.0, 1.0) as f32;
-                let end_frac = (clip_out / seq_dur).clamp(0.0, 1.0) as f32;
-                let highlight = egui::Rect::from_min_max(
-                    egui::pos2(rect.min.x + rect.width() * start_frac, rect.min.y),
-                    egui::pos2(rect.min.x + rect.width() * end_frac, rect.max.y),
-                );
-                ui.painter().rect_filled(highlight, 2.0, accent);
-            });
-
-            // Timecode range labels
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                ui.add_space(pad);
-                ui.colored_label(dim,
-                    egui::RichText::new(clip.timeline_in.to_timecode_string()).monospace().size(10.0));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(pad);
-                    ui.colored_label(dim,
-                        egui::RichText::new(clip.timeline_out.to_timecode_string()).monospace().size(10.0));
-                });
-            });
-        }
-        ui.add_space(4.0);
-
-        // In
-        info_row_custom(ui, theme, pad, row_h, w, "In", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                clip.timeline_in.to_timecode_string(),
-                egui::FontId::monospace(13.0), value_color,
-            );
-        });
-
-        // Out
-        info_row_custom(ui, theme, pad, row_h, w, "Out", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                clip.timeline_out.to_timecode_string(),
-                egui::FontId::monospace(13.0), value_color,
-            );
-        });
-
-        // Duration (accent)
-        info_row_custom(ui, theme, pad, row_h, w, "Duration", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                clip.duration().to_timecode_string(),
-                egui::FontId::monospace(13.0), accent,
-            );
-        });
-
-        // Track
-        info_row_custom(ui, theme, pad, row_h, w, "Track", |ui, rx, cy| {
-            let track_name = state.sequence().tracks.get(track_idx)
-                .map(|t| t.name.clone())
-                .unwrap_or_default();
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                track_name,
-                egui::FontId::proportional(13.0),
-                theme.marker_info,
-            );
-        });
-
-        // Speed
-        info_row_custom(ui, theme, pad, row_h, w, "Speed", |ui, rx, cy| {
-            let speed = clip.speed;
-            let color = if (speed - 1.0).abs() < 0.001 {
-                theme.marker_success // green
-            } else if speed > 1.0 {
-                theme.marker_warning // amber
-            } else {
-                theme.marker_error // red
-            };
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                format!("{:.0}%", speed * 100.0),
-                egui::FontId::proportional(13.0), color,
-            );
-        });
-    });
 }
 
 // ── Helpers ──────────────────────────────────────────────
 
-/// Collapsible section card using egui's collapsing header state.
 /// The marks the editor left on the clip: notes, favourite stretches,
 /// rejected ones — each named in place and removable. Shown only when
 /// there are any.
-fn markers_section(ui: &mut egui::Ui, theme: &KlippTheme, header_bg: egui::Color32, card_bg: egui::Color32, media: &klipp_media::MediaItem, cmds: &mut Vec<AppCommand>) {
+fn markers_section(ui: &mut egui::Ui, theme: &KlippTheme, media: &klipp_media::MediaItem, cmds: &mut Vec<AppCommand>) {
     if media.markers.is_empty() {
         return;
     }
-    let pad = 12.0;
-    let dim = theme.text_dim;
+    let pad = super::rows::ROW_PAD;
+    let dim = theme.text_secondary;
     let rate = media.fps.rate();
-    section_card(ui, "MARKERS", Some(format!("{}", media.markers.len())), header_bg, card_bg, theme, |ui| {
+    section_card(ui, "MARKERS", Some(format!("{}", media.markers.len())), theme, |ui| {
         ui.add_space(4.0);
         let mut remove: Option<usize> = None;
         for (i, m) in media.markers.iter().enumerate() {
@@ -1211,7 +482,7 @@ fn markers_section(ui: &mut egui::Ui, theme: &KlippTheme, header_bg: egui::Color
                 } else {
                     when
                 };
-                ui.label(egui::RichText::new(span).monospace().size(10.0).color(dim));
+                ui.label(egui::RichText::new(span).monospace().size(11.5).color(dim));
                 let mut name = m.name.clone();
                 let w = (ui.available_width() - 28.0).max(60.0);
                 if ui.add(egui::TextEdit::singleline(&mut name).desired_width(w).font(egui::TextStyle::Small).hint_text(m.kind.label())).changed() {
@@ -1233,11 +504,11 @@ fn markers_section(ui: &mut egui::Ui, theme: &KlippTheme, header_bg: egui::Color
 /// description, comments, good take — edited in place. Each change goes
 /// out as one `SetMediaLog`; the keywords line is committed when it is
 /// left, so a comma being typed is not swept away mid-edit.
-fn logging_section(ui: &mut egui::Ui, theme: &KlippTheme, header_bg: egui::Color32, card_bg: egui::Color32, media: &klipp_media::MediaItem, cmds: &mut Vec<AppCommand>) {
-    let pad = 12.0;
-    let dim = theme.text_dim;
+fn logging_section(ui: &mut egui::Ui, theme: &KlippTheme, media: &klipp_media::MediaItem, cmds: &mut Vec<AppCommand>) {
+    let pad = super::rows::ROW_PAD;
+    let dim = theme.text_secondary;
     let badge = media.log.slate_line().or_else(|| (!media.log.is_empty()).then(|| "logged".to_string()));
-    section_card(ui, "LOGGING", badge, header_bg, card_bg, theme, |ui| {
+    section_card(ui, "LOGGING", badge, theme, |ui| {
         let mut log = media.log.clone();
         let mut changed = false;
         ui.add_space(6.0);
@@ -1247,7 +518,7 @@ fn logging_section(ui: &mut egui::Ui, theme: &KlippTheme, header_bg: egui::Color
             egui::Grid::new(("clip_log_grid", media.id)).num_columns(2).spacing([8.0, 4.0]).min_col_width(64.0).show(ui, |ui| {
                 let edit_w = (total - 80.0).max(60.0);
                 let mut line = |ui: &mut egui::Ui, label: &str, value: &mut String| {
-                    ui.label(egui::RichText::new(label).size(11.0).color(dim));
+                    ui.label(egui::RichText::new(label).size(TEXT).color(dim));
                     if ui.add(egui::TextEdit::singleline(value).desired_width(edit_w).font(egui::TextStyle::Small)).changed() {
                         changed = true;
                     }
@@ -1260,7 +531,7 @@ fn logging_section(ui: &mut egui::Ui, theme: &KlippTheme, header_bg: egui::Color
 
                 // Keywords: edited as one line in a buffer of their own,
                 // normalised when the field is left.
-                ui.label(egui::RichText::new("Keywords").size(11.0).color(dim));
+                ui.label(egui::RichText::new("Keywords").size(TEXT).color(dim));
                 let buf_id = egui::Id::new(("clip_log_keywords", media.id));
                 let mut buf: String = ui.ctx().data_mut(|d| d.get_temp::<String>(buf_id)).unwrap_or_else(|| log.keywords_line());
                 let resp = ui.add(egui::TextEdit::singleline(&mut buf).desired_width(edit_w).font(egui::TextStyle::Small).hint_text("interview, wide, b-roll"));
@@ -1278,18 +549,18 @@ fn logging_section(ui: &mut egui::Ui, theme: &KlippTheme, header_bg: egui::Color
                 }
                 ui.end_row();
 
-                ui.label(egui::RichText::new("Description").size(11.0).color(dim));
+                ui.label(egui::RichText::new("Description").size(TEXT).color(dim));
                 if ui.add(egui::TextEdit::multiline(&mut log.description).desired_width(edit_w).desired_rows(2).font(egui::TextStyle::Small)).changed() {
                     changed = true;
                 }
                 ui.end_row();
-                ui.label(egui::RichText::new("Comments").size(11.0).color(dim));
+                ui.label(egui::RichText::new("Comments").size(TEXT).color(dim));
                 if ui.add(egui::TextEdit::multiline(&mut log.comments).desired_width(edit_w).desired_rows(2).font(egui::TextStyle::Small)).changed() {
                     changed = true;
                 }
                 ui.end_row();
                 ui.label("");
-                if ui.checkbox(&mut log.good_take, egui::RichText::new("Good take").size(11.0)).changed() {
+                if ui.checkbox(&mut log.good_take, egui::RichText::new("Good take").size(TEXT)).changed() {
                     changed = true;
                 }
                 ui.end_row();
@@ -1298,7 +569,7 @@ fn logging_section(ui: &mut egui::Ui, theme: &KlippTheme, header_bg: egui::Color
         if let Some(reel) = media.shot.reel_name.as_deref().filter(|_| log.reel.is_empty()) {
             ui.horizontal(|ui| {
                 ui.add_space(pad);
-                ui.label(egui::RichText::new(format!("Reel from the file: {reel}")).size(10.0).color(dim));
+                ui.label(egui::RichText::new(format!("Reel from the file: {reel}")).size(11.0).color(dim));
             });
         }
         ui.add_space(8.0);
@@ -1308,54 +579,13 @@ fn logging_section(ui: &mut egui::Ui, theme: &KlippTheme, header_bg: egui::Color
     });
 }
 
-fn section_card(
-    ui: &mut egui::Ui,
-    title: &str,
-    badge: Option<String>,
-    header_bg: egui::Color32,
-    card_bg: egui::Color32,
-    theme: &KlippTheme,
-    add_contents: impl FnOnce(&mut egui::Ui),
-) {
-    let _ = (header_bg, card_bg);
-    crate::widgets::inspector_group::section_card(ui, title, badge, theme, add_contents);
-}
-
-/// Draw a single key-value row with custom right-side rendering.
-/// Which part of a split take the clip is.
-fn span_row(ui: &mut egui::Ui, theme: &KlippTheme, pad: f32, row_h: f32, w: f32, media: &klipp_media::MediaItem) {
-    let Some(span) = media.span else { return };
-    info_row_custom(ui, theme, pad, row_h, w, "Split take", |ui, rx, cy| {
-        ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, span.label(), egui::FontId::proportional(12.0), theme.text_primary);
-    });
-}
-
-/// The separate recording paired with the clip, and its offset.
-fn synced_audio_row(ui: &mut egui::Ui, theme: &KlippTheme, pad: f32, row_h: f32, w: f32, state: &AppState, media: &klipp_media::MediaItem) {
-    let Some(sync) = &media.synced_audio else { return };
-    let name = state.media_pool.get(&sync.audio_media_id).map(|m| m.filename.clone()).unwrap_or_else(|| "missing recording".to_string());
-    let text = format!("{name} ({})", sync.describe());
-    info_row_custom(ui, theme, pad, row_h, w, "Synced audio", |ui, rx, cy| {
-        ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(12.0), theme.text_accent);
-    });
-}
-
-/// A file cut short: what it holds against what its header claims.
-fn truncated_row(ui: &mut egui::Ui, theme: &KlippTheme, pad: f32, row_h: f32, w: f32, media: &klipp_media::MediaItem) {
-    let Some(claimed) = media.truncated_from_secs else { return };
-    let text = format!("{} of {} the header claims", klipp_media::describe_secs(media.duration.to_secs_f64()), klipp_media::describe_secs(claimed));
-    info_row_custom(ui, theme, pad, row_h, w, "Cut short", |ui, rx, cy| {
-        ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, text, egui::FontId::proportional(12.0), theme.text_accent);
-    });
-}
-
 /// The shot as the camera recorded it: lens, exposure, white balance,
 /// gamma and gamut, timecode and reel — each row only when known.
-fn shot_rows(ui: &mut egui::Ui, theme: &KlippTheme, pad: f32, row_h: f32, w: f32, dim: egui::Color32, shot: &klipp_core::ShotMetadata) {
-    let rows: [(&str, Option<String>, egui::Color32); 6] = [
-        ("Lens", shot.lens.clone(), theme.text_primary),
-        ("Exposure", shot.exposure_summary(), theme.text_primary),
-        ("White balance", shot.white_balance.clone(), dim),
+fn shot_rows(ui: &mut egui::Ui, theme: &KlippTheme, shot: &klipp_core::ShotMetadata) {
+    let rows: [(&str, Option<String>); 6] = [
+        ("Lens", shot.lens.clone()),
+        ("Exposure", shot.exposure_summary()),
+        ("White balance", shot.white_balance.clone()),
         (
             "Gamma",
             match (&shot.gamma, &shot.colour_gamut) {
@@ -1364,16 +594,14 @@ fn shot_rows(ui: &mut egui::Ui, theme: &KlippTheme, pad: f32, row_h: f32, w: f32
                 (None, Some(c)) => Some(c.clone()),
                 (None, None) => None,
             },
-            dim,
         ),
-        ("Timecode", shot.start_timecode.clone(), theme.text_primary),
-        ("Reel", shot.reel_name.clone(), dim),
+        ("Timecode", shot.start_timecode.clone()),
+        ("Reel", shot.reel_name.clone()),
     ];
-    for (label, value, colour) in rows {
-        let Some(value) = value else { continue };
-        info_row_custom(ui, theme, pad, row_h, w, label, |ui, rx, cy| {
-            ui.painter().text(egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER, value, egui::FontId::proportional(12.0), colour);
-        });
+    for (label, value) in rows {
+        if let Some(value) = value {
+            text_row(ui, theme, label, value);
+        }
     }
 }
 
@@ -1382,7 +610,9 @@ fn tag_list(ui: &mut egui::Ui, theme: &KlippTheme, shot: &klipp_core::ShotMetada
     if shot.tags.is_empty() {
         return;
     }
-    egui::CollapsingHeader::new(egui::RichText::new(format!("All metadata ({})", shot.tags.len())).size(11.0).color(theme.text_dim))
+    ui.horizontal(|ui| {
+        ui.add_space(super::rows::ROW_PAD - 4.0);
+        egui::CollapsingHeader::new(egui::RichText::new(format!("All metadata ({})", shot.tags.len())).size(TEXT).color(theme.text_secondary))
         .id_salt("shot_tag_list")
         .show(ui, |ui| {
             egui::Grid::new("shot_tag_grid").num_columns(2).spacing([8.0, 2.0]).show(ui, |ui| {
@@ -1392,40 +622,7 @@ fn tag_list(ui: &mut egui::Ui, theme: &KlippTheme, shot: &klipp_core::ShotMetada
                     ui.end_row();
                 }
             });
-        });
-}
-
-fn info_row_custom(
-    ui: &mut egui::Ui,
-    theme: &KlippTheme,
-    pad: f32,
-    row_h: f32,
-    total_w: f32,
-    label: &str,
-    draw_value: impl FnOnce(&mut egui::Ui, f32, f32),
-) {
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(total_w, row_h), egui::Sense::hover(),
-    );
-
-    // Separator
-    ui.painter().hline(
-        rect.min.x + pad..=rect.max.x - pad,
-        rect.max.y,
-        egui::Stroke::new(0.5_f32, theme.border),
-    );
-
-    // Label
-    ui.painter().text(
-        egui::pos2(rect.min.x + pad, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        egui::FontId::proportional(13.0),
-        theme.text_secondary,
-    );
-
-    // Value
-    draw_value(ui, rect.max.x - pad, rect.center().y);
+        });    });
 }
 
 /// Format Unix epoch seconds as "DD Mon YYYY, HH:MM".
@@ -1515,7 +712,7 @@ fn camera_section(
     let idx = state.active_sequence_idx;
     let at = state.playhead.to_secs_f64();
     let tolerance = super::keyframe_selection::frame_tolerance(seq);
-    section_card(ui, "CAMERA", None, theme.bg_deep, theme.bg_panel, theme, |ui| {
+    section_card(ui, "CAMERA", None, theme, |ui| {
         for param in [CameraParam::X, CameraParam::Y, CameraParam::Zoom, CameraParam::Roll] {
             let keys = match param {
                 CameraParam::X => &seq.camera.x_keyframes,
@@ -1523,28 +720,29 @@ fn camera_section(
                 CameraParam::Zoom => &seq.camera.zoom_keyframes,
                 CameraParam::Roll => &seq.camera.roll_keyframes,
             };
-            let row = CameraRow::at(keys, at, tolerance, param.resting());
-            let mut value = row.value;
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(param.label()).color(theme.text_secondary));
+            let row_at = CameraRow::at(keys, at, tolerance, param.resting());
+            let mut value = row_at.value;
+            row(ui, theme, param.label(), |ui| {
+                // Right to left: the key mark at the edge, the value before it.
+                let mark = if row_at.keyed { "\u{25C6}" } else { "\u{25C7}" };
+                let tint = if row_at.keyed { theme.accent } else { theme.text_secondary };
+                if ui.add(egui::Button::new(egui::RichText::new(mark).color(tint)).frame(false))
+                    .on_hover_text(if row_at.keyed { "Remove this key" } else { "Key at the playhead" })
+                    .clicked()
+                {
+                    cmds.push(if row_at.keyed { row_at.remove(idx, param) } else { row_at.set(idx, param, value) });
+                }
                 let speed = match param {
                     CameraParam::Roll => 0.25,
                     CameraParam::Zoom => 0.01,
                     _ => 0.002,
                 };
                 if ui.add(egui::DragValue::new(&mut value).speed(speed)).changed() {
-                    cmds.push(row.set(idx, param, value));
-                }
-                let mark = if row.keyed { "\u{25C6}" } else { "\u{25C7}" };
-                let tint = if row.keyed { theme.accent } else { theme.text_dim };
-                if ui.add(egui::Button::new(egui::RichText::new(mark).color(tint)).frame(false))
-                    .on_hover_text(if row.keyed { "Remove this key" } else { "Key at the playhead" })
-                    .clicked()
-                {
-                    cmds.push(if row.keyed { row.remove(idx, param) } else { row.set(idx, param, value) });
+                    cmds.push(row_at.set(idx, param, value));
                 }
             });
         }
+        ui.add_space(4.0);
     });
 }
 
@@ -1716,5 +914,173 @@ mod camera_row_tests {
             upsert_keyframe(&mut edited, time_of(&row.set(0, CameraParam::Y, 0.1)), 0.1);
             assert_eq!(edited.len(), 1, "editing from frame {frame} should not add a key");
         }
+    }
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+    use crate::inspector::rows::test_frame::{click, frame};
+    use klipp_core::{MediaId, RationalTime};
+
+    /// The texts a frame drew, and how many hairline rules it drew.
+    fn drawn(ctx: &egui::Context, draw: impl FnMut(&mut egui::Ui, &KlippTheme, &mut Vec<AppCommand>)) -> (Vec<String>, Vec<(String, egui::Pos2)>) {
+        let (texts, _) = frame(ctx, Vec::new(), draw);
+        (texts.iter().map(|(t, _)| t.clone()).collect(), texts)
+    }
+
+    /// Hairlines a frame painted: the section headers' own, and any
+    /// rule between rows.
+    fn rules(ctx: &egui::Context, mut draw: impl FnMut(&mut egui::Ui, &KlippTheme, &mut Vec<AppCommand>)) -> usize {
+        let theme = KlippTheme::default();
+        let out = ctx.run(
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 2400.0))), ..Default::default() },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| draw(ui, &theme, &mut Vec::new()));
+            },
+        );
+        out.shapes.iter().filter(|s| matches!(s.shape, egui::Shape::LineSegment { .. })).count()
+    }
+
+    /// The value drawn on `label`'s row: the text furthest right at its height.
+    fn value_of(texts: &[(String, egui::Pos2)], label: &str) -> String {
+        let (_, at) = texts.iter().find(|(t, _)| t == label).unwrap_or_else(|| panic!("no {label}: {texts:?}"));
+        texts.iter().filter(|(_, p)| (p.y - at.y).abs() < 4.0 && p.x > at.x).max_by(|a, b| a.1.x.total_cmp(&b.1.x)).map(|(t, _)| t.clone()).unwrap_or_default()
+    }
+
+    fn assert_has(all: &[String], labels: &[&str]) {
+        for label in labels {
+            assert!(all.iter().any(|t| t == label), "{label} is no longer shown: {all:?}");
+        }
+    }
+
+    /// A file that says little about itself: no channel count, no rate,
+    /// no colour tags. The Info tab must not make those up.
+    fn media() -> klipp_media::MediaItem {
+        let mut m = klipp_media::MediaItem::new_synthetic_title(MediaId::new(), "shot.mov".into(), RationalTime::from_secs_f64(10.0, 24), klipp_core::Fps::film_24());
+        m.path = "/footage/shot.mov".into();
+        m.video_codec = "h264".into();
+        m.audio_codec = "aac".into();
+        m.has_audio = true;
+        m.file_size_bytes = 5 * 1024 * 1024;
+        m.media_created_at = Some(1_700_000_000);
+        m.camera_make = Some("Acme".into());
+        m.encoder = Some("Lavf".into());
+        m.bit_depth = Some(10);
+        m.video_bitrate_kbps = Some(25_000);
+        m.color_transfer = Some("bt709".into());
+        m.truncated_from_secs = Some(12.0);
+        m.shot.lens = Some("35mm".into());
+        m.tags = vec!["wide".into(), "interview".into()];
+        m
+    }
+
+    /// Nothing selected: every fact the tab gave is still there (the two
+    /// offline counts, which counted the one thing twice, are one row),
+    /// with real values: the format revision a save writes, no project
+    /// file size for a project never saved, and the media's size under
+    /// its own name.
+    #[test]
+    fn nothing_selected_keeps_every_fact_with_real_values() {
+        let ctx = egui::Context::default();
+        let mut state = AppState::default();
+        let mut m = media();
+        m.offline = true;
+        state.offline_media_ids.push(m.id);
+        state.media_pool.add(m);
+        let draw = |ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>| show_no_selection(ui, &state, theme, cmds);
+        let (all, texts) = drawn(&ctx, draw);
+        assert_has(&all, &[
+            "CAMERA", "X", "Y", "Zoom", "Roll",
+            "PROJECT", "Name", "Created", "Last modified", "Format version", "Klipp version",
+            "MEDIA", "Clips in bin", "Total bin duration", "Offline media",
+            "SEQUENCE", "Resolution", "Frame rate", "Duration", "Video tracks", "Audio tracks", "Total clips",
+            "STORAGE", "Project file", "Media files", "Cache", "Proxies", "Free disk space",
+        ]);
+        assert_eq!(value_of(&texts, "Format version"), format!("Revision {}", klipp_project::FORMAT_REVISION));
+        assert!(!all.iter().any(|t| t.contains("klipp-v2")), "a fixed version string: {all:?}");
+        assert_eq!(value_of(&texts, "Project file"), "Not saved", "an unsaved project has no file");
+        assert_eq!(value_of(&texts, "Media files"), "5 MB", "the media's size");
+        assert_eq!(value_of(&texts, "Offline media"), "1", "one offline file, counted once");
+        assert_eq!(value_of(&texts, "Clips in bin"), "1 \u{00B7} 1 video \u{00B7} 0 audio");
+        assert_eq!(value_of(&texts, "Klipp version"), klipp_core::build_info::get().version);
+        assert_eq!(rules(&ctx, draw), 5, "a rule under each section header and none between rows");
+    }
+
+    /// A bin item: every fact the tab gave is still there, and what the
+    /// file does not say is not filled in (no "Stereo", no "48 kHz", no
+    /// "SDR" for an untagged file).
+    #[test]
+    fn a_bin_item_keeps_every_fact_and_invents_none() {
+        let ctx = egui::Context::default();
+        let mut state = AppState::default();
+        let m = media();
+        state.media_pool.add(m.clone());
+        let seq = state.sequence_mut();
+        seq.tracks[0].clips.push(Clip::media(m.id, RationalTime::from_secs_f64(0.0, 24), RationalTime::from_secs_f64(2.0, 24), RationalTime::from_secs_f64(0.0, 24), RationalTime::from_secs_f64(2.0, 24)));
+        let mut tag_input = String::new();
+        let mut draw = |ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>| show_bin_media(ui, &state, theme, &m, &mut tag_input, cmds);
+        let (all, texts) = drawn(&ctx, &mut draw);
+        assert_has(&all, &[
+            "CLIP INFO", "Resolution", "Frame rate", "Codec", "Audio", "Duration", "File size", "Colour", "Transfer",
+            "Shoot date", "Camera", "Cut short", "Lens", "Encoder", "Format", "Bitrate", "Proxy", "/footage/shot.mov",
+            "LOGGING", "Scene", "Shot", "Take", "Reel", "Keywords", "Description", "Comments", "Good take",
+            "TAGS", "wide", "interview", "TIMELINE USAGE", "Used in", "Total used",
+        ]);
+        assert_eq!(value_of(&texts, "Codec"), "H264 \u{00B7} AAC");
+        assert_eq!(value_of(&texts, "Audio"), "Format unknown");
+        assert_eq!(value_of(&texts, "Colour"), "Unknown", "an untagged file's colour");
+        for made_up in ["Stereo", "48 kHz", "SDR", "BT.709"] {
+            assert!(!all.iter().any(|t| t.contains(made_up)), "{made_up} is not what the file says: {all:?}");
+        }
+        let track = track_name(state.sequence(), 0);
+        assert!(!track.is_empty());
+        assert!(all.contains(&track), "the track the file is used on: {all:?}");
+        assert_eq!(rules(&ctx, &mut draw), 4, "a rule under each section header and none between rows");
+    }
+
+    /// A timeline clip: the file's facts and where the clip sits, in
+    /// plain text; the track named even when it has no name of its own.
+    #[test]
+    fn a_clip_keeps_every_fact() {
+        let ctx = egui::Context::default();
+        let state = AppState::default();
+        let m = media();
+        let clip = Clip::media(m.id, RationalTime::from_secs_f64(1.0, 24), RationalTime::from_secs_f64(3.0, 24), RationalTime::from_secs_f64(0.0, 24), RationalTime::from_secs_f64(2.0, 24));
+        let mut tag_input = String::new();
+        let draw = |ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>| show_clip(ui, &state, theme, 0, &clip, &m, &mut tag_input, cmds);
+        let (all, texts) = drawn(&ctx, draw);
+        assert_has(&all, &[
+            "CLIP INFO", "Resolution", "Frame rate", "Codec", "Audio", "Duration", "File size", "Colour", "Proxy",
+            "LOGGING", "TAGS", "TIMELINE", "In", "Out", "Track", "Speed", "100%",
+        ]);
+        let name = track_name(state.sequence(), 0);
+        assert!(!name.is_empty());
+        assert_eq!(value_of(&texts, "Track"), name);
+        assert_eq!(value_of(&texts, "Speed"), "100%");
+    }
+
+    /// The controls answer real clicks: the camera's key mark keys the
+    /// playhead, a tag's cross removes that tag and no other.
+    #[test]
+    fn the_controls_do_what_they_say() {
+        let ctx = egui::Context::default();
+        let state = AppState::default();
+        let draw = |ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>| show_no_selection(ui, &state, theme, cmds);
+        let (_, texts) = drawn(&ctx, draw);
+        let zoom_y = texts.iter().find(|(t, _)| t == "Zoom").expect("a Zoom row").1.y;
+        let mark = texts.iter().find(|(t, p)| t == "\u{25C7}" && (p.y - zoom_y).abs() < 4.0).expect("Zoom's key mark").1;
+        let cmds = click(&ctx, mark, draw);
+        assert!(matches!(cmds.as_slice(), [AppCommand::SetSequenceCameraKey { param: klipp_core::CameraParam::Zoom, .. }]), "{cmds:?}");
+
+        let ctx = egui::Context::default();
+        let m = media();
+        let mut tag_input = String::new();
+        let mut draw = |ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>| show_bin_media(ui, &state, theme, &m, &mut tag_input, cmds);
+        let (_, texts) = drawn(&ctx, &mut draw);
+        let wide = texts.iter().find(|(t, _)| t == "wide").expect("the wide tag").1;
+        let cross = texts.iter().filter(|(t, p)| t == "\u{00D7}" && p.x > wide.x && (p.y - wide.y).abs() < 4.0).map(|(_, p)| *p).min_by(|a, b| a.x.total_cmp(&b.x)).expect("its cross");
+        let cmds = click(&ctx, cross, &mut draw);
+        assert!(matches!(cmds.as_slice(), [AppCommand::SetMediaTags { tags, .. }] if tags == &vec!["interview".to_string()]), "{cmds:?}");
     }
 }
