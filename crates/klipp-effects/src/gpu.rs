@@ -717,7 +717,9 @@ pub enum EffectMatte<'a> {
 /// sees them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GpuKey {
-    Qualifier { hue_center: f32, hue_width: f32, hue_soft: f32, sat_low: f32, sat_high: f32, sat_soft: f32, lum_low: f32, lum_high: f32, lum_soft: f32, invert: bool },
+    /// `rgb`, in RGB mode (#895): red, green and blue low and high, and
+    /// the soft edge; `None` keys by hue, saturation and luminance.
+    Qualifier { hue_center: f32, hue_width: f32, hue_soft: f32, sat_low: f32, sat_high: f32, sat_soft: f32, lum_low: f32, lum_high: f32, lum_soft: f32, invert: bool, rgb: Option<[f32; 7]> },
     LumaKey { low: f32, high: f32, soft: f32, invert: bool },
     /// Against the plate [`GpuEffectsPipeline::upload_difference_key_plate`]
     /// put on the GPU.
@@ -3972,6 +3974,7 @@ impl GpuEffectsPipeline {
         invert: bool,
         sec_exposure: f32, sec_saturation: f32, sec_hue_shift: f32, sec_temperature: f32,
         matte_preview: bool,
+        rgb: Option<[f32; 7]>,
     ) -> Vec<f32> {
         if self.is_device_lost() {
             return linear_rgba.to_vec();
@@ -4002,9 +4005,11 @@ impl GpuEffectsPipeline {
             sec_hue_shift: sec_hue_shift.to_radians(),
             sec_temperature: sec_temperature / 100.0 * 0.1,
             matte_preview: if matte_preview { 1 } else { 0 },
-            _pad0: 0,
+            mode: GpuQualifierParams::rgb_mode(rgb).0,
             _pad1: 0,
             _pad2: 0,
+            rgb: GpuQualifierParams::rgb_mode(rgb).1,
+            _pad3: 0.0,
         });
 
         let pixel_count = width * height;
@@ -6185,7 +6190,8 @@ impl GpuEffectsPipeline {
     fn record_key(&mut self, key: &GpuKey, route: KeyRoute, width: u32, height: u32) {
         let slot = self.next_params_slot();
         let pipeline = match *key {
-            GpuKey::Qualifier { hue_center, hue_width, hue_soft, sat_low, sat_high, sat_soft, lum_low, lum_high, lum_soft, invert } => {
+            GpuKey::Qualifier { hue_center, hue_width, hue_soft, sat_low, sat_high, sat_soft, lum_low, lum_high, lum_soft, invert, rgb } => {
+                let (mode, rgb) = GpuQualifierParams::rgb_mode(rgb);
                 self.write_chain_params(slot, &GpuQualifierParams {
                     width,
                     height,
@@ -6204,9 +6210,11 @@ impl GpuEffectsPipeline {
                     sec_hue_shift: 0.0,
                     sec_temperature: 0.0,
                     matte_preview: 1,
-                    _pad0: 0,
+                    mode,
                     _pad1: 0,
                     _pad2: 0,
+                    rgb,
+                    _pad3: 0.0,
                 });
                 &self.qualifier_pipeline
             }
@@ -7951,11 +7959,26 @@ struct GpuQualifierParams {
     sec_temperature: f32,
     // Matte preview
     matte_preview: u32,
-    _pad0: u32,
+    /// 0 HSL, 1 RGB (#895).
+    mode: u32,
     _pad1: u32,
     _pad2: u32,
+    /// The RGB mode's ranges: red, green, blue low and high, the soft edge.
+    rgb: [f32; 7],
+    _pad3: f32,
 }
-// 20 fields × 4 bytes = 80 bytes (well under 256-byte PARAMS_SIZE)
+// 28 fields × 4 bytes = 112 bytes (well under 256-byte PARAMS_SIZE)
+
+impl GpuQualifierParams {
+    /// The mode and RGB ranges `rgb` gives (#895): HSL's, with the RGB
+    /// ranges unused, for `None`.
+    fn rgb_mode(rgb: Option<[f32; 7]>) -> (u32, [f32; 7]) {
+        match rgb {
+            Some(r) => (1, r),
+            None => (0, [0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.1]),
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -13250,9 +13273,17 @@ struct Params {
     sec_hue_shift: f32,
     sec_temperature: f32,
     matte_preview: u32,
-    _pad0: u32,
+    mode: u32,
     _pad1: u32,
     _pad2: u32,
+    red_low: f32,
+    red_high: f32,
+    green_low: f32,
+    green_high: f32,
+    blue_low: f32,
+    blue_high: f32,
+    rgb_soft: f32,
+    _pad3: f32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -13302,12 +13333,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let s = hsl.s;
     let l = picture_lum_axis(hsl);
 
-    // Qualifier matte
-    let hue_dist = circular_distance(h, params.hue_center);
-    let hue_m = soft_range_centered(hue_dist, params.hue_width, params.hue_soft);
-    let sat_m = soft_range(s, params.sat_low, params.sat_high, params.sat_soft);
-    let lum_m = soft_range(l, params.lum_low, params.lum_high, params.lum_soft);
-    var matte = hue_m * sat_m * lum_m;
+    // Qualifier matte: by hue, saturation and luminance, or (RGB mode,
+    // #895) by each display-encoded channel on its own.
+    var matte = 0.0;
+    if params.mode == 1u {
+        let e = clamp(vec3<f32>(enc_signed(r), enc_signed(g), enc_signed(b)), vec3<f32>(0.0), vec3<f32>(1.0));
+        matte = soft_range(e.x, params.red_low, params.red_high, params.rgb_soft)
+            * soft_range(e.y, params.green_low, params.green_high, params.rgb_soft)
+            * soft_range(e.z, params.blue_low, params.blue_high, params.rgb_soft);
+    } else {
+        let hue_dist = circular_distance(h, params.hue_center);
+        let hue_m = soft_range_centered(hue_dist, params.hue_width, params.hue_soft);
+        let sat_m = soft_range(s, params.sat_low, params.sat_high, params.sat_soft);
+        let lum_m = soft_range(l, params.lum_low, params.lum_high, params.lum_soft);
+        matte = hue_m * sat_m * lum_m;
+    }
     if params.invert != 0u { matte = 1.0 - matte; }
 
     // Matte preview mode: output greyscale matte

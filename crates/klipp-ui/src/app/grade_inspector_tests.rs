@@ -60,7 +60,11 @@ struct Run {
 impl Run {
     fn new(kind: NodeKind) -> Option<Self> {
         let (state, clip, node) = graded(kind)?;
-        Some(Self { ctx: egui::Context::default(), state, clip, node, time: 0.5, clock: 0.0, panel: None, fresh: None })
+        // The icons load as in the app: a failed one is drawn as a warning
+        // filling the panel, which pushed a long page's rows off it.
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        Some(Self { ctx, state, clip, node, time: 0.5, clock: 0.0, panel: None, fresh: None })
     }
 
     /// One frame with `events`: the commands it pushed, the rows it drew
@@ -238,7 +242,11 @@ fn every_keyframable_grade_param_shows_a_diamond() {
     assert!(misses.is_empty(), "{} of {} missed:\n{}", misses.len(), misses.len() + keyed, misses.join("\n"));
     assert!(keyed > 20, "only {keyed} diamonds were tried");
     assert_eq!(stepped, STEPPED, "the keyframable switches and choices, each keyed as a step");
-    assert_eq!(unwritable, ["Qualifier qual_enabled", "LumaKey luma_key_enabled"], "the rows whose fixture takes no edit");
+    // The Qualifier's rows shown at its defaults: its switch, its mode and
+    // the HSL mode's ranges (#895).
+    let qualifier = ["enabled", "mode", "hue_center", "hue_width", "hue_soft", "sat_low", "sat_high", "sat_soft", "lum_low", "lum_high", "lum_soft"].map(|k| format!("Qualifier qual_{k}"));
+    let want: Vec<String> = qualifier.into_iter().chain(["LumaKey luma_key_enabled".to_string()]).collect();
+    assert_eq!(unwritable, want, "the rows whose fixture takes no edit");
 }
 
 /// The keyframable switches and choices: their diamonds key a step
@@ -249,6 +257,7 @@ const STEPPED: &[&str] = &[
     "ColorWheels wheels_log_mode",
     "RGBCurves curves_preserve_luma",
     "Qualifier qual_enabled",
+    "Qualifier qual_mode",
     "LumaKey luma_key_enabled",
     "Lut3D lut_input_space",
     "Lut3D lut_output_space",
@@ -2036,3 +2045,4 @@ fn a_wire_that_would_loop_says_why() {
     let sent = h.drag(h.out_port(ids[0]), h.in_port(ids[2], 0));
     assert!(sent.iter().any(|c| matches!(c, AppCommand::ConnectNodes { from, to, .. } if *from == ids[0] && *to == ids[2])), "{sent:?}");
 }
+

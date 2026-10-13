@@ -277,6 +277,11 @@ pub(super) fn shown_in_frame(start: &Grade, ty: &NodeType, desc: &ParamDesc) -> 
         }
         "qual_lum_soft" => vec![param("qual_lum_low", 0.4), param("qual_lum_high", 0.6)],
         "qual_sat_soft" => vec![param("qual_sat_low", 0.3)],
+        // An RGB key that keys part of the frame (#895): the default
+        // ranges key it all, as if off, so picking RGB and softening its
+        // edge would change nothing.
+        "qual_mode" => vec![param("qual_red_low", 0.5)],
+        "qual_rgb_soft" => vec![param("qual_red_low", 0.4), param("qual_green_high", 0.6)],
         k if k.starts_with("difference_key.") => {
             let mut difference_key = g.grade().nodes.iter().find(|n| n.id == node_id).and_then(|n| n.params.difference_key.clone()).unwrap_or_default();
             difference_key.plate_path = Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/effect_preview_reference.png"));
@@ -495,3 +500,4 @@ fn a_grade_edited_under_one_clip_id_draws_anew_on_a_kept_renderer() {
     }
     assert!(with(-1.0) == last, "the same grade draws the same frame");
 }
+

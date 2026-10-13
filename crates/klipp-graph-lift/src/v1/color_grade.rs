@@ -71,6 +71,40 @@ pub struct QualifierSettings {
     pub shrink_grow: f32,
     #[serde(default)]
     pub blur: f32,
+    /// Keyed by HSL or by RGB (#895).
+    #[serde(default)]
+    pub mode: QualifierMode,
+    #[serde(default = "zero")]
+    pub red_low: f32,
+    #[serde(default = "one")]
+    pub red_high: f32,
+    #[serde(default = "zero")]
+    pub green_low: f32,
+    #[serde(default = "one")]
+    pub green_high: f32,
+    #[serde(default = "zero")]
+    pub blue_low: f32,
+    #[serde(default = "one")]
+    pub blue_high: f32,
+    #[serde(default = "tenth")]
+    pub rgb_soft: f32,
+}
+
+fn zero() -> f32 {
+    0.0
+}
+fn one() -> f32 {
+    1.0
+}
+fn tenth() -> f32 {
+    0.1
+}
+
+#[derive(PartialEq, Eq, Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub enum QualifierMode {
+    #[default]
+    Hsl,
+    Rgb,
 }
 
 impl Default for QualifierSettings {
@@ -95,6 +129,14 @@ impl Default for QualifierSettings {
             clean_white: 0.0,
             shrink_grow: 0.0,
             blur: 0.0,
+            mode: QualifierMode::Hsl,
+            red_low: 0.0,
+            red_high: 1.0,
+            green_low: 0.0,
+            green_high: 1.0,
+            blue_low: 0.0,
+            blue_high: 1.0,
+            rgb_soft: 0.1,
         }
     }
 }

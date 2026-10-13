@@ -101,6 +101,23 @@ const MEANT: &[(&str, &str, &str)] = &[
     ("klipp.grade.corrector", "global_mix", "widget"),
 ];
 
+/// Rows shown where the recorded panel didn't show them, each with why.
+const SHOWN_NOW: &[(&str, &str, &str)] = &[
+    // The qualifier's mode (#895), new, and its HSL rows, which are the
+    // HSL mode's rather than the switched-on key's: set before the key
+    // is on, an edit turns it on.
+    ("klipp.grade.qualifier", "qual_mode", "the qualifier's mode, #895"),
+    ("klipp.grade.qualifier", "qual_hue_center", "the HSL mode's, #895"),
+    ("klipp.grade.qualifier", "qual_hue_width", "the HSL mode's, #895"),
+    ("klipp.grade.qualifier", "qual_hue_soft", "the HSL mode's, #895"),
+    ("klipp.grade.qualifier", "qual_sat_low", "the HSL mode's, #895"),
+    ("klipp.grade.qualifier", "qual_sat_high", "the HSL mode's, #895"),
+    ("klipp.grade.qualifier", "qual_sat_soft", "the HSL mode's, #895"),
+    ("klipp.grade.qualifier", "qual_lum_low", "the HSL mode's, #895"),
+    ("klipp.grade.qualifier", "qual_lum_high", "the HSL mode's, #895"),
+    ("klipp.grade.qualifier", "qual_lum_soft", "the HSL mode's, #895"),
+];
+
 /// What the variant's stored values switch on.
 fn switched_on(kind: &str, variant: &str) -> Vec<&'static str> {
     match (kind.trim_start_matches("klipp.grade."), variant) {
@@ -211,7 +228,7 @@ fn presentation_matches_the_old_rows() {
                 let pres = t.presentation(p);
                 let ours = pres.widget != Widget::Hidden && visible(&pres, &on) && grade::params().any(|e| e.type_id == kind && e.key == p.key);
                 let today = keys.iter().any(|k| *k == p.key) || matches!(pres.widget, Widget::WheelPart(_) | Widget::Custom(_)) && keys.iter().any(|k| t.desc.params.iter().find(|q| q.key == *k).map(|q| t.presentation(q).group == pres.group && t.presentation(q).widget == pres.widget).unwrap_or(false));
-                if ours && !today {
+                if ours && !today && !SHOWN_NOW.iter().any(|(k, q, _)| *k == kind && *q == p.key) {
                     differ.push(format!("{kind}/{} [{variant}]: shown, not today", p.key));
                 }
             }

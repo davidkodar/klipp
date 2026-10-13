@@ -179,6 +179,9 @@ fn cases() -> Vec<(&'static str, NodeKind, NodeParams)> {
         ("Qualifier with matte finesse", Qualifier, p(|p| {
             p.qualifier = Some(klipp_core::QualifierSettings { clean_black: 0.1, clean_white: 0.1, shrink_grow: 1.0, blur: 2.0, ..red_window() })
         })),
+        // The RGB mode (#895): a red channel high, the others low.
+        ("Qualifier RGB", Qualifier, p(|p| p.qualifier = Some(rgb_red()))),
+        ("Qualifier RGB inverted", Qualifier, p(|p| p.qualifier = Some(klipp_core::QualifierSettings { invert: true, ..rgb_red() }))),
     ]
 }
 
@@ -280,6 +283,44 @@ fn the_hue_sat_tools_keep_bright_colours() {
                 assert!(got[0] > input[0] * 0.5 && got[0] < input[0] * 2.0, "{label}: {input:?} -> {got:?}");
             }
         }
+    }
+}
+
+/// The RGB mode's red (#895): red at 0.5 or above, green and blue at 0.4
+/// or below, a 0.1 soft edge.
+fn rgb_red() -> klipp_core::QualifierSettings {
+    klipp_core::QualifierSettings {
+        enabled: true,
+        mode: klipp_core::QualifierMode::Rgb,
+        red_low: 0.5,
+        red_high: 1.0,
+        green_low: 0.0,
+        green_high: 0.4,
+        blue_low: 0.0,
+        blue_high: 0.4,
+        rgb_soft: 0.1,
+        ..Default::default()
+    }
+}
+
+/// The RGB mode (#895) keys each display-encoded channel on its own, on
+/// both paths: a red keys, a white (green and blue too high) and a dark
+/// red (red too low) don't, and a colour just past a range's edge keys
+/// partly, across the soft edge. The HSL window set on it is ignored.
+#[test]
+fn the_rgb_qualifier_keys_each_channel_on_its_own() {
+    let enc = |v: f32| klipp_color::transfer::srgb_to_linear(v);
+    let params = p(|p| p.qualifier = Some(klipp_core::QualifierSettings { hue_center: 220.0, ..rgb_red() }));
+    for gpu in [false, true] {
+        if gpu && !have_gpu() {
+            continue;
+        }
+        let matte = |rgb: [f32; 3]| render_flat_node(rgb.map(enc), NodeKind::Qualifier, &params, gpu)[0];
+        assert!(matte([0.8, 0.2, 0.2]) > 0.99, "a red didn't key (gpu {gpu})");
+        assert!(matte([0.9, 0.9, 0.9]) < 0.01, "a white keyed (gpu {gpu})");
+        assert!(matte([0.3, 0.1, 0.1]) < 0.01, "a dark red keyed (gpu {gpu})");
+        let edge = matte([0.8, 0.45, 0.2]);
+        assert!((edge - 0.5).abs() < 0.05, "half across green's soft edge (gpu {gpu}): {edge}");
     }
 }
 

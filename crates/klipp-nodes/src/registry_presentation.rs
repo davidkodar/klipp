@@ -54,6 +54,11 @@ const fn off(key: &'static str) -> Cond {
     Cond::ParamIs { key, value: 0.0 }
 }
 
+/// A qualifier row of mode `index` (#895): 0 HSL, 1 RGB.
+const fn mode_is(index: u8) -> Cond {
+    Cond::ParamIs { key: "qual_mode", value: index as f32 }
+}
+
 /// The contrast pivot is stored linear and shown in the grade encoding.
 fn pivot_shown(linear: f32, enc: Encoding) -> f32 {
     encode(linear.clamp(MIN_CONTRAST_PIVOT, MAX_CONTRAST_PIVOT), enc)
@@ -198,15 +203,24 @@ const NODES: &[ParamEntry] = &[
     at("klipp.grade.color_balance", "hue", slider(0.45).suffix(Suffix::None)),
     at("klipp.grade.color_balance", "global_mix", slider(0.00125).label("Global Mix")),
     at(QUALIFIER, "qual_enabled", toggle()),
-    at(QUALIFIER, "qual_hue_center", slider(0.45).label("Hue Center").suffix(Suffix::Text("deg")).visible_if(on("qual_enabled"))),
-    at(QUALIFIER, "qual_hue_width", slider(0.225).label("Hue Width").suffix(Suffix::Text("deg")).visible_if(on("qual_enabled"))),
-    at(QUALIFIER, "qual_hue_soft", slider(0.1125).label("Hue Soft").suffix(Suffix::Text("deg")).visible_if(on("qual_enabled"))),
-    at(QUALIFIER, "qual_sat_low", slider(0.00125).label("Sat Low").visible_if(on("qual_enabled"))),
-    at(QUALIFIER, "qual_sat_high", slider(0.00125).label("Sat High").visible_if(on("qual_enabled"))),
-    at(QUALIFIER, "qual_sat_soft", slider(0.00125).label("Sat Soft").visible_if(on("qual_enabled"))),
-    at(QUALIFIER, "qual_lum_low", slider(0.00125).label("Lum Low").visible_if(on("qual_enabled"))),
-    at(QUALIFIER, "qual_lum_high", slider(0.00125).label("Lum High").visible_if(on("qual_enabled"))),
-    at(QUALIFIER, "qual_lum_soft", slider(0.00125).label("Lum Soft").visible_if(on("qual_enabled"))),
+    // The key's mode (#895): HSL's rows or RGB's.
+    at(QUALIFIER, "qual_mode", combo().label("Mode")),
+    at(QUALIFIER, "qual_hue_center", slider(0.45).label("Hue Center").suffix(Suffix::Text("deg")).visible_if(mode_is(0))),
+    at(QUALIFIER, "qual_hue_width", slider(0.225).label("Hue Width").suffix(Suffix::Text("deg")).visible_if(mode_is(0))),
+    at(QUALIFIER, "qual_hue_soft", slider(0.1125).label("Hue Soft").suffix(Suffix::Text("deg")).visible_if(mode_is(0))),
+    at(QUALIFIER, "qual_sat_low", slider(0.00125).label("Sat Low").visible_if(mode_is(0))),
+    at(QUALIFIER, "qual_sat_high", slider(0.00125).label("Sat High").visible_if(mode_is(0))),
+    at(QUALIFIER, "qual_sat_soft", slider(0.00125).label("Sat Soft").visible_if(mode_is(0))),
+    at(QUALIFIER, "qual_lum_low", slider(0.00125).label("Lum Low").visible_if(mode_is(0))),
+    at(QUALIFIER, "qual_lum_high", slider(0.00125).label("Lum High").visible_if(mode_is(0))),
+    at(QUALIFIER, "qual_lum_soft", slider(0.00125).label("Lum Soft").visible_if(mode_is(0))),
+    at(QUALIFIER, "qual_red_low", slider(0.00125).label("Red Low").visible_if(mode_is(1))),
+    at(QUALIFIER, "qual_red_high", slider(0.00125).label("Red High").visible_if(mode_is(1))),
+    at(QUALIFIER, "qual_green_low", slider(0.00125).label("Green Low").visible_if(mode_is(1))),
+    at(QUALIFIER, "qual_green_high", slider(0.00125).label("Green High").visible_if(mode_is(1))),
+    at(QUALIFIER, "qual_blue_low", slider(0.00125).label("Blue Low").visible_if(mode_is(1))),
+    at(QUALIFIER, "qual_blue_high", slider(0.00125).label("Blue High").visible_if(mode_is(1))),
+    at(QUALIFIER, "qual_rgb_soft", slider(0.00125).label("RGB Soft").visible_if(mode_is(1))),
     at(QUALIFIER, "qual_invert", toggle().visible_if(on("qual_enabled"))),
     at(QUALIFIER, "qual_clean_black", slider(0.00125).label("Clean Black").visible_if(on("qual_enabled"))),
     at(QUALIFIER, "qual_clean_white", slider(0.00125).label("Clean White").visible_if(on("qual_enabled"))),

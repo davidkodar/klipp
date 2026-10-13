@@ -3465,6 +3465,12 @@ struct PendingKey {
 /// or `None` for one it can't draw: switched off (the CPU path's whole
 /// matte), a qualifier's finesse (clean, shrink and grow, blur run on the
 /// CPU), a difference key without a plate.
+/// A qualifier's RGB ranges in RGB mode (#895), as its kernels take
+/// them; `None` in HSL mode.
+fn rgb_ranges(q: &klipp_core::QualifierSettings) -> Option<[f32; 7]> {
+    (q.mode == klipp_core::QualifierMode::Rgb).then_some([q.red_low, q.red_high, q.green_low, q.green_high, q.blue_low, q.blue_high, q.rgb_soft])
+}
+
 fn gpu_key(kind: &NodeKind, params: &NodeParams) -> Option<klipp_effects::gpu::GpuKey> {
     use klipp_effects::gpu::GpuKey;
     match kind {
@@ -3478,6 +3484,7 @@ fn gpu_key(kind: &NodeKind, params: &NodeParams) -> Option<klipp_effects::gpu::G
             lum_low: q.lum_low,
             lum_high: q.lum_high,
             lum_soft: q.lum_soft,
+            rgb: rgb_ranges(q),
             invert: q.invert,
         }),
         NodeKind::LumaKey => params.luma_key.as_ref().filter(|k| k.enabled).map(|k| GpuKey::LumaKey { low: k.low, high: k.high, soft: k.soft, invert: k.invert }),
@@ -5032,16 +5039,20 @@ impl GraphExecutor {
                             qual.invert,
                             qual.exposure, qual.saturation, qual.hue_shift, qual.temperature,
                             true, // always matte_preview for Qualifier node (outputs matte)
+                            rgb_ranges(qual),
                         )
                     } else {
                         let mut frame = primary_input.to_vec();
-                        klipp_effects::cpu_grade::qualifier_matte(
-                            &mut frame,
-                            qual.hue_center / 360.0, qual.hue_width / 360.0, qual.hue_soft / 360.0,
-                            qual.sat_low, qual.sat_high, qual.sat_soft,
-                            qual.lum_low, qual.lum_high, qual.lum_soft,
-                            qual.invert,
-                        );
+                        match rgb_ranges(qual) {
+                            Some(rgb) => klipp_effects::cpu_grade::qualifier_matte_rgb(&mut frame, rgb, qual.invert),
+                            None => klipp_effects::cpu_grade::qualifier_matte(
+                                &mut frame,
+                                qual.hue_center / 360.0, qual.hue_width / 360.0, qual.hue_soft / 360.0,
+                                qual.sat_low, qual.sat_high, qual.sat_soft,
+                                qual.lum_low, qual.lum_high, qual.lum_soft,
+                                qual.invert,
+                            ),
+                        }
                         frame
                     };
                     // The matte comes back to the CPU on both paths; the
