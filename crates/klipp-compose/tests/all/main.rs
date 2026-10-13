@@ -46,6 +46,8 @@ mod legacy_route_gone;
 mod masked_effects_render;
 #[path = "../masked_grade_seeded.rs"]
 mod masked_grade_seeded;
+#[path = "../merge_render.rs"]
+mod merge_render;
 #[path = "../ofx_runs_after_the_grade.rs"]
 mod ofx_runs_after_the_grade;
 #[path = "../opacity_multiplies.rs"]

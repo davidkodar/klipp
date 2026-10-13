@@ -110,6 +110,8 @@ const EFFECTS: &[(&str, Cover)] = &[
     ("PictureTransform", Case("PictureTransform")),
     ("Flicker", Case("Flicker exposure")),
     ("BinocularVignette", Case("BinocularVignette")),
+    ("Generator", Case("Generator linear")),
+    ("Merge", Exempt("its own kernels pass the picture: the plan's layer mixer draws it with its foreground, held in klipp-compose's merge_render")),
 ];
 
 const SHADERS: &[(&str, Cover)] = &[
@@ -162,6 +164,7 @@ const SHADERS: &[(&str, Cover)] = &[
     ("SHADER_INVERT", EVERY_EFFECT),
     ("SHADER_POSTERIZE", EVERY_EFFECT),
     ("SHADER_CST", Case("ColourSpaceTransform")),
+    ("SHADER_GENERATOR", Case("Generator linear")),
     ("SHADER_MOSAIC", EVERY_EFFECT),
     ("SHADER_EDGE_DETECT", EVERY_EFFECT),
     ("SHADER_CHANNEL_MIXER", EVERY_EFFECT),

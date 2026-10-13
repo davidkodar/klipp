@@ -158,6 +158,7 @@ pub(super) fn category_palette(category: Category) -> Palette {
         Category::Key => Palette::Matte,
         Category::Geometry => Palette::Structural,
         Category::BlurDetail | Category::LightGlow | Category::FilmTemporal | Category::PlugIn => Palette::Look,
+        Category::Composite => Palette::Composite,
     }
 }
 

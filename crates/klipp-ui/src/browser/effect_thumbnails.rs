@@ -470,10 +470,14 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         }
         // Nothing to show without a file, or the renderer's tables: the
         // card shows the picture as it is.
-        klipp_effects::BuiltinEffect::Lut3D { .. } | klipp_effects::BuiltinEffect::ColourSpaceTransform { .. } => effect.clone(),
+        klipp_effects::BuiltinEffect::Lut3D { .. } | klipp_effects::BuiltinEffect::ColourSpaceTransform { .. } | klipp_effects::BuiltinEffect::Merge { .. } => effect.clone(),
         // Smaller and turned, so the card shows a picture inside its frame.
         klipp_effects::BuiltinEffect::PictureTransform { .. } => klipp_effects::BuiltinEffect::PictureTransform {
             position_x: 0.0, position_y: 0.0, scale_x: 0.7, scale_y: 0.7, rotation: 12.0, anchor_x: 0.5, anchor_y: 0.5,
+        },
+        // A gradient shows what the generator makes.
+        klipp_effects::BuiltinEffect::Generator { .. } => klipp_effects::BuiltinEffect::Generator {
+            shape: 1, color_a: [30, 60, 160, 255], color_b: [250, 200, 120, 255], angle: 30.0, center_x: 0.5, center_y: 0.5, radius: 0.5,
         },
         klipp_effects::BuiltinEffect::CornerPin { .. } => {
             // A card leaning back into the frame: the pin as a picture

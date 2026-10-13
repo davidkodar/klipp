@@ -373,6 +373,11 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::PictureTransform { .. } => BuiltinEffect::PictureTransform {
             position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5,
         },
+        BuiltinEffect::Merge { .. } => BuiltinEffect::Merge { blend_mode: klipp_effects::BlendMode::Normal, opacity: 1.0 },
+        // The colours stay: a reset is the shape and its placing.
+        BuiltinEffect::Generator { color_a, color_b, .. } => BuiltinEffect::Generator {
+            shape: 0, color_a: *color_a, color_b: *color_b, angle: 0.0, center_x: 0.5, center_y: 0.5, radius: 0.5,
+        },
         BuiltinEffect::ColourSpaceTransform { .. } => BuiltinEffect::ColourSpaceTransform {
             input_gamut: 0, input_curve: 0, output_gamut: 0, output_curve: 0, prepared: None,
         },

@@ -365,7 +365,7 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
         } else {
             "Effects go on the clip's picture chain, not inside this group: go up to Clip to add one".to_owned()
         };
-        let matte = |kind: &str| crate::picture_mattes::matte(kind).is_some();
+        let matte = |kind: &str| crate::picture_mattes::matte(kind).is_some() || crate::picture_mattes::source(kind).is_some();
         match command {
             // A matte stands beside the chain at the clip's top, reading its
             // source (#1746).
@@ -373,7 +373,7 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
                 (!self.graph.nodes.iter().any(|n| n.type_id.as_str() == lt::SOURCE)).then(|| "A matte goes beside the clip's picture chain: go up to Clip to add one".to_owned())
             }
             AppCommand::InsertNodeOnWire { kind, .. } | AppCommand::AddNodeWired { kind, .. } | AppCommand::ReplaceNode { kind, .. } if matte(kind) => {
-                Some("A matte stands beside the picture's chain: add it from the Mattes menu, then wire it to an effect's mask".to_owned())
+                Some("A matte or a source stands beside the picture's chain: add it from its menu, then wire it to an effect's mask or a merge's picture".to_owned())
             }
             AppCommand::AddNode { kind, .. } | AppCommand::ReplaceNode { kind, .. } if crate::inspector::stack_view::new_effect_node(kind).is_none() => {
                 Some(format!("{kind} can't be added to a picture"))
@@ -416,6 +416,11 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
                 Some(AppCommand::RevealGraph { path, select: false })
             },
             AppCommand::AutoLayoutNodeGraph { .. } => Some(AppCommand::GraphOps { ops: layout(self.graph).into_iter().map(|(id, p)| GraphOp::SetNodeMeta { path: self.path(id), label: None, position: Some(serde_json::json!({"x":p.x,"y":p.y})) }).collect(), label: "Arrange picture graph".into() }),
+            AppCommand::AddNode { kind, node_id, position, .. } if crate::picture_mattes::source(&kind).is_some() => {
+                let s = crate::picture_mattes::source(&kind)?;
+                let ops = crate::picture_mattes::source_ops(self.graph, &self.level, s, node_id.unwrap_or_else(NodeId::new_v4), position, self.selected)?;
+                Some(AppCommand::GraphOps { ops, label: format!("Add {}", s.name) })
+            }
             AppCommand::AddNode { kind, node_id, position, .. } if crate::picture_mattes::matte(&kind).is_some() => {
                 let m = crate::picture_mattes::matte(&kind)?;
                 let ops = crate::picture_mattes::add_ops(self.graph, &self.level, m, node_id.unwrap_or_else(NodeId::new_v4), position, self.selected)?;
@@ -527,14 +532,16 @@ pub(super) const MOVE_NOTE: &str = "Move note";
 pub(super) fn picture_menu() -> &'static [MenuCategory] {
     static MENU: std::sync::OnceLock<Vec<MenuCategory>> = std::sync::OnceLock::new();
     MENU.get_or_init(|| {
-        [Category::Colour, Category::BlurDetail, Category::LightGlow, Category::Geometry, Category::FilmTemporal, Category::Key, Category::PlugIn].into_iter().map(|category| {
-            let label = match category { Category::Colour => "Colour", Category::BlurDetail => "Blur and detail", Category::LightGlow => "Light", Category::Geometry => "Geometry", Category::FilmTemporal => "Film and time", Category::Key => "Keying", Category::PlugIn => "Plug-ins", Category::Grade => "Grade" };
+        [Category::Colour, Category::BlurDetail, Category::LightGlow, Category::Geometry, Category::FilmTemporal, Category::Key, Category::Composite, Category::PlugIn].into_iter().map(|category| {
+            let label = match category { Category::Colour => "Colour", Category::BlurDetail => "Blur and detail", Category::LightGlow => "Light", Category::Geometry => "Geometry", Category::FilmTemporal => "Film and time", Category::Key => "Keying", Category::Composite => "Composite", Category::PlugIn => "Plug-ins", Category::Grade => "Grade" };
             let mut entries: Vec<_> = klipp_effects::registry::effect_types().filter(|t| t.desc.category == category && !crate::inspector::stack_view::is_placed_kind(t.tag)).map(|t| (t.desc.name, t.tag)).collect();
             entries.sort_by_key(|e| e.0);
             (label, entries)
         }).filter(|(_, entries)| !entries.is_empty())
         // Mattes beside the chain, for an effect's mask (#1746).
         .chain([("Mattes", crate::picture_mattes::MATTES.iter().map(|m| (m.name, m.tag)).collect())])
+        // Pictures beside the chain, for a merge (#1746).
+        .chain([("Sources", crate::picture_mattes::SOURCES.iter().map(|s| (s.name, s.tag)).collect())])
         .collect()
     })
 }
@@ -684,7 +691,7 @@ mod tests {
         let source = graph.nodes.iter().find(|n| n.type_id.as_str() == lt::SOURCE).unwrap().id;
         assert!(graph.edges.iter().any(|e| e.from.0 == source && e.to.0 == key), "the key reads the source");
         let on_wire = AppCommand::AddNodeWired { clip_id: c.id, kind: "matte.window".into(), position: (0.0, 0.0), from: source, from_port: 0 };
-        assert!(model.refusal(&on_wire).is_some_and(|why| why.contains("Mattes menu")));
+        assert!(model.refusal(&on_wire).is_some_and(|why| why.contains("add it from its menu")));
     }
 
     /// Every node of a clip's picture is on the canvas, in a wide strip

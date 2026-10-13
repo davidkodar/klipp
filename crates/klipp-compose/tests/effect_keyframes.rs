@@ -89,6 +89,8 @@ fn every_effect() -> Vec<E> {
         E::PictureTransform { position_x: 4.0, position_y: 2.0, scale_x: 0.9, scale_y: 0.9, rotation: 5.0, anchor_x: 0.5, anchor_y: 0.5 },
         E::Flicker { amount: 0.5, speed: 8.0, smoothness: 0.2, hold: 0.3, seed: 1, target: 0, time: 0.0 },
         E::BinocularVignette { amount: -0.8, spacing: 0.4, width: 0.8, height: 0.8, softness: 0.2, fringe: 3.0 },
+        E::Merge { blend_mode: klipp_effects::BlendMode::Screen, opacity: 0.5 },
+        E::Generator { shape: 1, color_a: [0, 0, 0, 255], color_b: [255, 255, 255, 255], angle: 30.0, center_x: 0.5, center_y: 0.5, radius: 0.5 },
     ];
     // Adding an effect stops this compiling until it is listed above.
     for e in &all {
@@ -106,7 +108,7 @@ fn every_effect() -> Vec<E> {
             | E::FilmGrain { .. } | E::TiltShift { .. } | E::OldFilm { .. } | E::Vhs { .. }
             | E::RollingShutterCorrection { .. } | E::TemporalDenoise { .. } | E::Deflicker { .. }
             | E::VideoStabilization { .. } | E::SpeedRamp { .. } | E::Frei0r { .. } | E::CornerPin { .. }
-            | E::Lut3D { .. } | E::ColourSpaceTransform { .. } | E::PictureTransform { .. } | E::Flicker { .. } | E::BinocularVignette { .. } => {}
+            | E::Lut3D { .. } | E::ColourSpaceTransform { .. } | E::PictureTransform { .. } | E::Flicker { .. } | E::BinocularVignette { .. } | E::Merge { .. } | E::Generator { .. } => {}
         }
     }
     all

@@ -6,6 +6,9 @@
 //!
 //! The Picture view's Mattes menu adds them ([`add_ops`]); the effect they
 //! mask shows each one's settings under its "Masked by" chip.
+//!
+//! Its Sources menu adds, the same way, a picture a Merge lays over the
+//! clip's ([`source_ops`]): a generator's solid or gradient.
 
 use klipp_core::{DifferenceKeySettings, LumaKeySettings, Mask, MaskShape, MaskStack};
 use klipp_graph_format::lifted::types as lt;
@@ -90,6 +93,59 @@ pub fn add_ops(graph: &Graph, level: &NodePath, m: &Matte, id: NodeId, position:
     Some(ops)
 }
 
+/// A picture the Sources menu makes beside the chain (#1746): its menu
+/// tag, its name, and the effect that draws it.
+pub struct Source {
+    pub tag: &'static str,
+    pub name: &'static str,
+    effect: fn() -> klipp_effects::BuiltinEffect,
+}
+
+/// Each source, in the menu's order.
+pub const SOURCES: &[Source] = &[
+    Source {
+        tag: "source.solid",
+        name: "Solid Colour",
+        effect: || klipp_effects::BuiltinEffect::Generator { shape: 0, color_a: [40, 90, 200, 255], color_b: [255, 255, 255, 255], angle: 0.0, center_x: 0.5, center_y: 0.5, radius: 0.5 },
+    },
+    Source {
+        tag: "source.gradient",
+        name: "Gradient",
+        effect: || klipp_effects::BuiltinEffect::Generator { shape: 1, color_a: [20, 30, 90, 255], color_b: [250, 180, 90, 255], angle: 30.0, center_x: 0.5, center_y: 0.5, radius: 0.5 },
+    },
+];
+
+/// The source the menu tag `tag` names.
+pub fn source(tag: &str) -> Option<&'static Source> {
+    SOURCES.iter().find(|s| s.tag == tag)
+}
+
+/// The ops that add `s` beside `graph`'s chain at `level`, reading the
+/// clip's source (which it replaces), at `position`, and its picture into
+/// `merge`'s `fg` when that is a Merge nothing feeds yet. `None` when the
+/// level has no source.
+pub fn source_ops(graph: &Graph, level: &NodePath, s: &Source, id: NodeId, position: (f32, f32), merge: Option<NodeId>) -> Option<Vec<GraphOp>> {
+    let at = |node: NodeId| NodePath::new(level.root, level.nodes.iter().copied().chain([node]));
+    let source = graph.nodes.iter().find(|n| n.type_id.as_str() == lt::SOURCE)?.id;
+    let mut node = crate::inspector::stack_view::effect_node("generator", &(s.effect)())?;
+    node.id = id;
+    let mut ops = vec![
+        GraphOp::AddNodeBeside { at: at(source), node: Box::new(node) },
+        GraphOp::Connect { from: at(source), from_port: "out".into(), to: at(id), to_port: "in".into() },
+        GraphOp::SetNodeMeta { path: at(id), label: Some(s.name.to_owned()), position: Some(serde_json::json!({"x": position.0, "y": position.1})) },
+    ];
+    if let Some(target) = merge.filter(|t| takes_a_picture(graph, *t)) {
+        ops.push(GraphOp::Connect { from: at(id), from_port: "out".into(), to: at(target), to_port: "fg".into() });
+    }
+    Some(ops)
+}
+
+/// Whether `node` is a Merge whose `fg` nothing feeds.
+pub fn takes_a_picture(graph: &Graph, node: NodeId) -> bool {
+    let Some(n) = graph.nodes.iter().find(|n| n.id == node) else { return false };
+    klipp_graph_lift::effect_params::tag(n) == Some("merge") && !graph.edges.iter().any(|e| e.to == (node, "fg".into()))
+}
+
 /// Whether `node` is an effect with a mask port nothing feeds.
 pub fn takes_a_mask(graph: &Graph, node: NodeId) -> bool {
     let Some(n) = graph.nodes.iter().find(|n| n.id == node) else { return false };
@@ -130,6 +186,26 @@ mod tests {
             let mask = fx.iter().find_map(|(_, b)| b.as_ref().and_then(|b| b.mask.clone()));
             assert!(matches!(mask, Some(klipp_compose::resolve::MaskSource::Side { input: klipp_compose::resolve::SideInput::Source, .. })), "{}: {mask:?}", m.name);
         }
+    }
+
+    /// A gradient from the Sources menu, with a merge picked, is the
+    /// merge's picture (#1746): beside the chain, reading the source, wired
+    /// into its `fg`, and the renderer reads it there.
+    #[test]
+    fn a_source_added_with_a_merge_picked_is_its_picture() {
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut c = TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))).effect(klipp_effects::BuiltinEffect::Merge { blend_mode: klipp_effects::BlendMode::Normal, opacity: 0.8 }).build();
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let merge = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("merge")).unwrap().id;
+        assert!(takes_a_picture(&graph, merge));
+        let id = NodeId::new_v4();
+        let ops = source_ops(&graph, &NodePath::new(Root::Clip { clip: c.id.0 }, []), source("source.gradient").unwrap(), id, (0.0, 0.0), Some(merge)).unwrap();
+        c.apply_picture_ops(&ops).unwrap();
+        let graph = &c.picture_v2().unwrap().picture.graph;
+        assert!(!takes_a_picture(graph, merge), "the merge's picture is fed");
+        let fx = klipp_compose::resolve::resolve_effects_blended(&c, &c.picture_v2().unwrap().picture, t(1.0), 25.0, None, None, 1.0).unwrap();
+        let fg = fx.iter().find_map(|(_, b)| b.as_ref().and_then(|b| b.fg.clone()));
+        assert!(matches!(fg, Some(klipp_compose::resolve::MaskSource::Side { input: klipp_compose::resolve::SideInput::Source, .. })), "{fg:?}");
     }
 
     /// Added with nothing to mask, a matte stands beside the chain, read by

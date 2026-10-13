@@ -252,6 +252,13 @@ impl BuiltinEffect {
                 real(f, "softness", softness);
                 real(f, "fringe", fringe);
             }
+            E::Merge { opacity, .. } => real(f, "opacity", opacity),
+            E::Generator { angle, center_x, center_y, radius, .. } => {
+                real(f, "angle", angle);
+                real(f, "center_x", center_x);
+                real(f, "center_y", center_y);
+                real(f, "radius", radius);
+            }
             E::CornerPin { tl, tr, br, bl } => {
                 for (corner, names) in [tl, tr, br, bl].into_iter().zip(crate::corner_pin::PARAMS) {
                     real(f, names[0], &mut corner[0]);

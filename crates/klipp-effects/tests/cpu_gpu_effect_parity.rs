@@ -151,6 +151,9 @@ fn cases() -> Vec<(&'static str, BuiltinEffect)> {
             input_gamut: 5, input_curve: 2, output_gamut: 1, output_curve: 0, prepared: Some(Prepared(Arc::new(transform(true, false)))),
         }),
         ("PictureTransform", PictureTransform { position_x: 12.0, position_y: -6.0, scale_x: 0.8, scale_y: 0.7, rotation: 15.0, anchor_x: 0.4, anchor_y: 0.6 }),
+        ("Generator solid", Generator { shape: 0, color_a: [200, 60, 30, 200], color_b: [0, 0, 0, 255], angle: 0.0, center_x: 0.5, center_y: 0.5, radius: 0.5 }),
+        ("Generator linear", Generator { shape: 1, color_a: [20, 40, 220, 255], color_b: [250, 230, 90, 128], angle: 35.0, center_x: 0.5, center_y: 0.5, radius: 0.5 }),
+        ("Generator radial", Generator { shape: 2, color_a: [255, 255, 255, 255], color_b: [10, 80, 30, 255], angle: 0.0, center_x: 0.3, center_y: 0.6, radius: 0.4 }),
         ("ColourSpaceTransform to a curve", ColourSpaceTransform {
             input_gamut: 0, input_curve: 0, output_gamut: 9, output_curve: 4, prepared: Some(Prepared(Arc::new(transform(false, true)))),
         }),

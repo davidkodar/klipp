@@ -177,7 +177,7 @@ pub(super) fn run(report: &mut Report) {
     for (entry, ty, desc, alpha) in entries() {
         let key = |i| CoverageKey::new(entry.type_id, &entry.parameter, Surface::EffectsStack, "sample", i);
         let label = ty.presentation(desc).label.unwrap_or(desc.label);
-        let start = fixture(&(ty.sample)());
+        let start = fixture(&super::parity_numeric::acting_sample(ty));
         let name = |what: &str| format!("{} {} {what}", ty.tag, desc.key);
         report.case(&name("opened"), [key(Interaction::OpenWithoutWrite)], || {
             let mut run = Run::new(start.clone());
@@ -229,7 +229,7 @@ pub(super) fn run(report: &mut Report) {
             }
         });
         report.case_or_blocked(&name("drawn"), [key(Interaction::Pixels)], || {
-            let (start, _) = super::parity_numeric::pixel_fixture(ty, &(ty.sample)(), Surface::EffectsStack)?;
+            let (start, _) = super::parity_numeric::pixel_fixture(ty, &super::parity_numeric::acting_sample(ty), Surface::EffectsStack)?;
             // An orange the source holds (its hue ramp), so a key colour
             // keys something and a glow or a shadow shows its change.
             let orange = |was: &serde_json::Value| channel(2, 60)(&channel(1, 120)(&channel(0, 200)(was)));

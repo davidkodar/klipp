@@ -111,8 +111,9 @@ fn picture_only(p: &ClipPicture, op: &GraphOp) -> bool {
         // Root canvas metadata has no legacy field representation.
         GraphOp::SetNodeMeta { .. } | GraphOp::SetAnnotations { .. } | GraphOp::AddNodeBeside { .. } => true,
         GraphOp::SetMix { .. } | GraphOp::SetMaskChannel { .. } => first.type_id.as_str() == types::LEGACY_EFFECT,
-        GraphOp::Connect { to_port, .. } => first.type_id.as_str() == types::LEGACY_EFFECT && to_port.as_str() == "mask",
-        GraphOp::Disconnect { port, .. } => first.type_id.as_str() == types::LEGACY_EFFECT && port.as_str() == "mask",
+        // A mask, or a merge's picture (#1746): wired from beside the chain.
+        GraphOp::Connect { to_port, .. } => first.type_id.as_str() == types::LEGACY_EFFECT && matches!(to_port.as_str(), "mask" | "fg"),
+        GraphOp::Disconnect { port, .. } => first.type_id.as_str() == types::LEGACY_EFFECT && matches!(port.as_str(), "mask" | "fg"),
         _ => false,
     }
 }

@@ -1082,6 +1082,59 @@ fn a_picture_transform_exports_as_the_viewer_shows_it() {
     assert!(d > 20, "only {d} levels at the corner: the picture transform is not in the export");
 }
 
+/// The main timeline with a Merge on V1's clips (#1746) laying a gradient
+/// Generator over each picture: the generator beside the chain reading the
+/// clip's source, wired into the merge's `fg`, as the Picture view's
+/// Sources menu makes it. Both run it alike, and it is in the picture.
+#[test]
+fn a_merged_gradient_exports_as_the_viewer_shows_it() {
+    let _decoders = decoders_at_speed();
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    use klipp_graph_format::path::{NodePath, Root};
+    let mut t = timeline();
+    for c in t.seq.tracks.iter_mut().find(|t| t.name == "V1").unwrap().clips.iter_mut() {
+        add_after_display(c, &[BuiltinEffect::Merge { blend_mode: klipp_effects::BlendMode::Multiply, opacity: 0.8 }]);
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let at = |id| NodePath::new(Root::Clip { clip: c.id.0 }, [id]);
+        let source = graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::SOURCE).unwrap().id;
+        let merge = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("merge")).unwrap().id;
+        let gradient = BuiltinEffect::Generator { shape: 1, color_a: [30, 60, 160, 255], color_b: [250, 220, 120, 255], angle: 25.0, center_x: 0.5, center_y: 0.5, radius: 0.5 };
+        let payload = serde_json::to_value(&gradient).unwrap();
+        let node: klipp_graph_format::Node = serde_json::from_value(serde_json::json!({
+            "id": klipp_graph_format::NodeId::new_v4(),
+            "type_id": klipp_graph_lift::names::effect_node_type("generator"),
+            "legacy": { "payload": payload },
+        }))
+        .unwrap();
+        let id = node.id;
+        c.apply_picture_ops(&[
+            klipp_graph_lift::ops::GraphOp::AddNodeBeside { at: at(source), node: Box::new(node) },
+            klipp_graph_lift::ops::GraphOp::Connect { from: at(source), from_port: "out".into(), to: at(id), to_port: "in".into() },
+            klipp_graph_lift::ops::GraphOp::Connect { from: at(id), from_port: "out".into(), to: at(merge), to_port: "fg".into() },
+        ])
+        .unwrap();
+    }
+    let mut shown = t.clone();
+    shown.seq = klipp_timeline::flatten::flatten_sequence(&t.seq, std::slice::from_ref(&t.seq));
+    let out = exported(&shown);
+    let viewer = Viewer::start(&shown);
+    let mut worst = 0;
+    for n in [10, 60, 110] {
+        let (v, e) = (viewer.frame_at(n), exported_frame(&out, n));
+        worst = worst.max(compare(&format!("merged gradient frame {n:3}"), &v, &e));
+    }
+    eprintln!("merged gradient, viewer vs export: worst {worst} levels");
+    assert!(worst <= 3, "the export differs from the viewer by {worst} levels");
+    let (_, plain) = main_fixture();
+    let (g, p) = (exported_frame(&out, 10), exported_frame(plain, 10));
+    let (a, b) = (px(&g, 4, 4), px(&p, 4, 4));
+    let d = (0..3).map(|c| (a[c] - b[c]).abs()).max().unwrap_or(0);
+    assert!(d > 20, "only {d} levels at the corner: the merge is not in the export");
+}
+
 /// `fx` added to `c`'s picture as the Picture view adds them: each after
 /// the last, from the display step.
 fn add_after_display(c: &mut Clip, fx: &[BuiltinEffect]) {

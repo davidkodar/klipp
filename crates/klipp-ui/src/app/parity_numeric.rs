@@ -121,6 +121,11 @@ pub(super) fn acting_sample(ty: &EffectType) -> BuiltinEffect {
         "colour_space_transform" => BuiltinEffect::ColourSpaceTransform { input_gamut: 2, input_curve: 1, output_gamut: 1, output_curve: 0, prepared: None },
         // Shrunk and turned, so its anchor moves the picture too.
         "picture_transform" => BuiltinEffect::PictureTransform { position_x: 0.0, position_y: 0.0, scale_x: 0.8, scale_y: 0.8, rotation: 10.0, anchor_x: 0.5, anchor_y: 0.5 },
+        // A gradient, part clear, so its placing and its colours' alpha
+        // show (a solid is a flat frame).
+        "generator" => BuiltinEffect::Generator { shape: 1, color_a: [240, 200, 80, 255], color_b: [30, 60, 160, 160], angle: 20.0, center_x: 0.45, center_y: 0.55, radius: 0.4 },
+        // Over its gradient at half, so the mode and the opacity both show.
+        "merge" => BuiltinEffect::Merge { blend_mode: klipp_effects::BlendMode::Screen, opacity: 0.5 },
         _ => (ty.sample)(),
     }
 }
@@ -380,6 +385,15 @@ pub(super) fn pixel_fixture(ty: &EffectType, effect: &BuiltinEffect, surface: Su
     // (`parity_pixels::analyses`), derived with the effect's settings as
     // it reads them (M4 step 9).
     let mut clip = fixture_on(&effect, surface);
+    // A merge lays a picture over: a gradient beside the chain wired into
+    // its foreground, as the Picture view's Sources menu makes one (#1746).
+    if matches!(effect, BuiltinEffect::Merge { .. }) {
+        let graph = clip.picture_v2()?.picture.graph.clone();
+        let merge = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("merge")).ok_or("the merge")?.id;
+        let level = klipp_graph_format::path::NodePath::new(klipp_graph_format::path::Root::Clip { clip: clip.id.0 }, []);
+        let ops = crate::picture_mattes::source_ops(&graph, &level, &crate::picture_mattes::SOURCES[1], klipp_graph_format::NodeId::new_v4(), (0.0, 0.0), Some(merge)).ok_or("the source's ops")?;
+        clip.apply_picture_ops(&ops)?;
+    }
     if context.is_some_and(|(_, _, shrunk)| *shrunk) {
         let shrink = BuiltinEffect::Transform { position_x: 0.0, position_y: 0.0, scale_x: 0.6, scale_y: 0.6, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
         clip.insert_effect(0, shrink).ok_or("the shrinking Transform")?;
