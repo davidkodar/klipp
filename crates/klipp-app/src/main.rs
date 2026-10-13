@@ -113,6 +113,7 @@ fn main() -> Result<()> {
     // control socket report it.
     klipp_core::build_info::set(klipp_core::build_info::BuildInfo::of_this_process(
         env!("CARGO_PKG_VERSION"),
+        env!("KLIPP_BUILD_NUMBER").parse().unwrap_or(0),
         env!("KLIPP_GIT_COMMIT"),
         env!("KLIPP_GIT_DIRTY") == "true",
         env!("KLIPP_BUILD_PROFILE"),

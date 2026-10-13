@@ -14,6 +14,9 @@ use std::time::UNIX_EPOCH;
 pub struct BuildInfo {
     /// The package version.
     pub version: &'static str,
+    /// The build number: the count of commits up to the one built from,
+    /// or 0 when built outside a git checkout.
+    pub number: u32,
     /// The short commit hash, or `unknown` when built outside a git checkout.
     pub commit: &'static str,
     /// Whether tracked files differed from the commit when it was built.
@@ -31,10 +34,10 @@ static BUILD: OnceLock<BuildInfo> = OnceLock::new();
 impl BuildInfo {
     /// The build of this process's executable, with what its build script
     /// recorded.
-    pub fn of_this_process(version: &'static str, commit: &'static str, dirty: bool, profile: &'static str) -> Self {
+    pub fn of_this_process(version: &'static str, number: u32, commit: &'static str, dirty: bool, profile: &'static str) -> Self {
         let exe = std::env::current_exe().ok();
         let built_at = exe.as_deref().and_then(modified_secs);
-        Self { version, commit, dirty, profile, exe, built_at }
+        Self { version, number, commit, dirty, profile, exe, built_at }
     }
 
     /// `0.1.0 36466b08 release`, with `-dirty` after the commit when it was.
@@ -67,6 +70,7 @@ pub fn set(info: BuildInfo) {
 pub fn get() -> &'static BuildInfo {
     BUILD.get_or_init(|| BuildInfo {
         version: env!("CARGO_PKG_VERSION"),
+        number: 0,
         commit: "unknown",
         dirty: false,
         profile: "unknown",
@@ -105,7 +109,7 @@ mod tests {
 
     #[test]
     fn a_build_labels_its_commit() {
-        let build = BuildInfo { version: "0.1.0", commit: "36466b08", dirty: true, profile: "release", exe: None, built_at: None };
+        let build = BuildInfo { version: "0.1.0", number: 2711, commit: "36466b08", dirty: true, profile: "release", exe: None, built_at: None };
         assert_eq!(build.label(), "0.1.0 36466b08-dirty release");
         assert!(!build.newer_build_on_disk(), "no executable, nothing newer");
     }

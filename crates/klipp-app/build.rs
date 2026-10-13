@@ -22,7 +22,11 @@ fn watch(path: &str) {
 fn main() {
     let commit = git(&["rev-parse", "--short=8", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
     let dirty = git(&["status", "--porcelain", "--untracked-files=no"]).is_some_and(|s| !s.is_empty());
+    // The build number: how many commits lead up to the one built from,
+    // so a later build of main always has a larger number.
+    let number = git(&["rev-list", "--count", "HEAD"]).unwrap_or_else(|| "0".to_string());
     println!("cargo:rustc-env=KLIPP_GIT_COMMIT={commit}");
+    println!("cargo:rustc-env=KLIPP_BUILD_NUMBER={number}");
     println!("cargo:rustc-env=KLIPP_GIT_DIRTY={dirty}");
     println!("cargo:rustc-env=KLIPP_BUILD_PROFILE={}", std::env::var("PROFILE").unwrap_or_default());
 
