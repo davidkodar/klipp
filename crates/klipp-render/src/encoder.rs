@@ -430,6 +430,10 @@ impl Encoder {
             ExportFormat::Mov => "mov",
             ExportFormat::WebM => "webm",
             ExportFormat::Gif => "gif",
+            // Sound alone is written by `crate::audio_only` (#1813).
+            ExportFormat::Mp3 | ExportFormat::Wav | ExportFormat::M4a => {
+                return Err(RenderError::Encode(format!("{} has no picture; the audio export writes it", settings.format.label())));
+            }
         };
 
         let mut output_ctx = ffmpeg_next::format::output_as(output_path, forced_format)
@@ -930,7 +934,9 @@ impl Encoder {
                 klipp_core::ExportFormat::Mp4 | klipp_core::ExportFormat::Mov => ffmpeg_next::codec::Id::MOV_TEXT,
                 klipp_core::ExportFormat::Mkv => ffmpeg_next::codec::Id::SUBRIP,
                 klipp_core::ExportFormat::WebM => ffmpeg_next::codec::Id::WEBVTT,
-                klipp_core::ExportFormat::Gif => unreachable!("supports_subtitles guards this"),
+                klipp_core::ExportFormat::Gif | klipp_core::ExportFormat::Mp3 | klipp_core::ExportFormat::Wav | klipp_core::ExportFormat::M4a => {
+                    unreachable!("supports_subtitles guards this")
+                }
             };
 
             let sub_codec = ffmpeg_next::encoder::find(sub_codec_id)

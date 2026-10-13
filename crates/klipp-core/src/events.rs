@@ -558,9 +558,18 @@ pub enum ExportFormat {
     /// Animated GIF (CPU-only, two-pass palette via palettegen +
     /// paletteuse). No audio, no subtitles, no chapters, no HDR.
     Gif,
+    /// Sound alone, no picture (#1813): MP3, WAV or AAC in M4A.
+    Mp3,
+    Wav,
+    M4a,
 }
 
 impl ExportFormat {
+    /// Whether the file is sound alone, with no video stream (#1813).
+    pub fn is_audio_only(&self) -> bool {
+        matches!(self, Self::Mp3 | Self::Wav | Self::M4a)
+    }
+
     pub fn extension(&self) -> &'static str {
         match self {
             Self::Mp4 => "mp4",
@@ -568,6 +577,9 @@ impl ExportFormat {
             Self::Mov => "mov",
             Self::WebM => "webm",
             Self::Gif => "gif",
+            Self::Mp3 => "mp3",
+            Self::Wav => "wav",
+            Self::M4a => "m4a",
         }
     }
 
@@ -578,6 +590,9 @@ impl ExportFormat {
             Self::Mov => "MOV",
             Self::WebM => "WebM",
             Self::Gif => "GIF",
+            Self::Mp3 => "MP3 (audio only)",
+            Self::Wav => "WAV (audio only)",
+            Self::M4a => "M4A (audio only)",
         }
     }
 
@@ -594,7 +609,7 @@ impl ExportFormat {
 
     /// Whether this format supports embedded subtitle streams.
     pub fn supports_subtitles(&self) -> bool {
-        !matches!(self, Self::Gif)
+        !matches!(self, Self::Gif) && !self.is_audio_only()
     }
 
     /// Whether FFmpeg's muxer for this container takes `codec`: MP4
@@ -608,6 +623,8 @@ impl ExportFormat {
             Self::Mov => !matches!(codec, V::Av1 | V::Vp9 | V::Gif),
             Self::WebM => matches!(codec, V::Vp9 | V::Av1),
             Self::Gif => codec == V::Gif,
+            // No picture is written, so the video codec is not used.
+            Self::Mp3 | Self::Wav | Self::M4a => true,
         }
     }
 
@@ -620,6 +637,9 @@ impl ExportFormat {
             Self::Mp4 | Self::Mkv | Self::Gif => true,
             Self::Mov => !matches!(codec, A::Opus | A::Flac),
             Self::WebM => matches!(codec, A::Opus | A::Copy),
+            Self::Mp3 => codec == A::Mp3,
+            Self::Wav => matches!(codec, A::Pcm16 | A::Pcm24),
+            Self::M4a => codec == A::Aac,
         }
     }
 
@@ -629,6 +649,7 @@ impl ExportFormat {
             Self::Mp4 | Self::Mkv | Self::Mov => ExportVideoCodec::H264,
             Self::WebM => ExportVideoCodec::Vp9,
             Self::Gif => ExportVideoCodec::Gif,
+            Self::Mp3 | Self::Wav | Self::M4a => ExportVideoCodec::H264,
         }
     }
 
@@ -636,6 +657,8 @@ impl ExportFormat {
     pub fn default_audio(&self) -> ExportAudioCodec {
         match self {
             Self::WebM => ExportAudioCodec::Opus,
+            Self::Mp3 => ExportAudioCodec::Mp3,
+            Self::Wav => ExportAudioCodec::Pcm16,
             _ => ExportAudioCodec::Aac,
         }
     }
@@ -4587,6 +4610,23 @@ mod gif_format_tests {
         assert!(ExportFormat::WebM.supports_audio());
         assert!(!ExportFormat::WebM.supports_chapters());
         assert!(ExportFormat::WebM.supports_subtitles());
+    }
+
+    /// #1813: the sound-alone formats take no picture, chapters or
+    /// subtitles, hold only their own audio, and a codec that doesn't fit
+    /// gives way to theirs; the video codec is not looked at.
+    #[test]
+    fn audio_only_formats_hold_only_their_own_sound() {
+        use ExportAudioCodec as A;
+        for (f, ext, own) in [(ExportFormat::Mp3, "mp3", A::Mp3), (ExportFormat::Wav, "wav", A::Pcm16), (ExportFormat::M4a, "m4a", A::Aac)] {
+            assert!(f.is_audio_only() && f.supports_audio(), "{f:?}");
+            assert!(!f.supports_chapters() && !f.supports_subtitles(), "{f:?}");
+            assert_eq!(f.extension(), ext);
+            assert!(f.holds_audio(own) && f.holds_video(ExportVideoCodec::ProRes4444), "{f:?}");
+            assert_eq!(f.fit(ExportVideoCodec::H264, A::Opus).1, own, "{f:?}: Opus gives way");
+        }
+        assert!(ExportFormat::Wav.holds_audio(A::Pcm24) && !ExportFormat::Wav.holds_audio(A::Aac));
+        assert!(!ExportFormat::Mp4.is_audio_only() && !ExportFormat::Gif.is_audio_only());
     }
 
     #[test]

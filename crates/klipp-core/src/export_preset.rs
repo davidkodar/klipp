@@ -279,8 +279,10 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
             id: "00000000-0000-4000-a000-00000000000a".into(),
             name: "Audio Only MP3".into(),
             built_in: true,
+            // The mix alone, no video stream (#1813); the video fields
+            // are not used.
             settings: ExportPresetSettings {
-                format: ExportFormat::Mp4,
+                format: ExportFormat::Mp3,
                 video_codec: ExportVideoCodec::H264,
                 resolution: None,
                 fps: None,
