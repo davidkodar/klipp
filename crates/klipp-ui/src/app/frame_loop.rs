@@ -628,6 +628,10 @@ impl KlippApp {
             self.state.default_fade_secs = self.prefs.audio.default_fade_duration_ms as f32 / 1000.0;
             self.state.default_fade_curve = self.prefs.audio.default_fade_curve;
             self.state.jkl_speed_step = f64::from(self.prefs.playback.jkl_speed_step);
+            self.state.track_search_radius = self.prefs.editing.track_search_radius;
+            self.state.multicam_default_sync = self.prefs.editing.multicam_sync_method.sync();
+            // The timeline's own copy, so a change shows without a restart.
+            self.state.timeline_prefs = self.prefs.timeline.clone();
             self.state.audio_show_crossfade_indicators = self.prefs.audio.show_crossfade_indicators;
             self.state.lufs_target = match self.prefs.audio.loudness_standard {
                 klipp_core::LoudnessStandard::EbuR128 => -23.0,

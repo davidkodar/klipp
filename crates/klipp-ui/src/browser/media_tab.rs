@@ -1261,7 +1261,7 @@ fn render_list_view(
             }
             resp.context_menu(|ui| {
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
-                    show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), cmds);
+                    show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), state.multicam_default_sync, cmds);
                 } else {
                     show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, &item.span_parts, cmds);
                 }
@@ -1630,7 +1630,7 @@ fn render_grid_view(
 
             card_resp.context_menu(|ui| {
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
-                    show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), cmds);
+                    show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), state.multicam_default_sync, cmds);
                 } else {
                     show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, &item.span_parts, cmds);
                 }
@@ -2155,6 +2155,7 @@ fn show_multi_context_menu(
     ui: &mut egui::Ui,
     selected_ids: &std::collections::HashSet<MediaId>,
     sync_pair: Option<(MediaId, MediaId)>,
+    default_sync: MulticamSync,
     cmds: &mut Vec<AppCommand>,
 ) {
     let count = selected_ids.len();
@@ -2177,8 +2178,17 @@ fn show_multi_context_menu(
         ui.close_menu();
         cmds.push(AppCommand::AddMediaToSharedLibrary { media_ids: selected_ids.iter().copied().collect(), collection: String::new() });
     }
-    ui.menu_button("Create Synced Multicam", |ui| {
-        let ids = || selected_ids.iter().copied().collect::<Vec<_>>();
+    let ids = || selected_ids.iter().copied().collect::<Vec<_>>();
+    // In one click, by the editing preferences' default sync method;
+    // the other methods are one level down.
+    if ui.button("Create Synced Multicam")
+        .on_hover_text(format!("Put these clips on one clock and lay them out at the playhead as a multicam, one angle per track: {} (the default in Preferences > Editing).", default_sync.label().to_lowercase()))
+        .clicked()
+    {
+        ui.close_menu();
+        cmds.push(AppCommand::CreateSyncedMulticam { media_ids: ids(), method: default_sync });
+    }
+    ui.menu_button("Create Synced Multicam By", |ui| {
         for (method, hint) in [
             (MulticamSync::TimecodeThenAudio, "Timecode where a clip has it, the sound for the rest. The usual choice."),
             (MulticamSync::Timecode, "Only the start timecode. For cameras jam-synced to one clock."),
@@ -2191,7 +2201,7 @@ fn show_multi_context_menu(
         }
     })
     .response
-    .on_hover_text("Put these clips on one clock and lay them out at the playhead as a multicam, one angle per track.");
+    .on_hover_text("The same, by a method chosen here.");
     if let Some((video_id, audio_id)) = sync_pair {
         if ui.button("Sync Video and Audio")
             .on_hover_text("Pair the clip with this recording: by timecode when both carry one, by the sound otherwise. The recording then goes under the clip when it is added to the timeline.")
@@ -2549,5 +2559,48 @@ mod thumbnail_placement_tests {
         let (dst, uv) = thumbnail_placement(egui::vec2(2.39, 1.0), tile);
         assert_eq!(dst, tile);
         assert!(uv.min.x > 0.0 && uv.max.x < 1.0 && uv.min.y == 0.0);
+    }
+}
+
+#[cfg(test)]
+mod default_multicam_sync_tests {
+    use super::*;
+
+    /// The command Create Synced Multicam sends, clicked for real, with
+    /// `default_sync` the preferences' method.
+    fn clicked(default_sync: MulticamSync) -> Vec<AppCommand> {
+        let ids: std::collections::HashSet<MediaId> = [MediaId::new(), MediaId::new()].into_iter().collect();
+        let ctx = egui::Context::default();
+        let run = |events: Vec<egui::Event>| {
+            let mut cmds = Vec::new();
+            let mut at = None;
+            let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 800.0))), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| show_multi_context_menu(ui, &ids, None, default_sync, &mut cmds));
+            });
+            for s in &out.shapes {
+                if let egui::Shape::Text(t) = &s.shape {
+                    if t.galley.text() == "Create Synced Multicam" {
+                        at = Some(t.pos + t.galley.size() / 2.0);
+                    }
+                }
+            }
+            (cmds, at)
+        };
+        let at = run(Vec::new()).1.expect("the item is drawn");
+        let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut cmds = run(vec![egui::Event::PointerMoved(at), press(true)]).0;
+        cmds.extend(run(vec![press(false)]).0);
+        cmds
+    }
+
+    /// #1816: Create Synced Multicam syncs by the preferences' default
+    /// method: Sound gives Audio, Timecode gives Timecode.
+    #[test]
+    fn one_click_syncs_by_the_default_method() {
+        for method in [MulticamSync::Audio, MulticamSync::Timecode] {
+            let cmds = clicked(method);
+            assert!(matches!(cmds.as_slice(), [AppCommand::CreateSyncedMulticam { method: m, media_ids }] if *m == method && media_ids.len() == 2), "{cmds:?}");
+        }
+        assert_eq!(crate::prefs::MulticamSyncMethod::default().sync(), MulticamSync::TimecodeThenAudio, "the default is the usual choice");
     }
 }

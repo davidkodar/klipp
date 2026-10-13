@@ -1150,8 +1150,32 @@ impl PreferencesPanel {
             }
         });
 
+        Self::setting_row_with_subtitle(ui, "Default sync method", "How Create Synced Multicam puts the angles on one clock", theme, |ui| {
+            use crate::prefs::MulticamSyncMethod;
+            let label = |m: MulticamSyncMethod| match m {
+                MulticamSyncMethod::Manual => "Timecode, then sound",
+                MulticamSyncMethod::Timecode => "Timecode",
+                MulticamSyncMethod::AudioWaveform => "Sound",
+            };
+            egui::ComboBox::from_id_salt("multicam_sync")
+                .selected_text(label(prefs.editing.multicam_sync_method))
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    for m in [MulticamSyncMethod::Manual, MulticamSyncMethod::Timecode, MulticamSyncMethod::AudioWaveform] {
+                        if ui.selectable_value(&mut prefs.editing.multicam_sync_method, m, label(m)).changed() { *dirty = true; }
+                    }
+                });
+        });
+
         // ── TRACKING section ──
         Self::section_header(ui, "TRACKING", theme);
+
+        Self::setting_row_with_subtitle(ui, "Search radius", "How far a new track point looks for its match, in pixels", theme, |ui| {
+            let mut v = prefs.editing.track_search_radius;
+            if ui.add(egui::DragValue::new(&mut v).range(8..=128).speed(1.0).suffix(" px")).changed() {
+                prefs.editing.track_search_radius = v; *dirty = true;
+            }
+        });
 
         Self::setting_row_with_subtitle(ui, "Patch size", "Half-width of matching patch", theme, |ui| {
             let mut v = prefs.editing.track_patch_size;
@@ -3683,6 +3707,7 @@ impl PreferencesPanel {
         dim_row(ui, "Trim handle", &mut prefs.timeline.trim_handle_width, 6.0, 30.0, " px", dirty);
         dim_row(ui, "Overview bar", &mut prefs.timeline.overview_bar_height, 12.0, 48.0, " px", dirty);
         dim_row(ui, "Min track height", &mut prefs.timeline.min_track_height, 16.0, 64.0, " px", dirty);
+        dim_row(ui, "Max track height", &mut prefs.timeline.max_track_height, 100.0, 600.0, " px", dirty);
         dim_row(ui, "Text track height", &mut prefs.timeline.text_track_height, 20.0, 80.0, " px", dirty);
 
         Self::section_header(ui, "SELECTION", theme);
@@ -4858,9 +4883,9 @@ mod layout_tests {
     /// nothing, so they are out of view until they are wired. "Render
     /// cache" here is the folder row; the cache's size row keeps the name.
     const HIDDEN: &[&str] = &[
-        "Monitoring mode", "Normalize target", "Default sync method",
-        "Search radius", "Colour space tagging", "Default encoder preset",
-        "Clip corner radius", "Max track height", "Ruler height",
+        "Monitoring mode", "Normalize target",
+        "Colour space tagging", "Default encoder preset",
+        "Clip corner radius", "Ruler height",
         "Title-safe area overlay",
         "Show keyboard shortcut hints", "Recent projects to show",
     ];

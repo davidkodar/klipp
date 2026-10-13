@@ -441,6 +441,8 @@ impl KlippApp {
         app.state.default_fade_secs = app.prefs.audio.default_fade_duration_ms as f32 / 1000.0;
         app.state.default_fade_curve = app.prefs.audio.default_fade_curve;
         app.state.jkl_speed_step = f64::from(app.prefs.playback.jkl_speed_step);
+        app.state.track_search_radius = app.prefs.editing.track_search_radius;
+        app.state.multicam_default_sync = app.prefs.editing.multicam_sync_method.sync();
         app.state.audio_show_crossfade_indicators = app.prefs.audio.show_crossfade_indicators;
         app.state.lufs_target = match app.prefs.audio.loudness_standard {
             klipp_core::LoudnessStandard::EbuR128 => -23.0,

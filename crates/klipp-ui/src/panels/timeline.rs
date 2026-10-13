@@ -199,7 +199,22 @@ pub(crate) const VIDEO_TRACK_HEIGHT: f32 = 50.0;
 pub(crate) const AUDIO_TRACK_HEIGHT: f32 = 48.0;
 pub(crate) const TEXT_TRACK_HEIGHT: f32 = 32.0;
 const MIN_TRACK_HEIGHT: f32 = 32.0;
+/// The default cap a track is resized to (the preference's default);
+/// the timeline reads the preference, the tests this.
+#[cfg(test)]
 const MAX_TRACK_HEIGHT: f32 = 300.0;
+
+/// The tallest a track is resized to: the timeline preferences' max
+/// track height, never below the smallest track.
+pub(crate) fn track_height_cap(prefs: &crate::prefs::TimelinePrefs) -> f32 {
+    prefs.max_track_height.max(MIN_TRACK_HEIGHT)
+}
+
+/// A track's height after its edge is dragged `delta` pixels from
+/// `orig`: between the smallest track and the preferences' cap.
+pub(crate) fn resized_track_height(orig: f32, delta: f32, prefs: &crate::prefs::TimelinePrefs) -> f32 {
+    (orig + delta).clamp(MIN_TRACK_HEIGHT, track_height_cap(prefs))
+}
 
 /// Height of the per-track expandable automation lane when visible.
 /// Matches DaVinci Fairlight's lane proportion — tall enough that drag
@@ -3444,12 +3459,13 @@ impl TimelinePanel {
                 cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(120.0) });
                 ui.close_menu();
             }
-            if ui.button("Expanded (200px)").clicked() {
+            let cap = track_height_cap(&state.timeline_prefs);
+            if cap > 200.0 && ui.button("Expanded (200px)").clicked() {
                 cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(200.0) });
                 ui.close_menu();
             }
-            if ui.button("Maximum (300px)").clicked() {
-                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(300.0) });
+            if ui.button(format!("Maximum ({cap:.0}px)")).clicked() {
+                cmds.push(AppCommand::SetTrackCustomHeight { track_id, height: Some(cap) });
                 ui.close_menu();
             }
             ui.separator();
@@ -3467,7 +3483,7 @@ impl TimelinePanel {
                 if ri == track_idx {
                     if let Some(pos) = ui.ctx().pointer_latest_pos() {
                         let delta = pos.y - start_y;
-                        let new_h = (orig_h + delta).clamp(MIN_TRACK_HEIGHT, MAX_TRACK_HEIGHT);
+                        let new_h = resized_track_height(orig_h, delta, &state.timeline_prefs);
                         let ctrl = ui.input(|i| i.modifiers.ctrl);
                         if ctrl {
                             for t in &mut state.sequences[state.active_sequence_idx].tracks {
@@ -19506,5 +19522,23 @@ mod selects_drop_tests {
         let away = egui::pos2(400.0, 150.0);
         let (cmds, left) = run(vec![egui::Event::PointerMoved(away), egui::Event::PointerButton { pos: away, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }], egui::Modifiers::NONE);
         assert!(cmds.is_empty() && left.is_some(), "not over this track");
+    }
+}
+
+#[cfg(test)]
+mod track_height_cap_tests {
+    use super::*;
+
+    /// #1816: a track dragged taller stops at the timeline preferences'
+    /// max track height: 250 stops it at 250, 400 lets it reach 400;
+    /// it never goes below the smallest track.
+    #[test]
+    fn a_resized_track_stops_at_the_preferences_cap() {
+        let prefs = |max: f32| crate::prefs::TimelinePrefs { max_track_height: max, ..Default::default() };
+        assert_eq!(resized_track_height(100.0, 400.0, &prefs(250.0)), 250.0);
+        assert_eq!(resized_track_height(100.0, 400.0, &prefs(400.0)), 400.0);
+        assert_eq!(resized_track_height(100.0, 50.0, &prefs(250.0)), 150.0, "under the cap: as dragged");
+        assert_eq!(resized_track_height(100.0, -500.0, &prefs(250.0)), MIN_TRACK_HEIGHT);
+        assert_eq!(track_height_cap(&crate::prefs::TimelinePrefs::default()), MAX_TRACK_HEIGHT, "the default is the old fixed cap");
     }
 }

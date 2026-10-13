@@ -1060,9 +1060,10 @@ impl KlippApp {
             }
             AppCommand::SetTrackCustomHeight { track_id, height } => {
                 self.state.timeline_track_scale = 1.0;
+                let cap = crate::panels::timeline::track_height_cap(&self.state.timeline_prefs);
                 let seq = self.state.sequence_mut();
                 if let Some(track) = seq.tracks.iter_mut().find(|t| t.id == *track_id) {
-                    track.custom_height = height.map(|h| h.clamp(32.0, 300.0));
+                    track.custom_height = height.map(|h| h.clamp(32.0, cap));
                 }
                 self.state.dirty = true;
                 true
