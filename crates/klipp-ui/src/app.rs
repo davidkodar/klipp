@@ -57,6 +57,7 @@ mod inspector_edit_host;
 mod command_writes;
 mod event_writes;
 mod graph_dock;
+pub(crate) mod node_labels;
 pub(crate) mod node_thumbnails;
 #[cfg(test)]
 mod inspector_parity;

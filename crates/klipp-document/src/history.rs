@@ -213,6 +213,9 @@ pub enum EditCommand {
     /// A title's white in an HDR delivery, cd/m²; see
     /// `Sequence::title_nits`.
     SetSequenceTitleNits { old: f32, new: f32 },
+    /// The colour labels on the sequence's graph nodes, whole (#1753);
+    /// see `Sequence::node_labels`.
+    SetNodeLabels { old: Vec<klipp_timeline::NodeLabel>, new: Vec<klipp_timeline::NodeLabel> },
     /// How far back a clip sits for the camera; see `Clip::depth`.
     SetClipDepth { clip_id: ClipId, old: f32, new: f32 },
     /// Clips given their own name or colour label (#920), each as (clip,
@@ -819,6 +822,7 @@ impl EditCommand {
             EditCommand::SetTrack { description, .. } => description,
             EditCommand::SetSequenceCamera { .. } => "Camera",
             EditCommand::SetSequenceTitleNits { .. } => "Title Brightness",
+            EditCommand::SetNodeLabels { .. } => "Node Colour Label",
             EditCommand::SetClipDepth { .. } => "Depth",
             EditCommand::SetClipLabels { description, .. } => description,
             EditCommand::SetGradeGroups { .. } => "Grade Groups",

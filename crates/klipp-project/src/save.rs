@@ -354,6 +354,8 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
         grade_groups: seq.grade_groups.clone(),
         drop_frame: Some(seq.drop_frame),
         title_nits: (seq.title_nits != klipp_timeline::DEFAULT_TITLE_NITS).then_some(seq.title_nits),
+        // A label whose node is gone names nothing any more (#1753).
+        node_labels: seq.live_node_labels(),
         last_playhead: seq.last_playhead.map(|rt| TimecodeJson { value: rt.value, rate: rt.rate }),
         markers: seq.markers.iter().map(|m| {
             MarkerJson {

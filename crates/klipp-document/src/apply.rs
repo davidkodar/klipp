@@ -213,6 +213,9 @@ impl DocumentView<'_> {
             EditCommand::SetSequenceTitleNits { old, .. } => {
                 self.sequences[self.active].title_nits = *old;
             }
+            EditCommand::SetNodeLabels { old, .. } => {
+                self.sequences[self.active].node_labels = old.clone();
+            }
             EditCommand::SetClipDepth { clip_id, old, .. } => {
                 if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
                     c.depth = *old;
@@ -905,6 +908,9 @@ impl DocumentView<'_> {
             }
             EditCommand::SetSequenceTitleNits { new, .. } => {
                 self.sequences[self.active].title_nits = *new;
+            }
+            EditCommand::SetNodeLabels { new, .. } => {
+                self.sequences[self.active].node_labels = new.clone();
             }
             EditCommand::SetClipDepth { clip_id, new, .. } => {
                 if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
@@ -1815,6 +1821,26 @@ mod grade_group_tests {
         view.apply_inverse(&edit);
         assert_eq!(view.sequences[0].title_nits, klipp_timeline::DEFAULT_TITLE_NITS);
         assert_eq!(edit.label(), "Title Brightness");
+    }
+
+    /// #1753: the labels on a sequence's nodes undo and redo, whole.
+    #[test]
+    fn node_labels_undo_and_redo() {
+        use klipp_graph_format::path::{NodePath, Root};
+        let mut sequences = vec![Sequence::new_default()];
+        let mut pool = MediaPool::new();
+        let mut fps = sequences[0].fps;
+        let node = NodePath::new(Root::TimelineGrade { sequence: sequences[0].id.0 }, [uuid::Uuid::new_v4()]);
+        let mut view = DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        let new = view.sequences[0].node_labels_with(&node, 3);
+        let edit = EditCommand::SetNodeLabels { old: Vec::new(), new };
+        view.apply_forward(&edit);
+        assert_eq!(view.sequences[0].node_label(&node), 3);
+        view.apply_inverse(&edit);
+        assert_eq!(view.sequences[0].node_label(&node), 0);
+        view.apply_forward(&edit);
+        assert_eq!(view.sequences[0].node_label(&node), 3);
+        assert_eq!(edit.label(), "Node Colour Label");
     }
 
     #[test]

@@ -698,6 +698,8 @@ pub fn frame_snapshot(seq: &Sequence, time: Timecode) -> Sequence {
         timeline_graph: seq.timeline_grade().cloned().map(Into::into),
         grade_groups: seq.grade_groups.clone(),
         title_nits: seq.title_nits,
+        // The render reads no labels.
+        node_labels: Vec::new(),
         drop_frame: seq.drop_frame,
         fps: seq.fps,
         resolution: seq.resolution,

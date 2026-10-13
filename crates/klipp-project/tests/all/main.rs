@@ -62,6 +62,8 @@ mod media_state_round_trip;
 mod merge_round_trip;
 #[path = "../newer_format_refused.rs"]
 mod newer_format_refused;
+#[path = "../node_labels_round_trip.rs"]
+mod node_labels_round_trip;
 #[path = "../picture_cache_keys.rs"]
 mod picture_cache_keys;
 #[path = "../picture_ops_corpus.rs"]

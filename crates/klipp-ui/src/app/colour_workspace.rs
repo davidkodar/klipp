@@ -728,6 +728,7 @@ impl KlippApp {
             if let Some(cid) = clip_id {
                 // How its nodes fared on the frame shown (#1747).
                 self.node_graph_v2_panel.node_feedback = self.state.node_feedback(cid);
+                self.node_graph_v2_panel.node_labels = super::node_labels::canvas_labels(self.state.sequence());
                 let seq_idx = self.state.active_sequence_idx;
                 // The timeline grade's stand-in keeps no versions: only
                 // its graph is written back.

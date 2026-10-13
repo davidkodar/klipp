@@ -3374,6 +3374,11 @@ pub enum AppCommand {
     /// How bright the sequence's titles are in an HDR delivery, cd/m²
     /// (`Sequence::title_nits`), held inside `TITLE_NITS_RANGE`. Undoable.
     SetSequenceTitleNits { sequence_idx: usize, nits: f32 },
+    /// Give the node at `node` a colour label, 1 to 6 as a clip's are
+    /// numbered, or take it off with 0 (#1753). A node the colour page
+    /// edits through a stand-in clip names it by that clip; it is kept
+    /// under the grade it stands in for. Undoable.
+    SetNodeColourLabel { node: klipp_graph_format::path::NodePath, colour: u8 },
 
     /// One of the sequence camera's moving values, keyed at a moment.
     /// Where it looks, how far in, and its roll — the move itself,

@@ -764,6 +764,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::DeleteGradeGroup { .. }
         | AppCommand::SetSequenceShutter { .. }
         | AppCommand::SetSequenceTitleNits { .. }
+        | AppCommand::SetNodeColourLabel { .. }
         | AppCommand::SetSequenceCameraKey { .. }
         | AppCommand::RemoveSequenceCameraKey { .. }
         | AppCommand::MoveSequenceCameraKey { .. }

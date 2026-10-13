@@ -423,6 +423,7 @@ impl crate::state::AppState {
             }
             AppCommand::AbandonParamEditAt { addr, key } => Ok(self.abandon_param_edit_at(addr, key)),
             AppCommand::ToggleGraphDock => { self.toggle_graph_dock(); Ok(false) },
+            AppCommand::SetNodeColourLabel { node, colour } => Ok(self.set_node_colour_label(node, *colour)),
             AppCommand::RevealGraph { path, select } => self.reveal_graph(path, *select).map(|()| false),
             AppCommand::SetGraphDockRoot { root } => self.set_graph_dock_root(*root).map(|()| false),
             AppCommand::SetSplitCompareNode { clip_id, path } => self.set_split_compare_node(*clip_id, path.as_ref()).map(|()| false),

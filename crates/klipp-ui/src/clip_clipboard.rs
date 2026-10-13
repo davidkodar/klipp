@@ -26,6 +26,9 @@ pub struct ClipboardContent {
     pub clips: Vec<CopiedClip>,
     /// Transitions whose two clips were both copied, with their track.
     pub transitions: Vec<(Transition, usize)>,
+    /// The colour labels on the copied clips' nodes (#1753), which a
+    /// paste puts on the copies' nodes.
+    pub labels: Vec<klipp_timeline::NodeLabel>,
 }
 
 impl ClipboardContent {
@@ -74,7 +77,8 @@ pub fn copy(seq: &Sequence, ids: &[ClipId]) -> Option<ClipboardContent> {
         .filter(|(tr, _)| copied.contains(&tr.clip_a_id) && copied.contains(&tr.clip_b_id))
         .map(|(tr, ti)| (*tr, ti))
         .collect();
-    Some(ClipboardContent { clips, transitions })
+    let labels = seq.node_labels.iter().filter(|l| l.node.root_clip().is_some_and(|c| copied.contains(&ClipId(c)))).cloned().collect();
+    Some(ClipboardContent { clips, transitions, labels })
 }
 
 /// What lies in `seq` from `from` to `to` on every track, as Copy would
@@ -197,6 +201,8 @@ pub fn paste(seq: &Sequence, cb: &ClipboardContent, at: Timecode, mode: PasteMod
             pasted.grade_group = None;
         }
         ids.push(pasted.id);
+        // The copied clip's node labels on the copy's nodes (#1753).
+        out.node_labels.extend(klipp_timeline::carry_node_labels(&cb.labels, clip, &pasted));
         crate::app::KlippApp::overwrite_insert_clip_on_track(&mut out.tracks[ti], pasted);
         touched.insert(ti);
     }
@@ -267,6 +273,28 @@ mod tests {
         a1.clips = vec![sa, d];
         seq.tracks = vec![v1, a1];
         (seq, ids)
+    }
+
+    /// #1753: a copied clip's node labels go with it, onto the paste's
+    /// nodes, in another sequence too: a grade node's under the copy's own
+    /// grade group. Another clip's labels stay behind.
+    #[test]
+    fn a_paste_carries_the_copied_clips_node_labels() {
+        use klipp_graph_format::path::{NodePath, Root};
+        use klipp_timeline::{grade_group_id, GradeAccess, NodeLabel};
+        let (mut seq, [a, b, ..]) = timeline();
+        let (ti, ci) = seq.find_clip(a).unwrap();
+        let node = seq.tracks[ti].clips[ci].edit_grade(|g| g.ensure_corrector());
+        let on = |clip: ClipId| NodePath::new(Root::Clip { clip: clip.0 }, [grade_group_id(clip), node]);
+        seq.node_labels = vec![NodeLabel { node: on(a), colour: 2 }, NodeLabel { node: on(b), colour: 3 }];
+        let cb = copy(&seq, &[a]).unwrap();
+        for into in [seq.clone(), Sequence::new_default()] {
+            let pasted = paste(&into, &cb, tc(10.0), PasteMode::Overwrite);
+            let copy = pasted.ids.iter().copied().find(|id| pasted.sequence.tracks.iter().any(|t| t.kind == TrackKind::Video && t.find_clip(*id).is_some())).unwrap();
+            let added: Vec<_> = pasted.sequence.node_labels.iter().filter(|l| !into.node_labels.contains(l)).cloned().collect();
+            assert_eq!(added, vec![NodeLabel { node: on(copy), colour: 2 }]);
+            assert!(pasted.sequence.holds_node(&on(copy)), "the label names the copy's node");
+        }
     }
 
     /// #82: a range of a selects sequence is what lies in it on every

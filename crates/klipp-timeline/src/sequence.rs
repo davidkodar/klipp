@@ -119,6 +119,10 @@ pub struct Sequence {
     /// places graphics. The render holds it under the delivery's peak.
     #[serde(default = "default_title_nits", skip_serializing_if = "is_default_title_nits")]
     pub title_nits: f32,
+    /// Colour labels on the nodes of its graphs, by path (#1753); see
+    /// [`crate::NodeLabel`]. Empty for every sequence made before them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub node_labels: Vec<crate::NodeLabel>,
 }
 
 /// [`Sequence::title_nits`] when nobody has chosen one: SDR reference
@@ -654,6 +658,7 @@ impl Sequence {
             grade_groups: Vec::new(),
             drop_frame: Self::default_drop_frame(Fps::film_24()),
             title_nits: DEFAULT_TITLE_NITS,
+            node_labels: Vec::new(),
             name: "Main Sequence".to_string(),
             fps: Fps::film_24(),
             resolution: Resolution::hd_1080(),
@@ -4374,6 +4379,7 @@ mod tests {
     fn make_swap_seq() -> Sequence {
         Sequence {
             title_nits: crate::DEFAULT_TITLE_NITS,
+            node_labels: Vec::new(),
             drop_frame: false,
             camera: Default::default(),
             timeline_graph: None,

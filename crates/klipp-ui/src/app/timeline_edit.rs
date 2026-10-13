@@ -1080,7 +1080,11 @@ impl KlippApp {
             self.state.toast.show(format!("{label}: no track of the clips' kind to put them on"));
             return;
         }
-        let edits = crate::clip_clipboard::track_edits(&before, &pasted.sequence, &pasted.touched, label);
+        let mut edits = crate::clip_clipboard::track_edits(&before, &pasted.sequence, &pasted.touched, label);
+        // The copies' node labels, in the same step (#1753).
+        if pasted.sequence.node_labels != before.node_labels {
+            edits.push(EditCommand::SetNodeLabels { old: before.node_labels.clone(), new: pasted.sequence.node_labels.clone() });
+        }
         self.apply_edits_as_one(&edits, label);
         self.state.selected_clip = pasted.ids.first().copied();
         self.state.selected_clips = if pasted.ids.len() > 1 { pasted.ids.clone() } else { Vec::new() };
