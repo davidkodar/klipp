@@ -78,6 +78,14 @@ pub struct Request<'a> {
     pub speed: Option<f32>,
     /// The silence between sentences; `None` is the voice's own.
     pub pause_secs: Option<f32>,
+    /// How long the take must last, seconds (#112): spoken again at
+    /// another speed until it lands within a frame of it, from `speed`
+    /// (or as the voice speaks). `None` is as long as it comes out.
+    pub fit_secs: Option<f32>,
+    /// How much a Piper voice varies its delivery, 0 (flat, the same line
+    /// said the same way every time) to 2, 1 as the voice does (#112).
+    /// Kokoro has no such control.
+    pub variation: Option<f32>,
     /// Fetch a voice that is not downloaded yet.
     pub download: bool,
     /// Where to write the take; `None` names it in `dir` after its words.
@@ -286,6 +294,73 @@ pub fn delivery_args(speed: Option<f32>, pause_secs: Option<f32>) -> Result<Vec<
     Ok(args)
 }
 
+/// Piper's arguments for `variation` (#112): its noise scale and noise
+/// width (0.667 and 0.8 as a voice comes) scaled together. None given:
+/// no arguments, and the take keeps its name.
+pub fn variation_args(variation: Option<f32>) -> Result<Vec<String>, String> {
+    let Some(v) = variation else { return Ok(Vec::new()) };
+    if !(0.0..=2.0).contains(&v) {
+        return Err(format!("a variation of {v} is outside 0 to 2 (1 is as the voice speaks)"));
+    }
+    Ok(vec!["--noise_scale".into(), format!("{:.3}", 0.667 * v), "--noise_w".into(), format!("{:.3}", 0.8 * v)])
+}
+
+/// How far from its target a fitted take may land: a frame at 30 fps.
+pub const FIT_TOLERANCE_SECS: f64 = 1.0 / 30.0;
+
+/// The speed a take lasts `target` seconds at (#112): `speak(speed)` says
+/// it at a speed and gives its length; speech scales close to inversely
+/// with speed, so each pass corrects by the ratio of what it got to the
+/// target, from `start`, held to 0.5 to 2, until within
+/// [`FIT_TOLERANCE_SECS`], six passes at most. The speed of the last pass,
+/// and how long it was.
+pub fn fit_speed(target: f64, start: f32, mut speak: impl FnMut(f32) -> Result<f64, String>) -> Result<(f32, f64), String> {
+    if !(0.2..=600.0).contains(&target) {
+        return Err(format!("a take of {target} s is outside 0.2 to 600"));
+    }
+    let mut speed = start.clamp(0.5, 2.0);
+    let mut got = speak(speed)?;
+    for _ in 0..5 {
+        if (got - target).abs() <= FIT_TOLERANCE_SECS {
+            break;
+        }
+        let next = (speed as f64 * got / target).clamp(0.5, 2.0) as f32;
+        if (next - speed).abs() < 1e-4 {
+            // Held at a limit: as close as the voice can be made.
+            break;
+        }
+        speed = next;
+        got = speak(speed)?;
+    }
+    Ok((speed, got))
+}
+
+/// How long a WAV file lasts, seconds: its data chunk over its byte rate.
+pub fn wav_secs(path: &Path) -> Result<f64, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Err(format!("{} is not a WAV file", path.display()));
+    }
+    let (mut at, mut byte_rate, mut data) = (12usize, 0u32, None);
+    while at + 8 <= bytes.len() {
+        let id = &bytes[at..at + 4];
+        let size = u32::from_le_bytes([bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]]) as usize;
+        if id == b"fmt " && at + 20 <= bytes.len() {
+            byte_rate = u32::from_le_bytes([bytes[at + 16], bytes[at + 17], bytes[at + 18], bytes[at + 19]]);
+        }
+        if id == b"data" {
+            // A streamed WAV may say 0 or more than it holds: what is there.
+            data = Some(if size == 0 || at + 8 + size > bytes.len() { bytes.len() - at - 8 } else { size });
+            break;
+        }
+        at += 8 + size + (size & 1);
+    }
+    match (byte_rate, data) {
+        (r, Some(d)) if r > 0 => Ok(d as f64 / r as f64),
+        _ => Err(format!("{} has no audio to time", path.display())),
+    }
+}
+
 /// A short hash of a text, for a file name that follows its words.
 fn text_hash(text: &str) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -368,11 +443,19 @@ pub fn synthesize(req: &Request) -> Result<PathBuf, String> {
     if text.is_empty() {
         return Err("narrate needs the words to say".into());
     }
-    let delivery = delivery_args(req.speed, req.pause_secs)?;
+    let mut delivery = delivery_args(req.speed, req.pause_secs)?;
     let voice = match req.voice {
         Some(v) => v,
         None => default_voice(),
     };
+    if req.variation.is_some() && kokoro::is_kokoro(voice) {
+        return Err(format!("{voice} is a Kokoro voice, which has no variation control; a Piper voice has"));
+    }
+    delivery.extend(variation_args(req.variation)?);
+    // A fitted take is its own file, named for its target.
+    if let Some(t) = req.fit_secs {
+        delivery.push(format!("fit={t:.3}"));
+    }
     let out = match &req.path {
         Some(p) => p.clone(),
         None => {
@@ -380,6 +463,22 @@ pub fn synthesize(req: &Request) -> Result<PathBuf, String> {
             take_path(req.dir, text, voice, &delivery)
         }
     };
+    // Fitted to a length: said at a speed until it lasts it (#112).
+    if let Some(target) = req.fit_secs {
+        let mut pass = 0u32;
+        let trial = |pass: u32| out.with_extension(format!("fit{pass}.wav"));
+        let (_, _) = fit_speed(target as f64, req.speed.unwrap_or(1.0), |speed| {
+            pass += 1;
+            let take = trial(pass);
+            synthesize(&Request { text: req.text, voice: req.voice, speed: Some(speed), pause_secs: req.pause_secs, fit_secs: None, variation: req.variation, download: req.download, path: Some(take.clone()), dir: req.dir })?;
+            wav_secs(&take)
+        })?;
+        std::fs::rename(trial(pass), &out).map_err(|e| format!("{}: {e}", out.display()))?;
+        for p in 1..pass {
+            let _ = std::fs::remove_file(trial(p));
+        }
+        return Ok(out);
+    }
     if kokoro::is_kokoro(voice) {
         kokoro::speak(text, voice, req.speed, req.pause_secs, req.download, &out)?;
         return Ok(out);
@@ -414,6 +513,62 @@ pub fn synthesize(req: &Request) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::{commercial_use, config_beside, delivery_args, take_key, text_hash, DEFAULT_VOICE, UNNAMED_VOICE};
+
+    /// #112: a take is fitted to a length within a frame in a few passes,
+    /// though a voice is not exactly inverse in its speed; held at the
+    /// speed limits it says what it got; a length out of range is refused.
+    #[test]
+    fn a_take_is_fitted_to_its_length() {
+        // A voice whose 3 s at speed 1 slows less than in proportion,
+        // with pauses that don't scale.
+        let voice = |speed: f32| 0.6 + 2.4 / (speed as f64).powf(0.9);
+        let mut passes = 0;
+        let (speed, got) = super::fit_speed(2.0, 1.0, |s| {
+            passes += 1;
+            Ok(voice(s))
+        })
+        .unwrap();
+        assert!((got - 2.0).abs() <= super::FIT_TOLERANCE_SECS, "{got} s at speed {speed}");
+        assert!(passes <= 6, "{passes} passes");
+        // Too long to reach: held at twice the speed, and said.
+        let (speed, got) = super::fit_speed(0.5, 1.0, |s| Ok(voice(s))).unwrap();
+        assert_eq!(speed, 2.0);
+        assert!(got > 0.5);
+        assert!(super::fit_speed(0.1, 1.0, |s| Ok(voice(s))).is_err());
+    }
+
+    /// A WAV's length is its data over its byte rate, a streamed one's
+    /// unknown size read as what is there.
+    #[test]
+    fn a_wav_files_length_is_read_from_its_header() {
+        let wav = |data_size: u32, samples: usize| {
+            let mut b = Vec::new();
+            b.extend_from_slice(b"RIFF");
+            b.extend_from_slice(&0u32.to_le_bytes());
+            b.extend_from_slice(b"WAVEfmt ");
+            b.extend_from_slice(&16u32.to_le_bytes());
+            b.extend_from_slice(&1u16.to_le_bytes());
+            b.extend_from_slice(&1u16.to_le_bytes());
+            b.extend_from_slice(&22050u32.to_le_bytes());
+            b.extend_from_slice(&44100u32.to_le_bytes());
+            b.extend_from_slice(&2u16.to_le_bytes());
+            b.extend_from_slice(&16u16.to_le_bytes());
+            b.extend_from_slice(b"data");
+            b.extend_from_slice(&data_size.to_le_bytes());
+            b.extend(std::iter::repeat_n(0u8, samples * 2));
+            b
+        };
+        let dir = std::env::temp_dir().join(format!("klipp-wav-secs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("a.wav");
+        std::fs::write(&p, wav(44100, 22050)).unwrap();
+        assert!((super::wav_secs(&p).unwrap() - 1.0).abs() < 1e-9);
+        std::fs::write(&p, wav(0, 11025)).unwrap();
+        assert!((super::wav_secs(&p).unwrap() - 0.5).abs() < 1e-9, "a streamed WAV's size read from the file");
+        std::fs::write(&p, b"not a wav").unwrap();
+        assert!(super::wav_secs(&p).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_take_keeps_its_name_unless_a_delivery_or_another_voice_is_asked_for() {
@@ -512,6 +667,10 @@ mod tests {
         assert!(delivery_args(Some(0.0), None).is_err());
         assert!(delivery_args(Some(f32::NAN), None).is_err());
         assert!(delivery_args(None, Some(-0.1)).is_err());
+        // Variation, #112: both noise terms scaled together, none by default.
+        assert!(super::variation_args(None).unwrap().is_empty());
+        assert_eq!(super::variation_args(Some(2.0)).unwrap(), ["--noise_scale", "1.334", "--noise_w", "1.600"]);
+        assert!(super::variation_args(Some(3.0)).is_err());
     }
 
     /// The real thing, where piper is installed: the default voice and
@@ -524,7 +683,7 @@ mod tests {
     fn piper_speaks_a_take_into_a_wav_file() {
         let dir = std::env::temp_dir().join(format!("klipp-narration-{}", std::process::id()));
         let say = |text: &str, voice: Option<&str>, speed| {
-            super::synthesize(&super::Request { text, voice, speed, pause_secs: None, download: true, path: None, dir: &dir })
+            super::synthesize(&super::Request { text, voice, speed, pause_secs: None, fit_secs: None, variation: None, download: true, path: None, dir: &dir })
                 .expect("piper is installed and the voice downloads")
         };
         let plain = say("Some walks you plan.", None, None);
