@@ -24,6 +24,39 @@ pub const FPS: u32 = 25;
 /// a window that is too short fails loudly rather than passing quietly.
 pub const QUIET: Duration = Duration::from_millis(250);
 
+/// The newest frame `fb` holds.
+pub fn generation(fb: &Mutex<FrameBuffer>) -> u64 {
+    fb.lock().unwrap().latest_generation()
+}
+
+/// [`Parked::settle`] for any engine's frame buffer.
+pub fn settle(fb: &Mutex<FrameBuffer>) {
+    // Thirty seconds at the most: a loaded machine settles later, not
+    // wrongly. Quiet counts only on a complete frame: one drawn before
+    // every clip's stream had its picture is still to be redrawn.
+    let cap = Instant::now() + Duration::from_secs(30);
+    let mut g = generation(fb);
+    while Instant::now() < cap {
+        match wait_new(fb, g, QUIET) {
+            Some(_) => g = generation(fb),
+            None if fb.lock().unwrap().latest_complete() => return,
+            None => {}
+        }
+    }
+}
+
+/// [`Parked::wait_new`] for any engine's frame buffer.
+pub fn wait_new(fb: &Mutex<FrameBuffer>, since: u64, limit: Duration) -> Option<Duration> {
+    let t0 = Instant::now();
+    while t0.elapsed() < limit {
+        if generation(fb) != since {
+            return Some(t0.elapsed());
+        }
+        std::thread::sleep(Duration::from_micros(200));
+    }
+    None
+}
+
 /// A two-second ffmpeg test pattern, 10-bit, tagged with `setparams`
 /// (`tags`, e.g. `color_trc=smpte2084:...`) — FFV1 in Matroska keeps
 /// only tags set on the frames. `None` without ffmpeg.
@@ -133,13 +166,26 @@ impl Parked {
         Self::start_at(src, width, height, Fps::new(FPS, 1), false)
     }
 
+    /// [`Self::start`] with a clip `secs` long, all of a source at least
+    /// that long, for a test that has to keep playing: the usual clip is
+    /// two seconds, parked 1.6 s from its end, and a loaded machine can
+    /// spend that on one slow pass before a watch has begun (#1828).
+    pub fn start_long(src: PathBuf, width: u32, height: u32, secs: u32) -> Self {
+        Self::start_spanning(src, width, height, Fps::new(FPS, 1), true, (secs * FPS) as i64)
+    }
+
     /// [`Self::start`] on a timeline at `fps`, for a source at that rate.
     pub fn start_at(src: PathBuf, width: u32, height: u32, fps: Fps, graded: bool) -> Self {
+        Self::start_spanning(src, width, height, fps, graded, 50)
+    }
+
+    /// [`Self::start_at`] with a clip `frames` long.
+    fn start_spanning(src: PathBuf, width: u32, height: u32, fps: Fps, graded: bool, frames: i64) -> Self {
         let tc = |f: i64| frame_tc(f, fps);
         let id = MediaId::new();
-        let mut clip = Clip { kind: ClipKind::Media { media_id: id }, ..Clip::gap(tc(0), tc(50)) };
+        let mut clip = Clip { kind: ClipKind::Media { media_id: id }, ..Clip::gap(tc(0), tc(frames)) };
         clip.source_in = tc(0);
-        clip.source_out = tc(50);
+        clip.source_out = tc(frames);
         clip.set_grade(exposure_graph(if graded { 0.5 } else { 0.0 }));
         let (clip_id, source_node, exposure_node) = (clip.id, clip.grade().nodes[0].id, clip.grade().nodes[1].id);
         let mut seq = Sequence::new_default();
@@ -155,7 +201,7 @@ impl Parked {
             path: src.clone(),
             kind: klipp_media::MediaItemKind::File,
             resolution: Resolution { width, height },
-            ..MediaItem::new_synthetic_title(id, src.display().to_string(), tc(50), fps)
+            ..MediaItem::new_synthetic_title(id, src.display().to_string(), tc(frames), fps)
         });
 
         let (cmd, cmd_rx) = crossbeam_channel::unbounded();
@@ -198,7 +244,7 @@ impl Parked {
     }
 
     pub fn generation(&self) -> u64 {
-        self.fb.lock().unwrap().latest_generation()
+        generation(&self.fb)
     }
 
     /// Wait for a frame newer than `since`, then for the picture to stop
@@ -223,30 +269,12 @@ impl Parked {
     /// must produce a frame goes through [`Self::settle_after`], which
     /// waits for that frame first.
     pub fn settle(&self) {
-        // Thirty seconds at the most: a loaded machine settles later, not
-        // wrongly. Quiet counts only on a complete frame: one drawn before
-        // every clip's stream had its picture is still to be redrawn.
-        let cap = Instant::now() + Duration::from_secs(30);
-        let mut g = self.generation();
-        while Instant::now() < cap {
-            match self.wait_new(g, QUIET) {
-                Some(_) => g = self.generation(),
-                None if self.fb.lock().unwrap().latest_complete() => return,
-                None => {}
-            }
-        }
+        settle(&self.fb)
     }
 
     /// Wait for a frame newer than `since`; how long it took.
     pub fn wait_new(&self, since: u64, limit: Duration) -> Option<Duration> {
-        let t0 = Instant::now();
-        while t0.elapsed() < limit {
-            if self.generation() != since {
-                return Some(t0.elapsed());
-            }
-            std::thread::sleep(Duration::from_micros(200));
-        }
-        None
+        wait_new(&self.fb, since, limit)
     }
 
     pub fn begin_drag(&self) {

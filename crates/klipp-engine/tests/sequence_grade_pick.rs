@@ -147,11 +147,16 @@ fn ask(p: Pick) -> Option<Result<[f32; 3], NodeSampleRefusal>> {
         Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
     );
     let thread = std::thread::spawn(move || engine.run());
+    // The pick reads the parked frame, so it waits for that frame and for
+    // the picture to settle, not for a time: a loaded machine took longer
+    // than the 1.5 s this slept, and the pick found nothing to read (#1828).
+    let g = common::generation(&fb);
     cmd.send(AppCommand::SetPlayhead(tc(p.park))).unwrap();
-    std::thread::sleep(Duration::from_millis(1500));
+    assert!(common::wait_new(&fb, g, Duration::from_secs(60)).is_some(), "the parked frame is shown");
+    common::settle(&fb);
+    // Playing when the pick arrives: the engine takes the two in order.
     if p.playing {
         cmd.send(AppCommand::Play).unwrap();
-        std::thread::sleep(Duration::from_millis(200));
     }
     cmd.send(AppCommand::SampleNodeInput { clip_id: stand_in, node_id: q, at, nx: 0.5, ny: 0.5 }).unwrap();
     let t0 = Instant::now();
