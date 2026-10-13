@@ -76,7 +76,7 @@ pub(crate) fn respond(
             }))
         }
 
-        ControlCommand::Narrate { text, at_secs, voice, speed, pause_secs, download_models, apply, path } => {
+        ControlCommand::Narrate { text, at_secs, voice, speed, pause_secs, fit_secs, variation, download_models, apply, path } => {
             if in_batch {
                 return Err("narrate synthesises and imports; send it on its own".into());
             }
@@ -91,6 +91,8 @@ pub(crate) fn respond(
                 voice: voice.as_deref(),
                 speed,
                 pause_secs,
+                fit_secs,
+                variation,
                 download: download_models,
                 path: path.map(std::path::PathBuf::from),
                 dir: &dir,
@@ -100,6 +102,10 @@ pub(crate) fn respond(
             v["media_id"] = json!(media_id);
             v["path"] = json!(out);
             v["synth_secs"] = json!(t.elapsed().as_secs_f64());
+            // How long it lasts, said: a fitted take within a frame of its target.
+            if let Ok(secs) = klipp_audio::narration::wav_secs(&out) {
+                v["duration_secs"] = json!(secs);
+            }
             if apply {
                 let at = at_secs.unwrap_or(0.0).max(0.0);
                 let ops = {

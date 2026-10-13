@@ -526,7 +526,8 @@ pub enum ControlCommand {
     /// program, imported, and with `apply` placed on a Voice track at
     /// `at_secs` as dialogue. Without apply the file is made and
     /// imported only. `speed` above 1 is quicker, below 1 slower;
-    /// `pause_secs` is the silence between sentences.
+    /// `pause_secs` is the silence between sentences; `fit_secs` the
+    /// length the take is made to last.
     Narrate {
         text: String,
         #[serde(default)]
@@ -537,6 +538,14 @@ pub enum ControlCommand {
         speed: Option<f32>,
         #[serde(default)]
         pause_secs: Option<f32>,
+        /// How long the take must last, seconds: said again at another
+        /// speed until it lands within a frame of it (#112).
+        #[serde(default)]
+        fit_secs: Option<f32>,
+        /// How much a Piper voice varies its delivery, 0 flat to 2, 1 as
+        /// the voice does (#112).
+        #[serde(default)]
+        variation: Option<f32>,
         #[serde(default)]
         download_models: bool,
         #[serde(default)]

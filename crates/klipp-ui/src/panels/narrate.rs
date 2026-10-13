@@ -39,6 +39,8 @@ struct Spec {
     voice: String,
     speed: Option<f32>,
     pause_secs: Option<f32>,
+    /// The length the take is made to last (#112).
+    fit_secs: Option<f32>,
 }
 
 /// A download under way: bytes so far of `total`, a cancel, the answer.
@@ -55,6 +57,8 @@ pub struct NarratePanel {
     speed: f32,
     pause_on: bool,
     pause_secs: f32,
+    fit_on: bool,
+    fit_secs: f32,
     voices: Option<Result<Vec<Voice>, String>>,
     working: Option<(Then, Spec, Receiver<Result<PathBuf, String>>)>,
     fetch: Option<Fetch>,
@@ -74,6 +78,8 @@ impl Default for NarratePanel {
             speed: 1.0,
             pause_on: false,
             pause_secs: 0.4,
+            fit_on: false,
+            fit_secs: 3.0,
             voices: None,
             working: None,
             fetch: None,
@@ -93,6 +99,7 @@ impl NarratePanel {
             // take keeps the name it would have had without the slider.
             speed: ((self.speed - 1.0).abs() > 0.005).then_some(self.speed),
             pause_secs: self.pause_on.then_some(self.pause_secs),
+            fit_secs: self.fit_on.then_some(self.fit_secs),
         }
     }
 
@@ -118,6 +125,8 @@ impl NarratePanel {
                     voice: Some(&job.voice),
                     speed: job.speed,
                     pause_secs: job.pause_secs,
+                    fit_secs: job.fit_secs,
+                    variation: None,
                     download: false,
                     path: None,
                     dir: &dir,
@@ -301,6 +310,14 @@ impl NarratePanel {
                         ui.add_enabled(self.pause_on, egui::Slider::new(&mut self.pause_secs, 0.0..=3.0).fixed_decimals(2).suffix(" s"));
                     });
                     ui.end_row();
+
+                    // A line made to last a length, for cutting to it (#112).
+                    ui.label("Length");
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.fit_on, "fit to").on_hover_text("Speak it again at another speed until it lasts this long, within a frame");
+                        ui.add_enabled(self.fit_on, egui::DragValue::new(&mut self.fit_secs).range(0.2..=600.0).speed(0.05).fixed_decimals(2).suffix(" s"));
+                    });
+                    ui.end_row();
                 });
 
                 // The one thing between this voice and a take, if anything:
@@ -416,4 +433,19 @@ fn picker_label(v: &Voice) -> String {
         s.push_str(" · research only");
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NarratePanel;
+
+    /// #112: the Length row's fit reaches the take only when it is on.
+    #[test]
+    fn a_fitted_length_is_asked_for_only_when_on() {
+        let mut p = NarratePanel { text: "Some walks you plan.".into(), ..Default::default() };
+        assert_eq!(p.spec().fit_secs, None);
+        p.fit_on = true;
+        p.fit_secs = 1.8;
+        assert_eq!(p.spec().fit_secs, Some(1.8));
+    }
 }
