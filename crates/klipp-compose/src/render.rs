@@ -802,6 +802,10 @@ pub struct Renderer {
     /// One node; one per effect, under its picture node's id, when the
     /// grade tools read the clip (#1305).
     run_source_nodes: Vec<klipp_nodes::Node>,
+    /// The grade being run reads a scene-referred clip's picture (HDR or
+    /// log media, decoded to scene light on the CPU): its Source is
+    /// scene-referred for the executor's colour domains (#1867).
+    grade_source_scene: bool,
     /// Each still generator's layer on the GPU stack, by clip, as it was
     /// last rasterised: its data, the size, and the half-float pixels. A
     /// solid colour, a gradient, bars, a slate or a placeholder is the same
@@ -966,6 +970,7 @@ impl Renderer {
             global_lut: None,
             instances: Default::default(),
             run_source_nodes: Vec::new(),
+            grade_source_scene: false,
             still_generators: HashMap::new(),
             assets: Box::new(klipp_analysis::assets::CacheStore::default()),
             derived: HashMap::new(),
@@ -1232,6 +1237,15 @@ impl Renderer {
                 reason: "switched off".into(),
                 why: String::new(),
             });
+        }
+    }
+
+    /// A run the executor refused for its colour domains (#1867): its
+    /// failing decline, named against `clip`, so the viewer shows why the
+    /// run's nodes did nothing and an export refuses the frame.
+    fn note_domain_refusal(&mut self, clip: &Clip, e: &klipp_nodes::executor::ExecutorError) {
+        if matches!(e, klipp_nodes::executor::ExecutorError::ColourDomain(_)) {
+            self.note_declines(clip.id);
         }
     }
 
@@ -2972,6 +2986,7 @@ impl Renderer {
             Ok(_) => Err(pixels),
             Err(e) => {
                 tracing::warn!("clip {}: its effects after the plug-ins: {e:?}; the CPU kernels take them", clip.id.0);
+                self.note_domain_refusal(clip, &e);
                 Err(pixels)
             }
         }
@@ -3028,6 +3043,10 @@ impl Renderer {
                 // couldn't keep it there.
                 let slot_a = self.executor.last_chain_final_slot().unwrap_or(true);
                 self.executor.gpu_pipeline_or_init().is_some_and(|g| if out.is_empty() { g.stack_layer_from_chain(slot, slot_a) } else { g.stack_layer_from_linear(slot, &out) })
+            }
+            Err(e) => {
+                self.note_domain_refusal(clip, &e);
+                false
             }
             _ => false,
         };
@@ -3600,7 +3619,9 @@ impl Renderer {
         let at = source_secs(clip, time, fps);
         let mut sources = ClipSources::new(src, clip, self.working).with_current(at, hdr, width, height);
         let mut bounded = BoundedSources::new(&mut sources, width, height);
+        self.grade_source_scene = hdr.is_some();
         let pixels = self.in_context(clip, clip_time, fps, at, source_pts, &mut bounded, |r, ctx| r.grade(clip, input, clip_time, fps, width, height, Some(ctx)));
+        self.grade_source_scene = false;
         self.run_source_nodes.clear();
         pixels
     }
@@ -3780,6 +3801,10 @@ impl Renderer {
         self.executor.set_lut_tetrahedral(self.lut_tetrahedral);
         self.executor.set_current_clip_track_points(&clip.track_points);
         self.executor.set_solo_node(if inspecting { self.resolved.solo } else { None });
+        // A scene-referred clip's grade reads scene light; any other
+        // clip's picture is display-referred, an SDR one included (#1867).
+        let scene = matches!(input, GradeInput::Scene { .. }) || self.run_display.is_some() || self.grade_source_scene;
+        self.executor.set_source_domain(if scene { klipp_nodes::domains::PictureDomain::Scene } else { klipp_nodes::domains::PictureDomain::Display });
         let frame = grade_frame(clip_time, fps);
         let out = match &input {
             GradeInput::Cpu(p) => self.run_graph(clip, p, width, height, clip_time, frame, inspecting, matte_view, ctx.as_deref_mut()),
@@ -3816,6 +3841,7 @@ impl Renderer {
                 self.run_graph(clip, &input.pixels(), width, height, clip_time, frame, inspecting, matte_view, ctx)
             }
         };
+        self.executor.set_source_domain(klipp_nodes::domains::PictureDomain::Display);
         self.found.stats.grade_ms += ms_since(t);
         // A test's fault (`fault`, #1276): the run, made as any run is,
         // fails as a graph that fails does.
@@ -3827,6 +3853,7 @@ impl Renderer {
             }
             Err(e) => {
                 tracing::error!("node graph failed for clip {:?}: {e:?}", clip.id);
+                self.note_domain_refusal(clip, &e);
                 unshare(input.pixels())
             }
         }

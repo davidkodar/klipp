@@ -23,7 +23,8 @@
 //! input's domain whatever it is.
 //!
 //! [`step`] is the rule, one node at a time, shared by the executor
-//! ([`check`], which a plan runs before it is compiled) and by graph
+//! (each top-level run, from the domain the renderer says its Source
+//! reads, #1867) and by graph
 //! editing, which applies it to a picture's nodes to refuse a connection
 //! before it lands.
 
@@ -185,9 +186,9 @@ fn domains_within(graph: &NodeGraph, source: PictureDomain, outer: &[NodeId]) ->
     Ok(out)
 }
 
-/// `graph` checked as the executor runs it (#1290): its Source
-/// scene-referred, as at the head of a clip's grade, and every node that
-/// runs able to take the pictures it reads.
+/// `graph` checked with its Source scene-referred, as at the head of a
+/// scene-referred clip's grade (#1290): every node that runs able to take
+/// the pictures it reads.
 pub fn check(graph: &NodeGraph) -> Result<(), DomainFault> {
     domains(graph, PictureDomain::Scene).map(|_| ())
 }
@@ -357,12 +358,58 @@ mod tests {
         }
         let frame = [0.5f32, 0.5, 0.5, 1.0].repeat(4);
         let mut ex = crate::executor::GraphExecutor::new_cpu_only();
+        // A scene-referred clip's grade (#1867): its Source reads scene light.
+        ex.set_source_domain(PictureDomain::Scene);
         match ex.execute_linear(&frame, &g, 2, 2, 0.0, 0, None, None) {
             Err(crate::executor::ExecutorError::ColourDomain(fault)) => assert_eq!(fault.path, vec![n[2].id]),
             other => panic!("{:?}", other.map(|_| ())),
         }
+        // The refusal is a failing decline naming the node and why (#1867).
+        let d = ex.last_run_declines();
+        assert_eq!(d.len(), 1, "{d:?}");
+        assert!(d[0].node == n[2].id && d[0].kind == NodeKind::SceneToDisplay && d[0].outcome.fails() && d[0].why.contains("display-referred already"), "{:?}", d[0]);
         g.nodes[2].enabled = false;
         assert!(ex.execute_linear(&frame, &g, 2, 2, 0.0, 0, None, None).is_ok(), "the second step off, it runs");
+        assert!(ex.last_run_declines().is_empty(), "a run that runs leaves the refusal behind");
+    }
+
+    /// #1867: a run's Source is display-referred unless the renderer says
+    /// it reads a scene-referred clip's picture: an SDR clip's picture is
+    /// display-referred, so a display-referred picture mixes with it, and a
+    /// display step in its run would turn it twice. Told it is
+    /// scene-referred (HDR or log, before its display step), the step runs
+    /// and a display-referred picture mixed before it is refused.
+    #[test]
+    fn a_runs_source_is_display_referred_unless_said_scene_referred() {
+        let step = || Some(klipp_color::hdr::SceneToDisplay { transfer: klipp_color::hdr::HdrTransfer::Pq, peak_nits: None, luma: [0.2126, 0.7152, 0.0722] });
+        let frame = [0.5f32, 0.5, 0.5, 1.0].repeat(4);
+        let mut ex = crate::executor::GraphExecutor::new_cpu_only();
+        // Source -> display step -> Blend, the Blend's second picture the
+        // Source's own: the source mixed with its displayed self.
+        let (mut g, n) = chain(&[NodeKind::SceneToDisplay, NodeKind::Blend]);
+        g.nodes[1].params.scene_to_display = step();
+        g.edges.push(edge(&n[0], &n[2], 1));
+        // SDR, the default: the display step reads a display-referred
+        // picture, refused there.
+        match ex.execute_linear(&frame, &g, 2, 2, 0.0, 0, None, None) {
+            Err(crate::executor::ExecutorError::ColourDomain(fault)) => assert_eq!(fault.path, vec![n[1].id], "the display step"),
+            other => panic!("{:?}", other.map(|_| ())),
+        }
+        // Scene-referred: the step runs, and the Blend mixing scene and
+        // display light is refused.
+        ex.set_source_domain(PictureDomain::Scene);
+        match ex.execute_linear(&frame, &g, 2, 2, 0.0, 0, None, None) {
+            Err(crate::executor::ExecutorError::ColourDomain(fault)) => assert_eq!(fault.path, vec![n[2].id], "the Blend"),
+            other => panic!("{:?}", other.map(|_| ())),
+        }
+        // An SDR picture with no display step of its own mixes with a
+        // display-referred one: every picture of its run is display-referred.
+        let (mut g, n) = chain(&[NodeKind::Exposure, NodeKind::Blend]);
+        g.edges.push(edge(&n[0], &n[2], 1));
+        let d = domains(&g, Display).unwrap();
+        assert_eq!((d[&n[0].id], d[&n[1].id], d[&n[2].id]), (Display, Display, Display));
+        ex.set_source_domain(PictureDomain::Display);
+        assert!(ex.execute_linear(&frame, &g, 2, 2, 0.0, 0, None, None).is_ok());
     }
 
     /// A connection is checked on a copy: refused when it would make the

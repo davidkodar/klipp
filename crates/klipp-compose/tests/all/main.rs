@@ -14,6 +14,8 @@ mod colour_effects_render;
 mod corner_pin_keys;
 #[path = "../disabled_transform.rs"]
 mod disabled_transform;
+#[path = "../domain_refusal_render.rs"]
+mod domain_refusal_render;
 #[path = "../effect_keyframes.rs"]
 mod effect_keyframes;
 #[path = "../effect_node_anim.rs"]

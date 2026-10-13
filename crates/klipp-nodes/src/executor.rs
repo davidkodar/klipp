@@ -440,6 +440,11 @@ pub struct GraphExecutor {
     /// instead of stack-overflowing. Zero in the common case (no
     /// compounds, or top-level call).
     compound_depth: u32,
+    /// The colour domain of the picture a run's Source reads (#1867):
+    /// display-referred unless the renderer says the run is a
+    /// scene-referred clip's grade before its display step
+    /// ([`Self::set_source_domain`]).
+    source_domain: crate::domains::PictureDomain,
     /// Track-points for the clip currently being graded. The engine
     /// calls [`set_current_clip_track_points`] before each
     /// `execute_linear*` call so the Mask-node handler can apply
@@ -835,6 +840,7 @@ impl GraphExecutor {
             run_seed_dims: None,
             last_chain_final_slot: None,
             compound_depth: 0,
+            source_domain: crate::domains::PictureDomain::Display,
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
             render_scale: 1.0,
             grade_encoding: klipp_color::grade_model::Encoding::Bt1886,
@@ -921,6 +927,7 @@ impl GraphExecutor {
             run_seed_dims: None,
             last_chain_final_slot: None,
             compound_depth: 0,
+            source_domain: crate::domains::PictureDomain::Display,
             working_colorspace: klipp_core::WorkingColorspace::Rec709Linear,
             render_scale: 1.0,
             grade_encoding: klipp_color::grade_model::Encoding::Bt1886,
@@ -1513,6 +1520,15 @@ impl GraphExecutor {
 
     /// The nodes the last run didn't draw as asked, and why (step 10): a
     /// list beside [`ChainStats`], which stays `Copy`.
+    /// The colour domain of the picture the next runs' Source reads
+    /// (#1867): scene-referred for a scene-referred clip's grade before its
+    /// display step (HDR or log media), display-referred otherwise, which
+    /// is the default. An SDR clip's picture is display-referred: a
+    /// display-referred side picture mixes with it.
+    pub fn set_source_domain(&mut self, domain: crate::domains::PictureDomain) {
+        self.source_domain = domain;
+    }
+
     pub fn last_run_declines(&self) -> &[crate::Decline] {
         &self.last_run_declines
     }
@@ -1753,6 +1769,18 @@ impl GraphExecutor {
         visible_nodes: Option<&std::collections::HashSet<NodeId>>,
         ctx: Option<&mut crate::frame_context::FrameContext<'_>>,
     ) -> Result<(Vec<f32>, Option<Vec<f32>>, std::collections::HashMap<NodeId, Vec<u8>>), ExecutorError> {
+        // Every node able to take the pictures it reads (#1290), from the
+        // domain of the picture the run's Source reads (#1867): a refusal is
+        // a failing decline naming the node and why, read after the run as
+        // any other run's declines are. Checked whole from the top level,
+        // into its compounds with the domain each reads.
+        if self.compound_depth == 0 {
+            if let Err(fault) = crate::domains::domains(graph, self.source_domain) {
+                self.run_declines.clear();
+                self.last_run_declines = vec![domain_decline(graph, &fault)];
+                return Err(ExecutorError::ColourDomain(fault));
+            }
+        }
         // The run's plan (#1089, M2 step 8): compiled once per graph shape
         // and kept. A correction gated by a matte runs as the correction
         // blended by an ApplyMatte, so no correction reads its port 1
@@ -9105,5 +9133,31 @@ mod analysis_node_tests {
         let (run, missing) = resolve_analysis(&graph, &ctx, 8);
         assert!(run.is_empty());
         assert_eq!(missing.iter().map(|m| m.2).collect::<Vec<_>>(), [crate::DeclineOutcome::NeighbourMissing], "declined");
+    }
+}
+
+/// The failing decline a colour-domain refusal records (#1867): the node
+/// that can't take what it reads, by its kind and, inside compounds, its
+/// path, and why.
+fn domain_decline(graph: &NodeGraph, fault: &crate::domains::DomainFault) -> crate::Decline {
+    fn kind_at(g: &NodeGraph, path: &[NodeId]) -> Option<NodeKind> {
+        let (first, rest) = path.split_first()?;
+        let n = g.nodes.iter().find(|n| n.id == *first)?;
+        match rest {
+            [] => Some(n.kind),
+            _ => kind_at(n.params.compound_subgraph.as_ref()?, rest),
+        }
+    }
+    let node = fault.path.last().copied().unwrap_or(graph.output_node_id);
+    let kind = kind_at(graph, &fault.path).unwrap_or(NodeKind::Effect);
+    let path = fault.path.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(" / ");
+    crate::Decline {
+        clip: None,
+        node,
+        kind,
+        outcome: crate::DeclineOutcome::RenderFailed,
+        name: kind.display_name().to_string(),
+        reason: "its pictures' colour domains don't match".into(),
+        why: format!("{} (at {path})", fault.why),
     }
 }
