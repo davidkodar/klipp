@@ -694,6 +694,10 @@ impl ToolbarPanel {
                     }
                 }
             }
+            if has_clip && ui.button("Normalize Audio\u{2026}").on_hover_text("Bring the selected clips to a loudness or peak target by their gain").clicked() {
+                cmds.push(AppCommand::OpenNormalizeDialog { clip_id: None });
+                ui.close_menu();
+            }
             ui.separator();
             if ui.button("Add Track Point").clicked() {
                 state.tracking_mode = !state.tracking_mode;

@@ -846,6 +846,8 @@ impl EditCommand {
             // An effect added or removed together with the clip speed it
             // sets (a speed ramp) undoes under the effect's name.
             EditCommand::Batch(cmds) if matches!(cmds.first(), Some(EditCommand::SetBuiltinEffects { .. })) => cmds[0].label(),
+            // Several clips' sound set at once (a normalize, #1843).
+            EditCommand::Batch(cmds) if !cmds.is_empty() && cmds.iter().all(|c| matches!(c, EditCommand::EditClipAudio { .. })) => cmds[0].label(),
             EditCommand::Batch(..) => "Add Clips",
             EditCommand::Magnetic(cmd) => cmd.label(),
             EditCommand::SourceLinkedInsert { video_command, .. } => video_command.label(),

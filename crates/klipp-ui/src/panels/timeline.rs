@@ -8647,6 +8647,17 @@ impl TimelinePanel {
                         ui.close_menu();
                     }
                 }
+                // Normalize (#1843): this clip and the rest of the selection
+                // to a loudness or peak target, by their gain.
+                let has_sound = state.sequence().all_clips()
+                    .find(|c| c.id == clip_id)
+                    .and_then(|c| c.media_id())
+                    .and_then(|m| state.media_pool.get(&m))
+                    .is_some_and(|m| m.has_audio);
+                if has_sound && ui.button("Normalize\u{2026}").on_hover_text("Bring the clip, or the selection, to a loudness or peak target by its gain").clicked() {
+                    cmds.push(AppCommand::OpenNormalizeDialog { clip_id: Some(clip_id) });
+                    ui.close_menu();
+                }
                 // Colour match (#CG-CLIP2CLIP-MATCH). Parallel to the
                 // audio-reference pattern: one clip is the reference,
                 // others can match against it. Match result lands on a

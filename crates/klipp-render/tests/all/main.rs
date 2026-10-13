@@ -40,6 +40,8 @@ mod hdr_export;
 mod keyer_op_matches_the_app;
 #[path = "../layer_fx_goldens.rs"]
 mod layer_fx_goldens;
+#[path = "../normalize_clips.rs"]
+mod normalize_clips;
 #[path = "../odd_size_export.rs"]
 mod odd_size_export;
 #[path = "../pixel_check_fractional.rs"]

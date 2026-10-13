@@ -262,6 +262,20 @@ pub enum ControlCommand {
     /// the audio along — re-appending those clips would get the audio
     /// but throw away their grades.
     AttachAudio { clip_id: String },
+    /// Bring clips to a loudness (LUFS) or peak (dBFS) target by their
+    /// gain, each on its own or `group`ed as one, never past
+    /// `ceiling_dbtp` (#1843). The source media is not changed. Measured
+    /// here; `apply` false answers what it would set without setting it.
+    NormalizeClips {
+        clip_ids: Vec<String>,
+        #[serde(default)]
+        mode: klipp_core::normalize::NormalizeMode,
+        target: Option<f64>,
+        ceiling_dbtp: Option<f64>,
+        #[serde(default)]
+        group: bool,
+        apply: Option<bool>,
+    },
     /// Source patching: whether `append_clip` also brings the media's
     /// audio. The timeline toolbar's V+A / V only button, and the same
     /// session-scoped setting, so it shows there when set from here.

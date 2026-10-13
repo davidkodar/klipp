@@ -55,6 +55,7 @@ pub mod ofx_value;
 pub mod snap;
 pub mod shot;
 pub mod logging;
+pub mod normalize;
 pub mod field;
 pub mod fill_gradient;
 pub mod smart_bin;

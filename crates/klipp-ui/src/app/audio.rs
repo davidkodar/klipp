@@ -807,6 +807,26 @@ impl KlippApp {
 
     fn handle_audio_clip_props(&mut self, cmd: &AppCommand, _needs_refresh: &mut bool) -> bool {
         match cmd {
+                AppCommand::OpenNormalizeDialog { clip_id } => {
+                    let mut clips = crate::normalize_dialog::selected(&self.state);
+                    if let Some(id) = clip_id.filter(|id| !clips.contains(id)) {
+                        clips.insert(0, id);
+                    }
+                    if clips.is_empty() {
+                        self.state.toast.show("Select the clips to normalize first");
+                    } else {
+                        self.state.normalize_dialog = Some(crate::normalize_dialog::NormalizeDialog::new(clips, self.prefs.audio.normalize));
+                    }
+                    true
+                }
+                AppCommand::NormalizeClips { clip_ids, settings } => {
+                    self.normalize_clips(clip_ids, *settings);
+                    true
+                }
+                AppCommand::ApplyClipGains { gains } => {
+                    self.apply_clip_gains(gains);
+                    true
+                }
                 AppCommand::AutoDuckAudio { target_clip_id, sidechain_track_idx, duck_level, attack_secs, release_secs, threshold } => {
                     self.auto_duck_audio(target_clip_id, sidechain_track_idx, duck_level, attack_secs, release_secs, threshold);
                     true
@@ -877,6 +897,49 @@ impl KlippApp {
                     true
                 }
             _ => false,
+        }
+    }
+
+    /// Measure `clip_ids` off the UI thread and bring them to `settings`
+    /// (#1843); the settings are the dialog's next time.
+    fn normalize_clips(&mut self, clip_ids: &[klipp_core::ClipId], settings: klipp_core::normalize::NormalizeSettings) {
+        if let Err(e) = settings.check() {
+            self.state.toast.show(format!("Normalize: {e}"));
+            return;
+        }
+        self.prefs.audio.normalize = settings;
+        self.prefs.save().ok();
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let (clips, skipped) = klipp_render::normalize::clip_sounds(seq, &self.state.media_pool, clip_ids);
+        if clips.is_empty() {
+            self.state.toast.show("None of the selected clips has sound to normalize");
+            return;
+        }
+        self.state.toast.show(format!("Measuring {} clip{}\u{2026}", clips.len(), if clips.len() == 1 { "" } else { "s" }));
+        crate::file_dialog::spawn(move || {
+            let sounds: Vec<_> = clips.iter().map(|(_, s)| s.clone()).collect();
+            let measured = match klipp_render::normalize::measure(&sounds, &std::sync::atomic::AtomicBool::new(false)) {
+                Ok(m) => m,
+                Err(e) => return vec![AppCommand::ShowToast { text: format!("Normalize could not measure the clips: {e}") }],
+            };
+            let gains = klipp_core::normalize::gains(&measured.levels, &measured.together, &settings);
+            let applied: Vec<(klipp_core::ClipId, f32)> = clips.iter().zip(&gains).filter_map(|((id, _), g)| g.map(|g| (*id, 10f64.powf(g.db / 20.0) as f32))).collect();
+            let text = normalize_summary(&settings, &gains, skipped.len());
+            let mut out = Vec::new();
+            if !applied.is_empty() {
+                out.push(AppCommand::ApplyClipGains { gains: applied });
+            }
+            out.push(AppCommand::ShowToast { text });
+            out
+        });
+    }
+
+    /// Set each clip's gain, and its linked partner's, as one undo step.
+    fn apply_clip_gains(&mut self, gains: &[(klipp_core::ClipId, f32)]) {
+        if crate::normalize_dialog::apply_gains(&mut self.state, gains) {
+            self.state.dirty = true;
+            self.sync_sequence_to_engine();
+            let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
         }
     }
 
@@ -1162,6 +1225,32 @@ impl crate::state::AppState {
         self.push_history(EditCommand::EditAudioChain { clip_id, description, old_state, new_state });
         true
     }
+}
+
+/// What a normalize says it did (#1843).
+fn normalize_summary(settings: &klipp_core::normalize::NormalizeSettings, gains: &[Option<klipp_core::normalize::Gain>], skipped: usize) -> String {
+    let unit = match settings.mode {
+        klipp_core::normalize::NormalizeMode::Loudness => "LUFS",
+        klipp_core::normalize::NormalizeMode::Peak => "dBFS",
+    };
+    let done = gains.iter().flatten().count();
+    let mut text = format!("Normalized {done} clip{} to {} {unit}", if done == 1 { "" } else { "s" }, settings.target);
+    if settings.group && done > 1 {
+        text.push_str(" as one group");
+    }
+    let held = gains.iter().flatten().filter(|g| g.ceiling_limited).count();
+    if held > 0 {
+        text.push_str(&format!("; {held} held under the {} dBTP ceiling", settings.ceiling_dbtp));
+    }
+    let maxed = gains.iter().flatten().filter(|g| g.max_limited).count();
+    if maxed > 0 {
+        text.push_str(&format!("; {maxed} at the most gain a clip takes (+{} dB)", klipp_core::normalize::MAX_GAIN_DB));
+    }
+    let silent = gains.iter().filter(|g| g.is_none()).count();
+    if silent + skipped > 0 {
+        text.push_str(&format!("; {} left as they were (silent or no sound)", silent + skipped));
+    }
+    text
 }
 
 #[cfg(test)]

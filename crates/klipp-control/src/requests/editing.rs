@@ -3,6 +3,10 @@
 #[allow(unused_imports)]
 use crate::*;
 
+#[cfg(test)]
+#[path = "normalize_tests.rs"]
+mod normalize_tests;
+
 /// Where the user's project templates are kept (#618), as the app keeps
 /// them.
 fn templates_dir() -> std::path::PathBuf {
@@ -219,6 +223,63 @@ pub(crate) fn respond(
 
         ControlCommand::AttachAudio { clip_id: c } => {
             send(AppCommand::AttachLinkedAudio { clip_id: existing_clip_id(ctx, &c)? })
+        }
+
+        ControlCommand::NormalizeClips { clip_ids, mode, target, ceiling_dbtp, group, apply } => {
+            if in_batch {
+                return Err("normalize_clips measures the clips first; send it on its own".into());
+            }
+            use klipp_core::normalize::{NormalizeMode, NormalizeSettings};
+            let target = target.unwrap_or(match mode {
+                NormalizeMode::Loudness => klipp_core::normalize::LOUDNESS_PRESETS[0].1,
+                NormalizeMode::Peak => -1.0,
+            });
+            let settings = NormalizeSettings { mode, target, ceiling_dbtp: ceiling_dbtp.unwrap_or(klipp_core::DEFAULT_TRUE_PEAK_DBTP as f64), group };
+            settings.check()?;
+            if clip_ids.is_empty() {
+                return Err("name the clips to normalize in clip_ids".into());
+            }
+            let ids = clip_ids.iter().map(|c| existing_clip_id(ctx, c)).collect::<Result<Vec<_>, _>>()?;
+            let (clips, skipped) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                klipp_render::normalize::clip_sounds(&seq, &pool, &ids)
+            };
+            if clips.is_empty() {
+                return Err("none of those clips plays sound from a file".into());
+            }
+            let sounds: Vec<_> = clips.iter().map(|(_, s)| s.clone()).collect();
+            let measured = klipp_render::normalize::measure(&sounds, &std::sync::atomic::AtomicBool::new(false)).map_err(|e| format!("the clips could not be measured: {e}"))?;
+            let gains = klipp_core::normalize::gains(&measured.levels, &measured.together, &settings);
+            let round = |v: f64| if v.is_finite() { json!((v * 100.0).round() / 100.0) } else { json!(null) };
+            let rows: Vec<serde_json::Value> = clips
+                .iter()
+                .zip(measured.levels.iter().zip(&gains))
+                .map(|((id, _), (level, gain))| {
+                    json!({
+                        "clip_id": id.to_string(),
+                        "integrated_lufs": round(level.integrated_lufs),
+                        "sample_peak_dbfs": round(level.sample_peak_dbfs),
+                        "true_peak_dbtp": round(level.true_peak_dbtp),
+                        "gain_db": gain.map(|g| round(g.db)),
+                        "ceiling_limited": gain.is_some_and(|g| g.ceiling_limited),
+                        "max_limited": gain.is_some_and(|g| g.max_limited),
+                    })
+                })
+                .collect();
+            let set: Vec<(klipp_core::ClipId, f32)> = clips.iter().zip(&gains).filter_map(|((id, _), g)| g.map(|g| (*id, 10f64.powf(g.db / 20.0) as f32))).collect();
+            let mut v = if apply.unwrap_or(true) && !set.is_empty() {
+                send(AppCommand::ApplyClipGains { gains: set })?
+            } else {
+                json!({ "applied": false })
+            };
+            v["clips"] = json!(rows);
+            v["skipped"] = json!(skipped.iter().map(|c| c.to_string()).collect::<Vec<_>>());
+            v["settings"] = json!(settings);
+            if settings.group {
+                v["together"] = json!({ "integrated_lufs": round(measured.together.integrated_lufs), "true_peak_dbtp": round(measured.together.true_peak_dbtp) });
+            }
+            Ok(v)
         }
 
         ControlCommand::SetAppendAudio { enabled } => {

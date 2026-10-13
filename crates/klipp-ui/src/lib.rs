@@ -95,6 +95,7 @@ pub mod effect_presets;
 pub mod export_hook;
 pub mod title_templates;
 pub mod credits_dialog;
+pub mod normalize_dialog;
 pub mod missing_fonts;
 pub mod state;
 pub mod theme;

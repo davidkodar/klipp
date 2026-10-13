@@ -4119,6 +4119,18 @@ pub enum AppCommand {
     /// Tell the editor `text`: what work done off the UI thread says when
     /// it finishes.
     ShowToast { text: String },
+
+    /// Open the Normalize dialog for the selected clips and `clip_id`,
+    /// when given (the one a context menu is on) (#1843).
+    OpenNormalizeDialog { clip_id: Option<crate::ClipId> },
+
+    /// Measure `clip_ids` and bring them to `settings`' target, off the
+    /// UI thread; [`AppCommand::ApplyClipGains`] applies what it finds.
+    NormalizeClips { clip_ids: Vec<crate::ClipId>, settings: crate::normalize::NormalizeSettings },
+
+    /// Set each clip's gain (linear), mirrored to a linked partner, as one
+    /// undo step.
+    ApplyClipGains { gains: Vec<(crate::ClipId, f32)> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
