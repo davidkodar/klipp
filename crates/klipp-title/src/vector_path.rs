@@ -94,8 +94,8 @@ fn box_fractions(transform: &ObjectTransform, width: u32, height: u32) -> (impl 
     (unmap, size)
 }
 #[cfg(test)]
-pub(crate) fn paint(
-    buf: &mut [u8],
+pub(crate) fn paint<C: super::Channel>(
+    buf: &mut [C],
     pose: &PathPose,
     transform: &ObjectTransform,
     width: u32,
@@ -108,8 +108,8 @@ pub(crate) fn paint(
 /// [`paint`], with the fill taken from a gradient over the object's box
 /// in place of the pose's fill colour when one is given (#1509).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn paint_filled(
-    buf: &mut [u8],
+pub(crate) fn paint_filled<C: super::Channel>(
+    buf: &mut [C],
     pose: &PathPose,
     transform: &ObjectTransform,
     width: u32,

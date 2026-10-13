@@ -2601,6 +2601,24 @@ impl TitleRenderer {
         gpu: Option<&mut dyn AlphaMaskProcessor>,
         time_secs: Option<f32>,
     ) -> Vec<u8> {
+        let stack = self.render_stack(title, width, height, gpu, time_secs);
+        if stack.is_empty() {
+            return vec![0u8; (width as usize) * (height as usize) * 4];
+        }
+        to_bytes(&stack)
+    }
+
+    /// The layers of `title` stacked in byte units but not rounded, so
+    /// that each layer is rounded once, where it was drawn, and the
+    /// stack once, where it leaves (#190). Empty when nothing is drawn.
+    fn render_stack(
+        &mut self,
+        title: &TitleData,
+        width: u32,
+        height: u32,
+        gpu: Option<&mut dyn AlphaMaskProcessor>,
+        time_secs: Option<f32>,
+    ) -> Vec<f32> {
         // The clip's length, for a layer's exit and loops.
         let window = self.motion_window;
         // The GPU alpha-mask processor is consumable: we use it for
@@ -2612,15 +2630,13 @@ impl TitleRenderer {
         // the `wgpu` queue.
         let mut gpu_for_first_text = gpu;
         let pixel_count = (width as usize) * (height as usize);
-        let mut buf = vec![0u8; pixel_count * 4];
+        let mut buf = vec![0.0f32; pixel_count * 4];
         // A matte is its source layer alone: no fill, no backing (#1513).
         let matte_only = self.matte_only;
         // Title-level background fill (legacy field — will move to a
         // Shape object once on-canvas editing lands).
-        if let (TitleBackground::FullFrame { color }, None) = (&title.background, matte_only) {
-            for pixel in buf.chunks_exact_mut(4) {
-                pixel.copy_from_slice(color);
-            }
+        if matte_only.is_none() {
+            fill_full_frame(&mut buf, title);
         }
 
         // Until something is painted, `buf` is empty (unless a full
@@ -2720,7 +2736,7 @@ impl TitleRenderer {
                     self.loop_wave = None;
                     self.fade_layer(obj, &mut layer, width, height);
                     if first_layer && (opacity - 1.0).abs() < 0.001 {
-                        buf = layer;
+                        buf = layer.iter().map(|&v| v as f32).collect();
                     } else if (opacity - 1.0).abs() < 0.001 {
                         frame(&mut buf, pixel_count);
                         over_blend(&mut buf, &layer);
@@ -2835,10 +2851,11 @@ impl TitleRenderer {
     /// The layer `id` of `title` drawn alone, at `time_secs`, as the
     /// mask of another layer (#1513): shown or hidden, its own blend and
     /// mask left out.
-    fn matte_layer(&mut self, title: &TitleData, id: TitleObjectId, width: u32, height: u32, time_secs: Option<f32>) -> Vec<u8> {
+    fn matte_layer(&mut self, title: &TitleData, id: TitleObjectId, width: u32, height: u32, time_secs: Option<f32>) -> Vec<f32> {
         let units = self.last_units.take();
         let outer = self.matte_only.replace(id);
-        let matte = self.render_inner(title, width, height, None, time_secs);
+        let mut matte = self.render_stack(title, width, height, None, time_secs);
+        frame(&mut matte, (width as usize) * (height as usize));
         self.matte_only = outer;
         self.last_units = units;
         matte
@@ -4855,21 +4872,56 @@ fn shift_and_fade(rest: Vec<u8>, width: u32, height: u32, dx: i32, dy: i32, opac
     out
 }
 
-fn over_blend(dst: &mut [u8], src: &[u8]) {
+/// One channel of a frame being drawn, in byte units: a byte, rounded
+/// at every write, as a single layer is drawn, or an `f32`, as the
+/// layers of a title are stacked, so that one layer laid over another
+/// does not read back what the last one rounded (#190).
+pub(crate) trait Channel: Copy + Send + Sync + 'static {
+    fn value(self) -> f32;
+    fn from_value(v: f32) -> Self;
+    /// The channel decoded from sRGB to linear light.
+    fn linear(self) -> f32;
+}
+
+impl Channel for u8 {
+    fn value(self) -> f32 {
+        self as f32
+    }
+    fn from_value(v: f32) -> Self {
+        v.round().clamp(0.0, 255.0) as u8
+    }
+    fn linear(self) -> f32 {
+        srgb_decode_lut()[self as usize]
+    }
+}
+
+impl Channel for f32 {
+    fn value(self) -> f32 {
+        self
+    }
+    fn from_value(v: f32) -> Self {
+        v.clamp(0.0, 255.0)
+    }
+    fn linear(self) -> f32 {
+        srgb_to_linear_f(self / 255.0)
+    }
+}
+
+fn over_blend<C: Channel>(dst: &mut [C], src: &[u8]) {
     use rayon::prelude::*;
     debug_assert_eq!(dst.len(), src.len());
     debug_assert_eq!(dst.len() % 4, 0);
     dst.par_chunks_mut(4 * 4096).zip(src.par_chunks(4 * 4096)).for_each(|(dc, sc)| over_blend_chunk(dc, sc));
 }
 
-fn over_blend_chunk(dst: &mut [u8], src: &[u8]) {
+fn over_blend_chunk<C: Channel>(dst: &mut [C], src: &[u8]) {
     for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
         let sa = s[3] as f32 / 255.0;
         if sa <= 0.0 {
             continue;
         }
         let inv_sa = 1.0 - sa;
-        let da = d[3] as f32 / 255.0;
+        let da = d[3].value() / 255.0;
         let out_a = sa + da * inv_sa;
         if out_a <= 0.0 {
             continue;
@@ -4880,10 +4932,10 @@ fn over_blend_chunk(dst: &mut [u8], src: &[u8]) {
         // darkening where it is translucent.
         for i in 0..3 {
             let sc = s[i] as f32;
-            let dc = d[i] as f32;
-            d[i] = ((sc * sa + dc * da * inv_sa) / out_a).round().clamp(0.0, 255.0) as u8;
+            let dc = d[i].value();
+            d[i] = C::from_value((sc * sa + dc * da * inv_sa) / out_a);
         }
-        d[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
+        d[3] = C::from_value(out_a * 255.0);
     }
 }
 
@@ -4893,55 +4945,56 @@ fn srgb_decode_lut() -> &'static [f32; 256] {
     LUT.get_or_init(|| std::array::from_fn(|i| srgb_u8_to_linear(i as u8)))
 }
 
-/// Lay `src` on `dst` with `mode` (#1513), both straight-alpha sRGB
-/// RGBA8. Normal is `over_blend`, as every layer has always been laid.
+/// Lay `src` on `dst` with `mode` (#1513), both straight-alpha sRGB. Normal is `over_blend`, as every layer has always been laid.
 /// The other modes mix in linear light, as the clip compositor's do:
 /// each channel is the mode's mix where there is something below and
 /// the layer's own colour where there is not, then laid over what is
 /// below, premultiplied, and encoded back.
-fn blend_layer_mode(dst: &mut [u8], src: &[u8], mode: klipp_core::BlendMode) {
+fn blend_layer_mode<C: Channel, S: Channel>(dst: &mut [C], src: &[S], mode: klipp_core::BlendMode) {
     use rayon::prelude::*;
-    if mode == klipp_core::BlendMode::Normal {
-        over_blend(dst, src);
-        return;
-    }
     debug_assert_eq!(dst.len(), src.len());
-    let lut = srgb_decode_lut();
     dst.par_chunks_mut(4 * 4096).zip(src.par_chunks(4 * 4096)).for_each(|(dc, sc)| {
         for (d, s) in dc.chunks_exact_mut(4).zip(sc.chunks_exact(4)) {
-            let sa = s[3] as f32 / 255.0;
+            let sa = s[3].value() / 255.0;
             if sa <= 0.0 {
                 continue;
             }
-            let da = d[3] as f32 / 255.0;
+            let da = d[3].value() / 255.0;
             let out_a = sa + da * (1.0 - sa);
-            for i in 0..3 {
-                let (cb, cs) = (lut[d[i] as usize], lut[s[i] as usize]);
-                let mixed = (1.0 - da) * cs + da * mode.blend_channel(cb, cs).clamp(0.0, 1.0);
-                let co = mixed * sa + cb * da * (1.0 - sa);
-                d[i] = (linear_to_srgb_f(co / out_a) * 255.0).round().clamp(0.0, 255.0) as u8;
+            if mode == klipp_core::BlendMode::Normal {
+                // `over_blend`'s straight-alpha over, for a source that
+                // may itself be unrounded.
+                for i in 0..3 {
+                    d[i] = C::from_value((s[i].value() * sa + d[i].value() * da * (1.0 - sa)) / out_a);
+                }
+            } else {
+                for i in 0..3 {
+                    let (cb, cs) = (d[i].linear(), s[i].linear());
+                    let mixed = (1.0 - da) * cs + da * mode.blend_channel(cb, cs).clamp(0.0, 1.0);
+                    let co = mixed * sa + cb * da * (1.0 - sa);
+                    d[i] = C::from_value(linear_to_srgb_f(co / out_a) * 255.0);
+                }
             }
-            d[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
+            d[3] = C::from_value(out_a * 255.0);
         }
     });
 }
 
 /// Scale `layer`'s alpha by the mask `kind` reads from `matte` (#1513),
-/// both straight-alpha sRGB RGBA8 of the frame. A luma mask weighs the
+/// both straight-alpha sRGB of the frame. A luma mask weighs the
 /// matte's colour in linear light by Rec.709's row, the primaries a
 /// title is authored in.
-fn apply_layer_mask(layer: &mut [u8], matte: &[u8], kind: klipp_timeline::LayerMaskKind) {
+fn apply_layer_mask<C: Channel, M: Channel>(layer: &mut [C], matte: &[M], kind: klipp_timeline::LayerMaskKind) {
     use rayon::prelude::*;
     debug_assert_eq!(layer.len(), matte.len());
-    let lut = srgb_decode_lut();
     layer.par_chunks_mut(4 * 4096).zip(matte.par_chunks(4 * 4096)).for_each(|(lc, mc)| {
         for (l, m) in lc.chunks_exact_mut(4).zip(mc.chunks_exact(4)) {
-            if l[3] == 0 {
+            if l[3].value() <= 0.0 {
                 continue;
             }
-            let luma = 0.2126 * lut[m[0] as usize] + 0.7152 * lut[m[1] as usize] + 0.0722 * lut[m[2] as usize];
-            let v = kind.value(luma, m[3] as f32 / 255.0);
-            l[3] = (l[3] as f32 * v).round().clamp(0.0, 255.0) as u8;
+            let luma = 0.2126 * m[0].linear() + 0.7152 * m[1].linear() + 0.0722 * m[2].linear();
+            let v = kind.value(luma, m[3].value() / 255.0);
+            l[3] = C::from_value(l[3].value() * v);
         }
     });
 }
@@ -5613,8 +5666,8 @@ fn text_box_extent(title: &TitleData, width: u32, height: u32) -> (f32, f32) {
 /// for a layer drawn alone to be blended or masked (#1513); without
 /// it a rectangle or an ellipse mixes its colour with the pixel's as
 /// it always has, which darkens a translucent fill over nothing.
-fn paint_shape_layer(
-    buf: &mut [u8],
+fn paint_shape_layer<C: Channel>(
+    buf: &mut [C],
     shape: &Shape,
     transform: &ObjectTransform,
     width: u32,
@@ -5715,26 +5768,24 @@ fn paint_shape_layer(
                         // Composite this single pixel using "over".
                         let idx = ((y as usize) * (width as usize) + (x as usize)) * 4;
                         let one = [c[0], c[1], c[2], c[3]];
-                        let mut tmp = [0u8; 4];
-                        tmp.copy_from_slice(&buf[idx..idx + 4]);
+                        let tmp = [buf[idx].value(), buf[idx + 1].value(), buf[idx + 2].value(), buf[idx + 3].value()];
                         let sa = one[3] as f32 / 255.0;
                         let inv_sa = 1.0 - sa;
-                        let da = tmp[3] as f32 / 255.0;
+                        let da = tmp[3] / 255.0;
                         let out_a = sa + da * inv_sa;
                         for i in 0..3 {
                             let sc = one[i] as f32;
-                            let dc = tmp[i] as f32;
-                            buf[idx + i] = if straight {
+                            let dc = tmp[i];
+                            buf[idx + i] = C::from_value(if straight {
                                 // A layer drawn alone to be mixed keeps
                                 // its fill's colour where it is
                                 // translucent (#1513).
                                 if out_a > 0.0 { (sc * sa + dc * da * inv_sa) / out_a } else { 0.0 }
                             } else {
                                 sc * sa + dc * inv_sa
-                            }
-                            .round().clamp(0.0, 255.0) as u8;
+                            });
                         }
-                        buf[idx + 3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
+                        buf[idx + 3] = C::from_value(out_a * 255.0);
                     }
                 }
             }
@@ -7075,9 +7126,9 @@ fn paint_backing(buf: &mut [f32], title: &TitleData, bounds: [f32; 4], width: u3
 
 /// `buf` made a frame of `pixels` transparent pixels when it is none yet:
 /// a mixed layer's frame, made when the layer draws into it (#1725).
-fn frame(buf: &mut Vec<u8>, pixels: usize) {
+fn frame(buf: &mut Vec<f32>, pixels: usize) {
     if buf.is_empty() {
-        *buf = vec![0u8; pixels * 4];
+        *buf = vec![0.0; pixels * 4];
     }
 }
 
