@@ -2933,6 +2933,18 @@ fn perf_reports_the_presented_rate_only_while_pictures_change() {
     assert!(fps.is_finite() && fps > 0.0, "{fps}");
 }
 
+/// #1850: perf splits the viewer frame's time into its phases around the
+/// render, averaged over the last frames, so a slow stretch can be read
+/// apart on a running app.
+#[test]
+fn perf_gives_the_viewer_frames_phases() {
+    let mut h = harness();
+    let phases = h.ok(json!({ "method": "perf" }))["average_of_last_60"]["phases"].clone();
+    for key in ["sync_ms", "snapshot_ms", "frame_snapshot_ms", "render_ms", "present_ms"] {
+        assert!(phases[key].is_number(), "phases.{key}: {phases}");
+    }
+}
+
 /// Perf's plan_effects says how many effect runs fell to the CPU, how many
 /// masked effects were bypassed for a matte their run couldn't give, and
 /// how many frames the GPU stack declined: cumulative counts a reader

@@ -1519,6 +1519,8 @@ pub struct PlaybackEngine {
     /// changes every tick, so the cache misses every read and pays
     /// for a write it won't reuse.
     in_node_param_edit: bool,
+    /// The viewer frame's phases so far, for its perf sample (#1850).
+    frame_phases: crate::perf::FramePhases,
     /// One-shot signal: after `EndNodeParamEdit` clears
     /// `in_node_param_edit`, the next tick must run a full-resolution
     /// regrade so the viewer recovers from any drag-time downsampled
@@ -2215,6 +2217,7 @@ impl PlaybackEngine {
             current_grade_clip_id: None,
             current_graph_arc: None,
             in_node_param_edit: false,
+            frame_phases: Default::default(),
             force_full_res_regrade: false,
             drag_started_at: None,
             drag_grade_count: 0,
@@ -8381,6 +8384,7 @@ impl PlaybackEngine {
                 composite_ms: 0.0,
                 update_playback_ms: 0.0,
                 in_param_edit: self.in_node_param_edit,
+                phases: Default::default(),
             });
         }
         let _ = self.event_tx.send(AppEvent::FrameReady);
@@ -8561,6 +8565,7 @@ impl PlaybackEngine {
                 composite_ms: 0.0,
                 update_playback_ms: total_ms as f32,
                 in_param_edit: self.in_node_param_edit,
+                phases: Default::default(),
             });
         }
 

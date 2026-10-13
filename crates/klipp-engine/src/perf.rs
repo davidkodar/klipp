@@ -21,6 +21,46 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+/// Where a viewer frame's time went, phase by phase (#1850): what the
+/// engine does around the render, which the render's own stages can't
+/// see. Each is wall-clock milliseconds; a frame drawn another way (a
+/// cached frame, a paused regrade) leaves the phases it skipped at 0.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct FramePhases {
+    /// Bringing the frame's streams up to the playhead, and waiting for
+    /// them while parked.
+    pub sync_ms: f32,
+    /// Taking the sequence's snapshot.
+    pub snapshot_ms: f32,
+    /// Cutting it down to what the frame reads (`frame_snapshot`).
+    pub frame_snapshot_ms: f32,
+    /// The render call: the GPU stack's composite and display encode, or
+    /// the CPU timeline render.
+    pub render_ms: f32,
+    /// Everything after it: presenting, the scopes, the bookkeeping.
+    pub present_ms: f32,
+}
+
+impl FramePhases {
+    fn add(&mut self, o: &FramePhases) {
+        self.sync_ms += o.sync_ms;
+        self.snapshot_ms += o.snapshot_ms;
+        self.frame_snapshot_ms += o.frame_snapshot_ms;
+        self.render_ms += o.render_ms;
+        self.present_ms += o.present_ms;
+    }
+
+    fn scaled(self, k: f32) -> FramePhases {
+        FramePhases {
+            sync_ms: self.sync_ms * k,
+            snapshot_ms: self.snapshot_ms * k,
+            frame_snapshot_ms: self.frame_snapshot_ms * k,
+            render_ms: self.render_ms * k,
+            present_ms: self.present_ms * k,
+        }
+    }
+}
+
 /// One frame's post-processing timing snapshot.
 ///
 /// All `*_ms` fields are wall-clock durations in milliseconds.
@@ -89,6 +129,9 @@ pub struct PerfSample {
     /// rendered the frame (`BeginNodeParamEdit` seen, no end yet): the
     /// frames a drag's fast path is for.
     pub in_param_edit: bool,
+    /// The viewer frame's phases (#1850); all 0 for a sample that isn't
+    /// one.
+    pub phases: FramePhases,
 }
 
 /// Plain-data carrier for `PerfRing::update_wrap_stages`. Stages
@@ -255,6 +298,7 @@ impl PerfRing {
             avg.bridge_u8_ms += s.bridge_u8_ms;
             avg.reencode_ms += s.reencode_ms;
             avg.scope_ms += s.scope_ms;
+            avg.phases.add(&s.phases);
             if s.dropped {
                 avg.dropped_count += 1;
             }
@@ -269,6 +313,7 @@ impl PerfRing {
         avg.bridge_u8_ms /= n;
         avg.reencode_ms /= n;
         avg.scope_ms /= n;
+        avg.phases = avg.phases.scaled(1.0 / n);
         avg.sample_count = recent.len();
         avg
     }
@@ -336,6 +381,8 @@ pub struct PerfAverages {
     pub bridge_u8_ms: f32,
     pub reencode_ms: f32,
     pub scope_ms: f32,
+    /// The viewer frames' phases (#1850), averaged with the rest.
+    pub phases: FramePhases,
     pub dropped_count: u32,
     pub sample_count: usize,
 }
@@ -384,6 +431,22 @@ mod tests {
     use std::thread::sleep;
     use std::time::Duration;
 
+    /// #1850: the viewer frames' phases average as the other stages do.
+    #[test]
+    fn the_phases_average_across_samples() {
+        let mut r = PerfRing::new();
+        for k in [1.0f32, 3.0] {
+            let mut s = sample(10.0 * k, false);
+            s.phases = FramePhases { sync_ms: k, snapshot_ms: 0.1 * k, frame_snapshot_ms: 0.2 * k, render_ms: 2.0 * k, present_ms: 4.0 * k };
+            r.push(s);
+        }
+        let a = r.averages(60).phases;
+        let close = |x: f32, y: f32| (x - y).abs() < 1e-5;
+        assert!(close(a.sync_ms, 2.0) && close(a.snapshot_ms, 0.2) && close(a.frame_snapshot_ms, 0.4) && close(a.render_ms, 4.0) && close(a.present_ms, 8.0), "{a:?}");
+        // Control: a window of one is the latest sample's alone.
+        assert!(close(r.averages(1).phases.render_ms, 6.0));
+    }
+
     fn sample(total_ms: f32, dropped: bool) -> PerfSample {
         PerfSample {
             timestamp: Instant::now(),
@@ -404,6 +467,7 @@ mod tests {
             composite_ms: 0.0,
             update_playback_ms: 0.0,
             in_param_edit: false,
+            phases: FramePhases::default(),
         }
     }
 
