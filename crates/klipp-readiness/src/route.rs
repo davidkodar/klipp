@@ -252,7 +252,7 @@ impl FrameSource for KnownSource {
         let (media, source, start) = (Self::media(clip)?, Arc::clone(&self.source), clip.source_in.to_secs_f64());
         Some(Box::new(move |t| {
             let f = source.frame(media, start + t)?;
-            Some((f.linear, f.width, f.height))
+            Some((Arc::new(f.linear), f.width, f.height))
         }))
     }
 

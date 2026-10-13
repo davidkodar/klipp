@@ -411,7 +411,7 @@ impl FrameSource for ExportFrameSource<'_> {
         self.opened.set(self.opened.get() + 1);
         let mut reader =
             klipp_media::frame_reader::SeekableFrameReader::open_linear(&path, log_format, working)?;
-        Some(Box::new(move |t: f64| reader.decode_at((source_in + t).max(0.0))))
+        Some(Box::new(move |t: f64| reader.decode_at((source_in + t).max(0.0)).map(|(px, w, h)| (Arc::new(px), w, h))))
     }
 }
 

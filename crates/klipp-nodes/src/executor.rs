@@ -4672,7 +4672,7 @@ impl GraphExecutor {
                 if let Neighbour::Frame(on) = &next {
                     if let Some(on_pts) = on.pts.filter(|p| *p > pts + 1e-6 && *p <= ctx.source_secs + 1e-9) {
                         if on.rgba.len() == out.len() {
-                            out.clone_from(&on.rgba);
+                            out.clone_from(on.rgba.as_ref());
                             pts = on_pts;
                             next = ctx.sources.next(pts);
                         }
@@ -4683,7 +4683,7 @@ impl GraphExecutor {
                         if let Some(next_pts) = next.pts.filter(|p| *p > pts + 1e-6) {
                             let weight = (((ctx.source_secs - pts) / (next_pts - pts)).clamp(0.0, 1.0)) as f32;
                             if weight > 1e-4 && next.rgba.len() == out.len() {
-                                for (o, n) in out.iter_mut().zip(&next.rgba) {
+                                for (o, n) in out.iter_mut().zip(next.rgba.iter()) {
                                     *o += (n - *o) * weight;
                                 }
                             }
@@ -4702,7 +4702,7 @@ impl GraphExecutor {
             // say).
             let dt = ctx.sources.frame_secs().unwrap_or(1.0 / ctx.fps.max(1.0));
             let mut missed = Vec::new();
-            let neighbours: Vec<Vec<f32>> = [ctx.source_secs - dt, ctx.source_secs + dt]
+            let neighbours: Vec<Arc<Vec<f32>>> = [ctx.source_secs - dt, ctx.source_secs + dt]
                 .into_iter()
                 .filter_map(|t| match ctx.sources.linear(t) {
                     Neighbour::Frame(f) => Some(f.rgba),
@@ -4713,7 +4713,7 @@ impl GraphExecutor {
                 })
                 .collect();
             self.decline_neighbours(node_id, effect, &missed);
-            let refs: Vec<&[f32]> = neighbours.iter().map(Vec::as_slice).collect();
+            let refs: Vec<&[f32]> = neighbours.iter().map(|n| n.as_slice()).collect();
             out = klipp_effects::temporal_denoise::denoise_frame(&out, &refs, threshold, strength);
         }
         out

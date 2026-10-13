@@ -42,7 +42,7 @@ impl FrameSource for Known {
             asked.lock().unwrap().push(t);
             let source = clip_source_in() + t;
             let v = if source < now { 0.48 } else { 0.52 };
-            Some((flat(v), W, H))
+            Some((Arc::new(flat(v)), W, H))
         }))
     }
     fn media_range(&mut self, _: &Clip) -> Option<(f64, f64)> {

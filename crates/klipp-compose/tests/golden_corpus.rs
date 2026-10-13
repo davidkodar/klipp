@@ -214,7 +214,7 @@ impl FrameSource for Frames {
         }
         let seed = *self.seeds.get(&clip.id)?;
         let source_in = clip.source_in.to_secs_f64();
-        Some(Box::new(move |clip_secs| Some((linear_of(&pattern_at(seed, frame_no(source_in + clip_secs))), W, H))))
+        Some(Box::new(move |clip_secs| Some((std::sync::Arc::new(linear_of(&pattern_at(seed, frame_no(source_in + clip_secs)))), W, H))))
     }
 
     /// Every media clip's analyses, under the one stand-in key the

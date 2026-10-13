@@ -133,8 +133,10 @@ pub struct SourceFrame {
 /// decoders, export from its sequential ones; the renderer does not care.
 /// Frames of a clip's media at other clip times, in linear RGBA f32 in
 /// the working space.
+/// Shared, not owned: a frame a viewer holds while parked (#1863) is
+/// handed out without a copy.
 pub type LinearFrameProviderFn =
-    Box<dyn FnMut(f64) -> Option<(Vec<f32>, u32, u32)> + Send>;
+    Box<dyn FnMut(f64) -> Option<(Arc<Vec<f32>>, u32, u32)> + Send>;
 
 /// Fit a native file reader's linear neighbours as the renderer fits its
 /// current frame: one scale factor, centred, with transparent bars. Missing or
@@ -142,7 +144,7 @@ pub type LinearFrameProviderFn =
 pub fn fit_linear_reader(mut reader: LinearFrameProviderFn, width: u32, height: u32) -> LinearFrameProviderFn {
     Box::new(move |time| {
         let (pixels, w, h) = reader(time)?;
-        Some((fit_linear(pixels, w, h, width, height)?, width, height))
+        Some((fit_linear_shared(pixels, w, h, width, height)?, width, height))
     })
 }
 
@@ -150,11 +152,17 @@ pub fn fit_linear_reader(mut reader: LinearFrameProviderFn, width: u32, height: 
 /// [`fit_linear_reader`] fits a neighbour: one scale factor, centred, with
 /// transparent bars. `None` for a malformed frame.
 pub fn fit_linear(pixels: Vec<f32>, w: u32, h: u32, width: u32, height: u32) -> Option<Vec<f32>> {
+    fit_linear_shared(Arc::new(pixels), w, h, width, height).map(unshare)
+}
+
+/// [`fit_linear`] on a shared frame: one already at the size comes back
+/// as the same buffer, not a copy (#1863).
+pub fn fit_linear_shared(pixels: Arc<Vec<f32>>, w: u32, h: u32, width: u32, height: u32) -> Option<Arc<Vec<f32>>> {
     let len = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
     if w == 0 || h == 0 || width == 0 || height == 0 || pixels.len() != len {
         return None;
     }
-    Some(unshare(fit(Arc::new(pixels), w, h, width, height)))
+    Some(fit(pixels, w, h, width, height))
 }
 
 pub trait FrameSource {
@@ -399,7 +407,7 @@ impl klipp_nodes::frame_context::SourceProvider for ClipSources<'_> {
         if next_hdr != hdr {
             return Neighbour::Missing(Missing::Unavailable);
         }
-        Neighbour::Frame(LinearFrame { rgba: unshare(rgba), width, height, source_secs: pts, pts: Some(pts) })
+        Neighbour::Frame(LinearFrame { rgba, width, height, source_secs: pts, pts: Some(pts) })
     }
 }
 
@@ -5973,7 +5981,7 @@ mod clip_sources_tests {
         }
         fn temporal_frames_linear(&mut self, _: &Clip, _: WorkingColorspace) -> Option<LinearFrameProviderFn> {
             self.opened.push("linear");
-            Some(Box::new(|t| (t >= 0.0).then(|| (vec![0.25, t as f32, 0.0, 1.0], 1, 1))))
+            Some(Box::new(|t| (t >= 0.0).then(|| (Arc::new(vec![0.25, t as f32, 0.0, 1.0]), 1, 1))))
         }
     }
 

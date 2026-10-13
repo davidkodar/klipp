@@ -266,7 +266,7 @@ mod tests {
             Neighbour::Frame(EncodedFrame { rgba8: vec![9; 32], width: 4, height: 2, source_secs })
         }
         fn linear(&mut self, source_secs: f64) -> Neighbour<LinearFrame> {
-            Neighbour::Frame(LinearFrame { rgba: vec![0.1; 32], width: 4, height: 2, source_secs, pts: None })
+            Neighbour::Frame(LinearFrame { rgba: Arc::new(vec![0.1; 32]), width: 4, height: 2, source_secs, pts: None })
         }
     }
 
