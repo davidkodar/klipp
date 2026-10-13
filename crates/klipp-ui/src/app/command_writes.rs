@@ -56,6 +56,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetProjectsFolder { .. }
         | AppCommand::RemoveRecentProject { .. }
         | AppCommand::PinRecentProject { .. }
+        | AppCommand::OpenPreferences { .. }
         | AppCommand::OpenSequenceSettings { .. }
         | AppCommand::RegenerateFilmstripsForAll
         | AppCommand::CreateWorkspace { .. }

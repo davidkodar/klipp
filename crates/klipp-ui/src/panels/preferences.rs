@@ -409,6 +409,17 @@ impl PreferencesPanel {
     }
 
     /// Searchable keywords for each preferences tab.
+    /// Turn to the page named: `cache` or `keyboard`. Another name leaves
+    /// the page as it was.
+    pub fn open_page(&mut self, page: &str) {
+        match page {
+            "cache" => self.active_tab = PrefsTab::MediaCache,
+            "keyboard" => self.active_tab = PrefsTab::Keyboard,
+            _ => return,
+        }
+        self.search_query.clear();
+    }
+
     fn tab_search_keywords(tab: PrefsTab) -> &'static [&'static str] {
         match tab {
             PrefsTab::General => &["general", "updates", "preview", "auto-save", "backup", "recent projects", "project", "default folder", "inspector", "startup", "launch", "open last"],
@@ -4998,5 +5009,23 @@ mod layout_tests {
         assert!(missing.is_empty(), "no longer shown: {missing:?}");
         let shown: Vec<&&str> = HIDDEN.iter().filter(|l| all.iter().any(|s| s == **l)).collect();
         assert!(shown.is_empty(), "settings that change nothing are shown: {shown:?}");
+    }
+}
+
+#[cfg(test)]
+mod open_page_tests {
+    use super::*;
+
+    /// The welcome screen's Manage… and Keyboard Shortcuts turn to their
+    /// pages; a name it does not know leaves the page as it was.
+    #[test]
+    fn open_page_turns_to_the_named_page() {
+        let mut panel = PreferencesPanel::default();
+        panel.open_page("cache");
+        assert_eq!(panel.active_tab, PrefsTab::MediaCache);
+        panel.open_page("keyboard");
+        assert_eq!(panel.active_tab, PrefsTab::Keyboard);
+        panel.open_page("nonsense");
+        assert_eq!(panel.active_tab, PrefsTab::Keyboard);
     }
 }

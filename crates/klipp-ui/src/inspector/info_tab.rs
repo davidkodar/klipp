@@ -676,7 +676,7 @@ fn dir_size_bytes(path: &std::path::Path) -> Option<u64> {
     Some(total)
 }
 
-fn disk_free_bytes(path: &std::path::Path) -> Option<u64> {
+pub(crate) fn disk_free_bytes(path: &std::path::Path) -> Option<u64> {
     use std::ffi::CString;
     let c_path = CString::new(path.to_string_lossy().as_bytes()).ok()?;
     unsafe {

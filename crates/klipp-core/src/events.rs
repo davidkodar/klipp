@@ -1336,6 +1336,8 @@ pub enum AppCommand {
     /// Delete a Shared Library collection: its entries, not their files (#614).
     DeleteSharedCollection { name: String },
     RemoveRecentProject { path: PathBuf },
+    /// Open Preferences, on the page named (`cache`, `keyboard`) when one is.
+    OpenPreferences { page: Option<String> },
     /// Keep a recent project at the top of the list, or stop keeping it.
     PinRecentProject { path: PathBuf, pinned: bool },
     /// Copy a project folder beside it under a new name, and list the copy.

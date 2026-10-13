@@ -69,6 +69,14 @@ fn card_metrics(grid_width: f32, lines: usize) -> (usize, f32, f32) {
 }
 const SIDEBAR_W: f32 = 300.0;
 
+/// The sidebar's rows: a recent project, a template, and the footer.
+const RECENT_ROW_H: f32 = 46.0;
+const TEMPLATE_ROW_H: f32 = 24.0;
+const FOOTER_H: f32 = 76.0;
+
+/// Where Help goes.
+const HELP_URL: &str = "https://github.com/davidkodar/klipp";
+
 /// How many frames a project's skim strip holds: the steps a pointer
 /// moving across a card scrubs through.
 pub const SKIM_FRAMES: usize = 12;
@@ -185,6 +193,89 @@ impl Poster {
     }
 }
 
+/// A template the sidebar offers: one of the built-in formats or one of
+/// the user's own (#618).
+#[derive(Clone, Debug, PartialEq)]
+struct TemplateEntry {
+    name: String,
+    /// Its format, or what it holds, said short.
+    detail: String,
+    source: TemplateSource,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum TemplateSource {
+    /// A place in the New Project dialog's built-in list.
+    BuiltIn(usize),
+    /// A template file of the user's.
+    User(PathBuf),
+}
+
+impl TemplateEntry {
+    /// The command that makes a project from it in `location`, under the
+    /// template's name, or that name and a number when it is taken.
+    fn create(&self, location: &std::path::Path) -> AppCommand {
+        use crate::panels::new_project_dialog::{FPS_PRESETS, RESOLUTION_PRESETS, TEMPLATES};
+        let name = free_project_name(location, &self.name);
+        let (width, height, fps_num, fps_den, template) = match &self.source {
+            TemplateSource::BuiltIn(i) => {
+                let (_, res, fps) = TEMPLATES[*i];
+                (RESOLUTION_PRESETS[res].1, RESOLUTION_PRESETS[res].2, FPS_PRESETS[fps].1, FPS_PRESETS[fps].2, None)
+            }
+            TemplateSource::User(path) => (0, 0, 0, 0, Some(path.clone())),
+        };
+        AppCommand::CreateProject { sequence_name: name.clone(), name, location: location.to_path_buf(), fps_num, fps_den, width, height, template }
+    }
+}
+
+/// `base`, or `base 2`, `base 3` and on: the first with no project of
+/// that name in `dir`.
+fn free_project_name(dir: &std::path::Path, base: &str) -> String {
+    (1..1000)
+        .map(|n| if n == 1 { base.to_string() } else { format!("{base} {n}") })
+        .find(|name| !dir.join(format!("{name}.klipp")).exists())
+        .unwrap_or_else(|| base.to_string())
+}
+
+/// What the footer says of the disk: room on the projects drive and the
+/// render cache's size.
+#[derive(Clone, Debug, PartialEq)]
+struct Storage {
+    drive: PathBuf,
+    free_bytes: Option<u64>,
+    render_cache_bytes: u64,
+}
+
+/// `path` with the home folder written `~`.
+fn tilde(path: &std::path::Path) -> String {
+    match dirs::home_dir().and_then(|home| path.strip_prefix(home).ok().map(std::path::Path::to_path_buf)) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
+/// A quiet text link at `pos`: secondary text, lit on hover.
+fn quiet_link(ui: &mut egui::Ui, pos: egui::Pos2, text: &str, theme: &KlippTheme) -> egui::Response {
+    let g = ui.painter().layout_no_wrap(text.to_string(), egui::FontId::proportional(11.0), theme.text_secondary);
+    let rect = egui::Rect::from_min_size(pos, g.size());
+    let resp = ui.interact(rect, ui.id().with(("launch_link", text)), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    let colour = if resp.hovered() { theme.text_primary } else { theme.text_secondary };
+    ui.painter().galley_with_override_text_color(pos, g, colour);
+    resp
+}
+
+/// The name a project goes by: its file's, as Files and Open show it,
+/// not a name stored inside it.
+fn named_by_file(rp: &RecentProject) -> RecentProject {
+    let mut rp = rp.clone();
+    if let Some(stem) = rp.path.file_stem().map(|s| s.to_string_lossy().into_owned()).filter(|s| !s.is_empty()) {
+        rp.name = stem;
+    }
+    rp
+}
+
 /// What the last frame drew, for the tests to find it by.
 #[cfg(test)]
 #[derive(Default)]
@@ -231,8 +322,22 @@ pub struct LaunchScreen {
     folder_projects: Vec<RecentProject>,
     folder_scanned: Option<(PathBuf, std::time::Instant)>,
     folder_rx: Option<std::sync::mpsc::Receiver<(PathBuf, Vec<RecentProject>)>>,
+    /// Where the user's project templates are kept (#618).
+    pub templates_dir: Option<PathBuf>,
+    /// The user's templates, read every few seconds.
+    user_templates: Vec<TemplateEntry>,
+    templates_read_at: Option<std::time::Instant>,
+    /// The footer's figures, measured on a thread of their own.
+    storage: Option<Storage>,
+    storage_checked_at: Option<std::time::Instant>,
+    storage_rx: Option<std::sync::mpsc::Receiver<Storage>>,
+    /// What's New is open.
+    show_whats_new: bool,
     #[cfg(test)]
     seen: Seen,
+    /// Links opened outside Klipp, kept across frames for the tests.
+    #[cfg(test)]
+    opened: Vec<&'static str>,
 }
 
 impl LaunchScreen {
@@ -241,6 +346,68 @@ impl LaunchScreen {
         self.posters.remove(path);
         self.strips.remove(path);
         self.unreadable_posters.remove(path);
+    }
+
+    /// Read the user's templates afresh every few seconds.
+    fn refresh_templates(&mut self) {
+        if self.templates_read_at.is_some_and(|t| t.elapsed().as_secs() < 5) {
+            return;
+        }
+        self.templates_read_at = Some(std::time::Instant::now());
+        self.user_templates = self.templates_dir.as_deref()
+            .map(klipp_project::template::list_templates)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(path, t)| t.ok().map(|t| TemplateEntry { name: t.name.clone(), detail: "Yours".into(), source: TemplateSource::User(path) }))
+            .collect();
+    }
+
+    /// The templates offered: the user's own first, then the built-in.
+    fn template_entries(&self) -> Vec<TemplateEntry> {
+        use crate::panels::new_project_dialog::{FPS_PRESETS, RESOLUTION_PRESETS, TEMPLATES};
+        let built_in = TEMPLATES.iter().enumerate().skip(1).map(|(i, (name, res, fps))| {
+            let (_, w, h) = RESOLUTION_PRESETS[*res];
+            let rate = FPS_PRESETS[*fps].0.trim_end_matches(" fps");
+            TemplateEntry { name: name.to_string(), detail: format!("{w}\u{00D7}{h} \u{00B7} {rate}"), source: TemplateSource::BuiltIn(i) }
+        });
+        self.user_templates.iter().cloned().chain(built_in).collect()
+    }
+
+    /// Take the last storage measure, and start the next every fifteen
+    /// seconds: a stat of the drive and a listing of the render cache,
+    /// both of which can block on a slow disk.
+    fn refresh_storage(&mut self, ctx: &egui::Context, projects_folder: Option<&std::path::Path>) {
+        if let Some(rx) = &self.storage_rx {
+            match rx.try_recv() {
+                Ok(found) => {
+                    self.storage = Some(found);
+                    self.storage_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.storage_rx = None,
+            }
+        }
+        if self.storage_checked_at.is_some_and(|t| t.elapsed().as_secs() < 15) {
+            return;
+        }
+        self.storage_checked_at = Some(std::time::Instant::now());
+        let drive = projects_folder.map(std::path::Path::to_path_buf)
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| PathBuf::from("/"));
+        let render = dirs::cache_dir().unwrap_or_default().join("klipp").join("render");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("launch-storage".into())
+            .spawn(move || {
+                let free_bytes = crate::inspector::info_tab::disk_free_bytes(&drive);
+                let (render_cache_bytes, _) = crate::cache_manager::scan_dir_size(&render);
+                let _ = tx.send(Storage { drive, free_bytes, render_cache_bytes });
+                ctx.request_repaint();
+            });
+        if spawned.is_ok() {
+            self.storage_rx = Some(rx);
+        }
     }
 
     /// The skim strip of `rp`, looked for again every few seconds until
@@ -391,8 +558,9 @@ impl LaunchScreen {
         if let Some(dir) = projects_folder.filter(|_| self.folder_view) {
             self.refresh_folder_projects(ctx, dir);
         }
+        let recent: Vec<RecentProject> = recent.iter().map(named_by_file).collect();
         let in_folder = self.folder_view && projects_folder.is_some();
-        let shown: Vec<RecentProject> = if in_folder { self.folder_projects.clone() } else { recent.to_vec() };
+        let shown: Vec<RecentProject> = if in_folder { self.folder_projects.iter().map(named_by_file).collect() } else { recent.clone() };
         let mut checked: Vec<PathBuf> = recent.iter().chain(&shown).map(|rp| rp.path.clone()).collect();
         checked.sort();
         checked.dedup();
@@ -425,7 +593,7 @@ impl LaunchScreen {
                 egui::Stroke::new(1.0_f32, theme.border),
             );
 
-            self.draw_sidebar(ctx, ui, recent, theme, &mut cmds);
+            self.draw_sidebar(ctx, ui, &recent, projects_folder, theme, &mut cmds);
         });
 
         // Draw main area with project grid
@@ -483,6 +651,34 @@ impl LaunchScreen {
             }
         }
 
+        // What's New: the changes in this build, newest first.
+        if self.show_whats_new {
+            let mut open = true;
+            egui::Window::new("What's New")
+                .id(egui::Id::new("launch_whats_new"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .default_width(460.0)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(egui::RichText::new(version_line(klipp_core::build_info::get())).color(theme.text_secondary));
+                    ui.add_space(6.0);
+                    let changes = klipp_core::build_info::changes();
+                    if changes.is_empty() {
+                        ui.label(egui::RichText::new("This build recorded no changes.").color(theme.text_dim));
+                    }
+                    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                        for change in changes {
+                            ui.label(format!("\u{2022} {change}"));
+                        }
+                    });
+                });
+            if !open {
+                self.show_whats_new = false;
+            }
+        }
+
         // Move to Trash asks first. The folder goes to the trash, from
         // where the file manager can put it back; nothing deletes it.
         if let Some(path) = self.confirm_trash.clone() {
@@ -528,6 +724,7 @@ impl LaunchScreen {
         ctx: &egui::Context,
         ui: &mut egui::Ui,
         recent: &[RecentProject],
+        projects_folder: Option<&std::path::Path>,
         theme: &KlippTheme,
         cmds: &mut Vec<AppCommand>,
     ) {
@@ -616,16 +813,24 @@ impl LaunchScreen {
         // Importing is a thing you do *to* a project. The two entry
         // points above are the ones that produce one.
 
-        // ── Recent Projects List ──
-        let recent_y = buttons_y + 148.0;
-        if !recent.is_empty() {
+        // The sections run down from the buttons, each as tall as what it
+        // holds, so with fewer recents the templates move up; the footer
+        // keeps the bottom.
+        let footer_top = area.max.y - FOOTER_H;
+        let mut y = buttons_y + 84.0 + 26.0;
+        let heading = |ui: &egui::Ui, y: f32, text: &str| {
             ui.painter().text(
-                egui::pos2(area.min.x + pad_x, recent_y),
+                egui::pos2(area.min.x + pad_x, y),
                 egui::Align2::LEFT_TOP,
-                "RECENT",
+                text,
                 egui::FontId::proportional(10.0),
                 theme.text_dim,
             );
+        };
+
+        // ── Recent Projects List ──
+        if !recent.is_empty() {
+            heading(ui, y, "RECENT");
 
             // A few, not all of them.
             //
@@ -639,16 +844,17 @@ impl LaunchScreen {
             // so with sort set to Name or Size it is still the way back
             // to what you had open. That is a shortcut, and a shortcut
             // is short.
-            const MAX_RECENT: usize = 5;
-            let item_h = 52.0;
-            let fits = ((area.max.y - recent_y - 60.0) / item_h).floor().max(1.0) as usize;
+            const MAX_RECENT: usize = 8;
+            let item_h = RECENT_ROW_H;
+            // Room is kept below for the templates' heading and two of them.
+            let fits = ((footer_top - y - 20.0 - 14.0 - 20.0 - 2.0 * TEMPLATE_ROW_H) / item_h).floor().max(1.0) as usize;
             let items_to_show = recent.len().min(fits).min(MAX_RECENT);
             let now = chrono::Local::now().naive_local();
 
             for (i, rp) in sidebar_order(recent).into_iter().take(items_to_show).enumerate() {
-                let y = recent_y + 20.0 + i as f32 * item_h;
+                let row_y = y + 20.0 + i as f32 * item_h;
                 let item_rect = egui::Rect::from_min_size(
-                    egui::pos2(area.min.x + pad_x - 8.0, y),
+                    egui::pos2(area.min.x + pad_x - 8.0, row_y),
                     egui::vec2(button_w + 16.0, item_h - 4.0),
                 );
                 let resp = ui.allocate_rect(item_rect, egui::Sense::click());
@@ -659,8 +865,8 @@ impl LaunchScreen {
                 // The project's poster frame, 16:9, where a coloured bar
                 // keyed to its name used to say nothing about it.
                 let thumb_rect = egui::Rect::from_min_size(
-                    egui::pos2(area.min.x + pad_x, item_rect.center().y - 18.0),
-                    egui::vec2(64.0, 36.0),
+                    egui::pos2(area.min.x + pad_x, item_rect.center().y - 16.0),
+                    egui::vec2(56.0, 31.5),
                 );
                 let poster = self.poster(ctx, rp);
                 draw_poster(ui.painter(), thumb_rect, poster.as_ref(), None, theme);
@@ -669,7 +875,7 @@ impl LaunchScreen {
 
                 // The marks, right to left from the row's end.
                 let name_x = thumb_rect.max.x + 10.0;
-                let name_y = y + 9.0;
+                let name_y = row_y + 6.0;
                 let marks = marks_for(rp, self.status.get(&rp.path));
                 let mut mark_x = item_rect.max.x - 8.0;
                 for (k, mark) in marks.iter().enumerate().rev() {
@@ -730,39 +936,104 @@ impl LaunchScreen {
                     });
                 });
             }
+            y += 20.0 + items_to_show as f32 * item_h + 14.0;
         }
 
-        // ── Footer ──
-        let footer_y = area.max.y - 32.0;
-        // One item, and it does something.
-        //
-        // There were three — Account, Settings, Help — and all three
-        // allocated a click rect, highlighted on hover, and dropped the
-        // response. Three buttons that could not be pressed.
-        //
-        // "Account" also implied a service: Klipp is a local
-        // application with nothing to sign in to. "Settings" asked the
-        // user to configure an application they had not opened yet, and
-        // could not have worked anyway — the launch screen takes the
-        // whole frame and returns before any window is drawn, so a
-        // preferences window opened from here would never appear.
-        let footer_rect = egui::Rect::from_min_size(
-            egui::pos2(area.center().x - 39.0, footer_y),
-            egui::vec2(78.0, 20.0),
-        );
-        let resp = ui
-            .allocate_rect(footer_rect, egui::Sense::click())
-            .on_hover_cursor(egui::CursorIcon::PointingHand);
-        if resp.clicked() {
-            let _ = crate::ui_util::open_external("https://github.com/davidkodar/klipp");
+        // ── Start from a template ──
+        // The built-in formats and the user's own templates (#618), each
+        // a ready project in one click, named after it in the projects
+        // folder. More… opens the full chooser.
+        self.refresh_templates();
+        let location = projects_folder.map(std::path::Path::to_path_buf)
+            .or_else(|| dirs::home_dir().map(|h| h.join("Projects")))
+            .unwrap_or_else(|| PathBuf::from("."));
+        let rows_fit = ((footer_top - y - 20.0 - TEMPLATE_ROW_H - 8.0) / TEMPLATE_ROW_H).floor().max(0.0) as usize;
+        if footer_top - y > 20.0 + TEMPLATE_ROW_H {
+            heading(ui, y, "START FROM A TEMPLATE");
+            let entries = self.template_entries();
+            let shown = entries.len().min(rows_fit);
+            for (i, entry) in entries.iter().take(shown).enumerate() {
+                let row = egui::Rect::from_min_size(
+                    egui::pos2(area.min.x + pad_x - 8.0, y + 18.0 + i as f32 * TEMPLATE_ROW_H),
+                    egui::vec2(button_w + 16.0, TEMPLATE_ROW_H - 2.0),
+                );
+                let resp = ui.allocate_rect(row, egui::Sense::click())
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text(format!("Create a project from {}", entry.name));
+                if resp.hovered() {
+                    ui.painter().rect_filled(row, 4.0, theme.bg_hover);
+                }
+                let detail_g = ui.painter().layout_no_wrap(entry.detail.clone(), egui::FontId::proportional(10.0), theme.text_dim);
+                let detail_w = detail_g.size().x;
+                ui.painter().galley(egui::pos2(row.max.x - 8.0 - detail_w, row.center().y - detail_g.size().y / 2.0), detail_g, theme.text_dim);
+                let name_g = layout_truncated(
+                    ui.painter(),
+                    &entry.name,
+                    egui::FontId::proportional(12.0),
+                    if resp.hovered() { theme.text_primary } else { theme.text_secondary },
+                    (row.width() - 24.0 - detail_w).max(0.0),
+                );
+                ui.painter().galley(egui::pos2(row.min.x + 8.0, row.center().y - name_g.size().y / 2.0), name_g, theme.text_secondary);
+                if resp.clicked() {
+                    cmds.push(entry.create(&location));
+                }
+            }
+            let more_y = y + 18.0 + shown as f32 * TEMPLATE_ROW_H;
+            if quiet_link(ui, egui::pos2(area.min.x + pad_x, more_y + 4.0), "More\u{2026}", theme).clicked() {
+                cmds.push(AppCommand::NewProject);
+            }
         }
-        ui.painter().text(
-            footer_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "\u{2139} Help",
-            egui::FontId::proportional(11.0),
-            if resp.hovered() { theme.text_primary } else { theme.text_dim },
-        );
+
+        self.draw_footer(ui, egui::Rect::from_min_max(egui::pos2(area.min.x + pad_x, footer_top), egui::pos2(area.max.x - pad_x, area.max.y)), projects_folder, theme, cmds);
+    }
+
+    /// The footer: room on the projects drive and the render cache's size
+    /// (Manage… opens the cache preferences), then Help, Keyboard
+    /// Shortcuts and What's New.
+    fn draw_footer(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        projects_folder: Option<&std::path::Path>,
+        theme: &KlippTheme,
+        cmds: &mut Vec<AppCommand>,
+    ) {
+        ui.painter().hline(rect.x_range(), rect.min.y, egui::Stroke::new(1.0_f32, theme.border));
+        self.refresh_storage(ui.ctx(), projects_folder);
+        let small = egui::FontId::proportional(10.0);
+        let mut y = rect.min.y + 10.0;
+        if let Some(storage) = &self.storage {
+            if let Some(free) = storage.free_bytes {
+                let line = format!("{} free on {}", format_size_compact(free), tilde(&storage.drive));
+                let g = layout_truncated(ui.painter(), &line, small.clone(), theme.text_dim, rect.width());
+                ui.painter().galley(egui::pos2(rect.min.x, y), g, theme.text_dim);
+            }
+            let cache = format!("Render cache {}", format_size_compact(storage.render_cache_bytes));
+            let g = ui.painter().layout_no_wrap(cache, small.clone(), theme.text_dim);
+            let w = g.size().x;
+            ui.painter().galley(egui::pos2(rect.min.x, y + 15.0), g, theme.text_dim);
+            if quiet_link(ui, egui::pos2(rect.min.x + w + 8.0, y + 15.0), "Manage\u{2026}", theme).clicked() {
+                cmds.push(AppCommand::OpenPreferences { page: Some("cache".into()) });
+            }
+        }
+        y += 38.0;
+        let mut x = rect.min.x;
+        for link in ["Help", "Keyboard Shortcuts", "What's New"] {
+            let resp = quiet_link(ui, egui::pos2(x, y), link, theme);
+            x = resp.rect.max.x + 14.0;
+            if resp.clicked() {
+                match link {
+                    "Help" => {
+                        #[cfg(not(test))]
+                        let _ = crate::ui_util::open_external(HELP_URL);
+                        #[cfg(test)]
+                        self.opened.push(HELP_URL);
+                    }
+                    "Keyboard Shortcuts" => cmds.push(AppCommand::OpenPreferences { page: Some("keyboard".into()) }),
+                    _ => self.show_whats_new = true,
+                }
+            }
+        }
     }
 
     fn draw_main_area(
@@ -2621,5 +2892,122 @@ mod tests {
         rp.duration_secs = Some(115.0);
         rp.fps = Some("24fps".into());
         assert_eq!(sidebar_detail(&rp, now), "Today 13:26 \u{00B7} 1:55 \u{00B7} 24 fps");
+    }
+
+    // ── #1854: names, eight recents, templates, the footer ──
+
+    /// A project goes by its file's name on its card and in the sidebar,
+    /// whatever name is stored inside it, and Rename starts from that.
+    #[test]
+    fn a_project_shows_and_renames_by_its_file_name() {
+        let dir = temp_dir();
+        let mut rp = project(&dir, "Two Shores");
+        rp.name = "Main Sequence".into();
+        let recent = vec![rp];
+        let path = recent[0].path.clone();
+        let ctx = egui::Context::default();
+        let mut screen = screen_with(&[]);
+        frame(&ctx, &mut screen, &recent, None, Vec::new());
+        let (_, shapes) = frame(&ctx, &mut screen, &recent, None, Vec::new());
+        let all = texts(&shapes);
+        assert!(!all.iter().any(|(t, _)| t == "Main Sequence"), "the stored name is not shown");
+        let card = screen.seen.cards[0].1;
+        let row = screen.seen.sidebar[0].1;
+        assert!(all.iter().any(|(t, r)| t == "Two Shores" && card.contains(r.center())), "on the card");
+        assert!(all.iter().any(|(t, r)| t == "Two Shores" && row.contains(r.center())), "in the sidebar");
+        click_with(&ctx, &mut screen, &recent, None, card.center(), egui::PointerButton::Secondary);
+        let shapes = frame(&ctx, &mut screen, &recent, None, Vec::new()).1;
+        click(&ctx, &mut screen, &recent, at(&shapes, "Rename\u{2026}"));
+        frame(&ctx, &mut screen, &recent, None, Vec::new());
+        frame(&ctx, &mut screen, &recent, None, vec![egui::Event::Text(" 2".into())]);
+        let shapes = frame(&ctx, &mut screen, &recent, None, Vec::new()).1;
+        let cmds = click(&ctx, &mut screen, &recent, at(&shapes, "Rename"));
+        assert!(matches!(&cmds[..], [AppCommand::RenameProjectOnDisk { old_path, new_name }] if *old_path == path && new_name == "Two Shores 2"), "{cmds:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Recent holds up to eight, pinned first; with fewer, the templates
+    /// below move up.
+    #[test]
+    fn eight_recents_show_pinned_first() {
+        let dir = temp_dir();
+        let mut recent: Vec<_> = (0..10).map(|i| project(&dir, &format!("P{i}"))).collect();
+        recent[9].pinned = true;
+        let ctx = egui::Context::default();
+        let mut screen = screen_with(&[]);
+        frame(&ctx, &mut screen, &recent, None, Vec::new());
+        let (_, many) = frame(&ctx, &mut screen, &recent, None, Vec::new());
+        let rows: Vec<_> = screen.seen.sidebar.iter().map(|(p, _, _)| p.file_stem().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(rows, ["P9", "P0", "P1", "P2", "P3", "P4", "P5", "P6"]);
+        let few = &recent[..2];
+        let mut screen = screen_with(&[]);
+        frame(&ctx, &mut screen, few, None, Vec::new());
+        let (_, shapes) = frame(&ctx, &mut screen, few, None, Vec::new());
+        assert_eq!(screen.seen.sidebar.len(), 2);
+        let heading = |s: &Shapes| at(s, "START FROM A TEMPLATE").y;
+        assert!(heading(&shapes) < heading(&many) - 5.0 * RECENT_ROW_H, "{} vs {}", heading(&shapes), heading(&many));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A template entry makes a ready project in one click: a built-in
+    /// one its format, under a name not yet taken in the projects folder;
+    /// one of the user's from its file. More… opens the chooser.
+    #[test]
+    fn a_template_entry_creates_a_project_from_it() {
+        use klipp_project::template::{ProjectSetup, ProjectTemplate, TemplateColour};
+        let dir = temp_dir();
+        let folder = dir.join("Projects");
+        std::fs::create_dir_all(folder.join("Instagram Vertical.klipp")).unwrap();
+        let templates = dir.join("templates");
+        let colour = TemplateColour { working_colorspace: Default::default(), grade_encoding: Default::default(), global_lut_path: None, global_lut_opacity: 1.0, global_lut_enabled: false };
+        ProjectTemplate::capture("Weekly Series", "", &ProjectSetup { sequences: &[klipp_timeline::Sequence::new_default()], pool: &klipp_media::MediaPool::new(), colour }).save(&templates).unwrap();
+        let recent = vec![project(&dir, "Trip")];
+        let ctx = egui::Context::default();
+        let mut screen = screen_with(&[]);
+        screen.templates_dir = Some(templates.clone());
+        frame(&ctx, &mut screen, &recent, Some(&folder), Vec::new());
+        let (_, shapes) = frame(&ctx, &mut screen, &recent, Some(&folder), Vec::new());
+        assert!(at(&shapes, "Weekly Series").y < at(&shapes, "YouTube 1080p 24fps").y, "the user's own first");
+        at(&shapes, "1080\u{00D7}1920 \u{00B7} 30");
+        let cmds = click_with(&ctx, &mut screen, &recent, Some(&folder), at(&shapes, "Instagram Vertical"), egui::PointerButton::Primary);
+        match &cmds[..] {
+            [AppCommand::CreateProject { name, location, width: 1080, height: 1920, fps_num: 30, fps_den: 1, template: None, .. }] => {
+                assert_eq!(name, "Instagram Vertical 2", "the name taken, the next");
+                assert_eq!(location, &folder);
+            }
+            other => panic!("one CreateProject: {other:?}"),
+        }
+        let cmds = click_with(&ctx, &mut screen, &recent, Some(&folder), at(&shapes, "Weekly Series"), egui::PointerButton::Primary);
+        assert!(matches!(&cmds[..], [AppCommand::CreateProject { name, template: Some(p), .. }] if name == "Weekly Series" && p.parent() == Some(templates.as_path())), "{cmds:?}");
+        let cmds = click_with(&ctx, &mut screen, &recent, Some(&folder), at(&shapes, "More\u{2026}"), egui::PointerButton::Primary);
+        assert!(matches!(&cmds[..], [AppCommand::NewProject]), "{cmds:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The footer: room on the projects drive and the render cache's
+    /// size, Manage… for the cache preferences, and Help, Keyboard
+    /// Shortcuts and What's New, each opening what it names.
+    #[test]
+    fn the_footer_shows_storage_and_opens_its_links() {
+        klipp_core::build_info::set_changes("Cards fit their content\nThe sidebar shows posters\n");
+        let recent = vec![RecentProject::from_path(PathBuf::from("/nowhere/Trip.klipp"))];
+        let ctx = egui::Context::default();
+        let mut screen = screen_with(&[]);
+        screen.storage = Some(Storage { drive: PathBuf::from("/media/work/Projects"), free_bytes: Some(412 << 30), render_cache_bytes: 3 << 30 });
+        screen.storage_checked_at = Some(std::time::Instant::now());
+        frame(&ctx, &mut screen, &recent, None, Vec::new());
+        let (_, shapes) = frame(&ctx, &mut screen, &recent, None, Vec::new());
+        at(&shapes, "412.0 GB free on /media/work/Projects");
+        at(&shapes, "Render cache 3.0 GB");
+        let cmds = click(&ctx, &mut screen, &recent, at(&shapes, "Manage\u{2026}"));
+        assert!(matches!(&cmds[..], [AppCommand::OpenPreferences { page: Some(p) }] if p == "cache"), "{cmds:?}");
+        let cmds = click(&ctx, &mut screen, &recent, at(&shapes, "Keyboard Shortcuts"));
+        assert!(matches!(&cmds[..], [AppCommand::OpenPreferences { page: Some(p) }] if p == "keyboard"), "{cmds:?}");
+        click(&ctx, &mut screen, &recent, at(&shapes, "Help"));
+        assert_eq!(screen.opened, [HELP_URL]);
+        click(&ctx, &mut screen, &recent, at(&shapes, "What's New"));
+        let (_, shapes) = frame(&ctx, &mut screen, &recent, None, Vec::new());
+        at(&shapes, "\u{2022} Cards fit their content");
+        at(&shapes, "\u{2022} The sidebar shows posters");
     }
 }

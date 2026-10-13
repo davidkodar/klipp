@@ -212,6 +212,13 @@ impl KlippApp {
                 self.prefs_dirty = true;
                 true
             }
+            AppCommand::OpenPreferences { page } => {
+                if let Some(page) = page {
+                    self.preferences_panel.open_page(page);
+                }
+                self.state.show_preferences = true;
+                true
+            }
             AppCommand::PinRecentProject { path, pinned } => {
                 if let Some(rp) = self.prefs.general.recent_projects.iter_mut().find(|rp| rp.path == *path) {
                     rp.pinned = *pinned;
