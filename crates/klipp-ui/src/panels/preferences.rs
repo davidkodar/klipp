@@ -1689,7 +1689,43 @@ impl PreferencesPanel {
         });
 
         // ── BEHAVIOR section ──
+        Self::setting_row_with_subtitle(ui, "Default export folder", "Where the Export dialog puts a new export", theme, |ui| {
+            let picker = egui::Id::new("prefs-default-export-dir");
+            if ui.button("Browse\u{2026}").clicked() {
+                crate::file_dialog::pick_path(picker, || {
+                    rfd::FileDialog::new().set_title("Default Export Folder").pick_folder()
+                });
+            }
+            if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(picker) {
+                prefs.export.default_output_dir = Some(path);
+                *dirty = true;
+            }
+            if prefs.export.default_output_dir.is_some() && ui.small_button("Reset").on_hover_text("Back to the Videos folder").clicked() {
+                prefs.export.default_output_dir = None;
+                *dirty = true;
+            }
+            let shown = prefs.export.default_output_dir.clone().unwrap_or_else(|| dirs::video_dir().or_else(dirs::home_dir).unwrap_or_default());
+            ui.add(egui::Label::new(egui::RichText::new(tilde(&shown)).size(11.0).color(theme.text_dim)).truncate());
+        });
+
         Self::section_header(ui, "BEHAVIOR", theme);
+
+        Self::setting_row_with_subtitle(ui, "Overwrite existing files", "When the export's file is already there", theme, |ui| {
+            use crate::prefs::OverwriteMode;
+            let label = |m: OverwriteMode| match m {
+                OverwriteMode::Ask => "Ask",
+                OverwriteMode::Always => "Overwrite",
+                OverwriteMode::Never => "Pick a new name",
+            };
+            egui::ComboBox::from_id_salt("overwrite_mode")
+                .selected_text(label(prefs.export.overwrite_mode))
+                .width(130.0)
+                .show_ui(ui, |ui| {
+                    for m in [OverwriteMode::Ask, OverwriteMode::Always, OverwriteMode::Never] {
+                        if ui.selectable_value(&mut prefs.export.overwrite_mode, m, label(m)).changed() { *dirty = true; }
+                    }
+                });
+        });
 
         Self::setting_row(ui, "Parallel render jobs", theme, |ui| {
             let mut val = prefs.export.parallel_render_jobs;
@@ -4781,7 +4817,7 @@ mod layout_tests {
     /// cache" here is the folder row; the cache's size row keeps the name.
     const HIDDEN: &[&str] = &[
         "Monitoring mode", "Normalize target", "Default sync method",
-        "Search radius", "Colour space tagging", "Default encoder preset", "Default export folder", "Overwrite existing files",
+        "Search radius", "Colour space tagging", "Default encoder preset",
         "Max cache size", "Thumbnail resolution", "JKL speed steps", "Clip corner radius", "Max track height", "Ruler height",
         "Title-safe area overlay",
         "Show keyboard shortcut hints", "Recent projects to show",
