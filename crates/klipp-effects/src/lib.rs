@@ -366,6 +366,19 @@ pub enum BuiltinEffect {
         #[serde(default)]
         spill_strength: f32,
     },
+    /// Luma Key (#1638): the clip keyed by brightness, as Chroma Key keys
+    /// it by colour. Pixels whose luma lies in `[low, high]` are keyed out
+    /// (alpha 0); `soft` is how far past either end the key fades back in;
+    /// `invert` keeps that range and keys out the rest. Luma is the
+    /// working space's own weights on the encoded picture, as the grade's
+    /// LumaKey node measures it (`klipp_color::luma_key`), so a threshold
+    /// means what the waveform shows. Only alpha changes.
+    LumaKey {
+        low: f32,
+        high: f32,
+        soft: f32,
+        invert: bool,
+    },
     /// Bloom: extract bright areas, blur, and add back for a cinematic glow.
     Bloom {
         /// Luminance threshold for bright areas (0.0–1.0, default 0.7)

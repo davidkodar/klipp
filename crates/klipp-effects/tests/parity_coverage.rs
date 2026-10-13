@@ -110,6 +110,8 @@ const EFFECTS: &[(&str, Cover)] = &[
     ("PictureTransform", Case("PictureTransform")),
     ("Flicker", Case("Flicker exposure")),
     ("BinocularVignette", Case("BinocularVignette")),
+    // Its alpha is all it changes, which `cases()` does not compare (#1638).
+    ("LumaKey", Test("klipp-effects/tests/luma_key_effect.rs", "the_luma_key_effect_matches_between_cpu_and_gpu")),
     ("Generator", Case("Generator linear")),
     ("Merge", Exempt("its own kernels pass the picture: the plan's layer mixer draws it with its foreground, held in klipp-compose's merge_render")),
 ];

@@ -225,6 +225,27 @@ pub(super) static TYPES: &[EffectType] = &[
             spill_strength: 0.6,
         },
     },
+    // Keyed by brightness (#1638): the range keyed out, black by
+    // default, soft past its ends; invert keeps the range instead.
+    EffectType {
+        desc: effect(
+            "klipp.fx.luma_key",
+            "Luma Key",
+            Category::Key,
+            &[
+                ParamDesc::float("low", "Low", 0.0, UNIT, Unit::Ratio),
+                ParamDesc::float("high", "High", 0.1, UNIT, Unit::Ratio),
+                ParamDesc::float("soft", "Softness", 0.05, (0.0, 0.5), Unit::Ratio),
+                switch("invert", "Invert", false),
+            ],
+            ColourDomain::DisplayEncoded,
+            Spatial::PerPixel,
+            Temporal::None,
+            true,
+        ),
+        tag: "luma_key",
+        sample: || BuiltinEffect::LumaKey { low: 0.0, high: 0.1, soft: 0.05, invert: false },
+    },
     EffectType {
         desc: effect(
             "klipp.fx.rolling_shutter_correction",

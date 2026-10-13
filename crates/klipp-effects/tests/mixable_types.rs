@@ -7,7 +7,7 @@ use klipp_effects::registry::{effect_types, PortType, MASK_CHANNEL, MIXABLE_IN};
 /// their input: per-pixel and neighbourhood operations. Not: geometry,
 /// what draws outside the picture, the head, temporal and plug-in
 /// effects, those with their own mix (invert, emboss, edge detect), and
-/// chroma key, which is still open. By saved tag (HSV adjust is saved
+/// the keys (chroma and luma), which are still open. By saved tag (HSV adjust is saved
 /// as `h_s_v_adjust`).
 const MIXABLE: [&str; 37] = [
     "color_fade", "posterize", "channel_mixer", "gamma", "h_s_v_adjust", "vibrance", "levels", "equalize",
@@ -25,7 +25,7 @@ fn exactly_the_single_picture_effects_are_mixable() {
     let mut expected = MIXABLE.to_vec();
     expected.sort_unstable();
     assert_eq!(mixable, expected);
-    for tag in ["chroma_key", "invert", "transform", "opacity", "drop_shadow", "speed_ramp", "frei0r"] {
+    for tag in ["chroma_key", "luma_key", "invert", "transform", "opacity", "drop_shadow", "speed_ramp", "frei0r"] {
         assert!(!effect_types().any(|t| t.tag == tag && t.desc.mixable), "{tag} is not mixable");
     }
 }

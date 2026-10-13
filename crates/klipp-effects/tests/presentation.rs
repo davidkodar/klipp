@@ -121,9 +121,9 @@ fn covered() -> Vec<&'static klipp_effects::registry::EffectType> {
     effect_types().filter(|t| presentation::params().any(|e| e.type_id == t.desc.id)).collect()
 }
 
-/// Types made after the old inspector was recorded (#1746, #989): their rows
+/// Types made after the old inspector was recorded (#1746, #989, #1638): their rows
 /// are the tables' alone, with no old row to match.
-const AFTER_THE_RECORDING: &[&str] = &["klipp.fx.lut_3d", "klipp.fx.colour_space_transform", "klipp.fx.picture_transform", "klipp.fx.flicker", "klipp.fx.binocular_vignette", "klipp.fx.merge", "klipp.fx.generator"];
+const AFTER_THE_RECORDING: &[&str] = &["klipp.fx.lut_3d", "klipp.fx.colour_space_transform", "klipp.fx.picture_transform", "klipp.fx.flicker", "klipp.fx.binocular_vignette", "klipp.fx.merge", "klipp.fx.generator", "klipp.fx.luma_key"];
 
 #[test]
 fn a_covered_type_names_every_param() {

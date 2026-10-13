@@ -52,6 +52,12 @@ impl BuiltinEffect {
                 real(f, "spill", soft_edge);
                 real(f, "spill_strength", spill_strength);
             }
+            // The range and its softness; the invert is a switch (#1638).
+            E::LumaKey { low, high, soft, .. } => {
+                real(f, "low", low);
+                real(f, "high", high);
+                real(f, "soft", soft);
+            }
             E::Bloom { threshold, radius, intensity } => {
                 real(f, "threshold", threshold);
                 real(f, "radius", radius);

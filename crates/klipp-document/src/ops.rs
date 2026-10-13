@@ -979,6 +979,9 @@ pub enum Op {
     /// A key, "chroma_key" (with "green_screen" and "blue_screen" for
     /// their colours), keys one clip by `color`, `tolerance`, `softness`
     /// and `spill`, the app's Chroma Key with its defaults (#1170).
+    /// "luma_key" keys one clip by brightness: `low` to `high` keyed out
+    /// (black by default), `softness` past them, `invert` keeping that
+    /// range instead; the app's Luma Key with its defaults (#1638).
     Effect {
         /// The clip; not needed with `on`.
         #[serde(default)]
@@ -1001,6 +1004,15 @@ pub enum Op {
         /// How much of the colour's spill is taken off what is kept, 0 to 1.
         #[serde(default)]
         spill: Option<f32>,
+        /// A luma key's darkest brightness keyed out, 0 to 1.
+        #[serde(default)]
+        low: Option<f32>,
+        /// A luma key's brightest brightness keyed out, 0 to 1.
+        #[serde(default)]
+        high: Option<f32>,
+        /// A luma key keeping `low` to `high` and keying out the rest.
+        #[serde(default)]
+        invert: Option<bool>,
     },
     /// Hide a patch of the picture — an email, a key, a face — for a
     /// stretch of a clip: a cropped copy of the same footage goes on a
@@ -2833,9 +2845,14 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let (ti, ci, clip) = resolve_clip(seq, fps, clip_id, i)?;
             transition(seq, pool, fps, i, ti, ci, clip, kind, *secs)
         }
-        Op::Effect { clip_id, on, kind, amount, color, tolerance, softness, spill } => match (on, clip_id) {
+        Op::Effect { clip_id, on, kind, amount, color, tolerance, softness, spill, low, high, invert } => match (on, clip_id) {
             (Some(_), _) if is_key(kind) => Err(refuse(i, format!("{kind} keys one clip, not every one of a group"), "give clip_id for each clip to key")),
             (Some(on), _) => effect_on_many(seq, pool, fps, i, clip_id.as_ref(), on, kind, *amount),
+            (None, Some(clip_id)) if is_luma_key(kind) => {
+                let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
+                let fx = named_luma_key(*low, *high, *softness, *invert).map_err(|(why, fix)| refuse(i, why, fix))?;
+                key_effect(seq, pool, i, ti, clip, kind, fx)
+            }
             (None, Some(clip_id)) if is_key(kind) => {
                 let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
                 let fx = named_key(kind, color.as_deref(), *tolerance, *softness, *spill).map_err(|(why, fix)| refuse(i, why, fix))?;
@@ -5437,14 +5454,35 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
         // Two eyepieces, the outside darker the more, a fringe at their
         // rims (#989).
         "binocular" | "binocular_vignette" => E::BinocularVignette { amount: -(0.5 + a * 0.5), spacing: 0.4, width: 0.85, height: 0.85, softness: 0.15, fringe: a * 6.0 },
-        other => return Err((format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, chroma_key, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, edge_detect, denoise, vhs, old_film, flicker, exposure_flicker or binocular".into())),
+        other => return Err((format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, chroma_key, luma_key, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, edge_detect, denoise, vhs, old_film, flicker, exposure_flicker or binocular".into())),
     };
     Ok((fx, a))
 }
 
-/// Whether `kind` names a key rather than a finishing effect (#1170).
+/// Whether `kind` names a key rather than a finishing effect (#1170,
+/// #1638).
 fn is_key(kind: &str) -> bool {
-    matches!(kind.to_lowercase().as_str(), "chroma_key" | "chromakey" | "green_screen" | "blue_screen")
+    is_luma_key(kind) || matches!(kind.to_lowercase().as_str(), "chroma_key" | "chromakey" | "green_screen" | "blue_screen")
+}
+
+/// Whether `kind` names a luma key (#1638).
+fn is_luma_key(kind: &str) -> bool {
+    matches!(kind.to_lowercase().as_str(), "luma_key" | "lumakey")
+}
+
+/// The luma key the app's Luma Key makes: `low` to `high` keyed out
+/// (0 to 0.1, black, when left out), `softness` past them (0.05), each 0
+/// to 1, and `invert` keeping that range instead (#1638).
+pub fn named_luma_key(low: Option<f32>, high: Option<f32>, softness: Option<f32>, invert: Option<bool>) -> Result<klipp_effects::BuiltinEffect, (String, String)> {
+    let unit = |name: &str, v: Option<f32>, default: f32| -> Result<f32, (String, String)> {
+        let v = v.unwrap_or(default);
+        if v.is_finite() && (0.0..=1.0).contains(&v) { Ok(v) } else { Err((format!("{name} {v} is out of range"), format!("give {name} between 0 and 1"))) }
+    };
+    let (low, high) = (unit("low", low, 0.0)?, unit("high", high, 0.1)?);
+    if low > high {
+        return Err((format!("low {low} is above high {high}"), "give low at or below high: low to high is the brightness keyed out".into()));
+    }
+    Ok(klipp_effects::BuiltinEffect::LumaKey { low, high, soft: unit("softness", softness, 0.05)?, invert: invert.unwrap_or(false) })
 }
 
 /// The key `kind` names, as the app's Chroma Key makes it: green for
@@ -5476,9 +5514,19 @@ pub fn named_key(kind: &str, color: Option<&str>, tolerance: Option<f32>, softne
 fn key_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, kind: &str, fx: klipp_effects::BuiltinEffect) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     require_picture(seq, pool, i, ti, clip, "key")?;
     use klipp_effects::BuiltinEffect as E;
-    let E::ChromaKey { key_color: [r, g, b], tolerance, soft_edge, spill_strength, .. } = fx else { unreachable!("named_key makes a chroma key") };
-    let what = format!("{} #{r:02x}{g:02x}{b:02x} (tolerance {tolerance:.2}, softness {soft_edge:.2}, spill {spill_strength:.2}) on {}", kind.to_lowercase(), clip_name(seq, pool, clip));
-    let edit = effects_edit(clip, |e: &E| matches!(e, E::ChromaKey { .. }), Some((fx, Place::Last))).map_err(|why| refuse(i, why, "edit the clip's effects in its node view"))?;
+    let how = match &fx {
+        E::ChromaKey { key_color: [r, g, b], tolerance, soft_edge, spill_strength, .. } => {
+            format!("#{r:02x}{g:02x}{b:02x} (tolerance {tolerance:.2}, softness {soft_edge:.2}, spill {spill_strength:.2})")
+        }
+        E::LumaKey { low, high, soft, invert } => {
+            format!("{} {low:.2} to {high:.2} (softness {soft:.2})", if *invert { "keeping" } else { "keying out" })
+        }
+        other => unreachable!("a key is a chroma or a luma key, not {other:?}"),
+    };
+    let what = format!("{} {how} on {}", kind.to_lowercase(), clip_name(seq, pool, clip));
+    // A second key of the same kind replaces the first.
+    let kind_of = std::mem::discriminant(&fx);
+    let edit = effects_edit(clip, |e: &E| std::mem::discriminant(e) == kind_of, Some((fx, Place::Last))).map_err(|why| refuse(i, why, "edit the clip's effects in its node view"))?;
     Ok((what, edit, vec![clip.id]))
 }
 
@@ -10643,7 +10691,7 @@ mod tests {
     fn an_effect_on_the_timeline_or_a_group_goes_on_each_picture() {
         use klipp_effects::BuiltinEffect as E;
         let (mut seq, pool, _, a, b) = fixture();
-        let effect = |on: GradeOn, amount: f32| Op::Effect { clip_id: None, on: Some(on), kind: "vignette".into(), amount: Some(amount), color: None, tolerance: None, softness: None, spill: None };
+        let effect = |on: GradeOn, amount: f32| Op::Effect { clip_id: None, on: Some(on), kind: "vignette".into(), amount: Some(amount), color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None };
         let vignetted = |plan: &Plan| -> Vec<ClipId> {
             let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!("{:?}", plan.steps[0].edit) };
             edits.iter().map(|e| match e {
@@ -10673,10 +10721,10 @@ mod tests {
         let plan = resolve(&seq, &pool, &[effect(GradeOn::Group { group: "Night".into(), stage: None }, 0.1)]).unwrap();
         assert_eq!(vignetted(&plan), vec![b]);
 
-        let both = Op::Effect { clip_id: Some(ClipRef::Id(a)), on: Some(GradeOn::Named("timeline".into())), kind: "grain".into(), amount: None, color: None, tolerance: None, softness: None, spill: None };
+        let both = Op::Effect { clip_id: Some(ClipRef::Id(a)), on: Some(GradeOn::Named("timeline".into())), kind: "grain".into(), amount: None, color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None };
         assert!(resolve(&seq, &pool, &[both]).unwrap_err().why.contains("both"));
         assert!(resolve(&seq, &pool, &[effect(GradeOn::Group { group: "Day".into(), stage: None }, 0.3)]).is_err());
-        assert!(resolve(&seq, &pool, &[Op::Effect { clip_id: None, on: None, kind: "grain".into(), amount: None, color: None, tolerance: None, softness: None, spill: None }]).unwrap_err().why.contains("no clip"));
+        assert!(resolve(&seq, &pool, &[Op::Effect { clip_id: None, on: None, kind: "grain".into(), amount: None, color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None }]).unwrap_err().why.contains("no clip"));
     }
 
     /// #847: effect, look, grade and audio take every clip of a track,
@@ -12113,22 +12161,57 @@ mod tests {
         assert!(matches!(after.last(), Some(E::ChromaKey { tolerance, .. }) if (*tolerance - 0.4).abs() < 1e-6));
     }
 
+    /// #1638: a luma key in one op, the app's Luma Key at its defaults
+    /// (black keyed out, 0 to 0.1, softness 0.05); its range, softness and
+    /// invert given; out of range, a range upside down and a key for every
+    /// clip of a group refused; a second luma key replaces the first and
+    /// leaves a chroma key be.
+    #[test]
+    fn a_luma_key_is_one_op() {
+        use klipp_effects::BuiltinEffect as E;
+        let (seq, pool, _, a, _) = fixture();
+        let key = |json: serde_json::Value| {
+            let ops: Vec<Op> = serde_json::from_value(serde_json::json!([json])).unwrap();
+            resolve(&seq, &pool, &ops)
+        };
+        let id = a.0.to_string();
+        let plan = key(serde_json::json!({"op": "effect", "clip_id": id, "kind": "luma_key"})).unwrap();
+        assert!(plan.steps[0].what.starts_with("luma_key keying out 0.00 to 0.10 (softness 0.05)"), "{}", plan.steps[0].what);
+        assert_eq!(effects_after(&plan.steps[0].edit).unwrap().1.last(), Some(&E::LumaKey { low: 0.0, high: 0.1, soft: 0.05, invert: false }));
+        let own = key(serde_json::json!({"op": "effect", "clip_id": id, "kind": "luma_key", "low": 0.6, "high": 1.0, "softness": 0.2, "invert": true})).unwrap();
+        assert_eq!(effects_after(&own.steps[0].edit).unwrap().1.last(), Some(&E::LumaKey { low: 0.6, high: 1.0, soft: 0.2, invert: true }));
+        assert!(own.steps[0].what.contains("keeping 0.60 to 1.00"), "{}", own.steps[0].what);
+        assert!(key(serde_json::json!({"op": "effect", "clip_id": id, "kind": "luma_key", "high": 1.5})).unwrap_err().why.contains("high"));
+        assert!(key(serde_json::json!({"op": "effect", "clip_id": id, "kind": "luma_key", "low": 0.5, "high": 0.2})).unwrap_err().why.contains("above high"));
+        assert!(key(serde_json::json!({"op": "effect", "on": "timeline", "kind": "luma_key"})).unwrap_err().why.contains("keys one clip"));
+        let ops: Vec<Op> = serde_json::from_value(serde_json::json!([
+            {"op": "effect", "clip_id": id, "kind": "green_screen"},
+            {"op": "effect", "clip_id": id, "kind": "luma_key"},
+            {"op": "effect", "clip_id": id, "kind": "luma_key", "high": 0.2}
+        ]))
+        .unwrap();
+        let after = effects_after(&resolve(&seq, &pool, &ops).unwrap().steps[2].edit).unwrap().1;
+        assert_eq!(after.iter().filter(|e| matches!(e, E::LumaKey { .. })).count(), 1, "{after:?}");
+        assert_eq!(after.iter().filter(|e| matches!(e, E::ChromaKey { .. })).count(), 1, "{after:?}");
+        assert!(matches!(after.last(), Some(E::LumaKey { high, .. }) if (*high - 0.2).abs() < 1e-6));
+    }
+
     #[test]
     fn finishing_ops_add_effects_stabilise_retime_and_clean_audio() {
         let (seq, pool, media, a, _) = fixture();
         use klipp_effects::BuiltinEffect as E;
 
         // An effect appends a builtin effect; the same kind replaces it.
-        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "vignette".into(), amount: Some(0.6), color: None, tolerance: None, softness: None, spill: None }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "vignette".into(), amount: Some(0.6), color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None }]).unwrap();
         assert!(plan.steps[0].what.starts_with("vignette 0.60"), "{}", plan.steps[0].what);
         let new_effects = &effects_after(&plan.steps[0].edit).expect("effects edit").1;
         assert!(matches!(new_effects.last(), Some(E::Vignette { .. })));
 
         // The layer treatment reaches the same op by name.
-        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "shadow".into(), amount: Some(0.5), color: None, tolerance: None, softness: None, spill: None }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "shadow".into(), amount: Some(0.5), color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None }]).unwrap();
         let new_effects = &effects_after(&plan.steps[0].edit).expect("effects edit").1;
         assert!(matches!(new_effects.last(), Some(E::DropShadow { color, .. }) if *color == [0, 0, 0]));
-        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "corners".into(), amount: Some(0.2), color: None, tolerance: None, softness: None, spill: None }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "corners".into(), amount: Some(0.2), color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None }]).unwrap();
         let new_effects = &effects_after(&plan.steps[0].edit).expect("effects edit").1;
         assert!(matches!(new_effects.last(), Some(E::RoundedCorners { .. })));
 
@@ -12205,7 +12288,7 @@ mod tests {
 
         // Refusals and the JSON shape.
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
-        assert!(bad(Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "sparkle".into(), amount: None, color: None, tolerance: None, softness: None, spill: None }).why.contains("not an effect"));
+        assert!(bad(Op::Effect { clip_id: Some(ClipRef::Id(a)), on: None, kind: "sparkle".into(), amount: None, color: None, tolerance: None, softness: None, spill: None, low: None, high: None, invert: None }).why.contains("not an effect"));
         assert!(bad(Op::CleanAudio { clip_id: ClipRef::Id(a), voice: false, reduction_db: None, wind: false, hiss: false, hum: false, deess: false }).why.contains("nothing to clean"));
         let _: Vec<Op> = serde_json::from_str(r#"[{"op":"effect","clip_id":{"track":0,"secs":1.0},"kind":"glow"},{"op":"retime","clip_id":{"track":0,"secs":1.0},"speed":0.5},{"op":"clean_audio","clip_id":{"track":0,"secs":1.0},"wind":true},{"op":"clean_audio","clip_id":{"track":0,"secs":1.0},"voice":true,"reduction_db":12}]"#).unwrap();
         let _ = media;

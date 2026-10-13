@@ -43,6 +43,28 @@ fn luma(p: Px, yw: [f32; 3]) -> f32 {
     yw[0] * p[0] + yw[1] * p[1] + yw[2] * p[2]
 }
 
+/// How much of a pixel a Luma Key keeps (#1638), from its encoded colour
+/// `e`: 0 inside `[low, high]`, back to 1 across `soft` past either end;
+/// `invert` keeps the range instead. It is the grade's LumaKey matte
+/// (`klipp_color::luma_key::luma_key_value`, which this crate cannot call:
+/// klipp-color sits above it) with its range selecting what goes, each
+/// channel clamped to `[0, 1]` before it is weighted, as there;
+/// `tests/luma_key_effect.rs` holds the two equal.
+pub(crate) fn luma_key_keep(e: [f32; 3], low: f32, high: f32, soft: f32, invert: bool, yw: [f32; 3]) -> f32 {
+    let e = e.map(|c| c.clamp(0.0, 1.0));
+    let y = yw[0] * e[0] + yw[1] * e[1] + yw[2] * e[2];
+    let inside = if y >= low && y <= high {
+        1.0
+    } else if soft <= 0.0001 {
+        0.0
+    } else if y < low {
+        (1.0 - (low - y) / soft).clamp(0.0, 1.0)
+    } else {
+        (1.0 - (y - high) / soft).clamp(0.0, 1.0)
+    };
+    if invert { inside } else { 1.0 - inside }
+}
+
 fn mix(a: Px, b: Px, t: f32) -> Px {
     [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3] + (b[3] - a[3]) * t]
 }
@@ -357,6 +379,12 @@ pub(crate) fn apply(
                 px
             })
         }
+        // The luma key's matte taken into alpha (#1638): the range keyed
+        // out, the rest kept. The twin of `SHADER_LUMA_KEY` run into alpha.
+        LumaKey { low, high, soft, invert } => each_value(p, |mut px| {
+            px[3] *= luma_key_keep([encode(px[0]), encode(px[1]), encode(px[2])], low, high, soft, invert, yw);
+            px
+        }),
         Bloom { threshold, radius, intensity } => {
             let blurred = gaussian(&bright(&p, threshold, yw), w, h, radius, false);
             let mut out = p;

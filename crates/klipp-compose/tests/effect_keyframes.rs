@@ -32,6 +32,7 @@ fn every_effect() -> Vec<E> {
         E::FocusBlur { radius: 3.0, vertical: false, band: 0.2 },
         E::Sharpen { amount: 0.5 },
         E::ChromaKey { key_color: [0, 255, 0], tolerance: 0.3, soft_edge: 0.1, spill_method: SpillMethod::None, spill_strength: 0.5 },
+        E::LumaKey { low: 0.0, high: 0.1, soft: 0.05, invert: false },
         E::Bloom { threshold: 0.7, radius: 6.0, intensity: 0.8 },
         E::Glow { radius: 6.0, intensity: 0.5 },
         E::LightRays { center_x: 0.5, center_y: 0.5, threshold: 0.6, samples: 16, decay: 0.9, intensity: 0.5 },
@@ -96,7 +97,7 @@ fn every_effect() -> Vec<E> {
     for e in &all {
         match e {
             E::Crop { .. } | E::Transform { .. } | E::Opacity { .. } | E::ColorFade { .. } | E::GaussianBlur { .. }
-            | E::FocusBlur { .. } | E::Sharpen { .. } | E::ChromaKey { .. } | E::Bloom { .. } | E::Glow { .. }
+            | E::FocusBlur { .. } | E::Sharpen { .. } | E::ChromaKey { .. } | E::LumaKey { .. } | E::Bloom { .. } | E::Glow { .. }
             | E::LightRays { .. } | E::Vignette { .. } | E::Diffusion { .. } | E::LensFlare { .. }
             | E::RoundedCorners { .. } | E::DropShadow { .. } | E::FillBars { .. } | E::OuterGlow { .. }
             | E::LightWrap { .. } | E::AnamorphicStreak { .. } | E::FilmHalation { .. } | E::Invert { .. }

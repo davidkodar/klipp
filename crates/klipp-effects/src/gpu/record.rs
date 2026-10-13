@@ -97,6 +97,7 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         | BuiltinEffect::Sharpen { .. }
         | BuiltinEffect::MedianFilter { .. }
         | BuiltinEffect::ChromaKey { .. }
+        | BuiltinEffect::LumaKey { .. }
         | BuiltinEffect::Deflicker { .. }
         | BuiltinEffect::FilmGrain { .. }
         | BuiltinEffect::NoiseGenerator { .. }
@@ -564,6 +565,19 @@ impl GpuEffectsPipeline {
                     _pad: [0; 3],
                 });
                 (&self.chroma_key_pipeline, slot)
+            }
+            // The grade's luma key op, its matte taken into alpha (#1638).
+            // Its range is what goes, so the op keeps the inverse of it.
+            BuiltinEffect::LumaKey { low, high, soft, invert } => {
+                let slot = rec.slots.claim(q, &super::GpuLumaKeyParams {
+                    width, height,
+                    low: *low, high: *high, soft: *soft,
+                    invert: u32::from(!*invert),
+                    into_alpha: 1,
+                    _pad1: 0,
+                    luma: [self.luma_coefs[0], self.luma_coefs[1], self.luma_coefs[2], 0.0],
+                });
+                (&self.luma_key_pipeline, slot)
             }
             BuiltinEffect::Deflicker { strength, gain, .. } => {
                 // `window_secs` shaped the gains during analysis
