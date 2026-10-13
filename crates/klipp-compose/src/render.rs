@@ -142,12 +142,19 @@ pub type LinearFrameProviderFn =
 pub fn fit_linear_reader(mut reader: LinearFrameProviderFn, width: u32, height: u32) -> LinearFrameProviderFn {
     Box::new(move |time| {
         let (pixels, w, h) = reader(time)?;
-        let len = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
-        if w == 0 || h == 0 || width == 0 || height == 0 || pixels.len() != len {
-            return None;
-        }
-        Some((unshare(fit(Arc::new(pixels), w, h, width, height)), width, height))
+        Some((fit_linear(pixels, w, h, width, height)?, width, height))
     })
+}
+
+/// A linear frame `w × h` fitted to `width × height` as
+/// [`fit_linear_reader`] fits a neighbour: one scale factor, centred, with
+/// transparent bars. `None` for a malformed frame.
+pub fn fit_linear(pixels: Vec<f32>, w: u32, h: u32, width: u32, height: u32) -> Option<Vec<f32>> {
+    let len = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
+    if w == 0 || h == 0 || width == 0 || height == 0 || pixels.len() != len {
+        return None;
+    }
+    Some(unshare(fit(Arc::new(pixels), w, h, width, height)))
 }
 
 pub trait FrameSource {
@@ -218,6 +225,21 @@ pub trait FrameSource {
     /// default) when it can't say: the clip's analysis nodes then have
     /// none.
     fn analysis_key(&mut self, _clip: &Clip, _kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
+        None
+    }
+
+    /// Another media item's frame at `secs` in it (a media source, #1746),
+    /// by the pool item's id: linear RGBA f32 in `working`, fitted to
+    /// `width × height` ([`fit_linear`]). The default reads no other
+    /// media.
+    fn media_frame(&mut self, _media: &str, _secs: f64, _working: WorkingColorspace, _width: u32, _height: u32) -> Result<Vec<f32>, klipp_nodes::side_picture::SideMissing> {
+        Err(klipp_nodes::side_picture::SideMissing::Unavailable)
+    }
+
+    /// The item's name when its frames are scene-referred (HDR or camera
+    /// log): a media source reading it after a display step is mixed
+    /// without its own (#1857). `None` (the default) for an SDR item.
+    fn media_scene_referred(&mut self, _media: &str) -> Option<String> {
         None
     }
 }
@@ -2063,6 +2085,8 @@ impl Renderer {
         // plug-in before a layer is placed (M4 step 5), so none reaches it.
         let fx_on_gpu = !has_active_effects(&fx) || !temporal;
         let clip_time = eval_clip_time(c, time);
+        // Its media sources' frames, for its plan (#1746).
+        self.read_media_frames(c, clip_time, width, height, src);
         let mut rows = (0, height);
         let mut effects_done = false;
         // A title's entrance and focus blur, put before its effects: they
@@ -2735,6 +2759,9 @@ impl Renderer {
             }
         };
 
+        // Read here, where the frames come from, for whichever run draws
+        // its effects; after a scene's clips, which set their own.
+        self.read_media_frames(clip, clip_time, width, height, src);
         if self.inspect.ungraded && self.inspect.clip == Some(clip.id) {
             let mut before = (*input.pixels()).clone();
             if let Some(t) = hdr {
@@ -2833,7 +2860,7 @@ impl Renderer {
                     return Some((pixels, opacity));
                 }
                 self.found.declines.truncate(declines_before);
-                if blended || klipp_effects::has_frei0r(&fx) {
+                if blended || klipp_effects::runs_only_as_a_node(&fx) {
                     // A masked or mixed clip's effects can't be drawn by the
                     // CPU kernels, nor can a frei0r plug-in, which runs only
                     // as its node: the same plan runs again on the CPU
@@ -3148,7 +3175,8 @@ impl Renderer {
         let blended = blends.iter().any(Option::is_some);
         // A frei0r plug-in runs as a node, with its instances, on every
         // route: never by the kernels, which would make it one frame's.
-        let frei0r = klipp_effects::has_frei0r(fx);
+        // A media source too (#1746): its frame is the render's to read.
+        let frei0r = klipp_effects::runs_only_as_a_node(fx);
         if (!plan && !blended && !frei0r) || fx.is_empty() {
             return self.effects_analysed(clip, fx, pixels, clip_time, fps, width, height);
         }
@@ -3175,11 +3203,42 @@ impl Renderer {
     /// effect (step 9c-2).
     fn on_cpu_executor<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
         let mut cpu = self.cpu_executor.take().unwrap_or_else(klipp_nodes::GraphExecutor::new_cpu_only);
+        cpu.set_side_pictures(self.executor.side_pictures());
         std::mem::swap(&mut self.executor, &mut cpu);
         let out = f(self);
         std::mem::swap(&mut self.executor, &mut cpu);
         self.cpu_executor = Some(cpu);
         out
+    }
+
+    /// The frames `clip`'s media sources draw at `clip_time` (#1746), read
+    /// from `src` at the render size: the executor's side pictures.
+    fn read_media_frames(&mut self, clip: &Clip, clip_time: f64, width: u32, height: u32, src: &mut dyn FrameSource) {
+        let frames = crate::resolve::media_sources(clip)
+            .into_iter()
+            .map(|(media, offset)| {
+                let got = src.media_frame(&media, clip_time + f64::from(offset), self.working, width, height).map(Arc::new);
+                (klipp_nodes::side_picture::SideKey::Media { item: media, offset_bits: offset.to_bits() }, got)
+            })
+            .collect();
+        self.executor.set_side_pictures(Arc::new(frames));
+        // An HDR or log item mixed after the display step has no display
+        // step of its own yet (#1857): said, never silently wrong.
+        for (node, media) in crate::resolve::media_mixed_after_display(clip) {
+            let Some(item) = src.media_scene_referred(&media) else { continue };
+            if self.found.declines.iter().any(|d| d.clip == Some(clip.id) && d.node == node) {
+                continue;
+            }
+            self.found.declines.push(klipp_nodes::Decline {
+                clip: Some(clip.id),
+                node,
+                kind: klipp_nodes::NodeKind::SidePicture,
+                outcome: klipp_nodes::DeclineOutcome::Fallback,
+                name: klipp_nodes::decline::effect_name(&BuiltinEffect::MediaSource { media: String::new(), offset: 0.0 }),
+                reason: format!("{item} is HDR/log; it is mixed without its display step"),
+                why: "a media source's item has no display step yet (#1857)".into(),
+            });
+        }
     }
 
     /// Splice `fx` into `clip`'s next grade run as plan nodes (step 10b)
@@ -4715,6 +4774,8 @@ fn splice_blended(
         let kind = match &fx[i] {
             // A plug-in of its own, its instances kept (M4 step 5).
             BuiltinEffect::Frei0r { .. } => klipp_nodes::NodeKind::Frei0r,
+            // Another media item's frame, handed to the run (#1746).
+            BuiltinEffect::MediaSource { .. } => klipp_nodes::NodeKind::SidePicture,
             // A merge with a picture to lay over: the grade's layer mixer
             // draws it, that picture on top (#1746).
             BuiltinEffect::Merge { .. } if blend(i).is_some_and(|b| b.fg.is_some()) => klipp_nodes::NodeKind::LayerMixer,

@@ -431,6 +431,18 @@ impl MediaItem {
         }
     }
 
+    /// Whether the file's frames decode scene-referred: HDR (PQ, HLG) or
+    /// camera log.
+    pub fn scene_referred(&self) -> bool {
+        matches!(self.colour_space, ColourSpace::Hdr10 | ColourSpace::Hlg) || self.camera_log_format().is_some()
+    }
+
+    /// The camera log format the file decodes through, when it is one:
+    /// what export's decoders and a media source's reader (#1746) take.
+    pub fn camera_log_format(&self) -> Option<klipp_core::LogFormat> {
+        Some(self.effective_log_format()).filter(|f| f.camera_colourspace().is_some())
+    }
+
     /// What this file's metadata says about being camera log, for the
     /// colour tools' flat-picture test (#504).
     pub fn log_prior(&self) -> klipp_color::measure::LogPrior {

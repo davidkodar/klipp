@@ -94,7 +94,24 @@ impl FrameSource for Synthetic {
     fn analysis_key(&mut self, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
         matches!(clip.kind, klipp_timeline::ClipKind::Media { .. }).then(|| stand_in_key(kind)).flatten()
     }
+
+    /// A media source's item (#1746), [`MEDIA_ITEM`]: the same pattern
+    /// further on and upside down, so it differs from the clip's own and
+    /// from itself at another time.
+    fn media_frame(&mut self, media: &str, secs: f64, _working: klipp_core::WorkingColorspace, width: u32, height: u32) -> Result<Vec<f32>, klipp_nodes::side_picture::SideMissing> {
+        if media != MEDIA_ITEM {
+            return Err(klipp_nodes::side_picture::SideMissing::File(media.to_owned()));
+        }
+        let (w, h) = self.size;
+        let frame = source(secs + 3.0, self.size);
+        let flipped: Vec<f32> = (0..h).rev().flat_map(|y| frame[(y * w * 4) as usize..((y + 1) * w * 4) as usize].iter().copied()).collect();
+        klipp_compose::render::fit_linear(flipped, w, h, width, height).ok_or(klipp_nodes::side_picture::SideMissing::Unavailable)
+    }
 }
+
+/// The one media item the harness's sources hold besides each clip's own
+/// (#1746).
+pub(super) const MEDIA_ITEM: &str = "3c8e6d52-7a14-4b0f-9e21-5d6f8a9b0c13";
 
 /// The key the oracle's analyses are kept under: a stand-in file that
 /// exists (this binary), as an analysis key reads the file.
@@ -484,6 +501,10 @@ impl FrameSource for Held<'_> {
 
     fn analysis_key(&mut self, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
         klipp_analysis::assets::asset_key(kind, self.state.media_pool.get(&clip.media_id()?)?)
+    }
+
+    fn media_frame(&mut self, media: &str, secs: f64, working: klipp_core::WorkingColorspace, width: u32, height: u32) -> Result<Vec<f32>, klipp_nodes::side_picture::SideMissing> {
+        self.inner.media_frame(media, secs, working, width, height)
     }
 }
 

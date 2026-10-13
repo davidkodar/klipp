@@ -112,27 +112,24 @@ pub struct MediaFile {
     pub fps: Option<(u32, u32)>,
     /// The media's size, when known: its analysis assets' key (M4 step 9).
     pub resolution: Option<(u32, u32)>,
+    /// Its frames are scene-referred (HDR or camera log): a media source
+    /// reading it is mixed without its display step (#1857).
+    pub scene_referred: bool,
 }
 
-/// A media item's camera log format for its export decoder: the same
-/// effective format (the user's choice, else detection) the viewer's
-/// decoder registry holds, or `None` for anything that is not a camera log.
 impl MediaFile {
     /// A media item's file, as export decodes it.
     pub fn of(item: &klipp_media::MediaItem) -> Self {
         MediaFile {
             path: item.path.clone(),
-            log_format: camera_log_format(item),
+            log_format: item.camera_log_format(),
+            scene_referred: item.scene_referred(),
             source_rotation: item.source_rotation,
             duration_secs: Some(item.duration.to_secs_f64()),
             fps: Some((item.fps.num, item.fps.den)),
             resolution: Some((item.resolution.width, item.resolution.height)),
         }
     }
-}
-
-fn camera_log_format(media: &klipp_media::MediaItem) -> Option<klipp_core::LogFormat> {
-    Some(media.effective_log_format()).filter(|f| f.camera_colourspace().is_some())
 }
 
 #[derive(Clone)]
@@ -539,6 +536,13 @@ impl SequenceSnapshot {
                     .get(media_id)
                     .ok_or_else(|| RenderError::Snapshot(format!("media {media_id:?} not in pool")))?;
                 media.insert(*media_id, MediaFile::of(item));
+            }
+            // A media source's item (#1746): one not in the pool is drawn
+            // clear and said, not a failed export.
+            for (item, _) in klipp_compose::resolve::media_sources(clip) {
+                if let Some((id, item)) = klipp_compose::resolve::media_id(&item).and_then(|id| Some((id, media_pool.get(&id)?))) {
+                    media.insert(id, MediaFile::of(item));
+                }
             }
         }
 
@@ -1482,7 +1486,7 @@ mod tests {
         assert_eq!(snap.video.sequence.tracks[0].clips[0].id, seq.tracks[0].clips[0].id);
         assert_eq!(
             snap.video.media.get(&media_id),
-            Some(&MediaFile { path: PathBuf::from("/media/clip1.mp4"), log_format: None, source_rotation: 0, duration_secs: Some(pool.get(&media_id).unwrap().duration.to_secs_f64()), fps: Some((pool.get(&media_id).unwrap().fps.num, pool.get(&media_id).unwrap().fps.den)), resolution: Some((pool.get(&media_id).unwrap().resolution.width, pool.get(&media_id).unwrap().resolution.height)) }),
+            Some(&MediaFile { path: PathBuf::from("/media/clip1.mp4"), log_format: None, source_rotation: 0, duration_secs: Some(pool.get(&media_id).unwrap().duration.to_secs_f64()), fps: Some((pool.get(&media_id).unwrap().fps.num, pool.get(&media_id).unwrap().fps.den)), resolution: Some((pool.get(&media_id).unwrap().resolution.width, pool.get(&media_id).unwrap().resolution.height)), scene_referred: false }),
         );
     }
 

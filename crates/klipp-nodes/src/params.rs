@@ -38,6 +38,11 @@ pub struct NodeParams {
     #[serde(skip)]
     pub scene_to_display: Option<klipp_color::hdr::SceneToDisplay>,
 
+    /// `SidePicture`: the picture it outputs, when not the one its effect
+    /// draws (#1746). The run's own setting, never saved.
+    #[serde(skip)]
+    pub side_picture: Option<crate::side_picture::SideKey>,
+
     // InputTransform
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_format: Option<LogFormat>,

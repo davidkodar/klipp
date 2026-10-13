@@ -123,7 +123,7 @@ fn covered() -> Vec<&'static klipp_effects::registry::EffectType> {
 
 /// Types made after the old inspector was recorded (#1746, #989, #1638): their rows
 /// are the tables' alone, with no old row to match.
-const AFTER_THE_RECORDING: &[&str] = &["klipp.fx.lut_3d", "klipp.fx.colour_space_transform", "klipp.fx.picture_transform", "klipp.fx.flicker", "klipp.fx.binocular_vignette", "klipp.fx.merge", "klipp.fx.generator", "klipp.fx.luma_key", "klipp.fx.particles"];
+const AFTER_THE_RECORDING: &[&str] = &["klipp.fx.lut_3d", "klipp.fx.colour_space_transform", "klipp.fx.picture_transform", "klipp.fx.flicker", "klipp.fx.binocular_vignette", "klipp.fx.merge", "klipp.fx.generator", "klipp.fx.luma_key", "klipp.fx.particles", "klipp.fx.media_source"];
 
 #[test]
 fn a_covered_type_names_every_param() {
@@ -311,7 +311,7 @@ fn every_other_param_names_a_custom_editor() {
             }
         }
     }
-    assert_eq!(named.into_iter().collect::<Vec<_>>(), ["effect_lut_file", "frei0r_plugin"]);
+    assert_eq!(named.into_iter().collect::<Vec<_>>(), ["effect_lut_file", "effect_media", "frei0r_plugin"]);
 }
 
 /// The adapters drawing what rows can't, by type (M3 step 6): exactly the

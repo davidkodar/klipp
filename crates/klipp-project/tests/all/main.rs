@@ -54,6 +54,8 @@ mod looks_each_saved;
 mod manifest_order;
 #[path = "../media_kind_round_trip.rs"]
 mod media_kind_round_trip;
+#[path = "../media_source_round_trip.rs"]
+mod media_source_round_trip;
 #[path = "../media_state_round_trip.rs"]
 mod media_state_round_trip;
 #[path = "../merge_round_trip.rs"]

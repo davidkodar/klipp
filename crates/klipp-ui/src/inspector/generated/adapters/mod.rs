@@ -8,10 +8,12 @@
 mod analysis;
 mod frei0r;
 mod lut_file;
+mod media_item;
 mod quiet;
 
 pub use frei0r::Frei0rEditor;
 pub use lut_file::LutFileEditor;
+pub use media_item::MediaItemEditor;
 
 use super::{node_rows, NodeRows, RowCtx, RowOutcome};
 use crate::state::AppState;

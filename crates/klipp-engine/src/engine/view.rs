@@ -209,6 +209,29 @@ impl FrameSource for ViewerSource<'_> {
             .map(|reader| klipp_compose::render::fit_linear_reader(reader, width, height))
     }
 
+    /// The item's name, when the pool says its frames are scene-referred.
+    fn media_scene_referred(&mut self, media: &str) -> Option<String> {
+        let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+        let item = klipp_compose::resolve::media_id(media).and_then(|id| pool.get(&id))?;
+        item.scene_referred().then(|| item.filename.clone())
+    }
+
+    /// The item's original file, as export reads it: a proxy is the
+    /// clip's stand-in, and a media source is no clip.
+    fn media_frame(&mut self, media: &str, secs: f64, working: klipp_core::WorkingColorspace, width: u32, height: u32) -> Result<Vec<f32>, klipp_nodes::side_picture::SideMissing> {
+        use klipp_nodes::side_picture::SideMissing;
+        let (path, log_format) = {
+            let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+            let item = klipp_compose::resolve::media_id(media).and_then(|id| pool.get(&id)).ok_or_else(|| SideMissing::File(media.to_owned()))?;
+            (item.path.clone(), item.camera_log_format())
+        };
+        if !path.exists() {
+            return Err(SideMissing::File(path.display().to_string()));
+        }
+        let (pixels, w, h) = self.streams.media.read(&path, log_format, working, secs).ok_or(SideMissing::Unavailable)?;
+        klipp_compose::render::fit_linear(pixels, w, h, width, height).ok_or(SideMissing::Unavailable)
+    }
+
     /// The same frames in linear light, for the renderer's own use.
     ///
     /// The log format comes from the same registry the viewer's own

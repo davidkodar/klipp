@@ -1,6 +1,7 @@
 //! The effects that bring a second picture in (#1746): a Merge lays the
 //! picture wired into its `fg` port over the clip's; a Generator makes a
-//! picture (a solid, a gradient) for it from nothing.
+//! picture (a solid, a gradient) for it from nothing; a Media Source
+//! brings another media item's.
 
 use super::{Alpha, Category, ColourDomain, EffectType, NodeTypeDesc, ParamDesc, ParamKind, PortDesc, PortType, Spatial, Temporal, Unit, IMAGE_IN, IMAGE_OUT};
 use crate::generator::SHAPES;
@@ -74,5 +75,23 @@ pub(super) static TYPES: &[EffectType] = &[
         ),
         tag: "generator",
         sample: || BuiltinEffect::Generator { shape: 0, color_a: [40, 90, 200, 255], color_b: [255, 255, 255, 255], angle: 0.0, center_x: 0.5, center_y: 0.5, radius: 0.5 },
+    },
+    EffectType {
+        desc: NodeTypeDesc {
+            // Read by the executor from its frame context, on the CPU.
+            gpu: false,
+            ..composite(
+                "klipp.fx.media_source",
+                "Media Source",
+                IMAGE_IN,
+                &[
+                    ParamDesc { kind: ParamKind::Other, soft: None, ..ParamDesc::float("media", "Media", f32::NAN, (0.0, 0.0), Unit::None).fixed() },
+                    ParamDesc::float("offset", "Offset", 0.0, (-3600.0, 3600.0), Unit::Seconds).fixed(),
+                ],
+                Spatial::Global,
+            )
+        },
+        tag: "media_source",
+        sample: || BuiltinEffect::MediaSource { media: String::new(), offset: 0.0 },
     },
 ];

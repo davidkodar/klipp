@@ -112,6 +112,9 @@ pub fn kind_step(kind: NodeKind, params: &crate::params::NodeParams) -> DomainSt
         NodeKind::Source => DomainStep::Gives(PictureDomain::Scene),
         NodeKind::SceneToDisplay => DomainStep::ToDisplay,
         NodeKind::Ofx | NodeKind::Frei0r => DomainStep::Undeclared,
+        // A picture handed to the run (#1746): another media item's frame,
+        // not made from what the node reads.
+        NodeKind::SidePicture => DomainStep::Undeclared,
         // A plug-in's picture, or a generator's, made from colours
         // authored for it: neither is the domain of what it reads.
         NodeKind::Effect | NodeKind::EffectSegment
