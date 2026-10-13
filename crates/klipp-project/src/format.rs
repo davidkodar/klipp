@@ -77,8 +77,8 @@ pub struct ProjectJson {
     pub grade_encoding: klipp_core::GradeEncoding,
     /// The output transform new exports start from (#466). Absent in
     /// every file written before it, and then Match Viewer, as every
-    /// export started.
-    #[serde(default)]
+    /// export started; written only when another is chosen.
+    #[serde(default, skip_serializing_if = "is_match_viewer")]
     pub default_odt: klipp_core::OdtChoice,
     /// The input format given to new clips whose file says none (#466);
     /// absent, each clip's own detection alone.
@@ -189,6 +189,8 @@ fn default_lut_opacity() -> f32 { 1.0 }
 fn default_true() -> bool { true }
 fn is_true(b: &bool) -> bool { *b }
 fn is_zero_u8(v: &u8) -> bool { *v == 0 }
+
+fn is_match_viewer(v: &klipp_core::OdtChoice) -> bool { *v == klipp_core::OdtChoice::MatchViewer }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimecodeJson {
