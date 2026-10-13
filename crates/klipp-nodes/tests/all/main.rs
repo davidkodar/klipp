@@ -34,6 +34,8 @@ mod gated_correction;
 mod gpu_keys;
 #[path = "../grain_denoise_parity.rs"]
 mod grain_denoise_parity;
+#[path = "../held_outputs.rs"]
+mod held_outputs;
 #[path = "../key_matte_parity.rs"]
 mod key_matte_parity;
 #[path = "../lut_node_tags_parity.rs"]
