@@ -701,6 +701,10 @@ impl KlippApp {
                 if kb.is_action_pressed("create_multicam", i) {
                     cmds.push(AppCommand::CreateMulticamClip);
                 }
+                // Multicam mode in the Source viewer (#1844).
+                if kb.is_action_pressed("toggle_multicam_mode", i) {
+                    cmds.push(crate::multicam_grid::switch_mode(self.state.multicam_mode));
+                }
             }
             // N — Toggle snap (dispatches through AppCommand so layout
             // persists on flip, matching the toolbar / palette / View

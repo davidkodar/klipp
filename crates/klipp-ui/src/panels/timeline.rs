@@ -8221,17 +8221,20 @@ impl TimelinePanel {
             }
         }
 
-        // Double-click: open compound clips
+        // Double-click: open compound clips, and open a multicam clip in
+        // multicam mode (#1844).
         if track_response.double_clicked() {
             if let Some(pos) = track_response.interact_pointer_pos {
-                let dbl_hit: Option<(klipp_core::ClipId, bool)> = {
+                let dbl_hit: Option<(klipp_core::ClipId, bool, bool)> = {
                     let clips_slice = &state.sequence().tracks[track_idx].clips;
                     self.hit_test_clip_body(clips_slice, content_rect, track_rect, zoom, scroll, track_height, pos)
-                        .map(|(_, hit_clip)| (hit_clip.id, matches!(hit_clip.kind, klipp_timeline::ClipKind::Sequence { .. })))
+                        .map(|(_, hit_clip)| (hit_clip.id, matches!(hit_clip.kind, klipp_timeline::ClipKind::Sequence { .. }), hit_clip.multicam_group.is_some()))
                 };
-                if let Some((hit_clip_id, is_seq)) = dbl_hit {
+                if let Some((hit_clip_id, is_seq, is_multicam)) = dbl_hit {
                     if is_seq {
                         cmds.push(AppCommand::OpenCompoundClip { clip_id: hit_clip_id });
+                    } else if is_multicam {
+                        cmds.push(AppCommand::SetMulticamMode { on: true, open: Some(hit_clip_id) });
                     }
                 }
             }

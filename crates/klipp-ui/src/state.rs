@@ -2499,9 +2499,18 @@ pub struct AppState {
     /// A whole-window capture asked for (the file, the widest it may be),
     /// and whether egui has been asked for the screenshot yet.
     pub window_capture: Option<(std::path::PathBuf, Option<u32>, bool)>,
-    /// Show the multicam angle grid in the Source viewer's place while a
-    /// multicam group is in play (View menu).
-    pub multicam_grid_enabled: bool,
+    /// Multicam mode (#1844): the Source viewer shows the angle grid of
+    /// the multicam clip under the playhead, or of `multicam_opened`.
+    /// Switched only by the Angles button, its shortcut, the View menu
+    /// and opening a multicam clip; never by the playhead.
+    pub multicam_mode: bool,
+    /// The multicam clip last opened (double-clicked), shown in multicam
+    /// mode when none is under the playhead.
+    pub multicam_opened: Option<ClipId>,
+    /// A multicam group of two angles or more is under the playhead (or
+    /// the opened clip): the program viewer's angle bar follows this, not
+    /// the mode.
+    pub multicam_at_playhead: bool,
     /// The interface size in effect, for the menu's check mark.
     pub ui_scale_percent: u32,
     /// Auto-create tracks when dropping clips outside existing tracks (synced from prefs).
@@ -2866,7 +2875,8 @@ pub struct AppState {
     /// Duration (in seconds) for title animation fade presets.
     pub title_fade_duration: f32,
 
-    /// Whether the multicam viewer grid is active.
+    /// Multicam mode is on and has a group to show: the Source viewer is
+    /// the angle grid.
     pub multicam_viewer_active: bool,
     /// The angles of the current multicam group, in order (0 the
     /// primary). Not assumed to run 0..n: labelled by position, a group
@@ -4654,7 +4664,9 @@ impl Default for AppState {
             show_preferences: false,
             ui_scale_request: None,
             window_capture: None,
-            multicam_grid_enabled: true,
+            multicam_mode: false,
+            multicam_opened: None,
+            multicam_at_playhead: false,
             ui_scale_percent: 0,
             auto_create_tracks: true,
             project_auto_filmstrips: None,
@@ -4867,6 +4879,23 @@ impl AppState {
 }
 
 impl AppState {
+    /// Switch multicam mode (#1844). On, it remembers the clip `open`ed,
+    /// and a single viewer that may show the Source viewer shows it,
+    /// since that is where the grid is. Off, it forgets the opened clip.
+    pub fn set_multicam_mode(&mut self, on: bool, open: Option<ClipId>) {
+        self.multicam_mode = on;
+        if on {
+            if open.is_some() {
+                self.multicam_opened = open;
+            }
+            if !self.viewers_side_by_side() && !self.single_viewer_is_program() {
+                self.viewer_mode = klipp_core::ViewerMode::Source;
+            }
+        } else {
+            self.multicam_opened = None;
+        }
+    }
+
     /// The scope dock under the viewer exists only in the Color
     /// workspace, where the timeline is hidden. Elsewhere it would take
     /// the timeline's rows, so the dock flag is ignored there.

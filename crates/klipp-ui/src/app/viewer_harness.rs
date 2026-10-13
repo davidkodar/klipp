@@ -126,3 +126,41 @@ impl Viewer {
 pub(super) fn button(pos: egui::Pos2, pressed: bool) -> egui::Event {
     egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }
 }
+
+#[cfg(test)]
+mod multicam_mode_program_tests {
+    use super::*;
+
+    /// The shapes the program viewer draws, by kind and place.
+    fn drawn(v: &mut Viewer) -> Vec<String> {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0))), time: Some(v.clock), ..Default::default() };
+        let (panel, state, theme) = (&mut v.panel, &mut v.state, &v.theme);
+        let out = v.ctx.run(input, |ctx| {
+            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| { panel.show(ui, state, theme); });
+        });
+        out.shapes.iter().map(|s| match &s.shape {
+            egui::Shape::Text(t) => format!("text {} at {:?}", t.galley.text(), t.pos),
+            other => format!("{:?}", std::mem::discriminant(other)),
+        }).collect()
+    }
+
+    /// #1844: multicam mode is the Source viewer's; the program viewer
+    /// draws the same with it on as off.
+    #[test]
+    fn the_program_viewer_is_unaffected_by_multicam_mode() {
+        let mut v = Viewer::new();
+        v.state.viewer_mode = klipp_core::ViewerMode::Program;
+        // A group's angles known, as the frame loop leaves them.
+        v.state.multicam_angles = vec![0, 1];
+        drawn(&mut v);
+        let off = drawn(&mut v);
+        // On, with a group to show, as the frame loop sets it.
+        v.state.set_multicam_mode(true, None);
+        v.state.multicam_viewer_active = true;
+        v.state.viewer_mode = klipp_core::ViewerMode::Program;
+        drawn(&mut v);
+        let on = drawn(&mut v);
+        assert_eq!(off, on);
+    }
+}
+

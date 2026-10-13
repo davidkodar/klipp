@@ -1738,6 +1738,12 @@ pub enum AppCommand {
     /// Show or hide one of the viewer's overlays (the inspector's
     /// switches; the keys and the palette toggle them in place).
     SetViewerOverlay { overlay: ViewerOverlay, on: bool },
+    /// Multicam mode in the Source viewer (#1844): on, the Source viewer
+    /// shows the angle grid of the multicam clip under the playhead, or of
+    /// `open` (a multicam clip opened by a double-click); off, the source.
+    /// Only this turns it on or off; the playhead crossing a multicam clip
+    /// never does.
+    SetMulticamMode { on: bool, open: Option<ClipId> },
     /// Begin timeline scrubbing — engine may switch to proxy decode for speed.
     /// Enable or disable the smart render cache.
     SetRenderCacheEnabled(bool),

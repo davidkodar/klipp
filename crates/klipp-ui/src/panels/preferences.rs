@@ -1130,14 +1130,6 @@ impl PreferencesPanel {
         // ── MULTICAM section ──
         Self::section_header(ui, "MULTICAM", theme);
 
-        Self::setting_row(ui, "Auto-show angle viewer", theme, |ui| {
-            let mut val = prefs.editing.multicam_auto_viewer;
-            if ui.add(Switch::new(&mut val, theme)).changed() {
-                prefs.editing.multicam_auto_viewer = val;
-                *dirty = true;
-            }
-        });
-
         Self::setting_row(ui, "Show angle badges on timeline", theme, |ui| {
             let mut val = prefs.editing.multicam_show_angles;
             if ui.add(Switch::new(&mut val, theme)).changed() {
@@ -4888,6 +4880,9 @@ mod layout_tests {
         "Clip corner radius", "Ruler height",
         "Title-safe area overlay",
         "Show keyboard shortcut hints", "Recent projects to show",
+        // Removed with multicam mode (#1844), which the playhead never
+        // switches on.
+        "Auto-show angle viewer",
     ];
 
     /// One frame of the dialog on `tab`, with `events`: its texts by their

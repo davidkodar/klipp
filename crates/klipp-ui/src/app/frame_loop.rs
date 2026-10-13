@@ -523,14 +523,16 @@ impl KlippApp {
             self.state.media_usage_cache_dirty = false;
         }
 
-        // The multicam viewer follows the group of the selected clip, else
-        // the group under the playhead: gated on a selection alone, it went
-        // away as soon as the playhead moved on without one.
-        let view = self.prefs.editing.multicam_auto_viewer.then(|| {
-            crate::multicam_grid::view_at(&self.state.sequences[self.state.active_sequence_idx], self.state.selected_clip, self.state.playhead)
-        }).flatten();
+        // Multicam mode (#1844) shows the group under the playhead, else
+        // the opened one, and only while the mode is on: the playhead
+        // crossing a multicam clip never turns it on. The program
+        // viewer's angle bar follows the playhead whatever the mode.
+        let seq = &self.state.sequences[self.state.active_sequence_idx];
+        let at_playhead = crate::multicam_grid::view_at(seq, self.state.multicam_opened, self.state.playhead);
+        let view = crate::multicam_grid::mode_view(seq, self.state.multicam_mode, self.state.multicam_opened, self.state.playhead);
+        self.state.multicam_at_playhead = at_playhead.is_some();
         self.state.multicam_viewer_active = view.is_some();
-        if let Some((angles, active)) = view {
+        if let Some((angles, active)) = view.or(at_playhead) {
             self.state.multicam_angles = angles;
             self.state.multicam_active_angle = active;
         }
@@ -544,11 +546,11 @@ impl KlippApp {
         // was waste.
         let source_on_screen = self.state.viewers_side_by_side()
             || (!self.state.single_viewer_is_program() && self.state.viewer_mode == klipp_core::ViewerMode::Source);
-        let grid_shown = self.state.multicam_grid_enabled && self.state.multicam_viewer_active && source_on_screen;
+        let grid_shown = self.state.multicam_viewer_active && source_on_screen;
         let mut old_tiles = Vec::new();
         if grid_shown {
             let seq = &self.state.sequences[self.state.active_sequence_idx];
-            if let Some(group) = crate::multicam_grid::group_at(seq, self.state.selected_clip, self.state.playhead) {
+            if let Some(group) = crate::multicam_grid::group_at(seq, self.state.multicam_opened, self.state.playhead) {
                 let runtime = self.multicam_grid.get_or_insert_with(|| crate::multicam_grid::GridRuntime::new(ctx));
                 runtime.request(seq, &self.state.media_pool, group, self.state.playhead, self.state.playback == PlaybackState::Playing);
                 runtime.drain(ctx, |t| old_tiles.push(t));

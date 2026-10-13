@@ -592,6 +592,10 @@ impl KlippApp {
                     ));
                     true
                 }
+                AppCommand::SetMulticamMode { on, open } => {
+                    self.state.set_multicam_mode(*on, *open);
+                    true
+                }
                 AppCommand::SetViewerOverlay { overlay, on } => {
                     let o = &mut self.state.viewer_overlays;
                     match overlay {

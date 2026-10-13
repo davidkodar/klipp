@@ -502,20 +502,29 @@ impl KlippApp {
         // 1-9 do (through the same command, so both routes record the
         // same). The chrome below stays, so a single-viewer layout can go
         // back to Program.
-        if self.state.multicam_grid_enabled && self.state.multicam_viewer_active {
-            if let Some(runtime) = self.multicam_grid.as_ref().filter(|r| !r.sources.is_empty()) {
-                if let Some(angle) = crate::multicam_grid::show(ui, video_rect, runtime, self.state.multicam_active_angle, &self.theme) {
-                    all_cmds.push(AppCommand::SwitchMulticamAngle { angle: angle as usize + 1 });
+        // Multicam mode (#1844): the grid of the clip under the playhead
+        // (or the opened one), or a note when there is none. The Angles
+        // button, top right, switches it whichever is shown.
+        if self.state.multicam_mode {
+            let runtime = self.multicam_grid.as_ref().filter(|r| self.state.multicam_viewer_active && !r.sources.is_empty());
+            match runtime {
+                Some(runtime) => {
+                    if let Some(angle) = crate::multicam_grid::show(ui, video_rect, runtime, self.state.multicam_active_angle, &self.theme) {
+                        all_cmds.push(AppCommand::SwitchMulticamAngle { angle: angle as usize + 1 });
+                    }
                 }
-                // The timeline's transport, not the Source viewer's: the
-                // grid follows the timeline playhead, and the Source
-                // chrome read and moved a source playhead it is not about.
-                let chrome_cmds = self.viewer.draw_transport_chrome(ui, &mut self.state, &self.theme, chrome_rect, klipp_core::ViewerMode::Program);
-                all_cmds.extend(chrome_cmds);
-                return;
+                None => crate::multicam_grid::no_multicam_note(ui, video_rect, &self.theme),
             }
+            all_cmds.extend(crate::multicam_grid::angles_button(ui, video_rect, true, &self.theme));
+            // The timeline's transport, not the Source viewer's: the
+            // grid follows the timeline playhead, and the Source
+            // chrome read and moved a source playhead it is not about.
+            let chrome_cmds = self.viewer.draw_transport_chrome(ui, &mut self.state, &self.theme, chrome_rect, klipp_core::ViewerMode::Program);
+            all_cmds.extend(chrome_cmds);
+            return;
         }
         self.viewer.show_source_viewer(ui, &self.state, &self.theme, video_rect, all_cmds);
+        all_cmds.extend(crate::multicam_grid::angles_button(ui, video_rect, false, &self.theme));
 
         // Scroll-zoom + middle-drag-pan input for the source video area.
         // Texture size = the source viewer's live frame when present, or
