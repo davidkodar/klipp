@@ -172,7 +172,7 @@ fn todays_build_leaves_a_revision_2_stills_index_alone() {
     std::fs::write(&path, &text).unwrap();
     assert!(klipp_project::load_grade_stills_v1(&dir).is_empty(), "not loaded");
     // A new still saved over it: today's save refuses rather than overwrite.
-    let still = klipp_project::GradeStillData { name: "New".into(), filename: "new.png".into(), rgba: vec![255; 16], width: 2, height: 2, source: None, grade: None };
+    let still = klipp_project::GradeStillData { name: "New".into(), filename: "new.png".into(), rgba: vec![255; 16], width: 2, height: 2, source: None, grade: None, grade_labels: Vec::new() };
     assert!(klipp_project::save_grade_stills_v1(&dir, &[still]).is_err());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "not overwritten");
     let _ = std::fs::remove_dir_all(&dir);

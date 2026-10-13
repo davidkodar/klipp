@@ -48,7 +48,7 @@ fn an_unconverted_look_is_neither_read_nor_removed() {
 }
 
 fn still(name: &str) -> GradeStillData {
-    GradeStillData { name: name.into(), filename: format!("{name}.png"), rgba: vec![128; 4 * 4 * 4], width: 4, height: 4, source: None, grade: Some(klipp_nodes::NodeGraph::default()) }
+    GradeStillData { name: name.into(), filename: format!("{name}.png"), rgba: vec![128; 4 * 4 * 4], width: 4, height: 4, source: None, grade: Some(klipp_nodes::NodeGraph::default()), grade_labels: Vec::new() }
 }
 
 #[test]

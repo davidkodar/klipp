@@ -145,6 +145,61 @@ pub fn grade_group_id(clip: ClipId) -> NodeId {
     klipp_graph_lift::ids::entry_id(klipp_graph_lift::ids::RootKind::Clip, clip.0, "grade", 0)
 }
 
+/// One colour label of a grade, by the node's path inside the grade
+/// (`[node]`, or through compounds `[compound, …, node]`): how a label
+/// travels with a grade copied from one clip to another, or kept in the
+/// library or a still (#1866).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GradeNodeLabel {
+    pub nodes: Vec<NodeId>,
+    pub colour: u8,
+}
+
+/// The labels of clip `clip`'s grade, by path inside it.
+pub fn grade_node_labels(labels: &[NodeLabel], clip: ClipId) -> Vec<GradeNodeLabel> {
+    let group = grade_group_id(clip);
+    labels
+        .iter()
+        .filter(|l| l.node.root == Root::Clip { clip: clip.0 } && l.node.nodes.len() > 1 && l.node.nodes[0] == group)
+        .map(|l| GradeNodeLabel { nodes: l.node.nodes[1..].to_vec(), colour: l.colour })
+        .collect()
+}
+
+/// `labels` with clip `clip`'s grade labelled by `grade` as well; with
+/// `replace`, its grade's labels before are taken off, as a grade put in
+/// place of its own takes its nodes.
+pub fn with_grade_node_labels(labels: &[NodeLabel], clip: ClipId, grade: &[GradeNodeLabel], replace: bool) -> Vec<NodeLabel> {
+    let group = grade_group_id(clip);
+    let root = Root::Clip { clip: clip.0 };
+    let mut out: Vec<NodeLabel> = labels
+        .iter()
+        .filter(|l| !(replace && l.node.root == root && l.node.nodes.len() > 1 && l.node.nodes[0] == group))
+        .cloned()
+        .collect();
+    for g in grade {
+        let node = NodePath::new(root, std::iter::once(group).chain(g.nodes.iter().copied()));
+        out.retain(|l| l.node != node);
+        out.push(NodeLabel { node, colour: g.colour });
+    }
+    out
+}
+
+/// A grade's labels as they belong on its copy, whose top nodes took the
+/// ids `map` gives (a compound's own keep theirs) and which holds the
+/// top nodes `kept`: a label of a node that didn't come along is left
+/// behind.
+pub fn remap_grade_node_labels(grade: &[GradeNodeLabel], map: &std::collections::HashMap<NodeId, NodeId>, kept: &klipp_nodes::NodeGraph) -> Vec<GradeNodeLabel> {
+    grade
+        .iter()
+        .filter_map(|g| {
+            let (first, rest) = g.nodes.split_first()?;
+            let new = *map.get(first)?;
+            let nodes: Vec<NodeId> = std::iter::once(new).chain(rest.iter().copied()).collect();
+            grade_holds(kept, &nodes).then_some(GradeNodeLabel { nodes, colour: g.colour })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +266,31 @@ mod tests {
         let mut seq = seq;
         seq.tracks[0].clips.push(copy);
         assert!(seq.holds_node(&carried[0].node), "the carried label names the copy's node");
+    }
+
+    /// #1866: a grade's labels come off one clip by path inside the grade,
+    /// follow the ids its copy took, and go onto another clip's grade,
+    /// replacing its own or beside them; a label of a node the copy
+    /// lacks is left behind.
+    #[test]
+    fn grade_labels_follow_a_copied_grade() {
+        let (_, clip, node) = graded();
+        let other = ClipId::new();
+        let theirs = NodeLabel { node: NodePath::new(Root::Clip { clip: other.0 }, [grade_group_id(other), uuid::Uuid::new_v4()]), colour: 1 };
+        let ghost = uuid::Uuid::new_v4();
+        let labels = vec![
+            NodeLabel { node: NodePath::new(Root::Clip { clip: clip.id.0 }, [grade_group_id(clip.id), node]), colour: 6 },
+            NodeLabel { node: NodePath::new(Root::Clip { clip: clip.id.0 }, [grade_group_id(clip.id), ghost]), colour: 2 },
+            theirs.clone(),
+        ];
+        let grade = grade_node_labels(&labels, clip.id);
+        assert_eq!(grade.len(), 2);
+        let (copy, map) = klipp_nodes::NodeGraph::default().with_grade_of_mapped(clip.grade());
+        let moved = remap_grade_node_labels(&grade, &map, &copy);
+        assert_eq!(moved, vec![GradeNodeLabel { nodes: vec![map[&node]], colour: 6 }], "the ghost's is left behind");
+        let replaced = with_grade_node_labels(&labels, other, &moved, true);
+        assert!(!replaced.contains(&theirs));
+        assert!(replaced.contains(&NodeLabel { node: NodePath::new(Root::Clip { clip: other.0 }, [grade_group_id(other), map[&node]]), colour: 6 }));
+        assert!(with_grade_node_labels(&labels, other, &moved, false).contains(&theirs), "an append keeps them");
     }
 }

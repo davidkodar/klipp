@@ -34,6 +34,9 @@ pub struct GradeStillMeta {
     /// of grades as well as a picture to match against.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grade: Option<klipp_nodes::NodeGraph>,
+    /// That grade's node colour labels, by path inside it (#1866).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grade_labels: Vec<klipp_timeline::GradeNodeLabel>,
 }
 
 /// Everything needed to reconstruct a runtime `GradeStill` after load.
@@ -46,6 +49,8 @@ pub struct GradeStillData {
     pub height: u32,
     pub source: Option<StillSource>,
     pub grade: Option<klipp_nodes::NodeGraph>,
+    /// That grade's node colour labels, by path inside it (#1866).
+    pub grade_labels: Vec<klipp_timeline::GradeNodeLabel>,
 }
 
 use crate::path_util::atomic_write;
@@ -237,6 +242,7 @@ fn save_grade_stills_as(
             filename: s.filename.clone(),
             source: s.source.clone(),
             grade: s.grade.clone(),
+            grade_labels: s.grade_labels.clone(),
         })
         .collect();
     let index_json = match form {
@@ -340,6 +346,7 @@ fn load_grade_stills_as(project_dir: &Path, form: crate::FileForm) -> Vec<GradeS
             height,
             source: meta.source,
             grade: meta.grade,
+            grade_labels: meta.grade_labels,
         });
     }
     info!("Loaded {} grade still(s) from {:?}", out.len(), stills_dir);
@@ -525,7 +532,10 @@ mod carry_tests {
     fn a_still_keeps_its_grade_and_source_through_save_and_load() {
         let dir = std::env::temp_dir().join(format!("klipp-still-grade-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let grade = klipp_nodes::NodeGraph::default();
+        let mut grade = klipp_nodes::NodeGraph::default();
+        let node = grade.ensure_corrector();
+        // Its nodes' colour labels too (#1866), by the ids the grade keeps.
+        let labels = vec![klipp_timeline::GradeNodeLabel { nodes: vec![node], colour: 2 }];
         let source = StillSource { clip_id: Some(klipp_core::ClipId::new()), media_id: None, record_secs: 12.5, clip_name: "A001C003.mov".into() };
         let still = GradeStillData {
             name: "Hero".into(),
@@ -535,6 +545,7 @@ mod carry_tests {
             height: 2,
             source: Some(source.clone()),
             grade: Some(grade.clone()),
+            grade_labels: labels.clone(),
         };
         save_grade_stills(&dir, &[still]).unwrap();
         let back = load_grade_stills(&dir);
@@ -543,6 +554,7 @@ mod carry_tests {
         assert_eq!(back[0].source.as_ref(), Some(&source));
         let ids = |g: &klipp_nodes::NodeGraph| g.nodes.iter().map(|n| n.id).collect::<Vec<_>>();
         assert_eq!(ids(back[0].grade.as_ref().unwrap()), ids(&grade));
+        assert_eq!(back[0].grade_labels, labels);
     }
 
     #[test]
@@ -550,5 +562,6 @@ mod carry_tests {
         let old = r#"[{"name":"Still 1","filename":"still_1.png"}]"#;
         let metas: Vec<GradeStillMeta> = serde_json::from_str(old).unwrap();
         assert!(metas[0].grade.is_none() && metas[0].source.is_none());
+        assert!(metas[0].grade_labels.is_empty(), "and no node labels (#1866)");
     }
 }

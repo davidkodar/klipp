@@ -755,7 +755,7 @@ impl KlippApp {
                     // Its attributes too: copy a clip, then Paste
                     // Attributes onto others. Paste Attributes stayed
                     // greyed out after Copy, with nothing saying why (#325).
-                    let attributes = self.state.sequence().all_clips().find(|c| c.id == cid).map(crate::state::AttributesClipboard::of);
+                    let attributes = self.state.sequence().all_clips().find(|c| c.id == cid).map(|c| crate::state::AttributesClipboard::of_in(self.state.sequence(), c));
                     if attributes.is_some() {
                         self.state.attributes_clipboard = attributes;
                     }
@@ -809,7 +809,7 @@ impl KlippApp {
                     let cid = *clip_id;
                     let seq = &self.state.sequences[self.state.active_sequence_idx];
                     if let Some(clip) = seq.all_clips().find(|c| c.id == cid) {
-                        self.state.attributes_clipboard = Some(crate::state::AttributesClipboard::of(clip));
+                        self.state.attributes_clipboard = Some(crate::state::AttributesClipboard::of_in(seq, clip));
                         self.state.toast.show("Attributes copied".to_string());
                     }
                     true
@@ -842,8 +842,10 @@ impl KlippApp {
                                 targets.push(primary);
                             }
                         }
-                        let edits = paste_attributes_edits(&self.state.sequences[self.state.active_sequence_idx], &targets, &attrs, what);
+                        let (mut edits, labels) = paste_attributes(&self.state.sequences[self.state.active_sequence_idx], &targets, &attrs, what);
                         let count = edits.len();
+                        // The grade's node labels, in the same step (#1866).
+                        edits.extend(labels);
                         self.apply_edits_as_one(&edits, "Paste Attributes");
                         self.state.toast.show(format!("Attributes pasted to {count} clip(s)"));
                     }

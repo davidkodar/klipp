@@ -358,15 +358,24 @@ pub fn save_preset(name: &str, graph: &NodeGraph) -> Result<(), String> {
 }
 
 pub(crate) fn save_preset_in(dir: &Path, name: &str, graph: &NodeGraph) -> Result<(), String> {
+    save_labelled_preset_in(dir, name, graph, &[])
+}
+
+/// [`save_preset_in`], with the grade's node colour labels (#1866) kept
+/// in the same file, beside its graph: one file, so the two can't part.
+pub(crate) fn save_labelled_preset_in(dir: &Path, name: &str, graph: &NodeGraph, node_labels: &[klipp_timeline::GradeNodeLabel]) -> Result<(), String> {
     let file_name = format!("{}.json", preset_stem(name));
     let path = dir.join(&file_name);
     refuse_unreadable(&path, |t| read_colour_preset(&file_name, t).is_ok())?;
     // Revision 2 (#1089), through text so an f32 keeps today's digits.
     let text = serde_json::to_string(graph).map_err(|e| format!("Serialize error: {e}"))?;
     let v1: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("Serialize error: {e}"))?;
-    let (v2, notes) = klipp_graph_lift::revision2::colour_preset_noted(&file_name, &v1).map_err(|e| format!("Revision 2 error: {e}"))?;
+    let (mut v2, notes) = klipp_graph_lift::revision2::colour_preset_noted(&file_name, &v1).map_err(|e| format!("Revision 2 error: {e}"))?;
     if let Some(n) = notes.iter().find(|n| klipp_graph_lift::revision2::is_lost(n)) {
         return Err(format!("Saving the preset would lose part of it ({n:?}), so it was not saved"));
+    }
+    if !node_labels.is_empty() {
+        v2[NODE_LABELS] = serde_json::to_value(node_labels).map_err(|e| format!("Serialize error: {e}"))?;
     }
     let json = serde_json::to_string_pretty(&v2).map_err(|e| format!("Serialize error: {e}"))?;
     std::fs::write(&path, json)
@@ -379,15 +388,31 @@ pub(crate) fn preset_stem(name: &str) -> String {
     name.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' }).collect()
 }
 
+/// Where a whole-grade preset keeps its node colour labels (#1866). A
+/// preset without the key has none.
+const NODE_LABELS: &str = "node_labels";
+
 /// The whole-grade presets in `dir`, by name.
 pub(crate) fn load_presets_in(dir: &Path) -> Vec<(String, NodeGraph)> {
+    load_labelled_presets_in(dir).into_iter().map(|(name, graph, _)| (name, graph)).collect()
+}
+
+/// [`load_presets_in`], each with its node colour labels: none for a
+/// preset saved without them, or whose labels this build can't read.
+pub(crate) fn load_labelled_presets_in(dir: &Path) -> Vec<(String, NodeGraph, Vec<klipp_timeline::GradeNodeLabel>)> {
     let mut presets = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else { return presets };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("json") {
-            if let Some(preset) = load_preset_file(&path) {
-                presets.push(preset);
+            if let Some((name, graph)) = load_preset_file(&path) {
+                let labels = std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                    .and_then(|v| v.get(NODE_LABELS).cloned())
+                    .and_then(|l| serde_json::from_value(l).ok())
+                    .unwrap_or_default();
+                presets.push((name, graph, labels));
             }
         }
     }

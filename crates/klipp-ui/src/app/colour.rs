@@ -1853,7 +1853,8 @@ impl KlippApp {
                     return true;
                 };
                 let name = still.name.clone();
-                let (edits, refused) = grade_from_still_edits(&self.state.sequences[self.state.active_sequence_idx], &grade, clip_ids, *append);
+                let labels = still.grade_labels.clone();
+                let GradeApplied { edits, refused, labels } = apply_grade(&self.state.sequences[self.state.active_sequence_idx], &grade, &labels, clip_ids, *append);
                 if edits.is_empty() {
                     if refused.is_empty() {
                         self.state.toast.show("Select the clips to grade first");
@@ -1863,6 +1864,8 @@ impl KlippApp {
                     return true;
                 }
                 let n = edits.len();
+                // The grade's node labels in the same step (#1866).
+                let edits: Vec<_> = edits.into_iter().chain(labels).collect();
                 self.apply_edits_as_one(&edits, "Apply Grade from Still");
                 let mut told = format!("Applied the grade of \"{name}\" to {n} clip{}", if n == 1 { "" } else { "s" });
                 if !refused.is_empty() {
@@ -1880,7 +1883,9 @@ impl KlippApp {
                 let Some(clip) = seq.all_clips().find(|c| c.id == *clip_id) else { return true };
                 // Its thumbnail, as the strip shows it: the clip graded, at its middle.
                 let thumbnail = klipp_render::still::clip_still(clip, &self.state.media_pool, clip.duration().to_secs_f64() / 2.0, crate::graded_thumbs::THUMB_WIDTH, klipp_engine::video_decoder::working_colorspace()).ok();
-                match crate::grade_library::save_in(&dir, name, clip.grade(), thumbnail.as_ref()) {
+                // Its nodes' colour labels in its file (#1866).
+                let node_labels = klipp_timeline::grade_node_labels(&seq.node_labels, clip.id);
+                match crate::grade_library::save_labelled_in(&dir, name, clip.grade(), &node_labels, thumbnail.as_ref()) {
                     Ok(()) => {
                         self.state.grade_library = crate::grade_library::load_in(&dir);
                         self.state.toast.show(format!("Kept \"{}\" in the grade library", name.trim()));
@@ -1911,11 +1916,11 @@ impl KlippApp {
                 true
             }
             AppCommand::ApplyGradeFromLibrary { name, clip_ids, append } => {
-                let Some(grade) = self.state.grade_library.iter().find(|g| &g.name == name).map(|g| g.graph.clone()) else {
+                let Some((grade, labels)) = self.state.grade_library.iter().find(|g| &g.name == name).map(|g| (g.graph.clone(), g.node_labels.clone())) else {
                     self.state.toast.show(format!("No grade \"{name}\" in the library"));
                     return true;
                 };
-                let (edits, refused) = grade_from_still_edits(&self.state.sequences[self.state.active_sequence_idx], &grade, clip_ids, *append);
+                let GradeApplied { edits, refused, labels } = apply_grade(&self.state.sequences[self.state.active_sequence_idx], &grade, &labels, clip_ids, *append);
                 if edits.is_empty() {
                     if refused.is_empty() {
                         self.state.toast.show("Select the clips to grade first");
@@ -1925,6 +1930,8 @@ impl KlippApp {
                     return true;
                 }
                 let n = edits.len();
+                // The grade's node labels in the same step (#1866).
+                let edits: Vec<_> = edits.into_iter().chain(labels).collect();
                 self.apply_edits_as_one(&edits, "Apply Grade from Library");
                 let mut told = format!("Applied \"{name}\" to {n} clip{}", if n == 1 { "" } else { "s" });
                 if !refused.is_empty() {
@@ -2016,6 +2023,8 @@ impl KlippApp {
             // A grade with a correction's mix (M3 step 17a) would be
             // applied from the still without it: the still keeps no grade.
             grade: clip.filter(|c| !c.holds_grade_mix()).map(|c| c.grade().clone()),
+            // Its nodes' colour labels with it (#1866).
+            grade_labels: clip.filter(|c| !c.holds_grade_mix()).map(|c| klipp_timeline::grade_node_labels(&seq.node_labels, c.id)).unwrap_or_default(),
             texture: None,
         })
     }
@@ -2038,6 +2047,7 @@ impl KlippApp {
                 height: s.height,
                 source: s.source.clone(),
                 grade: s.grade.clone(),
+                grade_labels: s.grade_labels.clone(),
             })
             .collect();
         if let Err(e) = klipp_project::save_grade_stills(&project_dir, &stills) {
