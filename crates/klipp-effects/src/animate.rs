@@ -250,6 +250,15 @@ impl BuiltinEffect {
                 real(f, "smoothness", smoothness);
                 real(f, "hold", hold);
             }
+            E::Particles { amount, size, speed, direction, spread, lifetime, opacity, .. } => {
+                real(f, "amount", amount);
+                real(f, "size", size);
+                real(f, "speed", speed);
+                real(f, "direction", direction);
+                real(f, "spread", spread);
+                real(f, "lifetime", lifetime);
+                real(f, "opacity", opacity);
+            }
             E::BinocularVignette { amount, spacing, width, height, softness, fringe } => {
                 real(f, "amount", amount);
                 real(f, "spacing", spacing);

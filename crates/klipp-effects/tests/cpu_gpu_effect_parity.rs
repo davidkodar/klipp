@@ -162,6 +162,15 @@ fn cases() -> Vec<(&'static str, BuiltinEffect)> {
         ("Flicker exposure", Flicker { amount: 0.6, speed: 12.0, smoothness: 0.0, hold: 0.0, seed: 5, target: 1, time: 1.27 }),
         ("Flicker gamma", Flicker { amount: 0.7, speed: 6.0, smoothness: 1.0, hold: 0.0, seed: 9, target: 2, time: 0.81 }),
         ("BinocularVignette", BinocularVignette { amount: -0.9, spacing: 0.4, width: 0.8, height: 0.7, softness: 0.2, fringe: 3.0 }),
+        // Particles (#1141): each kind, part way through their lives,
+        // more of them than the preset: the frame here is small.
+        ("Particles dust", klipp_effects::particles::preset(0).with_time(1.7).denser(4.0)),
+        ("Particles snow", klipp_effects::particles::preset(1).with_time(3.1).denser(6.0)),
+        ("Particles rain", klipp_effects::particles::preset(2).with_time(0.6).denser(6.0)),
+        ("Particles sparks", klipp_effects::particles::preset(3).with_time(0.9).denser(6.0)),
+        ("Particles embers", klipp_effects::particles::preset(4).with_time(2.2).denser(6.0)),
+        // Blown up and left an hour in: the slide wrapped, held small.
+        ("Particles dust an hour in", klipp_effects::particles::preset(0).with_time(3600.3).denser(4.0)),
         ("BinocularVignette lit", BinocularVignette { amount: 0.5, spacing: 0.6, width: 0.5, height: 0.9, softness: 0.05, fringe: -2.5 }),
     ]
 }

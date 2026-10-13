@@ -459,6 +459,10 @@ const EFFECTS_IN_A_LATER_BATCH: &[&str] = &[
     // stored frames come with the next recording on main.
     "Flicker",
     "BinocularVignette",
+    // Particles (#1141): drawn alike on the CPU and the GPU in
+    // klipp-effects' `cpu_gpu_effect_parity.rs`, their time from the
+    // clip's in `effect_keyframes.rs`.
+    "Particles",
     // The luma key (#1638): drawn alike on the CPU and the GPU, alpha
     // included, in klipp-effects' `luma_key_effect.rs`, and by op as by
     // the app in klipp-render's `keyer_op_matches_the_app.rs`. Its stored

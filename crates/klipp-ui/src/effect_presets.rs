@@ -433,6 +433,12 @@ impl PresetManager {
         self.bi("klipp.fx.flicker", "Glitchy Title", "Opacity jumps, for titles and overlays",
             klipp_effects::BuiltinEffect::Flicker { amount: 0.9, speed: 14.0, smoothness: 0.0, hold: 0.6, seed: 1, target: 0, time: 0.0 });
 
+        // ── Particles (#1141) ─────────────────────────────────
+        for kind in 0..5u32 {
+            let (name, what) = PARTICLE_PRESETS[kind as usize];
+            self.bi("klipp.fx.particles", name, what, particles_default(kind));
+        }
+
         // ── VHS ───────────────────────────────────────────────
         self.bi("klipp.fx.vhs", "Worn Tape", "Heavy tracking and bleed",
             klipp_effects::BuiltinEffect::Vhs { tracking: 0.8, bleed: 0.8, noise: 0.6, scanlines: 0.6, seed: 0 });
@@ -555,6 +561,7 @@ pub fn builtin_effect_key(effect: &klipp_effects::BuiltinEffect) -> &'static str
         klipp_effects::BuiltinEffect::Vignette { .. } => "vignette",
         klipp_effects::BuiltinEffect::BinocularVignette { .. } => "binocular_vignette",
         klipp_effects::BuiltinEffect::Flicker { .. } => "flicker",
+        klipp_effects::BuiltinEffect::Particles { .. } => "particles",
         klipp_effects::BuiltinEffect::Diffusion { .. } => "diffusion",
         klipp_effects::BuiltinEffect::LensFlare { .. } => "lens_flare",
         klipp_effects::BuiltinEffect::LightWrap { .. } => "light_wrap",
@@ -605,6 +612,21 @@ fn sanitize_filename(name: &str) -> String {
         .collect()
 }
 
+/// The particle presets' names and descriptions, by kind (#1141).
+const PARTICLE_PRESETS: [(&str, &str); 5] = [
+    ("Dust Motes", "Specks drifting in the light"),
+    ("Snowfall", "Soft flakes falling and swaying"),
+    ("Rain", "Fast streaks slanting down"),
+    ("Sparks", "Bright sparks flying up and falling back"),
+    ("Embers", "Glowing embers rising and cooling"),
+];
+
+/// Particles of `kind` with that kind's own numbers (#1141): what its
+/// preset and a reset give.
+pub fn particles_default(kind: u32) -> klipp_effects::BuiltinEffect {
+    klipp_effects::particles::preset(kind)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -619,7 +641,7 @@ mod tests {
     fn every_built_in_preset_is_keyed_by_its_type_id() {
         let m = manager(std::path::Path::new("/nonexistent/klipp-presets"));
         let builtins: Vec<_> = m.presets.iter().filter(|p| p.is_builtin).collect();
-        assert_eq!(builtins.len(), 136);
+        assert_eq!(builtins.len(), 141);
         for p in &builtins {
             let id = p.builtin.as_ref().and_then(preset_type_id);
             assert_eq!(Some(p.effect_key.as_str()), id, "{}", p.name);
@@ -671,3 +693,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+

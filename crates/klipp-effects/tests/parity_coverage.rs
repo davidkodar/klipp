@@ -110,6 +110,7 @@ const EFFECTS: &[(&str, Cover)] = &[
     ("PictureTransform", Case("PictureTransform")),
     ("Flicker", Case("Flicker exposure")),
     ("BinocularVignette", Case("BinocularVignette")),
+    ("Particles", Case("Particles sparks")),
     // Its alpha is all it changes, which `cases()` does not compare (#1638).
     ("LumaKey", Test("klipp-effects/tests/luma_key_effect.rs", "the_luma_key_effect_matches_between_cpu_and_gpu")),
     ("Generator", Case("Generator linear")),
@@ -128,6 +129,7 @@ const SHADERS: &[(&str, Cover)] = &[
     ("LAYER_FILL_OVER", Test(LAYER, "fill_bars_matches_cpu_on_gpu")),
     ("SHADER_OPACITY", EVERY_EFFECT),
     ("SHADER_BINOCULAR_VIGNETTE", EVERY_EFFECT),
+    ("SHADER_PARTICLES", EVERY_EFFECT),
     ("SHADER_COLOR_FADE", EVERY_EFFECT),
     ("SHADER_BLUR_H", EVERY_EFFECT),
     ("SHADER_BLUR_V", EVERY_EFFECT),

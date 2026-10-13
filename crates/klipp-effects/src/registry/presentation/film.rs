@@ -23,6 +23,7 @@ const STABILIZE: &str = "klipp.fx.video_stabilization";
 const RAMP: &str = "klipp.fx.speed_ramp";
 const FREI0R: &str = "klipp.fx.frei0r";
 const FLICKER: &str = "klipp.fx.flicker";
+const PARTICLES: &str = "klipp.fx.particles";
 
 const fn toggle() -> P {
     P::shown_as(Widget::Toggle)
@@ -62,6 +63,18 @@ pub(super) static PARAMS: &[ParamEntry] = &[
     at(FLICKER, "hold", P::scrub(0.005, 2).order(4)),
     at(FLICKER, "seed", P::scrub(1.0, 0).soft_whole((0, 10_000)).order(5)),
     at(FLICKER, "time", P::hidden()),
+    // Particles (#1141): the kind first; their time is the compositor's.
+    at(PARTICLES, "style", combo().labels(&["Dust", "Snow", "Rain", "Sparks", "Embers"]).order(0)),
+    at(PARTICLES, "amount", P::scrub(1.0, 0).order(1)),
+    at(PARTICLES, "size", P::scrub(0.05, 1).order(2)),
+    at(PARTICLES, "speed", P::scrub(1.0, 0).suffix(Suffix::Text("px/s")).order(3)),
+    at(PARTICLES, "direction", P::scrub(1.0, 0).order(4)),
+    at(PARTICLES, "spread", P::scrub(0.005, 2).order(5)),
+    at(PARTICLES, "lifetime", P::scrub(0.05, 1).order(6)),
+    at(PARTICLES, "opacity", P::scrub(0.005, 2).order(7)),
+    at(PARTICLES, "color", P::shown_as(Widget::ColourRgb).order(8)),
+    at(PARTICLES, "seed", P::scrub(1.0, 0).soft_whole((0, 10_000)).order(9)),
+    at(PARTICLES, "time", P::hidden()),
     at(CHROMA_KEY, "key_color", P::shown_as(Widget::ColourRgb)),
     at(CHROMA_KEY, "tolerance", P::scrub(0.005, 3)),
     at(CHROMA_KEY, "spill", P::scrub(0.005, 3)),

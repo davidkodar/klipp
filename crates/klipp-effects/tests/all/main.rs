@@ -52,6 +52,8 @@ mod mixable_types;
 mod motion_warp_parity;
 #[path = "../parity_coverage.rs"]
 mod parity_coverage;
+#[path = "../particles_look.rs"]
+mod particles_look;
 #[path = "../piece_transitions.rs"]
 mod piece_transitions;
 #[path = "../presentation.rs"]

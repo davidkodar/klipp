@@ -300,8 +300,10 @@ exist until the plan runs.
   `fringe`), `tilt_shift`, `mosaic` (`pixelate`), `posterize`, `invert`,
   `mirror`, `lens_distortion` (`barrel`), `emboss`, `edge_detect`
   (`edges`), `denoise`, `vhs`, `old_film`, `flicker` (random jumps of
-  the opacity; `exposure_flicker` of the light) and `binocular`
-  (`binocular_vignette`: two eyepieces, a fringe at their rims). `corners`
+  the opacity; `exposure_flicker` of the light), `binocular`
+  (`binocular_vignette`: two eyepieces, a fringe at their rims) and the
+  particles `dust`, `snow`, `rain`, `sparks` and `embers` (`particles`
+  is dust; more of them with the amount). `corners`
   (`rounded_corners`) rounds a layer's alpha mask, `shadow`
   (`drop_shadow`) places a shadow behind it, and `outer_glow` lights its
   silhouette; compose the picture smaller than the frame to see these.

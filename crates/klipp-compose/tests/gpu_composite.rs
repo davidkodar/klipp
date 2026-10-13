@@ -1457,3 +1457,65 @@ fn a_still_generator_is_kept_and_a_changed_one_redrawn() {
     let (a, b) = (at(&living, &mut r, 1.0, W, H).unwrap(), at(&living, &mut r, 2.0, W, H).unwrap());
     assert!(worst(&a, &b) > 10, "a moving generator is drawn anew");
 }
+
+/// #1141: particles over a clip are the same in the viewer (the GPU
+/// stack) and the export (the CPU), for each kind, small and large.
+#[test]
+fn particles_match() {
+    for style in 0..5u32 {
+        for (size, dir_, sp) in [(1.0f32, None, None), (12.0, None, None), (18.05, None, None), (2.45, Some(324.0f32), None), (2.5, None, Some(1350.0f32)), (17.0, Some(37.0), Some(400.0))] {
+            let size: f32 = size;
+            let mut seq = Sequence::new_default();
+            seq.resolution = klipp_core::Resolution { width: W, height: H };
+            let mut v = Track::new("V1", TrackKind::Video);
+            let mut a = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 4.0);
+            let fx = match klipp_effects::particles::preset(style) {
+                klipp_effects::BuiltinEffect::Particles { style, amount, speed, direction, spread, lifetime, opacity, color, seed, time, .. } => klipp_effects::BuiltinEffect::Particles { style, amount, size, speed: sp.unwrap_or(speed), direction: dir_.unwrap_or(direction), spread, lifetime, opacity, color, seed, time },
+                e => e,
+            };
+            a = TestClip::of(a).effects([fx]).build();
+            let mut src = Flat::default();
+            src.0.insert(a.id, busy());
+            v.clips = vec![a];
+            seq.tracks = vec![v];
+            let mut r = renderer();
+            // A frame before, on the same renderer: what it keeps between
+            // frames must not hold the particles where they were.
+            let _ = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default());
+            let _ = r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default());
+            let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(0.5), W, H, &mut src, RenderOptions::default()) else {
+                eprintln!("skipping: the GPU stack declined");
+                return;
+            };
+            let cpu = display(&r.render(&seq, tc(0.5), W, H, &mut src, RenderOptions::default()));
+            let over: Vec<usize> = (0..cpu.len()).filter(|&i| cpu[i].abs_diff(gpu[i]) > 1).collect();
+            for &i in over.iter().take(4) {
+                let p = i / 4;
+                eprintln!("style {style} size {size}: ({}, {}) channel {} CPU {} GPU {}", p as u32 % W, p as u32 / W, i % 4, cpu[i], gpu[i]);
+            }
+            assert!(over.is_empty(), "style {style} size {size}: {} values more than a level apart", over.len());
+        }
+    }
+}
+
+/// A busy picture with highlights over 1 and grain: the UI parity
+/// harness's source.
+fn busy() -> Arc<Vec<f32>> {
+    let (w, h) = (W, H);
+    let frame = 12u32;
+    let pan = frame * 2;
+    let mut v = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let xs = x + pan;
+            let (fx, fy) = ((xs % w) as f32 / w as f32, y as f32 / h as f32);
+            let check = if (xs / 8 + y / 8).is_multiple_of(2) { 0.15 } else { 0.0 };
+            let bright = (0.6..0.75).contains(&fx) && (0.2..0.4).contains(&fy);
+            let lift = if bright { 1.5 } else { 0.0 };
+            let hash = (x.wrapping_mul(73856093) ^ y.wrapping_mul(19349663) ^ frame.wrapping_mul(83492791)) % 1000;
+            let grain = (hash as f32 / 1000.0 - 0.5) * 0.06;
+            v.extend_from_slice(&[fx * 0.8 + check + lift + grain, fy * 0.7 + lift + grain, (1.0 - fx) * 0.6 + check + lift + grain, 1.0]);
+        }
+    }
+    Arc::new(v)
+}

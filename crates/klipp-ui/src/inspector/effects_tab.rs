@@ -400,6 +400,8 @@ fn builtin_effect_default(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         BuiltinEffect::Flicker { .. } => BuiltinEffect::Flicker {
             amount: 0.5, speed: 8.0, smoothness: 0.0, hold: 0.3, seed: 67, target: 0, time: 0.0,
         },
+        // The kind stays: a reset sets snow's numbers back, not dust's.
+        BuiltinEffect::Particles { style: kind, .. } => crate::effect_presets::particles_default(*kind),
         BuiltinEffect::Diffusion { .. } => BuiltinEffect::Diffusion {
             amount: 0.3, radius: 25.0, threshold: 0.5, desaturation: 0.2,
         },
@@ -519,7 +521,7 @@ fn builtin_effect_has_multi_params(effect: &klipp_effects::BuiltinEffect) -> boo
         | BuiltinEffect::Letterbox { .. } | BuiltinEffect::ChromaticAberration { .. }
         | BuiltinEffect::FilmGrain { .. } | BuiltinEffect::TiltShift { .. }
         | BuiltinEffect::OldFilm { .. } | BuiltinEffect::Vhs { .. }
-        | BuiltinEffect::Flicker { .. } | BuiltinEffect::BinocularVignette { .. })
+        | BuiltinEffect::Flicker { .. } | BuiltinEffect::BinocularVignette { .. } | BuiltinEffect::Particles { .. })
 }
 
 #[allow(dead_code)]

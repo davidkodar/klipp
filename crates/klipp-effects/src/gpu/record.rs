@@ -110,6 +110,7 @@ pub fn slots_needed(effect: &BuiltinEffect) -> Option<usize> {
         | BuiltinEffect::LightRays { .. }
         | BuiltinEffect::Vignette { .. }
         | BuiltinEffect::BinocularVignette { .. }
+        | BuiltinEffect::Particles { .. }
         | BuiltinEffect::Lut3D { .. }
         | BuiltinEffect::ColourSpaceTransform { .. }
         | BuiltinEffect::PictureTransform { .. }
@@ -694,6 +695,14 @@ impl GpuEffectsPipeline {
                     luma_yr: self.luma_coefs[0], luma_yg: self.luma_coefs[1], luma_yb: self.luma_coefs[2], _pad_luma: 0,
                 });
                 (&self.light_rays_pipeline, slot)
+            }
+            BuiltinEffect::Particles { .. } => {
+                // The twin of `particles::apply` (#1141).
+                let Some(pp) = crate::particles::params(effect, width, height) else {
+                    return Recorded::Identity;
+                };
+                let slot = rec.slots.claim(q, &pp);
+                (&self.particles_pipeline, slot)
             }
             BuiltinEffect::BinocularVignette { amount, spacing, width: eye_w, height: eye_h, softness, fringe } => {
                 if amount.abs() < f32::EPSILON && fringe.abs() < f32::EPSILON {

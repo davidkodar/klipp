@@ -59,6 +59,7 @@ pub mod light;
 pub mod mask_mix;
 pub mod nv12_gpu;
 pub mod p010_gpu;
+pub mod particles;
 pub mod pieces;
 pub mod registry;
 pub mod rolling_shutter;
@@ -903,6 +904,28 @@ pub enum BuiltinEffect {
         softness: f32,
         fringe: f32,
     },
+    /// Particles (#1141): dust, snow, rain, sparks or embers (`style` 0
+    /// to 4) drawn over the picture. About `amount` of them in the frame,
+    /// `size` and `speed` (a second) in pixels of a 1080-line frame, the
+    /// wind blowing them at `direction` degrees (0 right, 90 down),
+    /// `spread` how far each strays from it (0..1), each living
+    /// `lifetime` seconds give or take; `color` sRGB, `opacity` 0..1,
+    /// `seed` the pattern. **The compositor sets `time`**, the clip's time
+    /// in seconds, as it sets a flicker's.
+    Particles {
+        style: u32,
+        amount: f32,
+        size: f32,
+        speed: f32,
+        direction: f32,
+        spread: f32,
+        lifetime: f32,
+        opacity: f32,
+        color: [u8; 3],
+        seed: u32,
+        #[serde(default)]
+        time: f32,
+    },
 
     /// A second picture laid over the clip's, by `blend_mode` and
     /// `opacity` (#1746): the one wired into its `fg` port from beside the
@@ -1244,6 +1267,8 @@ pub fn is_identity_effect(effect: &BuiltinEffect) -> bool {
         BuiltinEffect::PictureTransform { .. } => effect.picture_transform_as_transform().is_some_and(|t| is_identity_effect(&t)),
         // A flicker of nothing, or one whose every jump holds (#989).
         BuiltinEffect::Flicker { amount, hold, .. } => amount.abs() < f32::EPSILON || *hold >= 1.0,
+        // No particles, or none to see (#1141).
+        BuiltinEffect::Particles { amount, opacity, size, .. } => *amount < 1.0 || *opacity <= 0.0 || *size <= 0.0,
         BuiltinEffect::Merge { opacity, .. } => *opacity <= 0.0,
         BuiltinEffect::ColourSpaceTransform { input_gamut, input_curve, output_gamut, output_curve, .. } => {
             input_gamut == output_gamut && *input_curve == 0 && *output_curve == 0

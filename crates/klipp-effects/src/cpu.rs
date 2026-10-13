@@ -441,6 +441,8 @@ pub(crate) fn apply(
             Some(plain) => apply(&plain, p, w, h, yw),
             None => p,
         },
+        // The twin of `SHADER_PARTICLES` (#1141).
+        Particles { .. } => crate::particles::apply(effect, p, w, h),
         // The twin of `SHADER_BINOCULAR_VIGNETTE` (#989).
         BinocularVignette { amount, spacing, width: eye_w, height: eye_h, softness, fringe } => {
             if amount.abs() < f32::EPSILON && fringe.abs() < f32::EPSILON {
