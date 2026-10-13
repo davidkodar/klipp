@@ -53,14 +53,16 @@ impl FieldValue for Field {
                 if item.resolution.width == 0 { String::new() } else { format!("{}x{}", item.resolution.width, item.resolution.height) }
             }
             Field::Fps => {
-                if item.fps.den == 0 || (item.fps.num == 1 && item.fps.den == 1) {
+                if !has_frame_rate(item) {
                     String::new()
                 } else {
                     let f = item.fps.as_f64();
                     if (f - f.round()).abs() < 1e-3 { format!("{}", f.round() as u32) } else { format!("{f:.3}") }
                 }
             }
-            Field::Codec => item.video_codec.to_lowercase(),
+            // The picture's codec, or for a sound-only file its sound's,
+            // so a recording's row says what it holds.
+            Field::Codec => if item.video_codec.is_empty() { item.audio_codec.to_lowercase() } else { item.video_codec.to_lowercase() },
             Field::FileSize => size_text(item.file_size_bytes),
             Field::Rating => "\u{2605}".repeat(item.rating as usize),
             Field::ColourLabel => item.color_label.label().to_string(),
@@ -110,7 +112,7 @@ impl FieldValue for Field {
         match self {
             Field::Duration => Some(item.duration.to_secs_f64()),
             Field::Resolution => Some(f64::from(item.resolution.width) * f64::from(item.resolution.height)),
-            Field::Fps => (item.fps.den != 0).then(|| item.fps.as_f64()),
+            Field::Fps => has_frame_rate(item).then(|| item.fps.as_f64()),
             Field::FileSize => Some(item.file_size_bytes as f64),
             Field::Rating => Some(f64::from(item.rating)),
             Field::ShootDate => item.media_created_at.or(item.file_modified_at).map(|s| s as f64),
@@ -140,6 +142,13 @@ impl FieldValue for Field {
 }
 
 /// "1:24:05" or "0:07" — hours only when there are any.
+/// Whether the item has a frame rate of its own: moving picture. A
+/// sound-only file or a still carries a placeholder rate that is not
+/// the file's.
+pub fn has_frame_rate(item: &MediaItem) -> bool {
+    item.fps.den != 0 && !(item.fps.num == 1 && item.fps.den == 1) && !item.video_codec.is_empty() && !item.is_still
+}
+
 pub fn duration_text(secs: f64) -> String {
     let whole = secs.round().max(0.0) as u64;
     let (h, m, s) = (whole / 3600, (whole % 3600) / 60, whole % 60);
@@ -241,5 +250,27 @@ mod tests {
         assert_eq!(duration_text(3725.0), "1:02:05");
         assert_eq!(duration_text(7.0), "0:07");
         assert_eq!(date_text(1_710_498_600), "2024-03-15 10:30");
+    }
+
+    /// A sound-only file or a still has no frame rate of its own: its
+    /// Fps column is empty and does not sort as a rate; a clip's shows
+    /// its rate. A recording's Codec column is its sound's codec.
+    #[test]
+    fn only_moving_picture_has_a_frame_rate() {
+        let mut clip = MediaItem::synthetic_for_test("/f/a.mov".into(), None);
+        clip.video_codec = "H264".into();
+        clip.fps = klipp_core::Fps::new(24, 1);
+        assert_eq!(Field::Fps.text(&clip), "24");
+        assert_eq!(Field::Fps.number(&clip), Some(24.0));
+        assert_eq!(Field::Codec.text(&clip), "h264");
+        let mut sound = clip.clone();
+        sound.video_codec.clear();
+        sound.audio_codec = "PCM_S24LE".into();
+        assert_eq!(Field::Fps.text(&sound), "", "a recording has no frame rate");
+        assert_eq!(Field::Fps.number(&sound), None);
+        assert_eq!(Field::Codec.text(&sound), "pcm_s24le");
+        let mut still = clip.clone();
+        still.is_still = true;
+        assert_eq!(Field::Fps.text(&still), "");
     }
 }

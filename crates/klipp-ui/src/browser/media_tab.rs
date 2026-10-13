@@ -1,3 +1,4 @@
+use crate::widgets::menu::{menu_body, menu_item};
 use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
@@ -252,6 +253,7 @@ pub fn show(
             true
         })
         .map(|m| MediaRow {
+            caption: card_caption(m),
             id: m.id,
             filename: m.filename.clone(),
             duration: m.duration,
@@ -260,7 +262,6 @@ pub fn show(
             _proxy_ready: m.proxy_ready,
             path: m.path.clone(),
             bin: m.bin.clone(),
-            fps: m.fps,
             color_label: m.color_label,
             resolution: m.resolution,
             camera: {
@@ -353,22 +354,22 @@ pub fn show(
         let min_h = 40.0_f32.max(remaining.height());
         let bg_rect = egui::Rect::from_min_size(remaining.min, egui::vec2(remaining.width(), min_h));
         let bg_resp = ui.allocate_rect(bg_rect, egui::Sense::click());
-        bg_resp.context_menu(|ui| {
+        bg_resp.context_menu(|ui| menu_body(ui, |ui| {
             ui.set_min_width(180.0);
 
-            if ui.button("New Folder").clicked() {
+            if menu_item(ui, "New Folder", "").clicked() {
                 *creating_bin = Some("New Folder".to_string());
                 ui.close_menu();
             }
 
             ui.separator();
 
-            if ui.button("Import Media\u{2026}").clicked() {
+            if menu_item(ui, "Import Media\u{2026}", "").clicked() {
                 crate::file_dialog::spawn(crate::command_palette::import_media_commands);
                 ui.close_menu();
             }
 
-            if ui.button("Import Folder\u{2026}").clicked() {
+            if menu_item(ui, "Import Folder\u{2026}", "").clicked() {
                 crate::file_dialog::spawn(move || {
                     rfd::FileDialog::new()
                         .pick_folder()
@@ -380,20 +381,20 @@ pub fn show(
 
             ui.separator();
 
-            ui.menu_button("Sort By", |ui| {
+            ui.menu_button("Sort By", |ui| menu_body(ui, |ui| {
                 for f in Field::SORTABLE {
                     ui.selectable_value(sort_by, f, f.label());
                 }
-            });
+            }));
 
-            ui.menu_button("View", |ui| {
+            ui.menu_button("View", |ui| menu_body(ui, |ui| {
                 if ui.selectable_value(view_mode, BrowserViewMode::List, "List").clicked() {
                     ui.close_menu();
                 }
                 if ui.selectable_value(view_mode, BrowserViewMode::Grid, "Grid").clicked() {
                     ui.close_menu();
                 }
-            });
+            }));
 
             let (sort_icon, sort_text) = if *sort_ascending {
                 (Icon::SortAscending, "Ascending")
@@ -407,7 +408,7 @@ pub fn show(
                 *sort_ascending = !*sort_ascending;
                 ui.close_menu();
             }
-        });
+        }));
     });
 
     // ── File-browser drag-and-drop ──
@@ -448,17 +449,25 @@ pub fn show(
     cmds
 }
 
-/// Duration in seconds to HH:MM:SS string.
-fn format_duration(dur: &klipp_core::RationalTime) -> String {
-    let dur_secs = if dur.rate > 0 {
-        dur.value as f64 / dur.rate as f64
+/// A grid card's caption, as the list's columns read it: a clip's
+/// length and frame rate ("0:13 · 24 fps"), a recording's length and
+/// sample rate ("0:13 · 48 kHz"), a still's size ("Still · 1920×1080").
+/// No rate is shown that the file does not have.
+fn card_caption(item: &klipp_media::MediaItem) -> String {
+    use klipp_media::FieldValue;
+    if item.is_still {
+        return if item.resolution.width > 0 { format!("Still \u{00b7} {}\u{00d7}{}", item.resolution.width, item.resolution.height) } else { "Still".to_string() };
+    }
+    let length = klipp_media::field::duration_text(item.duration.to_secs_f64());
+    if klipp_media::field::has_frame_rate(item) {
+        format!("{length} \u{00b7} {} fps", klipp_media::Field::Fps.text(item))
+    } else if let Some(rate) = item.sample_rate.filter(|r| *r > 0) {
+        let khz = rate as f64 / 1000.0;
+        let khz = if khz.fract() == 0.0 { format!("{khz:.0}") } else { format!("{khz:.1}") };
+        format!("{length} \u{00b7} {khz} kHz")
     } else {
-        0.0
-    };
-    let hours = (dur_secs / 3600.0) as u32;
-    let mins = ((dur_secs % 3600.0) / 60.0) as u32;
-    let secs = (dur_secs % 60.0) as u32;
-    format!("{:02}:{:02}:{:02}", hours, mins, secs)
+        length
+    }
 }
 
 /// FPS as display string.
@@ -643,7 +652,7 @@ fn build_info_tooltip_rows(item: &klipp_media::MediaItem) -> Vec<(&'static str, 
             format!("{} \u{00D7} {}", item.resolution.width, item.resolution.height),
         ));
     }
-    if !item.is_still {
+    if klipp_media::field::has_frame_rate(item) {
         rows.push(("Frame rate", format_fps(&item.fps)));
     }
     if !item.video_codec.is_empty() {
@@ -935,7 +944,7 @@ fn render_column_header(ui: &mut egui::Ui, theme: &KlippTheme, columns: &mut Vec
             *sort_ascending = true;
         }
     }
-    resp.context_menu(|ui| {
+    resp.context_menu(|ui| menu_body(ui, |ui| {
         ui.label(egui::RichText::new("Columns").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
         for f in Field::COLUMNS {
             let mut on = columns.contains(&f);
@@ -948,11 +957,11 @@ fn render_column_header(ui: &mut egui::Ui, theme: &KlippTheme, columns: &mut Vec
             }
         }
         ui.separator();
-        if ui.button("Default columns").clicked() {
+        if menu_item(ui, "Default columns", "").clicked() {
             *columns = Field::DEFAULT_COLUMNS.to_vec();
             ui.close_menu();
         }
-    });
+    }));
     painter.line_segment([egui::pos2(rect.min.x, rect.max.y), egui::pos2(rect.max.x, rect.max.y)], egui::Stroke::new(1.0_f32, theme.border));
 }
 
@@ -1009,8 +1018,8 @@ fn render_list_view(
 
         // Bin header context menu (only for named bins)
         if let Some(bin_name) = bin {
-            header_resp.context_menu(|ui| {
-                if ui.button("New Sub-Folder").clicked() {
+            header_resp.context_menu(|ui| menu_body(ui, |ui| {
+                if menu_item(ui, "New Sub-Folder", "").clicked() {
                     if let Some(bin_record) = state.media_pool.bins.iter().find(|b| b.name == *bin_name) {
                         cmds.push(AppCommand::CreateSubBin {
                             parent_id: bin_record.id,
@@ -1020,15 +1029,15 @@ fn render_list_view(
                     ui.close_menu();
                 }
                 ui.separator();
-                if ui.button("Rename Bin").clicked() {
+                if menu_item(ui, "Rename Bin", "").clicked() {
                     *renaming_bin = Some((bin_name.clone(), bin_name.clone()));
                     ui.close_menu();
                 }
-                if ui.button("Delete Bin").clicked() {
+                if menu_item(ui, "Delete Bin", "").clicked() {
                     cmds.push(AppCommand::DeleteBin { name: bin_name.clone() });
                     ui.close_menu();
                 }
-            });
+            }));
         }
 
         // Drag-to-bin highlight
@@ -1259,13 +1268,13 @@ fn render_list_view(
                 state.dragging_media_group = crate::drag_drop::drag_group(all_ordered_ids, &state.selected_media_ids, item.id);
                 state.dragging_media = Some(item.id);
             }
-            resp.context_menu(|ui| {
+            resp.context_menu(|ui| menu_body(ui, |ui| {
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
                     show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), state.multicam_default_sync, cmds);
                 } else {
                     show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, &item.span_parts, cmds);
                 }
-            });
+            }));
         }
     }
 }
@@ -1350,8 +1359,8 @@ fn render_grid_view(
         // Folder header with rename support
         let header_resp = render_bin_header(ui, theme, bin, renaming_bin, cmds);
         if let Some(bin_name) = bin {
-            header_resp.context_menu(|ui| {
-                if ui.button("New Sub-Folder").clicked() {
+            header_resp.context_menu(|ui| menu_body(ui, |ui| {
+                if menu_item(ui, "New Sub-Folder", "").clicked() {
                     if let Some(bin_record) = state.media_pool.bins.iter().find(|b| b.name == *bin_name) {
                         cmds.push(AppCommand::CreateSubBin {
                             parent_id: bin_record.id,
@@ -1361,15 +1370,15 @@ fn render_grid_view(
                     ui.close_menu();
                 }
                 ui.separator();
-                if ui.button("Rename Bin").clicked() {
+                if menu_item(ui, "Rename Bin", "").clicked() {
                     *renaming_bin = Some((bin_name.clone(), bin_name.clone()));
                     ui.close_menu();
                 }
-                if ui.button("Delete Bin").clicked() {
+                if menu_item(ui, "Delete Bin", "").clicked() {
                     cmds.push(AppCommand::DeleteBin { name: bin_name.clone() });
                     ui.close_menu();
                 }
-            });
+            }));
         }
         ui.add_space(4.0);
 
@@ -1496,9 +1505,8 @@ fn render_grid_view(
                 theme.text_primary,
             );
 
-            // Caption: stars first when rated, then duration · fps.
-            let dur_str = format_duration(&item.duration);
-            let fps_str = format_fps(&item.fps);
+            // Caption: stars first when rated, then what the item is.
+            let meta_str = item.caption.clone();
             let meta_y = name_y + crate::theme::type_scale::BODY + 5.0;
             let mut meta_x = card_pos.x + 6.0;
             if item.rating > 0 {
@@ -1520,7 +1528,6 @@ fn render_grid_view(
                 );
                 meta_x = sep_rect.max.x;
             }
-            let meta_str = format!("{} \u{00b7} {}fps", dur_str, fps_str);
             ui.painter().text(
                 egui::pos2(meta_x, meta_y),
                 egui::Align2::LEFT_TOP,
@@ -1628,13 +1635,13 @@ fn render_grid_view(
                 }
             }
 
-            card_resp.context_menu(|ui| {
+            card_resp.context_menu(|ui| menu_body(ui, |ui| {
                 if state.selected_media_ids.len() > 1 && state.selected_media_ids.contains(&item.id) {
                     show_multi_context_menu(ui, &state.selected_media_ids, sync_pair_of(state), state.multicam_default_sync, cmds);
                 } else {
                     show_context_menu(ui, item.id, &item.path, item.offline, &item.filename, item.has_zone, item.parent_media_id.is_some(), item.synced_audio, &item.span_parts, cmds);
                 }
-            });
+            }));
 
             col_idx += 1;
             if col_idx >= cols {
@@ -1886,7 +1893,6 @@ struct MediaRow {
     _proxy_ready: bool,
     path: std::path::PathBuf,
     bin: Option<String>,
-    fps: klipp_core::Fps,
     color_label: klipp_media::ColorLabel,
     resolution: klipp_core::Resolution,
     camera: Option<String>,
@@ -1916,6 +1922,8 @@ struct MediaRow {
     span_parts: Vec<MediaId>,
     /// The name with its part, "C0001.MP4 · part 1 of 3", for display.
     display_name: String,
+    /// The grid card's caption (`card_caption`).
+    caption: String,
 }
 
 fn show_context_menu(
@@ -1930,7 +1938,7 @@ fn show_context_menu(
     span_parts: &[MediaId],
     cmds: &mut Vec<AppCommand>,
 ) {
-    if span_parts.len() >= 2 && ui.button(format!("Add All {} Parts to Timeline", span_parts.len()))
+    if span_parts.len() >= 2 && menu_item(ui, &format!("Add All {} Parts to Timeline", span_parts.len()), "")
         .on_hover_text("The take the camera split into numbered files, laid back to back.")
         .clicked()
     {
@@ -1939,11 +1947,11 @@ fn show_context_menu(
         }
         ui.close_menu();
     }
-    if synced_audio && ui.button("Remove Synced Audio").on_hover_text("The clip goes back to its own sound.").clicked() {
+    if synced_audio && menu_item(ui, "Remove Synced Audio", "").on_hover_text("The clip goes back to its own sound.").clicked() {
         cmds.push(AppCommand::ClearSyncedAudio { video_id: media_id });
         ui.close_menu();
     }
-    if !offline && ui.button("Transcribe Clip")
+    if !offline && menu_item(ui, "Transcribe Clip", "")
         .on_hover_text("Run speech-to-text on this clip now, even when automatic transcription is off.")
         .clicked()
     {
@@ -1953,7 +1961,7 @@ fn show_context_menu(
     // Relink — only shown for offline items, sits at the top so it's
     // the first action a user sees when reaching for a missing clip.
     if offline {
-        if ui.button("Relink\u{2026}").clicked() {
+        if menu_item(ui, "Relink\u{2026}", "").clicked() {
             ui.close_menu();
             let ext = path
                 .extension()
@@ -1974,7 +1982,7 @@ fn show_context_menu(
         ui.separator();
     }
 
-    if ui.button("Rename\u{2026}").clicked() {
+    if menu_item(ui, "Rename\u{2026}", "").clicked() {
         ui.close_menu();
         // Single-item rename reuses the batch dialog (count 1 is supported).
         cmds.push(AppCommand::OpenBatchRenameDialog { media_ids: vec![media_id] });
@@ -1983,7 +1991,7 @@ fn show_context_menu(
     // The handler rejects subclip-of-subclip defensively; this gate just
     // avoids offering it when it would toast an error.
     if !is_subclip && has_zone
-        && ui.button("Create Subclip from Zone").clicked() {
+        && menu_item(ui, "Create Subclip from Zone", "").clicked() {
             ui.close_menu();
             cmds.push(AppCommand::CreateSubclipFromZone {
                 source_media_id: media_id,
@@ -1991,27 +1999,27 @@ fn show_context_menu(
             });
         }
     ui.separator();
-    if ui.button("Load in Source").clicked() {
+    if menu_item(ui, "Load in Source", "").clicked() {
         cmds.push(AppCommand::LoadSourceMedia { media_id });
         ui.close_menu();
     }
-    if ui.button("Add at Playhead").clicked() {
+    if menu_item(ui, "Add at Playhead", "").clicked() {
         cmds.push(AppCommand::PlaceMedia { media_id, drop: klipp_core::events::ClipDrop::AtPlayhead });
         ui.close_menu();
     }
-    if ui.button("Add to End of Timeline").clicked() {
+    if menu_item(ui, "Add to End of Timeline", "").clicked() {
         cmds.push(AppCommand::ImportMediaLinked { media_id, on_new_tracks: false });
         ui.close_menu();
     }
-    if ui.button("Generate Proxy").clicked() {
+    if menu_item(ui, "Generate Proxy", "").clicked() {
         cmds.push(AppCommand::GenerateProxy { media_id });
         ui.close_menu();
     }
-    if ui.button("Regenerate Filmstrip").clicked() {
+    if menu_item(ui, "Regenerate Filmstrip", "").clicked() {
         cmds.push(AppCommand::RegenerateFilmstrip { media_id });
         ui.close_menu();
     }
-    if ui.button("Regenerate Skim Transcode").clicked() {
+    if menu_item(ui, "Regenerate Skim Transcode", "").clicked() {
         cmds.push(AppCommand::RegenerateSkimTranscode { media_id });
         ui.close_menu();
     }
@@ -2023,20 +2031,20 @@ fn show_context_menu(
         ui.close_menu();
     }
     ui.separator();
-    ui.menu_button("Set Rating", |ui| {
+    ui.menu_button("Set Rating", |ui| menu_body(ui, |ui| {
         for r in 0..=5u8 {
             let label = if r == 0 {
                 "None".to_string()
             } else {
                 "\u{2605}".repeat(r as usize)
             };
-            if ui.button(&label).clicked() {
+            if menu_item(ui, &label, "").clicked() {
                 cmds.push(AppCommand::SetMediaRating { media_id, rating: r });
                 ui.close_menu();
             }
         }
-    });
-    ui.menu_button("Label colour", |ui| {
+    }));
+    ui.menu_button("Label colour", |ui| menu_body(ui, |ui| {
         for label in klipp_media::ColorLabel::ALL {
             let mut text = egui::RichText::new(label.label()).size(11.0);
             if let Some((r, g, b)) = label.rgb() {
@@ -2047,28 +2055,28 @@ fn show_context_menu(
                 ui.close_menu();
             }
         }
-    });
+    }));
     ui.separator();
-    if ui.button("Move to Root").clicked() {
+    if menu_item(ui, "Move to Root", "").clicked() {
         cmds.push(AppCommand::MoveItemToBin { media_id, bin: None });
         ui.close_menu();
     }
     ui.separator();
-    if ui.button("Remove from Project").clicked() {
+    if menu_item(ui, "Remove from Project", "").clicked() {
         cmds.push(AppCommand::RemoveFromPool { media_id });
         ui.close_menu();
     }
-    if ui.button("Open in External App").clicked() {
+    if menu_item(ui, "Open in External App", "").clicked() {
         cmds.push(AppCommand::OpenInExternalApp { media_id });
         ui.close_menu();
     }
-    if ui.button("Reveal in File Manager").clicked() {
+    if menu_item(ui, "Reveal in File Manager", "").clicked() {
         cmds.push(AppCommand::RevealInFileManager {
             path: path.to_path_buf(),
         });
         ui.close_menu();
     }
-    if ui.button("Add to Shared Library")
+    if menu_item(ui, "Add to Shared Library", "")
         .on_hover_text("Keep this file in the Library's shared collection, to bring into any project. The file stays where it is.")
         .clicked()
     {
@@ -2079,16 +2087,16 @@ fn show_context_menu(
     // resolve to the first timeline clip using this media at
     // handler time; if no clip uses it yet they surface a toast.
     ui.separator();
-    if ui.button("Set as Audio Reference").clicked() {
+    if menu_item(ui, "Set as Audio Reference", "").clicked() {
         cmds.push(AppCommand::SetAudioReferenceByMedia { media_id });
         ui.close_menu();
     }
-    if ui.button("Align to Audio Reference").clicked() {
+    if menu_item(ui, "Align to Audio Reference", "").clicked() {
         cmds.push(AppCommand::AlignToAudioReferenceByMedia { media_id });
         ui.close_menu();
     }
     ui.separator();
-    if ui.button("Properties\u{2026}").clicked() {
+    if menu_item(ui, "Properties\u{2026}", "").clicked() {
         cmds.push(AppCommand::OpenClipProperties { media_id });
         ui.close_menu();
     }
@@ -2161,17 +2169,17 @@ fn show_multi_context_menu(
     let count = selected_ids.len();
     ui.label(egui::RichText::new(format!("{count} items selected")).strong());
     ui.separator();
-    if ui.button("Rename\u{2026}").clicked() {
+    if menu_item(ui, "Rename\u{2026}", "").clicked() {
         ui.close_menu();
         cmds.push(AppCommand::OpenBatchRenameDialog {
             media_ids: selected_ids.iter().copied().collect(),
         });
     }
-    if ui.button("Refresh Metadata").on_hover_text("Read these files again for what the camera recorded.").clicked() {
+    if menu_item(ui, "Refresh Metadata", "").on_hover_text("Read these files again for what the camera recorded.").clicked() {
         ui.close_menu();
         cmds.push(AppCommand::RefreshMediaMetadata { media_ids: selected_ids.iter().copied().collect() });
     }
-    if ui.button("Add to Shared Library")
+    if menu_item(ui, "Add to Shared Library", "")
         .on_hover_text("Keep these files in the Library's shared collection, to bring into any project. The files stay where they are.")
         .clicked()
     {
@@ -2181,29 +2189,29 @@ fn show_multi_context_menu(
     let ids = || selected_ids.iter().copied().collect::<Vec<_>>();
     // In one click, by the editing preferences' default sync method;
     // the other methods are one level down.
-    if ui.button("Create Synced Multicam")
+    if menu_item(ui, "Create Synced Multicam", "")
         .on_hover_text(format!("Put these clips on one clock and lay them out at the playhead as a multicam, one angle per track: {} (the default in Preferences > Editing).", default_sync.label().to_lowercase()))
         .clicked()
     {
         ui.close_menu();
         cmds.push(AppCommand::CreateSyncedMulticam { media_ids: ids(), method: default_sync });
     }
-    ui.menu_button("Create Synced Multicam By", |ui| {
+    ui.menu_button("Create Synced Multicam By", |ui| menu_body(ui, |ui| {
         for (method, hint) in [
             (MulticamSync::TimecodeThenAudio, "Timecode where a clip has it, the sound for the rest. The usual choice."),
             (MulticamSync::Timecode, "Only the start timecode. For cameras jam-synced to one clock."),
             (MulticamSync::Audio, "Only the sound, matched against the longest clip. For cameras with no shared timecode."),
         ] {
-            if ui.button(method.label()).on_hover_text(hint).clicked() {
+            if menu_item(ui, method.label(), "").on_hover_text(hint).clicked() {
                 ui.close_menu();
                 cmds.push(AppCommand::CreateSyncedMulticam { media_ids: ids(), method });
             }
         }
-    })
+    }))
     .response
     .on_hover_text("The same, by a method chosen here.");
     if let Some((video_id, audio_id)) = sync_pair {
-        if ui.button("Sync Video and Audio")
+        if menu_item(ui, "Sync Video and Audio", "")
             .on_hover_text("Pair the clip with this recording: by timecode when both carry one, by the sound otherwise. The recording then goes under the clip when it is added to the timeline.")
             .clicked()
         {
@@ -2212,35 +2220,35 @@ fn show_multi_context_menu(
         }
     }
     ui.separator();
-    ui.menu_button("Move to bin", |ui| {
-        if ui.button("Root (no bin)").clicked() {
+    ui.menu_button("Move to bin", |ui| menu_body(ui, |ui| {
+        if menu_item(ui, "Root (no bin)", "").clicked() {
             for &id in selected_ids {
                 cmds.push(AppCommand::MoveItemToBin { media_id: id, bin: None });
             }
             ui.close_menu();
         }
-    });
-    ui.menu_button("Set Rating", |ui| {
+    }));
+    ui.menu_button("Set Rating", |ui| menu_body(ui, |ui| {
         for r in 0..=5u8 {
             let label = if r == 0 {
                 "None".to_string()
             } else {
                 "\u{2605}".repeat(r as usize)
             };
-            if ui.button(&label).clicked() {
+            if menu_item(ui, &label, "").clicked() {
                 for &id in selected_ids {
                     cmds.push(AppCommand::SetMediaRating { media_id: id, rating: r });
                 }
                 ui.close_menu();
             }
         }
-    });
+    }));
     // Batch colour label — mirrors the single-item "Label colour"
     // submenu but fans the per-item SetMediaColorLabel out across
     // every selected media id. ColorLabel::ALL keeps the swatch
     // list canonical with the single-item path so an added/removed
     // colour propagates to both surfaces in one place.
-    ui.menu_button("Set Colour Label", |ui| {
+    ui.menu_button("Set Colour Label", |ui| menu_body(ui, |ui| {
         for label in klipp_media::ColorLabel::ALL {
             let mut text = egui::RichText::new(label.label()).size(11.0);
             if let Some((r, g, b)) = label.rgb() {
@@ -2253,22 +2261,22 @@ fn show_multi_context_menu(
                 ui.close_menu();
             }
         }
-    });
+    }));
     ui.separator();
-    if ui.button(format!("Generate Proxies ({count})")).clicked() {
+    if menu_item(ui, &format!("Generate Proxies ({count})"), "").clicked() {
         for &id in selected_ids {
             cmds.push(AppCommand::GenerateProxy { media_id: id });
         }
         ui.close_menu();
     }
-    if ui.button(format!("Regenerate Filmstrips ({count})")).clicked() {
+    if menu_item(ui, &format!("Regenerate Filmstrips ({count})"), "").clicked() {
         for &id in selected_ids {
             cmds.push(AppCommand::RegenerateFilmstrip { media_id: id });
         }
         ui.close_menu();
     }
     ui.separator();
-    if ui.button(format!("Remove {count} items from Project")).clicked() {
+    if menu_item(ui, &format!("Remove {count} items from Project"), "").clicked() {
         for &id in selected_ids {
             cmds.push(AppCommand::RemoveFromPool { media_id: id });
         }
@@ -2602,5 +2610,79 @@ mod default_multicam_sync_tests {
             assert!(matches!(cmds.as_slice(), [AppCommand::CreateSyncedMulticam { method: m, media_ids }] if *m == method && media_ids.len() == 2), "{cmds:?}");
         }
         assert_eq!(crate::prefs::MulticamSyncMethod::default().sync(), MulticamSync::TimecodeThenAudio, "the default is the usual choice");
+    }
+}
+
+#[cfg(test)]
+mod pool_style_tests {
+    use super::*;
+
+    fn item(name: &str, video: &str, audio: &str) -> klipp_media::MediaItem {
+        let mut m = klipp_media::MediaItem::synthetic_for_test(format!("/footage/{name}").into(), None);
+        m.video_codec = video.into();
+        m.audio_codec = audio.into();
+        m.has_audio = !audio.is_empty();
+        m.fps = klipp_core::Fps::new(24, 1);
+        m.duration = klipp_core::RationalTime::from_secs_f64(12.5, 24);
+        m
+    }
+
+    /// A media item's menu is the shared menu and its items do what they
+    /// did: a card right-clicked, then Load in Source clicked for real,
+    /// loads that item into the source viewer; the list's rows the same.
+    #[test]
+    fn a_media_items_menu_loads_it_in_source() {
+        for view in [BrowserViewMode::Grid, BrowserViewMode::List] {
+            let mut state = AppState::default();
+            let m = item("A001_C002.mov", "h264", "aac");
+            let id = state.media_pool.add(m);
+            let mut panel = crate::browser::BrowserPanel { browser_view_mode: view, ..Default::default() };
+            let ctx = egui::Context::default();
+            let theme = KlippTheme::default();
+            let mut frame = |events: Vec<egui::Event>| {
+                let mut tab = crate::layout_state::BrowserTab::Media;
+                let (mut pinned, mut ratio) = (false, 0.5);
+                let mut cmds = Vec::new();
+                let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 900.0))), events, ..Default::default() }, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| cmds = panel.show(ui, &mut state, &theme, &mut tab, &mut pinned, &mut ratio));
+                });
+                let texts: Vec<(String, egui::Pos2)> = out.shapes.iter().filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                    _ => None,
+                }).collect();
+                (texts, cmds)
+            };
+            frame(Vec::new());
+            let (texts, _) = frame(Vec::new());
+            let at = texts.iter().find(|(t, _)| t == "A001_C002.mov").unwrap_or_else(|| panic!("{view:?}: {texts:?}")).1;
+            let secondary = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE };
+            frame(vec![egui::Event::PointerMoved(at), secondary(true)]);
+            frame(vec![secondary(false)]);
+            let (texts, _) = frame(Vec::new());
+            let load = texts.iter().find(|(t, _)| t == "Load in Source").unwrap_or_else(|| panic!("{view:?} menu: {texts:?}")).1;
+            let primary = |pressed| egui::Event::PointerButton { pos: load, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            let mut cmds = frame(vec![egui::Event::PointerMoved(load), primary(true)]).1;
+            cmds.extend(frame(vec![primary(false)]).1);
+            assert!(cmds.iter().any(|c| matches!(c, AppCommand::LoadSourceMedia { media_id } if *media_id == id)), "{view:?}: {cmds:?}");
+        }
+    }
+
+    /// A card's caption reads as the list's columns do, and only rates
+    /// the file has: a clip its frame rate, a recording its sample rate
+    /// (no "24fps" on a WAV), a still its size.
+    #[test]
+    fn a_cards_caption_is_what_the_file_is() {
+        assert_eq!(card_caption(&item("a.mov", "h264", "aac")), "0:13 \u{00b7} 24 fps");
+        let mut wav = item("b.wav", "", "pcm_s24le");
+        wav.sample_rate = Some(48_000);
+        assert_eq!(card_caption(&wav), "0:13 \u{00b7} 48 kHz");
+        wav.sample_rate = Some(44_100);
+        assert_eq!(card_caption(&wav), "0:13 \u{00b7} 44.1 kHz");
+        wav.sample_rate = None;
+        assert_eq!(card_caption(&wav), "0:13");
+        let mut still = item("c.png", "png", "");
+        still.is_still = true;
+        still.resolution = klipp_core::Resolution { width: 1920, height: 1080 };
+        assert_eq!(card_caption(&still), "Still \u{00b7} 1920\u{00d7}1080");
     }
 }

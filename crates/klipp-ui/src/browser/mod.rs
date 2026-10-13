@@ -6707,6 +6707,22 @@ mod files_row_style_tests {
         }
     }
 
+    impl Files {
+        /// Frames until the folder's entries are listed (the listing may
+        /// come from a worker), then that frame.
+        fn listed(&mut self) -> (Vec<(String, egui::Pos2)>, Vec<f32>, Vec<AppCommand>) {
+            for _ in 0..200 {
+                let f = self.frame(Vec::new());
+                if f.0.iter().any(|(t, _)| t == "clip.mov") {
+                    // One more, so the layout has settled.
+                    return self.frame(Vec::new());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("the folder was never listed");
+        }
+    }
+
     impl Drop for Files {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.dir);
@@ -6719,8 +6735,7 @@ mod files_row_style_tests {
     fn the_rows_show_real_times_without_rules_between() {
         let mut f = Files::new();
         let before = chrono::Local::now();
-        f.frame(Vec::new());
-        let (texts, rules, _) = f.frame(Vec::new());
+        let (texts, rules, _) = f.listed();
         let at = |l: &str| texts.iter().find(|(t, _)| t == l).unwrap_or_else(|| panic!("no {l}: {texts:?}")).1;
         let rows = ["Day 1", "clip.mov", "music.wav", "notes.txt"].map(|r| at(r).y);
         let now = [before.format("%H:%M").to_string(), chrono::Local::now().format("%H:%M").to_string()];
@@ -6735,8 +6750,7 @@ mod files_row_style_tests {
     #[test]
     fn a_files_menu_adds_it_to_the_pool() {
         let mut f = Files::new();
-        f.frame(Vec::new());
-        let (texts, _, _) = f.frame(Vec::new());
+        let (texts, _, _) = f.listed();
         let row = texts.iter().find(|(t, _)| t == "clip.mov").unwrap().1;
         let secondary = |pressed| egui::Event::PointerButton { pos: row, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE };
         f.frame(vec![egui::Event::PointerMoved(row), secondary(true)]);
