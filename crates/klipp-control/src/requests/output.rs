@@ -521,11 +521,15 @@ pub(crate) fn respond(
                     "composite_ms": p.composite_ms,
                     "total_ms": p.total_ms,
                     "dropped": p.dropped,
+                    "phases": phases(&p.phases),
                 })),
                 "average_of_last_60": {
                     "decode_ms": avg.decode_ms,
                     "grade_ms": avg.grade_ms,
                     "total_ms": avg.total_ms,
+                    // Where a viewer frame's time went, around its render
+                    // (#1850); 0 for a phase a frame didn't take.
+                    "phases": phases(&avg.phases),
                 },
                 "readbacks": {
                     "count": klipp_engine::CPU_READBACK_COUNT
@@ -585,6 +589,17 @@ pub(crate) fn respond(
 /// applied to `settings`: its codecs, size, rate, quality and loudness.
 /// The container comes from the path, so it must be the preset's
 /// (#1583). Returns the preset's name, for the reply.
+/// A viewer frame's phases (#1850), as the `perf` reply gives them.
+fn phases(p: &klipp_engine::perf::FramePhases) -> serde_json::Value {
+    json!({
+        "sync_ms": p.sync_ms,
+        "snapshot_ms": p.snapshot_ms,
+        "frame_snapshot_ms": p.frame_snapshot_ms,
+        "render_ms": p.render_ms,
+        "present_ms": p.present_ms,
+    })
+}
+
 fn apply_export_preset(settings: &mut klipp_core::ExportSettings, name: &str) -> Result<String, String> {
     let presets = klipp_core::builtin_presets();
     let wanted = name.trim().to_lowercase();

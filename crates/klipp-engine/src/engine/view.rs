@@ -610,6 +610,9 @@ impl PlaybackEngine {
     /// readback and the UI upload they pay.
     pub(super) fn present_frame_with(&mut self, primary: Option<HeldFrame>, stack_only: bool) -> bool {
         let t_frame = Instant::now();
+        // Each phase's time, for the frame's perf sample (#1850).
+        let ms = |t: Instant| (t.elapsed().as_secs_f64() * 1000.0) as f32;
+        self.frame_phases = crate::perf::FramePhases::default();
         self.sync_streams();
         if self.state != PlaybackState::Playing {
             // While scrubbing, show the frame at once and fill in the other
@@ -617,9 +620,14 @@ impl PlaybackEngine {
             let wait = if self.is_scrubbing { Duration::ZERO } else { Duration::from_millis(150) };
             self.wait_for_streams(wait);
         }
+        self.frame_phases.sync_ms = ms(t_frame);
+        let t = Instant::now();
         let (snapshot, revision) = self.sequence.snapshot_with_revision();
+        self.frame_phases.snapshot_ms = ms(t);
         let primary_clip = primary.as_ref().and(self.v1_clip_id(&snapshot));
+        let t = Instant::now();
         let seq = klipp_compose::frame_snapshot(&snapshot, self.playhead);
+        self.frame_phases.frame_snapshot_ms = ms(t);
         let seq_size = (seq.resolution.width, seq.resolution.height);
         let (w, h) = match &primary {
             Some(p) => viewer_canvas((p.width, p.height), seq_size),
@@ -759,7 +767,10 @@ impl PlaybackEngine {
             let target = self.gpu_viewer_target(w, h);
             let want_bytes = target.is_none() || self.state != PlaybackState::Playing;
             let out = klipp_compose::DisplayDelivery { texture: target.as_deref(), bytes: want_bytes };
-            if let Some((bytes, stats)) = self.render_composite_on_gpu(&seq, primary_ref, w, h, out) {
+            let t = Instant::now();
+            let stacked = self.render_composite_on_gpu(&seq, primary_ref, w, h, out);
+            self.frame_phases.render_ms = ms(t);
+            if let Some((bytes, stats)) = stacked {
                 // The nodes the stack didn't draw as asked, named against
                 // this frame as the timeline path names its own (step 10).
                 let declines: Vec<klipp_nodes::Decline> = self.renderer.frame_declines().iter().filter(|d| d.shown()).cloned().collect();
@@ -793,7 +804,10 @@ impl PlaybackEngine {
         }
 
         let thumbs_requested = inspect.thumbs.is_some() && !progress;
+        let t = Instant::now();
         let (linear, mut found) = self.render_timeline(&seq, primary_ref, w, h, inspect);
+        // After a declined stack, the timeline render's time with it.
+        self.frame_phases.render_ms += ms(t);
         if thumbs_requested {
             let batch = crate::node_thumbnails::ThumbnailBatch::new(
                 self.thumbnail_request, crate::node_thumbnails::frame_index(self.playhead, snapshot.fps), crate::node_thumbnails::PreviewQuality::Viewer,
@@ -1102,6 +1116,10 @@ impl PlaybackEngine {
     ) {
         let total_ms = t_frame.elapsed().as_secs_f64() * 1000.0;
         let s = stats.unwrap_or_default();
+        // What the frame did after its render: the rest of its time.
+        let mut phases = std::mem::take(&mut self.frame_phases);
+        let before = phases.sync_ms + phases.snapshot_ms + phases.frame_snapshot_ms + phases.render_ms;
+        phases.present_ms = (total_ms as f32 - before).max(0.0);
         let target_fps = self.target_fps_for_overlay();
         let decode_ms = self.v1_decoder.as_ref().map(|d| d.last_decode_ms()).unwrap_or(0.0);
         let dropped = match target_fps {
@@ -1128,6 +1146,7 @@ impl PlaybackEngine {
                 composite_ms: s.composite_ms as f32,
                 update_playback_ms: 0.0,
                 in_param_edit: self.in_node_param_edit,
+                phases,
             });
         }
         if total_ms > 16.0 || self.in_node_param_edit {
