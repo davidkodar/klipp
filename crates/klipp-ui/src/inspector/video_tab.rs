@@ -1,9 +1,9 @@
 use klipp_timeline::GradeAccess;
-use crate::icons::Icon;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 use crate::widgets::role_pill;
-use crate::widgets::scrubby_param::{scrubby_param_row, KeyframeState};
+use crate::widgets::scrubby_param::KeyframeState;
+use super::rows::switch;
 use klipp_core::{AppCommand, ClipRole, Timecode, VideoParam};
 use klipp_effects::BuiltinEffect;
 use klipp_timeline::Clip;
@@ -229,7 +229,7 @@ fn show_clip_video(
     clip: &Clip,
     cmds: &mut Vec<AppCommand>,
     clip_time_secs: f64,
-    is_timeline: bool,
+    _is_timeline: bool,
     by_path: bool,
 ) {
     let keyframe_tolerance = crate::inspector::keyframe_selection::frame_tolerance(state.sequence());
@@ -396,32 +396,27 @@ fn show_clip_video(
         }
 
         if col_state.is_open() {
-            let body_start = ui.cursor().min;
-            let frame = egui::Frame::default()
-                .fill(theme.bg_panel)
-                .inner_margin(egui::Margin { left: pad, right: pad, top: 6.0, bottom: 8.0 })
-                .stroke(egui::Stroke::NONE)
-                .shadow(egui::Shadow::NONE);
+            let frame = egui::Frame::none()
+                .inner_margin(egui::Margin { left: pad, right: pad, top: 4.0, bottom: 4.0 });
             frame.show(ui, |ui| {
-                r_px_out = Some(scrubby_param_row(ui, "Position X", &mut pos_x, -2000.0..=2000.0, 0.0, 1.0, 0, " px", Some(pos_x_ks)));
-                r_py_out = Some(scrubby_param_row(ui, "Position Y", &mut pos_y, -2000.0..=2000.0, 0.0, 1.0, 0, " px", Some(pos_y_ks)));
-                r_sc_out = Some(scrubby_param_row(ui, "Scale", &mut scale_val, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", Some(scale_ks)));
+                r_px_out = Some(param_row(ui, theme, "Position X", &mut pos_x, -2000.0..=2000.0, 0.0, 1.0, 0, " px", Some(pos_x_ks)));
+                r_py_out = Some(param_row(ui, theme, "Position Y", &mut pos_y, -2000.0..=2000.0, 0.0, 1.0, 0, " px", Some(pos_y_ks)));
+                r_sc_out = Some(param_row(ui, theme, "Scale", &mut scale_val, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", Some(scale_ks)));
                 if shows_scale_y {
-                    r_sy_out = Some(scrubby_param_row(ui, "Scale Y", &mut scale_y_val, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", Some(scale_y_ks)));
+                    r_sy_out = Some(param_row(ui, theme, "Scale Y", &mut scale_y_val, 0.0..=4.0, 1.0, 0.01, 2, "\u{00d7}", Some(scale_y_ks)));
                 }
-                r_ro_out = Some(scrubby_param_row(ui, "Rotation", &mut rotation, -360.0..=360.0, 0.0, 0.5, 1, " \u{00b0}", Some(rot_ks)));
+                r_ro_out = Some(param_row(ui, theme, "Rotation", &mut rotation, -360.0..=360.0, 0.0, 0.5, 1, " \u{00b0}", Some(rot_ks)));
                 // Tilt out of the picture's plane: the top leans away for
                 // positive X, the right edge swings away for positive Y.
-                r_tx_out = Some(scrubby_param_row(ui, "Tilt X", &mut tilt_x, -80.0..=80.0, 0.0, 0.5, 1, " \u{00b0}", Some(tilt_x_ks)));
-                r_ty_out = Some(scrubby_param_row(ui, "Tilt Y", &mut tilt_y, -80.0..=80.0, 0.0, 0.5, 1, " \u{00b0}", Some(tilt_y_ks)));
+                r_tx_out = Some(param_row(ui, theme, "Tilt X", &mut tilt_x, -80.0..=80.0, 0.0, 0.5, 1, " \u{00b0}", Some(tilt_x_ks)));
+                r_ty_out = Some(param_row(ui, theme, "Tilt Y", &mut tilt_y, -80.0..=80.0, 0.0, 0.5, 1, " \u{00b0}", Some(tilt_y_ks)));
                 if tilt_x != 0.0 || tilt_y != 0.0 || !lane(clip, "tilt_x").is_empty() || !lane(clip, "tilt_y").is_empty() {
-                    r_pe_out = Some(scrubby_param_row(ui, "Perspective", &mut persp, 0.1..=3.0, 1.0, 0.01, 2, "", None));
+                    r_pe_out = Some(param_row(ui, theme, "Perspective", &mut persp, 0.1..=3.0, 1.0, 0.01, 2, "", None));
                 }
 
                 // Source rotation (auto-detected from media metadata, user-overridable)
                 if clip.source_rotation != 0 || clip.media_id().is_some() {
-                    ui.horizontal(|ui| {
-                        ui.label("Source Rotation");
+                    row(ui, theme, "Source rotation", |ui| {
                         let current = clip.source_rotation;
                         let label = match current {
                             0 => "None",
@@ -447,18 +442,12 @@ fn show_clip_video(
                 // composed plane, further back drifts less, 0 holds the clip
                 // on the screen.
                 let mut depth = clip.depth;
-                let r = scrubby_param_row(ui, "Depth", &mut depth, 0.0..=20.0, 1.0, 0.01, 2, "", None);
+                let r = param_row(ui, theme, "Depth", &mut depth, 0.0..=20.0, 1.0, 0.01, 2, "", None);
                 if r.changed {
                     cmds.push(AppCommand::SetClipDepth { clip_id, depth });
                 }
 
-                // Separator before opacity
-                let sep_w = ui.available_width();
-                let (sep_rect, _) = ui.allocate_exact_size(egui::vec2(sep_w, 1.0), egui::Sense::hover());
-                ui.painter().hline(sep_rect.x_range(), sep_rect.center().y, egui::Stroke::new(0.5_f32, theme.border));
-                ui.add_space(2.0);
-
-                r_op_out = Some(scrubby_param_row(ui, "Opacity", &mut opacity, 0.0..=1.0, 1.0, 0.005, 2, "", Some(opacity_ks)));
+                r_op_out = Some(param_row(ui, theme, "Opacity", &mut opacity, 0.0..=1.0, 1.0, 0.005, 2, "", Some(opacity_ks)));
             });
             // Behind the switch opacity is the clip's property, edited here
             // and not on a card, so its presets are offered here (M3 step 14).
@@ -466,15 +455,6 @@ fn show_clip_video(
                 opacity_presets(ui, theme, state, clip_id, opacity_index.unwrap_or(0), base_opacity, cmds);
             }
 
-            let body_end_y = ui.cursor().min.y;
-            ui.painter().rect_filled(
-                egui::Rect::from_min_size(body_start, egui::vec2(3.0, body_end_y - body_start.y)),
-                0.0, theme.border,
-            );
-            let full_rect = egui::Rect::from_min_max(header_rect.min, egui::pos2(header_rect.max.x, body_end_y));
-            ui.painter().rect_stroke(full_rect.shrink(0.25), 4.0, egui::Stroke::new(0.5_f32, theme.border));
-        } else {
-            ui.painter().rect_stroke(header_rect.shrink(0.25), 4.0, egui::Stroke::new(0.5_f32, theme.border));
         }
 
         col_state.store(ui.ctx());
@@ -918,7 +898,14 @@ fn show_clip_video(
 
                 // Enable/disable toggle
                 let mut ramp_enabled = has_ramp;
-                if ui.checkbox(&mut ramp_enabled, egui::RichText::new("Enable Speed Ramp").size(11.0).color(theme.text_primary)).changed() {
+                let mut toggled = false;
+                row(ui, theme, "Speed ramp", |ui| {
+                    if switch(ui, theme, has_ramp).clicked() {
+                        ramp_enabled = !has_ramp;
+                        toggled = true;
+                    }
+                });
+                if toggled {
                     if ramp_enabled && !has_ramp {
                         // Initialize with a basic two-keyframe ramp
                         let clip_dur = clip.duration().to_secs_f64();
@@ -1290,151 +1277,6 @@ fn show_clip_video(
     // (visual letter picker is a deferred follow-up).
     show_hyperzoom_section(ui, theme, state, clip, cmds);
 
-    // ── SPEED RAMP (timeline only) ──
-    if is_timeline {
-        ui.add_space(8.0);
-        // SPEED RAMP section (timeline clips only)
-        {
-            let w = ui.available_width();
-            let collapsed_key = egui::Id::new("klipp_collapsed_sections");
-            let title = "SPEED RAMP";
-            let is_collapsed: bool = ui.ctx().data_mut(|d| {
-                let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
-                set.contains(title)
-            });
-
-            let id = ui.id().with(title).with("video_section");
-            let mut col_state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, !is_collapsed);
-
-            let header_h = 30.0;
-            let (header_rect, header_resp) = ui.allocate_exact_size(egui::vec2(w, header_h), egui::Sense::click());
-            let is_open = col_state.is_open();
-            let rounding = if is_open {
-                egui::Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 }
-            } else {
-                egui::Rounding::same(4.0)
-            };
-            ui.painter().rect_filled(header_rect, rounding, theme.bg_deep);
-            // Left accent
-            ui.painter().rect_filled(
-                egui::Rect::from_min_size(header_rect.min, egui::vec2(3.0, header_h)),
-                if is_open { egui::Rounding { nw: 6.0, ne: 0.0, sw: 0.0, se: 0.0 } } else { egui::Rounding { nw: 6.0, ne: 0.0, sw: 6.0, se: 0.0 } },
-                theme.border,
-            );
-            // Title
-            ui.painter().text(
-                egui::pos2(header_rect.min.x + 18.0, header_rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                title, egui::FontId::proportional(11.0), theme.text_dim,
-            );
-            // Collapse icon
-            let icon = if is_open { Icon::CaretDown } else { Icon::CaretRight };
-            icon.image(12.0).tint(theme.text_dim).paint_at(ui,
-                egui::Rect::from_center_size(
-                    egui::pos2(header_rect.max.x - 20.0, header_rect.center().y),
-                    egui::vec2(12.0, 12.0),
-                ),
-            );
-
-            if header_resp.clicked() {
-                col_state.toggle(ui);
-                let now_open = col_state.is_open();
-                ui.ctx().data_mut(|d| {
-                    let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(collapsed_key);
-                    if now_open { set.remove(title); } else { set.insert(title.to_string()); }
-                });
-            }
-
-            if col_state.is_open() {
-                let body_start = ui.cursor().min;
-                let frame = egui::Frame::default()
-                    .fill(theme.bg_panel)
-                    .inner_margin(egui::Margin { left: 0.0, right: 0.0, top: 2.0, bottom: 0.0 })
-                    .stroke(egui::Stroke::NONE)
-                    .shadow(egui::Shadow::NONE);
-                frame.show(ui, |ui| {
-                    let w = ui.available_width();
-                    let pad = 14.0;
-                    let row_h = 30.0;
-
-                    // In speed
-                    info_row(ui, theme, pad, row_h, w, "In speed", |ui, rx, cy| {
-                        // Value box
-                        let input_w = 60.0;
-                        let input_rect = egui::Rect::from_min_size(
-                            egui::pos2(rx - 20.0 - input_w, cy - 13.0), egui::vec2(input_w, 26.0),
-                        );
-                        ui.painter().rect(input_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0_f32, theme.border));
-                        ui.painter().text(
-                            input_rect.center(), egui::Align2::CENTER_CENTER,
-                            "100 %", egui::FontId::monospace(12.0), theme.text_primary,
-                        );
-                        // Keyframe diamond
-                        let diamond_x = rx - 5.0;
-                        draw_keyframe_diamond(ui, egui::pos2(diamond_x, cy),
-                            egui::Color32::from_rgba_premultiplied(theme.text_dim.r(), theme.text_dim.g(), theme.text_dim.b(), 90), false);
-                    });
-
-                    // Out speed
-                    info_row(ui, theme, pad, row_h, w, "Out speed", |ui, rx, cy| {
-                        let input_w = 60.0;
-                        let input_rect = egui::Rect::from_min_size(
-                            egui::pos2(rx - 20.0 - input_w, cy - 13.0), egui::vec2(input_w, 26.0),
-                        );
-                        ui.painter().rect(input_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0_f32, theme.border));
-                        ui.painter().text(
-                            input_rect.center(), egui::Align2::CENTER_CENTER,
-                            "100 %", egui::FontId::monospace(12.0), theme.text_primary,
-                        );
-                        let diamond_x = rx - 5.0;
-                        draw_keyframe_diamond(ui, egui::pos2(diamond_x, cy),
-                            egui::Color32::from_rgba_premultiplied(theme.text_dim.r(), theme.text_dim.g(), theme.text_dim.b(), 90), false);
-                    });
-
-                    // Ease dropdown
-                    {
-                        let (row_rect, _) = ui.allocate_exact_size(egui::vec2(w, row_h + 4.0), egui::Sense::hover());
-                        ui.painter().hline(row_rect.min.x + pad..=row_rect.max.x - pad, row_rect.max.y, egui::Stroke::new(0.5_f32, theme.border));
-                        ui.painter().text(
-                            egui::pos2(row_rect.min.x + pad, row_rect.center().y),
-                            egui::Align2::LEFT_CENTER, "Ease",
-                            egui::FontId::proportional(13.0), theme.text_secondary,
-                        );
-                        let combo_w = 110.0;
-                        let combo_rect = egui::Rect::from_min_size(
-                            egui::pos2(row_rect.max.x - pad - combo_w, row_rect.center().y - 13.0),
-                            egui::vec2(combo_w, 26.0),
-                        );
-                        ui.painter().rect(combo_rect, 4.0, theme.bg_raised, egui::Stroke::new(1.0_f32, theme.border));
-                        ui.painter().text(
-                            egui::pos2(combo_rect.min.x + 10.0, combo_rect.center().y),
-                            egui::Align2::LEFT_CENTER,
-                            "Linear", egui::FontId::proportional(12.0), theme.text_primary,
-                        );
-                        ui.painter().text(
-                            egui::pos2(combo_rect.max.x - 10.0, combo_rect.center().y),
-                            egui::Align2::RIGHT_CENTER,
-                            "\u{25BE}", egui::FontId::proportional(10.0), theme.text_dim,
-                        );
-                    }
-                    ui.add_space(4.0);
-                });
-
-                let body_end_y = ui.cursor().min.y;
-                ui.painter().rect_filled(
-                    egui::Rect::from_min_size(body_start, egui::vec2(3.0, body_end_y - body_start.y)),
-                    0.0, theme.border,
-                );
-                let full_rect = egui::Rect::from_min_max(header_rect.min, egui::pos2(header_rect.max.x, body_end_y));
-                ui.painter().rect_stroke(full_rect.shrink(0.25), 4.0, egui::Stroke::new(0.5_f32, theme.border));
-            } else {
-                ui.painter().rect_stroke(header_rect.shrink(0.25), 4.0, egui::Stroke::new(0.5_f32, theme.border));
-            }
-            col_state.store(ui.ctx());
-        }
-    }
-
-    ui.add_space(8.0);
 }
 
 fn show_tracking_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip, cmds: &mut Vec<AppCommand>) {
@@ -1657,28 +1499,13 @@ fn show_color_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, c
                 let grade_applied = has_lut || has_custom_nodes;
                 let grade_count = if has_lut { 1 } else { 0 } + if has_custom_nodes { node_count - 12 } else { 0 };
 
-                if grade_applied {
-                    // Grade applied state
-                    ui.horizontal(|ui| {
-                        // Orange dot
-                        let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                        ui.painter().circle_filled(dot_rect.center(), 4.0, theme.accent);
-                        ui.label(
-                            egui::RichText::new(format!("{grade_count} grade applied"))
-                                .size(12.0)
-                                .color(theme.accent),
-                        );
-                    });
-                } else {
-                    // No grade applied
-                    ui.label(
-                        egui::RichText::new("No grade applied")
-                            .size(12.0)
-                            .italics()
-                            .color(theme.text_dim),
-                    );
-                }
-
+                row(ui, theme, "Grade", |ui| {
+                    if grade_applied {
+                        ui.label(egui::RichText::new(format!("{grade_count} applied")).size(super::rows::TEXT).color(theme.text_primary));
+                    } else {
+                        ui.label(egui::RichText::new("None").size(super::rows::TEXT).color(theme.text_secondary));
+                    }
+                });
                 ui.add_space(6.0);
 
                 // Open Color Panel button with C shortcut badge
@@ -3648,7 +3475,7 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                 // direction through a change of rate (#617).
                 let sign = if clip.is_reversed() { -1.0 } else { 1.0 };
                 let mut rate = (clip.speed.abs() * 100.0) as f32;
-                let r_rate = scrubby_param_row(ui, "Rate", &mut rate, 10.0..=1600.0, 100.0, 0.5, 0, " %", None);
+                let r_rate = param_row(ui, theme, "Rate", &mut rate, 10.0..=1600.0, 100.0, 0.5, 0, " %", None);
                 if r_rate.changed {
                     let new_speed = (rate as f64 / 100.0).clamp(0.1, 16.0) * sign;
                     cmds.push(AppCommand::SetClipSpeed { clip_id, speed: new_speed, ripple: true });
@@ -3660,17 +3487,12 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                 // the sign of clip.speed (#617). A media clip's only: a title
                 // or a compound has no file to read backward.
                 let can_reverse = matches!(clip.kind, klipp_timeline::ClipKind::Media { .. });
-                if can_reverse { ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Direction")
-                            .size(11.0)
-                            .color(theme.text_secondary),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if can_reverse { row(ui, theme, "Direction", |ui| {
+                    {
                         let is_reversed = clip.speed < 0.0;
                         let label = if is_reversed { "⇄ Reverse" } else { "⇄ Forward" };
                         if ui
-                            .selectable_label(is_reversed, egui::RichText::new(label).size(11.0))
+                            .selectable_label(is_reversed, egui::RichText::new(label).size(super::rows::TEXT))
                             .on_hover_text("Play the clip from its last frame to its first. Its sound plays backward with it.")
                             .clicked()
                         {
@@ -3678,14 +3500,9 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                             let new_speed = if is_reversed { abs } else { -abs };
                             cmds.push(AppCommand::SetClipSpeed { clip_id, speed: new_speed, ripple: true });
                         }
-                    });
+                    }
                 }); }
 
-                // Separator
-                ui.add_space(4.0);
-                let sep_w = ui.available_width();
-                let (sep_rect, _) = ui.allocate_exact_size(egui::vec2(sep_w, 1.0), egui::Sense::hover());
-                ui.painter().hline(sep_rect.x_range(), sep_rect.center().y, egui::Stroke::new(0.5_f32, theme.border));
                 ui.add_space(4.0);
 
                 // Speed preset buttons
@@ -3709,13 +3526,15 @@ fn show_speed_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: 
                     }
                 });
                 // A retimed clip's sound at its own pitch (#925).
-                let mut keep = clip.keep_pitch;
-                if ui.add_enabled(clip.speed > 0.0, egui::Checkbox::new(&mut keep, "Keep pitch"))
-                    .on_hover_text("The sound plays at its own pitch, longer or shorter. Off, its pitch moves with the speed, as tape's does.")
-                    .changed()
-                {
-                    cmds.push(AppCommand::SetClipKeepPitch { clip_id, keep_pitch: keep });
-                }
+                ui.add_space(4.0);
+                row(ui, theme, "Keep pitch", |ui| {
+                    let on = clip.keep_pitch;
+                    let hover = "The sound plays at its own pitch, longer or shorter. Off, its pitch moves with the speed, as tape's does.";
+                    let resp = ui.add_enabled_ui(clip.speed > 0.0, |ui| switch(ui, theme, on)).inner;
+                    if resp.on_hover_text(hover).on_disabled_hover_text(hover).clicked() {
+                        cmds.push(AppCommand::SetClipKeepPitch { clip_id, keep_pitch: !on });
+                    }
+                });
             });
     });
 }
@@ -3731,9 +3550,8 @@ fn show_color_fade_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, c
             .stroke(egui::Stroke::NONE)
             .shadow(egui::Shadow::NONE)
             .show(ui, |ui| {
-                color_fade_row(ui, theme, clip, cmds, klipp_effects::ColorFadeMode::In, "Fade From Colour");
-                ui.add_space(6.0);
-                color_fade_row(ui, theme, clip, cmds, klipp_effects::ColorFadeMode::Out, "Fade To Colour");
+                color_fade_row(ui, theme, clip, cmds, klipp_effects::ColorFadeMode::In, "Fade from colour");
+                color_fade_row(ui, theme, clip, cmds, klipp_effects::ColorFadeMode::Out, "Fade to colour");
             });
         ui.add_space(6.0);
     });
@@ -3761,10 +3579,12 @@ fn color_fade_row(
     });
     let clip_id = clip.id;
 
-    ui.horizontal(|ui| {
+    row(ui, theme, label, |ui| {
+        // Right to left: the switch at the edge, then the colour and the
+        // length when the fade is on.
         let enabled = existing.is_some();
-        let mut want_enabled = enabled;
-        if ui.checkbox(&mut want_enabled, "").changed() {
+        if switch(ui, theme, enabled).clicked() {
+            let want_enabled = !enabled;
             if want_enabled && !enabled {
                 cmds.push(AppCommand::AddBuiltinEffect {
                     clip_id,
@@ -3781,20 +3601,8 @@ fn color_fade_row(
                 }
             }
         }
-        ui.label(egui::RichText::new(label).size(11.0).color(if enabled {
-            theme.text_primary
-        } else {
-            theme.text_dim
-        }));
-
         if let Some((idx, color, duration)) = existing {
             ui.add_space(8.0);
-            // Colour picker — reads/writes on change.
-            let mut c = egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
-            if ui.color_edit_button_srgba(&mut c).changed() {
-                cmds.push(update(idx, BuiltinEffect::ColorFade { color: [c.r(), c.g(), c.b(), c.a()], duration_secs: duration, mode, progress: 0.0 }));
-            }
-            ui.add_space(4.0);
             // Duration scrubby. egui's DragValue is enough — no need for
             // a heavyweight scrubby with keyframe affordances since the
             // ColorFade's progress is engine-driven, not user-keyframed.
@@ -3806,6 +3614,12 @@ fn color_fade_row(
                 .fixed_decimals(2)
             ).changed() {
                 cmds.push(update(idx, BuiltinEffect::ColorFade { color, duration_secs: dur, mode, progress: 0.0 }));
+            }
+            ui.add_space(4.0);
+            // Colour picker — reads/writes on change.
+            let mut c = egui::Color32::from_rgba_premultiplied(color[0], color[1], color[2], color[3]);
+            if ui.color_edit_button_srgba(&mut c).changed() {
+                cmds.push(update(idx, BuiltinEffect::ColorFade { color: [c.r(), c.g(), c.b(), c.a()], duration_secs: duration, mode, progress: 0.0 }));
             }
         }
     });
@@ -3989,6 +3803,36 @@ pub fn emit_opacity(cmds: &mut Vec<AppCommand>, clip: &Clip, clip_id: klipp_core
     }
 }
 
+/// A row in the inspector's row style inside a section's padded frame.
+fn row(ui: &mut egui::Ui, theme: &KlippTheme, label: &str, value: impl FnOnce(&mut egui::Ui)) {
+    super::rows::row_padded(ui, theme, label, 0.0, value);
+}
+
+/// A numeric row in the inspector's row style: the scrubby label in
+/// the secondary colour on the left, the value, reset and keyframe
+/// controls on the right, at the shared row height.
+#[allow(clippy::too_many_arguments)]
+fn param_row(
+    ui: &mut egui::Ui,
+    theme: &KlippTheme,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    default: f32,
+    speed: f64,
+    decimals: usize,
+    suffix: &str,
+    keyframe_state: Option<KeyframeState>,
+) -> crate::widgets::scrubby_param::ScrubbyParamResponse {
+    let look = crate::widgets::scrubby_param::RowLook {
+        label_size: super::rows::TEXT,
+        label_colour: Some(theme.text_secondary),
+        label_inset: 0.0,
+        height: super::rows::ROW_H - 4.0,
+    };
+    crate::widgets::scrubby_param::scrubby_param_row_look(ui, look, label, value, range, default, speed, decimals, suffix, keyframe_state)
+}
+
 fn section_card(
     ui: &mut egui::Ui,
     title: &str,
@@ -3996,34 +3840,6 @@ fn section_card(
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
     crate::widgets::inspector_group::section_card(ui, title, None, theme, add_contents);
-}
-
-fn info_row(
-    ui: &mut egui::Ui, theme: &KlippTheme, pad: f32, row_h: f32, total_w: f32,
-    label: &str, draw_value: impl FnOnce(&mut egui::Ui, f32, f32),
-) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(total_w, row_h), egui::Sense::hover());
-    ui.painter().hline(rect.min.x + pad..=rect.max.x - pad, rect.max.y, egui::Stroke::new(0.5_f32, theme.border));
-    ui.painter().text(
-        egui::pos2(rect.min.x + pad, rect.center().y), egui::Align2::LEFT_CENTER,
-        label, egui::FontId::proportional(13.0), theme.text_secondary,
-    );
-    draw_value(ui, rect.max.x - pad, rect.center().y);
-}
-
-fn draw_keyframe_diamond(ui: &mut egui::Ui, center: egui::Pos2, color: egui::Color32, filled: bool) {
-    let s = 5.0;
-    let pts = vec![
-        egui::pos2(center.x, center.y - s),
-        egui::pos2(center.x + s, center.y),
-        egui::pos2(center.x, center.y + s),
-        egui::pos2(center.x - s, center.y),
-    ];
-    if filled {
-        ui.painter().add(egui::Shape::convex_polygon(pts, color, egui::Stroke::NONE));
-    } else {
-        ui.painter().add(egui::Shape::convex_polygon(pts, egui::Color32::TRANSPARENT, egui::Stroke::new(1.5_f32, color)));
-    }
 }
 
 #[cfg(test)]
@@ -4194,4 +4010,104 @@ fn opacity_presets(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip
             }
         });
     });
+}
+
+#[cfg(test)]
+mod row_style_tests {
+    use super::*;
+    use crate::inspector::rows::test_frame::{click, frame};
+    use klipp_core::RationalTime;
+
+    fn media_clip() -> Clip {
+        let t = |s: f64| RationalTime::from_secs_f64(s, 24);
+        Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))
+    }
+
+    /// Where a row's right-hand control sits: the panel's edge less its
+    /// margin, the section's padding and half the control.
+    fn right_control(texts: &[(String, egui::Pos2)], label: &str, half: f32) -> egui::Pos2 {
+        let at = texts.iter().find(|(t, _)| t == label).unwrap_or_else(|| panic!("no {label}: {texts:?}")).1;
+        egui::pos2(360.0 - 8.0 - 14.0 - half, at.y)
+    }
+
+    /// Every row the Video tab had for a clip is still there, each once,
+    /// and the card of fixed "100 %" speeds and a "Linear" ease that
+    /// changed nothing is gone.
+    #[test]
+    fn every_control_is_kept_and_nothing_fake_is_drawn() {
+        let ctx = egui::Context::default();
+        let state = AppState::default();
+        let clip = media_clip();
+        let (texts, _) = frame(&ctx, Vec::new(), |ui, theme, cmds| show_clip_video(ui, theme, &state, &clip, cmds, 0.5, true, false));
+        let all: Vec<&str> = texts.iter().map(|(t, _)| t.as_str()).collect();
+        for label in [
+            "ROLE", "TRANSFORM", "Position X", "Position Y", "Scale", "Rotation", "Tilt X", "Tilt Y", "Source rotation", "Depth", "Opacity",
+            "TRACKING", "COLOUR", "Grade", "Open Colour Panel", "COMPOSITING", "COLOUR FADE", "Fade from colour", "Fade to colour",
+            "TRANSFORM LINK", "HYPERZOOM", "KEN BURNS", "Zoom In", "BEHAVIORS", "SPEED", "Rate", "Direction", "Keep pitch",
+            "SPEED RAMP", "Speed ramp",
+        ] {
+            assert!(all.contains(&label), "{label} is no longer shown: {all:?}");
+        }
+        assert_eq!(all.iter().filter(|t| **t == "SPEED RAMP").count(), 1, "one speed ramp section: {all:?}");
+        for fake in ["In speed", "Out speed", "Ease"] {
+            assert!(!all.contains(&fake), "{fake} was a painted value, not a setting: {all:?}");
+        }
+        assert_eq!(all.iter().filter(|t| **t == "100 %").count(), 1, "the Rate's own value only: {all:?}");
+    }
+
+    /// No rule between the rows of the restyled sections: between the
+    /// TRANSFORM header and the next section's, and through SPEED and
+    /// SPEED RAMP, the only hairlines are the headers' own.
+    #[test]
+    fn no_rule_between_rows() {
+        let ctx = egui::Context::default();
+        let state = AppState::default();
+        let clip = media_clip();
+        let theme = KlippTheme::default();
+        let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 6000.0))), ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| show_clip_video(ui, &theme, &state, &clip, &mut Vec::new(), 0.5, true, false));
+        });
+        let y_of = |label: &str| out.shapes.iter().find_map(|s| match &s.shape {
+            egui::Shape::Text(t) if t.galley.text() == label => Some(t.pos.y),
+            _ => None,
+        }).unwrap_or_else(|| panic!("no {label}"));
+        let rules_between = |a: f32, b: f32| out.shapes.iter().filter(|s| match &s.shape {
+            egui::Shape::LineSegment { points, .. } => points[0].y == points[1].y && points[0].y > a + 24.0 && points[0].y < b - 4.0,
+            _ => false,
+        }).count();
+        assert_eq!(rules_between(y_of("TRANSFORM"), y_of("KEN BURNS")), 0, "rules inside TRANSFORM");
+        assert_eq!(rules_between(y_of("SPEED"), y_of("TRACKING")), 1, "only SPEED RAMP's header rule from SPEED to TRACKING");
+        assert_eq!(rules_between(y_of("COLOUR"), y_of("COMPOSITING")), 0, "rules inside COLOUR");
+        assert_eq!(rules_between(y_of("COLOUR FADE"), y_of("TRANSFORM LINK")), 0, "rules inside COLOUR FADE");
+    }
+
+    /// The switches and the keyframe mark answer real clicks with the
+    /// commands they did before.
+    #[test]
+    fn the_controls_do_what_they_say() {
+        let ctx = egui::Context::default();
+        let state = AppState::default();
+        let clip = media_clip();
+        let mut draw = |ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>| show_clip_video(ui, theme, &state, &clip, cmds, 0.5, true, false);
+        let (texts, _) = frame(&ctx, Vec::new(), &mut draw);
+        // Every frame tells the viewer which matte to preview; that is
+        // not what a click sends.
+        let click = |at, draw: &mut dyn FnMut(&mut egui::Ui, &KlippTheme, &mut Vec<AppCommand>)| {
+            let mut cmds = click(&ctx, at, draw);
+            cmds.retain(|c| !matches!(c, AppCommand::SetInspectorMattePreviewTarget(_)));
+            cmds
+        };
+
+        let cmds = click(right_control(&texts, "Keep pitch", 16.0), &mut draw);
+        assert!(matches!(cmds.as_slice(), [AppCommand::SetClipKeepPitch { keep_pitch: true, .. }]), "{cmds:?}");
+
+        let cmds = click(right_control(&texts, "Speed ramp", 16.0), &mut draw);
+        assert!(matches!(cmds.as_slice(), [AppCommand::SetSpeedKeyframes { keyframes, .. }] if keyframes.len() == 2), "{cmds:?}");
+
+        let cmds = click(right_control(&texts, "Fade from colour", 16.0), &mut draw);
+        assert!(matches!(cmds.as_slice(), [AppCommand::AddBuiltinEffect { effect: BuiltinEffect::ColorFade { mode: klipp_effects::ColorFadeMode::In, .. }, .. }]), "{cmds:?}");
+
+        let cmds = click(right_control(&texts, "Position X", 8.0), &mut draw);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::AddVideoKeyframe { param: VideoParam::PositionX, .. })), "{cmds:?}");
+    }
 }

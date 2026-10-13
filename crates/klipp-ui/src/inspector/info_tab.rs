@@ -934,7 +934,7 @@ mod view_tests {
     fn rules(ctx: &egui::Context, mut draw: impl FnMut(&mut egui::Ui, &KlippTheme, &mut Vec<AppCommand>)) -> usize {
         let theme = KlippTheme::default();
         let out = ctx.run(
-            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 2400.0))), ..Default::default() },
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 6000.0))), ..Default::default() },
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| draw(ui, &theme, &mut Vec::new()));
             },

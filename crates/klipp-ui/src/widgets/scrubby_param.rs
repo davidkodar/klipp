@@ -277,7 +277,43 @@ pub fn scrubby_param_row(
     suffix: &str,
     keyframe_state: Option<KeyframeState>,
 ) -> ScrubbyParamResponse {
-    scrubby_row(ui, label, value, range, default, speed, decimals, suffix, keyframe_state, None)
+    scrubby_row(ui, RowLook::default(), label, value, range, default, speed, decimals, suffix, keyframe_state, None)
+}
+
+/// How a scrubby row is drawn: its label's size, colour and inset, and
+/// the row's height. The default is the widget's own compact look; a
+/// tab drawn in the inspector's row style passes its own.
+#[derive(Clone, Copy, Debug)]
+pub struct RowLook {
+    pub label_size: f32,
+    /// `None` for the visuals' inactive text colour.
+    pub label_colour: Option<egui::Color32>,
+    /// Space before the label inside its drag area.
+    pub label_inset: f32,
+    pub height: f32,
+}
+
+impl Default for RowLook {
+    fn default() -> Self {
+        Self { label_size: 11.0, label_colour: None, label_inset: 4.0, height: 22.0 }
+    }
+}
+
+/// [`scrubby_param_row`] drawn with `look`; it behaves the same.
+#[allow(clippy::too_many_arguments)]
+pub fn scrubby_param_row_look(
+    ui: &mut egui::Ui,
+    look: RowLook,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    default: f32,
+    speed: f64,
+    decimals: usize,
+    suffix: &str,
+    keyframe_state: Option<KeyframeState>,
+) -> ScrubbyParamResponse {
+    scrubby_row(ui, look, label, value, range, default, speed, decimals, suffix, keyframe_state, None)
 }
 
 /// [`scrubby_param_row`] whose drags (of the label or the number) move the
@@ -297,12 +333,13 @@ pub fn scrubby_param_row_dragged(
     drag: &dyn Fn(f32, f32) -> f32,
 ) -> ScrubbyParamResponse {
     // `speed` is the field's keyboard nudge; a drag goes by `drag`.
-    scrubby_row(ui, label, value, range, default, speed, decimals, suffix, keyframe_state, Some(drag))
+    scrubby_row(ui, RowLook::default(), label, value, range, default, speed, decimals, suffix, keyframe_state, Some(drag))
 }
 
 #[allow(clippy::too_many_arguments)]
 fn scrubby_row(
     ui: &mut egui::Ui,
+    look: RowLook,
     label: &str,
     value: &mut f32,
     range: std::ops::RangeInclusive<f32>,
@@ -373,7 +410,7 @@ fn scrubby_row(
         // ---- LABEL (draggable -- this is the scrubby slider) ----
         // Use allocate_exact_size instead of Label to prevent text selection on drag.
         let (label_rect_inner, label_rect) = ui.allocate_exact_size(
-            egui::vec2(label_width, 22.0),
+            egui::vec2(label_width, look.height),
             egui::Sense::click_and_drag(),
         );
 
@@ -383,13 +420,13 @@ fn scrubby_row(
         let label_color = if label_rect.hovered() || label_rect.dragged() {
             ui.visuals().widgets.hovered.fg_stroke.color
         } else {
-            ui.visuals().widgets.inactive.fg_stroke.color
+            look.label_colour.unwrap_or(ui.visuals().widgets.inactive.fg_stroke.color)
         };
         ui.painter().text(
-            egui::pos2(label_rect_inner.left() + 4.0, label_rect_inner.center().y),
+            egui::pos2(label_rect_inner.left() + look.label_inset, label_rect_inner.center().y),
             egui::Align2::LEFT_CENTER,
             label,
-            egui::FontId::proportional(11.0),
+            egui::FontId::proportional(look.label_size),
             label_color,
         );
 
@@ -462,7 +499,7 @@ fn scrubby_row(
 
             // Reset icon (left of prev arrow)
             let (rri, rr) = ui.allocate_exact_size(
-                egui::vec2(icon_width, 22.0),
+                egui::vec2(icon_width, look.height),
                 egui::Sense::click(),
             );
             reset_rect_inner = rri;

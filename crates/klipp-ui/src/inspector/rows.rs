@@ -18,12 +18,18 @@ pub const TEXT: f32 = 12.5;
 
 /// A label on the left and `value` on the right, no rule between rows.
 pub fn row(ui: &mut Ui, theme: &KlippTheme, label: &str, value: impl FnOnce(&mut Ui)) {
+    row_padded(ui, theme, label, ROW_PAD, value);
+}
+
+/// [`row`] with `pad` either side instead of the row's own, for a row
+/// inside a frame that already keeps that margin.
+pub fn row_padded(ui: &mut Ui, theme: &KlippTheme, label: &str, pad: f32, value: impl FnOnce(&mut Ui)) {
     let w = ui.available_width();
     ui.allocate_ui_with_layout(vec2(w, ROW_H), Layout::left_to_right(Align::Center), |ui| {
-        ui.add_space(ROW_PAD);
+        ui.add_space(pad);
         ui.label(RichText::new(label).size(TEXT).color(theme.text_secondary));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.add_space(ROW_PAD);
+            ui.add_space(pad);
             value(ui);
         });
     });
@@ -106,7 +112,7 @@ pub(crate) mod test_frame {
         let mut cmds = Vec::new();
         let theme = KlippTheme::default();
         let out = ctx.run(
-            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(360.0, 2400.0))), events, ..Default::default() },
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(360.0, 6000.0))), events, ..Default::default() },
             |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| draw(ui, &theme, &mut cmds));
             },
