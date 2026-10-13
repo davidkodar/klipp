@@ -1325,7 +1325,13 @@ pub enum AppCommand {
     /// Delete a Shared Library collection: its entries, not their files (#614).
     DeleteSharedCollection { name: String },
     RemoveRecentProject { path: PathBuf },
-    DeleteProject { path: PathBuf },
+    /// Keep a recent project at the top of the list, or stop keeping it.
+    PinRecentProject { path: PathBuf, pinned: bool },
+    /// Copy a project folder beside it under a new name, and list the copy.
+    DuplicateProject { path: PathBuf },
+    /// Move a project folder to the system trash, from where it can be
+    /// put back. Nothing deletes a project outright.
+    MoveProjectToTrash { path: PathBuf },
     RenameProjectOnDisk { old_path: PathBuf, new_name: String },
     /// Set project thumbnail from the current viewer frame.
     SetProjectThumbnailFromViewer,

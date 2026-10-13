@@ -98,6 +98,7 @@ pub mod credits_dialog;
 pub mod missing_fonts;
 pub mod state;
 pub mod theme;
+pub mod trash;
 pub mod transcript;
 pub mod timeline;
 pub mod tracks_undo;

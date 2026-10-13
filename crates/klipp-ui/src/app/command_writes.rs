@@ -54,6 +54,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ResetEngine
         | AppCommand::SetProjectsFolder { .. }
         | AppCommand::RemoveRecentProject { .. }
+        | AppCommand::PinRecentProject { .. }
         | AppCommand::OpenSequenceSettings { .. }
         | AppCommand::RegenerateFilmstripsForAll
         | AppCommand::CreateWorkspace { .. }
@@ -336,7 +337,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::OpenProject { .. }
         | AppCommand::OpenProjectNow { .. }
         | AppCommand::CreateProject { .. }
-        | AppCommand::DeleteProject { .. }
+        | AppCommand::MoveProjectToTrash { .. }
+        | AppCommand::DuplicateProject { .. }
         | AppCommand::RenameProjectOnDisk { .. }
         | AppCommand::SetProjectThumbnailFromViewer
         | AppCommand::SetProjectThumbnailFromFile { .. }
