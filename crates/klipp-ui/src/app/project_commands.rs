@@ -145,6 +145,8 @@ impl KlippApp {
                 self.new_project_dialog.reset(
                     self.prefs.general.default_project_dir.as_ref(),
                 );
+                let templates = self.project_templates_dir();
+                self.new_project_dialog.load_templates(&templates);
                 self.state.show_new_project_dialog = true;
                 true
             }
@@ -302,9 +304,19 @@ impl KlippApp {
                 true
             }
             AppCommand::CreateProject {
-                name, location, fps_num, fps_den, width, height, sequence_name,
+                name, location, fps_num, fps_den, width, height, sequence_name, template,
             } => {
                 let project_dir = location.join(format!("{name}.klipp"));
+                // From a template (#618): read before anything is reset, so
+                // one that no longer reads leaves the open project open.
+                let from_template = match template.as_deref().map(klipp_project::template::ProjectTemplate::load) {
+                    None => None,
+                    Some(Ok(t)) => Some(t.instantiate()),
+                    Some(Err(e)) => {
+                        self.state.toast.show(format!("The template could not be read: {e}"));
+                        return true;
+                    }
+                };
                 // "Automatic" FPS: use 24fps as placeholder, auto-set from first clip
                 let fps = if *fps_num == 0 || *fps_den == 0 {
                     klipp_core::Fps::new(24, 1)
@@ -361,6 +373,11 @@ impl KlippApp {
                 self.media_watcher = None;
                 self.reset_project_state();
                 self.state.sequences = vec![seq];
+                let mut fps = fps;
+                if let Some(made) = from_template {
+                    self.apply_template(made);
+                    fps = self.state.sequences[0].fps;
+                }
                 self.state.active_sequence_idx = 0;
                 self.state.fps = fps;
                 self.state.project_path = Some(project_dir.clone());
@@ -377,6 +394,29 @@ impl KlippApp {
                 self.prefs.general.default_project_dir = Some(location.clone());
                 self.prefs_dirty = true;
                 tracing::info!("Created new project at {:?}", project_dir);
+                true
+            }
+            AppCommand::SaveProjectTemplate { name, description } => {
+                let setup = klipp_project::template::ProjectSetup {
+                    sequences: &self.state.sequences,
+                    pool: &self.state.media_pool,
+                    colour: self.template_colour(),
+                };
+                let template = klipp_project::template::ProjectTemplate::capture(name, description, &setup);
+                match template.save(&self.project_templates_dir()) {
+                    Ok(_) => self.state.toast.show(format!("Saved the project template \"{}\": {}", template.name, template.summary())),
+                    Err(e) => self.state.toast.show(format!("The template could not be saved: {e}")),
+                }
+                true
+            }
+            AppCommand::DeleteProjectTemplate { path } => {
+                // Only a template in the templates folder.
+                if path.parent() == Some(self.project_templates_dir().as_path()) {
+                    match std::fs::remove_file(path) {
+                        Ok(()) => self.state.toast.show("Template deleted"),
+                        Err(e) => self.state.toast.show(format!("The template could not be deleted: {e}")),
+                    }
+                }
                 true
             }
             AppCommand::SetActiveSequence { sequence_idx } => {

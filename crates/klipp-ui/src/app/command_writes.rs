@@ -261,7 +261,10 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::StopSource
         | AppCommand::CopyAudioEffectKeyframes { .. }
         | AppCommand::OpenSaveHyperzoomPresetDialog { .. }
-        | AppCommand::ExportOtio { .. } => false,
+        | AppCommand::ExportOtio { .. }
+        // A template is kept outside the project (#618).
+        | AppCommand::SaveProjectTemplate { .. }
+        | AppCommand::DeleteProjectTemplate { .. } => false,
         // Write the picture, the project or the history, start a step of
         // their own, or aren't known to write nothing. The path edits are
         // among them; a path drag takes its own (`closes_path_drag`).

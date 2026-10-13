@@ -2567,6 +2567,11 @@ pub struct AppState {
 
     // New Project dialog
     pub show_new_project_dialog: bool,
+    /// Where project templates are kept (#618); `None` for the user's
+    /// configuration folder's.
+    pub project_templates_dir: Option<std::path::PathBuf>,
+    /// The Save Project as Template dialog, when it is open (#618).
+    pub save_template_dialog: Option<crate::panels::new_project_dialog::SaveTemplateDialog>,
     // Batch rename dialog (for bin media items).
     pub show_batch_rename_dialog: bool,
     /// Find and replace in titles (#1717): open, what is looked for, its
@@ -4607,6 +4612,8 @@ impl Default for AppState {
             media_usage_cache_dirty: true,
             analysis_generation: 0,
             show_new_project_dialog: false,
+            project_templates_dir: None,
+            save_template_dialog: None,
             show_batch_rename_dialog: false,
             show_title_find: false,
             title_find: Default::default(),

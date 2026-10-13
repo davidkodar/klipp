@@ -206,6 +206,11 @@ impl ToolbarPanel {
                         .unwrap_or_default()
                 });
             }
+            // The project's structure kept to start new ones from (#618).
+            if ui.add_enabled(state.project_path.is_some(), egui::Button::new("Save Project as Template...")).clicked() {
+                state.save_template_dialog = Some(Default::default());
+                ui.close_menu();
+            }
             if ui.button("Revert to Saved").clicked() {
                 if let Some(path) = state.project_path.clone() { cmds.push(AppCommand::OpenProject { path }); }
                 ui.close_menu();

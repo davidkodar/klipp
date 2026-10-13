@@ -48,6 +48,49 @@ pub(super) fn opened_global_lut(saved: Option<&std::path::Path>, opacity: f32, e
 }
 
 impl KlippApp {
+    /// Where project templates are kept (#618).
+    pub(super) fn project_templates_dir(&self) -> std::path::PathBuf {
+        self.state.project_templates_dir.clone().unwrap_or_else(|| {
+            klipp_project::template::templates_dir(&dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from(".")))
+        })
+    }
+
+    /// The open project's colour setup, as a template keeps it.
+    pub(super) fn template_colour(&self) -> klipp_project::template::TemplateColour {
+        klipp_project::template::TemplateColour {
+            working_colorspace: self.state.project_working_colorspace,
+            grade_encoding: self.state.project_grade_encoding,
+            global_lut_path: self.state.global_lut_path.clone(),
+            global_lut_opacity: self.state.global_lut_opacity,
+            global_lut_enabled: self.state.global_lut_enabled,
+        }
+    }
+
+    /// A project made from a template, in place of the fresh project's
+    /// one sequence (#618): its sequences, its bins and smart bins, and its
+    /// colour setup, given to the engine as opening a project gives it.
+    pub(super) fn apply_template(&mut self, made: klipp_project::template::FromTemplate) {
+        self.state.sequences = made.sequences;
+        self.state.media_pool = made.pool;
+        self.sync_media_pool_to_engine();
+        let colour = made.colour;
+        self.state.project_working_colorspace = colour.working_colorspace;
+        klipp_engine::video_decoder::set_working_colorspace(colour.working_colorspace);
+        self.state.project_grade_encoding = colour.grade_encoding;
+        klipp_core::set_grade_encoding(colour.grade_encoding);
+        self.state.global_lut_opacity = colour.global_lut_opacity;
+        self.state.global_lut_enabled = colour.global_lut_enabled;
+        let (kept, to_engine) = opened_global_lut(colour.global_lut_path.as_deref(), colour.global_lut_opacity, colour.global_lut_enabled);
+        if let Some(lut) = kept.as_ref().filter(|p| !p.exists()) {
+            let name = lut.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            self.state.toast.show(format!("The template's LUT {name} is missing: relink it in Project Doctor"));
+        }
+        self.state.global_lut_path = kept;
+        for cmd in to_engine {
+            self.cmd_tx.send(cmd).ok();
+        }
+    }
+
     fn do_new_project(&mut self) {
         self.reset_project_state();
         self.sync_sequence_to_engine();
@@ -1016,6 +1059,8 @@ impl KlippApp {
             UnsavedAction::NewProject => self.do_new_project(),
             UnsavedAction::OpenNewProjectDialog => {
                 self.new_project_dialog.reset(self.prefs.general.default_project_dir.as_ref());
+                let templates = self.project_templates_dir();
+                self.new_project_dialog.load_templates(&templates);
                 self.state.show_new_project_dialog = true;
             }
             UnsavedAction::OpenProject(p) => self.do_open_project(&p),
