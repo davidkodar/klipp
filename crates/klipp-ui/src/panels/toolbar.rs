@@ -430,6 +430,7 @@ impl ToolbarPanel {
             ui.separator();
             if ui.add(egui::Button::new("Close Project").shortcut_text(kb.display_for("close_project"))).clicked() { cmds.push(AppCommand::CloseProject); ui.close_menu(); }
             if ui.button("Project Properties...").clicked() { state.show_project_info = true; ui.close_menu(); }
+            if ui.button("Colour Management\u{2026}").clicked() { state.show_colour_management = true; ui.close_menu(); }
             if ui.button("Sequence Settings...").clicked() {
                 cmds.push(AppCommand::OpenSequenceSettings { sequence_idx: state.active_sequence_idx });
                 ui.close_menu();
@@ -1695,6 +1696,40 @@ pub(crate) mod narrow_bar_tests {
                 }
             }
         }
+    }
+
+    /// #466: the File menu opens Colour Management, after Project
+    /// Properties.
+    #[test]
+    fn the_file_menu_opens_colour_management() {
+        let ctx = egui::Context::default();
+        let mut panel = ToolbarPanel { logo_texture: None };
+        let mut state = AppState::default();
+        let mut time = 0.0;
+        let mut frame = |state: &mut AppState, events| {
+            time += 0.1;
+            let output = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1920.0, 1080.0))), time: Some(time), events, ..Default::default() }, |ctx| {
+                egui::TopBottomPanel::top("toolbar").exact_height(40.0).show(ctx, |ui| {
+                    panel.show(ui, state, &[], &KlippTheme::default(), &crate::keybindings::KeyBindings::default());
+                });
+            });
+            output.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)), _ => None,
+            }).collect::<Vec<_>>()
+        };
+        let button = |at, pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut texts = Vec::new();
+        for _ in 0..3 { texts = frame(&mut state, Vec::new()); }
+        let at = texts.iter().find(|(s, _)| s == "File").unwrap().1;
+        frame(&mut state, vec![egui::Event::PointerMoved(at), button(at, true)]);
+        frame(&mut state, vec![button(at, false)]);
+        for _ in 0..3 { texts = frame(&mut state, Vec::new()); }
+        let props = texts.iter().find(|(s, _)| s == "Project Properties...").expect("Project Properties").1;
+        let at = texts.iter().find(|(s, _)| s == "Colour Management\u{2026}").unwrap_or_else(|| panic!("{texts:?}")).1;
+        assert!(at.y > props.y, "after Project Properties");
+        frame(&mut state, vec![egui::Event::PointerMoved(at), button(at, true)]);
+        frame(&mut state, vec![button(at, false)]);
+        assert!(state.show_colour_management);
     }
 
     /// The switcher sits centred when the menus leave room, moves into the

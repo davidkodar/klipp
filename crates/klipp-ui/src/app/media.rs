@@ -1815,6 +1815,7 @@ impl KlippApp {
             auto_generate_skim: self.state.project_auto_skim,
             working_colorspace: self.state.project_working_colorspace,
             grade_encoding: self.state.project_grade_encoding,
+            default_odt: self.state.project_default_odt,
         };
         let options = klipp_project::consolidate::ConsolidateOptions {
             dest_dir,

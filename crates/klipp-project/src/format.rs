@@ -75,6 +75,11 @@ pub struct ProjectJson {
     /// then BT.1886, as every grade was.
     #[serde(default)]
     pub grade_encoding: klipp_core::GradeEncoding,
+    /// The output transform new exports start from (#466). Absent in
+    /// every file written before it, and then Match Viewer, as every
+    /// export started.
+    #[serde(default)]
+    pub default_odt: klipp_core::OdtChoice,
     /// Project-scoped synthetic title assets. Each entry is keyed by
     /// the `MediaId` of its synthetic `MediaItem` (the entry that
     /// shows up in the Media tab) and carries the canonical
@@ -919,6 +924,7 @@ mod tests {
             timeline_track_scale: Some(0.5),
             working_colorspace: klipp_core::WorkingColorspace::AcesCG,
             grade_encoding: klipp_core::GradeEncoding::AcesCct,
+            default_odt: klipp_core::OdtChoice::Rec2100Pq1000,
             title_assets: Vec::new(),
         };
         let serialised = serde_json::to_string(&project).expect("serialise");

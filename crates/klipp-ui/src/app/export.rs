@@ -128,6 +128,10 @@ pub(super) struct ExportDialogState {
     /// space of the rendered file. Default `MatchViewer` mirrors what
     /// the user has been seeing while editing.
     pub(super) odt: klipp_core::OdtChoice,
+    /// The project's default output transform the dialog last took
+    /// (#466): a new default, or another project's, is taken again; the
+    /// user's choice in the dialog stands until then.
+    pub(super) odt_followed: Option<klipp_core::OdtChoice>,
     /// Mastering peak for a PQ delivery, cd/m². Only surfaced when the
     /// delivery is PQ through the viewer's own picture — HLG has a
     /// nominal peak of its own and the ACES transforms are named for
@@ -170,6 +174,7 @@ impl Default for ExportDialogState {
             hdr_mode: klipp_core::HdrMode::Sdr,
             tone_map_op: klipp_core::ToneMapOp::Hable,
             odt: klipp_core::OdtChoice::MatchViewer,
+            odt_followed: None,
             mastering_peak_nits: klipp_core::DEFAULT_MASTERING_PEAK_NITS,
         }
     }
@@ -991,6 +996,7 @@ impl KlippApp {
     /// and the Export button. Hosted by the Export workspace's right
     /// column and by the Export dialog elsewhere.
     pub(super) fn export_settings_contents(&mut self, ui: &mut egui::Ui, all_presets: &[ExportPreset], cmds: &mut Vec<AppCommand>, in_dialog: bool) {
+        follow_project_odt(&mut self.export_dialog.odt, &mut self.export_dialog.hdr_mode, &mut self.export_dialog.odt_followed, self.state.project_default_odt);
         use crate::widgets::inspector_group::section_card;
         let theme = self.theme.clone();
         let grid = |name: &str| egui::Grid::new(name).num_columns(2).spacing([12.0, 6.0]);
@@ -2111,6 +2117,20 @@ impl KlippApp {
 /// The export's output transform menu: every transform that can serve
 /// `delivery` and suits a project in `working`, Rec.2020 SDR among the
 /// SDR ones (#901).
+/// Start the export at the project's default output transform (#466),
+/// once for each default: a PQ one sets a PQ delivery with it. A choice
+/// made in the dialog afterwards stands until the default changes.
+pub(super) fn follow_project_odt(odt: &mut klipp_core::OdtChoice, delivery: &mut klipp_core::HdrMode, followed: &mut Option<klipp_core::OdtChoice>, project: klipp_core::OdtChoice) {
+    if *followed == Some(project) {
+        return;
+    }
+    *followed = Some(project);
+    *odt = project;
+    if project.is_pq() {
+        *delivery = klipp_core::HdrMode::Pq;
+    }
+}
+
 fn output_transform_menu(ui: &mut egui::Ui, odt: &mut klipp_core::OdtChoice, delivery: klipp_core::HdrMode, working: klipp_core::WorkingColorspace) {
     egui::ComboBox::from_id_salt("export_odt").selected_text(odt.label()).show_ui(ui, |ui| {
         for choice in klipp_core::OdtChoice::ALL.into_iter().filter(|c| c.fits(delivery) && c.suits_working_space(working)) {
@@ -2145,6 +2165,22 @@ mod output_transform_menu_tests {
 
     /// #901: an SDR export's menu offers Rec.2020 SDR, and picking it sets
     /// the export's transform; an HDR delivery's menu does not offer it.
+    /// #466: the export starts at the project's default output
+    /// transform, a PQ one with a PQ delivery; a choice made in the
+    /// dialog stands until the default changes.
+    #[test]
+    fn the_export_starts_at_the_projects_default_output_transform() {
+        let (mut odt, mut delivery, mut followed) = (OdtChoice::MatchViewer, HdrMode::Sdr, None);
+        super::follow_project_odt(&mut odt, &mut delivery, &mut followed, OdtChoice::Rec2100Pq1000);
+        assert_eq!((odt, delivery), (OdtChoice::Rec2100Pq1000, HdrMode::Pq));
+        odt = OdtChoice::Rec2100Pq4000;
+        super::follow_project_odt(&mut odt, &mut delivery, &mut followed, OdtChoice::Rec2100Pq1000);
+        assert_eq!(odt, OdtChoice::Rec2100Pq4000, "the dialog's own choice stands");
+        delivery = HdrMode::Sdr;
+        super::follow_project_odt(&mut odt, &mut delivery, &mut followed, OdtChoice::DciP3D65_48);
+        assert_eq!((odt, delivery), (OdtChoice::DciP3D65_48, HdrMode::Sdr), "a new default is taken");
+    }
+
     #[test]
     fn rec2020_sdr_is_picked_from_an_sdr_exports_menu() {
         let ctx = egui::Context::default();
