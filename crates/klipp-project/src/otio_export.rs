@@ -363,6 +363,49 @@ fn describe(kind: &ClipKind) -> String {
     }
 }
 
+/// Why an `.otio` file could not be converted (#89).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ConvertError {
+    /// No `otioconvert` on the PATH: OpenTimelineIO is not installed.
+    #[error("OpenTimelineIO's otioconvert is not installed")]
+    NoConverter,
+    /// OpenTimelineIO has no adapter for the output's extension: for AAF,
+    /// the `otio-aaf-adapter` plugin is not installed.
+    #[error("OpenTimelineIO has no adapter that writes .{0} files")]
+    NoAdapter(String),
+    /// The converter ran and failed; its last line of output.
+    #[error("otioconvert failed: {0}")]
+    Failed(String),
+}
+
+/// Convert the `.otio` file `otio` to `out`, in the format its extension
+/// names, with OpenTimelineIO's own converter: how Klipp reaches AAF
+/// (#89) and any other format an installed OTIO adapter writes, without
+/// implementing them.
+pub fn convert(otio: &Path, out: &Path) -> Result<(), ConvertError> {
+    convert_with("otioconvert", otio, out)
+}
+
+/// [`convert`] with the converter named `program`.
+fn convert_with(program: &str, otio: &Path, out: &Path) -> Result<(), ConvertError> {
+    let ran = std::process::Command::new(program).arg("-i").arg(otio).arg("-o").arg(out).output();
+    let ran = match ran {
+        Ok(ran) => ran,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(ConvertError::NoConverter),
+        Err(e) => return Err(ConvertError::Failed(e.to_string())),
+    };
+    if ran.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&ran.stderr);
+    if stderr.contains("NoKnownAdapterForExtensionError") {
+        let ext = out.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+        return Err(ConvertError::NoAdapter(ext));
+    }
+    let last = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("no message").trim().to_string();
+    Err(ConvertError::Failed(last))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -587,5 +630,36 @@ mod tests {
             "{:?}",
             out.warnings
         );
+    }
+
+    /// No converter installed: said as such, not as a failed run (#89).
+    #[test]
+    fn a_missing_converter_is_named() {
+        let dir = std::env::temp_dir();
+        let got = super::convert_with("klipp-no-such-otioconvert", &dir.join("in.otio"), &dir.join("out.aaf"));
+        assert_eq!(got, Err(super::ConvertError::NoConverter));
+    }
+
+    /// With OpenTimelineIO installed: a file it has an adapter for is
+    /// written, and AAF is written, or refused as the adapter missing.
+    #[test]
+    fn otioconvert_writes_what_it_has_an_adapter_for() {
+        let dir = std::env::temp_dir().join(format!("klipp-otio-convert-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("in.otio");
+        std::fs::write(&input, r#"{"OTIO_SCHEMA":"Timeline.1","name":"t","tracks":{"OTIO_SCHEMA":"Stack.1","children":[]}}"#).unwrap();
+        match super::convert(&input, &dir.join("out.otio")) {
+            Err(super::ConvertError::NoConverter) => {
+                eprintln!("skipping: no otioconvert");
+                return;
+            }
+            got => assert_eq!(got, Ok(()), "OTIO to OTIO"),
+        }
+        assert!(dir.join("out.otio").exists());
+        match super::convert(&input, &dir.join("out.aaf")) {
+            Ok(()) => assert!(dir.join("out.aaf").exists()),
+            Err(e) => assert_eq!(e, super::ConvertError::NoAdapter("aaf".into())),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

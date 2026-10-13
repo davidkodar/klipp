@@ -3480,8 +3480,48 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::ExportAaf { path } => {
+                // OTIO first, beside nothing: a scratch file the converter
+                // reads and that goes when it is done.
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+                let otio = std::env::temp_dir().join(format!("klipp-aaf-{}-{stamp}.otio", std::process::id()));
+                match klipp_project::otio_export::export_otio(seq, &self.state.media_pool, &otio) {
+                    Ok(warnings) => {
+                        let path = path.clone();
+                        self.state.toast.show(format!("Writing AAF to {}…", path.display()));
+                        // The converter is a Python program and a long
+                        // timeline takes it a while: run off the UI thread.
+                        crate::file_dialog::spawn(move || {
+                            let converted = klipp_project::otio_export::convert(&otio, &path);
+                            let _ = std::fs::remove_file(&otio);
+                            vec![AppCommand::ShowToast { text: aaf_outcome(&path, converted, warnings.len()) }]
+                        });
+                    }
+                    Err(e) => self.state.toast.show(format!("AAF export failed writing its OTIO: {e}")),
+                }
+                true
+            }
+            AppCommand::ShowToast { text } => {
+                self.state.toast.show(text.clone());
+                true
+            }
             _ => false,
         }
+    }
+}
+
+/// What an AAF export says when its conversion is done (#89): where the
+/// file went and what OTIO could not carry, or what to install.
+fn aaf_outcome(path: &std::path::Path, converted: Result<(), klipp_project::otio_export::ConvertError>, dropped: usize) -> String {
+    use klipp_project::otio_export::ConvertError;
+    let install = "install OpenTimelineIO and its AAF adapter (pip install opentimelineio otio-aaf-adapter), or export OpenTimelineIO and convert it yourself";
+    match converted {
+        Ok(()) if dropped == 0 => format!("AAF exported to {}", path.display()),
+        Ok(()) => format!("AAF exported to {}: {dropped} thing(s) OTIO cannot carry were left out (Export OpenTimelineIO lists them)", path.display()),
+        Err(ConvertError::NoConverter) => format!("AAF export needs OpenTimelineIO's otioconvert: {install}"),
+        Err(ConvertError::NoAdapter(_)) => format!("AAF export needs OpenTimelineIO's AAF adapter: {install}"),
+        Err(e) => format!("AAF export failed: {e}"),
     }
 }
 

@@ -387,6 +387,19 @@ impl ToolbarPanel {
                             .unwrap_or_default()
                     });
                 }
+                // AAF through OpenTimelineIO's converter, where installed (#89).
+                if ui.button("AAF (via OpenTimelineIO)...").clicked() {
+                    ui.close_menu();
+                    crate::file_dialog::spawn(move || {
+                        rfd::FileDialog::new()
+                            .set_title("Export AAF")
+                            .add_filter("AAF", &["aaf"])
+                            .set_file_name("export.aaf")
+                            .save_file()
+                            .map(|path| vec![AppCommand::ExportAaf { path }])
+                            .unwrap_or_default()
+                    });
+                }
             });
             ui.menu_button("Export Metadata Sheet", |ui| {
                 if ui.button("CSV...").clicked() {

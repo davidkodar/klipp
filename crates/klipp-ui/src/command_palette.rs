@@ -84,6 +84,7 @@ pub enum DialogKind {
     ExportFcpxml,
     ExportEdl,
     ExportOtio,
+    ExportAaf,
     ExportKdenlive,
     ImportFcpxml,
     ImportKdenlive,
@@ -178,6 +179,8 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::OpenDialog(DialogKind::ExportEdl), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Export OpenTimelineIO (.otio)…"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::OpenDialog(DialogKind::ExportOtio), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Export AAF (via OpenTimelineIO)…"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::OpenDialog(DialogKind::ExportAaf), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Export Kdenlive Project…"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::OpenDialog(DialogKind::ExportKdenlive), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Render Queue"), shortcut: Cow::Borrowed(""),
@@ -1107,6 +1110,12 @@ pub fn dispatch_dialog(kind: DialogKind) -> Vec<AppCommand> {
             .set_file_name("project.otio")
             .save_file()
             .map(|p| AppCommand::ExportOtio { path: p }),
+        DialogKind::ExportAaf => rfd::FileDialog::new()
+            .set_title("Export AAF")
+            .add_filter("AAF", &["aaf"])
+            .set_file_name("project.aaf")
+            .save_file()
+            .map(|p| AppCommand::ExportAaf { path: p }),
         DialogKind::ExportKdenlive => rfd::FileDialog::new()
             .set_title("Export Kdenlive Project")
             .add_filter("Kdenlive Project", &["kdenlive"])

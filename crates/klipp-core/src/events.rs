@@ -4085,6 +4085,15 @@ pub enum AppCommand {
     /// because parallel lanes share this enum and appends merge where
     /// insertions in the middle conflict.
     ExportOtio { path: PathBuf },
+
+    /// Write the active sequence as an AAF file (#89): exported as OTIO
+    /// and converted by OpenTimelineIO's `otioconvert`, with its AAF
+    /// adapter, where they are installed.
+    ExportAaf { path: PathBuf },
+
+    /// Tell the editor `text`: what work done off the UI thread says when
+    /// it finishes.
+    ShowToast { text: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
