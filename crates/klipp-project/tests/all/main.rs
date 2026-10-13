@@ -20,6 +20,8 @@ mod camera_keys_round_trip;
 mod camera_round_trip;
 #[path = "../canvas_metadata.rs"]
 mod canvas_metadata;
+#[path = "../clip_below_round_trip.rs"]
+mod clip_below_round_trip;
 #[path = "../clip_label_round_trip.rs"]
 mod clip_label_round_trip;
 #[path = "../clip_rates_round_trip.rs"]

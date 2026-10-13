@@ -477,6 +477,9 @@ const EFFECTS_IN_A_LATER_BATCH: &[&str] = &[
     // corpus's has none of: drawn against its item in
     // `media_source_render.rs`.
     "MediaSource",
+    // What the tracks below composite to, which a one-clip case has
+    // none of: drawn against its stack in `clip_below_render.rs`.
+    "ClipBelow",
 ];
 
 /// One moving, grainy clip carrying `fx` (#1024).

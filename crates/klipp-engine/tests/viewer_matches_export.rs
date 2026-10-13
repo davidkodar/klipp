@@ -1206,6 +1206,59 @@ fn a_merged_media_item_exports_as_the_viewer_shows_it() {
     assert!(d > 20, "only {d} levels below the band: the item is not in the export");
 }
 
+/// The main timeline with V2's scaled clip merged by Difference with
+/// what is below it (#1746): a Clip Below beside its chain wired into the
+/// merge's `fg`, as the Picture view's Sources menu makes it. The clip is
+/// drawn over the composite below on both routes, and it is in the export.
+#[test]
+fn a_clip_merged_with_what_is_below_exports_as_the_viewer_shows_it() {
+    let _decoders = decoders_at_speed();
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    use klipp_graph_format::path::{NodePath, Root};
+    let mut t = timeline();
+    for c in t.seq.tracks.iter_mut().find(|t| t.name == "V2").unwrap().clips.iter_mut() {
+        add_after_display(c, &[BuiltinEffect::Merge { blend_mode: klipp_effects::BlendMode::Difference, opacity: 1.0 }]);
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let at = |id| NodePath::new(Root::Clip { clip: c.id.0 }, [id]);
+        let source = graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::SOURCE).unwrap().id;
+        let merge = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("merge")).unwrap().id;
+        let payload = serde_json::to_value(BuiltinEffect::ClipBelow {}).unwrap();
+        let node: klipp_graph_format::Node = serde_json::from_value(serde_json::json!({
+            "id": klipp_graph_format::NodeId::new_v4(),
+            "type_id": klipp_graph_lift::names::effect_node_type("clip_below"),
+            "legacy": { "payload": payload },
+        }))
+        .unwrap();
+        let id = node.id;
+        c.apply_picture_ops(&[
+            klipp_graph_lift::ops::GraphOp::AddNodeBeside { at: at(source), node: Box::new(node) },
+            klipp_graph_lift::ops::GraphOp::Connect { from: at(source), from_port: "out".into(), to: at(id), to_port: "in".into() },
+            klipp_graph_lift::ops::GraphOp::Connect { from: at(id), from_port: "out".into(), to: at(merge), to_port: "fg".into() },
+        ])
+        .unwrap();
+    }
+    let mut shown = t.clone();
+    shown.seq = klipp_timeline::flatten::flatten_sequence(&t.seq, std::slice::from_ref(&t.seq));
+    let out = exported(&shown);
+    let viewer = Viewer::start(&shown);
+    let mut worst = 0;
+    for n in [40, 60, 110] {
+        let (v, e) = (viewer.frame_at(n), exported_frame(&out, n));
+        worst = worst.max(compare(&format!("clip below frame {n:3}"), &v, &e));
+    }
+    eprintln!("clip below, viewer vs export: worst {worst} levels");
+    assert!(worst <= 3, "the export differs from the viewer by {worst} levels");
+    let (_, plain) = main_fixture();
+    let (g, p) = (exported_frame(&out, 60), exported_frame(plain, 60));
+    // Inside V2's clip, outside V3's smaller one over the centre.
+    let (a, b) = (px(&g, W / 4, H / 2), px(&p, W / 4, H / 2));
+    let d = (0..3).map(|c| (a[c] - b[c]).abs()).max().unwrap_or(0);
+    assert!(d > 20, "only {d} levels inside V2's clip: the clip below is not in the export");
+}
+
 /// `fx` added to `c`'s picture as the Picture view adds them: each after
 /// the last, from the display step.
 fn add_after_display(c: &mut Clip, fx: &[BuiltinEffect]) {

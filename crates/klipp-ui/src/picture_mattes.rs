@@ -123,6 +123,13 @@ pub const SOURCES: &[Source] = &[
         kind: "media_source",
         effect: || klipp_effects::BuiltinEffect::MediaSource { media: String::new(), offset: 0.0 },
     },
+    // What the tracks below the clip show under it.
+    Source {
+        tag: "source.below",
+        name: "Clip Below",
+        kind: "clip_below",
+        effect: || klipp_effects::BuiltinEffect::ClipBelow {},
+    },
 ];
 
 /// The source the menu tag `tag` names.
@@ -238,6 +245,24 @@ mod tests {
         let item = klipp_core::MediaId::new().0.to_string();
         c.apply_picture_ops(&[GraphOp::SetParam { path: NodePath::new(Root::Clip { clip: c.id.0 }, [id]), key: "media".into(), value: klipp_graph_format::ParamValue::Text(item.clone()) }]).unwrap();
         assert_eq!(klipp_compose::resolve::media_sources(&c), vec![(item, 0.0)]);
+    }
+
+    /// The Sources menu's Clip Below adds what is below the clip, wired
+    /// into the merge picked: the clip is drawn over what is below it.
+    #[test]
+    fn a_clip_below_added_with_a_merge_picked_draws_the_clip_over_what_is_below() {
+        let t = |s| klipp_core::RationalTime::from_secs_f64(s, 25);
+        let mut c = TestClip::of(Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))).effect(klipp_effects::BuiltinEffect::Merge { blend_mode: klipp_effects::BlendMode::Screen, opacity: 1.0 }).build();
+        assert!(!klipp_compose::resolve::reads_below(&c));
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let merge = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("merge")).unwrap().id;
+        let id = NodeId::new_v4();
+        let ops = source_ops(&graph, &NodePath::new(Root::Clip { clip: c.id.0 }, []), source("source.below").unwrap(), id, (0.0, 0.0), Some(merge)).unwrap();
+        c.apply_picture_ops(&ops).unwrap();
+        let graph = &c.picture_v2().unwrap().picture.graph;
+        assert_eq!(graph.nodes.iter().find(|n| n.id == id).and_then(klipp_graph_lift::effect_params::tag), Some("clip_below"));
+        assert!(graph.edges.iter().any(|e| e.from.0 == id && e.to == (merge, "fg".into())));
+        assert!(klipp_compose::resolve::reads_below(&c));
     }
 
     /// Added with nothing to mask, a matte stands beside the chain, read by

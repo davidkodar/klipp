@@ -789,6 +789,9 @@ pub struct Renderer {
     /// A scene-referred clip's display step for the grade being run,
     /// spliced in after the grade and before `run_effects` (step 11c).
     run_display: Option<klipp_color::hdr::SceneToDisplay>,
+    /// What the tracks below composite to, while a clip that reads it is
+    /// drawn in the stacking loop (#1746): a Clip Below's picture.
+    below: Option<Arc<Vec<f32>>>,
     /// Where analysis assets are kept (M4 step 8): the analysis cache.
     assets: Box<dyn klipp_analysis::assets::AssetStore + Send>,
     /// Analyses derived from their assets with an effect's settings, each
@@ -944,6 +947,7 @@ impl Renderer {
             cpu_executor: None,
             matte_input: None,
             run_display: None,
+            below: None,
             plan_misses: 0,
             spliced: klipp_nodes::NodeGraph::default(),
             passthrough: passthrough_graph(),
@@ -1590,6 +1594,10 @@ impl Renderer {
         }
 
         self.executor.request_output_on_gpu();
+        // No side pictures: a clip that reads one has an effect (its Merge,
+        // or the source on its chain) and went to the stack above (#1746);
+        // the map holds the last clip's, never this one's.
+        self.executor.clear_side_pictures();
         let pixels = self.grade(clip, input, clip_time, fps, width, height, None);
         // The grade kept its result on the GPU exactly when it returns
         // nothing. Coming back on the CPU instead — a node with no GPU
@@ -1786,6 +1794,9 @@ impl Renderer {
                 // with its instances (M4 step 5): the stack has no frei0r,
                 // and running the layer's effects here would leave it out.
                 Some("frei0r plug-in")
+            } else if crate::resolve::reads_below(c) {
+                // What is below is the CPU stacking loop's for now (#1746).
+                Some("clip below")
             } else if frame_blends(c, time) {
                 Some("frame blending")
             } else if title_motion_blur(c).is_some() {
@@ -2376,6 +2387,7 @@ impl Renderer {
         transforms: &HashMap<ClipId, ResolvedTransform>,
         stats: &mut RenderStats,
     ) -> Result<(), &'static str> {
+        self.executor.clear_side_pictures();
         self.note_switched_off(c);
         let clip_time = eval_clip_time(c, time);
         let (mut fx, _) = clip_effects(c, time, fps, transforms.get(&c.id).copied(), self.pins.get(&c.id).copied());
@@ -2539,9 +2551,23 @@ impl Renderer {
         // matte source is rendered, so each side is matted before the
         // blend; it used to blend both sides unmatted (#718).
         let mut matted_transitions: Vec<usize> = Vec::new();
+        // A clip that reads what is below it (#1746) is drawn in the
+        // stacking loop, over the composite so far, as an adjustment layer
+        // is; a transition into or out of one too. Not a matte's source,
+        // which every layer may need first, nor a clip measured alone.
+        let defers = |c: &Clip| !only && !matte_sources.contains(&c.id) && crate::resolve::reads_below(c);
+        let mut deferred: HashSet<usize> = HashSet::new();
         for (i, (_, track, item)) in stack.iter().enumerate() {
             let layer = match item {
                 TrackItem::Clip(c) if matches!(c.kind, ClipKind::AdjustmentLayer) => None,
+                TrackItem::Clip(c) if defers(c) => {
+                    deferred.insert(i);
+                    None
+                }
+                TrackItem::Transition { a, b, .. } if (defers(a) || defers(b)) && a.matte_source.is_none() && b.matte_source.is_none() => {
+                    deferred.insert(i);
+                    None
+                }
                 // Measured alone, the clip is read at full strength: a fade
                 // or a track's opacity is not the footage's colour.
                 TrackItem::Clip(c) if only => self
@@ -2604,6 +2630,23 @@ impl Renderer {
                     continue;
                 }
             }
+            // Drawn now, over what is below it (#1746).
+            let layer = match deferred.contains(&i) {
+                true => {
+                    // The one before is put back after: a precomposition's
+                    // scene drawn inside this clip has a loop of its own.
+                    let outer = self.below.replace(Arc::new(acc.clone().unwrap_or_else(canvas)));
+                    let layer = match item {
+                        TrackItem::Clip(c) => self.render_clip(c, time, fps, width, height, src, &transforms).map(|(pixels, opacity)| Layer { pixels, opacity: opacity * track.opacity, blend: c.blend_mode }),
+                        TrackItem::Transition { a, b, kind, progress, params, shutter } => self
+                            .render_transition(a, b, *kind, *progress, params, *shutter, time, fps, width, height, src, &transforms, None)
+                            .map(|pixels| Layer { pixels, opacity: track.opacity, blend: BlendMode::Normal }),
+                    };
+                    self.below = outer;
+                    layer
+                }
+                false => layer,
+            };
             let Some(mut layer) = layer else { continue };
             if layer.opacity <= 0.001 {
                 continue;
@@ -2789,6 +2832,9 @@ impl Renderer {
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
         self.title_light(clip, &mut fx);
+        if crate::resolve::reads_below(clip) {
+            self.put_below(clip, &fx, width, height);
+        }
         // The grade's result goes on into the effects on the GPU, with no
         // download and upload between them, when nothing in between needs
         // the picture on the CPU (#1089, M2 step 10).
@@ -3233,16 +3279,14 @@ impl Renderer {
     }
 
     /// The frames `clip`'s media sources draw at `clip_time` (#1746), read
-    /// from `src` at the render size: the executor's side pictures.
+    /// from `src` at the render size: the first of the executor's side
+    /// pictures for the clip, the map cleared of the clip before's.
     fn read_media_frames(&mut self, clip: &Clip, clip_time: f64, width: u32, height: u32, src: &mut dyn FrameSource) {
-        let frames = crate::resolve::media_sources(clip)
-            .into_iter()
-            .map(|(media, offset)| {
-                let got = src.media_frame(&media, clip_time + f64::from(offset), self.working, width, height).map(Arc::new);
-                (klipp_nodes::side_picture::SideKey::Media { item: media, offset_bits: offset.to_bits() }, got)
-            })
-            .collect();
-        self.executor.set_side_pictures(Arc::new(frames));
+        self.executor.clear_side_pictures();
+        for (media, offset) in crate::resolve::media_sources(clip) {
+            let got = src.media_frame(&media, clip_time + f64::from(offset), self.working, width, height).map(Arc::new);
+            self.executor.put_side_picture(klipp_nodes::side_picture::SideKey::Media { item: media, offset_bits: offset.to_bits() }, got);
+        }
         // An HDR or log item mixed after the display step has no display
         // step of its own yet (#1857): said, never silently wrong.
         for (node, media) in crate::resolve::media_mixed_after_display(clip) {
@@ -3260,6 +3304,26 @@ impl Renderer {
                 why: "a media source's item has no display step yet (#1857)".into(),
             });
         }
+    }
+
+    /// What is below `clip` (#1746), for its Clip Below: the stacking
+    /// loop's composite so far ([`Self::below`]), seen through the clip's
+    /// placement in `fx` so it lines up with what is under the clip on
+    /// screen. A clip drawn outside that loop has none; one placed with a
+    /// pin or a 3D tilt can't see it, said.
+    fn put_below(&mut self, clip: &Clip, fx: &[BuiltinEffect], width: u32, height: u32) {
+        use klipp_nodes::side_picture::SideMissing;
+        let still = BuiltinEffect::Transform { position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+        let place = fx.iter().find(|e| matches!(e, BuiltinEffect::Transform { .. })).unwrap_or(&still);
+        let got = match &self.below {
+            None => Err(SideMissing::Unavailable),
+            Some(_) if self.pins.contains_key(&clip.id) || fx.iter().any(|e| matches!(e, BuiltinEffect::CornerPin { .. })) => Err(SideMissing::Unsupported("the clip is pinned to a surface".into())),
+            Some(below) => match klipp_effects::corner_pin::seen_through(place, width, height) {
+                Some(pin) => Ok(Arc::new(klipp_effects::apply_effects(&[pin], (**below).clone(), width, height))),
+                None => Err(SideMissing::Unsupported("the clip is placed with a 3D tilt".into())),
+            },
+        };
+        self.executor.put_side_picture(klipp_nodes::side_picture::SideKey::Below, got);
     }
 
     /// Splice `fx` into `clip`'s next grade run as plan nodes (step 10b)
@@ -3424,6 +3488,10 @@ impl Renderer {
     /// frames for a sample; it runs on the sample alone, as on a still.
     fn title_pixels_at(&mut self, clip: &Clip, td: &klipp_timeline::TitleData, t: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
         let linear = self.title_linear_at(clip, td, t, width, height);
+        // Its grade alone, which reads no side picture: the clip's effects,
+        // a media source or what is below among them (#1746), run once on
+        // the averaged samples at the frame's time, as every effect's keys
+        // are read there.
         let graded = self.grade(clip, GradeInput::Cpu(Arc::new(linear)), t, fps, width, height, None);
         self.ofx_nodes(clip, graded, t, fps, t, width, height, None)
     }
@@ -4446,6 +4514,9 @@ impl Renderer {
         if opacity <= 0.001 {
             return below;
         }
+        // No side pictures: an adjustment layer reads none (#1746), and the
+        // clip before's are not its.
+        self.executor.clear_side_pictures();
         self.note_switched_off(clip);
         let clip_time = eval_clip_time(clip, time);
         let before = if opacity < 0.999 { Some(below.clone()) } else { None };
@@ -4803,8 +4874,9 @@ fn splice_blended(
         let kind = match &fx[i] {
             // A plug-in of its own, its instances kept (M4 step 5).
             BuiltinEffect::Frei0r { .. } => klipp_nodes::NodeKind::Frei0r,
-            // Another media item's frame, handed to the run (#1746).
-            BuiltinEffect::MediaSource { .. } => klipp_nodes::NodeKind::SidePicture,
+            // Another media item's frame, or what is below, handed to the
+            // run (#1746).
+            BuiltinEffect::MediaSource { .. } | BuiltinEffect::ClipBelow {} => klipp_nodes::NodeKind::SidePicture,
             // A merge with a picture to lay over: the grade's layer mixer
             // draws it, that picture on top (#1746).
             BuiltinEffect::Merge { .. } if blend(i).is_some_and(|b| b.fg.is_some()) => klipp_nodes::NodeKind::LayerMixer,
@@ -6024,5 +6096,67 @@ mod ofx_graph_tests {
         let mut other = other;
         other.set_ofx_effects(vec![entry("A", true), entry("A", true)]);
         assert_ne!(ids(&other)[1].1, second, "another clip, another slot");
+    }
+}
+
+#[cfg(test)]
+mod single_path_side_pictures {
+    use super::*;
+    use klipp_graph_format::lifted::types as lt;
+    use klipp_graph_format::path::{NodePath, Root};
+    use klipp_graph_lift::ops::GraphOp;
+
+    struct NoFrames;
+    impl FrameSource for NoFrames {
+        fn frame(&mut self, _: &Clip, _: f64, _: u32, _: u32) -> Option<SourceFrame> {
+            None
+        }
+    }
+
+    fn effect_node(e: &BuiltinEffect) -> klipp_graph_format::Node {
+        let payload = serde_json::to_value(e).unwrap();
+        serde_json::from_value(serde_json::json!({
+            "id": klipp_graph_format::NodeId::new_v4(),
+            "type_id": klipp_graph_lift::names::effect_node_type(payload["type"].as_str().unwrap()),
+            "legacy": { "payload": payload },
+        }))
+        .unwrap()
+    }
+
+    /// A clip whose Merge reads `side` from beside its chain.
+    fn merged(side: BuiltinEffect) -> Clip {
+        let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut c = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+        let picture = c.picture_v2().unwrap().picture.clone();
+        let at = |id| NodePath::new(Root::Clip { clip: c.id.0 }, [id]);
+        let display = picture.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::SCENE_TO_DISPLAY).unwrap().id;
+        let source = picture.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::SOURCE).unwrap().id;
+        let (m, s) = (effect_node(&BuiltinEffect::Merge { blend_mode: BlendMode::Normal, opacity: 1.0 }), effect_node(&side));
+        c.apply_picture_ops(&[
+            GraphOp::AddNode { after: at(display), node: Box::new(m.clone()) },
+            GraphOp::AddNodeBeside { at: at(source), node: Box::new(s.clone()) },
+            GraphOp::Connect { from: at(source), from_port: "out".into(), to: at(s.id), to_port: "in".into() },
+            GraphOp::Connect { from: at(s.id), from_port: "out".into(), to: at(m.id), to_port: "fg".into() },
+        ])
+        .unwrap();
+        c
+    }
+
+    /// The single-clip export path grades a clip with the executor's side
+    /// pictures cleared, not refilled: it never takes a clip that reads one,
+    /// which goes to the stack, where its pictures are read (#1746).
+    #[test]
+    fn the_single_path_leaves_a_clip_reading_a_side_picture_to_the_stack() {
+        let target = klipp_effects::gpu::Yuv420Target { tone_map_op: 0, odt_tag: 0, scene: None, gamut_op: 0, hdr_op: 0, peak_nits: 100.0, luma_coefs: [0.2126, 0.7152, 0.0722], semi_planar: true, bits: 8, sample_shift: 0 };
+        for side in [BuiltinEffect::MediaSource { media: klipp_core::MediaId::new().0.to_string(), offset: 0.0 }, BuiltinEffect::ClipBelow {}] {
+            let mut seq = Sequence::new_default();
+            seq.resolution = klipp_core::Resolution { width: 64, height: 36 };
+            let mut track = Track::new("V1", TrackKind::Video);
+            track.clips = vec![merged(side.clone())];
+            seq.tracks = vec![track];
+            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            let single = r.render_yuv420_single(&seq, klipp_core::RationalTime::from_secs_f64(1.0, 24), 64, 36, &mut NoFrames, RenderOptions::default(), target);
+            assert!(matches!(single, Single::ForTheStack), "{side:?}");
+        }
     }
 }

@@ -536,7 +536,7 @@ pub(super) fn picture_menu() -> &'static [MenuCategory] {
     MENU.get_or_init(|| {
         [Category::Colour, Category::BlurDetail, Category::LightGlow, Category::Geometry, Category::FilmTemporal, Category::Key, Category::Composite, Category::PlugIn].into_iter().map(|category| {
             let label = match category { Category::Colour => "Colour", Category::BlurDetail => "Blur and detail", Category::LightGlow => "Light", Category::Geometry => "Geometry", Category::FilmTemporal => "Film and time", Category::Key => "Keying", Category::Composite => "Composite", Category::PlugIn => "Plug-ins", Category::Grade => "Grade" };
-            let mut entries: Vec<_> = klipp_effects::registry::effect_types().filter(|t| t.desc.category == category && !crate::inspector::stack_view::is_placed_kind(t.tag) && !klipp_effects::reads_media(&(t.sample)())).map(|t| (t.desc.name, t.tag)).collect();
+            let mut entries: Vec<_> = klipp_effects::registry::effect_types().filter(|t| t.desc.category == category && !crate::inspector::stack_view::is_placed_kind(t.tag) && !klipp_effects::draws_a_side_picture(&(t.sample)())).map(|t| (t.desc.name, t.tag)).collect();
             entries.sort_by_key(|e| e.0);
             (label, entries)
         }).filter(|(_, entries)| !entries.is_empty())

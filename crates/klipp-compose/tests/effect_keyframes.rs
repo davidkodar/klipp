@@ -94,6 +94,7 @@ fn every_effect() -> Vec<E> {
         E::Merge { blend_mode: klipp_effects::BlendMode::Screen, opacity: 0.5 },
         E::Generator { shape: 1, color_a: [0, 0, 0, 255], color_b: [255, 255, 255, 255], angle: 30.0, center_x: 0.5, center_y: 0.5, radius: 0.5 },
         E::MediaSource { media: String::new(), offset: 0.0 },
+        E::ClipBelow {},
     ];
     // Adding an effect stops this compiling until it is listed above.
     for e in &all {
@@ -111,7 +112,7 @@ fn every_effect() -> Vec<E> {
             | E::FilmGrain { .. } | E::TiltShift { .. } | E::OldFilm { .. } | E::Vhs { .. }
             | E::RollingShutterCorrection { .. } | E::TemporalDenoise { .. } | E::Deflicker { .. }
             | E::VideoStabilization { .. } | E::SpeedRamp { .. } | E::Frei0r { .. } | E::CornerPin { .. }
-            | E::Lut3D { .. } | E::ColourSpaceTransform { .. } | E::PictureTransform { .. } | E::Flicker { .. } | E::BinocularVignette { .. } | E::Particles { .. } | E::Merge { .. } | E::Generator { .. } | E::MediaSource { .. } => {}
+            | E::Lut3D { .. } | E::ColourSpaceTransform { .. } | E::PictureTransform { .. } | E::Flicker { .. } | E::BinocularVignette { .. } | E::Particles { .. } | E::Merge { .. } | E::Generator { .. } | E::MediaSource { .. } | E::ClipBelow {} => {}
         }
     }
     all
