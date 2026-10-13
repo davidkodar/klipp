@@ -47,6 +47,7 @@ pub mod plugin;
 mod plan;
 pub mod auto_layout;
 pub mod json_check;
+pub mod matte_sequence;
 pub mod registry;
 
 pub use graph::{CannotAppend, Edge, Node, NodeFrame, NodeFrameId, NodeGraph, NodeId, NodePos, NodeStickyNote, NodeStickyNoteId, effective_signal_role_at};

@@ -271,6 +271,9 @@ pub struct GraphExecutor {
     /// once. Only loads that succeed are cached, so a missing file is
     /// tried again every frame, and it warned every frame (#1020).
     unreadable_images: HashSet<PathBuf>,
+    /// The manifests of the matte sequences (#239) external mattes read,
+    /// by folder: read once, not every frame.
+    matte_sequences: HashMap<PathBuf, crate::matte_sequence::Manifest>,
     /// The same plate already resized to the frame, keyed by path and
     /// target size. `matte_image_cache` above saves the *decode*; this
     /// saves the resize, which is a full-frame write — 33 MB at 4K — and
@@ -791,6 +794,7 @@ impl GraphExecutor {
             curve_lut_cache: HashMap::new(),
             matte_image_cache: HashMap::new(),
             unreadable_images: HashSet::new(),
+            matte_sequences: HashMap::new(),
             plate_resize_cache: HashMap::new(),
             matte_cache: HashMap::new(),
             gpu_chain_preseeded: false,
@@ -875,6 +879,7 @@ impl GraphExecutor {
             curve_lut_cache: HashMap::new(),
             matte_image_cache: HashMap::new(),
             unreadable_images: HashSet::new(),
+            matte_sequences: HashMap::new(),
             plate_resize_cache: HashMap::new(),
             matte_cache: HashMap::new(),
             gpu_chain_preseeded: false,
@@ -5350,6 +5355,45 @@ impl GraphExecutor {
                 };
                 let channel = params.matte_channel.unwrap_or_default();
                 let invert = params.matte_invert.unwrap_or(false);
+
+                // A matte sequence (#239): the matte for this frame of the
+                // media, made by the subject matte pass. Its own channel is
+                // the matte; invert applies.
+                if path.is_dir() {
+                    let manifest = match self.matte_sequences.get(path) {
+                        Some(m) => Some(m.clone()),
+                        None => crate::matte_sequence::read_manifest(path).inspect(|m| {
+                            self.matte_sequences.insert(path.clone(), m.clone());
+                        }),
+                    };
+                    let secs = ctx.as_ref().map_or(clip_time_secs, |c| c.source_secs);
+                    let at = manifest.as_ref().and_then(|m| crate::matte_sequence::matte_at(path, m, secs));
+                    let Some(at) = at else {
+                        self.decline(node_id, NodeKind::ExternalMatte, crate::DeclineOutcome::FileMissing, "Subject matte".into(), "no matte made for this media yet", format!("{}: no matte frames", path.display()));
+                        return full_matte(pixel_count);
+                    };
+                    // Another frame's matte stands in on screen, but the
+                    // picture isn't the one asked for: said, and an export
+                    // refuses it (#239).
+                    if at.read != at.asked {
+                        let reason = format!("frame {} of its media has no subject matte yet", at.asked);
+                        self.decline(
+                            node_id,
+                            NodeKind::ExternalMatte,
+                            crate::DeclineOutcome::FileMissing,
+                            "Subject matte".into(),
+                            &reason,
+                            format!("{}: frame {} has no matte; frame {} stands in", path.display(), at.asked, at.read),
+                        );
+                    }
+                    let up = crate::matte_sequence::upsample(&at.values, at.width, at.height, width, height);
+                    let mut out = vec![0.0f32; pixel_count * 4];
+                    for (i, m) in up.into_iter().enumerate() {
+                        let m = if invert { 1.0 - m } else { m }.clamp(0.0, 1.0);
+                        out[i * 4..i * 4 + 4].copy_from_slice(&[m, m, m, 1.0]);
+                    }
+                    return out;
+                }
 
                 // Decode + cache. An image that fails to load is read as
                 // no image (it selects everything), so a broken link

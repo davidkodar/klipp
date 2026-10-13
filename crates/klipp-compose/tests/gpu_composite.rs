@@ -1519,3 +1519,71 @@ fn busy() -> Arc<Vec<f32>> {
     }
     Arc::new(v)
 }
+
+/// #239: a grade gated by a matte sequence (the subject matte pass's
+/// output) takes each frame's own matte as the clip plays, the same on
+/// the GPU stack (the viewer) and the CPU (the export); a frame whose
+/// matte isn't made yet is drawn with the nearest one, but said, as a
+/// failing decline naming the sequence, so an export refuses it.
+#[test]
+fn a_matte_sequence_gates_the_grade_frame_by_frame_on_both_routes() {
+    use klipp_nodes::{graph::{Edge, Node, NodeGraph, NodeId}, kinds::NodeKind, matte_sequence, params::NodeParams};
+    let dir = std::env::temp_dir().join(format!("klipp-matte-seq-render-{}-{}", std::process::id(), ClipId::new().0));
+    let (mw, mh) = (32u32, 18u32);
+    let manifest = matte_sequence::Manifest { format: matte_sequence::FORMAT, fps: 25.0, width: mw, height: mh, model: "test".into(), model_bytes: 0, algorithm: 1, steadied: true };
+    matte_sequence::create(&dir, &manifest).unwrap();
+    // A bar a quarter of the frame wide, moving right a column a frame.
+    for f in 0..=60i64 {
+        let bar: Vec<u8> = (0..mw * mh).map(|i| if ((i % mw) as i64 - f / 3).rem_euclid(mw as i64) < (mw / 4) as i64 { 255 } else { 0 }).collect();
+        matte_sequence::put(&dir, &manifest, f, &bar).unwrap();
+    }
+    let mut g = NodeGraph::default();
+    let corr = g.ensure_corrector();
+    g.nodes.iter_mut().find(|n| n.id == corr).unwrap().params.saturation = Some(0.0);
+    let matte = NodeId::new_v4();
+    let params = NodeParams { matte_image_path: Some(dir.clone()), ..Default::default() };
+    g.nodes.push(Node { id: matte, kind: NodeKind::ExternalMatte, label: "Subject".into(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+    g.edges.push(Edge { from_node: matte, from_port: 0, to_node: corr, to_port: 1 });
+
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    let mut v = Track::new("V1", TrackKind::Video);
+    let mut a = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 4.0);
+    a.set_grade(g);
+    let mut src = Flat::default();
+    src.0.insert(a.id, picture(0.2));
+    v.clips = vec![a];
+    seq.tracks = vec![v];
+
+    let mut r = renderer();
+    let mut frames = Vec::new();
+    for t in [1.0, 2.0] {
+        let cpu = display(&r.render(&seq, tc(t), W, H, &mut src, RenderOptions::default()));
+        assert!(r.frame_declines().iter().all(|d| !d.fails()), "at {t} s: {:?}", r.frame_declines());
+        if let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut src, RenderOptions::default()) {
+            let d = worst(&cpu, &gpu);
+            assert!(d <= 1, "at {t} s: the stack differs from the CPU by {d} levels");
+        } else {
+            eprintln!("UNVERIFIED: the GPU stack declined ({:?})", r.last_decline());
+        }
+        frames.push(cpu);
+    }
+    assert!(worst(&frames[0], &frames[1]) > 20, "the matte moved with the frame: the grey bar is elsewhere");
+
+    // Frame 50 (2 s) not made yet: the nearest stands in, and is said.
+    std::fs::remove_file(matte_sequence::frame_path(&dir, 50)).unwrap();
+    let mut r = renderer();
+    let (_, found) = r.render_inspected(&seq, tc(2.0), W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
+    let mut routes = vec![("CPU", found.declines)];
+    if r.render_display_u8_on_gpu(&seq, tc(2.0), W, H, &mut src, RenderOptions::default()).is_some() {
+        routes.push(("GPU", r.frame_declines().to_vec()));
+    }
+    for (route, declines) in routes {
+        let missing: Vec<_> = declines.iter().filter(|d| d.outcome == klipp_nodes::DeclineOutcome::FileMissing).collect();
+        assert_eq!(missing.len(), 1, "{route}: {declines:?}");
+        assert!(missing[0].fails() && missing[0].shown(), "{route}: an export refuses a stand-in matte, and the viewer says so");
+        assert!(missing[0].reason.contains("frame 50"), "{route}: {}", missing[0].reason);
+        assert!(missing[0].why.contains("frame 49 stands in") && missing[0].why.contains(&dir.display().to_string()), "{route}: {}", missing[0].why);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
