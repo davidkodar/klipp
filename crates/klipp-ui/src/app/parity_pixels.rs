@@ -86,7 +86,7 @@ impl FrameSource for Synthetic {
     /// the same source, linear, as the working space takes it.
     fn temporal_frames_linear(&mut self, _clip: &Clip, _working: klipp_core::WorkingColorspace) -> Option<klipp_compose::LinearFrameProviderFn> {
         let size = self.size;
-        Some(Box::new(move |secs| Some(((*source(secs, size)).clone(), size.0, size.1))))
+        Some(Box::new(move |secs| Some((source(secs, size), size.0, size.1))))
     }
 
     /// Every media clip's analyses, under one stand-in key: those the

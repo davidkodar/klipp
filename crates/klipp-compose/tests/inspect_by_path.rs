@@ -453,7 +453,7 @@ impl FrameSource for Moving {
     }
     fn temporal_frames_linear(&mut self, clip: &Clip, _: klipp_core::WorkingColorspace) -> Option<LinearFrameProviderFn> {
         let source_in = clip.source_in.to_secs_f64();
-        Some(Box::new(move |t| Some((moving(((source_in + t) * MEDIA_FPS).round() as i64), W, H))))
+        Some(Box::new(move |t| Some((std::sync::Arc::new(moving(((source_in + t) * MEDIA_FPS).round() as i64)), W, H))))
     }
     fn media_range(&mut self, _: &Clip) -> Option<(f64, f64)> {
         Some((0.0, 10.0))

@@ -46,7 +46,7 @@ impl FrameSource for Grain {
 
     fn temporal_frames_linear(&mut self, clip: &Clip, _working: WorkingColorspace) -> Option<LinearFrameProviderFn> {
         let source_in = clip.source_in.to_secs_f64();
-        Some(Box::new(move |clip_secs| Some((grainy(source_in + clip_secs), W, H))))
+        Some(Box::new(move |clip_secs| Some((std::sync::Arc::new(grainy(source_in + clip_secs)), W, H))))
     }
 }
 

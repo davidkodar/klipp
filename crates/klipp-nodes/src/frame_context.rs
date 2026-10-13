@@ -92,7 +92,9 @@ pub struct EncodedFrame {
 /// working space, rendered as the current frame is.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinearFrame {
-    pub rgba: Vec<f32>,
+    /// Shared with whoever holds it: a parked viewer's held neighbour
+    /// (#1863) reaches the node without a copy. Read only.
+    pub rgba: std::sync::Arc<Vec<f32>>,
     pub width: u32,
     pub height: u32,
     /// The source time it is the frame of.
@@ -475,7 +477,7 @@ mod tests {
         fn linear(&mut self, source_secs: f64) -> Neighbour<LinearFrame> {
             self.asked += 1;
             let (width, height) = self.size;
-            Neighbour::Frame(LinearFrame { rgba: vec![0.5; (width * height * 4) as usize], width, height, source_secs, pts: None })
+            Neighbour::Frame(LinearFrame { rgba: std::sync::Arc::new(vec![0.5; (width * height * 4) as usize]), width, height, source_secs, pts: None })
         }
     }
 

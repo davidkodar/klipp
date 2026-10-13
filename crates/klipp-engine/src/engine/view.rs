@@ -302,18 +302,17 @@ impl FrameSource for ViewerSource<'_> {
         let mut reader: Option<Option<klipp_compose::LinearFrameProviderFn>> = None;
         Some(Box::new(move |t: f64| {
             let key = NeighbourKey { path: path.clone(), file, working, log_format, size: (width, height), micros: ((source_in + t).max(0.0) * 1e6).round() as i64 };
-            if let Some((px, w, h)) = hold.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
-                return Some((px.as_ref().clone(), w, h));
+            if let Some(held) = hold.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+                return Some(held);
             }
             let read = reader.get_or_insert_with(|| {
                 let mut file = klipp_media::frame_reader::SeekableFrameReader::open_linear(&path, log_format, working)?;
-                let read: klipp_compose::LinearFrameProviderFn = Box::new(move |t: f64| file.decode_at((source_in + t).max(0.0)));
+                let read: klipp_compose::LinearFrameProviderFn = Box::new(move |t: f64| file.decode_at((source_in + t).max(0.0)).map(|(px, w, h)| (std::sync::Arc::new(px), w, h)));
                 Some(klipp_compose::render::fit_linear_reader(read, width, height))
             });
             let (px, w, h) = read.as_mut()?(t)?;
-            let px = std::sync::Arc::new(px);
             hold.lock().unwrap_or_else(|e| e.into_inner()).put(key, std::sync::Arc::clone(&px), w, h);
-            Some((std::sync::Arc::unwrap_or_clone(px), w, h))
+            Some((px, w, h))
         }))
     }
 
@@ -356,7 +355,7 @@ impl FrameSource for ViewerSource<'_> {
         let mut reader = klipp_media::frame_reader::SeekableFrameReader::open_linear(
             &path, log_format, working,
         )?;
-        Some(Box::new(move |t: f64| reader.decode_at((source_in + t).max(0.0))))
+        Some(Box::new(move |t: f64| reader.decode_at((source_in + t).max(0.0)).map(|(px, w, h)| (std::sync::Arc::new(px), w, h))))
     }
 }
 

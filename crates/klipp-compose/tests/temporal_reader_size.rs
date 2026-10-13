@@ -14,7 +14,7 @@ impl FrameSource for WrongSize {
         _: &Clip,
         _: WorkingColorspace,
     ) -> Option<LinearFrameProviderFn> {
-        Some(Box::new(|_| Some((vec![0.2, 0.2, 0.2, 1.0], 1, 1))))
+        Some(Box::new(|_| Some((std::sync::Arc::new(vec![0.2, 0.2, 0.2, 1.0]), 1, 1))))
     }
 }
 
@@ -46,7 +46,7 @@ fn a_native_reader_is_fitted_with_bars_and_missing_frames_stay_missing() {
         if time < 0.0 {
             None
         } else {
-            Some(([0.2, 0.4, 0.6, 1.0].repeat(2), 2, 1))
+            Some((std::sync::Arc::new([0.2, 0.4, 0.6, 1.0].repeat(2)), 2, 1))
         }
     });
     let mut reader = klipp_compose::render::fit_linear_reader(raw, 4, 4);
@@ -63,6 +63,20 @@ fn a_native_reader_is_fitted_with_bars_and_missing_frames_stay_missing() {
             }
         );
     }
-    let malformed: LinearFrameProviderFn = Box::new(|_| Some((vec![0.5], 2, 1)));
+    let malformed: LinearFrameProviderFn = Box::new(|_| Some((std::sync::Arc::new(vec![0.5]), 2, 1)));
     assert!(klipp_compose::render::fit_linear_reader(malformed, 4, 4)(0.0).is_none());
+}
+
+/// A frame already at the render size passes through the fitting as the
+/// same buffer, not a copy (#1863): a parked viewer's held neighbour
+/// reaches the node without 133 MB copied per 4K frame.
+#[test]
+fn a_frame_at_the_render_size_is_shared_not_copied() {
+    let held = std::sync::Arc::new([0.2, 0.4, 0.6, 1.0].repeat(16));
+    let given = std::sync::Arc::clone(&held);
+    let raw: LinearFrameProviderFn = Box::new(move |_| Some((std::sync::Arc::clone(&given), 4, 4)));
+    let mut reader = klipp_compose::render::fit_linear_reader(raw, 4, 4);
+    let (first, ..) = reader(0.0).unwrap();
+    let (second, ..) = reader(0.04).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &held) && std::sync::Arc::ptr_eq(&second, &held), "the held frame was copied");
 }
