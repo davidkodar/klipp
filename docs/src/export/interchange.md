@@ -8,10 +8,11 @@ Klipp reads and writes timelines in four interchange formats. Each one carries t
 | Kdenlive / MLT (`.kdenlive`) | yes | yes |
 | FCPXML 1.9 (`.fcpxml`) | yes | yes |
 | CMX 3600 EDL (`.edl`) | no | yes |
+| AAF (`.aaf`), through OpenTimelineIO | no | yes, with OpenTimelineIO's AAF adapter installed |
 
 **Import:** **File → Import Timeline** has Kdenlive Project, OpenTimelineIO and Final Cut Pro XML. An import adds a new sequence to the current project and switches to it; its media is added to the media pool. What the importer could not bring in is listed in a file beside the one you imported, named `<name>.import_warnings.txt`, and a message says how many there were.
 
-**Export:** **File → Export Timeline** has FCPXML, Kdenlive Project and EDL. OpenTimelineIO export is in the command palette, as **Export OpenTimelineIO (.otio)…**. Every export writes the active sequence.
+**Export:** **File → Export Timeline** has FCPXML, Kdenlive Project, EDL, OpenTimelineIO and AAF (via OpenTimelineIO); each is in the command palette too. Every export writes the active sequence.
 
 All four formats refer to media by its file path. The receiving system needs the same files at the same paths, or has to relink them.
 
@@ -29,6 +30,16 @@ OTIO has adapters to many other applications, so an `.otio` file is the most gen
 Titles, generators, adjustment layers and compound clips become gaps of the same length, so everything after them stays in place. Subtitle and text tracks are not exported. Transitions, grades and effects are not written. Clips that overlap on one track cannot be expressed in OTIO, where a track is a sequence of items; the later clip is moved to follow the earlier one. Everything dropped or moved is listed in `<name>.export_warnings.txt` beside the exported file.
 
 **Import** reads video and audio tracks, clips with their media (a missing or unlinked reference becomes an offline item), gaps, and timeline and clip markers. Transitions and effects, including speed changes, are skipped with a warning.
+
+## AAF
+
+Klipp writes AAF by way of OpenTimelineIO: **AAF (via OpenTimelineIO)…** exports the sequence as OTIO and has OpenTimelineIO's `otioconvert` turn it into AAF. That needs OpenTimelineIO and its AAF adapter on the machine:
+
+```sh
+pip install opentimelineio otio-aaf-adapter
+```
+
+Without them the export says which one is missing and writes nothing; **Export OpenTimelineIO** still works, and the `.otio` file can be converted anywhere they are installed with `otioconvert -i edit.otio -o edit.aaf`. What reaches the AAF file is what reaches the OTIO one (see above).
 
 ## Kdenlive (MLT)
 

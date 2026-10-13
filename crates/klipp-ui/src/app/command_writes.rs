@@ -269,6 +269,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::CopyAudioEffectKeyframes { .. }
         | AppCommand::OpenSaveHyperzoomPresetDialog { .. }
         | AppCommand::ExportOtio { .. }
+        | AppCommand::ExportAaf { .. }
+        | AppCommand::ShowToast { .. }
         // A template is kept outside the project (#618).
         | AppCommand::SaveProjectTemplate { .. }
         | AppCommand::DeleteProjectTemplate { .. }
