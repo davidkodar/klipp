@@ -467,7 +467,6 @@ fn the_brightness_gated_effects_follow_the_working_space() {
                 input.clone(),
                 W,
                 H,
-                0.0,
                 luma,
             );
             let (worst, mean) = diff(&cpu, &on_gpu);

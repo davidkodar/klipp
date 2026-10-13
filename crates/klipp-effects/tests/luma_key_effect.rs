@@ -123,7 +123,7 @@ fn the_cpu_key_is_the_grade_nodes_matte_turned_round() {
     for (low, high, soft) in [(0.0, 0.1, 0.05), (0.3, 0.6, 0.15), (0.8, 1.0, 0.0)] {
         for invert in [false, true] {
             for yw in [BT709, BT2020, AP1] {
-                let out = apply_effects_with_luma(&[key(low, high, soft, invert)], input.clone(), w, h, 0.0, yw);
+                let out = apply_effects_with_luma(&[key(low, high, soft, invert)], input.clone(), w, h, yw);
                 let node = LumaKeySettings { enabled: true, low, high, soft, invert: !invert };
                 for (i, o) in input.chunks_exact(4).zip(out.chunks_exact(4)) {
                     let m = luma_key_value([encode(i[0]), encode(i[1]), encode(i[2])], &node, yw);
@@ -135,7 +135,7 @@ fn the_cpu_key_is_the_grade_nodes_matte_turned_round() {
     // Control: the weights matter on this frame, so the loop above is
     // telling the spaces apart.
     let k = [key(0.3, 0.6, 0.05, false)];
-    let (a, b) = (apply_effects_with_luma(&k, input.clone(), w, h, 0.0, BT709), apply_effects_with_luma(&k, input, w, h, 0.0, AP1));
+    let (a, b) = (apply_effects_with_luma(&k, input.clone(), w, h, BT709), apply_effects_with_luma(&k, input, w, h, AP1));
     assert_ne!(a, b, "BT.709 and AP1 key the saturated rows alike");
 }
 
@@ -156,7 +156,7 @@ fn the_luma_key_effect_matches_between_cpu_and_gpu() {
                 let fx = [key(low, high, soft, invert)];
                 gpu.set_luma_coefs(yw);
                 let on_gpu = gpu.apply_effects(&fx, &input, w, h);
-                let cpu = apply_effects_with_luma(&fx, input.clone(), w, h, 0.0, yw);
+                let cpu = apply_effects_with_luma(&fx, input.clone(), w, h, yw);
                 let d = cpu.iter().zip(&on_gpu).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
                 worst = worst.max(d);
                 if d > 1e-4 {

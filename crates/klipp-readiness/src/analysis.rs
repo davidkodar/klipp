@@ -218,7 +218,7 @@ fn expected(effect: &BuiltinEffect, raw: Option<&serde_json::Value>, source_secs
     if matches!(effect, BuiltinEffect::VideoStabilization { .. }) && at.motion.stabilization.is_none() || matches!(effect, BuiltinEffect::RollingShutterCorrection { .. }) && at.motion.rsc_rows.is_none() {
         return frame;
     }
-    klipp_effects::apply_effects_with_motion(&[effect], frame, W, H, 0.0, LUMA, &at.motion)
+    klipp_effects::apply_effects_with_motion(&[effect], frame, W, H, LUMA, &at.motion)
 }
 
 /// The expectation of timeline frame `frame` of the scene: the clip under

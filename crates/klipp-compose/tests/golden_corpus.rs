@@ -1687,7 +1687,7 @@ fn the_analysed_cases_draw_what_their_analysis_computes() {
                 }
             }
             let luma = klipp_color::linear::luma_coefs(case.working);
-            let want = klipp_effects::apply_effects_with_motion(&effects, without, W, H, clip_time, luma, &motion);
+            let want = klipp_effects::apply_effects_with_motion(&effects, without, W, H, luma, &motion);
             let worst = with.iter().zip(&want).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
             assert!(with.len() == want.len() && worst < 1e-4, "{} @{t}: {worst} from what its analysis computes", case.name);
         }

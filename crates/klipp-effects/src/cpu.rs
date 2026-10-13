@@ -195,7 +195,7 @@ pub(crate) fn screen_at_ceiling(o: f32, v: f32) -> f32 {
 }
 
 /// Apply one built-in effect. Frei0r plugins are not here (they take
-/// 8-bit frames: see `apply_effects_with_time`); stabilisation, rolling-
+/// run as nodes of their own, M4 step 5); stabilisation, rolling-
 /// shutter correction and speed ramps need data only the GPU path or the
 /// renderer has, and pass through.
 pub(crate) fn apply(

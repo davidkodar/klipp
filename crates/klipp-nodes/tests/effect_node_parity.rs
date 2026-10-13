@@ -137,7 +137,7 @@ fn every_effect_node_matches_the_legacy_chain_on_the_cpu() {
     for (tag, effect) in &cases {
         let mut ex = GraphExecutor::new_cpu_only();
         let got = ex.execute_linear(&frame(), &graph(effect), W, H, 0.5, 12, None, None).unwrap().0;
-        let want = klipp_effects::apply_effects_with_luma(std::slice::from_ref(effect), frame(), W, H, 0.5, luma());
+        let want = klipp_effects::apply_effects_with_luma(std::slice::from_ref(effect), frame(), W, H, luma());
         assert_eq!(bits(&got), bits(&want), "{tag} {effect:?}");
         if mean_change(&got, &frame()) < 0.05 {
             unchanged.push(*tag);
@@ -251,7 +251,7 @@ fn display_encoded_effect_nodes_keep_their_encoding_in_every_working_space() {
         for ty in &encoded {
             for effect in [(ty.sample)(), at_seven_tenths(ty)] {
                 let got = cpu.execute_linear(&frame(), &graph(&effect), W, H, 0.5, 12, None, None).unwrap().0;
-                let want = klipp_effects::apply_effects_with_luma(std::slice::from_ref(&effect), frame(), W, H, 0.5, luma);
+                let want = klipp_effects::apply_effects_with_luma(std::slice::from_ref(&effect), frame(), W, H, luma);
                 assert_eq!(bits(&got), bits(&want), "cpu, {ws:?}, {}", ty.tag);
                 if let Some((ex, legacy)) = gpu.as_mut() {
                     let got = ex.execute_linear(&frame(), &graph(&effect), W, H, 0.5, 12, None, None).unwrap().0;
@@ -287,7 +287,7 @@ fn effect_nodes_pass_hdr_and_negative_values_as_the_legacy_chain_does() {
     let (cases, _) = cases();
     for (tag, effect) in &cases {
         let got = cpu.execute_linear(&hdr, &graph(effect), W, H, 0.5, 12, None, None).unwrap().0;
-        let want = klipp_effects::apply_effects_with_luma(std::slice::from_ref(effect), hdr.clone(), W, H, 0.5, luma());
+        let want = klipp_effects::apply_effects_with_luma(std::slice::from_ref(effect), hdr.clone(), W, H, luma());
         assert_eq!(bits(&got), bits(&want), "cpu, {tag}");
         if let Some((ex, legacy)) = gpu.as_mut() {
             let got = ex.execute_linear(&hdr, &graph(effect), W, H, 0.5, 12, None, None).unwrap().0;

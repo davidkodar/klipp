@@ -94,7 +94,7 @@ fn legacy(gpu: bool, fx: &[E]) -> Vec<f32> {
             p.set_luma_coefs(luma);
             p.apply_effects(fx, &graded, W, H)
         }
-        _ => klipp_effects::apply_effects_with_luma(fx, graded, W, H, 0.5, luma),
+        _ => klipp_effects::apply_effects_with_luma(fx, graded, W, H, luma),
     }
 }
 

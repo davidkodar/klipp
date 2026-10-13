@@ -3243,14 +3243,14 @@ impl Renderer {
         if blur > 0.5 {
             // The blur entrance, as the GPU stack blurs the placed sprite.
             let luma = klipp_color::linear::luma_coefs(self.working);
-            linear = klipp_effects::apply_effects_with_luma(&[BuiltinEffect::GaussianBlur { radius: blur }], linear, width, height, t, luma);
+            linear = klipp_effects::apply_effects_with_luma(&[BuiltinEffect::GaussianBlur { radius: blur }], linear, width, height, luma);
         }
         if let Some((radius, axis, band)) = self.titles.last_focus_blur() {
             // A roll's focus band going soft, as the GPU stack softens the
             // placed sprite (#592).
             let luma = klipp_color::linear::luma_coefs(self.working);
             let fx = [BuiltinEffect::FocusBlur { radius, vertical: axis == klipp_core::title_motion::RampAxis::Vertical, band }];
-            linear = klipp_effects::apply_effects_with_luma(&fx, linear, width, height, t, luma);
+            linear = klipp_effects::apply_effects_with_luma(&fx, linear, width, height, luma);
         }
         self.authored_to_working(&mut linear);
         linear
@@ -3880,7 +3880,7 @@ impl Renderer {
     fn effects_analysed(&mut self, clip: &Clip, fx: &[BuiltinEffect], pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
         use klipp_nodes::frame_context::{Analysis, AnalysisInputs, NODE_ANALYSIS_SCHEMA};
         let Some((_, analyses)) = self.clip_analysis.as_ref().filter(|(id, _)| *id == clip.id) else {
-            return self.effects(fx, pixels, clip_time, width, height);
+            return self.effects(fx, pixels, width, height);
         };
         let source_secs = clip.source_secs_at(clip_time, fps);
         let mut motion = klipp_effects::MotionData::default();
@@ -3926,7 +3926,7 @@ impl Renderer {
             decline(self, effect, *outcome, reason);
         }
         let kept = std::mem::replace(&mut self.motion, motion);
-        let out = self.effects(&list, pixels, clip_time, width, height);
+        let out = self.effects(&list, pixels, width, height);
         self.motion = kept;
         out
     }
@@ -3934,7 +3934,7 @@ impl Renderer {
     /// `fx` on `pixels` by the CPU kernels: a clip whose effects can't run
     /// on the GPU (no GPU, an effect with no GPU kernel), or whose plan
     /// couldn't apply them. Every run is counted (#1274).
-    fn effects(&mut self, fx: &[BuiltinEffect], pixels: Vec<f32>, clip_time: f64, width: u32, height: u32) -> Vec<f32> {
+    fn effects(&mut self, fx: &[BuiltinEffect], pixels: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
         if !has_active_effects(fx) {
             return pixels;
         }
@@ -3945,7 +3945,7 @@ impl Renderer {
         // measure: the numbers the plan's effect nodes get, which is what
         // `cpu_gpu_effect_parity` checks.
         let luma = klipp_color::linear::luma_coefs(self.working);
-        let out = klipp_effects::apply_effects_with_motion(fx, pixels, width, height, clip_time, luma, &self.motion);
+        let out = klipp_effects::apply_effects_with_motion(fx, pixels, width, height, luma, &self.motion);
         self.found.stats.effects_ms += ms_since(t);
         out
     }
