@@ -3,9 +3,18 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 fn default_true() -> bool { true }
+fn default_fade_ms() -> u32 { 500 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// The preferences file's revision. A file below it has the one-time
+/// migrations of [`Preferences::migrate_to_revision`] run on load; a file
+/// at it is read as written, so a value chosen after the migration stays.
+pub const PREFS_REVISION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Preferences {
+    /// See [`PREFS_REVISION`]. Absent in a file written before it: 0.
+    #[serde(default)]
+    pub revision: u32,
     pub general: GeneralPrefs,
     pub playback: PlaybackPrefs,
     #[serde(default)]
@@ -41,6 +50,33 @@ pub struct Preferences {
     pub external_tools: ExternalToolsPrefs,
     #[serde(default)]
     pub ai: AiPrefs,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            revision: PREFS_REVISION,
+            general: Default::default(),
+            playback: Default::default(),
+            editing: Default::default(),
+            file_browser: Default::default(),
+            effects_browser: Default::default(),
+            audio: Default::default(),
+            export: Default::default(),
+            proxy: Default::default(),
+            system: Default::default(),
+            audio_hardware: Default::default(),
+            appearance: Default::default(),
+            media_cache: Default::default(),
+            color: Default::default(),
+            title: Default::default(),
+            timeline: Default::default(),
+            viewer: Default::default(),
+            advanced: Default::default(),
+            external_tools: Default::default(),
+            ai: Default::default(),
+        }
+    }
 }
 
 /// Rich recent project entry with cached metadata for the launch screen.
@@ -373,8 +409,9 @@ pub struct AudioPrefs {
     /// Default fade curve for new clips.
     #[serde(default)]
     pub default_fade_curve: klipp_core::FadeCurve,
-    /// Default fade duration in milliseconds (0 = no fade).
-    #[serde(default)]
+    /// How long a fade is when one is added (a clip's Add Fade In or
+    /// Add Fade Out), in milliseconds.
+    #[serde(default = "default_fade_ms")]
     pub default_fade_duration_ms: u32,
     /// Loudness standard for metering/normalization.
     #[serde(default)]
@@ -422,7 +459,7 @@ impl Default for AudioPrefs {
             pan_law: Default::default(),
             metering_ballistics: Default::default(),
             default_fade_curve: Default::default(),
-            default_fade_duration_ms: 0,
+            default_fade_duration_ms: default_fade_ms(),
             loudness_standard: Default::default(),
             normalize_target_lufs: default_normalize_lufs(),
             peak_hold_time_secs: default_peak_hold(),
@@ -944,6 +981,7 @@ impl Preferences {
         Self::migrate_skim_resolution_default(&mut value);
         Self::migrate_filmstrip_height_default(&mut value);
         Self::migrate_skim_quality_default(&mut value);
+        Self::migrate_to_revision(&mut value);
         match serde_json::from_value::<Self>(value) {
             Ok(mut prefs) => {
                 // Migrate legacy theme_mode → theme_name (added when the
@@ -1005,6 +1043,26 @@ impl Preferences {
     /// ~50 GB skim files for 35-min 4K clips — 5× what FCP or DaVinci
     /// write. Only rewrites the literal old default; anything the user
     /// explicitly set is left alone.
+    /// Settings that were saved but read by nothing until #1816 carry
+    /// the default they had then, which may not be the one they have
+    /// now that they act. A file below [`PREFS_REVISION`] has those old
+    /// defaults moved to the new ones, once: the revision is then
+    /// written, so a value set afterwards is kept even if it equals an
+    /// old default.
+    fn migrate_to_revision(value: &mut serde_json::Value) {
+        let Some(root) = value.as_object_mut() else { return };
+        let revision = root.get("revision").and_then(|v| v.as_u64()).unwrap_or(0);
+        if revision < 1 {
+            // A fade of 0 ms is no fade: Add Fade In would do nothing.
+            if let Some(audio) = root.get_mut("audio").and_then(|v| v.as_object_mut()) {
+                if audio.get("default_fade_duration_ms").and_then(|v| v.as_u64()) == Some(0) {
+                    audio.insert("default_fade_duration_ms".into(), serde_json::Value::from(default_fade_ms()));
+                }
+            }
+        }
+        root.insert("revision".into(), serde_json::Value::from(PREFS_REVISION));
+    }
+
     fn migrate_skim_quality_default(value: &mut serde_json::Value) {
         let Some(mc) = value.get_mut("media_cache").and_then(|v| v.as_object_mut()) else {
             return;
@@ -2116,7 +2174,7 @@ mod tests {
         assert_eq!(rt.audio.pan_law, klipp_core::PanLaw::Linear);
         assert_eq!(rt.audio.metering_ballistics, klipp_core::MeteringBallistics::Peak);
         assert_eq!(rt.audio.default_fade_curve, klipp_core::FadeCurve::Linear);
-        assert_eq!(rt.audio.default_fade_duration_ms, 0);
+        assert_eq!(rt.audio.default_fade_duration_ms, 500);
         assert_eq!(rt.audio.loudness_standard, klipp_core::LoudnessStandard::EbuR128);
         assert_eq!(rt.audio.normalize_target_lufs, -23.0);
 
@@ -3144,5 +3202,34 @@ mod font_pick_tests {
         assert_eq!(t.recent_fonts[0], "F19");
         let old: TitlePrefs = serde_json::from_str("{}").unwrap();
         assert!(old.favourite_fonts.is_empty() && old.recent_fonts.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod revision_tests {
+    use super::*;
+
+    /// A file in its default state, as an older build wrote it.
+    fn old_file(edit: impl FnOnce(&mut serde_json::Value)) -> Preferences {
+        let mut v = serde_json::to_value(Preferences::default()).unwrap();
+        v.as_object_mut().unwrap().remove("revision");
+        edit(&mut v);
+        Preferences::from_json_str(&v.to_string())
+    }
+
+    /// #1816: a file from before the fades acted, with the then-default
+    /// 0 ms, gets the half-second default once; a file already at the
+    /// revision keeps whatever it holds, so a value set later stands.
+    #[test]
+    fn an_old_zero_fade_becomes_the_default_once() {
+        let p = old_file(|v| v["audio"]["default_fade_duration_ms"] = 0.into());
+        assert_eq!(p.audio.default_fade_duration_ms, 500);
+        assert_eq!(p.revision, PREFS_REVISION);
+        let p = old_file(|v| v["audio"]["default_fade_duration_ms"] = 300.into());
+        assert_eq!(p.audio.default_fade_duration_ms, 300, "a value chosen is kept");
+        let mut current = serde_json::to_value(Preferences::default()).unwrap();
+        current["audio"]["default_fade_duration_ms"] = 0.into();
+        assert_eq!(Preferences::from_json_str(&current.to_string()).audio.default_fade_duration_ms, 0, "at the revision, nothing moves");
+        assert_eq!(Preferences::default().revision, PREFS_REVISION, "a fresh install is at the revision");
     }
 }

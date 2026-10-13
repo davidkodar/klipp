@@ -1571,6 +1571,33 @@ impl PreferencesPanel {
             }
         });
 
+        Self::setting_row_with_subtitle(ui, "Default fade duration", "A clip's Add Fade In and Add Fade Out", theme, |ui| {
+            let mut v_secs = prefs.audio.default_fade_duration_ms as f32 / 1000.0;
+            if ui.add(egui::DragValue::new(&mut v_secs).range(0.05..=5.0).speed(0.05).suffix(" s").fixed_decimals(2)).changed() {
+                prefs.audio.default_fade_duration_ms = (v_secs * 1000.0).round() as u32;
+                *dirty = true;
+            }
+        });
+
+        Self::setting_row_with_subtitle(ui, "Default fade curve", "A fade added, or drawn out from none on the timeline", theme, |ui| {
+            egui::ComboBox::from_id_salt("fade_curve")
+                .selected_text(crate::inspector::audio_tab::fade_curve_label(
+                    prefs.audio.default_fade_curve,
+                ))
+                .width(100.0)
+                .show_ui(ui, |ui| {
+                    // One list, from the same source as the clip
+                    // inspector's, so a shape cannot appear in one
+                    // picker and not the other.
+                    for curve in crate::inspector::audio_tab::FADE_CURVES {
+                        let label = crate::inspector::audio_tab::fade_curve_label(*curve);
+                        if ui.selectable_value(&mut prefs.audio.default_fade_curve, *curve, label).changed() {
+                            *dirty = true;
+                        }
+                    }
+                });
+        });
+
         // ── LOUDNESS section ──
         Self::section_header(ui, "LOUDNESS", theme);
 
@@ -4712,7 +4739,7 @@ mod layout_tests {
     /// nothing, so they are out of view until they are wired. "Render
     /// cache" here is the folder row; the cache's size row keeps the name.
     const HIDDEN: &[&str] = &[
-        "Default fade curve", "Default fade duration", "Monitoring mode", "Normalize target", "Default sync method",
+        "Monitoring mode", "Normalize target", "Default sync method",
         "Search radius", "Colour space tagging", "Default encoder preset", "Default export folder", "Overwrite existing files",
         "Max cache size", "Thumbnail resolution", "JKL speed steps", "Clip corner radius", "Max track height", "Ruler height",
         "Default alignment", "Default colour", "Default font", "Default size", "Title-safe area overlay",

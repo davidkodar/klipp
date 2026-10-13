@@ -802,6 +802,39 @@ mod menu_smoke_tests {
         assert!(lacking.is_empty(), "the clip's menu lacks {lacking:?}; it shows {menu:?}");
     }
 
+    /// A sounding clip's menu adds a fade of the default fade's length
+    /// and curve (Preferences > Audio): Add Fade In with 1.25 s and an
+    /// exponential curve set sends exactly that, and another default
+    /// sends the other, so the fade is the preference's and not fixed.
+    #[test]
+    fn add_fade_in_uses_the_default_fade() {
+        for (secs, curve) in [(1.25_f32, klipp_core::FadeCurve::Exponential), (0.4, klipp_core::FadeCurve::Linear)] {
+            let mut timeline = Timeline::new();
+            let a1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Audio)).expect("an audio track");
+            let (zero, long) = (RationalTime { value: 0, rate: 24 }, RationalTime { value: 24 * 600, rate: 24 });
+            let media = timeline.state.media_pool.all().next().unwrap().id;
+            timeline.state.sequences[0].tracks[a1].clips.push(Clip::media(media, zero, long, zero, long));
+            let audio_id = timeline.state.sequences[0].tracks[a1].clips[0].id;
+            timeline.state.default_fade_secs = secs;
+            timeline.state.default_fade_curve = curve;
+            let drawn = timeline.frame(Vec::new());
+            // The audio clip's name is drawn on its track, below the video's.
+            let at = drawn.iter().filter(|(t, _)| t == "smoke.mov").map(|(_, p)| *p).max_by(|a, b| a.y.total_cmp(&b.y)).expect("the audio clip is drawn");
+            timeline.right_click(at);
+            let item = timeline.frame(Vec::new()).into_iter().find(|(t, _)| t == "Add Fade In").expect("Add Fade In in the menu").1;
+            let button = |pressed| egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            timeline.frame(vec![egui::Event::PointerMoved(item), button(true)]);
+            let mut sent = std::mem::take(&mut timeline.sent);
+            timeline.frame(vec![button(false)]);
+            sent.extend(std::mem::take(&mut timeline.sent));
+            let fade = sent.iter().find_map(|c| match c {
+                AppCommand::UpdateClipAudio { clip_id, fade_in_secs, fade_in_curve, fade_out_secs, .. } if *clip_id == audio_id => Some((*fade_in_secs, *fade_in_curve, *fade_out_secs)),
+                _ => None,
+            });
+            assert_eq!(fade, Some((secs, curve, 0.0)), "{sent:?}");
+        }
+    }
+
     /// On the Colour page's strip, a clip's menu flags where its grade
     /// stands (#899): Grade Flag, then a flag, sends that flag for the
     /// clip; a flagged clip shows a pennant in the flag's colour.

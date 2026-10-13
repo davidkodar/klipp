@@ -2690,6 +2690,11 @@ pub struct AppState {
     pub audio_show_rubber_band: bool,
     pub audio_show_waveform: bool,
     pub audio_anti_click_fade: bool,
+    /// A fade added to a clip (its Add Fade In or Out, or a fade handle
+    /// dragged out from none): how long, and its curve. The audio
+    /// preferences' default fade.
+    pub default_fade_secs: f32,
+    pub default_fade_curve: klipp_core::FadeCurve,
     /// See `prefs::AudioPrefs::show_crossfade_indicators`: a fade
     /// handoff between two butted clips, not a crossfade.
     pub audio_show_crossfade_indicators: bool,
@@ -4696,6 +4701,8 @@ impl Default for AppState {
             audio_show_rubber_band: true,
             audio_show_waveform: true,
             audio_anti_click_fade: true,
+            default_fade_secs: 0.5,
+            default_fade_curve: klipp_core::FadeCurve::default(),
             audio_show_crossfade_indicators: true,
             waveform_zoom: std::collections::HashMap::new(),
             copied_track_settings: None,
