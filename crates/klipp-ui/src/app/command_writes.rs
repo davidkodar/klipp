@@ -352,6 +352,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::CutClip { .. }
         | AppCommand::PasteClip
         | AppCommand::PasteClipInsert
+        | AppCommand::EditFromSelects { .. }
         | AppCommand::DuplicateClip { .. }
         | AppCommand::PasteAttributes { .. }
         | AppCommand::SetClipEnabled { .. }

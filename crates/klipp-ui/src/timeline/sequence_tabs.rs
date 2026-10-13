@@ -151,6 +151,13 @@ pub fn show(
                 cmds.push(AppCommand::OpenSequenceSettings { sequence_idx: i });
                 ui.close_menu();
             }
+            // Stacked above the cut, to skim and take ranges from (#82).
+            let as_selects = state.selects_sequence == Some(state.sequences[i].id);
+            if ui.add_enabled(!is_active && !as_selects, egui::Button::new("Open as Selects")).on_disabled_hover_text(if is_active { "This is the sequence being cut" } else { "Open above the cut already" }).clicked() {
+                state.selects_sequence = Some(state.sequences[i].id);
+                state.selects_range = None;
+                ui.close_menu();
+            }
             if ui.add_enabled(can_close, egui::Button::new("Close Tab")).clicked() {
                 state.closed_sequence_tabs.insert(state.sequences[i].id);
                 if is_active {

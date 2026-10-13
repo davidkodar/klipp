@@ -77,6 +77,29 @@ pub fn copy(seq: &Sequence, ids: &[ClipId]) -> Option<ClipboardContent> {
     Some(ClipboardContent { clips, transitions })
 }
 
+/// What lies in `seq` from `from` to `to` on every track, as Copy would
+/// take it (#82): each clip there, one that straddles an end cut at it,
+/// with the transitions between them. `None` when nothing is there.
+pub fn copy_range(seq: &Sequence, from: Timecode, to: Timecode) -> Option<ClipboardContent> {
+    if to <= from {
+        return None;
+    }
+    let mut cut = seq.clone();
+    for track in &mut cut.tracks {
+        for at in [from, to] {
+            if let Some(id) = track.clips.iter().find(|c| c.timeline_in < at && at < c.timeline_out).map(|c| c.id) {
+                track.split_at(id, at);
+            }
+        }
+    }
+    let inside: Vec<ClipId> = cut.tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| c.timeline_in >= from && c.timeline_out <= to).map(|c| c.id).collect();
+    let mut cb = copy(&cut, &inside)?;
+    // Only what lies inside: a partner of a clip inside that reaches out
+    // of the range is not taken.
+    cb.clips.retain(|c| c.clip.timeline_in >= from && c.clip.timeline_out <= to);
+    (!cb.clips.is_empty()).then_some(cb)
+}
+
 /// Whether a paste lays the clips over what is there, or cuts every
 /// unlocked track at the playhead and moves everything after it along.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,6 +267,37 @@ mod tests {
         a1.clips = vec![sa, d];
         seq.tracks = vec![v1, a1];
         (seq, ids)
+    }
+
+    /// #82: a range of a selects sequence is what lies in it on every
+    /// track, a clip straddling an end cut there, and it goes into a cut
+    /// as an insert that moves everything after it along.
+    #[test]
+    fn a_range_is_copied_across_tracks_and_inserted() {
+        let (selects, [a, b, c, sa, d]) = timeline();
+        // 1 s to 5 s: the back half of a and of its sound, all of b, the
+        // front half of d; nothing of c.
+        let cb = copy_range(&selects, tc(1.0), tc(5.0)).unwrap();
+        let spans: Vec<(usize, f64, f64)> = cb.clips.iter().map(|x| (x.track, x.clip.timeline_in.to_secs_f64(), x.clip.timeline_out.to_secs_f64())).collect();
+        assert_eq!(spans, vec![(0, 1.0, 2.0), (1, 1.0, 2.0), (0, 2.0, 4.0), (1, 4.0, 5.0)], "{spans:?}");
+        assert!(cb.clips.iter().all(|x| ![a, sa, d, c].contains(&x.clip.id)), "the cut pieces are new clips");
+        assert!(cb.clips.iter().any(|x| x.clip.id == b), "b whole");
+        // The back half of a starts a second into its source.
+        assert_eq!(cb.clips[0].clip.source_in.to_secs_f64(), 1.0);
+        assert!(copy_range(&selects, tc(4.0), tc(4.0)).is_none() && copy_range(&selects, tc(20.0), tc(30.0)).is_none());
+        // Into a cut of one 10 s clip, at 3 s: it is cut there and what
+        // follows moves along by the 4 s range.
+        let mut cut = Sequence::new_default();
+        let long = clip(0.0, 10.0);
+        let mut v1 = Track::new("V1", TrackKind::Video);
+        v1.clips = vec![long];
+        cut.tracks = vec![v1, Track::new("A1", TrackKind::Audio)];
+        let p = paste(&cut, &cb, tc(3.0), PasteMode::Insert);
+        assert_eq!(p.ids.len(), 4);
+        let end = p.sequence.tracks[0].clips.iter().map(|x| x.timeline_out.to_secs_f64()).fold(0.0, f64::max);
+        assert_eq!(end, 14.0, "the cut grew by the range");
+        let starts: Vec<f64> = p.ids.iter().filter_map(|id| p.sequence.all_clips().find(|x| x.id == *id)).map(|x| x.timeline_in.to_secs_f64()).collect();
+        assert_eq!(starts, vec![3.0, 3.0, 4.0, 6.0], "each at its offset from the range's start");
     }
 
     #[test]

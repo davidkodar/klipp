@@ -776,6 +776,27 @@ impl KlippApp {
                     }
                     true
                 }
+                // From the selects sequence above the cut (#82): its range
+                // copied whole, every track, and put in as one step.
+                AppCommand::EditFromSelects { sequence_id, range_in, range_out, at, overwrite } => {
+                    if *sequence_id == self.state.sequence().id {
+                        self.state.toast.show("The selects and the cut are the same sequence: open another as selects");
+                        return true;
+                    }
+                    let Some(selects) = self.state.sequences.iter().find(|s| s.id == *sequence_id) else { return true };
+                    let Some(cb) = crate::clip_clipboard::copy_range(selects, *range_in, *range_out) else {
+                        self.state.toast.show("Nothing in the selects' marked range");
+                        return true;
+                    };
+                    let at = at.or(self.state.sequence().in_point).unwrap_or(self.state.playhead);
+                    let (mode, label) = if *overwrite {
+                        (crate::clip_clipboard::PasteMode::Overwrite, "Overwrite from Selects")
+                    } else {
+                        (crate::clip_clipboard::PasteMode::Insert, "Insert from Selects")
+                    };
+                    self.paste_clipboard(&cb, at, mode, label);
+                    true
+                }
                 AppCommand::PasteClipInsert => {
                     if let Some(cb) = self.state.clipboard.clone() {
                         self.paste_clipboard(&cb, self.state.playhead, crate::clip_clipboard::PasteMode::Insert, "Paste Insert");
