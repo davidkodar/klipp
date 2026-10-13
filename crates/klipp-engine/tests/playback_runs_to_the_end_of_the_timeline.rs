@@ -184,12 +184,18 @@ fn a_gap_between_shots_is_played_through() {
     let (moves, stopped) = e.play_from(0.2, fps, Duration::from_secs(60));
     assert!(stopped, "playback did not stop at the end");
     assert!(furthest(&moves) > 1.5, "the second shot was not played: reached {:.2} s", furthest(&moves));
-    // In the gap (0.6 s to 1.0 s) the playhead moves through it rather
-    // than jumping from its start to its end.
-    let in_gap: Vec<_> = moves.iter().filter(|m| m.1 > 0.65 && m.1 < 0.95).collect();
-    assert!(!in_gap.is_empty(), "the playhead jumped over the gap: {:?}", moves.iter().map(|m| (m.1 * 100.0).round() / 100.0).collect::<Vec<_>>());
-    let spent = in_gap.last().unwrap().0.duration_since(in_gap.first().unwrap().0);
-    assert!(spent > Duration::from_millis(150), "the gap went by in {spent:?}");
+    // The gap (0.6 s to 1.0 s) takes its own time rather than being
+    // jumped: from the last playhead before it to the first after it, at
+    // least most of its 0.4 s go by. A loaded machine only makes that
+    // longer; it may report nothing inside the gap, which is why the
+    // reports in it are not what is counted (#1828).
+    let before = moves.iter().filter(|m| m.1 <= 0.6).map(|m| m.0).max();
+    let after = moves.iter().filter(|m| m.1 >= 1.0).map(|m| m.0).min();
+    let (Some(before), Some(after)) = (before, after) else {
+        panic!("no playhead either side of the gap: {:?}", moves.iter().map(|m| (m.1 * 100.0).round() / 100.0).collect::<Vec<_>>());
+    };
+    let spent = after.saturating_duration_since(before);
+    assert!(spent > Duration::from_millis(300), "the gap went by in {spent:?}: jumped rather than played");
 }
 
 /// After the last shot on V1, a picture on V2 (an image, a closing
