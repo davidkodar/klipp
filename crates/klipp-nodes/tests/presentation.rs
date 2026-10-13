@@ -116,6 +116,8 @@ const SHOWN_NOW: &[(&str, &str, &str)] = &[
     ("klipp.grade.qualifier", "qual_lum_low", "the HSL mode's, #895"),
     ("klipp.grade.qualifier", "qual_lum_high", "the HSL mode's, #895"),
     ("klipp.grade.qualifier", "qual_lum_soft", "the HSL mode's, #895"),
+    // The matte finesse's denoise (#901), new.
+    ("klipp.grade.qualifier", "qual_denoise", "the matte's denoise, #901"),
 ];
 
 /// What the variant's stored values switch on.

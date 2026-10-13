@@ -3632,7 +3632,7 @@ pub(crate) fn refinement_keyed(graph: &NodeGraph, node: NodeId) -> bool {
     graph.nodes.iter().find(|n| n.id == node).is_some_and(|n| {
         n.keyframes.tracks.iter().any(|t| {
             !t.keyframes.is_empty()
-                && matches!(t.param_name.as_str(), "qual_clean_black" | "qual_clean_white" | "qual_shrink_grow" | "qual_blur")
+                && matches!(t.param_name.as_str(), "qual_clean_black" | "qual_clean_white" | "qual_denoise" | "qual_shrink_grow" | "qual_blur")
         })
     })
 }
@@ -5070,11 +5070,11 @@ impl GraphExecutor {
                         frame
                     };
                     // The matte comes back to the CPU on both paths; the
-                    // finesse — clean, shrink/grow, blur — is one code.
+                    // finesse — clean, denoise, shrink/grow, blur — is one code.
                     if qual.refines() {
                         klipp_effects::cpu_grade::matte_finesse(
                             &mut frame, width, height,
-                            qual.clean_black, qual.clean_white, self.whole_px(qual.shrink_grow), self.whole_px(qual.blur),
+                            qual.clean_black, qual.clean_white, self.whole_px(qual.denoise), self.whole_px(qual.shrink_grow), self.whole_px(qual.blur),
                         );
                     }
                     frame

@@ -653,6 +653,7 @@ impl NodeParams {
                     // names keyed nothing and went nowhere (#1040).
                     "clean_black" => q.clean_black = value,
                     "clean_white" => q.clean_white = value,
+                    "denoise" => q.denoise = value,
                     "shrink_grow" => q.shrink_grow = value,
                     "blur" => q.blur = value,
                     // The key's mode and the RGB mode's ranges (#895).
