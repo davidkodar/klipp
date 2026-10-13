@@ -137,6 +137,30 @@ pub fn switch(ui: &mut Ui, theme: &KlippTheme, on: bool) -> egui::Response {
     resp
 }
 
+/// [`switch`] as a widget over a `bool`: a click flips it and marks the
+/// response changed, as a checkbox's does.
+pub struct Switch<'a> {
+    on: &'a mut bool,
+    theme: &'a KlippTheme,
+}
+
+impl<'a> Switch<'a> {
+    pub fn new(on: &'a mut bool, theme: &'a KlippTheme) -> Self {
+        Self { on, theme }
+    }
+}
+
+impl egui::Widget for Switch<'_> {
+    fn ui(self, ui: &mut Ui) -> egui::Response {
+        let mut resp = switch(ui, self.theme, *self.on);
+        if resp.clicked() {
+            *self.on = !*self.on;
+            resp.mark_changed();
+        }
+        resp
+    }
+}
+
 /// Helpers for drawing a view in a test and reading back its text.
 #[cfg(test)]
 pub(crate) mod test_frame {
