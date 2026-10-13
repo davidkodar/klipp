@@ -1,9 +1,10 @@
 //! The qualifier eyedropper and the Hue-Sat curve picker on one of the
-//! sequence's own grades: the timeline grade, or a grade group's stage
-//! (#1428). The pick names its node by path, and the engine reads what
-//! that node receives: the composite for the timeline grade, the group's
-//! member on the frame for a stage, before its own grade (pre) or after
-//! it (post).
+//! sequence's own grades: the timeline grade, a grade group's stage
+//! (#1428) or a track's grade (#1655). The pick names its node by path,
+//! and the engine reads what that node receives: the composite for the
+//! timeline grade, the group's member on the frame for a stage, before
+//! its own grade (pre) or after it (post), and the track's picture clip
+//! on the frame, after its own grade, for the track's.
 
 mod common;
 
@@ -55,6 +56,8 @@ enum Root {
     Timeline,
     Pre,
     Post,
+    /// The clip's track's grade (#1655).
+    Track,
 }
 
 /// One pick, as the app sends it.
@@ -70,13 +73,13 @@ struct Pick {
     park: i64,
     /// Playing when the pick arrives.
     playing: bool,
-    /// Ask about a track's grade instead.
-    track_root: bool,
+    /// Ask about the track's effect list instead.
+    track_effects: bool,
 }
 
 impl Default for Pick {
     fn default() -> Self {
-        Pick { root: Root::Timeline, exposed: false, own_up: false, placed: false, park: 20, playing: false, track_root: false }
+        Pick { root: Root::Timeline, exposed: false, own_up: false, placed: false, park: 20, playing: false, track_effects: false }
     }
 }
 
@@ -108,6 +111,7 @@ fn ask(p: Pick) -> Option<Result<[f32; 3], NodeSampleRefusal>> {
     let mut seq = Sequence::new_default();
     (seq.fps, seq.resolution) = (fps, Resolution { width: W, height: H });
     let (g, q) = qualified(p.exposed);
+    let mut v1 = Track::new("V1", TrackKind::Video);
     let (stand_in, at) = match p.root {
         Root::Timeline => {
             seq.timeline_grade_slot().set(Some(g));
@@ -122,9 +126,12 @@ fn ask(p: Pick) -> Option<Result<[f32; 3], NodeSampleRefusal>> {
             seq.grade_groups.push(group);
             found
         }
+        Root::Track => {
+            v1.effects.grade_slot().set(Some(g));
+            let part = if p.track_effects { TrackPart::Effects } else { TrackPart::Grade };
+            (Sequence::track_grade_clip_id(v1.id), NodePath::new(PathRoot::Track { track: v1.id.0, part }, [q]))
+        }
     };
-    let mut v1 = Track::new("V1", TrackKind::Video);
-    let at = if p.track_root { NodePath::new(PathRoot::Track { track: v1.id.0, part: TrackPart::Grade }, [q]) } else { at };
     v1.clips = vec![clip];
     seq.tracks = vec![v1];
     assert!(seq.all_clips().all(|c| c.id != stand_in), "the stand-in is the app's alone");
@@ -187,6 +194,17 @@ fn a_pick_on_a_sequence_grade_reads_its_node_input() {
     // The post stage receives the own grade's output.
     let post = ask(Pick { root: Root::Post, exposed: true, own_up: true, ..Pick::default() }).unwrap().expect("post stage");
     times(post, source, 4.0, "the own grade's stop, then the post stage's");
+
+    // A track's grade runs after the clip's own: its Qualifier straight
+    // after its Source reads the own grade's stop (#1655), and one after
+    // a stop of its own reads both.
+    let track = ask(Pick { root: Root::Track, own_up: true, ..Pick::default() }).unwrap().expect("track grade");
+    times(track, source, 2.0, "the own grade's stop, read at the track grade's Source");
+    let track = ask(Pick { root: Root::Track, exposed: true, own_up: true, ..Pick::default() }).unwrap().expect("track grade");
+    times(track, source, 4.0, "the own grade's stop, then the track grade's");
+    // Control: without the own grade's stop, the source.
+    let track = ask(Pick { root: Root::Track, ..Pick::default() }).unwrap().expect("track grade");
+    times(track, source, 1.0, "the track grade's input, nothing before it");
 }
 
 /// What the engine can't read point for point, it refuses, and says why.
@@ -195,9 +213,15 @@ fn a_pick_it_cannot_read_is_refused() {
     let Some(off) = ask(Pick { root: Root::Pre, park: 40, ..Pick::default() }) else { return };
     assert_eq!(off, Err(NodeSampleRefusal::Why("no clip of the group is on this frame — park the playhead on one first".into())));
     assert_eq!(ask(Pick { root: Root::Post, placed: true, ..Pick::default() }).unwrap(), Err(NodeSampleRefusal::Placed));
+    // Parked off the track's clip, nothing of the track is on the frame.
     assert_eq!(
-        ask(Pick { track_root: true, ..Pick::default() }).unwrap(),
-        Err(NodeSampleRefusal::Why("a track's grade can't be sampled yet: pick on a clip's own grade instead".into())),
+        ask(Pick { root: Root::Track, park: 40, ..Pick::default() }).unwrap(),
+        Err(NodeSampleRefusal::Why("no picture clip of the track is on this frame — park the playhead on one first".into())),
+    );
+    assert_eq!(ask(Pick { root: Root::Track, placed: true, ..Pick::default() }).unwrap(), Err(NodeSampleRefusal::Placed));
+    assert_eq!(
+        ask(Pick { root: Root::Track, track_effects: true, ..Pick::default() }).unwrap(),
+        Err(NodeSampleRefusal::Why("a track's effect list has no node input to read: pick on a node of its grade".into())),
     );
     assert_eq!(
         ask(Pick { playing: true, ..Pick::default() }).unwrap(),
