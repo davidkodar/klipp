@@ -12,6 +12,7 @@ pub mod transitions_tab;
 pub mod generators_tab;
 pub mod shared_tab;
 
+use crate::widgets::menu::{menu_body, menu_item};
 use crate::icons::Icon;
 use crate::layout_state::{BrowserTab, LibraryCategory};
 use crate::templates_tab;
@@ -2495,14 +2496,14 @@ impl BrowserPanel {
                 if btn.clicked() {
                     self.navigate_to_recents(state);
                 }
-                btn.context_menu(|ui| {
-                    if ui.button("Clear Recent Files").clicked() {
+                btn.context_menu(|ui| menu_body(ui, |ui| {
+                    if menu_item(ui, "Clear Recent Files", "").clicked() {
                         state.recent_files_snapshot.clear();
                         self.files_entries.clear();
                         pending_clear_recents = true;
                         ui.close_menu();
                     }
-                });
+                }));
             }
 
             // ── User-pinned favorites ──
@@ -2534,12 +2535,12 @@ impl BrowserPanel {
                 if btn.clicked() {
                     self.navigate_files_to(path.clone());
                 }
-                btn.context_menu(|ui| {
-                    if ui.button("Remove from Favorites").clicked() {
+                btn.context_menu(|ui| menu_body(ui, |ui| {
+                    if menu_item(ui, "Remove from Favorites", "").clicked() {
                         pending_unpin = Some(path.clone());
                         ui.close_menu();
                     }
-                });
+                }));
             }
             // Apply unpin after the loop so we don't mutate `pinned_snapshot`'s
             // backing store (`self.pinned_folders`) mid-iteration. Persistence
@@ -3551,12 +3552,6 @@ impl BrowserPanel {
                     }
                 }
 
-                // Separator
-                ui.painter().hline(
-                    rect.min.x + pad..=rect.max.x - pad,
-                    rect.max.y,
-                    egui::Stroke::new(0.3_f32, theme.border),
-                );
 
                 // ── Interactions ──
                 // All `self` mutations are deferred to after the closure to
@@ -3649,7 +3644,7 @@ impl BrowserPanel {
                 // Snapshot of "is this directory currently pinned" so the menu
                 // closure can read it without borrowing self.pinned_folders.
                 let menu_is_pinned = entry.is_dir && self.pinned_folders.iter().any(|p| p == &entry.path);
-                resp.context_menu(|ui| {
+                resp.context_menu(|ui| menu_body(ui, |ui| {
                     // ── Import actions (only for media files) ──
                     if menu_count > 0 {
                         let label = if menu_count == 1 {
@@ -3657,19 +3652,19 @@ impl BrowserPanel {
                         } else {
                             format!("Add {} files to Media Pool", menu_count)
                         };
-                        if ui.button(label).clicked() {
+                        if menu_item(ui, &label, "").clicked() {
                             import_request = Some((target_paths.clone(), None));
                             ui.close_menu();
                         }
                         if !bins_snapshot.is_empty() {
-                            ui.menu_button("Add to Bin", |ui| {
+                            ui.menu_button("Add to Bin", |ui| menu_body(ui, |ui| {
                                 for bin_name in &bins_snapshot {
-                                    if ui.button(bin_name).clicked() {
+                                    if menu_item(ui, bin_name, "").clicked() {
                                         import_request = Some((target_paths.clone(), Some(bin_name.clone())));
                                         ui.close_menu();
                                     }
                                 }
-                            });
+                            }));
                         }
 
                         // ── Open in Source Viewer ──
@@ -3682,7 +3677,7 @@ impl BrowserPanel {
                         } else {
                             format!("Import {} & Open First in Source Viewer", menu_count)
                         };
-                        if ui.button(src_label).clicked() {
+                        if menu_item(ui, &src_label, "").clicked() {
                             pending_open_in_source = Some(target_paths.clone());
                             ui.close_menu();
                         }
@@ -3695,7 +3690,7 @@ impl BrowserPanel {
                     } else {
                         "Reveal in File Manager"
                     };
-                    if ui.button(reveal_label).clicked() {
+                    if menu_item(ui, reveal_label, "").clicked() {
                         let target = if menu_is_dir {
                             menu_path.clone()
                         } else {
@@ -3707,7 +3702,7 @@ impl BrowserPanel {
 
                     // ── Open with Default Application (only for files) ──
                     if !menu_is_dir
-                        && ui.button("Open with Default Application").clicked() {
+                        && menu_item(ui, "Open with Default Application", "").clicked() {
                             let _ = crate::ui_util::open_external(&menu_path);
                             ui.close_menu();
                         }
@@ -3719,7 +3714,7 @@ impl BrowserPanel {
                         } else {
                             "Pin to Favorites"
                         };
-                        if ui.button(pin_label).clicked() {
+                        if menu_item(ui, pin_label, "").clicked() {
                             pending_pin_toggle = Some(menu_path.clone());
                             ui.close_menu();
                         }
@@ -3729,23 +3724,23 @@ impl BrowserPanel {
                     // Available on any file (not directories). Mirrors
                     // the media pool "Set Rating" submenu pattern.
                     if !menu_is_dir {
-                        ui.menu_button("Set Rating", |ui| {
+                        ui.menu_button("Set Rating", |ui| menu_body(ui, |ui| {
                             for r in (0..=5).rev() {
                                 let label = if r == 0 {
                                     "No Rating".to_string()
                                 } else {
                                     "\u{2605}".repeat(r as usize)
                                 };
-                                if ui.button(label).clicked() {
+                                if menu_item(ui, &label, "").clicked() {
                                     pending_set_rating = Some((vec![menu_path.clone()], r));
                                     ui.close_menu();
                                 }
                             }
-                        });
+                        }));
                     }
 
                     // ── Copy file path ──
-                    if ui.button("Copy File Path").clicked() {
+                    if menu_item(ui, "Copy File Path", "").clicked() {
                         ui.output_mut(|o| o.copied_text = menu_path.to_string_lossy().to_string());
                         ui.close_menu();
                     }
@@ -3760,7 +3755,7 @@ impl BrowserPanel {
                         let single = menu_count <= 1;
                         let renameable = single && !is_system_path(&menu_path) && !is_recents_view;
                         if renameable
-                            && ui.button("Rename").clicked() {
+                            && menu_item(ui, "Rename", "").clicked() {
                                 pending_start_rename = Some(menu_path.clone());
                                 ui.close_menu();
                             }
@@ -3769,7 +3764,7 @@ impl BrowserPanel {
                     ui.separator();
 
                     // ── File Info... ──
-                    if ui.button("File Info\u{2026}").clicked() {
+                    if menu_item(ui, "File Info\u{2026}", "").clicked() {
                         pending_show_file_info = Some(menu_path.clone());
                         ui.close_menu();
                     }
@@ -3779,17 +3774,17 @@ impl BrowserPanel {
                     // ── New folder ──
                     // Not available in the virtual Recents view.
                     if !is_recents_view
-                        && ui.button("New Folder").clicked() {
+                        && menu_item(ui, "New Folder", "").clicked() {
                             pending_new_folder = true;
                             ui.close_menu();
                         }
 
                     // ── Refresh folder ──
-                    if ui.button("Refresh Folder").clicked() {
+                    if menu_item(ui, "Refresh Folder", "").clicked() {
                         pending_refresh = true;
                         ui.close_menu();
                     }
-                });
+                }));
 
                 // Tooltip on hover (path)
                 resp.on_hover_text(entry.path.to_string_lossy().as_ref());
@@ -3814,17 +3809,17 @@ impl BrowserPanel {
                     egui::vec2(ui.available_width(), remaining_h),
                     egui::Sense::click(),
                 );
-                empty_resp.context_menu(|ui| {
+                empty_resp.context_menu(|ui| menu_body(ui, |ui| {
                     if !is_recents_view
-                        && ui.button("New Folder").clicked() {
+                        && menu_item(ui, "New Folder", "").clicked() {
                             pending_new_folder = true;
                             ui.close_menu();
                         }
-                    if ui.button("Refresh Folder").clicked() {
+                    if menu_item(ui, "Refresh Folder", "").clicked() {
                         pending_refresh = true;
                         ui.close_menu();
                     }
-                });
+                }));
             }
         });
 
@@ -5124,7 +5119,7 @@ impl BrowserPanel {
                         preview_req = Some((t.id.clone(), t.preview_url.clone()));
                     }
                     ui.add_enabled_ui(!adding, |ui| {
-                        ui.menu_button(if adding { "…" } else { "Add ▾" }, |ui| {
+                        ui.menu_button(if adding { "…" } else { "Add ▾" }, |ui| menu_body(ui, |ui| {
                             use klipp_core::events::ClipDrop;
                             if ui.button("Add to media pool").clicked() {
                                 add_req = Some((t.clone(), ClipDrop::PoolOnly));
@@ -5138,7 +5133,7 @@ impl BrowserPanel {
                                 add_req = Some((t.clone(), ClipDrop::EndOfTimeline));
                                 ui.close_menu();
                             }
-                        }).response.on_hover_text("Download into the pool, with its credit kept");
+                        })).response.on_hover_text("Download into the pool, with its credit kept");
                     });
                 });
                 ui.add_space(4.0);
@@ -5247,30 +5242,26 @@ fn format_file_size(bytes: u64) -> String {
     }
 }
 
-/// Format a SystemTime as a short date string for the Date column.
-/// Shows "HH:MM" for today, "Mon DD" for this year, "YYYY-MM-DD" for older.
+/// A file's last change for the Files rows, in local time (see
+/// [`format_mtime_at`]).
 fn format_mtime_short(mtime: std::time::SystemTime) -> String {
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(mtime)
-        .unwrap_or_default();
-    let secs = elapsed.as_secs();
-    const HOUR: u64 = 3600;
-    const DAY: u64 = 86_400;
+    format_mtime_at(mtime, chrono::Local::now())
+}
 
-    if secs < DAY {
-        // Today — show time
-        let total_secs_of_day = secs; // approximate
-        let h = 23 - (total_secs_of_day / HOUR).min(23);
-        let m = 59 - ((total_secs_of_day % HOUR) / 60).min(59);
-        format!("{h:02}:{m:02}")
-    } else if secs < 180 * DAY {
-        // This year — show month + day
-        let days_ago = secs / DAY;
-        format!("{days_ago}d ago")
+/// When a file was last changed, as `now` sees it in local time: the
+/// clock time today ("14:05"), "Yesterday 14:05", the day and month this
+/// year ("3 Oct"), with the year before that ("3 Oct 2024").
+fn format_mtime_at(mtime: std::time::SystemTime, now: chrono::DateTime<chrono::Local>) -> String {
+    let at: chrono::DateTime<chrono::Local> = mtime.into();
+    let (day, today) = (at.date_naive(), now.date_naive());
+    if day == today {
+        at.format("%H:%M").to_string()
+    } else if today.pred_opt() == Some(day) {
+        at.format("Yesterday %H:%M").to_string()
+    } else if day.format("%Y").to_string() == today.format("%Y").to_string() {
+        at.format("%-d %b").to_string()
     } else {
-        // Older — show days ago
-        let days_ago = secs / DAY;
-        format!("{days_ago}d ago")
+        at.format("%-d %b %Y").to_string()
     }
 }
 
@@ -6651,5 +6642,124 @@ mod tests {
         assert!(!super::is_visual_media(&PathBuf::from("foo.mp3")));
         assert!(!super::is_visual_media(&PathBuf::from("foo.txt")));
         assert!(!super::is_visual_media(&PathBuf::from("foo")));
+    }
+}
+
+#[cfg(test)]
+mod files_row_style_tests {
+    use super::*;
+    use crate::layout_state::BrowserTab;
+    use chrono::TimeZone;
+
+    /// A file's last change reads as a real local time: today's clock
+    /// time, yesterday's, a day this year, a day with its year before.
+    /// (It read "23 minus hours ago" as a clock time before.)
+    #[test]
+    fn a_files_time_is_its_real_local_time() {
+        let now = chrono::Local.with_ymd_and_hms(2026, 10, 13, 15, 30, 0).unwrap();
+        let at = |y, mo, d, h, mi| std::time::SystemTime::from(chrono::Local.with_ymd_and_hms(y, mo, d, h, mi, 0).unwrap());
+        assert_eq!(format_mtime_at(at(2026, 10, 13, 9, 5), now), "09:05");
+        assert_eq!(format_mtime_at(at(2026, 10, 13, 14, 59), now), "14:59", "another time today reads as itself");
+        assert_eq!(format_mtime_at(at(2026, 10, 12, 22, 40), now), "Yesterday 22:40");
+        assert_eq!(format_mtime_at(at(2026, 3, 3, 8, 0), now), "3 Mar");
+        assert_eq!(format_mtime_at(at(2024, 3, 3, 8, 0), now), "3 Mar 2024");
+    }
+
+    struct Files {
+        ctx: egui::Context,
+        panel: BrowserPanel,
+        state: AppState,
+        dir: std::path::PathBuf,
+    }
+
+    impl Files {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!("klipp-files-style-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(dir.join("Day 1")).unwrap();
+            for f in ["clip.mov", "music.wav", "notes.txt"] {
+                std::fs::write(dir.join(f), b"x").unwrap();
+            }
+            let mut panel = BrowserPanel::default();
+            panel.navigate_files_to(dir.clone());
+            Self { ctx: egui::Context::default(), panel, state: AppState::default(), dir }
+        }
+
+        /// One frame: the texts by their centres, the wide hairlines by
+        /// height, and the commands.
+        fn frame(&mut self, events: Vec<egui::Event>) -> (Vec<(String, egui::Pos2)>, Vec<f32>, Vec<AppCommand>) {
+            let theme = KlippTheme::default();
+            let mut tab = BrowserTab::Files;
+            let (mut pinned, mut ratio) = (false, 0.5);
+            let mut cmds = Vec::new();
+            let out = self.ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(700.0, 900.0))), events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| cmds = self.panel.show(ui, &mut self.state, &theme, &mut tab, &mut pinned, &mut ratio));
+            });
+            let mut texts = Vec::new();
+            let mut rules = Vec::new();
+            for s in &out.shapes {
+                match &s.shape {
+                    egui::Shape::Text(t) => texts.push((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                    egui::Shape::LineSegment { points, .. } if points[0].y == points[1].y && points[1].x - points[0].x > 200.0 => rules.push(points[0].y),
+                    _ => {}
+                }
+            }
+            (texts, rules, cmds)
+        }
+    }
+
+    impl Files {
+        /// Frames until the folder's entries are listed (the listing may
+        /// come from a worker), then that frame.
+        fn listed(&mut self) -> (Vec<(String, egui::Pos2)>, Vec<f32>, Vec<AppCommand>) {
+            for _ in 0..200 {
+                let f = self.frame(Vec::new());
+                if f.0.iter().any(|(t, _)| t == "clip.mov") {
+                    // One more, so the layout has settled.
+                    return self.frame(Vec::new());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("the folder was never listed");
+        }
+    }
+
+    impl Drop for Files {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// The Files rows: every entry drawn with its real time, and no rule
+    /// between one row and the next.
+    #[test]
+    fn the_rows_show_real_times_without_rules_between() {
+        let mut f = Files::new();
+        let before = chrono::Local::now();
+        let (texts, rules, _) = f.listed();
+        let at = |l: &str| texts.iter().find(|(t, _)| t == l).unwrap_or_else(|| panic!("no {l}: {texts:?}")).1;
+        let rows = ["Day 1", "clip.mov", "music.wav", "notes.txt"].map(|r| at(r).y);
+        let now = [before.format("%H:%M").to_string(), chrono::Local::now().format("%H:%M").to_string()];
+        assert!(texts.iter().any(|(t, _)| now.iter().any(|n| t.ends_with(n.as_str()))), "a file written now shows the time now ({now:?}): {texts:?}");
+        let (top, bottom) = (rows[0], rows[3]);
+        let between: Vec<&f32> = rules.iter().filter(|r| **r > top && **r < bottom + 20.0).collect();
+        assert!(between.is_empty(), "rules between the rows: {between:?}");
+    }
+
+    /// A file's menu is the shared menu, and its items do what they did:
+    /// Add to Media Pool, clicked for real, loads the file.
+    #[test]
+    fn a_files_menu_adds_it_to_the_pool() {
+        let mut f = Files::new();
+        let (texts, _, _) = f.listed();
+        let row = texts.iter().find(|(t, _)| t == "clip.mov").unwrap().1;
+        let secondary = |pressed| egui::Event::PointerButton { pos: row, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE };
+        f.frame(vec![egui::Event::PointerMoved(row), secondary(true)]);
+        f.frame(vec![secondary(false)]);
+        let (texts, _, _) = f.frame(Vec::new());
+        let item = texts.iter().find(|(t, _)| t == "Add to Media Pool").unwrap_or_else(|| panic!("the menu: {texts:?}")).1;
+        let primary = |pressed| egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut cmds = f.frame(vec![egui::Event::PointerMoved(item), primary(true)]).2;
+        cmds.extend(f.frame(vec![primary(false)]).2);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::LoadMediaFile { path, .. } if path.ends_with("clip.mov"))), "{cmds:?}");
     }
 }
