@@ -38,6 +38,52 @@ pub fn view_at(seq: &Sequence, selected: Option<ClipId>, playhead: Timecode) -> 
     (m.angles.len() >= 2).then_some((m.angles, m.active))
 }
 
+/// What multicam mode shows (#1844): with the mode off, nothing, whatever
+/// is under the playhead; on, the angles of the multicam clip under the
+/// playhead, else of the one opened. `None` when the mode is on with no
+/// multicam clip to show, for the Source viewer's note.
+pub fn mode_view(seq: &Sequence, mode: bool, opened: Option<ClipId>, playhead: Timecode) -> Option<(Vec<u8>, u8)> {
+    if !mode {
+        return None;
+    }
+    view_at(seq, opened, playhead)
+}
+
+/// What the multicam mode key (`toggle_multicam_mode`, Shift+Alt+M by
+/// default) sends: the mode the other way.
+pub fn switch_mode(on: bool) -> klipp_core::AppCommand {
+    klipp_core::AppCommand::SetMulticamMode { on: !on, open: None }
+}
+
+/// The Source viewer's Angles button, at the top right of `rect`, in the
+/// viewer controls' toggle style (accent on the subtle accent fill while
+/// on). The command that switches the mode, when clicked.
+pub fn angles_button(ui: &mut egui::Ui, rect: egui::Rect, on: bool, theme: &crate::theme::KlippTheme) -> Option<klipp_core::AppCommand> {
+    let font = egui::FontId::proportional(crate::theme::type_scale::CAPTION);
+    let text_w = ui.painter().layout_no_wrap("Angles".into(), font.clone(), theme.text_primary).size().x;
+    let size = egui::vec2(text_w + 16.0, crate::theme::control::COMPACT);
+    let r = egui::Rect::from_min_size(egui::pos2(rect.right() - 8.0 - size.x, rect.top() + 8.0), size);
+    let resp = ui.interact(r, ui.id().with("multicam_angles_button"), egui::Sense::click());
+    let colour = if on { theme.accent } else if resp.hovered() { theme.text_primary } else { theme.text_secondary };
+    let fill = if on { theme.accent_subtle } else { theme.bg_panel.gamma_multiply(0.85) };
+    ui.painter().rect_filled(r, crate::theme::radius::CONTROL, fill);
+    ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "Angles", font, colour);
+    let resp = resp.on_hover_text(if on { "Multicam mode is on: the Source viewer shows the angles (Shift+Alt+M)" } else { "Show the multicam angles in the Source viewer (Shift+Alt+M)" });
+    resp.clicked().then_some(klipp_core::AppCommand::SetMulticamMode { on: !on, open: None })
+}
+
+/// The Source viewer in multicam mode with no multicam clip to show: a
+/// short note in the middle of `rect`.
+pub fn no_multicam_note(ui: &egui::Ui, rect: egui::Rect, theme: &crate::theme::KlippTheme) {
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "No multicam clip at the playhead",
+        egui::FontId::proportional(crate::theme::type_scale::BODY),
+        theme.text_secondary,
+    );
+}
+
 /// One angle of the group: its number (0 the primary), a name to label
 /// it with, and what to decode for it at the playhead, when it has
 /// picture there.
@@ -605,5 +651,90 @@ mod tests {
         });
         let said = out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().starts_with("Angles at 1 fps")));
         assert!(said);
+    }
+
+    /// #1844: multicam mode shows nothing while it is off, however the
+    /// playhead sits on a multicam clip; on, the group under the playhead,
+    /// else the opened clip's when the playhead is on it.
+    #[test]
+    fn the_playhead_crossing_a_multicam_clip_leaves_the_mode_off() {
+        let g = GroupId::new();
+        let a = angle(g, 0, 0.0, 10.0);
+        let opened = a.id;
+        let seq = synced(vec![(a, TrackKind::Video), (angle(g, 1, 0.0, 10.0), TrackKind::Video)]);
+        assert_eq!(mode_view(&seq, false, None, tc(5.0)), None, "off: the playhead on a multicam clip shows nothing");
+        assert_eq!(mode_view(&seq, true, None, tc(5.0)).map(|(a, _)| a), Some(vec![0, 1]), "on: its angles");
+        assert_eq!(mode_view(&seq, true, Some(opened), tc(5.0)).map(|(a, _)| a), Some(vec![0, 1]));
+        assert_eq!(mode_view(&seq, true, None, tc(12.0)), None, "on, past the clip: nothing, for the note");
+    }
+
+    /// One frame of the Angles button at the top right of an 800×450
+    /// viewer, with `events`: its text and what it sent.
+    fn button_frame(ctx: &egui::Context, on: bool, events: Vec<egui::Event>) -> (Option<(egui::Pos2, egui::Color32)>, Option<klipp_core::AppCommand>) {
+        let theme = crate::theme::KlippTheme::default();
+        let mut sent = None;
+        let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 450.0))), events, ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| sent = angles_button(ui, egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 450.0)), on, &theme));
+        });
+        let text = out.shapes.iter().find_map(|s| match &s.shape {
+            egui::Shape::Text(t) if t.galley.text() == "Angles" => Some((t.pos + t.galley.size() / 2.0, t.galley.job.sections[0].format.color)),
+            _ => None,
+        });
+        (text, sent)
+    }
+
+    /// #1844: the Angles button, clicked for real, turns the mode on, and
+    /// clicked again turns it off; on, it shows in the toggle style's
+    /// accent, off it does not.
+    #[test]
+    fn the_angles_button_switches_the_mode() {
+        let theme = crate::theme::KlippTheme::default();
+        for on in [false, true] {
+            let ctx = egui::Context::default();
+            let (Some((at, colour)), None) = button_frame(&ctx, on, Vec::new()) else { panic!("the button is drawn") };
+            assert_eq!(colour == theme.accent, on, "the accent only while on");
+            assert!(at.x > 700.0 && at.y < 40.0, "top right: {at:?}");
+            let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            let mut sent = button_frame(&ctx, on, vec![egui::Event::PointerMoved(at), press(true)]).1;
+            sent = sent.or(button_frame(&ctx, on, vec![press(false)]).1);
+            assert!(matches!(sent, Some(klipp_core::AppCommand::SetMulticamMode { on: to, open: None }) if to == !on), "{sent:?}");
+        }
+    }
+
+    /// #1844: Shift+Alt+M switches the mode either way; another key does
+    /// not.
+    #[test]
+    fn the_shortcut_switches_the_mode() {
+        let kb = crate::keybindings::KeyBindings::default();
+        let pressed = |key: egui::Key, modifiers: egui::Modifiers, on: bool| {
+            let ctx = egui::Context::default();
+            let mut sent = None;
+            let _ = ctx.run(egui::RawInput { events: vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }], modifiers, ..Default::default() }, |ctx| {
+                // As the app's shortcuts read it.
+                sent = ctx.input(|i| kb.is_action_pressed("toggle_multicam_mode", i).then(|| switch_mode(on)));
+            });
+            sent
+        };
+        let shift_alt = egui::Modifiers { shift: true, alt: true, ..Default::default() };
+        assert!(matches!(pressed(egui::Key::M, shift_alt, false), Some(klipp_core::AppCommand::SetMulticamMode { on: true, .. })));
+        assert!(matches!(pressed(egui::Key::M, shift_alt, true), Some(klipp_core::AppCommand::SetMulticamMode { on: false, .. })));
+        assert!(pressed(egui::Key::M, egui::Modifiers::NONE, false).is_none(), "M alone is a marker");
+    }
+
+    /// #1844: switched on, a single viewer shows the Source viewer, where
+    /// the grid is; the opened clip is kept until the mode is off.
+    #[test]
+    fn turning_it_on_shows_the_source_viewer() {
+        let mut state = crate::state::AppState::default();
+        let clip = ClipId::new();
+        state.viewer_mode = klipp_core::ViewerMode::Program;
+        state.set_multicam_mode(true, Some(clip));
+        assert!(state.multicam_mode);
+        assert_eq!(state.multicam_opened, Some(clip));
+        if !state.viewers_side_by_side() && !state.single_viewer_is_program() {
+            assert_eq!(state.viewer_mode, klipp_core::ViewerMode::Source);
+        }
+        state.set_multicam_mode(false, None);
+        assert!(!state.multicam_mode && state.multicam_opened.is_none());
     }
 }

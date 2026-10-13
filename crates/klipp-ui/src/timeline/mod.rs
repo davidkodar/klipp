@@ -802,6 +802,30 @@ mod menu_smoke_tests {
         assert!(lacking.is_empty(), "the clip's menu lacks {lacking:?}; it shows {menu:?}");
     }
 
+    /// #1844: double-clicking a multicam clip on the timeline turns
+    /// multicam mode on with that clip opened; double-clicking a clip that
+    /// is not one does not.
+    #[test]
+    fn double_clicking_a_multicam_clip_turns_the_mode_on() {
+        for multicam in [true, false] {
+            let mut timeline = Timeline::new();
+            let v1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+            let id = timeline.state.sequences[0].tracks[v1].clips[0].id;
+            if multicam {
+                timeline.state.sequences[0].tracks[v1].clips[0].multicam_group = Some(klipp_core::GroupId::new());
+            }
+            let drawn = timeline.frame(Vec::new());
+            let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
+            let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            timeline.frame(vec![egui::Event::PointerMoved(at), button(true), button(false), button(true), button(false)]);
+            let mut sent = std::mem::take(&mut timeline.sent);
+            timeline.frame(Vec::new());
+            sent.extend(std::mem::take(&mut timeline.sent));
+            let opened = sent.iter().any(|c| matches!(c, AppCommand::SetMulticamMode { on: true, open: Some(o) } if *o == id));
+            assert_eq!(opened, multicam, "multicam {multicam}: {sent:?}");
+        }
+    }
+
     /// A sounding clip's menu adds a fade of the default fade's length
     /// and curve (Preferences > Audio): Add Fade In with 1.25 s and an
     /// exponential curve set sends exactly that, and another default

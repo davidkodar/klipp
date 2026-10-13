@@ -730,9 +730,6 @@ pub struct EditingPrefs {
     /// Default multicam sync method.
     #[serde(default)]
     pub multicam_sync_method: MulticamSyncMethod,
-    /// Auto-switch to multicam viewer when multicam clip is selected.
-    #[serde(default = "default_true")]
-    pub multicam_auto_viewer: bool,
     /// Show angle numbers overlay on multicam clips in timeline.
     #[serde(default = "default_true")]
     pub multicam_show_angles: bool,
@@ -807,7 +804,6 @@ impl Default for EditingPrefs {
             adaptive_timeline_fit: false,
             magnetic_timeline: true,
             multicam_sync_method: MulticamSyncMethod::default(),
-            multicam_auto_viewer: true,
             multicam_show_angles: true,
             track_search_radius: default_track_search_radius(),
             track_patch_size: default_track_patch_size(),

@@ -21,6 +21,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         AppCommand::SetSplitCompareNode { .. }
         | AppCommand::ShowPanel { .. }
         | AppCommand::SetViewerOverlay { .. }
+        | AppCommand::SetMulticamMode { .. }
         | AppCommand::GradeTrackInColour { .. }
         | AppCommand::LoadCreditsList { .. }
         | AppCommand::ToggleFavouriteFont { .. }

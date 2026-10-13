@@ -493,6 +493,7 @@ impl KeyBindings {
         bind(&mut b, "multicam_angle_8", vec![KeyCombo::new("8")]);
         bind(&mut b, "multicam_angle_9", vec![KeyCombo::new("9")]);
         bind(&mut b, "create_multicam", vec![KeyCombo::alt("C")]);
+        bind(&mut b, "toggle_multicam_mode", vec![KeyCombo::parse("Shift+Alt+M").expect("a combo")]);
 
         // Color grading
         bind(&mut b, "nudge_clips_back", vec![KeyCombo::alt(",")]);
@@ -754,6 +755,7 @@ impl KeyBindings {
             "multicam_angle_8" => "Multicam Angle 8",
             "multicam_angle_9" => "Multicam Angle 9",
             "create_multicam" => "Create Multicam Clip",
+            "toggle_multicam_mode" => "Multicam Mode (Source Viewer Angles)",
             "prev_color_node" => "Previous Colour Node",
             "next_color_node" => "Next Colour Node",
             "toggle_node_bypass" => "Toggle Node Bypass",
@@ -796,7 +798,7 @@ impl KeyBindings {
             ("Multicam", &["multicam_angle_1", "multicam_angle_2", "multicam_angle_3",
                 "multicam_angle_4", "multicam_angle_5", "multicam_angle_6",
                 "multicam_angle_7", "multicam_angle_8", "multicam_angle_9",
-                "create_multicam"]),
+                "create_multicam", "toggle_multicam_mode"]),
             ("Colour", &["prev_color_node", "next_color_node", "toggle_node_bypass", "reset_current_node", "printer_red_up", "printer_red_down", "printer_green_up", "printer_green_down", "printer_blue_up", "printer_blue_down", "printer_master_up", "printer_master_down", "cycle_scope_mode", "copy_color_nodes", "paste_color_nodes"]),
             ("AI Tools", &["ai_remove_background", "ai_isolate_object", "ai_detect_objects", "ai_run_inference", "ai_cancel_inference", "toggle_ai_tools_panel"]),
             ("Other", &["create_title", "connect_clip", "disconnect_clip"]),

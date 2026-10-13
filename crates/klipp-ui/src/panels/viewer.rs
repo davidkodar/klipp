@@ -2103,7 +2103,7 @@ impl ViewerPanel {
         self.draw_proxy_badge(ui.painter(), state, theme, &frame);
 
         // ── Multicam angle bar (shown below the viewer when multicam is active) ──
-        if state.multicam_viewer_active && !state.multicam_angles.is_empty() {
+        if state.multicam_at_playhead && !state.multicam_angles.is_empty() {
             self.draw_multicam_angle_bar(ui, state, theme, cmds, &frame);
         }
 

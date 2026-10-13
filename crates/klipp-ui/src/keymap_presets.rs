@@ -86,6 +86,8 @@ pub(crate) const PREMIERE: &[(&str, &[&str])] = &[
     ("multicam_angle_7", &["7"]),
     ("multicam_angle_8", &["8"]),
     ("multicam_angle_9", &["9"]),
+    // Toggle Multi-Camera View.
+    ("toggle_multicam_mode", &["Shift+0"]),
 ];
 
 /// Avid Media Composer's default keyboard: the US keyboard in Avid's
@@ -280,4 +282,6 @@ pub(crate) const FINAL_CUT: &[(&str, &[&str])] = &[
     ("multicam_angle_7", &["7"]),
     ("multicam_angle_8", &["8"]),
     ("multicam_angle_9", &["9"]),
+    // View > Show in Viewer > Angles (Shift-Command-7).
+    ("toggle_multicam_mode", &["Ctrl+Shift+7"]),
 ];
