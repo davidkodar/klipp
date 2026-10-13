@@ -85,6 +85,10 @@ pub struct PerfSample {
     /// stages outside the grade pipeline (decode wait, fb_write,
     /// command drain). Reserved; not yet wired.
     pub update_playback_ms: f32,
+    /// Whether the engine was inside a node-parameter drag when it
+    /// rendered the frame (`BeginNodeParamEdit` seen, no end yet): the
+    /// frames a drag's fast path is for.
+    pub in_param_edit: bool,
 }
 
 /// Plain-data carrier for `PerfRing::update_wrap_stages`. Stages
@@ -399,6 +403,7 @@ mod tests {
             scope_ms: 0.0,
             composite_ms: 0.0,
             update_playback_ms: 0.0,
+            in_param_edit: false,
         }
     }
 

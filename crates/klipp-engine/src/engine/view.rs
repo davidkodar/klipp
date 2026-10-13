@@ -1127,6 +1127,7 @@ impl PlaybackEngine {
                 scope_ms: scope_ms as f32,
                 composite_ms: s.composite_ms as f32,
                 update_playback_ms: 0.0,
+                in_param_edit: self.in_node_param_edit,
             });
         }
         if total_ms > 16.0 || self.in_node_param_edit {
