@@ -2206,6 +2206,12 @@ pub enum AppCommand {
     /// next click keys the node on the colour picked
     /// (`RequestQualifierSample`).
     PickQualifierColour { clip_id: ClipId, node_id: uuid::Uuid },
+    /// Arm the viewer for a 3D qualifier stroke (#895): a drag across the
+    /// colours to keep, or with `remove` to take out.
+    PickQualifierStroke { clip_id: ClipId, node_id: uuid::Uuid, remove: bool },
+    /// A stroke drawn on the viewer, its points in frame fractions: sampled
+    /// on the picture the armed node receives and added to its volume.
+    QualifierStroke { points: Vec<[f32; 2]> },
     /// Arm the viewer's eyedropper for a Hue/Sat Curves node's `curve`
     /// (0 Hue vs Hue, 1 Hue vs Sat, 2 Hue vs Lum): the next click puts
     /// a range on that curve round the hue picked (#612).

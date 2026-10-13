@@ -88,6 +88,21 @@ pub struct QualifierSettings {
     pub blue_high: f32,
     #[serde(default = "tenth")]
     pub rgb_soft: f32,
+    #[serde(default)]
+    pub keep_samples: Vec<[f32; 3]>,
+    #[serde(default)]
+    pub remove_samples: Vec<[f32; 3]>,
+    #[serde(default = "key_radius")]
+    pub key_radius: f32,
+    #[serde(default = "key_soft")]
+    pub key_soft: f32,
+}
+
+fn key_radius() -> f32 {
+    2.5
+}
+fn key_soft() -> f32 {
+    1.5
 }
 
 fn zero() -> f32 {
@@ -105,6 +120,9 @@ pub enum QualifierMode {
     #[default]
     Hsl,
     Rgb,
+    // Saved as its menu names it, which the generated row matches.
+    #[serde(rename = "3D")]
+    ThreeD,
 }
 
 impl Default for QualifierSettings {
@@ -137,6 +155,10 @@ impl Default for QualifierSettings {
             blue_low: 0.0,
             blue_high: 1.0,
             rgb_soft: 0.1,
+            keep_samples: Vec::new(),
+            remove_samples: Vec::new(),
+            key_radius: 2.5,
+            key_soft: 1.5,
         }
     }
 }

@@ -182,6 +182,8 @@ fn cases() -> Vec<(&'static str, NodeKind, NodeParams)> {
         // The RGB mode (#895): a red channel high, the others low.
         ("Qualifier RGB", Qualifier, p(|p| p.qualifier = Some(rgb_red()))),
         ("Qualifier RGB inverted", Qualifier, p(|p| p.qualifier = Some(klipp_core::QualifierSettings { invert: true, ..rgb_red() }))),
+        // The 3D mode (#895): a skin volume with a lip colour taken out.
+        ("Qualifier 3D", Qualifier, p(|p| p.qualifier = Some(skin_volume()))),
     ]
 }
 
@@ -300,6 +302,38 @@ fn rgb_red() -> klipp_core::QualifierSettings {
         blue_high: 0.4,
         rgb_soft: 0.1,
         ..Default::default()
+    }
+}
+
+/// The 3D mode's skin (#895): strokes across four skin tones kept, the
+/// brightest highlight of it taken out.
+fn skin_volume() -> klipp_core::QualifierSettings {
+    klipp_core::QualifierSettings {
+        enabled: true,
+        mode: klipp_core::QualifierMode::ThreeD,
+        keep_samples: vec![[0.80, 0.55, 0.45], [0.75, 0.50, 0.40], [0.85, 0.62, 0.52], [0.70, 0.47, 0.38]],
+        remove_samples: vec![[0.86, 0.64, 0.55]],
+        ..Default::default()
+    }
+}
+
+/// The 3D mode (#895) keys the colour volume its strokes span, on both
+/// paths: a skin tone between the strokes keys, a sky blue doesn't, and
+/// the highlight taken out is out though the skin's volume holds it.
+#[test]
+fn the_3d_qualifier_keys_its_volume() {
+    let enc = |v: f32| klipp_color::transfer::srgb_to_linear(v);
+    let params = p(|p| p.qualifier = Some(skin_volume()));
+    for gpu in [false, true] {
+        if gpu && !have_gpu() {
+            continue;
+        }
+        let matte = |rgb: [f32; 3]| render_flat_node(rgb.map(enc), NodeKind::Qualifier, &params, gpu)[0];
+        assert!(matte([0.78, 0.53, 0.43]) > 0.99, "a skin tone didn't key (gpu {gpu})");
+        assert!(matte([0.2, 0.4, 0.8]) < 0.01, "a sky keyed (gpu {gpu})");
+        assert!(matte([0.86, 0.64, 0.55]) < 0.01, "the removed colour keyed (gpu {gpu})");
+        let kept = p(|p| p.qualifier = Some(klipp_core::QualifierSettings { remove_samples: Vec::new(), ..skin_volume() }));
+        assert!(render_flat_node([0.86, 0.64, 0.55].map(enc), NodeKind::Qualifier, &kept, gpu)[0] > 0.99, "without the remove stroke it keys (gpu {gpu})");
     }
 }
 

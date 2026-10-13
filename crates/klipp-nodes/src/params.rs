@@ -664,6 +664,8 @@ impl NodeParams {
                     "blue_low" => { q.blue_low = value; q.enabled = true }
                     "blue_high" => { q.blue_high = value; q.enabled = true }
                     "rgb_soft" => { q.rgb_soft = value; q.enabled = true }
+                    "key_radius" => { q.key_radius = value; q.enabled = true }
+                    "key_soft" => { q.key_soft = value; q.enabled = true }
                     _ => return false,
                 }
             }

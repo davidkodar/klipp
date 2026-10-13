@@ -623,6 +623,152 @@ pub fn qualifier_matte_rgb(px: &mut [f32], rgb: [f32; 7], invert: bool) {
     });
 }
 
+/// A colour volume the 3D qualifier keys on (#895): the centre and the
+/// inverse spread of a set of stroke samples, in the luma-chroma space
+/// [`qualifier_ycc`] puts them in. A pixel's distance from it is in the
+/// samples' own spread (standard deviations), so a stroke across a face
+/// keys the face's whole range of skin and no further.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KeyVolume {
+    pub mean: [f32; 3],
+    /// The inverse covariance, row by row.
+    pub inv: [[f32; 3]; 3],
+}
+
+/// A display-encoded colour (0-1) in the 3D qualifier's space: luma and
+/// the two chroma differences (BT.709 weights).
+pub fn qualifier_ycc(e: [f32; 3]) -> [f32; 3] {
+    let y = 0.2126 * e[0] + 0.7152 * e[1] + 0.0722 * e[2];
+    [y, (e[2] - y) / 1.8556, (e[0] - y) / 1.5748]
+}
+
+/// How wide a volume is at the least, in each direction of the space: a
+/// stroke over one flat colour still keys its neighbourhood.
+const KEY_VOLUME_FLOOR: f32 = 0.02;
+
+/// The volume `samples` (display-encoded RGB) span, or `None` for none:
+/// their centre and spread, the spread floored so one sample, or a line of
+/// them, still keys a volume round it.
+pub fn qualifier_volume(samples: &[[f32; 3]]) -> Option<KeyVolume> {
+    if samples.is_empty() {
+        return None;
+    }
+    let pts: Vec<[f64; 3]> = samples.iter().map(|s| qualifier_ycc(*s).map(f64::from)).collect();
+    let n = pts.len() as f64;
+    let mut mean = [0.0f64; 3];
+    for p in &pts {
+        for i in 0..3 {
+            mean[i] += p[i] / n;
+        }
+    }
+    let floor = f64::from(KEY_VOLUME_FLOOR).powi(2);
+    let mut cov = [[0.0f64; 3]; 3];
+    for p in &pts {
+        for i in 0..3 {
+            for j in 0..3 {
+                cov[i][j] += (p[i] - mean[i]) * (p[j] - mean[j]) / n;
+            }
+        }
+    }
+    for (i, row) in cov.iter_mut().enumerate() {
+        row[i] += floor;
+    }
+    let [[a, b, c], [d, e, f], [g, h, k]] = cov;
+    let det = a * (e * k - f * h) - b * (d * k - f * g) + c * (d * h - e * g);
+    if det.abs() < 1e-18 {
+        return None;
+    }
+    let inv = [
+        [(e * k - f * h) / det, (c * h - b * k) / det, (b * f - c * e) / det],
+        [(f * g - d * k) / det, (a * k - c * g) / det, (c * d - a * f) / det],
+        [(d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det],
+    ];
+    Some(KeyVolume { mean: mean.map(|v| v as f32), inv: inv.map(|r| r.map(|v| v as f32)) })
+}
+
+/// A colour's distance from `v`, in the volume's own spread.
+pub fn volume_distance(v: &KeyVolume, ycc: [f32; 3]) -> f32 {
+    let d = [ycc[0] - v.mean[0], ycc[1] - v.mean[1], ycc[2] - v.mean[2]];
+    let mut q = 0.0;
+    for i in 0..3 {
+        for j in 0..3 {
+            q += d[i] * v.inv[i][j] * d[j];
+        }
+    }
+    q.max(0.0).sqrt()
+}
+
+/// The 3D qualifier's matte for one display-encoded colour (#895): 1
+/// within `radius` of the keep volume, falling off over `soft`, and, where
+/// the colour is nearer the remove volume than the keep one, less by the
+/// remove volume's own key there. No keep volume keys nothing.
+pub fn volume_matte(e: [f32; 3], keep: Option<&KeyVolume>, remove: Option<&KeyVolume>, radius: f32, soft: f32) -> f32 {
+    let Some(keep) = keep else { return 0.0 };
+    let reach = |d: f32| {
+        if d <= radius {
+            1.0
+        } else if soft <= 0.0001 {
+            0.0
+        } else {
+            (1.0 - (d - radius) / soft).clamp(0.0, 1.0)
+        }
+    };
+    let ycc = qualifier_ycc(e);
+    let dk = volume_distance(keep, ycc);
+    let mut m = reach(dk);
+    if let Some(remove) = remove {
+        let dr = volume_distance(remove, ycc);
+        if dr < dk {
+            m *= 1.0 - reach(dr);
+        }
+    }
+    m
+}
+
+/// The qualifier's 3D mode (#895), as `SHADER_QUALIFIER` computes it: each
+/// pixel's display-encoded colour keyed on the keep and remove volumes; a
+/// greyscale matte (R=G=B=matte, alpha kept).
+pub fn qualifier_matte_3d(px: &mut [f32], keep: Option<KeyVolume>, remove: Option<KeyVolume>, radius: f32, soft: f32, invert: bool) {
+    px.par_chunks_exact_mut(4).for_each(|p| {
+        let mut matte = volume_matte(qualifier_rgb([p[0], p[1], p[2]]), keep.as_ref(), remove.as_ref(), radius, soft);
+        if invert {
+            matte = 1.0 - matte;
+        }
+        p[0] = matte;
+        p[1] = matte;
+        p[2] = matte;
+    });
+}
+
+#[cfg(test)]
+mod volume_tests {
+    use super::*;
+
+    /// A volume keys what its samples span and its neighbourhood, not a
+    /// far colour; a remove volume takes out what is nearer it than the
+    /// keep one; one sample keys a small volume round it.
+    #[test]
+    fn a_volume_keys_its_samples_and_a_remove_takes_out_its_own() {
+        let skin = [[0.80, 0.55, 0.45], [0.75, 0.50, 0.40], [0.85, 0.62, 0.52], [0.70, 0.47, 0.38]];
+        let keep = qualifier_volume(&skin).unwrap();
+        for s in skin {
+            assert!(volume_matte(s, Some(&keep), None, 2.5, 1.5) > 0.99, "{s:?}");
+        }
+        assert!(volume_matte([0.78, 0.53, 0.43], Some(&keep), None, 2.5, 1.5) > 0.99, "between the samples");
+        assert_eq!(volume_matte([0.2, 0.4, 0.8], Some(&keep), None, 2.5, 1.5), 0.0, "a sky blue isn't skin");
+        let highlight = [0.86, 0.64, 0.55];
+        assert!(volume_matte(highlight, Some(&keep), None, 2.5, 1.5) > 0.99, "the skin's volume holds its highlight");
+        let out = qualifier_volume(&[highlight]).unwrap();
+        let with = volume_matte(highlight, Some(&keep), Some(&out), 2.5, 1.5);
+        assert!(with < 0.01, "the removed colour is out: {with}");
+        assert!(volume_matte([0.75, 0.50, 0.40], Some(&keep), Some(&out), 2.5, 1.5) > 0.99, "the kept one stays");
+        assert_eq!(volume_matte([0.8, 0.5, 0.4], None, None, 2.5, 1.5), 0.0, "no strokes, no key");
+        let one = qualifier_volume(&[[0.5, 0.5, 0.5]]).unwrap();
+        assert!(volume_matte([0.5, 0.5, 0.5], Some(&one), None, 2.5, 1.5) > 0.99);
+        assert_eq!(volume_matte([0.7, 0.5, 0.5], Some(&one), None, 2.5, 1.5), 0.0, "a single sample's volume is small");
+    }
+}
+
 /// Matte finesse on a qualifier's matte (the same value in R, G and B):
 /// clean black and clean white clip and rescale the matte, shrink/grow
 /// erodes or dilates it by a square of `|shrink_grow|` pixels, and blur

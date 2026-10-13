@@ -719,11 +719,22 @@ pub enum EffectMatte<'a> {
 pub enum GpuKey {
     /// `rgb`, in RGB mode (#895): red, green and blue low and high, and
     /// the soft edge; `None` keys by hue, saturation and luminance.
-    Qualifier { hue_center: f32, hue_width: f32, hue_soft: f32, sat_low: f32, sat_high: f32, sat_soft: f32, lum_low: f32, lum_high: f32, lum_soft: f32, invert: bool, rgb: Option<[f32; 7]> },
+    /// `volume`, in 3D mode: the keep and remove volumes and the reach.
+    Qualifier { hue_center: f32, hue_width: f32, hue_soft: f32, sat_low: f32, sat_high: f32, sat_soft: f32, lum_low: f32, lum_high: f32, lum_soft: f32, invert: bool, rgb: Option<[f32; 7]>, volume: Option<QualifierVolume> },
     LumaKey { low: f32, high: f32, soft: f32, invert: bool },
     /// Against the plate [`GpuEffectsPipeline::upload_difference_key_plate`]
     /// put on the GPU.
     DifferenceKey { tolerance: f32, soft: f32, invert: bool, luminance: bool },
+}
+
+/// The 3D qualifier's key (#895): the keep and remove volumes, and how
+/// far (and how softly) the keep volume reaches.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QualifierVolume {
+    pub keep: Option<crate::cpu_grade::KeyVolume>,
+    pub remove: Option<crate::cpu_grade::KeyVolume>,
+    pub radius: f32,
+    pub soft: f32,
 }
 
 /// A key's matte in a pool slot of its own (#1266), drawn from a chain
@@ -3975,6 +3986,7 @@ impl GpuEffectsPipeline {
         sec_exposure: f32, sec_saturation: f32, sec_hue_shift: f32, sec_temperature: f32,
         matte_preview: bool,
         rgb: Option<[f32; 7]>,
+        volume: Option<QualifierVolume>,
     ) -> Vec<f32> {
         if self.is_device_lost() {
             return linear_rgba.to_vec();
@@ -3985,6 +3997,7 @@ impl GpuEffectsPipeline {
         let buf_a = self.buf_a.as_ref().unwrap();
         let buf_b = self.buf_b.as_ref().unwrap();
 
+        let (mode, ranges, v) = GpuQualifierParams::shape(rgb, volume);
         self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
 
         self.write_params(&GpuQualifierParams {
@@ -4005,11 +4018,16 @@ impl GpuEffectsPipeline {
             sec_hue_shift: sec_hue_shift.to_radians(),
             sec_temperature: sec_temperature / 100.0 * 0.1,
             matte_preview: if matte_preview { 1 } else { 0 },
-            mode: GpuQualifierParams::rgb_mode(rgb).0,
+            mode,
             _pad1: 0,
             _pad2: 0,
-            rgb: GpuQualifierParams::rgb_mode(rgb).1,
+            rgb: ranges,
             _pad3: 0.0,
+            keep_mean: v[0],
+            keep_inv: [v[1], v[2], v[3]],
+            remove_mean: v[4],
+            remove_inv: [v[5], v[6], v[7]],
+            reach: v[8],
         });
 
         let pixel_count = width * height;
@@ -6190,8 +6208,8 @@ impl GpuEffectsPipeline {
     fn record_key(&mut self, key: &GpuKey, route: KeyRoute, width: u32, height: u32) {
         let slot = self.next_params_slot();
         let pipeline = match *key {
-            GpuKey::Qualifier { hue_center, hue_width, hue_soft, sat_low, sat_high, sat_soft, lum_low, lum_high, lum_soft, invert, rgb } => {
-                let (mode, rgb) = GpuQualifierParams::rgb_mode(rgb);
+            GpuKey::Qualifier { hue_center, hue_width, hue_soft, sat_low, sat_high, sat_soft, lum_low, lum_high, lum_soft, invert, rgb, volume } => {
+                let (mode, rgb, v) = GpuQualifierParams::shape(rgb, volume);
                 self.write_chain_params(slot, &GpuQualifierParams {
                     width,
                     height,
@@ -6215,6 +6233,11 @@ impl GpuEffectsPipeline {
                     _pad2: 0,
                     rgb,
                     _pad3: 0.0,
+                    keep_mean: v[0],
+                    keep_inv: [v[1], v[2], v[3]],
+                    remove_mean: v[4],
+                    remove_inv: [v[5], v[6], v[7]],
+                    reach: v[8],
                 });
                 &self.qualifier_pipeline
             }
@@ -7966,8 +7989,15 @@ struct GpuQualifierParams {
     /// The RGB mode's ranges: red, green, blue low and high, the soft edge.
     rgb: [f32; 7],
     _pad3: f32,
+    /// The 3D mode's volumes (#895): each centre (its `w` 1 when there is
+    /// one) and inverse spread by rows, and the reach and its soft edge.
+    keep_mean: [f32; 4],
+    keep_inv: [[f32; 4]; 3],
+    remove_mean: [f32; 4],
+    remove_inv: [[f32; 4]; 3],
+    reach: [f32; 4],
 }
-// 28 fields × 4 bytes = 112 bytes (well under 256-byte PARAMS_SIZE)
+// 64 fields × 4 bytes = 256 bytes: the whole PARAMS_SIZE
 
 impl GpuQualifierParams {
     /// The mode and RGB ranges `rgb` gives (#895): HSL's, with the RGB
@@ -7977,6 +8007,28 @@ impl GpuQualifierParams {
             Some(r) => (1, r),
             None => (0, [0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.1]),
         }
+    }
+
+    /// The mode, ranges and volumes a key's shape gives: 3D for a
+    /// volume, else RGB's or HSL's.
+    fn shape(rgb: Option<[f32; 7]>, volume: Option<QualifierVolume>) -> (u32, [f32; 7], [[f32; 4]; 9]) {
+        let (mut mode, ranges) = Self::rgb_mode(rgb);
+        let mut v = [[0.0f32; 4]; 9];
+        if let Some(q) = volume {
+            mode = 2;
+            let mut put = |at: usize, k: Option<crate::cpu_grade::KeyVolume>| {
+                if let Some(k) = k {
+                    v[at] = [k.mean[0], k.mean[1], k.mean[2], 1.0];
+                    for r in 0..3 {
+                        v[at + 1 + r] = [k.inv[r][0], k.inv[r][1], k.inv[r][2], 0.0];
+                    }
+                }
+            };
+            put(0, q.keep);
+            put(4, q.remove);
+            v[8] = [q.radius, q.soft, 0.0, 0.0];
+        }
+        (mode, ranges, v)
     }
 }
 
@@ -13284,6 +13336,15 @@ struct Params {
     blue_high: f32,
     rgb_soft: f32,
     _pad3: f32,
+    keep_mean: vec4<f32>,
+    keep_inv0: vec4<f32>,
+    keep_inv1: vec4<f32>,
+    keep_inv2: vec4<f32>,
+    remove_mean: vec4<f32>,
+    remove_inv0: vec4<f32>,
+    remove_inv1: vec4<f32>,
+    remove_inv2: vec4<f32>,
+    reach: vec4<f32>,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -13304,6 +13365,24 @@ fn soft_range_centered(dist: f32, width: f32, soft: f32) -> f32 {
     if soft <= 0.0001 { return 0.0; }
     let t = (dist - half_w) / soft;
     return clamp(1.0 - t, 0.0, 1.0);
+}
+
+// The 3D key's space and distance (#895), as `cpu_grade::volume_matte`.
+fn qualifier_ycc(e: vec3<f32>) -> vec3<f32> {
+    let y = 0.2126 * e.x + 0.7152 * e.y + 0.0722 * e.z;
+    return vec3<f32>(y, (e.z - y) / 1.8556, (e.x - y) / 1.5748);
+}
+
+fn volume_distance(c: vec3<f32>, mean: vec4<f32>, i0: vec4<f32>, i1: vec4<f32>, i2: vec4<f32>) -> f32 {
+    let d = c - mean.xyz;
+    let q = d.x * dot(i0.xyz, d) + d.y * dot(i1.xyz, d) + d.z * dot(i2.xyz, d);
+    return sqrt(max(q, 0.0));
+}
+
+fn volume_reach(d: f32, radius: f32, soft: f32) -> f32 {
+    if d <= radius { return 1.0; }
+    if soft <= 0.0001 { return 0.0; }
+    return clamp(1.0 - (d - radius) / soft, 0.0, 1.0);
 }
 
 fn soft_range(val: f32, lo: f32, hi: f32, soft: f32) -> f32 {
@@ -13336,7 +13415,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Qualifier matte: by hue, saturation and luminance, or (RGB mode,
     // #895) by each display-encoded channel on its own.
     var matte = 0.0;
-    if params.mode == 1u {
+    if params.mode == 2u {
+        if params.keep_mean.w > 0.5 {
+            let e = clamp(vec3<f32>(enc_signed(r), enc_signed(g), enc_signed(b)), vec3<f32>(0.0), vec3<f32>(1.0));
+            let c = qualifier_ycc(e);
+            let dk = volume_distance(c, params.keep_mean, params.keep_inv0, params.keep_inv1, params.keep_inv2);
+            matte = volume_reach(dk, params.reach.x, params.reach.y);
+            if params.remove_mean.w > 0.5 {
+                let dr = volume_distance(c, params.remove_mean, params.remove_inv0, params.remove_inv1, params.remove_inv2);
+                if dr < dk {
+                    matte = matte * (1.0 - volume_reach(dr, params.reach.x, params.reach.y));
+                }
+            }
+        }
+    } else if params.mode == 1u {
         let e = clamp(vec3<f32>(enc_signed(r), enc_signed(g), enc_signed(b)), vec3<f32>(0.0), vec3<f32>(1.0));
         matte = soft_range(e.x, params.red_low, params.red_high, params.rgb_soft)
             * soft_range(e.y, params.green_low, params.green_high, params.rgb_soft)

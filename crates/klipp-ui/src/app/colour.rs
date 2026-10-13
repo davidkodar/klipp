@@ -650,6 +650,38 @@ impl KlippApp {
         self.send_commands(vec![AppCommand::SetNodeHueSatCurves { clip_id, node_id, huesat }]);
     }
 
+    /// One of a 3D stroke's samples back (#895): kept; a clip moved in
+    /// the frame read on screen instead. Once the last is back, the node's
+    /// volume takes them all, one undo step. `false` when no stroke of this
+    /// node was waiting.
+    pub(super) fn stroke_sample(&mut self, clip_id: klipp_core::ClipId, node_id: uuid::Uuid, nx: f32, ny: f32, sample: Result<[f32; 3], klipp_core::NodeSampleRefusal>) -> bool {
+        if !self.state.qualifier_stroke.as_ref().is_some_and(|s| (s.clip_id, s.node_id) == (clip_id, node_id)) {
+            return false;
+        }
+        let read = match sample {
+            Ok(rgb) => Some(rgb),
+            Err(klipp_core::NodeSampleRefusal::Placed) => self.shown_frame_for_balance(clip_id).ok().and_then(|(bytes, fw, fh)| picked_linear(&bytes, fw, fh, nx, ny)),
+            Err(klipp_core::NodeSampleRefusal::Why(_)) => None,
+        };
+        let Some(stroke) = self.state.qualifier_stroke.as_mut() else { return false };
+        if let Some(rgb) = read {
+            stroke.samples.push(klipp_effects::cpu_grade::qualifier_rgb(rgb));
+        }
+        stroke.pending = stroke.pending.saturating_sub(1);
+        if stroke.pending > 0 {
+            return true;
+        }
+        let Some(done) = self.state.qualifier_stroke.take() else { return true };
+        if done.samples.is_empty() {
+            self.state.toast.show("Qualifier stroke: nothing to read there");
+            return true;
+        }
+        let base = picked_node(self.state.sequence(), clip_id, node_id).and_then(|n| n.params.qualifier.clone()).unwrap_or_default();
+        let qualifier = qualifier_with_stroke(base, &done.samples, done.remove);
+        self.send_commands(vec![AppCommand::SetNodeQualifier { clip_id, node_id, qualifier }]);
+        true
+    }
+
     /// Key a Qualifier node on the eyedropper's sample: the colour it
     /// receives there, or, for a clip moved in the frame, the colour on
     /// screen, since the point clicked is not the same point of its
@@ -720,6 +752,21 @@ impl KlippApp {
                 self.state.hue_curve_awaiting = Some((clip_id, node_id, curve));
                 let at = sample_path(self.state.sequence(), clip_id, node_id);
                 let _ = self.cmd_tx.send(AppCommand::SampleNodeInput { clip_id, node_id, at, nx: *nx, ny: *ny });
+                true
+            }
+            AppCommand::QualifierStroke { points } => {
+                // Each point read on the picture the node receives, as the
+                // eyedropper's is; the volume takes them once all are back.
+                let Some((clip_id, node_id, remove)) = self.state.qualifier_stroke_pick.take() else { return true };
+                let points = stroke_points(points, STROKE_SAMPLES);
+                if points.is_empty() {
+                    return true;
+                }
+                self.state.qualifier_stroke = Some(crate::state::StrokeSampling { clip_id, node_id, remove, samples: Vec::new(), pending: points.len() });
+                let at = sample_path(self.state.sequence(), clip_id, node_id);
+                for [nx, ny] in points {
+                    let _ = self.cmd_tx.send(AppCommand::SampleNodeInput { clip_id, node_id, at: at.clone(), nx, ny });
+                }
                 true
             }
             AppCommand::RequestQualifierSample { nx, ny } => {
@@ -1653,6 +1700,12 @@ impl KlippApp {
                 self.state.toast.show("Click the colour to change in the viewer (Esc cancels)");
                 true
             }
+            AppCommand::PickQualifierStroke { clip_id, node_id, remove } => {
+                self.state.eyedropper_mode = crate::state::EyedropperMode::QualifierStroke;
+                self.state.qualifier_stroke_pick = Some((*clip_id, *node_id, *remove));
+                self.state.toast.show(if *remove { "Drag across the colours to take out of the key (Esc cancels)" } else { "Drag across the colours to keep (Esc cancels)" });
+                true
+            }
             AppCommand::PickQualifierColour { clip_id, node_id } => {
                 self.state.eyedropper_mode = crate::state::EyedropperMode::Qualifier;
                 self.state.qualifier_pick = Some((*clip_id, *node_id));
@@ -2425,6 +2478,78 @@ pub(super) fn hue_range_points(points: &[[f32; 2]], hue: f32) -> Vec<[f32; 2]> {
 /// `base` keyed on a colour in linear light, read as the qualifier reads
 /// a pixel (`picture_hsl`): its hue centred there, its saturation range
 /// around it.
+/// How many points of a drawn stroke are read (#895).
+pub(super) const STROKE_SAMPLES: usize = 16;
+
+/// A drawn stroke's points to read (#895): at most `most`, spread evenly
+/// along it by its length, its ends among them; a click, one point.
+pub(super) fn stroke_points(points: &[[f32; 2]], most: usize) -> Vec<[f32; 2]> {
+    if points.len() <= 1 || most <= 1 {
+        return points.iter().take(1).copied().collect();
+    }
+    let seg: Vec<f32> = points.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt()).collect();
+    let total: f32 = seg.iter().sum();
+    if total <= 1e-6 {
+        return vec![points[0]];
+    }
+    (0..most)
+        .map(|k| {
+            let mut want = total * k as f32 / (most - 1) as f32;
+            for (i, len) in seg.iter().enumerate() {
+                if want <= *len || i == seg.len() - 1 {
+                    let t = if *len > 0.0 { (want / len).clamp(0.0, 1.0) } else { 0.0 };
+                    let (a, b) = (points[i], points[i + 1]);
+                    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+                }
+                want -= len;
+            }
+            points[points.len() - 1]
+        })
+        .collect()
+}
+
+/// `base` with a stroke's `samples` (display-encoded) added to what it
+/// keeps, or with `remove` to what it takes out (#895): the key in 3D mode
+/// and on, everything else as it was.
+pub(super) fn qualifier_with_stroke(base: klipp_core::QualifierSettings, samples: &[[f32; 3]], remove: bool) -> klipp_core::QualifierSettings {
+    let mut q = klipp_core::QualifierSettings { enabled: true, mode: klipp_core::QualifierMode::ThreeD, ..base };
+    if remove {
+        q.remove_samples.extend_from_slice(samples);
+    } else {
+        q.keep_samples.extend_from_slice(samples);
+    }
+    q
+}
+
+#[cfg(test)]
+mod stroke_tests {
+    /// A stroke is read at most 16 points along it, evenly by length, its
+    /// ends included; a click at its one point.
+    #[test]
+    fn a_stroke_is_read_evenly_along_it() {
+        let pts = super::stroke_points(&[[0.0, 0.5], [0.1, 0.5], [0.2, 0.5], [0.8, 0.5]], 4);
+        assert_eq!(pts.len(), 4);
+        for (p, x) in pts.iter().zip([0.0f32, 0.8 / 3.0, 1.6 / 3.0, 0.8]) {
+            assert!((p[0] - x).abs() < 1e-5 && (p[1] - 0.5).abs() < 1e-6, "{pts:?}");
+        }
+        assert_eq!(super::stroke_points(&[[0.3, 0.4]], 16), vec![[0.3, 0.4]]);
+        assert!(super::stroke_points(&[], 16).is_empty());
+    }
+
+    /// A keep stroke's samples join what the key keeps, a remove stroke's
+    /// what it takes out; either turns the key on in 3D mode and leaves the
+    /// rest of it.
+    #[test]
+    fn a_stroke_adds_to_its_side_of_the_volume() {
+        let base = klipp_core::QualifierSettings { invert: true, keep_samples: vec![[0.1, 0.2, 0.3]], ..Default::default() };
+        let kept = super::qualifier_with_stroke(base.clone(), &[[0.5, 0.5, 0.5]], false);
+        assert!(kept.enabled && kept.mode == klipp_core::QualifierMode::ThreeD && kept.invert);
+        assert_eq!(kept.keep_samples, vec![[0.1, 0.2, 0.3], [0.5, 0.5, 0.5]]);
+        let out = super::qualifier_with_stroke(base, &[[0.9, 0.1, 0.1]], true);
+        assert_eq!((out.keep_samples.len(), out.remove_samples.clone()), (1, vec![[0.9, 0.1, 0.1]]));
+    }
+}
+
 pub(super) fn qualifier_keyed_on(rgb: [f32; 3], base: klipp_core::QualifierSettings) -> klipp_core::QualifierSettings {
     // In RGB mode (#895), each channel within 0.1 of the picked colour's.
     if base.mode == klipp_core::QualifierMode::Rgb {
