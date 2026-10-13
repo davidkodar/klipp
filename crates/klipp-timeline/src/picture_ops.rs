@@ -643,6 +643,8 @@ impl Clip {
         // where a structural op lands in the list is read from the chain.
         let mut docs = Documents::default();
         docs.clips.insert(self.id.0, lifted.picture.clone());
+        // The picture the batch starts from, for its end's check.
+        let start = docs.clone();
         // The grade is written back from a copy that took the grade's ops
         // alone: the full copy also holds effect nodes the batch added,
         // which have no place in the stored list yet.
@@ -676,7 +678,7 @@ impl Clip {
             }
             steps.push((t, docs.clips[&self.id.0].clone()));
         }
-        check_batch_end(&docs, root, &RegistryCatalog).map_err(|error| {
+        check_batch_end(&docs, &start, root, &RegistryCatalog).map_err(|error| {
             let index = error.unwired.and_then(|(id, _)| ops.iter().position(|op|
                 matches!(op, GraphOp::AddNodeBeside { node, .. } if node.id == id)));
             (index, error.why)

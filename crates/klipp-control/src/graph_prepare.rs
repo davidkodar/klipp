@@ -17,6 +17,8 @@ pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepa
     let root = wire[0].path().root.root();
     let mut result = Prepared { ops: Vec::new(), source_indices: Vec::new(), created: BTreeMap::new() };
     let mut pending = Vec::new();
+    // The documents the batch starts from, for its end's check.
+    let start = docs.clone();
     for (index, item) in wire.iter().enumerate() {
         let step = (|| -> Result<(), String> {
             if item.path().root.root() != root { return Err("a batch edits one root".into()); }
@@ -80,7 +82,7 @@ pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepa
         })();
         step.map_err(|why| (Some(index), why))?;
     }
-    check_batch_end(&docs, root, &RegistryCatalog).map_err(|error| {
+    check_batch_end(&docs, &start, root, &RegistryCatalog).map_err(|error| {
         // Attribute an unwired beside node to its creation, without parsing prose.
         // Other whole-batch failures have no single offending operation.
         let index = error.unwired.and_then(|(id, _)| {

@@ -109,6 +109,11 @@ pub enum ExecutorError {
     /// gives nothing is never taken for white.
     #[error("the mask of effect node {0} is wired but its matte isn't there")]
     MaskUnavailable(NodeId),
+    /// A node can't take the pictures it reads: a display step after the
+    /// picture's own or after a plug-in, or scene- and display-referred
+    /// pictures mixed (#1290). The run is refused rather than drawn wrong.
+    #[error("colour domains: {0}")]
+    ColourDomain(crate::domains::DomainFault),
 }
 
 /// Executes a node graph on RGBA frames.
