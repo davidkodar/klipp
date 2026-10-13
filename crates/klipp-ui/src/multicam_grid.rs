@@ -8,6 +8,12 @@
 //! tile carries no grade. While playing the tiles refresh at about ten
 //! frames a second, and the angle being cut to plays in the Program
 //! viewer at full rate; paused, each tile shows the frame at the playhead.
+//! When the tiles can't keep that up the grid says at what rate they
+//! refresh, rather than look stuck.
+//!
+//! The grid is composed on the GPU: each tile is a texture of its own,
+//! updated in place as its frame arrives, and drawn as a quad scaled into
+//! its cell; nothing tiles or copies pictures on the CPU.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -142,6 +148,9 @@ pub struct GridRuntime {
     /// Why an angle's frame could not be made, last time it was asked
     /// for: shown on its tile rather than leaving it blank (#84).
     pub failed: HashMap<u8, String>,
+    /// When each recent batch was fully answered while playing: the rate
+    /// the tiles refresh at.
+    completed: std::collections::VecDeque<Instant>,
 }
 
 /// A batch worker with room for `decoders`, delivering into `tx`.
@@ -154,6 +163,8 @@ fn spawn_worker(ctx: &egui::Context, tx: &crossbeam_channel::Sender<Delivered>, 
     })
 }
 
+/// The window the tiles' refresh rate is measured over.
+const REFRESH_WINDOW: Duration = Duration::from_secs(2);
 /// While playing, a new batch at most this often.
 const PLAYING_INTERVAL: Duration = Duration::from_millis(100);
 /// A batch not fully answered by then is given up on.
@@ -182,7 +193,28 @@ impl GridRuntime {
             tile_generation: HashMap::new(),
             retired: Vec::new(),
             failed: HashMap::new(),
+            completed: std::collections::VecDeque::new(),
         }
+    }
+
+    /// The batches fully answered a second while playing, over the last two
+    /// seconds; `None` paused, or before a second of play.
+    pub fn refresh_rate(&self) -> Option<f32> {
+        if !self.playing {
+            return None;
+        }
+        let now = Instant::now();
+        let recent = self.completed.iter().filter(|t| now.duration_since(**t) <= REFRESH_WINDOW).count();
+        let first = self.completed.front()?;
+        (now.duration_since(*first) >= Duration::from_secs(1) || recent > 0).then(|| recent as f32 / REFRESH_WINDOW.as_secs_f32())
+    }
+
+    /// Whether the tiles refresh slower than they are asked to while
+    /// playing, by a clear margin: what the grid says on screen.
+    pub fn falling_behind(&self) -> Option<f32> {
+        let rate = self.refresh_rate()?;
+        let asked = 1.0 / PLAYING_INTERVAL.as_secs_f32();
+        (self.completed.len() >= 2 && rate < asked * 0.7).then_some(rate)
     }
 
     /// Ask for the tiles of `group` at `playhead`: once per position when
@@ -243,19 +275,31 @@ impl GridRuntime {
     /// `drop_old` (a texture freed mid-frame trips wgpu).
     pub fn drain(&mut self, ctx: &egui::Context, mut drop_old: impl FnMut(egui::TextureHandle)) {
         while let Ok((generation, angle, result)) = self.rx.try_recv() {
-            if generation == self.generation {
+            let current = generation == self.generation;
+            if current {
                 self.answered += 1;
+                if self.answered == self.asked && self.playing {
+                    let now = Instant::now();
+                    self.completed.push_back(now);
+                    while self.completed.front().is_some_and(|t| now.duration_since(*t) > REFRESH_WINDOW) {
+                        self.completed.pop_front();
+                    }
+                }
             }
             let frame = match result {
                 Ok(frame) => frame,
                 Err(e) => {
-                    if generation == self.generation {
+                    if current {
                         self.failed.insert(angle, e);
                     }
                     continue;
                 }
             };
-            self.failed.remove(&angle);
+            // Only this batch's frame answers this batch's failure: a late
+            // success from an older one must not clear it (#84 review).
+            if current {
+                self.failed.remove(&angle);
+            }
             // A frame for a group no longer shown (its batch was asked
             // for before the switch) is not this group's.
             if !self.sources.iter().any(|s| s.angle == angle) {
@@ -299,6 +343,7 @@ impl GridRuntime {
         self.failed.clear();
         self.sources.clear();
         self.last_key = None;
+        self.completed.clear();
     }
 }
 
@@ -367,6 +412,15 @@ pub fn show(ui: &mut egui::Ui, rect: egui::Rect, runtime: &GridRuntime, active: 
         if resp.clicked() {
             clicked = Some(source.angle);
         }
+    }
+    // Degrading honestly: the tiles refresh slower than asked, and the
+    // grid says so, while the angle cut to plays at full rate.
+    if let Some(rate) = runtime.falling_behind() {
+        let text = format!("Angles at {rate:.0} fps · the live angle plays at full rate in the Program viewer");
+        let galley = ui.painter().layout_no_wrap(text, egui::FontId::proportional(11.0), egui::Color32::WHITE);
+        let r = egui::Rect::from_min_size(egui::pos2(rect.left() + 8.0, rect.bottom() - galley.size().y - 10.0), galley.size() + egui::vec2(10.0, 4.0));
+        ui.painter().rect_filled(r, 3.0, egui::Color32::from_black_alpha(190));
+        ui.painter().galley(r.min + egui::vec2(5.0, 2.0), galley, egui::Color32::WHITE);
     }
     clicked
 }
@@ -484,5 +538,72 @@ mod tests {
         assert_eq!(grid_shape(4), (2, 2));
         assert_eq!(grid_shape(5), (2, 3));
         assert_eq!(grid_shape(9), (3, 3));
+    }
+
+    /// A tile's frame, as the worker delivers one.
+    fn frame() -> klipp_engine::skim::SkimFrame {
+        klipp_engine::skim::SkimFrame { width: 2, height: 2, rgba: vec![255; 16], reused_decoder: false, repeated: false }
+    }
+
+    /// #84 review: a failure is cleared only by the batch it belongs to;
+    /// a late success from an older batch leaves the current one's.
+    #[test]
+    fn a_late_success_does_not_clear_this_batchs_failure() {
+        let ctx = egui::Context::default();
+        let mut grid = GridRuntime::new(&ctx);
+        grid.sources = vec![AngleSource { angle: 1, name: "b".into(), decode: None }];
+        grid.generation = 2;
+        grid.asked = 1;
+        grid.tx.send((2, 1, Err("no such file".into()))).unwrap();
+        grid.drain(&ctx, drop);
+        assert_eq!(grid.failed.get(&1).map(String::as_str), Some("no such file"));
+        grid.tx.send((1, 1, Ok(frame()))).unwrap();
+        grid.drain(&ctx, drop);
+        assert!(grid.failed.contains_key(&1), "the older batch's frame left it");
+        assert!(grid.is_stale(1), "and its frame is drawn as on its way");
+        // This batch's own success clears it.
+        grid.generation = 3;
+        grid.tx.send((3, 1, Ok(frame()))).unwrap();
+        grid.drain(&ctx, drop);
+        assert!(!grid.failed.contains_key(&1));
+    }
+
+    /// #84: while playing, the grid measures how often whole batches come
+    /// back; slower than asked by a clear margin, it says so. Paused, it
+    /// says nothing.
+    #[test]
+    fn the_grid_says_when_its_tiles_fall_behind() {
+        let ctx = egui::Context::default();
+        let mut grid = GridRuntime::new(&ctx);
+        grid.sources = vec![AngleSource { angle: 0, name: "a".into(), decode: None }];
+        grid.playing = true;
+        // Two batches answered, over a second and a half: about 1 fps.
+        let now = Instant::now();
+        grid.completed = [now - Duration::from_millis(1500), now - Duration::from_millis(500)].into_iter().collect();
+        let rate = grid.falling_behind().expect("behind");
+        assert!((rate - 1.0).abs() < 0.01, "{rate}");
+        // Answering every tenth of a second: not behind.
+        grid.completed = (0..20).map(|k| now - Duration::from_millis(100 * k)).rev().collect();
+        assert_eq!(grid.falling_behind(), None);
+        // A batch answered while playing is counted.
+        grid.completed.clear();
+        grid.generation = 5;
+        grid.asked = 1;
+        grid.answered = 0;
+        grid.tx.send((5, 0, Ok(frame()))).unwrap();
+        grid.drain(&ctx, drop);
+        assert_eq!(grid.completed.len(), 1);
+        grid.playing = false;
+        assert_eq!(grid.refresh_rate(), None, "paused: nothing to say");
+        // Drawn: the line on the grid when behind.
+        grid.playing = true;
+        grid.completed = [now - Duration::from_millis(1500), now - Duration::from_millis(500)].into_iter().collect();
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                show(ui, egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 360.0)), &grid, 0, &crate::theme::KlippTheme::default());
+            });
+        });
+        let said = out.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().starts_with("Angles at 1 fps")));
+        assert!(said);
     }
 }
