@@ -171,23 +171,29 @@ impl Parked {
     /// two seconds, parked 1.6 s from its end, and a loaded machine can
     /// spend that on one slow pass before a watch has begun (#1828).
     pub fn start_long(src: PathBuf, width: u32, height: u32, secs: u32) -> Self {
-        Self::start_spanning(src, width, height, Fps::new(FPS, 1), true, (secs * FPS) as i64, |_| {})
+        Self::start_spanning(src, width, height, Fps::new(FPS, 1), true, (secs * FPS) as i64, |_| {}, true)
     }
 
     /// [`Self::start`] with the clip changed by `tweak` before the engine
     /// sees it: an effect added, a node put above the Exposure node. The
     /// slider still moves that Exposure node.
     pub fn start_with(src: PathBuf, width: u32, height: u32, tweak: impl FnOnce(&mut Clip)) -> Self {
-        Self::start_spanning(src, width, height, Fps::new(FPS, 1), true, 50, tweak)
+        Self::start_spanning(src, width, height, Fps::new(FPS, 1), true, 50, tweak, true)
+    }
+
+    /// [`Self::start_with`] on an engine that keeps no temporal neighbours
+    /// between renders (#1863): every render decodes them.
+    pub fn start_with_unheld(src: PathBuf, width: u32, height: u32, tweak: impl FnOnce(&mut Clip)) -> Self {
+        Self::start_spanning(src, width, height, Fps::new(FPS, 1), true, 50, tweak, false)
     }
 
     /// [`Self::start`] on a timeline at `fps`, for a source at that rate.
     pub fn start_at(src: PathBuf, width: u32, height: u32, fps: Fps, graded: bool) -> Self {
-        Self::start_spanning(src, width, height, fps, graded, 50, |_| {})
+        Self::start_spanning(src, width, height, fps, graded, 50, |_| {}, true)
     }
 
     /// [`Self::start_at`] with a clip `frames` long.
-    fn start_spanning(src: PathBuf, width: u32, height: u32, fps: Fps, graded: bool, frames: i64, tweak: impl FnOnce(&mut Clip)) -> Self {
+    fn start_spanning(src: PathBuf, width: u32, height: u32, fps: Fps, graded: bool, frames: i64, tweak: impl FnOnce(&mut Clip), hold: bool) -> Self {
         let tc = |f: i64| frame_tc(f, fps);
         let id = MediaId::new();
         let mut clip = Clip { kind: ClipKind::Media { media_id: id }, ..Clip::gap(tc(0), tc(frames)) };
@@ -226,11 +232,12 @@ impl Parked {
         });
         let fb = Arc::new(Mutex::new(FrameBuffer::new(width, height)));
         let perf = Arc::new(Mutex::new(PerfRing::default()));
-        let engine = PlaybackEngine::new(
+        let mut engine = PlaybackEngine::new(
             cmd_rx, ev_tx, Arc::clone(&fb), Arc::new(Mutex::new(FrameBuffer::new(width, height))),
             Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
             Arc::new(Mutex::new(None)), Arc::clone(&perf),
         );
+        engine.set_neighbour_hold(hold);
         let params = engine.param_change_queue();
         let thread = Some(std::thread::spawn(move || engine.run()));
         let parked = Self { cmd, fb, playhead, fps, perf, params, thread, clip_id, source_node, exposure_node };

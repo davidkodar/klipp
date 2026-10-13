@@ -115,6 +115,7 @@ fn paused_4k_regrade_below_heavy_nodes() {
         cases.push(("OFX node", Box::new(ofx_node)));
         cases.push(("temporal NR + OFX node", Box::new(move |c: &mut klipp_timeline::Clip| { tnr(c); ofx_node(c) })));
     }
+    split_temporal_nr(&src);
     for (label, tweak) in cases {
         let parked = common::Parked::start_with(src.clone(), 3840, 2160, |c| tweak(c));
         parked.begin_drag();
@@ -134,6 +135,44 @@ fn paused_4k_regrade_below_heavy_nodes() {
             sorted[sorted.len() / 2], sorted[0], sorted[sorted.len() - 1],
         );
     }
+}
+
+/// The temporal NR step taken apart (#1863), as the viewer runs it on
+/// each step: a reader opened on the file, the frames either side of the
+/// parked one decoded into linear light, then the denoise over 4K. The
+/// median of five, each from a fresh reader as a step's is.
+fn split_temporal_nr(src: &std::path::Path) {
+    let working = klipp_engine::video_decoder::working_colorspace();
+    let t = 10.0 / common::FPS as f64;
+    let dt = 1.0 / common::FPS as f64;
+    let ms = |i: std::time::Instant| i.elapsed().as_secs_f64() * 1000.0;
+    let (mut open, mut fetch, mut compute) = (Vec::new(), Vec::new(), Vec::new());
+    for _ in 0..5 {
+        let t0 = std::time::Instant::now();
+        let Some(mut reader) = klipp_media::frame_reader::SeekableFrameReader::open_linear(src, None, working) else {
+            eprintln!("temporal NR split: the file would not open");
+            return;
+        };
+        open.push(ms(t0));
+        // In the order a step asks: the frame before, then the one after.
+        let t1 = std::time::Instant::now();
+        let before = reader.decode_at(t - dt).expect("the frame before").0;
+        let after = reader.decode_at(t + dt).expect("the frame after").0;
+        fetch.push(ms(t1));
+        let current = reader.decode_at(t).expect("the parked frame").0;
+        let t2 = std::time::Instant::now();
+        let out = klipp_effects::temporal_denoise::denoise_frame(&current, &[&before, &after], 0.05, 0.8);
+        compute.push(ms(t2));
+        assert_eq!(out.len(), current.len());
+    }
+    let median = |mut v: Vec<f64>| {
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        v[v.len() / 2]
+    };
+    eprintln!(
+        "temporal NR split: reader open {:.1} ms, two neighbours decoded {:.1} ms, denoise {:.1} ms",
+        median(open), median(fetch), median(compute),
+    );
 }
 
 /// The C OFX fixture built into a bundle under a scratch folder; the
