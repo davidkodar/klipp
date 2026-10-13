@@ -613,7 +613,7 @@ fn collect_walks_compound_graphs_and_brings_the_stills() {
     clip.set_grade(clip_graph);
     seq.tracks[0].clips.push(clip);
     save_project_with_color(&source_dir, std::slice::from_ref(&seq), &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
-    let still = klipp_project::GradeStillData { name: "Hero".into(), filename: "hero.png".into(), rgba: vec![255; 2 * 2 * 4], width: 2, height: 2, source: None, grade: Some(still_grade) };
+    let still = klipp_project::GradeStillData { name: "Hero".into(), filename: "hero.png".into(), rgba: vec![255; 2 * 2 * 4], width: 2, height: 2, source: None, grade: Some(still_grade), grade_labels: Vec::new() };
     klipp_project::save_grade_stills(&source_dir, &[still]).unwrap();
 
     let options = ConsolidateOptions { dest_dir: dest.clone(), include_proxies: false, include_skims: false, mode: Default::default(), looks: Vec::new() };

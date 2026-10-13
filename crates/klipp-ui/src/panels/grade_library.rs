@@ -185,7 +185,7 @@ mod tests {
     /// Delete takes it out.
     #[test]
     fn the_library_row_saves_picks_applies_and_deletes() {
-        let library = ["Teal shadows", "Warm dusk"].map(|n| LibraryGrade { name: n.into(), graph: Default::default(), labels: Default::default(), thumbnail: Some(klipp_render::still::Still { rgba: vec![90; 64 * 36 * 4], width: 64, height: 36 }), texture: None }).into_iter().collect();
+        let library = ["Teal shadows", "Warm dusk"].map(|n| LibraryGrade { name: n.into(), graph: Default::default(), labels: Default::default(), node_labels: Vec::new(), thumbnail: Some(klipp_render::still::Still { rgba: vec![90; 64 * 36 * 4], width: 64, height: 36 }), texture: None }).into_iter().collect();
         let mut row = Row { ctx: egui::Context::default(), state: Default::default(), library, clock: 0.0, sent: Vec::new() };
         let (graded, targets) = (ClipId::new(), [ClipId::new(), ClipId::new()]);
 
@@ -217,7 +217,7 @@ mod tests {
     /// leaves only the grades whose name or labels hold what is typed.
     #[test]
     fn the_library_row_labels_and_finds_grades() {
-        let mut library: Vec<LibraryGrade> = ["Night blue", "Warm dusk"].map(|n| LibraryGrade { name: n.into(), graph: Default::default(), labels: Default::default(), thumbnail: None, texture: None }).into_iter().collect();
+        let mut library: Vec<LibraryGrade> = ["Night blue", "Warm dusk"].map(|n| LibraryGrade { name: n.into(), graph: Default::default(), labels: Default::default(), node_labels: Vec::new(), thumbnail: None, texture: None }).into_iter().collect();
         library[0].labels.camera = "FX3".into();
         let mut row = Row { ctx: egui::Context::default(), state: Default::default(), library, clock: 0.0, sent: Vec::new() };
         let (graded, targets) = (ClipId::new(), [ClipId::new()]);

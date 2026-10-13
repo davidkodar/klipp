@@ -59,6 +59,7 @@ fn stills_from_a_newer_klipp_are_not_loaded_and_not_overwritten() {
         height: 4,
         source: None,
         grade: Some(klipp_nodes::NodeGraph::default()),
+        grade_labels: Vec::new(),
     };
     save_grade_stills(&dir, &[still]).unwrap();
     let index = dir.join("media").join("stills.json");

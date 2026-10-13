@@ -2954,6 +2954,8 @@ pub struct GradeStill {
     /// That clip's grade at the time: what Apply Grade from Still puts
     /// on other clips. `None` for stills from before stills kept it.
     pub grade: Option<klipp_nodes::NodeGraph>,
+    /// That grade's node colour labels, by path inside it (#1866).
+    pub grade_labels: Vec<klipp_timeline::GradeNodeLabel>,
     pub texture: Option<egui::TextureHandle>,
 }
 
@@ -3865,6 +3867,9 @@ pub struct AttributesClipboard {
     pub speed: f64,
     /// Speed keyframes.
     pub speed_keyframes: Vec<klipp_core::Keyframe>,
+    /// The grade's node colour labels, by path inside it (#1866): set
+    /// by the app, which has the sequence they are kept on.
+    pub grade_labels: Vec<klipp_timeline::GradeNodeLabel>,
 }
 
 /// Which parts of the attributes clipboard a paste writes.
@@ -3901,7 +3906,14 @@ impl AttributesClipboard {
             param_modifiers: clip.param_modifiers().clone(),
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
+            grade_labels: Vec::new(),
         }
+    }
+
+    /// What Copy Attributes takes from `clip` of `seq`, its grade's node
+    /// colour labels with it (#1866).
+    pub fn of_in(seq: &klipp_timeline::Sequence, clip: &klipp_timeline::Clip) -> Self {
+        Self { grade_labels: klipp_timeline::grade_node_labels(&seq.node_labels, clip.id), ..Self::of(clip) }
     }
 
     /// Write the chosen parts onto `clip`. A pasted grade gets fresh node
@@ -3976,6 +3988,13 @@ impl AttributesClipboard {
     }
 
     pub fn paste_onto(&self, clip: &mut klipp_timeline::Clip, what: PasteChoice) {
+        self.paste_onto_mapped(clip, what);
+    }
+
+    /// [`Self::paste_onto`], and, when the grade was pasted, the id each
+    /// of its nodes took on `clip` (#1866).
+    pub fn paste_onto_mapped(&self, clip: &mut klipp_timeline::Clip, what: PasteChoice) -> Option<std::collections::HashMap<klipp_nodes::NodeId, klipp_nodes::NodeId>> {
+        let mut map = None;
         if what.effects {
             // The effects with their flags, keyframes and modifiers, as new
             // entries on this clip. An effect's modifiers go with it, as its
@@ -3983,7 +4002,9 @@ impl AttributesClipboard {
             self.paste_effects(clip);
         }
         if what.color_grade {
-            clip.set_grade(clip.grade().with_grade_of(&self.node_graph));
+            let (grade, ids) = clip.grade().with_grade_of_mapped(&self.node_graph);
+            clip.set_grade(grade);
+            map = Some(ids);
         }
         if what.audio {
             clip.volume = self.volume;
@@ -4009,6 +4030,7 @@ impl AttributesClipboard {
             clip.speed = self.speed;
             clip.speed_keyframes = self.speed_keyframes.clone();
         }
+        map
     }
 }
 

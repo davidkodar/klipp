@@ -1070,7 +1070,18 @@ impl NodeGraph {
     /// belongs to the clip and stays; the grade is what travels, as a
     /// still's grade or a Look applied to another shot.
     pub fn with_grade_of(&self, other: &NodeGraph) -> NodeGraph {
-        let mut new = other.remap_ids();
+        self.with_grade_of_mapped(other).0
+    }
+
+    /// [`Self::with_grade_of`], and the id each of `other`'s nodes took,
+    /// for what is kept by node id beside a grade (its colour labels,
+    /// #1866). A node left behind (an Input Transform) is in it too.
+    pub fn with_grade_of_mapped(&self, other: &NodeGraph) -> (NodeGraph, HashMap<NodeId, NodeId>) {
+        let (new, map) = other.remap_ids_mapped();
+        (self.with_remapped_grade(new), map)
+    }
+
+    fn with_remapped_grade(&self, mut new: NodeGraph) -> NodeGraph {
         new.strip_input_transforms();
         let Some(own) = self.nodes.iter().find(|n| n.kind == NodeKind::InputTransform) else { return new };
         let Some(src) = new.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id) else { return new };
@@ -1108,6 +1119,14 @@ impl NodeGraph {
     /// it is; the pin, if any, stays this graph's.
     pub fn append(&mut self, other: &NodeGraph) -> Result<(), CannotAppend> {
         self.splice_after(other.remap_ids())
+    }
+
+    /// [`Self::append`], and the id each of `other`'s nodes took (see
+    /// [`Self::with_grade_of_mapped`]): its Source, Output and Input
+    /// Transform are in it though they don't come along.
+    pub fn append_mapped(&mut self, other: &NodeGraph) -> Result<HashMap<NodeId, NodeId>, CannotAppend> {
+        let (new, map) = other.remap_ids_mapped();
+        self.splice_after(new).map(|()| map)
     }
 
     /// [`Self::append`] with `other`'s node ids kept: a group's post-clip
@@ -1269,6 +1288,12 @@ impl NodeGraph {
     /// clip, so the two share nothing the executor's per-node caches are
     /// keyed by.
     pub fn remap_ids(&self) -> NodeGraph {
+        self.remap_ids_mapped().0
+    }
+
+    /// [`Self::remap_ids`], and the new id of each node, old to new. A
+    /// compound's own nodes keep theirs: only this graph's are renamed.
+    pub fn remap_ids_mapped(&self) -> (NodeGraph, HashMap<NodeId, NodeId>) {
         let id_map: HashMap<NodeId, NodeId> = self
             .nodes
             .iter()
@@ -1296,7 +1321,7 @@ impl NodeGraph {
         for note in &mut new_graph.sticky_notes {
             note.id = NodeStickyNoteId::new_v4();
         }
-        new_graph
+        (new_graph, id_map)
     }
 }
 
@@ -2331,5 +2356,40 @@ mod path_to_node_tests {
         assert_eq!(root.path_to_node(inner_id), Some(vec![c1_id]));
         assert_eq!(root.path_to_node(deep_id), Some(vec![c1_id, c2_id]));
         assert_eq!(root.path_to_node(NodeId::new_v4()), None);
+    }
+}
+
+#[cfg(test)]
+mod remap_map_tests {
+    use super::*;
+
+    /// #1866: a pasted or appended grade says which id each node took;
+    /// a compound's own nodes keep theirs, and the map names only nodes
+    /// of the copied graph's top.
+    #[test]
+    fn the_remap_names_each_nodes_new_id() {
+        let mut other = NodeGraph::default();
+        let corrector = other.ensure_corrector();
+        let mut inner = NodeGraph::default();
+        let inside = inner.ensure_corrector();
+        let mut compound = Node { id: NodeId::new_v4(), kind: NodeKind::Compound, label: String::new(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: vec![] };
+        compound.params.compound_subgraph = Some(inner);
+        let compound_id = compound.id;
+        other.nodes.push(compound);
+
+        let (pasted, map) = NodeGraph::default().with_grade_of_mapped(&other);
+        assert_eq!(map.len(), other.nodes.len());
+        for id in [corrector, compound_id] {
+            let new = map[&id];
+            assert_ne!(new, id);
+            assert!(pasted.nodes.iter().any(|n| n.id == new), "{id} is pasted as {new}");
+        }
+        let body = pasted.nodes.iter().find(|n| n.id == map[&compound_id]).unwrap().params.compound_subgraph.as_ref().unwrap();
+        assert!(body.nodes.iter().any(|n| n.id == inside), "inside a compound the ids are kept");
+        assert_eq!(pasted.nodes.len(), NodeGraph::default().with_grade_of(&other).nodes.len());
+
+        let mut base = NodeGraph::default();
+        let map = base.append_mapped(&other).unwrap();
+        assert!(base.nodes.iter().any(|n| n.id == map[&corrector]), "appended under its mapped id");
     }
 }

@@ -26,37 +26,55 @@ pub(super) fn record_timecode(secs: f64, fps: f64) -> String {
     format!("{:02}:{:02}:{:02}:{:02}", total / 3600, total / 60 % 60, total % 60, ff)
 }
 
-/// A still's grade onto each of `targets`, fresh node ids per clip, as
-/// graph edits to apply together: in place of each clip's grade, or with
-/// `append` after it, keeping the clip's own balance. With the edits,
-/// why any target was passed over, once per reason.
-pub(super) fn grade_from_still_edits(
+/// A grade from a still or the library put on clips: the graph edits,
+/// one per clip graded, why any target was passed over, once per reason,
+/// and the grade's node colour labels on the nodes each clip took
+/// (#1866), to go in the same step.
+pub(super) struct GradeApplied {
+    pub edits: Vec<EditCommand>,
+    pub refused: Vec<klipp_nodes::CannotAppend>,
+    pub labels: Option<EditCommand>,
+}
+
+/// `grade` onto each of `targets`, fresh node ids per clip, as graph
+/// edits to apply together: in place of each clip's grade, or with
+/// `append` after it, keeping the clip's own balance. Its labels
+/// `labels` (by path inside it) go onto each clip's copy: in place of its
+/// grade's labels, or beside them with `append`.
+pub(super) fn apply_grade(
     seq: &klipp_timeline::Sequence,
     grade: &klipp_nodes::NodeGraph,
+    labels: &[klipp_timeline::GradeNodeLabel],
     targets: &[klipp_core::ClipId],
     append: bool,
-) -> (Vec<EditCommand>, Vec<klipp_nodes::CannotAppend>) {
+) -> GradeApplied {
     let mut refused = Vec::new();
+    let mut node_labels = seq.node_labels.clone();
     let edits = seq
         .all_clips()
         .filter(|c| targets.contains(&c.id))
         .filter_map(|c| {
-            let new_graph = if append {
+            let (new_graph, map) = if append {
                 let mut g = c.grade().clone();
-                if let Err(why) = g.append(grade) {
-                    if !refused.contains(&why) {
-                        refused.push(why);
+                match g.append_mapped(grade) {
+                    Ok(map) => (g, map),
+                    Err(why) => {
+                        if !refused.contains(&why) {
+                            refused.push(why);
+                        }
+                        return None;
                     }
-                    return None;
                 }
-                g
             } else {
-                c.grade().with_grade_of(grade)
+                c.grade().with_grade_of_mapped(grade)
             };
+            let moved = klipp_timeline::remap_grade_node_labels(labels, &map, &new_graph);
+            node_labels = klipp_timeline::with_grade_node_labels(&node_labels, c.id, &moved, !append);
             Some(EditCommand::SetNodeGraph { clip_id: c.id, old_graph: c.grade().clone(), new_graph })
         })
         .collect();
-    (edits, refused)
+    let labels = (node_labels != seq.node_labels).then(|| EditCommand::SetNodeLabels { old: seq.node_labels.clone(), new: node_labels });
+    GradeApplied { edits, refused, labels }
 }
 
 /// One line for a toast out of the reasons targets were passed over.
@@ -67,20 +85,29 @@ pub(super) fn refusals_line(refused: &[klipp_nodes::CannotAppend]) -> String {
 /// The edits a Paste Attributes makes: each target clip replaced whole
 /// by itself with the chosen attributes written on. Free of the app so
 /// it can be tested without one.
-pub(super) fn paste_attributes_edits(
+/// And a pasted grade's node colour labels on the nodes each clip took
+/// (#1866), in place of its grade's own: an edit for the same step.
+pub(super) fn paste_attributes(
     seq: &klipp_timeline::Sequence,
     targets: &[klipp_core::ClipId],
     attrs: &crate::state::AttributesClipboard,
     what: crate::state::PasteChoice,
-) -> Vec<EditCommand> {
-    seq.all_clips()
+) -> (Vec<EditCommand>, Option<EditCommand>) {
+    let mut node_labels = seq.node_labels.clone();
+    let edits = seq
+        .all_clips()
         .filter(|c| targets.contains(&c.id))
         .map(|c| {
             let mut new = c.clone();
-            attrs.paste_onto(&mut new, what);
+            if let Some(map) = attrs.paste_onto_mapped(&mut new, what) {
+                let moved = klipp_timeline::remap_grade_node_labels(&attrs.grade_labels, &map, new.grade());
+                node_labels = klipp_timeline::with_grade_node_labels(&node_labels, c.id, &moved, true);
+            }
             EditCommand::ReplaceClip { description: "Paste Attributes", old: Box::new(c.clone()), new: Box::new(new) }
         })
-        .collect()
+        .collect();
+    let labels = (node_labels != seq.node_labels).then(|| EditCommand::SetNodeLabels { old: seq.node_labels.clone(), new: node_labels });
+    (edits, labels)
 }
 
 impl crate::state::AppState {
@@ -158,7 +185,7 @@ mod paste_attributes_tests {
         seq.tracks[0].clips = vec![a.clone(), b.clone(), c.clone()];
         let attrs = crate::state::AttributesClipboard::of(&source);
         let what = crate::state::PasteChoice { color_grade: true, audio: true, ..Default::default() };
-        let edits = paste_attributes_edits(&seq, &targets, &attrs, what);
+        let (edits, _) = paste_attributes(&seq, &targets, &attrs, what);
         assert_eq!(edits.len(), 2);
 
         let mut sequences = vec![seq];
@@ -298,7 +325,7 @@ mod grade_still_tests {
         let (a, b, c) = (clip(0, 2), clip(2, 4), clip(4, 6));
         seq.tracks[0].clips = vec![a.clone(), b.clone(), c.clone()];
         let grade = klipp_nodes::NodeGraph::default();
-        let (edits, _) = grade_from_still_edits(&seq, &grade, &[a.id, c.id], false);
+        let GradeApplied { edits, .. } = apply_grade(&seq, &grade, &[], &[a.id, c.id], false);
         assert_eq!(edits.len(), 2);
         let ids = |e: &EditCommand| match e {
             EditCommand::SetNodeGraph { new_graph, .. } => new_graph.nodes.iter().map(|n| n.id).collect::<Vec<_>>(),
@@ -317,10 +344,91 @@ mod grade_still_tests {
         seq.tracks[0].clips = vec![a.clone()];
         let mut look = klipp_nodes::NodeGraph::default();
         look.ensure_lut3d();
-        let (edits, _) = grade_from_still_edits(&seq, &look, &[a.id], true);
+        let GradeApplied { edits, .. } = apply_grade(&seq, &look, &[], &[a.id], true);
         let EditCommand::SetNodeGraph { new_graph, .. } = &edits[0] else { panic!("a graph edit") };
         assert!(own.iter().all(|id| new_graph.nodes.iter().any(|n| n.id == *id)), "the clip's own nodes stay");
         assert!(new_graph.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Lut3D), "the look is added");
+    }
+
+    /// The edits applied, then undone, as the app's one step does.
+    fn apply(seq: Sequence, edits: &[EditCommand]) -> (Sequence, Sequence) {
+        let mut sequences = vec![seq];
+        let mut pool = klipp_media::MediaPool::new();
+        let mut fps = sequences[0].fps;
+        let mut view = klipp_document::apply::DocumentView { sequences: &mut sequences, active: 0, media_pool: &mut pool, fps: &mut fps };
+        let step = EditCommand::Batch(edits.to_vec());
+        view.apply_forward(&step);
+        let after = view.sequences[0].clone();
+        view.apply_inverse(&step);
+        (after, view.sequences[0].clone())
+    }
+
+    /// The node of `seq`'s clip `clip` labelled `colour`, if one is, and
+    /// whether it is in its grade.
+    fn labelled(seq: &Sequence, clip: klipp_core::ClipId, colour: u8) -> Option<klipp_nodes::NodeId> {
+        let grade = klipp_timeline::grade_node_labels(&seq.node_labels, clip);
+        let node = grade.iter().find(|g| g.colour == colour)?.nodes[0];
+        seq.all_clips().find(|c| c.id == clip)?.grade().nodes.iter().any(|n| n.id == node).then_some(node)
+    }
+
+    /// #1866: a grade from the library or a still brings its node colour
+    /// labels onto the nodes each clip took, in the same step: in place of
+    /// the clip's own grade's labels, or beside them when added; undone,
+    /// the clip has its own back.
+    #[test]
+    fn a_grades_node_labels_come_with_it_from_a_still_or_the_library() {
+        use klipp_graph_format::path::{NodePath, Root};
+        let mut seq = Sequence::new_default();
+        let mut a = clip(0, 2);
+        let own = a.edit_grade(|g| g.ensure_corrector());
+        seq.tracks[0].clips = vec![a.clone()];
+        seq.node_labels = vec![klipp_timeline::NodeLabel { node: NodePath::new(Root::Clip { clip: a.id.0 }, [klipp_timeline::grade_group_id(a.id), own]), colour: 1 }];
+        let mut look = klipp_nodes::NodeGraph::default();
+        let lut = look.ensure_lut3d();
+        let labels = vec![klipp_timeline::GradeNodeLabel { nodes: vec![lut], colour: 5 }];
+
+        let GradeApplied { edits, labels: label_edit, .. } = apply_grade(&seq, &look, &labels, &[a.id], false);
+        assert!(label_edit.is_some(), "a labels edit for the same step");
+        let (after, undone) = apply(seq.clone(), &edits.into_iter().chain(label_edit).collect::<Vec<_>>());
+        let new = labelled(&after, a.id, 5).expect("the look's node labelled on the clip");
+        assert_ne!(new, lut, "under the id it took there");
+        assert!(labelled(&after, a.id, 1).is_none(), "the replaced grade's label is gone");
+        assert_eq!(undone.node_labels, seq.node_labels, "undone, its own again");
+
+        let GradeApplied { edits, labels: label_edit, .. } = apply_grade(&seq, &look, &labels, &[a.id], true);
+        let (after, _) = apply(seq.clone(), &edits.into_iter().chain(label_edit).collect::<Vec<_>>());
+        assert!(labelled(&after, a.id, 5).is_some() && labelled(&after, a.id, 1) == Some(own), "added: both");
+
+        // A library entry or a still from before labels: applied cleanly,
+        // added with no labels edit at all, put in place with only the
+        // replaced grade's label taken off.
+        let GradeApplied { edits, refused, labels: label_edit } = apply_grade(&seq, &look, &[], &[a.id], true);
+        assert!(edits.len() == 1 && refused.is_empty() && label_edit.is_none());
+        let GradeApplied { edits, labels: label_edit, .. } = apply_grade(&seq, &look, &[], &[a.id], false);
+        let (after, _) = apply(seq.clone(), &edits.into_iter().chain(label_edit).collect::<Vec<_>>());
+        assert!(after.node_labels.is_empty());
+    }
+
+    /// #1866: Paste Attributes brings the copied grade's node labels, by
+    /// the ids its nodes took on each target, in the paste's step.
+    #[test]
+    fn pasted_attributes_bring_the_grades_node_labels() {
+        use klipp_graph_format::path::{NodePath, Root};
+        let mut seq = Sequence::new_default();
+        let mut source = clip(0, 2);
+        let node = source.edit_grade(|g| g.ensure_corrector());
+        let target = clip(2, 4);
+        seq.tracks[0].clips = vec![source.clone(), target.clone()];
+        seq.node_labels = vec![klipp_timeline::NodeLabel { node: NodePath::new(Root::Clip { clip: source.id.0 }, [klipp_timeline::grade_group_id(source.id), node]), colour: 4 }];
+        let attrs = crate::state::AttributesClipboard::of_in(&seq, &source);
+        assert_eq!(attrs.grade_labels.len(), 1);
+        let what = crate::state::PasteChoice { color_grade: true, ..Default::default() };
+        let (edits, label_edit) = paste_attributes(&seq, &[target.id], &attrs, what);
+        let (after, _) = apply(seq.clone(), &edits.into_iter().chain(label_edit).collect::<Vec<_>>());
+        let new = labelled(&after, target.id, 4).expect("the pasted corrector is labelled");
+        assert_ne!(new, node);
+        let (_, none) = paste_attributes(&seq, &[target.id], &attrs, crate::state::PasteChoice { audio: true, ..Default::default() });
+        assert!(none.is_none(), "no grade pasted, no labels");
     }
 
     /// A target that cannot take the grade is passed over with a reason
@@ -335,7 +443,7 @@ mod grade_still_tests {
         let mut look = klipp_nodes::NodeGraph::default();
         look.ensure_lut3d();
         look.working_space_override = Some(Ws::AcesCG);
-        let (edits, refused) = grade_from_still_edits(&seq, &look, &[a.id], true);
+        let GradeApplied { edits, refused, .. } = apply_grade(&seq, &look, &[], &[a.id], true);
         assert!(edits.is_empty());
         assert_eq!(refused, vec![klipp_nodes::CannotAppend::WorkingSpace { ours: Ws::Rec709Linear, theirs: Ws::AcesCG }]);
         assert!(refusals_line(&refused).contains("working space"));

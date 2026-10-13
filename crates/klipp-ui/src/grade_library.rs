@@ -38,6 +38,8 @@ pub struct LibraryGrade {
     pub graph: NodeGraph,
     /// Its labels (#614).
     pub labels: GradeLabels,
+    /// Its nodes' colour labels, by path inside it (#1866).
+    pub node_labels: Vec<klipp_timeline::GradeNodeLabel>,
     /// Its thumbnail, sRGB RGBA8, when it has one.
     pub thumbnail: Option<klipp_render::still::Still>,
     pub texture: Option<egui::TextureHandle>,
@@ -51,9 +53,9 @@ pub fn dir() -> Option<PathBuf> {
 /// The library's grades in `dir`, by name, each with its thumbnail when
 /// one was saved.
 pub fn load_in(dir: &Path) -> Vec<LibraryGrade> {
-    crate::presets::load_presets_in(dir)
+    crate::presets::load_labelled_presets_in(dir)
         .into_iter()
-        .map(|(name, graph)| {
+        .map(|(name, graph, node_labels)| {
             let thumbnail = image::open(dir.join(format!("{}.png", crate::presets::preset_stem(&name)))).ok().map(|img| {
                 let rgba = img.to_rgba8();
                 klipp_render::still::Still { width: rgba.width(), height: rgba.height(), rgba: rgba.into_raw() }
@@ -62,7 +64,7 @@ pub fn load_in(dir: &Path) -> Vec<LibraryGrade> {
                 .ok()
                 .and_then(|t| serde_json::from_str(&t).ok())
                 .unwrap_or_default();
-            LibraryGrade { name, graph, labels, thumbnail, texture: None }
+            LibraryGrade { name, graph, labels, node_labels, thumbnail, texture: None }
         })
         .collect()
 }
@@ -72,11 +74,17 @@ pub fn load_in(dir: &Path) -> Vec<LibraryGrade> {
 /// Klipp is never). An empty name, or a grade that wouldn't save whole,
 /// is refused.
 pub fn save_in(dir: &Path, name: &str, graph: &NodeGraph, thumbnail: Option<&klipp_render::still::Still>) -> Result<(), String> {
+    save_labelled_in(dir, name, graph, &[], thumbnail)
+}
+
+/// [`save_in`], with the grade's node colour labels kept in its file
+/// (#1866).
+pub fn save_labelled_in(dir: &Path, name: &str, graph: &NodeGraph, node_labels: &[klipp_timeline::GradeNodeLabel], thumbnail: Option<&klipp_render::still::Still>) -> Result<(), String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("Give the grade a name".into());
     }
-    crate::presets::save_preset_in(dir, name, graph)?;
+    crate::presets::save_labelled_preset_in(dir, name, graph, node_labels)?;
     let png = dir.join(format!("{}.png", crate::presets::preset_stem(name)));
     match thumbnail {
         Some(t) => image::save_buffer(&png, &t.rgba, t.width, t.height, image::ExtendedColorType::Rgba8).map_err(|e| format!("Could not save its thumbnail: {e}"))?,
@@ -194,6 +202,30 @@ mod tests {
         set_labels_in(&dir, "Night blue", &labels).unwrap();
         delete_in(&dir, "Night blue").unwrap();
         assert!(std::fs::read_dir(&dir).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().contains("labels")), "its labels go with it");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1866: a grade's node colour labels are kept in its own file and
+    /// come back with it; saved again without them, it has none; a grade
+    /// saved before there were any, or by the old preset path, has none
+    /// and loads as before; deleted, nothing of it is left.
+    #[test]
+    fn a_grades_node_labels_come_back_with_it() {
+        let dir = temp_dir("node-labels");
+        let mut grade = NodeGraph::default();
+        let node = grade.ensure_corrector();
+        let labels = vec![klipp_timeline::GradeNodeLabel { nodes: vec![node], colour: 3 }];
+        save_labelled_in(&dir, "Warm dusk", &grade, &labels, None).unwrap();
+        save_in(&dir, "Plain", &grade, None).unwrap();
+        let lib = load_in(&dir);
+        assert_eq!(lib.iter().map(|g| (g.name.as_str(), g.node_labels.clone())).collect::<Vec<_>>(), vec![("Plain", Vec::new()), ("Warm dusk", labels.clone())]);
+        assert_eq!(lib[1].graph, grade, "the graph reads as before");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2, "one file each");
+        save_in(&dir, "Warm dusk", &grade, None).unwrap();
+        assert!(load_in(&dir)[1].node_labels.is_empty(), "saved again without, none");
+        delete_in(&dir, "Warm dusk").unwrap();
+        delete_in(&dir, "Plain").unwrap();
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "nothing of it is left");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1031,6 +1031,7 @@ impl KlippApp {
                         height: d.height,
                         source: d.source,
                         grade: d.grade,
+                        grade_labels: d.grade_labels,
                         texture: None,
                     })
                     .collect();
