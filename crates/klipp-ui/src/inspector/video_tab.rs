@@ -1144,13 +1144,7 @@ fn show_clip_video(
                         });
                     });
 
-                    ui.add_space(4.0);
-
-                    // Separator
-                    let sep_w = ui.available_width();
-                    let (sep_rect, _) = ui.allocate_exact_size(egui::vec2(sep_w, 1.0), egui::Sense::hover());
-                    ui.painter().hline(sep_rect.x_range(), sep_rect.center().y, egui::Stroke::new(0.5_f32, theme.border));
-                    ui.add_space(4.0);
+                    ui.add_space(8.0);
 
                     // Preset ramp buttons
                     ui.horizontal_wrapped(|ui| {
@@ -1567,17 +1561,11 @@ fn show_compositing_section(
                 ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
 
                 // ── Blend Mode ──
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Blend Mode")
-                            .size(11.0)
-                            .color(theme.text_dim),
-                    );
-                    ui.add_space(8.0);
+                row(ui, theme, "Blend Mode", |ui| {
                     let mut current = clip.blend_mode;
                     let combo = egui::ComboBox::from_id_salt(("video:blend_mode", clip_id))
                         .selected_text(current.display_name())
-                        .width(160.0);
+                        .width((ui.available_width() - 24.0).clamp(80.0, 160.0));
                     combo.show_ui(ui, |ui| {
                         for &mode in &klipp_core::BlendMode::ALL {
                             if ui.selectable_value(&mut current, mode, mode.display_name()).clicked()
@@ -1588,9 +1576,7 @@ fn show_compositing_section(
                     });
                 });
 
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(4.0);
+                ui.add_space(6.0);
 
                 // ── Stencil mode (Phase 4B) ─────────────────────────
                 // Toggle on the source side: when set, this clip's
@@ -1626,8 +1612,8 @@ fn show_compositing_section(
                         ui.add_space(16.0);
                         ui.label(
                             egui::RichText::new("Channel")
-                                .size(11.0)
-                                .color(theme.text_dim),
+                                .size(super::rows::TEXT)
+                                .color(theme.text_secondary),
                         );
                         ui.add_space(8.0);
                         let mut current_ch = stencil.channel;
@@ -1664,9 +1650,7 @@ fn show_compositing_section(
                     });
                 }
 
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(4.0);
+                ui.add_space(6.0);
 
                 // ── Matte source picker ──
                 // Build candidate list: every clip in the active sequence
@@ -1697,13 +1681,7 @@ fn show_compositing_section(
                     })
                     .unwrap_or_default();
 
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Matte Source")
-                            .size(11.0)
-                            .color(theme.text_dim),
-                    );
-                    ui.add_space(8.0);
+                row(ui, theme, "Matte Source", |ui| {
                     let current_label = match clip.matte_source.as_ref() {
                         None => "(none)".to_string(),
                         Some(b) => candidates.iter()
@@ -1713,7 +1691,7 @@ fn show_compositing_section(
                     };
                     egui::ComboBox::from_id_salt(("video:matte_source", clip_id))
                         .selected_text(current_label)
-                        .width(220.0)
+                        .width((ui.available_width() - 24.0).clamp(80.0, 220.0))
                         .show_ui(ui, |ui| {
                             // "(none)" entry — clears any existing binding.
                             let none_selected = clip.matte_source.is_none();
@@ -1769,13 +1747,7 @@ fn show_compositing_section(
                     ui.add_space(4.0);
 
                     // ── Channel ──
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Channel")
-                                .size(11.0)
-                                .color(theme.text_dim),
-                        );
-                        ui.add_space(8.0);
+                    row(ui, theme, "Channel", |ui| {
                         let mut current_ch = binding.channel;
                         for (ch, label) in [
                             (klipp_nodes::params::MatteChannel::Alpha, "Alpha"),
@@ -1783,7 +1755,7 @@ fn show_compositing_section(
                             (klipp_nodes::params::MatteChannel::Red, "R"),
                             (klipp_nodes::params::MatteChannel::Green, "G"),
                             (klipp_nodes::params::MatteChannel::Blue, "B"),
-                        ] {
+                        ].into_iter().rev() {
                             if ui.selectable_value(&mut current_ch, ch, label).clicked() && current_ch != binding.channel {
                                 cmds.push(AppCommand::SetClipMatte {
                                     clip_id,
@@ -1823,11 +1795,7 @@ fn show_compositing_section(
                     // transform UX users already know.
                     let kf_tolerance_secs = keyframe_tolerance;
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Feather")
-                                .size(11.0)
-                                .color(theme.text_dim),
-                        );
+                        ui.label(egui::RichText::new("Feather").size(super::rows::TEXT).color(theme.text_secondary));
                         ui.add_space(8.0);
                         let mut feather = crate::inspector::keyframe_selection::editable_value(
                             &clip.matte_feather_keyframes, clip_time_secs, binding.feather_px,
@@ -1890,11 +1858,7 @@ fn show_compositing_section(
                     });
 
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Choke")
-                                .size(11.0)
-                                .color(theme.text_dim),
-                        );
+                        ui.label(egui::RichText::new("Choke").size(super::rows::TEXT).color(theme.text_secondary));
                         ui.add_space(8.0);
                         let mut choke = crate::inspector::keyframe_selection::editable_value(
                             &clip.matte_choke_keyframes, clip_time_secs, binding.choke_px,
@@ -1975,8 +1939,8 @@ fn show_compositing_section(
 
                     ui.label(
                         egui::RichText::new("Mask preview")
-                            .size(11.0)
-                            .color(theme.text_dim),
+                            .size(super::rows::TEXT)
+                            .color(theme.text_secondary),
                     );
                     let preview_w = 192.0_f32;
                     let preview_h = 108.0_f32;
@@ -2093,13 +2057,7 @@ fn show_transform_link_section(
                     .unwrap_or_default();
 
                 // ── Target picker ──
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Target")
-                            .size(11.0)
-                            .color(theme.text_dim),
-                    );
-                    ui.add_space(8.0);
+                row(ui, theme, "Target", |ui| {
                     // The dropdown's selected_text needs to read the
                     // right thing for both target shapes. For
                     // `Clip(...)` we look up the clip-candidates
@@ -2127,7 +2085,7 @@ fn show_transform_link_section(
                     };
                     egui::ComboBox::from_id_salt(("video:transform_link_target", clip_id))
                         .selected_text(current_label)
-                        .width(260.0)
+                        .width((ui.available_width() - 24.0).clamp(80.0, 260.0))
                         .show_ui(ui, |ui| {
                             let none_selected = clip.transform_link.is_none();
                             if ui.selectable_label(none_selected, "(none)").clicked()
@@ -2251,20 +2209,14 @@ fn show_transform_link_section(
                     ui.add_space(4.0);
 
                     // ── Mode (Absolute / Additive) ──
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("Mode")
-                                .size(11.0)
-                                .color(theme.text_dim),
-                        );
-                        ui.add_space(8.0);
+                    row(ui, theme, "Mode", |ui| {
                         let mut mode = link.mode;
                         for (m, label, hover) in [
                             (klipp_timeline::LinkMode::Absolute, "Absolute",
                                 "Replace this clip's transform with the target's (per-axis flags decide which axes inherit)."),
                             (klipp_timeline::LinkMode::Additive, "Additive",
                                 "Compose: positions add, scales multiply, rotations add. Anchor still inherits absolutely."),
-                        ] {
+                        ].into_iter().rev() {
                             let resp = ui.selectable_value(&mut mode, m, label);
                             if resp.on_hover_text(hover).clicked() && mode != link.mode {
                                 cmds.push(AppCommand::SetClipTransformLink {
@@ -2424,9 +2376,7 @@ fn show_hyperzoom_section(
                     })
                     .unwrap_or_default();
 
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Target").size(11.0).color(theme.text_dim));
-                    ui.add_space(8.0);
+                row(ui, theme, "Target", |ui| {
                     let current_label = match target_choice {
                         HyperzoomTargetChoice::Auto => "(next clip on this track)".to_string(),
                         HyperzoomTargetChoice::Explicit(id) => candidates
@@ -2437,7 +2387,7 @@ fn show_hyperzoom_section(
                     };
                     egui::ComboBox::from_id_salt(("video:hyperzoom_target", clip_id))
                         .selected_text(current_label)
-                        .width(220.0)
+                        .width((ui.available_width() - 24.0).clamp(80.0, 220.0))
                         .show_ui(ui, |ui| {
                             let auto = matches!(target_choice, HyperzoomTargetChoice::Auto);
                             if ui.selectable_label(auto, "(next clip on this track)").clicked() && !auto {
@@ -2452,16 +2402,12 @@ fn show_hyperzoom_section(
                         });
                 });
 
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(4.0);
+                ui.add_space(6.0);
 
                 // ── Focal point (X / Y) ──
                 // Spinbox fallback for the visual letter picker. 0,0
                 // = top-left; 1,1 = bottom-right; 0.5,0.5 = centre.
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Focal X").size(11.0).color(theme.text_dim));
-                    ui.add_space(8.0);
+                row(ui, theme, "Focal X", |ui| {
                     ui.add(
                         egui::DragValue::new(&mut focal_x)
                             .range(0.0_f32..=1.0)
@@ -2469,9 +2415,7 @@ fn show_hyperzoom_section(
                             .fixed_decimals(3),
                     );
                 });
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Focal Y").size(11.0).color(theme.text_dim));
-                    ui.add_space(8.0);
+                row(ui, theme, "Focal Y", |ui| {
                     ui.add(
                         egui::DragValue::new(&mut focal_y)
                             .range(0.0_f32..=1.0)
@@ -2505,12 +2449,10 @@ fn show_hyperzoom_section(
                             .map(|(_, _, l)| l))
                         .unwrap_or_else(|| "(missing tracker)".to_string()),
                 };
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Track this point").size(11.0).color(theme.text_dim));
-                    ui.add_space(8.0);
+                row(ui, theme, "Track this point", |ui| {
                     egui::ComboBox::from_id_salt(("video:hyperzoom_tracker_target", clip_id))
                         .selected_text(tracker_label)
-                        .width(260.0)
+                        .width((ui.available_width() - 24.0).clamp(80.0, 260.0))
                         .show_ui(ui, |ui| {
                             // "(off)" entry — clears the tracker
                             // binding so Apply falls back to focal
@@ -2765,14 +2707,10 @@ fn show_hyperzoom_section(
                     }
                 }
 
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(4.0);
+                ui.add_space(6.0);
 
                 // ── Duration + peak scale ──
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Duration").size(11.0).color(theme.text_dim));
-                    ui.add_space(8.0);
+                row(ui, theme, "Duration", |ui| {
                     ui.add(
                         egui::DragValue::new(&mut duration_secs)
                             .range(0.05_f64..=10.0)
@@ -2781,9 +2719,7 @@ fn show_hyperzoom_section(
                             .fixed_decimals(2),
                     );
                 });
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Peak scale").size(11.0).color(theme.text_dim));
-                    ui.add_space(8.0);
+                row(ui, theme, "Peak scale", |ui| {
                     ui.add(
                         egui::DragValue::new(&mut max_scale)
                             .range(1.5_f32..=200.0)
@@ -2793,25 +2729,21 @@ fn show_hyperzoom_section(
                     );
                 });
 
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(4.0);
+                ui.add_space(6.0);
 
                 // ── Easing ──
                 // Linear is the back-compat default. Bezier emits a
                 // symmetric S-curve via `±duration/3` horizontal
                 // tangents — visually a slow-start/fast-middle/slow-
                 // end ramp on each side of the cut.
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Easing").size(11.0).color(theme.text_dim));
-                    ui.add_space(8.0);
+                row(ui, theme, "Easing", |ui| {
                     let label = match easing {
                         crate::hyperzoom::HyperzoomEasing::Linear => "Linear",
                         crate::hyperzoom::HyperzoomEasing::Bezier => "Bezier (ease-in/out)",
                     };
                     egui::ComboBox::from_id_salt(("video:hyperzoom_easing", clip_id))
                         .selected_text(label)
-                        .width(220.0)
+                        .width((ui.available_width() - 24.0).clamp(80.0, 220.0))
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
                                 &mut easing,
@@ -2832,9 +2764,7 @@ fn show_hyperzoom_section(
                 // `hold_secs` both sit at peak — perceived freeze is
                 // 2× this value. 0 (default) reproduces the original
                 // two-keyframe ramp.
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Hold at peak").size(11.0).color(theme.text_dim));
-                    ui.add_space(8.0);
+                row(ui, theme, "Hold at peak", |ui| {
                     ui.add(
                         egui::DragValue::new(&mut hold_secs)
                             .range(0.0_f64..=1.0)
@@ -2847,9 +2777,7 @@ fn show_hyperzoom_section(
                     );
                 });
 
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(4.0);
+                ui.add_space(6.0);
 
                 // ── Radial blur (opt-in convenience) ──
                 // Off by default. When toggled on, Apply Hyperzoom
@@ -2868,7 +2796,7 @@ fn show_hyperzoom_section(
                 if add_radial_blur {
                     ui.horizontal(|ui| {
                         ui.add_space(16.0);
-                        ui.label(egui::RichText::new("Amount").size(11.0).color(theme.text_dim));
+                        ui.label(egui::RichText::new("Amount").size(super::rows::TEXT).color(theme.text_secondary));
                         ui.add_space(8.0);
                         ui.add(
                             egui::DragValue::new(&mut radial_blur_amount)
@@ -2904,7 +2832,7 @@ fn show_hyperzoom_section(
                 if add_chromatic_aberration {
                     ui.horizontal(|ui| {
                         ui.add_space(16.0);
-                        ui.label(egui::RichText::new("Amount").size(11.0).color(theme.text_dim));
+                        ui.label(egui::RichText::new("Amount").size(super::rows::TEXT).color(theme.text_secondary));
                         ui.add_space(8.0);
                         ui.add(
                             egui::DragValue::new(&mut chromatic_aberration_amount)
@@ -2938,7 +2866,7 @@ fn show_hyperzoom_section(
                 if add_light_leak {
                     ui.horizontal(|ui| {
                         ui.add_space(16.0);
-                        ui.label(egui::RichText::new("Intensity").size(11.0).color(theme.text_dim));
+                        ui.label(egui::RichText::new("Intensity").size(super::rows::TEXT).color(theme.text_secondary));
                         ui.add_space(8.0);
                         ui.add(
                             egui::DragValue::new(&mut light_leak_intensity)
@@ -2972,7 +2900,7 @@ fn show_hyperzoom_section(
                     let mut choice = crate::hyperzoom::WhooshChoice::from_u8(whoosh_variant_tag);
                     ui.horizontal(|ui| {
                         ui.add_space(16.0);
-                        ui.label(egui::RichText::new("Variant").size(11.0).color(theme.text_dim));
+                        ui.label(egui::RichText::new("Variant").size(super::rows::TEXT).color(theme.text_secondary));
                         ui.add_space(8.0);
                         let prev_label = choice.label();
                         egui::ComboBox::from_id_salt(("hyperzoom_whoosh_variant", clip_id))
@@ -2988,7 +2916,7 @@ fn show_hyperzoom_section(
                         let custom = crate::hyperzoom::read_whoosh_custom(ui.ctx(), clip_id);
                         ui.horizontal(|ui| {
                             ui.add_space(16.0);
-                            ui.label(egui::RichText::new("Sample").size(11.0).color(theme.text_dim));
+                            ui.label(egui::RichText::new("Sample").size(super::rows::TEXT).color(theme.text_secondary));
                             ui.add_space(8.0);
                             let label = custom
                                 .path
@@ -3077,8 +3005,8 @@ fn show_hyperzoom_section(
                             if presets.is_empty() {
                                 ui.label(
                                     egui::RichText::new("No presets yet — Save as preset\u{2026} to start")
-                                        .size(11.0)
-                                        .color(theme.text_dim),
+                                        .size(super::rows::TEXT)
+                                        .color(theme.text_secondary),
                                 );
                             } else {
                                 for preset in presets {
@@ -4079,6 +4007,9 @@ mod row_style_tests {
         assert_eq!(rules_between(y_of("SPEED"), y_of("TRACKING")), 1, "only SPEED RAMP's header rule from SPEED to TRACKING");
         assert_eq!(rules_between(y_of("COLOUR"), y_of("COMPOSITING")), 0, "rules inside COLOUR");
         assert_eq!(rules_between(y_of("COLOUR FADE"), y_of("TRANSFORM LINK")), 0, "rules inside COLOUR FADE");
+        // From TRACKING on, the only rules are the five headers after it
+        // (COLOUR, COMPOSITING, COLOUR FADE, TRANSFORM LINK, HYPERZOOM).
+        assert_eq!(rules_between(y_of("TRACKING"), f32::MAX), 5, "rules between the rows of the later sections");
     }
 
     /// The switches and the keyframe mark answer real clicks with the
@@ -4109,5 +4040,16 @@ mod row_style_tests {
 
         let cmds = click(right_control(&texts, "Position X", 8.0), &mut draw);
         assert!(cmds.iter().any(|c| matches!(c, AppCommand::AddVideoKeyframe { param: VideoParam::PositionX, .. })), "{cmds:?}");
+
+        // The blend mode's menu, opened from its row's right-hand side,
+        // picks a mode.
+        let normal = texts.iter().find(|(t, p)| t == "Normal" && (p.y - right_control(&texts, "Blend Mode", 0.0).y).abs() < 4.0).expect("the blend mode's value").1;
+        assert!(normal.x > 180.0, "the value sits on the right: {normal:?}");
+        let cmds = click(normal, &mut draw);
+        assert!(cmds.is_empty(), "{cmds:?}");
+        let (open, _) = frame(&ctx, Vec::new(), &mut draw);
+        let multiply = open.iter().find(|(t, _)| t == "Multiply").expect("the blend menu").1;
+        let cmds = click(multiply, &mut draw);
+        assert!(matches!(cmds.as_slice(), [AppCommand::SetClipBlendMode { mode: klipp_core::BlendMode::Multiply, .. }]), "{cmds:?}");
     }
 }
