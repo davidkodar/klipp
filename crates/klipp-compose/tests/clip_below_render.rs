@@ -23,11 +23,18 @@ const H: u32 = 54;
 struct Sources {
     black: MediaId,
     top: MediaId,
+    /// An item whose frames are HDR (PQ codes): a scene-referred clip.
+    hdr: Option<MediaId>,
 }
 
 impl FrameSource for Sources {
     fn frame(&mut self, c: &Clip, _secs: f64, w: u32, h: u32) -> Option<SourceFrame> {
         let id = c.media_id()?;
+        if Some(id) == self.hdr {
+            let codes = klipp_color::hdr::SceneCodes::Packed10((0..w * h).map(|i| klipp_color::hdr::pack_rgb10(300 + i % 200, 400, 500)).collect());
+            let pixels = SourcePixels::SceneReferred { codes: Arc::new(codes), transfer: klipp_color::hdr::HdrTransfer::Pq, source_to_working: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] };
+            return Some(SourceFrame { pixels, width: w, height: h, pts: None });
+        }
         let mut v = Vec::with_capacity((w * h * 4) as usize);
         for y in 0..h {
             for x in 0..w {
@@ -122,7 +129,7 @@ fn worst_levels(a: &[f32], b: &[f32]) -> u8 {
 }
 
 fn sources() -> Sources {
-    Sources { black: MediaId::new(), top: MediaId::new() }
+    Sources { black: MediaId::new(), top: MediaId::new(), hdr: None }
 }
 
 fn gpu_routes() -> Vec<bool> {
@@ -296,5 +303,53 @@ fn a_precomposition_and_its_scene_each_see_their_own_below() {
         let worst = worst_levels(&out, &want);
         eprintln!("gpu {gpu}: nested, the precomposition by Difference against the formula: worst {worst} levels");
         assert!(worst <= 1, "gpu {gpu}: {worst} levels from the formula");
+    }
+}
+
+/// What is below a clip is the composite, display-referred (#1867): an SDR
+/// clip's picture is display-referred too, so it mixes; an HDR clip's
+/// picture after its display step (where the Picture view puts a Merge)
+/// mixes; before its display step a clip's picture is scene-referred, and
+/// wiring what is below into a Merge there is refused as the edit is
+/// made, saying why, the picture left as it was.
+#[test]
+fn what_is_below_is_display_referred() {
+    let mut src = sources();
+    let (ground, hdr) = (MediaId::new(), MediaId::new());
+    src.hdr = Some(hdr);
+    let bottom = || media(ground, 0.0, 2.0);
+    // A Merge of what is below, after the display step or, `before`, just
+    // after the clip's grade.
+    let merged_at = |c: Clip, before: bool| -> Result<Clip, String> {
+        let mut c = c;
+        let picture = c.picture_v2().unwrap().picture.clone();
+        let clip_id = c.id.0;
+        let at = |id| NodePath::new(Root::Clip { clip: clip_id }, [id]);
+        let anchor = picture.graph.nodes.iter().find(|n| n.type_id.as_str() == if before { lt::GROUP } else { lt::SCENE_TO_DISPLAY }).unwrap().id;
+        let source = picture.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::SOURCE).unwrap().id;
+        let (m, b) = (effect_node(&E::Merge { blend_mode: BlendMode::Screen, opacity: 0.5 }), effect_node(&E::ClipBelow {}));
+        c.apply_picture_ops(&[
+            GraphOp::AddNode { after: at(anchor), node: Box::new(m.clone()) },
+            GraphOp::AddNodeBeside { at: at(source), node: Box::new(b.clone()) },
+            GraphOp::Connect { from: at(source), from_port: "out".into(), to: at(b.id), to_port: "in".into() },
+            GraphOp::Connect { from: at(b.id), from_port: "out".into(), to: at(m.id), to_port: "fg".into() },
+        ])?;
+        Ok(c)
+    };
+    // Before the display step: refused as it is made, the picture as it was.
+    let hdr_clip = media(hdr, 0.0, 2.0);
+    let why = merged_at(hdr_clip.clone(), true).unwrap_err();
+    assert!(why.contains("mix a scene-referred picture with a display-referred one"), "{why}");
+    for gpu in gpu_routes() {
+        // An SDR clip: it mixes.
+        let sdr = merged_at(media(src.top, 0.0, 2.0), false).unwrap();
+        let (_, found) = render(gpu, &sequence(vec![vec![bottom()], vec![sdr]]), &mut src, 1.0);
+        assert!(found.declines.is_empty(), "gpu {gpu}: SDR: {:?}", found.declines);
+        // An HDR clip after its display step: it mixes, and draws.
+        let after = merged_at(hdr_clip.clone(), false).unwrap();
+        let (plain, _) = render(gpu, &sequence(vec![vec![bottom()], vec![hdr_clip.clone()]]), &mut src, 1.0);
+        let (out, found) = render(gpu, &sequence(vec![vec![bottom()], vec![after]]), &mut src, 1.0);
+        assert!(found.declines.is_empty(), "gpu {gpu}: HDR after: {:?}", found.declines);
+        assert!(worst_levels(&out, &plain) > 5, "gpu {gpu}: HDR after: the merge draws");
     }
 }
