@@ -1411,16 +1411,17 @@ pub enum Op {
         /// crossfade on its linked sound with it; undo puts both back.
         #[serde(default)]
         remove: bool,
-        /// For `slide_strips`, `slide_panels` and `part_halves` (#985),
+        /// For `slide_strips`, `slide_panels`, `part_halves` and `shatter` (#985),
         /// how their pieces move: `count` (strips, or panel rows),
         /// `angle` in degrees, `stagger` 0 to 0.9, `order` (in_sequence,
         /// reversed, centre_out, edges_in, random, all_at_once), `ease`
         /// (smooth, linear, accelerate, overshoot), `assemble` (the next
         /// shot's pieces arrive), `alternate`, `gap` in pixels, `shear`
-        /// (halves slide along the line). What is left out keeps its
-        /// default.
+        /// (halves slide along the line), `motion` (slide, tilt, turn,
+        /// fall, shrink), `shadow`, `seed` (0-255). What is left out keeps
+        /// its kind's default.
         #[serde(default)]
-        pieces: Option<klipp_core::piece_transition::PieceParams>,
+        pieces: Option<serde_json::Value>,
     },
     /// The look and place of titles: one clip, or every title on a track
     /// (the captions, all at once), between `from` and `to` when given —
@@ -7280,7 +7281,7 @@ fn transition(
     clip: &Clip,
     kind: &str,
     secs: f64,
-    pieces: Option<&klipp_core::piece_transition::PieceParams>,
+    pieces: Option<&serde_json::Value>,
 ) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     if seq.tracks[ti].locked {
         return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
@@ -7298,7 +7299,7 @@ fn transition(
         return Err(refuse(i, format!("a transition of {secs} s"), "give secs between 0.06 and 4"));
     }
     if pieces.is_some() && !klipp_core::piece_transition::is_piece_kind(spec.kind) {
-        return Err(refuse(i, format!("{} has no pieces", spec.display_name), "pieces go with slide_strips, slide_panels or part_halves"));
+        return Err(refuse(i, format!("{} has no pieces", spec.display_name), "pieces go with slide_strips, slide_panels, part_halves or shatter"));
     }
     let dur = snap(secs, fps).max(one_frame(fps));
     let alignment = klipp_core::TransitionAlignment::default();
@@ -7310,7 +7311,19 @@ fn transition(
         duration: dur,
         clip_a_id: clip.id,
         clip_b_id: next.id,
-        user_params: pieces.map(|p| p.to_user(spec.kind)).unwrap_or_else(|| klipp_core::TransitionUserParams::default_for_kind(spec.kind_id)),
+        user_params: match pieces {
+            // Over the kind's own defaults, so what is left out is as the
+            // kind has it (a shatter falls; strips slide).
+            Some(given) => {
+                let mut merged = serde_json::to_value(klipp_core::piece_transition::PieceParams::read(spec.kind, &spec.default_params)).unwrap_or_default();
+                if let (Some(m), Some(g)) = (merged.as_object_mut(), given.as_object()) {
+                    m.extend(g.clone());
+                }
+                let p: klipp_core::piece_transition::PieceParams = serde_json::from_value(merged).map_err(|e| refuse(i, format!("the pieces {given}: {e}"), "give count, angle, stagger, order, ease, motion, assemble, alternate, gap, shear, shadow or seed"))?;
+                p.to_user(spec.kind)
+            }
+            None => klipp_core::TransitionUserParams::default_for_kind(spec.kind_id),
+        },
         alignment,
     };
     let at = clip.timeline_out.to_secs_f64();
@@ -7513,6 +7526,7 @@ fn resolve_transition_kind(name: &str) -> Option<&'static klipp_core::Transition
         "strips" | "slide_strips" => "SlideStrips",
         "panels" | "slide_panels" | "grid" => "SlidePanels",
         "halves" | "part_halves" | "split" => "PartHalves",
+        "shatter" | "shards" | "glass" | "break" => "Shatter",
         other => {
             // The registry key itself, matched without case.
             return klipp_core::TRANSITION_SPECS.iter().find(|s| s.string_key.eq_ignore_ascii_case(&other.replace('_', "")));
@@ -11671,12 +11685,22 @@ mod tests {
         let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!() };
         let EditCommand::AddTransition { transition, .. } = &edits[0] else { panic!() };
         assert_eq!((transition.kind, transition.user_params), (klipp_core::TransitionKind::PartHalves, klipp_core::spec_for_kind(klipp_core::TransitionKind::PartHalves).default_params));
+        // A shatter keeps its own defaults for what is left out (#985,
+        // phase 2): it falls, with shadows; a bad value is refused.
+        let op: Op = serde_json::from_value(serde_json::json!({ "op": "transition", "clip_id": a, "kind": "shatter", "secs": 0.4, "pieces": { "count": 40, "seed": 7 } })).unwrap();
+        let plan = resolve(&seq, &pool, &[op]).unwrap();
+        let EditCommand::Batch(edits) = &plan.steps[0].edit else { panic!() };
+        let EditCommand::AddTransition { transition, .. } = &edits[0] else { panic!() };
+        let pieces = klipp_core::piece_transition::PieceParams::read(transition.kind, &transition.user_params);
+        assert_eq!((transition.kind, pieces.count, pieces.seed, pieces.motion, pieces.shadow), (klipp_core::TransitionKind::Shatter, 40, 7, klipp_core::piece_transition::PieceMotion::Fall, true));
+        let op: Op = serde_json::from_value(serde_json::json!({ "op": "transition", "clip_id": a, "kind": "panels", "pieces": { "motion": "wobble" } })).unwrap();
+        assert!(resolve(&seq, &pool, &[op]).unwrap_err().why.contains("the pieces"));
 
         // Refusals: the last clip has no next; an unknown kind; too long.
         let bad = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
         assert!(bad(Op::Transition { clip_id: ClipRef::Id(b), kind: "dissolve".into(), secs: 0.5, remove: false, pieces: None }).why.contains("no clip after"));
         assert!(bad(Op::Transition { clip_id: ClipRef::Id(a), kind: "sparkle".into(), secs: 0.5, remove: false, pieces: None }).why.contains("not a transition"));
-        assert!(bad(Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.5, remove: false, pieces: Some(Default::default()) }).why.contains("has no pieces"));
+        assert!(bad(Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.5, remove: false, pieces: Some(serde_json::json!({})) }).why.contains("has no pieces"));
         assert!(bad(Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 4.0, remove: false, pieces: None }).why.contains("as long as one of its clips"));
 
         // As the tools send it, kind and secs optional.

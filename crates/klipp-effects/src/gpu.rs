@@ -322,6 +322,8 @@ pub struct GpuEffectsPipeline {
     alpha_dilate_pipeline: wgpu::ComputePipeline,
     // Compute pipelines — transitions (3-buffer: from, to, output, params)
     transition_pipeline: wgpu::ComputePipeline,
+    /// Posed piece transitions (#985): `SHADER_PIECES`.
+    pieces_pipeline: wgpu::ComputePipeline,
     // ── linear-f32 → sRGB-u8 pixel encode pipeline ─────────────────
     // GPU replacement for the CPU `linear_rgba_to_u8` LUT pass that
     // costs 40-90 ms per 4K frame. Reads `array<vec4<f32>>` linear,
@@ -429,6 +431,7 @@ pub struct GpuEffectsPipeline {
     // Bind group layouts
     bind_group_layout: wgpu::BindGroupLayout,         // effects: input, output, params
     transition_bgl: wgpu::BindGroupLayout,             // transitions: from, to, output, params
+    pieces_bgl: wgpu::BindGroupLayout,                 // posed pieces: from, to, output, params, pieces
     // Reusable buffers — resized when frame dimensions change
     buf_a: Option<wgpu::Buffer>,
     buf_b: Option<wgpu::Buffer>,
@@ -907,6 +910,34 @@ impl GpuEffectsPipeline {
             push_constant_ranges: &[],
         });
 
+        // Posed pieces (#985): the transition's four bindings and the plan.
+        let storage = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        };
+        let pieces_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("pieces_bgl"),
+            entries: &[
+                storage(0, true),
+                storage(1, true),
+                storage(2, false),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                storage(4, true),
+            ],
+        });
+        let pieces_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("pieces_pl"),
+            bind_group_layouts: &[&pieces_bgl],
+            push_constant_ranges: &[],
+        });
+
         // Push error handler to capture shader validation errors
         device.push_error_scope(wgpu::ErrorFilter::Validation);
 
@@ -1220,6 +1251,7 @@ impl GpuEffectsPipeline {
         });
 
         let transition_pipeline = create_pipeline(&device, &transition_pl, "transition", SHADER_TRANSITION);
+        let pieces_pipeline = create_pipeline(&device, &pieces_pl, "pieces", SHADER_PIECES);
         // Linear-to-u8 bridge — uses the same 3-binding effects BGL.
         // Input: array<vec4<f32>>. Output: array<u32> (packed u8 RGBA).
         // Output buffer is 4× smaller than input; readback dominates
@@ -1598,6 +1630,7 @@ impl GpuEffectsPipeline {
             alpha_blur_v_pipeline,
             alpha_dilate_pipeline,
             transition_pipeline,
+            pieces_pipeline,
             bridge_u8_pipeline,
             bridge_u8_to_linear_pipeline,
             bridge_u8_fit_pipeline,
@@ -1651,6 +1684,7 @@ impl GpuEffectsPipeline {
             bridge_u8_staging_size: 0,
             bind_group_layout,
             transition_bgl,
+            pieces_bgl,
             buf_a: None,
             buf_b: None,
             buf_c: None,
@@ -5754,6 +5788,10 @@ impl GpuEffectsPipeline {
     /// it is the plain mix.
     #[allow(clippy::too_many_arguments)]
     pub fn stack_transition(&mut self, from: usize, to: usize, out: usize, kind_id: u32, progress: f32, p: [f32; 4], color: [f32; 4]) -> bool {
+        if crate::pieces::is_posed(kind_id, p[3]) {
+            let (width, height) = self.stack_dims;
+            return self.stack_pieces(from, to, out, &crate::pieces::plan(kind_id, progress, width, height, p, 0.0, 1));
+        }
         if self.is_device_lost() || from >= self.stack_layers.len() || to >= self.stack_layers.len() || out >= self.stack_layers.len() {
             return false;
         }
@@ -6893,6 +6931,10 @@ impl GpuEffectsPipeline {
         user_param3: f32,
         user_color: [f32; 4],
     ) -> Vec<f32> {
+        if crate::pieces::is_posed(kind_id, user_param3) {
+            let plan = crate::pieces::plan(kind_id, progress, width, height, [user_param0, user_param1, user_param2, user_param3], 0.0, 1);
+            return self.render_pieces_linear(from_linear, to_linear, &plan);
+        }
         if self.is_device_lost() {
             let _ = to_linear;
             return from_linear.to_vec();
@@ -6951,6 +6993,87 @@ impl GpuEffectsPipeline {
         self.device.poll(wgpu::Maintain::Poll);
 
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
+    }
+
+    /// A posed-pieces plan in a buffer of its own (#985): a batched stack
+    /// may not have read the last one yet.
+    fn pieces_buffer(&self, plan: &crate::pieces::PiecePlan) -> wgpu::Buffer {
+        let mut data = plan.data.clone();
+        if data.is_empty() {
+            data.resize(crate::pieces::STRIDE, 0.0);
+        }
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pieces"),
+            size: (data.len() * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: true,
+        });
+        buf.slice(..).get_mapped_range_mut().copy_from_slice(bytemuck::cast_slice(&data));
+        buf.unmap();
+        buf
+    }
+
+    /// `SHADER_PIECES` over `from` and `to` into `out`, with `plan`.
+    fn dispatch_pieces(&self, from: &wgpu::Buffer, to: &wgpu::Buffer, out: &wgpu::Buffer, plan: &crate::pieces::PiecePlan, label: &str) {
+        self.write_params(&PiecesParams { width: plan.width, height: plan.height, count: plan.count, samples: plan.samples, background_to: plan.background_to as u32, _pad0: 0, _pad1: 0, _pad2: 0 });
+        let pieces = self.pieces_buffer(plan);
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(label),
+            layout: &self.pieces_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: from.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: to.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: out.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.params_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: pieces.as_entire_binding() },
+            ],
+        });
+        let mut enc = self.encoder(Some(label));
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.pieces_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups((plan.width * plan.height).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        self.submit(enc);
+    }
+
+    /// Posed piece transitions (#985) between two linear-light frames:
+    /// what `pieces::render` draws on the CPU.
+    pub fn render_pieces_linear(&mut self, from_linear: &[f32], to_linear: &[f32], plan: &crate::pieces::PiecePlan) -> Vec<f32> {
+        if self.is_device_lost() {
+            return crate::pieces::render(from_linear, to_linear, plan);
+        }
+        self.ensure_buffers((plan.width * plan.height * 16) as u64);
+        let (buf_a, buf_b, buf_c) = (self.buf_a.as_ref().unwrap(), self.buf_b.as_ref().unwrap(), self.buf_c.as_ref().unwrap());
+        self.upload(buf_a, 0, bytemuck::cast_slice(from_linear));
+        self.upload(buf_c, 0, bytemuck::cast_slice(to_linear));
+        self.dispatch_pieces(buf_a, buf_c, buf_b, plan, "render_pieces_linear");
+        self.device.poll(wgpu::Maintain::Poll);
+        self.download_linear_rgba_f32(buf_b, (plan.width * plan.height) as usize)
+    }
+
+    /// Posed piece transitions (#985) on the stack: layers `from` and `to`
+    /// into `out`, mixed premultiplied as `stack_transition` mixes.
+    pub fn stack_pieces(&mut self, from: usize, to: usize, out: usize, plan: &crate::pieces::PiecePlan) -> bool {
+        if self.is_device_lost() || from >= self.stack_layers.len() || to >= self.stack_layers.len() || out >= self.stack_layers.len() {
+            return false;
+        }
+        let (width, height) = self.stack_dims;
+        if (plan.width, plan.height) != (width, height) {
+            return false;
+        }
+        let wg = (self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE);
+        let (Some(from_pm), Some(to_pm)) = (self.buf_a.as_ref(), self.buf_b.as_ref()) else { return false };
+        self.write_params(&AlphaFormParams { width, height, unpremultiply: 0, _pad: 0 });
+        let (from_layer, to_layer) = (std::sync::Arc::clone(&self.stack_layers[from]), std::sync::Arc::clone(&self.stack_layers[to]));
+        self.stack_pass(&self.alpha_form_pipeline, &from_layer, from_pm, wg, "stack_pieces_premultiply_from");
+        self.stack_pass(&self.alpha_form_pipeline, &to_layer, to_pm, wg, "stack_pieces_premultiply_to");
+        self.dispatch_pieces(from_pm, to_pm, self.buf_c.as_ref().unwrap(), plan, "stack_pieces");
+        self.write_params(&AlphaFormParams { width, height, unpremultiply: 1, _pad: 0 });
+        let out_layer = std::sync::Arc::clone(&self.stack_layers[out]);
+        self.stack_pass(&self.alpha_form_pipeline, self.buf_c.as_ref().unwrap(), &out_layer, wg, "stack_pieces_unpremultiply");
+        true
     }
 
     /// One pass over two inputs (bindings 0 and 1) into `output`, with
@@ -7645,6 +7768,21 @@ struct FilmHalationBlendParams {
     luma_yg: f32,
     luma_yb: f32,
     _pad_luma: u32,
+}
+
+/// `SHADER_PIECES`' uniform (#985): the frame, and how many posed pieces
+/// an instant and instants the plan holds.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct PiecesParams {
+    width: u32,
+    height: u32,
+    count: u32,
+    samples: u32,
+    background_to: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 #[repr(C)]
@@ -13217,6 +13355,163 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
+/// Posed piece transitions (#985, phase 2): the plan `pieces::plan` works
+/// out (each piece's screen-to-picture homography, box, edges, light,
+/// opacity and shadow, nearest first, an instant at a time) drawn front
+/// to back over what shows behind, shadows on that, instants averaged.
+/// `pieces::render` is its CPU twin, line for line.
+const SHADER_PIECES: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params {
+    width: u32,
+    height: u32,
+    count: u32,
+    samples: u32,
+    background_to: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+}
+
+@group(0) @binding(0) var<storage, read> from_buf: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> to_buf: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(3) var<uniform> params: Params;
+@group(0) @binding(4) var<storage, read> pieces: array<f32>;
+
+const STRIDE: u32 = 60u;
+const O_BOX: u32 = 9u;
+const O_JAC: u32 = 13u;
+const O_SIDE: u32 = 14u;
+const O_SHADE: u32 = 15u;
+const O_OPACITY: u32 = 16u;
+const O_SHADOW: u32 = 17u;
+const O_AA: u32 = 21u;
+const O_PLANES: u32 = 24u;
+
+fn piece_sample(to_side: bool, sx: f32, sy: f32) -> vec4<f32> {
+    let fx = min(max(sx, 0.0), f32(params.width) - 1.0);
+    let fy = min(max(sy, 0.0), f32(params.height) - 1.0);
+    let x0 = u32(floor(fx));
+    let y0 = u32(floor(fy));
+    let x1 = min(x0 + 1u, params.width - 1u);
+    let y1 = min(y0 + 1u, params.height - 1u);
+    let tx = fx - f32(x0);
+    let ty = fy - f32(y0);
+    var c00: vec4<f32>;
+    var c10: vec4<f32>;
+    var c01: vec4<f32>;
+    var c11: vec4<f32>;
+    if to_side {
+        c00 = unpack(to_buf[y0 * params.width + x0]);
+        c10 = unpack(to_buf[y0 * params.width + x1]);
+        c01 = unpack(to_buf[y1 * params.width + x0]);
+        c11 = unpack(to_buf[y1 * params.width + x1]);
+    } else {
+        c00 = unpack(from_buf[y0 * params.width + x0]);
+        c10 = unpack(from_buf[y0 * params.width + x1]);
+        c01 = unpack(from_buf[y1 * params.width + x0]);
+        c11 = unpack(from_buf[y1 * params.width + x1]);
+    }
+    let top = c00 + (c10 - c00) * tx;
+    let bot = c01 + (c11 - c01) * tx;
+    return top + (bot - top) * ty;
+}
+
+// The distance inside the piece at `base` of the picture point the
+// screen point (x, y) maps to (x: in picture pixels), and that point
+// (y, z); w < 0 outside its box or behind the camera.
+fn piece_at(base: u32, x: f32, y: f32) -> vec4<f32> {
+    if x < pieces[base + O_BOX] || y < pieces[base + O_BOX + 1u] || x > pieces[base + O_BOX + 2u] || y > pieces[base + O_BOX + 3u] {
+        return vec4<f32>(0.0, 0.0, 0.0, -1.0);
+    }
+    let wz = pieces[base + 6u] * x + pieces[base + 7u] * y + pieces[base + 8u];
+    if wz <= 1e-9 {
+        return vec4<f32>(0.0, 0.0, 0.0, -1.0);
+    }
+    let sx = (pieces[base] * x + pieces[base + 1u] * y + pieces[base + 2u]) / wz;
+    let sy = (pieces[base + 3u] * x + pieces[base + 4u] * y + pieces[base + 5u]) / wz;
+    var sd: f32 = 1.0e6;
+    for (var k: u32 = 0u; k < 12u; k = k + 1u) {
+        let o = base + O_PLANES + k * 3u;
+        sd = min(sd, pieces[o] * sx + pieces[o + 1u] * sy + pieces[o + 2u]);
+    }
+    return vec4<f32>(sd, sx, sy, 1.0);
+}
+
+fn coverage(base: u32, sd: f32) -> f32 {
+    let aa = pieces[base + O_AA] * pieces[base + O_JAC];
+    if aa <= 1e-4 {
+        if sd >= -0.01 {
+            return 1.0;
+        }
+        return 0.0;
+    }
+    return clamp(sd / aa + 0.5, 0.0, 1.0);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = f32(idx % params.width) + 0.5;
+    let y = f32(idx / params.width) + 0.5;
+    let hx = x + 0.001953125;
+    let hy = y + 0.0029296875;
+    var bg: vec4<f32>;
+    if params.background_to == 1u {
+        bg = unpack(to_buf[idx]);
+    } else {
+        bg = unpack(from_buf[idx]);
+    }
+    var total = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    for (var s: u32 = 0u; s < 8u; s = s + 1u) {
+        if s >= params.samples {
+            break;
+        }
+        var acc = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        var alpha: f32 = 0.0;
+        var shadow: f32 = 0.0;
+        for (var i: u32 = 0u; i < 128u; i = i + 1u) {
+            if i >= params.count {
+                break;
+            }
+            let base = (s * params.count + i) * STRIDE;
+            if alpha < 0.999 {
+                let hit = piece_at(base, hx, hy);
+                if hit.w > 0.0 {
+                    let cov = coverage(base, hit.x) * pieces[base + O_OPACITY];
+                    if cov > 0.0 {
+                        var at = piece_at(base, x, y);
+                        if at.w <= 0.0 {
+                            at = vec4<f32>(hit.x, 0.0, 0.0, 1.0);
+                        }
+                        let c = piece_sample(pieces[base + O_SIDE] > 0.5, at.y - 0.5, at.z - 0.5);
+                        let k = (1.0 - alpha) * cov;
+                        let shade = pieces[base + O_SHADE];
+                        acc = acc + vec4<f32>(k * c.x * shade, k * c.y * shade, k * c.z * shade, k * c.w);
+                        alpha = alpha + k;
+                    }
+                }
+            }
+            if pieces[base + O_SHADOW + 2u] > 0.0 {
+                let sh = piece_at(base, hx - pieces[base + O_SHADOW], hy - pieces[base + O_SHADOW + 1u]);
+                if sh.w > 0.0 {
+                    let a = pieces[base + O_SHADOW + 2u] * clamp(sh.x / pieces[base + O_JAC] / pieces[base + O_SHADOW + 3u] + 0.5, 0.0, 1.0);
+                    shadow = 1.0 - (1.0 - shadow) * (1.0 - a);
+                }
+            }
+        }
+        let dark = 1.0 - shadow;
+        let rest = 1.0 - alpha;
+        total = total + vec4<f32>(acc.x + rest * bg.x * dark, acc.y + rest * bg.y * dark, acc.z + rest * bg.z * dark, acc.w + rest * bg.w);
+    }
+    output[idx] = pack(total / f32(params.samples));
+}
+"
+);
+
 // Colour grade — the big one. Exposure, tone controls, LGG+offset
 // wheels, contrast, saturation, temperature/tint, global mix. All
 // run in linear so BT.709 luma matches its coefficient domain,
@@ -17146,6 +17441,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_ACES_REC709_U8", SHADER_ACES_REC709_U8),
         ("SHADER_BT2020_DISPLAY_U8", SHADER_BT2020_DISPLAY_U8),
         ("SHADER_TRANSITION", SHADER_TRANSITION),
+        ("SHADER_PIECES", SHADER_PIECES),
         ("SHADER_COLOR_GRADE", SHADER_COLOR_GRADE),
         ("SHADER_HUESAT", SHADER_HUESAT),
         ("SHADER_QUALIFIER", SHADER_QUALIFIER),

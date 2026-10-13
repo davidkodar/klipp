@@ -1,9 +1,10 @@
 //! The transition inspector's controls for the piece transitions (#985):
-//! how many strips or rows, which way they go, in what order, how they
-//! ease, whether they leave or arrive, and the gap between them. Typed as
+//! how many strips, rows or shards, which way they go, how they move
+//! (slide, tilt, turn, fall, shrink), in what order, how they ease,
+//! whether they leave or arrive, the gap between them and their shadows. Typed as
 //! `PieceParams`; what changed comes back as the transition's parameters.
 
-use klipp_core::piece_transition::{PieceEase, PieceOrder, PieceParams};
+use klipp_core::piece_transition::{PieceEase, PieceMotion, PieceOrder, PieceParams};
 use klipp_core::{TransitionKind, TransitionUserParams};
 
 use crate::theme::KlippTheme;
@@ -36,7 +37,9 @@ pub fn show(ui: &mut egui::Ui, theme: &KlippTheme, kind: TransitionKind, params:
         TransitionKind::SlidePanels => {
             ui.horizontal(|ui| {
                 label(ui, theme, "Rows");
-                ui.add(egui::DragValue::new(&mut p.count).range(1..=16).speed(0.1)).on_hover_text("As many columns as make the panels square");
+                // Posed panels are drawn forward, each one: fewer of them.
+                let most = if p.motion == PieceMotion::Slide { 16 } else { 8 };
+                ui.add(egui::DragValue::new(&mut p.count).range(1..=most).speed(0.1)).on_hover_text("As many columns as make the panels square");
             });
             ui.horizontal(|ui| {
                 label(ui, theme, "Direction");
@@ -46,6 +49,17 @@ pub fn show(ui: &mut egui::Ui, theme: &KlippTheme, kind: TransitionKind, params:
                         p.angle = *angle;
                     }
                 }
+            });
+        }
+        TransitionKind::Shatter => {
+            ui.horizontal(|ui| {
+                label(ui, theme, "Shards");
+                ui.add(egui::DragValue::new(&mut p.count).range(4..=96).speed(0.2));
+            });
+            ui.horizontal(|ui| {
+                label(ui, theme, "Direction");
+                ui.add(egui::DragValue::new(&mut p.angle).range(-360.0..=360.0).speed(1.0).suffix("\u{b0}"))
+                    .on_hover_text("The way the shards are pushed as they break away");
             });
         }
         _ => {
@@ -59,12 +73,20 @@ pub fn show(ui: &mut egui::Ui, theme: &KlippTheme, kind: TransitionKind, params:
                 if ui.selectable_label(!p.shear, "Part").on_hover_text("Move apart, across the line").clicked() {
                     p.shear = false;
                 }
-                if ui.selectable_label(p.shear, "Slide").on_hover_text("Slide past each other, along the line").clicked() {
+                if ui.selectable_label(p.shear, "Slide past").on_hover_text("Slide past each other, along the line").clicked() {
                     p.shear = true;
                 }
             });
         }
     }
+    ui.horizontal(|ui| {
+        label(ui, theme, "Motion");
+        egui::ComboBox::from_id_salt("piece_motion").selected_text(p.motion.label()).show_ui(ui, |ui| {
+            for m in PieceMotion::ALL {
+                ui.selectable_value(&mut p.motion, m, m.label());
+            }
+        });
+    });
     ui.horizontal(|ui| {
         label(ui, theme, "Pieces");
         if ui.selectable_label(!p.assemble, "Leave").on_hover_text("The outgoing picture's pieces move away").clicked() {
@@ -105,6 +127,21 @@ pub fn show(ui: &mut egui::Ui, theme: &KlippTheme, kind: TransitionKind, params:
         label(ui, theme, "Gap");
         ui.add(egui::DragValue::new(&mut p.gap).range(0..=31).speed(0.2).suffix(" px")).on_hover_text("A gap that opens between the pieces as they move");
     });
+    // Shadows and the tumbling's pattern are the posed pieces': the
+    // sliding ones are flat on the picture.
+    if kind == TransitionKind::Shatter || p.motion != PieceMotion::Slide {
+        ui.horizontal(|ui| {
+            label(ui, theme, "");
+            ui.checkbox(&mut p.shadow, "Shadows").on_hover_text("Soft shadows under the moving pieces");
+        });
+        ui.horizontal(|ui| {
+            label(ui, theme, "Pattern");
+            ui.add(egui::DragValue::new(&mut p.seed).range(0..=255).speed(0.3)).on_hover_text("Another cut of the shards, another way for each piece to turn");
+        });
+    }
+    if p.motion != PieceMotion::Slide && kind == TransitionKind::SlidePanels {
+        p.count = p.count.min(8);
+    }
     (p != old).then(|| {
         let mut out = *params;
         p.write(kind, &mut out);
@@ -181,9 +218,24 @@ mod tests {
         let mut halves = Panel::new(TransitionKind::PartHalves);
         halves.frame(Vec::new());
         assert!(halves.frame(Vec::new()).iter().all(|(t, _)| t != "Alternate ways" && t != "Rows alternate"), "two halves have no neighbours to alternate");
-        halves.click("Slide");
+        halves.click("Slide past");
         assert!(halves.read().shear);
         assert_eq!(halves.params.param1, 70.0, "the line kept");
+
+        // Shatter: its motion from the list, its shadows off; a panel's
+        // motion other than sliding offers shadows too.
+        let mut shatter = Panel::new(TransitionKind::Shatter);
+        shatter.frame(Vec::new());
+        shatter.click("Fall");
+        shatter.click("Turn");
+        assert_eq!(shatter.read().motion, PieceMotion::Turn);
+        shatter.click("Shadows");
+        assert!(!shatter.read().shadow, "on by default, clicked off");
+        assert!(panels.frame(Vec::new()).iter().all(|(t, _)| t != "Shadows"), "sliding panels have none");
+        panels.click("Slide");
+        panels.click("Tilt away");
+        assert_eq!(panels.read().motion, PieceMotion::Tilt);
+        assert!(panels.frame(Vec::new()).iter().any(|(t, _)| t == "Shadows"));
 
         // Nothing touched, nothing sent.
         let theme = KlippTheme::default();

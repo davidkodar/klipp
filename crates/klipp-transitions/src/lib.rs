@@ -175,7 +175,7 @@ pub fn render_transition_with_params(
                 }
             }
         }
-        TransitionKind::SlideStrips | TransitionKind::SlidePanels | TransitionKind::PartHalves => {
+        TransitionKind::SlideStrips | TransitionKind::SlidePanels | TransitionKind::PartHalves | TransitionKind::Shatter => {
             // Nor are the piece transitions (#985): here they draw as the
             // push their pieces travel like, eased.
             output = render_transition_with_params(TransitionKind::PushLeft, from, to, p * p * (3.0 - 2.0 * p), width, height, &klipp_core::TransitionUserParams::default());

@@ -621,7 +621,7 @@ pub fn frame_snapshot(seq: &Sequence, time: Timecode) -> Sequence {
             }
         }
         for tr in &track.transitions {
-            if let Some(TrackItem::Transition { a, b, .. }) = transition_at(track, tr, time) {
+            if let Some(TrackItem::Transition { a, b, .. }) = transition_at(seq, track, tr, time) {
                 keep.insert(a.id);
                 keep.insert(b.id);
                 keep_transitions.insert(tr.id);
@@ -865,6 +865,10 @@ enum TrackItem<'a> {
         kind: klipp_core::TransitionKind,
         progress: f32,
         params: klipp_core::TransitionUserParams,
+        /// The open shutter as a share of the transition's progress, and
+        /// the instants across it: the sequence camera's motion blur, for
+        /// the posed piece transitions (#985).
+        shutter: (f32, u32),
     },
 }
 
@@ -1745,7 +1749,7 @@ impl Renderer {
         // and the result).
         enum Item<'a> {
             Clip { c: &'a Clip, slot: usize },
-            Transition { a: &'a Clip, b: &'a Clip, kind: klipp_core::TransitionKind, progress: f32, params: klipp_core::TransitionUserParams, slots: [usize; 3] },
+            Transition { a: &'a Clip, b: &'a Clip, kind: klipp_core::TransitionKind, progress: f32, params: klipp_core::TransitionUserParams, shutter: (f32, u32), slots: [usize; 3] },
         }
         let mut items: Vec<(&Track, Item)> = Vec::with_capacity(stack.len());
         let mut n_slots = 0usize;
@@ -1765,7 +1769,7 @@ impl Renderer {
                     items.push((track, Item::Clip { c, slot: n_slots }));
                     n_slots += 1;
                 }
-                TrackItem::Transition { a, b, kind, progress, params } => {
+                TrackItem::Transition { a, b, kind, progress, params, shutter } => {
                     for side in [a, b] {
                         if let Some(why) = blocker(side) {
                             return self.gpu_stack_declines(why);
@@ -1774,7 +1778,7 @@ impl Renderer {
                             return self.gpu_stack_declines("matte or adjustment inside a transition");
                         }
                     }
-                    items.push((track, Item::Transition { a, b, kind: *kind, progress: *progress, params: *params, slots: [n_slots, n_slots + 1, n_slots + 2] }));
+                    items.push((track, Item::Transition { a, b, kind: *kind, progress: *progress, params: *params, shutter: *shutter, slots: [n_slots, n_slots + 1, n_slots + 2] }));
                     n_slots += 3;
                 }
             }
@@ -1848,7 +1852,7 @@ impl Renderer {
                         Err(why) => return self.gpu_stack_declines(why),
                     }
                 }
-                Item::Transition { a, b, kind, progress, params, slots } => {
+                Item::Transition { a, b, kind, progress, params, shutter, slots } => {
                     for (side, slot) in [(a, slots[0]), (b, slots[1])] {
                         match self.place_layer(slot, side, time, fps, width, height, src, &transforms, &mut stats) {
                             Ok(Some(p)) => {
@@ -1873,7 +1877,14 @@ impl Renderer {
                     let p = [params.param0, params.param1, params.param2, params.param3];
                     let colour = self.authored_colour(params.color);
                     let t = Instant::now();
-                    if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_transition(slots[0], slots[1], slots[2], kind_id, eased, p, colour)) {
+                    let done = if klipp_effects::pieces::is_posed(kind_id, p[3]) {
+                        // Posed pieces (#985), blurred across the shutter.
+                        let plan = klipp_effects::pieces::plan(kind_id, eased, width, height, p, shutter.0, shutter.1);
+                        self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_pieces(slots[0], slots[1], slots[2], &plan))
+                    } else {
+                        self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_transition(slots[0], slots[1], slots[2], kind_id, eased, p, colour))
+                    };
+                    if !done {
                         return self.gpu_stack_declines("the transition pass failed");
                     }
                     stats.composite_ms += ms_since(t);
@@ -2465,8 +2476,8 @@ impl Renderer {
                     matted_transitions.push(i);
                     None
                 }
-                TrackItem::Transition { a, b, kind, progress, params } => {
-                    self.render_transition(a, b, *kind, *progress, params, time, fps, width, height, src, &transforms, None)
+                TrackItem::Transition { a, b, kind, progress, params, shutter } => {
+                    self.render_transition(a, b, *kind, *progress, params, *shutter, time, fps, width, height, src, &transforms, None)
                         .map(|pixels| Layer { pixels, opacity: track.opacity, blend: BlendMode::Normal })
                 }
             };
@@ -2478,9 +2489,9 @@ impl Renderer {
             layers.push(layer);
         }
         for i in matted_transitions {
-            if let (_, track, TrackItem::Transition { a, b, kind, progress, params }) = &stack[i] {
+            if let (_, track, TrackItem::Transition { a, b, kind, progress, params, shutter }) = &stack[i] {
                 layers[i] = self
-                    .render_transition(a, b, *kind, *progress, params, time, fps, width, height, src, &transforms, Some(&rendered))
+                    .render_transition(a, b, *kind, *progress, params, *shutter, time, fps, width, height, src, &transforms, Some(&rendered))
                     .map(|pixels| Layer { pixels, opacity: track.opacity, blend: BlendMode::Normal });
             }
         }
@@ -4177,6 +4188,7 @@ impl Renderer {
         kind: klipp_core::TransitionKind,
         progress: f32,
         params: &klipp_core::TransitionUserParams,
+        shutter: (f32, u32),
         time: Timecode,
         fps: f64,
         width: u32,
@@ -4220,7 +4232,15 @@ impl Renderer {
             }
         }
         let colour = self.authored_colour(params.color);
-        let mut mixed = match self.gpu() {
+        let p4 = [params.param0, params.param1, params.param2, params.param3];
+        let mut mixed = if klipp_effects::pieces::is_posed(kind_id, params.param3) {
+            // Posed pieces (#985), blurred across the shutter.
+            let plan = klipp_effects::pieces::plan(kind_id, eased, width, height, p4, shutter.0, shutter.1);
+            match self.gpu() {
+                Some(gpu) => gpu.render_pieces_linear(&from, &to, &plan),
+                None => klipp_effects::pieces::render(&from, &to, &plan),
+            }
+        } else { match self.gpu() {
             Some(gpu) => gpu.render_transition_linear(
                 &from, &to, kind_id, eased, width, height,
                 params.param0, params.param1, params.param2, params.param3, colour,
@@ -4230,7 +4250,7 @@ impl Renderer {
                 &from, &to, kind_id, eased, width, height,
                 params.param0, params.param1, params.param2, params.param3, colour,
             ),
-        };
+        } };
         if premultiplied {
             mixed.chunks_exact_mut(4).for_each(|px| {
                 if px[3] > 1e-6 {
@@ -4328,7 +4348,7 @@ fn is_visual(t: &Track) -> bool {
 
 /// The clip, or the transition, a track shows at `time`.
 fn active_item<'a>(seq: &'a Sequence, track: &'a Track, time: Timecode) -> Option<TrackItem<'a>> {
-    if let Some(item) = track.transitions.iter().find_map(|tr| transition_at(track, tr, time)) {
+    if let Some(item) = track.transitions.iter().find_map(|tr| transition_at(seq, track, tr, time)) {
         return Some(item);
     }
     let clip = track.clip_at_timecode(time).map(|(_, c)| c).filter(|c| c.enabled)?;
@@ -4336,7 +4356,7 @@ fn active_item<'a>(seq: &'a Sequence, track: &'a Track, time: Timecode) -> Optio
 }
 
 /// `tr`, when it is running at `time` between two enabled clips.
-fn transition_at<'a>(track: &'a Track, tr: &klipp_timeline::Transition, time: Timecode) -> Option<TrackItem<'a>> {
+fn transition_at<'a>(seq: &Sequence, track: &'a Track, tr: &klipp_timeline::Transition, time: Timecode) -> Option<TrackItem<'a>> {
     let (a, b) = (track.find_clip(tr.clip_a_id)?, track.find_clip(tr.clip_b_id)?);
     if !a.enabled || !b.enabled {
         return None;
@@ -4355,7 +4375,14 @@ fn transition_at<'a>(track: &'a Track, tr: &klipp_timeline::Transition, time: Ti
     }
     let total = tr.duration.to_secs_f64();
     let progress = if total > 0.0 { ((time - start).to_secs_f64() / total).clamp(0.0, 1.0) as f32 } else { 0.0 };
-    Some(TrackItem::Transition { a, b, kind: tr.kind, progress, params: tr.user_params })
+    // The camera's shutter, as a share of this transition's progress.
+    let fps = seq.fps.as_f64();
+    let shutter = if seq.camera.shutter_deg > 0.0 && total > 0.0 && fps > 0.0 {
+        ((seq.camera.shutter_deg as f64 / 360.0 / (fps * total)) as f32, seq.camera.shutter_samples.clamp(2, 8) as u32)
+    } else {
+        (0.0, 1)
+    };
+    Some(TrackItem::Transition { a, b, kind: tr.kind, progress, params: tr.user_params, shutter })
 }
 
 /// The clip a multicam group shows at `time`: the angle chosen by the

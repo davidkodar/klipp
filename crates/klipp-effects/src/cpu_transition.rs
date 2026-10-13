@@ -155,6 +155,10 @@ pub fn render_transition_linear(
     param3: f32,
     color: [f32; 4],
 ) -> Vec<f32> {
+    // Posed pieces (#985) are drawn forward, not inverse-mapped here.
+    if crate::pieces::is_posed(kind_id, param3) {
+        return crate::pieces::render(from, to, &crate::pieces::plan(kind_id, progress, width, height, [param0, param1, param2, param3], 0.0, 1));
+    }
     let buf = |p: &[f32]| Buf(p.chunks_exact(4).map(|c| V4 { x: c[0], y: c[1], z: c[2], w: c[3] }).collect());
     let (from_buf, to_buf) = (buf(from), buf(to));
     let params = Params {

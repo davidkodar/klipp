@@ -965,7 +965,7 @@ fn a_frame_snapshot_renders_the_same_frame() {
 #[test]
 fn every_transition_renders_the_same_with_and_without_a_gpu() {
     // The piece transitions (#985) too, which move the pictures.
-    for kind in [klipp_core::TransitionKind::WipeLeft, klipp_core::TransitionKind::FilmDissolve, klipp_core::TransitionKind::DipToBlack, klipp_core::TransitionKind::SlideStrips, klipp_core::TransitionKind::SlidePanels, klipp_core::TransitionKind::PartHalves] {
+    for kind in [klipp_core::TransitionKind::WipeLeft, klipp_core::TransitionKind::FilmDissolve, klipp_core::TransitionKind::DipToBlack, klipp_core::TransitionKind::SlideStrips, klipp_core::TransitionKind::SlidePanels, klipp_core::TransitionKind::PartHalves, klipp_core::TransitionKind::Shatter] {
         let a = solid([230, 40, 40], 0.0, 2.0);
         let mut b = media(2.0, 4.0);
         b.set_grade(exposure(1.0));

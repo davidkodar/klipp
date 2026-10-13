@@ -708,11 +708,25 @@ fn a_transition_between_two_clips_matches() {
     assert_match("cross dissolve", &seq, &mut src);
 }
 
-/// #985: the piece transitions, at their defaults, are the same in the
-/// viewer (the GPU stack) and the export (the CPU).
+/// #985: the piece transitions, at their defaults, sliding and posed
+/// (panels tilting away, halves turning, the shatter falling), with the
+/// camera's shutter shut and open, are the same in the viewer (the GPU
+/// stack) and the export (the CPU); the open shutter blurs the posed ones.
 #[test]
 fn the_piece_transitions_match() {
-    for kind in [klipp_core::TransitionKind::SlideStrips, klipp_core::TransitionKind::SlidePanels, klipp_core::TransitionKind::PartHalves] {
+    use klipp_core::piece_transition::{PieceMotion, PieceParams};
+    let posed = |kind, motion| PieceParams { motion, shadow: true, ..PieceParams::read(kind, &klipp_core::spec_for_kind(kind).default_params) }.to_user(kind);
+    let cases = [
+        (klipp_core::TransitionKind::SlideStrips, klipp_core::spec_for_kind(klipp_core::TransitionKind::SlideStrips).default_params, 0.0),
+        (klipp_core::TransitionKind::SlidePanels, klipp_core::spec_for_kind(klipp_core::TransitionKind::SlidePanels).default_params, 0.0),
+        (klipp_core::TransitionKind::PartHalves, klipp_core::spec_for_kind(klipp_core::TransitionKind::PartHalves).default_params, 0.0),
+        (klipp_core::TransitionKind::SlidePanels, posed(klipp_core::TransitionKind::SlidePanels, PieceMotion::Tilt), 0.0),
+        (klipp_core::TransitionKind::PartHalves, posed(klipp_core::TransitionKind::PartHalves, PieceMotion::Turn), 0.0),
+        (klipp_core::TransitionKind::Shatter, klipp_core::spec_for_kind(klipp_core::TransitionKind::Shatter).default_params, 0.0),
+        (klipp_core::TransitionKind::Shatter, klipp_core::spec_for_kind(klipp_core::TransitionKind::Shatter).default_params, 270.0),
+    ];
+    let mut sharp_frame = None;
+    for (kind, user_params, shutter_deg) in cases {
         let mut seq = Sequence::new_default();
         seq.resolution = klipp_core::Resolution { width: W, height: H };
         let mut v = Track::new("V1", TrackKind::Video);
@@ -728,10 +742,12 @@ fn the_piece_transitions_match() {
             kind,
             duration: tc(2.0),
             alignment: Default::default(),
-            user_params: klipp_core::spec_for_kind(kind).default_params,
+            user_params,
         });
         v.clips = vec![a, b];
         seq.tracks = vec![v];
+        seq.camera.shutter_deg = shutter_deg;
+        seq.camera.shutter_samples = 6;
         // Part way in and past the cut: the transition runs from 1 s to 3 s.
         for t in [1.7, 2.3] {
             let mut r = renderer();
@@ -742,7 +758,13 @@ fn the_piece_transitions_match() {
             let cpu = display(&r.render(&seq, tc(t), W, H, &mut src, RenderOptions::default()));
             assert!(cpu != display(&picture(0.0)) && cpu != display(&picture(0.5)), "{kind:?} at {t} s: under way");
             let d = worst(&cpu, &gpu);
-            assert!(d <= 1, "{kind:?} at {t} s: GPU stack differs from the CPU renderer by {d} levels");
+            assert!(d <= 1, "{kind:?} with a {shutter_deg} degree shutter at {t} s: GPU stack differs from the CPU renderer by {d} levels");
+            if kind == klipp_core::TransitionKind::Shatter && t == 2.3 {
+                match sharp_frame.take() {
+                    None => sharp_frame = Some(cpu),
+                    Some(sharp) => assert!(worst(&sharp, &cpu) > 8, "the open shutter blurs the falling shards"),
+                }
+            }
         }
     }
 }

@@ -145,6 +145,7 @@ const SHADERS: &[(&str, Cover)] = &[
     ("SHADER_ACES_REC709_U8", Test("klipp-engine/tests/aces_gpu_matches_cpu.rs", "aces_rec709_matches_the_cpu_on_noise")),
     ("SHADER_BT2020_DISPLAY_U8", Test("klipp-engine/tests/bt2020_gamut_gpu_matches_cpu.rs", "bt2020_display_matches_the_cpu_on_saturated_colour")),
     ("SHADER_TRANSITION", Test("klipp-effects/tests/cpu_gpu_transition_parity.rs", "every_transition_matches_between_cpu_and_gpu")),
+    ("SHADER_PIECES", Test("klipp-effects/tests/piece_transitions.rs", "posed_pieces_match_between_cpu_and_gpu")),
     ("SHADER_COLOR_GRADE", GRADE),
     ("SHADER_HUESAT", Test("klipp-effects/tests/equalize_and_huesat_share_nothing.rs", "a_huesat_grade_followed_by_equalize_matches_the_cpu")),
     ("SHADER_QUALIFIER", Test(SECONDARY, "a_secondary_matches_the_cpu_and_stays_on_the_gpu")),
