@@ -2532,6 +2532,10 @@ pub struct AppState {
     /// What the grade's controls act in (#467): BT.1886, or ACEScct or
     /// ACEScc under ACEScg. Mirrored into `klipp_core::set_grade_encoding`.
     pub project_grade_encoding: klipp_core::GradeEncoding,
+    /// The output transform new exports start from (#466).
+    pub project_default_odt: klipp_core::OdtChoice,
+    /// The Colour Management window is open (#466).
+    pub show_colour_management: bool,
 
     // Media panel
     pub show_media_panel: bool,
@@ -4676,6 +4680,8 @@ impl Default for AppState {
             project_auto_skim: None,
             project_working_colorspace: klipp_core::WorkingColorspace::default(),
             project_grade_encoding: klipp_core::GradeEncoding::default(),
+            project_default_odt: klipp_core::OdtChoice::default(),
+            show_colour_management: false,
             show_media_panel: false,
             show_remove_media_confirm: None,
             show_delete_unused_confirm: None,

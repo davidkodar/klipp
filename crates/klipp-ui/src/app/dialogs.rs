@@ -1308,6 +1308,22 @@ impl KlippApp {
             }
         }
 
+        // 4c3b. Colour Management (#466): the project's colour set-up on
+        // one page.
+        if self.state.show_colour_management {
+            let mut open = true;
+            let colour_before = (self.state.project_working_colorspace, self.state.project_grade_encoding);
+            crate::panels::colour_management::show_window(ctx, &mut self.state, &self.theme, &mut open, cmds);
+            if !open {
+                self.state.show_colour_management = false;
+            }
+            // A new working space or grade encoding changes the picture,
+            // and a paused viewer redraws nothing on its own.
+            if (self.state.project_working_colorspace, self.state.project_grade_encoding) != colour_before {
+                self.sync_and_refresh_frame();
+            }
+        }
+
         // 4c4. File Info window — opens from the file browser right-click menu.
         if let Some(path) = self.state.file_info.clone() {
             // Modal backdrop

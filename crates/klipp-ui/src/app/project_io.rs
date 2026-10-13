@@ -251,6 +251,7 @@ impl KlippApp {
         self.state.sequences = vec![Sequence::new_default()];
         self.state.active_sequence_idx = 0;
         self.state.media_pool = klipp_media::MediaPool::new();
+        self.state.project_default_odt = klipp_core::OdtChoice::default();
         // The engine resolves clips through its own copy of the pool.
         self.sync_media_pool_to_engine();
         self.state.title_assets.clear();
@@ -594,6 +595,7 @@ impl KlippApp {
             auto_generate_skim: self.state.project_auto_skim,
             working_colorspace: self.state.project_working_colorspace,
             grade_encoding: self.state.project_grade_encoding,
+            default_odt: self.state.project_default_odt,
         };
         // Stills made while there was no folder of our own to write to —
         // a project never saved, or one open read-only — come along, or
@@ -891,6 +893,7 @@ impl KlippApp {
                 // And what the grade acts in (#467): BT.1886 for every
                 // file written before it.
                 self.state.project_grade_encoding = color_settings.grade_encoding;
+                self.state.project_default_odt = color_settings.default_odt;
                 klipp_core::set_grade_encoding(color_settings.grade_encoding);
 
                 self.state.project_path = Some(path.to_path_buf());

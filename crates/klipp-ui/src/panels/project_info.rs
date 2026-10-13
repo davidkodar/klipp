@@ -1,4 +1,3 @@
-use klipp_timeline::GradeAccess;
 use crate::state::AppState;
 use crate::theme::KlippTheme;
 
@@ -151,175 +150,25 @@ pub fn show_project_info(
                 state.dirty = true;
             }
 
-            // Working colorspace. The grade chain operates in this
-            // basis; decoded frames are converted to it; the display
-            // path (RRT + ODT) consumes it on the way out. Defaults
-            // to Rec.709 for back-compat with any project on disk.
-            // Switching it changes the look of the existing grade —
-            // there's no in-place migration in this dialog, just the
-            // setting.
-            let mut ws = state.project_working_colorspace;
+            // Colour: one line saying the set-up, which opens Colour
+            // Management, where it is set (#466).
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("Working colorspace:")
-                        .size(11.0)
-                        .color(theme.text_dim),
-                );
-                egui::ComboBox::from_id_salt("proj_ws")
-                    .width(140.0)
-                    .selected_text(working_colorspace_label(ws))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut ws,
-                            klipp_core::WorkingColorspace::Rec709Linear,
-                            "Rec.709 / sRGB (linear)",
-                        );
-                        ui.selectable_value(
-                            &mut ws,
-                            klipp_core::WorkingColorspace::AcesCG,
-                            "ACEScg (AP1)",
-                        );
-                        ui.selectable_value(
-                            &mut ws,
-                            klipp_core::WorkingColorspace::Bt2020Linear,
-                            "BT.2020 (linear)",
-                        );
-                    });
-            });
-            // A switch with grades in the project asks first (#902): a naked
-            // switch re-bases every grade and changes its look.
-            let pending_id = ui.id().with("proj_ws_pending");
-            if ws != state.project_working_colorspace {
-                let graded = state.sequences.iter().flat_map(|s| s.all_clips()).any(|c| !c.grade().is_identity());
-                if graded {
-                    ui.data_mut(|d| d.insert_temp(pending_id, ws));
-                } else {
-                    switch_working_space(state, ws, false);
+                ui.label(egui::RichText::new("Colour:").size(11.0).color(theme.text_dim));
+                let summary = crate::panels::colour_management::summary(state);
+                if ui.add(egui::Button::new(egui::RichText::new(summary).size(11.0).color(theme.text_secondary)).frame(false))
+                    .on_hover_text("Colour Management\u{2026}")
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    state.show_colour_management = true;
                 }
-            }
-            if let Some(to) = ui.data(|d| d.get_temp::<klipp_core::WorkingColorspace>(pending_id)) {
-                ui.label(egui::RichText::new(format!("Switch to {}? The project has grades.", working_colorspace_label(to))).size(11.0));
-                ui.horizontal(|ui| {
-                    let mut done = false;
-                    if ui.button("Convert grades (keep the look)").clicked() {
-                        switch_working_space(state, to, true);
-                        done = true;
-                    }
-                    if ui.button("Switch without converting").on_hover_text("Each grade is re-based on the new space and will look different").clicked() {
-                        switch_working_space(state, to, false);
-                        done = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        done = true;
-                    }
-                    if done {
-                        ui.data_mut(|d| d.remove::<klipp_core::WorkingColorspace>(pending_id));
-                    }
-                });
-            }
-            // What the grade's controls act in (#467). The ACES log
-            // encodings are ACEScg's; elsewhere the grade is BT.1886.
-            let mut enc = state.project_grade_encoding;
-            let aces = state.project_working_colorspace == klipp_core::WorkingColorspace::AcesCG;
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Grade in:").size(11.0).color(theme.text_dim));
-                ui.add_enabled_ui(aces, |ui| {
-                    egui::ComboBox::from_id_salt("proj_grade_encoding")
-                        .width(140.0)
-                        .selected_text(grade_encoding_label(if aces { enc } else { klipp_core::GradeEncoding::Bt1886 }))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut enc, klipp_core::GradeEncoding::Bt1886, grade_encoding_label(klipp_core::GradeEncoding::Bt1886));
-                            ui.selectable_value(&mut enc, klipp_core::GradeEncoding::AcesCct, grade_encoding_label(klipp_core::GradeEncoding::AcesCct));
-                            ui.selectable_value(&mut enc, klipp_core::GradeEncoding::AcesCc, grade_encoding_label(klipp_core::GradeEncoding::AcesCc));
-                        })
-                        .response
-                        .on_hover_text("What lift, gamma, gain, offset, contrast and the tone controls act in. ACEScct is what most colourists grade ACES in: offset is an exposure and the wheels move evenly across the stops. ACEScc is the same without the toe in the shadows.")
-                        .on_disabled_hover_text("ACEScct and ACEScc are ACES encodings: choose ACEScg as the working colorspace to grade in them");
-                });
             });
-            if enc != state.project_grade_encoding {
-                state.project_grade_encoding = enc;
-                state.dirty = true;
-                // The executors read it with the working space each frame.
-                klipp_core::set_grade_encoding(enc);
-            }
-            ui.label(
-                egui::RichText::new(
-                    "Switching working colorspace re-bases the entire grade \
-                     chain. With grades in the project the dropdown asks \
-                     whether to convert them, wrapping each clip's chain \
-                     with primaries-conversion nodes so the look is kept; \
-                     the button below does that conversion directly.",
-                )
-                .size(10.0)
-                .italics()
-                .color(theme.text_dim),
-            );
-
-            // Pick the most likely migration target. Rec.709 is where a
-            // wide-gamut project goes to come back; a Rec.709 project is
-            // most likely heading for ACEScg, the well-tested wide path.
-            // Every pair has a matrix now, so the button no longer has a
-            // dead end to hide from (it did while BT.2020 was a stub).
-            let from = state.project_working_colorspace;
-            let target = match from {
-                klipp_core::WorkingColorspace::Rec709Linear => klipp_core::WorkingColorspace::AcesCG,
-                klipp_core::WorkingColorspace::AcesCG
-                | klipp_core::WorkingColorspace::Bt2020Linear => klipp_core::WorkingColorspace::Rec709Linear,
-            };
-            let label = format!(
-                "Convert grades to {} (preserve look)",
-                working_colorspace_label(target),
-            );
-            if ui.button(label).clicked() {
-                switch_working_space(state, target, true);
-            }
         });
 }
 
-/// The project's working colorspace switched to `to`. With `convert`,
-/// each clip's grade is wrapped in primaries conversions so it keeps its
-/// look, and a toast says how many; without, the grades are re-based as
-/// they are. Pushed to the engine at once: the decoder reads it per frame,
-/// and without the push the change waits for the next project load.
-fn switch_working_space(state: &mut AppState, to: klipp_core::WorkingColorspace, convert: bool) {
-    let from = state.project_working_colorspace;
-    if from == to {
-        return;
-    }
-    if convert {
-        let mut migrated = 0usize;
-        for sequence in &mut state.sequences {
-            for track in &mut sequence.tracks {
-                for clip in &mut track.clips {
-                    if clip.edit_grade(|g| g.migrate_working_space(from, to)) {
-                        migrated += 1;
-                    }
-                }
-            }
-        }
-        state.toast.show(format!("Migrated {migrated} clip{} to {}", if migrated == 1 { "" } else { "s" }, working_colorspace_label(to)));
-    }
-    state.project_working_colorspace = to;
-    state.dirty = true;
-    klipp_engine::video_decoder::set_working_colorspace(to);
-}
 
-fn grade_encoding_label(enc: klipp_core::GradeEncoding) -> &'static str {
-    match enc {
-        klipp_core::GradeEncoding::Bt1886 => "Display gamma (BT.1886)",
-        klipp_core::GradeEncoding::AcesCct => "ACEScct",
-        klipp_core::GradeEncoding::AcesCc => "ACEScc",
-    }
-}
 
-fn working_colorspace_label(ws: klipp_core::WorkingColorspace) -> &'static str {
-    match ws {
-        klipp_core::WorkingColorspace::Rec709Linear => "Rec.709 / sRGB (linear)",
-        klipp_core::WorkingColorspace::AcesCG => "ACEScg (AP1)",
-        klipp_core::WorkingColorspace::Bt2020Linear => "BT.2020 (linear)",
-    }
-}
 
 fn info_row(ui: &mut egui::Ui, theme: &KlippTheme, label: &str, value: &str) {
     ui.horizontal(|ui| {
@@ -380,7 +229,7 @@ fn format_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod working_space_tests {
-    use super::switch_working_space;
+    use crate::panels::colour_management::switch_working_space;
     use crate::state::AppState;
     use klipp_core::WorkingColorspace;
     use klipp_timeline::GradeAccess;
@@ -414,5 +263,33 @@ mod working_space_tests {
         switch_working_space(&mut plain, WorkingColorspace::AcesCG, false);
         assert_eq!(plain.project_working_colorspace, WorkingColorspace::AcesCG);
         assert_eq!(grade(&plain).nodes.len(), untouched, "a plain switch leaves the grade as it is");
+    }
+
+    /// #466: Project Info says the colour set-up in a line, set nowhere
+    /// but Colour Management, which the line opens.
+    #[test]
+    fn project_info_shows_the_colour_summary_and_opens_colour_management() {
+        let ctx = egui::Context::default();
+        let mut state = AppState::default();
+        let theme = crate::theme::KlippTheme::default();
+        let mut open = true;
+        let mut run = |state: &mut AppState, events: Vec<egui::Event>| {
+            let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 1200.0))), events, ..Default::default() }, |ctx| {
+                super::show_project_info(ctx, state, &theme, &mut open);
+            });
+            out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        run(&mut state, Vec::new());
+        let texts = run(&mut state, Vec::new());
+        let summary = crate::panels::colour_management::summary(&state);
+        assert!(!texts.iter().any(|(t, _)| t.starts_with("Working colorspace")), "not set here any more");
+        let at = texts.iter().find(|(t, _)| *t == summary).unwrap_or_else(|| panic!("{summary} in {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>())).1;
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        run(&mut state, vec![egui::Event::PointerMoved(at), button(true)]);
+        run(&mut state, vec![button(false)]);
+        assert!(state.show_colour_management);
     }
 }

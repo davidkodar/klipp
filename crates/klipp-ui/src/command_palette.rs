@@ -141,6 +141,8 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::Cmd(AppCommand::CloseProject), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Project Properties…"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::SetState(|s| s.show_project_info = true), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Colour Management…"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::SetState(|s| s.show_colour_management = true), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Import Media…"), shortcut: Cow::Borrowed("Ctrl+I"),
         action: PaletteAction::OpenDialog(DialogKind::ImportMedia), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Import Subtitles…"), shortcut: Cow::Borrowed(""),

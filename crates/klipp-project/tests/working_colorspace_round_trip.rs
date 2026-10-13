@@ -30,6 +30,7 @@ fn acescg_setting_round_trips_through_save_load() {
     let color = ColorSettings {
         working_colorspace: WorkingColorspace::AcesCG,
         grade_encoding: klipp_core::GradeEncoding::AcesCct,
+        default_odt: klipp_core::OdtChoice::Rec2100Pq1000,
         ..Default::default()
     };
 
@@ -43,6 +44,7 @@ fn acescg_setting_round_trips_through_save_load() {
         "AcesCG should round-trip through ColorSettings → ProjectJson → load",
     );
     assert_eq!(loaded_color.grade_encoding, klipp_core::GradeEncoding::AcesCct, "the grade encoding with it (#467)");
+    assert_eq!(loaded_color.default_odt, klipp_core::OdtChoice::Rec2100Pq1000, "the default output transform with it (#466)");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -66,6 +68,7 @@ fn default_setting_round_trips_as_rec709_linear() {
         loaded_color.working_colorspace,
         WorkingColorspace::Rec709Linear,
     );
+    assert_eq!(loaded_color.default_odt, klipp_core::OdtChoice::MatchViewer, "new exports start at Match Viewer, as they did (#466)");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

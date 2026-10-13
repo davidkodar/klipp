@@ -23,6 +23,8 @@ pub struct ColorSettings {
     pub working_colorspace: klipp_core::WorkingColorspace,
     /// The grade encoding chosen (#467); BT.1886 by default.
     pub grade_encoding: klipp_core::GradeEncoding,
+    /// The output transform new exports start from (#466).
+    pub default_odt: klipp_core::OdtChoice,
 }
 
 impl Default for ColorSettings {
@@ -36,6 +38,7 @@ impl Default for ColorSettings {
             auto_generate_skim: None,
             working_colorspace: klipp_core::WorkingColorspace::default(),
             grade_encoding: klipp_core::GradeEncoding::default(),
+            default_odt: klipp_core::OdtChoice::default(),
         }
     }
 }
@@ -178,6 +181,7 @@ fn save_project_full_as(
         timeline_track_scale,
         working_colorspace: color.working_colorspace,
         grade_encoding: color.grade_encoding,
+        default_odt: color.default_odt,
         title_assets: title_assets_json,
     };
 

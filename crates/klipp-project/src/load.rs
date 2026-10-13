@@ -686,6 +686,7 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
         // gave us Rec709Linear via #[serde(default)].
         working_colorspace: project.working_colorspace,
         grade_encoding: project.grade_encoding,
+        default_odt: project.default_odt,
     };
 
     // Decode the synthetic title-asset list into a MediaId-keyed

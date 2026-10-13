@@ -405,7 +405,7 @@ pub(crate) fn input_colour_space_combo(
 }
 
 /// The picker behind both Load LUT buttons. Shaped for `file_dialog::spawn`.
-fn pick_global_lut() -> Vec<AppCommand> {
+pub(crate) fn pick_global_lut() -> Vec<AppCommand> {
     rfd::FileDialog::new()
         .set_title("Load .cube LUT")
         .add_filter("LUT files", &["cube", "3dl", "csp"])

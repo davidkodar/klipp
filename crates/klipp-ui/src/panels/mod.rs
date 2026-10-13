@@ -8,6 +8,7 @@ pub mod system_probe;
 pub mod batch_rename_dialog;
 pub mod title_find_dialog;
 pub mod cache_manager;
+pub mod colour_management;
 pub mod clip_properties;
 pub mod curve_editor;
 pub mod preset_manager;
