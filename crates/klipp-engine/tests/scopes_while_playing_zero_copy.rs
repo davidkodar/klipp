@@ -25,9 +25,11 @@ fn the_scopes_refresh_while_playing_without_a_readback() {
     }
     // Long enough that playback cannot reach the end inside the watch:
     // at the end it pauses, and the paused frame is shown as bytes, which
-    // is not a readback while playing (#1523).
+    // is not a readback while playing (#1523). The clip too, not only its
+    // source: a first scope pass took 6 s on a loaded GPU, longer than
+    // the usual clip has left to play (#1828).
     let Some(src) = common::hevc_long(90) else { return };
-    let parked = common::Parked::start(src, common::RAMP_W, common::RAMP_H);
+    let parked = common::Parked::start_long(src, common::RAMP_W, common::RAMP_H, 90);
     parked.send(AppCommand::SetScopesVisible(true));
     parked.send(AppCommand::SetActiveScopeModes { modes: [0u8, 1, 2, 3].into_iter().collect() });
     parked.settle();
