@@ -1194,6 +1194,7 @@ fn the_acescg_odts_agree_with_the_renderer() {
             OdtChoice::DciP3D65_48,
             OdtChoice::Rec2100Pq1000,
             OdtChoice::Rec2100Pq4000,
+            OdtChoice::Rec2020Sdr,
         ] {
             let display = klipp_color::display::ExportDisplay::new(
                 klipp_core::ToneMapOp::None,
@@ -1275,12 +1276,13 @@ fn the_acescg_odts_agree_with_the_renderer() {
 
     // Every pair has to be separated by *some* exposure. Without this the
     // agreement above would also hold for a shader that ignored the
-    // blob's variant and ran one chain for all four.
+    // blob's variant and ran one chain for all five.
     for (i, a) in [
         OdtChoice::Rec709Sdr,
         OdtChoice::DciP3D65_48,
         OdtChoice::Rec2100Pq1000,
         OdtChoice::Rec2100Pq4000,
+        OdtChoice::Rec2020Sdr,
     ]
     .iter()
     .enumerate()
@@ -1290,6 +1292,7 @@ fn the_acescg_odts_agree_with_the_renderer() {
             OdtChoice::DciP3D65_48,
             OdtChoice::Rec2100Pq1000,
             OdtChoice::Rec2100Pq4000,
+            OdtChoice::Rec2020Sdr,
         ]
         .iter()
         .skip(i + 1)

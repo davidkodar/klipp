@@ -18,12 +18,13 @@
 //! | Rec.2100 PQ 1000 nit | matches OCIO (max 5.1e-5) |
 //! | Rec.2100 PQ 4000 nit | matches OCIO (max 5.0e-6) |
 //! | DCI-P3 D65 48-nit | matches OCIO (max 2.6e-4) |
+//! | Rec.2020 SDR | matches OCIO (max 4.7e-4, #901) |
 //!
-//! All four now agree with the reference. Keep it that way: if one of
+//! All five agree with the reference. Keep it that way: if one of
 //! these starts failing, our maths moved, not OCIO's.
 
 use klipp_color::aces::{
-    acescg_to_dcip3_d65_48nit, acescg_to_rec2100_pq_1000_nit,
+    acescg_to_dcip3_d65_48nit, acescg_to_rec2020_sdr, acescg_to_rec2100_pq_1000_nit,
     acescg_to_rec2100_pq_4000_nit, acescg_to_rec709_sdr,
 };
 
@@ -130,6 +131,14 @@ fn rec709_sdr_matches_ocio() {
 #[test]
 fn dcip3_d65_48nit_matches_ocio() {
     check("dcip3_d65_48", acescg_to_dcip3_d65_48nit, TOL);
+}
+
+/// The Rec.2020 SDR video output (#901): OCIO's "Rec.1886 Rec.2020 -
+/// Display" under "ACES 1.0 - SDR Video", the AMPAS
+/// `ODT.Academy.Rec2020_100nits_dim`.
+#[test]
+fn rec2020_sdr_matches_ocio() {
+    check("rec2020_sdr", acescg_to_rec2020_sdr, TOL);
 }
 
 #[test]

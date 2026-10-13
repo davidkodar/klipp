@@ -1361,20 +1361,7 @@ impl KlippApp {
                         // (or a Rec.709 project, which the encoder
                         // walks into AcesCG before applying the ODT).
                         ui.label("Output transform:");
-                        egui::ComboBox::from_id_salt("export_odt")
-                            .selected_text(self.export_dialog.odt.label())
-                            .show_ui(ui, |ui| {
-                                for choice in klipp_core::OdtChoice::ALL
-                                    .into_iter()
-                                    .filter(|c| c.fits(delivery) && c.suits_working_space(working))
-                                {
-                                    ui.selectable_value(
-                                        &mut self.export_dialog.odt,
-                                        choice,
-                                        choice.label(),
-                                    );
-                                }
-                            });
+                        output_transform_menu(ui, &mut self.export_dialog.odt, delivery, working);
                         ui.end_row();
 
                         // Plain-language hint so the default isn't
@@ -2118,6 +2105,69 @@ impl KlippApp {
         }
 
         cmds
+    }
+}
+
+/// The export's output transform menu: every transform that can serve
+/// `delivery` and suits a project in `working`, Rec.2020 SDR among the
+/// SDR ones (#901).
+fn output_transform_menu(ui: &mut egui::Ui, odt: &mut klipp_core::OdtChoice, delivery: klipp_core::HdrMode, working: klipp_core::WorkingColorspace) {
+    egui::ComboBox::from_id_salt("export_odt").selected_text(odt.label()).show_ui(ui, |ui| {
+        for choice in klipp_core::OdtChoice::ALL.into_iter().filter(|c| c.fits(delivery) && c.suits_working_space(working)) {
+            ui.selectable_value(odt, choice, choice.label());
+        }
+    });
+}
+
+#[cfg(test)]
+mod output_transform_menu_tests {
+    use klipp_core::{HdrMode, OdtChoice, WorkingColorspace};
+
+    /// One frame of the menu with `events`: what it drew, and where.
+    fn frame(ctx: &egui::Context, odt: &mut OdtChoice, delivery: HdrMode, events: Vec<egui::Event>) -> Vec<(String, egui::Pos2)> {
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 500.0))), events, ..Default::default() };
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| super::output_transform_menu(ui, odt, delivery, WorkingColorspace::AcesCG));
+        });
+        out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)), _ => None }).collect()
+    }
+
+    fn click(ctx: &egui::Context, odt: &mut OdtChoice, delivery: HdrMode, at: egui::Pos2) {
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(ctx, odt, delivery, vec![egui::Event::PointerMoved(at), button(true)]);
+        frame(ctx, odt, delivery, vec![egui::Event::PointerMoved(at), button(false)]);
+        frame(ctx, odt, delivery, vec![egui::Event::PointerGone]);
+    }
+
+    fn at(drawn: &[(String, egui::Pos2)], text: &str) -> Option<egui::Pos2> {
+        drawn.iter().rev().find(|(t, _)| t == text).map(|(_, p)| *p)
+    }
+
+    /// #901: an SDR export's menu offers Rec.2020 SDR, and picking it sets
+    /// the export's transform; an HDR delivery's menu does not offer it.
+    #[test]
+    fn rec2020_sdr_is_picked_from_an_sdr_exports_menu() {
+        let ctx = egui::Context::default();
+        let mut odt = OdtChoice::MatchViewer;
+        frame(&ctx, &mut odt, HdrMode::Sdr, Vec::new());
+        let shown = frame(&ctx, &mut odt, HdrMode::Sdr, Vec::new());
+        click(&ctx, &mut odt, HdrMode::Sdr, at(&shown, "Match Viewer").expect("the menu shows its choice"));
+        let open = frame(&ctx, &mut odt, HdrMode::Sdr, Vec::new());
+        let item = at(&open, "Rec.2020 SDR").unwrap_or_else(|| panic!("the SDR menu offers Rec.2020 SDR: {open:?}"));
+        click(&ctx, &mut odt, HdrMode::Sdr, item);
+        assert_eq!(odt, OdtChoice::Rec2020Sdr);
+        let shows = frame(&ctx, &mut odt, HdrMode::Sdr, Vec::new());
+        assert!(at(&shows, "Rec.2020 SDR").is_some(), "the menu shows the pick: {shows:?}");
+
+        // A PQ delivery's menu: no SDR transform to pick.
+        let ctx = egui::Context::default();
+        let mut odt = OdtChoice::MatchViewer;
+        frame(&ctx, &mut odt, HdrMode::Pq, Vec::new());
+        let shown = frame(&ctx, &mut odt, HdrMode::Pq, Vec::new());
+        click(&ctx, &mut odt, HdrMode::Pq, at(&shown, "Match Viewer").unwrap());
+        let open = frame(&ctx, &mut odt, HdrMode::Pq, Vec::new());
+        assert!(at(&open, "Rec.2100 PQ (1000 nit)").is_some(), "the PQ menu is open: {open:?}");
+        assert!(at(&open, "Rec.2020 SDR").is_none(), "an SDR transform offered for PQ: {open:?}");
     }
 }
 
