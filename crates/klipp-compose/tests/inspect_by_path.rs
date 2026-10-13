@@ -14,7 +14,7 @@
 use klipp_timeline::GradeAccess;
 use std::sync::Arc;
 
-use klipp_compose::{FrameSource, Inspect, InspectAt, RenderOptions, Renderer, SourceFrame, SourcePixels};
+use klipp_compose::{FrameSource, Inspect, InspectAt, LinearFrameProviderFn, RenderOptions, Renderer, SourceFrame, SourcePixels};
 use klipp_core::{ClipId, RationalTime, Timecode};
 use klipp_graph_format::lifted::Stage;
 use klipp_graph_format::path::{NodePath, Root};
@@ -222,12 +222,8 @@ fn a_soloed_node_inside_a_gpu_chain_is_shown() {
 /// engine's thumbnails from a filmstrip frame are (the clip alone, at the
 /// playhead) is read at that frame's clip time: its picture is the one
 /// its value there gives, at two frames with two values.
-///
-/// A source-neighbour node (a temporal denoise, a frame blend) runs before
-/// the grade, outside the plan: a request on one is unavailable, and says
-/// so, until it is a node of the plan (#1305).
 #[test]
-fn a_source_neighbour_node_tap_has_its_time_context() {
+fn a_keyed_node_tap_has_its_time_context() {
     // Source -> exposure keyed 0 at 0 s, 2 at 2 s -> exposure 0.5 -> Output.
     let e = NodeId::new_v4();
     let mut g = exposure(0.0, e);
@@ -255,21 +251,6 @@ fn a_source_neighbour_node_tap_has_its_time_context() {
             close(&format!("gpu {gpu}: the keyed node at {t} s"), &shown, &want);
         }
     }
-
-    // A temporal denoise: unavailable, never another node's picture.
-    let c = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
-    let denoise = (klipp_effects::registry::effect_type("temporal_denoise").unwrap().sample)();
-    let c = TestClip::of(c).effect(denoise).build();
-    let id = c.id;
-    let node = c.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_format::lifted::types::TEMPORAL_DENOISE).expect("a temporal denoise node").id;
-    let mut seq = Sequence::new_default();
-    let mut track = Track::new("V1", TrackKind::Video);
-    track.clips = vec![c];
-    seq.tracks = vec![track];
-    let at = InspectAt::out(NodePath::new(Root::Clip { clip: id.0 }, [node]));
-    let (_, found) = draw(&seq, false, Inspect { clip: Some(id), solo: Some(at.clone()), ..Default::default() });
-    let why = found.unavailable.iter().find(|(a, _)| *a == at).map(|(_, w)| w.clone()).expect("said to be unavailable");
-    assert!(why.contains("before the grade") && why.contains("#1305"), "{why}");
 }
 
 /// An identity grade the tools read inside still runs, so its nodes'
@@ -438,4 +419,161 @@ fn the_pictures_own_nodes_answer_their_thumbnails() {
             None => assert!(unavailable(&gamma).is_some(), "gpu {gpu}: {:?}", found.unavailable),
         }
     }
+}
+
+/// Media at 24 fps whose frames differ: frame `n` a ramp across the frame
+/// at one of three uneven levels in turn, so no frame is the mean of its
+/// neighbours. Its frames, the next one for a
+/// blend and its neighbours for a denoise, each by its media frame.
+struct Moving;
+
+const MEDIA_FPS: f64 = 24.0;
+
+fn moving(n: i64) -> Vec<f32> {
+    let level = [0.3, 0.4, 0.33][n.rem_euclid(3) as usize];
+    (0..W * H).flat_map(|i| {
+        let x = (i % W) as f32 / W as f32;
+        [level + 0.1 * x, level, level * 0.8, 1.0]
+    }).collect()
+}
+
+/// The media frame shown at `secs`: the one at or before it.
+fn frame_at(secs: f64) -> i64 {
+    (secs * MEDIA_FPS + 1e-6).floor() as i64
+}
+
+impl FrameSource for Moving {
+    fn frame(&mut self, _: &Clip, secs: f64, w: u32, h: u32) -> Option<SourceFrame> {
+        let n = frame_at(secs);
+        Some(SourceFrame { pixels: SourcePixels::Linear(Arc::new(moving(n))), width: w, height: h, pts: Some(n as f64 / MEDIA_FPS) })
+    }
+    fn frame_after(&mut self, _: &Clip, secs: f64, w: u32, h: u32) -> Option<SourceFrame> {
+        let n = frame_at(secs) + 1;
+        Some(SourceFrame { pixels: SourcePixels::Linear(Arc::new(moving(n))), width: w, height: h, pts: Some(n as f64 / MEDIA_FPS) })
+    }
+    fn temporal_frames_linear(&mut self, clip: &Clip, _: klipp_core::WorkingColorspace) -> Option<LinearFrameProviderFn> {
+        let source_in = clip.source_in.to_secs_f64();
+        Some(Box::new(move |t| Some((moving(((source_in + t) * MEDIA_FPS).round() as i64), W, H))))
+    }
+    fn media_range(&mut self, _: &Clip) -> Option<(f64, f64)> {
+        Some((0.0, 10.0))
+    }
+    fn media_fps(&mut self, _: &Clip) -> Option<f64> {
+        Some(MEDIA_FPS)
+    }
+}
+
+/// A media clip of `Moving` carrying `effects`, at half speed when
+/// `slowed`, graded by `grade` when given; its sequence at 24 fps.
+fn moving_clip(effects: &[klipp_effects::BuiltinEffect], slowed: bool, grade: Option<NodeGraph>) -> (Sequence, Clip) {
+    let out = if slowed { 1.0 } else { 2.0 };
+    let mut c = Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(out));
+    if slowed {
+        c.speed = 0.5;
+    }
+    let mut built = TestClip::of(c);
+    for e in effects {
+        built = built.effect(e.clone());
+    }
+    let mut c = built.build();
+    if let Some(g) = grade {
+        c.set_grade(g);
+    }
+    let mut seq = Sequence::new_default();
+    seq.fps = klipp_core::Fps::new(24, 1);
+    let mut track = Track::new("V1", TrackKind::Video);
+    track.clips = vec![c.clone()];
+    seq.tracks = vec![track];
+    (seq, c)
+}
+
+/// The output of `clip`'s picture node of type `type_id`.
+fn picture_node(clip: &Clip, type_id: &str) -> InspectAt {
+    let node = clip.picture_v2().unwrap().picture.graph.nodes.iter().find(|n| n.type_id.as_str() == type_id).unwrap_or_else(|| panic!("a {type_id} node")).id;
+    InspectAt::out(NodePath::new(Root::Clip { clip: clip.id.0 }, [node]))
+}
+
+fn moving_render(seq: &Sequence, gpu: bool, t: f64, inspect: Inspect) -> (Vec<f32>, klipp_compose::Inspection) {
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(gpu);
+    r.render_inspected(seq, tc(t), W, H, &mut Moving, RenderOptions::default(), inspect)
+}
+
+/// #1305: a temporal denoise is inspected with its neighbouring frames.
+/// Its tap is the picture after it in the normal render (the clip with
+/// the denoise and no grade), at frames whose neighbours differ, and its
+/// solo shows that picture; the clip's own grade after it doesn't reach
+/// either.
+#[test]
+fn a_temporal_denoise_is_inspected_with_its_neighbours() {
+    let denoise = klipp_effects::BuiltinEffect::TemporalDenoise { strength: 1.0, threshold: 0.2 };
+    let (graded, clip) = moving_clip(std::slice::from_ref(&denoise), false, Some(exposure(1.0, NodeId::new_v4())));
+    let (alone, _) = moving_clip(std::slice::from_ref(&denoise), false, None);
+    let (bare, _) = moving_clip(&[], false, None);
+    let at = picture_node(&clip, klipp_graph_format::lifted::types::TEMPORAL_DENOISE);
+    for gpu in [false, true] {
+        for t in [0.5, 0.5 + 1.0 / 24.0, 0.5 + 2.0 / 24.0] {
+            let what = format!("gpu {gpu} at {t:.3} s");
+            let (shown, found) = moving_render(&graded, gpu, t, Inspect { clip: Some(clip.id), scope_tap: Some(at.clone()), ..Default::default() });
+            assert!(found.unavailable.is_empty(), "{what}: {:?}", found.unavailable);
+            let tapped = found.scope_tap.unwrap_or_else(|| panic!("{what}: no tap"));
+            let after = moving_render(&alone, gpu, t, Inspect::default()).0;
+            close(&format!("{what}: the tap is the picture after the denoise"), &tapped, &after);
+            // Controls: the denoise changed the frame (its neighbours
+            // differ), and the grade after it changes the picture shown.
+            far(&format!("{what}: the denoise did something"), &tapped, &moving_render(&bare, gpu, t, Inspect::default()).0);
+            far(&format!("{what}: the tap isn't the graded picture"), &tapped, &shown);
+            // Run as nodes of their own for the tap, the picture is the
+            // one the render draws without it.
+            close(&format!("{what}: the picture shown"), &shown, &moving_render(&graded, gpu, t, Inspect::default()).0);
+            let (solo, found) = moving_render(&graded, gpu, t, Inspect { clip: Some(clip.id), solo: Some(at.clone()), ..Default::default() });
+            assert!(found.unavailable.is_empty(), "{what}: {:?}", found.unavailable);
+            close(&format!("{what}: the solo shows the picture after the denoise"), &solo, &after);
+        }
+    }
+}
+
+/// #1305: a slowed clip's frame blend and the denoise after it, each
+/// inspected: the blend's tap is the picture after the blend alone, the
+/// denoise's the picture after both, at frames between two media frames;
+/// a thumbnail of each comes back. At full speed nothing blends, and a
+/// request on the blend says it doesn't run.
+#[test]
+fn a_frame_blend_and_a_denoise_after_it_are_each_inspected() {
+    let blend = klipp_effects::BuiltinEffect::SpeedRamp { speed: 0.5, blend_mode: 1 };
+    let denoise = klipp_effects::BuiltinEffect::TemporalDenoise { strength: 1.0, threshold: 0.2 };
+    let (both, clip) = moving_clip(&[blend.clone(), denoise.clone()], true, Some(exposure(1.0, NodeId::new_v4())));
+    let (blend_alone, _) = moving_clip(std::slice::from_ref(&blend), true, None);
+    let (both_alone, _) = moving_clip(&[blend.clone(), denoise.clone()], true, None);
+    let at_blend = picture_node(&clip, klipp_graph_format::lifted::types::FRAME_BLEND);
+    let at_denoise = picture_node(&clip, klipp_graph_format::lifted::types::TEMPORAL_DENOISE);
+    for gpu in [false, true] {
+        // Odd timeline frames fall halfway between two media frames.
+        for t in [11.0 / 24.0, 13.0 / 24.0] {
+            let what = format!("gpu {gpu} at {t:.3} s");
+            let plain = moving_render(&both, gpu, t, Inspect::default()).0;
+            let tap = |at: &InspectAt| {
+                let (shown, found) = moving_render(&both, gpu, t, Inspect { clip: Some(clip.id), scope_tap: Some(at.clone()), ..Default::default() });
+                assert!(found.unavailable.is_empty(), "{what}: {:?}", found.unavailable);
+                close(&format!("{what}: the picture shown"), &shown, &plain);
+                found.scope_tap.unwrap_or_else(|| panic!("{what}: no tap"))
+            };
+            let (blended, denoised) = (tap(&at_blend), tap(&at_denoise));
+            close(&format!("{what}: the blend's tap"), &blended, &moving_render(&blend_alone, gpu, t, Inspect::default()).0);
+            close(&format!("{what}: the denoise's tap"), &denoised, &moving_render(&both_alone, gpu, t, Inspect::default()).0);
+            // Control: the two are told apart, so neither tap is the other
+            // node's.
+            far(&format!("{what}: the blend and the denoise"), &blended, &denoised);
+            let thumbs = Some([at_blend.clone(), at_denoise.clone()].into_iter().collect());
+            let (_, found) = moving_render(&both, gpu, t, Inspect { clip: Some(clip.id), thumbs, ..Default::default() });
+            assert!(found.thumbs.contains_key(&at_blend) && found.thumbs.contains_key(&at_denoise), "{what}: {:?}", found.unavailable);
+        }
+    }
+    // At full speed the blend doesn't run: said so, never another node's.
+    let (full, clip) = moving_clip(&[blend, denoise], false, None);
+    let at = picture_node(&clip, klipp_graph_format::lifted::types::FRAME_BLEND);
+    let (_, found) = moving_render(&full, false, 0.5, Inspect { clip: Some(clip.id), scope_tap: Some(at.clone()), ..Default::default() });
+    assert!(found.scope_tap.is_none(), "a tap on a blend that doesn't run");
+    let why = found.unavailable.iter().find(|(a, _)| *a == at).map(|(_, w)| w.clone()).expect("said to be unavailable");
+    assert!(why.contains("doesn't run"), "{why}");
 }

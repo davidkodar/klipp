@@ -119,11 +119,14 @@ fn node_of(seq: &Sequence, clip: ClipId, at: &InspectAt) -> Result<(NodeId, bool
                     Some(klipp_graph_format::types::LEGACY_EFFECT) if at.port.as_str() == "out" => Ok((*node, false)),
                     Some(klipp_graph_format::types::LEGACY_EFFECT) => Err(format!("an effect has no output {}", at.port)),
                     Some(klipp_graph_format::types::LEGACY_OFX) => Err("a plug-in effect runs outside the grade and can't be inspected yet".into()),
-                    // They read neighbouring source frames before the
-                    // grade runs, outside the plan (#1305).
-                    Some(klipp_graph_format::lifted::types::TEMPORAL_DENOISE | klipp_graph_format::lifted::types::FRAME_BLEND) => {
-                        Err("a temporal denoise or a frame blend runs before the grade, outside the plan, so it can't be inspected yet (#1305)".into())
-                    }
+                    // They read neighbouring source frames at the head of
+                    // the grade's run: an inspected clip runs each as a node
+                    // of its own under its picture node's id, fed those
+                    // frames (#1305). One that doesn't run this frame (a
+                    // blend at full speed, a second denoise) the run says
+                    // it doesn't hold.
+                    Some(klipp_graph_format::lifted::types::TEMPORAL_DENOISE | klipp_graph_format::lifted::types::FRAME_BLEND) if at.port.as_str() == "out" => Ok((*node, false)),
+                    Some(klipp_graph_format::lifted::types::TEMPORAL_DENOISE | klipp_graph_format::lifted::types::FRAME_BLEND) => Err(format!("a temporal denoise or a frame blend has no output {}", at.port)),
                     Some(_) if effect && at.port.as_str() == "out" => Ok((*node, false)),
                     _ => Err(why),
                 }
