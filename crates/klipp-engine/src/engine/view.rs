@@ -44,9 +44,13 @@ struct ViewerSource<'a> {
 /// at a size, so that is its key: the same key is the same pixels, after
 /// any number of seeks. The file is named by its path, length and
 /// modification time, so a file replaced on disk, or a relink to another
-/// file, is never shown through frames held from the one before. What keeps the hold to the parked frame is its
-/// size and its clearing: two frames, a temporal denoiser's pair, and
-/// emptied when playback starts, where every frame is a new time.
+/// file, is never shown through frames held from the one before. What
+/// keeps the hold to the parked frame is its size and its clearing: a
+/// temporal denoiser's pair at each of two render sizes, and emptied when
+/// playback starts, where every frame is a new time. Two sizes because a
+/// drag renders smaller than the frame it lets go on: with one pair, the
+/// release decoded the full-size pair again and the next drag the small
+/// one. At 4K the four are 266 MB and 66 MB.
 #[derive(Default)]
 pub(crate) struct NeighbourHold {
     frames: std::collections::VecDeque<(NeighbourKey, std::sync::Arc<Vec<f32>>, u32, u32)>,
@@ -66,8 +70,10 @@ struct NeighbourKey {
 }
 
 impl NeighbourHold {
-    /// Frames held at most: a temporal denoiser's two neighbours.
+    /// Frames held at each size: a temporal denoiser's two neighbours.
     const FRAMES: usize = 2;
+    /// Render sizes held at once: a drag's and its release's.
+    const SIZES: usize = 2;
 
     fn get(&self, key: &NeighbourKey) -> Option<(std::sync::Arc<Vec<f32>>, u32, u32)> {
         self.frames.iter().find(|(k, ..)| k == key).map(|(_, px, w, h)| (std::sync::Arc::clone(px), *w, *h))
@@ -75,8 +81,21 @@ impl NeighbourHold {
 
     fn put(&mut self, key: NeighbourKey, px: std::sync::Arc<Vec<f32>>, w: u32, h: u32) {
         self.frames.retain(|(k, ..)| *k != key);
-        if self.frames.len() >= Self::FRAMES {
-            self.frames.pop_front();
+        // The oldest of this size past its pair.
+        if self.frames.iter().filter(|(k, ..)| k.size == key.size).count() >= Self::FRAMES {
+            let oldest = self.frames.iter().position(|(k, ..)| k.size == key.size).expect("counted above");
+            self.frames.remove(oldest);
+        }
+        // A third size: the least recently stored size goes.
+        let mut sizes: Vec<(u32, u32)> = Vec::new();
+        for (k, ..) in self.frames.iter().rev() {
+            if !sizes.contains(&k.size) {
+                sizes.push(k.size);
+            }
+        }
+        if !sizes.contains(&key.size) && sizes.len() >= Self::SIZES {
+            let gone = *sizes.last().expect("at least SIZES");
+            self.frames.retain(|(k, ..)| k.size != gone);
         }
         self.frames.push_back((key, px, w, h));
     }
@@ -113,6 +132,29 @@ mod neighbour_hold_tests {
         assert_eq!(hold.get(&key(3)).map(|f| f.0[0]), Some(3.0));
         hold.clear();
         assert!(hold.get(&key(3)).is_none());
+    }
+
+    /// A drag's pair and its release's pair, at two sizes, are both held:
+    /// letting go and dragging again decode nothing. A third size drops
+    /// the size stored longest ago, so the hold stays at four frames.
+    #[test]
+    fn a_pair_is_held_at_each_of_two_sizes() {
+        let at = |micros, size| NeighbourKey { size, ..key(micros) };
+        let (small, full, other) = ((2, 1), (4, 2), (8, 4));
+        let mut hold = NeighbourHold::default();
+        for size in [small, full] {
+            hold.put(at(1, size), Arc::new(vec![1.0]), size.0, size.1);
+            hold.put(at(3, size), Arc::new(vec![3.0]), size.0, size.1);
+        }
+        for size in [small, full] {
+            assert!(hold.get(&at(1, size)).is_some() && hold.get(&at(3, size)).is_some(), "the pair at {size:?}");
+        }
+        hold.put(at(5, full), Arc::new(vec![5.0]), 4, 2);
+        assert!(hold.get(&at(1, full)).is_none() && hold.get(&at(1, small)).is_some(), "a third frame at a size drops that size's oldest");
+        hold.put(at(1, other), Arc::new(vec![1.0]), 8, 4);
+        assert!(hold.get(&at(1, small)).is_none() && hold.get(&at(3, small)).is_none(), "a third size drops the size stored longest ago");
+        assert!(hold.get(&at(5, full)).is_some() && hold.get(&at(1, other)).is_some());
+        assert!(hold.frames.len() <= NeighbourHold::FRAMES * NeighbourHold::SIZES);
     }
 }
 
