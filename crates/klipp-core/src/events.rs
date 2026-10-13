@@ -1282,6 +1282,25 @@ pub enum AppCommand {
     ExportProjectTemplate { path: PathBuf, to: PathBuf },
     /// Add the project template in the zip at `from` to the user's (#618).
     ImportProjectTemplate { from: PathBuf },
+    /// Put the files at `paths` in the Shared Library's collection
+    /// `collection` (#614), where they are: references, not copies. An
+    /// empty name means the collection the Library shows.
+    AddToSharedLibrary { paths: Vec<PathBuf>, collection: String },
+    /// Put the pool items' files in the Shared Library (#614), as
+    /// `AddToSharedLibrary` does.
+    AddMediaToSharedLibrary { media_ids: Vec<MediaId>, collection: String },
+    /// Take `path` out of the Shared Library's `collection` (#614); the
+    /// file and every project that imported it are left as they are.
+    RemoveFromSharedLibrary { collection: String, path: PathBuf },
+    /// Point the Shared Library's entry for `old` in `collection` at
+    /// `new`: a moved file found again (#614).
+    RelinkSharedLibraryItem { collection: String, old: PathBuf, new: PathBuf },
+    /// A new, empty Shared Library collection (#614).
+    CreateSharedCollection { name: String },
+    /// Rename a Shared Library collection (#614).
+    RenameSharedCollection { from: String, to: String },
+    /// Delete a Shared Library collection: its entries, not their files (#614).
+    DeleteSharedCollection { name: String },
     RemoveRecentProject { path: PathBuf },
     DeleteProject { path: PathBuf },
     RenameProjectOnDisk { old_path: PathBuf, new_name: String },
@@ -3597,6 +3616,10 @@ pub enum AppCommand {
     ApplyGradeFromLibrary { name: String, clip_ids: Vec<ClipId>, append: bool },
     /// Take `name` out of the grade library.
     DeleteGradeFromLibrary { name: String },
+    /// Label the library's grade `name` with the camera and profile it
+    /// was made for, and notes, to find it by (#614); empty ones take its
+    /// labels off. A label grades nothing by itself.
+    SetGradeLibraryLabels { name: String, camera: String, profile: String, notes: String },
     CaptureGradeStill { name: String },
     /// Delete a saved grade still by index.
     DeleteGradeStill { index: usize },

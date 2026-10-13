@@ -2,16 +2,42 @@
 //! a graded thumbnail of the clip it was taken from, to browse and apply
 //! to any clip. Kept with the whole-grade presets in the user's config
 //! folder (`presets/color`): `<name>.json`, the grade, and `<name>.png`,
-//! its thumbnail.
+//! its thumbnail; and `<name>.labels`, its labels as JSON (#614): the camera
+//! and profile it was made for, and notes. A label is only a note to
+//! search by: nothing grades footage from its camera by itself.
 
 use std::path::{Path, PathBuf};
 
 use klipp_nodes::NodeGraph;
 
+/// What a saved grade is labelled with (#614): words to find it by.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct GradeLabels {
+    #[serde(default)]
+    pub camera: String,
+    #[serde(default)]
+    pub profile: String,
+    #[serde(default)]
+    pub notes: String,
+}
+
+impl GradeLabels {
+    pub fn is_empty(&self) -> bool {
+        self.camera.trim().is_empty() && self.profile.trim().is_empty() && self.notes.trim().is_empty()
+    }
+
+    /// The labels as one line: camera, profile, then notes.
+    pub fn line(&self) -> String {
+        [&self.camera, &self.profile, &self.notes].into_iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("  \u{b7}  ")
+    }
+}
+
 /// One saved grade.
 pub struct LibraryGrade {
     pub name: String,
     pub graph: NodeGraph,
+    /// Its labels (#614).
+    pub labels: GradeLabels,
     /// Its thumbnail, sRGB RGBA8, when it has one.
     pub thumbnail: Option<klipp_render::still::Still>,
     pub texture: Option<egui::TextureHandle>,
@@ -32,7 +58,11 @@ pub fn load_in(dir: &Path) -> Vec<LibraryGrade> {
                 let rgba = img.to_rgba8();
                 klipp_render::still::Still { width: rgba.width(), height: rgba.height(), rgba: rgba.into_raw() }
             });
-            LibraryGrade { name, graph, thumbnail, texture: None }
+            let labels = std::fs::read_to_string(dir.join(format!("{}.labels", crate::presets::preset_stem(&name))))
+                .ok()
+                .and_then(|t| serde_json::from_str(&t).ok())
+                .unwrap_or_default();
+            LibraryGrade { name, graph, labels, thumbnail, texture: None }
         })
         .collect()
 }
@@ -57,11 +87,38 @@ pub fn save_in(dir: &Path, name: &str, graph: &NodeGraph, thumbnail: Option<&kli
     Ok(())
 }
 
-/// Take `name` out of the library in `dir`: its grade and its thumbnail.
+impl LibraryGrade {
+    /// Whether `query` (any case) is in its name or its labels; an empty
+    /// query matches every grade.
+    pub fn matches(&self, query: &str) -> bool {
+        let q = query.trim().to_lowercase();
+        q.is_empty() || [&self.name, &self.labels.camera, &self.labels.profile, &self.labels.notes].iter().any(|s| s.to_lowercase().contains(&q))
+    }
+}
+
+/// Label the grade `name` in the library in `dir` (#614): its labels
+/// replaced, or taken off when `labels` is empty.
+pub fn set_labels_in(dir: &Path, name: &str, labels: &GradeLabels) -> Result<(), String> {
+    let stem = crate::presets::preset_stem(name);
+    if !dir.join(format!("{stem}.json")).exists() {
+        return Err(format!("No grade \"{name}\" in the library"));
+    }
+    let path = dir.join(format!("{stem}.labels"));
+    if labels.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        return Ok(());
+    }
+    let json = serde_json::to_string_pretty(labels).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| format!("Could not label \"{name}\": {e}"))
+}
+
+/// Take `name` out of the library in `dir`: its grade, its thumbnail and
+/// its labels.
 pub fn delete_in(dir: &Path, name: &str) -> Result<(), String> {
     let stem = crate::presets::preset_stem(name);
     std::fs::remove_file(dir.join(format!("{stem}.json"))).map_err(|e| format!("Could not delete \"{name}\": {e}"))?;
     let _ = std::fs::remove_file(dir.join(format!("{stem}.png")));
+    let _ = std::fs::remove_file(dir.join(format!("{stem}.labels")));
     Ok(())
 }
 
@@ -104,6 +161,39 @@ mod tests {
         assert_eq!(load_in(&dir).iter().map(|g| g.name.as_str()).collect::<Vec<_>>(), vec!["A plain"]);
         assert!(!dir.join("Warm dusk.png").exists(), "its thumbnail goes with it");
         assert!(save_in(&dir, "  ", &warm, None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #614: a grade's labels come back with it, find it by any of its
+    /// words, survive saving the grade again, and go with it; a label on
+    /// a grade not in the library is refused, and empty labels are taken
+    /// off.
+    #[test]
+    fn a_grades_labels_come_back_and_find_it() {
+        let dir = temp_dir("labels");
+        save_in(&dir, "Night blue", &NodeGraph::default(), None).unwrap();
+        save_in(&dir, "Warm dusk", &NodeGraph::default(), None).unwrap();
+        let labels = GradeLabels { camera: "FX3".into(), profile: "S-Log3".into(), notes: "for interviews".into() };
+        set_labels_in(&dir, "Night blue", &labels).unwrap();
+        assert!(set_labels_in(&dir, "Nowhere", &labels).is_err());
+        let lib = load_in(&dir);
+        assert_eq!(lib[0].labels, labels);
+        assert!(lib[1].labels.is_empty());
+        let found = |q: &str| load_in(&dir).into_iter().filter(|g| g.matches(q)).map(|g| g.name).collect::<Vec<_>>();
+        assert_eq!(found("slog"), Vec::<String>::new());
+        assert_eq!(found("s-log"), vec!["Night blue"]);
+        assert_eq!(found("INTERVIEW"), vec!["Night blue"]);
+        assert_eq!(found("dusk"), vec!["Warm dusk"]);
+        assert_eq!(found(""), vec!["Night blue", "Warm dusk"]);
+        assert_eq!(lib[0].labels.line(), "FX3  \u{b7}  S-Log3  \u{b7}  for interviews");
+
+        save_in(&dir, "Night blue", &NodeGraph::default(), None).unwrap();
+        assert_eq!(load_in(&dir)[0].labels, labels, "saving the grade again keeps its labels");
+        set_labels_in(&dir, "Night blue", &GradeLabels::default()).unwrap();
+        assert!(!dir.join(format!("{}.labels", crate::presets::preset_stem("Night blue"))).exists() && load_in(&dir)[0].labels.is_empty());
+        set_labels_in(&dir, "Night blue", &labels).unwrap();
+        delete_in(&dir, "Night blue").unwrap();
+        assert!(std::fs::read_dir(&dir).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().contains("labels")), "its labels go with it");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

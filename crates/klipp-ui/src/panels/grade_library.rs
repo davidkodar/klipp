@@ -2,7 +2,9 @@
 //! grades, across projects, each as its thumbnail and name. Click one to
 //! pick it; Apply puts its grade on the selected clips, Add puts it after
 //! theirs; Save keeps the graded clip's grade under a name; the picked
-//! one can be deleted. Purely UI: it emits the library's commands.
+//! one can be deleted. Labels note the camera and profile a grade was
+//! made for, and the filter finds grades by name or label (#614). Purely
+//! UI: it emits the library's commands.
 
 use crate::grade_library::LibraryGrade;
 use crate::theme::KlippTheme;
@@ -14,6 +16,10 @@ pub struct GradeLibraryPanelState {
     pub picked: Option<String>,
     /// The name being typed for a save, while its field is open.
     pub saving: Option<String>,
+    /// Only the grades whose name or labels hold this (#614).
+    pub filter: String,
+    /// The picked grade's labels being edited, while their fields are open.
+    pub labelling: Option<crate::grade_library::GradeLabels>,
 }
 
 /// The library's row. `graded` is the clip whose grade a save keeps;
@@ -22,6 +28,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut GradeLibraryPanelState, library: &mut
     let mut cmds = Vec::new();
     if state.picked.as_ref().is_some_and(|p| !library.iter().any(|g| &g.name == p)) {
         state.picked = None;
+        state.labelling = None;
     }
     ui.horizontal(|ui| {
         ui.set_min_height(crate::theme::control::COMPACT);
@@ -67,9 +74,42 @@ pub fn show(ui: &mut egui::Ui, state: &mut GradeLibraryPanelState, library: &mut
         });
         return cmds;
     }
+    // The filter, and the picked grade's labels (#614).
+    ui.horizontal(|ui| {
+        ui.add_space(72.0);
+        ui.add(egui::TextEdit::singleline(&mut state.filter).hint_text("Find by name, camera, profile").desired_width(160.0));
+        let picked = state.picked.as_ref().and_then(|p| library.iter().find(|g| &g.name == p));
+        if let Some(grade) = picked {
+            if ui.add_enabled(state.labelling.is_none(), egui::Button::new("Labels").small()).on_hover_text("Note the camera and profile this grade was made for, to find it by. It grades nothing by itself.").clicked() {
+                state.labelling = Some(grade.labels.clone());
+            }
+            if !grade.labels.is_empty() {
+                ui.add(egui::Label::new(egui::RichText::new(grade.labels.line()).size(10.0).color(theme.text_dim)).truncate());
+            }
+        }
+    });
+    if let (Some(labels), Some(name)) = (state.labelling.as_mut(), state.picked.clone()) {
+        let mut close = false;
+        ui.horizontal(|ui| {
+            ui.add_space(72.0);
+            ui.add(egui::TextEdit::singleline(&mut labels.camera).hint_text("Camera").desired_width(70.0));
+            ui.add(egui::TextEdit::singleline(&mut labels.profile).hint_text("Profile").desired_width(70.0));
+            ui.add(egui::TextEdit::singleline(&mut labels.notes).hint_text("Notes").desired_width(110.0));
+            if ui.small_button("Keep").clicked() {
+                cmds.push(AppCommand::SetGradeLibraryLabels { name, camera: labels.camera.clone(), profile: labels.profile.clone(), notes: labels.notes.clone() });
+                close = true;
+            }
+            if ui.small_button("Cancel").clicked() {
+                close = true;
+            }
+        });
+        if close {
+            state.labelling = None;
+        }
+    }
     ui.horizontal_wrapped(|ui| {
         ui.add_space(72.0);
-        for grade in library.iter_mut() {
+        for grade in library.iter_mut().filter(|g| g.matches(&state.filter)) {
             if grade.texture.is_none() {
                 if let Some(t) = &grade.thumbnail {
                     let image = egui::ColorImage::from_rgba_unmultiplied([t.width as usize, t.height as usize], &t.rgba);
@@ -95,8 +135,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut GradeLibraryPanelState, library: &mut
                 let name = ui.add_sized([size.x, 12.0], egui::Label::new(egui::RichText::new(&grade.name).size(9.0).color(if picked { theme.text_primary } else { theme.text_dim })).truncate().sense(egui::Sense::click()).selectable(false));
                 resp | name
             }).inner;
-            if resp.on_hover_text(&grade.name).clicked() {
+            let hover = if grade.labels.is_empty() { grade.name.clone() } else { format!("{}\n{}", grade.name, grade.labels.line()) };
+            if resp.on_hover_text(hover).clicked() {
                 state.picked = if picked { None } else { Some(grade.name.clone()) };
+                state.labelling = None;
             }
         }
     });
@@ -143,7 +185,7 @@ mod tests {
     /// Delete takes it out.
     #[test]
     fn the_library_row_saves_picks_applies_and_deletes() {
-        let library = ["Teal shadows", "Warm dusk"].map(|n| LibraryGrade { name: n.into(), graph: Default::default(), thumbnail: Some(klipp_render::still::Still { rgba: vec![90; 64 * 36 * 4], width: 64, height: 36 }), texture: None }).into_iter().collect();
+        let library = ["Teal shadows", "Warm dusk"].map(|n| LibraryGrade { name: n.into(), graph: Default::default(), labels: Default::default(), thumbnail: Some(klipp_render::still::Still { rgba: vec![90; 64 * 36 * 4], width: 64, height: 36 }), texture: None }).into_iter().collect();
         let mut row = Row { ctx: egui::Context::default(), state: Default::default(), library, clock: 0.0, sent: Vec::new() };
         let (graded, targets) = (ClipId::new(), [ClipId::new(), ClipId::new()]);
 
@@ -168,5 +210,31 @@ mod tests {
         let want = |append| move |c: &AppCommand| matches!(c, AppCommand::ApplyGradeFromLibrary { name, clip_ids, append: a } if name == "Warm dusk" && *clip_ids == targets.to_vec() && *a == append);
         assert!(row.sent.iter().any(want(false)) && row.sent.iter().any(want(true)), "{:?}", row.sent);
         assert!(row.sent.iter().any(|c| matches!(c, AppCommand::DeleteGradeFromLibrary { name } if name == "Warm dusk")), "{:?}", row.sent);
+    }
+
+    /// #614, with pointer and key events: the picked grade's Labels opens
+    /// its camera, profile and notes, and Keep sends them; the filter
+    /// leaves only the grades whose name or labels hold what is typed.
+    #[test]
+    fn the_library_row_labels_and_finds_grades() {
+        let mut library: Vec<LibraryGrade> = ["Night blue", "Warm dusk"].map(|n| LibraryGrade { name: n.into(), graph: Default::default(), labels: Default::default(), thumbnail: None, texture: None }).into_iter().collect();
+        library[0].labels.camera = "FX3".into();
+        let mut row = Row { ctx: egui::Context::default(), state: Default::default(), library, clock: 0.0, sent: Vec::new() };
+        let (graded, targets) = (ClipId::new(), [ClipId::new()]);
+        assert!(row.frame(Vec::new(), Some(graded), &targets).iter().all(|(t, _)| t != "Labels"), "nothing picked, nothing to label");
+        row.click("Warm dusk", Some(graded), &targets);
+        row.click("Labels", Some(graded), &targets);
+        let field = row.frame(Vec::new(), Some(graded), &targets).into_iter().find(|(t, _)| t == "Profile").expect("the profile field").1;
+        for pressed in [true, false] {
+            row.frame(vec![egui::Event::PointerButton { pos: field, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }], Some(graded), &targets);
+        }
+        row.frame(vec![egui::Event::Text("HLG".into())], Some(graded), &targets);
+        row.click("Keep", Some(graded), &targets);
+        assert!(row.sent.iter().any(|c| matches!(c, AppCommand::SetGradeLibraryLabels { name, camera, profile, notes } if name == "Warm dusk" && camera.is_empty() && profile == "HLG" && notes.is_empty())), "{:?}", row.sent);
+        assert!(row.state.labelling.is_none());
+
+        row.state.filter = "fx3".into();
+        let shown = row.frame(Vec::new(), Some(graded), &targets);
+        assert!(shown.iter().any(|(t, _)| t == "Night blue") && !shown.iter().any(|(t, _)| t == "Warm dusk"), "found by its camera label");
     }
 }

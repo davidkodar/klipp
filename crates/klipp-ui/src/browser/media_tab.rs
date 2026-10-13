@@ -2068,6 +2068,13 @@ fn show_context_menu(
         });
         ui.close_menu();
     }
+    if ui.button("Add to Shared Library")
+        .on_hover_text("Keep this file in the Library's shared collection, to bring into any project. The file stays where it is.")
+        .clicked()
+    {
+        cmds.push(AppCommand::AddMediaToSharedLibrary { media_ids: vec![media_id], collection: String::new() });
+        ui.close_menu();
+    }
     // F-160: bin-side audio sync entries. The by-media variants
     // resolve to the first timeline clip using this media at
     // handler time; if no clip uses it yet they surface a toast.
@@ -2162,6 +2169,13 @@ fn show_multi_context_menu(
     if ui.button("Refresh Metadata").on_hover_text("Read these files again for what the camera recorded.").clicked() {
         ui.close_menu();
         cmds.push(AppCommand::RefreshMediaMetadata { media_ids: selected_ids.iter().copied().collect() });
+    }
+    if ui.button("Add to Shared Library")
+        .on_hover_text("Keep these files in the Library's shared collection, to bring into any project. The files stay where they are.")
+        .clicked()
+    {
+        ui.close_menu();
+        cmds.push(AppCommand::AddMediaToSharedLibrary { media_ids: selected_ids.iter().copied().collect(), collection: String::new() });
     }
     ui.menu_button("Create Synced Multicam", |ui| {
         let ids = || selected_ids.iter().copied().collect::<Vec<_>>();

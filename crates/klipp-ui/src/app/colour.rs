@@ -1844,6 +1844,19 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::SetGradeLibraryLabels { name, camera, profile, notes } => {
+                let Some(dir) = crate::grade_library::dir() else { return true };
+                let labels = crate::grade_library::GradeLabels { camera: camera.trim().into(), profile: profile.trim().into(), notes: notes.trim().into() };
+                match crate::grade_library::set_labels_in(&dir, name, &labels) {
+                    Ok(()) => {
+                        if let Some(g) = self.state.grade_library.iter_mut().find(|g| &g.name == name) {
+                            g.labels = labels;
+                        }
+                    }
+                    Err(why) => self.state.toast.show(why),
+                }
+                true
+            }
             AppCommand::ApplyGradeFromLibrary { name, clip_ids, append } => {
                 let Some(grade) = self.state.grade_library.iter().find(|g| &g.name == name).map(|g| g.graph.clone()) else {
                     self.state.toast.show(format!("No grade \"{name}\" in the library"));
