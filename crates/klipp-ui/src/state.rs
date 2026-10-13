@@ -2034,7 +2034,8 @@ pub struct AppState {
     pub show_preset_menu: bool,
     pub preset_save_name: String,
     pub show_preset_save: bool,
-    pub grade_presets: Vec<(String, klipp_nodes::NodeGraph)>,
+    /// The grade library, across projects (#899).
+    pub grade_library: Vec<crate::grade_library::LibraryGrade>,
     pub huesat_single_mode: bool,
     pub huesat_active_curve: u8, // 0-5 index for Single mode
 
@@ -4402,7 +4403,7 @@ impl Default for AppState {
             show_preset_menu: false,
             preset_save_name: String::new(),
             show_preset_save: false,
-            grade_presets: crate::presets::load_all_presets(),
+            grade_library: crate::grade_library::dir().map(|d| crate::grade_library::load_in(&d)).unwrap_or_default(),
             huesat_single_mode: false,
             huesat_active_curve: 0,
             show_scopes: false,

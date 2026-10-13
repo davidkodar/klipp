@@ -255,6 +255,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetActiveGradeStill { .. }
         | AppCommand::ToggleGradeStillCompare
         | AppCommand::WipeAgainstClip { .. }
+        | AppCommand::SaveGradeToLibrary { .. }
+        | AppCommand::DeleteGradeFromLibrary { .. }
         | AppCommand::SetSourceMedia { .. }
         | AppCommand::PlaySource
         | AppCommand::PauseSource
@@ -802,6 +804,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::CaptureGradeStill { .. }
         | AppCommand::DeleteGradeStill { .. }
         | AppCommand::ApplyGradeFromStill { .. }
+        | AppCommand::ApplyGradeFromLibrary { .. }
         | AppCommand::AddAudioEffectKeyframe { .. }
         | AppCommand::RemoveAudioEffectKeyframe { .. }
         | AppCommand::MoveAudioEffectKeyframe { .. }

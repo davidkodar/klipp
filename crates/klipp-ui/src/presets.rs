@@ -357,11 +357,8 @@ pub fn save_preset(name: &str, graph: &NodeGraph) -> Result<(), String> {
     save_preset_in(&user_presets_dir().ok_or("Cannot find config directory")?, name, graph)
 }
 
-fn save_preset_in(dir: &Path, name: &str, graph: &NodeGraph) -> Result<(), String> {
-    let safe_name: String = name.chars()
-        .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' })
-        .collect();
-    let file_name = format!("{safe_name}.json");
+pub(crate) fn save_preset_in(dir: &Path, name: &str, graph: &NodeGraph) -> Result<(), String> {
+    let file_name = format!("{}.json", preset_stem(name));
     let path = dir.join(&file_name);
     refuse_unreadable(&path, |t| read_colour_preset(&file_name, t).is_ok())?;
     // Revision 2 (#1089), through text so an f32 keeps today's digits.
@@ -377,11 +374,15 @@ fn save_preset_in(dir: &Path, name: &str, graph: &NodeGraph) -> Result<(), Strin
     Ok(())
 }
 
-/// Load presets from user directory.
-fn load_user_presets() -> Vec<(String, NodeGraph)> {
-    let Some(dir) = user_presets_dir() else { return Vec::new() };
+/// The file stem a whole-grade preset named `name` is saved under.
+pub(crate) fn preset_stem(name: &str) -> String {
+    name.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' }).collect()
+}
+
+/// The whole-grade presets in `dir`, by name.
+pub(crate) fn load_presets_in(dir: &Path) -> Vec<(String, NodeGraph)> {
     let mut presets = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else { return presets };
+    let Ok(entries) = std::fs::read_dir(dir) else { return presets };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("json") {
@@ -392,6 +393,11 @@ fn load_user_presets() -> Vec<(String, NodeGraph)> {
     }
     presets.sort_by(|a, b| a.0.cmp(&b.0));
     presets
+}
+
+/// Load presets from user directory.
+fn load_user_presets() -> Vec<(String, NodeGraph)> {
+    user_presets_dir().map(|dir| load_presets_in(&dir)).unwrap_or_default()
 }
 
 fn load_preset_file(path: &Path) -> Option<(String, NodeGraph)> {

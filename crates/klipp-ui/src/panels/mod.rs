@@ -14,6 +14,7 @@ pub mod preset_manager;
 // `crate::inspector::color_and_luts` to live alongside the rest of
 // the inspector.
 pub mod looks;
+pub mod grade_library;
 pub mod node_graph;
 pub mod node_graph_v2;
 pub mod node_inspector;

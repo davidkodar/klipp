@@ -1818,6 +1818,55 @@ impl KlippApp {
                 self.state.toast.show(told);
                 true
             }
+            AppCommand::SaveGradeToLibrary { clip_id, name } => {
+                let Some(dir) = crate::grade_library::dir() else {
+                    self.state.toast.show("No config folder to keep the grade library in");
+                    return true;
+                };
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let Some(clip) = seq.all_clips().find(|c| c.id == *clip_id) else { return true };
+                // Its thumbnail, as the strip shows it: the clip graded, at its middle.
+                let thumbnail = klipp_render::still::clip_still(clip, &self.state.media_pool, clip.duration().to_secs_f64() / 2.0, crate::graded_thumbs::THUMB_WIDTH, klipp_engine::video_decoder::working_colorspace()).ok();
+                match crate::grade_library::save_in(&dir, name, clip.grade(), thumbnail.as_ref()) {
+                    Ok(()) => {
+                        self.state.grade_library = crate::grade_library::load_in(&dir);
+                        self.state.toast.show(format!("Kept \"{}\" in the grade library", name.trim()));
+                    }
+                    Err(why) => self.state.toast.show(why),
+                }
+                true
+            }
+            AppCommand::DeleteGradeFromLibrary { name } => {
+                let Some(dir) = crate::grade_library::dir() else { return true };
+                match crate::grade_library::delete_in(&dir, name) {
+                    Ok(()) => self.state.grade_library = crate::grade_library::load_in(&dir),
+                    Err(why) => self.state.toast.show(why),
+                }
+                true
+            }
+            AppCommand::ApplyGradeFromLibrary { name, clip_ids, append } => {
+                let Some(grade) = self.state.grade_library.iter().find(|g| &g.name == name).map(|g| g.graph.clone()) else {
+                    self.state.toast.show(format!("No grade \"{name}\" in the library"));
+                    return true;
+                };
+                let (edits, refused) = grade_from_still_edits(&self.state.sequences[self.state.active_sequence_idx], &grade, clip_ids, *append);
+                if edits.is_empty() {
+                    if refused.is_empty() {
+                        self.state.toast.show("Select the clips to grade first");
+                    } else {
+                        self.state.toast.show(format!("Could not add \"{name}\": {}", refusals_line(&refused)));
+                    }
+                    return true;
+                }
+                let n = edits.len();
+                self.apply_edits_as_one(&edits, "Apply Grade from Library");
+                let mut told = format!("Applied \"{name}\" to {n} clip{}", if n == 1 { "" } else { "s" });
+                if !refused.is_empty() {
+                    told = format!("{told}; not to {}: {}", clip_ids.len() - n, refusals_line(&refused));
+                }
+                self.state.toast.show(told);
+                true
+            }
             AppCommand::ToggleGradeStillCompare => {
                 self.state.grade_still_compare = !self.state.grade_still_compare;
                 // One wipe at a time.
