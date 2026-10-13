@@ -2576,6 +2576,11 @@ pub struct AppState {
     pub project_templates_dir: Option<std::path::PathBuf>,
     /// The Save Project as Template dialog, when it is open (#618).
     pub save_template_dialog: Option<crate::panels::new_project_dialog::SaveTemplateDialog>,
+    /// The clip whose Frame Glide is being framed in the viewer (#611):
+    /// the viewer shows it without its move, its Start and End over it.
+    pub frame_glide_clip: Option<ClipId>,
+    /// A Frame Glide drag in the viewer, sent when it is let go.
+    pub frame_glide_drag: Option<crate::panels::frame_glide_tool::GlideDrag>,
     // Batch rename dialog (for bin media items).
     pub show_batch_rename_dialog: bool,
     /// Find and replace in titles (#1717): open, what is looked for, its
@@ -4619,6 +4624,8 @@ impl Default for AppState {
             show_new_project_dialog: false,
             project_templates_dir: None,
             save_template_dialog: None,
+            frame_glide_clip: None,
+            frame_glide_drag: None,
             show_batch_rename_dialog: false,
             show_title_find: false,
             title_find: Default::default(),

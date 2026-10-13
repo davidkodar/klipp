@@ -1555,6 +1555,7 @@ impl Track {
             matte_feather_keyframes: Vec::new(),
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
+            frame_glide: None,
             role: ClipRole::default(),
             speed: 1.0,
             speed_keyframes: Vec::new(),
@@ -1862,6 +1863,8 @@ impl Track {
             matte_feather_keyframes: mfeath_a,
             matte_choke_keyframes: mchoke_a,
             clip_markers: markers_a,
+            // A glide is the whole clip's move: each piece keeps its share of the keys (#611).
+            frame_glide: None,
             role: clip.role,
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
@@ -1937,6 +1940,8 @@ impl Track {
             matte_feather_keyframes: mfeath_b,
             matte_choke_keyframes: mchoke_b,
             clip_markers: markers_b,
+            // A glide is the whole clip's move: each piece keeps its share of the keys (#611).
+            frame_glide: None,
             role: clip.role,
             speed: clip.speed,
             speed_keyframes: clip.speed_keyframes.clone(),
@@ -2381,6 +2386,11 @@ pub struct Clip {
     /// Per-clip markers at specific times within the clip.
     #[serde(default)]
     pub clip_markers: Vec<ClipMarker>,
+    /// The clip's Frame Glide (#611): a move between two framings, written
+    /// into its position and scale keys over its visible length. `None`
+    /// for a clip without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_glide: Option<crate::frame_glide::FrameGlide>,
     /// Content role — determines timeline color coding.
     #[serde(default)]
     pub role: ClipRole,
@@ -2902,6 +2912,7 @@ impl Clip {
             matte_feather_keyframes: Vec::new(),
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
+            frame_glide: None,
             role: ClipRole::default(),
             speed: 1.0,
             speed_keyframes: Vec::new(),
@@ -3016,6 +3027,7 @@ impl Clip {
             matte_feather_keyframes: Vec::new(),
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
+            frame_glide: None,
             role: ClipRole::default(),
             speed: 1.0,
             speed_keyframes: Vec::new(),
@@ -3119,6 +3131,7 @@ impl Clip {
             matte_feather_keyframes: Vec::new(),
             matte_choke_keyframes: Vec::new(),
             clip_markers: Vec::new(),
+            frame_glide: None,
             role: ClipRole::default(),
             speed: 1.0,
             speed_keyframes: Vec::new(),

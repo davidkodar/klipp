@@ -190,6 +190,7 @@ fn show_bin_media_video(
         matte_feather_keyframes: Vec::new(),
         matte_choke_keyframes: Vec::new(),
         clip_markers: Vec::new(),
+        frame_glide: None,
         role: klipp_core::ClipRole::default(),
         speed: 1.0,
         speed_keyframes: Vec::new(),
@@ -878,6 +879,12 @@ fn show_clip_video(
     show_ken_burns_section(ui, theme, clip, cmds);
 
     ui.add_space(8.0);
+
+    // ── FRAME GLIDE ──
+    if matches!(clip.kind, klipp_timeline::ClipKind::Media { .. }) {
+        show_frame_glide_section(ui, theme, state, clip, cmds);
+        ui.add_space(8.0);
+    }
 
     // ── BEHAVIORS ──
     show_behaviors_section(ui, theme, clip, cmds);
@@ -3331,6 +3338,68 @@ fn title_data_has_animated_chars(td: &klipp_timeline::TitleData) -> bool {
     })
 }
 
+/// Frame Glide (#611): the clip's move between a Start and an End
+/// framing, framed in the viewer; its easing, Swap, Reset and Remove.
+/// A clip animated by hand is not glided over without asking.
+fn show_frame_glide_section(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState, clip: &Clip, cmds: &mut Vec<AppCommand>) {
+    use klipp_core::frame_glide::{FrameGlide, GlideFrame};
+    use klipp_timeline::frame_glide::GlideEasing;
+    let clip_id = clip.id;
+    let seq = state.sequence();
+    let (w, h) = (seq.resolution.width as f32, seq.resolution.height as f32);
+    let free = klipp_timeline::frame_glide::keys_are_free(clip, w, h);
+    let framing = state.frame_glide_clip == Some(clip_id);
+    section_card(ui, "FRAME GLIDE", theme, |ui| {
+        egui::Frame::default().inner_margin(egui::Margin::symmetric(14.0, 8.0)).show(ui, |ui| {
+            let set = |glide: FrameGlide, replace: bool| AppCommand::SetFrameGlide { clip_id, glide: Some(glide), replace_animation: replace };
+            if !free && clip.frame_glide.is_none() {
+                ui.label(egui::RichText::new("This clip's position or scale is animated already. Frame Glide would replace that animation.").size(11.0).color(theme.text_secondary));
+                if ui.button("Replace Animation with a Glide").clicked() {
+                    cmds.push(set(FrameGlide::default(), true));
+                    cmds.push(AppCommand::SetFrameGlideMode(Some(clip_id)));
+                }
+                return;
+            }
+            ui.horizontal_wrapped(|ui| {
+                let label = if framing { "Done" } else { "Frame in Viewer" };
+                let hover = if framing { "Back to the clip as it plays" } else { "Show the whole picture with the Start and End framings over it: drag one to move it, a corner to size it" };
+                if ui.button(label).on_hover_text(hover).clicked() {
+                    cmds.push(AppCommand::SetFrameGlideMode((!framing).then_some(clip_id)));
+                }
+                if let Some(glide) = clip.frame_glide {
+                    if ui.button("Swap Start/End").clicked() {
+                        cmds.push(set(FrameGlide { start: glide.end, end: glide.start, ..glide }, false));
+                    }
+                    if ui.button("Reset").on_hover_text("Both framings back to the whole frame").clicked() {
+                        cmds.push(set(FrameGlide { start: GlideFrame::FULL, end: GlideFrame::FULL, ..glide }, false));
+                    }
+                    if ui.button("Remove Glide").on_hover_text("Take the glide off, its keys with it").clicked() {
+                        cmds.push(AppCommand::SetFrameGlide { clip_id, glide: None, replace_animation: false });
+                    }
+                }
+            });
+            if let Some(glide) = clip.frame_glide {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Easing").size(11.0).color(theme.text_secondary));
+                    let mut easing = glide.easing;
+                    egui::ComboBox::from_id_salt(("frame_glide_easing", clip_id)).selected_text(easing.label()).show_ui(ui, |ui| {
+                        for e in GlideEasing::ALL {
+                            ui.selectable_value(&mut easing, e, e.label());
+                        }
+                    });
+                    if easing != glide.easing {
+                        cmds.push(set(FrameGlide { easing, ..glide }, false));
+                    }
+                });
+                let pct = |f: GlideFrame| format!("{:.0}%", 100.0 / f.width.max(0.01));
+                ui.label(egui::RichText::new(format!("Start {} \u{2192} End {} zoom", pct(glide.start), pct(glide.end))).size(11.0).color(theme.text_secondary));
+            } else if !framing {
+                ui.label(egui::RichText::new("Compose where the shot starts and ends over the picture; the move runs the clip's length, however it is trimmed.").size(11.0).color(theme.text_secondary));
+            }
+        });
+    });
+}
+
 fn show_ken_burns_section(ui: &mut egui::Ui, theme: &KlippTheme, clip: &Clip, cmds: &mut Vec<AppCommand>) {
     let clip_id = clip.id;
     let pad = 14.0;
@@ -4051,5 +4120,74 @@ mod row_style_tests {
         let multiply = open.iter().find(|(t, _)| t == "Multiply").expect("the blend menu").1;
         let cmds = click(multiply, &mut draw);
         assert!(matches!(cmds.as_slice(), [AppCommand::SetClipBlendMode { mode: klipp_core::BlendMode::Multiply, .. }]), "{cmds:?}");
+    }
+}
+
+#[cfg(test)]
+mod frame_glide_section_tests {
+    use super::*;
+    use klipp_core::frame_glide::{FrameGlide, GlideFrame};
+
+    /// The Video tab for `clip` in a sequence of its own, with `events`:
+    /// the commands pushed and the texts drawn.
+    fn frame(ctx: &egui::Context, clip: &Clip, events: Vec<egui::Event>) -> (Vec<AppCommand>, Vec<(String, egui::Pos2)>) {
+        let mut state = AppState::default();
+        state.sequences[0].tracks[0].clips = vec![clip.clone()];
+        let mut cmds = Vec::new();
+        let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 9000.0))), events, ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| show(ui, &KlippTheme::default(), &state, Some((clip, 0.0, true)), None, &mut cmds));
+        });
+        let texts = out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+            _ => None,
+        }).collect();
+        (cmds, texts)
+    }
+
+    fn click(ctx: &egui::Context, clip: &Clip, label: &str) -> Vec<AppCommand> {
+        frame(ctx, clip, Vec::new());
+        let texts = frame(ctx, clip, Vec::new()).1;
+        let pos = texts.iter().find(|(t, _)| t == label).map(|(_, p)| *p).unwrap_or_else(|| panic!("{label} is drawn: {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>()));
+        let button = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut cmds = frame(ctx, clip, vec![egui::Event::PointerMoved(pos), button(true)]).0;
+        cmds.extend(frame(ctx, clip, vec![button(false)]).0);
+        // The tab says each frame which matte the viewer previews: not the
+        // click's.
+        cmds.retain(|c| !matches!(c, AppCommand::SetInspectorMattePreviewTarget(_)));
+        cmds
+    }
+
+    fn media() -> Clip {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0))
+    }
+
+    /// #611: the Video tab enters Frame Glide for the clip; a glided clip
+    /// has Swap, Reset and Remove, each one edit; a clip animated by hand
+    /// is glided only by replacing its animation, said so.
+    #[test]
+    fn the_frame_glide_section_frames_swaps_resets_and_asks_before_replacing() {
+        let ctx = egui::Context::default();
+        let plain = media();
+        let cmds = click(&ctx, &plain, "Frame in Viewer");
+        assert!(matches!(&cmds[..], [AppCommand::SetFrameGlideMode(Some(id))] if *id == plain.id), "{cmds:?}");
+
+        let glide = FrameGlide { start: GlideFrame::FULL, end: GlideFrame { x: 0.1, y: 0.0, width: 0.5 }, ..FrameGlide::default() };
+        let (w, h) = (1920.0, 1080.0);
+        let glided = klipp_timeline::frame_glide::set(&plain, Some(glide), false, w, h).unwrap();
+        let cmds = click(&ctx, &glided, "Swap Start/End");
+        assert!(matches!(&cmds[..], [AppCommand::SetFrameGlide { glide: Some(g), replace_animation: false, .. }] if g.start == glide.end && g.end == glide.start), "{cmds:?}");
+        let cmds = click(&ctx, &glided, "Reset");
+        assert!(matches!(&cmds[..], [AppCommand::SetFrameGlide { glide: Some(g), .. }] if g.start == GlideFrame::FULL && g.end == GlideFrame::FULL), "{cmds:?}");
+        let cmds = click(&ctx, &glided, "Remove Glide");
+        assert!(matches!(&cmds[..], [AppCommand::SetFrameGlide { glide: None, .. }]), "{cmds:?}");
+
+        let mut animated = media();
+        // Its position and scale keyed by hand.
+        klipp_timeline::frame_glide::hold_at_rest(&mut animated);
+        let (_, texts) = frame(&ctx, &animated, Vec::new());
+        assert!(!texts.iter().any(|(t, _)| t == "Frame in Viewer"), "not glided over without asking");
+        let cmds = click(&ctx, &animated, "Replace Animation with a Glide");
+        assert!(matches!(&cmds[..], [AppCommand::SetFrameGlide { replace_animation: true, .. }, AppCommand::SetFrameGlideMode(Some(_))]), "{cmds:?}");
     }
 }

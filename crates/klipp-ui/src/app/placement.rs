@@ -452,6 +452,8 @@ impl KlippApp {
             // Left portion: keep original in, trim out to new_in
             track.clips[i].timeline_out = new_in;
             track.clips[i].source_out = clip.source_in + left_dur;
+            // A glide is the whole clip's move; the pieces keep their keys (#611).
+            track.clips[i].frame_glide = None;
 
             // Right portion: new clip starting at new_out
             let mut right_clip = klipp_timeline::Clip {
@@ -499,6 +501,7 @@ impl KlippApp {
                 matte_feather_keyframes: clip.matte_feather_keyframes.clone(),
                 matte_choke_keyframes: clip.matte_choke_keyframes.clone(),
                 clip_markers: clip.clip_markers.clone(),
+                frame_glide: None,
                 role: clip.role,
                 speed: clip.speed,
                 speed_keyframes: clip.speed_keyframes.clone(),
@@ -598,6 +601,8 @@ impl KlippApp {
             // Left portion
             track.clips[i].timeline_out = range_in;
             track.clips[i].source_out = clip.source_in + left_dur;
+            // A glide is the whole clip's move; the pieces keep their keys (#611).
+            track.clips[i].frame_glide = None;
 
             // Right portion
             let right_offset = range_out - clip.timeline_in;
@@ -646,6 +651,7 @@ impl KlippApp {
                 matte_feather_keyframes: clip.matte_feather_keyframes.clone(),
                 matte_choke_keyframes: clip.matte_choke_keyframes.clone(),
                 clip_markers: clip.clip_markers.clone(),
+                frame_glide: None,
                 role: clip.role,
                 speed: clip.speed,
                 speed_keyframes: clip.speed_keyframes.clone(),

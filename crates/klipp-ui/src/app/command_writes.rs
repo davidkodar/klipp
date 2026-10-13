@@ -267,7 +267,9 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ExportOtio { .. }
         // A template is kept outside the project (#618).
         | AppCommand::SaveProjectTemplate { .. }
-        | AppCommand::DeleteProjectTemplate { .. } => false,
+        | AppCommand::DeleteProjectTemplate { .. }
+        // Which clip the viewer frames for its glide (#611).
+        | AppCommand::SetFrameGlideMode(..) => false,
         // Write the picture, the project or the history, start a step of
         // their own, or aren't known to write nothing. The path edits are
         // among them; a path drag takes its own (`closes_path_drag`).
@@ -764,6 +766,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::BeginKeyframeDrag { .. }
         | AppCommand::EndKeyframeDrag { .. }
         | AppCommand::ApplyKenBurns { .. }
+        | AppCommand::SetFrameGlide { .. }
         | AppCommand::ClearTransformKeyframes { .. }
         | AppCommand::ClearVideoParamKeyframes { .. }
         | AppCommand::AutoDuckAudio { .. }

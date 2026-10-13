@@ -29,6 +29,7 @@
 //! * Serde-serialised types round-trip through the `.klipp` project format
 //!   via `klipp-project`; treat any breaking rename as a migration.
 
+pub mod frame_glide;
 pub mod assets;
 pub mod build_info;
 pub mod color_grade;

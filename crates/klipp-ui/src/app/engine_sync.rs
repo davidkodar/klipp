@@ -216,6 +216,7 @@ impl KlippApp {
                     break 'dispatch;
                 }
                 if self.handle_storyline_commands(&cmd) { break 'dispatch; }
+                if self.handle_frame_glide_commands(&cmd) { break 'dispatch; }
                 if self.handle_transition_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
                 if self.handle_playback_commands(&cmd, &mut needs_refresh) { break 'dispatch; }
                 if self.handle_transition_key_commands(&cmd) { break 'dispatch; }
@@ -308,6 +309,8 @@ pub(super) fn sync_sequence(state: &AppState, sequence: &klipp_timeline::SharedS
     // grade stands in as a clip: the engine gets the grade, never the
     // stand-in.
     settle_timeline_grade_proxy(&mut flat, None);
+    // The clip being framed for its glide, without its move (#611).
+    super::frame_glide::show_unmoved(&mut flat, state.frame_glide_clip);
     sequence.replace(flat);
 }
 

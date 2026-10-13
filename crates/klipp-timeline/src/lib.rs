@@ -80,6 +80,7 @@ pub use title_template_file::{read_templates, template_dir, TemplateFile, TEMPLA
 pub use title_fields::{FieldKind, LayerSize, LayerTiming, PublishedField, Timing, SIZE_RANGE as TITLE_SIZE_RANGE, SPEED_RANGE as TITLE_SPEED_RANGE};
 pub mod crossfade;
 pub mod flatten;
+pub mod frame_glide;
 pub mod insert_edit;
 pub mod magnetic;
 pub mod magnetic_commands;

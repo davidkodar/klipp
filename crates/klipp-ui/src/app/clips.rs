@@ -1836,6 +1836,7 @@ pub(super) fn duplicate_after(clip: &klipp_timeline::Clip) -> klipp_timeline::Cl
         matte_feather_keyframes: clip.matte_feather_keyframes.clone(),
         matte_choke_keyframes: clip.matte_choke_keyframes.clone(),
         clip_markers: clip.clip_markers.clone(),
+        frame_glide: None,
         role: clip.role,
         speed: clip.speed,
         speed_keyframes: clip.speed_keyframes.clone(),

@@ -131,12 +131,18 @@ pub fn flatten_sequence(seq: &Sequence, all_sequences: &[Sequence]) -> Sequence 
     // each sequence with its own groups, so a scene inside a compound
     // grades as it does on its own (#237); then each track's effects go
     // onto its clips the same way (#846).
-    if seq.bakes_for_render() || all_sequences.iter().any(Sequence::bakes_for_render) {
+    let mut flat = if seq.bakes_for_render() || all_sequences.iter().any(Sequence::bakes_for_render) {
         let bake = |s: &Sequence| s.baked_for_render().into_owned();
         let all: Vec<Sequence> = all_sequences.iter().map(bake).collect();
-        return flatten_within(&bake(seq), &all, &mut Vec::new(), None);
-    }
-    flatten_within(seq, all_sequences, &mut Vec::new(), None)
+        flatten_within(&bake(seq), &all, &mut Vec::new(), None)
+    } else {
+        flatten_within(seq, all_sequences, &mut Vec::new(), None)
+    };
+    // Each Frame Glide over its clip's length as it is now (#611): the
+    // viewer and the export both render from here, so a trim moves End
+    // to the clip's last frame in both.
+    crate::frame_glide::refresh(&mut flat);
+    flat
 }
 
 /// [`flatten_sequence`] within an instance: `namespace` is the clip
