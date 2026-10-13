@@ -3,14 +3,12 @@
 //! each a control or plainly a fact. Its timeline counts and storage
 //! are on the Info tab, its delivery on the Export page.
 
-use egui::{vec2, Align, Layout, RichText, Ui};
+use egui::{RichText, Ui};
 use klipp_core::{AppCommand, ViewerOverlay};
 
 use crate::state::AppState;
 use crate::theme::KlippTheme;
-
-/// A row's height.
-const ROW_H: f32 = 26.0;
+use super::rows::{point_row, row, switch};
 
 /// The sequence, for the inspector with nothing selected.
 pub fn show(ui: &mut Ui, theme: &KlippTheme, state: &AppState, cmds: &mut Vec<AppCommand>) {
@@ -107,52 +105,10 @@ fn gcd(a: u32, b: u32) -> u32 {
     if b == 0 { a } else { gcd(b, a % b) }
 }
 
-/// A label on the left and `value` on the right, no rule between rows.
-fn row(ui: &mut Ui, theme: &KlippTheme, label: &str, value: impl FnOnce(&mut Ui)) {
-    let w = ui.available_width();
-    ui.allocate_ui_with_layout(vec2(w, ROW_H), Layout::left_to_right(Align::Center), |ui| {
-        ui.add_space(14.0);
-        ui.label(RichText::new(label).size(12.5).color(theme.text_secondary));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.add_space(14.0);
-            value(ui);
-        });
-    });
-}
-
-/// An In or Out point: its timecode with a clear mark, or "Not set".
-fn point_row(ui: &mut Ui, theme: &KlippTheme, label: &str, tc: Option<String>, cmds: &mut Vec<AppCommand>, clear: AppCommand) {
-    row(ui, theme, label, |ui| match tc {
-        Some(tc) => {
-            if ui.add(egui::Button::new(RichText::new("\u{2715}").size(11.0)).frame(false)).on_hover_text(format!("Clear the {label} point")).clicked() {
-                cmds.push(clear);
-            }
-            ui.label(RichText::new(tc).monospace().size(12.5).color(theme.text_primary));
-        }
-        None => {
-            ui.label(RichText::new("Not set").size(12.5).color(theme.text_secondary));
-        }
-    });
-}
-
-/// A compact switch in the theme's colours.
-fn switch(ui: &mut Ui, theme: &KlippTheme, on: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(32.0, 18.0), egui::Sense::click());
-    let t = ui.ctx().animate_bool_with_time(resp.id, on, 0.12);
-    let track = if on { theme.accent } else { theme.bg_raised };
-    ui.painter().rect_filled(rect, 9.0, track);
-    let r = 7.0;
-    let x = egui::lerp(rect.left() + r + 2.0..=rect.right() - r - 2.0, t);
-    ui.painter().circle_filled(egui::pos2(x, rect.center().y), r, if on { theme.text_on_accent } else { theme.text_secondary });
-    if resp.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
-    resp
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::vec2;
 
     /// One frame of the view, with `events`: its text and its commands.
     fn frame(ctx: &egui::Context, state: &AppState, events: Vec<egui::Event>) -> (Vec<(String, egui::Pos2)>, Vec<AppCommand>) {

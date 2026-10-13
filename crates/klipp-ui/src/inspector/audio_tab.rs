@@ -89,193 +89,37 @@ pub fn show(
 }
 
 // ══════════════════════════════════════════════════
-// State 1: No clip selected — sequence/project properties
+// State 1: No clip selected — the sound going out
 // ══════════════════════════════════════════════════
 
+/// With no clip selected: the output the sound goes to and the master
+/// meter. The sequence's name and format are on the Video tab (and its
+/// counts on the Info tab), the master volume on the transport and the
+/// mixer's master fader, proxies on the Video tab, and the delivery
+/// format on the Export page; none is repeated here.
 fn show_sequence_properties(ui: &mut egui::Ui, theme: &KlippTheme, state: &AppState) {
-    let seq = state.sequence();
-    let pad = 14.0;
-    let row_h = 30.0;
+    use super::rows::{colour_row, text_row};
 
-    // ── SEQUENCE ──
-    section_card(ui, "SEQUENCE", theme, |ui| {
-        let w = ui.available_width();
-
-        info_row(ui, theme, pad, row_h, w, "Name", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                &seq.name, egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        info_row(ui, theme, pad, row_h, w, "Resolution", |ui, rx, cy| {
-            let text = format!("{} \u{00D7} {}", seq.resolution.width, seq.resolution.height);
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                text, egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        info_row(ui, theme, pad, row_h, w, "Frame rate", |ui, rx, cy| {
-            let fps = seq.fps.num as f64 / seq.fps.den.max(1) as f64;
-            let text = if (fps - fps.round()).abs() < 0.01 {
-                format!("{}  fps", fps.round() as u32)
-            } else {
-                format!("{:.3}  fps", fps)
-            };
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                text, egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        info_row(ui, theme, pad, row_h, w, "Duration", |ui, rx, cy| {
-            let dur = state.sequence_duration();
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                dur.to_timecode_string(), egui::FontId::monospace(13.0), theme.accent,
-            );
-        });
-
-        info_row(ui, theme, pad, row_h, w, "Colour", |ui, rx, cy| {
-            // SDR badge + BT.709
-            let badge_text = "SDR";
-            let badge_color = theme.marker_info;
-            let sub_text = "BT.709";
-            let dim = theme.text_dim;
-
-            let sub_galley = ui.painter().layout_no_wrap(
-                sub_text.to_string(), egui::FontId::proportional(12.0), dim,
-            );
-            let sub_w = sub_galley.size().x;
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                sub_text, egui::FontId::proportional(12.0), dim,
-            );
-            let badge_galley = ui.painter().layout_no_wrap(
-                badge_text.to_string(), egui::FontId::proportional(11.0), egui::Color32::WHITE,
-            );
-            let bw = badge_galley.size().x + 10.0;
-            let bh = 18.0;
-            let badge_rect = egui::Rect::from_min_size(
-                egui::pos2(rx - sub_w - 8.0 - bw, cy - bh / 2.0),
-                egui::vec2(bw, bh),
-            );
-            ui.painter().rect_filled(badge_rect, 2.0, badge_color);
-            ui.painter().text(
-                badge_rect.center(), egui::Align2::CENTER_CENTER,
-                badge_text, egui::FontId::proportional(11.0), egui::Color32::WHITE,
-            );
-        });
-    });
-
-    ui.add_space(8.0);
-
-    // ── AUDIO OUTPUT ──
-    section_card(ui, "AUDIO OUTPUT", theme, |ui| {
-        let w = ui.available_width();
-
-        info_row(ui, theme, pad, row_h, w, "Sample rate", |ui, rx, cy| {
-            let sr_khz = state.audio_sample_rate as f32 / 1000.0;
-            let sr_text = if sr_khz == sr_khz.floor() {
-                format!("{}  kHz", sr_khz as u32)
-            } else {
-                format!("{:.1}  kHz", sr_khz)
-            };
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                sr_text, egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        info_row(ui, theme, pad, row_h, w, "Bit depth", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                "24-bit", egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        info_row(ui, theme, pad, row_h, w, "Channels", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                "Stereo (L/R)", egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        // Master volume knob (visual only)
+    section_card(ui, "OUTPUT", theme, |ui| {
+        if state.audio_backend_ok {
+            colour_row(ui, theme, "Device", "Open", theme.marker_success);
+            let khz = state.audio_sample_rate as f32 / 1000.0;
+            let rate = if khz == khz.floor() { format!("{} kHz", khz as u32) } else { format!("{khz:.1} kHz") };
+            text_row(ui, theme, "Sample rate", rate);
+        } else {
+            colour_row(ui, theme, "Device", "Not open", theme.marker_error);
+        }
         ui.add_space(4.0);
-        let (knob_row, _) = ui.allocate_exact_size(egui::vec2(w, 50.0), egui::Sense::hover());
-        // Knob circle
-        let knob_center = egui::pos2(knob_row.min.x + pad + 24.0, knob_row.center().y);
-        let knob_r = 20.0;
-        ui.painter().circle_stroke(knob_center, knob_r, egui::Stroke::new(2.0_f32, theme.border_light));
-        // Knob indicator — maps master_volume (0.0–2.0) to angle range
-        let vol_frac = (state.master_volume / 2.0).clamp(0.0, 1.0);
-        // Sweep from 225° (min, bottom-left) to -45° (max, bottom-right) = 270° range
-        let angle = (std::f32::consts::PI * 1.25) - vol_frac * (std::f32::consts::PI * 1.5);
-        let ind_end = egui::pos2(
-            knob_center.x + knob_r * 0.7 * angle.cos(),
-            knob_center.y - knob_r * 0.7 * angle.sin(),
-        );
-        ui.painter().line_segment([knob_center, ind_end], egui::Stroke::new(2.5_f32, theme.accent));
-        // Label
-        ui.painter().text(
-            egui::pos2(knob_center.x + knob_r + 12.0, knob_row.center().y - 10.0),
-            egui::Align2::LEFT_CENTER,
-            "MASTER VOLUME", egui::FontId::proportional(10.0), theme.text_dim,
-        );
-        ui.painter().text(
-            egui::pos2(knob_center.x + knob_r + 12.0, knob_row.center().y + 8.0),
-            egui::Align2::LEFT_CENTER,
-            format!("{:.1} dB", 20.0 * state.master_volume.max(0.0001).log10()),
-            egui::FontId::proportional(13.0), theme.text_primary,
-        );
-        // Keyframe diamond
-        let kf_pos = egui::pos2(knob_row.max.x - pad - 6.0, knob_row.center().y + 8.0);
-        draw_keyframe_diamond(ui, kf_pos, theme.text_dim, false);
     });
 
-    ui.add_space(8.0);
-
-    // ── LOUDNESS METER ──
     section_card(ui, "LOUDNESS METER", theme, |ui| {
         crate::panels::audio_mixer::draw_inspector_meter(ui, theme, state, (state.master_peak_left, state.master_peak_right));
     });
 
-    ui.add_space(8.0);
-
-    // ── RENDER SETTINGS ──
-    section_card(ui, "RENDER SETTINGS", theme, |ui| {
-        let w = ui.available_width();
-
-        // Format
-        info_row(ui, theme, pad, row_h, w, "Format", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                "H.264 / AAC", egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        // Quality (encoder preset)
-        info_row(ui, theme, pad, row_h, w, "Quality", |ui, rx, cy| {
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                "High", egui::FontId::proportional(13.0), theme.text_primary,
-            );
-        });
-
-        // Proxy
-        info_row(ui, theme, pad, row_h, w, "Proxy", |ui, rx, cy| {
-            let proxy_text = if state.use_proxies { "On" } else { "Off" };
-            let color = if state.use_proxies { theme.marker_success } else { theme.text_primary };
-            ui.painter().text(
-                egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                proxy_text, egui::FontId::proportional(13.0), color,
-            );
-        });
+    ui.add_space(12.0);
+    ui.vertical_centered(|ui| {
+        ui.label(egui::RichText::new("Select a clip to see its sound.").size(12.0).color(theme.text_secondary));
     });
-
-    ui.add_space(8.0);
 }
 
 // ══════════════════════════════════════════════════
@@ -1395,5 +1239,53 @@ fn draw_stereo_meter(ui: &mut egui::Ui, theme: &KlippTheme, peak_l: f32, peak_r:
 
     if ms.smooth_l > 0.001 || ms.smooth_r > 0.001 || ms.peak_hold_l > 0.005 || ms.peak_hold_r > 0.005 {
         ui.ctx().request_repaint();
+    }
+}
+
+#[cfg(test)]
+mod sequence_properties_tests {
+    use super::*;
+    use crate::inspector::rows::test_frame::frame;
+
+    fn texts(state: &AppState) -> Vec<String> {
+        let ctx = egui::Context::default();
+        let (texts, _) = frame(&ctx, Vec::new(), |ui, theme, _| show_sequence_properties(ui, theme, state));
+        texts.into_iter().map(|(t, _)| t).collect()
+    }
+
+    /// With nothing selected the Audio tab shows the real output: the
+    /// device's state and its sample rate, and the master meter. Nothing
+    /// in it is a fixed word posing as a setting.
+    #[test]
+    fn the_output_is_shown_as_it_is() {
+        let state = AppState { audio_backend_ok: true, audio_sample_rate: 44_100, ..Default::default() };
+        let all = texts(&state);
+        for label in ["OUTPUT", "Device", "Open", "Sample rate", "44.1 kHz", "LOUDNESS METER"] {
+            assert!(all.iter().any(|t| t == label), "{label}: {all:?}");
+        }
+        for fake in ["24-bit", "Stereo (L/R)", "H.264 / AAC", "High", "SDR", "BT.709", "RENDER SETTINGS", "MASTER VOLUME", "Bit depth", "Channels"] {
+            assert!(!all.iter().any(|t| t == fake), "{fake} is not a real setting here: {all:?}");
+        }
+
+        let state = AppState { audio_backend_ok: false, ..Default::default() };
+        let all = texts(&state);
+        assert!(all.iter().any(|t| t == "Not open"), "{all:?}");
+        assert!(!all.iter().any(|t| t == "Sample rate"), "no rate without a device: {all:?}");
+    }
+
+    /// What left this view is still shown where it belongs: the
+    /// sequence's name, format and proxies switch on the Video tab's
+    /// nothing-selected view.
+    #[test]
+    fn what_moved_is_on_the_video_tab() {
+        let state = AppState::default();
+        let ctx = egui::Context::default();
+        let (texts, _) = frame(&ctx, Vec::new(), |ui, theme, cmds| crate::inspector::sequence_view::show(ui, theme, &state, cmds));
+        let all: Vec<String> = texts.into_iter().map(|(t, _)| t).collect();
+        let seq = state.sequence();
+        assert!(all.contains(&seq.name), "{all:?}");
+        assert!(all.contains(&crate::inspector::sequence_view::format_line(&state)), "{all:?}");
+        assert!(all.contains(&crate::inspector::sequence_view::colour_line(&state)), "{all:?}");
+        assert!(all.iter().any(|t| t == "Use proxies"), "{all:?}");
     }
 }
