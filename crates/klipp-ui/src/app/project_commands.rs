@@ -4,6 +4,108 @@
 use super::*;
 
 impl KlippApp {
+    /// Reset to a new project's first sequence, in this format or from
+    /// the template file (its copied media going into `project_dir`).
+    /// `false`, with the reason shown, when the template does not read;
+    /// the project open stays open then.
+    #[allow(clippy::too_many_arguments)]
+    fn start_new_project(
+        &mut self,
+        name: &str,
+        sequence_name: &str,
+        (fps_num, fps_den): (u32, u32),
+        (width, height): (u32, u32),
+        template: Option<&std::path::Path>,
+        project_dir: &std::path::Path,
+        hdr: bool,
+    ) -> bool {
+        let (fps_num, fps_den, width, height) = (&fps_num, &fps_den, &width, &height);
+        // From a template (#618): read before anything is reset, so
+        // one that no longer reads leaves the open project open.
+        // Its starter content's copied media goes into the new
+        // project's folder.
+        let made = template.map(|p| klipp_project::template::ProjectTemplate::load(p).and_then(|t| t.instantiate_at(p, project_dir)));
+        let from_template = match made {
+            None => None,
+            Some(Ok(t)) => Some(t),
+            Some(Err(e)) => {
+                self.state.toast.show(format!("The template could not be read: {e}"));
+                return false;
+            }
+        };
+        // "Automatic" FPS: use 24fps as placeholder, auto-set from first clip
+        let fps = if *fps_num == 0 || *fps_den == 0 {
+            klipp_core::Fps::new(24, 1)
+        } else {
+            klipp_core::Fps::new(*fps_num, *fps_den)
+        };
+        // "Automatic" resolution: use 1920×1080 as placeholder, auto-set from first clip
+        let resolution = if *width == 0 || *height == 0 {
+            klipp_core::Resolution { width: 1920, height: 1080 }
+        } else {
+            klipp_core::Resolution { width: *width, height: *height }
+        };
+        let seq_name = if sequence_name.is_empty() { name } else { sequence_name }.to_string();
+        let seq = klipp_timeline::Sequence {
+            // A new sequence starts without a camera; a nest that goes
+            // back into its parent is moved by the parent's.
+            camera: klipp_timeline::Camera::default(),
+            timeline_graph: None,
+            grade_groups: Vec::new(),
+            title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
+            node_labels: Vec::new(),
+            drop_frame: klipp_timeline::Sequence::default_drop_frame(fps),
+            id: klipp_core::SequenceId::new(),
+            name: seq_name,
+            fps,
+            resolution,
+            first_clip_autoset: klipp_timeline::FirstClipAutoSet {
+                resolution: *width == 0 || *height == 0,
+                fps: *fps_num == 0 || *fps_den == 0,
+            },
+            tracks: {
+                let mut tracks = vec![
+                    klipp_timeline::Track::new("Video 1", klipp_timeline::TrackKind::Video),
+                    klipp_timeline::Track::new("Audio 1", klipp_timeline::TrackKind::Audio),
+                ];
+                tracks[0].magnetic_role = klipp_timeline::TrackRole::Primary;
+                tracks[1].magnetic_role = klipp_timeline::TrackRole::Connected;
+                tracks
+            },
+            in_point: None,
+            out_point: None,
+            markers: Vec::new(),
+            last_playhead: None,
+            brief: None,
+            edit_plan: None,
+        };
+        // The same reset closing a project does. Resetting only the
+        // UI's copy left the engine on the last project: its
+        // decoders, parked frame and playhead, and its media pool,
+        // so the new timeline was drawn with the old footage.
+        self.media_watcher = None;
+        self.reset_project_state();
+        self.state.sequences = vec![seq];
+        let mut fps = fps;
+        if let Some(made) = from_template {
+            self.apply_template(made);
+            fps = self.state.sequences[0].fps;
+        }
+        self.state.active_sequence_idx = 0;
+        self.state.fps = fps;
+        self.state.created_at = Some(klipp_project::iso8601_now());
+        self.state.filmstrip_generating = false;
+        let seq_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
+        self.state.playhead = klipp_core::RationalTime::from_frames(0, seq_rate);
+        self.state.filmstrip_total_queued = 0;
+        self.state.filmstrip_completed = 0;
+        if hdr {
+            self.state.project_working_colorspace = klipp_core::WorkingColorspace::Bt2020Linear;
+        }
+        self.sync_sequence_to_engine();
+        true
+    }
+
     /// A track's attributes copied and pasted, and its own effects added,
     /// switched and taken off (#846): each change one undo step, through
     /// `SetTrackSettings`.
@@ -142,9 +244,8 @@ impl KlippApp {
                     self.state.unsaved_dialog_action = UnsavedAction::OpenNewProjectDialog;
                     return true;
                 }
-                self.new_project_dialog.reset(
-                    self.prefs.general.default_project_dir.as_ref(),
-                );
+                let root = self.projects_root();
+                self.new_project_dialog.reset(Some(&root));
                 let templates = self.project_templates_dir();
                 self.new_project_dialog.load_templates(&templates);
                 self.state.show_new_project_dialog = true;
@@ -163,24 +264,81 @@ impl KlippApp {
                 true
             }
             AppCommand::SaveProject => {
-                match self.state.project_path.clone() {
-                    Some(path) => {
+                let path = self.state.project_path.clone();
+                let untitled = crate::project_paths::is_untitled(path.as_deref());
+                match path {
+                    Some(path) if !untitled && self.unnamed_project.as_ref() != Some(&path) => {
                         self.do_save_project(&path);
                     }
-                    // Never saved: ask where, off the UI thread. The
+                    // Never named: ask its name and where, off the UI
+                    // thread, starting in the projects root (#1864). The
                     // answer comes back as Save As.
-                    None => crate::file_dialog::spawn(|| {
-                        rfd::FileDialog::new()
-                            .set_title("Save Project")
-                            .pick_folder()
-                            .map(|path| vec![AppCommand::SaveProjectAs { path }])
-                            .unwrap_or_default()
-                    }),
+                    _ => {
+                        let root = self.projects_root();
+                        // A name not yet taken there, so accepting the
+                        // offer never lands on another project.
+                        let name = crate::project_paths::free_project_name(&root, crate::project_paths::UNTITLED);
+                        crate::file_dialog::spawn(move || {
+                            rfd::FileDialog::new()
+                                .set_title("Save Project")
+                                .set_directory(&root)
+                                .set_file_name(&name)
+                                .save_file()
+                                .map(|path| vec![AppCommand::SaveProjectAs { path }])
+                                .unwrap_or_default()
+                        });
+                    }
                 }
                 true
             }
             AppCommand::SaveProjectAs { path } => {
                 let path = ensure_klipp_extension(path.clone());
+                // Never over another project: it would write its
+                // project.json over that one's.
+                if let Some(why) = crate::project_paths::save_as_refusal(&path, self.state.project_path.as_deref()) {
+                    self.state.toast.show(why);
+                    return true;
+                }
+                if self.project_copy.is_some() {
+                    self.state.toast.show("The project is still being copied; save again once it is done.");
+                    return true;
+                }
+                // The Untitled one written on its first edit moves to the
+                // name and place given, rather than leaving a copy behind.
+                // The lock and the unnamed mark stay with it until the
+                // move has happened; on a failure it stays the locked
+                // Untitled project it was.
+                if let Some(written) = self.unnamed_project.clone().filter(|w| *w != path && self.state.project_path.as_ref() == Some(w)) {
+                    self.wait_for_autosave();
+                    match crate::project_paths::rename_project_folder(&written, &path) {
+                        Ok(crate::project_paths::RenameOutcome::Renamed) => {
+                            self.lock_keeper.take();
+                            self.finish_project_move(&written, &path, true);
+                        }
+                        // Another filesystem: copied on a thread of its
+                        // own, with progress; the original is kept.
+                        Ok(crate::project_paths::RenameOutcome::NeedsCopy) => {
+                            let (tx, done) = std::sync::mpsc::channel();
+                            let copied = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+                            let total = crate::project_paths::tree_size(&written);
+                            let (from, to, counter) = (written.clone(), path.clone(), copied.clone());
+                            let spawned = std::thread::Builder::new().name("project-copy".into()).spawn(move || {
+                                let _ = tx.send(crate::project_paths::copy_project_tree_counting(&from, &to, &counter));
+                            });
+                            match spawned {
+                                Ok(_) => {
+                                    self.project_copy = Some(ProjectCopy { from: written, to: path, done, copied, total, shown_at: std::time::Instant::now() });
+                                }
+                                Err(e) => self.state.toast.show(format!("The project could not be copied there: {e}")),
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Could not move {written:?} to {path:?}: {e}");
+                            self.state.toast.show(format!("The project could not be moved there: {e}. It stays where it was."));
+                        }
+                    }
+                    return true;
+                }
                 self.do_save_project(&path);
                 true
             }
@@ -209,6 +367,11 @@ impl KlippApp {
             }
             AppCommand::RemoveRecentProject { path } => {
                 self.prefs.general.recent_projects.retain(|rp| rp.path != *path);
+                self.prefs_dirty = true;
+                true
+            }
+            AppCommand::SetFormatRate { rate } => {
+                self.prefs.general.last_format_rate = Some(*rate);
                 self.prefs_dirty = true;
                 true
             }
@@ -345,100 +508,40 @@ impl KlippApp {
                 true
             }
             AppCommand::CreateProject {
-                name, location, fps_num, fps_den, width, height, sequence_name, template,
+                name, location, fps_num, fps_den, width, height, sequence_name, template, hdr,
             } => {
                 let project_dir = location.join(format!("{name}.klipp"));
-                // From a template (#618): read before anything is reset, so
-                // one that no longer reads leaves the open project open.
-                // Its starter content's copied media goes into the new
-                // project's folder.
-                let made = template.as_deref().map(|p| klipp_project::template::ProjectTemplate::load(p).and_then(|t| t.instantiate_at(p, &project_dir)));
-                let from_template = match made {
-                    None => None,
-                    Some(Ok(t)) => Some(t),
-                    Some(Err(e)) => {
-                        self.state.toast.show(format!("The template could not be read: {e}"));
+                if !self.start_new_project(name, sequence_name, (*fps_num, *fps_den), (*width, *height), template.as_deref(), &project_dir, *hdr) {
+                    return true;
+                }
+                self.state.project_path = Some(project_dir.clone());
+                // Save immediately so the .klipp directory is created. The
+                // projects root is the user's to choose in Preferences: a
+                // place one project was made is not where every next one
+                // goes (#1864).
+                self.do_save_project(&project_dir);
+                tracing::info!("Created new project at {:?}", project_dir);
+                true
+            }
+            AppCommand::NewUntitledProject { fps_num, fps_den, width, height, template, hdr } => {
+                // Unsaved and Untitled: written on its first real edit or a
+                // save, and closed untouched it leaves nothing (#1864). A
+                // template's copied media waits in the cache till then.
+                let staging = match crate::project_paths::make_staging(&crate::project_paths::untitled_cache_dir(), &self.lock_holder) {
+                    Ok(staging) => staging,
+                    Err(e) => {
+                        self.state.toast.show(format!("A new project could not be started: {e}"));
                         return true;
                     }
                 };
-                // "Automatic" FPS: use 24fps as placeholder, auto-set from first clip
-                let fps = if *fps_num == 0 || *fps_den == 0 {
-                    klipp_core::Fps::new(24, 1)
-                } else {
-                    klipp_core::Fps::new(*fps_num, *fps_den)
-                };
-                // "Automatic" resolution: use 1920×1080 as placeholder, auto-set from first clip
-                let resolution = if *width == 0 || *height == 0 {
-                    klipp_core::Resolution { width: 1920, height: 1080 }
-                } else {
-                    klipp_core::Resolution { width: *width, height: *height }
-                };
-                let seq_name = if sequence_name.is_empty() {
-                    name.clone()
-                } else {
-                    sequence_name.clone()
-                };
-                let seq = klipp_timeline::Sequence {
-                    // A new sequence starts without a camera; a nest that goes
-                    // back into its parent is moved by the parent's.
-                    camera: klipp_timeline::Camera::default(),
-                    timeline_graph: None,
-                    grade_groups: Vec::new(),
-                    title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
-                    node_labels: Vec::new(),
-                    drop_frame: klipp_timeline::Sequence::default_drop_frame(fps),
-                    id: klipp_core::SequenceId::new(),
-                    name: seq_name,
-                    fps,
-                    resolution,
-                    first_clip_autoset: klipp_timeline::FirstClipAutoSet {
-                        resolution: *width == 0 || *height == 0,
-                        fps: *fps_num == 0 || *fps_den == 0,
-                    },
-                    tracks: {
-                        let mut tracks = vec![
-                            klipp_timeline::Track::new("Video 1", klipp_timeline::TrackKind::Video),
-                            klipp_timeline::Track::new("Audio 1", klipp_timeline::TrackKind::Audio),
-                        ];
-                        tracks[0].magnetic_role = klipp_timeline::TrackRole::Primary;
-                        tracks[1].magnetic_role = klipp_timeline::TrackRole::Connected;
-                        tracks
-                    },
-                    in_point: None,
-                    out_point: None,
-                    markers: Vec::new(),
-                    last_playhead: None,
-                    brief: None,
-                    edit_plan: None,
-                };
-                // The same reset closing a project does. Resetting only the
-                // UI's copy left the engine on the last project: its
-                // decoders, parked frame and playhead, and its media pool,
-                // so the new timeline was drawn with the old footage.
-                self.media_watcher = None;
-                self.reset_project_state();
-                self.state.sequences = vec![seq];
-                let mut fps = fps;
-                if let Some(made) = from_template {
-                    self.apply_template(made);
-                    fps = self.state.sequences[0].fps;
+                let untitled = crate::project_paths::UNTITLED;
+                if !self.start_new_project(untitled, untitled, (*fps_num, *fps_den), (*width, *height), template.as_deref(), &staging, *hdr) {
+                    return true;
                 }
-                self.state.active_sequence_idx = 0;
-                self.state.fps = fps;
-                self.state.project_path = Some(project_dir.clone());
-                self.state.created_at = Some(klipp_project::iso8601_now());
-                self.state.filmstrip_generating = false;
-                let seq_rate = self.state.sequences[self.state.active_sequence_idx].fps.rate();
-                self.state.playhead = klipp_core::RationalTime::from_frames(0, seq_rate);
-                self.state.filmstrip_total_queued = 0;
-                self.state.filmstrip_completed = 0;
-                self.sync_sequence_to_engine();
-                // Save immediately so the .klipp directory is created
-                self.do_save_project(&project_dir);
-                // Update default project dir pref
-                self.prefs.general.default_project_dir = Some(location.clone());
-                self.prefs_dirty = true;
-                tracing::info!("Created new project at {:?}", project_dir);
+                self.state.project_path = Some(PathBuf::from(crate::project_paths::UNTITLED));
+                self.untitled_staging = Some(staging);
+                self.state.dirty = false;
+                self.state.reset_ops_since_save();
                 true
             }
             AppCommand::SaveProjectTemplate { name, description, starter, package_media } => {

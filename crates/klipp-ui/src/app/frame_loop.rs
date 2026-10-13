@@ -736,6 +736,8 @@ impl KlippApp {
             }
         }
 
+        self.poll_project_copy();
+        self.write_untitled_on_first_edit();
         self.sync_project_lock();
 
         self.publish_viewer_compare();
@@ -753,6 +755,7 @@ impl KlippApp {
         if (time_trigger || op_trigger)
             && self.state.dirty
             && self.state.project_path.is_some()
+            && !crate::project_paths::is_untitled(self.state.project_path.as_deref())
             && self.read_only_project != self.state.project_path
             && !self.state.any_drag_in_progress()
             && self.autosave_rx.is_none()

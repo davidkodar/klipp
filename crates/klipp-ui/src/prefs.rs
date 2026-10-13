@@ -199,6 +199,10 @@ pub struct GeneralPrefs {
     #[serde(default = "default_auto_save_ops")]
     pub auto_save_op_threshold: u32,
     pub default_project_dir: Option<PathBuf>,
+    /// The frame rate last chosen for a welcome-screen format, which the
+    /// formats offering it start at (#1864).
+    #[serde(default)]
+    pub last_format_rate: Option<(u32, u32)>,
     /// Most-recent first, max 20 entries.
     #[serde(deserialize_with = "deserialize_recent_projects")]
     pub recent_projects: Vec<RecentProject>,
@@ -902,6 +906,7 @@ impl Default for GeneralPrefs {
             dismissed_update: None,
             auto_save_op_threshold: default_auto_save_ops(),
             default_project_dir: None,
+            last_format_rate: None,
             recent_projects: Vec::new(),
             remember_inspector_layout: true,
             collapsed_sections: Vec::new(),

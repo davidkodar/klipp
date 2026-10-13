@@ -100,7 +100,134 @@ impl KlippApp {
     }
 
     /// Close the current project and return to the Project Manager (launch screen).
+    /// The projects root (#1864), worked out again only when the
+    /// preference changes.
+    pub(super) fn projects_root(&mut self) -> PathBuf {
+        let pref = self.prefs.general.default_project_dir.clone();
+        match &self.projects_root {
+            Some((from, root)) if *from == pref => root.clone(),
+            _ => {
+                let root = crate::project_paths::projects_root(pref.as_ref());
+                self.projects_root = Some((pref, root.clone()));
+                root
+            }
+        }
+    }
+
+    /// An Untitled project's first real edit writes it, under a free
+    /// "Untitled" in the projects root, and lists it in Recent (#1864).
+    pub(super) fn write_untitled_on_first_edit(&mut self) {
+        let root = self.projects_root();
+        let Some(path) = crate::project_paths::first_write(self.state.project_path.as_deref(), self.state.dirty, &root) else { return };
+        if let Err(e) = std::fs::create_dir_all(&path) {
+            tracing::error!("Could not write the untitled project to {path:?}: {e}");
+            return;
+        }
+        // The template's copied media, from the cache into the project.
+        // Only once it is there does the staging folder go; when it could
+        // not be moved, the folder is kept for good, since the media's
+        // paths still lead into it.
+        if let Some(staging) = self.untitled_staging.take() {
+            match crate::project_paths::finish_staging(&staging, &path, &crate::project_paths::untitled_cache_dir()) {
+                Ok(true) => self.repoint_moved_media(&staging, &path),
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::error!("Could not move the template's media into {path:?}: {e}");
+                    crate::project_paths::keep_staging(&staging, &path);
+                }
+            }
+        }
+        self.do_save_project(&path);
+        self.unnamed_project = Some(path);
+    }
+
+    /// Let a background auto-save finish before the project's folder is
+    /// moved, so it does not write into the old place mid-move.
+    pub(super) fn wait_for_autosave(&mut self) {
+        if let Some(rx) = self.autosave_rx.take() {
+            match rx.recv_timeout(std::time::Duration::from_secs(60)) {
+                Ok(Ok(path)) => tracing::info!("Auto-saved to {:?} before the move", path),
+                Ok(Err(e)) => tracing::warn!("Auto-save failed: {e}"),
+                Err(e) => tracing::warn!("Auto-save did not finish before the move: {e}"),
+            }
+        }
+    }
+
+    /// The Untitled project's folder is at `to` now: it is that project,
+    /// its media and auto-save follow it, and Recent names it. The lock is
+    /// retaken there by `sync_project_lock` on the next frame, which sees
+    /// the path change: a renamed folder carries this session's lock with
+    /// it (taken again as ours), a copied one is locked afresh, and the
+    /// keeper of the old place is let go then.
+    pub(super) fn finish_project_move(&mut self, from: &Path, to: &Path, renamed: bool) {
+        self.unnamed_project = None;
+        if renamed {
+            self.prefs.general.recent_projects.retain(|rp| rp.path != *from);
+            self.prefs_dirty = true;
+            if let Err(e) = crate::project_paths::move_autosave(&autosave_path_for(from), &autosave_path_for(to)) {
+                tracing::warn!("Could not move the auto-save of {from:?}: {e}");
+            }
+        }
+        self.state.project_path = Some(to.to_path_buf());
+        self.repoint_moved_media(from, to);
+        self.do_save_project(to);
+    }
+
+    /// Take a finished background copy of the project (Save As across
+    /// filesystems), and say how far one still running has got.
+    pub(super) fn poll_project_copy(&mut self) {
+        let Some(copy) = &self.project_copy else { return };
+        match copy.done.try_recv() {
+            Ok(Ok(())) => {
+                let copy = self.project_copy.take().expect("checked above");
+                self.state.toast.show(format!("Copied to {}", copy.to.display()));
+                self.finish_project_move(&copy.from, &copy.to, false);
+            }
+            Ok(Err(e)) => {
+                let copy = self.project_copy.take().expect("checked above");
+                tracing::error!("Could not copy {:?} to {:?}: {e}", copy.from, copy.to);
+                self.state.toast.show(format!("The project could not be copied there: {e}. It stays where it was."));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                if copy.shown_at.elapsed().as_secs() >= 1 {
+                    let pct = (copy.copied.load(std::sync::atomic::Ordering::Relaxed) * 100).checked_div(copy.total.max(1)).unwrap_or(0).min(100);
+                    self.state.toast.show(format!("Copying the project to {}\u{2026} {pct}%", copy.to.display()));
+                    if let Some(c) = &mut self.project_copy {
+                        c.shown_at = std::time::Instant::now();
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.project_copy = None;
+                self.state.toast.show("The project copy stopped unexpectedly. It stays where it was.");
+            }
+        }
+    }
+
+    /// Point the media whose files were inside `from` at the same files
+    /// under `to`, now that the folder moved, and reopen each in the
+    /// engine, which would otherwise keep reading the old paths: the
+    /// same `LoadMediaFile` a relink sends.
+    pub(super) fn repoint_moved_media(&mut self, from: &Path, to: &Path) {
+        let moved = crate::project_paths::rewrite_media_paths(&mut self.state.media_pool, from, to);
+        if moved.is_empty() {
+            return;
+        }
+        for (media_id, path) in moved {
+            if path.exists() {
+                let _ = self.cmd_tx.send(AppCommand::LoadMediaFile { path, media_id });
+            }
+        }
+        self.sync_media_pool_to_engine();
+    }
+
     pub(super) fn do_close_project(&mut self) {
+        // An Untitled project closed untouched leaves nothing: its staged
+        // template media was the cache's copy.
+        if let Some(staging) = self.untitled_staging.take() {
+            crate::project_paths::discard_staging(&staging, &crate::project_paths::untitled_cache_dir());
+        }
+        self.unnamed_project = None;
         // Drop file watcher
         self.media_watcher = None;
         self.reset_project_state();
@@ -1065,7 +1192,8 @@ impl KlippApp {
         match action {
             UnsavedAction::NewProject => self.do_new_project(),
             UnsavedAction::OpenNewProjectDialog => {
-                self.new_project_dialog.reset(self.prefs.general.default_project_dir.as_ref());
+                let root = self.projects_root();
+                self.new_project_dialog.reset(Some(&root));
                 let templates = self.project_templates_dir();
                 self.new_project_dialog.load_templates(&templates);
                 self.state.show_new_project_dialog = true;
