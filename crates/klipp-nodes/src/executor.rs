@@ -4778,7 +4778,7 @@ impl GraphExecutor {
                             self.run_effect_breaks += 1;
                             out
                         }
-                        _ => klipp_effects::apply_effects_with_motion(fx, primary_input.to_vec(), width, height, clip_time_secs, luma, &motion),
+                        _ => klipp_effects::apply_effects_with_motion(fx, primary_input.to_vec(), width, height, luma, &motion),
                     }
                 };
                 match params.effect_blend {

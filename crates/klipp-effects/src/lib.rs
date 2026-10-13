@@ -1012,11 +1012,13 @@ pub const BT709_LUMA_WEIGHTS: [f32; 3] = [0.2126, 0.7152, 0.0722];
 /// [`apply_effects_with_luma`] instead: the effects that gate on
 /// brightness mis-estimate it in any other basis.
 pub fn apply_effects(effects: &[BuiltinEffect], linear_rgba: Vec<f32>, width: u32, height: u32) -> Vec<f32> {
-    apply_effects_with_time(effects, linear_rgba, width, height, 0.0)
+    apply_chain(effects, linear_rgba, width, height, BT709_LUMA_WEIGHTS, &MotionData::default())
 }
 
-/// [`apply_effects_with_time`] with the working space's luminance
-/// weights, which is what a render should call.
+/// [`apply_effects`] with the working space's luminance weights, which
+/// is what a render should call. No effect in the chain reads the clip's
+/// time: frei0r, the one that did, runs as its own node with its
+/// instances (M4 step 5).
 ///
 /// `luma` is `klipp_color::primaries::luminance_weights(working_space)` —
 /// passed in rather than derived, because this crate does not depend on
@@ -1028,7 +1030,6 @@ pub fn apply_effects_with_luma(
     linear_rgba: Vec<f32>,
     width: u32,
     height: u32,
-    _clip_time_secs: f64,
     luma: [f32; 3],
 ) -> Vec<f32> {
     apply_chain(effects, linear_rgba, width, height, luma, &MotionData::default())
@@ -1056,7 +1057,6 @@ pub fn apply_effects_with_motion(
     linear_rgba: Vec<f32>,
     width: u32,
     height: u32,
-    _clip_time_secs: f64,
     luma: [f32; 3],
     motion: &MotionData,
 ) -> Vec<f32> {
@@ -1066,21 +1066,6 @@ pub fn apply_effects_with_motion(
 /// How far stabilisation zooms in to hide the edges its warp uncovers.
 pub(crate) fn stabilization_crop_zoom(crop_ratio: f32, zoom: bool) -> f32 {
     if zoom { 1.0 / (1.0 - 2.0 * crop_ratio) } else { 1.0 }
-}
-
-/// [`apply_effects`] with a clip time, which no effect in the chain reads
-/// any more: frei0r, the one that did, runs as its own node with its
-/// instances (M4 step 5). The time parameters here and in
-/// [`apply_effects_with_luma`] and [`apply_effects_with_motion`] go in a
-/// follow-up that updates their callers.
-pub fn apply_effects_with_time(
-    effects: &[BuiltinEffect],
-    linear_rgba: Vec<f32>,
-    width: u32,
-    height: u32,
-    _clip_time_secs: f64,
-) -> Vec<f32> {
-    apply_chain(effects, linear_rgba, width, height, BT709_LUMA_WEIGHTS, &MotionData::default())
 }
 
 fn apply_chain(

@@ -55,8 +55,8 @@ fn spill_suppression_keeps_light_above_white() {
 #[test]
 fn equalize_uses_the_working_spaces_luma() {
     let eq = BuiltinEffect::Equalize { strength: 1.0 };
-    let ap1 = apply_effects_with_luma(std::slice::from_ref(&eq), colourful(), W, H, 0.0, AP1);
-    let bt709 = apply_effects_with_luma(std::slice::from_ref(&eq), colourful(), W, H, 0.0, BT709);
+    let ap1 = apply_effects_with_luma(std::slice::from_ref(&eq), colourful(), W, H, AP1);
+    let bt709 = apply_effects_with_luma(std::slice::from_ref(&eq), colourful(), W, H, BT709);
     assert!(worst(&ap1, &bt709) > 1e-3, "AP1 and BT.709 weights give different equalisations");
     if let Some(mut g) = gpu() {
         g.set_luma_coefs(AP1);

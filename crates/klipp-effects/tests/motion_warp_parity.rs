@@ -86,7 +86,7 @@ fn stabilisation_and_rolling_shutter_match_between_cpu_and_gpu() {
     ];
     let mut failures = Vec::new();
     for (name, fx) in cases {
-        let cpu = apply_effects_with_motion(&fx, input.clone(), W, H, 0.0, LUMA, &motion);
+        let cpu = apply_effects_with_motion(&fx, input.clone(), W, H, LUMA, &motion);
         let on_gpu = gpu.apply_effects(&fx, &input, W, H);
         let (worst, mean) = diff(&cpu, &on_gpu);
         let (_, change) = diff(&input, &cpu);
@@ -111,7 +111,7 @@ fn without_motion_data_both_arms_pass_the_frame_through() {
         BuiltinEffect::VideoStabilization { smoothing: 0.5, crop_ratio: 0.05, zoom: true },
         BuiltinEffect::RollingShutterCorrection { strength: 0.8, readout_ratio: 0.4 },
     ];
-    let cpu = apply_effects_with_motion(&fx, input.clone(), W, H, 0.0, LUMA, &MotionData::default());
+    let cpu = apply_effects_with_motion(&fx, input.clone(), W, H, LUMA, &MotionData::default());
     assert_eq!(cpu, input, "the CPU arm warped without motion data");
     let Some(mut gpu) = GpuEffectsPipeline::new() else {
         eprintln!("skipping the GPU half: no GPU");

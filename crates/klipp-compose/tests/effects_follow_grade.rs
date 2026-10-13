@@ -461,7 +461,7 @@ fn analysis_driven_effects_draw_what_their_analysis_computes() {
                     _ => {}
                 }
             }
-            let want = klipp_effects::apply_effects_with_motion(&effects, without, W, H, secs, klipp_color::linear::luma_coefs(klipp_core::WorkingColorspace::Rec709Linear), &motion);
+            let want = klipp_effects::apply_effects_with_motion(&effects, without, W, H, klipp_color::linear::luma_coefs(klipp_core::WorkingColorspace::Rec709Linear), &motion);
             let worst = with.iter().zip(&want).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
             assert!(with.len() == want.len() && worst < 2e-3, "{name} at {secs}: {worst} from what its analysis computes");
         }
