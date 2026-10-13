@@ -759,9 +759,11 @@ pub struct Renderer {
     derived: HashMap<(klipp_analysis::assets::AssetKey, u64), (u64, Kept)>,
     /// The clip being rendered and its analyses, for each of its runs.
     clip_analysis: Option<(ClipId, ClipAnalysis)>,
-    /// The source-boundary node for the grade being run (M4 step 6):
-    /// spliced in straight after the Source, before the grade.
-    run_source_node: Option<klipp_nodes::Node>,
+    /// The source-boundary nodes for the grade being run (M4 step 6):
+    /// spliced in straight after the Source, before the grade, in order.
+    /// One node; one per effect, under its picture node's id, when the
+    /// grade tools read the clip (#1305).
+    run_source_nodes: Vec<klipp_nodes::Node>,
     /// Effect runs that couldn't be applied as a plan of their own and
     /// took the CPU kernels instead (`effects_by`), for the stats' counts.
     plan_misses: u64,
@@ -915,7 +917,7 @@ impl Renderer {
             gpu_export_declined_after_work: false,
             global_lut: None,
             instances: Default::default(),
-            run_source_node: None,
+            run_source_nodes: Vec::new(),
             assets: Box::new(klipp_analysis::assets::CacheStore::default()),
             derived: HashMap::new(),
             clip_analysis: None,
@@ -3446,7 +3448,10 @@ impl Renderer {
         use klipp_nodes::frame_context::BoundedSources;
         let denoise = matches!(clip.kind, ClipKind::Media { .. }).then(|| temporal_denoise_of(clip, time, fps)).flatten();
         let blend = matches!(clip.kind, ClipKind::Media { .. }) && frame_blends(clip, time);
-        self.run_source_node = source_node(clip, blend, denoise);
+        // A clip the grade tools read inside runs each as the picture's
+        // node, so a thumbnail, tap or solo on one reads it (#1305).
+        let inspected = self.inspects_the_grade_of(clip).then(|| picture_source_nodes(clip));
+        self.run_source_nodes = source_nodes(clip, blend, denoise, inspected);
         // Every clip's run has its context: a plug-in node reads its
         // instance there whether or not anything reads the source, whose
         // readers open only when asked.
@@ -3454,7 +3459,7 @@ impl Renderer {
         let mut sources = ClipSources::new(src, clip, self.working).with_current(at, hdr, width, height);
         let mut bounded = BoundedSources::new(&mut sources, width, height);
         let pixels = self.in_context(clip, clip_time, fps, at, source_pts, &mut bounded, |r, ctx| r.grade(clip, input, clip_time, fps, width, height, Some(ctx)));
-        self.run_source_node = None;
+        self.run_source_nodes.clear();
         pixels
     }
 
@@ -3617,7 +3622,7 @@ impl Renderer {
         // the plan's nodes (step 11b). So does one the tools read inside: its
         // run is what takes their thumbnails and taps, and says which of
         // their requests it doesn't hold (M3 step 16a).
-        if clip.grade_is_identity() && !inspecting && self.run_effects.is_empty() && self.run_display.is_none() && self.run_source_node.is_none() {
+        if clip.grade_is_identity() && !inspecting && self.run_effects.is_empty() && self.run_display.is_none() && self.run_source_nodes.is_empty() {
             // Take the buffer rather than clone the handle: a layer this
             // renderer just made is held once, and moves out for free.
             return match input {
@@ -3706,7 +3711,7 @@ impl Renderer {
         // The grade with its corrections' mixes (M3 step 17a).
         let to_run = clip.grade_to_run();
         if !inspecting {
-            let graph = if self.run_effects.is_empty() && self.run_display.is_none() && self.run_source_node.is_none() {
+            let graph = if self.run_effects.is_empty() && self.run_display.is_none() && self.run_source_nodes.is_empty() {
                 &*to_run
             } else {
                 // An identity grade is the source straight to the output:
@@ -3727,7 +3732,7 @@ impl Renderer {
         // masked or mixed (a picture-truth clip's): those run in the plan
         // with it, the grade's nodes still tapped (step 9c-2). A
         // scene-referred clip's display step runs in it either way.
-        let (graph, graded) = if self.run_effects.is_empty() && self.run_display.is_none() && self.run_source_node.is_none() {
+        let (graph, graded) = if self.run_effects.is_empty() && self.run_display.is_none() && self.run_source_nodes.is_empty() {
             (&*to_run, to_run.input_of(to_run.output_node_id, 0))
         } else {
             self.splice_run(clip);
@@ -3828,8 +3833,10 @@ impl Renderer {
         if let Some(step) = self.run_display {
             self.spliced.splice_before_output(scene_to_display_node(clip, step));
         }
-        if let Some(node) = self.run_source_node.clone() {
-            self.spliced.splice_after_source(node);
+        // Each straight after the Source, the last first, so they run in
+        // their order.
+        for node in self.run_source_nodes.iter().rev() {
+            self.spliced.splice_after_source(node.clone());
         }
         // Each effect's node is the picture's node it came from, so an
         // inspection by path names it (M3 step 16a); an effect without one
@@ -4478,12 +4485,16 @@ fn passthrough_graph() -> klipp_nodes::NodeGraph {
     NodeGraph { output_node_id: output.id, nodes: vec![source, output], edges, node_positions: Default::default(), working_space_override: None, frames: vec![], sticky_notes: vec![] }
 }
 
-/// A clip's source-boundary node (M4 steps 6 and 7): its frame blend and
+/// A clip's source-boundary nodes (M4 steps 6 and 7): its frame blend and
 /// its temporal noise reduction, in the catalog's order
-/// (`SOURCE_BOUNDARY_ORDER`), run straight after the Source. `None` when it
-/// has neither.
-fn source_node(clip: &Clip, blend: bool, denoise: Option<(f32, f32)>) -> Option<klipp_nodes::Node> {
-    use klipp_nodes::{Node, NodeId, NodeKind, NodeParams};
+/// (`SOURCE_BOUNDARY_ORDER`), run straight after the Source; none when it
+/// has neither. One node runs both, unless `inspected` gives the
+/// picture's nodes they come from (`picture_source_nodes`): then each is
+/// a node of its own under its picture node's id, so an inspection by
+/// path reads the picture after it (#1305). Run one after the other, the
+/// two give what the one node gives.
+fn source_nodes(clip: &Clip, blend: bool, denoise: Option<(f32, f32)>, inspected: Option<(Option<NodeId>, Option<NodeId>)>) -> Vec<klipp_nodes::Node> {
+    use klipp_nodes::{Node, NodeKind, NodeParams};
     let mut effects: Vec<BuiltinEffect> = Vec::new();
     if blend {
         effects.push(BuiltinEffect::SpeedRamp { speed: 1.0, blend_mode: 1 });
@@ -4491,20 +4502,34 @@ fn source_node(clip: &Clip, blend: bool, denoise: Option<(f32, f32)>) -> Option<
     if let Some((strength, threshold)) = denoise {
         effects.push(BuiltinEffect::TemporalDenoise { strength, threshold });
     }
-    if effects.is_empty() {
-        return None;
-    }
     effects.sort_by_key(klipp_effects::registry::source_boundary_rank);
-    Some(Node {
-        id: NodeId::from_u128(clip.id.0.as_u128() ^ (0x0050_7c3e_u128 << 64)),
-        kind: NodeKind::Effect,
-        label: String::new(),
-        enabled: true,
-        params: NodeParams { effects, ..Default::default() },
-        keyframes: Default::default(),
-        output_link: None,
-        input_links: vec![],
-    })
+    let id = NodeId::from_u128(clip.id.0.as_u128() ^ (0x0050_7c3e_u128 << 64));
+    let node = |id, effects| Node { id, kind: NodeKind::Effect, label: String::new(), enabled: true, params: NodeParams { effects, ..Default::default() }, keyframes: Default::default(), output_link: None, input_links: vec![] };
+    match inspected {
+        _ if effects.is_empty() => Vec::new(),
+        None => vec![node(id, effects)],
+        Some((blend_node, denoise_node)) => effects
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let picture = if matches!(e, BuiltinEffect::SpeedRamp { .. }) { blend_node } else { denoise_node };
+                node(picture.unwrap_or_else(|| NodeId::from_u128(id.as_u128() ^ (i as u128 + 1))), vec![e])
+            })
+            .collect(),
+    }
+}
+
+/// The picture's nodes the source-boundary effects that run come from:
+/// its first frame blend (a speed ramp blending) and its first temporal
+/// denoise switched on, as `frame_blends` and `temporal_denoise_of` take
+/// them (#1305).
+fn picture_source_nodes(clip: &Clip) -> (Option<NodeId>, Option<NodeId>) {
+    let on = |i: usize| clip.builtin_effects_enabled().get(i).copied().unwrap_or(true);
+    let first = |is: fn(&BuiltinEffect) -> bool| {
+        let i = clip.builtin_effects().iter().enumerate().position(|(i, e)| on(i) && is(e))?;
+        clip.effect_node_at(false, i)
+    };
+    (first(|e| matches!(e, BuiltinEffect::SpeedRamp { blend_mode: 1, .. })), first(|e| matches!(e, BuiltinEffect::TemporalDenoise { .. })))
 }
 
 /// `clip`'s display step as a plan node (step 11c), with an id fixed per
