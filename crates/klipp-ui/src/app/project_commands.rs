@@ -370,6 +370,11 @@ impl KlippApp {
                 self.prefs_dirty = true;
                 true
             }
+            AppCommand::SetProjectInputLut { path } => {
+                self.state.project_default_input_lut = path.clone();
+                self.state.dirty = true;
+                true
+            }
             AppCommand::SetFormatRate { rate } => {
                 self.prefs.general.last_format_rate = Some(*rate);
                 self.prefs_dirty = true;

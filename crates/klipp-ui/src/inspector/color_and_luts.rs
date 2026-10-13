@@ -365,16 +365,11 @@ pub(crate) fn clip_input_colour_space(state: &AppState, clip_id: klipp_core::Cli
 /// The input colour space picker, shared by the Edit inspector's COLOUR
 /// tab and the Colour page's InputTransform node. A value detection chose
 /// says so, so a wrong guess can be told from a choice.
-pub(crate) fn input_colour_space_combo(
-    ui: &mut egui::Ui,
-    id_salt: &str,
-    clip_id: klipp_core::ClipId,
-    current: klipp_core::LogFormat,
-    detected: bool,
-    cmds: &mut Vec<AppCommand>,
-) {
+/// The input formats a clip can be given, as the inspector and Colour
+/// Management list them.
+pub(crate) const INPUT_FORMATS: &[(klipp_core::LogFormat, &str)] = {
     use klipp_core::LogFormat as LF;
-    let formats = [
+    &[
         (LF::Srgb, "Rec.709 / sRGB (no conversion)"), (LF::Linear, "Linear"),
         (LF::LogC3, "ARRI LogC3"), (LF::LogC4, "ARRI LogC4"),
         (LF::SLog2, "Sony S-Log2"), (LF::SLog3, "Sony S-Log3"),
@@ -386,7 +381,18 @@ pub(crate) fn input_colour_space_combo(
         (LF::LeicaLLogBt709, "Leica L-Log, SL (Typ 601)"),
         (LF::RedLog3G10, "RED Log3G10"), (LF::BmdFilmGen5, "BMD Film Gen 5"),
         (LF::HLG, "HLG (BT.2100)"), (LF::PQ, "PQ (ST 2084)"),
-    ];
+    ]
+};
+
+pub(crate) fn input_colour_space_combo(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    clip_id: klipp_core::ClipId,
+    current: klipp_core::LogFormat,
+    detected: bool,
+    cmds: &mut Vec<AppCommand>,
+) {
+    let formats = INPUT_FORMATS;
     let label = formats.iter()
         .find(|(f, _)| *f == current)
         .map(|(_, l)| *l)
@@ -396,7 +402,7 @@ pub(crate) fn input_colour_space_combo(
         .selected_text(selected_text)
         .width(ui.available_width() - 12.0)
         .show_ui(ui, |ui| {
-            for &(fmt, label) in &formats {
+            for &(fmt, label) in formats {
                 if ui.selectable_label(current == fmt, label).clicked() {
                     cmds.push(AppCommand::SetClipLogFormat { clip_id, log_format: fmt });
                 }

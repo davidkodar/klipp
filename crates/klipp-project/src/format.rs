@@ -80,6 +80,13 @@ pub struct ProjectJson {
     /// export started.
     #[serde(default)]
     pub default_odt: klipp_core::OdtChoice,
+    /// The input format given to new clips whose file says none (#466);
+    /// absent, each clip's own detection alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_input_format: Option<klipp_core::LogFormat>,
+    /// A LUT new clips start their grade with (#466); absent, none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_input_lut: Option<String>,
     /// Project-scoped synthetic title assets. Each entry is keyed by
     /// the `MediaId` of its synthetic `MediaItem` (the entry that
     /// shows up in the Media tab) and carries the canonical
@@ -925,6 +932,8 @@ mod tests {
             working_colorspace: klipp_core::WorkingColorspace::AcesCG,
             grade_encoding: klipp_core::GradeEncoding::AcesCct,
             default_odt: klipp_core::OdtChoice::Rec2100Pq1000,
+            default_input_format: Some(klipp_core::LogFormat::SLog3),
+            default_input_lut: Some("/luts/in.cube".into()),
             title_assets: Vec::new(),
         };
         let serialised = serde_json::to_string(&project).expect("serialise");

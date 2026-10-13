@@ -207,7 +207,7 @@ impl KlippApp {
                                     c.source_rotation = rotation;
                                 }
                             }
-                            self.apply_detected_log_format(clip_id, *media_id);
+                            self.apply_input_defaults(clip_id, *media_id);
                             // The file's audio, linked to this clip. Without
                             // it the timeline is silent and so is every
                             // render made from it.
@@ -482,7 +482,7 @@ impl KlippApp {
                                 // sees a flat raw-log image and has to
                                 // pick the format manually for every
                                 // imported clip.
-                                self.apply_detected_log_format(video_clip_id, *media_id);
+                                self.apply_input_defaults(video_clip_id, *media_id);
 
                                 if let Some(vc) = self.state.sequences[self.state.active_sequence_idx].tracks[vi].find_clip(video_clip_id) {
                                     hist_video = Some((vc.clone(), vi));
@@ -531,7 +531,7 @@ impl KlippApp {
                                 // format (video-only path; audio has no
                                 // InputTransform).
                                 if has_video {
-                                    self.apply_detected_log_format(clip_id, *media_id);
+                                    self.apply_input_defaults(clip_id, *media_id);
                                 }
                                 if let Some(c) = self.state.sequences[self.state.active_sequence_idx].tracks[track_idx].find_clip(clip_id) {
                                     let snap = (c.clone(), track_idx);
@@ -1747,15 +1747,22 @@ impl KlippApp {
     /// media) wins over the heuristic (`detected_log_format`); the
     /// heuristic wins over Srgb default. Skipped entirely when the
     /// effective format is Srgb so we don't insert pointless
-    /// `Some(Srgb)` overrides on plain SDR clips.
-    pub(super) fn apply_detected_log_format(&mut self, clip_id: klipp_core::ClipId, media_id: klipp_core::MediaId) {
-        let effective = self.state.media_pool.get(&media_id)
-            .map(|m| m.effective_log_format())
-            .unwrap_or_default();
-        if effective != klipp_core::LogFormat::Srgb {
-            let seq = &mut self.state.sequences[self.state.active_sequence_idx];
-            if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
+    /// `Some(Srgb)` overrides on plain SDR clips. The project's input
+    /// defaults (#466) fill in where the file says nothing, and its input
+    /// LUT heads the new clip's grade.
+    pub(super) fn apply_input_defaults(&mut self, clip_id: klipp_core::ClipId, media_id: klipp_core::MediaId) {
+        let Some(media) = self.state.media_pool.get(&media_id) else { return };
+        // The project's input defaults (#466): its format where the file
+        // says none, and its input LUT at the head of the grade.
+        let effective = crate::panels::colour_management::new_clip_input_format(media, self.state.project_default_input_format);
+        let lut = self.state.project_default_input_lut.clone().filter(|_| !media.video_codec.is_empty() || media.is_still);
+        let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+        if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
+            if effective != klipp_core::LogFormat::Srgb {
                 clip.set_input_log_format(effective);
+            }
+            if let Some(lut) = lut {
+                crate::panels::colour_management::add_input_lut(clip, &lut);
             }
         }
     }
@@ -1816,6 +1823,8 @@ impl KlippApp {
             working_colorspace: self.state.project_working_colorspace,
             grade_encoding: self.state.project_grade_encoding,
             default_odt: self.state.project_default_odt,
+            default_input_format: self.state.project_default_input_format,
+            default_input_lut: self.state.project_default_input_lut.clone(),
         };
         let options = klipp_project::consolidate::ConsolidateOptions {
             dest_dir,

@@ -84,6 +84,56 @@ fn row<R>(ui: &mut egui::Ui, theme: &KlippTheme, label: &str, add: impl FnOnce(&
 pub fn show_page(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &mut Vec<AppCommand>) {
     ui.spacing_mut().item_spacing = egui::vec2(8.0, 5.0);
 
+    // ── Input ──
+    group(ui, theme, "INPUT", "What clips added from now on start with. Clips already in the project keep what they have.");
+    let formats = crate::inspector::color_and_luts::INPUT_FORMATS;
+    let mut input = state.project_default_input_format;
+    let input_label = |f: Option<klipp_core::LogFormat>| match f {
+        None => "Detect from the file".to_string(),
+        Some(f) => formats.iter().find(|(x, _)| *x == f).map_or_else(|| format!("{f:?}"), |(_, l)| l.to_string()),
+    };
+    row(ui, theme, "Input format", |ui| {
+        egui::ComboBox::from_id_salt("cm_input_format")
+            .width(200.0)
+            .selected_text(input_label(input))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut input, None, "Detect from the file");
+                for &(f, label) in formats {
+                    ui.selectable_value(&mut input, Some(f), label);
+                }
+            })
+            .response
+            .on_hover_text("For a clip whose file says nothing of its encoding. What a file says, or a format chosen for it, still wins.");
+    });
+    if input != state.project_default_input_format {
+        state.project_default_input_format = input;
+        state.dirty = true;
+    }
+    row(ui, theme, "Input LUT", |ui| {
+        match state.project_default_input_lut.clone() {
+            Some(path) => {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                ui.label(egui::RichText::new(name).color(theme.text_primary)).on_hover_text(path.display().to_string());
+                if ui.small_button("Clear").clicked() {
+                    cmds.push(AppCommand::SetProjectInputLut { path: None });
+                }
+            }
+            None => {
+                ui.label(egui::RichText::new("None").color(theme.text_dim));
+            }
+        }
+        if ui.small_button("Choose\u{2026}").clicked() {
+            crate::file_dialog::spawn(|| {
+                rfd::FileDialog::new()
+                    .set_title("Input LUT")
+                    .add_filter("LUT files", &["cube", "3dl", "csp"])
+                    .pick_file()
+                    .map(|path| vec![AppCommand::SetProjectInputLut { path: Some(path) }])
+                    .unwrap_or_default()
+            });
+        }
+    });
+
     // ── Working space ──
     group(ui, theme, "WORKING SPACE", "What the grade works in. Switching it re-bases every grade; with grades in the project you are asked whether to keep their look.");
     let mut ws = state.project_working_colorspace;
@@ -192,6 +242,29 @@ pub fn show_page(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cm
         }
         if ui.small_button("Choose\u{2026}").clicked() {
             crate::file_dialog::spawn(crate::inspector::color_and_luts::pick_global_lut);
+        }
+    });
+}
+
+/// The input format a clip of `media` starts with: what its file says or
+/// was given, and where that is nothing, the project's default (#466).
+/// A format chosen for the file, even "no conversion", is kept.
+pub fn new_clip_input_format(media: &klipp_media::MediaItem, project_default: Option<klipp_core::LogFormat>) -> klipp_core::LogFormat {
+    let own = media.effective_log_format();
+    match project_default {
+        Some(default) if own == klipp_core::LogFormat::Srgb && !media.log_format_user_set => default,
+        _ => own,
+    }
+}
+
+/// Start `clip`'s grade with the project's input LUT (#466): a 3D LUT
+/// node reading `lut`, ahead of anything graded on it.
+pub fn add_input_lut(clip: &mut klipp_timeline::Clip, lut: &std::path::Path) {
+    clip.edit_grade(|g| {
+        let id = g.ensure_lut3d();
+        if let Some(node) = g.nodes.iter_mut().find(|n| n.id == id) {
+            node.params.lut_path = Some(lut.to_path_buf());
+            node.label = "Input LUT".into();
         }
     });
 }
@@ -393,5 +466,69 @@ mod tests {
         state.global_lut_path = Some(PathBuf::from("/l.cube"));
         state.global_lut_enabled = true;
         assert_eq!(summary(&state), "ACEScg \u{00B7} ACEScct \u{00B7} Rec.709 SDR out \u{00B7} output LUT");
+    }
+
+    /// #466 (b): the input format new clips take where their file says
+    /// none is set here, and back to detecting from the file.
+    #[test]
+    fn the_input_format_for_new_clips_is_set_here() {
+        let ctx = egui::Context::default();
+        let mut state = AppState::default();
+        {
+            let mut run = page(&mut state);
+            choose(&ctx, &mut run, "Detect from the file", "Sony S-Log3");
+        }
+        assert_eq!(state.project_default_input_format, Some(klipp_core::LogFormat::SLog3));
+        assert!(state.dirty);
+        {
+            let mut run = page(&mut state);
+            choose(&ctx, &mut run, "Sony S-Log3", "Detect from the file");
+        }
+        assert_eq!(state.project_default_input_format, None);
+    }
+
+    /// #466 (b): the input LUT is shown and cleared here.
+    #[test]
+    fn the_input_lut_is_shown_and_cleared_here() {
+        let ctx = egui::Context::default();
+        let mut state = AppState { project_default_input_lut: Some(PathBuf::from("/luts/Camera In.cube")), ..Default::default() };
+        let mut run = page(&mut state);
+        let texts = frame(&ctx, Vec::new(), &mut run).1;
+        let name = at(&texts, "Camera In.cube");
+        // The Clear beside it, not the output LUT's.
+        let clear = texts.iter().filter(|(t, _)| t == "Clear").map(|(_, r)| r.center()).min_by(|a, b| (a.y - name.y).abs().total_cmp(&(b.y - name.y).abs())).expect("Clear");
+        let cmds = click(&ctx, clear, &mut run);
+        assert!(matches!(&cmds[..], [AppCommand::SetProjectInputLut { path: None }]), "{cmds:?}");
+    }
+
+    /// #466 (b): a new clip takes the project's input format only where
+    /// its file says nothing and nobody chose one for it.
+    #[test]
+    fn a_new_clip_takes_the_project_input_format_only_where_the_file_says_none() {
+        use klipp_core::LogFormat as LF;
+        let plain = klipp_media::MediaItem::synthetic_for_test(PathBuf::from("/a.mov"), None);
+        assert_eq!(new_clip_input_format(&plain, None), LF::Srgb);
+        assert_eq!(new_clip_input_format(&plain, Some(LF::SLog3)), LF::SLog3, "the file says nothing");
+        let mut detected = plain.clone();
+        detected.detected_log_format = LF::LogC3;
+        assert_eq!(new_clip_input_format(&detected, Some(LF::SLog3)), LF::LogC3, "what the file says wins");
+        let mut chosen = plain.clone();
+        chosen.log_format = LF::Srgb;
+        chosen.log_format_user_set = true;
+        assert_eq!(new_clip_input_format(&chosen, Some(LF::SLog3)), LF::Srgb, "a choice made for the file wins, even no conversion");
+    }
+
+    /// #466 (b): a new clip's grade starts with the project's input LUT,
+    /// a 3D LUT node reading it, wired before the Output.
+    #[test]
+    fn a_new_clip_starts_its_grade_with_the_input_lut() {
+        let mut clip = klipp_timeline::Clip::gap(klipp_core::Timecode::from_secs_f64(0.0, 24), klipp_core::Timecode::from_secs_f64(1.0, 24));
+        add_input_lut(&mut clip, std::path::Path::new("/luts/in.cube"));
+        let g = clip.grade();
+        let lut = g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Lut3D).expect("a LUT node");
+        assert_eq!(lut.params.lut_path.as_deref(), Some(std::path::Path::new("/luts/in.cube")));
+        assert_eq!(lut.label, "Input LUT");
+        assert!(g.edges.iter().any(|e| e.from_node == lut.id && e.to_node == g.output_node_id), "it feeds the Output");
+        assert!(!g.is_identity(), "the grade now does something");
     }
 }

@@ -25,6 +25,10 @@ pub struct ColorSettings {
     pub grade_encoding: klipp_core::GradeEncoding,
     /// The output transform new exports start from (#466).
     pub default_odt: klipp_core::OdtChoice,
+    /// The input format new clips take when their file says none (#466).
+    pub default_input_format: Option<klipp_core::LogFormat>,
+    /// The LUT new clips start their grade with (#466).
+    pub default_input_lut: Option<std::path::PathBuf>,
 }
 
 impl Default for ColorSettings {
@@ -39,6 +43,8 @@ impl Default for ColorSettings {
             working_colorspace: klipp_core::WorkingColorspace::default(),
             grade_encoding: klipp_core::GradeEncoding::default(),
             default_odt: klipp_core::OdtChoice::default(),
+            default_input_format: None,
+            default_input_lut: None,
         }
     }
 }
@@ -182,6 +188,8 @@ fn save_project_full_as(
         working_colorspace: color.working_colorspace,
         grade_encoding: color.grade_encoding,
         default_odt: color.default_odt,
+        default_input_format: color.default_input_format,
+        default_input_lut: color.default_input_lut.as_deref().map(|p| to_project_relative(dir, p).to_string_lossy().into_owned()),
         title_assets: title_assets_json,
     };
 

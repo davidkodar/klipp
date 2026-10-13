@@ -1303,6 +1303,8 @@ pub enum AppCommand {
         /// Graded in a wide-gamut working space for HLG or PQ delivery.
         hdr: bool,
     },
+    /// The LUT new clips start their grade with, or none (#466).
+    SetProjectInputLut { path: Option<PathBuf> },
     /// Remember the frame rate chosen for a welcome-screen format (#1864).
     SetFormatRate { rate: (u32, u32) },
     /// Open a new, unsaved Untitled project in this format, or from the
