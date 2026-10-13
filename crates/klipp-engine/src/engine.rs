@@ -8340,6 +8340,7 @@ impl PlaybackEngine {
                 scope_ms: scope_ms as f32,
                 composite_ms: 0.0,
                 update_playback_ms: 0.0,
+                in_param_edit: self.in_node_param_edit,
             });
         }
         let _ = self.event_tx.send(AppEvent::FrameReady);
@@ -8519,6 +8520,7 @@ impl PlaybackEngine {
                 scope_ms: scope_ms as f32,
                 composite_ms: 0.0,
                 update_playback_ms: total_ms as f32,
+                in_param_edit: self.in_node_param_edit,
             });
         }
 

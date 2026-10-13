@@ -21,7 +21,8 @@ fn drag_then_release(label: &str, tags: &str) {
     let parked = common::Parked::start(src, 640, 360);
     let before = parked.frame();
 
-    parked.begin_drag();
+    // Steps from where the engine has seen the drag begin (#1799).
+    parked.begin_drag_seen(0.25);
     let mut frames = Vec::new();
     for stops in [0.75, 1.0, 1.25] {
         parked.step(stops).expect("a drag step showed no frame");
@@ -78,14 +79,8 @@ fn thumbnails_wait_for_the_release() {
         at: [parked.source_node, parked.exposure_node].into_iter().map(|n| klipp_compose::inspect::grade_node(parked.clip_id, n)).collect(),
     });
     parked.settle();
-    parked.begin_drag();
-    // The begin goes through the command channel and a step through the
-    // parameter queue, so on a loaded machine the first step's frame can
-    // be rendered before the engine has seen the drag begin, as a full
-    // render. One step lets the drag start; the next is the one judged.
-    parked.step(0.5).expect("a drag step showed no frame");
-    parked.step(1.0).expect("a drag step showed no frame");
-    let s = parked.perf().last().cloned().unwrap();
+    // The first frame the engine rendered inside the drag (#1799).
+    let s = parked.begin_drag_seen(0.5);
     assert!(s.reencode_ms == 0.0 && s.composite_ms == 0.0, "thumbnails sent the drag through the full render ({s:?})");
     parked.end_drag().expect("letting go showed no frame");
 }

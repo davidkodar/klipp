@@ -253,6 +253,23 @@ impl Parked {
         self.send(AppCommand::BeginNodeParamEdit { clip_id: self.clip_id });
     }
 
+    /// [`Self::begin_drag`], then steps of the slider from `from` until a
+    /// step's frame is one the engine rendered inside the drag (#1799):
+    /// the begin goes through the command channel and a step through the
+    /// parameter queue, so on a loaded machine a step can be rendered
+    /// before the engine has seen the begin. The perf sample of that
+    /// frame, after which every step is a drag step.
+    pub fn begin_drag_seen(&self, from: f32) -> klipp_engine::perf::PerfSample {
+        self.begin_drag();
+        for k in 0..20 {
+            self.step(from + 0.05 * k as f32).expect("a drag step showed no frame");
+            if let Some(s) = self.perf().last().filter(|s| s.in_param_edit) {
+                return *s;
+            }
+        }
+        panic!("the engine never rendered a frame inside the drag");
+    }
+
     /// Move the exposure slider to `stops` and wait for the frame; the
     /// time from the change to the frame, ms.
     pub fn step(&self, stops: f32) -> Option<f64> {
