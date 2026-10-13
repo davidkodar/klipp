@@ -102,34 +102,35 @@ pub fn show_animators(
     keyframe_tolerance: f64,
     cmds: &mut Vec<AppCommand>,
 ) {
-    super::title_tab::caption(ui, theme, "ANIMATE LETTERS");
     let mut animators = fx.animators.clone();
     let mut changed = false;
-    ui.horizontal_wrapped(|ui| {
-        for preset in presets(clip_secs) {
-            if ui.button(&preset.name).on_hover_text(summary(&preset)).clicked() {
-                animators.push(preset);
-                changed = true;
-            }
-        }
-    });
     let mut remove = None;
     let mut keys: Vec<KeyRequest> = Vec::new();
-    for (i, a) in animators.iter_mut().enumerate() {
-        ui.add_space(4.0);
-        // Wrapped, so a long line never widens the inspector past its
-        // rows' diamonds.
+    crate::widgets::inspector_group::section_card(ui, "ANIMATE LETTERS", None, theme, |ui| {
         ui.horizontal_wrapped(|ui| {
-            changed |= ui.checkbox(&mut a.enabled, "").on_hover_text("On or off").changed();
-            ui.label(egui::RichText::new(summary(a)).size(crate::theme::type_scale::CAPTION).color(theme.text_secondary));
-            if ui.small_button("\u{2715}").on_hover_text("Remove this animator").clicked() {
-                remove = Some(i);
+            for preset in presets(clip_secs) {
+                if ui.button(&preset.name).on_hover_text(summary(&preset)).clicked() {
+                    animators.push(preset);
+                    changed = true;
+                }
             }
         });
-        egui::CollapsingHeader::new("Details").id_salt(("title_animator", clip_id, i)).show(ui, |ui| {
-            changed |= details(ui, i, a, target.is_some(), clip_time_secs, keyframe_tolerance, &mut keys);
-        });
-    }
+        for (i, a) in animators.iter_mut().enumerate() {
+            ui.add_space(4.0);
+            // Wrapped, so a long line never widens the inspector past its
+            // rows' diamonds.
+            ui.horizontal_wrapped(|ui| {
+                changed |= ui.checkbox(&mut a.enabled, "").on_hover_text("On or off").changed();
+                ui.label(egui::RichText::new(summary(a)).size(super::rows::TEXT).color(theme.text_secondary));
+                if ui.small_button("\u{2715}").on_hover_text("Remove this animator").clicked() {
+                    remove = Some(i);
+                }
+            });
+            egui::CollapsingHeader::new("Details").id_salt(("title_animator", clip_id, i)).show(ui, |ui| {
+                changed |= details(ui, theme, i, a, target.is_some(), clip_time_secs, keyframe_tolerance, &mut keys);
+            });
+        }
+    });
     if let Some(i) = remove {
         animators.remove(i);
         changed = true;
@@ -148,8 +149,8 @@ pub fn show_animators(
 /// A selector's unit and its range, start, end and offset, keyable as
 /// `animator.{i}.{prefix}{field}`; true when one changed in place.
 #[allow(clippy::too_many_arguments)]
-fn range_rows(ui: &mut egui::Ui, i: usize, prefix: &str, s: &mut RangeSelector, keyable: bool, t: f64, tolerance: f64, keys: &mut Vec<KeyRequest>) -> bool {
-    use crate::widgets::scrubby_param::scrubby_param_row;
+fn range_rows(ui: &mut egui::Ui, theme: &KlippTheme, i: usize, prefix: &str, s: &mut RangeSelector, keyable: bool, t: f64, tolerance: f64, keys: &mut Vec<KeyRequest>) -> bool {
+    use super::rows::param_row;
     let mut changed = false;
     egui::ComboBox::from_id_salt(("animator_unit", i, prefix.to_string())).selected_text(unit_label(s.unit)).show_ui(ui, |ui| {
         for u in [SelectUnit::Char, SelectUnit::Word, SelectUnit::Line] {
@@ -166,7 +167,7 @@ fn range_rows(ui: &mut egui::Ui, i: usize, prefix: &str, s: &mut RangeSelector, 
         let range = if field == "offset" { -100.0..=100.0 } else { 0.0..=100.0 };
         let default = if field == "end" { 100.0 } else { 0.0 };
         let ks = keyable.then(|| crate::inspector::keyframe_selection::state(keyframes, t, tolerance));
-        let resp = scrubby_param_row(ui, label, &mut v, range, default, 1.0, 0, "%", ks);
+        let resp = param_row(ui, theme, label, &mut v, range, default, 1.0, 0, "%", ks);
         let edit: super::TextKeyEdit = (&resp).into();
         // Without a layer to key, or unkeyed, the value is the range's own.
         if !keyable || (keyframes.is_empty() && !edit.toggled) {
@@ -189,8 +190,8 @@ fn range_rows(ui: &mut egui::Ui, i: usize, prefix: &str, s: &mut RangeSelector, 
 /// An animator's full controls; true when one of them changed it in
 /// place. A range row with keys (or its diamond) asks for a key instead.
 #[allow(clippy::too_many_arguments)]
-fn details(ui: &mut egui::Ui, i: usize, a: &mut Animator, keyable: bool, t: f64, tolerance: f64, keys: &mut Vec<KeyRequest>) -> bool {
-    use crate::widgets::scrubby_param::scrubby_param_row;
+fn details(ui: &mut egui::Ui, theme: &KlippTheme, i: usize, a: &mut Animator, keyable: bool, t: f64, tolerance: f64, keys: &mut Vec<KeyRequest>) -> bool {
+    use super::rows::param_row;
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.label("Name");
@@ -198,7 +199,7 @@ fn details(ui: &mut egui::Ui, i: usize, a: &mut Animator, keyable: bool, t: f64,
     });
     // Each range's rows in an id scope of their own: the two ranges'
     // rows share their labels.
-    changed |= ui.push_id(("animator_range", i), |ui| range_rows(ui, i, "", &mut a.selector, keyable, t, tolerance, keys)).inner;
+    changed |= ui.push_id(("animator_range", i), |ui| range_rows(ui, theme, i, "", &mut a.selector, keyable, t, tolerance, keys)).inner;
     let s = &mut a.selector;
     ui.horizontal(|ui| {
         egui::ComboBox::from_id_salt(("animator_shape", i)).selected_text(shape_label(s.shape)).show_ui(ui, |ui| {
@@ -239,12 +240,12 @@ fn details(ui: &mut egui::Ui, i: usize, a: &mut Animator, keyable: bool, t: f64,
         changed = true;
     }
     if let Some(within) = &mut a.within {
-        changed |= ui.push_id(("animator_within_range", i), |ui| range_rows(ui, i, "within.", within, keyable, t, tolerance, keys)).inner;
+        changed |= ui.push_id(("animator_within_range", i), |ui| range_rows(ui, theme, i, "within.", within, keyable, t, tolerance, keys)).inner;
     }
     // What it does at full selection.
     let p = &mut a.props;
     let mut row = |ui: &mut egui::Ui, label: &str, v: &mut f32, range: std::ops::RangeInclusive<f32>, default: f32, speed: f64, suffix: &str| {
-        changed |= scrubby_param_row(ui, label, v, range, default, speed, 2, suffix, None).changed;
+        changed |= param_row(ui, theme, label, v, range, default, speed, 2, suffix, None).changed;
     };
     row(ui, "Move X", &mut p.dx, -10.0..=10.0, 0.0, 0.01, " em");
     row(ui, "Move Y", &mut p.dy, -10.0..=10.0, 0.0, 0.01, " em");

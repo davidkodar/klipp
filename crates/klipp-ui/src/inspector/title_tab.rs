@@ -12,6 +12,9 @@ use klipp_timeline::{TitleObjectContent, LayerFx,
 };
 use std::hash::{Hash, Hasher};
 
+use super::rows::{rail_row, switch, TEXT};
+use crate::widgets::inspector_group::section_card;
+
 /// Chip render size: twice the display size so it is sharp on a 2×
 /// display.
 const CHIP_W: u32 = 224;
@@ -310,10 +313,6 @@ fn big_size(ui: &egui::Ui) -> egui::Vec2 {
     egui::vec2(w, w * 9.0 / 16.0)
 }
 
-/// A caption above a card section, in the tab's own voice.
-pub(crate) fn caption(ui: &mut egui::Ui, theme: &KlippTheme, text: &str) {
-    ui.label(egui::RichText::new(text).size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
-}
 
 // ─── The effect picker ───────────────────────────────────────────────
 
@@ -590,7 +589,7 @@ fn motion_row(
     ui.horizontal(|ui| {
         ui.add_sized(
             [58.0, ROW_CHIP.y],
-            egui::Label::new(egui::RichText::new(dir.title()).size(crate::theme::type_scale::CONTROL).color(theme.text_secondary)),
+            egui::Label::new(egui::RichText::new(dir.title()).size(TEXT).color(theme.text_secondary)),
         );
         let current = *slot;
         let s_c = subject.clone();
@@ -621,9 +620,8 @@ fn motion_row(
         }
     });
     if let Some(m) = slot.as_mut() {
-        ui.horizontal(|ui| {
-            ui.add_space(58.0 + 8.0);
-            if ui.add(egui::DragValue::new(&mut m.duration_secs).range(0.05..=klipp_core::title_motion::MAX_DURATION_SECS).speed(0.02).prefix("Duration ").suffix(" s").fixed_decimals(2)).changed() {
+        rail_row(ui, theme, "Duration", |ui| {
+            if ui.add(egui::DragValue::new(&mut m.duration_secs).range(0.05..=klipp_core::title_motion::MAX_DURATION_SECS).speed(0.02).suffix(" s").fixed_decimals(2)).changed() {
                 changed = true;
             }
         });
@@ -679,19 +677,20 @@ fn motion_row(
         let details_id = ui.id().with(("title_motion_details", dir.label()));
         let mut open: bool = ui.memory(|mem| mem.data.get_temp(details_id)).unwrap_or(false);
         ui.horizontal_wrapped(|ui| {
-            ui.add_space(28.0 + 8.0);
+            ui.add_space(super::rows::RAIL_PAD);
             let arrow = if open { "\u{25be}" } else { "\u{25b8}" };
-            if ui.add(egui::Button::new(egui::RichText::new(format!("{arrow} Details")).size(crate::theme::type_scale::CAPTION).color(theme.text_secondary)).frame(false)).clicked() {
+            if ui.add(egui::Button::new(egui::RichText::new(format!("{arrow} Details")).size(TEXT).color(theme.text_secondary)).frame(false)).clicked() {
                 open = !open;
                 ui.memory_mut(|mem| mem.data.insert_temp(details_id, open));
             }
         });
         if open {
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space(36.0);
-                if ui.add(egui::DragValue::new(&mut m.delay_secs).range(0.0..=10.0).speed(0.02).suffix(" s").prefix("Delay ").fixed_decimals(2)).changed() {
+            rail_row(ui, theme, "Delay", |ui| {
+                if ui.add(egui::DragValue::new(&mut m.delay_secs).range(0.0..=10.0).speed(0.02).suffix(" s").fixed_decimals(2)).changed() {
                     changed = true;
                 }
+            });
+            rail_row(ui, theme, "Easing", |ui| {
                 egui::ComboBox::from_id_salt(("title_motion_easing", dir.label()))
                     .selected_text(m.easing.label())
                     .width(0.0)
@@ -712,14 +711,18 @@ fn motion_row(
             });
             if let Easing::Custom(curve) = &mut m.easing {
                 ui.horizontal(|ui| {
-                    ui.add_space(36.0);
+                    ui.add_space(super::rows::RAIL_PAD);
                     if crate::widgets::easing_curve::easing_curve(ui, theme, curve).changed() {
                         changed = true;
                     }
                 });
             }
-            ui.horizontal(|ui| {
-                ui.add_space(36.0);
+            rail_row(ui, theme, "Stagger", |ui| {
+                if m.stagger != StaggerUnit::None
+                    && ui.add(egui::DragValue::new(&mut m.stagger_secs).range(0.0..=1.0).speed(0.005).suffix(" s").prefix("every ").fixed_decimals(3)).changed()
+                {
+                    changed = true;
+                }
                 egui::ComboBox::from_id_salt(("title_motion_stagger", dir.label()))
                     .selected_text(m.stagger.label())
                     .width(0.0)
@@ -731,16 +734,15 @@ fn motion_row(
                             }
                         }
                     });
-                if m.stagger != StaggerUnit::None
-                    && ui.add(egui::DragValue::new(&mut m.stagger_secs).range(0.0..=1.0).speed(0.005).suffix(" s").prefix("every ").fixed_decimals(3)).changed()
-                {
-                    changed = true;
-                }
-                let moves = matches!(m.kind, MotionKind::Rise | MotionKind::Drop | MotionKind::SlideLeft | MotionKind::SlideRight);
-                if moves && ui.add(egui::DragValue::new(&mut m.distance).range(0.1..=8.0).speed(0.02).suffix("\u{00d7} font").prefix("Travel ").fixed_decimals(2)).changed() {
-                    changed = true;
-                }
             });
+            let moves = matches!(m.kind, MotionKind::Rise | MotionKind::Drop | MotionKind::SlideLeft | MotionKind::SlideRight);
+            if moves {
+                rail_row(ui, theme, "Travel", |ui| {
+                    if ui.add(egui::DragValue::new(&mut m.distance).range(0.1..=8.0).speed(0.02).suffix("\u{00d7} font").fixed_decimals(2)).changed() {
+                        changed = true;
+                    }
+                });
+            }
         }
     }
     changed
@@ -827,24 +829,17 @@ pub fn show_motion_card(
     chips: &mut TitleChips,
     cmds: &mut Vec<AppCommand>,
 ) {
-    caption(ui, theme, "ANIMATION");
-    ui.label(
-        egui::RichText::new("Entrance and exit animation for this text layer")
-            .size(crate::theme::type_scale::CAPTION)
-            .color(theme.text_secondary),
-    );
-    ui.add_space(4.0);
-    let mut motion = fx.motion;
-    let mut changed = false;
-    changed |= motion_row(ui, theme, chips, subject, fx, Direction::Enter, &mut motion.enter);
-    ui.add_space(4.0);
-    changed |= motion_row(ui, theme, chips, subject, fx, Direction::Exit, &mut motion.exit);
-    if changed {
-        cmds.push(AppCommand::SetTitleMotion { clip_id, motion });
-    }
-    ui.add_space(8.0);
+    section_card(ui, "ANIMATION", None, theme, |ui| {
+        let mut motion = fx.motion;
+        let mut changed = false;
+        changed |= motion_row(ui, theme, chips, subject, fx, Direction::Enter, &mut motion.enter);
+        ui.add_space(4.0);
+        changed |= motion_row(ui, theme, chips, subject, fx, Direction::Exit, &mut motion.exit);
+        if changed {
+            cmds.push(AppCommand::SetTitleMotion { clip_id, motion });
+        }
+    });
     show_loops(ui, theme, clip_id, subject, fx, travel, chips, cmds);
-    ui.add_space(8.0);
     show_edge_fade(ui, theme, clip_id, fx, cmds);
 }
 
@@ -871,159 +866,160 @@ fn show_loops(
     let mut remove: Option<usize> = None;
     let picker_id = egui::Id::new("title_loop_picker");
     let open = open_picker(ui) == Some(picker_id);
-    caption(ui, theme, "LOOPS");
-    if picker_field(ui, theme, "Add loop\u{2026}", open) {
-        set_open_picker(ui, if open { None } else { Some(picker_id) });
-    }
-    if open {
-        let presets = TitleLoop::presets();
-        let entries: Vec<GalleryEntry> = presets.iter().map(|(name, l)| GalleryEntry { key: (*name).into(), label: name, group: l.category() }).collect();
-        let items: Vec<TitleLoop> = presets.into_iter().map(|(_, l)| l).collect();
-        let picked = inline_picker(ui, theme, picker_id, "Loops", &entries, None, |ui, i, big| {
-            let l = &items[i];
-            let s_c = subject.clone();
-            let fx_c = fx.clone();
-            let l_c = l.clone();
-            let make = move || loop_chip_title(&s_c, &fx_c, &l_c);
-            let label = entries[i].label;
-            if big {
+    section_card(ui, "LOOPS", None, theme, |ui| {
+        if picker_field(ui, theme, "Add loop\u{2026}", open) {
+            set_open_picker(ui, if open { None } else { Some(picker_id) });
+        }
+        if open {
+            let presets = TitleLoop::presets();
+            let entries: Vec<GalleryEntry> = presets.iter().map(|(name, l)| GalleryEntry { key: (*name).into(), label: name, group: l.category() }).collect();
+            let items: Vec<TitleLoop> = presets.into_iter().map(|(_, l)| l).collect();
+            let picked = inline_picker(ui, theme, picker_id, "Loops", &entries, None, |ui, i, big| {
+                let l = &items[i];
+                let s_c = subject.clone();
+                let fx_c = fx.clone();
+                let l_c = l.clone();
+                let make = move || loop_chip_title(&s_c, &fx_c, &l_c);
+                let label = entries[i].label;
+                if big {
+                    let spec = ChipSpec {
+                        id: format!("bigloop:{label}"),
+                        subject,
+                        fx,
+                        rest: 0.35,
+                        play: Play::Loop { len: LOOPS_HOVER_LOOP },
+                        selected: false,
+                        label: None,
+                        always: true,
+                        render: (BIG_W, BIG_H),
+                    };
+                    return chip(ui, theme, chips, spec, big_size(ui), make);
+                }
                 let spec = ChipSpec {
-                    id: format!("bigloop:{label}"),
+                    id: format!("loop:{label}"),
                     subject,
                     fx,
                     rest: 0.35,
-                    play: Play::Loop { len: LOOPS_HOVER_LOOP },
+                    play: Play::Still { at: 0.35 },
                     selected: false,
-                    label: None,
-                    always: true,
-                    render: (BIG_W, BIG_H),
+                    label: Some(label),
+                    always: false,
+                    render: (CHIP_W, CHIP_H),
                 };
-                return chip(ui, theme, chips, spec, big_size(ui), make);
+                chip(ui, theme, chips, spec, GALLERY_CHIP, make)
+            });
+            if let Some(i) = picked {
+                loops.push(items[i].clone());
+                changed = true;
             }
-            let spec = ChipSpec {
-                id: format!("loop:{label}"),
-                subject,
-                fx,
-                rest: 0.35,
-                play: Play::Still { at: 0.35 },
-                selected: false,
-                label: Some(label),
-                always: false,
-                render: (CHIP_W, CHIP_H),
-            };
-            chip(ui, theme, chips, spec, GALLERY_CHIP, make)
-        });
-        if let Some(i) = picked {
-            loops.push(items[i].clone());
+        }
+        if loops.is_empty() {
+            ui.label(egui::RichText::new("None. A loop runs the whole time the title is on screen.").size(TEXT).color(theme.text_secondary));
+        }
+        for (i, l) in loops.iter_mut().enumerate() {
+            ui.horizontal_wrapped(|ui| {
+                ui.add_sized(
+                    [72.0, crate::theme::control::COMPACT],
+                    egui::Label::new(egui::RichText::new(l.label()).size(TEXT).color(theme.text_secondary)),
+                );
+                match l {
+                    TitleLoop::Blink { rate_hz, duty } => {
+                        changed |= ui.add(egui::DragValue::new(rate_hz).range(0.1..=20.0).speed(0.05).suffix(" Hz").fixed_decimals(2)).changed();
+                        changed |= ui.add(egui::DragValue::new(duty).range(0.05..=0.95).speed(0.01).prefix("on ").fixed_decimals(2)).changed();
+                    }
+                    TitleLoop::Pulse { rate_hz, min_opacity } => {
+                        changed |= ui.add(egui::DragValue::new(rate_hz).range(0.05..=10.0).speed(0.02).suffix(" Hz").fixed_decimals(2)).changed();
+                        changed |= ui.add(egui::DragValue::new(min_opacity).range(0.0..=1.0).speed(0.01).prefix("min ").fixed_decimals(2)).changed();
+                    }
+                    TitleLoop::Shake { amplitude, rate_hz } | TitleLoop::Wave { amplitude, rate_hz } => {
+                        changed |= ui.add(egui::DragValue::new(amplitude).range(0.0..=2.0).speed(0.005).suffix("\u{00d7} font").fixed_decimals(3)).changed();
+                        changed |= ui.add(egui::DragValue::new(rate_hz).range(0.05..=30.0).speed(0.05).suffix(" Hz").fixed_decimals(2)).changed();
+                    }
+                    TitleLoop::Float { amplitude, rate_hz } | TitleLoop::Sway { amplitude, rate_hz } => {
+                        changed |= ui.add(egui::DragValue::new(amplitude).range(0.0..=2.0).speed(0.005).suffix("\u{00d7} font").fixed_decimals(3)).changed();
+                        changed |= ui.add(egui::DragValue::new(rate_hz).range(0.02..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
+                    }
+                    TitleLoop::Flicker { rate_hz, depth } => {
+                        changed |= ui.add(egui::DragValue::new(rate_hz).range(0.5..=30.0).speed(0.05).suffix(" Hz").fixed_decimals(1)).changed();
+                        changed |= ui.add(egui::DragValue::new(depth).range(0.0..=1.0).speed(0.01).prefix("dips to ").fixed_decimals(2)).changed();
+                    }
+                    TitleLoop::Drift { dx, dy } => {
+                        let mut x = *dx * 100.0;
+                        if ui.add(egui::DragValue::new(&mut x).range(-50.0..=50.0).speed(0.2).prefix("x ").suffix(" %").fixed_decimals(1)).on_hover_text("How far across the frame it drifts over the clip").changed() {
+                            *dx = x / 100.0;
+                            changed = true;
+                        }
+                        let mut y = *dy * 100.0;
+                        if ui.add(egui::DragValue::new(&mut y).range(-50.0..=50.0).speed(0.2).prefix("y ").suffix(" %").fixed_decimals(1)).on_hover_text("How far down the frame it drifts over the clip").changed() {
+                            *dy = y / 100.0;
+                            changed = true;
+                        }
+                    }
+                    TitleLoop::ColorCycle { rate_hz } => {
+                        changed |= ui.add(egui::DragValue::new(rate_hz).range(0.01..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
+                    }
+                    TitleLoop::ColorBlend { color_a, color_b, rate_hz } => {
+                        let mut a = egui::Color32::from_rgba_unmultiplied(color_a[0], color_a[1], color_a[2], color_a[3]);
+                        if ui.color_edit_button_srgba(&mut a).changed() {
+                            *color_a = a.to_array();
+                            changed = true;
+                        }
+                        let mut b = egui::Color32::from_rgba_unmultiplied(color_b[0], color_b[1], color_b[2], color_b[3]);
+                        if ui.color_edit_button_srgba(&mut b).changed() {
+                            *color_b = b.to_array();
+                            changed = true;
+                        }
+                        changed |= ui.add(egui::DragValue::new(rate_hz).range(0.01..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
+                    }
+                    TitleLoop::Scroll { direction, .. } => {
+                        let up = *direction == ScrollDirection::Up;
+                        if let Some(i) = crate::widgets::segmented::segmented(ui, &["Up", "Down"], if up { 0 } else { 1 }, theme, egui::FontId::proportional(crate::theme::type_scale::CAPTION), crate::theme::control::COMPACT) {
+                            *direction = if i == 0 { ScrollDirection::Up } else { ScrollDirection::Down };
+                            changed = true;
+                        }
+                    }
+                    TitleLoop::Crawl { direction, repeat, .. } => {
+                        let left = *direction == CrawlDirection::Left;
+                        if let Some(i) = crate::widgets::segmented::segmented(ui, &["\u{2190}", "\u{2192}"], if left { 0 } else { 1 }, theme, egui::FontId::proportional(crate::theme::type_scale::CAPTION), crate::theme::control::COMPACT) {
+                            *direction = if i == 0 { CrawlDirection::Left } else { CrawlDirection::Right };
+                            changed = true;
+                        }
+                        changed |= ui.checkbox(repeat, "Repeat").changed();
+                    }
+                    TitleLoop::Counter { from, to, duration_secs, decimals } => {
+                        changed |= ui.add(egui::DragValue::new(from).speed(1.0).prefix("from ")).changed();
+                        changed |= ui.add(egui::DragValue::new(to).speed(1.0).prefix("to ")).changed();
+                        changed |= ui.add(egui::DragValue::new(duration_secs).range(0.1..=60.0).speed(0.05).suffix(" s").fixed_decimals(1)).changed();
+                        let mut d = *decimals as f32;
+                        if ui.add(egui::DragValue::new(&mut d).range(0.0..=3.0).speed(0.1).prefix("dec ").fixed_decimals(0)).changed() {
+                            *decimals = d.round() as u8;
+                            changed = true;
+                        }
+                    }
+                }
+                if ui.small_button("\u{00d7}").on_hover_text("Remove").clicked() {
+                    remove = Some(i);
+                }
+            });
+            // The travelling loops' speed on a line of its own, always shown,
+            // and how they fade with where they are on screen.
+            match l {
+                TitleLoop::Scroll { speed_px_per_sec, shape, .. } => {
+                    changed |= roll_speed(ui, theme, speed_px_per_sec, travel, true, false);
+                    changed |= roll_shape(ui, theme, shape);
+                }
+                TitleLoop::Crawl { speed_px_per_sec, repeat, shape, .. } => {
+                    changed |= roll_speed(ui, theme, speed_px_per_sec, travel, false, *repeat);
+                    changed |= roll_shape(ui, theme, shape);
+                }
+                _ => {}
+            }
+        }
+        if let Some(i) = remove {
+            loops.remove(i);
             changed = true;
         }
-    }
-    if loops.is_empty() {
-        ui.label(egui::RichText::new("None. A loop runs the whole time the title is on screen.").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
-    }
-    for (i, l) in loops.iter_mut().enumerate() {
-        ui.horizontal_wrapped(|ui| {
-            ui.add_sized(
-                [72.0, crate::theme::control::COMPACT],
-                egui::Label::new(egui::RichText::new(l.label()).size(crate::theme::type_scale::CONTROL)),
-            );
-            match l {
-                TitleLoop::Blink { rate_hz, duty } => {
-                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.1..=20.0).speed(0.05).suffix(" Hz").fixed_decimals(2)).changed();
-                    changed |= ui.add(egui::DragValue::new(duty).range(0.05..=0.95).speed(0.01).prefix("on ").fixed_decimals(2)).changed();
-                }
-                TitleLoop::Pulse { rate_hz, min_opacity } => {
-                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.05..=10.0).speed(0.02).suffix(" Hz").fixed_decimals(2)).changed();
-                    changed |= ui.add(egui::DragValue::new(min_opacity).range(0.0..=1.0).speed(0.01).prefix("min ").fixed_decimals(2)).changed();
-                }
-                TitleLoop::Shake { amplitude, rate_hz } | TitleLoop::Wave { amplitude, rate_hz } => {
-                    changed |= ui.add(egui::DragValue::new(amplitude).range(0.0..=2.0).speed(0.005).suffix("\u{00d7} font").fixed_decimals(3)).changed();
-                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.05..=30.0).speed(0.05).suffix(" Hz").fixed_decimals(2)).changed();
-                }
-                TitleLoop::Float { amplitude, rate_hz } | TitleLoop::Sway { amplitude, rate_hz } => {
-                    changed |= ui.add(egui::DragValue::new(amplitude).range(0.0..=2.0).speed(0.005).suffix("\u{00d7} font").fixed_decimals(3)).changed();
-                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.02..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
-                }
-                TitleLoop::Flicker { rate_hz, depth } => {
-                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.5..=30.0).speed(0.05).suffix(" Hz").fixed_decimals(1)).changed();
-                    changed |= ui.add(egui::DragValue::new(depth).range(0.0..=1.0).speed(0.01).prefix("dips to ").fixed_decimals(2)).changed();
-                }
-                TitleLoop::Drift { dx, dy } => {
-                    let mut x = *dx * 100.0;
-                    if ui.add(egui::DragValue::new(&mut x).range(-50.0..=50.0).speed(0.2).prefix("x ").suffix(" %").fixed_decimals(1)).on_hover_text("How far across the frame it drifts over the clip").changed() {
-                        *dx = x / 100.0;
-                        changed = true;
-                    }
-                    let mut y = *dy * 100.0;
-                    if ui.add(egui::DragValue::new(&mut y).range(-50.0..=50.0).speed(0.2).prefix("y ").suffix(" %").fixed_decimals(1)).on_hover_text("How far down the frame it drifts over the clip").changed() {
-                        *dy = y / 100.0;
-                        changed = true;
-                    }
-                }
-                TitleLoop::ColorCycle { rate_hz } => {
-                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.01..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
-                }
-                TitleLoop::ColorBlend { color_a, color_b, rate_hz } => {
-                    let mut a = egui::Color32::from_rgba_unmultiplied(color_a[0], color_a[1], color_a[2], color_a[3]);
-                    if ui.color_edit_button_srgba(&mut a).changed() {
-                        *color_a = a.to_array();
-                        changed = true;
-                    }
-                    let mut b = egui::Color32::from_rgba_unmultiplied(color_b[0], color_b[1], color_b[2], color_b[3]);
-                    if ui.color_edit_button_srgba(&mut b).changed() {
-                        *color_b = b.to_array();
-                        changed = true;
-                    }
-                    changed |= ui.add(egui::DragValue::new(rate_hz).range(0.01..=5.0).speed(0.01).suffix(" Hz").fixed_decimals(2)).changed();
-                }
-                TitleLoop::Scroll { direction, .. } => {
-                    let up = *direction == ScrollDirection::Up;
-                    if let Some(i) = crate::widgets::segmented::segmented(ui, &["Up", "Down"], if up { 0 } else { 1 }, theme, egui::FontId::proportional(crate::theme::type_scale::CAPTION), crate::theme::control::COMPACT) {
-                        *direction = if i == 0 { ScrollDirection::Up } else { ScrollDirection::Down };
-                        changed = true;
-                    }
-                }
-                TitleLoop::Crawl { direction, repeat, .. } => {
-                    let left = *direction == CrawlDirection::Left;
-                    if let Some(i) = crate::widgets::segmented::segmented(ui, &["\u{2190}", "\u{2192}"], if left { 0 } else { 1 }, theme, egui::FontId::proportional(crate::theme::type_scale::CAPTION), crate::theme::control::COMPACT) {
-                        *direction = if i == 0 { CrawlDirection::Left } else { CrawlDirection::Right };
-                        changed = true;
-                    }
-                    changed |= ui.checkbox(repeat, "Repeat").changed();
-                }
-                TitleLoop::Counter { from, to, duration_secs, decimals } => {
-                    changed |= ui.add(egui::DragValue::new(from).speed(1.0).prefix("from ")).changed();
-                    changed |= ui.add(egui::DragValue::new(to).speed(1.0).prefix("to ")).changed();
-                    changed |= ui.add(egui::DragValue::new(duration_secs).range(0.1..=60.0).speed(0.05).suffix(" s").fixed_decimals(1)).changed();
-                    let mut d = *decimals as f32;
-                    if ui.add(egui::DragValue::new(&mut d).range(0.0..=3.0).speed(0.1).prefix("dec ").fixed_decimals(0)).changed() {
-                        *decimals = d.round() as u8;
-                        changed = true;
-                    }
-                }
-            }
-            if ui.small_button("\u{00d7}").on_hover_text("Remove").clicked() {
-                remove = Some(i);
-            }
-        });
-        // The travelling loops' speed on a line of its own, always shown,
-        // and how they fade with where they are on screen.
-        match l {
-            TitleLoop::Scroll { speed_px_per_sec, shape, .. } => {
-                changed |= roll_speed(ui, theme, speed_px_per_sec, travel, true, false);
-                changed |= roll_shape(ui, theme, shape);
-            }
-            TitleLoop::Crawl { speed_px_per_sec, repeat, shape, .. } => {
-                changed |= roll_speed(ui, theme, speed_px_per_sec, travel, false, *repeat);
-                changed |= roll_shape(ui, theme, shape);
-            }
-            _ => {}
-        }
-    }
-    if let Some(i) = remove {
-        loops.remove(i);
-        changed = true;
-    }
+    });
     if changed {
         cmds.push(AppCommand::SetTitleLoops { clip_id, loops });
     }
@@ -1068,7 +1064,7 @@ fn roll_speed(ui: &mut egui::Ui, theme: &KlippTheme, speed: &mut f32, travel: Tr
     let distance = travel.distance(vertical);
     let clip = travel.clip_secs;
     let fitted = distance / clip;
-    let dim = |t: &str| egui::RichText::new(t).size(crate::theme::type_scale::CAPTION).color(theme.text_dim);
+    let dim = |t: &str| egui::RichText::new(t).size(TEXT).color(theme.text_secondary);
     ui.horizontal_wrapped(|ui| {
         ui.add_space(4.0);
         ui.label(dim("Speed"));
@@ -1120,7 +1116,7 @@ fn roll_speed(ui: &mut egui::Ui, theme: &KlippTheme, speed: &mut f32, travel: Tr
 /// when it changed.
 fn roll_shape(ui: &mut egui::Ui, theme: &KlippTheme, shape: &mut klipp_core::title_motion::RollShape) -> bool {
     let mut changed = false;
-    let dim = |t: &str| egui::RichText::new(t).size(crate::theme::type_scale::CAPTION).color(theme.text_dim);
+    let dim = |t: &str| egui::RichText::new(t).size(TEXT).color(theme.text_secondary);
     ui.horizontal_wrapped(|ui| {
         ui.add_space(4.0);
         let mut on = shape.focus.is_some();
@@ -1170,24 +1166,24 @@ fn roll_shape(ui: &mut egui::Ui, theme: &KlippTheme, shape: &mut klipp_core::tit
 fn show_edge_fade(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId, fx: &LayerFx, cmds: &mut Vec<AppCommand>) {
     let mut fade = fx.edge_fade;
     let mut changed = false;
-    caption(ui, theme, "EDGE FADE");
-    ui.horizontal_wrapped(|ui| {
+    section_card(ui, "EDGE FADE", None, theme, |ui| {
         for (label, zone, tip) in [
             ("Top", &mut fade.top, "Fade out over this much of the frame at its top edge"),
             ("Bottom", &mut fade.bottom, "Fade out over this much of the frame at its bottom edge"),
             ("Left", &mut fade.left, "Fade out over this much of the frame at its left edge"),
             ("Right", &mut fade.right, "Fade out over this much of the frame at its right edge"),
         ] {
-            ui.label(egui::RichText::new(label).size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
-            let mut pct = *zone * 100.0;
-            if ui
-                .add(egui::DragValue::new(&mut pct).range(0.0..=50.0).speed(0.5).suffix(" %").fixed_decimals(0))
-                .on_hover_text(format!("{tip}; 0 for none"))
-                .changed()
-            {
-                *zone = pct / 100.0;
-                changed = true;
-            }
+            rail_row(ui, theme, label, |ui| {
+                let mut pct = *zone * 100.0;
+                if ui
+                    .add(egui::DragValue::new(&mut pct).range(0.0..=50.0).speed(0.5).suffix(" %").fixed_decimals(0))
+                    .on_hover_text(format!("{tip}; 0 for none"))
+                    .changed()
+                {
+                    *zone = pct / 100.0;
+                    changed = true;
+                }
+            });
         }
     });
     if changed {
@@ -1201,20 +1197,10 @@ fn to_c32(c: [u8; 4]) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
 }
 
-/// A labelled row of the style card: the label at a fixed width, the
-/// controls after it.
-fn style_row(ui: &mut egui::Ui, theme: &KlippTheme, label: &str, controls: impl FnOnce(&mut egui::Ui)) {
-    ui.horizontal(|ui| {
-        ui.add_sized(
-            [52.0, crate::theme::control::COMPACT],
-            egui::Label::new(egui::RichText::new(label).size(crate::theme::type_scale::CONTROL).color(theme.text_secondary)),
-        );
-        controls(ui);
-    });
-}
-
-/// The style card: presets as chips, then fill, stroke, shadow and
-/// glow as one row each. The full stacks live under Advanced.
+/// The style card: presets as chips, then fill, gradient, stroke, shadow
+/// and glow as one row each, its switch at the right. An effect that is
+/// off and was never set shows only its switch: the values it would
+/// start from are not the layer's. The full stacks live under Advanced.
 pub fn show_style_card(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
@@ -1225,43 +1211,48 @@ pub fn show_style_card(
     cmds: &mut Vec<AppCommand>,
 ) {
     let subject = ChipSubject::Text(tb.clone());
-    caption(ui, theme, "APPEARANCE");
-    ui.add_space(4.0);
-    // Presets, rendered on this text.
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-        for (id, label) in super::PRESET_REGISTRY.iter().filter(|(id, _)| *id != 0) {
-            let s_c = ChipSubject::Text(tb.clone());
-            let fx_c = fx.clone();
-            let pid = *id;
-            let make = move || chip_title(&s_c, &fx_c, |t, f| crate::app::apply_title_preset(t, f, pid));
-            let resp = chip(
-                ui,
-                theme,
-                chips,
-                ChipSpec {
-                    id: format!("preset:{pid}"),
-                    subject: &subject,
-                    fx,
-                    rest: 1.0,
-                    play: Play::Still { at: 1.0 },
-                    selected: false,
-                    label: Some(label),
-                    always: false,
-                    render: (CHIP_W, CHIP_H),
-                },
-                ROW_CHIP,
-                make,
-            );
-            if resp.clicked() {
-                cmds.push(AppCommand::ApplyTitlePreset { clip_id, preset_id: pid });
+    section_card(ui, "APPEARANCE", None, theme, |ui| {
+        // Presets, rendered on this text.
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+            for (id, label) in super::PRESET_REGISTRY.iter().filter(|(id, _)| *id != 0) {
+                let s_c = ChipSubject::Text(tb.clone());
+                let fx_c = fx.clone();
+                let pid = *id;
+                let make = move || chip_title(&s_c, &fx_c, |t, f| crate::app::apply_title_preset(t, f, pid));
+                let resp = chip(
+                    ui,
+                    theme,
+                    chips,
+                    ChipSpec {
+                        id: format!("preset:{pid}"),
+                        subject: &subject,
+                        fx,
+                        rest: 1.0,
+                        play: Play::Still { at: 1.0 },
+                        selected: false,
+                        label: Some(label),
+                        always: false,
+                        render: (CHIP_W, CHIP_H),
+                    },
+                    ROW_CHIP,
+                    make,
+                );
+                if resp.clicked() {
+                    cmds.push(AppCommand::ApplyTitlePreset { clip_id, preset_id: pid });
+                }
             }
-        }
+        });
+        ui.add_space(6.0);
+        style_rows(ui, theme, clip_id, tb, fx, cmds);
     });
-    ui.add_space(6.0);
+}
 
-    // Fill.
-    style_row(ui, theme, "Fill", |ui| {
+/// Fill, gradient, stroke, shadow and glow, one row each. Right to left,
+/// so the switch is added first and each row's values after it in
+/// reverse.
+fn style_rows(ui: &mut egui::Ui, theme: &KlippTheme, clip_id: klipp_core::ClipId, tb: &TextBox, fx: &LayerFx, cmds: &mut Vec<AppCommand>) {
+    rail_row(ui, theme, "Fill", |ui| {
         let mut col = to_c32(tb.color);
         if ui.color_edit_button_srgba(&mut col).changed() {
             cmds.push(AppCommand::UpdateTitleData {
@@ -1273,22 +1264,25 @@ pub fn show_style_card(
                 color: col.to_array(),
             });
         }
+    });
+    rail_row(ui, theme, "Gradient", |ui| {
         let g = tb.gradient.as_ref();
         let mut on = g.is_some_and(|g| g.enabled);
         let (mut top, mut bottom) = g.map(|g| (g.top_color, g.bottom_color)).unwrap_or((tb.color, [tb.color[0] / 2, tb.color[1] / 2, tb.color[2] / 2, tb.color[3]]));
         let mut send = false;
-        if ui.checkbox(&mut on, "Gradient").changed() {
+        if switch(ui, theme, on).clicked() {
+            on = !on;
             send = true;
         }
         if on {
-            let mut t = to_c32(top);
-            if ui.color_edit_button_srgba(&mut t).changed() {
-                top = t.to_array();
+            let mut b = to_c32(bottom);
+            if ui.color_edit_button_srgba(&mut b).on_hover_text("Bottom").changed() {
+                bottom = b.to_array();
                 send = true;
             }
-            let mut b = to_c32(bottom);
-            if ui.color_edit_button_srgba(&mut b).changed() {
-                bottom = b.to_array();
+            let mut t = to_c32(top);
+            if ui.color_edit_button_srgba(&mut t).on_hover_text("Top").changed() {
+                top = t.to_array();
                 send = true;
             }
         }
@@ -1296,73 +1290,88 @@ pub fn show_style_card(
             cmds.push(AppCommand::SetTitleGradient { clip_id, enabled: on, top_color: top, bottom_color: bottom });
         }
     });
-    // Stroke.
-    style_row(ui, theme, "Stroke", |ui| {
+    rail_row(ui, theme, "Stroke", |ui| {
         let o = fx.outlines.first();
         let mut on = o.is_some_and(|o| o.enabled);
         let (mut color, mut width) = o.map(|o| (o.color, o.width)).unwrap_or(([0, 0, 0, 255], 3.0));
-        let mut send = ui.checkbox(&mut on, "").changed();
-        let mut c = to_c32(color);
-        if ui.color_edit_button_srgba(&mut c).changed() {
-            color = c.to_array();
+        let mut send = false;
+        if switch(ui, theme, on).clicked() {
+            on = !on;
             send = true;
-            on = true;
         }
-        if ui.add(egui::DragValue::new(&mut width).range(0.5..=40.0).speed(0.1).suffix(" px").fixed_decimals(1)).changed() {
-            send = true;
-            on = true;
+        if on || o.is_some() {
+            if ui.add(egui::DragValue::new(&mut width).range(0.5..=40.0).speed(0.1).suffix(" px").fixed_decimals(1)).changed() {
+                send = true;
+                on = true;
+            }
+            let mut c = to_c32(color);
+            if ui.color_edit_button_srgba(&mut c).changed() {
+                color = c.to_array();
+                send = true;
+                on = true;
+            }
         }
         if send {
             cmds.push(AppCommand::SetTitleOutline { clip_id, enabled: on, color, width });
         }
     });
-    // Shadow.
-    style_row(ui, theme, "Shadow", |ui| {
+    rail_row(ui, theme, "Shadow", |ui| {
         let s = fx.shadows.first();
         let mut on = s.is_some_and(|s| s.enabled);
         let (mut color, mut ox, mut oy, mut blur) = s.map(|s| (s.color, s.offset_x, s.offset_y, s.blur)).unwrap_or(([0, 0, 0, 200], 4.0, 4.0, 6.0));
-        let mut send = ui.checkbox(&mut on, "").changed();
-        let mut c = to_c32(color);
-        if ui.color_edit_button_srgba(&mut c).changed() {
-            color = c.to_array();
+        let mut send = false;
+        if switch(ui, theme, on).clicked() {
+            on = !on;
             send = true;
-            on = true;
         }
-        if ui.add(egui::DragValue::new(&mut ox).range(-100.0..=100.0).speed(0.2).prefix("x ").fixed_decimals(0)).changed() {
-            send = true;
-            on = true;
-        }
-        if ui.add(egui::DragValue::new(&mut oy).range(-100.0..=100.0).speed(0.2).prefix("y ").fixed_decimals(0)).changed() {
-            send = true;
-            on = true;
-        }
-        if ui.add(egui::DragValue::new(&mut blur).range(0.0..=60.0).speed(0.2).prefix("blur ").fixed_decimals(0)).changed() {
-            send = true;
-            on = true;
+        if on || s.is_some() {
+            if ui.add(egui::DragValue::new(&mut blur).range(0.0..=60.0).speed(0.2).prefix("blur ").fixed_decimals(0)).changed() {
+                send = true;
+                on = true;
+            }
+            if ui.add(egui::DragValue::new(&mut oy).range(-100.0..=100.0).speed(0.2).prefix("y ").fixed_decimals(0)).changed() {
+                send = true;
+                on = true;
+            }
+            if ui.add(egui::DragValue::new(&mut ox).range(-100.0..=100.0).speed(0.2).prefix("x ").fixed_decimals(0)).changed() {
+                send = true;
+                on = true;
+            }
+            let mut c = to_c32(color);
+            if ui.color_edit_button_srgba(&mut c).changed() {
+                color = c.to_array();
+                send = true;
+                on = true;
+            }
         }
         if send {
             cmds.push(AppCommand::SetTitleShadow { clip_id, enabled: on, color, offset_x: ox, offset_y: oy, blur });
         }
     });
-    // Glow.
-    style_row(ui, theme, "Glow", |ui| {
+    rail_row(ui, theme, "Glow", |ui| {
         let g = fx.glows.first();
         let mut on = g.is_some_and(|g| g.enabled);
         let (mut color, mut radius, mut intensity) = g.map(|g| (g.color, g.radius, g.intensity)).unwrap_or((tb.color, 12.0, 1.0));
-        let mut send = ui.checkbox(&mut on, "").changed();
-        let mut c = to_c32(color);
-        if ui.color_edit_button_srgba(&mut c).changed() {
-            color = c.to_array();
+        let mut send = false;
+        if switch(ui, theme, on).clicked() {
+            on = !on;
             send = true;
-            on = true;
         }
-        if ui.add(egui::DragValue::new(&mut radius).range(1.0..=100.0).speed(0.2).prefix("radius ").fixed_decimals(0)).changed() {
-            send = true;
-            on = true;
-        }
-        if ui.add(egui::DragValue::new(&mut intensity).range(0.1..=3.0).speed(0.02).prefix("\u{00d7}").fixed_decimals(2)).changed() {
-            send = true;
-            on = true;
+        if on || g.is_some() {
+            if ui.add(egui::DragValue::new(&mut intensity).range(0.1..=3.0).speed(0.02).prefix("\u{00d7}").fixed_decimals(2)).changed() {
+                send = true;
+                on = true;
+            }
+            if ui.add(egui::DragValue::new(&mut radius).range(1.0..=100.0).speed(0.2).prefix("radius ").fixed_decimals(0)).changed() {
+                send = true;
+                on = true;
+            }
+            let mut c = to_c32(color);
+            if ui.color_edit_button_srgba(&mut c).changed() {
+                color = c.to_array();
+                send = true;
+                on = true;
+            }
         }
         if send {
             cmds.push(AppCommand::SetTitleGlow { clip_id, enabled: on, color, radius, intensity });
@@ -1797,5 +1806,90 @@ mod template_field_tests {
         assert!(dones.len() >= 2, "steps sent: {sent:?}");
         assert!(dones[..dones.len() - 1].iter().all(|d| !d), "under way: {dones:?}");
         assert_eq!(dones.last(), Some(&true), "the end is done: {dones:?}");
+    }
+}
+
+#[cfg(test)]
+mod row_style_tests {
+    use super::*;
+    use crate::inspector::rows::test_frame::{click, frame};
+
+    fn text() -> TextBox {
+        TextBox { text: "Title text".into(), font_name: "Inter".into(), ..Default::default() }
+    }
+
+    /// The motion card (with its loops and edge fade), the letter
+    /// animators and the style card, as the Title tab draws them.
+    fn draw(ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>, fx: &LayerFx, chips: &mut TitleChips) {
+        let clip_id = klipp_core::ClipId(uuid::Uuid::nil());
+        let tb = text();
+        let travel = Travel::new(klipp_core::Resolution { width: 1920, height: 1080 }, (400.0, 100.0), 2.0);
+        show_motion_card(ui, theme, clip_id, &ChipSubject::Text(tb.clone()), fx, travel, chips, cmds);
+        super::super::title_animators::show_animators(ui, theme, clip_id, None, fx, 2.0, 0.0, 1.0 / 48.0, cmds);
+        show_style_card(ui, theme, clip_id, &tb, fx, chips, cmds);
+    }
+
+    fn texts(fx: &LayerFx) -> Vec<(String, egui::Pos2)> {
+        let ctx = egui::Context::default();
+        let mut chips = TitleChips::default();
+        frame(&ctx, Vec::new(), |ui, theme, cmds| draw(ui, theme, cmds, fx, &mut chips)).0
+    }
+
+    /// Every heading and row the cards had is drawn, each edge-fade row
+    /// on a line of its own (they were drawn over one another), and an
+    /// effect that is off and never set shows no values it does not have.
+    #[test]
+    fn every_row_is_kept_and_nothing_is_made_up() {
+        let fx = LayerFx::default();
+        let t = texts(&fx);
+        let all: Vec<&str> = t.iter().map(|(s, _)| s.as_str()).collect();
+        for label in [
+            "ANIMATION", "Entrance", "Exit", "LOOPS", "EDGE FADE", "Top", "Bottom", "Left", "Right", "ANIMATE LETTERS", "Wave",
+            "APPEARANCE", "Neon", "Fill", "Gradient", "Stroke", "Shadow", "Glow",
+        ] {
+            assert!(all.contains(&label), "{label} is no longer shown: {all:?}");
+        }
+        let y = |l: &str| t.iter().find(|(s, _)| s == l).unwrap().1.y;
+        let ys = [y("Top"), y("Bottom"), y("Left"), y("Right")];
+        assert!(ys.windows(2).all(|w| w[1] > w[0] + 20.0), "one edge per row: {ys:?}");
+        for made_up in ["3.0 px", "x 4", "y 4", "blur 6", "radius 12", "\u{00d7}1.00"] {
+            assert!(!all.contains(&made_up), "{made_up} is not the layer's: {all:?}");
+        }
+
+        // A stroke the layer has shows its own values.
+        let mut fx = LayerFx::default();
+        fx.outlines.push(serde_json::from_value(serde_json::json!({ "color": [255, 0, 0, 255], "width": 5.5 })).unwrap());
+        let all: Vec<String> = texts(&fx).into_iter().map(|(s, _)| s).collect();
+        assert!(all.iter().any(|s| s == "5.5 px"), "{all:?}");
+    }
+
+    /// No rule between rows: the only hairlines are the section headers'.
+    #[test]
+    fn no_rule_between_rows() {
+        let ctx = egui::Context::default();
+        let fx = LayerFx::default();
+        let mut chips = TitleChips::default();
+        let theme = KlippTheme::default();
+        let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 6000.0))), ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| draw(ui, &theme, &mut Vec::new(), &fx, &mut chips));
+        });
+        let rules = out.shapes.iter().filter(|s| matches!(&s.shape, egui::Shape::LineSegment { points, .. } if points[0].y == points[1].y)).count();
+        assert_eq!(rules, 5, "ANIMATION, LOOPS, EDGE FADE, ANIMATE LETTERS and APPEARANCE headers, and none between rows");
+    }
+
+    /// The switches answer real clicks: Stroke on sends the outline it
+    /// starts from; an existing shadow off keeps its values.
+    #[test]
+    fn the_switches_do_what_they_say() {
+        let ctx = egui::Context::default();
+        let fx = LayerFx::default();
+        let mut chips = TitleChips::default();
+        let mut d = |ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>| draw(ui, theme, cmds, &fx, &mut chips);
+        let (t, _) = frame(&ctx, Vec::new(), &mut d);
+        let at = |l: &str| egui::pos2(360.0 - 8.0 - super::super::rows::RAIL_PAD - 16.0, t.iter().find(|(s, _)| s == l).unwrap().1.y);
+        let cmds = click(&ctx, at("Stroke"), &mut d);
+        assert!(matches!(cmds.as_slice(), [AppCommand::SetTitleOutline { enabled: true, width, .. }] if *width == 3.0), "{cmds:?}");
+        let cmds = click(&ctx, at("Gradient"), &mut d);
+        assert!(matches!(cmds.as_slice(), [AppCommand::SetTitleGradient { enabled: true, .. }]), "{cmds:?}");
     }
 }
