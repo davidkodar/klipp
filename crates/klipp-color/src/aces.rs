@@ -552,12 +552,16 @@ fn bt1886_inverse(l: f32, gamma: f32, l_w: f32, l_b: f32) -> f32 {
 /// raises the Y channel by `DIM_SURROUND_GAMMA`, returns to RGB.
 /// Preserves chromaticity; only the perceived brightness curve
 /// shifts to match the dim-surround viewing environment.
-fn dark_surround_to_dim_surround(rec709_lin: [f32; 3]) -> [f32; 3] {
-    // Rec.709 D65 → XYZ_D65. Standard matrix.
-    let xyz = matrix3_mul_vec(rec709_to_xyz_d65(), rec709_lin);
+///
+/// In a video display's own basis: to XYZ D65 by its matrix and back by
+/// its inverse. Chromaticity is kept and only Y raised, so the answer is
+/// the same light whichever D65 basis carries it.
+fn dark_surround_to_dim_surround(display_lin: [f32; 3], display: &VideoDisplay) -> [f32; 3] {
+    // Display D65 → XYZ_D65.
+    let xyz = matrix3_mul_vec((display.to_xyz)(), display_lin);
     let sum = xyz[0] + xyz[1] + xyz[2];
     if sum < 1e-12 {
-        return rec709_lin;
+        return display_lin;
     }
     let x_chrom = xyz[0] / sum;
     let y_chrom = xyz[1] / sum;
@@ -569,8 +573,32 @@ fn dark_surround_to_dim_surround(rec709_lin: [f32; 3]) -> [f32; 3] {
         let inv_y = 1.0 / y_chrom;
         [x_chrom * big_y * inv_y, big_y, (1.0 - x_chrom - y_chrom) * big_y * inv_y]
     };
-    matrix3_mul_vec(xyz_d65_to_rec709(), xyz_back)
+    matrix3_mul_vec((display.from_xyz)(), xyz_back)
 }
+
+/// A video ODT's display basis: AP1 into it (with the D60→D65
+/// adaptation), and its D65 RGB to and from XYZ for the dim-surround
+/// step. The Rec.709 and Rec.2020 100-nit dim ODTs differ in nothing
+/// else.
+struct VideoDisplay {
+    from_ap1: fn() -> [[f32; 3]; 3],
+    to_xyz: fn() -> [[f32; 3]; 3],
+    from_xyz: fn() -> [[f32; 3]; 3],
+}
+
+/// `ODT.Academy.Rec709_100nits_dim`'s display.
+const VIDEO_REC709: VideoDisplay = VideoDisplay {
+    from_ap1: crate::primaries::acescg_to_bt709,
+    to_xyz: rec709_to_xyz_d65,
+    from_xyz: xyz_d65_to_rec709,
+};
+
+/// `ODT.Academy.Rec2020_100nits_dim`'s display (#901).
+const VIDEO_REC2020: VideoDisplay = VideoDisplay {
+    from_ap1: crate::primaries::acescg_to_bt2020,
+    to_xyz: rec2020_to_xyz,
+    from_xyz: xyz_to_rec2020,
+};
 
 /// Rec.709 D65 → CIE XYZ (D65). Standard ITU-R BT.709 matrix.
 #[inline]
@@ -642,6 +670,13 @@ pub fn apply_odt_rec709_100_nits_dim(oces: [f32; 3]) -> [f32; 3] {
 /// [`apply_odt_rec709_100_nits_dim`] with the tone curve supplied —
 /// see [`apply_rrt_with`].
 fn apply_odt_rec709_100_nits_dim_with(oces: [f32; 3], curve: &dyn Fn(f32) -> f32) -> [f32; 3] {
+    apply_odt_video_100_nits_dim_with(oces, curve, &VIDEO_REC709)
+}
+
+/// The 100-nit dim video ODT onto `display`: Rec.709's, or Rec.2020's
+/// with the same tone scale, desaturation and surround, only the
+/// display primaries changed — as the AMPAS pair differ.
+fn apply_odt_video_100_nits_dim_with(oces: [f32; 3], curve: &dyn Fn(f32) -> f32, display: &VideoDisplay) -> [f32; 3] {
     // OCES → AP1 rendering space.
     let rgb_pre = matrix3_mul_vec(ap0_to_ap1(), oces);
 
@@ -664,10 +699,10 @@ fn apply_odt_rec709_100_nits_dim_with(oces: [f32; 3], curve: &dyn Fn(f32) -> f32
     // preserving, but the AMPAS reference applies it on AP1 so we
     // do too.
     let lin_cv_desat = matrix3_mul_vec(odt_sat_matrix(), lin_cv);
-    let rec709_lin = matrix3_mul_vec(crate::primaries::acescg_to_bt709(), lin_cv_desat);
+    let display_lin = matrix3_mul_vec((display.from_ap1)(), lin_cv_desat);
 
     // Dim-surround compensation (per-channel via xyY).
-    let dim_adjusted = dark_surround_to_dim_surround(rec709_lin);
+    let dim_adjusted = dark_surround_to_dim_surround(display_lin, display);
 
     // Clamp to display gamut.
     let clamped = [
@@ -774,6 +809,15 @@ pub fn odt_rec709_tone_curve_table(n: usize) -> ToneCurveTable {
         odt_c9_max_point()[0].log10(),
         n,
     )
+}
+
+/// The ACES Rec.2020 SDR output (#901), `ODT.Academy.Rec2020_100nits_dim`:
+/// the Rec.709 video transform onto BT.2020 primaries — the same tone
+/// scale, desaturation and dim surround, clamped to BT.2020 and encoded
+/// by the BT.1886 inverse (γ 2.4). For an SDR delivery in BT.2020.
+pub fn acescg_to_rec2020_sdr(acescg: [f32; 3]) -> [f32; 3] {
+    let oces = apply_rrt(matrix3_mul_vec(ap1_to_ap0(), acescg));
+    apply_odt_video_100_nits_dim_with(oces, &segmented_spline_c9_fwd, &VIDEO_REC2020)
 }
 
 /// [`acescg_to_rec709_sdr`] with both tone curves read from tables —
@@ -1579,7 +1623,7 @@ mod tests {
         // Neutral grey has equal RGB. The xyY transform preserves
         // chromaticity, so the output also has equal RGB (modulo
         // f32 precision noise from going through XYZ).
-        let out = dark_surround_to_dim_surround([0.5, 0.5, 0.5]);
+        let out = dark_surround_to_dim_surround([0.5, 0.5, 0.5], &VIDEO_REC709);
         assert!(approx(out[0], out[1], 1e-5));
         assert!(approx(out[1], out[2], 1e-5));
         // Y₀.₉₈¹¹ at Y=0.5 ≈ 0.506 — slight brightening.
@@ -1948,6 +1992,7 @@ mod gpu_odt_data_tests {
             GpuOdt::DciP3D65_48,
             GpuOdt::Rec2100Pq1000,
             GpuOdt::Rec2100Pq4000,
+            GpuOdt::Rec2020Sdr,
         ] {
             let n = 256;
             let d = aces_odt_gpu_data(odt, klipp_core::WorkingColorspace::AcesCG, n);
@@ -1963,10 +2008,10 @@ mod gpu_odt_data_tests {
             let want_n = if hdr { 0.0 } else { n as f32 };
             assert_eq!(d[2], want_n, "{odt:?}: rrt entries");
             assert_eq!(d[5], want_n, "{odt:?}: odt entries");
-            // Only the video ODT compensates for a dim surround.
+            // Only the video ODTs compensate for a dim surround.
             assert_eq!(
                 d[gpu_layout::DIM_SURROUND],
-                if odt == GpuOdt::Rec709Sdr { 1.0 } else { 0.0 },
+                if matches!(odt, GpuOdt::Rec709Sdr | GpuOdt::Rec2020Sdr) { 1.0 } else { 0.0 },
                 "{odt:?}: dim surround",
             );
             assert_eq!(
@@ -2020,10 +2065,11 @@ mod gpu_odt_data_tests {
             GpuOdt::DciP3D65_48,
             GpuOdt::Rec2100Pq1000,
             GpuOdt::Rec2100Pq4000,
+            GpuOdt::Rec2020Sdr,
         ] {
             assert_eq!(GpuOdt::from_tag(odt.tag()), Some(odt));
         }
-        assert_eq!(GpuOdt::from_tag(4), None, "an unknown tag must not resolve");
+        assert_eq!(GpuOdt::from_tag(5), None, "an unknown tag must not resolve");
     }
 
     /// A non-AcesCG project is walked into AP1 before the ODT, and that
@@ -2069,11 +2115,12 @@ mod gpu_odt_data_tests {
     /// `table_size_against_accuracy` measures at 0.041 code values.
     #[test]
     fn the_tabled_reference_is_the_deliverable() {
-        let exact: [(GpuOdt, fn([f32; 3]) -> [f32; 3]); 4] = [
+        let exact: [(GpuOdt, fn([f32; 3]) -> [f32; 3]); 5] = [
             (GpuOdt::Rec709Sdr, acescg_to_rec709_sdr),
             (GpuOdt::DciP3D65_48, acescg_to_dcip3_d65_48nit),
             (GpuOdt::Rec2100Pq1000, acescg_to_rec2100_pq_1000_nit),
             (GpuOdt::Rec2100Pq4000, acescg_to_rec2100_pq_4000_nit),
+            (GpuOdt::Rec2020Sdr, acescg_to_rec2020_sdr),
         ];
         let mut st = 0x2545_F491_4F6C_DD1Du64;
         let mut next = move || {
@@ -2262,6 +2309,8 @@ pub enum GpuOdt {
     Rec2100Pq1000,
     /// [`acescg_to_rec2100_pq_4000_nit`].
     Rec2100Pq4000,
+    /// [`acescg_to_rec2020_sdr`] (#901).
+    Rec2020Sdr,
 }
 
 impl GpuOdt {
@@ -2274,6 +2323,7 @@ impl GpuOdt {
             Self::DciP3D65_48 => 1,
             Self::Rec2100Pq1000 => 2,
             Self::Rec2100Pq4000 => 3,
+            Self::Rec2020Sdr => 4,
         }
     }
 
@@ -2284,6 +2334,7 @@ impl GpuOdt {
             1 => Self::DciP3D65_48,
             2 => Self::Rec2100Pq1000,
             3 => Self::Rec2100Pq4000,
+            4 => Self::Rec2020Sdr,
             _ => return None,
         })
     }
@@ -2343,10 +2394,11 @@ pub fn aces_odt_gpu_data(
         GpuOdt::DciP3D65_48 => DCI_DISP_GAMMA,
         _ => SDR_DISP_GAMMA,
     });
-    // Only the video ODT compensates for a dim surround. The cinema one
+    // Only the video ODTs compensate for a dim surround. The cinema one
     // does not, and neither does its saturation partner — applying one
     // without the other put positive blue into saturated reds.
-    out.push(if odt == GpuOdt::Rec709Sdr { 1.0 } else { 0.0 });
+    let video = matches!(odt, GpuOdt::Rec709Sdr | GpuOdt::Rec2020Sdr);
+    out.push(if video { 1.0 } else { 0.0 });
     let (y_white, y_black) = match hdr {
         Some(peak) => (peak, HDR_PQ_Y_MIN),
         None => (CINEMA_WHITE, CINEMA_BLACK),
@@ -2362,14 +2414,26 @@ pub fn aces_odt_gpu_data(
         ap0_to_ap1(),
         rrt_sat_matrix(),
         // The cinema ODT applies no saturation matrix.
-        if odt == GpuOdt::Rec709Sdr { odt_sat_matrix() } else { identity3() },
+        if video { odt_sat_matrix() } else { identity3() },
         match odt {
             GpuOdt::DciP3D65_48 => crate::primaries::acescg_to_p3d65(),
-            _ if sdr => crate::primaries::acescg_to_bt709(),
+            // The Rec.2020 video ODT is the Rec.709 one on BT.2020
+            // primaries: its display basis, and the dim surround's way
+            // to XYZ and back in that basis (#901).
+            GpuOdt::Rec2020Sdr => (VIDEO_REC2020.from_ap1)(),
+            _ if sdr => (VIDEO_REC709.from_ap1)(),
             _ => identity3(),
         },
-        if sdr { rec709_to_xyz_d65() } else { identity3() },
-        if sdr { xyz_d65_to_rec709() } else { identity3() },
+        match odt {
+            GpuOdt::Rec2020Sdr => (VIDEO_REC2020.to_xyz)(),
+            _ if sdr => (VIDEO_REC709.to_xyz)(),
+            _ => identity3(),
+        },
+        match odt {
+            GpuOdt::Rec2020Sdr => (VIDEO_REC2020.from_xyz)(),
+            _ if sdr => (VIDEO_REC709.from_xyz)(),
+            _ => identity3(),
+        },
         if sdr { identity3() } else { ap1_to_xyz() },
         if sdr { identity3() } else { xyz_to_rec2020() },
         if sdr { identity3() } else { rec2020_to_xyz() },
@@ -2432,6 +2496,10 @@ pub fn acescg_to_display_tabled(
         GpuOdt::Rec2100Pq1000 => acescg_to_rec2100_pq_1000_nit(acescg),
         GpuOdt::Rec2100Pq4000 => acescg_to_rec2100_pq_4000_nit(acescg),
         GpuOdt::Rec709Sdr => acescg_to_rec709_sdr_tabled(acescg, &curves.rrt, &curves.c9),
+        GpuOdt::Rec2020Sdr => {
+            let oces = apply_rrt_with(matrix3_mul_vec(ap1_to_ap0(), acescg), &|x| curves.rrt.eval(x));
+            apply_odt_video_100_nits_dim_with(oces, &|x| curves.c9.eval(x), &VIDEO_REC2020)
+        }
         GpuOdt::DciP3D65_48 => {
             let oces =
                 apply_rrt_with(matrix3_mul_vec(ap1_to_ap0(), acescg), &|x| curves.rrt.eval(x));

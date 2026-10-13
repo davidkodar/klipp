@@ -518,6 +518,9 @@ mod sdr_transfer_tests {
 ///   working space is Rec.709-linear.
 /// * [`OdtChoice::DciP3D65_48`] — DCI-P3 D65 theatrical at 48 nit.
 ///   Same conversion rule.
+/// * [`OdtChoice::Rec2020Sdr`] — the Rec.709 video transform onto
+///   BT.2020 primaries (RRT + Rec.2020 100-nit dim ODT + BT.1886
+///   inverse). Same conversion rule.
 /// * [`OdtChoice::Srgb`] — legacy sRGB-only path, identical to
 ///   [`display_transform`]. No RRT/ODT, no working-space awareness;
 ///   byte-identical to every export written before delivery-target
@@ -742,6 +745,7 @@ impl ExportDisplay {
             OdtChoice::Rec2100Pq1000 => GpuOdt::Rec2100Pq1000,
             OdtChoice::Rec2100Pq4000 => GpuOdt::Rec2100Pq4000,
             OdtChoice::DciP3D65_48 => GpuOdt::DciP3D65_48,
+            OdtChoice::Rec2020Sdr => GpuOdt::Rec2020Sdr,
             // `ExportPath::Odt` is unreachable for these three — they
             // take the ToneMapSrgb or AcesRec709 paths — so there is no
             // ODT to name.
@@ -801,6 +805,7 @@ impl ExportDisplay {
                     OdtChoice::Rec2100Pq1000 => crate::aces::acescg_to_rec2100_pq_1000_nit(ap1),
                     OdtChoice::Rec2100Pq4000 => crate::aces::acescg_to_rec2100_pq_4000_nit(ap1),
                     OdtChoice::DciP3D65_48 => crate::aces::acescg_to_dcip3_d65_48nit(ap1),
+                    OdtChoice::Rec2020Sdr => crate::aces::acescg_to_rec2020_sdr(ap1),
                     OdtChoice::MatchViewer | OdtChoice::Srgb | OdtChoice::Unknown => ap1,
                 };
                 if want_light && self.odt.is_pq() {

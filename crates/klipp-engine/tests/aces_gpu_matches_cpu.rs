@@ -266,6 +266,7 @@ fn every_acescg_odt_matches_the_cpu() {
             GpuOdt::DciP3D65_48,
             GpuOdt::Rec2100Pq1000,
             GpuOdt::Rec2100Pq4000,
+            GpuOdt::Rec2020Sdr,
         ] {
             pipeline.upload_chain_input_linear(&linear);
             let data = aces_odt_gpu_data(odt, working, CURVE_ENTRIES);

@@ -264,8 +264,8 @@ struct ColorTags {
 /// export says BT.709, the sRGB-curve ones included: Match Viewer in a
 /// Rec.709 or BT.2020 project writes the same curve as the sRGB transform,
 /// and the two must not be tagged apart. The matrix is the one the
-/// scalers convert with (BT.709 for SDR), since a P3 file is still
-/// Y'CbCr by that matrix.
+/// scalers convert with (BT.709 for SDR, BT.2020 for Rec.2020 SDR), since
+/// a P3 file is still Y'CbCr by the BT.709 matrix.
 fn color_tags(delivery: klipp_core::HdrMode, odt: klipp_core::OdtChoice) -> ColorTags {
     use ffmpeg_next::ffi::{AVColorPrimaries as P, AVColorSpace as M, AVColorTransferCharacteristic as T};
     match delivery {
@@ -275,6 +275,16 @@ fn color_tags(delivery: klipp_core::HdrMode, odt: klipp_core::OdtChoice) -> Colo
                 transfer: T::AVCOL_TRC_UNSPECIFIED,
                 matrix: M::AVCOL_SPC_BT709,
                 x265: "colorprim=smpte432:transfer=unknown:colormatrix=bt709",
+            },
+            // SDR in BT.2020 (#901): its primaries, BT.2020's SDR
+            // transfer (the BT.709 curve under BT.2020's name), and the
+            // BT.2020 non-constant-luminance matrix the scalers then
+            // convert with — see `yuv_matrix_for`.
+            klipp_core::OdtChoice::Rec2020Sdr => ColorTags {
+                primaries: P::AVCOL_PRI_BT2020,
+                transfer: T::AVCOL_TRC_BT2020_10,
+                matrix: M::AVCOL_SPC_BT2020_NCL,
+                x265: "colorprim=bt2020:transfer=bt2020-10:colormatrix=bt2020nc",
             },
             _ => ColorTags {
                 primaries: P::AVCOL_PRI_BT709,
@@ -295,6 +305,16 @@ fn color_tags(delivery: klipp_core::HdrMode, odt: klipp_core::OdtChoice) -> Colo
             matrix: M::AVCOL_SPC_BT2020_NCL,
             x265: "colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc",
         },
+    }
+}
+
+/// The Y'CbCr matrix an export converts with, the one [`color_tags`]
+/// names: BT.2020 non-constant-luminance for HDR and for Rec.2020 SDR,
+/// BT.709 for every other SDR delivery.
+fn yuv_matrix_for(settings: &ExportSettings) -> klipp_core::ColorMatrix {
+    match color_tags(settings.delivery(), settings.odt).matrix {
+        ffmpeg_next::ffi::AVColorSpace::AVCOL_SPC_BT2020_NCL => klipp_core::ColorMatrix::Bt2020Ncl,
+        _ => klipp_core::ColorMatrix::Bt709,
     }
 }
 
@@ -1089,10 +1109,7 @@ impl Encoder {
             audio_time_base,
             rgba_to_yuv,
             rgba64_to_yuv: None,
-            yuv_matrix: match settings.delivery() {
-                klipp_core::HdrMode::Sdr => klipp_core::ColorMatrix::Bt709,
-                klipp_core::HdrMode::Hlg | klipp_core::HdrMode::Pq => klipp_core::ColorMatrix::Bt2020Ncl,
-            },
+            yuv_matrix: yuv_matrix_for(settings),
             output_width: out_w,
             output_height: out_h,
             audio_frame_size,
@@ -2580,7 +2597,8 @@ mod tests {
     }
 
     /// The tags follow the output transform applied, not only the
-    /// delivery: a DCI-P3 D65 export says P3 primaries and claims no
+    /// delivery: a Rec.2020 SDR export says BT.2020 primaries, transfer
+    /// and matrix (#901), a DCI-P3 D65 export says P3 primaries and claims no
     /// transfer (2.6 gamma has no code). The sRGB-curve exports, the sRGB
     /// transform and Match Viewer in a Rec.709 project, are tagged alike,
     /// as are Match Viewer and Rec.709 in ACEScg. H.265
@@ -2593,14 +2611,16 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         use klipp_core::{OdtChoice as O, WorkingColorspace as W};
         let cases = [
-            (O::DciP3D65_48, W::AcesCG, "smpte432", "unknown"),
-            (O::Srgb, W::Rec709Linear, "bt709", "bt709"),
-            (O::MatchViewer, W::Rec709Linear, "bt709", "bt709"),
-            (O::MatchViewer, W::AcesCG, "bt709", "bt709"),
-            (O::Rec709Sdr, W::AcesCG, "bt709", "bt709"),
+            (O::DciP3D65_48, W::AcesCG, "smpte432", "unknown", "bt709"),
+            (O::Srgb, W::Rec709Linear, "bt709", "bt709", "bt709"),
+            (O::MatchViewer, W::Rec709Linear, "bt709", "bt709", "bt709"),
+            (O::MatchViewer, W::AcesCG, "bt709", "bt709", "bt709"),
+            (O::Rec709Sdr, W::AcesCG, "bt709", "bt709", "bt709"),
+            (O::Rec2020Sdr, W::AcesCG, "bt2020", "bt2020-10", "bt2020nc"),
+            (O::Rec2020Sdr, W::Rec709Linear, "bt2020", "bt2020-10", "bt2020nc"),
         ];
         for codec in [ExportVideoCodec::H264, ExportVideoCodec::H265] {
-            for (odt, working, primaries, transfer) in cases {
+            for (odt, working, primaries, transfer, space) in cases {
                 let path = dir.join(format!("tags_{odt:?}_{working:?}_{codec:?}.mp4"));
                 let mut settings = make_settings(codec, path.to_str().unwrap());
                 settings.audio_codec = ExportAudioCodec::Copy;
@@ -2622,11 +2642,84 @@ mod tests {
                 };
                 let tags = String::from_utf8_lossy(&probe.stdout).to_string();
                 let _ = std::fs::remove_file(&path);
-                for want in [format!("color_primaries={primaries}"), format!("color_transfer={transfer}"), "color_space=bt709".to_string()] {
+                for want in [format!("color_primaries={primaries}"), format!("color_transfer={transfer}"), format!("color_space={space}")] {
                     assert!(tags.contains(&want), "{codec:?} {odt:?} in {working:?} lacks {want}: {tags}");
                 }
             }
         }
+    }
+
+    /// #901: a Rec.2020 SDR export is BT.2020 in its pixels, not only its
+    /// tags. Colour patches go in as linear BT.709 light; the file's
+    /// Y'CbCr, decoded by the BT.2020 matrix its tags name, gives back
+    /// what the ACES Rec.2020 SDR transform says each patch is, within
+    /// 2.5 8-bit code values of compression; by the BT.709 matrix the
+    /// primaries decode further off. Skips without ffmpeg.
+    #[test]
+    #[serial]
+    fn a_rec2020_sdr_export_decodes_to_the_transform_by_the_bt2020_matrix() {
+        let dir = std::env::temp_dir().join("klipp_render_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rec2020_sdr_patches.mp4");
+        let mut settings = make_settings(ExportVideoCodec::H264, path.to_str().unwrap());
+        settings.audio_codec = ExportAudioCodec::Copy;
+        settings.crf = 4;
+        settings.odt = klipp_core::OdtChoice::Rec2020Sdr;
+        let snapshot = make_snapshot();
+        let (w, h) = (320usize, 240usize);
+        // Four 80-pixel-wide columns: grey, and BT.709's red, green and
+        // blue, the most saturated a BT.709 project holds.
+        let patches: [[f32; 3]; 4] = [[0.18, 0.18, 0.18], [0.5, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 0.5]];
+        let mut linear = vec![1.0f32; w * h * 4];
+        for (i, px) in linear.chunks_exact_mut(4).enumerate() {
+            px[..3].copy_from_slice(&patches[(i % w) / 80]);
+        }
+        let mut enc = Encoder::open(&path, &settings, &snapshot).unwrap();
+        for _ in 0..3 {
+            enc.encode_linear_frame(&linear, w as u32, h as u32).unwrap();
+        }
+        enc.finalise().unwrap();
+        let Ok(out) = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-i"])
+            .arg(&path)
+            .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "yuv444p", "-"])
+            .output()
+        else {
+            return;
+        };
+        let _ = std::fs::remove_file(&path);
+        let raw = out.stdout;
+        assert_eq!(raw.len(), w * h * 3, "one 4:4:4 frame: {}", String::from_utf8_lossy(&out.stderr));
+        // Limited-range Y'CbCr back to R'G'B' by a matrix's luma weights.
+        let decode = |at: usize, kr: f32, kb: f32| {
+            let y = (raw[at] as f32 - 16.0) / 219.0;
+            let cb = (raw[w * h + at] as f32 - 128.0) / 224.0;
+            let cr = (raw[2 * w * h + at] as f32 - 128.0) / 224.0;
+            let kg = 1.0 - kr - kb;
+            let r = y + 2.0 * (1.0 - kr) * cr;
+            let b = y + 2.0 * (1.0 - kb) * cb;
+            let g = (y - kr * r - kb * b) / kg;
+            [r, g, b].map(|v| v * 255.0)
+        };
+        let display = export_display(&settings, snapshot.working_colorspace);
+        let mut bt709_off = 0.0f32;
+        let mut matched = 0.0f32;
+        for (i, p) in patches.iter().enumerate() {
+            let at = (h / 2) * w + i * 80 + 40;
+            let want = display.encode(*p).map(|v| v * 255.0);
+            let got = decode(at, 0.2627, 0.0593);
+            matched = matched.max((0..3).map(|c| (got[c] - want[c]).abs()).fold(0.0, f32::max));
+            for c in 0..3 {
+                assert!((got[c] - want[c]).abs() <= 2.5, "patch {i} channel {c}: decoded {got:?}, the transform says {want:?}");
+            }
+            let wrong = decode(at, 0.2126, 0.0722);
+            bt709_off = bt709_off.max((0..3).map(|c| (wrong[c] - want[c]).abs()).fold(0.0, f32::max));
+        }
+        // Measured: 1.6 codes by the BT.2020 matrix, 5.1 by BT.709's — the
+        // ACES transform desaturates BT.709's primaries, so the matrices
+        // differ by a few codes, not tens.
+        assert!(matched <= 2.5, "decoded within {matched} of the transform");
+        assert!(bt709_off > 4.0, "the BT.709 matrix should decode the primaries off, but is within {bt709_off}");
     }
 
     /// ProRes in MKV writes a Matroska file holding ProRes: it used to be

@@ -12,7 +12,10 @@ Requirements: OpenColorIO >= 2.2 with Python bindings
     Debian/Ubuntu: apt install python3-pyopencolorio
 
 Usage (from the workspace root):
-    python tools/gen_ocio_reference.py
+    python tools/gen_ocio_reference.py [ODT ...]
+
+With ODT names (the keys of `ODTS`, e.g. `rec2020_sdr`), only those
+fixtures are written; the others stay as committed.
 
 Regenerate only when deliberately re-deriving the reference — the CSVs
 under crates/klipp-color/tests/fixtures/ are committed and are the
@@ -67,6 +70,11 @@ ODTS = {
         "fn": "acescg_to_dcip3_d65_48nit",
         "display": "P3-D65 - Display",
         "view": "ACES 1.0 - SDR Cinema",
+    },
+    "rec2020_sdr": {
+        "fn": "acescg_to_rec2020_sdr",
+        "display": "Rec.1886 Rec.2020 - Display",
+        "view": "ACES 1.0 - SDR Video",
     },
 }
 
@@ -166,7 +174,13 @@ def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     stamp = datetime.date.today().isoformat()
 
+    wanted = sys.argv[1:] or list(ODTS)
+    unknown = [k for k in wanted if k not in ODTS]
+    if unknown:
+        sys.exit(f"unknown ODT(s): {', '.join(unknown)}; known: {', '.join(ODTS)}")
     for key, spec in ODTS.items():
+        if key not in wanted:
+            continue
         xform = ocio.DisplayViewTransform(
             src=SRC, display=spec["display"], view=spec["view"]
         )

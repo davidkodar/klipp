@@ -153,6 +153,10 @@ pub enum ToneMapOp {
 ///   target display.
 /// * [`Self::DciP3D65_48`] — DCI-P3 D65 cinema, 48 cd/m² peak. The
 ///   theatrical-projection target.
+/// * [`Self::Rec2020Sdr`] — SDR video in BT.2020 primaries: the ACES
+///   Rec.709 video transform onto the wider gamut, BT.1886, tagged and
+///   matrixed BT.2020. For a broadcaster or platform that takes SDR in
+///   BT.2020.
 /// * [`Self::Srgb`] — legacy sRGB encode with no ACES RRT/ODT. The
 ///   pre-Phase-E export path, kept addressable for users who don't
 ///   want any opinionated tone mapping. Byte-identical to the export
@@ -180,6 +184,9 @@ pub enum OdtChoice {
     Rec2100Pq4000,
     /// DCI-P3 D65 at 48 cd/m² peak. Theatrical cinema deliverable.
     DciP3D65_48,
+    /// Rec.2020 SDR video — RRT + Rec.2020 100-nit dim ODT + BT.1886
+    /// inverse (#901). Placed after `Srgb` in the wire tags.
+    Rec2020Sdr,
     /// Legacy sRGB encode — no ACES RRT/ODT, just sRGB inverse EOTF
     /// on the linear master. The pre-delivery-target export path.
     Srgb,
@@ -204,6 +211,7 @@ impl OdtChoice {
             OdtChoice::Rec2100Pq4000 => 3,
             OdtChoice::DciP3D65_48 => 4,
             OdtChoice::Srgb => 5,
+            OdtChoice::Rec2020Sdr => 6,
             OdtChoice::Unknown => 255,
         }
     }
@@ -220,16 +228,18 @@ impl OdtChoice {
             3 => OdtChoice::Rec2100Pq4000,
             4 => OdtChoice::DciP3D65_48,
             5 => OdtChoice::Srgb,
+            6 => OdtChoice::Rec2020Sdr,
             _ => OdtChoice::MatchViewer,
         }
     }
 
-    /// Iteration order for menus (matches the discriminant order of
-    /// the supported variants — `Unknown` is excluded; it's a serde
-    /// sentinel, not a user choice).
-    pub const ALL: [OdtChoice; 6] = [
+    /// Iteration order for menus: the SDR video outputs together, then
+    /// HDR, cinema and the legacy curve. `Unknown` is excluded; it's a
+    /// serde sentinel, not a user choice.
+    pub const ALL: [OdtChoice; 7] = [
         OdtChoice::MatchViewer,
         OdtChoice::Rec709Sdr,
+        OdtChoice::Rec2020Sdr,
         OdtChoice::Rec2100Pq1000,
         OdtChoice::Rec2100Pq4000,
         OdtChoice::DciP3D65_48,
@@ -285,6 +295,7 @@ impl OdtChoice {
             OdtChoice::Rec2100Pq1000 => "Rec.2100 PQ (1000 nit)",
             OdtChoice::Rec2100Pq4000 => "Rec.2100 PQ (4000 nit)",
             OdtChoice::DciP3D65_48 => "DCI-P3 D65 (48 nit)",
+            OdtChoice::Rec2020Sdr => "Rec.2020 SDR",
             OdtChoice::Srgb => "sRGB curve only (legacy)",
             OdtChoice::Unknown => "Unknown",
         }
@@ -4572,6 +4583,7 @@ mod odt_choice_tests {
         assert_eq!(OdtChoice::Rec2100Pq4000.as_u8(), 3);
         assert_eq!(OdtChoice::DciP3D65_48.as_u8(), 4);
         assert_eq!(OdtChoice::Srgb.as_u8(), 5);
+        assert_eq!(OdtChoice::Rec2020Sdr.as_u8(), 6);
         assert_eq!(OdtChoice::Unknown.as_u8(), 255);
     }
 
@@ -4579,7 +4591,7 @@ mod odt_choice_tests {
     fn unknown_u8_falls_back_to_match_viewer() {
         // A corrupted atomic / FFI integer must default to the safe
         // viewer path — never produce a delivery-target surprise.
-        for tag in [6u8, 7, 42, 100, 200, 254] {
+        for tag in [7u8, 8, 42, 100, 200, 254] {
             assert_eq!(OdtChoice::from_u8(tag), OdtChoice::MatchViewer);
         }
     }
