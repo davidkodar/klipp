@@ -328,28 +328,21 @@ impl LaunchScreen {
             egui::Color32::WHITE,
         );
 
-        // "Klipp" title
-        let klipp_y = logo_center.y + logo_size * 0.5 + 14.0;
-        ui.painter().text(
-            egui::pos2(logo_center.x, klipp_y),
-            egui::Align2::CENTER_CENTER,
-            "Klipp",
-            egui::FontId::proportional(28.0),
-            theme.accent,
-        );
+        // The wordmark, as About and Preferences draw it.
+        let word = crate::widgets::wordmark::paint(ui, egui::pos2(logo_center.x, logo_center.y + logo_size * 0.5 + 12.0), 34.0);
 
-        // Version + platform
+        // The running build: its version and build number, as About says.
+        let build = klipp_core::build_info::get();
         ui.painter().text(
-            egui::pos2(logo_center.x, klipp_y + 22.0),
+            egui::pos2(logo_center.x, word.bottom() + 8.0),
             egui::Align2::CENTER_CENTER,
-            // Use the running app's package version, as About does.
-            format!("Version {} · Linux", klipp_core::build_info::get().version),
+            version_line(build),
             egui::FontId::proportional(11.0),
-            theme.text_dim,
+            theme.text_secondary,
         );
 
         // ── Action Buttons ──
-        let buttons_y = klipp_y + 54.0;
+        let buttons_y = word.bottom() + 34.0;
 
         // + New Project (orange filled)
         let new_rect = egui::Rect::from_min_size(
@@ -1545,6 +1538,16 @@ fn format_size_compact(bytes: u64) -> String {
     }
 }
 
+/// "Version 0.1.0 · Build 2711": the build number says which build of a
+/// version this is, and is left out where the binary recorded none.
+fn version_line(build: &klipp_core::build_info::BuildInfo) -> String {
+    if build.number > 0 {
+        format!("Version {} · Build {}", build.version, build.number)
+    } else {
+        format!("Version {}", build.version)
+    }
+}
+
 fn build_meta_string(rp: &RecentProject) -> String {
     let mut parts = Vec::new();
     if let Some(ref fps) = rp.fps {
@@ -1810,4 +1813,19 @@ fn image_from_png(data: &[u8]) -> Result<egui::ColorImage, String> {
         size: [w, h],
         pixels,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The sidebar names the version and its build number, and no
+    /// platform: Klipp runs on Linux only.
+    #[test]
+    fn the_version_line_carries_the_build_number() {
+        let mut build = klipp_core::build_info::BuildInfo { version: "0.1.0", number: 2711, commit: "672c2162", dirty: false, profile: "release", exe: None, built_at: None };
+        assert_eq!(version_line(&build), "Version 0.1.0 · Build 2711");
+        build.number = 0;
+        assert_eq!(version_line(&build), "Version 0.1.0");
+    }
 }

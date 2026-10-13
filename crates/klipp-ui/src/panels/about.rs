@@ -406,7 +406,8 @@ fn body(ui: &mut egui::Ui, theme: &KlippTheme) -> Option<AboutAction> {
         row(ui, "Version", &mut |ui| {
             ui.label(egui::RichText::new(build.version).size(13.0).color(theme.text_primary).strong());
             let commit = format!("{}{}", build.commit, if build.dirty { "-dirty" } else { "" });
-            ui.label(egui::RichText::new(format!("{commit} · {}", build.profile)).size(12.0).color(theme.text_secondary));
+            let detail = if build.number > 0 { format!("build {} · {commit} · {}", build.number, build.profile) } else { format!("{commit} · {}", build.profile) };
+            ui.label(egui::RichText::new(detail).size(12.0).color(theme.text_secondary));
             if quiet_link(ui, theme, "Copy").on_hover_text("Copy the full version").clicked() {
                 ui.ctx().copy_text(build.label());
             }

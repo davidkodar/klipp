@@ -171,7 +171,7 @@ mod status_text_tests {
     /// timeline, the playhead and the media, in words.
     #[test]
     fn status_reads_as_a_person_would_say_it() {
-        let build = klipp_core::build_info::BuildInfo { version: "0.1.0", commit: "f5e7b0ee", dirty: false, profile: "release", exe: None, built_at: None };
+        let build = klipp_core::build_info::BuildInfo { version: "0.1.0", number: 2711, commit: "f5e7b0ee", dirty: false, profile: "release", exe: None, built_at: None };
         let mut seq = klipp_timeline::Sequence::new_default();
         seq.name = "Main Sequence".into();
         let facts = |seq: &klipp_timeline::Sequence, project: Option<&std::path::Path>, unsaved: bool, media: usize| status_text(&StatusFacts { build: &build, project, unsaved, sequence: seq, media, playhead_secs: 65.2, playing: false });
