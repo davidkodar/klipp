@@ -304,6 +304,12 @@ impl Parked {
         (fb.gpu_output_frame, fb.latest_generation())
     }
 
+    /// The engine's recent notes on the picture, oldest first: each
+    /// `gen N <what was shown, how, in which state>`.
+    pub fn trail(&self) -> Vec<String> {
+        self.fb.lock().unwrap().trail()
+    }
+
     /// The scope texture the engine last published for `mode`.
     pub fn scope_texture(&self, mode: u8) -> Option<klipp_engine::texture::ScopeTextureEntry> {
         self.fb.lock().unwrap().scope_textures.get(&mode).cloned()
@@ -517,6 +523,35 @@ pub fn ramp(name: &str, codec: &[&str], ext: &str) -> Option<PathBuf> {
 /// truncated copy still opens.
 pub fn hevc_ramp() -> Option<PathBuf> {
     ramp("hevc-faststart", &["-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "bframes=4:keyint=250:log-level=error", "-movflags", "+faststart"], "mp4")
+}
+
+/// `secs` seconds of flat grey HEVC at 25 fps, the ramp's size, for a test
+/// that has to keep playing: 40 frames run out in 1.6 s, and on a loaded
+/// machine before a watch that needs them is done (#1523).
+pub fn hevc_long(secs: u32) -> Option<PathBuf> {
+    if Command::new("ffmpeg").arg("-version").output().is_err() {
+        return None;
+    }
+    let out = std::env::temp_dir().join(format!("klipp-hevc-long-{RAMP_W}x{RAMP_H}x{secs}s.mp4"));
+    if out.exists() {
+        return Some(out);
+    }
+    let partial = unshared(&out, "mp4");
+    let ok = Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i"])
+        .arg(format!("color=c=gray:s={RAMP_W}x{RAMP_H}:r=25:d={secs}"))
+        .args(["-pix_fmt", "yuv420p10le", "-vf", "setparams=range=tv:colorspace=bt709:color_primaries=bt709:color_trc=bt709"])
+        .args(["-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "bframes=4:keyint=250:log-level=error", "-movflags", "+faststart"])
+        .arg(&partial)
+        .status()
+        .ok()?
+        .success();
+    if !ok {
+        let _ = std::fs::remove_file(&partial);
+        panic!("ffmpeg could not encode {secs} s of HEVC");
+    }
+    std::fs::rename(&partial, &out).ok()?;
+    Some(out)
 }
 
 /// FFV1 in AVI: every frame is a `00dc` chunk, so a frame's data can be

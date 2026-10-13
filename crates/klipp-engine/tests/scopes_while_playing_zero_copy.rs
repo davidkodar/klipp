@@ -23,7 +23,10 @@ fn the_scopes_refresh_while_playing_without_a_readback() {
         eprintln!("a shared device was already installed; skipping");
         return;
     }
-    let Some(src) = common::hevc_ramp() else { return };
+    // Long enough that playback cannot reach the end inside the watch:
+    // at the end it pauses, and the paused frame is shown as bytes, which
+    // is not a readback while playing (#1523).
+    let Some(src) = common::hevc_long(90) else { return };
     let parked = common::Parked::start(src, common::RAMP_W, common::RAMP_H);
     parked.send(AppCommand::SetScopesVisible(true));
     parked.send(AppCommand::SetActiveScopeModes { modes: [0u8, 1, 2, 3].into_iter().collect() });
@@ -51,7 +54,17 @@ fn the_scopes_refresh_while_playing_without_a_readback() {
     parked.send(AppCommand::Pause);
 
     assert!(gpu_after > gpu_before + 3, "playback stalled: {gpu_before} → {gpu_after} GPU frames");
-    assert_eq!(bytes_after, bytes_before, "display bytes were published while playing zero-copy: a readback");
+    // No frame shown as bytes while playing in the window. Each byte
+    // frame takes a generation, and the engine notes each with the state
+    // it was made in, so every generation the window saw has its note: a
+    // readback while playing is told apart from the paused frame at the
+    // end of the clip (#1523).
+    let trail = parked.trail();
+    let note_of = |g: u64| trail.iter().find(|l| l.starts_with(&format!("gen {g} shown as bytes:"))).cloned();
+    for g in bytes_before + 1..=bytes_after {
+        let note = note_of(g).unwrap_or_else(|| panic!("byte frame {g} has no note left in the trail: {trail:?}"));
+        assert!(!note.contains("shown as bytes: Playing"), "display bytes were published while playing zero-copy, a readback: {note}");
+    }
     for m in 0..4 {
         assert!(
             scopes_after[m] >= scopes_before[m] + 2,
