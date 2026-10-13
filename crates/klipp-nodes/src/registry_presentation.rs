@@ -227,6 +227,7 @@ const NODES: &[ParamEntry] = &[
     at(QUALIFIER, "qual_invert", toggle().visible_if(on("qual_enabled"))),
     at(QUALIFIER, "qual_clean_black", slider(0.00125).label("Clean Black").visible_if(on("qual_enabled"))),
     at(QUALIFIER, "qual_clean_white", slider(0.00125).label("Clean White").visible_if(on("qual_enabled"))),
+    at(QUALIFIER, "qual_denoise", slider(0.025).label("Denoise").visible_if(on("qual_enabled"))),
     at(QUALIFIER, "qual_shrink_grow", slider(0.05).label("Shrink / Grow").visible_if(on("qual_enabled"))),
     at(QUALIFIER, "qual_blur", slider(0.0625).visible_if(on("qual_enabled"))),
     at(LUMA_KEY, "luma_key_enabled", toggle()),

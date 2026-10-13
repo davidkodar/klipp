@@ -67,6 +67,9 @@ pub struct QualifierSettings {
     pub clean_black: f32,
     #[serde(default)]
     pub clean_white: f32,
+    /// The matte's median denoise radius (#901).
+    #[serde(default)]
+    pub denoise: f32,
     #[serde(default)]
     pub shrink_grow: f32,
     #[serde(default)]
@@ -145,6 +148,7 @@ impl Default for QualifierSettings {
             temperature: 0.0,
             clean_black: 0.0,
             clean_white: 0.0,
+            denoise: 0.0,
             shrink_grow: 0.0,
             blur: 0.0,
             mode: QualifierMode::Hsl,

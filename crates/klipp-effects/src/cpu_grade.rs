@@ -770,15 +770,17 @@ mod volume_tests {
 }
 
 /// Matte finesse on a qualifier's matte (the same value in R, G and B):
-/// clean black and clean white clip and rescale the matte, shrink/grow
-/// erodes or dilates it by a square of `|shrink_grow|` pixels, and blur
-/// is two box passes of `blur` pixels — a near-Gaussian softening. This
+/// clean black and clean white clip and rescale the matte, denoise takes
+/// the median of the square `denoise` pixels around each pixel (see
+/// [`matte_denoise`]), shrink/grow erodes or dilates it by a square of
+/// `|shrink_grow|` pixels, and blur is two box passes of `blur` pixels —
+/// a near-Gaussian softening. This
 /// runs on the CPU for both paths: the qualifier's matte comes back to
 /// the CPU either way, so both are the same code.
 ///
 /// A key without these is unusable in practice: every real key needs at
 /// least its noise cleaned and its edge softened.
-pub fn matte_finesse(px: &mut [f32], width: u32, height: u32, clean_black: f32, clean_white: f32, shrink_grow: f32, blur: f32) {
+pub fn matte_finesse(px: &mut [f32], width: u32, height: u32, clean_black: f32, clean_white: f32, denoise: f32, shrink_grow: f32, blur: f32) {
     let (w, h) = (width as usize, height as usize);
     if w == 0 || h == 0 || px.len() < w * h * 4 {
         return;
@@ -786,6 +788,10 @@ pub fn matte_finesse(px: &mut [f32], width: u32, height: u32, clean_black: f32, 
     let lo = clean_black.clamp(0.0, 0.99);
     let hi = (1.0 - clean_white).clamp(lo + 0.01, 1.0);
     let mut m: Vec<f32> = px.chunks_exact(4).take(w * h).map(|p| ((p[0] - lo) / (hi - lo)).clamp(0.0, 1.0)).collect();
+    let dr = denoise.round().max(0.0) as usize;
+    if dr > 0 {
+        m = matte_denoise(&m, w, h, dr);
+    }
     let r = shrink_grow.abs().round() as usize;
     if r > 0 {
         let grow = shrink_grow > 0.0;
@@ -804,6 +810,77 @@ pub fn matte_finesse(px: &mut [f32], width: u32, height: u32, clean_black: f32, 
         p[1] = *v;
         p[2] = *v;
     });
+}
+
+/// The levels [`matte_denoise`] sorts a matte into: finer than a 10-bit
+/// matte, and 0 and 1 are levels of their own, so a solid matte stays
+/// exactly solid.
+const DENOISE_LEVELS: usize = 1024;
+
+/// A matte's noise taken out (#901): each pixel the median of the
+/// `(2r + 1)²` square around it, edges repeated. Specks and holes smaller
+/// than about half the square go, while an edge stays where it was and as
+/// sharp as it was — unlike a blur, which softens the edge with the
+/// noise, or shrink then grow, which rounds the matte's corners.
+///
+/// The median is found among [`DENOISE_LEVELS`] levels, a running
+/// histogram per row (Huang's method), so the cost grows with the radius,
+/// not its square. Where a pixel's own value is on the median's level it
+/// is kept as it was, so a smooth soft edge comes through unquantised.
+pub fn matte_denoise(m: &[f32], w: usize, h: usize, r: usize) -> Vec<f32> {
+    if r == 0 || w == 0 || h == 0 {
+        return m.to_vec();
+    }
+    let top = (DENOISE_LEVELS - 1) as f32;
+    let level: Vec<u16> = m.par_iter().map(|v| (v.clamp(0.0, 1.0) * top).round() as u16).collect();
+    let side = 2 * r + 1;
+    // The (0-based) rank of the median among the window's samples.
+    let k = (side * side - 1) / 2;
+    let clamp = |i: isize, n: usize| i.clamp(0, n as isize - 1) as usize;
+    let mut out = vec![0.0f32; w * h];
+    out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        let rows: Vec<usize> = (0..side).map(|j| clamp(y as isize + j as isize - r as isize, h)).collect();
+        let mut hist = vec![0u32; DENOISE_LEVELS];
+        let column = |hist: &mut [u32], x: usize, add: bool| {
+            for &yy in &rows {
+                let b = level[yy * w + x] as usize;
+                if add { hist[b] += 1 } else { hist[b] -= 1 }
+            }
+        };
+        for i in 0..side {
+            column(&mut hist, clamp(i as isize - r as isize, w), true);
+        }
+        // `below` counts the samples on levels under `med`.
+        let (mut med, mut below) = (0usize, 0usize);
+        for x in 0..w {
+            if x > 0 {
+                let (gone, come) = (clamp(x as isize - r as isize - 1, w), clamp(x as isize + r as isize, w));
+                for &yy in &rows {
+                    let b = level[yy * w + gone] as usize;
+                    hist[b] -= 1;
+                    if b < med {
+                        below -= 1;
+                    }
+                    let b = level[yy * w + come] as usize;
+                    hist[b] += 1;
+                    if b < med {
+                        below += 1;
+                    }
+                }
+            }
+            while below > k {
+                med -= 1;
+                below -= hist[med] as usize;
+            }
+            while below + hist[med] as usize <= k {
+                below += hist[med] as usize;
+                med += 1;
+            }
+            let own = y * w + x;
+            row[x] = if level[own] as usize == med { m[own] } else { med as f32 / top };
+        }
+    });
+    out
 }
 
 /// A separable window filter: `fold` accumulates the `2r + 1` samples
@@ -986,9 +1063,9 @@ mod matte_finesse_tests {
     #[test]
     fn grow_dilates_and_shrink_erodes() {
         let mut m = dot();
-        matte_finesse(&mut m, 11, 11, 0.0, 0.0, 2.0, 0.0);
+        matte_finesse(&mut m, 11, 11, 0.0, 0.0, 0.0, 2.0, 0.0);
         assert_eq!(count_on(&m), 25, "a dot grown by 2 px is a 5×5 square");
-        matte_finesse(&mut m, 11, 11, 0.0, 0.0, -2.0, 0.0);
+        matte_finesse(&mut m, 11, 11, 0.0, 0.0, 0.0, -2.0, 0.0);
         assert_eq!(count_on(&m), 1, "shrunk back by 2 px it is the dot again");
         assert_eq!(at(&m, 5, 5), 1.0);
     }
@@ -996,7 +1073,7 @@ mod matte_finesse_tests {
     #[test]
     fn blur_spreads_the_matte_and_keeps_its_sum() {
         let mut m = dot();
-        matte_finesse(&mut m, 11, 11, 0.0, 0.0, 0.0, 1.0);
+        matte_finesse(&mut m, 11, 11, 0.0, 0.0, 0.0, 0.0, 1.0);
         assert!(at(&m, 5, 5) < 1.0 && at(&m, 5, 5) > 0.0);
         assert!(at(&m, 6, 5) > 0.0 && at(&m, 7, 5) > 0.0 && at(&m, 8, 5) == 0.0, "two box passes of 1 px reach 2 px");
         let sum: f32 = m.chunks_exact(4).map(|p| p[0]).sum();
@@ -1011,11 +1088,97 @@ mod matte_finesse_tests {
             m[i * 4 + 1] = *v;
             m[i * 4 + 2] = *v;
         }
-        matte_finesse(&mut m, 4, 1, 0.1, 0.1, 0.0, 0.0);
+        matte_finesse(&mut m, 4, 1, 0.1, 0.1, 0.0, 0.0, 0.0);
         assert_eq!(m[0], 0.0, "noise under clean black goes to 0");
         assert!((m[4] - 0.5).abs() < 1e-6, "the middle stays the middle");
         assert_eq!(m[8], 1.0, "above clean white is solid");
         assert_eq!(m[12], 1.0);
+    }
+
+    /// A `w`×`h` matte from a value per pixel.
+    fn matte(w: usize, h: usize, f: impl Fn(usize, usize) -> f32) -> Vec<f32> {
+        let mut m = vec![1.0f32; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                let v = f(x, y);
+                m[(y * w + x) * 4..][..3].copy_from_slice(&[v, v, v]);
+            }
+        }
+        m
+    }
+
+    /// #901: denoise clears specks and fills pinholes, and leaves a hard
+    /// edge where it was and as hard as it was — what a blur or shrink
+    /// then grow can't.
+    #[test]
+    fn denoise_clears_specks_and_keeps_the_edge() {
+        let (w, h) = (24usize, 16usize);
+        // Left half keyed, right half not; a speck of key on the right,
+        // a pinhole in the left, and a 2×2 clump in each.
+        let base = |x: usize, y: usize| {
+            let keyed = x < 12;
+            let flipped = (x, y) == (18, 3) || (x, y) == (4, 12) || (19..21).contains(&x) && (9..11).contains(&y) || (3..5).contains(&x) && (5..7).contains(&y);
+            if keyed != flipped { 1.0 } else { 0.0 }
+        };
+        let mut m = matte(w, h, base);
+        matte_finesse(&mut m, w as u32, h as u32, 0.0, 0.0, 2.0, 0.0, 0.0);
+        for y in 0..h {
+            for x in 0..w {
+                let want = if x < 12 { 1.0 } else { 0.0 };
+                assert_eq!(m[(y * w + x) * 4], want, "({x}, {y}): the specks and holes are gone and the edge is still hard at x = 12");
+            }
+        }
+        // A blur of the same reach leaves the clump and softens the edge.
+        let mut blurred = matte(w, h, base);
+        matte_finesse(&mut blurred, w as u32, h as u32, 0.0, 0.0, 0.0, 0.0, 2.0);
+        assert!(blurred[(9 * w + 19) * 4] > 0.0 && blurred[(8 * w + 11) * 4] < 1.0, "the control: a blur keeps noise and softens the edge");
+    }
+
+    /// #901: the denoise is the median of the window, edges repeated —
+    /// checked against a plain sort on a noisy soft matte; on its levels,
+    /// or exactly the pixel's own value where that is the median's level.
+    #[test]
+    fn denoise_is_the_windows_median() {
+        let (w, h, r) = (17usize, 13usize, 2usize);
+        let mut seed = 12345u32;
+        let mut noise = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed % 1000) as f32 / 999.0
+        };
+        let vals: Vec<f32> = (0..w * h).map(|_| noise()).collect();
+        let got = super::matte_denoise(&vals, w, h, r);
+        let top = (super::DENOISE_LEVELS - 1) as f32;
+        let lvl = |v: f32| (v * top).round();
+        for y in 0..h {
+            for x in 0..w {
+                let mut win = Vec::new();
+                for dy in -(r as isize)..=r as isize {
+                    for dx in -(r as isize)..=r as isize {
+                        let (xx, yy) = ((x as isize + dx).clamp(0, w as isize - 1) as usize, (y as isize + dy).clamp(0, h as isize - 1) as usize);
+                        win.push(lvl(vals[yy * w + xx]));
+                    }
+                }
+                win.sort_by(f32::total_cmp);
+                let med = win[win.len() / 2];
+                let own = vals[y * w + x];
+                let want = if lvl(own) == med { own } else { med / top };
+                assert_eq!(got[y * w + x], want, "({x}, {y})");
+            }
+        }
+        assert_eq!(super::matte_denoise(&vals, w, h, 0), vals, "no radius, no change");
+    }
+
+    /// A smooth soft edge comes through a denoise unchanged: a ramp's
+    /// median is its own value.
+    #[test]
+    fn denoise_keeps_a_soft_ramp() {
+        let (w, h) = (40usize, 6usize);
+        let mut m = matte(w, h, |x, _| x as f32 / 39.0);
+        let before = m.clone();
+        matte_finesse(&mut m, w as u32, h as u32, 0.0, 0.0, 3.0, 0.0, 0.0);
+        assert_eq!(m, before);
     }
 }
 

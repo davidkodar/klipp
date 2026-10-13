@@ -98,6 +98,10 @@ pub struct QualifierSettings {
     /// rescaled (0..1).
     #[serde(default)]
     pub clean_white: f32,
+    /// Pixels: the radius of the median that takes the matte's specks
+    /// and pinholes out, its edges kept (#901). 0 is off.
+    #[serde(default)]
+    pub denoise: f32,
     /// Pixels: negative shrinks the matte, positive grows it.
     #[serde(default)]
     pub shrink_grow: f32,
@@ -193,10 +197,10 @@ impl QualifierMode {
 }
 
 impl QualifierSettings {
-    /// Whether the matte is refined after the key: cleaned, shrunk or
-    /// grown, or blurred.
+    /// Whether the matte is refined after the key: cleaned, denoised,
+    /// shrunk or grown, or blurred.
     pub fn refines(&self) -> bool {
-        self.clean_black != 0.0 || self.clean_white != 0.0 || self.shrink_grow != 0.0 || self.blur != 0.0
+        self.clean_black != 0.0 || self.clean_white != 0.0 || self.denoise != 0.0 || self.shrink_grow != 0.0 || self.blur != 0.0
     }
 }
 
@@ -220,6 +224,7 @@ impl Default for QualifierSettings {
             temperature: 0.0,
             clean_black: 0.0,
             clean_white: 0.0,
+            denoise: 0.0,
             shrink_grow: 0.0,
             blur: 0.0,
             mode: QualifierMode::Hsl,

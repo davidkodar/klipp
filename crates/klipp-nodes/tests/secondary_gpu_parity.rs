@@ -619,6 +619,48 @@ fn a_refined_qualifier_in_a_secondary_matches_the_cpu() {
     assert!(off < 0.001, "a refined secondary differs between CPU and GPU by {off}");
 }
 
+/// A qualifier's matte denoise (#901) alone is a refinement: the fused
+/// GPU path, which keys the window alone, must hand it to the CPU's
+/// finesse as it does the others, or the GPU keeps the matte's specks.
+#[test]
+fn a_denoised_qualifier_in_a_secondary_matches_the_cpu() {
+    let mut graph = secondary_graph(Some(1.0));
+    for n in &mut graph.nodes {
+        if let Some(q) = n.params.qualifier.as_mut() {
+            q.denoise = 3.0;
+        }
+    }
+    // The frame with grey specks scattered through it, which the key
+    // leaves out: a smooth frame's matte has no noise to take out.
+    let mut speckled = frame();
+    for (i, p) in speckled.chunks_exact_mut(4).enumerate() {
+        if (i.wrapping_mul(2_654_435_761) >> 7) % 23 == 0 {
+            p[..3].fill(0.5);
+        }
+    }
+    let run_on = |graph: &NodeGraph, gpu: bool| {
+        let mut exec = if gpu { GraphExecutor::new() } else { GraphExecutor::new_cpu_only() };
+        let out = exec.execute_linear(&speckled, graph, W, H, 0.0, 0, None, None).expect("graph runs").0;
+        (out, exec.last_run_chain_stats())
+    };
+    let (cpu, _) = run_on(&graph, false);
+    let (gpu, stats) = run_on(&graph, true);
+    if stats.extends == 0 && stats.flushes == 0 {
+        eprintln!("skipping: no usable GPU");
+        return;
+    }
+    let worst = |a: &[f32], b: &[f32]| {
+        a.chunks_exact(4)
+            .zip(b.chunks_exact(4))
+            .map(|(c, g)| (0..3).map(|i| (c[i] - g[i]).abs()).fold(0.0f32, f32::max))
+            .fold(0.0f32, f32::max)
+    };
+    let (unrefined, _) = run_on(&secondary_graph(Some(1.0)), false);
+    assert!(worst(&cpu, &unrefined) > 0.01, "the denoise changed nothing ({})", worst(&cpu, &unrefined));
+    let off = worst(&cpu, &gpu);
+    assert!(off < 0.001, "a denoised secondary differs between CPU and GPU by {off}");
+}
+
 /// The same with the refinement keyframed rather than set: a blur that
 /// is 0 still but keyed up to 8 px is refined on both paths (#1013).
 #[test]
