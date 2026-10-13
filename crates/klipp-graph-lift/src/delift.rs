@@ -235,8 +235,12 @@ pub fn view_of(p: &ClipPicture) -> ClipPicture {
         chain.push(id);
         at = v.graph.edges.iter().find(|e| e.from.0 == id && e.from.1.as_str() == "out" && e.to.1.as_str() == "in").map(|e| e.to.0);
     }
+    // A reroute on the chain is the picture's alone (#1746): the view steps
+    // over it, what it read feeding what it fed.
+    let reroutes: Vec<NodeId> = v.graph.nodes.iter().filter(|n| chain.contains(&n.id) && crate::structure::kind_of(n) == "Reroute").map(|n| n.id).collect();
+    chain.retain(|id| !reroutes.contains(id));
     v.graph.nodes.retain(|n| chain.contains(&n.id));
-    v.graph.edges.retain(|e| chain.contains(&e.from.0) && chain.contains(&e.to.0) && e.from.1.as_str() == "out" && e.to.1.as_str() == "in");
+    v.graph.edges = chain.windows(2).map(|w| klipp_graph_format::Edge { from: (w[0], "out".into()), to: (w[1], "in".into()) }).collect();
     for n in &mut v.graph.nodes {
         if n.type_id.as_str() == types::LEGACY_EFFECT {
             n.mix = None;

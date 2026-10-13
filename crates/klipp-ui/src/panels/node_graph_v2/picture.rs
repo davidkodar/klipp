@@ -375,14 +375,14 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
             AppCommand::InsertNodeOnWire { kind, .. } | AppCommand::AddNodeWired { kind, .. } | AppCommand::ReplaceNode { kind, .. } if matte(kind) => {
                 Some("A matte or a source stands beside the picture's chain: add it from its menu, then wire it to an effect's mask or a merge's picture".to_owned())
             }
-            AppCommand::AddNode { kind, .. } | AppCommand::ReplaceNode { kind, .. } if crate::inspector::stack_view::new_effect_node(kind).is_none() => {
+            AppCommand::AddNode { kind, .. } | AppCommand::ReplaceNode { kind, .. } if picture_node(kind).is_none() => {
                 Some(format!("{kind} can't be added to a picture"))
             }
             AppCommand::AddNode { .. } | AppCommand::PasteNodes { .. } => self.after.is_none().then(no_place),
             AppCommand::DuplicateNodes { node_ids, .. } | AppCommand::CopyNodes { node_ids, .. } if !node_ids.iter().any(|id| self.copyable(*id).is_some()) => {
                 Some("Only a picture's effects are copied here; a group is entered to copy what it holds".to_owned())
             }
-            AppCommand::InsertNodeOnWire { kind, .. } | AppCommand::AddNodeWired { kind, .. } if crate::inspector::stack_view::new_effect_node(kind).is_none() => {
+            AppCommand::InsertNodeOnWire { kind, .. } | AppCommand::AddNodeWired { kind, .. } if picture_node(kind).is_none() => {
                 Some(format!("{kind} can't go in a picture: it is a grade node"))
             }
             AppCommand::InsertNodeOnWire { from, from_port, .. } | AppCommand::SpliceNodeIntoWire { from, from_port, .. } if self.readers(*from, *from_port) != 1 => {
@@ -427,7 +427,7 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
                 Some(AppCommand::GraphOps { ops, label: format!("Add {}", m.name) })
             }
             AppCommand::AddNode { kind, node_id, position, .. } => {
-                let mut node = crate::inspector::stack_view::new_effect_node(&kind)?;
+                let mut node = picture_node(&kind)?;
                 if let Some(id) = node_id { node.id = id; }
                 let path = self.path(node.id);
                 Some(AppCommand::GraphOps { ops: vec![GraphOp::AddNode { after: self.path(self.after?), node: Box::new(node) },
@@ -480,7 +480,7 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
             AppCommand::PasteNodes { position, .. } => Some(AppCommand::PastePictureNodes { after: self.path(self.after?), position }),
             AppCommand::ReplaceNode { node_id, kind, .. } => {
                 self.copyable(node_id)?;
-                let node = crate::inspector::stack_view::new_effect_node(&kind)?;
+                let node = picture_node(&kind)?;
                 let p = self.positions.get(&node_id).copied().unwrap_or_default();
                 let path = self.path(node.id);
                 // The new node after the old, then the old out: the new
@@ -497,7 +497,7 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
             // source, which this wire alone reads; a wire's end moves by
             // path, both halves one step.
             AppCommand::InsertNodeOnWire { kind, position, from, .. } | AppCommand::AddNodeWired { kind, position, from, .. } => {
-                let node = crate::inspector::stack_view::new_effect_node(&kind)?;
+                let node = picture_node(&kind)?;
                 let path = self.path(node.id);
                 Some(AppCommand::GraphOps { ops: vec![
                     GraphOp::AddNode { after: self.path(from), node: Box::new(node) },
@@ -531,6 +531,19 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
 /// into the canvas's layout gesture, one step for the drag (#1743).
 pub(super) const MOVE_NOTE: &str = "Move note";
 
+/// The menu tag of a reroute (#1746): a point to route a wire through,
+/// which passes its picture on.
+pub(super) const REROUTE: &str = "reroute";
+
+/// A new node of the picture for the menu tag `kind`: an effect, or a
+/// reroute (a grade's reroute, which the renderer passes through).
+fn picture_node(kind: &str) -> Option<Node> {
+    match kind {
+        REROUTE => Some(crate::inspector::grade_view::new_grade_node(NodeKind::Reroute, NodeId::new_v4())),
+        _ => crate::inspector::stack_view::new_effect_node(kind),
+    }
+}
+
 pub(super) fn picture_menu() -> &'static [MenuCategory] {
     static MENU: std::sync::OnceLock<Vec<MenuCategory>> = std::sync::OnceLock::new();
     MENU.get_or_init(|| {
@@ -544,6 +557,8 @@ pub(super) fn picture_menu() -> &'static [MenuCategory] {
         .chain([("Mattes", crate::picture_mattes::MATTES.iter().map(|m| (m.name, m.tag)).collect())])
         // Pictures beside the chain, for a merge (#1746).
         .chain([("Sources", crate::picture_mattes::SOURCES.iter().map(|s| (s.name, s.tag)).collect())])
+        // A point to route a wire through (#1746).
+        .chain([("Wiring", vec![("Reroute", REROUTE)])])
         .collect()
     })
 }
@@ -1525,6 +1540,26 @@ mod tests {
         let sharpen = effect(&d, "sharpen");
         assert_eq!((reader(&d, s2d), reader(&d, sharpen)), (Some(sharpen), Some(blur)), "into the wire: {:?}", d.sent);
         assert_eq!(d.steps(), 1);
+    }
+
+    /// A reroute taken from a picture wire's menu goes into the wire, one
+    /// step: what fed the wire feeds it, and it feeds what the wire fed
+    /// (#1746). The frame is as it was.
+    #[test]
+    fn a_picture_wire_takes_a_reroute_from_its_menu() {
+        let mut d = Dock::new();
+        let (s2d, blur) = (display(&d), effect(&d, "gaussian_blur"));
+        let before = d.clip();
+        let mid = super::super::bezier_at_phase(out_port(&d, s2d), in_port(&d, blur, 0), 0.5);
+        d.click(mid, egui::PointerButton::Secondary);
+        let at = d.at("Insert node\u{2026}");
+        d.click(at, egui::PointerButton::Primary);
+        d.type_and_enter("Reroute");
+        let reroute = d.graph().nodes.iter().find(|n| klipp_graph_lift::structure::kind_of(n) == "Reroute").map(|n| n.id).unwrap_or_else(|| panic!("no reroute: {:?}", d.sent));
+        assert_eq!((reader(&d, s2d), reader(&d, reroute)), (Some(reroute), Some(blur)), "into the wire: {:?}", d.sent);
+        assert_eq!(d.steps(), 1);
+        let effects = |c: &Clip| klipp_compose::resolve::resolve_effects_at(c, &c.picture_v2().unwrap().picture, c.timeline_in, 25.0, None, None, 1.0).unwrap();
+        assert_eq!(effects(&d.clip()), effects(&before), "the effects drawn are the same");
     }
 
     /// An effect dragged onto a wire of the picture moves there in the
