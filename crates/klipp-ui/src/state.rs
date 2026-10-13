@@ -1172,6 +1172,9 @@ pub struct AppState {
     pub playhead: Timecode,
     pub fps: Fps,
     pub playback_speed: f64,
+    /// What each further J or L press multiplies the speed by: the
+    /// playback preferences' JKL speed steps.
+    pub jkl_speed_step: f64,
     pub loop_playback_enabled: bool,
 
     // Active workspace
@@ -4163,6 +4166,7 @@ impl Default for AppState {
             playhead: Timecode { value: 0, rate: 24 },
             fps: Fps::film_24(),
             playback_speed: 1.0,
+            jkl_speed_step: 2.0,
             loop_playback_enabled: false,
             active_workspace: Workspace::default(),
             custom_workspaces: Vec::new(),

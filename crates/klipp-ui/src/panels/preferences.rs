@@ -798,6 +798,23 @@ impl PreferencesPanel {
             }
         });
 
+        Self::setting_row_with_subtitle(ui, "JKL speed steps", "Each further J or L press multiplies the speed by this, three times at most", theme, |ui| {
+            let steps = [(2.0_f32, "2\u{00d7}"), (3.0, "3\u{00d7}"), (4.0, "4\u{00d7}")];
+            let current = steps.iter()
+                .find(|(v, _)| (*v - prefs.playback.jkl_speed_step).abs() < 0.01)
+                .map(|(_, l)| *l).unwrap_or("2\u{00d7}");
+            egui::ComboBox::from_id_salt("jkl_step")
+                .selected_text(current)
+                .width(50.0)
+                .show_ui(ui, |ui| {
+                    for (val, label) in &steps {
+                        if ui.selectable_value(&mut prefs.playback.jkl_speed_step, *val, *label).changed() {
+                            *dirty = true;
+                        }
+                    }
+                });
+        });
+
         Self::setting_row(ui, "Loop playback by default", theme, |ui| {
             let mut val = prefs.playback.loop_playback;
             if ui.add(Switch::new(&mut val, theme)).changed() {
@@ -4818,7 +4835,7 @@ mod layout_tests {
     const HIDDEN: &[&str] = &[
         "Monitoring mode", "Normalize target", "Default sync method",
         "Search radius", "Colour space tagging", "Default encoder preset",
-        "Max cache size", "Thumbnail resolution", "JKL speed steps", "Clip corner radius", "Max track height", "Ruler height",
+        "Max cache size", "Thumbnail resolution", "Clip corner radius", "Max track height", "Ruler height",
         "Title-safe area overlay",
         "Show keyboard shortcut hints", "Recent projects to show",
     ];

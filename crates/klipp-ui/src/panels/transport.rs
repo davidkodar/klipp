@@ -586,7 +586,7 @@ impl TransportBar {
                     self.start_slow(false, &mut cmds, state);
                 } else {
                     let playing = focus_playback == PlaybackState::Playing;
-                    let new_speed = crate::navigation::shuttle_speed(state.playback_speed, playing, false);
+                    let new_speed = crate::navigation::shuttle_speed(state.playback_speed, playing, false, state.jkl_speed_step);
                     cmds.push(route_for_viewer(AppCommand::SetSpeed(new_speed), state));
                     if !playing {
                         cmds.push(route_for_viewer(AppCommand::Play, state));
@@ -607,7 +607,7 @@ impl TransportBar {
                     self.start_slow(true, &mut cmds, state);
                 } else {
                     let playing = focus_playback == PlaybackState::Playing;
-                    let new_speed = crate::navigation::shuttle_speed(state.playback_speed, playing, true);
+                    let new_speed = crate::navigation::shuttle_speed(state.playback_speed, playing, true, state.jkl_speed_step);
                     cmds.push(route_for_viewer(AppCommand::SetSpeed(new_speed), state));
                     if !playing {
                         cmds.push(route_for_viewer(AppCommand::Play, state));
@@ -717,4 +717,41 @@ fn draw_loop_icon(painter: &egui::Painter, center: egui::Pos2, radius: f32, colo
         tip - arrow_dir * 4.0 - perp * 3.0,
     ];
     painter.add(egui::Shape::convex_polygon(arrow_pts, color, egui::Stroke::NONE));
+}
+
+#[cfg(test)]
+mod jkl_step_tests {
+    use super::*;
+
+    /// L pressed once, playing at `speed` with JKL steps `step`: the
+    /// speed it asks for.
+    fn press_l(speed: f64, step: f64) -> Option<f64> {
+        let mut state = AppState::default();
+        let v1 = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let (zero, end) = (RationalTime { value: 0, rate: 24 }, RationalTime { value: 240, rate: 24 });
+        state.sequences[0].tracks[v1].clips.push(klipp_timeline::Clip::media(klipp_core::MediaId::new(), zero, end, zero, end));
+        state.playback = PlaybackState::Playing;
+        state.playback_speed = speed;
+        state.jkl_speed_step = step;
+        let kb = crate::keybindings::KeyBindings::default();
+        let mut panel = TransportBar::default();
+        let ctx = egui::Context::default();
+        let mut cmds = Vec::new();
+        let key = |pressed| egui::Event::Key { key: egui::Key::L, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
+        let _ = ctx.run(egui::RawInput { events: vec![key(true)], ..Default::default() }, |ctx| {
+            cmds = panel.handle_keyboard(ctx, &state, &kb);
+        });
+        cmds.iter().find_map(|c| match c {
+            AppCommand::SetSpeed(s) => Some(*s),
+            _ => None,
+        })
+    }
+
+    /// #1816: L while playing multiplies the speed by the JKL step the
+    /// preferences hold: 3 takes 3x to 9x, 2 takes 2x to 4x.
+    #[test]
+    fn l_steps_by_the_preference() {
+        assert_eq!(press_l(3.0, 3.0), Some(9.0));
+        assert_eq!(press_l(2.0, 2.0), Some(4.0));
+    }
 }
