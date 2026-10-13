@@ -212,20 +212,54 @@ impl KlippApp {
                 self.prefs_dirty = true;
                 true
             }
-            AppCommand::DeleteProject { path } => {
-                if let Some(who) = self.lock_held_elsewhere(path) {
-                    self.state.toast.show(format!("{who} has that project open, so it was not deleted"));
-                    return true;
+            AppCommand::PinRecentProject { path, pinned } => {
+                if let Some(rp) = self.prefs.general.recent_projects.iter_mut().find(|rp| rp.path == *path) {
+                    rp.pinned = *pinned;
+                    self.prefs_dirty = true;
                 }
-                if path.exists() {
-                    if let Err(e) = std::fs::remove_dir_all(path) {
-                        tracing::error!("Failed to delete project: {e}");
-                    } else {
-                        tracing::info!("Deleted project {:?}", path);
+                true
+            }
+            AppCommand::DuplicateProject { path } => {
+                match crate::project_paths::duplicate_project(path) {
+                    Ok(copy) => {
+                        let name = copy.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                        let mut rp = self.prefs.general.recent_projects.iter()
+                            .find(|rp| rp.path == *path)
+                            .cloned()
+                            .unwrap_or_else(|| crate::prefs::RecentProject::from_path(path.clone()));
+                        rp.path = copy;
+                        rp.name = name.clone();
+                        rp.pinned = false;
+                        rp.last_saved = Some(crate::app::iso8601_now());
+                        self.prefs.add_recent_project(rp);
+                        self.prefs_dirty = true;
+                        self.state.toast.show(format!("Duplicated as {name}"));
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to duplicate project {path:?}: {e}");
+                        self.state.toast.show(format!("The project could not be duplicated: {e}"));
                     }
                 }
-                self.prefs.general.recent_projects.retain(|rp| rp.path != *path);
-                self.prefs_dirty = true;
+                true
+            }
+            AppCommand::MoveProjectToTrash { path } => {
+                if let Some(who) = self.lock_held_elsewhere(path) {
+                    self.state.toast.show(format!("{who} has that project open, so it was not moved to the trash"));
+                    return true;
+                }
+                match crate::trash::move_to_trash(path) {
+                    Ok(_) => {
+                        tracing::info!("Moved project {:?} to the trash", path);
+                        self.prefs.general.recent_projects.retain(|rp| rp.path != *path);
+                        self.prefs_dirty = true;
+                        let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                        self.state.toast.show(format!("{name} moved to the trash"));
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to move project {path:?} to the trash: {e}");
+                        self.state.toast.show(format!("The project could not be moved to the trash: {e}"));
+                    }
+                }
                 true
             }
             AppCommand::RenameProjectOnDisk { old_path, new_name } => {

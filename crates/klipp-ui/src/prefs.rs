@@ -106,6 +106,12 @@ pub struct RecentProject {
     /// True if any media item is offline (file missing).
     #[serde(default)]
     pub missing_media: Option<bool>,
+    /// How many sequences the project holds.
+    #[serde(default)]
+    pub sequence_count: Option<u32>,
+    /// Kept at the top of the recent list, ahead of the newer ones.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 impl RecentProject {
@@ -127,6 +133,8 @@ impl RecentProject {
             clip_count: None,
             track_count: None,
             missing_media: None,
+            sequence_count: None,
+            pinned: false,
         }
     }
 }
@@ -1191,6 +1199,9 @@ impl Preferences {
         if crate::app::is_autosave_path(&project.path) {
             return;
         }
+        let mut project = project;
+        // Saving or opening a pinned project keeps it pinned.
+        project.pinned |= self.general.recent_projects.iter().any(|p| p.path == project.path && p.pinned);
         self.general.recent_projects.retain(|p| p.path != project.path);
         self.general.recent_projects.insert(0, project);
         self.general.recent_projects.truncate(20);
@@ -1206,6 +1217,7 @@ impl Preferences {
                 && rp.fps.is_some()
                 && rp.clip_count.is_some()
                 && rp.missing_media.is_some()
+                && rp.sequence_count.is_some()
             {
                 continue; // already has data
             }
@@ -1236,6 +1248,10 @@ impl Preferences {
                     if rp.missing_media.is_none() {
                         let has_offline = media_pool.all().any(|m| m.offline || !m.path.exists());
                         rp.missing_media = Some(has_offline);
+                        changed = true;
+                    }
+                    if rp.sequence_count.is_none() {
+                        rp.sequence_count = Some(sequences.len() as u32);
                         changed = true;
                     }
                     if let Some(seq) = sequences.first() {
@@ -2072,6 +2088,21 @@ fn default_media_list_columns() -> Vec<klipp_media::Field> {
 mod tests {
     use super::*;
 
+    /// #1847: saving a pinned project puts it first in time order and
+    /// keeps its pin.
+    #[test]
+    fn saving_a_pinned_project_keeps_it_pinned() {
+        let mut prefs = Preferences::default();
+        let mut a = RecentProject::from_path(PathBuf::from("/p/A.klipp"));
+        a.pinned = true;
+        prefs.add_recent_project(a);
+        prefs.add_recent_project(RecentProject::from_path(PathBuf::from("/p/B.klipp")));
+        prefs.add_recent_project(RecentProject::from_path(PathBuf::from("/p/A.klipp")));
+        let r = &prefs.general.recent_projects;
+        assert_eq!(r[0].path, PathBuf::from("/p/A.klipp"));
+        assert!(r[0].pinned && !r[1].pinned);
+    }
+
     #[test]
     fn a_saved_recent_list_is_read_without_autosaves() {
         let json = serde_json::json!({ "general": { "recent_projects": [
@@ -2900,6 +2931,8 @@ mod tests {
                 clip_count: Some(5),
                 track_count: Some(3),
                 missing_media: None,
+                sequence_count: Some(2),
+                pinned: true,
             },
             RecentProject::from_path(PathBuf::from("/projects/b.klipp")),
         ];
@@ -2908,6 +2941,8 @@ mod tests {
         assert_eq!(rt.general.recent_projects[0].name, "Project A");
         assert_eq!(rt.general.recent_projects[0].duration_secs, Some(120.5));
         assert_eq!(rt.general.recent_projects[0].total_size_bytes, Some(1_000_000));
+        assert_eq!(rt.general.recent_projects[0].sequence_count, Some(2));
+        assert!(rt.general.recent_projects[0].pinned && !rt.general.recent_projects[1].pinned);
         assert_eq!(rt.general.recent_projects[1].name, "b");
         assert!(rt.general.recent_projects[1].duration_secs.is_none());
     }

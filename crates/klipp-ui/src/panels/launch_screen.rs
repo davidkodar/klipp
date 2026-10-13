@@ -26,13 +26,26 @@ const CARD_TARGET_W: f32 = 300.0;
 /// width evenly.
 const CARD_MIN_W: f32 = 240.0;
 const CARD_MAX_W: f32 = 340.0;
-/// A card is its thumbnail plus two lines of text under it. The
-/// thumbnail is 16:9 and takes 58% of the height (`draw_card`), so the
-/// card's own aspect follows from that rather than being squared off.
-const CARD_ASPECT: f32 = 1.0 / 1.18;
 const CARD_GAP: f32 = 16.0;
+/// The space under a card's thumbnail: above the name, the name's own
+/// line, each detail line, and below the last.
+const CARD_INFO_TOP: f32 = 10.0;
+const CARD_NAME_LINE: f32 = 19.0;
+const CARD_DETAIL_LINE: f32 = 15.0;
+const CARD_INFO_BOTTOM: f32 = 8.0;
 
-/// How wide each card is, and how many fit, for a given grid width.
+/// How tall a card of width `w` is with `lines` detail lines under its
+/// name: a 16:9 thumbnail, then exactly the text, and nothing below it.
+///
+/// The card used to take a fixed aspect, with the thumbnail at 58% of
+/// it, so whatever the text did not fill was an empty band at the
+/// bottom of every card.
+fn card_height(w: f32, lines: usize) -> f32 {
+    1.0 + (w - 2.0) * 9.0 / 16.0 + CARD_INFO_TOP + CARD_NAME_LINE + lines as f32 * CARD_DETAIL_LINE + CARD_INFO_BOTTOM
+}
+
+/// How wide each card is, and how many fit, for a given grid width, and
+/// how tall a card is with `lines` detail lines.
 ///
 /// Columns are chosen to land the card nearest [`CARD_TARGET_W`],
 /// rounding rather than flooring, so the card stays about the same
@@ -48,15 +61,24 @@ const CARD_GAP: f32 = 16.0;
 ///
 /// Rounding to a target gives 280 at 1169 and 287 at 2715 — the same
 /// card either way.
-fn card_metrics(grid_width: f32) -> (usize, f32, f32) {
+fn card_metrics(grid_width: f32, lines: usize) -> (usize, f32, f32) {
     let cols = (grid_width / CARD_TARGET_W).round().max(1.0) as usize;
     let gaps = CARD_GAP * (cols.saturating_sub(1)) as f32;
     let w = ((grid_width - gaps) / cols as f32).clamp(CARD_MIN_W, CARD_MAX_W);
-    (cols, w, w / CARD_ASPECT)
+    (cols, w, card_height(w, lines))
 }
 const SIDEBAR_W: f32 = 300.0;
 
-#[derive(Clone, Copy, PartialEq, Default)]
+/// How many frames a project's skim strip holds: the steps a pointer
+/// moving across a card scrubs through.
+pub const SKIM_FRAMES: usize = 12;
+
+/// The project's skim strip, beside its poster frame (#1847).
+pub fn skim_strip_path(poster: &std::path::Path) -> PathBuf {
+    poster.with_extension("strip.png")
+}
+
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
 enum SortMode {
     #[default]
     Modified,
@@ -66,6 +88,9 @@ enum SortMode {
     /// `duration_secs` was already on every recent project — it is
     /// printed on the cards, it just could not be sorted by.
     Duration,
+    Resolution,
+    Fps,
+    Location,
 }
 
 impl SortMode {
@@ -74,10 +99,22 @@ impl SortMode {
             Self::Modified => "Modified",
             Self::Name => "Name",
             Self::Size => "Size",
-            Self::Duration => "Duration",
+            Self::Duration => "Length",
+            Self::Resolution => "Resolution",
+            Self::Fps => "FPS",
+            Self::Location => "Location",
         }
     }
+
+    /// Which way a column sorts when first chosen: newest, longest,
+    /// largest first; names and places A to Z.
+    fn descending_first(self) -> bool {
+        !matches!(self, Self::Name | Self::Location)
+    }
 }
+
+/// The modes the grid's sort button steps through.
+const GRID_SORTS: [SortMode; 4] = [SortMode::Modified, SortMode::Name, SortMode::Size, SortMode::Duration];
 
 #[derive(Clone, Copy, PartialEq, Default)]
 enum ViewMode {
@@ -86,23 +123,105 @@ enum ViewMode {
     List,
 }
 
+/// What the background check found about one listed project.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ProjectStatus {
+    /// An auto-save newer than its last save: work not saved.
+    newer_autosave: bool,
+    /// Who has it open now, when someone does.
+    open_by: Option<String>,
+}
+
+/// A mark beside a recent project in the sidebar, each with its own
+/// shape and a tooltip that says what it means.
+#[derive(Clone, Debug, PartialEq)]
+enum Mark {
+    Pinned,
+    OpenNow(String),
+    Unsaved,
+    MissingMedia,
+}
+
+impl Mark {
+    fn tooltip(&self) -> String {
+        match self {
+            Self::Pinned => "Pinned to the top of the list".into(),
+            Self::OpenNow(who) => format!("Open now ({who})"),
+            Self::Unsaved => "Unsaved changes: an auto-save is newer than the last save".into(),
+            Self::MissingMedia => "Missing media: some of its files cannot be found".into(),
+        }
+    }
+}
+
+fn marks_for(rp: &RecentProject, status: Option<&ProjectStatus>) -> Vec<Mark> {
+    let mut marks = Vec::new();
+    if rp.pinned {
+        marks.push(Mark::Pinned);
+    }
+    if let Some(who) = status.and_then(|s| s.open_by.clone()) {
+        marks.push(Mark::OpenNow(who));
+    }
+    if status.is_some_and(|s| s.newer_autosave) {
+        marks.push(Mark::Unsaved);
+    }
+    if rp.missing_media == Some(true) {
+        marks.push(Mark::MissingMedia);
+    }
+    marks
+}
+
+/// A project's poster frame, and a soft copy of it to fill the space a
+/// picture of another shape leaves.
+#[derive(Clone)]
+struct Poster {
+    sharp: egui::TextureHandle,
+    soft: egui::TextureHandle,
+}
+
+impl Poster {
+    fn aspect(&self) -> f32 {
+        let [w, h] = self.sharp.size();
+        w as f32 / h.max(1) as f32
+    }
+}
+
+/// What the last frame drew, for the tests to find it by.
+#[cfg(test)]
+#[derive(Default)]
+struct Seen {
+    /// Each sidebar row: its project, its rect, and the poster texture
+    /// drawn in it.
+    sidebar: Vec<(PathBuf, egui::Rect, Option<egui::TextureId>)>,
+    marks: Vec<(PathBuf, Mark, egui::Rect)>,
+    cards: Vec<(PathBuf, egui::Rect)>,
+}
+
 #[derive(Default)]
 pub struct LaunchScreen {
     search_query: String,
-    thumbnail_textures: HashMap<PathBuf, egui::TextureHandle>,
+    posters: HashMap<PathBuf, Poster>,
+    /// Each poster's skim strip once read, or when it was last looked
+    /// for: it is written a little after the save that made the poster.
+    strips: HashMap<PathBuf, (Option<Poster>, std::time::Instant)>,
+    /// Posters there but not readable, not read again every frame.
+    unreadable_posters: std::collections::HashSet<PathBuf>,
     renaming_project: Option<(PathBuf, String)>,
+    /// The project Move to Trash asks about, until it is answered.
+    confirm_trash: Option<PathBuf>,
     logo_texture: Option<egui::TextureHandle>,
     sort_mode: SortMode,
+    sort_descending: bool,
+    sort_chosen: bool,
     view_mode: ViewMode,
-    /// Projects with an auto-save newer than their last save, re-read
-    /// from disk every few seconds rather than every repaint.
-    newer_autosave: HashMap<PathBuf, bool>,
-    autosave_checked_at: Option<std::time::Instant>,
+    /// Each listed project's auto-save and lock state, re-read from disk
+    /// every few seconds rather than every repaint.
+    status: HashMap<PathBuf, ProjectStatus>,
+    status_checked_at: Option<std::time::Instant>,
     /// The check in flight. It stats every listed project, and a stat on
     /// a dead network mount can block for minutes, so it runs on its own
     /// thread (as the FILES browser reads directories) and a new one is
     /// not started while one is still out.
-    autosave_rx: Option<std::sync::mpsc::Receiver<HashMap<PathBuf, bool>>>,
+    status_rx: Option<std::sync::mpsc::Receiver<HashMap<PathBuf, ProjectStatus>>>,
     /// The grid shows the projects in the projects folder, not the recent
     /// ones (#1143).
     folder_view: bool,
@@ -112,45 +231,98 @@ pub struct LaunchScreen {
     folder_projects: Vec<RecentProject>,
     folder_scanned: Option<(PathBuf, std::time::Instant)>,
     folder_rx: Option<std::sync::mpsc::Receiver<(PathBuf, Vec<RecentProject>)>>,
+    #[cfg(test)]
+    seen: Seen,
 }
 
 impl LaunchScreen {
     /// Remove a cached thumbnail texture so it gets reloaded on next draw.
     pub fn invalidate_thumbnail(&mut self, path: &std::path::Path) {
-        self.thumbnail_textures.remove(path);
+        self.posters.remove(path);
+        self.strips.remove(path);
+        self.unreadable_posters.remove(path);
     }
 
-    /// Take the last auto-save check's result, and start the next one
-    /// every few seconds when none is running.
-    fn refresh_newer_autosaves(&mut self, ctx: &egui::Context, recent: &[RecentProject]) {
-        if let Some(rx) = &self.autosave_rx {
-            match rx.try_recv() {
-                Ok(found) => {
-                    self.newer_autosave = found;
-                    self.autosave_rx = None;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => return,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.autosave_rx = None,
+    /// The skim strip of `rp`, looked for again every few seconds until
+    /// it is there.
+    fn strip(&mut self, ctx: &egui::Context, rp: &RecentProject) -> Option<Poster> {
+        let poster = rp.thumbnail_path.as_ref()?;
+        if let Some((strip, at)) = self.strips.get(poster) {
+            if strip.is_some() || at.elapsed().as_secs() < 3 {
+                return strip.clone();
             }
         }
-        if self.autosave_checked_at.is_some_and(|t| t.elapsed().as_secs() < 3) {
+        let path = skim_strip_path(poster);
+        let strip = std::fs::read(&path).ok().and_then(|data| image_from_png(&data).ok()).map(|img| {
+            let name = path.to_string_lossy();
+            let soft = crate::app::alloc_texture_logged(ctx, &format!("{name}#soft"), soften(&img, 12 * SKIM_FRAMES), egui::TextureOptions::LINEAR);
+            let sharp = crate::app::alloc_texture_logged(ctx, &name, img, egui::TextureOptions::LINEAR);
+            Poster { sharp, soft }
+        });
+        self.strips.insert(poster.clone(), (strip.clone(), std::time::Instant::now()));
+        strip
+    }
+
+    /// The poster of `rp`, read from disk the first time it is asked for.
+    fn poster(&mut self, ctx: &egui::Context, rp: &RecentProject) -> Option<Poster> {
+        let path = rp.thumbnail_path.as_ref()?;
+        if let Some(p) = self.posters.get(path) {
+            return Some(p.clone());
+        }
+        if self.unreadable_posters.contains(path) || !path.exists() {
+            return None;
+        }
+        let Some(img) = std::fs::read(path).ok().and_then(|data| image_from_png(&data).ok()) else {
+            self.unreadable_posters.insert(path.clone());
+            return None;
+        };
+        let name = path.to_string_lossy();
+        let soft = crate::app::alloc_texture_logged(ctx, &format!("{name}#soft"), soften(&img, 12), egui::TextureOptions::LINEAR);
+        let sharp = crate::app::alloc_texture_logged(ctx, &name, img, egui::TextureOptions::LINEAR);
+        let poster = Poster { sharp, soft };
+        self.posters.insert(path.clone(), poster.clone());
+        Some(poster)
+    }
+
+    /// Take the last status check's result, and start the next one every
+    /// few seconds when none is running.
+    fn refresh_status(&mut self, ctx: &egui::Context, paths: Vec<PathBuf>) {
+        if let Some(rx) = &self.status_rx {
+            match rx.try_recv() {
+                Ok(found) => {
+                    self.status = found;
+                    self.status_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.status_rx = None,
+            }
+        }
+        if self.status_checked_at.is_some_and(|t| t.elapsed().as_secs() < 3) {
             return;
         }
-        self.autosave_checked_at = Some(std::time::Instant::now());
-        let paths: Vec<PathBuf> = recent.iter().map(|rp| rp.path.clone()).collect();
+        self.status_checked_at = Some(std::time::Instant::now());
         let (tx, rx) = std::sync::mpsc::channel();
         let ctx = ctx.clone();
         let spawned = std::thread::Builder::new()
-            .name("launch-autosave-check".into())
+            .name("launch-status-check".into())
             .spawn(move || {
+                use klipp_project::lock::{self, Liveness, LockState};
+                let me = lock::Holder::current();
                 let found = paths.into_iter()
-                    .map(|p| { let newer = crate::app::has_newer_autosave(&p); (p, newer) })
+                    .map(|p| {
+                        let newer_autosave = crate::app::has_newer_autosave(&p);
+                        let open_by = match lock::inspect(&p, &me) {
+                            LockState::Held(info, Liveness::Active) => Some(info.who()),
+                            _ => None,
+                        };
+                        (p, ProjectStatus { newer_autosave, open_by })
+                    })
                     .collect();
                 let _ = tx.send(found);
                 ctx.request_repaint();
             });
         if spawned.is_ok() {
-            self.autosave_rx = Some(rx);
+            self.status_rx = Some(rx);
         }
     }
 
@@ -211,13 +383,20 @@ impl LaunchScreen {
         theme: &KlippTheme,
     ) -> Vec<AppCommand> {
         let mut cmds = Vec::new();
+        #[cfg(test)]
+        {
+            self.seen = Seen::default();
+        }
         self.ensure_logo_texture(ctx);
         if let Some(dir) = projects_folder.filter(|_| self.folder_view) {
             self.refresh_folder_projects(ctx, dir);
         }
         let in_folder = self.folder_view && projects_folder.is_some();
         let shown: Vec<RecentProject> = if in_folder { self.folder_projects.clone() } else { recent.to_vec() };
-        self.refresh_newer_autosaves(ctx, &shown);
+        let mut checked: Vec<PathBuf> = recent.iter().chain(&shown).map(|rp| rp.path.clone()).collect();
+        checked.sort();
+        checked.dedup();
+        self.refresh_status(ctx, checked);
         let full_rect = ui.max_rect();
 
         // Fill background
@@ -246,7 +425,7 @@ impl LaunchScreen {
                 egui::Stroke::new(1.0_f32, theme.border),
             );
 
-            self.draw_sidebar(ui, recent, theme, &mut cmds);
+            self.draw_sidebar(ctx, ui, recent, theme, &mut cmds);
         });
 
         // Draw main area with project grid
@@ -268,6 +447,11 @@ impl LaunchScreen {
                         ui.label("Name:");
                         let buf = &mut self.renaming_project.as_mut().unwrap().1;
                         let resp = ui.text_edit_singleline(buf);
+                        // Typing goes into the name the moment the
+                        // window opens, as in a file manager's rename.
+                        if ui.memory(|m| m.focused().is_none()) {
+                            resp.request_focus();
+                        }
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             done = true;
                         }
@@ -299,11 +483,49 @@ impl LaunchScreen {
             }
         }
 
+        // Move to Trash asks first. The folder goes to the trash, from
+        // where the file manager can put it back; nothing deletes it.
+        if let Some(path) = self.confirm_trash.clone() {
+            let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let mut open = true;
+            let mut answer = None;
+            egui::Window::new("Move to Trash")
+                .id(egui::Id::new("launch_confirm_trash"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(format!("Move \u{201C}{name}\u{201D} to the trash?"));
+                    ui.label(
+                        egui::RichText::new("The project folder can be put back from the trash. Its media files are not touched.")
+                            .color(theme.text_dim)
+                            .size(crate::theme::type_scale::BODY),
+                    );
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            answer = Some(false);
+                        }
+                        if ui.button("Move to Trash").clicked() {
+                            answer = Some(true);
+                        }
+                    });
+                });
+            if answer == Some(true) {
+                cmds.push(AppCommand::MoveProjectToTrash { path });
+            }
+            if !open || answer.is_some() {
+                self.confirm_trash = None;
+            }
+        }
+
         cmds
     }
 
     fn draw_sidebar(
-        &self,
+        &mut self,
+        ctx: &egui::Context,
         ui: &mut egui::Ui,
         recent: &[RecentProject],
         theme: &KlippTheme,
@@ -413,15 +635,17 @@ impl LaunchScreen {
             // side.
             //
             // It is not redundant in principle: the grid follows the
-            // chosen sort, this always follows recency, so with sort
-            // set to Name or Size it is still the way back to what you
-            // had open. That is a shortcut, and a shortcut is short.
+            // chosen sort, this always follows recency (pinned first),
+            // so with sort set to Name or Size it is still the way back
+            // to what you had open. That is a shortcut, and a shortcut
+            // is short.
             const MAX_RECENT: usize = 5;
-            let item_h = 44.0;
+            let item_h = 52.0;
             let fits = ((area.max.y - recent_y - 60.0) / item_h).floor().max(1.0) as usize;
             let items_to_show = recent.len().min(fits).min(MAX_RECENT);
+            let now = chrono::Local::now().naive_local();
 
-            for (i, rp) in recent.iter().take(items_to_show).enumerate() {
+            for (i, rp) in sidebar_order(recent).into_iter().take(items_to_show).enumerate() {
                 let y = recent_y + 20.0 + i as f32 * item_h;
                 let item_rect = egui::Rect::from_min_size(
                     egui::pos2(area.min.x + pad_x - 8.0, y),
@@ -432,58 +656,79 @@ impl LaunchScreen {
                     ui.painter().rect_filled(item_rect, 4.0, theme.bg_hover);
                 }
 
-                // Color bar (small rect matching project color)
-                let color = project_color(&rp.name);
-                let bar_rect = egui::Rect::from_min_size(
-                    egui::pos2(area.min.x + pad_x, y + 6.0),
-                    egui::vec2(28.0, 6.0),
+                // The project's poster frame, 16:9, where a coloured bar
+                // keyed to its name used to say nothing about it.
+                let thumb_rect = egui::Rect::from_min_size(
+                    egui::pos2(area.min.x + pad_x, item_rect.center().y - 18.0),
+                    egui::vec2(64.0, 36.0),
                 );
-                ui.painter().rect_filled(bar_rect, 2.0, color);
+                let poster = self.poster(ctx, rp);
+                draw_poster(ui.painter(), thumb_rect, poster.as_ref(), None, theme);
+                #[cfg(test)]
+                self.seen.sidebar.push((rp.path.clone(), item_rect, poster.as_ref().map(|p| p.sharp.id())));
 
-                // Second bar (simulating timeline)
-                let bar2_color = darken_color(color, 0.6);
-                let bar2_rect = egui::Rect::from_min_size(
-                    egui::pos2(area.min.x + pad_x, y + 14.0),
-                    egui::vec2(20.0, 3.0),
-                );
-                ui.painter().rect_filled(bar2_rect, 1.0, bar2_color);
+                // The marks, right to left from the row's end.
+                let name_x = thumb_rect.max.x + 10.0;
+                let name_y = y + 9.0;
+                let marks = marks_for(rp, self.status.get(&rp.path));
+                let mut mark_x = item_rect.max.x - 8.0;
+                for (k, mark) in marks.iter().enumerate().rev() {
+                    let mark_rect = egui::Rect::from_center_size(egui::pos2(mark_x - 6.0, name_y + 7.0), egui::vec2(12.0, 12.0));
+                    draw_mark(ui.painter(), mark_rect.center(), mark, theme);
+                    ui.interact(mark_rect, ui.id().with(("launch_mark", &rp.path, k)), egui::Sense::hover())
+                        .on_hover_text(mark.tooltip());
+                    #[cfg(test)]
+                    self.seen.marks.push((rp.path.clone(), mark.clone(), mark_rect));
+                    mark_x -= 14.0;
+                }
 
-                // Project name
-                let name_x = area.min.x + pad_x + 38.0;
-                ui.painter().text(
-                    egui::pos2(name_x, y + 8.0),
-                    egui::Align2::LEFT_TOP,
+                // Project name, then when · how long · what rate.
+                let text_w = (mark_x - name_x - 4.0).max(0.0);
+                let name = layout_truncated(
+                    ui.painter(),
                     &rp.name,
                     egui::FontId::proportional(12.0),
                     if resp.hovered() { theme.text_primary } else { theme.text_secondary },
+                    text_w,
                 );
-
-                // Relative timestamp
-                let time_str = rp.last_saved.as_deref()
-                    .map(relative_time)
-                    .unwrap_or_default();
-                if !time_str.is_empty() {
-                    ui.painter().text(
-                        egui::pos2(name_x, y + 23.0),
-                        egui::Align2::LEFT_TOP,
-                        &time_str,
+                ui.painter().galley(egui::pos2(name_x, name_y), name, theme.text_secondary);
+                let detail = sidebar_detail(rp, now);
+                if !detail.is_empty() {
+                    let g = layout_truncated(
+                        ui.painter(),
+                        &detail,
                         egui::FontId::proportional(10.0),
                         theme.text_dim,
+                        (item_rect.max.x - 8.0 - name_x).max(0.0),
                     );
-                }
-
-                // Active indicator (orange dot on most recent)
-                if i == 0 {
-                    let dot_center = egui::pos2(
-                        item_rect.max.x - 8.0,
-                        item_rect.center().y,
-                    );
-                    ui.painter().circle_filled(dot_center, 3.5, theme.accent);
+                    ui.painter().galley(egui::pos2(name_x, name_y + 17.0), g, theme.text_dim);
                 }
 
                 if resp.clicked() {
                     cmds.push(AppCommand::OpenProject { path: rp.path.clone() });
                 }
+                resp.context_menu(|ui| {
+                    crate::widgets::menu::menu_body(ui, |ui| {
+                        if crate::widgets::menu::menu_item(ui, "Open", "").clicked() {
+                            cmds.push(AppCommand::OpenProject { path: rp.path.clone() });
+                            ui.close_menu();
+                        }
+                        let pin = if rp.pinned { "Unpin" } else { "Pin to Top" };
+                        if crate::widgets::menu::menu_item(ui, pin, "").clicked() {
+                            cmds.push(AppCommand::PinRecentProject { path: rp.path.clone(), pinned: !rp.pinned });
+                            ui.close_menu();
+                        }
+                        if crate::widgets::menu::menu_item(ui, "Show in Files", "").clicked() {
+                            cmds.push(AppCommand::RevealInFileManager { path: rp.path.clone() });
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if crate::widgets::menu::menu_item(ui, "Remove from Recent", "").clicked() {
+                            cmds.push(AppCommand::RemoveRecentProject { path: rp.path.clone() });
+                            ui.close_menu();
+                        }
+                    });
+                });
             }
         }
 
@@ -549,41 +794,56 @@ impl LaunchScreen {
             .map(relative_time)
             .unwrap_or_default();
         // Which projects the grid shows: the recent ones, or those in the
-        // projects folder, one click each to open (#1143).
-        let tabs_rect = egui::Rect::from_min_size(
-            egui::pos2(area.min.x + pad + 150.0, area.min.y + pad + 4.0),
-            egui::vec2((area.width() - pad * 2.0 - 150.0).max(0.0), 24.0),
+        // projects folder, one click each to open (#1143). One segmented
+        // control, as the workspace switch is, and a quiet button to
+        // choose the folder — not three loose labels of three looks.
+        let header_y = area.min.y + pad + 2.0;
+        let mut header_x = area.min.x + pad + 150.0;
+        if let Some(dir) = projects_folder {
+            let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.display().to_string());
+            let folder_label = format!("In {name}");
+            let labels = ["Recent", folder_label.as_str()];
+            let font = egui::FontId::proportional(crate::theme::type_scale::CONTROL);
+            let size = crate::widgets::segmented::segmented_size(ui, &labels, &font, crate::theme::control::REGULAR);
+            let seg_rect = egui::Rect::from_min_size(egui::pos2(header_x, header_y), size);
+            if let Some(i) = crate::widgets::segmented::segmented_in(ui, seg_rect, &labels, usize::from(self.folder_view), theme, font) {
+                self.folder_view = i == 1;
+            }
+            header_x = seg_rect.max.x + 8.0;
+        }
+        let choose = if projects_folder.is_some() { "Change Folder\u{2026}" } else { "Choose Projects Folder\u{2026}" };
+        let choose_rect = egui::Rect::from_min_size(
+            egui::pos2(header_x, header_y),
+            egui::vec2((area.max.x - pad - header_x).max(0.0), crate::theme::control::REGULAR),
         );
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(tabs_rect), |ui| {
-            ui.horizontal(|ui| {
-                if ui.selectable_label(!self.folder_view, "Recent").clicked() {
-                    self.folder_view = false;
-                }
-                if let Some(dir) = projects_folder {
-                    let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.display().to_string());
-                    if ui.selectable_label(self.folder_view, format!("In {name}")).on_hover_text(dir.display().to_string()).clicked() {
-                        self.folder_view = true;
-                    }
-                }
-                let choose = if projects_folder.is_some() { "Change folder\u{2026}" } else { "Choose projects folder\u{2026}" };
-                if ui.small_button(choose).clicked() {
-                    self.folder_view = true;
-                    crate::file_dialog::spawn(|| {
-                        rfd::FileDialog::new()
-                            .set_title("Projects Folder")
-                            .pick_folder()
-                            .map(|path| vec![AppCommand::SetProjectsFolder { path }])
-                            .unwrap_or_default()
-                    });
-                }
+        let choose_clicked = ui.allocate_new_ui(egui::UiBuilder::new().max_rect(choose_rect), |ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(egui::Button::new(
+                    egui::RichText::new(choose).size(crate::theme::type_scale::CONTROL).color(theme.text_secondary),
+                ).frame(false))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            }).inner
+        }).inner;
+        if choose_clicked {
+            self.folder_view = true;
+            crate::file_dialog::spawn(|| {
+                rfd::FileDialog::new()
+                    .set_title("Projects Folder")
+                    .pick_folder()
+                    .map(|path| vec![AppCommand::SetProjectsFolder { path }])
+                    .unwrap_or_default()
             });
-        });
+        }
 
+        let in_folder = self.folder_view && projects_folder.is_some();
         let summary = if recent.is_empty() {
             "No projects".to_string()
         } else {
             let count_str = format!("{} project{}", recent.len(), if recent.len() == 1 { "" } else { "s" });
-            if most_recent_time.is_empty() {
+            if in_folder {
+                format!("{count_str} in {}", projects_folder.map(|d| d.display().to_string()).unwrap_or_default())
+            } else if most_recent_time.is_empty() {
                 count_str
             } else {
                 format!("{count_str} \u{00B7} Last modified {most_recent_time}")
@@ -701,32 +961,32 @@ impl LaunchScreen {
         }
         // Sort dropdown menu
         sort_resp.context_menu(|ui| {
-            for mode in [SortMode::Modified, SortMode::Name, SortMode::Size, SortMode::Duration] {
-                if ui.button(mode.label()).clicked() {
-                    self.sort_mode = mode;
-                    ui.close_menu();
+            crate::widgets::menu::menu_body(ui, |ui| {
+                for mode in GRID_SORTS {
+                    if crate::widgets::menu::menu_choice(ui, mode.label(), "", self.sort_mode == mode).clicked() {
+                        self.set_sort(mode);
+                        ui.close_menu();
+                    }
                 }
-            }
+            });
         });
         if sort_resp.clicked() {
             // Cycle through sort modes on click
-            self.sort_mode = match self.sort_mode {
-                SortMode::Modified => SortMode::Name,
-                SortMode::Name => SortMode::Size,
-                SortMode::Size => SortMode::Duration,
-                SortMode::Duration => SortMode::Modified,
-            };
+            let next = GRID_SORTS.iter().position(|m| *m == self.sort_mode).map_or(0, |i| (i + 1) % GRID_SORTS.len());
+            self.set_sort(GRID_SORTS[next]);
         }
 
         // ── Section header ──
         let section_y = controls_y + 36.0;
-        ui.painter().text(
-            egui::pos2(area.min.x + pad, section_y),
-            egui::Align2::LEFT_TOP,
-            "ALL PROJECTS",
-            egui::FontId::proportional(10.0),
-            theme.text_dim,
-        );
+        if self.view_mode == ViewMode::Grid {
+            ui.painter().text(
+                egui::pos2(area.min.x + pad, section_y),
+                egui::Align2::LEFT_TOP,
+                "ALL PROJECTS",
+                egui::FontId::proportional(10.0),
+                theme.text_dim,
+            );
+        }
 
         // Filter and sort
         let query = self.search_query.to_lowercase();
@@ -734,27 +994,10 @@ impl LaunchScreen {
             .iter()
             .filter(|rp| query.is_empty() || rp.name.to_lowercase().contains(&query))
             .collect();
-
-        // Apply sort
-        match self.sort_mode {
-            SortMode::Modified => {
-                // Already sorted most-recent-first from prefs
-            }
-            SortMode::Name => {
-                filtered.sort_by_key(|a| a.name.to_lowercase());
-            }
-            SortMode::Size => {
-                filtered.sort_by_key(|a| std::cmp::Reverse(a.total_size_bytes.unwrap_or(0)));
-            }
-            SortMode::Duration => {
-                // Longest first, and an unknown duration sorts last
-                // rather than ahead of every real one.
-                filtered.sort_by(|a, b| {
-                    b.duration_secs
-                        .unwrap_or(0.0)
-                        .total_cmp(&a.duration_secs.unwrap_or(0.0))
-                });
-            }
+        // Until a sort is chosen the list keeps the order it came in:
+        // most recent first, as the preferences keep it.
+        if self.sort_chosen {
+            sort_projects(&mut filtered, self.sort_mode, self.sort_descending);
         }
 
         // ── Project Grid / List ──
@@ -784,7 +1027,10 @@ impl LaunchScreen {
         theme: &KlippTheme,
         cmds: &mut Vec<AppCommand>,
     ) {
-        let (cols, card_w, card_h) = card_metrics(grid_width);
+        // Every card is as tall as the most any card has to say, so a
+        // row lines up and none has an empty band under its text.
+        let lines = filtered.iter().map(|rp| card_lines(rp).len()).max().unwrap_or(0);
+        let (cols, card_w, card_h) = card_metrics(grid_width, lines);
 
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(scroll_area), |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -912,56 +1158,74 @@ impl LaunchScreen {
                     card_idx += 1;
                 }
 
-                // Empty state
                 if filtered.is_empty() {
-                    ui.add_space(24.0);
-                    // Left-aligned under the grid, not centred in
-                    // whatever width happens to be left over — centred,
-                    // it landed adrift in the middle-right of an empty
-                    // page, related to nothing on screen. Here it reads
-                    // as a caption to the New Project card above it.
-                    ui.horizontal(|ui| {
-                        ui.add_space(pad);
-                        ui.vertical(|ui| {
-                        // Two different emptinesses, and they were
-                        // being told apart by nobody: a new user with
-                        // no projects at all was told their *search*
-                        // had matched nothing, on the first screen they
-                        // ever saw, without having typed anything.
-                        if self.search_query.trim().is_empty() {
-                            ui.label(
-                                egui::RichText::new("No projects yet")
-                                    .color(theme.text_primary)
-                                    .size(15.0),
-                            );
-                            ui.add_space(6.0);
-                            ui.label(
-                                egui::RichText::new(
-                                    "Start one with New Project, or open an existing .klipp file.",
-                                )
-                                .color(theme.text_dim)
-                                .size(12.0),
-                            );
-                        } else {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "No projects match \u{201C}{}\u{201D}",
-                                    self.search_query.trim()
-                                ))
-                                .color(theme.text_dim)
-                                .size(13.0),
-                            );
-                        }
-                        });
-                    });
+                    self.draw_empty_state(ui, pad, theme);
                 }
             });
         });
     }
 
+    /// The empty grid or list: no projects at all, or none matching.
+    fn draw_empty_state(&self, ui: &mut egui::Ui, pad: f32, theme: &KlippTheme) {
+        ui.add_space(24.0);
+        // Left-aligned under the grid, not centred in
+        // whatever width happens to be left over — centred,
+        // it landed adrift in the middle-right of an empty
+        // page, related to nothing on screen. Here it reads
+        // as a caption to the New Project card above it.
+        ui.horizontal(|ui| {
+            ui.add_space(pad);
+            ui.vertical(|ui| {
+                // Two different emptinesses, and they were
+                // being told apart by nobody: a new user with
+                // no projects at all was told their *search*
+                // had matched nothing, on the first screen they
+                // ever saw, without having typed anything.
+                if self.search_query.trim().is_empty() {
+                    ui.label(
+                        egui::RichText::new("No projects yet")
+                            .color(theme.text_primary)
+                            .size(15.0),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Start one with New Project, or open an existing .klipp file.",
+                        )
+                        .color(theme.text_dim)
+                        .size(12.0),
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "No projects match \u{201C}{}\u{201D}",
+                            self.search_query.trim()
+                        ))
+                        .color(theme.text_dim)
+                        .size(13.0),
+                    );
+                }
+            });
+        });
+    }
+
+    /// Sort by `mode`: a new column starts its own way round, and the
+    /// column already in force turns the other way.
+    fn set_sort(&mut self, mode: SortMode) {
+        if self.sort_chosen && self.sort_mode == mode {
+            self.sort_descending = !self.sort_descending;
+        } else {
+            self.sort_mode = mode;
+            self.sort_descending = mode.descending_first();
+        }
+        self.sort_chosen = true;
+    }
+
+    /// The list view: a table, one project a row, sorted by any column.
+    #[allow(clippy::too_many_arguments)]
     fn draw_list(
         &mut self,
-        _ctx: &egui::Context,
+        ctx: &egui::Context,
         ui: &mut egui::Ui,
         scroll_area: egui::Rect,
         pad: f32,
@@ -970,193 +1234,120 @@ impl LaunchScreen {
         theme: &KlippTheme,
         cmds: &mut Vec<AppCommand>,
     ) {
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(scroll_area), |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                let row_h = 52.0;
+        let columns = list_columns(grid_width);
+        let header_h = 24.0;
+        let left = scroll_area.min.x + pad;
 
-                for rp in filtered {
-                    let (rect, resp) = ui.allocate_exact_size(
-                        egui::vec2(grid_width, row_h),
+        // The header: each column's name, the one in force lit with
+        // its direction; a click sorts by it, again turns it round.
+        let header_rect = egui::Rect::from_min_size(egui::pos2(left, scroll_area.min.y - 4.0), egui::vec2(grid_width, header_h));
+        let mut x = left;
+        for (mode, w) in &columns {
+            let cell = egui::Rect::from_min_size(egui::pos2(x, header_rect.min.y), egui::vec2(*w, header_h));
+            let resp = ui.interact(cell, ui.id().with(("launch_list_header", mode.label())), egui::Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            let active = self.sort_chosen && self.sort_mode == *mode;
+            let label = if active {
+                format!("{} {}", mode.label(), if self.sort_descending { "\u{25BE}" } else { "\u{25B4}" })
+            } else {
+                mode.label().to_string()
+            };
+            let colour = if active || resp.hovered() { theme.text_primary } else { theme.text_dim };
+            let (anchor, at) = if list_column_is_numeric(*mode) {
+                (egui::Align2::RIGHT_CENTER, egui::pos2(cell.max.x - 10.0, cell.center().y))
+            } else {
+                (egui::Align2::LEFT_CENTER, egui::pos2(cell.min.x, cell.center().y))
+            };
+            ui.painter().text(at, anchor, label, egui::FontId::proportional(crate::theme::type_scale::CAPTION), colour);
+            if resp.clicked() {
+                self.set_sort(*mode);
+            }
+            x += w;
+        }
+        ui.painter().hline(
+            header_rect.x_range(),
+            header_rect.max.y,
+            egui::Stroke::new(1.0_f32, theme.border),
+        );
+
+        let body = egui::Rect::from_min_max(egui::pos2(scroll_area.min.x, header_rect.max.y + 1.0), scroll_area.max);
+        let mut sorted: Vec<&RecentProject> = filtered.to_vec();
+        if self.sort_chosen {
+            sort_projects(&mut sorted, self.sort_mode, self.sort_descending);
+        }
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(body), |ui| {
+            egui::ScrollArea::vertical().id_salt("launch_list").show(ui, |ui| {
+                let row_h = 40.0;
+                for rp in &sorted {
+                    let (full, resp) = ui.allocate_exact_size(
+                        egui::vec2(grid_width + pad * 2.0, row_h),
                         egui::Sense::click(),
                     );
-                    let hovered = resp.hovered();
-
-                    if hovered {
+                    let rect = egui::Rect::from_min_max(egui::pos2(full.min.x + pad, full.min.y), egui::pos2(full.max.x - pad, full.max.y));
+                    if resp.hovered() {
                         ui.painter().rect_filled(rect, 4.0, theme.bg_hover);
                     }
-
-                    // A colour chip keyed to the name, for recognition
-                    // down a long list. It claims nothing about the
-                    // project's contents — unlike the timeline strip
-                    // that used to be drawn over it, which was the same
-                    // hash pretending to be an edit.
-                    let color = project_color(&rp.name);
-                    let bar_rect = egui::Rect::from_min_size(
-                        egui::pos2(rect.min.x + pad, rect.min.y + 10.0),
-                        egui::vec2(36.0, 32.0),
-                    );
-                    ui.painter().rect_filled(bar_rect, 4.0, color);
-
-                    // Reserve space for the right-aligned timestamp
-                    // FIRST so the name + meta can be truncated to
-                    // fit whatever is left. Without this, long names
-                    // or meta strings would either overflow into the
-                    // timestamp area or paint past the card edge.
-                    let text_x = rect.min.x + pad + 48.0;
-                    let icon_size_right = 9.0;
-                    let time_str: String = rp.last_saved.as_deref()
-                        .map(relative_time)
-                        .unwrap_or_default();
-                    let time_reserved = if time_str.is_empty() {
-                        0.0
-                    } else {
-                        let g = ui.painter().layout_no_wrap(
-                            time_str.clone(),
-                            egui::FontId::proportional(11.0),
-                            theme.text_dim,
-                        );
-                        g.size().x + icon_size_right + 3.0
-                    };
-                    // Missing-media badge sits right of the name;
-                    // reserve ~24 px so truncation doesn't collide
-                    // with it.
-                    let badge_reserved = if rp.missing_media == Some(true) { 26.0 } else { 0.0 };
-                    let text_right_limit = rect.max.x - pad - time_reserved - 12.0;
-                    let text_max_w = (text_right_limit - text_x - badge_reserved).max(0.0);
-
-                    // Project name (truncated to available width)
-                    let name_galley = layout_truncated(
-                        ui.painter(),
-                        &rp.name,
-                        egui::FontId::proportional(13.0),
-                        theme.text_primary,
-                        text_max_w,
-                    );
-                    ui.painter().galley(
-                        egui::pos2(text_x, rect.min.y + 12.0),
-                        name_galley.clone(),
-                        theme.text_primary,
-                    );
-
-                    // Metadata line (fps · res · dur · size + counts)
-                    let meta = build_meta_string(rp);
-                    let counts = build_counts_string(rp);
-                    let combined = if meta.is_empty() {
-                        counts
-                    } else if counts.is_empty() {
-                        meta
-                    } else {
-                        format!("{meta}  \u{00B7}  {counts}")
-                    };
-                    if !combined.is_empty() {
+                    let mut x = rect.min.x;
+                    for (mode, w) in &columns {
+                        let cell = egui::Rect::from_min_size(egui::pos2(x, rect.min.y), egui::vec2(*w, row_h));
+                        x += w;
+                        if *mode == SortMode::Name {
+                            // The poster, small, then the name and its
+                            // missing-media mark.
+                            let thumb = egui::Rect::from_min_size(egui::pos2(cell.min.x, cell.center().y - 13.5), egui::vec2(48.0, 27.0));
+                            let poster = self.poster(ctx, rp);
+                            draw_poster(ui.painter(), thumb, poster.as_ref(), None, theme);
+                            let mark_w = if rp.missing_media == Some(true) { 18.0 } else { 0.0 };
+                            let g = layout_truncated(
+                                ui.painter(),
+                                &rp.name,
+                                egui::FontId::proportional(13.0),
+                                theme.text_primary,
+                                (cell.max.x - thumb.max.x - 22.0 - mark_w).max(0.0),
+                            );
+                            let name_pos = egui::pos2(thumb.max.x + 10.0, cell.center().y - g.size().y / 2.0);
+                            let name_w = g.size().x;
+                            ui.painter().galley(name_pos, g, theme.text_primary);
+                            if rp.missing_media == Some(true) {
+                                draw_mark(ui.painter(), egui::pos2(name_pos.x + name_w + 10.0, cell.center().y), &Mark::MissingMedia, theme);
+                            }
+                            continue;
+                        }
+                        let text = list_cell(rp, *mode);
+                        let max_w = (w - 12.0).max(0.0);
                         let g = layout_truncated(
                             ui.painter(),
-                            &combined,
-                            egui::FontId::monospace(10.0),
-                            theme.text_dim,
-                            text_max_w,
+                            &text,
+                            egui::FontId::proportional(crate::theme::type_scale::BODY),
+                            theme.text_secondary,
+                            max_w,
                         );
-                        ui.painter().galley(
-                            egui::pos2(text_x, rect.min.y + 30.0),
-                            g,
-                            theme.text_dim,
-                        );
+                        let y = cell.center().y - g.size().y / 2.0;
+                        let pos = if list_column_is_numeric(*mode) {
+                            egui::pos2(cell.max.x - 10.0 - g.size().x, y)
+                        } else {
+                            egui::pos2(cell.min.x, y)
+                        };
+                        ui.painter().galley(pos, g, theme.text_secondary);
                     }
 
-                    // Missing media warning (right of the rendered
-                    // name — use the truncated galley's actual width
-                    // so the badge doesn't overshoot).
-                    if rp.missing_media == Some(true) {
-                        let warn_x = text_x + name_galley.size().x + 8.0;
-                        draw_missing_media_badge(ui, egui::pos2(warn_x + 18.0, rect.min.y + 6.0), theme.marker_warning);
-                    }
-
-                    // Timestamp (right-aligned) with clock icon
-                    if !time_str.is_empty() {
-                        let time_galley = ui.painter().layout_no_wrap(
-                            time_str.clone(),
-                            egui::FontId::proportional(11.0),
-                            theme.text_dim,
-                        );
-                        let text_w = time_galley.size().x;
-                        let text_right = rect.max.x - pad;
-                        let text_left = text_right - text_w;
-                        let icon_x = text_left - icon_size_right - 3.0;
-                        let icon_cy = rect.center().y;
-                        draw_clock_icon(
-                            ui.painter(),
-                            egui::pos2(icon_x + icon_size_right / 2.0, icon_cy),
-                            icon_size_right,
-                            theme.text_dim,
-                        );
-                        ui.painter().text(
-                            egui::pos2(text_right, icon_cy),
-                            egui::Align2::RIGHT_CENTER,
-                            &time_str,
-                            egui::FontId::proportional(11.0),
-                            theme.text_dim,
-                        );
-                    }
-
+                    let resp = resp.on_hover_text(rp.path.display().to_string());
                     if resp.clicked() {
                         cmds.push(AppCommand::OpenProject { path: rp.path.clone() });
                     }
-
-                    // Context menu
                     resp.context_menu(|ui| {
                         self.project_context_menu(ui, rp, cmds);
                     });
 
-                    // Separator
-                    let sep_y = rect.max.y;
                     ui.painter().hline(
-                        rect.min.x + pad..=rect.max.x - pad,
-                        sep_y,
+                        rect.x_range(),
+                        rect.max.y,
                         egui::Stroke::new(0.5_f32, theme.border),
                     );
                 }
 
-                if filtered.is_empty() {
-                    ui.add_space(24.0);
-                    // Left-aligned under the grid, not centred in
-                    // whatever width happens to be left over — centred,
-                    // it landed adrift in the middle-right of an empty
-                    // page, related to nothing on screen. Here it reads
-                    // as a caption to the New Project card above it.
-                    ui.horizontal(|ui| {
-                        ui.add_space(pad);
-                        ui.vertical(|ui| {
-                        // Two different emptinesses, and they were
-                        // being told apart by nobody: a new user with
-                        // no projects at all was told their *search*
-                        // had matched nothing, on the first screen they
-                        // ever saw, without having typed anything.
-                        if self.search_query.trim().is_empty() {
-                            ui.label(
-                                egui::RichText::new("No projects yet")
-                                    .color(theme.text_primary)
-                                    .size(15.0),
-                            );
-                            ui.add_space(6.0);
-                            ui.label(
-                                egui::RichText::new(
-                                    "Start one with New Project, or open an existing .klipp file.",
-                                )
-                                .color(theme.text_dim)
-                                .size(12.0),
-                            );
-                        } else {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "No projects match \u{201C}{}\u{201D}",
-                                    self.search_query.trim()
-                                ))
-                                .color(theme.text_dim)
-                                .size(13.0),
-                            );
-                        }
-                        });
-                    });
+                if sorted.is_empty() {
+                    self.draw_empty_state(ui, pad, theme);
                 }
             });
         });
@@ -1232,6 +1423,8 @@ impl LaunchScreen {
     ) {
         let resp = ui.allocate_rect(rect, egui::Sense::click());
         let hovered = resp.hovered();
+        #[cfg(test)]
+        self.seen.cards.push((rp.path.clone(), rect));
 
         // Card background
         let bg = if hovered { theme.bg_hover } else { theme.bg_raised };
@@ -1242,71 +1435,33 @@ impl LaunchScreen {
         };
         ui.painter().rect(rect, 8.0, bg, stroke);
 
-        // Thumbnail area (top ~60%)
-        let thumb_h = rect.height() * 0.58;
+        // The thumbnail: 16:9, the card's full width.
         let thumb_rect = egui::Rect::from_min_size(
             rect.min + egui::vec2(1.0, 1.0),
-            egui::vec2(rect.width() - 2.0, thumb_h),
+            egui::vec2(rect.width() - 2.0, (rect.width() - 2.0) * 9.0 / 16.0),
         );
+        let thumb_rounding = egui::Rounding { nw: 7.0, ne: 7.0, sw: 0.0, se: 0.0 };
 
-        // Try to load/show actual thumbnail
-        let has_thumb = if let Some(ref thumb_path) = rp.thumbnail_path {
-            if let Some(tex) = self.thumbnail_textures.get(thumb_path) {
-                // Fit image within thumb_rect preserving aspect ratio
-                let img_aspect = tex.size()[0] as f32 / tex.size()[1] as f32;
-                let rect_aspect = thumb_rect.width() / thumb_rect.height();
-                let fitted = if img_aspect > rect_aspect {
-                    // Image is wider — fit to width, letterbox top/bottom
-                    let h = thumb_rect.width() / img_aspect;
-                    let y_off = (thumb_rect.height() - h) / 2.0;
-                    egui::Rect::from_min_size(
-                        egui::pos2(thumb_rect.min.x, thumb_rect.min.y + y_off),
-                        egui::vec2(thumb_rect.width(), h),
-                    )
-                } else {
-                    // Image is taller — fit to height, pillarbox left/right
-                    let w = thumb_rect.height() * img_aspect;
-                    let x_off = (thumb_rect.width() - w) / 2.0;
-                    egui::Rect::from_min_size(
-                        egui::pos2(thumb_rect.min.x + x_off, thumb_rect.min.y),
-                        egui::vec2(w, thumb_rect.height()),
-                    )
-                };
-                // Dark background behind pillarbox/letterbox bars
-                ui.painter().rect_filled(
-                    thumb_rect,
-                    egui::Rounding { nw: 7.0, ne: 7.0, sw: 0.0, se: 0.0 },
-                    theme.bg_void,
-                );
-                ui.painter().image(
-                    tex.id(),
-                    fitted,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-                true
-            } else if thumb_path.exists() {
-                if let Ok(data) = std::fs::read(thumb_path) {
-                    if let Ok(img) = image_from_png(&data) {
-                        let name = thumb_path.to_string_lossy();
-                        let tex = crate::app::alloc_texture_logged(
-                            ctx,
-                            &name,
-                            img,
-                            egui::TextureOptions::LINEAR,
-                        );
-                        self.thumbnail_textures.insert(thumb_path.clone(), tex);
-                    }
-                }
-                false
-            } else {
-                false
-            }
+        let poster = self.poster(ctx, rp);
+        // Across the thumbnail the pointer scrubs through the project,
+        // as it does over media in the browser: a frame of the skim
+        // strip for where it is, and the browser's line to show where.
+        let scrub_at = ui.input(|i| i.pointer.hover_pos()).filter(|p| hovered && thumb_rect.contains(*p));
+        let strip = if poster.is_some() && scrub_at.is_some() { self.strip(ctx, rp) } else { None };
+        if let (Some(strip), Some(at)) = (&strip, scrub_at) {
+            ui.painter().rect_filled(thumb_rect, thumb_rounding, theme.bg_void);
+            let frame = skim_frame((at.x - thumb_rect.min.x) / thumb_rect.width());
+            let n = SKIM_FRAMES as f32;
+            let crop = egui::Rect::from_min_max(egui::pos2(frame as f32 / n, 0.0), egui::pos2((frame + 1) as f32 / n, 1.0));
+            draw_poster(ui.painter(), thumb_rect, Some(strip), Some(crop), theme);
+            ui.painter().line_segment(
+                [egui::pos2(at.x, thumb_rect.min.y), egui::pos2(at.x, thumb_rect.max.y)],
+                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_premultiplied(255, 255, 255, 100)),
+            );
+        } else if poster.is_some() {
+            ui.painter().rect_filled(thumb_rect, thumb_rounding, theme.bg_void);
+            draw_poster(ui.painter(), thumb_rect, poster.as_ref(), None, theme);
         } else {
-            false
-        };
-
-        if !has_thumb {
             // A poster frame is taken from the first media file in the
             // project's manifest, so no thumbnail means no media: the
             // project is empty. Say that, rather than leaving a hole.
@@ -1315,11 +1470,7 @@ impl LaunchScreen {
             // a saturated block brighter than any real frame on the
             // page, so the eye went first to the projects with the
             // least in them.
-            ui.painter().rect_filled(
-                thumb_rect,
-                egui::Rounding { nw: 7.0, ne: 7.0, sw: 0.0, se: 0.0 },
-                theme.bg_raised,
-            );
+            ui.painter().rect_filled(thumb_rect, thumb_rounding, theme.bg_raised);
 
             // "Empty project", not the Klipp logo and "Klipp project".
             //
@@ -1364,7 +1515,7 @@ impl LaunchScreen {
         // Unsaved work: an auto-save newer than the project. Without this
         // the card shows the last save ("Empty project" when there never
         // was one) and nothing says the work is there to restore.
-        if self.newer_autosave.get(&rp.path).copied().unwrap_or(false) {
+        if self.status.get(&rp.path).is_some_and(|s| s.newer_autosave) {
             let g = layout_truncated(
                 ui.painter(),
                 "Unsaved work recovered \u{2014} open to restore",
@@ -1380,8 +1531,8 @@ impl LaunchScreen {
             ui.painter().galley(pill.min + egui::vec2(4.0, 3.0), g, theme.bg_void);
         }
 
-        // ── Info area (bottom ~40%) ──
-        let info_top = rect.min.y + thumb_h + 6.0;
+        // ── Info: the name, then each detail line, and nothing below ──
+        let info_top = thumb_rect.max.y + CARD_INFO_TOP;
         let left_x = rect.min.x + 10.0;
         let max_w = rect.width() - 20.0;
 
@@ -1401,60 +1552,35 @@ impl LaunchScreen {
             theme.text_primary,
         );
 
-        // Metadata line (fps, resolution, duration, size). Truncate
-        // when the joined string would overflow — the "7.1 GB" tail
-        // on the 4K/long-clip card was rendering past the card edge.
-        let meta = build_meta_string(rp);
-        let mut y_cursor = info_top + 18.0;
-        if !meta.is_empty() {
+        // The details, in the proportional face like the rest of the
+        // card: its figures are tabular, so numbers still line up from
+        // card to card without a typewriter face among the words.
+        let mut y = info_top + CARD_NAME_LINE;
+        for line in card_lines(rp) {
+            let (text, x, w) = match &line {
+                CardLine::Modified(t) => {
+                    let icon_size = 8.0;
+                    draw_clock_icon(ui.painter(), egui::pos2(left_x + icon_size / 2.0, y + 6.0), icon_size, theme.text_secondary);
+                    (t.as_str(), left_x + icon_size + 4.0, (max_w - icon_size - 4.0).max(0.0))
+                }
+                CardLine::Text(t) => (t.as_str(), left_x, max_w),
+            };
             let g = layout_truncated(
                 ui.painter(),
-                &meta,
-                egui::FontId::monospace(10.0),
+                text,
+                egui::FontId::proportional(crate::theme::type_scale::CAPTION),
                 theme.text_dim,
-                max_w,
+                w,
             );
-            ui.painter().galley(egui::pos2(left_x, y_cursor), g, theme.text_dim);
-            y_cursor += 13.0;
+            ui.painter().galley(egui::pos2(x, y), g, theme.text_dim);
+            y += CARD_DETAIL_LINE;
         }
 
-        // Counts line (clips, tracks)
-        let counts = build_counts_string(rp);
-        if !counts.is_empty() {
-            let g = layout_truncated(
-                ui.painter(),
-                &counts,
-                egui::FontId::proportional(10.0),
-                theme.text_dim,
-                max_w,
-            );
-            ui.painter().galley(egui::pos2(left_x, y_cursor), g, theme.text_dim);
-            y_cursor += 13.0;
-        }
-
-        // Modified timestamp with clock icon
-        if let Some(ref saved) = rp.last_saved {
-            let time_str = relative_time(saved);
-            if !time_str.is_empty() {
-                let icon_size = 8.0;
-                let icon_center = egui::pos2(left_x + icon_size / 2.0, y_cursor + 5.5);
-                draw_clock_icon(ui.painter(), icon_center, icon_size, theme.text_secondary);
-                // Remaining width after the icon + its gap.
-                let text_max_w = (max_w - icon_size - 4.0).max(0.0);
-                let g = layout_truncated(
-                    ui.painter(),
-                    &time_str,
-                    egui::FontId::proportional(10.0),
-                    theme.text_secondary,
-                    text_max_w,
-                );
-                ui.painter().galley(
-                    egui::pos2(left_x + icon_size + 4.0, y_cursor),
-                    g,
-                    theme.text_secondary,
-                );
-            }
-        }
+        // Where the file is, when the pointer is on the card's words
+        // (the picture is for looking at).
+        let info_rect = egui::Rect::from_min_max(egui::pos2(rect.min.x, thumb_rect.max.y), rect.max);
+        let pointer_on_info = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| info_rect.contains(p));
+        let resp = if pointer_on_info { resp.on_hover_text(rp.path.display().to_string()) } else { resp };
 
         // Click to open
         if resp.clicked() {
@@ -1473,30 +1599,299 @@ impl LaunchScreen {
         rp: &RecentProject,
         cmds: &mut Vec<AppCommand>,
     ) {
-        if ui.button("Open").clicked() {
-            cmds.push(AppCommand::OpenProject { path: rp.path.clone() });
-            ui.close_menu();
-        }
-        if ui.button("Rename\u{2026}").clicked() {
-            self.renaming_project = Some((rp.path.clone(), rp.name.clone()));
-            ui.close_menu();
-        }
-        if ui.button("Remove from Recent").clicked() {
-            cmds.push(AppCommand::RemoveRecentProject { path: rp.path.clone() });
-            ui.close_menu();
-        }
-        ui.separator();
-        if ui
-            .button(egui::RichText::new("Delete Project").color(ui.visuals().error_fg_color))
-            .clicked()
-        {
-            cmds.push(AppCommand::DeleteProject { path: rp.path.clone() });
-            ui.close_menu();
-        }
+        use crate::widgets::menu::{menu_body, menu_item};
+        menu_body(ui, |ui| {
+            if menu_item(ui, "Open", "").clicked() {
+                cmds.push(AppCommand::OpenProject { path: rp.path.clone() });
+                ui.close_menu();
+            }
+            if menu_item(ui, "Duplicate", "").clicked() {
+                cmds.push(AppCommand::DuplicateProject { path: rp.path.clone() });
+                ui.close_menu();
+            }
+            if menu_item(ui, "Rename\u{2026}", "").clicked() {
+                self.renaming_project = Some((rp.path.clone(), rp.name.clone()));
+                ui.close_menu();
+            }
+            if menu_item(ui, "Show in Files", "").clicked() {
+                cmds.push(AppCommand::RevealInFileManager { path: rp.path.clone() });
+                ui.close_menu();
+            }
+            ui.separator();
+            if menu_item(ui, "Remove from Recent", "").clicked() {
+                cmds.push(AppCommand::RemoveRecentProject { path: rp.path.clone() });
+                ui.close_menu();
+            }
+            if ui
+                .add(egui::Button::new(egui::RichText::new("Move to Trash\u{2026}").color(ui.visuals().error_fg_color)))
+                .clicked()
+            {
+                self.confirm_trash = Some(rp.path.clone());
+                ui.close_menu();
+            }
+        });
     }
 }
 
 // ── Helpers ──
+
+/// The strip frame for a pointer `fraction` of the way across.
+fn skim_frame(fraction: f32) -> usize {
+    ((fraction.clamp(0.0, 1.0) * SKIM_FRAMES as f32) as usize).min(SKIM_FRAMES - 1)
+}
+
+/// One line of a card's details.
+#[derive(Clone, Debug, PartialEq)]
+enum CardLine {
+    Text(String),
+    /// When it was saved, drawn after a clock.
+    Modified(String),
+}
+
+/// A card's detail lines: its picture format and size, what it holds,
+/// and when it was saved — each only when there is something to say.
+fn card_lines(rp: &RecentProject) -> Vec<CardLine> {
+    let mut lines = Vec::new();
+    let meta = build_meta_string(rp);
+    if !meta.is_empty() {
+        lines.push(CardLine::Text(meta));
+    }
+    let counts = build_counts_string(rp);
+    if !counts.is_empty() {
+        lines.push(CardLine::Text(counts));
+    }
+    let when = rp.last_saved.as_deref().map(relative_time).unwrap_or_default();
+    if !when.is_empty() {
+        lines.push(CardLine::Modified(when));
+    }
+    lines
+}
+
+/// The sidebar's order: pinned projects first, then by recency, each
+/// group in the order the list keeps.
+fn sidebar_order(recent: &[RecentProject]) -> Vec<&RecentProject> {
+    let mut order: Vec<&RecentProject> = recent.iter().collect();
+    order.sort_by_key(|rp| !rp.pinned);
+    order
+}
+
+/// The sidebar's second line: when it was saved, how long the cut is,
+/// and its frame rate — "Today 13:26 · 1:55 · 24 fps".
+fn sidebar_detail(rp: &RecentProject, now: chrono::NaiveDateTime) -> String {
+    let mut parts = Vec::new();
+    if let Some(when) = rp.last_saved.as_deref().and_then(|s| when_saved(s, now)) {
+        parts.push(when);
+    }
+    if let Some(dur) = rp.duration_secs {
+        parts.push(format_length(dur));
+    }
+    if let Some(fps) = rp.fps.as_deref() {
+        parts.push(fps_label(fps));
+    }
+    parts.join(" \u{00B7} ")
+}
+
+/// A save time as a day and a clock time: "Today 13:26", "Yesterday
+/// 09:05", "Mon 13:26" within the week, then "12 Oct", and "12 Oct 2025"
+/// in another year.
+fn when_saved(iso: &str, now: chrono::NaiveDateTime) -> Option<String> {
+    let dt = parse_saved(iso)?;
+    let days = (now.date() - dt.date()).num_days();
+    let time = dt.format("%H:%M");
+    Some(match days {
+        0 => format!("Today {time}"),
+        1 => format!("Yesterday {time}"),
+        2..=6 => format!("{} {time}", dt.format("%a")),
+        _ if dt.date().format("%Y").to_string() == now.date().format("%Y").to_string() => dt.format("%-d %b").to_string(),
+        _ => dt.format("%-d %b %Y").to_string(),
+    })
+}
+
+/// A length as "1:55", or "1:02:03" past the hour.
+fn format_length(secs: f64) -> String {
+    let total = secs.max(0.0).floor() as u64;
+    let (h, m, s) = (total / 3600, total / 60 % 60, total % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+/// "24fps" or "29.970fps", as the list keeps rates, read as "24 fps"
+/// and "29.97 fps".
+fn fps_label(fps: &str) -> String {
+    let number = fps.trim().trim_end_matches("fps").trim();
+    let number = if number.contains('.') { number.trim_end_matches('0').trim_end_matches('.') } else { number };
+    format!("{number} fps")
+}
+
+/// The list view's columns and their widths for a table `width` wide:
+/// the fixed ones as wide as their figures, the name and the place
+/// sharing what is left.
+fn list_columns(width: f32) -> Vec<(SortMode, f32)> {
+    let fixed = [
+        (SortMode::Modified, 130.0),
+        (SortMode::Duration, 76.0),
+        (SortMode::Resolution, 104.0),
+        (SortMode::Fps, 76.0),
+        (SortMode::Size, 84.0),
+    ];
+    let rest = (width - fixed.iter().map(|(_, w)| w).sum::<f32>()).max(240.0);
+    let mut columns = vec![(SortMode::Name, rest * 0.6)];
+    columns.extend(fixed);
+    columns.push((SortMode::Location, rest * 0.4));
+    columns
+}
+
+/// Figures read right-aligned, so their places line up down a column.
+fn list_column_is_numeric(mode: SortMode) -> bool {
+    matches!(mode, SortMode::Duration | SortMode::Fps | SortMode::Size)
+}
+
+/// What a list row shows under `column`.
+fn list_cell(rp: &RecentProject, column: SortMode) -> String {
+    match column {
+        SortMode::Name => rp.name.clone(),
+        SortMode::Modified => rp.last_saved.as_deref()
+            .and_then(|s| when_saved(s, chrono::Local::now().naive_local()))
+            .unwrap_or_default(),
+        SortMode::Duration => rp.duration_secs.map(format_length).unwrap_or_default(),
+        SortMode::Resolution => rp.resolution.clone().unwrap_or_default(),
+        SortMode::Fps => rp.fps.as_deref().map(fps_label).unwrap_or_default(),
+        SortMode::Size => rp.total_size_bytes.map(format_size_compact).unwrap_or_default(),
+        SortMode::Location => rp.path.parent().map(|p| p.display().to_string()).unwrap_or_default(),
+    }
+}
+
+/// Sort `list` by `mode`. A project missing the value sorts last either
+/// way round, rather than ahead of every real one.
+fn sort_projects(list: &mut [&RecentProject], mode: SortMode, descending: bool) {
+    fn pixels(res: &str) -> Option<f64> {
+        let (w, h) = res.split_once(['x', '\u{00D7}'])?;
+        Some(w.trim().parse::<f64>().ok()? * h.trim().parse::<f64>().ok()?)
+    }
+    fn number(rp: &RecentProject, mode: SortMode) -> Option<f64> {
+        match mode {
+            SortMode::Size => rp.total_size_bytes.map(|b| b as f64),
+            SortMode::Duration => rp.duration_secs,
+            SortMode::Resolution => rp.resolution.as_deref().and_then(pixels),
+            SortMode::Fps => rp.fps.as_deref().and_then(|f| f.trim().trim_end_matches("fps").trim().parse().ok()),
+            SortMode::Modified => rp.last_saved.as_deref().and_then(parse_saved).map(|d| d.and_utc().timestamp() as f64),
+            SortMode::Name | SortMode::Location => None,
+        }
+    }
+    let text = |rp: &RecentProject| match mode {
+        SortMode::Location => rp.path.parent().map(|p| p.to_string_lossy().to_lowercase()).unwrap_or_default(),
+        _ => rp.name.to_lowercase(),
+    };
+    list.sort_by(|a, b| {
+        let order = match mode {
+            SortMode::Name | SortMode::Location => text(a).cmp(&text(b)),
+            _ => match (number(a, mode), number(b, mode)) {
+                (Some(x), Some(y)) => x.total_cmp(&y),
+                (Some(_), None) => return std::cmp::Ordering::Less,
+                (None, Some(_)) => return std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            },
+        };
+        if descending { order.reverse() } else { order }
+    });
+}
+
+/// Draw a poster into `rect`: fitted whole, with a soft, darkened copy
+/// of the same picture filling what it leaves — so a vertical project
+/// sits in its own colours rather than between black bars. `crop` picks
+/// a part of the picture (a frame of a strip) instead of all of it.
+fn draw_poster(painter: &egui::Painter, rect: egui::Rect, poster: Option<&Poster>, crop: Option<egui::Rect>, theme: &KlippTheme) {
+    let Some(poster) = poster else {
+        painter.rect_filled(rect, 3.0, theme.bg_raised);
+        painter.rect_stroke(rect, 3.0, egui::Stroke::new(1.0_f32, theme.border));
+        return;
+    };
+    let uv = crop.unwrap_or(egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)));
+    let img_aspect = poster.aspect() * uv.width() / uv.height().max(f32::EPSILON);
+    let rect_aspect = rect.width() / rect.height().max(1.0);
+    if (img_aspect - rect_aspect).abs() / rect_aspect < 0.02 {
+        painter.image(poster.sharp.id(), rect, uv, egui::Color32::WHITE);
+        return;
+    }
+    // The fill: the soft picture scaled to cover, its middle shown.
+    let cover = if img_aspect > rect_aspect {
+        let f = rect_aspect / img_aspect;
+        egui::Rect::from_min_max(egui::pos2(0.5 - f / 2.0, 0.0), egui::pos2(0.5 + f / 2.0, 1.0))
+    } else {
+        let f = img_aspect / rect_aspect;
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.5 - f / 2.0), egui::pos2(1.0, 0.5 + f / 2.0))
+    };
+    let cover_uv = egui::Rect::from_min_max(
+        egui::pos2(uv.min.x + cover.min.x * uv.width(), uv.min.y + cover.min.y * uv.height()),
+        egui::pos2(uv.min.x + cover.max.x * uv.width(), uv.min.y + cover.max.y * uv.height()),
+    );
+    painter.image(poster.soft.id(), rect, cover_uv, egui::Color32::from_gray(150));
+    let fitted = if img_aspect > rect_aspect {
+        egui::Rect::from_center_size(rect.center(), egui::vec2(rect.width(), rect.width() / img_aspect))
+    } else {
+        egui::Rect::from_center_size(rect.center(), egui::vec2(rect.height() * img_aspect, rect.height()))
+    };
+    painter.image(poster.sharp.id(), fitted, uv, egui::Color32::WHITE);
+}
+
+/// A soft copy of `img`: averaged down to `across` pixels wide, which
+/// the linear filter spreads back out as a blur.
+fn soften(img: &egui::ColorImage, across: usize) -> egui::ColorImage {
+    let [w, h] = img.size;
+    let sw = across.min(w.max(1)).max(1);
+    let sh = ((h * sw) / w.max(1)).clamp(1, 24);
+    let mut pixels = Vec::with_capacity(sw * sh);
+    for y in 0..sh {
+        for x in 0..sw {
+            let (x0, x1) = (x * w / sw, ((x + 1) * w / sw).max(x * w / sw + 1).min(w));
+            let (y0, y1) = (y * h / sh, ((y + 1) * h / sh).max(y * h / sh + 1).min(h));
+            let mut sum = [0u32; 3];
+            let mut n = 0u32;
+            for yy in y0..y1 {
+                for xx in x0..x1 {
+                    let c = img.pixels[yy * w + xx];
+                    sum[0] += c.r() as u32;
+                    sum[1] += c.g() as u32;
+                    sum[2] += c.b() as u32;
+                    n += 1;
+                }
+            }
+            let n = n.max(1);
+            pixels.push(egui::Color32::from_rgb((sum[0] / n) as u8, (sum[1] / n) as u8, (sum[2] / n) as u8));
+        }
+    }
+    egui::ColorImage { size: [sw, sh], pixels }
+}
+
+/// Draw one sidebar mark centred on `c`.
+fn draw_mark(painter: &egui::Painter, c: egui::Pos2, mark: &Mark, theme: &KlippTheme) {
+    match mark {
+        Mark::Pinned => {
+            // A pin: its head and its point.
+            painter.circle_filled(c + egui::vec2(0.0, -2.0), 3.0, theme.text_secondary);
+            painter.line_segment([c + egui::vec2(0.0, 0.0), c + egui::vec2(0.0, 5.0)], egui::Stroke::new(1.5_f32, theme.text_secondary));
+        }
+        Mark::OpenNow(_) => {
+            painter.circle_filled(c, 3.5, theme.marker_success);
+        }
+        Mark::Unsaved => {
+            painter.circle_stroke(c, 3.5, egui::Stroke::new(1.5_f32, theme.accent));
+        }
+        Mark::MissingMedia => {
+            let s = 5.0;
+            painter.add(egui::Shape::convex_polygon(
+                vec![c + egui::vec2(0.0, -s), c + egui::vec2(-s, s * 0.8), c + egui::vec2(s, s * 0.8)],
+                theme.marker_warning,
+                egui::Stroke::NONE,
+            ));
+            painter.text(c + egui::vec2(0.0, 1.0), egui::Align2::CENTER_CENTER, "!", egui::FontId::proportional(8.0), egui::Color32::from_rgb(30, 25, 10));
+        }
+    }
+}
+
 
 /// Lay out a single-line galley that truncates with an ellipsis when
 /// the text wouldn't fit `max_w`. Project-card fields (name,
@@ -1548,18 +1943,18 @@ fn version_line(build: &klipp_core::build_info::BuildInfo) -> String {
     }
 }
 
+/// "1920×1080 · 24 fps · 1:55 · 1.2 GB": the picture, the length, the
+/// size on disk.
 fn build_meta_string(rp: &RecentProject) -> String {
     let mut parts = Vec::new();
-    if let Some(ref fps) = rp.fps {
-        parts.push(fps.clone());
-    }
     if let Some(ref res) = rp.resolution {
-        parts.push(res.clone());
+        parts.push(res.replace('x', "\u{00D7}"));
+    }
+    if let Some(ref fps) = rp.fps {
+        parts.push(fps_label(fps));
     }
     if let Some(dur) = rp.duration_secs {
-        let mins = (dur / 60.0).floor() as u32;
-        let secs = (dur % 60.0).floor() as u32;
-        parts.push(format!("{mins}:{secs:02}"));
+        parts.push(format_length(dur));
     }
     if let Some(size) = rp.total_size_bytes {
         parts.push(format_size_compact(size));
@@ -1567,16 +1962,20 @@ fn build_meta_string(rp: &RecentProject) -> String {
     parts.join(" \u{00B7} ")
 }
 
-/// Build a secondary metadata line with clip/track counts.
+/// "2 sequences · 14 clips · 4 tracks": what the project holds.
 fn build_counts_string(rp: &RecentProject) -> String {
+    let plural = |n: u32, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
     let mut parts = Vec::new();
-    if let Some(clips) = rp.clip_count {
-        parts.push(format!("{clips} clip{}", if clips == 1 { "" } else { "s" }));
+    if let Some(n) = rp.sequence_count {
+        parts.push(plural(n, "sequence"));
     }
-    if let Some(tracks) = rp.track_count {
-        parts.push(format!("{tracks} track{}", if tracks == 1 { "" } else { "s" }));
+    if let Some(n) = rp.clip_count {
+        parts.push(plural(n, "clip"));
     }
-    parts.join(", ")
+    if let Some(n) = rp.track_count {
+        parts.push(plural(n, "track"));
+    }
+    parts.join(" \u{00B7} ")
 }
 
 /// Draw a small warning triangle icon for missing media.
@@ -1622,45 +2021,6 @@ fn draw_clock_icon(painter: &egui::Painter, center: egui::Pos2, size: f32, color
         [center, egui::pos2(center.x, center.y - r * 0.55)],
         egui::Stroke::new(1.0_f32, color),
     );
-}
-
-/// Generate a deterministic color from a project name.
-fn project_color(name: &str) -> egui::Color32 {
-    let mut hash: u32 = 5381;
-    for b in name.bytes() {
-        hash = hash.wrapping_mul(33).wrapping_add(b as u32);
-    }
-    // Generate a saturated hue
-    let hue = (hash % 360) as f32;
-    let (r, g, b) = hsv_to_rgb(hue, 0.55, 0.65);
-    egui::Color32::from_rgb(r, g, b)
-}
-
-fn darken_color(c: egui::Color32, factor: f32) -> egui::Color32 {
-    egui::Color32::from_rgb(
-        (c.r() as f32 * factor) as u8,
-        (c.g() as f32 * factor) as u8,
-        (c.b() as f32 * factor) as u8,
-    )
-}
-
-fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
-    let c = v * s;
-    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
-    let m = v - c;
-    let (r, g, b) = match h as u32 {
-        0..=59 => (c, x, 0.0),
-        60..=119 => (x, c, 0.0),
-        120..=179 => (0.0, c, x),
-        180..=239 => (0.0, x, c),
-        240..=299 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    (
-        ((r + m) * 255.0) as u8,
-        ((g + m) * 255.0) as u8,
-        ((b + m) * 255.0) as u8,
-    )
 }
 
 /// Draw a dashed rounded rectangle.
@@ -1732,22 +2092,23 @@ fn draw_dashed_rect(
     }
 }
 
-/// Parse ISO 8601 datetime string and return a human-friendly relative time.
-fn relative_time(iso: &str) -> String {
+/// A saved time as the list keeps it, in local time.
+fn parse_saved(iso: &str) -> Option<chrono::NaiveDateTime> {
     use chrono::NaiveDateTime;
 
     // Strip trailing 'Z' (legacy UTC marker)
     let cleaned = iso.trim_end_matches('Z');
 
-    let parsed = NaiveDateTime::parse_from_str(cleaned, "%Y-%m-%d %H:%M:%S")
+    NaiveDateTime::parse_from_str(cleaned, "%Y-%m-%d %H:%M:%S")
         .or_else(|_| NaiveDateTime::parse_from_str(cleaned, "%Y-%m-%dT%H:%M:%S%.f"))
         .or_else(|_| NaiveDateTime::parse_from_str(cleaned, "%Y-%m-%dT%H:%M:%S"))
-        .or_else(|_| NaiveDateTime::parse_from_str(&format!("{cleaned} 00:00:00"), "%Y-%m-%d %H:%M:%S"));
+        .or_else(|_| NaiveDateTime::parse_from_str(&format!("{cleaned} 00:00:00"), "%Y-%m-%d %H:%M:%S"))
+        .ok()
+}
 
-    let dt = match parsed {
-        Ok(dt) => dt,
-        Err(_) => return String::new(),
-    };
+/// Parse ISO 8601 datetime string and return a human-friendly relative time.
+fn relative_time(iso: &str) -> String {
+    let Some(dt) = parse_saved(iso) else { return String::new() };
 
     // Compare against local time (timestamps are stored in local time)
     let now = chrono::Local::now().naive_local();
@@ -1827,5 +2188,438 @@ mod tests {
         assert_eq!(version_line(&build), "Version 0.1.0 · Build 2711");
         build.number = 0;
         assert_eq!(version_line(&build), "Version 0.1.0");
+    }
+
+    // ── #1847: the welcome screen drawn ──
+
+    type Shapes = Vec<egui::epaint::ClippedShape>;
+
+    /// One frame of the welcome screen with `events`: the commands it
+    /// gave and what it drew.
+    fn frame(ctx: &egui::Context, screen: &mut LaunchScreen, recent: &[RecentProject], folder: Option<&std::path::Path>, events: Vec<egui::Event>) -> (Vec<AppCommand>, Shapes) {
+        let theme = KlippTheme::default();
+        let mut cmds = Vec::new();
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1000.0))), events, ..Default::default() };
+        let out = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                cmds = screen.show(ctx, ui, recent, folder, &theme);
+            });
+        });
+        (cmds, out.shapes)
+    }
+
+    fn texts(shapes: &Shapes) -> Vec<(String, egui::Rect)> {
+        shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) => Some((t.galley.text().to_string(), egui::Rect::from_min_size(t.pos, t.galley.size()))),
+            _ => None,
+        }).collect()
+    }
+
+    fn at(shapes: &Shapes, label: &str) -> egui::Pos2 {
+        let all = texts(shapes);
+        all.iter().find(|(t, _)| t == label).map(|(_, r)| r.center()).unwrap_or_else(|| panic!("{label} is drawn: {:?}", all.iter().map(|t| &t.0).collect::<Vec<_>>()))
+    }
+
+    /// Each textured mesh drawn: its texture, where, and the part of the
+    /// texture shown.
+    fn images(shapes: &Shapes) -> Vec<(egui::TextureId, egui::Rect, egui::Rect)> {
+        shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Mesh(m) if m.texture_id != egui::TextureId::default() && !m.vertices.is_empty() => {
+                let rect = egui::Rect::from_points(&m.vertices.iter().map(|v| v.pos).collect::<Vec<_>>());
+                let uv = egui::Rect::from_points(&m.vertices.iter().map(|v| v.uv).collect::<Vec<_>>());
+                Some((m.texture_id, rect, uv))
+            }
+            _ => None,
+        }).collect()
+    }
+
+    fn click_with(ctx: &egui::Context, screen: &mut LaunchScreen, recent: &[RecentProject], folder: Option<&std::path::Path>, pos: egui::Pos2, button: egui::PointerButton) -> Vec<AppCommand> {
+        let press = |pressed| egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::NONE };
+        let mut cmds = frame(ctx, screen, recent, folder, vec![egui::Event::PointerMoved(pos), press(true)]).0;
+        cmds.extend(frame(ctx, screen, recent, folder, vec![press(false)]).0);
+        cmds.extend(frame(ctx, screen, recent, folder, Vec::new()).0);
+        cmds
+    }
+
+    fn click(ctx: &egui::Context, screen: &mut LaunchScreen, recent: &[RecentProject], pos: egui::Pos2) -> Vec<AppCommand> {
+        click_with(ctx, screen, recent, None, pos, egui::PointerButton::Primary)
+    }
+
+    /// A PNG of `w`x`h`, each pixel coloured by `colour(x)`.
+    fn png(path: &std::path::Path, w: u32, h: u32, colour: impl Fn(u32) -> [u8; 3]) {
+        let file = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+        let mut enc = png::Encoder::new(file, w, h);
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut writer = enc.write_header().unwrap();
+        let data: Vec<u8> = (0..h).flat_map(|_| (0..w).flat_map(&colour)).collect();
+        writer.write_image_data(&data).unwrap();
+    }
+
+    fn temp_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("klipp-launch-1847-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn project(dir: &std::path::Path, name: &str) -> RecentProject {
+        let mut rp = RecentProject::from_path(dir.join(format!("{name}.klipp")));
+        rp.last_saved = Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+        rp.duration_secs = Some(115.0);
+        rp.fps = Some("24fps".into());
+        rp.resolution = Some("1920\u{00D7}1080".into());
+        rp.total_size_bytes = Some(3 << 20);
+        rp.sequence_count = Some(2);
+        rp.clip_count = Some(14);
+        rp.track_count = Some(4);
+        rp.missing_media = Some(false);
+        rp
+    }
+
+    /// A screen whose status check is taken as given, not run.
+    fn screen_with(status: &[(PathBuf, ProjectStatus)]) -> LaunchScreen {
+        LaunchScreen { status: status.iter().cloned().collect(), status_checked_at: Some(std::time::Instant::now()), ..Default::default() }
+    }
+
+    /// The sidebar shows each project's poster, pinned ones first, the
+    /// second line as when · length · rate, and a mark for each of open
+    /// now, unsaved and missing media, each saying what it means.
+    #[test]
+    fn the_sidebar_shows_posters_and_clear_marks() {
+        let dir = temp_dir();
+        let poster = dir.join("Trip.png");
+        png(&poster, 32, 18, |_| [200, 80, 40]);
+        let mut trip = project(&dir, "Trip");
+        trip.thumbnail_path = Some(poster);
+        let mut empty = project(&dir, "Empty");
+        empty.missing_media = Some(true);
+        let mut pinned = project(&dir, "Pinned");
+        pinned.pinned = true;
+        let recent = vec![trip.clone(), empty.clone(), pinned.clone()];
+        let mut screen = screen_with(&[
+            (trip.path.clone(), ProjectStatus { newer_autosave: true, open_by: Some("ann@studio".into()) }),
+        ]);
+        let ctx = egui::Context::default();
+        ctx.style_mut(|s| {
+            s.interaction.tooltip_delay = 0.0;
+            s.interaction.show_tooltips_only_when_still = false;
+        });
+        frame(&ctx, &mut screen, &recent, None, Vec::new());
+        let (_, shapes) = frame(&ctx, &mut screen, &recent, None, Vec::new());
+
+        let rows: Vec<_> = screen.seen.sidebar.iter().map(|(p, _, t)| (p.clone(), t.is_some())).collect();
+        assert_eq!(rows, vec![(pinned.path.clone(), false), (trip.path.clone(), true), (empty.path.clone(), false)], "pinned first; a poster where there is one");
+        let (_, row, tex) = &screen.seen.sidebar[1];
+        let drawn = images(&shapes);
+        let thumb = drawn.iter().find(|(t, _, _)| Some(*t) == *tex).expect("the poster is drawn");
+        assert!(row.contains_rect(thumb.1), "inside its row");
+        assert!((thumb.1.width() / thumb.1.height() - 16.0 / 9.0).abs() < 0.05, "16:9: {:?}", thumb.1);
+
+        let detail = format!("Today {} \u{00B7} 1:55 \u{00B7} 24 fps", chrono::Local::now().format("%H:%M"));
+        assert!(texts(&shapes).iter().any(|(t, _)| *t == detail), "{detail}");
+
+        let marks: Vec<_> = screen.seen.marks.iter().map(|(p, m, _)| (p.clone(), m.clone())).collect();
+        for want in [
+            (pinned.path.clone(), Mark::Pinned),
+            (trip.path.clone(), Mark::OpenNow("ann@studio".into())),
+            (trip.path.clone(), Mark::Unsaved),
+            (empty.path.clone(), Mark::MissingMedia),
+        ] {
+            assert!(marks.contains(&want), "{want:?} in {marks:?}");
+        }
+        assert_eq!(marks.len(), 4, "no unexplained dot: {marks:?}");
+        // Each says what it is.
+        let unsaved = screen.seen.marks.iter().find(|(_, m, _)| *m == Mark::Unsaved).unwrap().2;
+        frame(&ctx, &mut screen, &recent, None, vec![egui::Event::PointerMoved(unsaved.center())]);
+        let (_, shapes) = frame(&ctx, &mut screen, &recent, None, Vec::new());
+        assert!(texts(&shapes).iter().any(|(t, _)| t.starts_with("Unsaved changes")), "the tooltip");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A sidebar row's menu: Open, Pin, Show in Files, Remove from Recent.
+    #[test]
+    fn the_sidebar_menu_pins_shows_and_removes() {
+        let dir = temp_dir();
+        let recent = vec![project(&dir, "Trip")];
+        let path = recent[0].path.clone();
+        let ctx = egui::Context::default();
+        let mut screen = screen_with(&[]);
+        frame(&ctx, &mut screen, &recent, None, Vec::new());
+        frame(&ctx, &mut screen, &recent, None, Vec::new());
+        let row = screen.seen.sidebar[0].1.center();
+        let open_menu = |screen: &mut LaunchScreen| {
+            click_with(&ctx, screen, &recent, None, row, egui::PointerButton::Secondary);
+            frame(&ctx, screen, &recent, None, Vec::new()).1
+        };
+        let shapes = open_menu(&mut screen);
+        let all: Vec<String> = texts(&shapes).into_iter().map(|t| t.0).collect();
+        for item in ["Open", "Pin to Top", "Show in Files", "Remove from Recent"] {
+            assert!(all.iter().any(|t| t == item), "{item} in {all:?}");
+        }
+        let cmds = click(&ctx, &mut screen, &recent, at(&shapes, "Pin to Top"));
+        assert!(matches!(&cmds[..], [AppCommand::PinRecentProject { path: p, pinned: true }] if *p == path), "{cmds:?}");
+        let shapes = open_menu(&mut screen);
+        let cmds = click(&ctx, &mut screen, &recent, at(&shapes, "Show in Files"));
+        assert!(matches!(&cmds[..], [AppCommand::RevealInFileManager { path: p }] if *p == path), "{cmds:?}");
+        let shapes = open_menu(&mut screen);
+        let cmds = click(&ctx, &mut screen, &recent, at(&shapes, "Remove from Recent"));
+        assert!(matches!(&cmds[..], [AppCommand::RemoveRecentProject { path: p }] if *p == path), "{cmds:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A card is as tall as what it says: the last line of text sits
+    /// just above its bottom edge, and a project with less to say gets a
+    /// shorter card, not an empty band.
+    #[test]
+    fn cards_fit_their_content() {
+        let dir = temp_dir();
+        let full = vec![project(&dir, "Trip"), project(&dir, "Hike")];
+        let bare = vec![RecentProject::from_path(dir.join("Bare.klipp"))];
+        let ctx = egui::Context::default();
+        let mut heights = Vec::new();
+        for recent in [&full, &bare] {
+            let mut screen = screen_with(&[]);
+            frame(&ctx, &mut screen, recent, None, Vec::new());
+            let (_, shapes) = frame(&ctx, &mut screen, recent, None, Vec::new());
+            let all = texts(&shapes);
+            for (_, card) in &screen.seen.cards {
+                let bottom = all.iter().filter(|(_, r)| card.contains(r.center())).map(|(_, r)| r.max.y).fold(f32::MIN, f32::max);
+                let gap = card.max.y - bottom;
+                assert!((0.0..=12.0).contains(&gap), "text ends {gap} px above the card's edge");
+            }
+            heights.push(screen.seen.cards[0].1.height());
+        }
+        assert!(heights[1] < heights[0] - 30.0, "a card with nothing to say is shorter: {heights:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A card's details are in the proportional face, not monospace, and
+    /// say how many sequences there are.
+    #[test]
+    fn card_details_are_proportional_with_the_sequence_count() {
+        let dir = temp_dir();
+        let recent = vec![project(&dir, "Trip")];
+        let ctx = egui::Context::default();
+        let mut screen = screen_with(&[]);
+        frame(&ctx, &mut screen, &recent, None, Vec::new());
+        let (_, shapes) = frame(&ctx, &mut screen, &recent, None, Vec::new());
+        let card = screen.seen.cards[0].1;
+        let details: Vec<_> = shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) if card.contains(t.pos) => Some((t.galley.text().to_string(), t.galley.job.sections[0].format.font_id.family.clone())),
+            _ => None,
+        }).collect();
+        assert!(details.iter().any(|(t, _)| t == "2 sequences \u{00B7} 14 clips \u{00B7} 4 tracks"), "{details:?}");
+        assert!(details.iter().any(|(t, _)| t.starts_with("1920\u{00D7}1080 \u{00B7} 24 fps \u{00B7} 1:55")), "{details:?}");
+        assert!(details.iter().all(|(_, f)| *f == egui::FontFamily::Proportional), "{details:?}");
+        // Its figures are tabular, so they still line up.
+        let width = |s: &str| ctx.fonts(|f| f.layout_no_wrap(s.into(), egui::FontId::proportional(10.0), egui::Color32::WHITE).size().x);
+        let ones = width("1111");
+        for d in ["0000", "4444", "8888"] {
+            assert!((width(d) - ones).abs() < 0.01, "{d}: {} vs {ones}", width(d));
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A card's menu: Open, Duplicate, Rename, Show in Files, Remove from
+    /// Recent, and Move to Trash — which asks first, and does nothing on
+    /// Cancel.
+    #[test]
+    fn the_card_menu_duplicates_renames_removes_and_trashes_with_confirmation() {
+        let dir = temp_dir();
+        let recent = vec![project(&dir, "Trip")];
+        let path = recent[0].path.clone();
+        let ctx = egui::Context::default();
+        let mut screen = screen_with(&[]);
+        frame(&ctx, &mut screen, &recent, None, Vec::new());
+        frame(&ctx, &mut screen, &recent, None, Vec::new());
+        let card = screen.seen.cards[0].1;
+        let pick = |screen: &mut LaunchScreen, item: &str| {
+            click_with(&ctx, screen, &recent, None, card.center(), egui::PointerButton::Secondary);
+            let shapes = frame(&ctx, screen, &recent, None, Vec::new()).1;
+            let all: Vec<String> = texts(&shapes).into_iter().map(|t| t.0).collect();
+            for want in ["Open", "Duplicate", "Rename\u{2026}", "Show in Files", "Remove from Recent", "Move to Trash\u{2026}"] {
+                assert!(all.iter().any(|t| t == want), "{want} in {all:?}");
+            }
+            let cmds = click(&ctx, screen, &recent, at(&shapes, item));
+            (cmds, frame(&ctx, screen, &recent, None, Vec::new()).1)
+        };
+        let (cmds, _) = pick(&mut screen, "Duplicate");
+        assert!(matches!(&cmds[..], [AppCommand::DuplicateProject { path: p }] if *p == path), "{cmds:?}");
+        let (cmds, _) = pick(&mut screen, "Remove from Recent");
+        assert!(matches!(&cmds[..], [AppCommand::RemoveRecentProject { path: p }] if *p == path), "{cmds:?}");
+        let (cmds, _) = pick(&mut screen, "Show in Files");
+        assert!(matches!(&cmds[..], [AppCommand::RevealInFileManager { path: p }] if *p == path), "{cmds:?}");
+
+        // Rename: the name is typed into, and Rename renames.
+        let (cmds, _) = pick(&mut screen, "Rename\u{2026}");
+        assert!(cmds.is_empty());
+        frame(&ctx, &mut screen, &recent, None, vec![egui::Event::Text(" 2".into())]);
+        let shapes = frame(&ctx, &mut screen, &recent, None, Vec::new()).1;
+        let cmds = click(&ctx, &mut screen, &recent, at(&shapes, "Rename"));
+        assert!(matches!(&cmds[..], [AppCommand::RenameProjectOnDisk { old_path, new_name }] if *old_path == path && new_name == "Trip 2"), "{cmds:?}");
+
+        // Trash: asked, Cancel does nothing.
+        let (cmds, shapes) = pick(&mut screen, "Move to Trash\u{2026}");
+        assert!(cmds.is_empty(), "nothing is trashed before the answer: {cmds:?}");
+        assert!(texts(&shapes).iter().any(|(t, _)| t == "Move \u{201C}Trip\u{201D} to the trash?"));
+        let cmds = click(&ctx, &mut screen, &recent, at(&shapes, "Cancel"));
+        assert!(cmds.is_empty() && screen.confirm_trash.is_none(), "{cmds:?}");
+        // Asked again, and answered.
+        let (_, shapes) = pick(&mut screen, "Move to Trash\u{2026}");
+        // The window's title says it too; the button is the lower one.
+        let button = texts(&shapes).into_iter().filter(|(t, _)| t == "Move to Trash").max_by(|a, b| a.1.min.y.total_cmp(&b.1.min.y)).expect("the button").1.center();
+        let cmds = click(&ctx, &mut screen, &recent, button);
+        assert!(matches!(&cmds[..], [AppCommand::MoveProjectToTrash { path: p }] if *p == path), "{cmds:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The list view is a table: a click on a column's name sorts by it,
+    /// a second turns it round, and a project without the value is last.
+    #[test]
+    fn the_list_sorts_by_its_columns() {
+        let dir = temp_dir();
+        let mut a = project(&dir, "Alpha");
+        a.total_size_bytes = Some(5 << 20);
+        let mut b = project(&dir, "Bravo");
+        b.total_size_bytes = Some(9 << 20);
+        let mut c = project(&dir, "Charlie");
+        c.total_size_bytes = None;
+        let recent = vec![a, b, c];
+        let ctx = egui::Context::default();
+        let mut screen = screen_with(&[]);
+        screen.view_mode = ViewMode::List;
+        frame(&ctx, &mut screen, &recent, None, Vec::new());
+        let (_, shapes) = frame(&ctx, &mut screen, &recent, None, Vec::new());
+        for column in ["Name", "Modified", "Length", "Resolution", "FPS", "Size", "Location"] {
+            at(&shapes, column);
+        }
+        let order = |shapes: &Shapes| {
+            // The table's rows, not the sidebar's.
+            let mut rows: Vec<_> = texts(shapes).into_iter().filter(|(t, r)| r.min.x > SIDEBAR_W && ["Alpha", "Bravo", "Charlie"].contains(&t.as_str())).collect();
+            rows.sort_by(|x, y| x.1.min.y.total_cmp(&y.1.min.y));
+            rows.into_iter().map(|r| r.0).collect::<Vec<_>>()
+        };
+        click(&ctx, &mut screen, &recent, at(&shapes, "Size"));
+        let shapes = frame(&ctx, &mut screen, &recent, None, Vec::new()).1;
+        assert_eq!(order(&shapes), ["Bravo", "Alpha", "Charlie"], "largest first");
+        click(&ctx, &mut screen, &recent, at(&shapes, "Size \u{25BE}"));
+        let shapes = frame(&ctx, &mut screen, &recent, None, Vec::new()).1;
+        assert_eq!(order(&shapes), ["Alpha", "Bravo", "Charlie"], "turned round, the unknown still last");
+        click(&ctx, &mut screen, &recent, at(&shapes, "Name"));
+        let shapes = frame(&ctx, &mut screen, &recent, None, Vec::new()).1;
+        assert_eq!(order(&shapes), ["Alpha", "Bravo", "Charlie"]);
+        click(&ctx, &mut screen, &recent, at(&shapes, "Name \u{25B4}"));
+        let shapes = frame(&ctx, &mut screen, &recent, None, Vec::new()).1;
+        assert_eq!(order(&shapes), ["Charlie", "Bravo", "Alpha"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The header's Recent / In <folder> is the shared segmented control
+    /// (the active segment lit as the workspace switch lights it), and
+    /// Change Folder is a quiet, frameless button.
+    #[test]
+    fn the_header_uses_the_shared_controls() {
+        let dir = temp_dir();
+        let folder = dir.join("Projects");
+        std::fs::create_dir_all(&folder).unwrap();
+        let recent = vec![project(&dir, "Trip")];
+        let theme = KlippTheme::default();
+        let ctx = egui::Context::default();
+        let mut screen = screen_with(&[]);
+        frame(&ctx, &mut screen, &recent, Some(&folder), Vec::new());
+        let (_, shapes) = frame(&ctx, &mut screen, &recent, Some(&folder), Vec::new());
+        let lit = |shapes: &Shapes, label: &str| {
+            let p = at(shapes, label);
+            shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.fill == theme.accent_subtle && r.rect.contains(p)))
+        };
+        assert!(lit(&shapes, "Recent") && !lit(&shapes, "In Projects"));
+        let change = at(&shapes, "Change Folder\u{2026}");
+        assert!(!shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.rect.contains(change) && r.fill != egui::Color32::TRANSPARENT && r.rect.width() < 300.0)), "no frame behind Change Folder");
+        click_with(&ctx, &mut screen, &recent, Some(&folder), at(&shapes, "In Projects"), egui::PointerButton::Primary);
+        let (_, shapes) = frame(&ctx, &mut screen, &recent, Some(&folder), Vec::new());
+        assert!(screen.folder_view && lit(&shapes, "In Projects") && !lit(&shapes, "Recent"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A vertical project's card fills the space beside its picture with
+    /// a soft copy of the same picture, not black bars.
+    #[test]
+    fn a_vertical_poster_sits_on_a_soft_fill_of_itself() {
+        let dir = temp_dir();
+        let poster = dir.join("Tall.png");
+        png(&poster, 18, 32, |x| [x as u8 * 10, 90, 160]);
+        let mut tall = project(&dir, "Tall");
+        tall.thumbnail_path = Some(poster.clone());
+        let recent = vec![tall];
+        let ctx = egui::Context::default();
+        let mut screen = screen_with(&[]);
+        frame(&ctx, &mut screen, &recent, None, Vec::new());
+        let (_, shapes) = frame(&ctx, &mut screen, &recent, None, Vec::new());
+        let card = screen.seen.cards[0].1;
+        let p = screen.posters[&poster].clone();
+        let in_card: Vec<_> = images(&shapes).into_iter().filter(|(_, r, _)| card.contains(r.center())).collect();
+        let soft = in_card.iter().find(|(t, _, _)| *t == p.soft.id()).expect("the soft fill is drawn");
+        let sharp = in_card.iter().find(|(t, _, _)| *t == p.sharp.id()).expect("the picture is drawn");
+        assert!((soft.1.width() - (card.width() - 2.0)).abs() < 1.0, "the fill spans the thumbnail: {:?}", soft.1);
+        assert!(sharp.1.width() < soft.1.width() * 0.5 && soft.1.contains_rect(sharp.1), "the picture whole, in the middle");
+        assert!(p.soft.size()[0] <= 12, "soft: a few pixels across");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Moving across a card's thumbnail scrubs through the project: the
+    /// frame of its skim strip under the pointer, further along further
+    /// right, and the poster again once the pointer leaves.
+    #[test]
+    fn hovering_a_card_scrubs_through_the_project() {
+        let dir = temp_dir();
+        let poster = dir.join("Trip.png");
+        png(&poster, 32, 18, |_| [10, 10, 10]);
+        png(&skim_strip_path(&poster), 32 * SKIM_FRAMES as u32, 18, |x| [(x / 32) as u8 * 20, 0, 0]);
+        let mut trip = project(&dir, "Trip");
+        trip.thumbnail_path = Some(poster.clone());
+        let recent = vec![trip];
+        let ctx = egui::Context::default();
+        let mut screen = screen_with(&[]);
+        frame(&ctx, &mut screen, &recent, None, Vec::new());
+        frame(&ctx, &mut screen, &recent, None, Vec::new());
+        let card = screen.seen.cards[0].1;
+        let thumb_y = card.min.y + 40.0;
+        let shown_at = |screen: &mut LaunchScreen, fraction: f32| {
+            let x = card.min.x + 1.0 + (card.width() - 2.0) * fraction;
+            frame(&ctx, screen, &recent, None, vec![egui::Event::PointerMoved(egui::pos2(x, thumb_y))]);
+            let shapes = frame(&ctx, screen, &recent, None, Vec::new()).1;
+            images(&shapes).into_iter().filter(|(_, r, _)| card.contains(r.center())).map(|(t, _, uv)| (t, uv)).collect::<Vec<_>>()
+        };
+        let early = shown_at(&mut screen, 0.05);
+        let strip = screen.strips[&poster].0.clone().expect("the strip is read");
+        let frame_of = |shown: &[(egui::TextureId, egui::Rect)]| {
+            let uv = shown.iter().find(|(t, _)| *t == strip.sharp.id()).expect("a strip frame is shown").1;
+            (uv.min.x * SKIM_FRAMES as f32).round() as usize
+        };
+        assert_eq!(frame_of(&early), 0);
+        assert_eq!(frame_of(&shown_at(&mut screen, 0.5)), 6);
+        assert_eq!(frame_of(&shown_at(&mut screen, 0.97)), SKIM_FRAMES - 1);
+        let resting = shown_at(&mut screen, -2.0);
+        assert!(resting.iter().all(|(t, _)| *t != strip.sharp.id()), "off the card, the poster");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_sidebar_line_reads_day_length_and_rate() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 10, 13).unwrap().and_hms_opt(18, 0, 0).unwrap();
+        assert_eq!(when_saved("2026-10-13 13:26:00", now).unwrap(), "Today 13:26");
+        assert_eq!(when_saved("2026-10-12 09:05:00", now).unwrap(), "Yesterday 09:05");
+        assert_eq!(when_saved("2026-10-08 09:05:00", now).unwrap(), "Thu 09:05");
+        assert_eq!(when_saved("2026-03-02 09:05:00", now).unwrap(), "2 Mar");
+        assert_eq!(when_saved("2025-03-02 09:05:00", now).unwrap(), "2 Mar 2025");
+        assert_eq!(format_length(115.4), "1:55");
+        assert_eq!(format_length(3723.0), "1:02:03");
+        assert_eq!(fps_label("24fps"), "24 fps");
+        assert_eq!(fps_label("29.970fps"), "29.97 fps");
+        let mut rp = RecentProject::from_path(PathBuf::from("/p/A.klipp"));
+        rp.last_saved = Some("2026-10-13 13:26:00".into());
+        rp.duration_secs = Some(115.0);
+        rp.fps = Some("24fps".into());
+        assert_eq!(sidebar_detail(&rp, now), "Today 13:26 \u{00B7} 1:55 \u{00B7} 24 fps");
     }
 }

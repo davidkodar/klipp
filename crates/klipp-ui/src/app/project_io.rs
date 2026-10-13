@@ -541,7 +541,12 @@ impl KlippApp {
                     clip_count: Some(self.state.sequences[self.state.active_sequence_idx].tracks.iter().map(|t| t.clips.len() as u32).sum()),
                     track_count: Some(self.state.sequences[self.state.active_sequence_idx].tracks.len() as u32),
                     missing_media: Some(self.state.media_pool.all().any(|m| m.offline || !m.path.exists())),
+                    sequence_count: Some(self.state.sequences.len() as u32),
+                    pinned: false,
                 };
+                if let Some(poster) = rp.thumbnail_path.as_deref() {
+                    spawn_skim_strip(&self.state.sequences[self.state.active_sequence_idx], &self.state.media_pool, poster);
+                }
                 self.prefs.add_recent_project(rp);
                 self.prefs_dirty = true;
                 // Delete autosave file on clean save
@@ -814,6 +819,8 @@ impl KlippApp {
                     clip_count: Some(self.state.sequences[self.state.active_sequence_idx].tracks.iter().map(|t| t.clips.len() as u32).sum()),
                     track_count: Some(self.state.sequences[self.state.active_sequence_idx].tracks.len() as u32),
                     missing_media: Some(self.state.media_pool.all().any(|m| m.offline || !m.path.exists())),
+                    sequence_count: Some(self.state.sequences.len() as u32),
+                    pinned: false,
                 };
                 self.prefs.add_recent_project(rp);
                 self.prefs_dirty = true;

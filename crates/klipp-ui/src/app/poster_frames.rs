@@ -26,6 +26,65 @@ pub(super) fn build_recent_thumbnail(
     )
 }
 
+/// Write the skim strip of `seq` beside `poster`, on a thread of its own:
+/// [`crate::panels::launch_screen::SKIM_FRAMES`] frames evenly through the
+/// cut, side by side, each the picture on the highest video track there
+/// (as the selects strip skims) decoded as poster frames are. A frame
+/// with no picture stays black.
+pub(super) fn spawn_skim_strip(seq: &klipp_timeline::Sequence, media_pool: &klipp_media::MediaPool, poster: &std::path::Path) {
+    let n = crate::panels::launch_screen::SKIM_FRAMES;
+    let duration = seq.total_duration().to_secs_f64();
+    if duration <= 0.0 {
+        return;
+    }
+    let rate = seq.fps.num.max(1);
+    let targets: Vec<Option<(PathBuf, f64)>> = (0..n)
+        .map(|i| {
+            let t = klipp_core::Timecode::from_secs_f64(duration * (i as f64 + 0.5) / n as f64, rate);
+            let (media_id, secs) = crate::panels::selects_strip::skim_target(seq, t)?;
+            let item = media_pool.get(&media_id)?;
+            (item.path.exists() && is_video_ext(&item.path)).then(|| (item.path.clone(), secs))
+        })
+        .collect();
+    if targets.iter().all(Option::is_none) {
+        return;
+    }
+    let cell_w = 192u32;
+    let (rw, rh) = (seq.resolution.width.max(1), seq.resolution.height.max(1));
+    let cell_h = ((cell_w as u64 * rh as u64 / rw as u64) as u32).clamp(16, 400);
+    let out = crate::panels::launch_screen::skim_strip_path(poster);
+    let _ = std::thread::Builder::new().name("skim-strip".into()).spawn(move || {
+        let strip_w = cell_w * n as u32;
+        let mut strip = vec![0u8; (strip_w * cell_h * 4) as usize];
+        for px in strip.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+        for (i, target) in targets.iter().enumerate() {
+            let Some((path, secs)) = target else { continue };
+            let Ok((rgba, w, h)) = klipp_engine::generate_thumbnail_at_size(path, *secs, cell_w) else { continue };
+            // Fitted into its cell, the rest left black.
+            let scale = (cell_w as f32 / w as f32).min(cell_h as f32 / h as f32);
+            let (fw, fh) = (((w as f32 * scale) as u32).max(1), ((h as f32 * scale) as u32).max(1));
+            let (ox, oy) = ((cell_w - fw.min(cell_w)) / 2, (cell_h - fh.min(cell_h)) / 2);
+            for y in 0..fh.min(cell_h) {
+                for x in 0..fw.min(cell_w) {
+                    let sx = ((x as f32 / scale) as u32).min(w - 1);
+                    let sy = ((y as f32 / scale) as u32).min(h - 1);
+                    let si = ((sy * w + sx) * 4) as usize;
+                    let di = (((oy + y) * strip_w + i as u32 * cell_w + ox + x) * 4) as usize;
+                    strip[di..di + 4].copy_from_slice(&rgba[si..si + 4]);
+                }
+            }
+        }
+        // Written whole under another name, then put in place, so the
+        // welcome screen never reads half a strip.
+        let tmp = out.with_extension("strip.tmp");
+        if save_rgba_as_png(&strip, strip_w, cell_h, &tmp) {
+            let _ = std::fs::rename(&tmp, &out);
+        }
+    });
+}
+
 /// Generate a poster frame thumbnail and save as PNG.
 /// Returns the path to the saved thumbnail, or None if no frame available.
 /// Save RGBA pixel data as a PNG file.

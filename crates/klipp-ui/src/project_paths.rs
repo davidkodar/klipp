@@ -91,12 +91,51 @@ pub fn projects_in(dir: &Path) -> Vec<RecentProject> {
                 clip_count: None,
                 track_count: None,
                 missing_media: None,
+                sequence_count: None,
+                pinned: false,
             };
             (modified, entry)
         })
         .collect();
     found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
     found.into_iter().map(|(_, rp)| rp).collect()
+}
+
+/// Copy the project folder `path` beside it as "<name> copy" (or
+/// "<name> copy 2", and on), and return the copy's path. The lock is not
+/// copied: the copy is nobody's open project.
+pub fn duplicate_project(path: &Path) -> std::io::Result<PathBuf> {
+    let parent = path.parent().ok_or_else(|| std::io::Error::other("the project has no folder"))?;
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Project".into());
+    let target = (1..1000)
+        .map(|n| parent.join(if n == 1 { format!("{stem} copy.klipp") } else { format!("{stem} copy {n}.klipp") }))
+        .find(|p| !p.exists())
+        .ok_or_else(|| std::io::Error::other("no free name for the copy"))?;
+    fn copy(from: &Path, to: &Path) -> std::io::Result<()> {
+        std::fs::create_dir(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            if name == klipp_project::lock::LOCK_FILE {
+                continue;
+            }
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                copy(&entry.path(), &to.join(&name))?;
+            } else if kind.is_symlink() {
+                std::os::unix::fs::symlink(std::fs::read_link(entry.path())?, to.join(&name))?;
+            } else {
+                std::fs::copy(entry.path(), to.join(&name))?;
+            }
+        }
+        Ok(())
+    }
+    if let Err(e) = copy(path, &target) {
+        // A half-made copy is ours to clear: nothing else knows of it.
+        let _ = std::fs::remove_dir_all(&target);
+        return Err(e);
+    }
+    Ok(target)
 }
 
 #[cfg(test)]
@@ -130,6 +169,22 @@ mod tests {
         let stray = root.join("notes.txt");
         std::fs::write(&stray, b"x").unwrap();
         assert_eq!(project_dir_of(&stray), stray);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #1847: Duplicate copies the whole folder beside it under a free
+    /// "copy" name, leaves the lock behind, and touches the original not.
+    #[test]
+    fn duplicate_copies_the_project_beside_it() {
+        let root = std::env::temp_dir().join(format!("klipp-dup-1847-{}", uuid::Uuid::new_v4()));
+        let dir = project(&root, "Trip");
+        std::fs::write(dir.join(klipp_project::lock::LOCK_FILE), b"held").unwrap();
+        let copy = duplicate_project(&dir).unwrap();
+        assert_eq!(copy, root.join("Trip copy.klipp"));
+        assert!(copy.join("media/manifest.json").exists() && copy.join("project.json").exists());
+        assert!(!copy.join(klipp_project::lock::LOCK_FILE).exists(), "the copy is nobody's open project");
+        assert!(dir.join(klipp_project::lock::LOCK_FILE).exists(), "the original is untouched");
+        assert_eq!(duplicate_project(&dir).unwrap(), root.join("Trip copy 2.klipp"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
