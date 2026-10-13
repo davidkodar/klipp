@@ -25,6 +25,11 @@ struct Engine {
     moves: Arc<Mutex<Vec<(Instant, f64)>>>,
     /// When each PlaybackPaused came.
     paused: Arc<Mutex<Vec<Instant>>>,
+    /// How many playheads had been reported when each PlaybackStarted
+    /// came: the engine's own order, which no clock reorders (#1806).
+    started: Arc<Mutex<Vec<usize>>>,
+    /// The frame the engine shows, to wait on a seek's frame.
+    shown: Arc<Mutex<FrameBuffer>>,
 }
 
 impl Engine {
@@ -33,28 +38,35 @@ impl Engine {
         let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<AppEvent>();
         let moves = Arc::new(Mutex::new(Vec::new()));
         let paused = Arc::new(Mutex::new(Vec::new()));
-        let (m, p) = (Arc::clone(&moves), Arc::clone(&paused));
+        let started = Arc::new(Mutex::new(Vec::new()));
+        let (m, p, st) = (Arc::clone(&moves), Arc::clone(&paused), Arc::clone(&started));
         std::thread::spawn(move || {
             while let Ok(ev) = ev_rx.recv() {
                 match ev {
                     AppEvent::PlayheadMoved(tc) => m.lock().unwrap().push((Instant::now(), tc.to_secs_f64())),
                     AppEvent::PlaybackPaused => p.lock().unwrap().push(Instant::now()),
+                    AppEvent::PlaybackStarted => {
+                        let n = m.lock().unwrap().len();
+                        st.lock().unwrap().push(n);
+                    }
                     _ => {}
                 }
             }
         });
+        let shown = Arc::new(Mutex::new(FrameBuffer::new(W, H)));
         let engine = PlaybackEngine::new(
-            cmd_rx, ev_tx, Arc::new(Mutex::new(FrameBuffer::new(W, H))), Arc::new(Mutex::new(FrameBuffer::new(W, H))),
+            cmd_rx, ev_tx, Arc::clone(&shown), Arc::new(Mutex::new(FrameBuffer::new(W, H))),
             Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
             Arc::new(Mutex::new(None)), Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default())),
         );
         let thread = Some(std::thread::spawn(move || engine.run()));
-        Engine { cmd, thread, moves, paused }
+        Engine { cmd, thread, moves, paused, started, shown }
     }
 
     /// Seek to `secs`, wait for it to land, then play; wait until playback
     /// pauses by itself or `limit` passes. Returns the playheads reported
-    /// after Play, and whether it paused by itself.
+    /// once playback had started, in the engine's order, and whether it
+    /// paused by itself.
     ///
     /// Waited on, never timed: a loaded machine is slower, not wrong. The
     /// seek's own pause can come late; a pause counts only once the
@@ -66,13 +78,18 @@ impl Engine {
         while asked.elapsed() < Duration::from_secs(30) && !landed(&self.moves.lock().unwrap()) {
             std::thread::sleep(Duration::from_millis(5));
         }
-        // And settled: a seek can report again as its frame arrives, and on
-        // a loaded machine that report could come after Play, reading as a
-        // step back (#1806). Quiet for 200 ms since its last report.
-        let last_report = || self.moves.lock().unwrap().last().map(|m| m.0);
-        while asked.elapsed() < Duration::from_secs(30) && last_report().is_some_and(|t| t.elapsed() < Duration::from_millis(200)) {
-            std::thread::sleep(Duration::from_millis(10));
+        // And its frame on screen, whole: a seek reports again as its
+        // frame arrives (#1806). This waited for 200 ms of quiet, a guess
+        // a loaded machine could outlast.
+        let on_screen = || {
+            let fb = self.shown.lock().unwrap();
+            fb.shown_presented().is_some_and(|at| (at.to_secs_f64() - secs).abs() < 0.5 / fps.as_f64()) && fb.latest_complete()
+        };
+        while asked.elapsed() < Duration::from_secs(30) && !on_screen() {
+            std::thread::sleep(Duration::from_millis(5));
         }
+        assert!(on_screen(), "the seek to {secs} s never put its frame on screen");
+        let starts_before = self.started.lock().unwrap().len();
         let t0 = Instant::now();
         self.cmd.send(AppCommand::Play).unwrap();
         let advanced = |m: &[(Instant, f64)]| m.iter().find(|(t, p)| *t >= t0 && *p > secs + 0.5 / fps.as_f64()).map(|m| m.0);
@@ -82,7 +99,11 @@ impl Engine {
         }
         let stopped = stopped();
         let _ = self.cmd.send(AppCommand::Pause);
-        let moves = self.moves.lock().unwrap().iter().copied().filter(|(t, _)| *t >= t0).collect();
+        // From the engine's PlaybackStarted on, by its own order: a report
+        // the seek sent before it but that was timed after Play (the
+        // listener is a thread too) is not playback's (#1806).
+        let from = self.started.lock().unwrap().get(starts_before).copied().unwrap_or(usize::MAX);
+        let moves = self.moves.lock().unwrap().iter().skip(from).copied().collect();
         (moves, stopped)
     }
 }

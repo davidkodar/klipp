@@ -209,6 +209,11 @@ impl MasterClock {
         self.current_display_pts_us() as f64 / 1_000_000.0
     }
 
+    /// The playback speed (1.0 normal, negative backwards).
+    pub fn speed(&self) -> f64 {
+        f64::from_bits(self.speed.load(Ordering::Acquire))
+    }
+
     /// Set playback speed (1.0 = normal).
     pub fn set_speed(&self, speed: f64) {
         // Freeze at current position first, then change speed
