@@ -99,6 +99,19 @@ impl BoxRaster {
         out
     }
 
+    /// The whole frame as packed half floats, transparent outside the
+    /// box: what a generator's f16 frame is.
+    pub fn to_frame_f16(&self) -> Vec<u32> {
+        let (fw, fh) = (self.frame.0 as usize, self.frame.1 as usize);
+        let mut out = vec![0u32; fw * fh * 2];
+        let row = self.w as usize * 2;
+        for by in 0..self.h as usize {
+            let at = ((self.y0 as usize + by) * fw + self.x0 as usize) * 2;
+            out[at..at + row].copy_from_slice(&self.texels[by * row..(by + 1) * row]);
+        }
+        out
+    }
+
     /// The whole frame as straight-alpha sRGB RGBA8, for what wants
     /// bytes: previews, the engine's paused overlay, the byte APIs.
     pub fn to_bytes(&self) -> Vec<u8> {

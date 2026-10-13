@@ -2942,6 +2942,7 @@ name = "klipp-compose"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "half",
  "image",
  "klipp-analysis",
  "klipp-color",

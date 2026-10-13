@@ -7,13 +7,14 @@ use crate::{FourPointGradient, GeneratorData, TimerFormat, TimerMode};
 /// `total_secs` is the clip's full duration (used by Countdown).
 /// A generator's frame as sRGB-encoded half floats, for the compositor.
 ///
-/// The two continuous-tone generators draw straight into float; a
-/// gradient is the one thing here that eight bits genuinely cannot
-/// hold, because it crosses few code values over a whole frame and
-/// the steps between them land as bands. Everything else is flat
-/// colour, bars, text or noise — nothing a wider buffer would
-/// improve — so it is drawn as bytes and widened exactly the way the
-/// decode pass would have widened it.
+/// The continuous-tone generators, the two-point, four-point and living
+/// gradients, draw straight into float (#190): a gradient is the one
+/// thing here that eight bits genuinely cannot hold, because it crosses
+/// few code values over a whole frame and the steps between them land
+/// as bands. Everything else is flat colour, bars, hard edges or noise
+/// that eight bits hold exactly, so it is drawn as bytes and widened
+/// exactly the way the decode pass would have widened it. (A slate's
+/// text is drawn in float by `klipp_compose::synth`.)
 pub fn render_generator_f16(
     data: &GeneratorData,
     width: u32,
@@ -25,6 +26,7 @@ pub fn render_generator_f16(
         GeneratorData::Gradient { top, bottom, angle_deg, four_point: None } => {
             render_gradient_f16(*top, *bottom, *angle_deg, width, height)
         }
+        GeneratorData::Gradient { four_point: Some(corners), .. } => render_four_point_gradient_f16(*corners, width, height),
         GeneratorData::LivingGradient { a, b, angle_deg, drift_deg_per_sec, glow } => {
             render_living_gradient_f16(*a, *b, *angle_deg, *drift_deg_per_sec, *glow, width, height, elapsed_secs)
         }
@@ -646,6 +648,34 @@ pub fn render_four_point_gradient(
     buf
 }
 
+/// [`render_four_point_gradient`] as sRGB-encoded half floats (#190):
+/// the same bilinear wash, interpolated in the encoded space it always
+/// was, without rounding the top and bottom rows to whole codes before
+/// blending between them.
+pub fn render_four_point_gradient_f16(corners: FourPointGradient, width: u32, height: u32) -> Vec<u32> {
+    let mut buf = vec![0u32; (width as usize) * (height as usize) * 2];
+    let w_div = (width.saturating_sub(1)).max(1) as f32;
+    let h_div = (height.saturating_sub(1)).max(1) as f32;
+    let lerp = |a: u8, b: u8, t: f32| a as f32 + (b as f32 - a as f32) * t;
+    for y in 0..height {
+        let ty = y as f32 / h_div;
+        for x in 0..width {
+            let tx = x as f32 / w_div;
+            let mut px = [0f32; 4];
+            for c in 0..4 {
+                let top = lerp(corners.top_left[c], corners.top_right[c], tx);
+                let bottom = lerp(corners.bottom_left[c], corners.bottom_right[c], tx);
+                px[c] = (top + (bottom - top) * ty) / 255.0;
+            }
+            let i = ((y as usize) * (width as usize) + (x as usize)) * 2;
+            let packed = pack_f16(px);
+            buf[i] = packed[0];
+            buf[i + 1] = packed[1];
+        }
+    }
+    buf
+}
+
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t)
         .round()
@@ -653,6 +683,10 @@ fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
 }
 
 /// A Bayer 8x8 ordered dither, in code values, centred on zero.
+///
+/// For the byte gradients only, which only the browser's previews and
+/// thumbnails draw now: every render and export takes the half-float
+/// gradients, which need none (#190).
 ///
 /// A gradient is a ramp of real numbers quantised to 256 steps. Where
 /// the ramp is long and shallow — a dark backdrop that crosses a dozen
@@ -981,6 +1015,42 @@ mod tests {
 
     /// And it is smoother than the thing it replaces: a shallow ramp the
     /// byte path can only draw in a dozen steps has hundreds in f16.
+    /// The half-float four-point wash is the eight-bit one's picture
+    /// (#190): within a code value, all the byte path's two roundings can
+    /// account for, and the routing sends a four-point gradient to it.
+    #[test]
+    fn the_f16_four_point_gradient_matches_the_eight_bit_one() {
+        let (w, h) = (64u32, 48u32);
+        let corners = crate::FourPointGradient { top_left: [4, 3, 12, 255], top_right: [60, 20, 8, 255], bottom_left: [10, 40, 90, 255], bottom_right: [200, 180, 30, 200] };
+        let bytes = super::render_four_point_gradient(corners, w, h);
+        let half = super::render_four_point_gradient_f16(corners, w, h);
+        let un = |bits: u32| half::f16::from_bits(bits as u16).to_f32() * 255.0;
+        let mut worst = 0.0f32;
+        for (b, p) in bytes.chunks_exact(4).zip(half.chunks_exact(2)) {
+            let got = [un(p[0] & 0xFFFF), un(p[0] >> 16), un(p[1] & 0xFFFF), un(p[1] >> 16)];
+            for c in 0..4 {
+                worst = worst.max((got[c] - b[c] as f32).abs());
+            }
+        }
+        assert!(worst <= 1.0, "{worst} code values from the byte wash");
+        let data = crate::GeneratorData::Gradient { top: [0; 4], bottom: [0; 4], angle_deg: 0.0, four_point: Some(corners) };
+        assert_eq!(super::render_generator_f16(&data, w, h, 0.0, 1.0), half, "the router draws it in float");
+    }
+
+    /// A shallow four-point wash steps where bytes round, not in half
+    /// floats: across a row the f16 values take more distinct levels than
+    /// the bytes do.
+    #[test]
+    fn the_f16_four_point_gradient_has_finer_steps_than_bytes() {
+        let (w, h) = (512u32, 8u32);
+        let corners = crate::FourPointGradient { top_left: [10, 10, 10, 255], top_right: [18, 18, 18, 255], bottom_left: [10, 10, 10, 255], bottom_right: [18, 18, 18, 255] };
+        let bytes = super::render_four_point_gradient(corners, w, h);
+        let half = super::render_four_point_gradient_f16(corners, w, h);
+        let row_bytes: std::collections::BTreeSet<u8> = bytes.chunks_exact(4).take(w as usize).map(|p| p[0]).collect();
+        let row_half: std::collections::BTreeSet<u32> = half.chunks_exact(2).take(w as usize).map(|p| p[0] & 0xFFFF).collect();
+        assert!(row_half.len() > row_bytes.len() * 4, "{} half-float levels against {} byte ones", row_half.len(), row_bytes.len());
+    }
+
     #[test]
     fn the_f16_gradient_has_no_steps() {
         let (w, h) = (16u32, 512u32);

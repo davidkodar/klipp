@@ -26,10 +26,20 @@ pub fn render_generator_with_slate_f16(
     elapsed_secs: f64,
     total_secs: f64,
 ) -> Vec<u32> {
-    if matches!(
-        gen_data,
-        klipp_core::GeneratorData::Slate { .. } | klipp_core::GeneratorData::Placeholder { .. }
-    ) {
+    if let klipp_core::GeneratorData::Slate {
+        project, scene, take, director, camera, date, framerate, notes,
+        text_color, background_color,
+    } = gen_data
+    {
+        // The slate's words over its colour as the title stacks them,
+        // unrounded (#190).
+        let title_data = build_slate_title_data(
+            project, scene, take, director, camera, date, framerate, notes,
+            *text_color, *background_color, h,
+        );
+        return title_renderer.render_raster(&title_data, w, h).to_frame_f16();
+    }
+    if matches!(gen_data, klipp_core::GeneratorData::Placeholder { .. }) {
         let bytes = render_generator_with_slate(title_renderer, gen_data, w, h, elapsed_secs, total_secs);
         return klipp_core::generator::srgb_u8_to_f16(&bytes);
     }
@@ -154,3 +164,40 @@ impl klipp_title::AlphaMaskProcessor for GpuAlphaMaskAdapter<'_> {
 
 
 
+
+#[cfg(test)]
+mod tests {
+    /// A slate in half floats is its byte frame's picture within a code
+    /// value, and its words' edges keep the fractions the bytes rounded
+    /// away (#190).
+    #[test]
+    fn a_slate_in_half_floats_is_its_byte_frame_unrounded() {
+        let slate = klipp_core::GeneratorData::Slate {
+            project: "Two Shores".into(),
+            scene: "12".into(),
+            take: "3".into(),
+            director: "Ana Ruiz".into(),
+            camera: "A".into(),
+            date: "2026-10-13".into(),
+            framerate: "25".into(),
+            notes: String::new(),
+            text_color: [240, 240, 240, 255],
+            background_color: [20, 24, 32, 255],
+        };
+        let (w, h) = (640u32, 360u32);
+        let bytes = super::render_generator_with_slate(&mut klipp_title::TitleRenderer::new(), &slate, w, h, 0.0, 5.0);
+        let half = super::render_generator_with_slate_f16(&mut klipp_title::TitleRenderer::new(), &slate, w, h, 0.0, 5.0);
+        let un = |bits: u32| half::f16::from_bits(bits as u16).to_f32() * 255.0;
+        let mut worst = 0.0f32;
+        let mut fractional = 0usize;
+        for (b, p) in bytes.chunks_exact(4).zip(half.chunks_exact(2)) {
+            let got = [un(p[0] & 0xFFFF), un(p[0] >> 16), un(p[1] & 0xFFFF), un(p[1] >> 16)];
+            for c in 0..4 {
+                worst = worst.max((got[c] - b[c] as f32).abs());
+            }
+            fractional += usize::from((got[0] - got[0].round()).abs() > 0.05);
+        }
+        assert!(worst <= 1.0, "{worst} code values from the byte slate");
+        assert!(fractional > 100, "the words' edges keep their fractions: {fractional} pixels between codes");
+    }
+}
