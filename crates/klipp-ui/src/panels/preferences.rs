@@ -659,18 +659,6 @@ impl PreferencesPanel {
             ui.label(egui::RichText::new(&dir_text).size(11.0).color(theme.text_dim));
         });
 
-        Self::setting_row(ui, "Recent projects to show", theme, |ui| {
-            let count = prefs.general.recent_projects.len();
-            let _display_counts = [5u32, 10, 15, 20];
-            // For now show current count — this is informational
-            egui::ComboBox::from_id_salt("recent_count")
-                .selected_text(format!("{}", count.min(20)))
-                .width(50.0)
-                .show_ui(ui, |_ui| {
-                    // Placeholder — recent project count is managed by the max in add_recent_project
-                });
-        });
-
         // ── INSPECTOR section ──
         Self::section_header(ui, "INSPECTOR", theme);
 
@@ -680,11 +668,6 @@ impl PreferencesPanel {
             }
         });
 
-        Self::setting_row(ui, "Show keyboard shortcut hints", theme, |ui| {
-            // Placeholder toggle — add a pref field for this later
-            let mut show_hints = true;
-            ui.add(Switch::new(&mut show_hints, theme));
-        });
     }
 
     fn show_playback(
@@ -813,23 +796,6 @@ impl PreferencesPanel {
                 prefs.playback.pre_roll_duration = v;
                 *dirty = true;
             }
-        });
-
-        Self::setting_row_with_subtitle(ui, "JKL speed steps", "Multiplier per J/L press", theme, |ui| {
-            let steps = [(2.0_f32, "2\u{00d7}"), (3.0, "3\u{00d7}"), (4.0, "4\u{00d7}")];
-            let current = steps.iter()
-                .find(|(v, _)| (*v - prefs.playback.jkl_speed_step).abs() < 0.01)
-                .map(|(_, l)| *l).unwrap_or("2\u{00d7}");
-            egui::ComboBox::from_id_salt("jkl_step")
-                .selected_text(current)
-                .width(50.0)
-                .show_ui(ui, |ui| {
-                    for (val, label) in &steps {
-                        if ui.selectable_value(&mut prefs.playback.jkl_speed_step, *val, *label).changed() {
-                            *dirty = true;
-                        }
-                    }
-                });
         });
 
         Self::setting_row(ui, "Loop playback by default", theme, |ui| {
@@ -1167,31 +1133,8 @@ impl PreferencesPanel {
             }
         });
 
-        Self::setting_row(ui, "Default sync method", theme, |ui| {
-            use crate::prefs::MulticamSyncMethod;
-            egui::ComboBox::from_id_salt("multicam_sync")
-                .selected_text(match prefs.editing.multicam_sync_method {
-                    MulticamSyncMethod::Manual => "Manual",
-                    MulticamSyncMethod::Timecode => "Timecode",
-                    MulticamSyncMethod::AudioWaveform => "Audio Waveform",
-                })
-                .width(130.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.editing.multicam_sync_method, MulticamSyncMethod::Manual, "Manual").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.editing.multicam_sync_method, MulticamSyncMethod::Timecode, "Timecode").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.editing.multicam_sync_method, MulticamSyncMethod::AudioWaveform, "Audio Waveform").changed() { *dirty = true; }
-                });
-        });
-
         // ── TRACKING section ──
         Self::section_header(ui, "TRACKING", theme);
-
-        Self::setting_row_with_subtitle(ui, "Search radius", "Pixel radius for tracker matching", theme, |ui| {
-            let mut v = prefs.editing.track_search_radius;
-            if ui.add(egui::DragValue::new(&mut v).range(8..=128).speed(1.0).suffix(" px")).changed() {
-                prefs.editing.track_search_radius = v; *dirty = true;
-            }
-        });
 
         Self::setting_row_with_subtitle(ui, "Patch size", "Half-width of matching patch", theme, |ui| {
             let mut v = prefs.editing.track_patch_size;
@@ -1628,33 +1571,6 @@ impl PreferencesPanel {
             }
         });
 
-        Self::setting_row(ui, "Default fade duration", theme, |ui| {
-            let mut v_secs = prefs.audio.default_fade_duration_ms as f32 / 1000.0;
-            if ui.add(egui::DragValue::new(&mut v_secs).range(0.0..=5.0).speed(0.05).suffix(" s").fixed_decimals(1)).changed() {
-                prefs.audio.default_fade_duration_ms = (v_secs * 1000.0) as u32;
-                *dirty = true;
-            }
-        });
-
-        Self::setting_row(ui, "Default fade curve", theme, |ui| {
-            egui::ComboBox::from_id_salt("fade_curve")
-                .selected_text(crate::inspector::audio_tab::fade_curve_label(
-                    prefs.audio.default_fade_curve,
-                ))
-                .width(100.0)
-                .show_ui(ui, |ui| {
-                    // One list, from the same source as the clip
-                    // inspector's, so a shape cannot appear in one
-                    // picker and not the other.
-                    for curve in crate::inspector::audio_tab::FADE_CURVES {
-                        let label = crate::inspector::audio_tab::fade_curve_label(*curve);
-                        if ui.selectable_value(&mut prefs.audio.default_fade_curve, *curve, label).changed() {
-                            *dirty = true;
-                        }
-                    }
-                });
-        });
-
         // ── LOUDNESS section ──
         Self::section_header(ui, "LOUDNESS", theme);
 
@@ -1671,13 +1587,6 @@ impl PreferencesPanel {
                     if ui.selectable_value(&mut prefs.audio.loudness_standard, klipp_core::LoudnessStandard::AtscA85, "ATSC A/85 (\u{2013}24 LKFS)").changed() { *dirty = true; }
                     if ui.selectable_value(&mut prefs.audio.loudness_standard, klipp_core::LoudnessStandard::Off, "Off").changed() { *dirty = true; }
                 });
-        });
-
-        Self::setting_row(ui, "Normalize target", theme, |ui| {
-            let mut v = prefs.audio.normalize_target_lufs;
-            if ui.add(egui::DragValue::new(&mut v).range(-30.0..=-6.0).speed(0.5).suffix(" LUFS").fixed_decimals(0)).changed() {
-                prefs.audio.normalize_target_lufs = v; *dirty = true;
-            }
         });
 
         Self::setting_row(ui, "Peak hold time", theme, |ui| {
@@ -1737,41 +1646,6 @@ impl PreferencesPanel {
         // ── DEFAULTS section ──
         Self::section_header(ui, "DEFAULTS", theme);
 
-        Self::setting_row(ui, "Default encoder preset", theme, |ui| {
-            let presets = ["H.264 High Quality", "H.264 Fast", "H.265 High Quality", "ProRes 422", "ProRes 422 HQ", "DNxHD 145"];
-            egui::ComboBox::from_id_salt("enc_preset")
-                .selected_text(prefs.export.default_encoder_preset.as_str())
-                .width(140.0)
-                .show_ui(ui, |ui| {
-                    for p in presets {
-                        if ui.selectable_label(prefs.export.default_encoder_preset == p, p).clicked() {
-                            prefs.export.default_encoder_preset = p.to_string();
-                            *dirty = true;
-                        }
-                    }
-                });
-        });
-
-        Self::setting_row(ui, "Colour space tagging", theme, |ui| {
-            use klipp_core::ColorSpace;
-            let label = match prefs.export.color_space_tag {
-                ColorSpace::Srgb => "sRGB",
-                ColorSpace::Rec709 => "Rec.709",
-                ColorSpace::Rec2020 => "Rec.2020",
-                ColorSpace::P3D65 => "DCI-P3",
-                _ => "Other",
-            };
-            egui::ComboBox::from_id_salt("export_cs")
-                .selected_text(label)
-                .width(80.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.export.color_space_tag, ColorSpace::Rec709, "Rec.709").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.export.color_space_tag, ColorSpace::Rec2020, "Rec.2020").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.export.color_space_tag, ColorSpace::P3D65, "DCI-P3").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.export.color_space_tag, ColorSpace::Srgb, "sRGB").changed() { *dirty = true; }
-                });
-        });
-
         Self::setting_row(ui, "Audio sample rate", theme, |ui| {
             let rates = [(44100_u32, "44.1 kHz"), (48000, "48 kHz"), (96000, "96 kHz")];
             let current = rates.iter()
@@ -1787,66 +1661,8 @@ impl PreferencesPanel {
                 });
         });
 
-        // Default export folder with path + Browse
-        {
-            let row_h = crate::inspector::rows::ROW_H + 4.0;
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-            ui.painter().text(
-                egui::pos2(rect.left() + 14.0, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                "Default export folder",
-                egui::FontId::proportional(crate::inspector::rows::TEXT),
-                theme.text_secondary,
-            );
-            let btn_rect = egui::Rect::from_min_size(
-                egui::pos2(rect.right() - 80.0, rect.top() + 6.0),
-                egui::vec2(66.0, 24.0),
-            );
-            let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
-            let btn_bg = if btn_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
-            ui.painter().rect_filled(btn_rect, 4.0, btn_bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light));
-            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Browse...", egui::FontId::proportional(11.0), theme.text_primary);
-            let display = prefs.export.default_output_dir.as_ref()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|| "~/Videos/Exports".into());
-            ui.painter().text(
-                egui::pos2(btn_rect.left() - 8.0, rect.center().y),
-                egui::Align2::RIGHT_CENTER,
-                &display,
-                egui::FontId::proportional(11.0),
-                theme.text_dim,
-            );
-            let picker = egui::Id::new("prefs-default-export-dir");
-            if btn_resp.clicked() {
-                crate::file_dialog::pick_path(picker, || {
-                    rfd::FileDialog::new().set_title("Default Export Folder").pick_folder()
-                });
-            }
-            if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(picker) {
-                prefs.export.default_output_dir = Some(path);
-                *dirty = true;
-            }
-        }
-
         // ── BEHAVIOR section ──
         Self::section_header(ui, "BEHAVIOR", theme);
-
-        Self::setting_row(ui, "Overwrite existing files", theme, |ui| {
-            use crate::prefs::OverwriteMode;
-            egui::ComboBox::from_id_salt("overwrite_mode")
-                .selected_text(match prefs.export.overwrite_mode {
-                    OverwriteMode::Ask => "Ask",
-                    OverwriteMode::Always => "Always",
-                    OverwriteMode::Never => "Never",
-                })
-                .width(100.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.export.overwrite_mode, OverwriteMode::Ask, "Ask").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.export.overwrite_mode, OverwriteMode::Always, "Always").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.export.overwrite_mode, OverwriteMode::Never, "Never").changed() { *dirty = true; }
-                });
-        });
 
         Self::setting_row(ui, "Parallel render jobs", theme, |ui| {
             let mut val = prefs.export.parallel_render_jobs;
@@ -2830,20 +2646,6 @@ impl PreferencesPanel {
                 });
         });
 
-        Self::setting_row(ui, "Monitoring mode", theme, |ui| {
-            use crate::prefs::MonitoringMode;
-            egui::ComboBox::from_id_salt("monitor_mode")
-                .selected_text(match prefs.audio_hardware.monitoring_mode {
-                    MonitoringMode::Software => "Software",
-                    MonitoringMode::Hardware => "Hardware (direct)",
-                })
-                .width(120.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.audio_hardware.monitoring_mode, MonitoringMode::Software, "Software").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.audio_hardware.monitoring_mode, MonitoringMode::Hardware, "Hardware (direct)").changed() { *dirty = true; }
-                });
-        });
-
         // ── INPUT DEVICE section (for audio recording, #60) ──
         Self::section_header(ui, "RECORDING INPUT", theme);
         Self::setting_row_with_subtitle(
@@ -3090,7 +2892,6 @@ impl PreferencesPanel {
 
         cache_dir_row(ui, "Thumbnail cache", &mut prefs.media_cache.filmstrip_cache_dir, "~/.cache/klipp/thumbnails", dirty, "thumb_dir");
         cache_dir_row(ui, "Audio cache", &mut prefs.media_cache.audio_cache_dir, "~/.cache/klipp/audio-cache", dirty, "wave_dir");
-        cache_dir_row(ui, "Render cache", &mut prefs.media_cache.render_cache_dir, "~/.cache/klipp/render", dirty, "render_dir");
 
         // ── RENDER CACHE section ──
         Self::section_header(ui, "RENDER CACHE", theme);
@@ -3106,30 +2907,6 @@ impl PreferencesPanel {
 
         // ── LIMITS section ──
         Self::section_header(ui, "LIMITS", theme);
-
-        Self::setting_row(ui, "Max cache size", theme, |ui| {
-            let mut v = prefs.media_cache.max_cache_size_gb;
-            if ui.add(egui::DragValue::new(&mut v).range(1..=500).speed(1.0).suffix(" GB")).changed() {
-                prefs.media_cache.max_cache_size_gb = v; *dirty = true;
-            }
-        });
-
-        Self::setting_row(ui, "Thumbnail resolution", theme, |ui| {
-            let sizes = [(128_u32, "128px"), (192, "192px"), (256, "256px"), (320, "320px")];
-            let current = sizes.iter()
-                .find(|(v, _)| *v == prefs.media_cache.thumbnail_height)
-                .map(|(_, l)| *l).unwrap_or("256px");
-            egui::ComboBox::from_id_salt("thumb_res")
-                .selected_text(current)
-                .width(70.0)
-                .show_ui(ui, |ui| {
-                    for (val, label) in &sizes {
-                        if ui.selectable_value(&mut prefs.media_cache.thumbnail_height, *val, *label).changed() {
-                            *dirty = true;
-                        }
-                    }
-                });
-        });
 
         Self::setting_row_with_subtitle(
             ui,
@@ -3242,8 +3019,9 @@ impl PreferencesPanel {
         Self::section_header(ui, "CACHE SIZES", theme);
 
         let klipp_cache = dirs::cache_dir().unwrap_or_default().join("klipp");
-        let render_dir = prefs.media_cache.render_cache_dir.clone()
-            .unwrap_or_else(|| klipp_cache.join("render"));
+        // The engine's render cache is always here; it does not read
+        // `render_cache_dir`, so measuring or clearing that would miss it.
+        let render_dir = klipp_cache.join("render");
         let thumb_dir = prefs.media_cache.filmstrip_cache_dir.clone()
             .unwrap_or_else(|| klipp_cache.join("thumbnails"));
         // The audio cache pref controls the engine's audio_cache_dir
@@ -3710,57 +3488,6 @@ impl PreferencesPanel {
         });
         ui.add_space(4.0);
 
-        // ── TEXT DEFAULTS section ──
-        Self::section_header(ui, "TEXT DEFAULTS", theme);
-
-        Self::setting_row(ui, "Default font", theme, |ui| {
-            let display = if prefs.title.default_font.is_empty() { "System default" } else { &prefs.title.default_font };
-            egui::ComboBox::from_id_salt("title_font")
-                .selected_text(display)
-                .width(130.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_label(prefs.title.default_font.is_empty(), "System default").clicked() {
-                        prefs.title.default_font.clear(); *dirty = true;
-                    }
-                    for font in ["Arial", "Helvetica", "Inter", "Roboto", "Open Sans", "Montserrat"] {
-                        if ui.selectable_label(prefs.title.default_font == font, font).clicked() {
-                            prefs.title.default_font = font.to_string(); *dirty = true;
-                        }
-                    }
-                });
-        });
-
-        Self::setting_row(ui, "Default size", theme, |ui| {
-            let mut v = prefs.title.default_size_pt;
-            if ui.add(egui::DragValue::new(&mut v).range(8.0..=200.0).speed(0.5).suffix(" pt").fixed_decimals(0)).changed() {
-                prefs.title.default_size_pt = v; *dirty = true;
-            }
-        });
-
-        Self::setting_row(ui, "Default colour", theme, |ui| {
-            let mut c = egui::Color32::from_rgb(prefs.title.default_color[0], prefs.title.default_color[1], prefs.title.default_color[2]);
-            if ui.color_edit_button_srgba(&mut c).changed() {
-                prefs.title.default_color = [c.r(), c.g(), c.b()];
-                *dirty = true;
-            }
-        });
-
-        Self::setting_row(ui, "Default alignment", theme, |ui| {
-            use crate::prefs::TextAlignment;
-            egui::ComboBox::from_id_salt("title_align")
-                .selected_text(match prefs.title.default_alignment {
-                    TextAlignment::Left => "Left",
-                    TextAlignment::Center => "Center",
-                    TextAlignment::Right => "Right",
-                })
-                .width(80.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.title.default_alignment, TextAlignment::Left, "Left").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.title.default_alignment, TextAlignment::Center, "Center").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.title.default_alignment, TextAlignment::Right, "Right").changed() { *dirty = true; }
-                });
-        });
-
         // ── BEHAVIOR section ──
         Self::section_header(ui, "BEHAVIOR", theme);
 
@@ -3771,13 +3498,6 @@ impl PreferencesPanel {
             }
         });
 
-        Self::setting_row(ui, "Title-safe area overlay", theme, |ui| {
-            let mut val = prefs.title.safe_area_overlay;
-            if ui.add(Switch::new(&mut val, theme)).changed() {
-                prefs.title.safe_area_overlay = val;
-                *dirty = true;
-            }
-        });
     }
 
     /// The page's name at its top.
@@ -3815,11 +3535,8 @@ impl PreferencesPanel {
         Self::section_header(ui, "DIMENSIONS", theme);
         dim_row(ui, "Clip gap", &mut prefs.timeline.clip_gap_px, 0.0, 20.0, " px", dirty);
         dim_row(ui, "Trim handle", &mut prefs.timeline.trim_handle_width, 6.0, 30.0, " px", dirty);
-        dim_row(ui, "Ruler height", &mut prefs.timeline.ruler_height, 16.0, 48.0, " px", dirty);
-        dim_row(ui, "Clip corner radius", &mut prefs.timeline.clip_corner_radius, 0.0, 16.0, " px", dirty);
         dim_row(ui, "Overview bar", &mut prefs.timeline.overview_bar_height, 12.0, 48.0, " px", dirty);
         dim_row(ui, "Min track height", &mut prefs.timeline.min_track_height, 16.0, 64.0, " px", dirty);
-        dim_row(ui, "Max track height", &mut prefs.timeline.max_track_height, 100.0, 500.0, " px", dirty);
         dim_row(ui, "Text track height", &mut prefs.timeline.text_track_height, 20.0, 80.0, " px", dirty);
 
         Self::section_header(ui, "SELECTION", theme);
@@ -4624,7 +4341,6 @@ impl PreferencesPanel {
     }
 }
 
-
 /// The human name of an AI model from the manifest, or its id.
 fn model_display_name(id: &str) -> String {
     klipp_ml::manifest::load_effective().ok()
@@ -4735,7 +4451,6 @@ mod connect_assistant_tests {
         assert!(off.iter().any(|t| t.contains("The AI assistant is off")), "{off:?}");
     }
 }
-
 
 #[cfg(test)]
 mod layout_tests {
@@ -4993,6 +4708,17 @@ mod layout_tests {
         "wgpu",
     ];
 
+    /// Settings the dialog showed that nothing reads: changing one did
+    /// nothing, so they are out of view until they are wired. "Render
+    /// cache" here is the folder row; the cache's size row keeps the name.
+    const HIDDEN: &[&str] = &[
+        "Default fade curve", "Default fade duration", "Monitoring mode", "Normalize target", "Default sync method",
+        "Search radius", "Colour space tagging", "Default encoder preset", "Default export folder", "Overwrite existing files",
+        "Max cache size", "Thumbnail resolution", "JKL speed steps", "Clip corner radius", "Max track height", "Ruler height",
+        "Default alignment", "Default colour", "Default font", "Default size", "Title-safe area overlay",
+        "Show keyboard shortcut hints", "Recent projects to show", "TEXT DEFAULTS",
+    ];
+
     /// One frame of the dialog on `tab`, with `events`: its texts by their
     /// centres, its hairlines by height and left end, and the prefs.
     struct Drawn {
@@ -5102,7 +4828,9 @@ mod layout_tests {
             all.extend(d.texts.into_iter().map(|(s, _)| s));
         }
         // "Built" shows only in a build that knows when it was built.
-        let missing: Vec<&&str> = OLD_LABELS.iter().filter(|l| **l != "Built" && !all.iter().any(|s| s == **l)).collect();
+        let missing: Vec<&&str> = OLD_LABELS.iter().filter(|l| **l != "Built" && !HIDDEN.contains(l) && !all.iter().any(|s| s == **l)).collect();
         assert!(missing.is_empty(), "no longer shown: {missing:?}");
+        let shown: Vec<&&str> = HIDDEN.iter().filter(|l| all.iter().any(|s| s == **l)).collect();
+        assert!(shown.is_empty(), "settings that change nothing are shown: {shown:?}");
     }
 }
