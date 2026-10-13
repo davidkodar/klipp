@@ -5477,7 +5477,18 @@ pub fn named_picture_effect(kind: &str, amount: Option<f32>) -> Result<(klipp_ef
         // Two eyepieces, the outside darker the more, a fringe at their
         // rims (#989).
         "binocular" | "binocular_vignette" => E::BinocularVignette { amount: -(0.5 + a * 0.5), spacing: 0.4, width: 0.85, height: 0.85, softness: 0.15, fringe: a * 6.0 },
-        other => return Err((format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, chroma_key, luma_key, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, edge_detect, denoise, vhs, old_film, flicker, exposure_flicker or binocular".into())),
+        // Particles over the picture (#1141): each kind's own look, more
+        // of them, and stronger, with the amount.
+        "dust" | "snow" | "rain" | "sparks" | "embers" | "particles" => {
+            let kind = match kind { "snow" => 1, "rain" => 2, "sparks" => 3, "embers" => 4, _ => 0 };
+            match klipp_effects::particles::preset(kind) {
+                E::Particles { style: kind, amount, size, speed, direction, spread, lifetime, opacity, color, seed, time } => {
+                    E::Particles { style: kind, amount: amount * (0.5 + a), size, speed, direction, spread, lifetime, opacity: (opacity * (0.6 + 0.4 * a)).min(1.0), color, seed, time }
+                }
+                other => other,
+            }
+        }
+        other => return Err((format!("\"{other}\" is not an effect"), "use e.g. vignette, grain, glow, bloom, chroma_key, luma_key, corners, shadow, outer_glow, fill_bars, diffusion, halation, light_rays, lens_flare, anamorphic, blur, radial_blur, directional_blur, sharpen, chromatic_aberration, tilt_shift, mosaic, posterize, invert, mirror, lens_distortion, edge_detect, denoise, vhs, old_film, flicker, exposure_flicker, binocular, dust, snow, rain, sparks or embers".into())),
     };
     Ok((fx, a))
 }
@@ -14450,6 +14461,15 @@ mod effect_scale_tests {
             };
             let (soft, hard) = (eyes(Some(0.2)), eyes(Some(1.0)));
             assert!(hard.0 < soft.0 && hard.0 == -1.0 && hard.1 > soft.1, "{kind}: {soft:?} {hard:?}");
+        }
+        // Particles (#1141): the kind named, more and stronger with the amount.
+        for (name, want) in [("dust", 0u32), ("snow", 1), ("rain", 2), ("sparks", 3), ("embers", 4), ("particles", 0)] {
+            let got = |amount| match named_picture_effect(name, amount).unwrap().0 {
+                E::Particles { style: kind, amount, opacity, .. } => (kind, amount, opacity),
+                other => panic!("{other:?}"),
+            };
+            let (few, many) = (got(Some(0.1)), got(Some(1.0)));
+            assert!(few.0 == want && many.0 == want && many.1 > few.1 && many.2 >= few.2, "{name}: {few:?} {many:?}");
         }
         let err = named_picture_effect("flickr", None).unwrap_err();
         assert!(err.1.contains("flicker") && err.1.contains("binocular"), "{err:?}");

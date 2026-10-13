@@ -90,6 +90,7 @@ fn every_effect() -> Vec<E> {
         E::PictureTransform { position_x: 4.0, position_y: 2.0, scale_x: 0.9, scale_y: 0.9, rotation: 5.0, anchor_x: 0.5, anchor_y: 0.5 },
         E::Flicker { amount: 0.5, speed: 8.0, smoothness: 0.2, hold: 0.3, seed: 1, target: 0, time: 0.0 },
         E::BinocularVignette { amount: -0.8, spacing: 0.4, width: 0.8, height: 0.8, softness: 0.2, fringe: 3.0 },
+        E::Particles { style: 1, amount: 200.0, size: 3.0, speed: 60.0, direction: 90.0, spread: 0.4, lifetime: 5.0, opacity: 0.8, color: [255, 255, 255], seed: 2, time: 0.0 },
         E::Merge { blend_mode: klipp_effects::BlendMode::Screen, opacity: 0.5 },
         E::Generator { shape: 1, color_a: [0, 0, 0, 255], color_b: [255, 255, 255, 255], angle: 30.0, center_x: 0.5, center_y: 0.5, radius: 0.5 },
     ];
@@ -109,7 +110,7 @@ fn every_effect() -> Vec<E> {
             | E::FilmGrain { .. } | E::TiltShift { .. } | E::OldFilm { .. } | E::Vhs { .. }
             | E::RollingShutterCorrection { .. } | E::TemporalDenoise { .. } | E::Deflicker { .. }
             | E::VideoStabilization { .. } | E::SpeedRamp { .. } | E::Frei0r { .. } | E::CornerPin { .. }
-            | E::Lut3D { .. } | E::ColourSpaceTransform { .. } | E::PictureTransform { .. } | E::Flicker { .. } | E::BinocularVignette { .. } | E::Merge { .. } | E::Generator { .. } => {}
+            | E::Lut3D { .. } | E::ColourSpaceTransform { .. } | E::PictureTransform { .. } | E::Flicker { .. } | E::BinocularVignette { .. } | E::Particles { .. } | E::Merge { .. } | E::Generator { .. } => {}
         }
     }
     all
@@ -168,6 +169,20 @@ fn a_keyframed_effect_ramps_between_its_keys() {
         assert_ne!(at(0.0), at(1.0), "{} {name} did not move", kind(&effect));
         assert_ne!(at(1.0), at(2.0), "{} {name} did not move", kind(&effect));
     }
+}
+
+/// Particles move by the clip's own time (#1141), wherever the clip sits.
+#[test]
+fn particles_are_given_the_clips_time() {
+    let particles = E::Particles { style: 0, amount: 100.0, size: 2.0, speed: 30.0, direction: 0.0, spread: 0.5, lifetime: 4.0, opacity: 0.6, color: [255, 255, 255], seed: 1, time: 0.0 };
+    let mut clip = clip_with(particles);
+    clip.timeline_in = tc(2.0);
+    clip.timeline_out = tc(6.0);
+    let time_at = |t: f64| match clip_effects(&clip, tc(t), 24.0, None, None).0.first() {
+        Some(E::Particles { time, .. }) => *time,
+        other => panic!("{other:?}"),
+    };
+    assert!((time_at(2.5) - 0.5).abs() < 1e-4 && (time_at(4.0) - 2.0).abs() < 1e-4, "{} {}", time_at(2.5), time_at(4.0));
 }
 
 /// A flicker jumps by the clip's own time (#989): the render gives it the

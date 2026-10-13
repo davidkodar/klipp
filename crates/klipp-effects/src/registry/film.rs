@@ -7,8 +7,8 @@
 //!
 //! Some fields are written by the compositor every frame but are still
 //! saved: the grain, old-film, VHS and noise `seed` (the frame number),
-//! deflicker's `gain` (from the clip's analysis) and flicker's `time`
-//! (the clip's time, #989). They are described
+//! deflicker's `gain` (from the clip's analysis) and flicker's and
+//! particles' `time` (the clip's time, #989, #1141). They are described
 //! as saved, fixed parameters; nothing a user sets.
 //!
 //! Where two places disagree, the description follows the reset and says
@@ -196,6 +196,34 @@ pub(super) static TYPES: &[EffectType] = &[
         )),
         tag: "flicker",
         sample: || BuiltinEffect::Flicker { amount: 0.5, speed: 8.0, smoothness: 0.0, hold: 0.3, seed: 67, target: 0, time: 0.0 },
+    },
+    // Particles drawn over the picture (#1141): their seed the user's,
+    // their time the compositor's (the clip's time each frame).
+    EffectType {
+        desc: effect(
+            "klipp.fx.particles",
+            "Particles",
+            Category::FilmTemporal,
+            &[
+                choice("style", "Kind", 0.0, &["dust", "snow", "rain", "sparks", "embers"]),
+                ParamDesc::float("amount", "Amount", 150.0, (10.0, 2000.0), Unit::Count),
+                ParamDesc::float("size", "Size", 2.5, (0.5, 20.0), Unit::Per1080),
+                ParamDesc::float("speed", "Speed", 30.0, (0.0, 1500.0), Unit::Per1080),
+                ParamDesc::float("direction", "Direction", 300.0, (0.0, 360.0), Unit::Degrees),
+                ParamDesc::float("spread", "Spread", 0.5, UNIT, Unit::Ratio),
+                ParamDesc::float("lifetime", "Lifetime", 4.0, (0.2, 20.0), Unit::Seconds),
+                ParamDesc::float("opacity", "Opacity", 0.6, UNIT, Unit::Ratio),
+                other("color", "Colour", ParamKind::Colour),
+                ParamDesc { kind: ParamKind::Whole, ..ParamDesc::float("seed", "Seed", 1.0, (0.0, 10_000.0), Unit::Count).fixed() },
+                ParamDesc { soft: None, ..ParamDesc::float("time", "Time", 0.0, (0.0, 1.0), Unit::Seconds).fixed() },
+            ],
+            ColourDomain::Linear,
+            Spatial::PerPixel,
+            Temporal::None,
+            true,
+        ),
+        tag: "particles",
+        sample: || BuiltinEffect::Particles { style: 0, amount: 150.0, size: 2.5, speed: 30.0, direction: 300.0, spread: 0.5, lifetime: 4.0, opacity: 0.6, color: [255, 240, 220], seed: 1, time: 0.0 },
     },
     EffectType {
         desc: effect(

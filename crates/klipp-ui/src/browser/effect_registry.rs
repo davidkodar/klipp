@@ -506,6 +506,14 @@ impl EffectRegistry {
                 grouping: "Film".into(),
             },
             EffectEntry {
+                name: "Particles".into(),
+                category: EffectCategory::Film,
+                source: EffectSource::Builtin(crate::effect_presets::particles_default(0)),
+                source_label: "Built-in",
+                description: "Dust, snow, rain, sparks or embers over the picture, seeded, the same every play.".into(),
+                grouping: "Film".into(),
+            },
+            EffectEntry {
                 name: "Flicker".into(),
                 category: EffectCategory::Film,
                 source: EffectSource::Builtin(klipp_effects::BuiltinEffect::Flicker {

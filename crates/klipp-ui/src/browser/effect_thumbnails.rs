@@ -607,6 +607,10 @@ fn builtin_preview_params(effect: &klipp_effects::BuiltinEffect) -> klipp_effect
         klipp_effects::BuiltinEffect::BinocularVignette { .. } => {
             klipp_effects::BuiltinEffect::BinocularVignette { amount: -1.0, spacing: 0.4, width: 0.8, height: 0.8, softness: 0.1, fringe: 6.0 }
         }
+        // A still card shows the particles well into their lives (#1141).
+        klipp_effects::BuiltinEffect::Particles { style: kind, color, .. } => {
+            klipp_effects::BuiltinEffect::Particles { style: *kind, amount: 400.0, size: 6.0, speed: 30.0, direction: 300.0, spread: 0.5, lifetime: 4.0, opacity: 1.0, color: *color, seed: 3, time: 2.0 }
+        }
         klipp_effects::BuiltinEffect::Vhs { .. } => {
             klipp_effects::BuiltinEffect::Vhs { tracking: 0.8, bleed: 0.8, noise: 0.6, scanlines: 0.8, seed: 9 }
         }

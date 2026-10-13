@@ -4877,7 +4877,7 @@ pub fn list_effects(
 }
 
 /// What one frame gives an animated effect (R16): the film effects' seed,
-/// a flicker's time, the deflicker gain, a pinned clip's first corner pin, a colour fade's
+/// a flicker's and particles' time, the deflicker gain, a pinned clip's first corner pin, a colour fade's
 /// progress.
 pub(crate) fn frame_inputs(
     clip: &Clip,
@@ -4896,6 +4896,8 @@ pub(crate) fn frame_inputs(
         }
         // A flicker jumps by the clip's time (#989).
         BuiltinEffect::Flicker { time, .. } => *time = t as f32,
+        // Particles move by the clip's time (#1141).
+        BuiltinEffect::Particles { time, .. } => *time = t as f32,
         BuiltinEffect::Deflicker { gain, .. } => {
             // Its analysis gives the frame's gain (M4 step 9, at the
             // effect's node or `effects_analysed`); none here.
