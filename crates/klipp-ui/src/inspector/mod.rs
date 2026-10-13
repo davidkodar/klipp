@@ -1595,13 +1595,6 @@ fn show_title_position_block(
         .map(|o| o.transform.center_y_keyframes.as_slice())
         .unwrap_or(&[]);
 
-    ui.label(
-        egui::RichText::new("POSITION")
-            .size(10.0)
-            .color(theme.text_dim),
-    );
-    ui.add_space(4.0);
-
     // X / Y compact 50/50 framed inputs. Default visual: just the
     // axis letter on the left and the DragValue on the right —
     // matching the reference. Diamond shows only when keyframes
@@ -1693,7 +1686,7 @@ fn show_title_pinned_core_textbox(
     ui: &mut egui::Ui,
     theme: &KlippTheme,
     clip_id: klipp_core::ClipId,
-    td: &klipp_timeline::TitleData,
+    _td: &klipp_timeline::TitleData,
     state: &AppState,
     cmds: &mut Vec<AppCommand>,
     tb: &klipp_timeline::TextBox,
@@ -1921,7 +1914,7 @@ fn show_title_pinned_core_textbox(
                 });
         }
         if size_is_mixed {
-            ui.label(egui::RichText::new("Mixed").size(10.0).color(theme.accent));
+            ui.label(egui::RichText::new("Mixed").size(rows::TEXT).color(theme.text_secondary));
         }
     });
     if let Some(family) = missing_font {
@@ -2063,10 +2056,10 @@ fn show_title_pinned_core_textbox(
     if has_selection && sel_range.0 < sel_range.1 {
         ui.horizontal(|ui| {
             if style_is_mixed {
-                ui.label(egui::RichText::new("Mixed style").size(10.0).color(theme.accent));
+                ui.label(egui::RichText::new("Mixed style").size(rows::TEXT).color(theme.text_secondary));
             }
             if underline_is_mixed {
-                ui.label(egui::RichText::new("Mixed underline").size(10.0).color(theme.accent));
+                ui.label(egui::RichText::new("Mixed underline").size(rows::TEXT).color(theme.text_secondary));
             }
             let mut tracking = display_tracking;
             if ui.add(egui::DragValue::new(&mut tracking).range(-10.0..=50.0).speed(0.2).suffix(" px").prefix("Tracking: ").fixed_decimals(1)).changed() {
@@ -2079,7 +2072,7 @@ fn show_title_pinned_core_textbox(
                 });
             }
             if tracking_is_mixed {
-                ui.label(egui::RichText::new("Mixed").size(10.0).color(theme.accent));
+                ui.label(egui::RichText::new("Mixed").size(rows::TEXT).color(theme.text_secondary));
             }
             let mut baseline = display_baseline;
             if ui.add(egui::DragValue::new(&mut baseline).range(-200.0..=200.0).speed(0.5).suffix(" px").prefix("Raise: ").fixed_decimals(0))
@@ -2095,13 +2088,13 @@ fn show_title_pinned_core_textbox(
                 });
             }
             if baseline_is_mixed {
-                ui.label(egui::RichText::new("Mixed").size(10.0).color(theme.accent));
+                ui.label(egui::RichText::new("Mixed").size(rows::TEXT).color(theme.text_secondary));
             }
         });
         // Its reading (ruby, #1704): set small above it, or right of a
         // vertical column; emptied, the gloss goes.
         ui.horizontal(|ui| {
-            ui.label("Ruby");
+            ui.label(egui::RichText::new("Ruby").size(rows::TEXT).color(theme.text_secondary));
             let mut gloss = display_ruby.clone();
             let edit = ui.add(egui::TextEdit::singleline(&mut gloss).hint_text("Reading").desired_width(160.0))
                 .on_hover_text("A reading set small beside the selection: above it, or to the right of a vertical column");
@@ -2115,7 +2108,7 @@ fn show_title_pinned_core_textbox(
                 });
             }
             if ruby_is_mixed {
-                ui.label(egui::RichText::new("Mixed").size(10.0).color(theme.accent));
+                ui.label(egui::RichText::new("Mixed").size(rows::TEXT).color(theme.text_secondary));
             }
         });
         ui.add_space(8.0);
@@ -2157,7 +2150,7 @@ fn show_title_pinned_core_textbox(
                         cmds.push(AppCommand::SetTitleLastLine { clip_id, last_line: val });
                     }
                 }
-                ui.label(egui::RichText::new("Last").size(10.0).color(theme.text_secondary));
+                ui.label(egui::RichText::new("Last").size(rows::TEXT).color(theme.text_secondary));
             });
         }
     });
@@ -2173,7 +2166,7 @@ fn show_title_pinned_core_textbox(
             klipp_timeline::TextFit::Shrink { min_size } => (1, min_size),
             klipp_timeline::TextFit::Grow => (2, 24.0),
         };
-        ui.label(egui::RichText::new("Fit").size(10.0).color(theme.text_secondary));
+        ui.label(egui::RichText::new("Fit").size(rows::TEXT).color(theme.text_secondary));
         for (val, label, tip) in [
             (0u8, "Wrap", "Long text wraps onto more lines, set smaller if it would be taller than the box."),
             (1u8, "Shrink", "Long text keeps its lines and is set smaller to fit the box, down to the minimum size."),
@@ -2262,7 +2255,7 @@ fn show_title_pinned_core_textbox(
                 );
             });
         if color_is_mixed {
-            ui.label(egui::RichText::new("Mixed").size(10.0).color(theme.accent));
+            ui.label(egui::RichText::new("Mixed").size(rows::TEXT).color(theme.text_secondary));
         }
         // The whole text's colour is keyable on its layer, all four
         // channels at once (#1511).
@@ -2307,10 +2300,7 @@ fn show_title_pinned_core_textbox(
             });
         }
     }
-    ui.add_space(10.0);
-
-    // 5. Position block.
-    show_title_position_block(ui, theme, clip_id, td, state, cmds, clip_time_secs);
+    ui.add_space(4.0);
 }
 
 /// The weight row of the Title tab (#1504): a picker of the weights
@@ -2385,7 +2375,7 @@ fn show_title_weight_row(
     };
     if weights.len() >= 2 || axes.iter().any(|a| a.tag == "wght") {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Weight").size(11.0).color(theme.text_secondary));
+            ui.label(egui::RichText::new("Weight").size(rows::TEXT).color(theme.text_secondary));
             let label = |w: Option<u16>| w.map_or_else(|| "By style".to_string(), |w| format!("{} {w}", weight_name(w)));
             let mut picked: Option<Option<u16>> = None;
             egui::ComboBox::from_id_salt("title_pinned_weight")
@@ -2423,7 +2413,7 @@ fn show_title_weight_row(
                 set_axis(cmds, &axis.tag, v);
             }
             if mixed {
-                ui.label(egui::RichText::new("Mixed").size(10.0).color(theme.accent));
+                ui.label(egui::RichText::new("Mixed").size(rows::TEXT).color(theme.text_secondary));
             }
         });
     }
@@ -2475,14 +2465,14 @@ fn show_title_quick_style_subsection(
     ui.add_space(4.0);
     ui.label(
         egui::RichText::new("Quick Style")
-            .size(10.0)
+            .size(rows::TEXT)
             .color(theme.text_secondary)
             .strong(),
     );
     ui.add_space(2.0);
 
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Quick").size(10.0).color(theme.text_dim));
+        ui.label(egui::RichText::new("Quick").size(rows::TEXT).color(theme.text_secondary));
         let preset_colors: &[(&str, [u8; 4])] = &[
             ("W", [255, 255, 255, 255]),
             ("R", [255, 60, 60, 255]),
@@ -2531,7 +2521,7 @@ fn show_title_quick_style_subsection(
     if has_selection && sel_range.1 > sel_range.0 {
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Effects:").size(10.0).color(theme.text_dim));
+            ui.label(egui::RichText::new("Effects").size(rows::TEXT).color(theme.text_secondary));
             if ui.small_button("Rainbow").clicked() {
                 let rainbow: &[[u8; 4]] = &[
                     [255, 50, 50, 255], [255, 150, 0, 255], [255, 230, 0, 255],
@@ -2789,7 +2779,7 @@ fn show_title_effects_group(
                 let kfs_r: &[klipp_core::Keyframe] = g.radius_keyframes.as_slice();
                 let kfs_i: &[klipp_core::Keyframe] = g.intensity_keyframes.as_slice();
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
+                    ui.label(egui::RichText::new(format!("#{}", i)).size(rows::TEXT).color(theme.text_secondary));
                     let mut col = egui::Color32::from_rgba_premultiplied(g.color[0], g.color[1], g.color[2], g.color[3]);
                     if ui.color_edit_button_srgba(&mut col).changed() {
                         cmds.push(AppCommand::SetTitleGlowLayer {
@@ -2802,8 +2792,8 @@ fn show_title_effects_group(
                         });
                     }
                     let mut radius = display_radius;
-                    let r_radius = crate::widgets::scrubby_param::scrubby_param_row(
-                        ui, "r", &mut radius, 1.0..=80.0, 10.0, 0.5, 1, " px",
+                    let r_radius = rows::param_row(
+                        ui, theme, "r", &mut radius, 1.0..=80.0, 10.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_r, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_glow_layer_axis_response(
@@ -2812,8 +2802,8 @@ fn show_title_effects_group(
                         keyframe_tolerance,
                     );
                     let mut intensity = display_intensity;
-                    let r_intensity = crate::widgets::scrubby_param::scrubby_param_row(
-                        ui, "i", &mut intensity, 0.0..=2.0, 1.0, 0.02, 2, "",
+                    let r_intensity = rows::param_row(
+                        ui, theme, "i", &mut intensity, 0.0..=2.0, 1.0, 0.02, 2, "",
                         target_oid.map(|_| title_object_keyframe_state(kfs_i, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_glow_layer_axis_response(
@@ -2938,7 +2928,7 @@ fn show_title_effects_group(
                 let kfs_width: &[klipp_core::Keyframe] = ol.width_keyframes.as_slice();
                 let ks_width = title_object_keyframe_state(kfs_width, clip_time_secs, keyframe_tolerance);
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
+                    ui.label(egui::RichText::new(format!("#{}", i)).size(rows::TEXT).color(theme.text_secondary));
                     let mut col = egui::Color32::from_rgba_premultiplied(ol.color[0], ol.color[1], ol.color[2], ol.color[3]);
                     if ui.color_edit_button_srgba(&mut col).changed() {
                         cmds.push(AppCommand::SetTitleOutlineLayer {
@@ -2950,8 +2940,8 @@ fn show_title_effects_group(
                         });
                     }
                     let mut w_val = display_width;
-                    let resp_width = crate::widgets::scrubby_param::scrubby_param_row(
-                        ui, "", &mut w_val, 0.5..=20.0, 4.0, 0.5, 1, " px",
+                    let resp_width = rows::param_row(
+                        ui, theme, "", &mut w_val, 0.5..=20.0, 4.0, 0.5, 1, " px",
                         target_oid.map(|_| ks_width),
                     );
                     handle_outline_axis_response(
@@ -3121,7 +3111,7 @@ fn show_title_effects_group(
                 let kfs_oy: &[klipp_core::Keyframe] = sh.offset_y_keyframes.as_slice();
                 let kfs_bl: &[klipp_core::Keyframe] = sh.blur_keyframes.as_slice();
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
+                    ui.label(egui::RichText::new(format!("#{}", i)).size(rows::TEXT).color(theme.text_secondary));
                     let mut col = egui::Color32::from_rgba_premultiplied(sh.color[0], sh.color[1], sh.color[2], sh.color[3]);
                     if ui.color_edit_button_srgba(&mut col).changed() {
                         cmds.push(AppCommand::SetTitleShadowLayer {
@@ -3135,8 +3125,8 @@ fn show_title_effects_group(
                         });
                     }
                     let mut ox = display_ox;
-                    let r_ox = crate::widgets::scrubby_param::scrubby_param_row(
-                        ui, "x", &mut ox, -20.0..=20.0, 4.0, 0.5, 1, " px",
+                    let r_ox = rows::param_row(
+                        ui, theme, "x", &mut ox, -20.0..=20.0, 4.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_ox, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_shadow_layer_axis_response(
@@ -3145,8 +3135,8 @@ fn show_title_effects_group(
                         keyframe_tolerance,
                     );
                     let mut oy = display_oy;
-                    let r_oy = crate::widgets::scrubby_param::scrubby_param_row(
-                        ui, "y", &mut oy, -20.0..=20.0, 4.0, 0.5, 1, " px",
+                    let r_oy = rows::param_row(
+                        ui, theme, "y", &mut oy, -20.0..=20.0, 4.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_oy, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_shadow_layer_axis_response(
@@ -3155,8 +3145,8 @@ fn show_title_effects_group(
                         keyframe_tolerance,
                     );
                     let mut bl = display_bl;
-                    let r_bl = crate::widgets::scrubby_param::scrubby_param_row(
-                        ui, "blur", &mut bl, 0.0..=60.0, 4.0, 0.5, 1, " px",
+                    let r_bl = rows::param_row(
+                        ui, theme, "blur", &mut bl, 0.0..=60.0, 4.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_bl, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_shadow_layer_axis_response(
@@ -3331,7 +3321,7 @@ fn show_title_effects_group(
                 let kfs_oy: &[klipp_core::Keyframe] = sh.offset_y_keyframes.as_slice();
                 let kfs_bl: &[klipp_core::Keyframe] = sh.blur_keyframes.as_slice();
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("#{}", i)).size(11.0).color(theme.text_dim));
+                    ui.label(egui::RichText::new(format!("#{}", i)).size(rows::TEXT).color(theme.text_secondary));
                     let mut col = egui::Color32::from_rgba_premultiplied(sh.color[0], sh.color[1], sh.color[2], sh.color[3]);
                     if ui.color_edit_button_srgba(&mut col).changed() {
                         cmds.push(AppCommand::SetTitleInnerShadowLayer {
@@ -3345,8 +3335,8 @@ fn show_title_effects_group(
                         });
                     }
                     let mut ox = display_ox;
-                    let r_ox = crate::widgets::scrubby_param::scrubby_param_row(
-                        ui, "x", &mut ox, -20.0..=20.0, 2.0, 0.5, 1, " px",
+                    let r_ox = rows::param_row(
+                        ui, theme, "x", &mut ox, -20.0..=20.0, 2.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_ox, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_inner_shadow_layer_axis_response(
@@ -3355,8 +3345,8 @@ fn show_title_effects_group(
                         keyframe_tolerance,
                     );
                     let mut oy = display_oy;
-                    let r_oy = crate::widgets::scrubby_param::scrubby_param_row(
-                        ui, "y", &mut oy, -20.0..=20.0, 2.0, 0.5, 1, " px",
+                    let r_oy = rows::param_row(
+                        ui, theme, "y", &mut oy, -20.0..=20.0, 2.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_oy, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_inner_shadow_layer_axis_response(
@@ -3365,8 +3355,8 @@ fn show_title_effects_group(
                         keyframe_tolerance,
                     );
                     let mut bl = display_bl;
-                    let r_bl = crate::widgets::scrubby_param::scrubby_param_row(
-                        ui, "blur", &mut bl, 0.0..=60.0, 3.0, 0.5, 1, " px",
+                    let r_bl = rows::param_row(
+                        ui, theme, "blur", &mut bl, 0.0..=60.0, 3.0, 0.5, 1, " px",
                         target_oid.map(|_| title_object_keyframe_state(kfs_bl, clip_time_secs, keyframe_tolerance)),
                     );
                     handle_inner_shadow_layer_axis_response(
@@ -3895,7 +3885,7 @@ fn show_title_shape_editor(
     }
     if fill_enabled {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Colour").size(11.0).color(theme.text_secondary));
+            ui.label(egui::RichText::new("Colour").size(rows::TEXT).color(theme.text_secondary));
             let mut c = egui::Color32::from_rgba_premultiplied(
                 cur_fill[0], cur_fill[1], cur_fill[2], cur_fill[3],
             );
@@ -3929,7 +3919,7 @@ fn show_title_shape_editor(
     }
     if stroke_enabled {
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Colour").size(11.0).color(theme.text_secondary));
+            ui.label(egui::RichText::new("Colour").size(rows::TEXT).color(theme.text_secondary));
             let mut c = egui::Color32::from_rgba_premultiplied(
                 cur_stroke_color[0], cur_stroke_color[1], cur_stroke_color[2], cur_stroke_color[3],
             );
@@ -4111,8 +4101,8 @@ fn compact_axis_input(
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(label)
-                        .size(11.0)
-                        .color(theme.text_dim),
+                        .size(rows::TEXT)
+                        .color(theme.text_secondary),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Diamond only when this axis already has
@@ -4194,8 +4184,8 @@ fn effect_color_row(
             egui::pos2(label_rect.min.x, label_rect.center().y),
             egui::Align2::LEFT_CENTER,
             label,
-            egui::FontId::proportional(11.0),
-            theme.text_dim,
+            egui::FontId::proportional(rows::TEXT),
+            theme.text_secondary,
         );
 
         // Swatch — opens egui's colour picker on click; live-applies.
@@ -4334,8 +4324,8 @@ fn effect_param_row(
             egui::pos2(label_rect.min.x, label_rect.center().y),
             egui::Align2::LEFT_CENTER,
             label,
-            egui::FontId::proportional(11.0),
-            theme.text_dim,
+            egui::FontId::proportional(rows::TEXT),
+            theme.text_secondary,
         );
 
         // Reserve room for value pill + optional diamond on the
@@ -4572,8 +4562,8 @@ fn show_title_motion_blur_group(
             let ks_shutter = title_object_keyframe_state(kfs_shutter, clip_time_secs, keyframe_tolerance);
 
             let mut shutter = display_shutter;
-            let resp_shutter = crate::widgets::scrubby_param::scrubby_param_row(
-                ui, "Shutter Angle", &mut shutter, 1.0..=360.0, 180.0, 1.0, 0, "\u{00b0}",
+            let resp_shutter = rows::param_row(
+                ui, theme, "Shutter Angle", &mut shutter, 1.0..=360.0, 180.0, 1.0, 0, "\u{00b0}",
                 target_oid.map(|_| ks_shutter),
             );
             handle_motion_blur_axis_response(
@@ -4732,13 +4722,10 @@ fn show_title_editor(
         }
     }
 
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("LAYERS")
-                .size(10.0)
-                .color(theme.text_dim),
-        );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    crate::widgets::inspector_group::section_card(ui, "LAYERS", Some(format!("{}", td.objects.len())), theme, |ui| {
+        show_title_layers_panel(ui, theme, clip_id, td, state, cmds);
+        ui.add_space(4.0);
+        rows::rail_row(ui, theme, "Template", |ui| {
             if ui
                 .small_button("Save as Template\u{2026}")
                 .on_hover_text("Keep this title in the Titles browser, under User")
@@ -4748,10 +4735,6 @@ fn show_title_editor(
             }
         });
     });
-    ui.add_space(4.0);
-    show_title_layers_panel(ui, theme, clip_id, td, state, cmds);
-    ui.separator();
-    ui.add_space(4.0);
 
     // ── Polymorphic pinned core ──
     // Branch on the selected layer's kind. Shape layers get the existing
@@ -4768,7 +4751,7 @@ fn show_title_editor(
         if let Some(oid) = target_oid {
             show_title_shape_editor(ui, theme, clip_id, oid, shape, td, cmds, (state.playhead.to_secs_f64()-clip.timeline_in.to_secs_f64()).max(0.0), 0.5/state.sequence().fps.as_f64());
             ui.add_space(8.0);
-            show_title_position_block(ui, theme, clip_id, td, state, cmds, clip_time_secs);
+            crate::widgets::inspector_group::section_card(ui, "POSITION", None, theme, |ui| show_title_position_block(ui, theme, clip_id, td, state, cmds, clip_time_secs));
             show_title_layer_stack(ui, theme, clip_id, td, oid, chips, cmds, clip_time_secs, keyframe_tolerance, state.sequence().resolution, clip_secs);
         }
         return;
@@ -4777,7 +4760,7 @@ fn show_title_editor(
         if let Some(oid) = target_oid {
             show_title_image_editor(ui, theme, clip_id, oid, img, cmds);
             ui.add_space(8.0);
-            show_title_position_block(ui, theme, clip_id, td, state, cmds, clip_time_secs);
+            crate::widgets::inspector_group::section_card(ui, "POSITION", None, theme, |ui| show_title_position_block(ui, theme, clip_id, td, state, cmds, clip_time_secs));
             show_title_layer_stack(ui, theme, clip_id, td, oid, chips, cmds, clip_time_secs, keyframe_tolerance, state.sequence().resolution, clip_secs);
         }
         return;
@@ -4791,42 +4774,46 @@ fn show_title_editor(
         let mut anchor_y = t.anchor_norm.y * 100.0;
         let mut property_changes: Vec<(klipp_core::TitleTransformProperty, f32)> = Vec::new();
         let mut toggles: Vec<klipp_core::TitleTransformProperty> = Vec::new();
-        ui.label(egui::RichText::new("TRANSFORM").size(10.0).color(theme.text_dim));
-        ui.horizontal(|ui| {
-            ui.label("W");
-            if ui.add(egui::DragValue::new(&mut w).range(1.0..=400.0).suffix(" %")).changed() { property_changes.push((klipp_core::TitleTransformProperty::Width, w / 100.0)); }
-            if ui.small_button(if t.size_x_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-6) { "◆" } else { "◇" }).on_hover_text("Animate width at the playhead").clicked() { toggles.push(klipp_core::TitleTransformProperty::Width); }
-            ui.label("H");
-            if ui.add(egui::DragValue::new(&mut h).range(1.0..=400.0).suffix(" %")).changed() { property_changes.push((klipp_core::TitleTransformProperty::Height, h / 100.0)); }
-            if ui.small_button(if t.size_y_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-6) { "◆" } else { "◇" }).on_hover_text("Animate height at the playhead").clicked() { toggles.push(klipp_core::TitleTransformProperty::Height); }
-        });
-        ui.horizontal(|ui| {
-            ui.label("Rotation");
-            if ui.add(egui::DragValue::new(&mut rotation).speed(0.5).range(-360.0..=360.0).suffix("°")).changed() { property_changes.push((klipp_core::TitleTransformProperty::Rotation, rotation)); }
-            if ui.small_button(if t.rotation_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-6) { "◆" } else { "◇" }).on_hover_text("Animate rotation at the playhead").clicked() { toggles.push(klipp_core::TitleTransformProperty::Rotation); }
-        });
-        ui.horizontal(|ui| {
-            ui.label("Anchor");
-            if ui.add(egui::DragValue::new(&mut anchor_x).range(0.0..=100.0).suffix(" X")).changed() { property_changes.push((klipp_core::TitleTransformProperty::AnchorX, anchor_x / 100.0)); }
-            if ui.small_button(if t.anchor_x_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-6) { "◆" } else { "◇" }).clicked() { toggles.push(klipp_core::TitleTransformProperty::AnchorX); }
-            if ui.add(egui::DragValue::new(&mut anchor_y).range(0.0..=100.0).suffix(" Y")).changed() { property_changes.push((klipp_core::TitleTransformProperty::AnchorY, anchor_y / 100.0)); }
-            if ui.small_button(if t.anchor_y_keyframes.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-6) { "◆" } else { "◇" }).clicked() { toggles.push(klipp_core::TitleTransformProperty::AnchorY); }
-        });
-        ui.horizontal(|ui| {
-            if ui.small_button("Center").on_hover_text("Center this layer in the frame").clicked() {
-                cmds.push(AppCommand::SetTitleObjectTransform {
-                    clip_id, object_id: object.id.0, center_x: 0.5, center_y: 0.5,
-                    size_x: t.size.x, size_y: t.size.y, rotation: t.rotation,
-                    anchor_x: t.anchor_norm.x, anchor_y: t.anchor_norm.y,
-                });
-            }
-            if ui.small_button("Reset transform").clicked() {
-                cmds.push(AppCommand::SetTitleObjectTransform {
-                    clip_id, object_id: object.id.0, center_x: t.center.x, center_y: t.center.y,
-                    size_x: t.size.x, size_y: t.size.y, rotation: 0.0,
-                    anchor_x: 0.5, anchor_y: 0.5,
-                });
-            }
+        // A keyframe mark: filled where the property has a key at the
+        // playhead.
+        let mark = |keys: &[klipp_core::Keyframe]| if keys.iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-6) { "\u{25c6}" } else { "\u{25c7}" };
+        crate::widgets::inspector_group::section_card(ui, "TRANSFORM", None, theme, |ui| {
+            // Right to left: the mark at the edge, the value before it.
+            rows::rail_row(ui, theme, "Width", |ui| {
+                if ui.small_button(mark(&t.size_x_keyframes)).on_hover_text("Animate width at the playhead").clicked() { toggles.push(klipp_core::TitleTransformProperty::Width); }
+                if ui.add(egui::DragValue::new(&mut w).range(1.0..=400.0).suffix(" %")).changed() { property_changes.push((klipp_core::TitleTransformProperty::Width, w / 100.0)); }
+            });
+            rows::rail_row(ui, theme, "Height", |ui| {
+                if ui.small_button(mark(&t.size_y_keyframes)).on_hover_text("Animate height at the playhead").clicked() { toggles.push(klipp_core::TitleTransformProperty::Height); }
+                if ui.add(egui::DragValue::new(&mut h).range(1.0..=400.0).suffix(" %")).changed() { property_changes.push((klipp_core::TitleTransformProperty::Height, h / 100.0)); }
+            });
+            rows::rail_row(ui, theme, "Rotation", |ui| {
+                if ui.small_button(mark(&t.rotation_keyframes)).on_hover_text("Animate rotation at the playhead").clicked() { toggles.push(klipp_core::TitleTransformProperty::Rotation); }
+                if ui.add(egui::DragValue::new(&mut rotation).speed(0.5).range(-360.0..=360.0).suffix("°")).changed() { property_changes.push((klipp_core::TitleTransformProperty::Rotation, rotation)); }
+            });
+            rows::rail_row(ui, theme, "Anchor", |ui| {
+                if ui.small_button(mark(&t.anchor_y_keyframes)).on_hover_text("Animate the anchor's Y at the playhead").clicked() { toggles.push(klipp_core::TitleTransformProperty::AnchorY); }
+                if ui.add(egui::DragValue::new(&mut anchor_y).range(0.0..=100.0).suffix(" Y")).changed() { property_changes.push((klipp_core::TitleTransformProperty::AnchorY, anchor_y / 100.0)); }
+                if ui.small_button(mark(&t.anchor_x_keyframes)).on_hover_text("Animate the anchor's X at the playhead").clicked() { toggles.push(klipp_core::TitleTransformProperty::AnchorX); }
+                if ui.add(egui::DragValue::new(&mut anchor_x).range(0.0..=100.0).suffix(" X")).changed() { property_changes.push((klipp_core::TitleTransformProperty::AnchorX, anchor_x / 100.0)); }
+            });
+            ui.horizontal(|ui| {
+                ui.add_space(rows::RAIL_PAD);
+                if ui.small_button("Center").on_hover_text("Center this layer in the frame").clicked() {
+                    cmds.push(AppCommand::SetTitleObjectTransform {
+                        clip_id, object_id: object.id.0, center_x: 0.5, center_y: 0.5,
+                        size_x: t.size.x, size_y: t.size.y, rotation: t.rotation,
+                        anchor_x: t.anchor_norm.x, anchor_y: t.anchor_norm.y,
+                    });
+                }
+                if ui.small_button("Reset transform").clicked() {
+                    cmds.push(AppCommand::SetTitleObjectTransform {
+                        clip_id, object_id: object.id.0, center_x: t.center.x, center_y: t.center.y,
+                        size_x: t.size.x, size_y: t.size.y, rotation: 0.0,
+                        anchor_x: 0.5, anchor_y: 0.5,
+                    });
+                }
+            });
         });
         for property in toggles {
             let exists = t.transform_keyframes_ref(property).iter().any(|k| (k.time_secs - clip_time_secs).abs() < 1e-6);
@@ -4861,7 +4848,7 @@ fn show_title_editor(
     if target_oid.is_none() && tb_target.is_some() {
         ui.label(
             egui::RichText::new("No layer selected — editing the primary text layer")
-                .size(10.0)
+                .size(rows::TEXT)
                 .color(theme.text_secondary),
         );
         ui.add_space(4.0);
@@ -4873,67 +4860,73 @@ fn show_title_editor(
         .map(klipp_timeline::TitleObject::fx)
         .unwrap_or_else(|| td.primary_fx());
     if let Some(tb) = tb_target {
-        show_title_pinned_core_textbox(ui, theme, clip_id, td, state, cmds, tb, clip_time_secs);
+        crate::widgets::inspector_group::section_card(ui, "TEXT", None, theme, |ui| show_title_pinned_core_textbox(ui, theme, clip_id, td, state, cmds, tb, clip_time_secs));
+        crate::widgets::inspector_group::section_card(ui, "POSITION", None, theme, |ui| show_title_position_block(ui, theme, clip_id, td, state, cmds, clip_time_secs));
     }
-    ui.add_space(8.0);
 
-    // The brief's style this title follows (#66), where it differs from
-    // it, and the way back to it.
-    if let Some(name) = td.style.as_deref() {
-        let diverged = state.sequence().all_clips().find(|c| c.id == clip_id).map(|c| klipp_document::ops::style_divergence(state.sequence(), c)).unwrap_or_default();
+    // Where this title's look comes from and goes: its style, its
+    // template, and copying it between titles.
+    crate::widgets::inspector_group::section_card(ui, "STYLE", None, theme, |ui| {
+        // The brief's style this title follows (#66), where it differs from
+        // it, and the way back to it.
+        if let Some(name) = td.style.as_deref() {
+            let diverged = state.sequence().all_clips().find(|c| c.id == clip_id).map(|c| klipp_document::ops::style_divergence(state.sequence(), c)).unwrap_or_default();
+            ui.horizontal_wrapped(|ui| {
+            ui.add_space(rows::RAIL_PAD);
+                ui.label(egui::RichText::new(format!("Follows style \u{201c}{name}\u{201d}")).size(rows::TEXT).color(theme.text_secondary))
+                    .on_hover_text("A change to this style in the brief carries this title with it, in every field it still has as the style has it");
+                // This title's look to every title of its style (#1716); a
+                // template's titles have their own line below.
+                if td.template.is_none() && ui.small_button("Update All").on_hover_text("Give every title that follows this style this title's look, each keeping its own words").clicked() {
+                    cmds.push(AppCommand::UpdateTitlesLike { clip_id });
+                }
+                if diverged.is_empty() {
+                    return;
+                }
+                ui.label(egui::RichText::new(format!("\u{00b7} differs in {}", diverged.join(", "))).size(rows::TEXT).color(theme.marker_warning));
+                if ui.small_button("Revert to Style").on_hover_text("Give this title every field of its style again").clicked() {
+                    cmds.push(AppCommand::RevertTitleToStyle { clip_id });
+                }
+            });
+            ui.add_space(6.0);
+        }
+
+        // The template this title was made from (#1716), and the way to give
+        // its look to every title made from it.
+        if let Some(template) = td.template.as_deref() {
+            let name = template.strip_prefix("user:").unwrap_or(template);
+            ui.horizontal_wrapped(|ui| {
+            ui.add_space(rows::RAIL_PAD);
+                ui.label(egui::RichText::new(format!("Made from template \u{201c}{name}\u{201d}")).size(rows::TEXT).color(theme.text_secondary));
+                if ui.small_button("Update All").on_hover_text("Give every title made from this template this title's look, each keeping its own words").clicked() {
+                    cmds.push(AppCommand::UpdateTitlesLike { clip_id });
+                }
+            });
+            ui.add_space(6.0);
+        }
+
+        // A title's look, copied, pasted, or taken from another title clicked
+        // in the timeline or viewer (#1718); a paste goes on every selected
+        // title, each keeping its words.
         ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(format!("Follows style \u{201c}{name}\u{201d}")).size(11.0).color(theme.text_secondary))
-                .on_hover_text("A change to this style in the brief carries this title with it, in every field it still has as the style has it");
-            // This title's look to every title of its style (#1716); a
-            // template's titles have their own line below.
-            if td.template.is_none() && ui.small_button("Update All").on_hover_text("Give every title that follows this style this title's look, each keeping its own words").clicked() {
-                cmds.push(AppCommand::UpdateTitlesLike { clip_id });
+            ui.add_space(rows::RAIL_PAD);
+            if ui.small_button("Copy Style").on_hover_text("Keep this title's look to paste on others").clicked() {
+                cmds.push(AppCommand::CopyTitleStyle { clip_id });
             }
-            if diverged.is_empty() {
-                return;
+            let targets: Vec<klipp_core::ClipId> = if state.selected_clips.len() > 1 && state.selected_clips.contains(&clip_id) { state.selected_clips.clone() } else { vec![clip_id] };
+            if ui.add_enabled(state.title_style_clipboard.is_some(), egui::Button::new("Paste Style").small())
+                .on_hover_text(if targets.len() > 1 { "Give the selected titles the copied look, each keeping its words" } else { "Give this title the copied look, keeping its words" })
+                .on_disabled_hover_text("Copy a title's style first")
+                .clicked()
+            {
+                cmds.push(AppCommand::PasteTitleStyle { from: None, to: targets });
             }
-            ui.label(egui::RichText::new(format!("\u{00b7} differs in {}", diverged.join(", "))).size(11.0).color(theme.text_accent));
-            if ui.small_button("Revert to Style").on_hover_text("Give this title every field of its style again").clicked() {
-                cmds.push(AppCommand::RevertTitleToStyle { clip_id });
+            let picking = state.title_style_pick == Some(clip_id);
+            if ui.selectable_label(picking, "\u{1f489} Take Style From\u{2026}").on_hover_text("Click a title in the timeline or the viewer to give this one its look").clicked() {
+                cmds.push(AppCommand::PickTitleStyle { target: (!picking).then_some(clip_id) });
             }
         });
-        ui.add_space(6.0);
-    }
-
-    // The template this title was made from (#1716), and the way to give
-    // its look to every title made from it.
-    if let Some(template) = td.template.as_deref() {
-        let name = template.strip_prefix("user:").unwrap_or(template);
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(format!("Made from template \u{201c}{name}\u{201d}")).size(11.0).color(theme.text_secondary));
-            if ui.small_button("Update All").on_hover_text("Give every title made from this template this title's look, each keeping its own words").clicked() {
-                cmds.push(AppCommand::UpdateTitlesLike { clip_id });
-            }
-        });
-        ui.add_space(6.0);
-    }
-
-    // A title's look, copied, pasted, or taken from another title clicked
-    // in the timeline or viewer (#1718); a paste goes on every selected
-    // title, each keeping its words.
-    ui.horizontal_wrapped(|ui| {
-        if ui.small_button("Copy Style").on_hover_text("Keep this title's look to paste on others").clicked() {
-            cmds.push(AppCommand::CopyTitleStyle { clip_id });
-        }
-        let targets: Vec<klipp_core::ClipId> = if state.selected_clips.len() > 1 && state.selected_clips.contains(&clip_id) { state.selected_clips.clone() } else { vec![clip_id] };
-        if ui.add_enabled(state.title_style_clipboard.is_some(), egui::Button::new("Paste Style").small())
-            .on_hover_text(if targets.len() > 1 { "Give the selected titles the copied look, each keeping its words" } else { "Give this title the copied look, keeping its words" })
-            .on_disabled_hover_text("Copy a title's style first")
-            .clicked()
-        {
-            cmds.push(AppCommand::PasteTitleStyle { from: None, to: targets });
-        }
-        let picking = state.title_style_pick == Some(clip_id);
-        if ui.selectable_label(picking, "\u{1f489} Take Style From\u{2026}").on_hover_text("Click a title in the timeline or the viewer to give this one its look").clicked() {
-            cmds.push(AppCommand::PickTitleStyle { target: (!picking).then_some(clip_id) });
-        }
     });
-    ui.add_space(6.0);
 
     // ── Motion and Style: the first tier, always open ──
     if let Some(tb) = tb_target {
@@ -4954,7 +4947,7 @@ fn show_title_editor(
         let status = crate::widgets::inspector_group::GroupStatus { count: None, active: false };
     ui.label(
         egui::RichText::new("More text effects, typography and layer controls")
-            .size(10.0)
+            .size(rows::TEXT)
             .color(theme.text_secondary),
     );
     if !title_group_is_open(ui, theme, clip_id, "Advanced title tools", status) {
@@ -4988,11 +4981,11 @@ fn show_title_editor(
         let keys = |key: &str| tb_target.and_then(|tb| tb.effect_keyframes_for(key)).unwrap_or(no_keys);
         let ks = |key: &str| target_oid.map(|_| title_object_keyframe_state(keys(key), clip_time_secs, keyframe_tolerance));
         let mut tracking = keyed.as_ref().map_or(td.tracking(), |tb| tb.tracking);
-        let resp = crate::widgets::scrubby_param::scrubby_param_row(ui, "Tracking", &mut tracking, -10.0..=200.0, 0.0, 0.2, 1, " px", ks(k::TEXT_TRACKING));
+        let resp = rows::param_row(ui, theme, "Tracking", &mut tracking, -10.0..=200.0, 0.0, 0.2, 1, " px", ks(k::TEXT_TRACKING));
         handle_text_key_edit(cmds, clip_id, target_oid, k::TEXT_TRACKING, tracking, keys(k::TEXT_TRACKING), clip_time_secs, keyframe_tolerance, (&resp).into(),
             |tracking| AppCommand::SetTitleTracking { clip_id, tracking });
         let mut line_sp = keyed.as_ref().map_or(td.line_spacing(), |tb| tb.line_spacing);
-        let resp = crate::widgets::scrubby_param::scrubby_param_row(ui, "Line spacing", &mut line_sp, 0.5..=4.0, 1.0, 0.05, 2, "x", ks(k::TEXT_LINE_SPACING));
+        let resp = rows::param_row(ui, theme, "Line spacing", &mut line_sp, 0.5..=4.0, 1.0, 0.05, 2, "x", ks(k::TEXT_LINE_SPACING));
         handle_text_key_edit(cmds, clip_id, target_oid, k::TEXT_LINE_SPACING, line_sp, keys(k::TEXT_LINE_SPACING), clip_time_secs, keyframe_tolerance, (&resp).into(),
             |line_spacing| AppCommand::SetTitleLineSpacing { clip_id, line_spacing });
         // The box's paragraphs (#1721), keyable as the type is.
@@ -5006,14 +4999,14 @@ fn show_title_editor(
             ("First line", k::TEXT_INDENT_FIRST, para.indent_first, -1000.0..=1000.0),
         ] {
             let mut v = value;
-            let resp = crate::widgets::scrubby_param::scrubby_param_row(ui, label, &mut v, range, 0.0, 0.5, 0, " px", ks(key));
+            let resp = rows::param_row(ui, theme, label, &mut v, range, 0.0, 0.5, 0, " px", ks(key));
             handle_text_key_edit(cmds, clip_id, target_oid, key, v, keys(key), clip_time_secs, keyframe_tolerance, (&resp).into(),
                 |value| AppCommand::SetTitleParagraph { clip_id, key: key.into(), value });
         }
         // Fewer one-word last lines (#1721): the fewest words a wrapped
         // paragraph ends on.
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Last line").size(11.0).color(theme.text_secondary));
+            ui.label(egui::RichText::new("Last line").size(rows::TEXT).color(theme.text_secondary));
             let cur = para.min_last_words.min(4);
             for (v, label, tip) in [(0u8, "Any", "Lines break where they fall"), (2, "2+ words", "A paragraph never ends on one word alone"), (3, "3+ words", "A paragraph ends on three words or more")] {
                 if pill_toggle_button(ui, theme, label, cur == v || (v == 0 && cur == 1), |r| r.size(11.0)).on_hover_text(tip).clicked() && cur != v {
@@ -5040,7 +5033,7 @@ fn show_title_editor(
             };
             let styles = ["None", "Bullets", "1. 2. 3.", "a. b. c.", "A. B. C.", "i. ii. iii.", "I. II. III."];
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("List").size(11.0).color(theme.text_secondary));
+                ui.label(egui::RichText::new("List").size(rows::TEXT).color(theme.text_secondary));
                 egui::ComboBox::from_id_salt(("title_list", clip_id)).selected_text(styles[style as usize % styles.len()]).width(110.0).show_ui(ui, |ui| {
                     for (v, name) in styles.iter().enumerate() {
                         if ui.selectable_label(style as usize == v, *name).clicked() && style as usize != v {
@@ -5077,7 +5070,7 @@ fn show_title_editor(
         let names = ["Left", "Center", "Right", "Decimal"];
         let mut edited: Option<Vec<(f32, u8)>> = None;
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Tab stops").size(11.0).color(theme.text_secondary));
+            ui.label(egui::RichText::new("Tab stops").size(rows::TEXT).color(theme.text_secondary));
             if ui.small_button("+ Stop").on_hover_text("A tab stop past the last, or at 200 px").clicked() {
                 let mut t = tabs.clone();
                 t.push((t.last().map_or(200.0, |l| l.0 + 200.0), 0));
@@ -5120,43 +5113,50 @@ fn show_title_editor(
         }
     }
     let mut write_on = td.write_on();
-    if ui.add(egui::Slider::new(&mut write_on, 0.0..=1.0).text("Write-On").step_by(0.01)).changed() {
-        cmds.push(AppCommand::SetTitleWriteOn { clip_id, write_on });
-    }
+    rows::rail_row(ui, theme, "Write-on", |ui| {
+        if ui.add(egui::Slider::new(&mut write_on, 0.0..=1.0).step_by(0.01)).changed() {
+            cmds.push(AppCommand::SetTitleWriteOn { clip_id, write_on });
+        }
+    });
     let mut baseline = td.baseline_shift();
-    if ui.add(
-        egui::DragValue::new(&mut baseline)
-            .range(-200.0..=200.0)
-            .speed(0.5)
-            .suffix(" px")
-            .prefix("Baseline shift: ")
-            .fixed_decimals(0),
-    ).changed() {
-        cmds.push(AppCommand::SetTitleBaselineShift { clip_id, shift_px: baseline });
-    }
-    ui.horizontal(|ui| {
-        // Columns: 1..=8 with reset.
+    rows::rail_row(ui, theme, "Baseline shift", |ui| {
+        if ui.add(
+            egui::DragValue::new(&mut baseline)
+                .range(-200.0..=200.0)
+                .speed(0.5)
+                .suffix(" px")
+                .fixed_decimals(0),
+        ).changed() {
+            cmds.push(AppCommand::SetTitleBaselineShift { clip_id, shift_px: baseline });
+        }
+    });
+    rows::rail_row(ui, theme, "Columns", |ui| {
         let mut cols = td.primary_text().map_or(1u8, |tb| tb.columns) as i32;
         if ui.add(
             egui::DragValue::new(&mut cols)
                 .range(1..=8)
-                .speed(0.05)
-                .prefix("Columns: "),
+                .speed(0.05),
         ).changed() {
             cmds.push(AppCommand::SetTitleColumns { clip_id, columns: cols.clamp(1, 8) as u8 });
         }
-        let mut vertical = td.primary_text().is_some_and(|tb| tb.vertical_layout);
-        if ui.checkbox(&mut vertical, "Vertical").changed() {
-            cmds.push(AppCommand::SetTitleVerticalLayout { clip_id, vertical });
+    });
+    let vertical = td.primary_text().is_some_and(|tb| tb.vertical_layout);
+    rows::rail_row(ui, theme, "Vertical", |ui| {
+        if rows::switch(ui, theme, vertical).clicked() {
+            cmds.push(AppCommand::SetTitleVerticalLayout { clip_id, vertical: !vertical });
         }
-        // Vertical text's columns run from the right, as Japanese and
-        // Chinese are set, unless asked otherwise (#1507).
-        if vertical {
-            let mut from_left = td.primary_text().is_some_and(|tb| tb.vertical_columns_ltr);
-            if ui.checkbox(&mut from_left, "Columns from the left").changed() {
-                cmds.push(AppCommand::SetTitleVerticalColumnsLtr { clip_id, left_to_right: from_left });
+    });
+    // Vertical text's columns run from the right, as Japanese and
+    // Chinese are set, unless asked otherwise (#1507).
+    if vertical {
+        let from_left = td.primary_text().is_some_and(|tb| tb.vertical_columns_ltr);
+        rows::rail_row(ui, theme, "Columns from the left", |ui| {
+            if rows::switch(ui, theme, from_left).clicked() {
+                cmds.push(AppCommand::SetTitleVerticalColumnsLtr { clip_id, left_to_right: !from_left });
             }
-        }
+        });
+    }
+    rows::rail_row(ui, theme, "Direction", |ui| {
         let dir_idx = match td.primary_text().map_or(klipp_timeline::TextDirection::Ltr, |tb| tb.text_direction) {
             klipp_timeline::TextDirection::Ltr => 0u8,
             klipp_timeline::TextDirection::Rtl => 1u8,
@@ -5172,19 +5172,17 @@ fn show_title_editor(
             cmds.push(AppCommand::SetTitleDirection { clip_id, direction: sel });
         }
     });
-    ui.add_space(4.0);
     {
         // Drop cap scale: 0 = off, >=1 enlarges first character.
         // Surface as a normal numeric drag clamped to a useful
         // range; the handler folds anything below 1.0 back to 0.0
         // so an off→on→off toggle is a single drag.
         let mut dc = td.drop_cap_scale();
-        let resp = ui.add(
+        let resp = rows::rail_row_inner(ui, theme, "Drop cap", |ui| ui.add(
             egui::DragValue::new(&mut dc)
                 .range(0.0..=8.0)
                 .speed(0.05)
                 .fixed_decimals(2)
-                .prefix("Drop cap: ")
                 .custom_formatter(|n, _| {
                     if n < 1.0 { "off".to_string() } else { format!("{n:.2}\u{00d7}") }
                 })
@@ -5193,19 +5191,21 @@ fn show_title_editor(
                     if t == "off" || t.is_empty() { Some(0.0) }
                     else { t.trim_end_matches('×').trim_end_matches("x").trim().parse::<f64>().ok() }
                 }),
-        );
+        ));
         if resp.changed() {
             cmds.push(AppCommand::SetTitleDropCap { clip_id, scale: dc });
         }
     }
-    ui.horizontal(|ui| {
-        let mut underline = td.underline();
-        if ui.checkbox(&mut underline, "Underline").changed() {
-            cmds.push(AppCommand::SetTitleUnderline { clip_id, underline });
+    let underline = td.underline();
+    rows::rail_row(ui, theme, "Underline", |ui| {
+        if rows::switch(ui, theme, underline).clicked() {
+            cmds.push(AppCommand::SetTitleUnderline { clip_id, underline: !underline });
         }
-        let mut strikethrough = td.strikethrough();
-        if ui.checkbox(&mut strikethrough, "Strikethrough").changed() {
-            cmds.push(AppCommand::SetTitleStrikethrough { clip_id, strikethrough });
+    });
+    let strikethrough = td.strikethrough();
+    rows::rail_row(ui, theme, "Strikethrough", |ui| {
+        if rows::switch(ui, theme, strikethrough).clicked() {
+            cmds.push(AppCommand::SetTitleStrikethrough { clip_id, strikethrough: !strikethrough });
         }
     });
     {
@@ -5223,8 +5223,7 @@ fn show_title_editor(
             klipp_timeline::TextCase::SmallCaps => "Small Caps",
         };
         let mut sel = case_idx;
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Case:").size(11.0).color(theme.text_secondary));
+        rows::rail_row(ui, theme, "Case", |ui| {
             egui::ComboBox::from_id_salt("title_case_transform")
                 .selected_text(case_label)
                 .show_ui(ui, |ui| {
@@ -5271,8 +5270,9 @@ fn show_title_editor(
             let keyframes = obj.opacity_keyframes.as_slice();
             let mut op = obj.evaluated_opacity(clip_time_secs);
             let keyframe_state = title_object_keyframe_state(keyframes, clip_time_secs, keyframe_tolerance);
-            let response = crate::widgets::scrubby_param::scrubby_param_row(
+            let response = rows::param_row(
                 ui,
+                theme,
                 "Layer opacity",
                 &mut op,
                 0.0..=1.0,
@@ -5298,8 +5298,7 @@ fn show_title_editor(
             // How the layer mixes with the layers below it, and the
             // layer that masks it (#1513).
             let mut blend = obj.blend;
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Blend:").size(11.0).color(theme.text_secondary));
+            rows::rail_row(ui, theme, "Blend", |ui| {
                 egui::ComboBox::from_id_salt(("title_layer_blend", object_id))
                     .selected_text(blend.display_name())
                     .show_ui(ui, |ui| {
@@ -5316,7 +5315,7 @@ fn show_title_editor(
             let mut source = current.map(|(id, _)| id);
             let mut kind = current.map_or(klipp_core::layer_mask::LayerMaskKind::Alpha, |(_, k)| k);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Mask with:").size(11.0).color(theme.text_secondary));
+                ui.label(egui::RichText::new("Mask with").size(rows::TEXT).color(theme.text_secondary));
                 let selected = source.and_then(|id| td.object(klipp_timeline::TitleObjectId(id))).map_or_else(|| "None".to_string(), label);
                 egui::ComboBox::from_id_salt(("title_layer_mask", object_id))
                     .selected_text(selected)
@@ -5440,12 +5439,12 @@ fn show_title_editor(
         let mut depth = display_depth;
         let mut angle = display_angle;
         let mut lighting = display_lighting;
-        let resp_depth = crate::widgets::scrubby_param::scrubby_param_row(
-            ui, "Depth", &mut depth, 1.0..=50.0, 10.0, 0.5, 1, " px",
+        let resp_depth = rows::param_row(
+            ui, theme, "Depth", &mut depth, 1.0..=50.0, 10.0, 0.5, 1, " px",
             target_oid.map(|_| ks_depth),
         );
-        let resp_angle = crate::widgets::scrubby_param::scrubby_param_row(
-            ui, "Angle", &mut angle, 0.0..=360.0, 135.0, 1.0, 0, "\u{00b0}",
+        let resp_angle = rows::param_row(
+            ui, theme, "Angle", &mut angle, 0.0..=360.0, 135.0, 1.0, 0, "\u{00b0}",
             target_oid.map(|_| ks_angle),
         );
         let mut face_col = egui::Color32::from_rgba_premultiplied(ext.face_color[0], ext.face_color[1], ext.face_color[2], ext.face_color[3]);
@@ -5459,8 +5458,8 @@ fn show_title_editor(
             ui.label("Side:");
             color_changed |= ui.color_edit_button_srgba(&mut side_col).changed();
         });
-        let resp_lighting = crate::widgets::scrubby_param::scrubby_param_row(
-            ui, "Lighting", &mut lighting, 0.0..=1.0, 0.5, 0.05, 2, "",
+        let resp_lighting = rows::param_row(
+            ui, theme, "Lighting", &mut lighting, 0.0..=1.0, 0.5, 0.05, 2, "",
             target_oid.map(|_| ks_lighting),
         );
         // Color edit always goes through the static SetTitleExtrusion
@@ -5498,14 +5497,13 @@ fn show_title_editor(
     {
         // Chromatic aberration: 0 = off, sub-pixel = silent, max ~40px.
         let mut ca = td.primary_text().map_or(0.0, |tb| tb.chromatic_aberration_px);
-        let resp = ui.add(
+        let resp = rows::rail_row_inner(ui, theme, "Chromatic aberration", |ui| ui.add(
             egui::DragValue::new(&mut ca)
                 .range(0.0..=40.0)
                 .speed(0.1)
                 .fixed_decimals(1)
-                .prefix("Chromatic aberration: ")
                 .suffix(" px"),
-        );
+        ));
         if resp.changed() {
             cmds.push(AppCommand::SetTitleChromaticAberration { clip_id, offset_px: ca });
         }
@@ -5513,11 +5511,10 @@ fn show_title_editor(
     {
         // Glitch intensity 0..1.
         let mut g = td.primary_text().map_or(0.0, |tb| tb.glitch_intensity);
-        let resp = ui.add(
+        let resp = rows::rail_row_inner(ui, theme, "Glitch", |ui| ui.add(
             egui::Slider::new(&mut g, 0.0..=1.0)
-                .step_by(0.01)
-                .text("Glitch"),
-        );
+                .step_by(0.01),
+        ));
         if resp.changed() {
             cmds.push(AppCommand::SetTitleGlitch { clip_id, intensity: g });
         }
@@ -5618,7 +5615,7 @@ fn show_title_editor(
                     let mut at = path.offset_at(clip_time_secs);
                     let align_id = match align { klipp_timeline::PathTextAlign::Start => 0u8, klipp_timeline::PathTextAlign::Center => 1, klipp_timeline::PathTextAlign::End => 2 };
                     let (layer, contour, offset, flip) = (layer.0, *contour, *offset, *flip);
-                    let resp = crate::widgets::scrubby_param::scrubby_param_row(ui, "Start", &mut at, 0.0..=1.0, 0.0, 0.005, 3, "", ks);
+                    let resp = rows::param_row(ui, theme, "Start", &mut at, 0.0..=1.0, 0.0, 0.005, 3, "", ks);
                     handle_text_key_edit(cmds, clip_id, target_oid, k::TEXT_PATH_OFFSET, at, keys, clip_time_secs, keyframe_tolerance, (&resp).into(),
                         |offset| AppCommand::SetTitleTextPathLayer { clip_id, layer, contour, offset, align: align_id, flip });
                     let mut new_align = align_id;
@@ -8675,3 +8672,138 @@ mod text_key_tests {
         assert!(run(None, &[], toggled()).is_empty(), "no layer, nothing to key");
     }
 }
+
+
+#[cfg(test)]
+mod title_row_style_tests {
+    use super::*;
+
+    /// One frame of the whole Title tab for a one-layer title with its
+    /// layer selected: the commands, the texts by their centres, and
+    /// the hairlines wider than a dash, by their height.
+    fn frame(ctx: &egui::Context, clip: &klipp_timeline::Clip, state: &AppState, events: Vec<egui::Event>) -> (Vec<AppCommand>, Vec<(String, egui::Pos2)>, Vec<f32>) {
+        let mut cmds = Vec::new();
+        let mut chips = title_tab::TitleChips::default();
+        let out = ctx.run(
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(380.0, 9000.0))), events, ..Default::default() },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| show_title_editor(ui, &KlippTheme::default(), clip, state, &mut cmds, &mut chips));
+            },
+        );
+        let texts = out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0)),
+            _ => None,
+        }).collect();
+        let rules = out.shapes.iter().filter_map(|s| match &s.shape {
+            egui::Shape::LineSegment { points, .. } if points[0].y == points[1].y && (points[1].x - points[0].x).abs() > 100.0 => Some(points[0].y),
+            _ => None,
+        }).collect();
+        (cmds, texts, rules)
+    }
+
+    fn title() -> (klipp_timeline::Clip, AppState) {
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Title text".into(), font_name: "Inter".into(), ..Default::default() });
+        let oid = td.objects[0].id;
+        let clip = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(klipp_core::Timecode::zero(), klipp_core::Timecode { value: 48, rate: 24 }) };
+        let state = AppState { selected_title_object: Some((clip.id, oid)), ..Default::default() };
+        (clip, state)
+    }
+
+    /// The layers, transform, text, position and style blocks are
+    /// sections with the shared header; every control they had is still
+    /// drawn; and the only rules above the first-tier cards are the
+    /// sections' own (the rule under the layer list is gone).
+    #[test]
+    fn the_top_of_the_title_tab_keeps_every_control_in_sections() {
+        let ctx = egui::Context::default();
+        let (clip, state) = title();
+        let (_, texts, rules) = frame(&ctx, &clip, &state, Vec::new());
+        let all: Vec<&str> = texts.iter().map(|(t, _)| t.as_str()).collect();
+        for label in [
+            "LAYERS", "Text 1", "+ Text", "+ Shape", "+ Image", "Save as Template\u{2026}",
+            "TRANSFORM", "Width", "Height", "Rotation", "Anchor", "50 X", "50 Y", "Center", "Reset transform",
+            "TEXT", "Title text", "Inter", "Font features", "Fit", "Wrap", "Shrink", "Grow",
+            "POSITION", "X", "Y", "Lower 3rd", "Top",
+            "STYLE", "Copy Style", "Paste Style",
+            "ANIMATION",
+        ] {
+            assert!(all.contains(&label), "{label} is no longer shown: {all:?}");
+        }
+        let y = |l: &str| texts.iter().find(|(t, _)| t == l).unwrap().1.y;
+        let headers = ["LAYERS", "TRANSFORM", "TEXT", "POSITION", "STYLE"];
+        let above: Vec<f32> = rules.into_iter().filter(|r| *r < y("ANIMATION") - 10.0).collect();
+        assert_eq!(above.len(), headers.len(), "a rule under each header and none between rows: {above:?}");
+        for h in headers {
+            assert!(above.iter().any(|r| (r - y(h)).abs() < 16.0), "{h}'s own rule: {above:?}");
+        }
+    }
+
+    /// The advanced groups opened: every row they had is drawn, a value
+    /// is no longer its own label ("Columns: 1", "Case:"), the switches
+    /// that replaced checkboxes answer real clicks, and the only rules
+    /// are the groups' headers'.
+    #[test]
+    fn the_advanced_groups_keep_every_row() {
+        let ctx = egui::Context::default();
+        ctx.data_mut(|d| {
+            let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(egui::Id::new(TITLE_EXPANDED_GROUPS_KEY));
+            for g in ["Advanced title tools", "Typography", "Text effects", "Background & Layer Opacity", "Motion Blur", "3D & Distortion", "Text Path"] {
+                set.insert(g.to_string());
+            }
+        });
+        let (clip, state) = title();
+        let (_, texts, rules) = frame(&ctx, &clip, &state, Vec::new());
+        let all: Vec<&str> = texts.iter().map(|(t, _)| t.as_str()).collect();
+        for label in [
+            "Tracking", "Line spacing", "Space before", "Space after", "Indent", "End indent", "First line", "Last line", "List", "Tab stops",
+            "Write-on", "Baseline shift", "Columns", "Vertical", "Direction", "Drop cap", "off", "Underline", "Strikethrough", "Case",
+            "Quick Style", "Quick", "Layer opacity", "Blend", "Mask with", "Chromatic aberration", "Glitch",
+            "Glow", "Outline", "Drop Shadow", "Inner Shadow", "Gradient Fill", "Pattern Fill", "Texture Fill", "3D text",
+        ] {
+            assert!(all.contains(&label), "{label} is no longer shown: {all:?}");
+        }
+        for old in ["Columns: 1", "Drop cap: off", "Baseline shift: 0 px", "Case:", "Blend:", "Mask with:", "Write-On"] {
+            assert!(!all.contains(&old), "{old} is a label inside its value: {all:?}");
+        }
+        let y = |l: &str| texts.iter().find(|(t, _)| t == l).unwrap().1.y;
+        let groups = ["Advanced title tools", "Text effects", "Typography", "Background & Layer Opacity", "Motion Blur", "3D & Distortion", "Text Path"];
+        for r in rules.iter().filter(|r| **r > y("Advanced title tools") - 10.0) {
+            assert!(groups.iter().any(|g| (r - y(g)).abs() < 24.0), "a rule at {r} is not a group header's: {rules:?}");
+        }
+
+        let switch_of = |l: &str| egui::pos2(380.0 - 8.0 - rows::RAIL_PAD - 16.0, y(l));
+        let click = |at: egui::Pos2| {
+            let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            let mut cmds = frame(&ctx, &clip, &state, vec![egui::Event::PointerMoved(at), press(true)]).0;
+            cmds.extend(frame(&ctx, &clip, &state, vec![press(false)]).0);
+            cmds
+        };
+        let cmds = click(switch_of("Underline"));
+        assert!(matches!(cmds.as_slice(), [AppCommand::SetTitleUnderline { underline: true, .. }]), "{cmds:?}");
+        let cmds = click(switch_of("Vertical"));
+        assert!(matches!(cmds.as_slice(), [AppCommand::SetTitleVerticalLayout { vertical: true, .. }]), "{cmds:?}");
+    }
+
+    /// The transform's keyframe marks and the template button answer
+    /// real clicks with the commands they sent before.
+    #[test]
+    fn the_transform_and_template_controls_do_what_they_say() {
+        let ctx = egui::Context::default();
+        let (clip, state) = title();
+        let (_, texts, _) = frame(&ctx, &clip, &state, Vec::new());
+        let click = |at: egui::Pos2| {
+            let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+            let mut cmds = frame(&ctx, &clip, &state, vec![egui::Event::PointerMoved(at), press(true)]).0;
+            cmds.extend(frame(&ctx, &clip, &state, vec![press(false)]).0);
+            cmds
+        };
+        let width_y = texts.iter().find(|(t, _)| t == "Width").unwrap().1.y;
+        let mark = texts.iter().find(|(t, p)| t == "\u{25c7}" && (p.y - width_y).abs() < 4.0).expect("width's mark").1;
+        let cmds = click(mark);
+        assert!(matches!(cmds.as_slice(), [AppCommand::AddTitleObjectTransformKeyframe { property: klipp_core::TitleTransformProperty::Width, value, .. }] if *value == 1.0), "{cmds:?}");
+        let save = texts.iter().find(|(t, _)| t == "Save as Template\u{2026}").unwrap().1;
+        let cmds = click(save);
+        assert!(matches!(cmds.as_slice(), [AppCommand::SaveTitleTemplate { .. }]), "{cmds:?}");
+    }
+}
+

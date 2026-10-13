@@ -3,7 +3,7 @@ use crate::state::AppState;
 use crate::theme::KlippTheme;
 use crate::widgets::role_pill;
 use crate::widgets::scrubby_param::KeyframeState;
-use super::rows::switch;
+use super::rows::{param_row, switch};
 use klipp_core::{AppCommand, ClipRole, Timecode, VideoParam};
 use klipp_effects::BuiltinEffect;
 use klipp_timeline::Clip;
@@ -3803,31 +3803,6 @@ pub fn emit_opacity(cmds: &mut Vec<AppCommand>, clip: &Clip, clip_id: klipp_core
 /// A row in the inspector's row style inside a section's padded frame.
 fn row(ui: &mut egui::Ui, theme: &KlippTheme, label: &str, value: impl FnOnce(&mut egui::Ui)) {
     super::rows::row_padded(ui, theme, label, 0.0, value);
-}
-
-/// A numeric row in the inspector's row style: the scrubby label in
-/// the secondary colour on the left, the value, reset and keyframe
-/// controls on the right, at the shared row height.
-#[allow(clippy::too_many_arguments)]
-fn param_row(
-    ui: &mut egui::Ui,
-    theme: &KlippTheme,
-    label: &str,
-    value: &mut f32,
-    range: std::ops::RangeInclusive<f32>,
-    default: f32,
-    speed: f64,
-    decimals: usize,
-    suffix: &str,
-    keyframe_state: Option<KeyframeState>,
-) -> crate::widgets::scrubby_param::ScrubbyParamResponse {
-    let look = crate::widgets::scrubby_param::RowLook {
-        label_size: super::rows::TEXT,
-        label_colour: Some(theme.text_secondary),
-        label_inset: 0.0,
-        height: super::rows::ROW_H - 4.0,
-    };
-    crate::widgets::scrubby_param::scrubby_param_row_look(ui, look, label, value, range, default, speed, decimals, suffix, keyframe_state)
 }
 
 fn section_card(

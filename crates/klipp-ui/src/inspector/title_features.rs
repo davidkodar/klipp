@@ -127,7 +127,7 @@ pub(super) fn show_features(
     };
     let has = |tag: &str| face.iter().any(|t| t == tag);
 
-    ui.label(egui::RichText::new("Font features").size(11.0).color(theme.text_secondary));
+    ui.label(egui::RichText::new("Font features").size(super::rows::TEXT).color(theme.text_secondary));
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
         for (label, tag, lacks, default) in TOGGLES {
@@ -169,7 +169,7 @@ pub(super) fn show_features(
         let label = |sets: &[String]| if sets.is_empty() { "None".to_string() } else { sets.join(", ") };
         let mut picked: Option<Option<String>> = None;
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Stylistic set").size(11.0).color(theme.text_secondary));
+            ui.label(egui::RichText::new("Stylistic set").size(super::rows::TEXT).color(theme.text_secondary));
             egui::ComboBox::from_id_salt("title_stylistic_set")
                 .selected_text(if mixed { "Mixed".to_string() } else { label(&current[0]) })
                 .show_ui(ui, |ui| {
@@ -201,7 +201,7 @@ pub(super) fn show_features(
         Some(r) => r.features.clone(),
         None => tb.features.clone(),
     };
-    egui::CollapsingHeader::new(egui::RichText::new("Other features").size(11.0).color(theme.text_secondary))
+    egui::CollapsingHeader::new(egui::RichText::new("Other features").size(super::rows::TEXT).color(theme.text_secondary))
         .id_salt("title_features_raw")
         .show(ui, |ui| {
             let id = ui.id().with("buffer");

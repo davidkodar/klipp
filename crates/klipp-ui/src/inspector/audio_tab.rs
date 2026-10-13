@@ -183,7 +183,7 @@ fn slider_row(
     ui.painter().text(
         egui::pos2(top_rect.min.x + pad, top_rect.center().y),
         egui::Align2::LEFT_CENTER,
-        label, egui::FontId::proportional(13.0), theme.text_secondary,
+        label, egui::FontId::proportional(super::rows::TEXT), theme.text_secondary,
     );
 
     // Keyframe diamond (rightmost element)
@@ -523,8 +523,8 @@ fn show_clip_audio(
                 }
                 ui.label(
                     egui::RichText::new("Reset to defaults")
-                        .size(10.0)
-                        .color(theme.text_dim),
+                        .size(super::rows::TEXT)
+                        .color(theme.text_secondary),
                 );
             });
             ui.add_space(2.0);
@@ -532,57 +532,25 @@ fn show_clip_audio(
 
         // Source channel info
         if let Some(ch) = source_channels {
-            info_row(ui, theme, pad, row_h, w, "Source", |ui, rx, cy| {
-                let (ch_label, ch_count) = match ch {
-                    1 => ("Mono", "1ch"),
-                    2 => ("Stereo", "2ch"),
-                    6 => ("5.1", "6ch"),
-                    8 => ("7.1", "8ch"),
-                    n => ("", &*Box::leak(format!("{n}ch").into_boxed_str())),
-                };
-                let label = format!("{ch_label} ({ch_count})");
-                let label_galley = ui.painter().layout_no_wrap(
-                    label.clone(), egui::FontId::proportional(12.0), theme.text_dim,
-                );
-                let label_w = label_galley.size().x;
-                ui.painter().text(
-                    egui::pos2(rx, cy), egui::Align2::RIGHT_CENTER,
-                    &label, egui::FontId::proportional(12.0), theme.text_dim,
-                );
-
-                // Channel bars
-                let bar_heights: &[f32] = match ch {
-                    1 => &[0.8],
-                    2 => &[0.9, 0.7],
-                    6 => &[0.7, 0.9, 1.0, 0.8, 0.6, 0.5],
-                    8 => &[0.7, 0.9, 1.0, 0.8, 0.6, 0.5, 0.7, 0.6],
-                    _ => &[0.8, 0.7],
-                };
-                let bar_w = 4.0;
-                let bar_gap = 2.0;
-                let max_bar_h = 14.0;
-                let total_bars_w = bar_heights.len() as f32 * (bar_w + bar_gap) - bar_gap;
-                let bx = rx - label_w - 10.0 - total_bars_w;
-                for (i, &h_frac) in bar_heights.iter().enumerate() {
-                    let bh = max_bar_h * h_frac;
-                    let bar_rect = egui::Rect::from_min_size(
-                        egui::pos2(bx + i as f32 * (bar_w + bar_gap), cy - bh / 2.0),
-                        egui::vec2(bar_w, bh),
-                    );
-                    ui.painter().rect_filled(bar_rect, 1.0, theme.accent);
-                }
-            });
+            // What the file holds, as its stream says.
+            let text = match ch {
+                1 => "Mono (1ch)".to_string(),
+                2 => "Stereo (2ch)".to_string(),
+                6 => "5.1 (6ch)".to_string(),
+                8 => "7.1 (8ch)".to_string(),
+                n => format!("{n} channels"),
+            };
+            super::rows::text_row(ui, theme, "Source", text);
         }
 
         // Channel routing dropdown
         {
             let prev = channel_config;
             let (row_rect, _) = ui.allocate_exact_size(egui::vec2(w, row_h + 4.0), egui::Sense::hover());
-            ui.painter().hline(row_rect.min.x + pad..=row_rect.max.x - pad, row_rect.max.y, egui::Stroke::new(0.5_f32, theme.border));
             ui.painter().text(
                 egui::pos2(row_rect.min.x + pad, row_rect.center().y),
                 egui::Align2::LEFT_CENTER, "Channel",
-                egui::FontId::proportional(13.0), theme.text_secondary,
+                egui::FontId::proportional(super::rows::TEXT), theme.text_secondary,
             );
             let combo_w = 110.0;
             let combo_rect = egui::Rect::from_min_size(
@@ -633,7 +601,7 @@ fn show_clip_audio(
         handle_audio_param(cmds, &gain_resp, &drag_key, clip, clip_id, gain, volume, pan, fade_in, fade_out, fade_in_curve, fade_out_curve, channel_config, AudioParam::Gain, clip_time_secs, kf_tolerance, clip_timeline_in_secs, clip_rate, gain_prev_kf, gain_next_kf);
 
         // ── Volume slider ──
-        padded_separator(ui, w, pad, theme);
+        ui.add_space(4.0);
         let vol_resp = slider_row(
             ui, theme, "volume", "Volume", &mut volume, 0.0..=2.0, 1.0, 0.005, 2, "",
             Some(vol_ks), false,
@@ -641,7 +609,7 @@ fn show_clip_audio(
         handle_audio_param(cmds, &vol_resp, &drag_key, clip, clip_id, gain, volume, pan, fade_in, fade_out, fade_in_curve, fade_out_curve, channel_config, AudioParam::Volume, clip_time_secs, kf_tolerance, clip_timeline_in_secs, clip_rate, vol_prev_kf, vol_next_kf);
 
         // ── Pan slider ──
-        padded_separator(ui, w, pad, theme);
+        ui.add_space(4.0);
         let pan_resp = slider_row(
             ui, theme, "pan", "Pan", &mut pan, -1.0..=1.0, 0.0, 0.005, 2, "",
             Some(pan_ks), true,
@@ -649,7 +617,7 @@ fn show_clip_audio(
         handle_audio_param(cmds, &pan_resp, &drag_key, clip, clip_id, gain, volume, pan, fade_in, fade_out, fade_in_curve, fade_out_curve, channel_config, AudioParam::Pan, clip_time_secs, kf_tolerance, clip_timeline_in_secs, clip_rate, pan_prev_kf, pan_next_kf);
 
         // ── Fade In ──
-        padded_separator(ui, w, pad, theme);
+        ui.add_space(4.0);
         let fi_resp = slider_row(
             ui, theme, "fade_in", "Fade In", &mut fade_in, 0.0..=10.0, 0.0, 0.02, 2, " s",
             None, false,
@@ -663,7 +631,7 @@ fn show_clip_audio(
             ui.painter().text(
                 egui::pos2(row_rect.min.x + pad, row_rect.center().y),
                 egui::Align2::LEFT_CENTER, "Curve",
-                egui::FontId::proportional(13.0), theme.text_secondary,
+                egui::FontId::proportional(super::rows::TEXT), theme.text_secondary,
             );
             let combo_w = 110.0;
             let combo_rect = egui::Rect::from_min_size(
@@ -690,7 +658,7 @@ fn show_clip_audio(
         }
 
         // ── Fade Out ──
-        padded_separator(ui, w, pad, theme);
+        ui.add_space(4.0);
         let fo_resp = slider_row(
             ui, theme, "fade_out", "Fade Out", &mut fade_out, 0.0..=10.0, 0.0, 0.02, 2, " s",
             None, false,
@@ -704,7 +672,7 @@ fn show_clip_audio(
             ui.painter().text(
                 egui::pos2(row_rect.min.x + pad, row_rect.center().y),
                 egui::Align2::LEFT_CENTER, "Curve",
-                egui::FontId::proportional(13.0), theme.text_secondary,
+                egui::FontId::proportional(super::rows::TEXT), theme.text_secondary,
             );
             let combo_w = 110.0;
             let combo_rect = egui::Rect::from_min_size(
@@ -838,11 +806,10 @@ fn show_clip_audio(
             // Sidechain dropdown — right-aligned to match slider value boxes
             {
                 let (row_rect, _) = ui.allocate_exact_size(egui::vec2(w, row_h + 4.0), egui::Sense::hover());
-                ui.painter().hline(row_rect.min.x + pad..=row_rect.max.x - pad, row_rect.max.y, egui::Stroke::new(0.5_f32, theme.border));
                 ui.painter().text(
                     egui::pos2(row_rect.min.x + pad, row_rect.center().y),
                     egui::Align2::LEFT_CENTER, "Sidechain",
-                    egui::FontId::proportional(13.0), theme.text_secondary,
+                    egui::FontId::proportional(super::rows::TEXT), theme.text_secondary,
                 );
                 let combo_w = 110.0;
                 let combo_rect = egui::Rect::from_min_size(
@@ -875,11 +842,11 @@ fn show_clip_audio(
                 current_interpolation: None,
             });
             slider_row(ui, theme, "duck_level", "Duck Level", &mut duck.level, 0.0..=1.0, 0.2, 0.005, 2, "", empty_ks, false);
-            padded_separator(ui, w, pad, theme);
+            ui.add_space(4.0);
             slider_row(ui, theme, "duck_attack", "Attack", &mut duck.attack, 0.01..=2.0, 0.1, 0.01, 2, " s", empty_ks, false);
-            padded_separator(ui, w, pad, theme);
+            ui.add_space(4.0);
             slider_row(ui, theme, "duck_release", "Release", &mut duck.release, 0.01..=2.0, 0.3, 0.01, 2, " s", empty_ks, false);
-            padded_separator(ui, w, pad, theme);
+            ui.add_space(4.0);
             slider_row(ui, theme, "duck_threshold", "Threshold", &mut duck.threshold, 0.0..=1.0, 0.1, 0.005, 2, "", empty_ks, false);
 
             ui.add_space(4.0);
@@ -913,8 +880,8 @@ fn show_clip_audio(
                     ui.add_space(14.0);
                     ui.label(
                         egui::RichText::new("Sidechain source cannot be the same track as the target.")
-                            .size(10.0)
-                            .color(theme.role_sfx),
+                            .size(super::rows::TEXT)
+                            .color(theme.marker_warning),
                     );
                 });
             }
@@ -1069,29 +1036,7 @@ fn section_card(
     crate::widgets::inspector_group::section_card(ui, title, None, theme, add_contents);
 }
 
-fn info_row(
-    ui: &mut egui::Ui, theme: &KlippTheme, pad: f32, row_h: f32, total_w: f32,
-    label: &str, draw_value: impl FnOnce(&mut egui::Ui, f32, f32),
-) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(total_w, row_h), egui::Sense::hover());
-    ui.painter().hline(rect.min.x + pad..=rect.max.x - pad, rect.max.y, egui::Stroke::new(0.5_f32, theme.border));
-    ui.painter().text(
-        egui::pos2(rect.min.x + pad, rect.center().y), egui::Align2::LEFT_CENTER,
-        label, egui::FontId::proportional(13.0), theme.text_secondary,
-    );
-    draw_value(ui, rect.max.x - pad, rect.center().y);
-}
-
 /// Draw a padded horizontal separator line inside a card.
-fn padded_separator(ui: &mut egui::Ui, w: f32, pad: f32, theme: &KlippTheme) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 1.0), egui::Sense::hover());
-    ui.painter().hline(
-        rect.min.x + pad..=rect.max.x - pad,
-        rect.center().y,
-        egui::Stroke::new(0.5_f32, theme.border),
-    );
-}
-
 fn draw_keyframe_diamond(ui: &mut egui::Ui, center: egui::Pos2, color: egui::Color32, filled: bool) {
     let s = 5.0;
     let pts = vec![
@@ -1287,5 +1232,68 @@ mod sequence_properties_tests {
         assert!(all.contains(&crate::inspector::sequence_view::format_line(&state)), "{all:?}");
         assert!(all.contains(&crate::inspector::sequence_view::colour_line(&state)), "{all:?}");
         assert!(all.iter().any(|t| t == "Use proxies"), "{all:?}");
+    }
+}
+
+#[cfg(test)]
+mod clip_audio_tests {
+    use super::*;
+    use crate::inspector::rows::test_frame::{click, frame};
+
+    fn clip() -> Clip {
+        let t = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        Clip::media(klipp_core::MediaId::new(), t(0.0), t(2.0), t(0.0), t(2.0))
+    }
+
+    fn draw(ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>, state: &AppState, clip: &Clip, duck: &mut DuckSettings) {
+        let tracks = [TrackInfo { index: 0, name: "Music".into() }, TrackInfo { index: 1, name: "Voice".into() }];
+        show(ui, theme, state, Some((clip, 1, true)), cmds, (0.0, 0.0), None, Some(2), 0.5, duck, &tracks);
+    }
+
+    /// A clip's Audio tab keeps every row; its source reads as the file's
+    /// channels, with no bars of made-up heights; and no rule runs
+    /// between rows, only under each section header.
+    #[test]
+    fn every_row_is_kept_without_rules() {
+        let ctx = egui::Context::default();
+        let state = AppState::default();
+        let clip = clip();
+        let mut duck = DuckSettings::default();
+        let (texts, _) = frame(&ctx, Vec::new(), |ui, theme, cmds| draw(ui, theme, cmds, &state, &clip, &mut duck));
+        let all: Vec<&str> = texts.iter().map(|(t, _)| t.as_str()).collect();
+        for label in [
+            "ROLE", "AUDIO", "Source", "Stereo (2ch)", "Channel", "Gain", "Volume", "Pan", "Fade In", "Curve", "Fade Out",
+            "BEHAVIORS", "LEVEL", "WAVEFORM", "AUDIO EFFECTS", "AUTO DUCK", "Sidechain", "Duck Level", "Attack", "Release", "Threshold", "Apply Auto Duck",
+        ] {
+            assert!(all.contains(&label), "{label} is no longer shown: {all:?}");
+        }
+        let theme = KlippTheme::default();
+        let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(360.0, 6000.0))), ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| draw(ui, &theme, &mut Vec::new(), &state, &clip, &mut duck));
+        });
+        let y = |l: &str| texts.iter().find(|(t, _)| t == l).unwrap().1.y;
+        let headers = ["ROLE", "AUDIO", "BEHAVIORS", "LEVEL", "WAVEFORM", "AUDIO EFFECTS", "AUTO DUCK"];
+        for s in &out.shapes {
+            if let egui::Shape::LineSegment { points, .. } = &s.shape {
+                if points[0].y == points[1].y && (points[1].x - points[0].x) > 100.0 {
+                    assert!(headers.iter().any(|h| (points[0].y - y(h)).abs() < 20.0), "a rule at {} is not a header's", points[0].y);
+                }
+            }
+        }
+    }
+
+    /// The volume's keyframe mark keys the volume at the playhead, by a
+    /// real click.
+    #[test]
+    fn the_keyframe_mark_keys_the_volume() {
+        let ctx = egui::Context::default();
+        let state = AppState::default();
+        let clip = clip();
+        let mut duck = DuckSettings::default();
+        let mut d = |ui: &mut egui::Ui, theme: &KlippTheme, cmds: &mut Vec<AppCommand>| draw(ui, theme, cmds, &state, &clip, &mut duck);
+        let (texts, _) = frame(&ctx, Vec::new(), &mut d);
+        let vy = texts.iter().find(|(t, _)| t == "Volume").unwrap().1.y;
+        let cmds = click(&ctx, egui::pos2(360.0 - 8.0 - 14.0 - 5.0, vy), &mut d);
+        assert!(cmds.iter().any(|c| matches!(c, AppCommand::AddAudioKeyframe { param: AudioParam::Volume, .. })), "{cmds:?}");
     }
 }

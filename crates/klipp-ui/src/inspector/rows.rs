@@ -35,6 +35,46 @@ pub fn row_padded(ui: &mut Ui, theme: &KlippTheme, label: &str, pad: f32, value:
     });
 }
 
+/// The Title tab's rows sit inside a 12 px rail already; this pad puts
+/// their labels where every other tab's are.
+pub const RAIL_PAD: f32 = ROW_PAD - 12.0;
+
+/// [`row`] inside the Title tab's rail.
+pub fn rail_row(ui: &mut Ui, theme: &KlippTheme, label: &str, value: impl FnOnce(&mut Ui)) {
+    row_padded(ui, theme, label, RAIL_PAD, value);
+}
+
+/// [`rail_row`] whose control's response comes back.
+pub fn rail_row_inner<R>(ui: &mut Ui, theme: &KlippTheme, label: &str, value: impl FnOnce(&mut Ui) -> R) -> R {
+    let mut out = None;
+    rail_row(ui, theme, label, |ui| out = Some(value(ui)));
+    out.expect("the row draws its value")
+}
+
+/// A numeric row in the shared style: the scrubby label in the
+/// secondary colour on the left, the value, reset and keyframe controls
+/// on the right. It behaves as `scrubby_param_row` does.
+#[allow(clippy::too_many_arguments)]
+pub fn param_row(
+    ui: &mut Ui,
+    theme: &KlippTheme,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    default: f32,
+    speed: f64,
+    decimals: usize,
+    suffix: &str,
+    keyframe_state: Option<crate::widgets::scrubby_param::KeyframeState>,
+) -> crate::widgets::scrubby_param::ScrubbyParamResponse {
+    crate::widgets::scrubby_param::scrubby_param_row_look(ui, look(theme), label, value, range, default, speed, decimals, suffix, keyframe_state)
+}
+
+/// The shared row look for the scrubby widget.
+pub fn look(theme: &KlippTheme) -> crate::widgets::scrubby_param::RowLook {
+    crate::widgets::scrubby_param::RowLook { label_size: TEXT, label_colour: Some(theme.text_secondary), label_inset: 0.0, height: ROW_H - 4.0 }
+}
+
 /// A fact: its value as plain text, cut short with the whole of it on
 /// hover when the row is too narrow for it.
 pub fn text_row(ui: &mut Ui, theme: &KlippTheme, label: &str, value: impl Into<String>) {
