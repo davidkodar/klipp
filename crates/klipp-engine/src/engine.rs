@@ -1218,6 +1218,11 @@ pub struct PlaybackEngine {
     /// prerolled during the gap and taken over as a cut is, not with a
     /// seek (#546). Cleared with `clock_only`'s other ways out.
     gap_hand_over: Option<(usize, usize)>,
+    /// The last playhead said while playing, and whether playing forwards
+    /// (#1806): what a report during playback is never behind, the way it
+    /// plays (a floor forwards, a ceiling backwards). Cleared by a pause, a
+    /// stop, a seek, a loop or a change of speed.
+    report_floor: std::cell::Cell<Option<(RationalTime, bool)>>,
     // Audio seek synchronization — generation counter
     expected_audio_generation: u64,
     // Performance
@@ -2117,6 +2122,7 @@ impl PlaybackEngine {
             last_synth_frame_rendered: None,
             clock_only: false,
             gap_hand_over: None,
+            report_floor: std::cell::Cell::new(None),
             expected_audio_generation: 0,
             last_stats_time: std::time::Instant::now(),
             dbg_update_playback_count: 0,
@@ -2895,6 +2901,9 @@ impl PlaybackEngine {
             AppCommand::SetSpeed(speed) => {
                 debug!("SetSpeed({speed})");
                 self.master_clock.set_speed(speed);
+                // Reports follow on from here, whichever way it now plays
+                // (#1806).
+                self.report_floor.set(None);
                 // Mute audio at high speeds (unintelligible above 4x)
                 for active in &self.audio_sources {
                     if speed.abs() > 4.0 {
@@ -6127,9 +6136,36 @@ impl PlaybackEngine {
     /// Tell the UI where the playhead is, never past the timeline's end:
     /// a playing clock runs on past it until the end is seen, and the UI
     /// then showed a time beyond the end and jumped back at the stop.
+    ///
+    /// Nor, while playing, behind where it was last said, the way it
+    /// plays (#1806): never back of it forwards, never ahead of it played
+    /// backwards (J, a reverse shuttle). The playhead follows the frame
+    /// shown when one is shown, and the clock (the sound) when none is new
+    /// yet; a frame that comes late is behind the clock, and following it
+    /// stepped the playhead back a frame or more under load, at the cut
+    /// after a gap most of all.
     fn report_playhead(&self) {
         let end = self.sequence_duration();
-        let at = if end.value > 0 { self.playhead.min(end) } else { self.playhead };
+        let mut at = if end.value > 0 { self.playhead.min(end) } else { self.playhead };
+        if self.state == PlaybackState::Playing {
+            let forwards = self.master_clock.speed() >= 0.0;
+            match self.report_floor.get() {
+                Some((floor, true)) if forwards => at = at.max(floor),
+                Some((ceiling, false)) if !forwards => at = at.min(ceiling),
+                _ => {}
+            }
+            self.report_floor.set(Some((at, forwards)));
+        } else {
+            self.report_floor.set(None);
+        }
+        let _ = self.event_tx.send(AppEvent::PlayheadMoved(at));
+    }
+
+    /// Say a jump of the playhead to `at` (a seek, a loop back): from
+    /// there on, reports while playing follow on from it, not from where
+    /// it jumped from.
+    fn report_jump(&self, at: RationalTime) {
+        self.report_floor.set(None);
         let _ = self.event_tx.send(AppEvent::PlayheadMoved(at));
     }
 
@@ -6404,7 +6440,7 @@ impl PlaybackEngine {
                 self.sync_streams();
 
                 let _ = self.event_tx.send(AppEvent::LoopedBack);
-                let _ = self.event_tx.send(AppEvent::PlayheadMoved(target));
+                self.report_jump(target);
                 (self.repaint_cb)();
                 return;
             } else {
@@ -6470,7 +6506,7 @@ impl PlaybackEngine {
 
             self.playhead = target;
             let _ = self.event_tx.send(AppEvent::LoopedBack);
-            let _ = self.event_tx.send(AppEvent::PlayheadMoved(target));
+            self.report_jump(target);
             (self.repaint_cb)();
             return;
         }
@@ -6546,7 +6582,7 @@ impl PlaybackEngine {
             self.sync_streams();
 
             let _ = self.event_tx.send(AppEvent::LoopedBack);
-            let _ = self.event_tx.send(AppEvent::PlayheadMoved(target));
+            self.report_jump(target);
             (self.repaint_cb)();
         } else {
             // No video clip at target — audio-only loop, or reversed
@@ -6570,7 +6606,7 @@ impl PlaybackEngine {
 
             self.playhead = target;
             let _ = self.event_tx.send(AppEvent::LoopedBack);
-            let _ = self.event_tx.send(AppEvent::PlayheadMoved(target));
+            self.report_jump(target);
             (self.repaint_cb)();
         }
     }
@@ -6644,7 +6680,7 @@ impl PlaybackEngine {
                 self.clip_timeline_start = timeline_in;
                 self.playhead = tc;
                 self.present_frame(None);
-                let _ = self.event_tx.send(AppEvent::PlayheadMoved(tc));
+                self.report_jump(tc);
                 (self.repaint_cb)();
                 return;
             }
@@ -6881,7 +6917,7 @@ impl PlaybackEngine {
         }
 
         self.playhead = tc;
-        let _ = self.event_tx.send(AppEvent::PlayheadMoved(tc));
+        self.report_jump(tc);
         (self.repaint_cb)();
     }
 
@@ -13330,5 +13366,75 @@ mod paused_refresh_tests {
             assert_eq!(presented(&shown), (Some(tc(11)), true), "a tick replaced the stepped-to frame");
         }
         let _ = std::fs::remove_file(&path);
+    }
+}
+
+#[cfg(test)]
+mod report_floor_tests {
+    use super::*;
+    use klipp_timeline::Sequence;
+    use std::sync::Mutex;
+
+    /// #1806: while playing, the playhead said never steps back behind
+    /// the last one said (a late frame behind the clock), the stop's
+    /// report included; a seek or a loop says its jump back, and reports
+    /// go on from there; paused, a report says where the playhead is.
+    #[test]
+    fn a_playing_report_never_steps_back_but_a_jump_does() {
+        let tc = |f: i64| RationalTime { value: f, rate: 25 };
+        let mut seq = Sequence::new_default();
+        seq.fps = klipp_core::Fps::new(25, 1);
+        let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v1.clips = vec![klipp_timeline::Clip::gap(tc(0), tc(100))];
+        seq.tracks = vec![v1];
+        let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, ev_rx) = crossbeam_channel::unbounded();
+        let mut engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16))), Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16))),
+            Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(klipp_media::MediaPool::new())), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        let said = |rx: &crossbeam_channel::Receiver<AppEvent>| {
+            rx.try_iter().filter_map(|e| match e { AppEvent::PlayheadMoved(t) => Some(t.value), _ => None }).collect::<Vec<_>>()
+        };
+        let _ = said(&ev_rx);
+        engine.state = PlaybackState::Playing;
+        for f in [25, 26, 25, 27, 26, 28] {
+            engine.playhead = tc(f);
+            engine.report_playhead();
+        }
+        assert_eq!(said(&ev_rx), vec![25, 26, 26, 27, 27, 28], "a late frame never steps the playhead back");
+        // A loop back while playing says its jump, and reports follow on.
+        engine.report_jump(tc(5));
+        engine.playhead = tc(6);
+        engine.report_playhead();
+        assert_eq!(said(&ev_rx), vec![5, 6]);
+        // Played backwards (J): a ceiling, not a floor, so the playhead
+        // runs back and a late frame never steps it forwards.
+        engine.handle_command(AppCommand::SetSpeed(-1.0));
+        for f in [25, 24, 25, 23] {
+            engine.playhead = tc(f);
+            engine.report_playhead();
+        }
+        assert_eq!(said(&ev_rx), vec![25, 24, 24, 23], "backwards, never forwards");
+        // Turned round (L): forwards from where it is, at once.
+        engine.handle_command(AppCommand::SetSpeed(1.0));
+        for f in [20, 21, 20] {
+            engine.playhead = tc(f);
+            engine.report_playhead();
+        }
+        assert_eq!(said(&ev_rx), vec![20, 21, 21], "forwards again from where it turned");
+        // A ceiling left from backwards play is not kept by a change of
+        // direction found on the clock alone either.
+        engine.master_clock.set_speed(-2.0);
+        engine.playhead = tc(30);
+        engine.report_playhead();
+        assert_eq!(said(&ev_rx), vec![30]);
+        engine.master_clock.set_speed(1.0);
+        // Paused: where the playhead is, back or not.
+        engine.state = PlaybackState::Paused;
+        engine.playhead = tc(3);
+        engine.report_playhead();
+        assert_eq!(said(&ev_rx), vec![3]);
     }
 }
