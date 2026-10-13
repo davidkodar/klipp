@@ -3139,13 +3139,18 @@ impl Renderer {
     /// CPU executor: the CPU kernels can't mask or mix (step 9c-2).
     #[allow(clippy::too_many_arguments)]
     fn effects_by(&mut self, plan: bool, clip: &Clip, fx: &[BuiltinEffect], blends: &[Option<crate::resolve::Blend>], pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
-        // A window reads no picture: it is drawn in the effects' own plan,
-        // beside the chain, and the effect blended there (#1265).
-        let windowed = self.matte_input.is_some().then(|| windows_in_the_plan(clip, blends)).flatten();
-        let blends = match &windowed {
+        // A window, or a key of the picture the grade reads, is drawn in
+        // the effects' own plan, beside the chain, and the effect blended
+        // there (#1265); the key reads that picture handed to the run.
+        let moved = self.matte_input.is_some().then(|| mattes_in_the_plan(clip, blends)).flatten();
+        let blends = match &moved {
             Some((moved, n)) => {
                 self.found.stats.effects_blended_apart += *n;
                 EFFECTS_BLENDED_APART.fetch_add(u64::from(*n), std::sync::atomic::Ordering::Relaxed);
+                let keyed = moved.iter().flatten().any(|b| matches!(&b.mask, Some(crate::resolve::MaskSource::Side { input: crate::resolve::SideInput::GradeInput, .. })));
+                if let (true, Some(input)) = (keyed, self.matte_input.clone()) {
+                    self.executor.put_side_picture(klipp_nodes::side_picture::SideKey::GradeInput, Ok(input));
+                }
                 moved.as_slice()
             }
             None => blends,
@@ -3153,7 +3158,7 @@ impl Renderer {
         self.effects_by_matte_apart(plan, clip, fx, blends, pixels, clip_time, fps, width, height)
     }
 
-    /// [`Self::effects_by`] once its windows are in the plan: a masked
+    /// [`Self::effects_by`] once its windows and keys are in the plan: a masked
     /// effect in a run apart from its grade whose matte reads a picture
     /// (9c-2 B2) has the effects before it as usual, it alone and
     /// unmasked, its matte made in a side run of its producer, the two
@@ -3161,8 +3166,12 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     fn effects_by_matte_apart(&mut self, plan: bool, clip: &Clip, fx: &[BuiltinEffect], blends: &[Option<crate::resolve::Blend>], pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
         let blend = |i: usize| blends.get(i).and_then(Option::as_ref);
-        // A window beside the chain is the plan's own (`windows_in_the_plan`).
-        let in_the_plan = |m: &crate::resolve::MaskSource| matches!(m, crate::resolve::MaskSource::Side { node, .. } if node.kind == klipp_nodes::NodeKind::Mask);
+        // A window or a grade-input key beside the chain is the plan's own
+        // (`mattes_in_the_plan`).
+        let in_the_plan = |m: &crate::resolve::MaskSource| {
+            matches!(m, crate::resolve::MaskSource::Side { node, .. } if node.kind == klipp_nodes::NodeKind::Mask)
+                || matches!(m, crate::resolve::MaskSource::Side { input: crate::resolve::SideInput::GradeInput, .. })
+        };
         let masked = (0..fx.len()).find(|&i| blend(i).and_then(|b| b.mask.as_ref()).is_some_and(|m| !in_the_plan(m)));
         let (Some(i), true) = (masked, self.matte_input.is_some()) else {
             return self.effects_by_plain(plan, clip, fx, blends, pixels, clip_time, fps, width, height);
@@ -3217,7 +3226,8 @@ impl Renderer {
                 let mut g = if *reads == SideInput::Graded { clip.grade_to_run().into_owned() } else { self.passthrough.clone() };
                 let feed = match reads {
                     SideInput::Graded => g.input_of(g.output_node_id, 0)?,
-                    SideInput::Source => g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source)?.id,
+                    // This run's Source is the picture the grade reads.
+                    SideInput::Source | SideInput::GradeInput => g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source)?.id,
                 };
                 g.nodes.push((**node).clone());
                 g.edges.push(klipp_nodes::Edge { from_node: feed, from_port: 0, to_node: node.id, to_port: 0 });
@@ -4749,22 +4759,39 @@ fn passthrough_graph() -> klipp_nodes::NodeGraph {
     NodeGraph { output_node_id: output.id, nodes: vec![source, output], edges, node_positions: Default::default(), working_space_override: None, frames: vec![], sticky_notes: vec![] }
 }
 
-/// `blends` with each mask that is a window (a Mask node, of the clip's
-/// grade or beside it) moved beside the chain of a run apart from that
-/// grade, reading its source: a window reads no picture, only its shapes
-/// at the run's time and size, so the effects' own plan draws it and
-/// blends the effect there, on the GPU where there is one (#1265). With
-/// how many it moved; `None` when it moved none.
-fn windows_in_the_plan(clip: &Clip, blends: &[Option<crate::resolve::Blend>]) -> Option<(Vec<Option<crate::resolve::Blend>>, u32)> {
+/// `blends` with each mask the effects' own plan can draw moved beside the
+/// chain of a run apart from the clip's grade (#1265), with how many; `None`
+/// when it moved none:
+/// - a window (a Mask node, of the grade or beside it), which reads no
+///   picture, only its shapes at the run's time and size;
+/// - a key (a Qualifier, a luma key, a difference key) of the picture the
+///   grade reads, reading it as a side picture
+///   (`SideKey::GradeInput`), drawn on the GPU where there is one.
+///
+/// A key of anything the grade made stays on the CPU side run.
+fn mattes_in_the_plan(clip: &Clip, blends: &[Option<crate::resolve::Blend>]) -> Option<(Vec<Option<crate::resolve::Blend>>, u32)> {
     use crate::resolve::{MaskSource, SideInput};
+    use klipp_nodes::NodeKind;
     let grade = clip.grade_to_run();
+    let grade_source = grade.nodes.iter().find(|n| n.kind == NodeKind::Source).map(|n| n.id);
+    let is_key = |k: NodeKind| matches!(k, NodeKind::Qualifier | NodeKind::LumaKey | NodeKind::DifferenceKey);
     let window = |mask: &MaskSource| -> Option<MaskSource> {
-        let (node, port) = match mask {
-            MaskSource::Grade { node, port } => (grade.nodes.iter().find(|n| n.id == *node)?.clone(), *port),
-            MaskSource::Side { node, port, .. } => ((**node).clone(), *port),
+        let (node, port, reads_the_grades_input) = match mask {
+            // A grade's node reading the grade's own Source.
+            MaskSource::Grade { node, port } => {
+                let n = grade.nodes.iter().find(|n| n.id == *node)?.clone();
+                let reads = grade_source.is_some() && grade.input_of(n.id, 0) == grade_source;
+                (n, *port, reads)
+            }
+            // Beside the chain, reading the clip's source as the grade does.
+            MaskSource::Side { node, port, input } => ((**node).clone(), *port, *input == SideInput::Source),
             MaskSource::Unavailable(_) => return None,
         };
-        (node.kind == klipp_nodes::NodeKind::Mask).then(|| MaskSource::Side { node: Box::new(node), port, input: SideInput::Source })
+        match node.kind {
+            NodeKind::Mask => Some(MaskSource::Side { node: Box::new(node), port, input: SideInput::Source }),
+            k if is_key(k) && reads_the_grades_input => Some(MaskSource::Side { node: Box::new(node), port, input: SideInput::GradeInput }),
+            _ => None,
+        }
     };
     let mut moved = 0;
     let out: Vec<Option<crate::resolve::Blend>> = blends
@@ -4917,8 +4944,36 @@ fn splice_blended(
                 }
                 Some((side.id, *port))
             }
+            // The picture the grade reads, handed to the run (#1265): a side
+            // picture node gives it, sized by the run's own Source.
+            (SideInput::GradeInput, Some(from), _) => {
+                let picture = klipp_nodes::NodeId::from_u128(side.id.as_u128() ^ (0x0009_4ade_u128 << 64));
+                if !graph.nodes.iter().any(|n| n.id == picture) {
+                    graph.nodes.push(klipp_nodes::Node {
+                        id: picture,
+                        kind: klipp_nodes::NodeKind::SidePicture,
+                        label: String::new(),
+                        enabled: true,
+                        params: klipp_nodes::NodeParams { side_picture: Some(klipp_nodes::side_picture::SideKey::GradeInput), ..Default::default() },
+                        keyframes: Default::default(),
+                        output_link: None,
+                        input_links: vec![],
+                    });
+                    graph.edges.push(klipp_nodes::Edge { from_node: from, from_port: 0, to_node: picture, to_port: 0 });
+                }
+                if !graph.nodes.iter().any(|n| n.id == side.id) {
+                    graph.nodes.push((**side).clone());
+                    graph.edges.push(klipp_nodes::Edge { from_node: picture, from_port: 0, to_node: side.id, to_port: 0 });
+                }
+                Some((side.id, *port))
+            }
             _ => {
-                unavailable.push(format!("its {what} reads {}, which this run hasn't", if *input == SideInput::Graded { "the grade's picture" } else { "the clip's source" }));
+                let reads = match input {
+                    SideInput::Graded => "the grade's picture",
+                    SideInput::Source => "the clip's source",
+                    SideInput::GradeInput => "the picture the grade reads",
+                };
+                unavailable.push(format!("its {what} reads {reads}, which this run hasn't"));
                 None
             }
         },

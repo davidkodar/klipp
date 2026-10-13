@@ -90,6 +90,10 @@ pub enum SideInput {
     Source,
     /// The grade's picture.
     Graded,
+    /// The picture the clip's grade reads, handed to a run apart from that
+    /// grade as a side picture (`SideKey::GradeInput`, #1265): a key's,
+    /// drawn in the effect's own plan.
+    GradeInput,
 }
 
 /// [`resolve_effects_at`], each effect with its [`Blend`] when its node
