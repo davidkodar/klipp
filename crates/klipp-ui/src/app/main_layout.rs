@@ -106,7 +106,7 @@ impl KlippApp {
                     if self.state.show_color_panel {
                         let s = &mut self.state;
                         let now = ctx.input(|i| i.time);
-                        s.graded_thumbs.update(ctx, now, &s.sequences[s.active_sequence_idx], &s.media_pool, klipp_engine::video_decoder::working_colorspace());
+                        s.graded_thumbs.update(ctx, now, &s.sequences[s.active_sequence_idx], &s.media_pool, klipp_engine::video_decoder::working_colorspace(), s.wipe_clip);
                     }
                     let crate::layout::LayoutRects {
                         full: _,
@@ -995,6 +995,14 @@ impl KlippApp {
                     let seq = &self.state.sequences[seq_idx];
                     crate::inspector::grade_view::snapshot_for_root(seq, clip_id, w.root(seq), &self.state.graph_descent_path, &mut self.state.pending_corrector, &mut self.state.root_grade_start)
                 });
+                // The shots either side of the graded one, for a wipe (#899).
+                let wiping = self.state.wipe_clip;
+                let wipe_neighbours = {
+                    let seq = &self.state.sequences[self.state.active_sequence_idx];
+                    let graded = crate::graded_thumbs::viewed_clip(seq, self.state.selected_clip, self.state.playhead);
+                    let n = |forward| graded.and_then(|g| crate::graded_thumbs::neighbour(seq, g, forward));
+                    (n(false), n(true))
+                };
                 let clip = self.state.sequences[seq_idx].tracks.iter_mut()
                     .find_map(|t| t.find_clip_mut(clip_id));
                 if let Some(clip) = clip {
@@ -1216,6 +1224,18 @@ impl KlippApp {
                                 .clicked()
                             {
                                 all_cmds.push(AppCommand::ToggleGradeStillCompare);
+                            }
+                            // Wipe against the shot before or after (#899):
+                            // the split's left side that clip, graded. A
+                            // second click on the lit one ends it.
+                            for (label, target, hover, that) in [
+                                ("\u{25C0} Clip", klipp_core::WipeClip::Previous, "Wipe against the clip before this one, graded", wipe_neighbours.0),
+                                ("Clip \u{25B6}", klipp_core::WipeClip::Next, "Wipe against the clip after this one, graded", wipe_neighbours.1),
+                            ] {
+                                let lit = that.is_some() && that == wiping;
+                                if ui.add_enabled(that.is_some(), egui::Button::new(label).small().selected(lit)).on_hover_text(hover).clicked() {
+                                    all_cmds.push(AppCommand::WipeAgainstClip { target: (!lit).then_some(target) });
+                                }
                             }
                             // Alt+B's split, shown and switchable here: the
                             // viewer showing half a frame ungraded should

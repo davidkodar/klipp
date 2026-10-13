@@ -254,6 +254,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ToggleTrackingMode
         | AppCommand::SetActiveGradeStill { .. }
         | AppCommand::ToggleGradeStillCompare
+        | AppCommand::WipeAgainstClip { .. }
         | AppCommand::SetSourceMedia { .. }
         | AppCommand::PlaySource
         | AppCommand::PauseSource

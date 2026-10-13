@@ -818,6 +818,35 @@ mod menu_smoke_tests {
         assert!(pennant(&mut timeline, klipp_timeline::GradeFlag::NeedsWork), "no pennant on the flagged clip");
     }
 
+    /// On the Colour strip, another clip's menu wipes the clip the viewer
+    /// shows against it (#899).
+    #[test]
+    fn the_colour_strip_wipes_against_another_clip() {
+        let mut timeline = Timeline::new();
+        timeline.state.show_color_panel = true;
+        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        let track = &mut timeline.state.sequences[0].tracks[v1];
+        let media = track.clips[0].media_id().unwrap();
+        let t = |secs: i64| RationalTime { value: 24 * secs, rate: 24 };
+        track.clips = vec![Clip::media(media, t(0), t(4), t(0), t(4)), Clip::media(media, t(4), t(600), t(4), t(600))];
+        track.clips[0].name = Some("First".into());
+        track.clips[1].name = Some("Second".into());
+        let (first, second) = (track.clips[0].id, track.clips[1].id);
+        timeline.state.selected_clip = Some(first);
+        let drawn = timeline.frame(Vec::new());
+        let at = drawn.iter().find(|(t, _)| t == "Second").expect("the second clip is drawn").1;
+        // The viewer shows the first, at the playhead; the right-click
+        // selects the second.
+        let menu = timeline.right_click(at);
+        let drawn = timeline.frame(Vec::new());
+        let item = drawn.iter().find(|(t, _)| t == "Wipe Against This Clip").unwrap_or_else(|| panic!("no wipe item: {menu:?}")).1;
+        let button = |pressed| egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        timeline.frame(vec![egui::Event::PointerMoved(item)]);
+        timeline.frame(vec![egui::Event::PointerMoved(item), button(true)]);
+        timeline.frame(vec![button(false)]);
+        assert!(timeline.sent.iter().any(|c| matches!(c, AppCommand::WipeAgainstClip { target: Some(klipp_core::WipeClip::Clip(id)) } if *id == second)), "{:?}", timeline.sent);
+    }
+
     /// A grey ramp, 2 s at 24 fps, written once with the ffmpeg CLI; `None`
     /// without it.
     fn ramp() -> Option<std::path::PathBuf> {
@@ -857,7 +886,7 @@ mod menu_smoke_tests {
         let ws = klipp_core::WorkingColorspace::Rec709Linear;
         let update = |t: &mut Timeline, now: f64| {
             let s = &mut t.state;
-            s.graded_thumbs.update(&t.ctx, now, &s.sequences[0], &s.media_pool, ws);
+            s.graded_thumbs.update(&t.ctx, now, &s.sequences[0], &s.media_pool, ws, None);
             s.graded_thumbs.settle(&t.ctx);
         };
         update(&mut timeline, 0.0);

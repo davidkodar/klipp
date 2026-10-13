@@ -2197,6 +2197,9 @@ pub struct AppState {
     pub active_grade_still: Option<usize>,
     /// Whether split-view comparison with a grade still is active.
     pub grade_still_compare: bool,
+    /// The clip the viewer wipes against (#899), its graded frame on the
+    /// split's left; `None` for no clip wipe.
+    pub wipe_clip: Option<ClipId>,
 
     /// Reference frame captured for the next ColorMatch run. Stored as
     /// raw RGBA bytes + dimensions; not persisted with the project,
@@ -4466,6 +4469,7 @@ impl Default for AppState {
             grade_stills: Vec::new(),
             active_grade_still: None,
             grade_still_compare: false,
+            wipe_clip: None,
             color_match_reference: None,
             color_match_reference_clip: None,
             node_thumbs: std::collections::HashMap::new(),

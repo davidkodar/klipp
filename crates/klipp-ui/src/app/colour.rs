@@ -1820,6 +1820,22 @@ impl KlippApp {
             }
             AppCommand::ToggleGradeStillCompare => {
                 self.state.grade_still_compare = !self.state.grade_still_compare;
+                // One wipe at a time.
+                if self.state.grade_still_compare {
+                    self.state.wipe_clip = None;
+                }
+                true
+            }
+            AppCommand::WipeAgainstClip { target } => {
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let wiped = target.and_then(|t| crate::graded_thumbs::wipe_target(seq, self.state.selected_clip, self.state.playhead, t));
+                if target.is_some() && wiped.is_none() {
+                    self.state.toast.show("No clip that way to wipe against");
+                }
+                self.state.wipe_clip = wiped;
+                if wiped.is_some() {
+                    self.state.grade_still_compare = false;
+                }
                 true
             }
             _ => false,
