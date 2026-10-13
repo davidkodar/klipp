@@ -273,7 +273,7 @@ pub struct GraphExecutor {
     unreadable_images: HashSet<PathBuf>,
     /// The manifests of the matte sequences (#239) external mattes read,
     /// by folder: read once, not every frame.
-    matte_sequences: HashMap<PathBuf, crate::matte_sequence::Manifest>,
+    matte_sequences: HashMap<PathBuf, (crate::matte_sequence::Manifest, Vec<i64>)>,
     /// The same plate already resized to the frame, keyed by path and
     /// target size. `matte_image_cache` above saves the *decode*; this
     /// saves the resize, which is a full-frame write — 33 MB at 4K — and
@@ -5415,14 +5415,24 @@ impl GraphExecutor {
                 // media, made by the subject matte pass. Its own channel is
                 // the matte; invert applies.
                 if path.is_dir() {
-                    let manifest = match self.matte_sequences.get(path) {
-                        Some(m) => Some(m.clone()),
-                        None => crate::matte_sequence::read_manifest(path).inspect(|m| {
-                            self.matte_sequences.insert(path.clone(), m.clone());
-                        }),
-                    };
+                    use crate::matte_sequence as seq;
                     let secs = ctx.as_ref().map_or(clip_time_secs, |c| c.source_secs);
-                    let at = manifest.as_ref().and_then(|m| crate::matte_sequence::matte_at(path, m, secs));
+                    // Read once: the manifest and the frames there. A time
+                    // with no frame of its own looks again, in case the
+                    // pass has made it since.
+                    let fresh = |path: &PathBuf| seq::read_manifest(path).map(|m| (m, seq::frames(path)));
+                    let mut known = match self.matte_sequences.get(path) {
+                        Some(k) => Some(k.clone()),
+                        None => fresh(path),
+                    };
+                    let mut at = known.as_ref().and_then(|(m, keys)| seq::matte_at(path, m, keys, secs));
+                    if at.as_ref().is_none_or(|a| !a.exact) {
+                        known = fresh(path);
+                        at = known.as_ref().and_then(|(m, keys)| seq::matte_at(path, m, keys, secs));
+                    }
+                    if let Some(k) = known {
+                        self.matte_sequences.insert(path.clone(), k);
+                    }
                     let Some(at) = at else {
                         self.decline(node_id, NodeKind::ExternalMatte, crate::DeclineOutcome::FileMissing, "Subject matte".into(), "no matte made for this media yet", format!("{}: no matte frames", path.display()));
                         return full_matte(pixel_count);
@@ -5430,15 +5440,15 @@ impl GraphExecutor {
                     // Another frame's matte stands in on screen, but the
                     // picture isn't the one asked for: said, and an export
                     // refuses it (#239).
-                    if at.read != at.asked {
-                        let reason = format!("frame {} of its media has no subject matte yet", at.asked);
+                    if !at.exact {
+                        let reason = format!("the frame at {secs:.3} s of its media has no subject matte yet");
                         self.decline(
                             node_id,
                             NodeKind::ExternalMatte,
                             crate::DeclineOutcome::FileMissing,
                             "Subject matte".into(),
                             &reason,
-                            format!("{}: frame {} has no matte; frame {} stands in", path.display(), at.asked, at.read),
+                            format!("{}: no matte at {secs:.6} s; the one at {:.6} s stands in", path.display(), at.read as f64 / 1_000_000.0),
                         );
                     }
                     let up = crate::matte_sequence::upsample(&at.values, at.width, at.height, width, height);

@@ -47,6 +47,14 @@ pub(crate) fn respond(
                 });
                 return Ok(response);
             }
+            // A subject matte pass (#239): stopped after the frame it is
+            // on, every finished frame kept.
+            if let Some(media) = job_id.strip_suffix(":subject_matte") {
+                let media_id = klipp_core::MediaId(parse_uuid(media, "job_id")?);
+                klipp_analysis::service::cancel_subject_matte(media_id)?;
+                return Ok(json!({ "job_id":job_id, "kind":"subject_matte", "cancel_requested":true,
+                    "next":"Read job_status until it reports cancelled; the frames made so far are kept." }));
+            }
             let media_id = klipp_core::MediaId(parse_uuid(&job_id, "job_id")?);
             klipp_analysis::service::cancel_queued(media_id)?;
             Ok(json!({ "job_id":job_id, "kind":"analysis", "state":"cancelled", "cancelled":true,
