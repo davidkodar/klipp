@@ -483,6 +483,10 @@ pub static EFFECTS_ON_CPU_KERNELS: std::sync::atomic::AtomicU64 = std::sync::ato
 /// Masked effects blended on the CPU in a run apart from their grade
 /// (`RenderStats::effects_blended_on_cpu`), in this process.
 pub static EFFECTS_BLENDED_ON_CPU: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Masked effects in a run apart from their grade whose window ran in
+/// their own plan, blended there (`RenderStats::effects_blended_apart`,
+/// #1265), in this process.
+pub static EFFECTS_BLENDED_APART: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Frames the GPU stack declined to the CPU composite, in this process,
 /// for whatever reason (`Renderer::frame_decline` says which for the last).
 /// Cumulative; a reader takes deltas.
@@ -543,8 +547,14 @@ pub struct RenderStats {
     /// Masked effects in a run apart from the grade they read (after a
     /// plug-in, across a shutter, an adjustment layer's): the matte made
     /// in a side run of its producer, the effect run alone, the two
-    /// blended on the CPU (step 9c-2 B2).
+    /// blended on the CPU (step 9c-2 B2). What a window can't give: a
+    /// key's or a matte's from the picture the grade reads.
     pub effects_blended_on_cpu: u32,
+    /// Masked effects in a run apart from their grade whose matte is a
+    /// window, which reads no picture: the window drawn in the effect's
+    /// own plan and the effect blended there, on the GPU where there is
+    /// one, with nothing downloaded between them (#1265).
+    pub effects_blended_apart: u32,
 }
 
 impl RenderStats {
@@ -2980,6 +2990,8 @@ impl Renderer {
     fn splice_effects_only(&mut self, clip: &Clip, fx: &[BuiltinEffect], blends: &[Option<crate::resolve::Blend>]) {
         self.executor.set_working_colorspace(self.working);
         self.executor.set_render_scale(self.px_scale);
+        // A tracked window drawn in the plan follows the clip's points.
+        self.executor.set_current_clip_track_points(&clip.track_points);
         self.spliced.clone_from(&self.passthrough);
         let source = self.spliced.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source).map(|n| n.id);
         let base = clip.id.0.as_u128() ^ (0x00ef_fec8_u128 << 64);
@@ -2997,12 +3009,31 @@ impl Renderer {
     /// CPU executor: the CPU kernels can't mask or mix (step 9c-2).
     #[allow(clippy::too_many_arguments)]
     fn effects_by(&mut self, plan: bool, clip: &Clip, fx: &[BuiltinEffect], blends: &[Option<crate::resolve::Blend>], pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
-        // A masked effect in a run apart from its grade (9c-2 B2): the
-        // effects before it as usual, it alone and unmasked, its matte made
-        // in a side run of its producer, the two blended on the CPU; then
-        // the rest.
+        // A window reads no picture: it is drawn in the effects' own plan,
+        // beside the chain, and the effect blended there (#1265).
+        let windowed = self.matte_input.is_some().then(|| windows_in_the_plan(clip, blends)).flatten();
+        let blends = match &windowed {
+            Some((moved, n)) => {
+                self.found.stats.effects_blended_apart += *n;
+                EFFECTS_BLENDED_APART.fetch_add(u64::from(*n), std::sync::atomic::Ordering::Relaxed);
+                moved.as_slice()
+            }
+            None => blends,
+        };
+        self.effects_by_matte_apart(plan, clip, fx, blends, pixels, clip_time, fps, width, height)
+    }
+
+    /// [`Self::effects_by`] once its windows are in the plan: a masked
+    /// effect in a run apart from its grade whose matte reads a picture
+    /// (9c-2 B2) has the effects before it as usual, it alone and
+    /// unmasked, its matte made in a side run of its producer, the two
+    /// blended on the CPU; then the rest.
+    #[allow(clippy::too_many_arguments)]
+    fn effects_by_matte_apart(&mut self, plan: bool, clip: &Clip, fx: &[BuiltinEffect], blends: &[Option<crate::resolve::Blend>], pixels: Vec<f32>, clip_time: f64, fps: f64, width: u32, height: u32) -> Vec<f32> {
         let blend = |i: usize| blends.get(i).and_then(Option::as_ref);
-        let masked = (0..fx.len()).find(|&i| blend(i).is_some_and(|b| b.mask.is_some()));
+        // A window beside the chain is the plan's own (`windows_in_the_plan`).
+        let in_the_plan = |m: &crate::resolve::MaskSource| matches!(m, crate::resolve::MaskSource::Side { node, .. } if node.kind == klipp_nodes::NodeKind::Mask);
+        let masked = (0..fx.len()).find(|&i| blend(i).and_then(|b| b.mask.as_ref()).is_some_and(|m| !in_the_plan(m)));
         let (Some(i), true) = (masked, self.matte_input.is_some()) else {
             return self.effects_by_plain(plan, clip, fx, blends, pixels, clip_time, fps, width, height);
         };
@@ -3012,22 +3043,29 @@ impl Renderer {
         let out = match self.side_matte(clip, b.mask.as_ref().expect("masked"), clip_time, fps, width, height) {
             Some(matte) if matte.len() == head.len() => {
                 let luma = klipp_color::linear::luma_coefs(self.working);
-                let out = match klipp_effects::mask_mix::MaskMix::new(b.blend.mix, b.blend.channel, luma) {
-                    Ok(mix) => head.chunks_exact(4).zip(drawn.chunks_exact(4)).zip(matte.chunks_exact(4)).flat_map(|((p, e), m)| {
-                        mix.pixel([p[0], p[1], p[2], p[3]], [e[0], e[1], e[2], e[3]], Some([m[0], m[1], m[2], m[3]]))
-                    }).collect(),
-                    Err(_) => head,
-                };
-                self.found.stats.effects_blended_on_cpu += 1;
-                EFFECTS_BLENDED_ON_CPU.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                out
+                match klipp_effects::mask_mix::MaskMix::new(b.blend.mix, b.blend.channel, luma) {
+                    Ok(mix) => {
+                        self.found.stats.effects_blended_on_cpu += 1;
+                        EFFECTS_BLENDED_ON_CPU.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        head.chunks_exact(4).zip(drawn.chunks_exact(4)).zip(matte.chunks_exact(4)).flat_map(|((p, e), m)| {
+                            mix.pixel([p[0], p[1], p[2], p[3]], [e[0], e[1], e[2], e[3]], Some([m[0], m[1], m[2], m[3]]))
+                        }).collect()
+                    }
+                    // A mix that can't be blended (not finite, from a
+                    // file): bypassed as any unavailable mask, and said,
+                    // never counted as blended (#1268's review).
+                    Err(e) => {
+                        self.masks_unavailable(clip, vec![format!("its {} can't be blended: {e:?}", effect_tag(&fx[i]))]);
+                        head
+                    }
+                }
             }
             _ => {
                 self.masks_unavailable(clip, vec![format!("the matte of its {} couldn't be made apart from its grade", effect_tag(&fx[i]))]);
                 head
             }
         };
-        self.effects_by(plan, clip, &fx[i + 1..], blends.get(i + 1..).unwrap_or(&[]), out, clip_time, fps, width, height)
+        self.effects_by_matte_apart(plan, clip, &fx[i + 1..], blends.get(i + 1..).unwrap_or(&[]), out, clip_time, fps, width, height)
     }
 
     /// The matte `mask` gives, made in a run of its own on the CPU from
@@ -4514,6 +4552,40 @@ fn passthrough_graph() -> klipp_nodes::NodeGraph {
     let (source, output) = (node(0x0011_b5ce, NodeKind::Source), node(0x0011_b0ce, NodeKind::Output));
     let edges = vec![Edge { from_node: source.id, from_port: 0, to_node: output.id, to_port: 0 }];
     NodeGraph { output_node_id: output.id, nodes: vec![source, output], edges, node_positions: Default::default(), working_space_override: None, frames: vec![], sticky_notes: vec![] }
+}
+
+/// `blends` with each mask that is a window (a Mask node, of the clip's
+/// grade or beside it) moved beside the chain of a run apart from that
+/// grade, reading its source: a window reads no picture, only its shapes
+/// at the run's time and size, so the effects' own plan draws it and
+/// blends the effect there, on the GPU where there is one (#1265). With
+/// how many it moved; `None` when it moved none.
+fn windows_in_the_plan(clip: &Clip, blends: &[Option<crate::resolve::Blend>]) -> Option<(Vec<Option<crate::resolve::Blend>>, u32)> {
+    use crate::resolve::{MaskSource, SideInput};
+    let grade = clip.grade_to_run();
+    let window = |mask: &MaskSource| -> Option<MaskSource> {
+        let (node, port) = match mask {
+            MaskSource::Grade { node, port } => (grade.nodes.iter().find(|n| n.id == *node)?.clone(), *port),
+            MaskSource::Side { node, port, .. } => ((**node).clone(), *port),
+            MaskSource::Unavailable(_) => return None,
+        };
+        (node.kind == klipp_nodes::NodeKind::Mask).then(|| MaskSource::Side { node: Box::new(node), port, input: SideInput::Source })
+    };
+    let mut moved = 0;
+    let out: Vec<Option<crate::resolve::Blend>> = blends
+        .iter()
+        .map(|b| {
+            let b = b.as_ref()?;
+            match b.mask.as_ref().and_then(window) {
+                Some(mask) => {
+                    moved += 1;
+                    Some(crate::resolve::Blend { mask: Some(mask), ..b.clone() })
+                }
+                None => Some(b.clone()),
+            }
+        })
+        .collect();
+    (moved > 0).then_some((out, moved))
 }
 
 /// A clip's source-boundary nodes (M4 steps 6 and 7): its frame blend and
