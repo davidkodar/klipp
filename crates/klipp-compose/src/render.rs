@@ -4523,12 +4523,19 @@ fn source_nodes(clip: &Clip, blend: bool, denoise: Option<(f32, f32)>, inspected
 /// its first frame blend (a speed ramp blending) and its first temporal
 /// denoise switched on, as `frame_blends` and `temporal_denoise_of` take
 /// them (#1305).
+/// Read from the picture's nodes in list order, not the v1 view.
 fn picture_source_nodes(clip: &Clip) -> (Option<NodeId>, Option<NodeId>) {
-    let on = |i: usize| clip.builtin_effects_enabled().get(i).copied().unwrap_or(true);
-    let first = |is: fn(&BuiltinEffect) -> bool| {
-        let i = clip.builtin_effects().iter().enumerate().position(|(i, e)| on(i) && is(e))?;
-        clip.effect_node_at(false, i)
-    };
+    let Ok(lifted) = clip.picture_v2() else { return (None, None) };
+    // Each entry's node, switched on, with the effect its values make.
+    let entries: Vec<(NodeId, BuiltinEffect)> = (0..)
+        .map_while(|i| clip.effect_node_at(false, i))
+        .filter_map(|id| {
+            let node = lifted.picture.graph.nodes.iter().find(|n| n.id == id && n.enabled)?;
+            let effect = serde_json::from_value(klipp_graph_lift::effect_params::entry_of(node).ok()?).ok()?;
+            Some((id, effect))
+        })
+        .collect();
+    let first = |is: fn(&BuiltinEffect) -> bool| entries.iter().find(|(_, e)| is(e)).map(|(id, _)| *id);
     (first(|e| matches!(e, BuiltinEffect::SpeedRamp { blend_mode: 1, .. })), first(|e| matches!(e, BuiltinEffect::TemporalDenoise { .. })))
 }
 
