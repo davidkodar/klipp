@@ -46,6 +46,8 @@ pub mod transcript;
 pub mod framing;
 #[cfg(feature = "ocr")]
 pub mod screentext;
+#[cfg(feature = "subject_matte")]
+pub mod subject_matte;
 
 use std::path::{Path, PathBuf};
 

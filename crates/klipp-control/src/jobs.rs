@@ -167,13 +167,18 @@ pub(super) fn snapshot(ctx: &ControlContext) -> Vec<Value> {
             klipp_analysis::service::State::Failed => "failed",
             klipp_analysis::service::State::Cancelled => "cancelled",
         };
+        // A subject matte pass (#239) is a job of its own beside the
+        // file's analysis: its id the media's with its kind, its progress
+        // the share of frames made, its artifact the matte sequence.
+        let job_id = if analysis.kind == "analysis" { analysis.media_id.clone() } else { format!("{}:{}", analysis.media_id, analysis.kind) };
+        let (unit, units) = if analysis.kind == "analysis" { ("analysers", Some(analysis.done.len() + analysis.failed.len())) } else { ("frames", None) };
         json!({
-            "job_id": analysis.media_id, "kind": "analysis", "state": state,
-            "phase": analysis.current.unwrap_or(state), "progress": null,
-            "completed_units": analysis.done.len() + analysis.failed.len(), "total_units": null,
-            "unit": "analysers", "eta_secs": null,
+            "job_id": job_id, "kind": analysis.kind, "state": state,
+            "phase": analysis.current.unwrap_or(state), "progress": analysis.progress,
+            "completed_units": units, "total_units": null,
+            "unit": unit, "eta_secs": null,
             "error": analysis.failed.first().map(|(stage, why)| format!("{stage}: {why}")),
-            "artifact": null, "result": if state == "completed" { Some(analysis.filename) } else { None },
+            "artifact": analysis.artifact, "result": if state == "completed" { Some(analysis.filename) } else { None },
         })
     }));
     let submitted: Vec<_> = submitted().lock().unwrap_or_else(|e| e.into_inner())

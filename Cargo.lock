@@ -2849,6 +2849,7 @@ dependencies = [
  "klipp-media",
  "klipp-ml",
  "klipp-ml-ort",
+ "klipp-nodes",
  "libc",
  "realfft",
  "serde",

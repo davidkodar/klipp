@@ -47,6 +47,21 @@ pub struct Status {
     pub current_for_secs: Option<u64>,
     #[serde(skip)]
     current_since: Option<std::time::Instant>,
+    /// What the job is: "analysis" (every analyser for the file) or
+    /// "subject_matte" (the matte pass over a range, #239).
+    pub kind: &'static str,
+    /// How far through it is, 0..1, when it can say.
+    #[serde(default)]
+    pub progress: Option<f32>,
+    /// What it made: the matte sequence's folder.
+    #[serde(default)]
+    pub artifact: Option<String>,
+}
+
+impl Status {
+    fn new(item: &MediaItem, state: State, kind: &'static str) -> Self {
+        Status { media_id: item.id.0.to_string(), filename: item.filename.clone(), state, done: Vec::new(), failed: Vec::new(), current: None, current_for_secs: None, current_since: None, kind, progress: None, artifact: None }
+    }
 }
 
 struct Service {
@@ -61,11 +76,14 @@ struct Service {
     /// Items an on-demand "Transcribe clip" queued: run the speech
     /// analyser for these even when automatic transcription is off.
     force_transcript: std::collections::HashSet<MediaId>,
+    /// The subject matte passes (#239), by media: their status and the
+    /// flag that stops them.
+    mattes: HashMap<MediaId, (Status, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
 }
 
 fn service() -> &'static Mutex<Service> {
     static S: OnceLock<Mutex<Service>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(Service { statuses: HashMap::new(), queue: Vec::new(), running: 0, running_video: 0, ctx: AnalysisCtx::default(), completed: Vec::new(), force_transcript: std::collections::HashSet::new() }))
+    S.get_or_init(|| Mutex::new(Service { statuses: HashMap::new(), queue: Vec::new(), running: 0, running_video: 0, ctx: AnalysisCtx::default(), completed: Vec::new(), force_transcript: std::collections::HashSet::new(), mattes: HashMap::new() }))
 }
 
 /// Ask for `item` to be analysed. Returns at once with its state;
@@ -81,22 +99,13 @@ pub fn request(item: &MediaItem) -> Status {
     if let Some(key) = crate::store::key_for(&item.path) {
         let wanted: Vec<_> = analysers().into_iter().filter(|a| a.wants(item)).collect();
         if !wanted.is_empty() && wanted.iter().all(|a| crate::has_fresh(a.as_ref(), &key)) {
-            let st = Status {
-                media_id: item.id.0.to_string(),
-                filename: item.filename.clone(),
-                state: State::Done,
-                done: wanted.iter().map(|a| a.id()).collect(),
-                failed: Vec::new(),
-                current: None,
-                current_for_secs: None,
-                current_since: None,
-            };
+            let st = Status { done: wanted.iter().map(|a| a.id()).collect(), ..Status::new(item, State::Done, "analysis") };
             s.statuses.insert(item.id, st.clone());
             s.completed.push(item.id);
             return st;
         }
     }
-    let st = Status { media_id: item.id.0.to_string(), filename: item.filename.clone(), state: State::Queued, done: Vec::new(), failed: Vec::new(), current: None, current_for_secs: None, current_since: None };
+    let st = Status::new(item, State::Queued, "analysis");
     s.statuses.insert(item.id, st.clone());
     s.queue.push(item.clone());
     pump(&mut s);
@@ -117,7 +126,7 @@ pub fn request_transcription(item: &MediaItem) -> Status {
         }
     }
     s.force_transcript.insert(item.id);
-    let st = Status { media_id: item.id.0.to_string(), filename: item.filename.clone(), state: State::Queued, done: Vec::new(), failed: Vec::new(), current: None, current_for_secs: None, current_since: None };
+    let st = Status::new(item, State::Queued, "analysis");
     s.statuses.insert(item.id, st.clone());
     s.queue.push(item.clone());
     pump(&mut s);
@@ -255,7 +264,7 @@ pub fn status(media_id: MediaId) -> Option<Status> {
 
 pub fn all() -> Vec<Status> {
     let s = service().lock().unwrap_or_else(|e| e.into_inner());
-    let mut v: Vec<Status> = s.statuses.values().cloned().map(timed).collect();
+    let mut v: Vec<Status> = s.statuses.values().chain(s.mattes.values().map(|m| &m.0)).cloned().map(timed).collect();
     v.sort_by(|a, b| a.filename.cmp(&b.filename));
     v
 }
@@ -337,15 +346,13 @@ mod queue_tests {
     fn cancel_one_queued_analysis_without_touching_other_work() {
         let mut service = Service { statuses: HashMap::new(), queue: Vec::new(), running: 1,
             running_video: 0, ctx: AnalysisCtx::default(), completed: Vec::new(),
-            force_transcript: std::collections::HashSet::new() };
+            force_transcript: std::collections::HashSet::new(), mattes: HashMap::new() };
         let first = MediaItem::new_synthetic_title(MediaId::new(), "first".into(),
             klipp_core::Timecode::from_frames(24, 24), klipp_core::Fps::new(24, 1));
         let second = MediaItem::new_synthetic_title(MediaId::new(), "second".into(),
             klipp_core::Timecode::from_frames(24, 24), klipp_core::Fps::new(24, 1));
         for item in [&first, &second] {
-            service.statuses.insert(item.id, Status { media_id:item.id.0.to_string(), filename:item.filename.clone(),
-                state:State::Queued, done:Vec::new(), failed:Vec::new(), current:None,
-                current_for_secs:None, current_since:None });
+            service.statuses.insert(item.id, Status::new(item, State::Queued, "analysis"));
             service.queue.push(item.clone());
         }
         assert!(cancel_queued_in(&mut service, first.id).is_ok());
@@ -359,10 +366,10 @@ mod queue_tests {
 
     #[test]
     fn prioritize_and_cancel_preserve_running_work_and_reject_invalid_ids() {
-        let mut s = Service { statuses: HashMap::new(), queue: Vec::new(), running: 1, running_video: 1, ctx: AnalysisCtx::default(), completed: Vec::new(), force_transcript: std::collections::HashSet::new() };
+        let mut s = Service { statuses: HashMap::new(), queue: Vec::new(), running: 1, running_video: 1, ctx: AnalysisCtx::default(), completed: Vec::new(), force_transcript: std::collections::HashSet::new(), mattes: HashMap::new() };
         for i in 0..22 {
             let item = MediaItem::new_synthetic_title(MediaId::new(), format!("take{i}"), klipp_core::Timecode::from_frames(24, 24), klipp_core::Fps::new(24, 1));
-            s.statuses.insert(item.id, Status { media_id: item.id.0.to_string(), filename: item.filename.clone(), state: State::Queued, done: Vec::new(), failed: Vec::new(), current: None, current_for_secs: None, current_since: None });
+            s.statuses.insert(item.id, Status::new(&item, State::Queued, "analysis"));
             s.queue.push(item);
         }
         let running = s.queue.remove(0).id;
@@ -380,5 +387,120 @@ mod queue_tests {
         assert_eq!(s.statuses.values().filter(|s| s.state == State::Cancelled).count(), 20);
         assert_eq!(edit_queue(&mut s, None, true).unwrap().len(), 1);
         assert!(s.queue.is_empty());
+    }
+}
+
+/// Make the subject mattes (#239) of `item` from `from_secs` to `to_secs`
+/// with `model` in the background: a job of its own, reported with the
+/// analyses (its progress the share of frames made). The model must be
+/// downloaded already; the pass never fetches it. Returns at once with
+/// its state; one already running for the media is left to run.
+#[cfg(feature = "subject_matte")]
+pub fn request_subject_matte(item: &MediaItem, model: crate::subject_matte::MatteModel, label: Option<String>, from_secs: f64, to_secs: f64) -> Status {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((st, _)) = s.mattes.get(&item.id) {
+        if matches!(st.state, State::Queued | State::Running) {
+            return st.clone();
+        }
+    }
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let st = Status { current: Some(crate::subject_matte::ID), current_since: Some(std::time::Instant::now()), progress: Some(0.0), ..Status::new(item, State::Running, crate::subject_matte::ID) };
+    s.mattes.insert(item.id, (st.clone(), cancel.clone()));
+    drop(s);
+    let id = item.id;
+    let item = item.clone();
+    let spawned = std::thread::Builder::new().name(format!("klipp-matte:{}", item.filename)).spawn(move || {
+        klipp_jobs::lower_current_thread_priority(10);
+        let mut progress = |done: usize, of: usize| {
+            if let Ok(mut s) = service().lock() {
+                if let Some((st, _)) = s.mattes.get_mut(&item.id) {
+                    st.progress = Some(done as f32 / of.max(1) as f32);
+                }
+            }
+            !cancel.load(Ordering::Relaxed)
+        };
+        let result = crate::subject_matte::run(&item, model, label.as_deref(), from_secs, to_secs, &mut progress);
+        let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((st, _)) = s.mattes.get_mut(&item.id) {
+            st.current = None;
+            st.current_since = None;
+            match result {
+                Ok((dir, made)) => {
+                    tracing::info!("subject matte of {}: {} frames made, the subject lost in {}", item.filename, made.frames.len(), made.lost);
+                    st.artifact = Some(dir.display().to_string());
+                    st.done = vec![crate::subject_matte::ID];
+                    if made.cancelled {
+                        st.state = State::Cancelled;
+                    } else {
+                        st.state = State::Done;
+                        st.progress = Some(1.0);
+                    }
+                }
+                Err(why) => {
+                    tracing::warn!("subject matte of {} failed: {why}", item.filename);
+                    st.state = State::Failed;
+                    st.failed = vec![(crate::subject_matte::ID.to_string(), why)];
+                }
+            }
+        }
+    });
+    if let Err(e) = spawned {
+        let mut s = service().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((st, _)) = s.mattes.get_mut(&id) {
+            st.state = State::Failed;
+            st.failed = vec![(crate::subject_matte::ID.to_string(), e.to_string())];
+        }
+    }
+    st
+}
+
+/// Stop the subject matte pass (#239) of a media: it finishes the frame
+/// it is on, keeps every frame finished, and stops. Refused when none is
+/// running.
+pub fn cancel_subject_matte(media_id: MediaId) -> Result<(), String> {
+    let s = service().lock().unwrap_or_else(|e| e.into_inner());
+    match s.mattes.get(&media_id) {
+        Some((st, cancel)) if matches!(st.state, State::Queued | State::Running) => {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+        Some((st, _)) => Err(format!("the subject matte of {} is {:?}", st.filename, st.state)),
+        None => Err(format!("no subject matte pass for {}", media_id.0)),
+    }
+}
+
+/// The subject matte pass's status for a media (#239).
+pub fn subject_matte_status(media_id: MediaId) -> Option<Status> {
+    service().lock().unwrap_or_else(|e| e.into_inner()).mattes.get(&media_id).map(|m| timed(m.0.clone()))
+}
+
+#[cfg(all(test, feature = "subject_matte"))]
+mod subject_matte_job_tests {
+    use super::*;
+
+    /// #239: a subject matte pass is a job of its own in the analyses'
+    /// report, said running at once with its progress; one that can't run
+    /// (here, a file that isn't there) ends failed with why, and a cancel
+    /// of a pass not running is refused, not claimed.
+    #[test]
+    fn a_matte_pass_is_reported_with_the_analyses() {
+        let mut item = MediaItem::synthetic_for_test(std::path::PathBuf::from("/nowhere/take.mov"), None);
+        item.fps = klipp_core::Fps::new(25, 1);
+        let st = request_subject_matte(&item, crate::subject_matte::MatteModel::Foreground, None, 0.0, 1.0);
+        assert_eq!((st.kind, st.progress), (crate::subject_matte::ID, Some(0.0)));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let end = loop {
+            let now = subject_matte_status(item.id).expect("reported");
+            if !matches!(now.state, State::Queued | State::Running) || std::time::Instant::now() > deadline {
+                break now;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        assert_eq!(end.state, State::Failed, "{end:?}");
+        assert!(!end.failed.is_empty() && end.failed[0].0 == crate::subject_matte::ID, "{end:?}");
+        assert!(all().iter().any(|s| s.kind == crate::subject_matte::ID && s.media_id == item.id.0.to_string()), "listed with the analyses");
+        assert!(cancel_subject_matte(item.id).unwrap_err().contains("Failed"));
+        assert!(cancel_subject_matte(MediaId::new()).is_err());
     }
 }

@@ -151,6 +151,44 @@ impl<T: Clone> SeekableFrameReader<T> {
         None
     }
 
+    /// Every frame from the one at `from_secs` on, in the file's order,
+    /// each with its time as [`Self::decode_at`] names it (the stream's
+    /// pts in seconds, the time the render asks a frame for by). For a
+    /// pass over a range (#239): no seek after the first, and a frame's
+    /// time is its own, not counted, so a variable frame rate or a
+    /// stream that starts late is named as the render reads it.
+    pub fn into_frames_from(self, from_secs: f64) -> FramesFrom<T> {
+        FramesFrom { reader: self, from_secs, started: false, ended: false }
+    }
+
+    /// The next frame the decoder gives, after a packet at a time; at the
+    /// file's end, what it still holds. `None` when nothing is left.
+    fn next_decoded(&mut self, tb: f64, ended: &mut bool) -> Option<Result<(f64, T, u32, u32), String>> {
+        loop {
+            if self.decoder.receive_frame(&mut self.frame).is_ok() {
+                let secs = self.frame.pts().unwrap_or(0) as f64 * tb;
+                self.current_pts = secs;
+                let (w, h) = (self.frame.width(), self.frame.height());
+                return Some((self.convert)(&self.frame, w, h).map(|t| (secs, t, w, h)));
+            }
+            if *ended {
+                return None;
+            }
+            match self.format_ctx.packets().next().map(|(st, p)| (st.index(), p)) {
+                Some((index, packet)) => {
+                    if index == self.stream_index && self.decoder.send_packet(&packet).is_err() {
+                        while self.decoder.receive_frame(&mut self.frame).is_ok() {}
+                        let _ = self.decoder.send_packet(&packet);
+                    }
+                }
+                None => {
+                    let _ = self.decoder.send_eof();
+                    *ended = true;
+                }
+            }
+        }
+    }
+
     /// The decoded frames the decoder gives now: `Some` with the answer
     /// once one is at or after `seek_secs` (time base `tb`, seconds a
     /// tick), `None` while it has given only earlier ones.
@@ -177,6 +215,50 @@ impl<T: Clone> SeekableFrameReader<T> {
             });
         }
         None
+    }
+}
+
+/// The frames of [`SeekableFrameReader::into_frames_from`], with their
+/// times.
+pub struct FramesFrom<T> {
+    reader: SeekableFrameReader<T>,
+    from_secs: f64,
+    started: bool,
+    ended: bool,
+}
+
+impl<T: Clone> FramesFrom<T> {
+    /// The length of one frame, in seconds.
+    pub fn frame_duration(&self) -> f64 {
+        self.reader.frame_duration
+    }
+}
+
+impl<T: Clone> Iterator for FramesFrom<T> {
+    type Item = Result<(f64, T, u32, u32), String>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let r = &mut self.reader;
+        let tb = r.format_ctx.stream(r.stream_index).map_or(0.0, |st| {
+            let tb = st.time_base();
+            tb.numerator() as f64 / tb.denominator().max(1) as f64
+        });
+        if !self.started {
+            self.started = true;
+            // As `decode_at` seeks: half a second before, then on to the
+            // first frame that is the one asked for (half a frame's grace).
+            let ts = ((self.from_secs - 0.5).max(0.0) * 1_000_000.0) as i64;
+            let _ = r.format_ctx.seek(ts, ..ts);
+            r.decoder.flush();
+            r.cache.clear();
+            loop {
+                match r.next_decoded(tb, &mut self.ended)? {
+                    Ok((secs, ..)) if secs < self.from_secs - r.frame_duration * 0.5 => continue,
+                    other => return Some(other),
+                }
+            }
+        }
+        r.next_decoded(tb, &mut self.ended)
     }
 }
 
@@ -317,6 +399,20 @@ impl SeekableFrameReader<Vec<u8>> {
         Self::open_with(path, |format_ctx, stream_index| {
             let colour = SourceColour::from_stream(format_ctx, stream_index, log_format);
             Box::new(move |frame: &ffmpeg_next::frame::Video, w: u32, h: u32| {
+                if let Some(rgba) = unsafe { colour.scene_referred_rgba8(frame.as_ptr(), w, h) } {
+                    return Ok(rgba);
+                }
+                swscale_rgba(frame, w, h)
+            })
+        })
+    }
+
+    /// [`Self::open_colour_managed`], every frame scaled to `w` × `h`
+    /// whatever its own size: a pass that wants the picture small (#239).
+    pub fn open_colour_managed_sized(path: &Path, log_format: Option<klipp_core::LogFormat>, w: u32, h: u32) -> Option<Self> {
+        Self::open_with(path, |format_ctx, stream_index| {
+            let colour = SourceColour::from_stream(format_ctx, stream_index, log_format);
+            Box::new(move |frame: &ffmpeg_next::frame::Video, _: u32, _: u32| {
                 if let Some(rgba) = unsafe { colour.scene_referred_rgba8(frame.as_ptr(), w, h) } {
                     return Ok(rgba);
                 }
