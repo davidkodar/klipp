@@ -1079,6 +1079,8 @@ fn load_sequence_from_json(
             .map_or(klipp_timeline::DEFAULT_TITLE_NITS, |n| {
                 n.clamp(*klipp_timeline::TITLE_NITS_RANGE.start(), *klipp_timeline::TITLE_NITS_RANGE.end())
             }),
+        // A colour past the six is no label.
+        node_labels: seq_json.node_labels.iter().filter(|l| (1..=klipp_timeline::NODE_LABEL_COLOURS).contains(&l.colour)).cloned().collect(),
     };
     // A file from before roles were saved carries none: give it the roles
     // a new sequence gets, which is what it had when it was made and what

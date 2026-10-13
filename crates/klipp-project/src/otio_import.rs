@@ -779,6 +779,7 @@ pub fn load_otio(path: &Path) -> Result<ImportResult, OtioImportError> {
         grade_groups: Vec::new(),
         // An imported timeline takes its rate's convention.
         title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
+        node_labels: Vec::new(),
         drop_frame: Sequence::default_drop_frame(fps),
         id: SequenceId::new(),
         name: doc.name.unwrap_or(name),

@@ -533,6 +533,7 @@ mod tests {
     fn empty_sequence(fps: Fps) -> Sequence {
         Sequence {
             title_nits: klipp_timeline::DEFAULT_TITLE_NITS,
+            node_labels: Vec::new(),
             drop_frame: false,
             camera: Default::default(),
             timeline_graph: None,

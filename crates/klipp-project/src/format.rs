@@ -166,6 +166,10 @@ pub struct SequenceJson {
     /// `Sequence::title_nits`. Left out at the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_nits: Option<f32>,
+    /// Colour labels on graph nodes, by path; see `Sequence::node_labels`.
+    /// Only those whose node is there are written.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub node_labels: Vec<klipp_timeline::NodeLabel>,
 }
 
 fn default_header_width() -> f32 { 160.0 }

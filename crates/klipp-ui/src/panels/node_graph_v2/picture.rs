@@ -518,6 +518,8 @@ impl<'a> CanvasGraph for PictureCanvas<'a> {
             }
             AppCommand::SetNodeSolo { at } => Some(AppCommand::SetNodeSolo { at: match at { Some(at) => Some(self.output(at.path.node()?)?), None => None } }),
             AppCommand::SetVisibleNodeThumbs { request, clip_id, at } => Some(AppCommand::SetVisibleNodeThumbs { request, clip_id, at: at.iter().filter_map(|at| self.output(at.path.node()?)).collect() }),
+            // Already by path (#1753).
+            label @ AppCommand::SetNodeColourLabel { .. } => Some(label),
             // Grade-only clipboard and versions have no picture writer
             // yet. The workspace integration hides those actions.
             _ => None,
@@ -1075,6 +1077,10 @@ mod tests {
         mods: egui::Modifiers,
         /// The node cards drawn, at the canvas's zoom.
         cards: Vec<egui::Rect>,
+        /// Every filled rectangle drawn, and its fill.
+        fills: Vec<(egui::Rect, egui::Color32)>,
+        /// Every circle drawn: its centre, and its fill.
+        swatches: Vec<(egui::Pos2, egui::Color32)>,
     }
 
     impl Dock {
@@ -1085,7 +1091,7 @@ mod tests {
             let mut state = crate::state::AppState::default();
             state.sequences[0].tracks.iter_mut().find(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap().clips.push(c.clone());
             state.selected_clip = Some(c.id);
-            let mut d = Self { ctx: Default::default(), panel: Default::default(), state, clip: c.id, selected: None, set: Default::default(), time: 0.0, texts: Vec::new(), sent: Vec::new(), mods: egui::Modifiers::NONE, cards: Vec::new() };
+            let mut d = Self { ctx: Default::default(), panel: Default::default(), state, clip: c.id, selected: None, set: Default::default(), time: 0.0, texts: Vec::new(), sent: Vec::new(), mods: egui::Modifiers::NONE, cards: Vec::new(), fills: Vec::new(), swatches: Vec::new() };
             d.settle();
             d
         }
@@ -1103,6 +1109,7 @@ mod tests {
             // nodes fared on the frame shown.
             self.panel.picture_solo = self.state.solo_node;
             self.panel.node_feedback = self.state.node_feedback(self.clip);
+            self.panel.node_labels = crate::app::node_labels::canvas_labels(&self.state.sequences[0]);
             let mut cmds = Vec::new();
             let (panel, selected, set) = (&mut self.panel, &mut self.selected, &mut self.set);
             let out = self.ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 700.0))), time: Some(self.time), events, modifiers: self.mods, ..Default::default() }, |ctx| {
@@ -1112,6 +1119,12 @@ mod tests {
             });
             self.texts = out.shapes.iter().filter_map(|s| match &s.shape {
                 egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)), _ => None,
+            }).collect();
+            self.fills = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r) => Some((r.rect, r.fill)), _ => None,
+            }).collect();
+            self.swatches = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Circle(c) => Some((c.center, c.fill)), _ => None,
             }).collect();
             let (w, h) = (super::super::NODE_W * self.panel.zoom, super::super::NODE_H * self.panel.zoom);
             self.cards = out.shapes.iter().filter_map(|s| match &s.shape {
@@ -1163,6 +1176,43 @@ mod tests {
         fn frames(&self) -> Vec<NodeFrame> {
             self.graph().ui.frames.iter().map(|v| serde_json::from_value(v.clone()).unwrap()).collect()
         }
+    }
+
+    /// #1753: an effect node on the picture is given a colour label from
+    /// its menu, one undo step kept on the sequence by the node's path,
+    /// and its card is drawn with a band of the colour along its top;
+    /// None from the same menu takes it off.
+    #[test]
+    fn a_picture_node_takes_a_colour_label_from_its_menu() {
+        let mut d = Dock::new();
+        let graph = d.graph();
+        let blur = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+        let label = PictureCanvas::new(&graph, root(&d.clip()), None).unwrap().nodes.iter().find(|n| n.id() == blur).unwrap().label.clone();
+        let path = NodePath::new(Root::Clip { clip: d.clip.0 }, [blur]);
+        let card = |d: &Dock| *d.cards.iter().find(|r| r.contains(d.at(&label))).unwrap();
+        let purple = super::super::node_label_colour(6).unwrap();
+        let banded = |d: &Dock| d.fills.iter().any(|(r, fill)| *fill == purple && card(d).contains_rect(*r) && (r.top() - card(d).top()).abs() < 0.5);
+        assert!(!banded(&d), "no band before a label");
+
+        let swatch = |d: &Dock, fill: egui::Color32| d.swatches.iter().rev().find(|(_, f)| *f == fill).unwrap_or_else(|| panic!("no swatch {fill:?}")).0;
+        let at = d.at(&label);
+        d.click(at, egui::PointerButton::Secondary);
+        let at = swatch(&d, purple);
+        d.click(at, egui::PointerButton::Primary);
+        assert_eq!(d.state.sequences[0].node_label(&path), 6, "labelled: {:?}", d.sent);
+        assert_eq!(d.steps(), 1);
+        assert_eq!(d.state.active_history().undo_label(), Some("Node Colour Label"));
+        assert!(banded(&d), "the card has the colour's band");
+
+        let at = d.at(&label);
+        d.click(at, egui::PointerButton::Secondary);
+        // None is the first swatch, a step left of the red one.
+        let red = swatch(&d, super::super::node_label_colour(1).unwrap());
+        let orange = swatch(&d, super::super::node_label_colour(2).unwrap());
+        d.click(red - (orange - red), egui::PointerButton::Primary);
+        assert!(d.state.sequences[0].node_labels.is_empty());
+        assert_eq!(d.steps(), 2);
+        assert!(!banded(&d));
     }
 
     /// Notes and frames edit on the picture as on the grade (#1743), each

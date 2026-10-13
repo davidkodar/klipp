@@ -441,6 +441,54 @@ pub struct NodeGraphV2Panel {
     /// How the nodes on the canvas fared on the frame shown (#1747), by
     /// node: the app sets it before each draw.
     pub node_feedback: std::collections::HashMap<NodeId, NodeFeedback>,
+    /// The colour labels of the nodes drawn (#1753), by the path the
+    /// canvas names each node by, 1 to 6: the app sets it before each
+    /// draw.
+    pub node_labels: std::collections::HashMap<klipp_graph_format::path::NodePath, u8>,
+}
+
+/// The row of label swatches in a node's menu, None first, `current`
+/// ringed: the colour picked.
+fn label_swatches(ui: &mut egui::Ui, current: u8) -> Option<u8> {
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        // Inside the menu's width, whatever the spacing.
+        ui.spacing_mut().item_spacing.x = 3.0;
+        ui.add_space(6.0);
+        ui.label("Label");
+        ui.add_space(4.0);
+        for label in klipp_media::ColorLabel::ALL {
+            let (rect, response) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+            let centre = rect.center();
+            let painter = ui.painter();
+            let weak = ui.visuals().weak_text_color();
+            match node_label_colour(label.to_u8()) {
+                Some(colour) => {
+                    painter.circle_filled(centre, 5.5, colour);
+                }
+                None => {
+                    painter.circle_stroke(centre, 5.0, egui::Stroke::new(1.0_f32, weak));
+                    painter.line_segment([centre + egui::vec2(-3.5, 3.5), centre + egui::vec2(3.5, -3.5)], egui::Stroke::new(1.0_f32, weak));
+                }
+            }
+            if current == label.to_u8() {
+                painter.circle_stroke(centre, 8.0, egui::Stroke::new(1.5_f32, ui.visuals().strong_text_color()));
+            } else if response.hovered() {
+                painter.circle_stroke(centre, 8.0, egui::Stroke::new(1.0_f32, weak));
+            }
+            if response.on_hover_text(label.label()).clicked() {
+                picked = Some(label.to_u8());
+            }
+        }
+    });
+    picked
+}
+
+/// The colour a node's label `colour` is drawn in, the clip label
+/// palette's; `None` for no label.
+pub(crate) fn node_label_colour(colour: u8) -> Option<egui::Color32> {
+    let label = klipp_media::ColorLabel::from_u8(colour);
+    (label.to_u8() == colour).then(|| label.rgb()).flatten().map(|(r, g, b)| egui::Color32::from_rgb(r, g, b))
 }
 
 impl Default for NodeGraphV2Panel {
@@ -501,6 +549,7 @@ impl Default for NodeGraphV2Panel {
             wire_from: None,
             drop_wire: None,
             node_feedback: Default::default(),
+            node_labels: Default::default(),
         }
     }
 }
@@ -1800,6 +1849,16 @@ impl NodeGraphV2Panel {
                 egui::pos2(rect.max.x, rect.min.y + header_h),
             );
             painter.rect_filled(header_rect, 4.0, theme.overlay(14));
+            // Its colour label (#1753): the header tinted, and a band
+            // of the colour along its top edge.
+            let label = if self.node_labels.is_empty() { None } else {
+                graph.thumbnail_output(clip_id, node_id, &thumbnail_descent).and_then(|at| self.node_labels.get(&at.path).copied()).and_then(node_label_colour)
+            };
+            if let Some(colour) = label {
+                painter.rect_filled(header_rect, 4.0, colour.gamma_multiply(0.3));
+                let band = egui::Rect::from_min_max(header_rect.min, egui::pos2(header_rect.max.x, header_rect.min.y + (3.0 * zoom).max(2.0)));
+                painter.rect_filled(band, egui::Rounding { nw: 4.0, ne: 4.0, sw: 0.0, se: 0.0 }, colour);
+            }
             // Active nodes get a small lift on the kind-palette fill so
             // they read as live; bypassed nodes fall back to bg_panel_alt
             // (no fill colour at all). The lift is intentionally
@@ -4621,6 +4680,16 @@ impl NodeGraphV2Panel {
                         self.node_rename_editor = Some((node_id, pos, current));
                         close = true;
                     }
+                    // A colour label, to find the node again (#1753): a
+                    // row of the swatches in the menu itself, the one it
+                    // has ringed.
+                    if let Some(at) = graph.thumbnail_output(clip_id, node_id, descent) {
+                        let current = self.node_labels.get(&at.path).copied().unwrap_or(0);
+                        if let Some(colour) = label_swatches(ui, current) {
+                            cmds.push(AppCommand::SetNodeColourLabel { node: at.path, colour });
+                            close = true;
+                        }
+                    }
                     if !is_structural && !is_passthrough_kind {
                         let toggle = if enabled { "Bypass" } else { "Enable" };
                         if ui.button(toggle).clicked() {
@@ -5666,6 +5735,10 @@ pub(crate) mod canvas_command_tests {
         time: f64,
         /// The keys held through the frames that follow.
         pub(crate) mods: egui::Modifiers,
+        /// Every filled rectangle drawn, and its fill.
+        fills: Vec<(egui::Rect, egui::Color32)>,
+        /// Every filled circle drawn: its centre and fill.
+        swatches: Vec<(egui::Pos2, egui::Color32)>,
     }
     impl Harness {
         fn new() -> Self {
@@ -5678,7 +5751,7 @@ pub(crate) mod canvas_command_tests {
         }
         /// The canvas showing `graph` for `clip`.
         pub(crate) fn on(graph: NodeGraph, clip: ClipId) -> Self {
-            let mut h = Self { ctx: Default::default(), panel: NodeGraphV2Panel { last_fit_clip: Some(clip), zoom: 1.0, ..Default::default() }, graph, clip, selected: None, set: Default::default(), texts: Vec::new(), cards: Vec::new(), time: 0.0, mods: egui::Modifiers::NONE };
+            let mut h = Self { ctx: Default::default(), panel: NodeGraphV2Panel { last_fit_clip: Some(clip), zoom: 1.0, ..Default::default() }, graph, clip, selected: None, set: Default::default(), texts: Vec::new(), cards: Vec::new(), time: 0.0, mods: egui::Modifiers::NONE, fills: Vec::new(), swatches: Vec::new() };
             h.settle();
             h
         }
@@ -5697,6 +5770,12 @@ pub(crate) mod canvas_command_tests {
             });
             self.texts = out.shapes.iter().filter_map(|s| match &s.shape {
                 egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)), _ => None,
+            }).collect();
+            self.fills = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Rect(r) => Some((r.rect, r.fill)), _ => None,
+            }).collect();
+            self.swatches = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Circle(c) => Some((c.center, c.fill)), _ => None,
             }).collect();
             self.cards = out.shapes.iter().filter_map(|s| match &s.shape {
                 egui::Shape::Rect(r) if (r.rect.width() - NODE_W).abs() < 0.1 && (r.rect.height() - NODE_H).abs() < 0.1 => Some(r.rect), _ => None,
@@ -5772,6 +5851,35 @@ pub(crate) mod canvas_command_tests {
             self.settle();
             self.click(self.text(label), egui::PointerButton::Primary)
         }
+    }
+
+    /// #1753: a grade node's menu gives it a colour label by the path the
+    /// canvas names it by (the grade's group in the clip's picture, then
+    /// the node), and a labelled node's card has a band of the colour
+    /// along its top; an unlabelled one has none.
+    #[test]
+    fn a_grade_node_is_labelled_from_its_menu_and_drawn_with_its_colour() {
+        let mut h = Harness::new();
+        let (id, card) = h.card(NodeKind::Corrector);
+        let path = klipp_compose::inspect::grade_node(h.clip, id).path;
+        let green = node_label_colour(4).unwrap();
+        h.click(card.center(), egui::PointerButton::Secondary);
+        h.settle();
+        let swatch = h.swatches.iter().rev().find(|(_, fill)| *fill == green).expect("a green swatch in the menu").0;
+        let sent = h.click(swatch, egui::PointerButton::Primary);
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::SetNodeColourLabel { node, colour: 4 } if *node == path)), "{sent:?}");
+
+        let banded = |h: &Harness| {
+            let card = h.card_of(id);
+            h.fills.iter().any(|(r, fill)| *fill == green && card.contains_rect(*r) && (r.top() - card.top()).abs() < 0.5)
+        };
+        h.settle();
+        assert!(!banded(&h), "a command alone draws nothing");
+        h.panel.node_labels.insert(path, 4);
+        h.settle();
+        assert!(banded(&h), "the labelled card has its band");
+        let other = h.card(NodeKind::Source).1;
+        assert!(!h.fills.iter().any(|(r, fill)| *fill == green && other.contains_rect(*r)), "only the labelled node");
     }
 
     /// A fitted graph is fitted again when its canvas changes size and

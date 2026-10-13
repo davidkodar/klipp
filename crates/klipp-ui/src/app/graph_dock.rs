@@ -201,6 +201,7 @@ impl KlippApp {
             let keyboard_enabled = self.state.active_panel == Some(crate::state::PanelKind::PictureGraph);
             self.node_graph_v2_panel.picture_solo = self.state.solo_node;
             self.node_graph_v2_panel.node_feedback = self.state.node_feedback(clip.id);
+            self.node_graph_v2_panel.node_labels = super::node_labels::canvas_labels(&self.state.sequences[self.state.active_sequence_idx]);
             match self.node_graph_v2_panel.show_picture(ui, clip, &mut level, &mut self.state.selected_node_id, &mut self.state.selected_node_ids, theme, time, keyboard_enabled, &self.state.node_thumbs, self.state.node_thumbs_gen, &mut self.state.deferred_texture_drops[self.state.deferred_texture_drops_slot]) {
                 Ok(updates) => cmds.extend(updates),
                 Err(why) => { ui.label(why); }
