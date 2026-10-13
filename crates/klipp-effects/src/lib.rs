@@ -59,6 +59,7 @@ pub mod light;
 pub mod mask_mix;
 pub mod nv12_gpu;
 pub mod p010_gpu;
+pub mod pieces;
 pub mod registry;
 pub mod rolling_shutter;
 pub mod scene_detect;

@@ -1413,6 +1413,11 @@ const TRANSITIONS: &[TransitionDef] = &[
         preview: |p, r, _, progress| paint_pieces(p, r, klipp_core::TransitionKind::PartHalves, progress, PREVIEW_A, PREVIEW_B),
     },
     TransitionDef {
+        kind: klipp_core::TransitionKind::Shatter,
+        category: TransitionCategory::Cinematic,
+        preview: |p, r, _, progress| paint_pieces(p, r, klipp_core::TransitionKind::Shatter, progress, PREVIEW_A, PREVIEW_B),
+    },
+    TransitionDef {
         kind: klipp_core::TransitionKind::WhipPan,
         category: TransitionCategory::Slide,
         preview: |p, r, _, _progress| {
@@ -2212,7 +2217,8 @@ fn paint_ab_canvas(painter: &egui::Painter, rect: egui::Rect, _progress: f32) {
 
 /// The piece transitions' card at `t` (#985), drawn as their defaults
 /// move: strips sliding off ways apart, panels leaving in a sweep, two
-/// halves parting down a diagonal, each uncovering `b`. The card the
+/// halves parting down a diagonal, shards falling from the middle out,
+/// each uncovering `b`. The card the
 /// real renderer draws replaces it once ready.
 fn paint_pieces(p: &egui::Painter, r: egui::Rect, kind: klipp_core::TransitionKind, t: f32, a: egui::Color32, b: egui::Color32) {
     use klipp_core::TransitionKind as K;
@@ -2244,6 +2250,36 @@ fn paint_pieces(p: &egui::Painter, r: egui::Rect, kind: klipp_core::TransitionKi
                     let off = ease(key, 0.5) * r.width();
                     let panel = egui::Rect::from_min_size(egui::pos2(r.min.x + col as f32 * pw + off, r.min.y + row as f32 * ph), egui::vec2(pw, ph));
                     p.rect_filled(panel.shrink(0.5), 0.0, a);
+                }
+            }
+        }
+        K::Shatter => {
+            // Triangles of a jittered grid falling from the middle out,
+            // turning as they go.
+            let (cols, rows) = (5, 3);
+            let (pw, ph) = (r.width() / cols as f32, r.height() / rows as f32);
+            let corner = |i: usize, j: usize| {
+                let jx = if i > 0 && i < cols { ((i * 7 + j * 3) % 5) as f32 / 5.0 - 0.4 } else { 0.0 };
+                let jy = if j > 0 && j < rows { ((i * 3 + j * 5) % 5) as f32 / 5.0 - 0.4 } else { 0.0 };
+                egui::pos2(r.min.x + (i as f32 + jx * 0.6) * pw, r.min.y + (j as f32 + jy * 0.6) * ph)
+            };
+            for j in 0..rows {
+                for i in 0..cols {
+                    let (q00, q10, q01, q11) = (corner(i, j), corner(i + 1, j), corner(i, j + 1), corner(i + 1, j + 1));
+                    for (n, tri) in [[q00, q10, q11], [q00, q11, q01]].into_iter().enumerate() {
+                        let c = egui::pos2((tri[0].x + tri[1].x + tri[2].x) / 3.0, (tri[0].y + tri[1].y + tri[2].y) / 3.0);
+                        let dist = ((c - r.center()).length() / (r.width() * 0.5)).min(1.0);
+                        let e = ease(dist, 0.4);
+                        let e = e * e;
+                        let spin = if (i + j + n) % 2 == 0 { 1.6 } else { -1.3 } * e;
+                        let drop = egui::vec2((c.x - r.center().x) * 0.4 * e, e * r.height() * 1.3);
+                        let pts: Vec<egui::Pos2> = tri.iter().map(|q| {
+                            let v = *q - c;
+                            let (s, co) = spin.sin_cos();
+                            c + egui::vec2(v.x * co - v.y * s, v.x * s + v.y * co) * (1.0 - 0.3 * e) + drop
+                        }).collect();
+                        p.add(egui::Shape::convex_polygon(pts, a, egui::Stroke::NONE));
+                    }
                 }
             }
         }
@@ -2990,7 +3026,7 @@ fn paint_kind_motion_overlay(
         K::SlideDown => slide_in_from(0.0, -1.0),
         K::PushLeft => push(-1.0, 0.0),
         K::WhipPan => push(-1.0, 0.0),
-        K::SlideStrips | K::SlidePanels | K::PartHalves => paint_pieces(p, rect, kind, t, a, b),
+        K::SlideStrips | K::SlidePanels | K::PartHalves | K::Shatter => paint_pieces(p, rect, kind, t, a, b),
         K::CoverLeft => slide_in_from(1.0, 0.0),
         K::CoverRight => slide_in_from(-1.0, 0.0),
         K::UncoverLeft => {

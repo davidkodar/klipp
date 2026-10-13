@@ -104,6 +104,8 @@ pub enum TransitionKind {
     SlidePanels,
     /// The picture splits down a line, and the halves part (#985).
     PartHalves,
+    /// The picture breaks into shards that tumble away (#985).
+    Shatter,
 }
 
 // ---------------------------------------------------------------------------
@@ -122,10 +124,10 @@ pub struct TransitionSpec {
 }
 
 // ---------------------------------------------------------------------------
-// Registry — const array of all 71 specs
+// Registry — const array of all 72 specs
 // ---------------------------------------------------------------------------
 
-pub const TRANSITION_SPECS: [TransitionSpec; 71] = [
+pub const TRANSITION_SPECS: [TransitionSpec; 72] = [
     TransitionSpec {
         kind: TransitionKind::CrossDissolve,
         kind_id: 0,
@@ -702,10 +704,21 @@ pub const TRANSITION_SPECS: [TransitionSpec; 71] = [
         // Split down a steep diagonal, the halves parting across it.
         default_params: TransitionUserParams { param0: 0.0, param1: 70.0, param2: 0.15, param3: 0.0, color: [1.0, 1.0, 1.0, 1.0] },
     },
+    TransitionSpec {
+        kind: TransitionKind::Shatter,
+        kind_id: 71,
+        string_key: "Shatter",
+        display_name: "Shatter",
+        short_label: "Shatter",
+        // 24 shards falling from the middle out, accelerating, with
+        // shadows: centre out (2), accelerate (2 << 3), fall (3 << 12),
+        // shadow (1 << 15).
+        default_params: TransitionUserParams { param0: 24.0, param1: 90.0, param2: 0.4, param3: 45074.0, color: [1.0, 1.0, 1.0, 1.0] },
+    },
 ];
 
-// Compile-time assertion: exactly 71 entries.
-const _: () = assert!(TRANSITION_SPECS.len() == 71);
+// Compile-time assertion: exactly 72 entries.
+const _: () = assert!(TRANSITION_SPECS.len() == 72);
 
 // ---------------------------------------------------------------------------
 // Lookup helpers
@@ -778,7 +791,7 @@ mod tests {
 
     #[test]
     fn test_spec_count() {
-        assert_eq!(TRANSITION_SPECS.len(), 71);
+        assert_eq!(TRANSITION_SPECS.len(), 72);
     }
 
     #[test]
@@ -1003,6 +1016,7 @@ mod tests {
             TransitionKind::SlideStrips => check(TransitionKind::SlideStrips),
             TransitionKind::SlidePanels => check(TransitionKind::SlidePanels),
             TransitionKind::PartHalves => check(TransitionKind::PartHalves),
+            TransitionKind::Shatter => check(TransitionKind::Shatter),
         }
     }
 

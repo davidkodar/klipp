@@ -166,7 +166,7 @@ fn piece_transitions_match_between_cpu_and_gpu() {
             (200.0, PieceOrder::EdgesIn, PieceEase::Linear, true, true, 0),
             (-45.0, PieceOrder::Reversed, PieceEase::Smooth, false, false, 3),
         ] {
-            let u = PieceParams { count: 7, angle, stagger: 0.5, order, ease, assemble, alternate, gap, shear: angle < 0.0 }.to_user(kind);
+            let u = PieceParams { count: 7, angle, stagger: 0.5, order, ease, assemble, alternate, gap, shear: angle < 0.0, ..Default::default() }.to_user(kind);
             for p in [0.2f32, 0.5, 0.8] {
                 let id = spec_for_kind(kind).kind_id as u32;
                 let cpu = render_transition_linear(&from, &to, id, p, W, H, u.param0, u.param1, u.param2, u.param3, u.color);
@@ -182,4 +182,170 @@ fn piece_transitions_match_between_cpu_and_gpu() {
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+// ── Posed pieces (#985, phase 2) ──
+
+use klipp_core::piece_transition::PieceMotion;
+use klipp_effects::pieces;
+
+const POSED: [PieceMotion; 4] = [PieceMotion::Tilt, PieceMotion::Turn, PieceMotion::Fall, PieceMotion::Shrink];
+
+fn close(a: &[f32], b: &[f32], tol: f32) -> bool {
+    a.iter().zip(b).all(|(x, y)| (x - y).abs() < tol)
+}
+
+/// Every kind with every posed motion, and the shards sliding, leaving
+/// and arriving, with a gap and shadows: the outgoing picture at the
+/// start and the incoming at the end; in between both show.
+#[test]
+fn posed_pieces_run_from_the_outgoing_picture_to_the_incoming() {
+    let (a, b) = (ramp(), blue());
+    let mut cases: Vec<(TransitionKind, PieceMotion)> = KINDS.iter().flat_map(|k| POSED.map(|m| (*k, m))).collect();
+    cases.extend([TransitionKind::Shatter].iter().flat_map(|k| [PieceMotion::Slide, PieceMotion::Fall, PieceMotion::Tilt].map(|m| (*k, m))));
+    for (kind, motion) in cases {
+        for assemble in [false, true] {
+            let u = PieceParams { motion, assemble, gap: 4, shadow: true, angle: 30.0, ..PieceParams::read(kind, &spec_for_kind(kind).default_params) }.to_user(kind);
+            assert!(pieces::is_posed(spec_for_kind(kind).kind_id as u32, u.param3), "{kind:?} {motion:?}");
+            let what = format!("{kind:?} {motion:?} assemble {assemble}");
+            assert!(close(&render(kind, u, &a, &b, 0.0), &a, 2e-3), "{what}: the outgoing picture at the start");
+            assert!(close(&render(kind, u, &a, &b, 1.0), &b, 2e-3), "{what}: the incoming picture at the end");
+            // Half way, neither picture whole: pieces (lit by how they
+            // face) over what shows behind them.
+            let mid = render(kind, u, &a, &b, 0.5);
+            let unlike = |pic: &[f32]| mid.chunks_exact(4).zip(pic.chunks_exact(4)).filter(|(m, p)| m.iter().zip(*p).any(|(x, y)| (x - y).abs() > 1e-3)).count();
+            let n = (W * H) as usize;
+            let (not_a, not_b) = (unlike(&a), unlike(&b));
+            assert!(not_a > 0 && not_b > 0 && (not_a < n || not_b < n), "{what}: half way, {not_a} pixels are not the outgoing picture and {not_b} not the incoming");
+        }
+    }
+}
+
+/// A shrinking panel keeps its picture at its middle while its corners
+/// open onto the incoming picture; shadows darken only what is behind,
+/// near a moving piece; tilted away, a piece is darker than its picture.
+#[test]
+fn posed_pieces_carry_their_picture_light_and_shadow() {
+    let (a, b) = (ramp(), blue());
+    // One row: two panels, shrinking together, linear.
+    let shrink = PieceParams { count: 1, stagger: 0.0, order: PieceOrder::AllAtOnce, ease: PieceEase::Linear, alternate: false, motion: PieceMotion::Shrink, ..Default::default() };
+    let mid = render(TransitionKind::SlidePanels, shrink.to_user(TransitionKind::SlidePanels), &a, &b, 0.5);
+    let centre = px(&mid, 24, 27);
+    assert!((centre[0] - px(&a, 24, 27)[0]).abs() < 0.02 && (centre[1] - px(&a, 24, 27)[1]).abs() < 0.02, "the middle keeps its picture: {centre:?}");
+    assert!(is_blue(px(&mid, 2, 2)) && is_blue(px(&mid, 93, 51)), "the corners are open");
+
+    // Shadows: on, part of what is behind is darkened well below the
+    // incoming picture (a piece's soft corner over it only ever takes a
+    // little); off, none is.
+    let shaded = |shadow: bool| {
+        let u = PieceParams { shadow, ..shrink }.to_user(TransitionKind::SlidePanels);
+        render(TransitionKind::SlidePanels, u, &a, &b, 0.5).chunks_exact(4).filter(|p| p[0] < 0.01 && p[1] < 0.01 && p[2] > 0.3 && p[2] < 0.8).count()
+    };
+    assert!(shaded(true) > 20, "a shadow falls on the incoming picture: {} pixels", shaded(true));
+    assert_eq!(shaded(false), 0, "none without");
+
+    // Tilted most of the way, a panel is darker than its own picture.
+    let tilt = PieceParams { motion: PieceMotion::Tilt, ..shrink };
+    let mid = render(TransitionKind::SlidePanels, tilt.to_user(TransitionKind::SlidePanels), &a, &b, 0.6);
+    let lit: Vec<[f32; 4]> = mid.chunks_exact(4).map(|p| [p[0], p[1], p[2], p[3]]).filter(|p| !is_blue(*p) && p[2] < 0.01).collect();
+    assert!(!lit.is_empty(), "something of the panels is left");
+    let brightest_green = lit.iter().map(|p| p[1]).fold(0.0f32, f32::max);
+    assert!(brightest_green < 0.95, "turned away from the light: {brightest_green}");
+}
+
+/// The shutter blurs moving pieces: blending instants across it leaves
+/// more pixels between the two pictures than one instant does, and none
+/// at rest.
+#[test]
+fn an_open_shutter_blurs_moving_pieces() {
+    let (a, b) = (ramp(), blue());
+    let kind = TransitionKind::Shatter;
+    let u = spec_for_kind(kind).default_params;
+    let id = spec_for_kind(kind).kind_id as u32;
+    let between = |img: &[f32]| img.chunks_exact(4).filter(|p| p[2] > 0.05 && p[2] < 0.95).count();
+    let sharp = pieces::render(&a, &b, &pieces::plan(id, 0.5, W, H, [u.param0, u.param1, u.param2, u.param3], 0.0, 1));
+    let blurred = pieces::render(&a, &b, &pieces::plan(id, 0.5, W, H, [u.param0, u.param1, u.param2, u.param3], 0.08, 6));
+    assert!(between(&blurred) > between(&sharp) * 2, "blurred {} vs sharp {}", between(&blurred), between(&sharp));
+    let at_rest = pieces::render(&a, &b, &pieces::plan(id, 0.0, W, H, [u.param0, u.param1, u.param2, u.param3], 0.08, 6));
+    assert!(close(&at_rest, &a, 2e-3), "nothing has moved yet: nothing blurs");
+}
+
+/// The shards tile the frame: at rest every pixel is in one, and there
+/// are about as many as asked for.
+#[test]
+fn the_shards_tile_the_frame() {
+    for count in [6u32, 24, 60] {
+        let u = PieceParams { count, ..PieceParams::read(TransitionKind::Shatter, &spec_for_kind(TransitionKind::Shatter).default_params) }.to_user(TransitionKind::Shatter);
+        let plan = pieces::plan(71, 0.0, W, H, [u.param0, u.param1, u.param2, u.param3], 0.0, 1);
+        assert!((plan.count as i64 - count as i64).abs() <= (count as i64) / 4 + 1, "{count} asked, {} cut", plan.count);
+        let (a, b) = (ramp(), blue());
+        assert_eq!(blue_share(&pieces::render(&a, &b, &plan)), 0.0, "{count}: no gaps between the shards at rest");
+    }
+}
+
+/// The GPU draws the posed pieces as the CPU does: every kind and motion,
+/// leaving and arriving, with shadows and a gap, and with the shutter open.
+#[test]
+fn posed_pieces_match_between_cpu_and_gpu() {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else {
+        eprintln!("skipping: no GPU");
+        return;
+    };
+    let mut from = Vec::new();
+    for y in 0..H {
+        for x in 0..W {
+            let check = if (x / 5 + y / 5) % 2 == 0 { 0.8 } else { 0.15 };
+            from.extend_from_slice(&[check * x as f32 / W as f32, 0.3 + 0.4 * y as f32 / H as f32, check, 1.0]);
+        }
+    }
+    let to: Vec<f32> = (0..W * H).flat_map(|i| [0.1, (i % 7) as f32 / 7.0, 0.5, 1.0]).collect();
+    let mut failures = Vec::new();
+    for kind in [TransitionKind::SlideStrips, TransitionKind::SlidePanels, TransitionKind::PartHalves, TransitionKind::Shatter] {
+        for (i, motion) in POSED.into_iter().enumerate() {
+            for (assemble, shutter) in [(false, 0.0f32), (true, 0.06)] {
+                let base = PieceParams::read(kind, &spec_for_kind(kind).default_params);
+                let u = PieceParams { motion, assemble, shadow: true, gap: (i * 3) as u32, angle: 20.0 + 70.0 * i as f32, seed: i as u32 * 40, ..base }.to_user(kind);
+                let id = spec_for_kind(kind).kind_id as u32;
+                for p in [0.3f32, 0.7] {
+                    let plan = pieces::plan(id, p, W, H, [u.param0, u.param1, u.param2, u.param3], shutter, 4);
+                    let cpu = pieces::render(&from, &to, &plan);
+                    let g = gpu.render_pieces_linear(&from, &to, &plan);
+                    let (c, g) = (linear_f32_rgba_to_srgb_u8(&cpu), linear_f32_rgba_to_srgb_u8(&g));
+                    let over = c.iter().zip(&g).enumerate().filter(|(i, (x, y))| i % 4 != 3 && (**x as i32 - **y as i32).abs() > 1).count();
+                    if over > 6 {
+                        failures.push(format!("{kind:?} {motion:?} assemble {assemble} shutter {shutter} p {p}: {over} values over 1"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// What a posed frame costs at 4K on the GPU, plan and pass, for the
+/// shatter's default and its most shards. Run by hand: timings say
+/// nothing on a busy machine.
+#[test]
+#[ignore]
+fn posed_pieces_cost_at_4k() {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
+    let (w, h) = (3840u32, 2160u32);
+    let a = vec![0.4f32; (w * h * 4) as usize];
+    let b = vec![0.7f32; (w * h * 4) as usize];
+    // A dissolve moves the same frames in and out: the pieces' own cost
+    // is what they take over it.
+    let _ = gpu.render_transition_linear(&a, &b, 0, 0.5, w, h, 0.0, 0.0, 0.0, 0.0, [1.0; 4]);
+    let t = std::time::Instant::now();
+    let _ = gpu.render_transition_linear(&a, &b, 0, 0.5, w, h, 0.0, 0.0, 0.0, 0.0, [1.0; 4]);
+    eprintln!("a dissolve, with upload and readback: {:?}", t.elapsed());
+    for (count, samples) in [(24u32, 1u32), (96, 1), (24, 6)] {
+        let u = PieceParams { count, ..PieceParams::read(TransitionKind::Shatter, &spec_for_kind(TransitionKind::Shatter).default_params) }.to_user(TransitionKind::Shatter);
+        let p4 = [u.param0, u.param1, u.param2, u.param3];
+        let _ = gpu.render_pieces_linear(&a, &b, &pieces::plan(71, 0.5, w, h, p4, 0.05, samples));
+        let t = std::time::Instant::now();
+        let plan = pieces::plan(71, 0.5, w, h, p4, if samples > 1 { 0.05 } else { 0.0 }, samples);
+        let planned = t.elapsed();
+        let _ = gpu.render_pieces_linear(&a, &b, &plan);
+        eprintln!("{count} shards, {samples} instants: plan {planned:?}, frame (with upload and readback) {:?}", t.elapsed());
+    }
 }
