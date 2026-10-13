@@ -3707,6 +3707,7 @@ impl PreferencesPanel {
         dim_row(ui, "Trim handle", &mut prefs.timeline.trim_handle_width, 6.0, 30.0, " px", dirty);
         dim_row(ui, "Overview bar", &mut prefs.timeline.overview_bar_height, 12.0, 48.0, " px", dirty);
         dim_row(ui, "Min track height", &mut prefs.timeline.min_track_height, 16.0, 64.0, " px", dirty);
+        dim_row(ui, "Max track height", &mut prefs.timeline.max_track_height, 100.0, 600.0, " px", dirty);
         dim_row(ui, "Text track height", &mut prefs.timeline.text_track_height, 20.0, 80.0, " px", dirty);
 
         Self::section_header(ui, "SELECTION", theme);
@@ -4884,7 +4885,7 @@ mod layout_tests {
     const HIDDEN: &[&str] = &[
         "Monitoring mode", "Normalize target",
         "Colour space tagging", "Default encoder preset",
-        "Clip corner radius", "Max track height", "Ruler height",
+        "Clip corner radius", "Ruler height",
         "Title-safe area overlay",
         "Show keyboard shortcut hints", "Recent projects to show",
     ];

@@ -8,7 +8,7 @@ fn default_fade_ms() -> u32 { 500 }
 /// The preferences file's revision. A file below it has the one-time
 /// migrations of [`Preferences::migrate_to_revision`] run on load; a file
 /// at it is read as written, so a value chosen after the migration stays.
-pub const PREFS_REVISION: u32 = 1;
+pub const PREFS_REVISION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Preferences {
@@ -1087,6 +1087,15 @@ impl Preferences {
                 }
             }
         }
+        if revision < 2 {
+            // The max track height's old default, 200, capped nothing:
+            // tracks were resized up to 300 while it did nothing.
+            if let Some(tl) = root.get_mut("timeline").and_then(|v| v.as_object_mut()) {
+                if tl.get("max_track_height").and_then(|v| v.as_f64()) == Some(200.0) {
+                    tl.insert("max_track_height".into(), serde_json::Value::from(default_max_track_h()));
+                }
+            }
+        }
         root.insert("revision".into(), serde_json::Value::from(PREFS_REVISION));
     }
 
@@ -1781,7 +1790,8 @@ fn default_ruler_h() -> f32 { 24.0 }
 fn default_clip_radius() -> f32 { 4.0 }
 fn default_overview_h() -> f32 { 24.0 }
 fn default_min_track_h() -> f32 { 24.0 }
-fn default_max_track_h() -> f32 { 200.0 }
+/// The tallest a track is resized to: the 300 px it always was.
+fn default_max_track_h() -> f32 { 300.0 }
 fn default_text_track_h() -> f32 { 32.0 }
 fn default_selection_border_width() -> f32 { 3.0 }
 impl Default for TimelinePrefs {
@@ -2261,7 +2271,7 @@ mod tests {
         assert_eq!(rt.timeline.clip_corner_radius, 4.0);
         assert_eq!(rt.timeline.overview_bar_height, 24.0);
         assert_eq!(rt.timeline.min_track_height, 24.0);
-        assert_eq!(rt.timeline.max_track_height, 200.0);
+        assert_eq!(rt.timeline.max_track_height, 300.0);
         assert_eq!(rt.timeline.text_track_height, 32.0);
 
         // ViewerPrefs
@@ -3271,6 +3281,23 @@ mod revision_tests {
     fn an_old_default_title_size_becomes_the_titles_own() {
         assert_eq!(old_file(|v| v["title"]["default_size_pt"] = 48.0.into()).title.default_size_pt, 72.0);
         assert_eq!(old_file(|v| v["title"]["default_size_pt"] = 60.0.into()).title.default_size_pt, 60.0);
+    }
+
+    /// The max track height's old default, 200, capped nothing (tracks
+    /// went to 300); a file from before revision 2 has it moved to 300
+    /// once, so tracks resize as far as they did. A file at revision 1
+    /// still gets this move; another height is kept.
+    #[test]
+    fn an_old_default_max_track_height_becomes_300() {
+        assert_eq!(old_file(|v| v["timeline"]["max_track_height"] = 200.0.into()).timeline.max_track_height, 300.0);
+        let at_1 = |h: f64| {
+            let mut v = serde_json::to_value(Preferences::default()).unwrap();
+            v["revision"] = 1.into();
+            v["timeline"]["max_track_height"] = h.into();
+            Preferences::from_json_str(&v.to_string()).timeline.max_track_height
+        };
+        assert_eq!(at_1(200.0), 300.0);
+        assert_eq!(at_1(250.0), 250.0);
     }
 
     /// The thumbnail size sized nothing before it acted; an old file's
