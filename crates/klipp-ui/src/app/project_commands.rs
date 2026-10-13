@@ -309,9 +309,12 @@ impl KlippApp {
                 let project_dir = location.join(format!("{name}.klipp"));
                 // From a template (#618): read before anything is reset, so
                 // one that no longer reads leaves the open project open.
-                let from_template = match template.as_deref().map(klipp_project::template::ProjectTemplate::load) {
+                // Its starter content's copied media goes into the new
+                // project's folder.
+                let made = template.as_deref().map(|p| klipp_project::template::ProjectTemplate::load(p).and_then(|t| t.instantiate_at(p, &project_dir)));
+                let from_template = match made {
                     None => None,
-                    Some(Ok(t)) => Some(t.instantiate()),
+                    Some(Ok(t)) => Some(t),
                     Some(Err(e)) => {
                         self.state.toast.show(format!("The template could not be read: {e}"));
                         return true;
@@ -396,27 +399,60 @@ impl KlippApp {
                 tracing::info!("Created new project at {:?}", project_dir);
                 true
             }
-            AppCommand::SaveProjectTemplate { name, description } => {
+            AppCommand::SaveProjectTemplate { name, description, starter, package_media } => {
                 let setup = klipp_project::template::ProjectSetup {
                     sequences: &self.state.sequences,
                     pool: &self.state.media_pool,
                     colour: self.template_colour(),
                 };
-                let template = klipp_project::template::ProjectTemplate::capture(name, description, &setup);
-                match template.save(&self.project_templates_dir()) {
+                let choice = klipp_project::template::StarterChoice { sequences: starter.clone(), package_media: *package_media };
+                let (template, files) = klipp_project::template::ProjectTemplate::capture_with_starter(name, description, &setup, &choice);
+                match template.save_with_starter(&self.project_templates_dir(), files.as_ref()) {
                     Ok(_) => self.state.toast.show(format!("Saved the project template \"{}\": {}", template.name, template.summary())),
                     Err(e) => self.state.toast.show(format!("The template could not be saved: {e}")),
                 }
                 true
             }
             AppCommand::DeleteProjectTemplate { path } => {
-                // Only a template in the templates folder.
+                // Only a template in the templates folder; one with starter
+                // content is a folder.
                 if path.parent() == Some(self.project_templates_dir().as_path()) {
-                    match std::fs::remove_file(path) {
+                    let removed = if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) };
+                    match removed {
                         Ok(()) => self.state.toast.show("Template deleted"),
                         Err(e) => self.state.toast.show(format!("The template could not be deleted: {e}")),
                     }
                 }
+                true
+            }
+            AppCommand::RenameProjectTemplate { path, name } => {
+                if path.parent() == Some(self.project_templates_dir().as_path()) {
+                    match klipp_project::template::rename_template(path, name) {
+                        Ok(_) => self.state.toast.show(format!("Template renamed \"{}\"", name.trim())),
+                        Err(e) => self.state.toast.show(format!("The template could not be renamed: {e}")),
+                    }
+                }
+                let dir = self.project_templates_dir();
+                self.new_project_dialog.load_templates(&dir);
+                true
+            }
+            AppCommand::ExportProjectTemplate { path, to } => {
+                match klipp_project::template::export_template(path, to) {
+                    Ok(()) => self.state.toast.show(format!("Template exported to {}", to.display())),
+                    Err(e) => self.state.toast.show(format!("The template could not be exported: {e}")),
+                }
+                true
+            }
+            AppCommand::ImportProjectTemplate { from } => {
+                let dir = self.project_templates_dir();
+                match klipp_project::template::import_template(from, &dir) {
+                    Ok(path) => {
+                        let name = klipp_project::template::ProjectTemplate::load(&path).map(|t| t.name).unwrap_or_default();
+                        self.state.toast.show(format!("Imported the template \"{name}\""));
+                    }
+                    Err(e) => self.state.toast.show(format!("The template could not be imported: {e}")),
+                }
+                self.new_project_dialog.load_templates(&dir);
                 true
             }
             AppCommand::SetActiveSequence { sequence_idx } => {

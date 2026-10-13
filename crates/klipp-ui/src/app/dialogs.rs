@@ -908,8 +908,27 @@ impl KlippApp {
         // Save Project as Template (#618): what it will keep, said up front.
         if let Some(mut dlg) = self.state.save_template_dialog.take() {
             let setup = klipp_project::template::ProjectSetup { sequences: &self.state.sequences, pool: &self.state.media_pool, colour: self.template_colour() };
-            let summary = klipp_project::template::ProjectTemplate::capture("-", "", &setup).summary();
-            if dlg.show(ctx, &self.theme, &summary, cmds) {
+            let choice = klipp_project::template::StarterChoice { sequences: if dlg.include_starter { dlg.starter.clone() } else { Vec::new() }, package_media: dlg.package_media };
+            let (template, _) = klipp_project::template::ProjectTemplate::capture_with_starter("-", "", &setup, &choice);
+            // What the starter content needs, as the template will hold it
+            // (copied media counted as copied).
+            let deps: Vec<klipp_project::template::Dependency> = template
+                .dependencies(std::path::Path::new(""))
+                .into_iter()
+                .map(|d| match d {
+                    klipp_project::template::Dependency::LinkedMedia { path, .. } if dlg.package_media => {
+                        klipp_project::template::Dependency::PackagedMedia(path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+                    }
+                    d => d,
+                })
+                .collect();
+            let view = crate::panels::new_project_dialog::SaveTemplateView {
+                summary: template.summary(),
+                sequences: self.state.sequences.iter().map(|s| (s.id, s.name.clone())).collect(),
+                needs: crate::panels::new_project_dialog::dependency_lines(&deps, &|_| true),
+                existing: klipp_project::template::list_templates(&self.project_templates_dir()).into_iter().filter_map(|(_, t)| t.ok().map(|t| t.name)).collect(),
+            };
+            if dlg.show(ctx, &self.theme, &view, cmds) {
                 self.state.save_template_dialog = Some(dlg);
             }
         }

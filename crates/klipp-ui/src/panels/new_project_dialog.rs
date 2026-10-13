@@ -58,6 +58,11 @@ pub struct NewProjectDialog {
     pub user_templates: Vec<(PathBuf, Result<ProjectTemplate, String>)>,
     /// The user's template chosen, by its place in `user_templates`.
     pub user_template: Option<usize>,
+    /// The chosen template's new name, while it is being renamed.
+    pub rename: Option<String>,
+    /// What the chosen template needs, a line each, worked out once for
+    /// the template it was worked out for.
+    needs: Option<(PathBuf, Vec<String>)>,
 }
 
 impl NewProjectDialog {
@@ -78,13 +83,35 @@ impl NewProjectDialog {
             template_idx: 0,
             user_templates: Vec::new(),
             user_template: None,
+            rename: None,
+            needs: None,
         }
+    }
+
+    /// What the chosen template needs, worked out the first time it is
+    /// shown (the system's fonts are read then).
+    fn needs(&mut self) -> Vec<String> {
+        let Some((path, t)) = self.chosen_template() else { return Vec::new() };
+        if let Some((at, lines)) = &self.needs {
+            if at == path {
+                return lines.clone();
+            }
+        }
+        let path = path.clone();
+        let deps = t.dependencies(&path);
+        let fonts = deps.iter().any(|d| matches!(d, klipp_project::template::Dependency::Font(_))).then(klipp_title::font_discovery::discover_system_fonts);
+        let installed = |f: &str| fonts.as_ref().is_none_or(|all| klipp_title::font_discovery::font_installed(all, f));
+        let lines = dependency_lines(&deps, &installed);
+        self.needs = Some((path, lines.clone()));
+        lines
     }
 
     /// Read the user's project templates from `dir` (#618), afresh.
     pub fn load_templates(&mut self, dir: &Path) {
         self.user_templates = klipp_project::template::list_templates(dir);
         self.user_template = None;
+        self.rename = None;
+        self.needs = None;
     }
 
     /// The user's template chosen, read.
@@ -241,6 +268,17 @@ impl NewProjectDialog {
                                 }
                             }
                         });
+                    // A template from another machine (#618).
+                    if ui.small_button("Import...").on_hover_text("Add a project template exported on another machine").clicked() {
+                        crate::file_dialog::spawn(move || {
+                            rfd::FileDialog::new()
+                                .set_title("Import Project Template")
+                                .add_filter("Project template", &["zip"])
+                                .pick_file()
+                                .map(|from| vec![AppCommand::ImportProjectTemplate { from }])
+                                .unwrap_or_default()
+                        });
+                    }
                     // Apply template when changed
                     if self.user_template.is_none() && self.template_idx != old_idx && self.template_idx > 0 {
                         let (_, res_idx, fps_idx) = TEMPLATES[self.template_idx];
@@ -253,8 +291,9 @@ impl NewProjectDialog {
                 // A template of the user's sets the sequences, their formats
                 // and tracks, the bins and the colour: what it holds,
                 // where the format rows were.
-                let chosen = self.chosen_template().map(|(p, t)| (p.clone(), t.summary(), t.description.clone()));
-                if let Some((path, summary, description)) = chosen {
+                let chosen = self.chosen_template().map(|(p, t)| (p.clone(), t.summary(), t.description.clone(), t.starter.as_ref().map(|s| s.sequences.join(", "))));
+                if let Some((path, summary, description, starter)) = chosen {
+                    let needs = self.needs();
                     ui.horizontal(|ui| {
                         ui.add_space(108.0 * control_scale);
                         ui.vertical(|ui| {
@@ -262,13 +301,51 @@ impl NewProjectDialog {
                             if !description.is_empty() {
                                 ui.label(egui::RichText::new(description).size(11.0 * control_scale).color(theme.text_dim));
                             }
-                            ui.label(egui::RichText::new("No media or edits: a new project with this structure.").size(10.0 * control_scale).color(theme.text_dim));
-                            if ui.small_button("Delete Template").clicked() {
-                                cmds.push(AppCommand::DeleteProjectTemplate { path: path.clone() });
-                                if let Some(i) = self.user_template.take() {
-                                    let _ = self.user_templates.remove(i);
-                                }
+                            match starter {
+                                Some(seqs) => ui.label(egui::RichText::new(format!("Starts with: {seqs}")).size(10.0 * control_scale).color(theme.text_secondary)),
+                                None => ui.label(egui::RichText::new("No media or edits: a new project with this structure.").size(10.0 * control_scale).color(theme.text_dim)),
+                            };
+                            // What it needs, missing things said before the
+                            // project is made.
+                            for line in &needs {
+                                let missing = line.contains("missing") || line.contains("not installed");
+                                ui.label(egui::RichText::new(line).size(10.0 * control_scale).color(if missing { theme.accent } else { theme.text_dim }));
                             }
+                            ui.horizontal(|ui| {
+                                match self.rename.as_mut() {
+                                    Some(new_name) => {
+                                        ui.add(egui::TextEdit::singleline(new_name).desired_width(140.0 * control_scale));
+                                        if ui.small_button("Rename").clicked() {
+                                            cmds.push(AppCommand::RenameProjectTemplate { path: path.clone(), name: new_name.trim().to_string() });
+                                            self.rename = None;
+                                        }
+                                    }
+                                    None => {
+                                        if ui.small_button("Rename...").clicked() {
+                                            self.rename = self.chosen_template().map(|(_, t)| t.name.clone());
+                                        }
+                                    }
+                                }
+                                if ui.small_button("Export...").clicked() {
+                                    let from = path.clone();
+                                    let file = format!("{}.zip", path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "template".into()));
+                                    crate::file_dialog::spawn(move || {
+                                        rfd::FileDialog::new()
+                                            .set_title("Export Project Template")
+                                            .add_filter("Project template", &["zip"])
+                                            .set_file_name(&file)
+                                            .save_file()
+                                            .map(|to| vec![AppCommand::ExportProjectTemplate { path: from, to }])
+                                            .unwrap_or_default()
+                                    });
+                                }
+                                if ui.small_button("Delete Template").clicked() {
+                                    cmds.push(AppCommand::DeleteProjectTemplate { path: path.clone() });
+                                    if let Some(i) = self.user_template.take() {
+                                        let _ = self.user_templates.remove(i);
+                                    }
+                                }
+                            });
                         });
                     });
                 } else {
@@ -475,17 +552,36 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 /// Save Project as Template (#618): a name, a description, and what the
-/// template will hold and leave out, said before it is saved.
+/// template will hold and leave out, said before it is saved; starter
+/// content opt-in: sequences kept whole, their media copied in or linked.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SaveTemplateDialog {
     pub name: String,
     pub description: String,
+    /// Keep chosen sequences whole as starter content.
+    pub include_starter: bool,
+    /// The sequences kept whole.
+    pub starter: Vec<klipp_core::SequenceId>,
+    /// Copy their media into the template, rather than link it.
+    pub package_media: bool,
+}
+
+/// What the Save Project as Template dialog shows of the open project.
+pub struct SaveTemplateView {
+    /// What the template keeps, in a line.
+    pub summary: String,
+    /// The project's sequences, to choose starter content from.
+    pub sequences: Vec<(klipp_core::SequenceId, String)>,
+    /// What the starter content chosen needs from outside, a line each.
+    pub needs: Vec<String>,
+    /// The names of the templates there already.
+    pub existing: Vec<String>,
 }
 
 impl SaveTemplateDialog {
-    /// The dialog over `summary` (what the template will hold). Pushes
-    /// `SaveProjectTemplate` on Save; `false` once it is closed.
-    pub fn show(&mut self, ctx: &egui::Context, theme: &KlippTheme, summary: &str, cmds: &mut Vec<AppCommand>) -> bool {
+    /// The dialog over `view`. Pushes `SaveProjectTemplate` on Save;
+    /// `false` once it is closed.
+    pub fn show(&mut self, ctx: &egui::Context, theme: &KlippTheme, view: &SaveTemplateView, cmds: &mut Vec<AppCommand>) -> bool {
         let mut keep = true;
         egui::Window::new("Save Project as Template")
             .collapsible(false)
@@ -500,18 +596,49 @@ impl SaveTemplateDialog {
                     ui.add(egui::TextEdit::singleline(&mut self.description).desired_width(280.0).hint_text("Optional"));
                     ui.end_row();
                 });
+                // Saving under a name there already updates that template:
+                // projects made from it before are not touched.
+                if view.existing.iter().any(|n| n.eq_ignore_ascii_case(self.name.trim())) {
+                    ui.label(egui::RichText::new(format!("Updates the template \"{}\"; projects made from it keep what they have.", self.name.trim())).size(11.0).color(theme.accent));
+                }
                 ui.add_space(6.0);
-                ui.label(egui::RichText::new(format!("Keeps: {summary}")).size(11.0).color(theme.text_secondary));
+                ui.label(egui::RichText::new(format!("Keeps: {}", view.summary)).size(11.0).color(theme.text_secondary));
+                ui.add_space(4.0);
+                ui.checkbox(&mut self.include_starter, "Include starter content");
+                if self.include_starter {
+                    ui.indent("starter", |ui| {
+                        ui.label(egui::RichText::new("Sequences kept whole, clips and all:").size(11.0).color(theme.text_secondary));
+                        for (id, name) in &view.sequences {
+                            let mut on = self.starter.contains(id);
+                            if ui.checkbox(&mut on, name).changed() {
+                                self.starter.retain(|s| s != id);
+                                if on {
+                                    self.starter.push(*id);
+                                }
+                            }
+                        }
+                        ui.radio_value(&mut self.package_media, false, "Link their media where it is (relinked on another machine)");
+                        ui.radio_value(&mut self.package_media, true, "Copy their media into the template");
+                        for line in &view.needs {
+                            ui.label(egui::RichText::new(line).size(11.0).color(theme.text_dim));
+                        }
+                    });
+                }
                 ui.label(
-                    egui::RichText::new("Leaves out: media, clips and edits, markers, the playhead, caches and history.")
-                        .size(11.0)
-                        .color(theme.text_dim),
+                    egui::RichText::new(if self.include_starter && !self.starter.is_empty() {
+                        "Leaves out: the other sequences' clips, markers, the playhead, caches and history."
+                    } else {
+                        "Leaves out: media, clips and edits, markers, the playhead, caches and history."
+                    })
+                    .size(11.0)
+                    .color(theme.text_dim),
                 );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let named = !self.name.trim().is_empty();
                     if ui.add_enabled(named, egui::Button::new("Save Template")).on_disabled_hover_text("Name the template first").clicked() {
-                        cmds.push(AppCommand::SaveProjectTemplate { name: self.name.trim().to_string(), description: self.description.trim().to_string() });
+                        let starter = if self.include_starter { self.starter.clone() } else { Vec::new() };
+                        cmds.push(AppCommand::SaveProjectTemplate { name: self.name.trim().to_string(), description: self.description.trim().to_string(), starter, package_media: self.package_media });
                         keep = false;
                     }
                     if ui.button("Cancel").clicked() {
@@ -521,6 +648,36 @@ impl SaveTemplateDialog {
             });
         keep
     }
+}
+
+/// What a template's starter content needs, a line each: its media
+/// (copied in or linked, and any missing), its LUT, fonts and plug-ins.
+/// `installed` says whether a font family is on this machine.
+pub fn dependency_lines(deps: &[klipp_project::template::Dependency], installed: &dyn Fn(&str) -> bool) -> Vec<String> {
+    use klipp_project::template::Dependency as D;
+    let copied = deps.iter().filter(|d| matches!(d, D::PackagedMedia(_))).count();
+    let linked: Vec<&D> = deps.iter().filter(|d| matches!(d, D::LinkedMedia { .. })).collect();
+    let mut out = Vec::new();
+    let files = |n: usize| if n == 1 { "1 media file".to_string() } else { format!("{n} media files") };
+    if copied > 0 {
+        out.push(format!("{}, copied in", files(copied)));
+    }
+    if !linked.is_empty() {
+        let missing = linked.iter().filter(|d| d.missing()).count();
+        out.push(if missing > 0 { format!("{}, linked: {missing} missing, to relink", files(linked.len())) } else { format!("{}, linked", files(linked.len())) });
+    }
+    for d in deps {
+        match d {
+            D::Lut { path, present } => {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                out.push(if *present { format!("LUT {name}") } else { format!("LUT {name} (missing)") });
+            }
+            D::Font(f) => out.push(if installed(f) { format!("Font {f}") } else { format!("Font {f} (not installed)") }),
+            D::Plugin(p) => out.push(format!("Plug-in {p}")),
+            _ => {}
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -621,7 +778,8 @@ mod template_tests {
         let mut dialog = SaveTemplateDialog::default();
         let theme = KlippTheme::default();
         let mut closed = false;
-        let mut run = |ctx: &egui::Context, cmds: &mut Vec<AppCommand>| closed |= !dialog.show(ctx, &theme, "1 sequence, 2 tracks", cmds);
+        let view = SaveTemplateView { summary: "1 sequence, 2 tracks".into(), sequences: Vec::new(), needs: Vec::new(), existing: Vec::new() };
+        let mut run = |ctx: &egui::Context, cmds: &mut Vec<AppCommand>| closed |= !dialog.show(ctx, &theme, &view, cmds);
         frame(&ctx, Vec::new(), &mut run);
         let (_, texts) = frame(&ctx, Vec::new(), &mut run);
         assert!(texts.iter().any(|(t, _)| t == "Keeps: 1 sequence, 2 tracks"));
@@ -632,7 +790,93 @@ mod template_tests {
         let (_, texts) = frame(&ctx, Vec::new(), &mut run);
         let cmds = click(&ctx, at(&texts, "Save Template"), &mut run);
         drop(run);
-        assert!(matches!(&cmds[..], [AppCommand::SaveProjectTemplate { name, description }] if name == "Promo" && description.is_empty()), "{cmds:?}");
+        assert!(matches!(&cmds[..], [AppCommand::SaveProjectTemplate { name, description, starter, .. }] if name == "Promo" && description.is_empty() && starter.is_empty()), "{cmds:?}");
         assert!(closed, "closed once saved");
+    }
+
+    /// #618 part 2: starter content is opt-in: ticked, the project's
+    /// sequences are offered, one kept whole and its media copied in is
+    /// what Save sends; what it needs is listed, and a name there already
+    /// says it updates that template.
+    #[test]
+    fn save_as_template_takes_starter_content_when_asked() {
+        let ctx = egui::Context::default();
+        let mut dialog = SaveTemplateDialog { name: "Weekly".into(), ..Default::default() };
+        let theme = KlippTheme::default();
+        let (ep, spare) = (klipp_core::SequenceId::new(), klipp_core::SequenceId::new());
+        let view = SaveTemplateView {
+            summary: "2 sequences".into(),
+            sequences: vec![(ep, "Episode".into()), (spare, "Spare".into())],
+            needs: vec!["2 media files, linked".into(), "Font Bebas Neue".into()],
+            existing: vec!["Weekly".into()],
+        };
+        let mut run = |ctx: &egui::Context, cmds: &mut Vec<AppCommand>| {
+            dialog.show(ctx, &theme, &view, cmds);
+        };
+        frame(&ctx, Vec::new(), &mut run);
+        let (_, texts) = frame(&ctx, Vec::new(), &mut run);
+        assert!(texts.iter().any(|(t, _)| t.starts_with("Updates the template \"Weekly\"")), "a name there already is an update");
+        assert!(!texts.iter().any(|(t, _)| t == "Episode"), "no sequences offered until asked");
+        click(&ctx, at(&texts, "Include starter content"), &mut run);
+        let (_, texts) = frame(&ctx, Vec::new(), &mut run);
+        for line in ["Episode", "Spare", "2 media files, linked", "Font Bebas Neue"] {
+            assert!(texts.iter().any(|(t, _)| t == line), "{line}: {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>());
+        }
+        click(&ctx, at(&texts, "Episode"), &mut run);
+        click(&ctx, at(&texts, "Copy their media into the template"), &mut run);
+        let (_, texts) = frame(&ctx, Vec::new(), &mut run);
+        let cmds = click(&ctx, at(&texts, "Save Template"), &mut run);
+        assert!(matches!(&cmds[..], [AppCommand::SaveProjectTemplate { name, starter, package_media: true, .. }] if name == "Weekly" && starter == &vec![ep]), "{cmds:?}");
+    }
+
+    /// #618 parts 2 and 3: a template with starter content says what it
+    /// starts with and what it needs, a linked file that is gone marked
+    /// missing; it is renamed in place, and Import is offered.
+    #[test]
+    fn a_starter_template_says_what_it_needs_and_is_renamed() {
+        let root = std::env::temp_dir().join(format!("klipp-dialog-starter-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("shot.mov");
+        std::fs::write(&file, b"x").unwrap();
+        let mut pool = klipp_media::MediaPool::new();
+        let id = pool.add(klipp_media::MediaItem::synthetic_for_test(file.clone(), None));
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        seq.name = "Episode".into();
+        seq.tracks[0].clips = vec![klipp_timeline::Clip::media(id, tc(0.0), tc(1.0), tc(0.0), tc(1.0))];
+        let colour = TemplateColour { working_colorspace: Default::default(), grade_encoding: Default::default(), global_lut_path: None, global_lut_opacity: 1.0, global_lut_enabled: false };
+        let sequences = [seq];
+        let setup = ProjectSetup { sequences: &sequences, pool: &pool, colour };
+        let choice = klipp_project::template::StarterChoice { sequences: vec![sequences[0].id], package_media: false };
+        let (t, files) = ProjectTemplate::capture_with_starter("Show", "", &setup, &choice);
+        let dir = root.join("templates");
+        t.save_with_starter(&dir, files.as_ref()).unwrap();
+        std::fs::remove_file(&file).unwrap();
+
+        let ctx = egui::Context::default();
+        let mut dialog = NewProjectDialog::new(Some(&root));
+        dialog.load_templates(&dir);
+        dialog.user_template = Some(0);
+        let mut open = true;
+        let theme = KlippTheme::default();
+        let mut run = |ctx: &egui::Context, cmds: &mut Vec<AppCommand>| dialog.show(ctx, &mut open, &theme, cmds);
+        frame(&ctx, Vec::new(), &mut run);
+        let (_, texts) = frame(&ctx, Vec::new(), &mut run);
+        assert!(texts.iter().any(|(t, _)| t == "Starts with: Episode"), "{:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>());
+        assert!(texts.iter().any(|(t, _)| t == "1 media file, linked: 1 missing, to relink"));
+        assert!(texts.iter().any(|(t, _)| t == "Import..."));
+        click(&ctx, at(&texts, "Rename..."), &mut run);
+        let (_, texts) = frame(&ctx, Vec::new(), &mut run);
+        // The field holds the name: select it all and type the new one.
+        // The field, below the combo that names the template too.
+        let field = texts.iter().filter(|(t, _)| t == "Show").map(|(_, p)| *p).max_by(|a, b| a.y.total_cmp(&b.y)).expect("the name field");
+        click(&ctx, field, &mut run);
+        let select_all = egui::Event::Key { key: egui::Key::A, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+        frame(&ctx, vec![select_all, egui::Event::Text("Weekly Show".into())], &mut run);
+        let (_, texts) = frame(&ctx, Vec::new(), &mut run);
+        let cmds = click(&ctx, at(&texts, "Rename"), &mut run);
+        assert!(matches!(&cmds[..], [AppCommand::RenameProjectTemplate { name, .. }] if name == "Weekly Show"), "{cmds:?}");
+        drop(run);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

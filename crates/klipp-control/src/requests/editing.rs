@@ -3,6 +3,37 @@
 #[allow(unused_imports)]
 use crate::*;
 
+/// Where the user's project templates are kept (#618), as the app keeps
+/// them.
+fn templates_dir() -> std::path::PathBuf {
+    klipp_project::template::templates_dir(&dirs::config_dir().unwrap_or_else(|| std::path::PathBuf::from(".")))
+}
+
+/// The template called `name` in `dir` (any case), or why not: the names
+/// there are listed.
+fn template_named(dir: &std::path::Path, name: &str) -> Result<std::path::PathBuf, String> {
+    let listed = klipp_project::template::list_templates(dir);
+    match listed.iter().find(|(_, t)| t.as_ref().is_ok_and(|t| t.name.eq_ignore_ascii_case(name.trim()))) {
+        Some((path, _)) => Ok(path.clone()),
+        None => {
+            let names: Vec<String> = listed.into_iter().filter_map(|(_, t)| t.ok().map(|t| t.name)).collect();
+            Err(if names.is_empty() { format!("no project template \"{name}\": there are none yet") } else { format!("no project template \"{name}\"; there are {}", names.join(", ")) })
+        }
+    }
+}
+
+/// A template's need as JSON: its kind, what, and whether it is missing.
+fn dependency_json(d: &klipp_project::template::Dependency) -> serde_json::Value {
+    use klipp_project::template::Dependency as D;
+    match d {
+        D::PackagedMedia(name) => json!({ "media": name, "copied": true }),
+        D::LinkedMedia { path, present } => json!({ "media": path, "copied": false, "missing": !present }),
+        D::Lut { path, present } => json!({ "lut": path, "missing": !present }),
+        D::Font(f) => json!({ "font": f }),
+        D::Plugin(p) => json!({ "plugin": p }),
+    }
+}
+
 pub(crate) fn respond(
     ctx: &ControlContext,
     cmd: ControlCommand,
@@ -12,7 +43,7 @@ pub(crate) fn respond(
     let mut send = sender!(ctx, collect);
 
     match cmd {
-        ControlCommand::NewProject { name, location, width, height, fps, sequence_name, discard_changes } => {
+        ControlCommand::NewProject { name, location, width, height, fps, sequence_name, discard_changes, template } => {
             if in_batch {
                 return Err("new_project is not part of a batch; send it on its own".into());
             }
@@ -42,7 +73,13 @@ pub(crate) fn respond(
                 return Err("the open project has unsaved changes: save_project first, or pass discard_changes true to lose them".into());
             }
             let sequence_name = sequence_name.unwrap_or_else(|| "Main Sequence".into());
-            send_envelope(ctx, vec![AppCommand::CreateProject { name, location, fps_num, fps_den, width, height, sequence_name, template: None }], false)?;
+            // A template by name (#618), found before anything is replaced.
+            let template = match template {
+                Some(t) => Some(template_named(&templates_dir(), &t)?),
+                None => None,
+            };
+            let from_template = template.is_some();
+            send_envelope(ctx, vec![AppCommand::CreateProject { name, location, fps_num, fps_den, width, height, sequence_name, template }], false)?;
             let after = wait_for_project_event(ctx, before.generation, 60_000)?;
             if let Some(e) = after.last_error {
                 return Err(e);
@@ -56,13 +93,82 @@ pub(crate) fn respond(
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
             let saved = file.exists();
-            let made = if width == 0 { "Empty project made; its size and rate follow the first clip placed." } else { "Empty project made." };
+            let made = if from_template {
+                "Project made from the template."
+            } else if width == 0 {
+                "Empty project made; its size and rate follow the first clip placed."
+            } else {
+                "Empty project made."
+            };
             Ok(json!({
                 "created": true,
                 "saved": saved,
                 "path": dir.to_string_lossy(),
                 "text": if saved { made.to_string() } else { format!("{made} Its first save has not landed yet: wait before reading the folder.") },
             }))
+        }
+
+        ControlCommand::ProjectTemplates { save } => {
+            if in_batch {
+                return Err("project_templates is not part of a batch; send it on its own".into());
+            }
+            let dir = templates_dir();
+            let mut saved = None;
+            if let Some(save) = save {
+                let name = save.name.trim().to_string();
+                if name.is_empty() {
+                    return Err("a template needs a name".into());
+                }
+                let project = ctx.shared.project.lock().map_err(|_| "project status lock poisoned")?;
+                let mut starter = Vec::new();
+                for wanted in &save.starter_sequences {
+                    let Some(s) = project.sequences.iter().find(|s| s.name.eq_ignore_ascii_case(wanted.trim())) else {
+                        let names: Vec<&str> = project.sequences.iter().map(|s| s.name.as_str()).collect();
+                        return Err(format!("no sequence \"{wanted}\"; the project's are {}", names.join(", ")));
+                    };
+                    starter.push(klipp_core::SequenceId(parse_uuid(&s.id, "sequence id")?));
+                }
+                drop(project);
+                let stamp = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+                let before: Vec<(std::path::PathBuf, Option<std::time::SystemTime>)> = klipp_project::template::list_templates(&dir).into_iter().map(|(p, _)| { let t = stamp(&p); (p, t) }).collect();
+                send_envelope(ctx, vec![AppCommand::SaveProjectTemplate { name: name.clone(), description: save.description.trim().to_string(), starter, package_media: save.package_media }], false)?;
+                // Kept once its file is there, new or written anew.
+                let waited = std::time::Instant::now();
+                saved = loop {
+                    let found = klipp_project::template::list_templates(&dir).into_iter().find(|(p, t)| {
+                        t.as_ref().is_ok_and(|t| t.name == name) && !before.iter().any(|(q, at)| q == p && *at == stamp(p))
+                    });
+                    if let Some((path, _)) = found {
+                        break Some(path);
+                    }
+                    if waited.elapsed() > std::time::Duration::from_secs(60) {
+                        return Err(format!("the template \"{name}\" was not saved: see the app's message"));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                };
+            }
+            let templates: Vec<serde_json::Value> = klipp_project::template::list_templates(&dir)
+                .into_iter()
+                .map(|(path, t)| match t {
+                    Ok(t) => {
+                        let needs: Vec<serde_json::Value> = t.dependencies(&path).iter().map(dependency_json).collect();
+                        json!({
+                            "name": t.name,
+                            "description": t.description,
+                            "holds": t.summary(),
+                            "starts_with": t.starter.as_ref().map(|s| s.sequences.clone()).unwrap_or_default(),
+                            "needs": needs,
+                        })
+                    }
+                    Err(e) => json!({ "file": path.file_name().map(|n| n.to_string_lossy().into_owned()), "unreadable": e }),
+                })
+                .collect();
+            let text = match &saved {
+                Some(p) => format!("Saved the template at {}; {} template(s) now.", p.display(), templates.len()),
+                None if templates.is_empty() => "No project templates yet: save one with save {name}.".into(),
+                None => format!("{} project template(s): start a project from one with new_project's template.", templates.len()),
+            };
+            Ok(json!({ "templates": templates, "text": text }))
         }
 
         ControlCommand::NewSequence { name, width, height, fps } => {
@@ -546,5 +652,28 @@ mod node_types_tests {
         for t in types.iter().filter(|t| t["category"] == "Grade") {
             assert_eq!(t["mixable"] == true, gates.contains(&t["tag"].as_str().unwrap()), "{}", t["tag"]);
         }
+    }
+}
+
+#[cfg(test)]
+mod template_name_tests {
+    use super::*;
+
+    /// #618: a template is found by its name in any case; a name there
+    /// isn't is refused with the names there are.
+    #[test]
+    fn a_template_is_found_by_name() {
+        let dir = std::env::temp_dir().join(format!("klipp-control-templates-{}", uuid::Uuid::new_v4()));
+        let seq = klipp_timeline::Sequence::new_default();
+        let pool = klipp_media::MediaPool::new();
+        let colour = klipp_project::template::TemplateColour { working_colorspace: Default::default(), grade_encoding: Default::default(), global_lut_path: None, global_lut_opacity: 1.0, global_lut_enabled: false };
+        let setup = klipp_project::template::ProjectSetup { sequences: std::slice::from_ref(&seq), pool: &pool, colour };
+        let path = klipp_project::template::ProjectTemplate::capture("Weekly Show", "", &setup).save(&dir).unwrap();
+        assert_eq!(template_named(&dir, "weekly show").unwrap(), path);
+        let err = template_named(&dir, "Daily").unwrap_err();
+        assert!(err.contains("Weekly Show"), "{err}");
+        assert!(template_named(&dir.join("none"), "Daily").unwrap_err().contains("none yet"));
+        assert_eq!(dependency_json(&klipp_project::template::Dependency::LinkedMedia { path: "/a.mov".into(), present: false }), json!({ "media": "/a.mov", "copied": false, "missing": true }));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

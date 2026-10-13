@@ -364,7 +364,7 @@ pub fn instance_id(instance: ClipId, clip: ClipId) -> ClipId {
 /// Every clip in `seq` renamed by `ids`, and every reference between
 /// them renamed to match; a reference to a clip outside `seq` is left
 /// as it is.
-fn reidentify(seq: &mut Sequence, ids: &HashMap<ClipId, ClipId>) {
+pub fn reidentify(seq: &mut Sequence, ids: &HashMap<ClipId, ClipId>) {
     let renamed = |id: ClipId| ids.get(&id).copied().unwrap_or(id);
     for track in &mut seq.tracks {
         for c in &mut track.clips {
