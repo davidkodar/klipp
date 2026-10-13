@@ -1419,3 +1419,41 @@ fn a_scene_referred_layer_refused_part_way_leaves_nothing_queued() {
     let d = worst(&cpu, &gpu);
     assert!(d <= 1, "the SDR layer after the refusal differs from its CPU render by {d} levels");
 }
+
+/// #1850: a still generator's layer is kept between frames, by its data
+/// and size: the next frame draws the same, a colour changed in the
+/// sequence is drawn at once, and so is another size. A living gradient,
+/// which moves, is drawn anew each frame.
+#[test]
+fn a_still_generator_is_kept_and_a_changed_one_redrawn() {
+    let at = |seq: &Sequence, r: &mut Renderer, t: f64, w: u32, h: u32| r.render_display_u8_on_gpu(seq, tc(t), w, h, &mut Flat::default(), RenderOptions::default()).map(|(px, _)| px);
+    let one = |data: klipp_core::GeneratorData| {
+        let mut seq = Sequence::new_default();
+        seq.resolution = klipp_core::Resolution { width: W, height: H };
+        let mut gen = Track::new("Gen", TrackKind::Video);
+        gen.clips = vec![clip(ClipKind::Generator(data), 0.0, 5.0)];
+        seq.tracks = vec![gen];
+        seq
+    };
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    let blue = one(klipp_core::GeneratorData::SolidColor { color: [20, 40, 220, 255] });
+    let Some(first) = at(&blue, &mut r, 1.0, W, H) else {
+        eprintln!("skipping: no GPU stack");
+        return;
+    };
+    assert_eq!(at(&blue, &mut r, 2.0, W, H).unwrap(), first, "the next frame draws the same");
+    // The same clip, its colour changed: drawn in the new colour at once.
+    let mut red = blue.clone();
+    red.tracks[0].clips[0].kind = ClipKind::Generator(klipp_core::GeneratorData::SolidColor { color: [220, 40, 20, 255] });
+    let changed = at(&red, &mut r, 2.0, W, H).unwrap();
+    let fresh = at(&red, &mut Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new()), 2.0, W, H).unwrap();
+    assert_eq!(changed, fresh, "the changed colour, as a fresh renderer draws it");
+    assert!(worst(&changed, &first) > 100, "control: the colours differ");
+    // Another size is drawn at that size.
+    let small = at(&red, &mut r, 2.0, W / 2, H / 2).unwrap();
+    assert_eq!(small.len(), (W / 2 * H / 2 * 4) as usize);
+    // A living gradient drifts: two times, two pictures.
+    let living = one(klipp_core::GeneratorData::LivingGradient { a: [20, 40, 220, 255], b: [250, 200, 120, 255], angle_deg: 0.0, drift_deg_per_sec: 45.0, glow: 0.0 });
+    let (a, b) = (at(&living, &mut r, 1.0, W, H).unwrap(), at(&living, &mut r, 2.0, W, H).unwrap());
+    assert!(worst(&a, &b) > 10, "a moving generator is drawn anew");
+}

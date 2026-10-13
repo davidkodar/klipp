@@ -778,6 +778,12 @@ pub struct Renderer {
     /// One node; one per effect, under its picture node's id, when the
     /// grade tools read the clip (#1305).
     run_source_nodes: Vec<klipp_nodes::Node>,
+    /// Each still generator's layer on the GPU stack, by clip, as it was
+    /// last rasterised: its data, the size, and the half-float pixels. A
+    /// solid colour, a gradient, bars, a slate or a placeholder is the same
+    /// every frame at one size; rasterising and packing a 720p one cost
+    /// 2.6 ms a frame (#1850).
+    still_generators: HashMap<ClipId, (klipp_core::GeneratorData, u32, u32, Arc<Vec<u32>>)>,
     /// Effect runs that couldn't be applied as a plan of their own and
     /// took the CPU kernels instead (`effects_by`), for the stats' counts.
     plan_misses: u64,
@@ -936,6 +942,7 @@ impl Renderer {
             global_lut: None,
             instances: Default::default(),
             run_source_nodes: Vec::new(),
+            still_generators: HashMap::new(),
             assets: Box::new(klipp_analysis::assets::CacheStore::default()),
             derived: HashMap::new(),
             clip_analysis: None,
@@ -2237,7 +2244,7 @@ impl Renderer {
                 // Half floats, sRGB-encoded, decoded on the way into
                 // the layer: the precision eight bits could not hold,
                 // without moving sRGB's power curve onto the CPU.
-                let px = crate::synth::render_generator_with_slate_f16(&mut self.titles, g, width, height, clip_time, total);
+                let px = self.generator_layer(c.id, g, width, height, clip_time, total);
                 self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_f16(slot, &px))
             }
             _ => {
@@ -2280,6 +2287,27 @@ impl Renderer {
             rows = (0, height);
         }
         Ok(Some(Placed { opacity, rows }))
+    }
+
+    /// `g`'s picture for the GPU stack, in half floats: a still one from
+    /// [`Self::still_generators`] when it is the same at this size, else
+    /// rasterised (and kept, when still).
+    fn generator_layer(&mut self, clip: ClipId, g: &klipp_core::GeneratorData, width: u32, height: u32, clip_time: f64, total: f64) -> Arc<Vec<u32>> {
+        if !is_still_generator(g) {
+            return Arc::new(crate::synth::render_generator_with_slate_f16(&mut self.titles, g, width, height, clip_time, total));
+        }
+        if let Some((data, w, h, px)) = self.still_generators.get(&clip) {
+            if data == g && (*w, *h) == (width, height) {
+                return Arc::clone(px);
+            }
+        }
+        let px = Arc::new(crate::synth::render_generator_with_slate_f16(&mut self.titles, g, width, height, clip_time, total));
+        // A handful on screen at once; a long timeline's worth is not kept.
+        if self.still_generators.len() >= 16 {
+            self.still_generators.clear();
+        }
+        self.still_generators.insert(clip, (g.clone(), width, height, Arc::clone(&px)));
+        px
     }
 
     /// A matte from layer `source` into layer `consumer`'s alpha; a
@@ -5323,6 +5351,18 @@ pub fn temporal_denoise_of(clip: &Clip, time: Timecode, fps: f64) -> Option<(f32
     match tnr {
         BuiltinEffect::TemporalDenoise { strength, threshold } if strength > 0.0 => Some((strength, threshold)),
         _ => None,
+    }
+}
+
+/// Whether generator `g` draws the same picture whatever the time, from
+/// its data alone: not a living gradient, grain, a countdown or a timer,
+/// nor a still frame, read from its file.
+fn is_still_generator(g: &klipp_core::GeneratorData) -> bool {
+    use klipp_core::GeneratorData as G;
+    match g {
+        G::SolidColor { .. } | G::Placeholder { .. } | G::Gradient { .. } | G::ColorBars | G::ColorBars100 | G::Slate { .. } | G::Polygon { .. } | G::Star { .. } => true,
+        // A still frame is read from its file, which can change under it.
+        G::StillFrame { .. } | G::LivingGradient { .. } | G::Grain { .. } | G::Countdown | G::Timer { .. } => false,
     }
 }
 
