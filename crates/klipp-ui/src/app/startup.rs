@@ -431,12 +431,16 @@ impl KlippApp {
         app.state.modal_backdrop_alpha = app.prefs.advanced.modal_backdrop_alpha;
         app.state.scope_quality = app.prefs.color.scope_quality;
         let _ = app.cmd_tx.send(AppCommand::SetRenderCacheEnabled(app.prefs.media_cache.enable_render_cache));
+        let _ = app.cmd_tx.send(AppCommand::SetRenderCacheLimitGb(app.prefs.media_cache.max_cache_size_gb));
         app.state.scope_update_interval_ms = app.prefs.color.scope_update_interval_ms;
         app.state.set_history_max_size(app.prefs.editing.undo_limit);
         app.state.audio_fade_overlay_mode = app.prefs.audio.fade_overlay_mode;
         app.state.audio_show_rubber_band = app.prefs.audio.show_rubber_band;
         app.state.audio_show_waveform = app.prefs.audio.show_waveform;
         app.state.audio_anti_click_fade = app.prefs.audio.anti_click_fade;
+        app.state.default_fade_secs = app.prefs.audio.default_fade_duration_ms as f32 / 1000.0;
+        app.state.default_fade_curve = app.prefs.audio.default_fade_curve;
+        app.state.jkl_speed_step = f64::from(app.prefs.playback.jkl_speed_step);
         app.state.audio_show_crossfade_indicators = app.prefs.audio.show_crossfade_indicators;
         app.state.lufs_target = match app.prefs.audio.loudness_standard {
             klipp_core::LoudnessStandard::EbuR128 => -23.0,

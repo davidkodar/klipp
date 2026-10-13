@@ -95,7 +95,7 @@ impl KlippApp {
                                 (c.timeline_in, ((secs * fps_rate as f64).round() as u32).max(1))
                             })
                     })
-                    .unwrap_or((self.state.playhead, fps_rate * 5));
+                    .unwrap_or((self.state.playhead, ((self.prefs.title.default_duration_secs as f64 * fps_rate as f64).round() as u32).max(1)));
                 let track_index = free_text_track(&mut self.state, timeline_in, duration_frames);
                 self.handle_title_lifecycle(&AppCommand::CreateTitleClip { track_index, timeline_in, duration_frames }, _needs_refresh)
             }
@@ -103,7 +103,7 @@ impl KlippApp {
                 // The Text tool's title (#1713): made, recorded and put
                 // into in-place editing by the same code a test drives.
                 let Some(clip_id) = super::text_tool::create_title_in_viewer(
-                    &mut self.state, *x, *y, *box_size, self.prefs.title.default_duration_secs,
+                    &mut self.state, *x, *y, *box_size, &self.prefs.title,
                 ) else {
                     return true;
                 };
@@ -203,6 +203,11 @@ impl KlippApp {
                 true
             }
             AppCommand::CreateTitleClip { track_index, timeline_in, duration_frames } => {
+                // A title from a template comes with its own look; a new
+                // one takes the title preferences'.
+                if self.state.pending_title_data.is_none() {
+                    self.state.pending_title_data = Some(default_title_data(&self.prefs.title));
+                }
                 let (clip_id, rest) = add_title_clip(&mut self.state, *track_index, *timeline_in, *duration_frames);
                 self.sync_sequence_to_engine();
                 self.render_title_to_viewer(clip_id);
@@ -3803,6 +3808,27 @@ pub(super) fn free_text_track(state: &mut AppState, timeline_in: klipp_core::Tim
 /// track `track_index`, recorded as one undo step and selected. Returns
 /// the clip and where it rests, for the caller to park the playhead; the
 /// engine sync and the overlay raster are the caller's too.
+/// A new title as the title preferences set it: the default title with
+/// its text in the default font (none set keeps the title's own), size,
+/// colour and alignment.
+pub(super) fn default_title_data(prefs: &crate::prefs::TitlePrefs) -> klipp_timeline::TitleData {
+    let mut td = klipp_timeline::TitleData::default();
+    if let Some(tb) = td.primary_text_mut() {
+        if !prefs.default_font.trim().is_empty() {
+            tb.font_name = prefs.default_font.trim().to_string();
+        }
+        tb.font_size = prefs.default_size_pt;
+        let [r, g, b] = prefs.default_color;
+        tb.color = [r, g, b, 255];
+        tb.alignment = match prefs.default_alignment {
+            crate::prefs::TextAlignment::Left => klipp_timeline::TextAlignment::Left,
+            crate::prefs::TextAlignment::Center => klipp_timeline::TextAlignment::Center,
+            crate::prefs::TextAlignment::Right => klipp_timeline::TextAlignment::Right,
+        };
+    }
+    td
+}
+
 pub(super) fn add_title_clip(
     state: &mut AppState,
     track_index: usize,

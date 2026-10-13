@@ -1150,6 +1150,25 @@ pub(crate) fn resolve_fade_drag_target_full(
     }
 }
 
+/// A fade added at one end of `clip`: the default fade's length (held
+/// under half the clip, so a fade in and out never cross) and curve,
+/// written to the clip that carries its sound. `None` for a clip whose
+/// sound cannot be found.
+pub(crate) fn default_fade_command(state: &AppState, clip: &klipp_timeline::Clip, fade_in: bool) -> Option<AppCommand> {
+    let (gain, volume, pan, fi, fo, fi_c, fo_c, channel_config) = resolve_fade_drag_target_full(state.sequence(), clip)?;
+    let secs = state.default_fade_secs.min(clip.duration().to_secs_f64() as f32 * 0.5).max(0.0);
+    let curve = state.default_fade_curve;
+    let (fade_in_secs, fade_in_curve, fade_out_secs, fade_out_curve) =
+        if fade_in { (secs, curve, fo, fo_c) } else { (fi, fi_c, secs, curve) };
+    Some(AppCommand::UpdateClipAudio {
+        clip_id: clip.linked_clip_id.unwrap_or(clip.id),
+        gain, volume, pan,
+        fade_in_secs, fade_out_secs,
+        fade_in_curve, fade_out_curve,
+        channel_config,
+    })
+}
+
 /// Audio params for the `EndAudioDrag` command emitted on fade-handle release.
 /// Same linked-clip resolution as `resolve_fade_drag_target_full`, but only
 /// the subset of fields the End command needs.
@@ -7593,7 +7612,7 @@ impl TimelinePanel {
         pointer_released: bool,
     ) {
         // ── Fade handle drag processing ──────────────────────────────────
-        let Some((fade_clip_id, is_fade_in, _original_fade)) = state.dragging_fade_handle else {
+        let Some((fade_clip_id, is_fade_in, original_fade)) = state.dragging_fade_handle else {
             return;
         };
 
@@ -7625,8 +7644,13 @@ impl TimelinePanel {
                         };
                         let new_fade = frac * clip_dur_secs;
 
-                        if let Some((gain, volume, pan, fi, fo, fi_c, fo_c, ch)) = target {
+                        if let Some((gain, volume, pan, fi, fo, mut fi_c, mut fo_c, ch)) = target {
                             let (new_fi, new_fo) = if is_fade_in { (new_fade, fo) } else { (fi, new_fade) };
+                            // A fade drawn out from none takes the default
+                            // fade's curve; one being resized keeps its own.
+                            if original_fade <= 0.0 {
+                                if is_fade_in { fi_c = state.default_fade_curve } else { fo_c = state.default_fade_curve }
+                            }
                             cmds.push(AppCommand::UpdateClipAudio {
                                 clip_id: cmd_clip_id,
                                 gain, volume, pan,
@@ -8843,6 +8867,21 @@ impl TimelinePanel {
                 if is_title_clip && ui.button("Save as Title Template\u{2026}").clicked() {
                     cmds.push(AppCommand::SaveTitleTemplate { clip_id });
                     ui.close_menu();
+                }
+                // Fades of the default length and curve (Preferences >
+                // Audio), on a clip that carries sound.
+                let sounding = state.sequence().tracks.iter()
+                    .flat_map(|t| t.clips.iter().map(move |c| (t, c)))
+                    .find(|(_, c)| c.id == clip_id)
+                    .filter(|(t, c)| t.kind == klipp_timeline::TrackKind::Audio || c.linked_clip_id.is_some())
+                    .map(|(_, c)| c.clone());
+                if let Some(clip) = sounding {
+                    for (label, fade_in) in [("Add Fade In", true), ("Add Fade Out", false)] {
+                        if ui.button(label).on_hover_text(format!("{:.2} s, set in Preferences > Audio", state.default_fade_secs)).clicked() {
+                            cmds.extend(default_fade_command(state, &clip, fade_in));
+                            ui.close_menu();
+                        }
+                    }
                 }
                 // Enable/Disable clip
                 let clip_enabled = state.sequence().tracks.iter()

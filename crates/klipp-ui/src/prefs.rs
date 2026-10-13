@@ -3,9 +3,18 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 fn default_true() -> bool { true }
+fn default_fade_ms() -> u32 { 500 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// The preferences file's revision. A file below it has the one-time
+/// migrations of [`Preferences::migrate_to_revision`] run on load; a file
+/// at it is read as written, so a value chosen after the migration stays.
+pub const PREFS_REVISION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Preferences {
+    /// See [`PREFS_REVISION`]. Absent in a file written before it: 0.
+    #[serde(default)]
+    pub revision: u32,
     pub general: GeneralPrefs,
     pub playback: PlaybackPrefs,
     #[serde(default)]
@@ -41,6 +50,33 @@ pub struct Preferences {
     pub external_tools: ExternalToolsPrefs,
     #[serde(default)]
     pub ai: AiPrefs,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            revision: PREFS_REVISION,
+            general: Default::default(),
+            playback: Default::default(),
+            editing: Default::default(),
+            file_browser: Default::default(),
+            effects_browser: Default::default(),
+            audio: Default::default(),
+            export: Default::default(),
+            proxy: Default::default(),
+            system: Default::default(),
+            audio_hardware: Default::default(),
+            appearance: Default::default(),
+            media_cache: Default::default(),
+            color: Default::default(),
+            title: Default::default(),
+            timeline: Default::default(),
+            viewer: Default::default(),
+            advanced: Default::default(),
+            external_tools: Default::default(),
+            ai: Default::default(),
+        }
+    }
 }
 
 /// Rich recent project entry with cached metadata for the launch screen.
@@ -373,8 +409,9 @@ pub struct AudioPrefs {
     /// Default fade curve for new clips.
     #[serde(default)]
     pub default_fade_curve: klipp_core::FadeCurve,
-    /// Default fade duration in milliseconds (0 = no fade).
-    #[serde(default)]
+    /// How long a fade is when one is added (a clip's Add Fade In or
+    /// Add Fade Out), in milliseconds.
+    #[serde(default = "default_fade_ms")]
     pub default_fade_duration_ms: u32,
     /// Loudness standard for metering/normalization.
     #[serde(default)]
@@ -422,7 +459,7 @@ impl Default for AudioPrefs {
             pan_law: Default::default(),
             metering_ballistics: Default::default(),
             default_fade_curve: Default::default(),
-            default_fade_duration_ms: 0,
+            default_fade_duration_ms: default_fade_ms(),
             loudness_standard: Default::default(),
             normalize_target_lufs: default_normalize_lufs(),
             peak_hold_time_secs: default_peak_hold(),
@@ -944,6 +981,7 @@ impl Preferences {
         Self::migrate_skim_resolution_default(&mut value);
         Self::migrate_filmstrip_height_default(&mut value);
         Self::migrate_skim_quality_default(&mut value);
+        Self::migrate_to_revision(&mut value);
         match serde_json::from_value::<Self>(value) {
             Ok(mut prefs) => {
                 // Migrate legacy theme_mode → theme_name (added when the
@@ -1005,6 +1043,40 @@ impl Preferences {
     /// ~50 GB skim files for 35-min 4K clips — 5× what FCP or DaVinci
     /// write. Only rewrites the literal old default; anything the user
     /// explicitly set is left alone.
+    /// Settings that were saved but read by nothing until #1816 carry
+    /// the default they had then, which may not be the one they have
+    /// now that they act. A file below [`PREFS_REVISION`] has those old
+    /// defaults moved to the new ones, once: the revision is then
+    /// written, so a value set afterwards is kept even if it equals an
+    /// old default.
+    fn migrate_to_revision(value: &mut serde_json::Value) {
+        let Some(root) = value.as_object_mut() else { return };
+        let revision = root.get("revision").and_then(|v| v.as_u64()).unwrap_or(0);
+        if revision < 1 {
+            // The title size's old default, 48, was never a title's size:
+            // titles were 72 while it did nothing.
+            if let Some(title) = root.get_mut("title").and_then(|v| v.as_object_mut()) {
+                if title.get("default_size_pt").and_then(|v| v.as_f64()) == Some(48.0) {
+                    title.insert("default_size_pt".into(), serde_json::Value::from(default_title_size()));
+                }
+            }
+            // The thumbnail size was a height of 128 to 320 that sized
+            // nothing; thumbnails were always 480 wide, now its default.
+            if let Some(mc) = root.get_mut("media_cache").and_then(|v| v.as_object_mut()) {
+                if mc.contains_key("thumbnail_height") {
+                    mc.insert("thumbnail_height".into(), serde_json::Value::from(default_thumb_h()));
+                }
+            }
+            // A fade of 0 ms is no fade: Add Fade In would do nothing.
+            if let Some(audio) = root.get_mut("audio").and_then(|v| v.as_object_mut()) {
+                if audio.get("default_fade_duration_ms").and_then(|v| v.as_u64()) == Some(0) {
+                    audio.insert("default_fade_duration_ms".into(), serde_json::Value::from(default_fade_ms()));
+                }
+            }
+        }
+        root.insert("revision".into(), serde_json::Value::from(PREFS_REVISION));
+    }
+
     fn migrate_skim_quality_default(value: &mut serde_json::Value) {
         let Some(mc) = value.get_mut("media_cache").and_then(|v| v.as_object_mut()) else {
             return;
@@ -1451,7 +1523,9 @@ pub struct MediaCachePrefs {
     /// Skim transcode quality (CRF value, lower = better quality, larger files).
     #[serde(default = "default_skim_quality")]
     pub skim_transcode_quality: u32,
-    /// Poster thumbnail height in pixels.
+    /// How wide a media item's thumbnail is decoded, in pixels: wider
+    /// is sharper on large tiles and costs more to make and keep.
+    /// (Named for the height it was once meant to be.)
     #[serde(default = "default_thumb_h")]
     pub thumbnail_height: u32,
     /// Filmstrip tile height in pixels. Each tile in the timeline clip's
@@ -1474,7 +1548,8 @@ fn default_cache_size_gb() -> u32 { 20 }
 // clip. Users who want finer detail can still select High (24) in
 // the Cache prefs.
 fn default_skim_quality() -> u32 { 30 }
-fn default_thumb_h() -> u32 { 256 }
+/// The width media thumbnails were always decoded at.
+fn default_thumb_h() -> u32 { 480 }
 fn default_filmstrip_h() -> u32 { 128 }
 impl Default for MediaCachePrefs {
     fn default() -> Self {
@@ -1608,7 +1683,9 @@ pub enum TextAlignment {
 }
 
 fn default_title_font() -> String { String::new() }
-fn default_title_size() -> f32 { 48.0 }
+/// A new title's size: the default title's own, so a fresh install's
+/// titles look as they did before this setting acted (#1816).
+fn default_title_size() -> f32 { 72.0 }
 fn default_title_color() -> [u8; 3] { [255, 255, 255] }
 fn default_title_duration() -> f32 { 5.0 }
 /// The font picker keeps this many recent families.
@@ -2116,7 +2193,7 @@ mod tests {
         assert_eq!(rt.audio.pan_law, klipp_core::PanLaw::Linear);
         assert_eq!(rt.audio.metering_ballistics, klipp_core::MeteringBallistics::Peak);
         assert_eq!(rt.audio.default_fade_curve, klipp_core::FadeCurve::Linear);
-        assert_eq!(rt.audio.default_fade_duration_ms, 0);
+        assert_eq!(rt.audio.default_fade_duration_ms, 500);
         assert_eq!(rt.audio.loudness_standard, klipp_core::LoudnessStandard::EbuR128);
         assert_eq!(rt.audio.normalize_target_lufs, -23.0);
 
@@ -2151,7 +2228,7 @@ mod tests {
         assert!(rt.media_cache.audio_cache_dir.is_none());
         assert_eq!(rt.media_cache.max_cache_size_gb, 20);
         assert_eq!(rt.media_cache.skim_transcode_quality, 30);
-        assert_eq!(rt.media_cache.thumbnail_height, 256);
+        assert_eq!(rt.media_cache.thumbnail_height, 480);
 
         // ColorPrefs
         assert!(rt.color.viewer_lut_path.is_none());
@@ -2160,7 +2237,7 @@ mod tests {
 
         // TitlePrefs
         assert!(rt.title.default_font.is_empty());
-        assert_eq!(rt.title.default_size_pt, 48.0);
+        assert_eq!(rt.title.default_size_pt, 72.0);
         assert!(rt.title.font_search_paths.is_empty());
 
         // TimelinePrefs
@@ -2292,9 +2369,9 @@ mod tests {
         assert_eq!(prefs.system.gpu_preference, klipp_core::GpuPreference::Auto);
         assert_eq!(prefs.audio_hardware.buffer_size, 256);
         assert_eq!(prefs.appearance.accent_color, [0x4a, 0x8f, 0xe7]);
-        assert_eq!(prefs.media_cache.thumbnail_height, 256);
+        assert_eq!(prefs.media_cache.thumbnail_height, 480);
         assert_eq!(prefs.color.scope_update_interval_ms, 32);
-        assert_eq!(prefs.title.default_size_pt, 48.0);
+        assert_eq!(prefs.title.default_size_pt, 72.0);
         assert_eq!(prefs.timeline.trim_handle_width, 14.0);
         assert_eq!(prefs.viewer.action_safe_pct, 0.9);
         assert_eq!(prefs.advanced.modal_backdrop_alpha, 120);
@@ -3144,5 +3221,52 @@ mod font_pick_tests {
         assert_eq!(t.recent_fonts[0], "F19");
         let old: TitlePrefs = serde_json::from_str("{}").unwrap();
         assert!(old.favourite_fonts.is_empty() && old.recent_fonts.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod revision_tests {
+    use super::*;
+
+    /// A file in its default state, as an older build wrote it.
+    fn old_file(edit: impl FnOnce(&mut serde_json::Value)) -> Preferences {
+        let mut v = serde_json::to_value(Preferences::default()).unwrap();
+        v.as_object_mut().unwrap().remove("revision");
+        edit(&mut v);
+        Preferences::from_json_str(&v.to_string())
+    }
+
+    /// #1816: a file from before the fades acted, with the then-default
+    /// 0 ms, gets the half-second default once; a file already at the
+    /// revision keeps whatever it holds, so a value set later stands.
+    #[test]
+    fn an_old_zero_fade_becomes_the_default_once() {
+        let p = old_file(|v| v["audio"]["default_fade_duration_ms"] = 0.into());
+        assert_eq!(p.audio.default_fade_duration_ms, 500);
+        assert_eq!(p.revision, PREFS_REVISION);
+        let p = old_file(|v| v["audio"]["default_fade_duration_ms"] = 300.into());
+        assert_eq!(p.audio.default_fade_duration_ms, 300, "a value chosen is kept");
+        let mut current = serde_json::to_value(Preferences::default()).unwrap();
+        current["audio"]["default_fade_duration_ms"] = 0.into();
+        assert_eq!(Preferences::from_json_str(&current.to_string()).audio.default_fade_duration_ms, 0, "at the revision, nothing moves");
+        assert_eq!(Preferences::default().revision, PREFS_REVISION, "a fresh install is at the revision");
+    }
+
+    /// The title size's old default, 48, never sized a title (they were
+    /// 72): an old file's 48 becomes 72 once; another size is kept.
+    #[test]
+    fn an_old_default_title_size_becomes_the_titles_own() {
+        assert_eq!(old_file(|v| v["title"]["default_size_pt"] = 48.0.into()).title.default_size_pt, 72.0);
+        assert_eq!(old_file(|v| v["title"]["default_size_pt"] = 60.0.into()).title.default_size_pt, 60.0);
+    }
+
+    /// The thumbnail size sized nothing before it acted; an old file's
+    /// value becomes the width thumbnails always had, once.
+    #[test]
+    fn an_old_thumbnail_size_becomes_the_width_they_had() {
+        assert_eq!(old_file(|v| v["media_cache"]["thumbnail_height"] = 192.into()).media_cache.thumbnail_height, 480);
+        let mut current = serde_json::to_value(Preferences::default()).unwrap();
+        current["media_cache"]["thumbnail_height"] = 640.into();
+        assert_eq!(Preferences::from_json_str(&current.to_string()).media_cache.thumbnail_height, 640);
     }
 }

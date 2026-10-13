@@ -625,6 +625,9 @@ impl KlippApp {
             self.state.audio_show_rubber_band = self.prefs.audio.show_rubber_band;
             self.state.audio_show_waveform = self.prefs.audio.show_waveform;
             self.state.audio_anti_click_fade = self.prefs.audio.anti_click_fade;
+            self.state.default_fade_secs = self.prefs.audio.default_fade_duration_ms as f32 / 1000.0;
+            self.state.default_fade_curve = self.prefs.audio.default_fade_curve;
+            self.state.jkl_speed_step = f64::from(self.prefs.playback.jkl_speed_step);
             self.state.audio_show_crossfade_indicators = self.prefs.audio.show_crossfade_indicators;
             self.state.lufs_target = match self.prefs.audio.loudness_standard {
                 klipp_core::LoudnessStandard::EbuR128 => -23.0,
@@ -662,6 +665,7 @@ impl KlippApp {
                 self.prefs.color.lut_interpolation == crate::prefs::LutInterpolation::Tetrahedral,
             ));
             let _ = self.cmd_tx.send(AppCommand::SetSdrTransfer(self.prefs.color.sdr_display_transfer));
+            let _ = self.cmd_tx.send(AppCommand::SetRenderCacheLimitGb(self.prefs.media_cache.max_cache_size_gb));
             // Push the background-performance pref into the live
             // scheduler so user changes take effect immediately
             // (without waiting for the next app launch).

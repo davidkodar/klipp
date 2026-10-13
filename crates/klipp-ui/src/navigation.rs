@@ -44,20 +44,16 @@ pub fn marker_from(seq: &Sequence, at: Timecode, forward: bool) -> Option<Timeco
 
 /// The speed J or L goes to. From a stop, from the other direction, or
 /// from slow play it starts at normal speed; each press after that
-/// doubles it, up to 8x.
-pub fn shuttle_speed(current: f64, playing: bool, forward: bool) -> f64 {
+/// multiplies it by `step` (Preferences > Playback, JKL speed steps),
+/// three times at most: 2 gives 2x, 4x, 8x; 3 gives 3x, 9x, 27x.
+pub fn shuttle_speed(current: f64, playing: bool, forward: bool, step: f64) -> f64 {
     let dir = if forward { 1.0 } else { -1.0 };
     let along = current * dir;
     if !playing || along < 1.0 {
         return dir;
     }
-    dir * if along < 2.0 {
-        2.0
-    } else if along < 4.0 {
-        4.0
-    } else {
-        8.0
-    }
+    let step = step.max(1.5);
+    dir * (along * step).min(step.powi(3))
 }
 
 /// The speed J and L play at while K is held.
@@ -180,21 +176,39 @@ mod tests {
 
     #[test]
     fn l_starts_at_normal_speed_and_doubles() {
-        assert_eq!(shuttle_speed(1.0, false, true), 1.0, "from a stop: normal speed, not 2x");
-        assert_eq!(shuttle_speed(1.0, true, true), 2.0);
-        assert_eq!(shuttle_speed(2.0, true, true), 4.0);
-        assert_eq!(shuttle_speed(4.0, true, true), 8.0);
-        assert_eq!(shuttle_speed(8.0, true, true), 8.0, "8x is the top");
-        assert_eq!(shuttle_speed(-4.0, true, true), 1.0, "from reverse: forward at normal speed");
-        assert_eq!(shuttle_speed(SLOW_SPEED, true, true), 1.0, "from slow play: normal speed");
+        assert_eq!(shuttle_speed(1.0, false, true, 2.0), 1.0, "from a stop: normal speed, not 2x");
+        assert_eq!(shuttle_speed(1.0, true, true, 2.0), 2.0);
+        assert_eq!(shuttle_speed(2.0, true, true, 2.0), 4.0);
+        assert_eq!(shuttle_speed(4.0, true, true, 2.0), 8.0);
+        assert_eq!(shuttle_speed(8.0, true, true, 2.0), 8.0, "8x is the top");
+        assert_eq!(shuttle_speed(-4.0, true, true, 2.0), 1.0, "from reverse: forward at normal speed");
+        assert_eq!(shuttle_speed(SLOW_SPEED, true, true, 2.0), 1.0, "from slow play: normal speed");
+    }
+
+    /// #1816: the step is the preference's: 3 gives 3x, 9x and 27x at
+    /// the top, where 2 gives 2x, 4x, 8x.
+    #[test]
+    fn the_step_is_the_preferences() {
+        let presses = |step: f64| {
+            let mut speed = shuttle_speed(1.0, false, true, step);
+            let mut seen = vec![speed];
+            for _ in 0..4 {
+                speed = shuttle_speed(speed, true, true, step);
+                seen.push(speed);
+            }
+            seen
+        };
+        assert_eq!(presses(2.0), [1.0, 2.0, 4.0, 8.0, 8.0]);
+        assert_eq!(presses(3.0), [1.0, 3.0, 9.0, 27.0, 27.0]);
+        assert_eq!(shuttle_speed(-1.0, true, false, 4.0), -4.0, "J too");
     }
 
     #[test]
     fn j_mirrors_l() {
-        assert_eq!(shuttle_speed(1.0, false, false), -1.0);
-        assert_eq!(shuttle_speed(-1.0, true, false), -2.0);
-        assert_eq!(shuttle_speed(-8.0, true, false), -8.0);
-        assert_eq!(shuttle_speed(2.0, true, false), -1.0);
+        assert_eq!(shuttle_speed(1.0, false, false, 2.0), -1.0);
+        assert_eq!(shuttle_speed(-1.0, true, false, 2.0), -2.0);
+        assert_eq!(shuttle_speed(-8.0, true, false, 2.0), -8.0);
+        assert_eq!(shuttle_speed(2.0, true, false, 2.0), -1.0);
     }
 
     #[test]

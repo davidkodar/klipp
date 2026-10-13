@@ -1172,6 +1172,9 @@ pub struct AppState {
     pub playhead: Timecode,
     pub fps: Fps,
     pub playback_speed: f64,
+    /// What each further J or L press multiplies the speed by: the
+    /// playback preferences' JKL speed steps.
+    pub jkl_speed_step: f64,
     pub loop_playback_enabled: bool,
 
     // Active workspace
@@ -2690,6 +2693,11 @@ pub struct AppState {
     pub audio_show_rubber_band: bool,
     pub audio_show_waveform: bool,
     pub audio_anti_click_fade: bool,
+    /// A fade added to a clip (its Add Fade In or Out, or a fade handle
+    /// dragged out from none): how long, and its curve. The audio
+    /// preferences' default fade.
+    pub default_fade_secs: f32,
+    pub default_fade_curve: klipp_core::FadeCurve,
     /// See `prefs::AudioPrefs::show_crossfade_indicators`: a fade
     /// handoff between two butted clips, not a crossfade.
     pub audio_show_crossfade_indicators: bool,
@@ -4158,6 +4166,7 @@ impl Default for AppState {
             playhead: Timecode { value: 0, rate: 24 },
             fps: Fps::film_24(),
             playback_speed: 1.0,
+            jkl_speed_step: 2.0,
             loop_playback_enabled: false,
             active_workspace: Workspace::default(),
             custom_workspaces: Vec::new(),
@@ -4696,6 +4705,8 @@ impl Default for AppState {
             audio_show_rubber_band: true,
             audio_show_waveform: true,
             audio_anti_click_fade: true,
+            default_fade_secs: 0.5,
+            default_fade_curve: klipp_core::FadeCurve::default(),
             audio_show_crossfade_indicators: true,
             waveform_zoom: std::collections::HashMap::new(),
             copied_track_settings: None,

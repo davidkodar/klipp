@@ -76,6 +76,9 @@ pub(super) struct ExportDialogState {
     pub(super) audio_codec: ExportAudioCodec,
     pub(super) audio_bitrate: u32,
     pub(super) confirm_overwrite: bool,
+    /// The export preferences say to overwrite a file already there
+    /// without asking (`OverwriteMode::Always`); set as the dialog opens.
+    pub(super) overwrite_without_asking: bool,
     /// Range selection for export.
     /// - 0 = Full timeline
     /// - 1 = Marked in/out range
@@ -143,6 +146,7 @@ impl Default for ExportDialogState {
             audio_codec: ExportAudioCodec::Aac,
             audio_bitrate: 128,
             confirm_overwrite: false,
+            overwrite_without_asking: false,
             range_mode: 0,
             include_pre_marker_segment: true,
             include_post_marker_segment: true,
@@ -238,6 +242,33 @@ pub(super) fn sanitise_filename(label: &str) -> String {
 
 /// Where an export goes when nothing says otherwise: the user's Videos
 /// folder where there is one, as every NLE does, else the home directory.
+/// Where a new export goes: the export preferences' folder while it is
+/// there, else the default (`default_export_dir`).
+pub(super) fn export_folder(prefs: &crate::prefs::ExportPrefs) -> PathBuf {
+    prefs.default_output_dir.clone().filter(|d| d.is_dir()).unwrap_or_else(default_export_dir)
+}
+
+/// The output path the Export dialog opens with, by the export
+/// preferences' overwrite mode, and whether a file already there is
+/// written over without asking. Ask keeps the path and asks at Export;
+/// Always keeps it and does not ask; Never moves it to the next free
+/// name (`name_1`, `name_2`, …) so nothing is written over.
+pub(super) fn apply_overwrite_mode(mode: crate::prefs::OverwriteMode, path: &str) -> (String, bool) {
+    use crate::prefs::OverwriteMode;
+    match mode {
+        OverwriteMode::Ask => (path.to_string(), false),
+        OverwriteMode::Always => (path.to_string(), true),
+        OverwriteMode::Never => {
+            let p = std::path::Path::new(path);
+            if !path.trim().is_empty() && p.exists() {
+                (next_free_name(p, |c| c.exists()).to_string_lossy().to_string(), false)
+            } else {
+                (path.to_string(), false)
+            }
+        }
+    }
+}
+
 pub(super) fn default_export_dir() -> PathBuf {
     dirs::video_dir()
         .filter(|d| d.is_dir())
@@ -940,7 +971,7 @@ impl KlippApp {
     /// (`XDG_VIDEOS_DIR`), else the home directory.
     pub(super) fn prepare_export_defaults(&mut self) {
         if self.export_dialog.output_path.trim().is_empty() {
-            let home = default_export_dir().to_string_lossy().to_string();
+            let home = export_folder(&self.prefs.export).to_string_lossy().to_string();
             let stem = self
                 .state
                 .project_path
@@ -951,6 +982,9 @@ impl KlippApp {
                 .unwrap_or_else(|| "output".into());
             self.export_dialog.output_path = format!("{home}/{stem}.{}", self.export_dialog.format.extension());
         }
+        let (path, without_asking) = apply_overwrite_mode(self.prefs.export.overwrite_mode, &self.export_dialog.output_path);
+        self.export_dialog.output_path = path;
+        self.export_dialog.overwrite_without_asking = without_asking;
     }
 
     /// The export settings form: presets, output, codec, audio, range
@@ -1962,7 +1996,7 @@ impl KlippApp {
 
             if export_clicked {
                 let path = PathBuf::from(&self.export_dialog.output_path);
-                if path.exists() {
+                if path.exists() && !self.export_dialog.overwrite_without_asking {
                     self.export_dialog.confirm_overwrite = true;
                 } else {
                     self.state.show_export_dialog = false;
@@ -3512,4 +3546,61 @@ pub(super) fn crf_mbps_range(codec: klipp_core::ExportVideoCodec, crf: u32, px: 
         * (fps.max(1.0) / 30.0).powf(0.6)
         * 2f64.powf((default_crf - crf as f64) / 6.0);
     Some((3.0 * scale, 12.0 * scale))
+}
+
+#[cfg(test)]
+mod export_prefs_tests {
+    use super::*;
+    use crate::prefs::{ExportPrefs, OverwriteMode};
+
+    /// A folder of its own under the temp dir, removed when dropped.
+    struct Dir(std::path::PathBuf);
+    impl Dir {
+        fn new() -> Self {
+            let p = std::env::temp_dir().join(format!("klipp-export-prefs-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&p).unwrap();
+            Self(p)
+        }
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// #1816: the Export dialog's folder is the preferences' while it is
+    /// there; unset, or a folder since removed, it is the default.
+    #[test]
+    fn a_new_export_goes_to_the_preferences_folder() {
+        let dir = Dir::new();
+        let mut prefs = ExportPrefs::default();
+        assert_eq!(export_folder(&prefs), default_export_dir(), "unset: the default");
+        prefs.default_output_dir = Some(dir.path().to_path_buf());
+        assert_eq!(export_folder(&prefs), dir.path(), "set: that folder");
+        prefs.default_output_dir = Some(dir.path().join("gone"));
+        assert_eq!(export_folder(&prefs), default_export_dir(), "a folder not there: the default");
+    }
+
+    /// #1816: with the file already there, Ask keeps the name and asks,
+    /// Always keeps it and does not ask, Never moves to the next free
+    /// name; with no file there every mode keeps the name.
+    #[test]
+    fn the_overwrite_mode_decides_the_name_and_the_question() {
+        let dir = Dir::new();
+        let taken = dir.path().join("cut.mp4");
+        std::fs::write(&taken, b"x").unwrap();
+        let taken = taken.to_string_lossy().to_string();
+        assert_eq!(apply_overwrite_mode(OverwriteMode::Ask, &taken), (taken.clone(), false));
+        assert_eq!(apply_overwrite_mode(OverwriteMode::Always, &taken), (taken.clone(), true));
+        let (free, asks) = apply_overwrite_mode(OverwriteMode::Never, &taken);
+        assert_eq!(free, dir.path().join("cut_1.mp4").to_string_lossy());
+        assert!(!asks);
+        let new = dir.path().join("new.mp4").to_string_lossy().to_string();
+        for mode in [OverwriteMode::Ask, OverwriteMode::Never] {
+            assert_eq!(apply_overwrite_mode(mode, &new).0, new, "{mode:?}: no file, no change");
+        }
+    }
 }

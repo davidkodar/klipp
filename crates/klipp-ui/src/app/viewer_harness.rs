@@ -56,7 +56,7 @@ impl Viewer {
         let state = &mut self.state;
         match cmd {
             AppCommand::CreateTitleInViewer { x, y, box_size } => {
-                create_title_in_viewer(state, *x, *y, *box_size, 5.0).expect("a title");
+                create_title_in_viewer(state, *x, *y, *box_size, &crate::prefs::TitlePrefs { default_duration_secs: 5.0, ..Default::default() }).expect("a title");
             }
             AppCommand::SetTitleObjectText { clip_id, object_id, text } => {
                 let clip = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(*clip_id)).unwrap();

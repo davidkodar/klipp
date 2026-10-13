@@ -798,6 +798,23 @@ impl PreferencesPanel {
             }
         });
 
+        Self::setting_row_with_subtitle(ui, "JKL speed steps", "Each further J or L press multiplies the speed by this, three times at most", theme, |ui| {
+            let steps = [(2.0_f32, "2\u{00d7}"), (3.0, "3\u{00d7}"), (4.0, "4\u{00d7}")];
+            let current = steps.iter()
+                .find(|(v, _)| (*v - prefs.playback.jkl_speed_step).abs() < 0.01)
+                .map(|(_, l)| *l).unwrap_or("2\u{00d7}");
+            egui::ComboBox::from_id_salt("jkl_step")
+                .selected_text(current)
+                .width(50.0)
+                .show_ui(ui, |ui| {
+                    for (val, label) in &steps {
+                        if ui.selectable_value(&mut prefs.playback.jkl_speed_step, *val, *label).changed() {
+                            *dirty = true;
+                        }
+                    }
+                });
+        });
+
         Self::setting_row(ui, "Loop playback by default", theme, |ui| {
             let mut val = prefs.playback.loop_playback;
             if ui.add(Switch::new(&mut val, theme)).changed() {
@@ -1571,6 +1588,33 @@ impl PreferencesPanel {
             }
         });
 
+        Self::setting_row_with_subtitle(ui, "Default fade duration", "A clip's Add Fade In and Add Fade Out", theme, |ui| {
+            let mut v_secs = prefs.audio.default_fade_duration_ms as f32 / 1000.0;
+            if ui.add(egui::DragValue::new(&mut v_secs).range(0.05..=5.0).speed(0.05).suffix(" s").fixed_decimals(2)).changed() {
+                prefs.audio.default_fade_duration_ms = (v_secs * 1000.0).round() as u32;
+                *dirty = true;
+            }
+        });
+
+        Self::setting_row_with_subtitle(ui, "Default fade curve", "A fade added, or drawn out from none on the timeline", theme, |ui| {
+            egui::ComboBox::from_id_salt("fade_curve")
+                .selected_text(crate::inspector::audio_tab::fade_curve_label(
+                    prefs.audio.default_fade_curve,
+                ))
+                .width(100.0)
+                .show_ui(ui, |ui| {
+                    // One list, from the same source as the clip
+                    // inspector's, so a shape cannot appear in one
+                    // picker and not the other.
+                    for curve in crate::inspector::audio_tab::FADE_CURVES {
+                        let label = crate::inspector::audio_tab::fade_curve_label(*curve);
+                        if ui.selectable_value(&mut prefs.audio.default_fade_curve, *curve, label).changed() {
+                            *dirty = true;
+                        }
+                    }
+                });
+        });
+
         // ── LOUDNESS section ──
         Self::section_header(ui, "LOUDNESS", theme);
 
@@ -1662,7 +1706,43 @@ impl PreferencesPanel {
         });
 
         // ── BEHAVIOR section ──
+        Self::setting_row_with_subtitle(ui, "Default export folder", "Where the Export dialog puts a new export", theme, |ui| {
+            let picker = egui::Id::new("prefs-default-export-dir");
+            if ui.button("Browse\u{2026}").clicked() {
+                crate::file_dialog::pick_path(picker, || {
+                    rfd::FileDialog::new().set_title("Default Export Folder").pick_folder()
+                });
+            }
+            if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(picker) {
+                prefs.export.default_output_dir = Some(path);
+                *dirty = true;
+            }
+            if prefs.export.default_output_dir.is_some() && ui.small_button("Reset").on_hover_text("Back to the Videos folder").clicked() {
+                prefs.export.default_output_dir = None;
+                *dirty = true;
+            }
+            let shown = prefs.export.default_output_dir.clone().unwrap_or_else(|| dirs::video_dir().or_else(dirs::home_dir).unwrap_or_default());
+            ui.add(egui::Label::new(egui::RichText::new(tilde(&shown)).size(11.0).color(theme.text_dim)).truncate());
+        });
+
         Self::section_header(ui, "BEHAVIOR", theme);
+
+        Self::setting_row_with_subtitle(ui, "Overwrite existing files", "When the export's file is already there", theme, |ui| {
+            use crate::prefs::OverwriteMode;
+            let label = |m: OverwriteMode| match m {
+                OverwriteMode::Ask => "Ask",
+                OverwriteMode::Always => "Overwrite",
+                OverwriteMode::Never => "Pick a new name",
+            };
+            egui::ComboBox::from_id_salt("overwrite_mode")
+                .selected_text(label(prefs.export.overwrite_mode))
+                .width(130.0)
+                .show_ui(ui, |ui| {
+                    for m in [OverwriteMode::Ask, OverwriteMode::Always, OverwriteMode::Never] {
+                        if ui.selectable_value(&mut prefs.export.overwrite_mode, m, label(m)).changed() { *dirty = true; }
+                    }
+                });
+        });
 
         Self::setting_row(ui, "Parallel render jobs", theme, |ui| {
             let mut val = prefs.export.parallel_render_jobs;
@@ -2908,6 +2988,31 @@ impl PreferencesPanel {
         // ── LIMITS section ──
         Self::section_header(ui, "LIMITS", theme);
 
+        Self::setting_row_with_subtitle(ui, "Max cache size", "The render cache's cap: past it the least recently used frames go", theme, |ui| {
+            let mut v = prefs.media_cache.max_cache_size_gb;
+            if ui.add(egui::DragValue::new(&mut v).range(1..=500).speed(1.0).suffix(" GB")).changed() {
+                prefs.media_cache.max_cache_size_gb = v; *dirty = true;
+            }
+        });
+
+        Self::setting_row_with_subtitle(ui, "Thumbnail resolution", "How wide a media item's thumbnail is made; wider is sharper on large tiles", theme, |ui| {
+            let sizes = [(320_u32, "320 px"), (480, "480 px"), (640, "640 px"), (960, "960 px")];
+            let current = sizes.iter()
+                .find(|(v, _)| *v == prefs.media_cache.thumbnail_height)
+                .map(|(_, l)| (*l).to_string())
+                .unwrap_or_else(|| format!("{} px", prefs.media_cache.thumbnail_height));
+            egui::ComboBox::from_id_salt("thumb_res")
+                .selected_text(current)
+                .width(80.0)
+                .show_ui(ui, |ui| {
+                    for (val, label) in &sizes {
+                        if ui.selectable_value(&mut prefs.media_cache.thumbnail_height, *val, *label).changed() {
+                            *dirty = true;
+                        }
+                    }
+                });
+        });
+
         Self::setting_row_with_subtitle(
             ui,
             "Filmstrip tile resolution",
@@ -3487,6 +3592,47 @@ impl PreferencesPanel {
             ui.label(egui::RichText::new("Titles").strong().size(16.0).color(theme.text_primary));
         });
         ui.add_space(4.0);
+
+        // ── TEXT DEFAULTS section: a new title's text ──
+        Self::section_header(ui, "TEXT DEFAULTS", theme);
+
+        Self::setting_row_with_subtitle(ui, "Default font", "A font family installed here; empty keeps the title's own", theme, |ui| {
+            let default_font = klipp_timeline::TextBox::default().font_name;
+            if ui.add(egui::TextEdit::singleline(&mut prefs.title.default_font).hint_text(default_font).desired_width(160.0)).changed() {
+                *dirty = true;
+            }
+        });
+
+        Self::setting_row(ui, "Default size", theme, |ui| {
+            let mut v = prefs.title.default_size_pt;
+            if ui.add(egui::DragValue::new(&mut v).range(8.0..=400.0).speed(0.5).suffix(" pt").fixed_decimals(0)).changed() {
+                prefs.title.default_size_pt = v; *dirty = true;
+            }
+        });
+
+        Self::setting_row(ui, "Default colour", theme, |ui| {
+            let mut c = egui::Color32::from_rgb(prefs.title.default_color[0], prefs.title.default_color[1], prefs.title.default_color[2]);
+            if ui.color_edit_button_srgba(&mut c).changed() {
+                prefs.title.default_color = [c.r(), c.g(), c.b()];
+                *dirty = true;
+            }
+        });
+
+        Self::setting_row(ui, "Default alignment", theme, |ui| {
+            use crate::prefs::TextAlignment;
+            egui::ComboBox::from_id_salt("title_align")
+                .selected_text(match prefs.title.default_alignment {
+                    TextAlignment::Left => "Left",
+                    TextAlignment::Center => "Center",
+                    TextAlignment::Right => "Right",
+                })
+                .width(80.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(&mut prefs.title.default_alignment, TextAlignment::Left, "Left").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.title.default_alignment, TextAlignment::Center, "Center").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.title.default_alignment, TextAlignment::Right, "Right").changed() { *dirty = true; }
+                });
+        });
 
         // ── BEHAVIOR section ──
         Self::section_header(ui, "BEHAVIOR", theme);
@@ -4712,11 +4858,11 @@ mod layout_tests {
     /// nothing, so they are out of view until they are wired. "Render
     /// cache" here is the folder row; the cache's size row keeps the name.
     const HIDDEN: &[&str] = &[
-        "Default fade curve", "Default fade duration", "Monitoring mode", "Normalize target", "Default sync method",
-        "Search radius", "Colour space tagging", "Default encoder preset", "Default export folder", "Overwrite existing files",
-        "Max cache size", "Thumbnail resolution", "JKL speed steps", "Clip corner radius", "Max track height", "Ruler height",
-        "Default alignment", "Default colour", "Default font", "Default size", "Title-safe area overlay",
-        "Show keyboard shortcut hints", "Recent projects to show", "TEXT DEFAULTS",
+        "Monitoring mode", "Normalize target", "Default sync method",
+        "Search radius", "Colour space tagging", "Default encoder preset",
+        "Clip corner radius", "Max track height", "Ruler height",
+        "Title-safe area overlay",
+        "Show keyboard shortcut hints", "Recent projects to show",
     ];
 
     /// One frame of the dialog on `tab`, with `events`: its texts by their
