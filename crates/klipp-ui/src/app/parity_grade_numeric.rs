@@ -282,6 +282,12 @@ pub(super) fn shown_in_frame(start: &Grade, ty: &NodeType, desc: &ParamDesc) -> 
         // edge would change nothing.
         "qual_mode" => vec![param("qual_red_low", 0.5)],
         "qual_rgb_soft" => vec![param("qual_red_low", 0.4), param("qual_green_high", 0.6)],
+        // Strokes to key round (#895): with none the 3D key keys nothing,
+        // however far it reaches.
+        "qual_key_radius" | "qual_key_soft" => {
+            let qualifier = klipp_core::QualifierSettings { enabled: true, mode: klipp_core::QualifierMode::ThreeD, keep_samples: vec![[0.5, 0.5, 0.5], [0.35, 0.3, 0.3], [0.6, 0.55, 0.45]], ..Default::default() };
+            vec![AppCommand::SetNodeQualifier { clip_id, node_id, qualifier }]
+        }
         k if k.starts_with("difference_key.") => {
             let mut difference_key = g.grade().nodes.iter().find(|n| n.id == node_id).and_then(|n| n.params.difference_key.clone()).unwrap_or_default();
             difference_key.plate_path = Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/effect_preview_reference.png"));

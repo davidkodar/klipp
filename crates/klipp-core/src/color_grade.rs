@@ -124,6 +124,26 @@ pub struct QualifierSettings {
     pub blue_high: f32,
     #[serde(default = "tenth")]
     pub rgb_soft: f32,
+    /// The 3D mode's strokes (#895): colours drawn across what to keep
+    /// and what to take out, display-encoded RGB (0-1). The key is the
+    /// colour volume each set spans, in a luma-chroma space.
+    #[serde(default)]
+    pub keep_samples: Vec<[f32; 3]>,
+    #[serde(default)]
+    pub remove_samples: Vec<[f32; 3]>,
+    /// How far out from a volume's centre the 3D key reaches, in its own
+    /// spread (standard deviations), and the soft edge beyond that.
+    #[serde(default = "key_radius")]
+    pub key_radius: f32,
+    #[serde(default = "key_soft")]
+    pub key_soft: f32,
+}
+
+fn key_radius() -> f32 {
+    2.5
+}
+fn key_soft() -> f32 {
+    1.5
 }
 
 fn zero() -> f32 {
@@ -145,6 +165,11 @@ pub enum QualifierMode {
     /// Red, green and blue ranges, each on its own: for a colour HSL
     /// separates poorly.
     Rgb,
+    /// A volume of colour drawn across with strokes to keep and to take
+    /// out: cleanest on skin and skies.
+    // Saved as its menu names it, which the generated row matches.
+    #[serde(rename = "3D")]
+    ThreeD,
 }
 
 impl QualifierMode {
@@ -153,12 +178,17 @@ impl QualifierMode {
         match self {
             QualifierMode::Hsl => 0,
             QualifierMode::Rgb => 1,
+            QualifierMode::ThreeD => 2,
         }
     }
 
     /// The mode a `qual_mode` index names; HSL for any other.
     pub fn from_index(i: f32) -> Self {
-        if i.round() as i32 == 1 { QualifierMode::Rgb } else { QualifierMode::Hsl }
+        match i.round() as i32 {
+            1 => QualifierMode::Rgb,
+            2 => QualifierMode::ThreeD,
+            _ => QualifierMode::Hsl,
+        }
     }
 }
 
@@ -200,6 +230,10 @@ impl Default for QualifierSettings {
             blue_low: 0.0,
             blue_high: 1.0,
             rgb_soft: 0.1,
+            keep_samples: Vec::new(),
+            remove_samples: Vec::new(),
+            key_radius: 2.5,
+            key_soft: 1.5,
         }
     }
 }

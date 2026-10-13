@@ -2125,6 +2125,11 @@ pub struct AppState {
     pub wb_pick_clip: Option<ClipId>,
     /// The clip and Qualifier node the qualifier eyedropper was armed for.
     pub qualifier_pick: Option<(ClipId, uuid::Uuid)>,
+    /// The clip and Qualifier node a 3D stroke was armed for, and whether
+    /// it takes colours out (#895).
+    pub qualifier_stroke_pick: Option<(ClipId, uuid::Uuid, bool)>,
+    /// A drawn stroke's samples on their way back from the engine.
+    pub qualifier_stroke: Option<StrokeSampling>,
     /// The clip, Hue/Sat Curves node and curve the hue eyedropper was
     /// armed for, until it is clicked (#612).
     pub hue_curve_pick: Option<(ClipId, uuid::Uuid, u8)>,
@@ -2948,6 +2953,19 @@ pub enum EyedropperMode {
     Qualifier,
     /// A hue for a Hue/Sat curve (#612).
     HueCurve,
+    /// A 3D qualifier stroke (#895): dragged, not clicked.
+    QualifierStroke,
+}
+
+/// A 3D qualifier stroke being sampled (#895): the node, whether it takes
+/// colours out, the samples read so far and how many are still to come.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StrokeSampling {
+    pub clip_id: ClipId,
+    pub node_id: uuid::Uuid,
+    pub remove: bool,
+    pub samples: Vec<[f32; 3]>,
+    pub pending: usize,
 }
 
 /// Messages sent from the consolidation background thread to the UI thread.
@@ -4478,6 +4496,8 @@ impl Default for AppState {
             hdr_reference_output: false,
             hdr_nits_under_pointer: None,
             eyedropper_mode: EyedropperMode::None,
+            qualifier_stroke_pick: None,
+            qualifier_stroke: None,
             library_recent: Default::default(),
             wb_pick_clip: None,
             qualifier_pick: None,

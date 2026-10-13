@@ -30,7 +30,7 @@ const KNOWN: &[(&str, &str, usize)] = &[
     ("klipp-document/src/ops.rs", "SetBuiltinEffects", 3),
     // The document ops' grade builders (grade, look, qualify, track and
     // stage grades) and their tests.
-    ("klipp-document/src/ops.rs", "SetNodeGraph", 19),
+    ("klipp-document/src/ops.rs", "SetNodeGraph", 20),
     // A drag left open, closed on the state alone (M3 step 2). The list
     // handlers and their drags go through the picture (M4 step 12c-5).
     ("klipp-ui/src/app/effects.rs", "EditBuiltinEffect", 2),

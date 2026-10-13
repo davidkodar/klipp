@@ -1262,7 +1262,10 @@ pub enum Op {
     /// grades everything but the key; `remove` clears it. `rgb` keys by
     /// red, green and blue instead (#895): `[red_low, red_high,
     /// green_low, green_high, blue_low, blue_high]`, each 0-1 on the
-    /// picture as shown, for a colour hue separates poorly.
+    /// picture as shown, for a colour hue separates poorly. `keep` keys
+    /// the 3D way instead (#895): the colour volume the colours given span
+    /// (each `[r, g, b]` 0-1 as shown, sampled across what to key), less
+    /// what `take_out`'s colours span: cleanest on skin and skies.
     Qualify {
         clip_id: ClipRef,
         #[serde(default)]
@@ -1310,6 +1313,10 @@ pub enum Op {
         window_feather: Option<f32>,
         #[serde(default)]
         rgb: Option<[f32; 6]>,
+        #[serde(default)]
+        keep: Option<Vec<[f32; 3]>>,
+        #[serde(default)]
+        take_out: Option<Vec<[f32; 3]>>,
     },
     /// Change a clip's speed. `speed` above 1 is faster and shorter, below
     /// 1 slower and longer (0.5 is half speed); negative plays the clip
@@ -3069,9 +3076,9 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             ]);
             Ok((format!("remove grade group \"{}\"; its clips keep their own grades", g.name), edit, touched))
         }
-        Op::Qualify { clip_id, target, hue, hue_width, sat_low, sat_high, lum_low, lum_high, invert, exposure, saturation, hue_shift, temperature, remove, window, window_feather, rgb } => {
+        Op::Qualify { clip_id, target, hue, hue_width, sat_low, sat_high, lum_low, lum_high, invert, exposure, saturation, hue_shift, temperature, remove, window, window_feather, rgb, keep, take_out } => {
             let (ti, _, clip) = resolve_clip(seq, fps, clip_id, i)?;
-            let q = QualifyArgs { target: target.as_deref(), hue: *hue, hue_width: *hue_width, sat_low: *sat_low, sat_high: *sat_high, lum_low: *lum_low, lum_high: *lum_high, invert: *invert, exposure: *exposure, saturation: *saturation, hue_shift: *hue_shift, temperature: *temperature, remove: *remove, window: window.as_deref(), window_feather: *window_feather, rgb: *rgb };
+            let q = QualifyArgs { target: target.as_deref(), hue: *hue, hue_width: *hue_width, sat_low: *sat_low, sat_high: *sat_high, lum_low: *lum_low, lum_high: *lum_high, invert: *invert, exposure: *exposure, saturation: *saturation, hue_shift: *hue_shift, temperature: *temperature, remove: *remove, window: window.as_deref(), window_feather: *window_feather, rgb: *rgb, keep: keep.as_deref(), take_out: take_out.as_deref() };
             qualify(seq, pool, i, ti, clip, q)
         }
         Op::Retime { clip_id, speed, fit, ripple } => {
@@ -6669,6 +6676,8 @@ struct QualifyArgs<'a> {
     window: Option<&'a [WindowKey]>,
     window_feather: Option<f32>,
     rgb: Option<[f32; 6]>,
+    keep: Option<&'a [[f32; 3]]>,
+    take_out: Option<&'a [[f32; 3]]>,
 }
 
 /// A named colour target for the qualifier: its hue centre and width in
@@ -6738,7 +6747,19 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
             return Err(refuse(i, format!("rgb {rgb:?} is not three ranges"), "give [red_low, red_high, green_low, green_high, blue_low, blue_high], each 0 to 1, low before high"));
         }
     }
-    let key_given = a.rgb.is_some() || hue_center.is_some() || a.sat_low.is_some() || a.sat_high.is_some() || a.lum_low.is_some() || a.lum_high.is_some();
+    if a.keep.is_some() || a.take_out.is_some() {
+        let keep = a.keep.unwrap_or(&[]);
+        if keep.is_empty() {
+            return Err(refuse(i, "a 3D key with nothing to keep", "give keep, the colours to key, each [r, g, b] 0 to 1"));
+        }
+        if a.rgb.is_some() || hue_center.is_some() || a.sat_low.is_some() || a.sat_high.is_some() || a.lum_low.is_some() || a.lum_high.is_some() {
+            return Err(refuse(i, "a 3D key and another key at once", "give keep (and take_out), or an RGB or HSL key, not both"));
+        }
+        if keep.iter().chain(a.take_out.unwrap_or(&[])).flatten().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v)) {
+            return Err(refuse(i, "a 3D key colour out of range", "give each colour as [r, g, b], each 0 to 1 as shown"));
+        }
+    }
+    let key_given = a.keep.is_some_and(|k| !k.is_empty()) || a.rgb.is_some() || hue_center.is_some() || a.sat_low.is_some() || a.sat_high.is_some() || a.lum_low.is_some() || a.lum_high.is_some();
     let corr_given = a.exposure.is_some() || a.saturation.is_some() || a.hue_shift.is_some() || a.temperature.is_some();
     if !key_given {
         return Err(refuse(i, "nothing keyed", "say what to key: a target, a hue, or a saturation or luminance window"));
@@ -6829,6 +6850,12 @@ fn qualify(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, a
             for (name, v) in ["qual_red_low", "qual_red_high", "qual_green_low", "qual_green_high", "qual_blue_low", "qual_blue_high"].into_iter().zip(rgb) {
                 node.params.apply_override(name, v);
             }
+        }
+        if let Some(keep) = a.keep {
+            let q = node.params.qualifier.get_or_insert_with(Default::default);
+            q.mode = klipp_core::QualifierMode::ThreeD;
+            q.keep_samples = keep.to_vec();
+            q.remove_samples = a.take_out.unwrap_or(&[]).to_vec();
         }
         node.params.apply_override("qual_enabled", 1.0);
         if a.invert {
@@ -9628,7 +9655,7 @@ mod tests {
         let op = |hue_shift: Option<f32>, saturation: Option<f32>| Op::Qualify {
             clip_id: ClipRef::Id(a), target: Some("skin".into()), hue: None, hue_width: None,
             sat_low: None, sat_high: None, lum_low: None, lum_high: None, invert: false,
-            exposure: None, saturation, hue_shift, temperature: None, remove: false, window: None, window_feather: None, rgb: None };
+            exposure: None, saturation, hue_shift, temperature: None, remove: false, window: None, window_feather: None, rgb: None, keep: None, take_out: None };
         let plan = resolve(&seq, &pool, &[op(Some(20.0), None)]).unwrap();
         let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("a graph edit") };
         let qual = new_graph.nodes.iter().find(|n| n.kind == NodeKind::Qualifier).expect("a keyer");
@@ -12598,7 +12625,7 @@ mod tests {
             clip_id: ClipRef::Id(a), target: target.map(|s| s.to_string()), hue, hue_width: None,
             sat_low: None, sat_high: None, lum_low: None, lum_high: None, invert: false,
             exposure, saturation, hue_shift: None, temperature: None, remove,
-            window: None, window_feather: None, rgb: None,
+            window: None, window_feather: None, rgb: None, keep: None, take_out: None,
         };
 
         // Key the sky and cool it down.
@@ -12649,7 +12676,7 @@ mod tests {
             target: None,
             hue, hue_width: None, sat_low: None, sat_high: None, lum_low: None, lum_high: None,
             invert: false, exposure: Some(-0.5), saturation: None, hue_shift: None, temperature: None, remove: false,
-            window: None, window_feather: None, rgb,
+            window: None, window_feather: None, rgb, keep: None, take_out: None,
         };
         let plan = resolve(&seq, &pool, &[q(Some([0.5, 1.0, 0.0, 0.4, 0.0, 0.3]), None)]).unwrap();
         let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("node-graph edit") };
@@ -12659,6 +12686,30 @@ mod tests {
         assert!(new_graph.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Corrector && n.params.exposure == Some(-0.5)), "the correction it gates");
         assert!(resolve(&seq, &pool, &[q(Some([0.5, 1.0, 0.0, 0.4, 0.0, 0.3]), Some(20.0))]).unwrap_err().why.contains("at once"));
         assert!(resolve(&seq, &pool, &[q(Some([0.8, 0.2, 0.0, 0.4, 0.0, 0.3]), None)]).unwrap_err().why.contains("three ranges"));
+    }
+
+    /// A 3D key (#895): the keyer in 3D mode with the colours to keep and
+    /// to take out, and the gated correction; one with nothing to keep, a
+    /// colour out of range, or another key beside it, refused.
+    #[test]
+    fn a_secondary_can_key_a_colour_volume() {
+        let (seq, pool, _media, a, _) = fixture();
+        let q = |keep: Option<Vec<[f32; 3]>>, take_out: Option<Vec<[f32; 3]>>, hue: Option<f32>| Op::Qualify {
+            clip_id: ClipRef::Id(a),
+            target: None,
+            hue, hue_width: None, sat_low: None, sat_high: None, lum_low: None, lum_high: None,
+            invert: false, exposure: None, saturation: Some(1.2), hue_shift: None, temperature: None, remove: false,
+            window: None, window_feather: None, rgb: None, keep, take_out,
+        };
+        let skin = vec![[0.8, 0.55, 0.45], [0.7, 0.47, 0.38]];
+        let plan = resolve(&seq, &pool, &[q(Some(skin.clone()), Some(vec![[0.8, 0.4, 0.4]]), None)]).unwrap();
+        let EditCommand::SetNodeGraph { new_graph, .. } = &plan.steps[0].edit else { panic!("node-graph edit") };
+        let key = new_graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Qualifier).and_then(|n| n.params.qualifier.clone()).expect("a key");
+        assert!(key.enabled && key.mode == klipp_core::QualifierMode::ThreeD);
+        assert_eq!((key.keep_samples, key.remove_samples), (skin.clone(), vec![[0.8, 0.4, 0.4]]));
+        assert!(resolve(&seq, &pool, &[q(Some(Vec::new()), None, None)]).unwrap_err().why.contains("nothing to keep"));
+        assert!(resolve(&seq, &pool, &[q(Some(vec![[1.5, 0.0, 0.0]]), None, None)]).unwrap_err().why.contains("out of range"));
+        assert!(resolve(&seq, &pool, &[q(Some(skin), None, Some(20.0))]).unwrap_err().why.contains("at once"));
     }
 
     #[test]
@@ -12674,7 +12725,7 @@ mod tests {
             hue: None, hue_width: None, sat_low: None, sat_high: None, lum_low: None, lum_high: None,
             invert: false, exposure: None, saturation: None, hue_shift: Some(6.0), temperature: None, remove: false,
             window: Some(vec![face(0.0, 0.20), face(1.0, 0.44), face(2.0, 0.62)]),
-            window_feather: None, rgb: None,
+            window_feather: None, rgb: None, keep: None, take_out: None,
         };
         let plan = resolve(&seq, &pool, &[op]).unwrap();
         assert!(plan.steps[0].what.contains("window tracked over 3 samples"), "{}", plan.steps[0].what);
@@ -12702,7 +12753,7 @@ mod tests {
                 clip_id: ClipRef::Id(a), target: Some("skin".into()),
                 hue: None, hue_width: None, sat_low: None, sat_high: None, lum_low: None, lum_high: None,
                 invert: false, exposure: None, saturation: None, hue_shift: Some(6.0), temperature: None, remove: false,
-                window: Some(w), window_feather: None, rgb: None,
+                window: Some(w), window_feather: None, rgb: None, keep: None, take_out: None,
             }]).unwrap_err()
         };
         assert!(bad(vec![WindowKey { at: 0.0, x: 0.2, y: 0.2, w: 0.0, h: 0.2 }]).why.contains("not a box"));

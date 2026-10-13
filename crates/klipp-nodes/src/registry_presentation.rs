@@ -54,7 +54,7 @@ const fn off(key: &'static str) -> Cond {
     Cond::ParamIs { key, value: 0.0 }
 }
 
-/// A qualifier row of mode `index` (#895): 0 HSL, 1 RGB.
+/// A qualifier row of mode `index` (#895): 0 HSL, 1 RGB, 2 3D.
 const fn mode_is(index: u8) -> Cond {
     Cond::ParamIs { key: "qual_mode", value: index as f32 }
 }
@@ -221,6 +221,9 @@ const NODES: &[ParamEntry] = &[
     at(QUALIFIER, "qual_blue_low", slider(0.00125).label("Blue Low").visible_if(mode_is(1))),
     at(QUALIFIER, "qual_blue_high", slider(0.00125).label("Blue High").visible_if(mode_is(1))),
     at(QUALIFIER, "qual_rgb_soft", slider(0.00125).label("RGB Soft").visible_if(mode_is(1))),
+    // The 3D mode's reach (#895): how far round its strokes it keys.
+    at(QUALIFIER, "qual_key_radius", slider(0.01).label("Reach").visible_if(mode_is(2))),
+    at(QUALIFIER, "qual_key_soft", slider(0.01).label("Softness").visible_if(mode_is(2))),
     at(QUALIFIER, "qual_invert", toggle().visible_if(on("qual_enabled"))),
     at(QUALIFIER, "qual_clean_black", slider(0.00125).label("Clean Black").visible_if(on("qual_enabled"))),
     at(QUALIFIER, "qual_clean_white", slider(0.00125).label("Clean White").visible_if(on("qual_enabled"))),

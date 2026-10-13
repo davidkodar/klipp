@@ -137,6 +137,8 @@ mod title_library_tests;
 #[cfg(test)]
 mod viewer_harness;
 #[cfg(test)]
+mod qualifier_3d_tests;
+#[cfg(test)]
 mod wipe_tests;
 mod poster_frames;
 mod links;

@@ -173,6 +173,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::MediaDecodeChanged
         | AppCommand::PickWhiteBalance { .. }
         | AppCommand::PickQualifierColour { .. }
+        | AppCommand::PickQualifierStroke { .. }
+        | AppCommand::QualifierStroke { .. }
         | AppCommand::PickHueCurve { .. }
         | AppCommand::SetLutTetrahedral(..)
         | AppCommand::SetSdrTransfer(..)

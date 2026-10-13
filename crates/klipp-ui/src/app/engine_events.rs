@@ -50,7 +50,11 @@ impl KlippApp {
                             self.state.hue_curve_awaiting = None;
                             self.range_hue_curve_on_sample(clip_id, node_id, curve, nx, ny, sample);
                         }
-                        _ => self.key_qualifier_on_sample(clip_id, node_id, nx, ny, sample),
+                        _ => {
+                            if !self.stroke_sample(clip_id, node_id, nx, ny, sample.clone()) {
+                                self.key_qualifier_on_sample(clip_id, node_id, nx, ny, sample);
+                            }
+                        }
                     }
                 }
                 AppEvent::PlaybackStopped => {

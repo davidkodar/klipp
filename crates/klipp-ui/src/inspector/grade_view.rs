@@ -282,10 +282,30 @@ impl GradeSnapshot {
             }
         }
         if v1.kind == klipp_nodes::NodeKind::Qualifier {
-            let pick = ui.add(egui::Button::image(crate::icons::Icon::Eyedropper.image(12.0).tint(theme.overlay(160))).min_size(egui::vec2(22.0, 18.0)))
-                .on_hover_text("Pick a colour: click it in the viewer to key it");
-            if pick.clicked() {
-                cmds.push(AppCommand::PickQualifierColour { clip_id: self.clip, node_id: node });
+            let q = v1.params.qualifier.clone().unwrap_or_default();
+            if q.mode == klipp_core::QualifierMode::ThreeD {
+                // The 3D key's strokes (#895): drawn across the colours to
+                // keep and to take out, counted, and cleared.
+                ui.horizontal(|ui| {
+                    if ui.button("Keep").on_hover_text("Drag across the colours to keep, in the viewer").clicked() {
+                        cmds.push(AppCommand::PickQualifierStroke { clip_id: self.clip, node_id: node, remove: false });
+                    }
+                    if ui.button("Remove").on_hover_text("Drag across the colours to take out of the key, in the viewer").clicked() {
+                        cmds.push(AppCommand::PickQualifierStroke { clip_id: self.clip, node_id: node, remove: true });
+                    }
+                    let strokes = !q.keep_samples.is_empty() || !q.remove_samples.is_empty();
+                    if ui.add_enabled(strokes, egui::Button::new("Clear")).on_hover_text("Take every stroke away").clicked() {
+                        let qualifier = klipp_core::QualifierSettings { keep_samples: Vec::new(), remove_samples: Vec::new(), ..q.clone() };
+                        cmds.push(AppCommand::SetNodeQualifier { clip_id: self.clip, node_id: node, qualifier });
+                    }
+                    ui.label(egui::RichText::new(format!("{} kept, {} out", q.keep_samples.len(), q.remove_samples.len())).size(10.0).color(theme.text_dim));
+                });
+            } else {
+                let pick = ui.add(egui::Button::image(crate::icons::Icon::Eyedropper.image(12.0).tint(theme.overlay(160))).min_size(egui::vec2(22.0, 18.0)))
+                    .on_hover_text("Pick a colour: click it in the viewer to key it");
+                if pick.clicked() {
+                    cmds.push(AppCommand::PickQualifierColour { clip_id: self.clip, node_id: node });
+                }
             }
         }
         let entry = entry_of(lifted);

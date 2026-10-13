@@ -152,6 +152,9 @@ pub struct ViewerPanel {
     /// alone — it attaches and detaches on its own.
     pub hdr_output_child: Option<std::process::Child>,
     pub video_texture: Option<egui::TextureHandle>,
+    /// A 3D qualifier stroke's points while it is drawn (#895), in frame
+    /// fractions.
+    stroke_points: Vec<[f32; 2]>,
     /// Separate texture for title overlay — rendered on UI thread for instant preview.
     /// Drawn on top of video_texture with alpha blending. Cleared when title is deselected.
     pub title_overlay_texture: Option<egui::TextureHandle>,
@@ -745,6 +748,44 @@ impl ViewerPanel {
         image_rect: egui::Rect,
         cmds: &mut Vec<AppCommand>,
     ) {
+        // ── A 3D qualifier stroke (#895): dragged across the colours ──
+        if state.eyedropper_mode == crate::state::EyedropperMode::QualifierStroke {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+            let resp = ui.allocate_rect(image_rect, egui::Sense::click_and_drag());
+            let to_frame = |p: egui::Pos2| [((p.x - image_rect.min.x) / image_rect.width()).clamp(0.0, 1.0), ((p.y - image_rect.min.y) / image_rect.height()).clamp(0.0, 1.0)];
+            if resp.drag_started() {
+                self.stroke_points.clear();
+            }
+            if resp.dragged() || resp.drag_started() {
+                if let Some(p) = resp.interact_pointer_pos() {
+                    self.stroke_points.push(to_frame(p));
+                }
+            }
+            // The stroke drawn as it goes.
+            let line: Vec<egui::Pos2> = self.stroke_points.iter().map(|p| egui::pos2(image_rect.min.x + p[0] * image_rect.width(), image_rect.min.y + p[1] * image_rect.height())).collect();
+            let remove = state.qualifier_stroke_pick.is_some_and(|(_, _, r)| r);
+            let colour = if remove { egui::Color32::from_rgb(230, 80, 80) } else { egui::Color32::from_rgb(90, 200, 120) };
+            if line.len() > 1 {
+                ui.painter().add(egui::Shape::line(line, egui::Stroke::new(3.0_f32, colour)));
+            }
+            let done = if resp.drag_stopped() {
+                Some(std::mem::take(&mut self.stroke_points))
+            } else if resp.clicked() {
+                resp.interact_pointer_pos().map(|p| vec![to_frame(p)])
+            } else {
+                None
+            };
+            if let Some(points) = done.filter(|p| !p.is_empty()) {
+                cmds.push(AppCommand::QualifierStroke { points });
+                state.eyedropper_mode = crate::state::EyedropperMode::None;
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                state.eyedropper_mode = crate::state::EyedropperMode::None;
+                state.qualifier_stroke_pick = None;
+                self.stroke_points.clear();
+            }
+            return;
+        }
         // ── Eyedropper interaction (White Balance or Qualifier) ──
         if state.eyedropper_mode != crate::state::EyedropperMode::None {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
@@ -763,7 +804,7 @@ impl ViewerPanel {
                         crate::state::EyedropperMode::HueCurve => {
                             cmds.push(AppCommand::RequestHueCurveSample { nx, ny });
                         }
-                        crate::state::EyedropperMode::None => {}
+                        crate::state::EyedropperMode::None | crate::state::EyedropperMode::QualifierStroke => {}
                     }
                     state.eyedropper_mode = crate::state::EyedropperMode::None;
                 }
