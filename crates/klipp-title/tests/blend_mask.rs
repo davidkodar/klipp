@@ -207,10 +207,10 @@ fn a_luma_mask_shows_the_layer_by_the_mattes_brightness() {
 }
 
 /// Normal and no mask: the layers laid one over the next in the encoded
-/// values, each exactly as it draws alone — the composite titles always
-/// had.
+/// values, each exactly as it draws alone, the stack rounded once at the
+/// end and not after every layer (#190).
 #[test]
-fn normal_layers_are_laid_over_each_other_as_before() {
+fn normal_layers_are_laid_over_each_other_and_rounded_once() {
     let mut td = empty();
     let a = rect(&mut td, [30, 60, 200, 255], (0.5, 0.5), (0.6, 0.3));
     let b = word(&mut td);
@@ -224,21 +224,22 @@ fn normal_layers_are_laid_over_each_other_as_before() {
         }
         render(&t)
     };
-    let mut want = alone(a);
+    let mut stack: Vec<f32> = alone(a).iter().map(|&v| v as f32).collect();
     for layer in [alone(b), alone(c)] {
-        for (d, s) in want.chunks_exact_mut(4).zip(layer.chunks_exact(4)) {
+        for (d, s) in stack.chunks_exact_mut(4).zip(layer.chunks_exact(4)) {
             let sa = s[3] as f32 / 255.0;
             if sa <= 0.0 {
                 continue;
             }
-            let da = d[3] as f32 / 255.0;
+            let da = d[3] / 255.0;
             let oa = sa + da * (1.0 - sa);
             for i in 0..3 {
-                d[i] = ((s[i] as f32 * sa + d[i] as f32 * da * (1.0 - sa)) / oa).round().clamp(0.0, 255.0) as u8;
+                d[i] = ((s[i] as f32 * sa + d[i] * da * (1.0 - sa)) / oa).clamp(0.0, 255.0);
             }
-            d[3] = (oa * 255.0).round().clamp(0.0, 255.0) as u8;
+            d[3] = (oa * 255.0).clamp(0.0, 255.0);
         }
     }
+    let want: Vec<u8> = stack.iter().map(|v| v.round().clamp(0.0, 255.0) as u8).collect();
     let got = render(&td);
     let off = got.iter().zip(&want).filter(|(g, w)| g != w).count();
     assert_eq!(off, 0, "{off} bytes differ from the layers laid over each other");
