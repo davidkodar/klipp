@@ -11,6 +11,7 @@
 pub mod canon;
 pub mod clip_properties;
 pub mod delift;
+pub mod domains;
 pub mod edit_planner;
 pub mod effect_params;
 pub mod ids;

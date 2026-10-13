@@ -37,6 +37,7 @@ pub mod graph;
 pub mod kinds;
 pub mod params;
 pub mod defaults;
+pub mod domains;
 pub mod executor;
 pub mod decline;
 pub mod fault;

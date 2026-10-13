@@ -53,7 +53,7 @@ impl std::error::Error for PathError {}
 
 /// A converted (revision-2) project's pictures, by the store that owns
 /// each.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Documents {
     pub clips: BTreeMap<Uuid, ClipPicture>,
     pub timeline: BTreeMap<Uuid, Graph>,

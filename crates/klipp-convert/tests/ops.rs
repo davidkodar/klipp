@@ -863,11 +863,11 @@ fn a_batch_end_names_the_node_left_unfed() {
     let g = group(&d);
     let second = grade_node(0x71, "Corrector");
     apply_in_batch(&mut d, &GraphOp::AddNodeBeside { at: clip_path([g, u(E)]), node: second.clone() }, &RegistryCatalog, &[second.id]).unwrap();
-    let err = check_batch_end(&d, Root::Clip { clip: u(CLIP) }, &RegistryCatalog).unwrap_err();
+    let err = check_batch_end(&d, &docs(), Root::Clip { clip: u(CLIP) }, &RegistryCatalog).unwrap_err();
     assert_eq!(err.unwired, Some((second.id, input_key("Corrector", 0))), "{err}");
     assert!(err.to_string().contains("invalid"), "{err}");
     let text: String = err.into();
     assert!(text.contains("Unwired"), "{text}");
     // A whole picture ends clean.
-    assert!(check_batch_end(&docs(), Root::Clip { clip: u(CLIP) }, &RegistryCatalog).is_ok());
+    assert!(check_batch_end(&docs(), &docs(), Root::Clip { clip: u(CLIP) }, &RegistryCatalog).is_ok());
 }

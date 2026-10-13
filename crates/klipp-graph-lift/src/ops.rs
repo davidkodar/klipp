@@ -748,10 +748,13 @@ fn unwired_beside(op: &GraphOp, e: &klipp_graph_format::lifted::LiftedError) -> 
 }
 
 fn apply_inner(docs: &mut Documents, op: &GraphOp, catalog: Option<&dyn PortCatalog>) -> Result<GraphEdit, String> {
-    apply_pending(docs, op, catalog, &[])
+    apply_pending(docs, op, catalog, &[], true)
 }
 
-fn apply_pending(docs: &mut Documents, op: &GraphOp, catalog: Option<&dyn PortCatalog>, pending: &[NodeId]) -> Result<GraphEdit, String> {
+/// `domains`: check the op's colour domains (#1290) on its own. A batch's
+/// ops aren't: an insert between two nodes rewires through a state that
+/// mixes them, so the batch is checked whole at its end.
+fn apply_pending(docs: &mut Documents, op: &GraphOp, catalog: Option<&dyn PortCatalog>, pending: &[NodeId], domains: bool) -> Result<GraphEdit, String> {
     let path = path_of(op);
     let (through, last) = match path.nodes.split_last() {
         Some((last, through)) => (through, *last),
@@ -797,6 +800,11 @@ fn apply_pending(docs: &mut Documents, op: &GraphOp, catalog: Option<&dyn PortCa
             picture.mark_grade_mix();
             tolerate(if let Some(catalog) = catalog { picture.graph.check_lifted_with_catalog(false, catalog) } else { picture.graph.check_lifted(false) }, pending)
                 .map_err(|e| unwired_beside(op, &e).unwrap_or_else(|| format!("that would leave the clip's graph invalid: {e}")))?;
+            // Every node still able to take the pictures it reads (#1290).
+            if let (true, Some(catalog)) = (domains, catalog) {
+                let was: klipp_graph_format::lifted::ClipPicture = serde_json::from_value(before.clone()).map_err(err)?;
+                crate::domains::check_edit(&was.graph, &picture.graph, crate::domains::source_of(root), catalog)?;
+            }
             serde_json::to_value(picture).map_err(err)?
         }
         _ => {
@@ -812,6 +820,10 @@ fn apply_pending(docs: &mut Documents, op: &GraphOp, catalog: Option<&dyn PortCa
             apply_graph(level(&mut body, through)?, op, last, catalog, &interface)?;
             tolerate(if let Some(catalog) = catalog { body.check_lifted_body_with_catalog(catalog) } else { body.check_lifted_body() }, pending)
                 .map_err(|e| unwired_beside(op, &e).unwrap_or_else(|| format!("that would leave the grade invalid: {e}")))?;
+            if let (true, Some(catalog)) = (domains, catalog) {
+                let was: Graph = serde_json::from_value(before.clone()).map_err(err)?;
+                crate::domains::check_edit(&was, &body, crate::domains::source_of(root), catalog)?;
+            }
             serde_json::to_value(body).map_err(err)?
         }
     };
@@ -857,11 +869,21 @@ fn batch_end(e: klipp_graph_format::lifted::LiftedError, what: &str) -> BatchEnd
     BatchEndError { unwired, why: format!("the batch would leave {what} invalid: {e}") }
 }
 
-/// A root's picture checked whole, as a batch leaves it.
-fn check_root(docs: &Documents, root: Root, catalog: Option<&dyn PortCatalog>) -> Result<(), BatchEndError> {
+/// A root's picture checked whole, as a batch leaves it: its structure,
+/// and its colour domains against the picture the batch started from
+/// (#1290).
+fn check_root(docs: &Documents, start: &Documents, root: Root, catalog: Option<&dyn PortCatalog>) -> Result<(), BatchEndError> {
     let v = snapshot(docs, root)?;
     let err = |e: serde_json::Error| BatchEndError::from(e.to_string());
-    match root {
+    let graph_of = |v: Value| -> Result<Option<Graph>, BatchEndError> {
+        Ok(match root {
+            Root::Track { part: TrackPart::Effects, .. } => None,
+            Root::Clip { .. } => Some(serde_json::from_value::<klipp_graph_format::lifted::ClipPicture>(v).map_err(err)?.graph),
+            _ => Some(serde_json::from_value::<Graph>(v).map_err(err)?),
+        })
+    };
+    let now = graph_of(v.clone())?;
+    let structure = match root {
         Root::Track { part: TrackPart::Effects, .. } => check_track_list(&serde_json::from_value::<Vec<Node>>(v).map_err(err)?).map_err(|e| BatchEndError::from(format!("that would leave the track's effects invalid: {e}"))),
         Root::Clip { .. } => {
             let picture: klipp_graph_format::lifted::ClipPicture = serde_json::from_value(v).map_err(err)?;
@@ -871,7 +893,12 @@ fn check_root(docs: &Documents, root: Root, catalog: Option<&dyn PortCatalog>) -
             let body: Graph = serde_json::from_value(v).map_err(err)?;
             (if let Some(catalog) = catalog { body.check_lifted_body_with_catalog(catalog) } else { body.check_lifted_body() }).map_err(|e| batch_end(e, "the grade"))
         }
+    };
+    structure?;
+    if let (Some(was), Some(now), Some(catalog)) = (graph_of(snapshot(start, root)?)?, now, catalog) {
+        crate::domains::check_edit(&was, &now, crate::domains::source_of(root), catalog).map_err(BatchEndError::from)?;
     }
+    Ok(())
 }
 
 /// One op of a batch applied op by op, with registry checks: a node the
@@ -880,13 +907,14 @@ fn check_root(docs: &Documents, root: Root, catalog: Option<&dyn PortCatalog>) -
 /// does inside, for a caller that has to see each op's result (where an
 /// op leaves the picture, the op a refusal stops at).
 pub fn apply_in_batch(docs: &mut Documents, op: &GraphOp, catalog: &dyn PortCatalog, pending: &[NodeId]) -> Result<GraphEdit, String> {
-    apply_pending(docs, op, Some(catalog), pending)
+    apply_pending(docs, op, Some(catalog), pending, false)
 }
 
 /// The end of a batch applied with [`apply_in_batch`]: the root checked
-/// whole, nothing waiting.
-pub fn check_batch_end(docs: &Documents, root: Root, catalog: &dyn PortCatalog) -> Result<(), BatchEndError> {
-    check_root(docs, root, Some(catalog))
+/// whole, nothing waiting, and its colour domains against `start`, the
+/// documents the batch began from (#1290).
+pub fn check_batch_end(docs: &Documents, start: &Documents, root: Root, catalog: &dyn PortCatalog) -> Result<(), BatchEndError> {
+    check_root(docs, start, root, Some(catalog))
 }
 
 /// Apply edits to one root atomically, returning one undo record.
@@ -912,9 +940,9 @@ fn apply_batch_inner(docs: &mut Documents, ops: &[GraphOp], catalog: Option<&dyn
         if let GraphOp::AddNodeBeside { node, .. } = op {
             pending.push(node.id);
         }
-        apply_pending(&mut copy, op, catalog, &pending)?;
+        apply_pending(&mut copy, op, catalog, &pending, false)?;
     }
-    check_root(&copy, root, catalog)?;
+    check_root(&copy, docs, root, catalog)?;
     let after = snapshot(&copy, root)?;
     put(docs, root, &after)?;
     Ok(GraphEdit { root, before, after })

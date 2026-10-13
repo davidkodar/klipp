@@ -57,6 +57,9 @@ impl ExecPlan {
         let gated = graph.with_gates_applied();
         let g = gated.as_ref().unwrap_or(graph);
         let order = g.topo_sort()?;
+        // Each node able to take the pictures it reads (#1290), checked
+        // once a graph shape, as the plan is kept.
+        crate::domains::check(g).map_err(crate::executor::ExecutorError::ColourDomain)?;
         let roots = std::iter::once(g.output_node_id)
             .chain(matte_tap)
             .chain(matte_preview_node)
