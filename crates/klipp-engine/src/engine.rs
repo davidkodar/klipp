@@ -1147,6 +1147,11 @@ pub struct PlaybackEngine {
     /// Decoders for every other media clip a frame needs: overlays, a
     /// transition's other side, multicam angles. See `engine::streams`.
     streams: streams::ClipStreams,
+    /// Neighbour frames a temporal node read beside the parked frame
+    /// (#1863), kept between its renders.
+    neighbour_hold: std::sync::Arc<std::sync::Mutex<view::NeighbourHold>>,
+    /// Whether [`Self::neighbour_hold`] is used (`set_neighbour_hold`).
+    hold_neighbours: bool,
     /// Renders every frame the viewer shows off the fast paths — the same
     /// renderer, and rules, export uses. Owns the node-graph executor and
     /// GPU effects pipeline the fast paths drive too.
@@ -1965,6 +1970,13 @@ impl PlaybackEngine {
         self.param_change_queue.clone()
     }
 
+    /// Whether a parked frame's temporal neighbours are kept between its
+    /// renders (#1863); on unless turned off. Off, every render decodes
+    /// them, as before the hold: what a test compares the hold against.
+    pub fn set_neighbour_hold(&mut self, on: bool) {
+        self.hold_neighbours = on;
+    }
+
     /// Apply every queued `ParamChange` to `self.sequence`. Takes the write
     /// lock at most once (when the first entry is popped) and releases it when
     /// the queue is empty. Also invalidates `current_grade_hash` and
@@ -2094,6 +2106,8 @@ impl PlaybackEngine {
             dropped_frames: 0,
             v1_decoder: None,
             streams: streams::ClipStreams::new(MAX_CLIP_STREAMS),
+            neighbour_hold: Default::default(),
+            hold_neighbours: true,
             renderer: klipp_compose::Renderer::new(ofx_host, title_renderer),
             titles_warmed: std::collections::HashSet::new(),
             titles_warm_checked: std::time::Instant::now(),

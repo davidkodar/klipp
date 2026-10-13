@@ -30,6 +30,90 @@ struct ViewerSource<'a> {
     primary_queue: Option<&'a SharedFrameQueue>,
     streams: &'a mut ClipStreams,
     media_pool: &'a RwLock<MediaPool>,
+    /// The neighbour frames kept while parked (#1863); `None` while
+    /// playing, when every frame is a new time.
+    hold: Option<&'a std::sync::Arc<std::sync::Mutex<NeighbourHold>>>,
+}
+
+/// The source frames a temporal node read beside the parked frame, kept
+/// between renders of it (#1863): a slider step on a clip with temporal
+/// noise reduction decoded the frame either side again on every step,
+/// from a reader opened afresh, about 290 ms at 4K.
+///
+/// A frame is the file's picture at a time, decoded into a working space
+/// at a size, so that is its key: the same key is the same pixels, after
+/// any number of seeks. The file is named by its path, length and
+/// modification time, so a file replaced on disk, or a relink to another
+/// file, is never shown through frames held from the one before. What keeps the hold to the parked frame is its
+/// size and its clearing: two frames, a temporal denoiser's pair, and
+/// emptied when playback starts, where every frame is a new time.
+#[derive(Default)]
+pub(crate) struct NeighbourHold {
+    frames: std::collections::VecDeque<(NeighbourKey, std::sync::Arc<Vec<f32>>, u32, u32)>,
+}
+
+/// What a held neighbour is the picture of.
+#[derive(Clone, PartialEq, Debug)]
+struct NeighbourKey {
+    path: std::path::PathBuf,
+    /// The file's length and modification time as the render found them.
+    file: (u64, Option<std::time::SystemTime>),
+    working: klipp_core::WorkingColorspace,
+    log_format: Option<klipp_core::LogFormat>,
+    size: (u32, u32),
+    /// The file's time, in microseconds.
+    micros: i64,
+}
+
+impl NeighbourHold {
+    /// Frames held at most: a temporal denoiser's two neighbours.
+    const FRAMES: usize = 2;
+
+    fn get(&self, key: &NeighbourKey) -> Option<(std::sync::Arc<Vec<f32>>, u32, u32)> {
+        self.frames.iter().find(|(k, ..)| k == key).map(|(_, px, w, h)| (std::sync::Arc::clone(px), *w, *h))
+    }
+
+    fn put(&mut self, key: NeighbourKey, px: std::sync::Arc<Vec<f32>>, w: u32, h: u32) {
+        self.frames.retain(|(k, ..)| *k != key);
+        if self.frames.len() >= Self::FRAMES {
+            self.frames.pop_front();
+        }
+        self.frames.push_back((key, px, w, h));
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.frames.clear();
+    }
+}
+
+#[cfg(test)]
+mod neighbour_hold_tests {
+    use super::{NeighbourHold, NeighbourKey};
+    use std::sync::Arc;
+
+    fn key(micros: i64) -> NeighbourKey {
+        NeighbourKey { path: "/m.mov".into(), file: (10, None), working: klipp_core::WorkingColorspace::Rec709Linear, log_format: None, size: (4, 2), micros }
+    }
+
+    /// #1863: a frame is found by its key and only by it — another time,
+    /// size or working space is another frame — and the hold keeps the
+    /// two latest.
+    #[test]
+    fn the_hold_finds_a_frame_by_its_whole_key_and_keeps_two() {
+        let mut hold = NeighbourHold::default();
+        hold.put(key(1), Arc::new(vec![1.0]), 4, 2);
+        hold.put(key(2), Arc::new(vec![2.0]), 4, 2);
+        assert_eq!(hold.get(&key(1)).map(|f| f.0[0]), Some(1.0));
+        assert_eq!(hold.get(&key(2)).map(|f| f.0[0]), Some(2.0));
+        assert!(hold.get(&NeighbourKey { size: (8, 4), ..key(1) }).is_none(), "another size");
+        assert!(hold.get(&NeighbourKey { file: (11, None), ..key(1) }).is_none(), "the file rewritten");
+        assert!(hold.get(&NeighbourKey { working: klipp_core::WorkingColorspace::AcesCG, ..key(1) }).is_none(), "another working space");
+        hold.put(key(3), Arc::new(vec![3.0]), 4, 2);
+        assert!(hold.get(&key(1)).is_none(), "the oldest of three is dropped");
+        assert_eq!(hold.get(&key(3)).map(|f| f.0[0]), Some(3.0));
+        hold.clear();
+        assert!(hold.get(&key(3)).is_none());
+    }
 }
 
 impl ViewerSource<'_> {
@@ -204,9 +288,33 @@ impl FrameSource for ViewerSource<'_> {
         Some(Box::new(move |t: f64| decoder.borrow_mut().decode_at((source_in + t).max(0.0))))
     }
 
+    /// The file's frames at the render size, opened on the first frame
+    /// not held (#1863): while parked, a frame read is kept, and a step
+    /// that asks for it again gets it without a decode.
     fn temporal_frames_linear_at_size(&mut self, clip: &Clip, working: klipp_core::WorkingColorspace, width: u32, height: u32) -> Option<klipp_compose::LinearFrameProviderFn> {
-        self.temporal_frames_linear(clip, working)
-            .map(|reader| klipp_compose::render::fit_linear_reader(reader, width, height))
+        let Some(hold) = self.hold.cloned() else {
+            return self.temporal_frames_linear(clip, working).map(|reader| klipp_compose::render::fit_linear_reader(reader, width, height));
+        };
+        let path = self.original_path(clip)?;
+        let source_in = clip.source_in.to_secs_f64();
+        let log_format = crate::video_decoder::log_format_for_path(&path);
+        let file = std::fs::metadata(&path).map(|m| (m.len(), m.modified().ok())).unwrap_or((0, None));
+        let mut reader: Option<Option<klipp_compose::LinearFrameProviderFn>> = None;
+        Some(Box::new(move |t: f64| {
+            let key = NeighbourKey { path: path.clone(), file, working, log_format, size: (width, height), micros: ((source_in + t).max(0.0) * 1e6).round() as i64 };
+            if let Some((px, w, h)) = hold.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+                return Some((px.as_ref().clone(), w, h));
+            }
+            let read = reader.get_or_insert_with(|| {
+                let mut file = klipp_media::frame_reader::SeekableFrameReader::open_linear(&path, log_format, working)?;
+                let read: klipp_compose::LinearFrameProviderFn = Box::new(move |t: f64| file.decode_at((source_in + t).max(0.0)));
+                Some(klipp_compose::render::fit_linear_reader(read, width, height))
+            });
+            let (px, w, h) = read.as_mut()?(t)?;
+            let px = std::sync::Arc::new(px);
+            hold.lock().unwrap_or_else(|e| e.into_inner()).put(key, std::sync::Arc::clone(&px), w, h);
+            Some((std::sync::Arc::unwrap_or_clone(px), w, h))
+        }))
     }
 
     /// The same frames in linear light, for the renderer's own use.
@@ -251,6 +359,18 @@ enum Picture {
 }
 
 impl PlaybackEngine {
+    /// The neighbour hold a render reads (#1863): the engine's while
+    /// parked; none while playing, and emptied, so a long play does not
+    /// keep a parked frame's neighbours.
+    fn neighbour_hold_for(hold: &std::sync::Arc<std::sync::Mutex<NeighbourHold>>, state: PlaybackState, on: bool) -> Option<&std::sync::Arc<std::sync::Mutex<NeighbourHold>>> {
+        if state == PlaybackState::Playing || !on {
+            hold.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            None
+        } else {
+            Some(hold)
+        }
+    }
+
     /// The clip the primary decoder plays.
     pub(super) fn v1_clip_id(&self, seq: &Sequence) -> Option<ClipId> {
         seq.tracks.get(self.current_track_index)?.clips.get(self.current_clip_index).map(|c| c.id)
@@ -531,6 +651,7 @@ impl PlaybackEngine {
             primary_queue: self.v1_decoder.as_ref().map(|d| d.frame_queue()),
             streams: &mut self.streams,
             media_pool: &self.media_pool,
+            hold: Self::neighbour_hold_for(&self.neighbour_hold, self.state, self.hold_neighbours),
         };
         let opts = RenderOptions {
             hdr_peak_nits: self
@@ -576,6 +697,7 @@ impl PlaybackEngine {
             primary_queue: self.v1_decoder.as_ref().map(|d| d.frame_queue()),
             streams: &mut self.streams,
             media_pool: &self.media_pool,
+            hold: Self::neighbour_hold_for(&self.neighbour_hold, self.state, self.hold_neighbours),
         };
         // HDR monitoring renders what the export writes: display light,
         // 1.0 = 203 cd/m², mastered to the delivery's peak.
