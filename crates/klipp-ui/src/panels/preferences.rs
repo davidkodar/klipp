@@ -4879,9 +4879,9 @@ mod layout_tests {
         "wgpu",
     ];
 
-    /// Settings the dialog showed that nothing reads: changing one did
-    /// nothing, so they are out of view until they are wired. "Render
-    /// cache" here is the folder row; the cache's size row keeps the name.
+    /// Settings the dialog showed that nothing read: changing one did
+    /// nothing, so they were removed (#1816). "Render cache" here is the
+    /// folder row; the cache's size row keeps the name.
     const HIDDEN: &[&str] = &[
         "Monitoring mode", "Normalize target",
         "Colour space tagging", "Default encoder preset",

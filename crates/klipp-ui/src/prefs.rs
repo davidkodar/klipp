@@ -429,9 +429,6 @@ pub struct AudioPrefs {
     /// Loudness standard for metering/normalization.
     #[serde(default)]
     pub loudness_standard: klipp_core::LoudnessStandard,
-    /// Normalize target in LUFS.
-    #[serde(default = "default_normalize_lufs")]
-    pub normalize_target_lufs: f32,
     /// Peak hold time in seconds for audio meters.
     #[serde(default = "default_peak_hold")]
     pub peak_hold_time_secs: f32,
@@ -454,7 +451,6 @@ pub struct AudioPrefs {
     pub tp_oversample: bool,
 }
 
-fn default_normalize_lufs() -> f32 { -23.0 }
 fn default_peak_hold() -> f32 { 3.0 }
 fn default_duck_level() -> f32 { 0.2 }
 fn default_duck_attack() -> f32 { 0.1 }
@@ -474,7 +470,6 @@ impl Default for AudioPrefs {
             default_fade_curve: Default::default(),
             default_fade_duration_ms: default_fade_ms(),
             loudness_standard: Default::default(),
-            normalize_target_lufs: default_normalize_lufs(),
             peak_hold_time_secs: default_peak_hold(),
             duck_level: default_duck_level(),
             duck_attack_secs: default_duck_attack(),
@@ -822,12 +817,6 @@ pub struct ExportPrefs {
     pub default_output_dir: Option<PathBuf>,
     pub last_preset_id: Option<String>,
     pub custom_presets: Vec<ExportPreset>,
-    /// Default encoder preset label (e.g. "H.264 High Quality").
-    #[serde(default = "default_encoder_preset")]
-    pub default_encoder_preset: String,
-    /// Color space tag written to exported file metadata.
-    #[serde(default)]
-    pub color_space_tag: klipp_core::ColorSpace,
     /// Audio sample rate for export.
     #[serde(default = "default_export_sr")]
     pub audio_sample_rate: u32,
@@ -852,7 +841,6 @@ pub struct ExportPrefs {
     #[serde(default)]
     pub post_export_command: String,
 }
-fn default_encoder_preset() -> String { "H.264 High Quality".into() }
 fn default_export_sr() -> u32 { 48000 }
 fn default_parallel_jobs() -> usize { 2 }
 
@@ -870,8 +858,6 @@ impl Default for ExportPrefs {
             default_output_dir: None,
             last_preset_id: None,
             custom_presets: Vec::new(),
-            default_encoder_preset: default_encoder_preset(),
-            color_space_tag: klipp_core::ColorSpace::Rec709,
             audio_sample_rate: default_export_sr(),
             overwrite_mode: Default::default(),
             parallel_render: true,
@@ -1347,9 +1333,6 @@ pub struct AudioHardwarePrefs {
     /// Audio buffer size in samples.
     #[serde(default = "default_buffer_size")]
     pub buffer_size: u32,
-    /// Audio monitoring mode (Software vs Hardware direct).
-    #[serde(default)]
-    pub monitoring_mode: MonitoringMode,
     /// How often (in seconds) to re-show the "muted by system" toast
     /// while the OS-level app mute is active. 0 = show only once.
     /// Detects PipeWire/WirePlumber per-app mute state.
@@ -1360,13 +1343,6 @@ pub struct AudioHardwarePrefs {
     /// sentinel idiom used by the recording input picker dropdown.
     #[serde(default)]
     pub input_device: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum MonitoringMode {
-    #[default]
-    Software,
-    Hardware,
 }
 
 fn default_sample_rate() -> u32 { 48000 }
@@ -1382,7 +1358,6 @@ impl Default for AudioHardwarePrefs {
             output_device: None,
             sample_rate: default_sample_rate(),
             buffer_size: default_buffer_size(),
-            monitoring_mode: Default::default(),
             mute_reminder_interval_secs: default_mute_reminder_interval(),
             input_device: String::new(),
         }
@@ -1684,9 +1659,6 @@ pub struct TitlePrefs {
     /// Default title clip duration in seconds.
     #[serde(default = "default_title_duration")]
     pub default_duration_secs: f32,
-    /// Show title-safe area overlay in viewer.
-    #[serde(default = "default_true")]
-    pub safe_area_overlay: bool,
     /// Title-inspector groups currently expanded by the user. Empty
     /// (the default) means every group is collapsed on a fresh
     /// install. Names match the group headers exactly: "Effects",
@@ -1742,7 +1714,6 @@ impl Default for TitlePrefs {
             default_color: default_title_color(),
             default_alignment: Default::default(),
             default_duration_secs: default_title_duration(),
-            safe_area_overlay: true,
             inspector_expanded_groups: std::collections::HashSet::new(),
         }
     }
@@ -1760,12 +1731,6 @@ pub struct TimelinePrefs {
     /// Trim handle width in pixels.
     #[serde(default = "default_trim_handle")]
     pub trim_handle_width: f32,
-    /// Ruler height in pixels.
-    #[serde(default = "default_ruler_h")]
-    pub ruler_height: f32,
-    /// Clip corner radius.
-    #[serde(default = "default_clip_radius")]
-    pub clip_corner_radius: f32,
     /// Overview bar height in pixels.
     #[serde(default = "default_overview_h")]
     pub overview_bar_height: f32,
@@ -1786,8 +1751,6 @@ pub struct TimelinePrefs {
 fn default_clip_colors() -> Vec<[u8; 3]> { vec![[50,90,160],[50,130,80],[160,90,50],[130,50,130],[50,130,130],[160,50,80]] }
 fn default_clip_gap() -> f32 { 3.0 }
 fn default_trim_handle() -> f32 { 14.0 }
-fn default_ruler_h() -> f32 { 24.0 }
-fn default_clip_radius() -> f32 { 4.0 }
 fn default_overview_h() -> f32 { 24.0 }
 fn default_min_track_h() -> f32 { 24.0 }
 /// The tallest a track is resized to: the 300 px it always was.
@@ -1798,8 +1761,8 @@ impl Default for TimelinePrefs {
     fn default() -> Self {
         Self {
             clip_colors: default_clip_colors(), clip_gap_px: default_clip_gap(),
-            trim_handle_width: default_trim_handle(), ruler_height: default_ruler_h(),
-            clip_corner_radius: default_clip_radius(), overview_bar_height: default_overview_h(),
+            trim_handle_width: default_trim_handle(),
+            overview_bar_height: default_overview_h(),
             min_track_height: default_min_track_h(), max_track_height: default_max_track_h(),
             text_track_height: default_text_track_h(),
             clip_selection_border_width: default_selection_border_width(),
@@ -2218,7 +2181,6 @@ mod tests {
         assert_eq!(rt.audio.default_fade_curve, klipp_core::FadeCurve::Linear);
         assert_eq!(rt.audio.default_fade_duration_ms, 500);
         assert_eq!(rt.audio.loudness_standard, klipp_core::LoudnessStandard::EbuR128);
-        assert_eq!(rt.audio.normalize_target_lufs, -23.0);
 
         // ExportPrefs
         assert!(rt.export.default_output_dir.is_none());
@@ -2267,8 +2229,6 @@ mod tests {
         assert_eq!(rt.timeline.clip_colors.len(), 6);
         assert_eq!(rt.timeline.clip_gap_px, 3.0);
         assert_eq!(rt.timeline.trim_handle_width, 14.0);
-        assert_eq!(rt.timeline.ruler_height, 24.0);
-        assert_eq!(rt.timeline.clip_corner_radius, 4.0);
         assert_eq!(rt.timeline.overview_bar_height, 24.0);
         assert_eq!(rt.timeline.min_track_height, 24.0);
         assert_eq!(rt.timeline.max_track_height, 300.0);
@@ -2450,7 +2410,6 @@ mod tests {
         prefs.audio.metering_ballistics = klipp_core::MeteringBallistics::Vu;
         prefs.audio.default_fade_curve = klipp_core::FadeCurve::Exponential;
         prefs.audio.default_fade_duration_ms = 50;
-        prefs.audio.normalize_target_lufs = -23.0;
 
         // ExportPrefs
         prefs.export.default_output_dir = Some(PathBuf::from("/tmp/exports"));
@@ -2511,8 +2470,6 @@ mod tests {
         prefs.timeline.clip_colors = vec![[255, 0, 0], [0, 255, 0], [0, 0, 255]];
         prefs.timeline.clip_gap_px = 5.0;
         prefs.timeline.trim_handle_width = 20.0;
-        prefs.timeline.ruler_height = 32.0;
-        prefs.timeline.clip_corner_radius = 8.0;
         prefs.timeline.overview_bar_height = 30.0;
         prefs.timeline.min_track_height = 16.0;
         prefs.timeline.max_track_height = 300.0;
@@ -2579,7 +2536,6 @@ mod tests {
         assert_eq!(rt.audio.metering_ballistics, klipp_core::MeteringBallistics::Vu);
         assert_eq!(rt.audio.default_fade_curve, klipp_core::FadeCurve::Exponential);
         assert_eq!(rt.audio.default_fade_duration_ms, 50);
-        assert_eq!(rt.audio.normalize_target_lufs, -23.0);
 
         assert_eq!(rt.export.default_output_dir.as_ref().unwrap().to_str().unwrap(), "/tmp/exports");
         assert_eq!(rt.export.last_preset_id.as_deref(), Some("h264-fast"));
@@ -2630,8 +2586,6 @@ mod tests {
         assert_eq!(rt.timeline.clip_colors, vec![[255, 0, 0], [0, 255, 0], [0, 0, 255]]);
         assert_eq!(rt.timeline.clip_gap_px, 5.0);
         assert_eq!(rt.timeline.trim_handle_width, 20.0);
-        assert_eq!(rt.timeline.ruler_height, 32.0);
-        assert_eq!(rt.timeline.clip_corner_radius, 8.0);
         assert_eq!(rt.timeline.overview_bar_height, 30.0);
         assert_eq!(rt.timeline.min_track_height, 16.0);
         assert_eq!(rt.timeline.max_track_height, 300.0);
