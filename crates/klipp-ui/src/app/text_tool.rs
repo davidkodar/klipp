@@ -7,8 +7,8 @@ use super::*;
 /// centred at `x`, `y` (fractions of the frame) and, for a drawn box,
 /// that size. A point title keeps the default layout box, the frame's
 /// size, so its text is centred on the click and wraps at the frame.
-pub(super) fn text_tool_title(x: f32, y: f32, box_size: Option<(f32, f32)>) -> klipp_timeline::TitleData {
-    let mut td = klipp_timeline::TitleData::default();
+pub(super) fn text_tool_title(x: f32, y: f32, box_size: Option<(f32, f32)>, defaults: &crate::prefs::TitlePrefs) -> klipp_timeline::TitleData {
+    let mut td = super::titles::default_title_data(defaults);
     if let Some(obj) = td.objects.first_mut() {
         obj.transform.center = klipp_timeline::TitlePosition { x, y };
         if let Some((w, h)) = box_size {
@@ -28,8 +28,9 @@ pub(super) fn create_title_in_viewer(
     x: f32,
     y: f32,
     box_size: Option<(f32, f32)>,
-    duration_secs: f32,
+    defaults: &crate::prefs::TitlePrefs,
 ) -> Option<ClipId> {
+    let duration_secs = defaults.default_duration_secs;
     if !x.is_finite() || !y.is_finite() || box_size.is_some_and(|(w, h)| !(w > 0.0 && h > 0.0)) {
         return None;
     }
@@ -37,7 +38,7 @@ pub(super) fn create_title_in_viewer(
     let duration_frames = ((duration_secs.max(0.0) as f64 * fps_rate as f64).round() as u32).max(1);
     let timeline_in = state.playhead;
     let track_index = super::titles::free_text_track(state, timeline_in, duration_frames);
-    state.pending_title_data = Some(text_tool_title(x, y, box_size));
+    state.pending_title_data = Some(text_tool_title(x, y, box_size, defaults));
     let (clip_id, _) = super::titles::add_title_clip(state, track_index, timeline_in, duration_frames);
     let (object_id, text) = state
         .sequence()
@@ -79,6 +80,31 @@ mod tests {
             klipp_timeline::TitleObjectContent::TextBox(tb) => tb.text.clone(),
             _ => panic!("a text layer"),
         }
+    }
+
+    /// #1816: a new title takes the title preferences' font, size,
+    /// colour, alignment and length; other preferences give another
+    /// title, so the look is the preferences' and not fixed. An empty
+    /// font keeps the title's own.
+    #[test]
+    fn a_new_title_takes_the_title_preferences() {
+        use crate::prefs::{TextAlignment, TitlePrefs};
+        let made = |prefs: &TitlePrefs| {
+            let mut state = AppState::default();
+            let id = create_title_in_viewer(&mut state, 0.5, 0.5, None, prefs).expect("a title");
+            let clip = state.sequence().all_clips().find(|c| c.id == id).unwrap().clone();
+            let tb = clip.title_data().unwrap().primary_text().unwrap().clone();
+            ((clip.timeline_out - clip.timeline_in).to_secs_f64(), tb.font_name, tb.font_size, tb.color, tb.alignment)
+        };
+        let a = TitlePrefs { default_font: "DejaVu Serif".into(), default_size_pt: 96.0, default_color: [255, 200, 0], default_alignment: TextAlignment::Left, default_duration_secs: 3.0, ..Default::default() };
+        assert_eq!(made(&a), (3.0, "DejaVu Serif".to_string(), 96.0, [255, 200, 0, 255], klipp_timeline::TextAlignment::Left));
+        let b = TitlePrefs { default_font: String::new(), default_size_pt: 40.0, default_color: [10, 20, 30], default_alignment: TextAlignment::Right, default_duration_secs: 7.0, ..Default::default() };
+        assert_eq!(made(&b), (7.0, klipp_timeline::TextBox::default().font_name, 40.0, [10, 20, 30, 255], klipp_timeline::TextAlignment::Right));
+        // The defaults as shipped give the title it always was.
+        let shipped = super::super::titles::default_title_data(&TitlePrefs::default());
+        let tb = shipped.primary_text().unwrap();
+        let plain = klipp_timeline::TextBox::default();
+        assert_eq!((tb.font_name.as_str(), tb.font_size, tb.color, tb.alignment), (plain.font_name.as_str(), plain.font_size, plain.color, plain.alignment));
     }
 
     /// A click with the Text tool makes a point title at the playhead,

@@ -3515,6 +3515,47 @@ impl PreferencesPanel {
         });
         ui.add_space(4.0);
 
+        // ── TEXT DEFAULTS section: a new title's text ──
+        Self::section_header(ui, "TEXT DEFAULTS", theme);
+
+        Self::setting_row_with_subtitle(ui, "Default font", "A font family installed here; empty keeps the title's own", theme, |ui| {
+            let default_font = klipp_timeline::TextBox::default().font_name;
+            if ui.add(egui::TextEdit::singleline(&mut prefs.title.default_font).hint_text(default_font).desired_width(160.0)).changed() {
+                *dirty = true;
+            }
+        });
+
+        Self::setting_row(ui, "Default size", theme, |ui| {
+            let mut v = prefs.title.default_size_pt;
+            if ui.add(egui::DragValue::new(&mut v).range(8.0..=400.0).speed(0.5).suffix(" pt").fixed_decimals(0)).changed() {
+                prefs.title.default_size_pt = v; *dirty = true;
+            }
+        });
+
+        Self::setting_row(ui, "Default colour", theme, |ui| {
+            let mut c = egui::Color32::from_rgb(prefs.title.default_color[0], prefs.title.default_color[1], prefs.title.default_color[2]);
+            if ui.color_edit_button_srgba(&mut c).changed() {
+                prefs.title.default_color = [c.r(), c.g(), c.b()];
+                *dirty = true;
+            }
+        });
+
+        Self::setting_row(ui, "Default alignment", theme, |ui| {
+            use crate::prefs::TextAlignment;
+            egui::ComboBox::from_id_salt("title_align")
+                .selected_text(match prefs.title.default_alignment {
+                    TextAlignment::Left => "Left",
+                    TextAlignment::Center => "Center",
+                    TextAlignment::Right => "Right",
+                })
+                .width(80.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_value(&mut prefs.title.default_alignment, TextAlignment::Left, "Left").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.title.default_alignment, TextAlignment::Center, "Center").changed() { *dirty = true; }
+                    if ui.selectable_value(&mut prefs.title.default_alignment, TextAlignment::Right, "Right").changed() { *dirty = true; }
+                });
+        });
+
         // ── BEHAVIOR section ──
         Self::section_header(ui, "BEHAVIOR", theme);
 
@@ -4742,8 +4783,8 @@ mod layout_tests {
         "Monitoring mode", "Normalize target", "Default sync method",
         "Search radius", "Colour space tagging", "Default encoder preset", "Default export folder", "Overwrite existing files",
         "Max cache size", "Thumbnail resolution", "JKL speed steps", "Clip corner radius", "Max track height", "Ruler height",
-        "Default alignment", "Default colour", "Default font", "Default size", "Title-safe area overlay",
-        "Show keyboard shortcut hints", "Recent projects to show", "TEXT DEFAULTS",
+        "Title-safe area overlay",
+        "Show keyboard shortcut hints", "Recent projects to show",
     ];
 
     /// One frame of the dialog on `tab`, with `events`: its texts by their

@@ -1053,6 +1053,13 @@ impl Preferences {
         let Some(root) = value.as_object_mut() else { return };
         let revision = root.get("revision").and_then(|v| v.as_u64()).unwrap_or(0);
         if revision < 1 {
+            // The title size's old default, 48, was never a title's size:
+            // titles were 72 while it did nothing.
+            if let Some(title) = root.get_mut("title").and_then(|v| v.as_object_mut()) {
+                if title.get("default_size_pt").and_then(|v| v.as_f64()) == Some(48.0) {
+                    title.insert("default_size_pt".into(), serde_json::Value::from(default_title_size()));
+                }
+            }
             // A fade of 0 ms is no fade: Add Fade In would do nothing.
             if let Some(audio) = root.get_mut("audio").and_then(|v| v.as_object_mut()) {
                 if audio.get("default_fade_duration_ms").and_then(|v| v.as_u64()) == Some(0) {
@@ -1666,7 +1673,9 @@ pub enum TextAlignment {
 }
 
 fn default_title_font() -> String { String::new() }
-fn default_title_size() -> f32 { 48.0 }
+/// A new title's size: the default title's own, so a fresh install's
+/// titles look as they did before this setting acted (#1816).
+fn default_title_size() -> f32 { 72.0 }
 fn default_title_color() -> [u8; 3] { [255, 255, 255] }
 fn default_title_duration() -> f32 { 5.0 }
 /// The font picker keeps this many recent families.
@@ -2218,7 +2227,7 @@ mod tests {
 
         // TitlePrefs
         assert!(rt.title.default_font.is_empty());
-        assert_eq!(rt.title.default_size_pt, 48.0);
+        assert_eq!(rt.title.default_size_pt, 72.0);
         assert!(rt.title.font_search_paths.is_empty());
 
         // TimelinePrefs
@@ -2352,7 +2361,7 @@ mod tests {
         assert_eq!(prefs.appearance.accent_color, [0x4a, 0x8f, 0xe7]);
         assert_eq!(prefs.media_cache.thumbnail_height, 256);
         assert_eq!(prefs.color.scope_update_interval_ms, 32);
-        assert_eq!(prefs.title.default_size_pt, 48.0);
+        assert_eq!(prefs.title.default_size_pt, 72.0);
         assert_eq!(prefs.timeline.trim_handle_width, 14.0);
         assert_eq!(prefs.viewer.action_safe_pct, 0.9);
         assert_eq!(prefs.advanced.modal_backdrop_alpha, 120);
@@ -3231,5 +3240,13 @@ mod revision_tests {
         current["audio"]["default_fade_duration_ms"] = 0.into();
         assert_eq!(Preferences::from_json_str(&current.to_string()).audio.default_fade_duration_ms, 0, "at the revision, nothing moves");
         assert_eq!(Preferences::default().revision, PREFS_REVISION, "a fresh install is at the revision");
+    }
+
+    /// The title size's old default, 48, never sized a title (they were
+    /// 72): an old file's 48 becomes 72 once; another size is kept.
+    #[test]
+    fn an_old_default_title_size_becomes_the_titles_own() {
+        assert_eq!(old_file(|v| v["title"]["default_size_pt"] = 48.0.into()).title.default_size_pt, 72.0);
+        assert_eq!(old_file(|v| v["title"]["default_size_pt"] = 60.0.into()).title.default_size_pt, 60.0);
     }
 }
