@@ -1,3 +1,4 @@
+use crate::inspector::rows::Switch;
 use crate::prefs::Preferences;
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, MarkerColor, ProxyResolution};
@@ -266,15 +267,15 @@ impl PreferencesPanel {
                         let searching = !self.search_query.is_empty();
 
                         // Define sidebar structure: (category, [(tab, icon, label)])
-                        let categories: &[(&str, &[(PrefsTab, &str, &str)])] = &[
-                            ("PROJECT", &[(PrefsTab::General, "\u{1F4C4}", "General"), (PrefsTab::Appearance, "\u{2699}", "Appearance")]),
-                            ("PERFORMANCE", &[(PrefsTab::System, "\u{1F5A5}", "System"), (PrefsTab::Playback, "\u{25B6}", "Playback"), (PrefsTab::MediaCache, "\u{1F4BE}", "Cache")]),
-                            ("EDITING", &[(PrefsTab::Editing, "\u{2702}", "Editing"), (PrefsTab::Timeline, "\u{1F39E}", "Timeline"), (PrefsTab::Viewer, "\u{1F5B5}", "Viewer")]),
-                            ("MEDIA & AUDIO", &[(PrefsTab::FileBrowser, "\u{1F4C2}", "File Browser"), (PrefsTab::Audio, "\u{1F3B5}", "Audio"), (PrefsTab::AudioHardware, "\u{1F50A}", "Audio HW"), (PrefsTab::Proxy, "\u{1F4F9}", "Proxy"), (PrefsTab::ExternalTools, "\u{1F517}", "External Tools")]),
-                            ("COLOUR & EXPORT", &[(PrefsTab::Color, "\u{1F3A8}", "Colour"), (PrefsTab::Export, "\u{2B07}", "Export")]),
-                            ("AI", &[(PrefsTab::Ai, "\u{2728}", "AI")]),
-                            ("INTERFACE", &[(PrefsTab::Title, "T", "Titles"), (PrefsTab::Keyboard, "\u{2328}", "Keyboard"), (PrefsTab::Advanced, "\u{2699}", "Advanced")]),
-                            ("ABOUT", &[(PrefsTab::About, "\u{2139}", "About Klipp")]),
+                        let categories: &[(&str, &[(PrefsTab, &str)])] = &[
+                            ("PROJECT", &[(PrefsTab::General, "General"), (PrefsTab::Appearance, "Appearance")]),
+                            ("PERFORMANCE", &[(PrefsTab::System, "System"), (PrefsTab::Playback, "Playback"), (PrefsTab::MediaCache, "Cache")]),
+                            ("EDITING", &[(PrefsTab::Editing, "Editing"), (PrefsTab::Timeline, "Timeline"), (PrefsTab::Viewer, "Viewer")]),
+                            ("MEDIA & AUDIO", &[(PrefsTab::FileBrowser, "File Browser"), (PrefsTab::Audio, "Audio"), (PrefsTab::AudioHardware, "Audio HW"), (PrefsTab::Proxy, "Proxy"), (PrefsTab::ExternalTools, "External Tools")]),
+                            ("COLOUR & EXPORT", &[(PrefsTab::Color, "Colour"), (PrefsTab::Export, "Export")]),
+                            ("AI", &[(PrefsTab::Ai, "AI")]),
+                            ("INTERFACE", &[(PrefsTab::Title, "Titles"), (PrefsTab::Keyboard, "Keyboard"), (PrefsTab::Advanced, "Advanced")]),
+                            ("ABOUT", &[(PrefsTab::About, "About Klipp")]),
                         ];
 
                         // Auto-switch to first matching tab when search changes
@@ -282,7 +283,7 @@ impl PreferencesPanel {
                             let current_matches = self.tab_matches_search(self.active_tab);
                             if !current_matches {
                                 for (_, items) in categories {
-                                    for (tab, _, _) in *items {
+                                    for (tab, _) in *items {
                                         if self.tab_matches_search(*tab) {
                                             self.active_tab = *tab;
                                             break;
@@ -296,13 +297,13 @@ impl PreferencesPanel {
                         ui.add_space(4.0);
                         for (cat_name, items) in categories {
                             // Filter items for this category
-                            let visible: Vec<_> = items.iter().filter(|(tab, _, _)| self.tab_matches_search(*tab)).collect();
+                            let visible: Vec<_> = items.iter().filter(|(tab, _)| self.tab_matches_search(*tab)).collect();
                             if visible.is_empty() { continue; }
 
                             if !searching { ui.add_space(8.0); }
                             self.sidebar_category(ui, cat_name, theme);
-                            for (tab, icon, label) in visible {
-                                self.sidebar_item(ui, *tab, icon, label, theme);
+                            for (tab, label) in visible {
+                                self.sidebar_item(ui, *tab, label, theme);
                             }
                         }
                     });
@@ -449,37 +450,28 @@ impl PreferencesPanel {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add_space(12.0);
-            ui.label(egui::RichText::new(label).size(10.0).color(theme.text_accent).strong());
+            ui.label(egui::RichText::new(label).size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
         });
         ui.add_space(2.0);
     }
 
-    /// Draw a clickable sidebar item with icon.
-    fn sidebar_item(&mut self, ui: &mut egui::Ui, tab: PrefsTab, icon: &str, label: &str, theme: &KlippTheme) {
+    /// A section in the list on the left: its name, the selected one on
+    /// a raised fill.
+    fn sidebar_item(&mut self, ui: &mut egui::Ui, tab: PrefsTab, label: &str, theme: &KlippTheme) {
         let is_active = self.active_tab == tab;
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(Self::SIDEBAR_W - 16.0, 26.0), egui::Sense::click());
         let rect = rect.translate(egui::vec2(8.0, 0.0));
-
         if is_active {
-            // Solid amber background — use dark text for readability
-            ui.painter().rect_filled(rect, 4.0, theme.accent);
+            ui.painter().rect_filled(rect, 4.0, theme.bg_raised);
         } else if resp.hovered() {
             ui.painter().rect_filled(rect, 4.0, theme.bg_hover);
         }
-
-        let text_color = if is_active { theme.text_on_accent } else { theme.text_primary };
+        let text_color = if is_active { theme.text_primary } else { theme.text_secondary };
         ui.painter().text(
-            egui::pos2(rect.left() + 10.0, rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            icon,
-            egui::FontId::proportional(13.0),
-            text_color,
-        );
-        ui.painter().text(
-            egui::pos2(rect.left() + 30.0, rect.center().y),
+            egui::pos2(rect.left() + 12.0, rect.center().y),
             egui::Align2::LEFT_CENTER,
             label,
-            egui::FontId::proportional(12.0),
+            egui::FontId::proportional(crate::inspector::rows::TEXT),
             text_color,
         );
 
@@ -497,18 +489,20 @@ impl PreferencesPanel {
         }
     }
 
-    /// Draw a section header (e.g., "PROJECT", "INSPECTOR") with subtle background.
+    /// A section's header: its name, with a hairline below, as the
+    /// inspector's sections have.
     fn section_header(ui: &mut egui::Ui, label: &str, theme: &KlippTheme) {
-        ui.add_space(8.0);
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 4.0, theme.bg_panel);
+        ui.add_space(12.0);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), crate::widgets::inspector_group::SECTION_HEADER_H), egui::Sense::hover());
         ui.painter().text(
-            egui::pos2(rect.left() + 14.0, rect.center().y),
+            egui::pos2(rect.left() + crate::inspector::rows::ROW_PAD, rect.center().y),
             egui::Align2::LEFT_CENTER,
             label,
-            egui::FontId::proportional(10.0),
-            theme.text_accent,
+            egui::FontId::proportional(crate::theme::type_scale::CONTROL),
+            theme.text_primary,
         );
+        ui.painter().hline(rect.x_range(), rect.max.y - 0.5, egui::Stroke::new(1.0_f32, theme.border));
+        ui.add_space(4.0);
     }
 
     /// Draw a setting row with label on left and a widget on right (returned via closure).
@@ -521,83 +515,41 @@ impl PreferencesPanel {
     }
 
     fn setting_row_inner(ui: &mut egui::Ui, label: &str, subtitle: Option<&str>, theme: &KlippTheme, add_right: impl FnOnce(&mut egui::Ui)) {
-        // Pre-measure the subtitle so the row grows to fit its
-        // wrapped height instead of clipping past the right-side
-        // widgets. Allow up to 3 lines — beyond that the subtitle
-        // belongs in a dialog or tooltip, not inline.
-        const LABEL_PAD_X: f32 = 14.0;
-        const SUBTITLE_TOP: f32 = 28.0;  // first subtitle line baseline offset from row.top
+        // The label on the left in the secondary colour, the control on
+        // the right, no rule between rows; a description, when there is
+        // one, wraps under the label across the row, up to three lines.
+        use crate::inspector::rows::{ROW_H, ROW_PAD, TEXT};
         const SUBTITLE_LINE_H: f32 = 14.0;
         const MAX_SUBTITLE_ROWS: usize = 3;
         const WIDGET_AREA_W: f32 = 250.0;
 
-        let (row_h, subtitle_galley) = if let Some(sub) = subtitle {
+        let subtitle_galley = subtitle.map(|sub| {
             let mut job = egui::text::LayoutJob::default();
-            job.append(
-                sub,
-                0.0,
-                egui::text::TextFormat {
-                    font_id: egui::FontId::proportional(10.0),
-                    color: theme.text_dim,
-                    ..Default::default()
-                },
-            );
+            job.append(sub, 0.0, egui::text::TextFormat { font_id: egui::FontId::proportional(11.0), color: theme.text_dim, ..Default::default() });
             job.wrap = egui::text::TextWrapping {
-                max_width: (ui.available_width() - LABEL_PAD_X * 2.0).max(0.0),
+                max_width: (ui.available_width() - ROW_PAD * 2.0).max(0.0),
                 max_rows: MAX_SUBTITLE_ROWS,
                 break_anywhere: false,
                 overflow_character: Some('\u{2026}'),
             };
-            let g = ui.ctx().fonts(|f| f.layout_job(job));
-            let rows = g.rows.len().max(1);
-            let h = SUBTITLE_TOP + rows as f32 * SUBTITLE_LINE_H + 4.0;
-            (h.max(48.0), Some(g))
-        } else {
-            (36.0, None)
-        };
-
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 0.0, theme.bg_panel_alt);
-        // Subtle separator
-        ui.painter().line_segment(
-            [egui::pos2(rect.left() + LABEL_PAD_X, rect.bottom()), egui::pos2(rect.right() - LABEL_PAD_X, rect.bottom())],
-            egui::Stroke::new(0.5_f32, theme.bg_raised),
+            ui.ctx().fonts(|f| f.layout_job(job))
+        });
+        let sub_h = subtitle_galley.as_ref().map_or(0.0, |g| g.rows.len().max(1) as f32 * SUBTITLE_LINE_H + 4.0);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H + sub_h), egui::Sense::hover());
+        let top = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), ROW_H));
+        ui.painter().text(
+            egui::pos2(rect.left() + ROW_PAD, top.center().y),
+            egui::Align2::LEFT_CENTER,
+            label,
+            egui::FontId::proportional(TEXT),
+            theme.text_secondary,
         );
-        // Label (+ optional multi-line subtitle)
         if let Some(g) = subtitle_galley {
-            ui.painter().text(
-                egui::pos2(rect.left() + LABEL_PAD_X, rect.top() + 16.0),
-                egui::Align2::LEFT_CENTER,
-                label,
-                egui::FontId::proportional(12.0),
-                theme.text_primary,
-            );
-            ui.painter().galley(
-                egui::pos2(rect.left() + LABEL_PAD_X, rect.top() + SUBTITLE_TOP),
-                g,
-                theme.text_dim,
-            );
-        } else {
-            ui.painter().text(
-                egui::pos2(rect.left() + LABEL_PAD_X, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                label,
-                egui::FontId::proportional(12.0),
-                theme.text_primary,
-            );
+            ui.painter().galley(egui::pos2(rect.left() + ROW_PAD, top.bottom()), g, theme.text_dim);
         }
-        // Right-aligned widget area. When a subtitle is present,
-        // pin the widget to the TOP band of the row (at the label's
-        // vertical level) so the subtitle wrapping below has the
-        // full row width to itself.
-        let widget_bottom = if subtitle.is_some() {
-            rect.top() + 26.0
-        } else {
-            rect.bottom() - 4.0
-        };
         let widget_rect = egui::Rect::from_min_max(
-            egui::pos2(rect.right() - WIDGET_AREA_W, rect.top() + 4.0),
-            egui::pos2(rect.right() - LABEL_PAD_X, widget_bottom),
+            egui::pos2(rect.right() - WIDGET_AREA_W, top.top() + 1.0),
+            egui::pos2(rect.right() - ROW_PAD, top.bottom() - 1.0),
         );
         let mut widget_ui = ui.new_child(egui::UiBuilder::new().max_rect(widget_rect));
         widget_ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -620,10 +572,10 @@ impl PreferencesPanel {
 
         Self::section_header(ui, "UPDATES", theme);
         Self::setting_row_with_subtitle(ui, "Check automatically", "Checks GitHub for new releases once a day", theme, |ui| {
-            if ui.checkbox(&mut prefs.general.check_for_updates, "").changed() { *dirty = true; }
+            if ui.add(Switch::new(&mut prefs.general.check_for_updates, theme)).changed() { *dirty = true; }
         });
         Self::setting_row(ui, "Include preview releases", theme, |ui| {
-            if ui.checkbox(&mut prefs.general.preview_updates, "").changed() { *dirty = true; }
+            if ui.add(Switch::new(&mut prefs.general.preview_updates, theme)).changed() { *dirty = true; }
         });
         Self::setting_row(ui, "Installed version", theme, |ui| {
             ui.label(klipp_core::build_info::get().version);
@@ -707,32 +659,15 @@ impl PreferencesPanel {
             ui.label(egui::RichText::new(&dir_text).size(11.0).color(theme.text_dim));
         });
 
-        Self::setting_row(ui, "Recent projects to show", theme, |ui| {
-            let count = prefs.general.recent_projects.len();
-            let _display_counts = [5u32, 10, 15, 20];
-            // For now show current count — this is informational
-            egui::ComboBox::from_id_salt("recent_count")
-                .selected_text(format!("{}", count.min(20)))
-                .width(50.0)
-                .show_ui(ui, |_ui| {
-                    // Placeholder — recent project count is managed by the max in add_recent_project
-                });
-        });
-
         // ── INSPECTOR section ──
         Self::section_header(ui, "INSPECTOR", theme);
 
         Self::setting_row(ui, "Remember collapsed sections", theme, |ui| {
-            if ui.checkbox(&mut prefs.general.remember_inspector_layout, "").changed() {
+            if ui.add(Switch::new(&mut prefs.general.remember_inspector_layout, theme)).changed() {
                 *dirty = true;
             }
         });
 
-        Self::setting_row(ui, "Show keyboard shortcut hints", theme, |ui| {
-            // Placeholder toggle — add a pref field for this later
-            let mut show_hints = true;
-            ui.checkbox(&mut show_hints, "");
-        });
     }
 
     fn show_playback(
@@ -780,7 +715,7 @@ impl PreferencesPanel {
 
         Self::setting_row_with_subtitle(ui, "Background render", "Pre-render complex sections in background", theme, |ui| {
             let mut val = prefs.playback.background_render;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+            if ui.add(Switch::new(&mut val, theme)).changed() {
                 prefs.playback.background_render = val;
                 *dirty = true;
             }
@@ -863,26 +798,9 @@ impl PreferencesPanel {
             }
         });
 
-        Self::setting_row_with_subtitle(ui, "JKL speed steps", "Multiplier per J/L press", theme, |ui| {
-            let steps = [(2.0_f32, "2\u{00d7}"), (3.0, "3\u{00d7}"), (4.0, "4\u{00d7}")];
-            let current = steps.iter()
-                .find(|(v, _)| (*v - prefs.playback.jkl_speed_step).abs() < 0.01)
-                .map(|(_, l)| *l).unwrap_or("2\u{00d7}");
-            egui::ComboBox::from_id_salt("jkl_step")
-                .selected_text(current)
-                .width(50.0)
-                .show_ui(ui, |ui| {
-                    for (val, label) in &steps {
-                        if ui.selectable_value(&mut prefs.playback.jkl_speed_step, *val, *label).changed() {
-                            *dirty = true;
-                        }
-                    }
-                });
-        });
-
         Self::setting_row(ui, "Loop playback by default", theme, |ui| {
             let mut val = prefs.playback.loop_playback;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+            if ui.add(Switch::new(&mut val, theme)).changed() {
                 prefs.playback.loop_playback = val;
                 *dirty = true;
             }
@@ -895,7 +813,7 @@ impl PreferencesPanel {
             theme,
             |ui| {
                 let mut val = prefs.playback.dim_ui_on_play;
-                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                if ui.add(Switch::new(&mut val, theme)).changed() {
                     prefs.playback.dim_ui_on_play = val;
                     *dirty = true;
                 }
@@ -909,7 +827,7 @@ impl PreferencesPanel {
             theme,
             |ui| {
                 let mut val = prefs.playback.scrub_audio;
-                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                if ui.add(Switch::new(&mut val, theme)).changed() {
                     prefs.playback.scrub_audio = val;
                     *dirty = true;
                     cmds.push(AppCommand::SetScrubAudioEnabled(val));
@@ -1033,7 +951,7 @@ impl PreferencesPanel {
             theme,
             |ui| {
                 let mut val = prefs.editing.adaptive_timeline_fit;
-                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                if ui.add(Switch::new(&mut val, theme)).changed() {
                     prefs.editing.adaptive_timeline_fit = val;
                     *dirty = true;
                 }
@@ -1051,7 +969,7 @@ impl PreferencesPanel {
         // mirrors of `state.snap` until a row is clicked.
         Self::setting_row_with_subtitle(ui, "Snap (master)", "Disables every per-target snap below (also bound to N)", theme, |ui| {
             let mut val = snap_config.master;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+            if ui.add(Switch::new(&mut val, theme)).changed() {
                 cmds.push(AppCommand::SetSnapMaster(val));
             }
         });
@@ -1069,7 +987,7 @@ impl PreferencesPanel {
             for &(target, label, subtitle, enabled) in rows {
                 Self::setting_row_with_subtitle(ui, label, subtitle, theme, |ui| {
                     let mut val = enabled;
-                    if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                    if ui.add(Switch::new(&mut val, theme)).changed() {
                         cmds.push(AppCommand::SetSnapTarget { target, enabled: val });
                     }
                 });
@@ -1101,7 +1019,7 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Playhead follows playback", theme, |ui| {
             let mut val = prefs.editing.playhead_follows_playback;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+            if ui.add(Switch::new(&mut val, theme)).changed() {
                 prefs.editing.playhead_follows_playback = val;
                 *dirty = true;
             }
@@ -1109,7 +1027,7 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Magnetic timeline", theme, |ui| {
             let mut val = prefs.editing.magnetic_timeline;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+            if ui.add(Switch::new(&mut val, theme)).changed() {
                 // Dispatch through AppCommand: bridges the
                 // magnetic_timeline (pref) ↔ magnetic_timeline_enabled
                 // (state) naming asymmetry. Without this, mid-session
@@ -1197,7 +1115,7 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Auto-show angle viewer", theme, |ui| {
             let mut val = prefs.editing.multicam_auto_viewer;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+            if ui.add(Switch::new(&mut val, theme)).changed() {
                 prefs.editing.multicam_auto_viewer = val;
                 *dirty = true;
             }
@@ -1205,7 +1123,7 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Show angle badges on timeline", theme, |ui| {
             let mut val = prefs.editing.multicam_show_angles;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+            if ui.add(Switch::new(&mut val, theme)).changed() {
                 // Dispatch through AppCommand for live-sync. Was
                 // covered by the debounced 1s re-sync block before
                 // T-PREFS-LIVE-SYNC; now applies immediately.
@@ -1215,31 +1133,8 @@ impl PreferencesPanel {
             }
         });
 
-        Self::setting_row(ui, "Default sync method", theme, |ui| {
-            use crate::prefs::MulticamSyncMethod;
-            egui::ComboBox::from_id_salt("multicam_sync")
-                .selected_text(match prefs.editing.multicam_sync_method {
-                    MulticamSyncMethod::Manual => "Manual",
-                    MulticamSyncMethod::Timecode => "Timecode",
-                    MulticamSyncMethod::AudioWaveform => "Audio Waveform",
-                })
-                .width(130.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.editing.multicam_sync_method, MulticamSyncMethod::Manual, "Manual").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.editing.multicam_sync_method, MulticamSyncMethod::Timecode, "Timecode").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.editing.multicam_sync_method, MulticamSyncMethod::AudioWaveform, "Audio Waveform").changed() { *dirty = true; }
-                });
-        });
-
         // ── TRACKING section ──
         Self::section_header(ui, "TRACKING", theme);
-
-        Self::setting_row_with_subtitle(ui, "Search radius", "Pixel radius for tracker matching", theme, |ui| {
-            let mut v = prefs.editing.track_search_radius;
-            if ui.add(egui::DragValue::new(&mut v).range(8..=128).speed(1.0).suffix(" px")).changed() {
-                prefs.editing.track_search_radius = v; *dirty = true;
-            }
-        });
 
         Self::setting_row_with_subtitle(ui, "Patch size", "Half-width of matching patch", theme, |ui| {
             let mut v = prefs.editing.track_patch_size;
@@ -1325,7 +1220,7 @@ impl PreferencesPanel {
             theme,
             |ui| {
                 let mut val = prefs.file_browser.file_browser_video_skim;
-                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                if ui.add(Switch::new(&mut val, theme)).changed() {
                     prefs.file_browser.file_browser_video_skim = val;
                     *dirty = true;
                 }
@@ -1339,7 +1234,7 @@ impl PreferencesPanel {
             theme,
             |ui| {
                 let mut val = prefs.file_browser.file_browser_audio_skim;
-                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                if ui.add(Switch::new(&mut val, theme)).changed() {
                     prefs.file_browser.file_browser_audio_skim = val;
                     *dirty = true;
                 }
@@ -1353,7 +1248,7 @@ impl PreferencesPanel {
             theme,
             |ui| {
                 let mut val = prefs.file_browser.filmstrip_hover;
-                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                if ui.add(Switch::new(&mut val, theme)).changed() {
                     prefs.file_browser.filmstrip_hover = val;
                     *dirty = true;
                 }
@@ -1385,7 +1280,7 @@ impl PreferencesPanel {
             theme,
             |ui| {
                 let mut val = prefs.file_browser.filmstrip_persist;
-                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                if ui.add(Switch::new(&mut val, theme)).changed() {
                     prefs.file_browser.filmstrip_persist = val;
                     *dirty = true;
                 }
@@ -1399,7 +1294,7 @@ impl PreferencesPanel {
             theme,
             |ui| {
                 let mut val = prefs.file_browser.group_by_date;
-                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                if ui.add(Switch::new(&mut val, theme)).changed() {
                     prefs.file_browser.group_by_date = val;
                     *dirty = true;
                 }
@@ -1413,7 +1308,7 @@ impl PreferencesPanel {
             theme,
             |ui| {
                 let mut val = prefs.file_browser.auto_refresh;
-                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                if ui.add(Switch::new(&mut val, theme)).changed() {
                     prefs.file_browser.auto_refresh = val;
                     *dirty = true;
                 }
@@ -1427,7 +1322,7 @@ impl PreferencesPanel {
             theme,
             |ui| {
                 let mut val = prefs.file_browser.show_recent_files;
-                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                if ui.add(Switch::new(&mut val, theme)).changed() {
                     prefs.file_browser.show_recent_files = val;
                     *dirty = true;
                 }
@@ -1548,7 +1443,7 @@ impl PreferencesPanel {
             theme,
             |ui| {
                 let mut val = prefs.file_browser.file_sort_ascending;
-                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                if ui.add(Switch::new(&mut val, theme)).changed() {
                     prefs.file_browser.file_sort_ascending = val;
                     *dirty = true;
                 }
@@ -1676,33 +1571,6 @@ impl PreferencesPanel {
             }
         });
 
-        Self::setting_row(ui, "Default fade duration", theme, |ui| {
-            let mut v_secs = prefs.audio.default_fade_duration_ms as f32 / 1000.0;
-            if ui.add(egui::DragValue::new(&mut v_secs).range(0.0..=5.0).speed(0.05).suffix(" s").fixed_decimals(1)).changed() {
-                prefs.audio.default_fade_duration_ms = (v_secs * 1000.0) as u32;
-                *dirty = true;
-            }
-        });
-
-        Self::setting_row(ui, "Default fade curve", theme, |ui| {
-            egui::ComboBox::from_id_salt("fade_curve")
-                .selected_text(crate::inspector::audio_tab::fade_curve_label(
-                    prefs.audio.default_fade_curve,
-                ))
-                .width(100.0)
-                .show_ui(ui, |ui| {
-                    // One list, from the same source as the clip
-                    // inspector's, so a shape cannot appear in one
-                    // picker and not the other.
-                    for curve in crate::inspector::audio_tab::FADE_CURVES {
-                        let label = crate::inspector::audio_tab::fade_curve_label(*curve);
-                        if ui.selectable_value(&mut prefs.audio.default_fade_curve, *curve, label).changed() {
-                            *dirty = true;
-                        }
-                    }
-                });
-        });
-
         // ── LOUDNESS section ──
         Self::section_header(ui, "LOUDNESS", theme);
 
@@ -1719,13 +1587,6 @@ impl PreferencesPanel {
                     if ui.selectable_value(&mut prefs.audio.loudness_standard, klipp_core::LoudnessStandard::AtscA85, "ATSC A/85 (\u{2013}24 LKFS)").changed() { *dirty = true; }
                     if ui.selectable_value(&mut prefs.audio.loudness_standard, klipp_core::LoudnessStandard::Off, "Off").changed() { *dirty = true; }
                 });
-        });
-
-        Self::setting_row(ui, "Normalize target", theme, |ui| {
-            let mut v = prefs.audio.normalize_target_lufs;
-            if ui.add(egui::DragValue::new(&mut v).range(-30.0..=-6.0).speed(0.5).suffix(" LUFS").fixed_decimals(0)).changed() {
-                prefs.audio.normalize_target_lufs = v; *dirty = true;
-            }
         });
 
         Self::setting_row(ui, "Peak hold time", theme, |ui| {
@@ -1785,41 +1646,6 @@ impl PreferencesPanel {
         // ── DEFAULTS section ──
         Self::section_header(ui, "DEFAULTS", theme);
 
-        Self::setting_row(ui, "Default encoder preset", theme, |ui| {
-            let presets = ["H.264 High Quality", "H.264 Fast", "H.265 High Quality", "ProRes 422", "ProRes 422 HQ", "DNxHD 145"];
-            egui::ComboBox::from_id_salt("enc_preset")
-                .selected_text(prefs.export.default_encoder_preset.as_str())
-                .width(140.0)
-                .show_ui(ui, |ui| {
-                    for p in presets {
-                        if ui.selectable_label(prefs.export.default_encoder_preset == p, p).clicked() {
-                            prefs.export.default_encoder_preset = p.to_string();
-                            *dirty = true;
-                        }
-                    }
-                });
-        });
-
-        Self::setting_row(ui, "Colour space tagging", theme, |ui| {
-            use klipp_core::ColorSpace;
-            let label = match prefs.export.color_space_tag {
-                ColorSpace::Srgb => "sRGB",
-                ColorSpace::Rec709 => "Rec.709",
-                ColorSpace::Rec2020 => "Rec.2020",
-                ColorSpace::P3D65 => "DCI-P3",
-                _ => "Other",
-            };
-            egui::ComboBox::from_id_salt("export_cs")
-                .selected_text(label)
-                .width(80.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.export.color_space_tag, ColorSpace::Rec709, "Rec.709").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.export.color_space_tag, ColorSpace::Rec2020, "Rec.2020").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.export.color_space_tag, ColorSpace::P3D65, "DCI-P3").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.export.color_space_tag, ColorSpace::Srgb, "sRGB").changed() { *dirty = true; }
-                });
-        });
-
         Self::setting_row(ui, "Audio sample rate", theme, |ui| {
             let rates = [(44100_u32, "44.1 kHz"), (48000, "48 kHz"), (96000, "96 kHz")];
             let current = rates.iter()
@@ -1835,71 +1661,8 @@ impl PreferencesPanel {
                 });
         });
 
-        // Default export folder with path + Browse
-        {
-            let row_h = 36.0;
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, theme.bg_panel_alt);
-            ui.painter().line_segment(
-                [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5_f32, theme.bg_raised),
-            );
-            ui.painter().text(
-                egui::pos2(rect.left() + 14.0, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                "Default export folder",
-                egui::FontId::proportional(12.0),
-                theme.text_primary,
-            );
-            let btn_rect = egui::Rect::from_min_size(
-                egui::pos2(rect.right() - 80.0, rect.top() + 6.0),
-                egui::vec2(66.0, 24.0),
-            );
-            let btn_resp = ui.allocate_rect(btn_rect, egui::Sense::click());
-            let btn_bg = if btn_resp.hovered() { theme.bg_hover } else { theme.bg_raised };
-            ui.painter().rect_filled(btn_rect, 4.0, btn_bg);
-            ui.painter().rect_stroke(btn_rect, 4.0, egui::Stroke::new(1.0_f32, theme.border_light));
-            ui.painter().text(btn_rect.center(), egui::Align2::CENTER_CENTER, "Browse...", egui::FontId::proportional(11.0), theme.text_primary);
-            let display = prefs.export.default_output_dir.as_ref()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|| "~/Videos/Exports".into());
-            ui.painter().text(
-                egui::pos2(btn_rect.left() - 8.0, rect.center().y),
-                egui::Align2::RIGHT_CENTER,
-                &display,
-                egui::FontId::proportional(11.0),
-                theme.text_dim,
-            );
-            let picker = egui::Id::new("prefs-default-export-dir");
-            if btn_resp.clicked() {
-                crate::file_dialog::pick_path(picker, || {
-                    rfd::FileDialog::new().set_title("Default Export Folder").pick_folder()
-                });
-            }
-            if let Some(crate::file_dialog::Picked::Path(path)) = crate::file_dialog::take_path(picker) {
-                prefs.export.default_output_dir = Some(path);
-                *dirty = true;
-            }
-        }
-
         // ── BEHAVIOR section ──
         Self::section_header(ui, "BEHAVIOR", theme);
-
-        Self::setting_row(ui, "Overwrite existing files", theme, |ui| {
-            use crate::prefs::OverwriteMode;
-            egui::ComboBox::from_id_salt("overwrite_mode")
-                .selected_text(match prefs.export.overwrite_mode {
-                    OverwriteMode::Ask => "Ask",
-                    OverwriteMode::Always => "Always",
-                    OverwriteMode::Never => "Never",
-                })
-                .width(100.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.export.overwrite_mode, OverwriteMode::Ask, "Ask").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.export.overwrite_mode, OverwriteMode::Always, "Always").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.export.overwrite_mode, OverwriteMode::Never, "Never").changed() { *dirty = true; }
-                });
-        });
 
         Self::setting_row(ui, "Parallel render jobs", theme, |ui| {
             let mut val = prefs.export.parallel_render_jobs;
@@ -1918,7 +1681,7 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Open folder after export", theme, |ui| {
             let mut val = prefs.export.open_folder_after_export;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+            if ui.add(Switch::new(&mut val, theme)).changed() {
                 prefs.export.open_folder_after_export = val;
                 *dirty = true;
             }
@@ -1965,7 +1728,7 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Auto-generate on import", theme, |ui| {
             let mut val = prefs.proxy.auto_generate_on_import;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+            if ui.add(Switch::new(&mut val, theme)).changed() {
                 prefs.proxy.auto_generate_on_import = val;
                 *dirty = true;
             }
@@ -1973,7 +1736,7 @@ impl PreferencesPanel {
 
         Self::setting_row(ui, "Auto-switch during scrub", theme, |ui| {
             let mut val = prefs.proxy.auto_switch_during_scrub;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+            if ui.add(Switch::new(&mut val, theme)).changed() {
                 prefs.proxy.auto_switch_during_scrub = val;
                 *dirty = true;
             }
@@ -2002,19 +1765,14 @@ impl PreferencesPanel {
 
         // Proxy cache directory with path + Browse
         {
-            let row_h = 36.0;
+            let row_h = crate::inspector::rows::ROW_H + 4.0;
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, theme.bg_panel_alt);
-            ui.painter().line_segment(
-                [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5_f32, theme.bg_raised),
-            );
             ui.painter().text(
                 egui::pos2(rect.left() + 14.0, rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 "Proxy cache",
-                egui::FontId::proportional(12.0),
-                theme.text_primary,
+                egui::FontId::proportional(crate::inspector::rows::TEXT),
+                theme.text_secondary,
             );
             // Browse button
             let btn_rect = egui::Rect::from_min_size(
@@ -2156,7 +1914,7 @@ impl PreferencesPanel {
             theme,
             |ui| {
                 let mut val = prefs.external_tools.round_trip_reload;
-                let resp = ui.add(crate::widgets::toggle::toggle(&mut val))
+                let resp = ui.add(Switch::new(&mut val, theme))
                     .on_hover_text("Uses the existing media watcher — no extra file watches are created.");
                 if resp.changed() {
                     prefs.external_tools.round_trip_reload = val;
@@ -2202,7 +1960,7 @@ impl PreferencesPanel {
         ui.add_space(6.0);
         Self::setting_row_with_subtitle(ui, "Speech transcription", "For captions and subtitles. Runs on import, and on demand from a clip's right-click menu.", theme, |ui| {
             let mut val = prefs.ai.transcription;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+            if ui.add(Switch::new(&mut val, theme)).changed() {
                 prefs.ai.transcription = val;
                 klipp_analysis::set_transcription_enabled(val);
                 *dirty = true;
@@ -2210,7 +1968,7 @@ impl PreferencesPanel {
         });
         Self::setting_row_with_subtitle(ui, "Subject detection", "Finds people and objects in the picture for framing and masking.", theme, |ui| {
             let mut val = prefs.ai.subject_detection;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+            if ui.add(Switch::new(&mut val, theme)).changed() {
                 prefs.ai.subject_detection = val;
                 klipp_analysis::set_subject_detection_enabled(val);
                 *dirty = true;
@@ -2218,7 +1976,7 @@ impl PreferencesPanel {
         });
         Self::setting_row_with_subtitle(ui, "Screen text (OCR)", "Reads what is on screen in a screen recording, so footage can be searched by its text and secrets left on screen are flagged. Needs two small models (about 10 MB), downloaded only when you ask.", theme, |ui| {
             let mut val = prefs.ai.screen_text;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+            if ui.add(Switch::new(&mut val, theme)).changed() {
                 prefs.ai.screen_text = val;
                 klipp_analysis::set_screen_text_enabled(val);
                 *dirty = true;
@@ -2226,7 +1984,7 @@ impl PreferencesPanel {
         });
         Self::setting_row_with_subtitle(ui, "AI assistant (MCP)  \u{2022}  restart required", "Runs the control socket and MCP server so an agent can drive Klipp through the klipp-mcp tools. Off means no agent can connect.", theme, |ui| {
             let mut val = prefs.ai.assistant;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+            if ui.add(Switch::new(&mut val, theme)).changed() {
                 prefs.ai.assistant = val;
                 *dirty = true;
             }
@@ -2276,7 +2034,7 @@ impl PreferencesPanel {
         }
         Self::setting_row_with_subtitle(ui, "Transcribe on CPU", "Slower, but works without a Vulkan GPU.", theme, |ui| {
             let mut val = prefs.ai.transcribe_on_cpu;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+            if ui.add(Switch::new(&mut val, theme)).changed() {
                 prefs.ai.transcribe_on_cpu = val;
                 klipp_analysis::transcript::set_transcribe_on_cpu(val);
                 *dirty = true;
@@ -2523,11 +2281,11 @@ impl PreferencesPanel {
             // Restart required badge
             let badge_text = "Restart required";
             let badge_font = egui::FontId::proportional(10.0);
-            let text_galley = ui.painter().layout_no_wrap(badge_text.to_string(), badge_font.clone(), theme.accent);
+            let text_galley = ui.painter().layout_no_wrap(badge_text.to_string(), badge_font.clone(), theme.marker_warning);
             let badge_size = egui::vec2(text_galley.size().x + 12.0, 20.0);
             let (badge_rect, _) = ui.allocate_exact_size(badge_size, egui::Sense::hover());
-            ui.painter().rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0_f32, theme.accent));
-            ui.painter().text(badge_rect.center(), egui::Align2::CENTER_CENTER, badge_text, badge_font, theme.accent);
+            ui.painter().rect_stroke(badge_rect, 4.0, egui::Stroke::new(1.0_f32, theme.marker_warning));
+            ui.painter().text(badge_rect.center(), egui::Align2::CENTER_CENTER, badge_text, badge_font, theme.marker_warning);
         });
         ui.add_space(4.0);
 
@@ -2553,7 +2311,7 @@ impl PreferencesPanel {
 
         Self::setting_row_with_subtitle(ui, "Hardware video decode", "NVDEC / VAAPI", theme, |ui| {
             let mut val = prefs.system.hardware_decode;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+            if ui.add(Switch::new(&mut val, theme)).changed() {
                 prefs.system.hardware_decode = val;
                 *dirty = true;
             }
@@ -2645,7 +2403,7 @@ impl PreferencesPanel {
             let subtitle = format!("Omarchy: {name}. Switching the theme in Omarchy changes Klipp live.");
             Self::setting_row_with_subtitle(ui, "Follow system theme", &subtitle, theme, |ui| {
                 let mut val = prefs.appearance.follow_system_theme;
-                if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+                if ui.add(Switch::new(&mut val, theme)).changed() {
                     prefs.appearance.follow_system_theme = val;
                     *dirty = true;
                 }
@@ -2737,20 +2495,15 @@ impl PreferencesPanel {
 
         // Helper for role color row with swatch + Edit button
         let role_color_row = |ui: &mut egui::Ui, label: &str, rgb: &mut [u8; 3], dirty: &mut bool, _id_salt: &str| {
-            let row_h = 36.0;
+            let row_h = crate::inspector::rows::ROW_H + 4.0;
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, theme.bg_panel_alt);
-            ui.painter().line_segment(
-                [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5_f32, theme.bg_raised),
-            );
             // Label
             ui.painter().text(
                 egui::pos2(rect.left() + 14.0, rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 label,
-                egui::FontId::proportional(12.0),
-                theme.text_primary,
+                egui::FontId::proportional(crate::inspector::rows::TEXT),
+                theme.text_secondary,
             );
             // Edit button (right side)
             let edit_rect = egui::Rect::from_min_size(
@@ -2890,20 +2643,6 @@ impl PreferencesPanel {
                             *dirty = true;
                         }
                     }
-                });
-        });
-
-        Self::setting_row(ui, "Monitoring mode", theme, |ui| {
-            use crate::prefs::MonitoringMode;
-            egui::ComboBox::from_id_salt("monitor_mode")
-                .selected_text(match prefs.audio_hardware.monitoring_mode {
-                    MonitoringMode::Software => "Software",
-                    MonitoringMode::Hardware => "Hardware (direct)",
-                })
-                .width(120.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.audio_hardware.monitoring_mode, MonitoringMode::Software, "Software").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.audio_hardware.monitoring_mode, MonitoringMode::Hardware, "Hardware (direct)").changed() { *dirty = true; }
                 });
         });
 
@@ -3085,9 +2824,9 @@ impl PreferencesPanel {
                 Self::setting_row_with_subtitle(ui, &label, &subtitle, theme, |ui| {
                     if d.is_default {
                         ui.label(
-                            egui::RichText::new("default")
-                                .size(10.0)
-                                .color(theme.accent),
+                            egui::RichText::new("Default")
+                                .size(crate::inspector::rows::TEXT)
+                                .color(theme.text_secondary),
                         );
                     } else {
                         ui.label("");
@@ -3110,20 +2849,15 @@ impl PreferencesPanel {
 
         // Helper: cache directory row with path display + Browse button
         let cache_dir_row = |ui: &mut egui::Ui, label: &str, path: &mut Option<std::path::PathBuf>, default_display: &str, dirty: &mut bool, _id: &str| {
-            let row_h = 36.0;
+            let row_h = crate::inspector::rows::ROW_H + 4.0;
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, theme.bg_panel_alt);
-            ui.painter().line_segment(
-                [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5_f32, theme.bg_raised),
-            );
             // Label
             ui.painter().text(
                 egui::pos2(rect.left() + 14.0, rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 label,
-                egui::FontId::proportional(12.0),
-                theme.text_primary,
+                egui::FontId::proportional(crate::inspector::rows::TEXT),
+                theme.text_secondary,
             );
             // Browse button
             let btn_rect = egui::Rect::from_min_size(
@@ -3158,14 +2892,13 @@ impl PreferencesPanel {
 
         cache_dir_row(ui, "Thumbnail cache", &mut prefs.media_cache.filmstrip_cache_dir, "~/.cache/klipp/thumbnails", dirty, "thumb_dir");
         cache_dir_row(ui, "Audio cache", &mut prefs.media_cache.audio_cache_dir, "~/.cache/klipp/audio-cache", dirty, "wave_dir");
-        cache_dir_row(ui, "Render cache", &mut prefs.media_cache.render_cache_dir, "~/.cache/klipp/render", dirty, "render_dir");
 
         // ── RENDER CACHE section ──
         Self::section_header(ui, "RENDER CACHE", theme);
 
         Self::setting_row(ui, "Smart render cache", theme, |ui| {
             let mut val = prefs.media_cache.enable_render_cache;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
+            if ui.add(Switch::new(&mut val, theme)).changed() {
                 prefs.media_cache.enable_render_cache = val;
                 cmds.push(AppCommand::SetRenderCacheEnabled(val));
                 *dirty = true;
@@ -3174,30 +2907,6 @@ impl PreferencesPanel {
 
         // ── LIMITS section ──
         Self::section_header(ui, "LIMITS", theme);
-
-        Self::setting_row(ui, "Max cache size", theme, |ui| {
-            let mut v = prefs.media_cache.max_cache_size_gb;
-            if ui.add(egui::DragValue::new(&mut v).range(1..=500).speed(1.0).suffix(" GB")).changed() {
-                prefs.media_cache.max_cache_size_gb = v; *dirty = true;
-            }
-        });
-
-        Self::setting_row(ui, "Thumbnail resolution", theme, |ui| {
-            let sizes = [(128_u32, "128px"), (192, "192px"), (256, "256px"), (320, "320px")];
-            let current = sizes.iter()
-                .find(|(v, _)| *v == prefs.media_cache.thumbnail_height)
-                .map(|(_, l)| *l).unwrap_or("256px");
-            egui::ComboBox::from_id_salt("thumb_res")
-                .selected_text(current)
-                .width(70.0)
-                .show_ui(ui, |ui| {
-                    for (val, label) in &sizes {
-                        if ui.selectable_value(&mut prefs.media_cache.thumbnail_height, *val, *label).changed() {
-                            *dirty = true;
-                        }
-                    }
-                });
-        });
 
         Self::setting_row_with_subtitle(
             ui,
@@ -3310,8 +3019,9 @@ impl PreferencesPanel {
         Self::section_header(ui, "CACHE SIZES", theme);
 
         let klipp_cache = dirs::cache_dir().unwrap_or_default().join("klipp");
-        let render_dir = prefs.media_cache.render_cache_dir.clone()
-            .unwrap_or_else(|| klipp_cache.join("render"));
+        // The engine's render cache is always here; it does not read
+        // `render_cache_dir`, so measuring or clearing that would miss it.
+        let render_dir = klipp_cache.join("render");
         let thumb_dir = prefs.media_cache.filmstrip_cache_dir.clone()
             .unwrap_or_else(|| klipp_cache.join("thumbnails"));
         // The audio cache pref controls the engine's audio_cache_dir
@@ -3740,7 +3450,7 @@ impl PreferencesPanel {
             "Highlight + lock the drag wire to the nearest input port",
             theme,
             |ui| {
-                if ui.checkbox(&mut prefs.color.port_snap_enabled, "").changed() {
+                if ui.add(Switch::new(&mut prefs.color.port_snap_enabled, theme)).changed() {
                     *dirty = true;
                 }
             },
@@ -3778,57 +3488,6 @@ impl PreferencesPanel {
         });
         ui.add_space(4.0);
 
-        // ── TEXT DEFAULTS section ──
-        Self::section_header(ui, "TEXT DEFAULTS", theme);
-
-        Self::setting_row(ui, "Default font", theme, |ui| {
-            let display = if prefs.title.default_font.is_empty() { "System default" } else { &prefs.title.default_font };
-            egui::ComboBox::from_id_salt("title_font")
-                .selected_text(display)
-                .width(130.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_label(prefs.title.default_font.is_empty(), "System default").clicked() {
-                        prefs.title.default_font.clear(); *dirty = true;
-                    }
-                    for font in ["Arial", "Helvetica", "Inter", "Roboto", "Open Sans", "Montserrat"] {
-                        if ui.selectable_label(prefs.title.default_font == font, font).clicked() {
-                            prefs.title.default_font = font.to_string(); *dirty = true;
-                        }
-                    }
-                });
-        });
-
-        Self::setting_row(ui, "Default size", theme, |ui| {
-            let mut v = prefs.title.default_size_pt;
-            if ui.add(egui::DragValue::new(&mut v).range(8.0..=200.0).speed(0.5).suffix(" pt").fixed_decimals(0)).changed() {
-                prefs.title.default_size_pt = v; *dirty = true;
-            }
-        });
-
-        Self::setting_row(ui, "Default colour", theme, |ui| {
-            let mut c = egui::Color32::from_rgb(prefs.title.default_color[0], prefs.title.default_color[1], prefs.title.default_color[2]);
-            if ui.color_edit_button_srgba(&mut c).changed() {
-                prefs.title.default_color = [c.r(), c.g(), c.b()];
-                *dirty = true;
-            }
-        });
-
-        Self::setting_row(ui, "Default alignment", theme, |ui| {
-            use crate::prefs::TextAlignment;
-            egui::ComboBox::from_id_salt("title_align")
-                .selected_text(match prefs.title.default_alignment {
-                    TextAlignment::Left => "Left",
-                    TextAlignment::Center => "Center",
-                    TextAlignment::Right => "Right",
-                })
-                .width(80.0)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_value(&mut prefs.title.default_alignment, TextAlignment::Left, "Left").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.title.default_alignment, TextAlignment::Center, "Center").changed() { *dirty = true; }
-                    if ui.selectable_value(&mut prefs.title.default_alignment, TextAlignment::Right, "Right").changed() { *dirty = true; }
-                });
-        });
-
         // ── BEHAVIOR section ──
         Self::section_header(ui, "BEHAVIOR", theme);
 
@@ -3839,22 +3498,22 @@ impl PreferencesPanel {
             }
         });
 
-        Self::setting_row(ui, "Title-safe area overlay", theme, |ui| {
-            let mut val = prefs.title.safe_area_overlay;
-            if ui.add(crate::widgets::toggle::toggle(&mut val)).changed() {
-                prefs.title.safe_area_overlay = val;
-                *dirty = true;
-            }
+    }
+
+    /// The page's name at its top.
+    fn page_title(ui: &mut egui::Ui, title: &str, theme: &KlippTheme) {
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new(title).strong().size(16.0).color(theme.text_primary));
         });
     }
 
-    fn show_timeline(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool, _theme: &KlippTheme) {
-        ui.label(egui::RichText::new("Clip Colours").strong().size(12.0));
-        ui.add_space(4.0);
+    fn show_timeline(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool, theme: &KlippTheme) {
+        Self::page_title(ui, "Timeline", theme);
+        Self::section_header(ui, "CLIP COLOURS", theme);
         let mut colors_changed = false;
         for (i, color) in prefs.timeline.clip_colors.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(format!("Colour {}:", i + 1));
+            Self::setting_row(ui, &format!("Colour {}", i + 1), theme, |ui| {
                 let mut c = egui::Color32::from_rgb(color[0], color[1], color[2]);
                 if ui.color_edit_button_srgba(&mut c).changed() {
                     *color = [c.r(), c.g(), c.b()];
@@ -3864,13 +3523,8 @@ impl PreferencesPanel {
         }
         if colors_changed { *dirty = true; }
 
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Dimensions").strong().size(12.0));
-        ui.add_space(4.0);
-
         let dim_row = |ui: &mut egui::Ui, label: &str, val: &mut f32, min: f32, max: f32, suffix: &str, dirty: &mut bool| {
-            ui.horizontal(|ui| {
-                ui.label(label);
+            Self::setting_row(ui, label, theme, |ui| {
                 let mut v = *val;
                 if ui.add(egui::DragValue::new(&mut v).range(min..=max).speed(0.5).suffix(suffix)).changed() {
                     *val = v; *dirty = true;
@@ -3878,83 +3532,59 @@ impl PreferencesPanel {
             });
         };
 
-        dim_row(ui, "Clip gap:", &mut prefs.timeline.clip_gap_px, 0.0, 20.0, " px", dirty);
-        dim_row(ui, "Trim handle:", &mut prefs.timeline.trim_handle_width, 6.0, 30.0, " px", dirty);
-        dim_row(ui, "Ruler height:", &mut prefs.timeline.ruler_height, 16.0, 48.0, " px", dirty);
-        dim_row(ui, "Clip corner radius:", &mut prefs.timeline.clip_corner_radius, 0.0, 16.0, " px", dirty);
-        dim_row(ui, "Overview bar:", &mut prefs.timeline.overview_bar_height, 12.0, 48.0, " px", dirty);
-        dim_row(ui, "Min track height:", &mut prefs.timeline.min_track_height, 16.0, 64.0, " px", dirty);
-        dim_row(ui, "Max track height:", &mut prefs.timeline.max_track_height, 100.0, 500.0, " px", dirty);
-        dim_row(ui, "Text track height:", &mut prefs.timeline.text_track_height, 20.0, 80.0, " px", dirty);
+        Self::section_header(ui, "DIMENSIONS", theme);
+        dim_row(ui, "Clip gap", &mut prefs.timeline.clip_gap_px, 0.0, 20.0, " px", dirty);
+        dim_row(ui, "Trim handle", &mut prefs.timeline.trim_handle_width, 6.0, 30.0, " px", dirty);
+        dim_row(ui, "Overview bar", &mut prefs.timeline.overview_bar_height, 12.0, 48.0, " px", dirty);
+        dim_row(ui, "Min track height", &mut prefs.timeline.min_track_height, 16.0, 64.0, " px", dirty);
+        dim_row(ui, "Text track height", &mut prefs.timeline.text_track_height, 20.0, 80.0, " px", dirty);
 
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Selection").strong().size(12.0));
-        ui.add_space(4.0);
-        dim_row(
-            ui,
-            "Selection border width:",
-            &mut prefs.timeline.clip_selection_border_width,
-            1.0,
-            8.0,
-            " px",
-            dirty,
-        );
-
+        Self::section_header(ui, "SELECTION", theme);
+        dim_row(ui, "Selection border width", &mut prefs.timeline.clip_selection_border_width, 1.0, 8.0, " px", dirty);
     }
 
     fn show_viewer(&mut self, ui: &mut egui::Ui, prefs: &mut Preferences, dirty: &mut bool, theme: &KlippTheme) {
-        ui.label(egui::RichText::new("Safe Areas").strong().size(12.0));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Action safe:");
+        Self::page_title(ui, "Viewer", theme);
+        Self::section_header(ui, "SAFE AREAS", theme);
+        Self::setting_row(ui, "Action safe", theme, |ui| {
             let mut v = prefs.viewer.action_safe_pct * 100.0;
             if ui.add(egui::Slider::new(&mut v, 70.0..=100.0).suffix("%")).changed() {
                 prefs.viewer.action_safe_pct = v / 100.0; *dirty = true;
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Title safe:");
+        Self::setting_row(ui, "Title safe", theme, |ui| {
             let mut v = prefs.viewer.title_safe_pct * 100.0;
             if ui.add(egui::Slider::new(&mut v, 50.0..=100.0).suffix("%")).changed() {
                 prefs.viewer.title_safe_pct = v / 100.0; *dirty = true;
             }
         });
 
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Zebras").strong().size(12.0));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("High threshold (clipping):");
+        // A level's IRE in BT.709 legal range: 16 is 0 IRE, 235 is 100.
+        let ire = |v: u8| (v as f32 - 16.0) / 2.19;
+        Self::section_header(ui, "ZEBRAS", theme);
+        Self::setting_row(ui, "High threshold (clipping)", theme, |ui| {
             let mut v = prefs.viewer.zebra_high_threshold;
+            ui.label(egui::RichText::new(format!("{:.0}% IRE", ire(v))).color(theme.text_dim).size(11.0));
             if ui.add(egui::DragValue::new(&mut v).range(128..=255).speed(1.0)).changed() {
                 prefs.viewer.zebra_high_threshold = v; *dirty = true;
             }
-            // Show approximate IRE equivalent (BT.709 legal range: 16=0 IRE, 235=100 IRE)
-            let ire = (v as f32 - 16.0) / 2.19;
-            ui.label(egui::RichText::new(format!("{ire:.0}% IRE")).color(theme.text_dim).size(11.0));
         });
-        ui.horizontal(|ui| {
-            ui.label("Low threshold (underexposure):");
+        Self::setting_row(ui, "Low threshold (underexposure)", theme, |ui| {
             let mut v = prefs.viewer.zebra_low_threshold;
+            ui.label(egui::RichText::new(format!("{:.0}% IRE", ire(v))).color(theme.text_dim).size(11.0));
             if ui.add(egui::DragValue::new(&mut v).range(0..=128).speed(1.0)).changed() {
                 prefs.viewer.zebra_low_threshold = v; *dirty = true;
             }
-            let ire = (v as f32 - 16.0) / 2.19;
-            ui.label(egui::RichText::new(format!("{ire:.0}% IRE")).color(theme.text_dim).size(11.0));
         });
 
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Focus Peaking").strong().size(12.0));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label("Sensitivity:");
+        Self::section_header(ui, "FOCUS PEAKING", theme);
+        Self::setting_row(ui, "Sensitivity", theme, |ui| {
             let mut v = prefs.viewer.focus_peaking_sensitivity;
             if ui.add(egui::Slider::new(&mut v, 0.0..=1.0)).changed() {
                 prefs.viewer.focus_peaking_sensitivity = v; *dirty = true;
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Colour:");
+        Self::setting_row(ui, "Colour", theme, |ui| {
             let pc = &mut prefs.viewer.focus_peaking_color;
             let mut c = egui::Color32::from_rgb(pc[0], pc[1], pc[2]);
             if ui.color_edit_button_srgba(&mut c).changed() {
@@ -3963,16 +3593,14 @@ impl PreferencesPanel {
             }
         });
 
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("False Colour").strong().size(12.0));
-        ui.add_space(4.0);
-        Self::show_false_color_editor(ui, prefs, dirty, theme);
-
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new("Overlays").strong().size(12.0));
-        ui.add_space(4.0);
+        Self::section_header(ui, "FALSE COLOUR", theme);
         ui.horizontal(|ui| {
-            ui.label("Grid colour:");
+            ui.add_space(crate::inspector::rows::ROW_PAD);
+            ui.vertical(|ui| Self::show_false_color_editor(ui, prefs, dirty, theme));
+        });
+
+        Self::section_header(ui, "OVERLAYS", theme);
+        Self::setting_row(ui, "Grid colour", theme, |ui| {
             let gc = &mut prefs.viewer.grid_color;
             let mut c = egui::Color32::from_rgba_unmultiplied(gc[0], gc[1], gc[2], gc[3]);
             if ui.color_edit_button_srgba(&mut c).changed() {
@@ -3980,22 +3608,19 @@ impl PreferencesPanel {
                 *dirty = true;
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Checkerboard tile:");
+        Self::setting_row(ui, "Checkerboard tile", theme, |ui| {
             let mut v = prefs.viewer.checkerboard_tile_size;
             if ui.add(egui::DragValue::new(&mut v).range(4.0..=32.0).speed(0.5).suffix(" px")).changed() {
                 prefs.viewer.checkerboard_tile_size = v; *dirty = true;
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Transform handle size:");
+        Self::setting_row(ui, "Transform handle size", theme, |ui| {
             let mut v = prefs.viewer.transform_handle_size;
             if ui.add(egui::DragValue::new(&mut v).range(4.0..=20.0).speed(0.5).suffix(" px")).changed() {
                 prefs.viewer.transform_handle_size = v; *dirty = true;
             }
         });
-        ui.horizontal(|ui| {
-            ui.label("Fullscreen overlay timeout:");
+        Self::setting_row(ui, "Fullscreen overlay timeout", theme, |ui| {
             let mut v = prefs.viewer.fullscreen_overlay_timeout_secs;
             if ui.add(egui::DragValue::new(&mut v).range(1.0..=10.0).speed(0.1).suffix(" sec")).changed() {
                 prefs.viewer.fullscreen_overlay_timeout_secs = v; *dirty = true;
@@ -4015,7 +3640,7 @@ impl PreferencesPanel {
 
         // Preset dropdown
         ui.horizontal(|ui| {
-            ui.label("Preset:");
+            ui.label(egui::RichText::new("Preset").size(crate::inspector::rows::TEXT).color(theme.text_secondary));
             egui::ComboBox::from_id_salt("fc_preset")
                 .selected_text(display_name)
                 .width(180.0)
@@ -4192,7 +3817,7 @@ impl PreferencesPanel {
             // This is a toggle for showing perf overlay by default (controlled by P key at runtime)
             // Use perf_overlay_interval_ms > 0 as proxy for "enabled"
             let mut enabled = prefs.advanced.perf_overlay_interval_ms > 0;
-            if ui.add(crate::widgets::toggle::toggle(&mut enabled)).changed() {
+            if ui.add(Switch::new(&mut enabled, theme)).changed() {
                 prefs.advanced.perf_overlay_interval_ms = if enabled { 500 } else { 0 };
                 *dirty = true;
             }
@@ -4318,15 +3943,15 @@ impl PreferencesPanel {
 
         // ── SHORTCUTS section header with Reset all button ──
         {
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 4.0, theme.bg_panel);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), crate::widgets::inspector_group::SECTION_HEADER_H), egui::Sense::hover());
             ui.painter().text(
                 egui::pos2(rect.left() + 14.0, rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 "SHORTCUTS",
-                egui::FontId::proportional(10.0),
-                theme.text_accent,
+                egui::FontId::proportional(crate::theme::type_scale::CONTROL),
+                theme.text_primary,
             );
+            ui.painter().hline(rect.x_range(), rect.max.y - 0.5, egui::Stroke::new(1.0_f32, theme.border));
             // Reset all to defaults button (right-aligned)
             let btn_rect = egui::Rect::from_min_size(
                 egui::pos2(rect.right() - 130.0, rect.top() + 3.0),
@@ -4424,21 +4049,16 @@ impl PreferencesPanel {
                 let combos = key_bindings.bindings.get(**action).cloned().unwrap_or_default();
                 let is_remapping = self.remapping.as_ref().is_some_and(|(a, _)| a == **action);
 
-                let row_h = 36.0;
+                let row_h = crate::inspector::rows::ROW_H + 4.0;
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-                ui.painter().rect_filled(rect, 0.0, theme.bg_panel_alt);
-                ui.painter().line_segment(
-                    [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                    egui::Stroke::new(0.5_f32, theme.bg_raised),
-                );
 
                 // Action label
                 ui.painter().text(
                     egui::pos2(rect.left() + 14.0, rect.center().y),
                     egui::Align2::LEFT_CENTER,
                     label,
-                    egui::FontId::proportional(12.0),
-                    theme.text_primary,
+                    egui::FontId::proportional(crate::inspector::rows::TEXT),
+                    theme.text_secondary,
                 );
 
                 // "Set" button (rightmost)
@@ -4664,19 +4284,14 @@ impl PreferencesPanel {
         Self::section_header(ui, "TECHNOLOGY", theme);
 
         let tech_row = |ui: &mut egui::Ui, name: &str, desc: &str| {
-            let row_h = 36.0;
+            let row_h = crate::inspector::rows::ROW_H + 4.0;
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, theme.bg_panel_alt);
-            ui.painter().line_segment(
-                [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5_f32, theme.bg_raised),
-            );
             ui.painter().text(
                 egui::pos2(rect.left() + 14.0, rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 name,
-                egui::FontId::proportional(12.0),
-                theme.text_primary,
+                egui::FontId::proportional(crate::inspector::rows::TEXT),
+                theme.text_secondary,
             );
             ui.painter().text(
                 egui::pos2(rect.right() - 14.0, rect.center().y),
@@ -4702,11 +4317,6 @@ impl PreferencesPanel {
         let ack_row = |ui: &mut egui::Ui, text: &str| {
             let row_h = 28.0;
             let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 0.0, theme.bg_panel_alt);
-            ui.painter().line_segment(
-                [egui::pos2(rect.left() + 14.0, rect.bottom()), egui::pos2(rect.right() - 14.0, rect.bottom())],
-                egui::Stroke::new(0.5_f32, theme.bg_raised),
-            );
             ui.painter().text(
                 egui::pos2(rect.left() + 14.0, rect.center().y),
                 egui::Align2::LEFT_CENTER,
@@ -4730,7 +4340,6 @@ impl PreferencesPanel {
         });
     }
 }
-
 
 /// The human name of an AI model from the manifest, or its id.
 fn model_display_name(id: &str) -> String {
@@ -4840,5 +4449,388 @@ mod connect_assistant_tests {
         prefs.ai.assistant = false;
         let off = frame(&mut panel, &prefs);
         assert!(off.iter().any(|t| t.contains("The AI assistant is off")), "{off:?}");
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    const TABS: [PrefsTab; 20] = [
+        PrefsTab::General, PrefsTab::Ai, PrefsTab::System, PrefsTab::Appearance, PrefsTab::Playback, PrefsTab::Editing,
+        PrefsTab::FileBrowser, PrefsTab::Audio, PrefsTab::AudioHardware, PrefsTab::Export, PrefsTab::MediaCache, PrefsTab::Color,
+        PrefsTab::Title, PrefsTab::Timeline, PrefsTab::Viewer, PrefsTab::Proxy, PrefsTab::ExternalTools, PrefsTab::Advanced,
+        PrefsTab::Keyboard, PrefsTab::About,
+    ];
+
+    /// Every row and section label the dialog drew before its restyle,
+    /// read from its source then (a "Label:" written as "Label" now).
+    const OLD_LABELS: &[&str] = &[
+        "ACKNOWLEDGMENTS",
+        "AI assistant (MCP)  \u{2022}  restart required",
+        "APPLICATION",
+        "APPLICATIONS",
+        "AUTO-DUCK DEFAULTS",
+        "Action safe",
+        "Adapt timeline to window",
+        "All AI models",
+        "All caches",
+        "Also auto-save every N operations",
+        "Ambience",
+        "Anti-click fade",
+        "Assistant (MCP)",
+        "Attack",
+        "Audio",
+        "Audio backend",
+        "Audio cache",
+        "Audio cache (PCM)",
+        "Audio editor",
+        "Audio hover skim",
+        "Audio peaks",
+        "Audio sample rate",
+        "Audio scrubbing",
+        "Author",
+        "Auto-generate on import",
+        "Auto-refresh folder",
+        "Auto-save interval",
+        "Auto-show angle viewer",
+        "Auto-switch during scrub",
+        "B-Roll",
+        "BEHAVIOR",
+        "Background performance",
+        "Background render",
+        "Backup versions to keep",
+        "Buffer size",
+        "Built",
+        "CACHE SIZES",
+        "CLEANUP",
+        "COLUMNS",
+        "CONNECT AN ASSISTANT",
+        "CPU",
+        "Check automatically",
+        "Check the connection",
+        "Checkerboard tile",
+        "Clear recent projects",
+        "Clip corner radius",
+        "Clip gap",
+        "Colour space tagging",
+        "Colour",
+        "DEFAULTS",
+        "DETECTED HARDWARE",
+        "DISPLAY",
+        "Debug logging",
+        "Decode threads",
+        "Default alignment",
+        "Default colour",
+        "Default duration",
+        "Default encoder preset",
+        "Default fade curve",
+        "Default fade duration",
+        "Default font",
+        "Default project folder",
+        "Default size",
+        "Default sort",
+        "Default sync method",
+        "Default transition",
+        "Default transition duration",
+        "Default type filter",
+        "Dialogue",
+        "Dim UI during playback",
+        "Duck level",
+        "FAVORITES",
+        "FEATURES",
+        "Filmstrip hover preview",
+        "Filmstrip quality",
+        "Filmstrip strips",
+        "Filmstrip tile resolution",
+        "Foley",
+        "Follow system theme",
+        "Frame queue size",
+        "Fullscreen overlay timeout",
+        "GENERATION",
+        "GPU",
+        "GPU preference",
+        "Graphics",
+        "Grid colour",
+        "Grid snap",
+        "Group files by date",
+        "HOVER SKIM",
+        "Hardware video decode",
+        "High threshold (clipping)",
+        "INSPECTOR",
+        "Image editor",
+        "Include preview releases",
+        "Input device",
+        "Installed version",
+        "JKL speed steps",
+        "Keep filmstrip visible",
+        "Klipp's MCP program",
+        "LIMITS",
+        "LOCATIONS",
+        "LOUDNESS",
+        "LUT interpolation",
+        "LUTs",
+        "License",
+        "Loop playback by default",
+        "Loss threshold",
+        "Loudness standard",
+        "Low threshold (underexposure)",
+        "MANAGEMENT",
+        "MIXING",
+        "MODELS",
+        "MULTICAM",
+        "Magnetic timeline",
+        "Marker colour",
+        "Max cache size",
+        "Max playback resolution",
+        "Max track height",
+        "Memory",
+        "Min track height",
+        "Minimum gap",
+        "Monitoring mode",
+        "Music",
+        "NODE GRAPH",
+        "New sequence resolution",
+        "Normalize target",
+        "OUTPUT DEVICE",
+        "On launch",
+        "Open folder after export",
+        "Optimised playback",
+        "Orphaned cache files",
+        "Output device  \u{2022}  restart required",
+        "Output devices",
+        "Overview bar",
+        "Overwrite existing files",
+        "PROJECT",
+        "Pan law",
+        "Parallel render jobs",
+        "Patch size",
+        "Peak hold time",
+        "Performance overlay",
+        "Pinned folders",
+        "Playback quality",
+        "Playhead follows playback",
+        "Post-export command",
+        "Poster thumbnails",
+        "Pre-roll duration",
+        "Preset",
+        "Printer point",
+        "Proxy cache",
+        "Proxy files",
+        "Proxy resolution",
+        "QUALITY",
+        "RECORDING INPUT",
+        "RENDER CACHE",
+        "RESET",
+        "ROLE COLOURS",
+        "ROUND-TRIP",
+        "Recent projects to show",
+        "Release",
+        "Reload on external edit",
+        "Remember collapsed sections",
+        "Render cache",
+        "Reset all preferences",
+        "Reset window layout",
+        "Ruler height",
+        "Rust",
+        "SCENE DETECTION",
+        "SCOPES",
+        "SCREEN TEXT (OCR)",
+        "SDR viewer transfer",
+        "SFX",
+        "STARTUP",
+        "STATUS",
+        "STORAGE",
+        "Sample rate",
+        "Sampling quality",
+        "Scope refresh rate",
+        "Screen text (OCR)",
+        "Search radius",
+        "Selection border width",
+        "Sensitivity",
+        "Sensitivity",
+        "Shift+arrow step",
+        "Show angle badges on timeline",
+        "Show keyboard shortcut hints",
+        "Show recent files",
+        "Skim preview height",
+        "Skim transcode quality",
+        "Skim transcodes",
+        "Smart render cache",
+        "Snap (master)",
+        "Snap radius",
+        "Snap threshold",
+        "Snap to ports while connecting",
+        "Sort ascending",
+        "Speech (transcription)",
+        "Speech transcription",
+        "Subject detection",
+        "System mute reminder",
+        "TECHNOLOGY",
+        "TEXT DEFAULTS",
+        "THEME",
+        "THREADING",
+        "TIMELINE BEHAVIOR",
+        "TRACKING",
+        "TRANSCRIPTION (SPEECH)",
+        "TRANSPORT",
+        "Text track height",
+        "Theme",
+        "Threshold",
+        "Thumbnail cache",
+        "Thumbnail resolution",
+        "Thumbnail size",
+        "Title",
+        "Title safe",
+        "Title-safe area overlay",
+        "Toast notification duration",
+        "Transcribe on CPU",
+        "Transform handle size",
+        "Trim handle",
+        "UI",
+        "UI scale",
+        "UPDATES",
+        "Vectorscope skin angle",
+        "Version",
+        "Video",
+        "Video editor",
+        "Video hover skim",
+        "Viewer LUT",
+        "Visible columns",
+        "Voiceover",
+        "Zoom step multiplier",
+        "cpal",
+        "egui / eframe",
+        "ffmpeg-next",
+        "image",
+        "rfd",
+        "serde",
+        "wgpu",
+    ];
+
+    /// Settings the dialog showed that nothing reads: changing one did
+    /// nothing, so they are out of view until they are wired. "Render
+    /// cache" here is the folder row; the cache's size row keeps the name.
+    const HIDDEN: &[&str] = &[
+        "Default fade curve", "Default fade duration", "Monitoring mode", "Normalize target", "Default sync method",
+        "Search radius", "Colour space tagging", "Default encoder preset", "Default export folder", "Overwrite existing files",
+        "Max cache size", "Thumbnail resolution", "JKL speed steps", "Clip corner radius", "Max track height", "Ruler height",
+        "Default alignment", "Default colour", "Default font", "Default size", "Title-safe area overlay",
+        "Show keyboard shortcut hints", "Recent projects to show", "TEXT DEFAULTS",
+    ];
+
+    /// One frame of the dialog on `tab`, with `events`: its texts by their
+    /// centres, its hairlines by height and left end, and the prefs.
+    struct Drawn {
+        texts: Vec<(String, egui::Pos2)>,
+        rules: Vec<(f32, f32, f32)>,
+        /// The heights of the texts drawn in the primary colour.
+        primary: Vec<f32>,
+    }
+
+    fn draw(ctx: &egui::Context, panel: &mut PreferencesPanel, prefs: &mut Preferences, dirty: &mut bool, events: Vec<egui::Event>) -> Drawn {
+        let theme = KlippTheme::default();
+        let reg = crate::theme::ThemeRegistry::load();
+        let mut kb = crate::keybindings::KeyBindings::default();
+        let out = ctx.run(
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 4000.0))), events, ..Default::default() },
+            |ctx| {
+                panel.show(ctx, prefs, dirty, &mut kb, &reg, &theme, klipp_core::SnapConfig::default());
+            },
+        );
+        fn walk(s: &egui::Shape, out: &mut Vec<egui::Shape>) {
+            match s {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+                s => out.push(s.clone()),
+            }
+        }
+        let mut flat = Vec::new();
+        for c in &out.shapes {
+            walk(&c.shape, &mut flat);
+        }
+        let mut texts = Vec::new();
+        let mut rules = Vec::new();
+        let mut primary = Vec::new();
+        for s in flat {
+            match s {
+                egui::Shape::Text(t) => {
+                    let c = t.galley.job.sections.first().map(|s| s.format.color);
+                    if c == Some(theme.text_primary) || t.override_text_color == Some(theme.text_primary) {
+                        primary.push(t.pos.y + t.galley.size().y / 2.0);
+                    }
+                    texts.push((t.galley.text().to_string(), t.pos + t.galley.size() / 2.0));
+                }
+                egui::Shape::LineSegment { points, .. } if points[0].y == points[1].y && (points[1].x - points[0].x).abs() > 100.0 => rules.push((points[0].y, points[0].x, points[1].x)),
+                _ => {}
+            }
+        }
+        Drawn { texts, rules, primary }
+    }
+
+    /// Each tab drawn twice (the second frame with its layout settled).
+    fn tab(tab: PrefsTab, prefs: &mut Preferences) -> Drawn {
+        let ctx = egui::Context::default();
+        let mut panel = PreferencesPanel { active_tab: tab, ..Default::default() };
+        let mut dirty = false;
+        draw(&ctx, &mut panel, prefs, &mut dirty, Vec::new());
+        draw(&ctx, &mut panel, prefs, &mut dirty, Vec::new())
+    }
+
+    /// A press and release at `at`.
+    fn click(ctx: &egui::Context, panel: &mut PreferencesPanel, prefs: &mut Preferences, dirty: &mut bool, at: egui::Pos2) {
+        let press = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        draw(ctx, panel, prefs, dirty, vec![egui::Event::PointerMoved(at), press(true)]);
+        draw(ctx, panel, prefs, dirty, vec![press(false)]);
+    }
+
+    /// A boolean is a switch at its row's right edge that flips the
+    /// setting and marks the preferences to be saved; a section in the
+    /// list on the left opens its page.
+    #[test]
+    fn the_switches_and_the_list_do_what_they_say() {
+        let ctx = egui::Context::default();
+        let mut panel = PreferencesPanel::default();
+        let mut prefs = Preferences::default();
+        let mut dirty = false;
+        let before = prefs.general.check_for_updates;
+        draw(&ctx, &mut panel, &mut prefs, &mut dirty, Vec::new());
+        let d = draw(&ctx, &mut panel, &mut prefs, &mut dirty, Vec::new());
+        let at = |l: &str| d.texts.iter().find(|(s, _)| s == l).unwrap_or_else(|| panic!("no {l}")).1;
+        let row = at("Include preview releases");
+        let right = d.rules.iter().filter(|(_, x0, _)| *x0 > 280.0).map(|(_, _, x1)| *x1).fold(0.0, f32::max);
+        click(&ctx, &mut panel, &mut prefs, &mut dirty, egui::pos2(right - crate::inspector::rows::ROW_PAD - 16.0, row.y));
+        assert_ne!(prefs.general.preview_updates, Preferences::default().general.preview_updates, "the switch flips its setting");
+        assert!(dirty, "and the preferences are saved");
+        assert_eq!(prefs.general.check_for_updates, before, "only its own");
+
+        let timeline = at("Timeline");
+        click(&ctx, &mut panel, &mut prefs, &mut dirty, timeline);
+        assert_eq!(panel.active_tab, PrefsTab::Timeline);
+    }
+
+    /// Across its pages the dialog still shows every setting and section
+    /// it showed before, and within a page the only rules are the
+    /// section headers' (and the window's own edges): no rule between
+    /// rows.
+    #[test]
+    fn every_setting_is_kept_and_rows_have_no_rules() {
+        let mut prefs = Preferences::default();
+        prefs.ai.assistant = true;
+        let mut all: Vec<String> = Vec::new();
+        for t in TABS {
+            let d = tab(t, &mut prefs);
+            // The content's rules (right of the list): each one under a
+            // header, whose name is in the primary colour; a row's
+            // label is in the secondary.
+            for (y, _, _) in d.rules.iter().filter(|(_, x0, _)| *x0 > 280.0) {
+                assert!(d.primary.iter().any(|h| (y - h) > 4.0 && (y - h) < 20.0), "{t:?}: a rule at {y} is not under a section header: {:?}", d.rules);
+            }
+            all.extend(d.texts.into_iter().map(|(s, _)| s));
+        }
+        // "Built" shows only in a build that knows when it was built.
+        let missing: Vec<&&str> = OLD_LABELS.iter().filter(|l| **l != "Built" && !HIDDEN.contains(l) && !all.iter().any(|s| s == **l)).collect();
+        assert!(missing.is_empty(), "no longer shown: {missing:?}");
+        let shown: Vec<&&str> = HIDDEN.iter().filter(|l| all.iter().any(|s| s == **l)).collect();
+        assert!(shown.is_empty(), "settings that change nothing are shown: {shown:?}");
     }
 }

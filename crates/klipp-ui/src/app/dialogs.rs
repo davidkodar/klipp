@@ -955,7 +955,7 @@ impl KlippApp {
                 .sequences
                 .get(dlg.sequence_idx)
                 .map_or(klipp_timeline::DEFAULT_TITLE_NITS, |s| s.title_nits);
-            let (still_open, dlg_cmds) = dlg.show(ctx, orig_w, orig_h, orig_n, orig_d, orig_shutter, orig_title_nits);
+            let (still_open, dlg_cmds) = dlg.show(ctx, &self.theme, orig_w, orig_h, orig_n, orig_d, orig_shutter, orig_title_nits);
             cmds.extend(dlg_cmds);
             if !still_open {
                 self.sequence_settings_dialog = None;
