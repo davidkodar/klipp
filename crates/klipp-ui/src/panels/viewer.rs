@@ -122,6 +122,9 @@ struct ViewerFrameState {
     video_w: f32,
     video_h: f32,
     grade_still_active: bool,
+    /// The graded frame of the clip the viewer wipes against (#899), when
+    /// it is drawn: the split's left side.
+    wipe_frame: Option<egui::TextureId>,
     /// `(width, height, proxy_ready)` of the media item under the playhead, if any.
     current_media_info: Option<(u32, u32, bool)>,
 }
@@ -884,12 +887,15 @@ impl ViewerPanel {
             && state.active_grade_still.is_some()
             && state.active_grade_still.unwrap() < state.grade_stills.len();
 
+        // A Colour page tool: the Edit page's viewer shows the frame.
+        let wipe_frame = state.wipe_clip.filter(|_| state.show_color_panel).and_then(|c| state.graded_thumbs.wipe_frame(c)).map(|t| t.id());
         Some(ViewerFrameState {
             image_rect,
             viewer_rect,
             video_w,
             video_h,
-            grade_still_active,
+            grade_still_active: grade_still_active && wipe_frame.is_none(),
+            wipe_frame,
             current_media_info,
         })
     }
@@ -904,7 +910,14 @@ impl ViewerPanel {
         let split_frac = state.split_position;
         let split_x = image_rect.min.x + split_frac * image_rect.width();
 
-        // Left side: grade still reference
+        // Left side: the wiped clip's graded frame (#899), or the grade
+        // still.
+        if let Some(id) = frame.wipe_frame {
+            let left_rect = egui::Rect::from_min_max(image_rect.min, egui::pos2(split_x, image_rect.max.y));
+            ui.painter().image(id, left_rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(split_frac, 1.0)), egui::Color32::WHITE);
+            self.draw_live_right(ui, image_rect, split_frac, split_x);
+            return;
+        }
         let still_idx = state.active_grade_still.unwrap();
         let still = &mut state.grade_stills[still_idx];
         // Lazily upload texture
@@ -934,7 +947,11 @@ impl ViewerPanel {
             );
         }
 
-        // Right side: current graded frame
+        self.draw_live_right(ui, image_rect, split_frac, split_x);
+    }
+
+    /// A split's right side: the current graded frame.
+    fn draw_live_right(&self, ui: &mut egui::Ui, image_rect: egui::Rect, split_frac: f32, split_x: f32) {
         if let Some(tex) = &self.video_texture {
             let right_rect = egui::Rect::from_min_max(egui::pos2(split_x, image_rect.min.y), image_rect.max);
             let uv_left = split_frac;
@@ -955,7 +972,7 @@ impl ViewerPanel {
         frame: &ViewerFrameState,
     ) {
         let image_rect = frame.image_rect;
-        let grade_still_active = frame.grade_still_active;
+        let grade_still_active = frame.grade_still_active || frame.wipe_frame.is_some();
         let stab_compare_active = state.stabilization_compare_active;
         let effect_compare_active = state.split_compare_node.is_some();
         let split_x = image_rect.min.x + state.split_position * image_rect.width();
@@ -979,7 +996,14 @@ impl ViewerPanel {
         // Labels
         let label_font = egui::FontId::proportional(11.0);
         let label_y = image_rect.min.y + 14.0;
-        let (left_label, right_label) = if grade_still_active {
+        let (left_label, right_label) = if frame.wipe_frame.is_some() {
+            let seq = &state.sequences[state.active_sequence_idx];
+            let name = state.wipe_clip.and_then(|id| seq.all_clips().find(|c| c.id == id)).map(|c| {
+                let media = c.media_id().and_then(|m| state.media_pool.get(&m)).map(|m| m.filename.clone()).unwrap_or_default();
+                c.label(&media).to_string()
+            }).unwrap_or_default();
+            (format!("Clip: {name}"), "Now".to_string())
+        } else if grade_still_active {
             let idx = state.active_grade_still.unwrap();
             (format!("Still: {}", state.grade_stills[idx].name), "Now".to_string())
         } else if stab_compare_active {
@@ -1848,7 +1872,7 @@ impl ViewerPanel {
         // the dual-viewer layout — showing it here would duplicate the
         // preview onto the Program side, which was the single-viewer-era
         // behaviour.
-        if frame.grade_still_active {
+        if frame.grade_still_active || frame.wipe_frame.is_some() {
             self.draw_grade_still_split(ui, state, &frame);
         } else {
             // Prefer the engine's GPU-resident output (`gpu_texture_id`)
@@ -1982,6 +2006,7 @@ impl ViewerPanel {
         // ── Before/After or Grade Still split divider ──
         let show_split_divider = state.before_after_active
             || frame.grade_still_active
+            || frame.wipe_frame.is_some()
             || state.stabilization_compare_active
             || state.split_compare_node.is_some();
         if show_split_divider {

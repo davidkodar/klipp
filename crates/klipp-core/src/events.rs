@@ -3571,6 +3571,10 @@ pub enum AppCommand {
     SetActiveGradeStill { index: Option<usize> },
     /// Toggle split-view comparison with the active grade still.
     ToggleGradeStillCompare,
+    /// Wipe the viewer against another clip's graded frame (#899): the
+    /// clip before or after the one graded on the timeline, or a clip
+    /// named; `None` ends the wipe.
+    WipeAgainstClip { target: Option<WipeClip> },
 
     // ── Source Viewer playback ─────────────────────────────────────
     /// Bind a media file to the source viewer. Opens a persistent
@@ -4972,4 +4976,13 @@ pub enum ViewerOverlay {
     SafeAreas,
     Grid,
     Checkerboard,
+}
+
+/// The clip a wipe compares against (#899): the picture clip before or
+/// after the one graded, in timeline order, or one named.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum WipeClip {
+    Previous,
+    Next,
+    Clip(ClipId),
 }

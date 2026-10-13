@@ -8323,6 +8323,15 @@ impl TimelinePanel {
                         }
                     })
                 });
+                // Wipe the graded clip against this one (#899).
+                let viewed = crate::graded_thumbs::viewed_clip(state.sequence(), state.selected_clip, state.playhead);
+                if state.show_color_panel
+                    && viewed.is_some_and(|v| v != clip_id)
+                    && ui.button("Wipe Against This Clip").on_hover_text("Split the viewer: this clip graded on the left, the frame shown on the right").clicked()
+                {
+                    cmds.push(AppCommand::WipeAgainstClip { target: Some(klipp_core::WipeClip::Clip(clip_id)) });
+                    ui.close_menu();
+                }
                 ui.separator();
 
                 // ── Export this clip ──
