@@ -687,6 +687,7 @@ fn handle(
             | ControlCommand::RemoveMarker { .. }
         ) => requests::media::respond(ctx, cmd, collect),
         cmd @ (ControlCommand::NewProject { .. }
+            | ControlCommand::ProjectTemplates { .. }
             | ControlCommand::NewSequence { .. }
             | ControlCommand::RenameSequence { .. }
             | ControlCommand::SwitchSequence { .. }

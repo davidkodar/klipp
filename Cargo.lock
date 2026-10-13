@@ -2981,6 +2981,7 @@ dependencies = [
  "klipp-media",
  "klipp-ml",
  "klipp-nodes",
+ "klipp-project",
  "klipp-render",
  "klipp-timeline",
  "klipp-title",

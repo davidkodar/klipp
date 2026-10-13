@@ -1116,7 +1116,9 @@ pub enum ControlCommand {
     /// `height` and `fps` (a rate like 25, 29.97, 30, 59.94; left out,
     /// both follow the first clip placed, as the New Project dialog's
     /// Automatic does). Refused over unsaved changes unless
-    /// `discard_changes`.
+    /// `discard_changes`. With `template` (a project template's name) the
+    /// project starts from it instead: its sequences, tracks, bins, colour
+    /// setup and starter content (#618).
     NewProject {
         name: String,
         location: String,
@@ -1130,6 +1132,14 @@ pub enum ControlCommand {
         sequence_name: Option<String>,
         #[serde(default)]
         discard_changes: bool,
+        #[serde(default)]
+        template: Option<String>,
+    },
+    /// The user's project templates (#618): each one's name, what it holds
+    /// and needs. With `save`, the open project kept as one first.
+    ProjectTemplates {
+        #[serde(default)]
+        save: Option<TemplateSave>,
     },
     /// Add a sequence to the project and open it: `width` x `height` at
     /// `fps` (a vertical 1080x1920 at 30 for a phone delivery).
@@ -1394,6 +1404,21 @@ unsafe fn libc_getuid() -> u32 {
 }
 
 fn default_analyze() -> bool { true }
+
+/// The open project kept as a project template (#618): under `name`, with
+/// the sequences `starter_sequences` names (by name) kept whole as starter
+/// content, their media copied in with `package_media`, else linked.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateSave {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub starter_sequences: Vec<String>,
+    #[serde(default)]
+    pub package_media: bool,
+}
 
 #[cfg(test)]
 mod socket_path_tests {

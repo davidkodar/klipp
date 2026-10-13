@@ -268,6 +268,9 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         // A template is kept outside the project (#618).
         | AppCommand::SaveProjectTemplate { .. }
         | AppCommand::DeleteProjectTemplate { .. }
+        | AppCommand::RenameProjectTemplate { .. }
+        | AppCommand::ExportProjectTemplate { .. }
+        | AppCommand::ImportProjectTemplate { .. }
         // Which clip the viewer frames for its glide (#611).
         | AppCommand::SetFrameGlideMode(..) => false,
         // Write the picture, the project or the history, start a step of

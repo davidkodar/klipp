@@ -10,6 +10,8 @@ autotests = false
 [dependencies]
 klipp-core = { workspace = true }
 klipp-graph-lift = { workspace = true }
+# A template's starter content names the plug-ins its clips run (#618).
+klipp-graph-format = { workspace = true }
 klipp-effects = { workspace = true }
 klipp-nodes = { workspace = true }
 klipp-timeline = { workspace = true }
@@ -26,7 +28,6 @@ zip = { version = "2", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
-klipp-graph-format = { workspace = true }
 # step_f_saves builds its clips with TestClip.
 klipp-timeline = { workspace = true, features = ["test-clip"] }
 

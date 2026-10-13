@@ -1132,9 +1132,16 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_remove_marker" => json!({ "method": "remove_marker", "marker_id": arg_str(args, "marker_id")? }),
+        "klipp_project_templates" => {
+            let mut v = json!({ "method": "project_templates" });
+            if let Some(save) = args.get("save") {
+                v["save"] = save.clone();
+            }
+            v
+        }
         "klipp_new_project" => {
             let mut v = json!({ "method": "new_project", "name": arg_str(args, "name")?, "location": arg_str(args, "location")? });
-            for key in ["width", "height", "fps", "sequence_name", "discard_changes"] {
+            for key in ["width", "height", "fps", "sequence_name", "discard_changes", "template"] {
                 if let Some(x) = args.get(key) {
                     v[key] = x.clone();
                 }
@@ -2125,8 +2132,18 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "height": { "type": "integer" },
                  "fps": { "type": "number", "description": "25, 29.97, 30, 59.94 …" },
                  "sequence_name": { "type": "string" },
-                 "discard_changes": { "type": "boolean" }
+                 "discard_changes": { "type": "boolean" },
+                 "template": { "type": "string", "description": "a project template's name (klipp_project_templates)" }
              }), vec!["name", "location"]),
+        tool("klipp_project_templates",
+             "The user's project templates: what each holds and needs. With save, keep the open project as one first. Details: klipp_guide topic project_templates.",
+             json!({
+                 "save": { "type": "object", "properties": {
+                     "name": { "type": "string" }, "description": { "type": "string" },
+                     "starter_sequences": { "type": "array", "items": { "type": "string" } },
+                     "package_media": { "type": "boolean" }
+                 }, "required": ["name"] }
+             }), vec![]),
         tool("klipp_new_sequence",
              "Add a sequence to the project and open it, at a picture size and rate: a vertical \
               1080x1920 at 30 for a phone cut beside the 16:9 master, a 1080x1080 square. \
@@ -2475,6 +2492,18 @@ mod wait_tests {
         assert!(text.contains("klipp_operation_status") && text.contains("write-42"), "{text}");
         assert!(!text.contains("Applied as one undo step"), "{text}");
         assert!(!text.contains("look at the cut"), "a queued write must not advance the agent: {text}");
+    }
+
+    /// #618: project templates are listed, saved, and started from.
+    #[test]
+    fn project_templates_reach_the_socket() {
+        assert_eq!(tool_to_command("klipp_project_templates", &json!({})).unwrap(), json!({ "method": "project_templates" }));
+        let save = json!({ "name": "Weekly", "starter_sequences": ["Episode"], "package_media": true });
+        assert_eq!(tool_to_command("klipp_project_templates", &json!({ "save": save.clone() })).unwrap(), json!({ "method": "project_templates", "save": save }));
+        let made = tool_to_command("klipp_new_project", &json!({ "name": "Ep 12", "location": "/tmp", "template": "Weekly" })).unwrap();
+        assert_eq!((made["method"].as_str(), made["template"].as_str()), (Some("new_project"), Some("Weekly")));
+        let request: klipp_control::protocol::Request = serde_json::from_value(json!({ "id": 1, "method": "project_templates", "save": { "name": "Weekly", "starter_sequences": ["Episode"] } })).unwrap_or_else(|e| panic!("{e}"));
+        let _ = request;
     }
 
     #[test]

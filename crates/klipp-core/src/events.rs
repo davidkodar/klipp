@@ -1269,10 +1269,19 @@ pub enum AppCommand {
     },
     /// Keep the open project's structure as a project template called
     /// `name` (#618): its sequences' formats and tracks, its bins and
-    /// smart bins and its colour setup, without media or edits.
-    SaveProjectTemplate { name: String, description: String },
+    /// smart bins and its colour setup, without media or edits; and, as
+    /// starter content, the sequences `starter` names kept whole, their
+    /// media copied into the template with `package_media`, else linked.
+    SaveProjectTemplate { name: String, description: String, starter: Vec<crate::SequenceId>, package_media: bool },
     /// Delete the project template kept at `path` (#618).
     DeleteProjectTemplate { path: PathBuf },
+    /// Rename the project template kept at `path` (#618).
+    RenameProjectTemplate { path: PathBuf, name: String },
+    /// Write the project template kept at `path` as one zip at `to`, for
+    /// another machine (#618).
+    ExportProjectTemplate { path: PathBuf, to: PathBuf },
+    /// Add the project template in the zip at `from` to the user's (#618).
+    ImportProjectTemplate { from: PathBuf },
     RemoveRecentProject { path: PathBuf },
     DeleteProject { path: PathBuf },
     RenameProjectOnDisk { old_path: PathBuf, new_name: String },

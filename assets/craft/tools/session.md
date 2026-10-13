@@ -28,7 +28,11 @@ Read live render and analysis jobs in one shape, including phase, progress, resu
 
 ## klipp_new_project
 
-Start an empty project: name, and location an existing folder (the project is <location>/<name>.klipp, saved at once). width, height and fps set its first sequence; left out, both follow the first clip placed. Refused when the open project has unsaved changes unless discard_changes is true: klipp_save_project first.
+Start an empty project: name, and location an existing folder (the project is <location>/<name>.klipp, saved at once). width, height and fps set its first sequence; left out, both follow the first clip placed. With template, a project template's name (klipp_project_templates), it starts from that template instead: its sequences, tracks, bins, colour setup and starter content. Refused when the open project has unsaved changes unless discard_changes is true: klipp_save_project first.
+
+## klipp_project_templates
+
+List the user's project templates: each one's name, description, what it holds (sequences, tracks, bins, colour), the sequences it starts with, and what it needs (media copied in or linked, missing ones marked; its LUT, fonts and plug-ins). With save {name, description?, starter_sequences?, package_media?}, keep the open project as a template first: its structure, and the sequences starter_sequences names kept whole, clips and all, their media copied into the template with package_media, else linked. A name already there is updated. Start a project from one with klipp_new_project's template.
 
 ## klipp_operation_status
 
