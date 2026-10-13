@@ -1208,6 +1208,15 @@ impl Preferences {
     pub fn enrich_recent_projects(&mut self) -> bool {
         let mut changed = false;
         for rp in &mut self.general.recent_projects {
+            // A project goes by its file's name, as Files and Open show
+            // it. Its sequence's name was put here once and read as the
+            // project's ("Main Sequence" for a project called Two Shores).
+            if let Some(stem) = rp.path.file_stem().map(|s| s.to_string_lossy().into_owned()).filter(|s| !s.is_empty()) {
+                if rp.name != stem {
+                    rp.name = stem;
+                    changed = true;
+                }
+            }
             if rp.total_size_bytes.is_some()
                 && rp.duration_secs.is_some()
                 && rp.fps.is_some()
@@ -1280,14 +1289,6 @@ impl Preferences {
                         }
                         if rp.track_count.is_none() {
                             rp.track_count = Some(seq.tracks.len() as u32);
-                            changed = true;
-                        }
-                        if rp.name.is_empty() || rp.name == rp.path.file_stem()
-                            .map(|s| s.to_string_lossy().to_string())
-                            .unwrap_or_default()
-                        {
-                            // Use sequence name if project name is just the directory stem
-                            rp.name = seq.name.clone();
                             changed = true;
                         }
                     }
@@ -2083,6 +2084,18 @@ fn default_media_list_columns() -> Vec<klipp_media::Field> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1854: a recent project goes by its file's name, not a name
+    /// stored in it, even when its folder is gone.
+    #[test]
+    fn a_recent_project_is_named_by_its_file() {
+        let mut prefs = Preferences::default();
+        let mut rp = RecentProject::from_path(PathBuf::from("/nowhere/Two Shores.klipp"));
+        rp.name = "Main Sequence".into();
+        prefs.general.recent_projects = vec![rp];
+        assert!(prefs.enrich_recent_projects());
+        assert_eq!(prefs.general.recent_projects[0].name, "Two Shores");
+    }
 
     /// #1847: saving a pinned project puts it first in time order and
     /// keeps its pin.

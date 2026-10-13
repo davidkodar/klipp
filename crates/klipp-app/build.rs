@@ -29,6 +29,11 @@ fn main() {
     println!("cargo:rustc-env=KLIPP_BUILD_NUMBER={number}");
     println!("cargo:rustc-env=KLIPP_GIT_DIRTY={dirty}");
     println!("cargo:rustc-env=KLIPP_BUILD_PROFILE={}", std::env::var("PROFILE").unwrap_or_default());
+    // What's New: the last 30 commit subjects, newest first, one a line.
+    let changes = git(&["log", "-30", "--no-merges", "--format=%s"]).unwrap_or_default();
+    if let Ok(out) = std::env::var("OUT_DIR") {
+        let _ = std::fs::write(Path::new(&out).join("changes.txt"), changes);
+    }
 
     // Again when HEAD moves, the branch advances, or a source changes.
     for name in ["HEAD", "packed-refs"] {

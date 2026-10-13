@@ -50,6 +50,7 @@ impl KlippApp {
                         .cloned()
                         .collect();
                     let folder = crate::project_paths::projects_folder(self.prefs.general.default_project_dir.as_ref());
+                    self.launch_screen.templates_dir = Some(self.project_templates_dir());
                     let panel_cmds = self.launch_screen.show(ctx, ui, &recent, folder.as_deref(), &self.theme);
                     all_cmds.extend(panel_cmds);
                 });

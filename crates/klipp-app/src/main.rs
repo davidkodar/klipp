@@ -118,6 +118,7 @@ fn main() -> Result<()> {
         env!("KLIPP_GIT_DIRTY") == "true",
         env!("KLIPP_BUILD_PROFILE"),
     ));
+    klipp_core::build_info::set_changes(include_str!(concat!(env!("OUT_DIR"), "/changes.txt")));
 
     // The command line, before any of the start-up work: `--version` and
     // `--help` answer and exit, paths are opened once the app is up.

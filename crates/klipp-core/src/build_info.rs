@@ -60,6 +60,20 @@ fn modified_secs(path: &Path) -> Option<u64> {
     modified.duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs())
 }
 
+static CHANGES: OnceLock<&'static str> = OnceLock::new();
+
+/// Record the changes in this build: commit subjects, newest first, one a
+/// line, as the build script wrote them. The first call wins.
+pub fn set_changes(subjects: &'static str) {
+    let _ = CHANGES.set(subjects);
+}
+
+/// The changes in this build, newest first: empty where the binary
+/// recorded none.
+pub fn changes() -> Vec<&'static str> {
+    CHANGES.get().map(|s| s.lines().map(str::trim).filter(|l| !l.is_empty()).collect()).unwrap_or_default()
+}
+
 /// Record this process's build. The first call wins.
 pub fn set(info: BuildInfo) {
     let _ = BUILD.set(info);
@@ -112,5 +126,13 @@ mod tests {
         let build = BuildInfo { version: "0.1.0", number: 2711, commit: "36466b08", dirty: true, profile: "release", exe: None, built_at: None };
         assert_eq!(build.label(), "0.1.0 36466b08-dirty release");
         assert!(!build.newer_build_on_disk(), "no executable, nothing newer");
+    }
+
+    /// What's New reads the subjects the build script wrote, a line each,
+    /// blank lines dropped.
+    #[test]
+    fn the_changes_are_the_recorded_subjects() {
+        set_changes("Cards fit their content\n\n  Posters in the sidebar \n");
+        assert_eq!(changes(), ["Cards fit their content", "Posters in the sidebar"]);
     }
 }
