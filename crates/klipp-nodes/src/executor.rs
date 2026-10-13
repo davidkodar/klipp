@@ -981,6 +981,17 @@ impl GraphExecutor {
         self.side_pictures = pictures;
     }
 
+    /// No side pictures, for the clip whose run is next: each producer
+    /// then puts its own ([`Self::put_side_picture`]).
+    pub fn clear_side_pictures(&mut self) {
+        self.side_pictures = Default::default();
+    }
+
+    /// `picture` under `key`, beside the run's others.
+    pub fn put_side_picture(&mut self, key: crate::side_picture::SideKey, picture: Result<std::sync::Arc<Vec<f32>>, crate::side_picture::SideMissing>) {
+        std::sync::Arc::make_mut(&mut self.side_pictures).insert(key, picture);
+    }
+
     /// The pictures [`Self::set_side_pictures`] set.
     pub fn side_pictures(&self) -> crate::side_picture::SidePictures {
         std::sync::Arc::clone(&self.side_pictures)
@@ -4577,6 +4588,7 @@ impl GraphExecutor {
             Ok(p) => (crate::DeclineOutcome::NeighbourMissing, "its picture came at another size", format!("{} values for {}", p.len(), input.len())),
             Err(SideMissing::File(item)) => (crate::DeclineOutcome::FileMissing, "its media file is missing", item),
             Err(SideMissing::Unavailable) => (crate::DeclineOutcome::NeighbourMissing, "its picture has no frame here", format!("{key:?}")),
+            Err(SideMissing::Unsupported(why)) => (crate::DeclineOutcome::Unsupported, "its picture can't be made here", why),
         };
         self.decline(node_id, NodeKind::SidePicture, outcome, name, reason, why);
         vec![0.0; input.len()]

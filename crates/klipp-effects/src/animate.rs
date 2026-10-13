@@ -291,6 +291,7 @@ impl BuiltinEffect {
             | E::ColourSpaceTransform { .. }
             // Its offset is a time; keyed, it would be a speed curve.
             | E::MediaSource { .. }
+            | E::ClipBelow {}
             | E::Frei0r { .. } => {}
         }
     }

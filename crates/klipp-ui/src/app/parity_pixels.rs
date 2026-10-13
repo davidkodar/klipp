@@ -198,6 +198,17 @@ fn sequence(clip: &Clip, (width, height): (u32, u32)) -> Sequence {
     let mut track = Track::new("V1", TrackKind::Video);
     track.clips = vec![clip.clone()];
     seq.tracks = vec![track];
+    // A clip that reads what is below it (#1746) is drawn over a track of
+    // the same source a second on: a picture of its own to read.
+    if klipp_compose::resolve::reads_below(clip) {
+        let mut below = Clip { kind: klipp_timeline::ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(clip.timeline_in, clip.timeline_out) };
+        let second = klipp_core::RationalTime::from_secs_f64(1.0, clip.timeline_in.rate.max(1));
+        below.source_in = clip.source_in + second;
+        below.source_out = clip.source_out + second;
+        let mut track = Track::new("V0", TrackKind::Video);
+        track.clips = vec![below];
+        seq.tracks.push(track);
+    }
     seq
 }
 

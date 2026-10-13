@@ -31,6 +31,30 @@ pub fn with_corners(c: [[f32; 2]; 4]) -> BuiltinEffect {
     BuiltinEffect::CornerPin { tl: c[0], tr: c[1], br: c[2], bl: c[3] }
 }
 
+/// The pin that shows the frame as a picture placed by `transform` sees
+/// it (#1746): each corner of the frame taken back through the placement
+/// by the Transform kernel's own arithmetic, so a pinned frame put through
+/// `transform` lands where it was. `None` for a placement with a 3D tilt
+/// (no affine way back) or for another effect; the pin is still for a
+/// placement that moves nothing.
+pub fn seen_through(transform: &BuiltinEffect, width: u32, height: u32) -> Option<BuiltinEffect> {
+    let BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, rotation_x, rotation_y, .. } = *transform else { return None };
+    if rotation_x.abs() >= f32::EPSILON || rotation_y.abs() >= f32::EPSILON {
+        return None;
+    }
+    let (wf, hf) = (width as f32, height as f32);
+    let (sin_r, cos_r) = rotation.to_radians().sin_cos();
+    let inv_sx = if scale_x.abs() > f32::EPSILON { 1.0 / scale_x } else { 1.0 };
+    let inv_sy = if scale_y.abs() > f32::EPSILON { 1.0 / scale_y } else { 1.0 };
+    let (ax, ay) = (anchor_x * wf, anchor_y * hf);
+    let back = |x: f32, y: f32| {
+        let (dx, dy) = (x - ax - position_x, y - ay - position_y);
+        let (rx, ry) = (dx * cos_r + dy * sin_r, -dx * sin_r + dy * cos_r);
+        [(rx * inv_sx + ax) / wf, (ry * inv_sy + ay) / hf]
+    };
+    Some(with_corners([back(0.0, 0.0), back(wf, 0.0), back(wf, hf), back(0.0, hf)]))
+}
+
 /// Whether the corners are the picture's own, to within a hair.
 pub fn is_still(corners: &[[f32; 2]; 4]) -> bool {
     corners.iter().zip(&STILL).all(|(c, s)| (c[0] - s[0]).abs() < 1e-6 && (c[1] - s[1]).abs() < 1e-6)
@@ -120,5 +144,34 @@ mod tests {
     fn collapsed_corners_make_no_map() {
         assert!(inverse_map(100, 100, &[[0.2, 0.2]; 4]).is_none());
         assert!(inverse_map(100, 100, &[[0.0, 0.0], [0.5, 0.0], [1.0, 0.0], [0.0, 1.0]]).is_none());
+    }
+
+    /// A frame pinned as a placed picture sees it, then placed, lands on
+    /// itself where the picture covers it: what is below a clip lines up
+    /// with what is under it on screen (#1746).
+    #[test]
+    fn a_frame_seen_through_a_placement_lands_on_itself_when_placed() {
+        let (w, h) = (96u32, 64u32);
+        let frame: Vec<f32> = (0..w * h).flat_map(|i| {
+            let (x, y) = ((i % w) as f32 / w as f32, (i / w) as f32 / h as f32);
+            [0.2 + 0.6 * x, 0.1 + 0.7 * y, 0.5, 1.0]
+        }).collect();
+        let place = BuiltinEffect::Transform { position_x: 9.0, position_y: -5.0, scale_x: 0.6, scale_y: 0.45, rotation: 20.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+        let pin = seen_through(&place, w, h).unwrap();
+        let back = crate::apply_effects(&[pin, place], frame.clone(), w, h);
+        let mut worst = 0.0f32;
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                // Where the placed picture is whole: away from its edges.
+                if back[i + 3] < 0.999 {
+                    continue;
+                }
+                worst = worst.max((0..3).map(|c| (back[i + c] - frame[i + c]).abs()).fold(0.0, f32::max));
+            }
+        }
+        assert!(worst < 0.02, "worst {worst}");
+        let tilted = BuiltinEffect::Transform { position_x: 9.0, position_y: -5.0, scale_x: 0.6, scale_y: 0.45, rotation: 20.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 10.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+        assert!(seen_through(&tilted, w, h).is_none(), "a 3D tilt has no affine way back");
     }
 }

@@ -963,12 +963,21 @@ pub enum BuiltinEffect {
         media: String,
         offset: f32,
     },
+
+    /// What is below the clip (#1746): everything the tracks under its
+    /// track composite to at its time, before the timeline's grade, seen
+    /// through the clip's placement so it lines up with what is under the
+    /// clip on screen. Beside a picture's chain, the foreground a Merge
+    /// lays over it. The executor draws it ([`draws_a_side_picture`]);
+    /// these kernels pass the picture they are given.
+    ClipBelow {},
 }
 
-/// Whether `effect` draws another media item's picture: the executor reads
-/// it from its frame context, never from this crate's kernels.
-pub fn reads_media(effect: &BuiltinEffect) -> bool {
-    matches!(effect, BuiltinEffect::MediaSource { .. })
+/// Whether `effect` draws a picture the render hands its run (another
+/// media item's, or what is below the clip): the executor's side
+/// picture node draws it, never this crate's kernels.
+pub fn draws_a_side_picture(effect: &BuiltinEffect) -> bool {
+    matches!(effect, BuiltinEffect::MediaSource { .. } | BuiltinEffect::ClipBelow {})
 }
 
 impl BuiltinEffect {
@@ -1176,10 +1185,10 @@ pub fn has_frei0r(effects: &[BuiltinEffect]) -> bool {
 }
 
 /// Whether the list holds an effect that only a node draws: a frei0r
-/// plug-in, or a media source (#1746), whose frame the render reads for
-/// the executor. These kernels would pass the picture instead.
+/// plug-in, or a side picture (#1746), which the render reads for the
+/// executor. These kernels would pass the picture instead.
 pub fn runs_only_as_a_node(effects: &[BuiltinEffect]) -> bool {
-    has_frei0r(effects) || effects.iter().any(reads_media)
+    has_frei0r(effects) || effects.iter().any(draws_a_side_picture)
 }
 
 impl BuiltinEffect {

@@ -484,6 +484,12 @@ pub fn media_mixed_after_display(clip: &Clip) -> Vec<(NodeId, String)> {
         .collect()
 }
 
+/// Whether `clip`'s picture holds an enabled Clip Below node (#1746): the
+/// clip is drawn over what is below it.
+pub fn reads_below(clip: &Clip) -> bool {
+    clip.picture_v2().is_ok_and(|p| p.picture.graph.nodes.iter().any(|n| n.enabled && klipp_graph_lift::effect_params::tag(n) == Some("clip_below")))
+}
+
 /// A media source's item id as the pool keys it.
 pub fn media_id(media: &str) -> Option<klipp_core::MediaId> {
     media.parse().ok().map(klipp_core::MediaId)
@@ -499,8 +505,9 @@ fn side_node(n: &Node, t: f64, ctx: &klipp_core::EvalContext) -> Result<klipp_no
     }
     let mut effect = klipp_graph_lift::effect_params::effect_of(n)?;
     EffectNodeAnim::of(n)?.animate(&mut effect, t, ctx);
-    // A media source's frame is handed to the run (#1746).
-    let kind = if klipp_effects::reads_media(&effect) { klipp_nodes::NodeKind::SidePicture } else { klipp_nodes::NodeKind::Effect };
+    // A media source's frame, or what is below, is handed to the run
+    // (#1746).
+    let kind = if klipp_effects::draws_a_side_picture(&effect) { klipp_nodes::NodeKind::SidePicture } else { klipp_nodes::NodeKind::Effect };
     Ok(klipp_nodes::Node {
         id: n.id,
         kind,

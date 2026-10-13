@@ -8,6 +8,8 @@
 // per file here.
 #![allow(clippy::duplicate_mod)]
 
+#[path = "../clip_below_render.rs"]
+mod clip_below_render;
 #[path = "../colour_effects_render.rs"]
 mod colour_effects_render;
 #[path = "../corner_pin_keys.rs"]

@@ -3,13 +3,15 @@
 //! [`NodeKind::SidePicture`](crate::NodeKind::SidePicture) node, which
 //! outputs the one its key names.
 //!
-//! A media source's frame is one. Another picture a plan needs (a key
-//! reading the picture its grade reads, apart from that grade) is a new
-//! [`SideKey`] variant: the renderer puts the picture in the run's map
-//! under it ([`crate::GraphExecutor::set_side_pictures`]) and makes a
-//! `SidePicture` node with that key in `NodeParams::side_picture`. On the
-//! GPU, [`crate::GraphExecutor::upload_side_picture`] puts it in a kept
-//! picture for a node that reads one.
+//! A media source's frame is one, and what is below a clip another.
+//! Another picture a plan needs (a key reading the picture its grade
+//! reads, apart from that grade) is a new [`SideKey`] variant: the
+//! renderer puts the picture in the run's map under it
+//! ([`crate::GraphExecutor::put_side_picture`], after the map is cleared
+//! for the clip) and makes a `SidePicture` node with that key in
+//! `NodeParams::side_picture`. On the GPU,
+//! [`crate::GraphExecutor::upload_side_picture`] puts it in a kept picture
+//! for a node that reads one.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,6 +22,9 @@ pub enum SideKey {
     /// A media item's frame at the clip's time plus an offset: the item's
     /// pool id and the offset's bits, as a media source holds them.
     Media { item: String, offset_bits: u32 },
+    /// What the tracks below the clip's composite to, seen through the
+    /// clip's placement.
+    Below,
 }
 
 impl SideKey {
@@ -27,6 +32,7 @@ impl SideKey {
     pub fn of(effect: &klipp_effects::BuiltinEffect) -> Option<Self> {
         match effect {
             klipp_effects::BuiltinEffect::MediaSource { media, offset } => Some(Self::Media { item: media.clone(), offset_bits: offset.to_bits() }),
+            klipp_effects::BuiltinEffect::ClipBelow {} => Some(Self::Below),
             _ => None,
         }
     }
@@ -35,6 +41,7 @@ impl SideKey {
     pub fn name(&self) -> String {
         match self {
             Self::Media { .. } => crate::decline::effect_name(&klipp_effects::BuiltinEffect::MediaSource { media: String::new(), offset: 0.0 }),
+            Self::Below => crate::decline::effect_name(&klipp_effects::BuiltinEffect::ClipBelow {}),
         }
     }
 }
@@ -48,6 +55,9 @@ pub enum SideMissing {
     /// No picture there: past a media's end, a decode that failed, or a
     /// render that reads none.
     Unavailable,
+    /// The render can't make it, said why: what is below a clip placed
+    /// with a 3D tilt or a pin.
+    Unsupported(String),
 }
 
 /// A run's side pictures by key: linear RGBA f32 in the working space at
@@ -109,6 +119,10 @@ mod tests {
     #[test]
     fn a_side_picture_declares_no_domain() {
         assert_eq!(crate::domains::kind_step(NodeKind::SidePicture, &NodeParams::default()), crate::domains::DomainStep::Undeclared);
+        for effect in [media("a"), klipp_effects::BuiltinEffect::ClipBelow {}] {
+            let p = NodeParams { effects: vec![effect], ..Default::default() };
+            assert_eq!(crate::domains::kind_step(NodeKind::SidePicture, &p), crate::domains::DomainStep::Undeclared);
+        }
     }
 
     #[test]
