@@ -74,6 +74,10 @@ pub struct Encoder {
     captions: Option<crate::a53::Captions>,
     /// HDR10+ dynamic metadata, per shot (#468), when the export carries it.
     hdr10plus: Option<crate::hdr10plus::Hdr10Plus>,
+    /// The colour tags every picture is sent with, limited range: an
+    /// encoder that writes each frame's own (ProRes, in its frame header)
+    /// writes these. `None` for a GIF, which is RGB.
+    frame_tags: Option<ColorTags>,
     /// Linear picture → display-encoded RGB, per pixel: the viewer's
     /// transform, an ACES output transform, or an HDR delivery's PQ/HLG
     /// encode. Fixed at `open()` from the settings and the project's
@@ -244,6 +248,7 @@ fn software_video_encoder(codec: &ExportVideoCodec) -> &'static str {
 }
 
 /// The colour tags an export carries, in FFmpeg's and x265's terms.
+#[derive(Clone, Copy)]
 struct ColorTags {
     primaries: ffmpeg_next::ffi::AVColorPrimaries,
     transfer: ffmpeg_next::ffi::AVColorTransferCharacteristic,
@@ -762,11 +767,15 @@ impl Encoder {
         // When no override is set, input = output = snapshot dims (also format conversion only).
         let scaler_in_w = out_w;
         let scaler_in_h = out_h;
+        // A GIF's frames go through its palette filter graph, never this
+        // scaler, and swscale makes no RGBA → PAL8 scaler: asked for one,
+        // every GIF export failed at open (#1142). It gets a copy instead.
+        let scaler_out = if settings.video_codec == ExportVideoCodec::Gif { ffmpeg_next::format::Pixel::RGBA } else { pix_fmt };
         let mut rgba_to_yuv = ffmpeg_next::software::scaling::Context::get(
             ffmpeg_next::format::Pixel::RGBA,
             scaler_in_w,
             scaler_in_h,
-            pix_fmt,
+            scaler_out,
             out_w,
             out_h,
             ffmpeg_next::software::scaling::Flags::LANCZOS,
@@ -801,7 +810,9 @@ impl Encoder {
 
         // Skip audio encoder for "Copy" codec (doesn't make sense for in-process encode)
         let audio_codec_name = settings.audio_codec.ffmpeg_codec();
-        let skip_audio = matches!(settings.audio_codec, klipp_core::ExportAudioCodec::Copy);
+        // A GIF has no sound: its muxer refuses an audio stream, whatever
+        // audio codec the settings carry (#1142).
+        let skip_audio = matches!(settings.audio_codec, klipp_core::ExportAudioCodec::Copy) || settings.format == klipp_core::ExportFormat::Gif;
         let found_audio_codec = if skip_audio {
             None
         } else {
@@ -1099,6 +1110,7 @@ impl Encoder {
             hdr_peak_nits: settings.hdr_peak_nits(),
             captions: captions_608(settings, snapshot),
             hdr10plus: hdr10plus(settings, snapshot),
+            frame_tags: (settings.video_codec != ExportVideoCodec::Gif).then(|| color_tags(settings.delivery(), settings.odt)),
             display: export_display(settings, snapshot.working_colorspace),
             gif_filter: if matches!(settings.format, ExportFormat::Gif) {
                 let fps_den = (snapshot.fps.max(1.0).round() as u32).max(1);
@@ -1326,13 +1338,23 @@ impl Encoder {
         }
         frame.set_pts(Some(self.video_pts));
         self.video_pts += 1;
-        self.send_video_frame(&frame)?;
+        self.send_video_frame(&mut frame)?;
         self.drain_video_packets()
     }
 
     /// Send one picture to the video encoder, by way of a VAAPI surface
     /// when the encoder takes those.
-    fn send_video_frame(&mut self, frame: &ffmpeg_next::frame::Video) -> Result<(), RenderError> {
+    fn send_video_frame(&mut self, frame: &mut ffmpeg_next::frame::Video) -> Result<(), RenderError> {
+        // Its colour as the stream is tagged. ProRes writes each frame's
+        // own into its frame header, and a frame without them told every
+        // decoder "unspecified", which they read as BT.601: saturated
+        // colours shifted in every ProRes export (#1142).
+        if let Some(t) = self.frame_tags {
+            frame.set_color_primaries(t.primaries.into());
+            frame.set_color_transfer_characteristic(t.transfer.into());
+            frame.set_color_space(t.matrix.into());
+            frame.set_color_range(ffmpeg_next::color::Range::MPEG);
+        }
         // Its light for HDR10+, from every fourth pixel of the planes the
         // encoder is given (#468).
         if let Some(h) = self.hdr10plus.as_mut() {
@@ -1466,7 +1488,7 @@ impl Encoder {
 
         frame.set_pts(Some(self.video_pts));
         self.video_pts += 1;
-        self.send_video_frame(&frame)?;
+        self.send_video_frame(&mut frame)?;
         self.drain_video_packets()?;
         Ok(Some(light))
     }
@@ -1517,7 +1539,7 @@ impl Encoder {
             .map_err(|e| RenderError::Encode(format!("RGBA64→YUV scale: {e}")))?;
         yuv.set_pts(Some(self.video_pts));
         self.video_pts += 1;
-        self.send_video_frame(&yuv)?;
+        self.send_video_frame(&mut yuv)?;
         self.drain_video_packets()?;
         Ok(())
     }
@@ -1572,7 +1594,7 @@ impl Encoder {
         self.video_pts += 1;
 
         // Send to encoder
-        self.send_video_frame(&yuv_frame)?;
+        self.send_video_frame(&mut yuv_frame)?;
 
         self.drain_video_packets()?;
         Ok(())

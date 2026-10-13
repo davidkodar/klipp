@@ -24,6 +24,10 @@ mod export_odt_round_trip;
 mod export_refuses_a_missing_analysis;
 #[path = "../frame_blend_reads_the_stream.rs"]
 mod frame_blend_reads_the_stream;
+#[path = "../frame_colour_tags.rs"]
+mod frame_colour_tags;
+#[path = "../gif_export.rs"]
+mod gif_export;
 #[path = "../graded_still.rs"]
 mod graded_still;
 #[path = "../hdr10plus_export.rs"]
