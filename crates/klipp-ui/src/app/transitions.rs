@@ -27,6 +27,7 @@ impl KlippApp {
                     kind: spec.string_key.to_string(),
                     secs,
                     remove: false,
+                    pieces: None,
                 };
                 let fps = seq.fps.as_f64();
                 let resolved = klipp_document::ops::resolve(seq, &self.state.media_pool, std::slice::from_ref(&op)).map(|plan| (plan, *duration_frames));
@@ -39,6 +40,7 @@ impl KlippApp {
                             kind: spec.string_key.to_string(),
                             secs: frames as f64 / fps,
                             remove: false,
+                            pieces: None,
                         };
                         klipp_document::ops::resolve(seq, &self.state.media_pool, std::slice::from_ref(&op)).ok().map(|plan| (plan, frames))
                     };

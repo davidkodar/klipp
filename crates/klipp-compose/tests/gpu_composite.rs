@@ -708,6 +708,45 @@ fn a_transition_between_two_clips_matches() {
     assert_match("cross dissolve", &seq, &mut src);
 }
 
+/// #985: the piece transitions, at their defaults, are the same in the
+/// viewer (the GPU stack) and the export (the CPU).
+#[test]
+fn the_piece_transitions_match() {
+    for kind in [klipp_core::TransitionKind::SlideStrips, klipp_core::TransitionKind::SlidePanels, klipp_core::TransitionKind::PartHalves] {
+        let mut seq = Sequence::new_default();
+        seq.resolution = klipp_core::Resolution { width: W, height: H };
+        let mut v = Track::new("V1", TrackKind::Video);
+        let a = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 2.0);
+        let b = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 2.0, 4.0);
+        let mut src = Flat::default();
+        src.0.insert(a.id, picture(0.0));
+        src.0.insert(b.id, picture(0.5));
+        v.transitions.push(klipp_timeline::Transition {
+            id: klipp_core::TransitionId::new(),
+            clip_a_id: a.id,
+            clip_b_id: b.id,
+            kind,
+            duration: tc(2.0),
+            alignment: Default::default(),
+            user_params: klipp_core::spec_for_kind(kind).default_params,
+        });
+        v.clips = vec![a, b];
+        seq.tracks = vec![v];
+        // Part way in and past the cut: the transition runs from 1 s to 3 s.
+        for t in [1.7, 2.3] {
+            let mut r = renderer();
+            let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut src, RenderOptions::default()) else {
+                eprintln!("skipping {kind:?}: the GPU stack declined (no usable GPU?)");
+                return;
+            };
+            let cpu = display(&r.render(&seq, tc(t), W, H, &mut src, RenderOptions::default()));
+            assert!(cpu != display(&picture(0.0)) && cpu != display(&picture(0.5)), "{kind:?} at {t} s: under way");
+            let d = worst(&cpu, &gpu);
+            assert!(d <= 1, "{kind:?} at {t} s: GPU stack differs from the CPU renderer by {d} levels");
+        }
+    }
+}
+
 /// #1653: a transition's colour is picked in BT.709, as a title's is, so
 /// in an ACEScg or a BT.2020 project a dip's held colour is the colour
 /// picked, put into the working space, not the same numbers read as the
