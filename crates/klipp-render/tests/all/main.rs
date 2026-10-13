@@ -26,6 +26,8 @@ mod export_refuses_a_missing_analysis;
 mod frame_blend_reads_the_stream;
 #[path = "../graded_still.rs"]
 mod graded_still;
+#[path = "../hdr10plus_export.rs"]
+mod hdr10plus_export;
 #[path = "../hdr_export.rs"]
 mod hdr_export;
 #[path = "../keyer_op_matches_the_app.rs"]

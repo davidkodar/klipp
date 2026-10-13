@@ -338,6 +338,11 @@ pub struct ExportSettings {
     /// H.264 and H.265 only.
     #[serde(default)]
     pub captions_608: bool,
+    /// HDR10+ dynamic metadata (SMPTE ST 2094-40) per shot in an H.265 PQ
+    /// delivery (#468), so a dimmer display tone-maps each shot by its
+    /// own light.
+    #[serde(default)]
+    pub hdr10plus: bool,
     /// Requested encoder bit depth. `0` = codec default (8-bit); `10` enables
     /// 10-bit encode for H.264/H.265. Other codecs ignore this (ProRes is
     /// always 10-bit, DNxHD is 8-bit). #65 baseline.
@@ -408,6 +413,7 @@ impl Default for ExportSettings {
             true_peak_dbtp: None,
             embed_chapters: false,
             captions_608: false,
+            hdr10plus: false,
             bit_depth: 0,
             hdr_mode: HdrMode::default(),
             tone_map_op: ToneMapOp::default(),

@@ -51,6 +51,7 @@ mod sws_colour;
 mod vaapi;
 
 pub mod a53;
+pub mod hdr10plus;
 pub mod audio_mixdown;
 pub mod encoder;
 pub mod export_frames;
