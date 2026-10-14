@@ -92,7 +92,7 @@ fn denoise() -> Node {
     node(NodeKind::Effect, NodeParams { effects: vec![E::TemporalDenoise { strength: 1.0, threshold: 0.5 }], ..Default::default() })
 }
 
-fn ofx(plugin: &str) -> Node {
+fn ofx_node(plugin: &str) -> Node {
     node(NodeKind::Ofx, NodeParams { ofx: Some(OfxNodeParams { plugin: plugin.into(), values: HashMap::new(), filter: true }), ..Default::default() })
 }
 
@@ -216,7 +216,7 @@ fn a_drag_below_a_denoise_runs_it_once() {
 
 #[test]
 fn a_drag_below_a_plugin_runs_it_once() {
-    drag_below(|| ofx("swap"), |_, host| *host.renders.lock().unwrap() as u64);
+    drag_below(|| ofx_node("swap"), |_, host| *host.renders.lock().unwrap() as u64);
 }
 
 /// Each step after a change above the node, or to its source or time,
@@ -310,7 +310,7 @@ fn what_is_not_held() {
     run(&mut ex, &g, ClipId::new(), Some(source(clip)), &mut media, &host, None);
     assert_eq!(ex.held_counts(), Default::default(), "a run of another clip ignores the source");
 
-    let (g, _) = below(ofx("sequential"));
+    let (g, _) = below(ofx_node("sequential"));
     let mut ex = GraphExecutor::new_cpu_only();
     run(&mut ex, &g, clip, Some(source(clip)), &mut media, &host, None);
     run(&mut ex, &g, clip, Some(source(clip)), &mut media, &host, None);
@@ -337,7 +337,7 @@ fn a_denoise_and_a_plugin_both_stay() {
     let mut media = Media { end: 10.0 };
     let ex_node = exposure(0.5);
     let stops = ex_node.id;
-    let mut g = chain(vec![node(NodeKind::Source, NodeParams::default()), denoise(), ofx("swap"), ex_node, node(NodeKind::Output, NodeParams::default())]);
+    let mut g = chain(vec![node(NodeKind::Source, NodeParams::default()), denoise(), ofx_node("swap"), ex_node, node(NodeKind::Output, NodeParams::default())]);
     let mut ex = GraphExecutor::new_cpu_only();
     // A budget smaller than both: the minimum of two keeps them.
     ex.set_held_budget(1);
