@@ -627,8 +627,16 @@ pub enum ControlCommand {
     /// (the focused window), "screen", a monitor's name, or a region
     /// "WxH+X+Y"; `fps` 60. Imported into the pool unless `import` is
     /// false.
+    ///
+    /// With `wait` false it returns at once with a `recording_id`, `secs`
+    /// then the most it records; `action` "status" with that id says how
+    /// it goes (`ready` once the recorder writes), and "stop" ends it,
+    /// imports it and says what was captured (#1903). `codec` and
+    /// `quality` are the capture's (#1904).
     Record {
-        secs: f64,
+        /// How long to record; with `wait` false, the most.
+        #[serde(default)]
+        secs: Option<f64>,
         #[serde(default)]
         target: Option<String>,
         #[serde(default)]
@@ -637,6 +645,23 @@ pub enum ControlCommand {
         path: Option<String>,
         #[serde(default)]
         import: Option<bool>,
+        /// Record the whole length before answering (the default), or
+        /// start and answer with an id.
+        #[serde(default)]
+        wait: Option<bool>,
+        /// "start" (the default), "status" or "stop".
+        #[serde(default)]
+        action: Option<String>,
+        /// The recording a status or stop is about.
+        #[serde(default)]
+        recording_id: Option<String>,
+        /// h264 (the default), hevc, av1, vp9, hevc_10bit or av1_10bit.
+        #[serde(default)]
+        codec: Option<String>,
+        /// medium, high (the default), very_high or ultra
+        /// (gpu-screen-recorder).
+        #[serde(default)]
+        quality: Option<String>,
     },
     /// Skin on the band: measure the faces in a clip's frame, and with
     /// `apply` add a skin secondary that turns their hue onto it,
