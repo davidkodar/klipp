@@ -533,6 +533,15 @@ pub fn color_balance(px: &mut [f32], white_balance: [[f32; 3]; 3], hue: f32, glo
     });
 }
 
+/// `SHADER_HDR_ZONES`: the HDR zones (#240), each pixel through
+/// [`klipp_grade_model::hdr_zones::apply`]. Alpha is kept.
+pub fn hdr_zones(px: &mut [f32], terms: &klipp_grade_model::hdr_zones::Terms) {
+    px.par_chunks_exact_mut(4).for_each(|p| {
+        let out = klipp_grade_model::hdr_zones::apply([p[0], p[1], p[2]], terms);
+        p[..3].copy_from_slice(&out);
+    });
+}
+
 /// The qualifier's HSL window, as `SHADER_QUALIFIER` computes it: a
 /// greyscale matte (R=G=B=matte, alpha kept). Hue values are turns, not
 /// degrees, as the shader takes them.

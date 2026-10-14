@@ -133,6 +133,10 @@ pub struct NodeParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub soft_clip: Option<SoftClipSettings>,
 
+    // HDR zones (#240), added after the freeze: a node of it reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hdr_zones: Option<HdrZonesSettings>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub masks: Option<MaskStack>,
 

@@ -45,6 +45,25 @@ pub fn color_wheel_sized(
     forced_width: Option<f32>,
     keys: Option<crate::widgets::scrubby_param::KeyframeState>,
 ) -> WheelResponse {
+    color_wheel_spanned(ui, state, theme, label, offset, master, wheel_diameter, forced_width, keys, 1.0)
+}
+
+/// Like [`color_wheel_sized`], its master reaching `master_span` either
+/// side of neutral instead of 1: an HDR zone's exposure, in stops (#240).
+#[allow(clippy::too_many_arguments)]
+pub fn color_wheel_spanned(
+    ui: &mut egui::Ui,
+    state: &mut ColorWheelState,
+    theme: &KlippTheme,
+    label: &str,
+    offset: &mut [f32; 2],
+    master: &mut f32,
+    wheel_diameter: f32,
+    forced_width: Option<f32>,
+    keys: Option<crate::widgets::scrubby_param::KeyframeState>,
+    master_span: f32,
+) -> WheelResponse {
+    let span = master_span.max(f32::EPSILON);
     let mut changed = false;
     let mut drag_started = false;
     let mut drag_ended = false;
@@ -395,14 +414,14 @@ pub fn color_wheel_sized(
     if master_resp.dragged() {
         let dx = master_resp.drag_delta().x;
         if dx != 0.0 {
-            let rate = 1.0 / track_w * if fine { 0.1 } else { 1.0 };
-            *master = (*master + dx * rate).clamp(-1.0, 1.0);
+            let rate = span / track_w * if fine { 0.1 } else { 1.0 };
+            *master = (*master + dx * rate).clamp(-span, span);
             changed = true;
         }
     } else if master_resp.clicked() {
         if let Some(pos) = master_resp.interact_pointer_pos() {
             let t = ((pos.x - track_left) / track_w).clamp(0.0, 1.0);
-            *master = t * 2.0 - 1.0; // map 0..1 to -1..1
+            *master = (t * 2.0 - 1.0) * span; // map 0..1 to -span..span
             changed = true;
         }
     }
@@ -412,7 +431,7 @@ pub fn color_wheel_sized(
     }
 
     // Thumb
-    let master_t = (*master + 1.0) / 2.0; // -1..1 to 0..1
+    let master_t = (*master / span + 1.0) / 2.0; // -span..span to 0..1
     let thumb_x = track_left + master_t * track_w;
     painter.circle_filled(egui::pos2(thumb_x, track_y), 4.0, text_accent);
 

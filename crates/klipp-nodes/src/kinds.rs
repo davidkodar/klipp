@@ -43,6 +43,9 @@ pub enum NodeKind {
     HueSatCurves,
     /// Temperature + Tint + Hue rotation + Global Mix.
     ColorBalance,
+    /// HDR zones (#240): exposure, colour and saturation by tonal zone,
+    /// each zone's reach set in stops about mid grey (`HdrZonesSettings`).
+    HdrZones,
 
     // ── Secondary Correction ────────────────────────────────────
     /// HSL qualifier — generates a matte from the input frame (matte only).
@@ -290,6 +293,7 @@ impl NodeKind {
             | NodeKind::WheelSatBri
             | NodeKind::RGBCurves
             | NodeKind::ColorBalance
+            | NodeKind::HdrZones
             | NodeKind::PrimariesMatrix
             | NodeKind::ColorMatch => GradeStage::Balance,
             // Secondary: a key, a window, or a correction gated by one.
@@ -463,6 +467,7 @@ impl NodeKind {
             NodeKind::RGBCurves => "RGB Curves",
             NodeKind::HueSatCurves => "Hue/Sat Curves",
             NodeKind::ColorBalance => "Color Balance",
+            NodeKind::HdrZones => "HDR Zones",
             NodeKind::Qualifier => "Qualifier",
             NodeKind::LumaKey => "Luma Key",
             NodeKind::SoftClip => "Soft Clip",
@@ -557,6 +562,7 @@ pub const ADDABLE_NODE_KINDS: &[(&str, NodeKind)] = &[
     ("RGBCurves", NodeKind::RGBCurves),
     ("HueSatCurves", NodeKind::HueSatCurves),
     ("ColorBalance", NodeKind::ColorBalance),
+    ("HdrZones", NodeKind::HdrZones),
     ("InputTransform", NodeKind::InputTransform),
     ("Qualifier", NodeKind::Qualifier),
     ("LumaKey", NodeKind::LumaKey),

@@ -49,7 +49,7 @@ fn declared_kinds() -> BTreeSet<String> {
 #[test]
 fn every_kind_is_described_or_listed_as_not_yet() {
     let declared = declared_kinds();
-    assert_eq!(declared.len(), 35, "the kind scan found {declared:?}");
+    assert_eq!(declared.len(), 36, "the kind scan found {declared:?}");
     let described: BTreeSet<String> = node_types().map(|t| format!("{:?}", t.kind)).collect();
     let pending: BTreeSet<String> = NOT_YET_DESCRIBED.iter().map(|s| s.to_string()).collect();
 
@@ -134,6 +134,15 @@ fn override_names() -> BTreeSet<String> {
         let name = if indent > 12 { format!("{prefix}{}", &rest[..close]) } else { rest[..close].to_string() };
         names.insert(name);
     }
+    for (i, zone) in klipp_nodes::params::HDR_ZONE_KEYS.iter().enumerate() {
+        for control in ["exposure", "colour_x", "colour_y", "saturation"] {
+            names.insert(format!("hdr_{zone}_{control}"));
+        }
+        if i > 0 {
+            names.insert(format!("hdr_{zone}_boundary"));
+            names.insert(format!("hdr_{zone}_falloff"));
+        }
+    }
     for i in 0..12 {
         names.insert(format!("warper_hue_{i}"));
         names.insert(format!("warper_sat_{i}"));
@@ -170,6 +179,7 @@ fn saved_with_structs() -> serde_json::Map<String, Value> {
         luma_key: Some(Default::default()),
         difference_key: Some(Default::default()),
         soft_clip: Some(Default::default()),
+        hdr_zones: Some(Default::default()),
         grain: Some(Default::default()),
         warper_params: Some(Default::default()),
         color_match: Some(Default::default()),

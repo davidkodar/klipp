@@ -28,9 +28,9 @@ const KNOWN: &[(&str, &str, usize)] = &[
     // The whole-list write the placed kinds fall back to (and reframe's
     // Transform), and the tests that check for it.
     ("klipp-document/src/ops.rs", "SetBuiltinEffects", 3),
-    // The document ops' grade builders (grade, look, qualify, track and
-    // stage grades) and their tests.
-    ("klipp-document/src/ops.rs", "SetNodeGraph", 20),
+    // The document ops' grade builders (grade, look, qualify, zones, track
+    // and stage grades) and their tests.
+    ("klipp-document/src/ops.rs", "SetNodeGraph", 22),
     // A drag left open, closed on the state alone (M3 step 2). The list
     // handlers and their drags go through the picture (M4 step 12c-5).
     ("klipp-ui/src/app/effects.rs", "EditBuiltinEffect", 2),

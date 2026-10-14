@@ -188,6 +188,32 @@ fn grade_ops_written_through_the_fields_are_the_engines() {
     same_both_ways(&with, GraphOp::RemoveNode { path: at(&with, [g, e]) });
 }
 
+/// An HDR Zones node (#240) in a clip's grade is set by its zone keys
+/// through the picture's ops, which read it with the frozen v1 types,
+/// the same both ways. Control: the zones not named keep their defaults.
+#[test]
+fn an_hdr_zones_node_is_set_by_its_zone_keys() {
+    use klipp_timeline::GradeAccess;
+    let mut with = clip();
+    let z = uuid::Uuid::from_u128(0xb2);
+    with.edit_grade(|g| {
+        g.splice_before_output(klipp_nodes::Node { id: z, kind: klipp_nodes::NodeKind::HdrZones, label: "HDR Zones".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: vec![] })
+    });
+    let p = picture(&with);
+    let g = grade_group(&p);
+    let set = |key: &str, v: f32| GraphOp::SetParam { path: at(&with, [g, z]), key: key.into(), value: ParamValue::Float(v) };
+    same_both_ways(&with, set("hdr_highlight_exposure", 1.25));
+    same_both_ways(&with, set("hdr_light_boundary", 0.5));
+    let mut written = with.clone();
+    written.apply_picture_ops(&[set("hdr_highlight_exposure", 1.25), set("hdr_light_boundary", 0.5)]).unwrap();
+    let node = written.grade().nodes.iter().find(|n| n.id == z).expect("the node kept").clone();
+    assert_eq!(node.kind, klipp_nodes::NodeKind::HdrZones);
+    let settings = node.params.hdr_zones.expect("its zones");
+    assert_eq!((settings.exposure[5], settings.boundary[4]), (1.25, 0.5));
+    let untouched = klipp_core::HdrZonesSettings::default();
+    assert_eq!((settings.exposure[4], settings.boundary[5]), (untouched.exposure[4], untouched.boundary[5]), "the other zones kept");
+}
+
 /// A batch is one edit: written whole or not at all, and undone whole.
 #[test]
 fn a_batch_is_one_edit_and_a_refusal_changes_nothing() {

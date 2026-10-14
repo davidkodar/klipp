@@ -155,6 +155,7 @@ const SHADERS: &[(&str, Cover)] = &[
     ("SHADER_QUALIFIER", Test(SECONDARY, "a_secondary_matches_the_cpu_and_stays_on_the_gpu")),
     ("SHADER_LUMA_KEY", Test("klipp-effects/tests/luma_key_gpu_parity.rs", "gpu_matches_cpu_oracle_across_fixtures")),
     ("SHADER_SOFT_CLIP", Test("klipp-effects/tests/soft_clip_gpu_parity.rs", "gpu_matches_cpu_oracle_across_fixtures")),
+    ("SHADER_HDR_ZONES", Test("klipp-effects/tests/hdr_zones_gpu_parity.rs", "the_standalone_pass_draws_the_cpu_zones")),
     ("SHADER_GRAIN", Test("klipp-nodes/tests/grain_denoise_parity.rs", "colour_grain_matches_the_shader")),
     ("SHADER_ALPHA_BLUR_H", GLOW),
     ("SHADER_ALPHA_BLUR_V", GLOW),

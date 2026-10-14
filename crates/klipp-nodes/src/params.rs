@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use klipp_core::{
-    BlendMode, ColorWarperParams, CurveSet, DifferenceKeySettings, FilmGrainSettings, HueSatCurves,
+    BlendMode, ColorWarperParams, CurveSet, DifferenceKeySettings, FilmGrainSettings, HdrZonesSettings, HueSatCurves,
     LayerMixerInput, LogFormat, LumaKeySettings, MaskStack, QualifierSettings, SoftClipSettings,
 };
 
@@ -207,6 +207,11 @@ pub struct NodeParams {
     // not a matte. See `SoftClipSettings`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub soft_clip: Option<SoftClipSettings>,
+
+    // HDR zones (#240): exposure, colour and saturation by tonal zone.
+    // See `HdrZonesSettings`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hdr_zones: Option<HdrZonesSettings>,
 
     // Mask
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -482,6 +487,7 @@ impl NodeParams {
             && self.difference_key.is_none()
             && self.color_match.as_ref().is_none_or(|m| m.is_identity())
             && self.soft_clip.is_none()
+            && self.hdr_zones.as_ref().is_none_or(HdrZonesSettings::is_neutral)
             && self.masks.is_none()
             && self.lut_path.is_none()
             && z(&self.lut_opacity)
@@ -629,6 +635,17 @@ impl NodeParams {
                     _ => return false,
                 }
             }
+            // HDR zones (#240): `hdr_<zone>_<control>`, the zone by its
+            // name (`hdr_highlight_exposure`); a name no zone or control
+            // reads is a bad name.
+            p if p.starts_with("hdr_") => {
+                if hdr_zone_slot(&mut HdrZonesSettings::default(), p).is_none() {
+                    return false;
+                }
+                if let Some(slot) = hdr_zone_slot(self.hdr_zones.get_or_insert_with(Default::default), p) {
+                    *slot = value;
+                }
+            }
             "denoise_luma" => self.denoise_luma = Some(value),
             "denoise_chroma" => self.denoise_chroma = Some(value),
             "denoise_radius" => self.denoise_radius = Some(value as u32),
@@ -702,6 +719,28 @@ impl NodeParams {
         Self::default().apply_override(param_name, 0.0)
     }
 }
+
+/// The setting `key` names in the HDR zones (#240): `hdr_<zone>_<control>`,
+/// the zone one of Global, Black, Dark, Shadow, Light, Highlight,
+/// Specular in lower case, the control `exposure`, `colour_x`, `colour_y`
+/// (the colour wheel's puck) or `saturation`, or for every zone but Global `boundary` or
+/// `falloff`.
+pub fn hdr_zone_slot<'a>(z: &'a mut HdrZonesSettings, key: &str) -> Option<&'a mut f32> {
+    let rest = key.strip_prefix("hdr_")?;
+    let (zone, control) = HDR_ZONE_KEYS.iter().enumerate().find_map(|(i, name)| rest.strip_prefix(name)?.strip_prefix('_').map(|c| (i, c)))?;
+    Some(match control {
+        "exposure" => &mut z.exposure[zone],
+        "colour_x" => &mut z.colour_x[zone],
+        "colour_y" => &mut z.colour_y[zone],
+        "saturation" => &mut z.saturation[zone],
+        "boundary" if zone > 0 => &mut z.boundary[zone],
+        "falloff" if zone > 0 => &mut z.falloff[zone],
+        _ => return None,
+    })
+}
+
+/// The HDR zones' names as their keys spell them (#240), in order.
+pub const HDR_ZONE_KEYS: [&str; 7] = ["global", "black", "dark", "shadow", "light", "highlight", "specular"];
 
 /// A LUT's working-space tag from its `apply_override` value: a tag for
 /// 0, 1 or 2, else `None` (the LUT's own).
@@ -853,6 +892,29 @@ mod tests {
         assert!(k.apply_override("luma_key_soft", 0.05));
         let lk = k.luma_key.as_ref().expect("luma key materialised");
         assert!(lk.enabled && lk.low == 0.2 && lk.soft == 0.05);
+    }
+
+    /// The HDR zones (#240) are set by name, the zone then the control,
+    /// and a node with every zone neutral is a default one (bypassed).
+    /// Controls: a zone or control no zone has is refused and makes
+    /// nothing, and Global has no boundary.
+    #[test]
+    fn hdr_zones_are_settable_by_name() {
+        let mut p = NodeParams::default();
+        assert!(p.apply_override("hdr_highlight_exposure", 1.5));
+        assert!(p.apply_override("hdr_black_colour_y", 0.2));
+        assert!(p.apply_override("hdr_shadow_boundary", -1.5));
+        let z = p.hdr_zones.as_ref().expect("made on first touch");
+        assert_eq!((z.exposure[5], z.colour_y[1], z.boundary[3]), (1.5, 0.2, -1.5));
+        assert!(!p.is_default());
+        for bad in ["hdr_global_boundary", "hdr_midtone_exposure", "hdr_light_gain", "hdr_lightexposure"] {
+            let mut q = NodeParams::default();
+            assert!(!q.apply_override(bad, 1.0), "{bad}");
+            assert!(q.hdr_zones.is_none(), "{bad} made nothing");
+        }
+        let mut n = NodeParams::default();
+        assert!(n.apply_override("hdr_dark_boundary", -3.0));
+        assert!(n.is_default(), "a boundary moved alone changes no pixel");
     }
 
     /// A name the params do not carry is reported, not swallowed. The

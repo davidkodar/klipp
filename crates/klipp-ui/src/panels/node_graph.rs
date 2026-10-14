@@ -269,6 +269,7 @@ const STRIP_ADD_MENU: &[(&str, &str)] = &[
     ("Curves", "RGBCurves"),
     ("Hue/Sat", "HueSatCurves"),
     ("Colour Balance", "ColorBalance"),
+    ("HDR Zones", "HdrZones"),
     ("Colour Match", "ColorMatch"),
     ("Qualifier", "Qualifier"),
     ("Film Grain", "FilmGrain"),

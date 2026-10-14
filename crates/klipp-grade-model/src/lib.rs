@@ -31,6 +31,8 @@
 //! these out per pixel and must agree with the functions here; the
 //! parity tests hold them to it.
 
+pub mod hdr_zones;
+
 /// The grade encoding's exponent: BT.1886's display gamma.
 pub const GRADE_GAMMA: f32 = 2.4;
 

@@ -64,6 +64,11 @@ pub struct NodeInspectorPanel {
     /// generated view (`grade_view::show`, which has the clip) for its
     /// draw, as the inspector's Colour tab passes its own.
     pub(crate) tracked_masks: Vec<usize>,
+    /// An HDR Zones node's picked zone (#240), by node: the zone menu's
+    /// choice, Global until one is picked.
+    pub(crate) hdr_zone_pick: std::collections::HashMap<NodeId, usize>,
+    /// The picked zone's colour wheel.
+    pub hdr_zone_wheel: ColorWheelState,
 }
 
 impl Default for NodeInspectorPanel {
@@ -77,6 +82,8 @@ impl Default for NodeInspectorPanel {
             log_low_wheel: ColorWheelState::default(),
             log_mid_wheel: ColorWheelState::default(),
             log_high_wheel: ColorWheelState::default(),
+            hdr_zone_pick: Default::default(),
+            hdr_zone_wheel: ColorWheelState::default(),
             active_curve_channel: CurveChannel::Master,
             wheels_presets: presets::load_tool_presets(&ToolScope::Wheels),
             curves_presets: presets::load_tool_presets(&ToolScope::Curves),
@@ -1683,6 +1690,10 @@ impl NodeInspectorPanel {
         keys: Option<&klipp_nodes::NodeKeyframeTracks>,
     ) -> bool {
         match id {
+            // An HDR Zones node's wheel is its picked zone's (#240).
+            "wheels" if ty.kind == NodeKind::HdrZones => {
+                self.hdr_zones_head(ui, node_id, params, keys.map(|tracks| NodeKeys { tracks, frame }), clip_id, cmds, theme);
+            }
             "wheels" => {
                 // Laid out from the width before the generated rows' indent,
                 // as the old page lays its wheels out: the same diameter, so
@@ -2286,6 +2297,180 @@ impl NodeInspectorPanel {
         }
     }
 
+    /// The HDR Zones page (#240) as the per-node layout draws it: its head
+    /// ([`Self::hdr_zones_head`]), the picked zone's Saturation, Boundary
+    /// and Falloff (Global reaches everything and has neither), and the
+    /// zone map. The generated layout draws the same head, its own rows
+    /// for the picked zone, and the map.
+    #[allow(clippy::too_many_arguments)]
+    fn hdr_zones_page(
+        &mut self,
+        ui: &mut egui::Ui,
+        node_id: NodeId,
+        params: &mut NodeParams,
+        keyframes: &klipp_nodes::NodeKeyframeTracks,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+        frame: FrameSelection,
+    ) {
+        self.hdr_zones_head(ui, node_id, params, Some(NodeKeys { tracks: keyframes, frame }), clip_id, cmds, theme);
+        let picked = self.hdr_zone_picked(node_id);
+        let mut zones = params.hdr_zones.clone().unwrap_or_default();
+        let before = zones.clone();
+        let name = |control: &str| format!("hdr_{}_{control}", klipp_nodes::params::HDR_ZONE_KEYS[picked]);
+        let mut rows: Vec<(&str, String, &mut f32, std::ops::RangeInclusive<f32>, &str)> = vec![("Saturation", name("saturation"), &mut zones.saturation[picked], 0.0..=2.0, "")];
+        if picked > 0 {
+            rows.push(("Boundary", name("boundary"), &mut zones.boundary[picked], -8.0..=8.0, "stops"));
+            rows.push(("Falloff", name("falloff"), &mut zones.falloff[picked], 0.0..=4.0, "stops"));
+        }
+        for (label, param, value, range, suffix) in rows {
+            let mut v = *value;
+            #[cfg(any(test, feature = "row-recorder"))]
+            crate::widgets::row_recorder::next_parameter(&param);
+            if grade_slider(ui, label, &mut v, range, suffix, cmds, clip_id, theme) {
+                *value = v;
+                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param, value: v });
+            }
+        }
+        if zones != before {
+            params.hdr_zones = Some(zones.clone());
+        }
+        ui.add_space(8.0);
+        hdr_zone_map(ui, &zones, picked, theme);
+    }
+
+    /// The zone an HDR Zones node's page shows (#240): the one picked from
+    /// its zone menu, Global until one is.
+    pub(crate) fn hdr_zone_picked(&self, node_id: NodeId) -> usize {
+        self.hdr_zone_pick.get(&node_id).copied().unwrap_or(0).min(klipp_color::grade_model::hdr_zones::ZONES - 1)
+    }
+
+    /// An HDR Zones page's head (#240): the zone menu, the picked zone's
+    /// colour wheel (its puck the colour, its Y the exposure in stops,
+    /// keyed together when `keys` are given), and Reset zone.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn hdr_zones_head(
+        &mut self,
+        ui: &mut egui::Ui,
+        node_id: NodeId,
+        params: &mut NodeParams,
+        keys: Option<NodeKeys>,
+        clip_id: ClipId,
+        cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
+    ) {
+        use klipp_color::grade_model::hdr_zones::ZONE_NAMES;
+        let mut zones = params.hdr_zones.clone().unwrap_or_default();
+        let before = zones.clone();
+        let picked = self.hdr_zone_picked(node_id);
+        ui.add_space(4.0);
+        #[cfg(any(test, feature = "row-recorder"))]
+        crate::widgets::row_recorder::control(ui.next_auto_id(), "choice", "hdr_zone", "Zone", picked);
+        let picked = ui
+            .horizontal(|ui| crate::widgets::segmented::segmented(ui, &ZONE_NAMES, picked, theme, egui::FontId::proportional(10.0), 20.0))
+            .inner
+            .unwrap_or(picked);
+        self.hdr_zone_pick.insert(node_id, picked);
+        let key = klipp_nodes::params::HDR_ZONE_KEYS[picked];
+        let name = |control: &str| format!("hdr_{key}_{control}");
+        let (px, py, pe) = (name("colour_x"), name("colour_y"), name("exposure"));
+        let parts = [px.as_str(), py.as_str(), pe.as_str()];
+
+        // The wheel: puck and Y keyed together, as a Lift wheel's are.
+        let shown_of = |param: &str, stored: f32| keys.map_or(stored, |k| k.shown(param, stored));
+        let mut offset = [shown_of(parts[0], zones.colour_x[picked]), shown_of(parts[1], zones.colour_y[picked])];
+        let mut exposure = shown_of(parts[2], zones.exposure[picked]);
+        let shown = [offset[0], offset[1], exposure];
+        ui.add_space(4.0);
+        // Whole pixels, as the Lift wheels are laid out: the same pixel
+        // moves the puck as far wherever the page is drawn.
+        let width = (ui.available_width() / 2.0).floor() * 2.0;
+        // 128 across, its radius a power of two: a drag of whole pixels
+        // moves the puck by exactly that over the radius.
+        let wheel_d = if width >= 168.0 { 128.0 } else { 64.0 };
+        #[cfg(any(test, feature = "row-recorder"))]
+        crate::widgets::row_recorder::control(ui.next_auto_id(), "colour_wheel", &format!("hdr_{key}"), "Colour", (offset, exposure));
+        let at = ui.cursor().min;
+        let cell = egui::Rect::from_min_size(egui::pos2(at.x.ceil(), at.y.ceil()), egui::vec2(width - 2.0, ui.available_height().max(1.0)));
+        let resp = ui
+            .allocate_new_ui(egui::UiBuilder::new().max_rect(cell).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+                color_wheel::color_wheel_spanned(ui, &mut self.hdr_zone_wheel, theme, "Colour", &mut offset, &mut exposure, wheel_d, Some(width - 2.0), keys.map(|k| k.state(&parts)), 4.0)
+            })
+            .inner;
+        if resp.drag_started {
+            cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+        }
+        if resp.changed {
+            let values = [offset[0], offset[1], exposure];
+            let push = |c: &mut Vec<AppCommand>| {
+                for (p, v) in parts.iter().zip(values) {
+                    c.push(AppCommand::SetNodeParam { clip_id, node_id, param: (*p).into(), value: v });
+                }
+            };
+            match keys.filter(|k| k.keyed(&parts)) {
+                Some(k) if resp.dragging => k.key_values(cmds, clip_id, node_id, &parts, &values),
+                Some(k) => atomic_node_edit_batch(cmds, clip_id, |c| k.key_values(c, clip_id, node_id, &parts, &values)),
+                None => {
+                    (zones.colour_x[picked], zones.colour_y[picked], zones.exposure[picked]) = (offset[0], offset[1], exposure);
+                    if resp.dragging {
+                        push(cmds);
+                    } else {
+                        atomic_node_edit_batch(cmds, clip_id, push);
+                    }
+                }
+            }
+        }
+        if let (_, Some(end)) = gesture_of(ui, false, resp.drag_ended) {
+            cmds.push(end(clip_id));
+        }
+        if let Some(k) = keys {
+            k.strip_commands(cmds, clip_id, node_id, &parts, &shown, resp.key);
+        }
+
+        // Reset zone: its every value back as a new node has it, one step.
+        // Start from: a preset's every zone, one step.
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            egui::ComboBox::from_id_salt(("hdr_zones_start", node_id))
+                .selected_text("Start from")
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    for (preset, about, settings) in klipp_core::HdrZonesSettings::presets() {
+                        if ui.selectable_label(false, preset).on_hover_text(about).clicked() {
+                            let writes = hdr_zones_writes(&settings);
+                            zones = settings;
+                            atomic_node_edit_batch(cmds, clip_id, |c| {
+                                for (param, value) in writes {
+                                    c.push(AppCommand::SetNodeParam { clip_id, node_id, param, value });
+                                }
+                            });
+                        }
+                    }
+                });
+            if ui.small_button("Reset zone").on_hover_text("Put this zone's colour, exposure, saturation and reach back").clicked() {
+                let fresh = klipp_core::HdrZonesSettings::default();
+                let mut values = vec![(name("exposure"), fresh.exposure[picked]), (name("colour_x"), 0.0), (name("colour_y"), 0.0), (name("saturation"), fresh.saturation[picked])];
+                if picked > 0 {
+                    values.push((name("boundary"), fresh.boundary[picked]));
+                    values.push((name("falloff"), fresh.falloff[picked]));
+                }
+                (zones.exposure[picked], zones.colour_x[picked], zones.colour_y[picked], zones.saturation[picked]) = (fresh.exposure[picked], 0.0, 0.0, fresh.saturation[picked]);
+                zones.boundary[picked] = fresh.boundary[picked];
+                zones.falloff[picked] = fresh.falloff[picked];
+                atomic_node_edit_batch(cmds, clip_id, |c| {
+                    for (param, value) in values {
+                        c.push(AppCommand::SetNodeParam { clip_id, node_id, param, value });
+                    }
+                });
+            }
+        });
+        ui.add_space(4.0);
+        if zones != before {
+            params.hdr_zones = Some(zones);
+        }
+    }
+
     fn show_inspector_layout(
         &mut self,
         ui: &mut egui::Ui,
@@ -2690,6 +2875,7 @@ impl NodeInspectorPanel {
                     cmds.push(AppCommand::SetNodeLumaKey { clip_id, node_id, luma_key: edited });
                 }
             }
+            NodeKind::HdrZones => self.hdr_zones_page(ui, node_id, params, keyframes, clip_id, cmds, theme, frame),
             NodeKind::SoftClip => {
                 // As the qualifier: a copy, sent once when it changed (#894).
                 let before = params.soft_clip.clone().unwrap_or_default();
@@ -4864,6 +5050,61 @@ impl NodeKeys<'_> {
             });
         }
     }
+}
+
+/// The HDR zones' map (#240), drawn, not edited: a stop axis from −8 to
+/// +8 about mid grey, each zone's weight over it, the picked zone's
+/// strongest and its boundary marked. Its only words are the axis's ends,
+/// written with a minus sign, never a number a row could be read as.
+/// Every value of the HDR zones `z` (#240) by its key, as a node's rows
+/// write them: what a preset sets, all of it.
+fn hdr_zones_writes(z: &klipp_core::HdrZonesSettings) -> Vec<(String, f32)> {
+    let mut z = z.clone();
+    klipp_nodes::registry::node_type(NodeKind::HdrZones)
+        .map_or(&[][..], |t| t.desc.params)
+        .iter()
+        .filter_map(|d| klipp_nodes::params::hdr_zone_slot(&mut z, d.key).map(|v| (d.key.to_owned(), *v)))
+        .collect()
+}
+
+pub(crate) fn hdr_zone_map(ui: &mut egui::Ui, zones: &klipp_core::HdrZonesSettings, picked: usize, theme: &KlippTheme) {
+    use klipp_color::grade_model::hdr_zones::{weight, ZONES};
+    const SPAN: f32 = 8.0;
+    let w = (ui.available_width() - 28.0).max(80.0);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 74.0), egui::Sense::hover());
+    let plot = egui::Rect::from_min_size(egui::pos2(rect.min.x + 14.0, rect.min.y + 4.0), egui::vec2(w, 52.0));
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(plot, 2.0, theme.bg_deep);
+    let x_of = |s: f32| plot.min.x + (s + SPAN) / (2.0 * SPAN) * plot.width();
+    let y_of = |wt: f32| plot.max.y - wt * (plot.height() - 4.0) - 2.0;
+    // Mid grey, and a tick every stop.
+    for s in -8..=8 {
+        let x = x_of(s as f32);
+        let h = if s == 0 { plot.height() } else if s % 4 == 0 { 6.0 } else { 3.0 };
+        painter.line_segment([egui::pos2(x, plot.max.y - h), egui::pos2(x, plot.max.y)], egui::Stroke::new(if s == 0 { 1.0_f32 } else { 0.5_f32 }, theme.text_dim));
+    }
+    let samples = 96;
+    for i in (1..ZONES).filter(|i| *i != picked).chain((picked > 0).then_some(picked)) {
+        let points: Vec<egui::Pos2> = (0..=samples)
+            .map(|k| {
+                let s = -SPAN + 2.0 * SPAN * k as f32 / samples as f32;
+                egui::pos2(x_of(s), y_of(weight(i, s, zones.boundary[i], zones.falloff[i])))
+            })
+            .collect();
+        let stroke = if i == picked { egui::Stroke::new(2.0_f32, theme.accent) } else { egui::Stroke::new(1.0_f32, theme.text_dim.gamma_multiply(0.6)) };
+        painter.add(egui::Shape::line(points, stroke));
+    }
+    if picked > 0 {
+        let x = x_of(zones.boundary[picked].clamp(-SPAN, SPAN));
+        painter.line_segment([egui::pos2(x, plot.min.y), egui::pos2(x, plot.max.y)], egui::Stroke::new(1.0_f32, theme.accent));
+    } else {
+        // Global reaches everything.
+        painter.line_segment([egui::pos2(plot.min.x, y_of(1.0)), egui::pos2(plot.max.x, y_of(1.0))], egui::Stroke::new(2.0_f32, theme.accent));
+    }
+    let font = egui::FontId::proportional(9.0);
+    painter.text(egui::pos2(plot.min.x, plot.max.y + 3.0), egui::Align2::LEFT_TOP, "\u{2212}8 stops", font.clone(), theme.text_dim);
+    painter.text(egui::pos2(x_of(0.0), plot.max.y + 3.0), egui::Align2::CENTER_TOP, "mid grey", font.clone(), theme.text_dim);
+    painter.text(egui::pos2(plot.max.x, plot.max.y + 3.0), egui::Align2::RIGHT_TOP, "+8 stops", font, theme.text_dim);
 }
 
 fn push_wheel_cmds(cmds: &mut Vec<AppCommand>, clip_id: ClipId, node_id: NodeId, prefix: &str, offset: [f32; 2], master: f32) {

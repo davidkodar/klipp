@@ -76,6 +76,7 @@ const SAT_BRI: &str = "klipp.grade.wheel_sat_bri";
 const QUALIFIER: &str = "klipp.grade.qualifier";
 const LUMA_KEY: &str = "klipp.grade.luma_key";
 const SOFT_CLIP: &str = "klipp.grade.soft_clip";
+const HDR_ZONES: &str = "klipp.grade.hdr_zones";
 const DIFF_KEY: &str = "klipp.grade.difference_key";
 const GRAIN: &str = "klipp.grade.film_grain";
 const LUT: &str = "klipp.grade.lut_3d";
@@ -246,6 +247,49 @@ const NODES: &[ParamEntry] = &[
     at(COLOR_MATCH, "color_match.saturation", readout()),
     at(SOFT_CLIP, "soft_clip.threshold", slider(0.00125).visible_if(on("soft_clip.enabled"))),
     at(SOFT_CLIP, "soft_clip.knee", slider(0.000625).visible_if(on("soft_clip.enabled"))),
+    // HDR zones (#240): the picked zone's wheel (its puck the colour, its
+    // Y the exposure), then its rows, one zone at a time from the zone
+    // menu, so each row is labelled as every zone's is.
+    at(HDR_ZONES, "hdr_global_exposure", wheel("Global")),
+    at(HDR_ZONES, "hdr_global_colour_x", wheel("Global")),
+    at(HDR_ZONES, "hdr_global_colour_y", wheel("Global")),
+    at(HDR_ZONES, "hdr_global_saturation", slider(0.0025).label("Saturation").suffix(Suffix::Text("×"))),
+    at(HDR_ZONES, "hdr_black_exposure", wheel("Black")),
+    at(HDR_ZONES, "hdr_black_colour_x", wheel("Black")),
+    at(HDR_ZONES, "hdr_black_colour_y", wheel("Black")),
+    at(HDR_ZONES, "hdr_black_saturation", slider(0.0025).label("Saturation").suffix(Suffix::Text("×"))),
+    at(HDR_ZONES, "hdr_black_boundary", slider(0.01).label("Boundary").suffix(Suffix::Text("stops"))),
+    at(HDR_ZONES, "hdr_black_falloff", slider(0.01).label("Falloff").suffix(Suffix::Text("stops"))),
+    at(HDR_ZONES, "hdr_dark_exposure", wheel("Dark")),
+    at(HDR_ZONES, "hdr_dark_colour_x", wheel("Dark")),
+    at(HDR_ZONES, "hdr_dark_colour_y", wheel("Dark")),
+    at(HDR_ZONES, "hdr_dark_saturation", slider(0.0025).label("Saturation").suffix(Suffix::Text("×"))),
+    at(HDR_ZONES, "hdr_dark_boundary", slider(0.01).label("Boundary").suffix(Suffix::Text("stops"))),
+    at(HDR_ZONES, "hdr_dark_falloff", slider(0.01).label("Falloff").suffix(Suffix::Text("stops"))),
+    at(HDR_ZONES, "hdr_shadow_exposure", wheel("Shadow")),
+    at(HDR_ZONES, "hdr_shadow_colour_x", wheel("Shadow")),
+    at(HDR_ZONES, "hdr_shadow_colour_y", wheel("Shadow")),
+    at(HDR_ZONES, "hdr_shadow_saturation", slider(0.0025).label("Saturation").suffix(Suffix::Text("×"))),
+    at(HDR_ZONES, "hdr_shadow_boundary", slider(0.01).label("Boundary").suffix(Suffix::Text("stops"))),
+    at(HDR_ZONES, "hdr_shadow_falloff", slider(0.01).label("Falloff").suffix(Suffix::Text("stops"))),
+    at(HDR_ZONES, "hdr_light_exposure", wheel("Light")),
+    at(HDR_ZONES, "hdr_light_colour_x", wheel("Light")),
+    at(HDR_ZONES, "hdr_light_colour_y", wheel("Light")),
+    at(HDR_ZONES, "hdr_light_saturation", slider(0.0025).label("Saturation").suffix(Suffix::Text("×"))),
+    at(HDR_ZONES, "hdr_light_boundary", slider(0.01).label("Boundary").suffix(Suffix::Text("stops"))),
+    at(HDR_ZONES, "hdr_light_falloff", slider(0.01).label("Falloff").suffix(Suffix::Text("stops"))),
+    at(HDR_ZONES, "hdr_highlight_exposure", wheel("Highlight")),
+    at(HDR_ZONES, "hdr_highlight_colour_x", wheel("Highlight")),
+    at(HDR_ZONES, "hdr_highlight_colour_y", wheel("Highlight")),
+    at(HDR_ZONES, "hdr_highlight_saturation", slider(0.0025).label("Saturation").suffix(Suffix::Text("×"))),
+    at(HDR_ZONES, "hdr_highlight_boundary", slider(0.01).label("Boundary").suffix(Suffix::Text("stops"))),
+    at(HDR_ZONES, "hdr_highlight_falloff", slider(0.01).label("Falloff").suffix(Suffix::Text("stops"))),
+    at(HDR_ZONES, "hdr_specular_exposure", wheel("Specular")),
+    at(HDR_ZONES, "hdr_specular_colour_x", wheel("Specular")),
+    at(HDR_ZONES, "hdr_specular_colour_y", wheel("Specular")),
+    at(HDR_ZONES, "hdr_specular_saturation", slider(0.0025).label("Saturation").suffix(Suffix::Text("×"))),
+    at(HDR_ZONES, "hdr_specular_boundary", slider(0.01).label("Boundary").suffix(Suffix::Text("stops"))),
+    at(HDR_ZONES, "hdr_specular_falloff", slider(0.01).label("Falloff").suffix(Suffix::Text("stops"))),
     at("klipp.grade.mask", "masks", editor("mask_stack").label("Masks")),
     at("klipp.grade.combine_mattes", "matte_combine_op", combo().label("Combine")),
     at("klipp.grade.external_matte", "matte_image_path", editor("matte_file")),

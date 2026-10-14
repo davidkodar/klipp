@@ -68,6 +68,8 @@ mod render_faults_1020;
 mod render_scale_units;
 #[path = "../scopes_from_display_on_gpu.rs"]
 mod scopes_from_display_on_gpu;
+#[path = "../hdr_zones_gpu_parity.rs"]
+mod hdr_zones_gpu_parity;
 #[path = "../soft_clip_gpu_parity.rs"]
 mod soft_clip_gpu_parity;
 #[path = "../wgsl_camera_log_parity.rs"]

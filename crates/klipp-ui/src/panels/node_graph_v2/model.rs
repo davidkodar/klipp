@@ -251,6 +251,7 @@ const GRADE_MENU_PRESENTATION: &[(&str, &[(&str, &str)])] = &[
         ("Curves", "RGBCurves"),
         ("Hue/Sat", "HueSatCurves"),
         ("Colour Balance", "ColorBalance"),
+        ("HDR Zones", "HdrZones"),
         ("Colour Match", "ColorMatch"),
     ]),
     ("Secondary", &[

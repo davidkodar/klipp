@@ -361,6 +361,16 @@ exist until the plan runs.
   only what is keyed. `invert` grades everything but the key; `remove`
   clears it. Fix a sky, calm a loud shirt, keep skin warm while cooling
   the rest. Grade the primary first, then reach for a secondary.
+- `zones {clip_id | on, zone?, exposure?, hue?, amount?, saturation?,
+  boundary?, falloff?, preset?, reset?}`: HDR zones, tonal balance placed
+  in stops about mid grey, the same on SDR, HDR and log material. A
+  `zone` (global, black, dark, shadow, light, highlight, specular) takes
+  an `exposure` in stops, a colour by `hue` (degrees on the wheel) and
+  `amount` (0 to 1), and a `saturation`; `boundary` and `falloff` move
+  where it reaches. `preset` starts from a named starting point (HDR
+  highlight roll-off, Lift shadows, Deepen blacks, Midtone contrast, Warm
+  highlights, cool shadows). Reach for it to calm HDR highlights or open
+  shadows without a key.
 - `look` (the `klipp_look` tool): put a creative look — a bundled 3D
   LUT — on a picture clip, as one node after the grade so it sits on the
   corrected image. `name` is a look from `klipp_looks` (category/name, or

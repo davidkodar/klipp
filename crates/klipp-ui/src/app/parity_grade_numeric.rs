@@ -293,6 +293,29 @@ pub(super) fn shown_in_frame(start: &Grade, ty: &NodeType, desc: &ParamDesc) -> 
             difference_key.plate_path = Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/effect_preview_reference.png"));
             vec![AppCommand::SetNodeDifferenceKey { clip_id, node_id, difference_key }]
         }
+        // An HDR zone (#240) placed inside the chart, which reaches a few
+        // stops either side of mid grey (Black and Specular sit past it),
+        // and moved there, so its boundary and falloff have something to
+        // place.
+        k if k.starts_with("hdr_") && !k.starts_with("hdr_global_") => {
+            let zone = k.trim_start_matches("hdr_").split('_').next().unwrap_or_default();
+            let lower = matches!(zone, "black" | "dark" | "shadow");
+            let mut cmds = Vec::new();
+            if !k.ends_with("_boundary") {
+                cmds.push(param(&format!("hdr_{zone}_boundary"), if lower { -1.0 } else { 0.5 }));
+            }
+            if k.ends_with("_boundary") || k.ends_with("_falloff") {
+                // Down for an upper zone: brightened, its pixels clip in
+                // the display frame whatever the boundary.
+                cmds.push(param(&format!("hdr_{zone}_exposure"), if lower { 1.0 } else { -1.0 }));
+            }
+            // A boundary past the chart (Black's, Specular's) reaches into
+            // it with a wide falloff.
+            if k.ends_with("_boundary") {
+                cmds.push(param(&format!("hdr_{zone}_falloff"), 3.0));
+            }
+            cmds
+        }
         k if k.starts_with("grain.") && k != "grain.amount" => vec![AppCommand::SetNodeFilmGrain { clip_id, node_id, grain: FilmGrainSettings { enabled: true, amount: 0.5, ..Default::default() } }],
         _ => Vec::new(),
     };
@@ -432,7 +455,7 @@ pub(super) fn run(report: &mut Report) {
         };
         let base = Grade::new(state, clip, node);
         for desc in rows {
-            match meet_conditions(&base, ty, desc) {
+            match meet_conditions(&base.twin().picking(desc.key), ty, desc) {
                 Ok((shown, variant)) => row_cases(report, ty, desc, &shown, Surface::GradePerNode, variant),
                 Err(e) => report.case(&format!("{} {}", ty.desc.id, desc.key), [], || Err(e)),
             }

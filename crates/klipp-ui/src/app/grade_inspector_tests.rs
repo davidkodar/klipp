@@ -165,7 +165,16 @@ fn kinds() -> Vec<(NodeKind, &'static klipp_nodes::registry::NodeType)> {
 
 /// The parameters a node of type `ty` shows at its defaults.
 fn shown_at_default(ty: &klipp_nodes::registry::NodeType) -> Vec<(&'static ParamDesc, klipp_effects::registry::presentation::Presentation)> {
-    let presentation = |p: &ParamDesc| ty.presentation(p);
+    // An HDR Zones page shows its picked zone's rows, Global's until one
+    // is picked (#240); each zone's own are driven picked, by the grade
+    // families.
+    let presentation = |p: &ParamDesc| {
+        let mut shown = ty.presentation(p);
+        if ty.kind == NodeKind::HdrZones && !crate::inspector::grade_view::hdr_zone_shows(p.key, 0) {
+            shown.widget = klipp_effects::registry::presentation::Widget::Hidden;
+        }
+        shown
+    };
     let stored = |_: &ParamDesc| serde_json::Value::Null;
     let keys = |_: &ParamDesc| (None, Default::default());
     let rows = NodeRows { params: ty.desc.params, presentation: &presentation, stored: &stored, keys: &keys };
