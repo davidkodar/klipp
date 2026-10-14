@@ -74,6 +74,7 @@ fn apply(state: &mut AppState, cmds: &[AppCommand]) -> Vec<String> {
             AppCommand::SelectClip(id) => state.selected_clip = *id,
             AppCommand::SetVideoRubberBandParam(_) | AppCommand::SequenceUpdated | AppCommand::BrowserSkimAudioStart { .. } => {}
             _ if super::colour::mask_key_edit(state, cmd, true).is_some() => {}
+            _ if super::keyframes::audio_effect_key_write(state, cmd) => {}
             _ if state.path_command(cmd).is_some() => {}
             _ => {
                 let mut host = InspectorEditHost { state: &mut *state, side: &Sink };
@@ -291,10 +292,14 @@ struct Editor {
 impl Editor {
     fn new() -> Self {
         let (state, clip, node) = state();
+        Self::showing(state, clip, node, CurveParam::Mask { track: MaskTrack { node, mask: 0, param: "radius".into() }, name: "Face \u{00B7} Radius".into() })
+    }
+
+    fn showing(state: AppState, clip: ClipId, node: klipp_nodes::NodeId, param: CurveParam) -> Self {
         let ctx = egui::Context::default();
         crate::icons::install(&ctx);
         let mut panel = CurveEditorPanel::new();
-        panel.show_track(CurveParam::Mask { track: MaskTrack { node, mask: 0, param: "radius".into() }, name: "Face \u{00B7} Radius".into() });
+        panel.show_track(param);
         let mut e = Editor { state, clip, node, panel, ctx, clock: 0.0, texts: Vec::new() };
         e.frame(Vec::new(), egui::Modifiers::NONE);
         e.frame(Vec::new(), egui::Modifiers::NONE);
@@ -424,4 +429,134 @@ fn sound_keys_move_inside_a_keyframe_drag() {
         _ => "other",
     }).collect();
     assert_eq!(kinds, ["begin", "move", "move", "end"], "{moved:?}");
+}
+
+/// The fixture with a 4 s clip on the first sound track too, its media in
+/// the pool, carrying a Gain effect whose `gain_db` is keyed at 1 s (0)
+/// and 2 s (6), shown on the sound band; that clip selected.
+fn fx_state() -> (AppState, ClipId, klipp_nodes::NodeId) {
+    let (mut state, _, node) = state();
+    let t = |s| RationalTime::from_secs_f64(s, 24);
+    let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/fx.wav".into(), None);
+    item.duration = t(60.0);
+    let media = state.media_pool.add(item);
+    let mut clip = klipp_timeline::Clip::media(media, t(0.0), t(4.0), t(0.0), t(4.0));
+    clip.audio_effects = vec![klipp_core::AudioEffectInstance { effect_type: "gain".into(), enabled: true, wet_dry: 1.0, params: vec![("gain_db".into(), 0.0)] }];
+    clip.audio_effect_keyframes.insert("0:gain_db".into(), vec![key(1.0, 0.0), key(2.0, 6.0)]);
+    let id = clip.id;
+    let a1 = state.sequences[0].tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+    state.sequences[0].tracks[a1].clips.push(clip);
+    state.selected_clip = Some(id);
+    state.rubber_band_param = crate::state::RubberBandParam::EffectParam { effect_index: 0, param_name: "gain_db".into() };
+    (state, id, node)
+}
+
+fn gain() -> KeyframeParamKind {
+    KeyframeParamKind::AudioEffect { effect_index: 0, param_name: "gain_db".into() }
+}
+
+/// A sound effect's key on the timeline's band, pressed and dragged,
+/// moves while the button is held, and the drag is one undo step that
+/// undo takes back exactly (#1990).
+#[test]
+fn an_effect_key_drags_on_the_band_as_one_step() {
+    let (state, id, _) = fx_state();
+    let mut t = Timeline::new(state);
+    t.frame(Vec::new(), egui::Modifiers::NONE);
+    let mut found = diamonds(&t.shapes, 4.0);
+    found.extend(diamonds(&t.shapes, 5.5));
+    found.sort_by(|a, b| a.x.total_cmp(&b.x));
+    assert_eq!(found.len(), 2, "the band's two keys drawn: {found:?}");
+    let before = keys(&t.state, id, &gain());
+    let steps = t.state.active_history().undo_count();
+    // Half a second later: 100 px at 200 px a second.
+    t.drag(found[0], found[0] + egui::vec2(100.0, 0.0));
+    assert!(t.unapplied.is_empty(), "{:?}", t.unapplied);
+    let now = keys(&t.state, id, &gain());
+    assert!((now[0].0 - 1.5).abs() < 0.03 && now[1] == (2.0, 6.0), "the key moved while held: {now:?}");
+    assert_eq!(t.state.active_history().undo_count(), steps + 1, "one step for the drag");
+    undo(&mut t.state);
+    assert_eq!(keys(&t.state, id, &gain()), before, "undo takes it back exactly");
+}
+
+/// A key dragged past its neighbour stays the one dragged: its index
+/// follows it as the keys sort (#1990).
+#[test]
+fn an_effect_key_dragged_past_another_stays_itself() {
+    let (state, id, _) = fx_state();
+    let mut t = Timeline::new(state);
+    t.frame(Vec::new(), egui::Modifiers::NONE);
+    let mut found = diamonds(&t.shapes, 4.0);
+    found.extend(diamonds(&t.shapes, 5.5));
+    found.sort_by(|a, b| a.x.total_cmp(&b.x));
+    // From 1 s to 2.6 s, past the key at 2 s, and on to 2.8 s.
+    let from = found[0];
+    let b = |p, d| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: egui::Modifiers::NONE };
+    let m = egui::Modifiers::NONE;
+    t.frame(vec![egui::Event::PointerMoved(from)], m);
+    t.frame(vec![b(from, true)], m);
+    for dx in [7.0, 100.0, 320.0, 360.0] {
+        t.frame(vec![egui::Event::PointerMoved(from + egui::vec2(dx, 0.0))], m);
+    }
+    t.frame(vec![egui::Event::PointerMoved(from + egui::vec2(360.0, 0.0)), b(from + egui::vec2(360.0, 0.0), false)], m);
+    let now = keys(&t.state, id, &gain());
+    assert!(now[0] == (2.0, 6.0) && (now[1].0 - 2.8).abs() < 0.03 && now[1].1.abs() < 1e-3, "the key dragged went on past, its neighbour left: {now:?}");
+}
+
+/// The curve editor moves a sound effect's key too, one step.
+#[test]
+fn the_curve_editor_moves_an_effect_key_as_one_step() {
+    let (state, id, node) = fx_state();
+    let mut e = Editor::showing(state, id, node, CurveParam::AudioEffect("0:gain_db".into()));
+    let before = keys(&e.state, id, &gain());
+    let steps = e.state.active_history().undo_count();
+    let (from, to) = (e.at(1.0, 0.0), e.at(1.5, 0.0));
+    e.drag(from, to);
+    let now = keys(&e.state, id, &gain());
+    assert!((now[0].0 - 1.5).abs() < 0.05 && now[1] == (2.0, 6.0), "{now:?}");
+    assert_eq!(e.state.active_history().undo_count(), steps + 1, "one step for the drag");
+    undo(&mut e.state);
+    assert_eq!(keys(&e.state, id, &gain()), before);
+}
+
+/// A key dragged on a lane moves the key, never the clip under it: one
+/// key, several, or a sound effect's (#1990).
+#[test]
+fn a_key_drag_leaves_the_clip_where_it_is() {
+    let (state, id, _) = state();
+    let mut t = Timeline::new(state);
+    t.state.video_rubber_band_param = VideoParam::PositionX;
+    let at = clip(&t.state, id).timeline_in;
+    let pos = t.keys();
+    t.drag(pos[0], pos[0] + egui::vec2(60.0, 0.0));
+    assert!(t.sent.iter().all(|c| !matches!(c, AppCommand::MoveClip { .. } | AppCommand::MoveClipToTrack { .. })), "a clip move sent: {:?}", t.sent.iter().filter(|c| matches!(c, AppCommand::MoveClip { .. })).collect::<Vec<_>>());
+    assert_eq!(clip(&t.state, id).timeline_in, at);
+    let x = keys(&t.state, id, &KeyframeParamKind::Video(VideoParam::PositionX));
+    assert!((x[0].0 - 1.3).abs() < 0.03, "the key moved: {x:?}");
+}
+
+/// On a sound track too, where a moved clip is sent as a move: a
+/// volume key's drag and a sound effect key's drag leave the clip.
+#[test]
+fn a_sound_key_drag_leaves_the_clip_where_it_is() {
+    for effect in [false, true] {
+        let (mut state, id, _) = fx_state();
+        if !effect {
+            state.rubber_band_param = crate::state::RubberBandParam::ClipParam(klipp_core::AudioParam::Volume);
+            for track in &mut state.sequences[0].tracks {
+                if let Some(c) = track.find_clip_mut(id) {
+                    c.volume_keyframes = vec![key(1.0, 0.5), key(2.0, 1.0)];
+                }
+            }
+        }
+        let mut t = Timeline::new(state);
+        t.frame(Vec::new(), egui::Modifiers::NONE);
+        let mut found: Vec<egui::Pos2> = [4.0, 5.5, 8.0, 9.0].iter().flat_map(|h| diamonds(&t.shapes, *h)).collect();
+        found.sort_by(|a, b| a.x.total_cmp(&b.x));
+        assert!(found.len() >= 2, "effect {effect}: {found:?}");
+        t.sent.clear();
+        t.drag(found[0], found[0] + egui::vec2(60.0, 0.0));
+        assert!(t.sent.iter().all(|c| !matches!(c, AppCommand::MoveClip { .. } | AppCommand::MoveClipToTrack { .. })), "effect {effect}: a clip move sent");
+        assert_eq!(clip(&t.state, id).timeline_in, RationalTime::from_secs_f64(0.0, 24), "effect {effect}");
+    }
 }

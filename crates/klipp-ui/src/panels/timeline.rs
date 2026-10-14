@@ -7799,7 +7799,18 @@ impl TimelinePanel {
         // Drag start: edge-first detection for trim, then clip-body for move.
         // Uses press_origin (where user first clicked) instead of current pointer pos,
         // because egui delays drag_started() until pointer moves ~4px from click point.
-        if track_response.drag_started() && !self.select_only {
+        // A key or a handle drawn over the clip took the press (its lane
+        // ran first, this frame): the drag is the key's, never the
+        // clip's as well (#1990).
+        let key_drag = state.dragging_audio_keyframe.is_some()
+            || state.dragging_video_keyframe.is_some()
+            || state.dragging_bezier_handle.is_some()
+            || state.dragging_video_bezier_handle.is_some()
+            || state.dragging_audio_effect_keyframe.is_some()
+            || state.dragging_audio_effect_bezier_handle.is_some()
+            || state.multi_key_drag.is_some()
+            || state.mask_lane_drag.is_some();
+        if track_response.drag_started() && !self.select_only && !key_drag {
             let decision_pos = self.press_origin.or(pointer_pos);
             if let Some(pos) = decision_pos {
                 // Zero: check if pointer is near a fade handle (top corner of audio clip).
@@ -14336,20 +14347,26 @@ impl TimelinePanel {
 
             // Diamonds at each kf, plus Bezier tangent handles for
             // Bezier-interp kfs on the selected clip.
+            let fx_kind = crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name: param_name.to_string() };
             for (kf_idx, kf) in kf_keyframes_vec.iter().enumerate() {
                 let cx = time_to_x(kf.time_secs);
                 let cy = value_to_y(kf.value);
                 let r = if is_selected || is_multi_selected { 4.0 } else { 3.5 };
+                // The key selected, or one of several (#1958), drawn
+                // bigger with a heavier edge.
+                let picked = state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == kf_clip_id && sk.param_kind == fx_kind && sk.keyframe_index == kf_idx)
+                    || crate::key_selection::marked(state, kf_clip_id, &fx_kind, kf.time_secs);
+                let (r_draw, edge) = if picked { (r + 1.5, 2.0_f32) } else { (r, 1.0_f32) };
                 let diamond = vec![
-                    egui::pos2(cx, cy - r),
-                    egui::pos2(cx + r, cy),
-                    egui::pos2(cx, cy + r),
-                    egui::pos2(cx - r, cy),
+                    egui::pos2(cx, cy - r_draw),
+                    egui::pos2(cx + r_draw, cy),
+                    egui::pos2(cx, cy + r_draw),
+                    egui::pos2(cx - r_draw, cy),
                 ];
                 clip_painter.add(egui::Shape::convex_polygon(
                     diamond,
                     line_color,
-                    egui::Stroke::new(1.0_f32, egui::Color32::WHITE),
+                    egui::Stroke::new(edge, egui::Color32::WHITE),
                 ));
 
                 // Bezier tangent handles + connector lines, only on
@@ -14391,9 +14408,23 @@ impl TimelinePanel {
                 // would start a kf drag instead of a tangent drag.
                 if interactive {
                     if let Some(pos) = pointer_pos {
-                        let primary_clicked = ui.input(|i| i.pointer.primary_clicked());
-                        if let Some((handle_kf_idx, is_out, _)) = nearest_handle {
-                            if handle_kf_idx == kf_idx && primary_clicked {
+                        let (primary_clicked, shift, alt) = ui.input(|i| (i.pointer.primary_clicked(), i.modifiers.shift, i.modifiers.alt));
+                        // A drag begins once the pointer, pressed on a key
+                        // or a handle, has moved past egui's threshold: by
+                        // where it was pressed, as the clip's other bands
+                        // do (#1990). Each drag is one undo step.
+                        let (decided, press) = ui.input(|i| (i.pointer.is_decidedly_dragging() && i.pointer.primary_down(), i.pointer.press_origin()));
+                        let free = !alt
+                            && state.dragging_audio_effect_keyframe.is_none()
+                            && state.dragging_audio_effect_bezier_handle.is_none()
+                            && state.multi_key_drag.is_none();
+                        let near = |p: egui::Pos2, x: f32, y: f32, d: f32| (p.x - x).abs() <= d && (p.y - y).abs() <= d;
+                        if let (true, true, Some(p)) = (decided && free, kf.interpolation == klipp_core::Interpolation::Bezier && (is_selected || is_multi_selected), press) {
+                            let tout = (cx + kf.tangent_out.0 as f32 * pixels_per_sec, cy - kf.tangent_out.1 * value_scale);
+                            let tin = (cx + kf.tangent_in.0 as f32 * pixels_per_sec, cy - kf.tangent_in.1 * value_scale);
+                            let handle = if near(p, tout.0, tout.1, 6.0) { Some(true) } else if near(p, tin.0, tin.1, 6.0) { Some(false) } else { None };
+                            if let Some(is_out) = handle {
+                                cmds.push(AppCommand::BeginKeyframeDrag { key: format!("kf:audio_effect_tangent:{}:{}:{}", kf_clip_id.0, effect_index, param_name), clip_id: kf_clip_id });
                                 state.dragging_audio_effect_bezier_handle =
                                     Some(crate::state::BezierEffectHandleDrag {
                                         clip_id: kf_clip_id,
@@ -14406,14 +14437,30 @@ impl TimelinePanel {
                             }
                         }
                         let hit = (pos.x - cx).abs() <= r + 2.0 && (pos.y - cy).abs() <= r + 2.0;
-                        if hit && primary_clicked {
-                            state.dragging_audio_effect_keyframe =
-                                Some(crate::state::DraggingEffectKeyframe {
-                                    clip_id: kf_clip_id,
-                                    effect_index,
-                                    param_name: param_name.to_string(),
-                                    keyframe_index: kf_idx,
-                                });
+                        if let (true, Some(p)) = (decided && free, press) {
+                            if near(p, cx, cy, r + 3.0) {
+                                // A key of several selected: every one
+                                // moves with it, in time (#1958).
+                                if let Some(begin) = crate::key_selection::lane_drag_begin(state, kf_clip_id, &fx_kind, kf_idx, p.x, pixels_per_sec) {
+                                    cmds.extend(begin);
+                                } else {
+                                    let drag_key = format!("kf:audio_effect:{}:{}:{}:{}", kf_clip_id.0, effect_index, param_name, kf_idx);
+                                    cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: kf_clip_id });
+                                    state.dragging_audio_effect_keyframe =
+                                        Some(crate::state::DraggingEffectKeyframe {
+                                            clip_id: kf_clip_id,
+                                            effect_index,
+                                            param_name: param_name.to_string(),
+                                            keyframe_index: kf_idx,
+                                        });
+                                    state.selected_keyframe = Some(crate::state::SelectedKeyframe { clip_id: kf_clip_id, param_kind: fx_kind.clone(), keyframe_index: kf_idx });
+                                }
+                            }
+                        }
+                        // A click selects the key; Shift adds it to the
+                        // keys selected, or takes it out (#1958).
+                        if hit && primary_clicked && !alt && state.multi_key_drag.is_none() {
+                            crate::key_selection::lane_click(state, kf_clip_id, fx_kind.clone(), kf_idx, shift);
                         }
                         // Right-click → open the keyframe context menu
                         // (interp picker, ease presets). Routes through
@@ -16389,6 +16436,16 @@ impl TimelinePanel {
                 new_time_secs: new_time,
                 new_value,
             });
+            // The keys sort by time once moved: the dragged one's index
+            // follows it past another, so the next frame moves it, not
+            // its neighbour (#1990).
+            let at = drag_kf.keyframe_index;
+            let index = kfs_ref.iter().enumerate().filter(|(i, k)| *i != at && (k.time_secs < new_time || (k.time_secs == new_time && *i < at))).count();
+            if let Some(d) = state.dragging_audio_effect_keyframe.as_mut() {
+                d.keyframe_index = index;
+            }
+            let kind = crate::state::KeyframeParamKind::AudioEffect { effect_index: drag_kf.effect_index, param_name: drag_kf.param_name.clone() };
+            state.selected_keyframe = Some(crate::state::SelectedKeyframe { clip_id: drag_kf.clip_id, param_kind: kind, keyframe_index: index });
 
             // Live readout tooltip
             let tooltip = format!("{:.2}s | {:.2}", new_time, new_value);
@@ -16426,6 +16483,7 @@ impl TimelinePanel {
         };
 
         if pointer_released || !pointer_down {
+            cmds.push(AppCommand::EndKeyframeDrag { key: format!("kf:audio_effect_tangent:{}:{}:{}", drag.clip_id.0, drag.effect_index, drag.param_name), clip_id: drag.clip_id });
             state.dragging_audio_effect_bezier_handle = None;
             return;
         }
