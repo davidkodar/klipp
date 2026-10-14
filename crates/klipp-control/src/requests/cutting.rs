@@ -411,7 +411,7 @@ fn add_one_track(ctx: &ControlContext, pick: MusicPick) -> Result<serde_json::Va
         source: klipp_audio_search::Source::JamendoMusic,
         id: track_id, title: title.clone(), artist: artist.clone(),
         duration_secs: 0.0, license: license.clone(), license_url,
-        commercial_ok: true, preview_url, download_url, page_url, image_url: String::new(), tags: Vec::new(), pace: String::new(),
+        commercial_ok: true, preview_url, download_url, page_url, image_url: String::new(), tags: Vec::new(), pace: String::new(), original: None,
     };
     let project = ctx.shared.project.lock().ok().and_then(|p| p.path.clone());
     let path = klipp_audio_search::download_track(&track, &music_destination(project.as_deref()))
