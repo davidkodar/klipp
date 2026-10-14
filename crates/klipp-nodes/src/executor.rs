@@ -2252,6 +2252,28 @@ impl GraphExecutor {
                 if chain_tail == Some(picture) {
                     self.draw_keys_of(picture, chain_slot_a, &mut pending_keys, &mut served, graph, width, height);
                 }
+                // A key of a picture handed to the run (#1265): drawn on
+                // the GPU from that picture, uploaded once, while a chain is
+                // live to record it, started here on the effect's own input
+                // if none is; else keyed on the CPU below.
+                let side = node_by_id.get(&picture).and_then(|n| side_key_of(n));
+                if side.is_some() && chain_tail.is_none() && !self.key_mattes.contains_key(&key) {
+                    if let Some(input) = graph.input_of(node_id, 0).filter(|i| !composite_port1.contains_key(i)) {
+                        let input_is_source = node_by_id.get(&input).is_some_and(|n| n.kind == NodeKind::Source);
+                        if let Some(pixels) = picture_pixels(&node_outputs, input, input_is_source, source_frame) {
+                            if self.begin_chain_from(pixels, width, height) {
+                                chain_tail = Some(input);
+                                chain_slot_a = true;
+                                chain_start_count += 1;
+                            }
+                        }
+                    }
+                }
+                if chain_tail.is_some() && !self.key_mattes.contains_key(&key) {
+                    if let Some((readers, Some(side))) = pending_keys.iter().find(|k| k.node == key).map(|k| (k.readers, node_by_id.get(&picture).and_then(|n| side_key_of(n)))) {
+                        self.draw_side_key(key, &side, readers, graph, clip_time_secs, width, height);
+                    }
+                }
                 pending_keys.retain(|k| k.node != key);
                 if !self.key_mattes.contains_key(&key) {
                     let key_node = *node_by_id.get(&key).expect("a graph node");
@@ -2460,7 +2482,19 @@ impl GraphExecutor {
             // first reader (below). Starting a chain here would skip what
             // a chain start keeps for a secondary or a composite.
             if let Some(picture) = pending_keys.iter().find(|k| k.node == node_id).map(|k| k.picture) {
-                if chain_tail == Some(picture) {
+                // Of a picture handed to the run (#1265): drawn now from it,
+                // while a chain is live to record the draw.
+                let side = node_by_id.get(&picture).and_then(|n| side_key_of(n));
+                if let (Some(side), true) = (side, chain_tail.is_some()) {
+                    let readers = pending_keys.iter().find(|k| k.node == node_id).map_or(0, |k| k.readers);
+                    self.draw_side_key(node_id, &side, readers, graph, clip_time_secs, width, height);
+                    if self.key_mattes.contains_key(&node_id) {
+                        pending_keys.retain(|k| k.node != node_id);
+                    }
+                }
+                if self.key_mattes.contains_key(&node_id) {
+                    // Drawn above: handled with the other GPU keys below.
+                } else if chain_tail == Some(picture) {
                     self.draw_keys_of(picture, chain_slot_a, &mut pending_keys, &mut served, graph, width, height);
                 } else {
                     node_outputs.insert(node_id, Arc::new(Vec::new()));
@@ -3419,6 +3453,26 @@ impl GraphExecutor {
                 self.run_key_draws += 1;
                 *served.entry(picture).or_insert(0) += 1;
             }
+        }
+    }
+
+    /// The key node `key`, reading the side picture `side`, drawn on the GPU
+    /// into a matte for its `readers` (#1265): the picture uploaded into a
+    /// kept slot, keyed from there, and the slot given back. Nothing is
+    /// drawn without a GPU, the picture, a slot or a plate; the key is then
+    /// keyed on the CPU by its reader.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_side_key(&mut self, key: NodeId, side: &crate::side_picture::SideKey, readers: usize, graph: &NodeGraph, clip_time_secs: f64, width: u32, height: u32) {
+        let Some(node) = graph.nodes.iter().find(|n| n.id == key) else { return };
+        let params = params_for_frame(node, clip_time_secs);
+        let Some(kept) = self.upload_side_picture(side, width, height) else { return };
+        let matte = self.key_from_kept(&node.kind, &params, &kept, width, height);
+        if let Some(gpu) = self.gpu.as_mut() {
+            gpu.release_picture(kept);
+        }
+        if let Some(matte) = matte {
+            self.key_mattes.insert(key, (matte, readers));
+            self.run_key_draws += 1;
         }
     }
 
@@ -9279,4 +9333,10 @@ fn domain_decline(graph: &NodeGraph, fault: &crate::domains::DomainFault) -> cra
         reason: "its pictures' colour domains don't match".into(),
         why: format!("{} (at {path})", fault.why),
     }
+}
+
+/// The side picture a `SidePicture` node outputs, by its key or the effect
+/// it holds (#1746, #1265).
+fn side_key_of(n: &Node) -> Option<crate::side_picture::SideKey> {
+    (n.kind == NodeKind::SidePicture).then(|| n.params.side_picture.clone().or_else(|| n.params.effects.iter().find_map(crate::side_picture::SideKey::of))).flatten()
 }

@@ -25,6 +25,9 @@ pub enum SideKey {
     /// What the tracks below the clip's composite to, seen through the
     /// clip's placement.
     Below,
+    /// The picture the clip's grade reads, for a key that reads it in a run
+    /// apart from that grade (#1265).
+    GradeInput,
 }
 
 impl SideKey {
@@ -42,6 +45,7 @@ impl SideKey {
         match self {
             Self::Media { .. } => crate::decline::effect_name(&klipp_effects::BuiltinEffect::MediaSource { media: String::new(), offset: 0.0 }),
             Self::Below => crate::decline::effect_name(&klipp_effects::BuiltinEffect::ClipBelow {}),
+            Self::GradeInput => "Grade input".into(),
         }
     }
 }
@@ -148,5 +152,61 @@ mod tests {
         let kept = ex.upload_side_picture(&key("a"), W, H).expect("kept");
         let back = ex.gpu_pipeline_or_init().unwrap().read_picture(&kept, (W * H) as usize).expect("read back");
         assert_eq!(back, picture());
+    }
+
+    /// #1265: a key reading the picture the grade reads, handed to a run
+    /// apart from that grade (`SideKey::GradeInput`), masks an effect the
+    /// same on the GPU as on the CPU: Source -> blur, the blur masked by a
+    /// luma key of the side picture. On the GPU the key is drawn there, from
+    /// the side picture uploaded once. Put and cleared with the run's other
+    /// pictures.
+    #[test]
+    fn a_key_of_the_grades_input_masks_an_effect_alike_on_the_cpu_and_the_gpu() {
+        let (w, h) = (64u32, 32u32);
+        let blur = node(2, NodeKind::Effect, NodeParams {
+            effects: vec![klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 }],
+            effect_blend: Some(crate::params::EffectBlend { mix: 1.0, channel: klipp_effects::mask_mix::MaskChannel::Luminance }),
+            ..Default::default()
+        });
+        let side = node(4, NodeKind::SidePicture, NodeParams { side_picture: Some(SideKey::GradeInput), ..Default::default() });
+        let key = node(5, NodeKind::LumaKey, NodeParams { luma_key: Some(klipp_core::LumaKeySettings { enabled: true, low: 0.4, high: 1.0, soft: 0.1, invert: false }), ..Default::default() });
+        let nodes = vec![node(1, NodeKind::Source, NodeParams::default()), blur, node(3, NodeKind::Output, NodeParams::default()), side, key];
+        let e = |a: u128, b: u128, port: u8| Edge { from_node: NodeId::from_u128(a), from_port: 0, to_node: NodeId::from_u128(b), to_port: port };
+        let g = NodeGraph { output_node_id: NodeId::from_u128(3), nodes, edges: vec![e(1, 2, 0), e(2, 3, 0), e(1, 4, 0), e(4, 5, 0), e(5, 2, 1)], node_positions: Default::default(), working_space_override: None, frames: vec![], sticky_notes: vec![] };
+        // A checker to blur, and a grade input bright on the left half only.
+        let source: Vec<f32> = (0..w * h).flat_map(|i| { let v = if (i % w / 4 + i / w / 4) % 2 == 0 { 0.8 } else { 0.1 }; [v, v, v, 1.0] }).collect();
+        let input: Vec<f32> = (0..w * h).flat_map(|i| { let v = if i % w < w / 2 { 0.9 } else { 0.05 }; [v, v, v, 1.0] }).collect();
+        let run = |ex: &mut GraphExecutor| {
+            ex.clear_side_pictures();
+            ex.put_side_picture(SideKey::GradeInput, Ok(Arc::new(input.clone())));
+            ex.execute_linear(&source, &g, w, h, 0.0, 0, None, None).unwrap().0
+        };
+        let mut cpu = GraphExecutor::new_cpu_only();
+        let want = run(&mut cpu);
+        // Control: the key reads the side picture, not the source: the left
+        // half is blurred, the right half left as it was.
+        let at = |v: &[f32], x: u32, y: u32| v[((y * w + x) * 4) as usize];
+        assert!((at(&want, w - 3, 5) - at(&source, w - 3, 5)).abs() < 1e-6, "outside the key, the source");
+        assert!((0..w / 2 - 4).any(|x| (at(&want, x, 5) - at(&source, x, 5)).abs() > 0.05), "inside, the blur");
+        let mut gpu = GraphExecutor::new();
+        if gpu.gpu_pipeline_or_init().is_none() {
+            assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none_or(|v| v != "1"), "required, but there is no GPU");
+            eprintln!("UNVERIFIED: no GPU");
+            return;
+        }
+        let got = run(&mut gpu);
+        let worst = got.iter().zip(&want).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        assert!(worst < 2e-3, "GPU against CPU: {worst}");
+        // Drawn on the GPU (a chain dispatch), not keyed on the CPU: only the
+        // Source and the side node ran there.
+        let stats = gpu.last_run_chain_stats();
+        assert!(stats.extends >= 1 && stats.cpu_nodes == 2, "{stats:?}");
+        // Control: with no picture handed to the run the key can't be drawn
+        // there; its reader keys it on the CPU (from the side node's clear
+        // picture, declined).
+        gpu.clear_side_pictures();
+        let _ = gpu.execute_linear(&source, &g, w, h, 0.0, 0, None, None).unwrap();
+        assert_eq!(gpu.last_run_chain_stats().cpu_nodes, 3, "{:?}", gpu.last_run_chain_stats());
+        assert!(gpu.last_run_declines().iter().any(|d| d.kind == NodeKind::SidePicture), "{:?}", gpu.last_run_declines());
     }
 }

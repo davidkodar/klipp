@@ -349,44 +349,85 @@ fn a_masked_effect_on_an_adjustment_layer_is_blended_in_its_plan() {
     case("an adjustment layer", build, false, false, 1e-5);
 }
 
-/// A grade whose matte reads its picture: a luma key beside the chain
-/// (Source -> Exposure -> Output, a LumaKey off the source that nothing in
-/// the grade reads), and the key's id.
-fn grade_with_key() -> (NodeGraph, NodeId) {
+/// A grade with a luma key beside its chain, reading the grade's Source
+/// (the picture the grade reads), or, when `of_graded`, the Exposure's
+/// output (a picture the grade made); and the key's id.
+fn grade_with_key(of_graded: bool) -> (NodeGraph, NodeId) {
     let (mut g, window) = grade_with_window(false);
     let k = g.nodes.iter_mut().find(|n| n.id == window).unwrap();
     k.kind = NodeKind::LumaKey;
     k.params = NodeParams { luma_key: Some(klipp_core::LumaKeySettings { enabled: true, low: 0.3, high: 0.6, soft: 0.1, ..Default::default() }), ..Default::default() };
+    if of_graded {
+        let exposure = g.nodes.iter().find(|n| n.kind == NodeKind::Exposure).unwrap().id;
+        for e in g.edges.iter_mut().filter(|e| e.to_node == window) {
+            e.from_node = exposure;
+        }
+    }
     (g, window)
 }
 
 /// A media clip graded with a key beside its chain, its blur set as
 /// `blend` by the key, after the test plug-in.
-fn keyed_after_a_plugin(blend: Blend) -> Sequence {
+fn keyed_after_a_plugin(blend: Blend, of_graded: bool) -> Sequence {
     let mut c = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
-    let (grade, key) = grade_with_key();
+    let (grade, key) = grade_with_key(of_graded);
     c.set_grade(grade);
     c = TestClip::of(c).effects(vec![E::GaussianBlur { radius: 5.0 }]).build();
     set_blend(&mut c, blend, key);
     with_invert(sequence(vec![vec![c]]), true)
 }
 
-/// #1265: a matte that reads the grade's picture (a key's) can't be drawn
-/// in a plan apart from that grade: it is still made in a side run and
-/// blended on the CPU, and counted so. And #1268's review: a mix that
-/// can't be blended (not finite, as a file can hold) is bypassed and said,
-/// the input left as it was, never counted as blended.
+/// The luma key's matte of the picture the grade reads (the chart), as
+/// the key draws it: grey, opaque.
+fn key_matte() -> Vec<[f32; 4]> {
+    let SourcePixels::Linear(chart) = Chart.frame(&Clip::gap(tc(0.0), tc(1.0)), 0.0, W, H).unwrap().pixels else { unreachable!() };
+    let k = klipp_core::LumaKeySettings { enabled: true, low: 0.3, high: 0.6, soft: 0.1, ..Default::default() };
+    let luma = klipp_color::linear::luma_coefs(klipp_core::WorkingColorspace::default());
+    let encode = |c: f32| klipp_color::transfer::linear_to_srgb(c);
+    chart.chunks_exact(4).map(|p| {
+        let m = klipp_color::luma_key::luma_key_value([encode(p[0]), encode(p[1]), encode(p[2])], &k, luma);
+        [m, m, m, 1.0]
+    }).collect()
+}
+
+/// #1265: a key of the picture the grade reads, apart from that grade, is
+/// drawn in the effect's own plan from that picture handed to the run, on
+/// the GPU where there is one: blended there, not on the CPU, and the
+/// oracle's, the key's matte of the grade's input over the input and the
+/// effect whole.
 #[test]
-fn a_key_apart_from_its_grade_is_blended_on_the_cpu_and_a_bad_mix_bypassed() {
+fn a_key_of_the_grades_input_apart_from_it_is_blended_in_its_plan() {
     for on_gpu in if gpu() { vec![false, true] } else { vec![false] } {
-        let (input, _) = render(&keyed_after_a_plugin(Blend::Off), on_gpu, true);
-        let (whole, _) = render(&keyed_after_a_plugin(Blend::Whole), on_gpu, true);
-        let (keyed, stats) = render(&keyed_after_a_plugin(Blend::Masked), on_gpu, true);
+        let (input, _) = render(&keyed_after_a_plugin(Blend::Off, false), on_gpu, true);
+        let (whole, _) = render(&keyed_after_a_plugin(Blend::Whole, false), on_gpu, true);
+        let (keyed, stats) = render(&keyed_after_a_plugin(Blend::Masked, false), on_gpu, true);
+        assert_eq!(blend_counters(&stats), (1, 0, 0), "gpu {on_gpu}: the key blended in its plan");
+        if on_gpu {
+            assert_eq!((stats.effects_on_cpu, stats.effects_on_cpu_kernels), (0, 0), "the plan ran on the GPU");
+        }
+        let want = oracle(&input, &whole, Some(&key_matte()));
+        assert!(worst(&keyed, &want) <= 2.0 * BAR, "gpu {on_gpu}: {} from the oracle", worst(&keyed, &want));
+        // Control: the key keys some of the frame, so the blend is seen.
+        assert!(worst(&keyed, &input) > 0.01 && worst(&keyed, &whole) > 0.01, "gpu {on_gpu}: neither the input nor the effect whole");
+    }
+}
+
+/// A key of a picture the grade made can't be drawn apart from that grade:
+/// it is still made in a side run and blended on the CPU, and counted so.
+/// And #1268's review: a mix that can't be blended (not finite, as a file
+/// can hold) is bypassed and said, the input left as it was, never counted
+/// as blended.
+#[test]
+fn a_key_of_the_graded_picture_is_blended_on_the_cpu_and_a_bad_mix_bypassed() {
+    for on_gpu in if gpu() { vec![false, true] } else { vec![false] } {
+        let (input, _) = render(&keyed_after_a_plugin(Blend::Off, true), on_gpu, true);
+        let (whole, _) = render(&keyed_after_a_plugin(Blend::Whole, true), on_gpu, true);
+        let (keyed, stats) = render(&keyed_after_a_plugin(Blend::Masked, true), on_gpu, true);
         assert_eq!(blend_counters(&stats), (0, 1, 0), "gpu {on_gpu}: a key blended on the CPU");
         // Control: the key keys some of the frame, so the blend is seen.
         assert!(worst(&keyed, &input) > 0.01 && worst(&keyed, &whole) > 0.01, "gpu {on_gpu}: neither the input nor the effect whole");
 
-        let mut seq = keyed_after_a_plugin(Blend::Masked);
+        let mut seq = keyed_after_a_plugin(Blend::Masked, true);
         let c = &mut seq.tracks[0].clips[0];
         let mut stored = (*c.picture_v2().unwrap()).clone();
         // The blur, its only effect, by the picture's own node for it.
