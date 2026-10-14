@@ -1110,6 +1110,15 @@ pub enum ControlCommand {
         /// Only instrumental tracks.
         #[serde(default)]
         instrumental: bool,
+        /// Only tracks whose licence allows cutting and fitting: no ND
+        /// (#1931).
+        #[serde(default)]
+        edits_only: bool,
+        /// Only these licence families: "CC0", "CC BY", "CC BY-SA",
+        /// "CC BY-NC", "CC BY-NC-SA", "CC BY-ND", "CC BY-NC-ND" ("by-sa"
+        /// as well). Empty: any (#1931).
+        #[serde(default)]
+        licences: Vec<String>,
         /// Listen to results' previews (at most 5): the first this-many,
         /// or those with these track ids (#795). Tempo, how sure the beat
         /// is, and the energy over the track, read without importing

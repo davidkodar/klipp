@@ -571,6 +571,8 @@ macro_rules! sender {
 
 mod requests;
 pub use requests::output::{export_presets, ENCODER_SPEEDS};
+/// The licence families a music search narrows to (#1931).
+pub use klipp_audio_search::LICENCE_FAMILIES;
 
 // A read inside a batch would answer before the writes it follows
 // are applied, which is a lie; refuse it.
