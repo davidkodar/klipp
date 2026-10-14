@@ -380,6 +380,16 @@ pub const SOURCE_FLOOR_SLACK: f32 = 3.0;
 /// move a rail's share by.
 pub const SOURCE_RAIL_SLACK: f32 = 1.0;
 
+/// How far toward green or magenta (a*) a light can move a grey surface:
+/// the least-coloured quarter of a frame further out than this is not
+/// read as a white reference (#1590).
+pub const TINT_PLAUSIBLE: f32 = 8.0;
+
+/// How far a frame's highlights must sit above a dark face for the face
+/// to read as lit from behind (#1590): a silhouette or rim light, which
+/// the frame alone cannot tell from an underexposed face.
+pub const BACKLIT_GAP: f32 = 40.0;
+
 /// How much more of a screen recording's flat picture may band than the
 /// file's own and still be the app's drawing: half the warning's
 /// threshold, under which a reading is within the material's own spread
@@ -781,7 +791,14 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
     // Lab units; a teal backdrop sits further out than that and is a
     // backdrop, not a white reference.
     let candidate_chroma = median(&mut na.iter().zip(&nb).map(|(a, b)| (a * a + b * b).sqrt()).collect::<Vec<_>>());
-    let neutral_solid = !na.is_empty() && (enough || (spread_a < 6.0 && spread_b < 6.0 && candidate_chroma < 18.0));
+    // …and a light moves a grey along blue–yellow: its green–magenta
+    // shift stays within a few units, under fluorescent tubes too.
+    // Whichever way the neutrals were found, where the greys went or the
+    // least-coloured quarter, a reading further toward green or magenta
+    // than that is a subject's colour — sea, foliage, a painted wall —
+    // not a lamp's (#1590).
+    let tint = median(&mut na.clone());
+    let neutral_solid = !na.is_empty() && tint.abs() < TINT_PLAUSIBLE && (enough || (spread_a < 6.0 && spread_b < 6.0 && candidate_chroma < 18.0));
     ls.sort_by(|a, b| a.total_cmp(b));
     chromas.sort_by(|a, b| a.total_cmp(b));
     let nn = n.max(1) as f32;
@@ -1800,7 +1817,19 @@ pub fn judge(m: &FrameMeasure, t: &LookTarget) -> Vec<Finding> {
         // face off the top.
         let face_l = m.faces.iter().find(|f| f.readable()).map(|f| f.median.l);
         match (face_l, t.skin_l) {
-            (Some(l), Some(want)) => out.push(graded("skin_exposure", l, want, 7.0, 14.0, format!("the face is L* {l:.0} (target {want:.0}; the frame's median is {:.0})", m.l_p50), "exposure, until the face sits right — the frame's median follows the picture, not a number")),
+            (Some(l), Some(want)) => {
+                let mut f = graded("skin_exposure", l, want, 7.0, 14.0, format!("the face is L* {l:.0} (target {want:.0}; the frame's median is {:.0})", m.l_p50), "exposure, until the face sits right — the frame's median follows the picture, not a number");
+                // A dark face against a bright background is lit from
+                // behind: a silhouette or rim light on purpose, or an
+                // underexposed face. Said both ways, as a warning a
+                // review can keep for the shot (#1590).
+                if f.verdict == Verdict::Fail && l < want && m.l_p95 - l >= BACKLIT_GAP {
+                    f.verdict = Verdict::Warn;
+                    f.what = format!("backlit: the face is L* {l:.0} against a background at L* {:.0} (target {want:.0}) — a silhouette or rim light, or an underexposed face", m.l_p95);
+                    f.fix = "if the face should read, lift it on its own (a window or a secondary) rather than the whole frame; if it is a silhouette, accept it for the shot";
+                }
+                out.push(f);
+            }
             _ => {
                 if let Some(mid) = t.mid_l {
                     out.push(graded("mid_grey", m.l_p50, mid, 6.0, 12.0, format!("median L* {:.0} (target {mid:.0})", m.l_p50), "exposure or gamma"));
@@ -2660,6 +2689,41 @@ mod match_tests {
         let dim = with_face(flat(25.0, 0.0, 0.0), Lab { l: 46.0, a: 14.0, b: 16.0 });
         let d = match_distance(&lit, &dim);
         assert!(d > MATCH_WARN, "half a stop down is a mismatch: {d:.2}");
+    }
+
+    /// #1590: a face lit from behind against a bright sky is a warning
+    /// naming the backlight; the same face in a flat, dark frame is still
+    /// a fault.
+    #[test]
+    fn a_backlit_face_is_said_as_backlit() {
+        let t = LookTarget::unbriefed();
+        let mut sunset = with_face(flat(50.0, 0.0, 0.0), Lab { l: 30.0, a: 14.0, b: 16.0 });
+        sunset.l_p95 = 88.0;
+        let exposure = |m: &FrameMeasure| judge(m, &t).into_iter().find(|f| f.rule == "skin_exposure").expect("a face exposure");
+        let f = exposure(&sunset);
+        assert_eq!(f.verdict, Verdict::Warn, "{f:?}");
+        assert!(f.what.starts_with("backlit"), "{}", f.what);
+        let mut dim = sunset.clone();
+        dim.l_p95 = 45.0;
+        assert_eq!(exposure(&dim).verdict, Verdict::Fail, "a dark face under a flat light");
+    }
+
+    /// #1590: with nothing truly neutral, the least-coloured quarter is a
+    /// white reference only where a light could have put it: pale sea
+    /// water sits too far toward green, a grey wall under a warm lamp
+    /// does not.
+    #[test]
+    fn the_sea_is_not_taken_for_a_neutral() {
+        let frame = |c: Lab| {
+            let [r, g, b] = lab_to_srgb8(c);
+            std::iter::repeat_n([r, g, b, 255u8], 120 * 80).flatten().collect::<Vec<u8>>()
+        };
+        let sea = measure_frame(&frame(Lab { l: 60.0, a: -13.0, b: -2.0 }), 120, 80, &[]);
+        assert!(!sea.neutral_solid, "sea read as a white reference: a* {:.1}", sea.cast_a);
+        let wall = measure_frame(&frame(Lab { l: 60.0, a: 3.0, b: 12.0 }), 120, 80, &[]);
+        assert!(wall.neutral_solid, "a grey wall under a warm lamp is a white reference");
+        let t = LookTarget::unbriefed();
+        assert_ne!(judge(&sea, &t).iter().find(|f| f.rule == "cast").map(|f| f.verdict), Some(Verdict::Fail));
     }
 
     #[test]
