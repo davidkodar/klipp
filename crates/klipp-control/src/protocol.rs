@@ -41,11 +41,44 @@ fn type_style_fields() -> Vec<String> {
     }
 }
 
+/// The brief's field names, every one, the ones left out when empty
+/// included (`language`): what `set_brief` and `update_brief` both hold
+/// a brief to (#1914, #1915).
+pub(crate) fn brief_fields() -> Vec<String> {
+    let full = klipp_timeline::Brief { language: Some("en".into()), ..Default::default() };
+    match serde_json::to_value(full) {
+        Ok(serde_json::Value::Object(fields)) => fields.keys().cloned().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// `name` refused as a field of the brief, with the field it likely
+/// means and the ones there are.
+pub(crate) fn unknown_brief_field(name: &str, known: &[String]) -> String {
+    let meant = match name {
+        "target_duration_secs" | "target_duration" | "duration_secs" | "duration" | "length_secs" | "length" => Some("target_secs"),
+        "target_lufs" | "lufs" | "loudness" | "integrated_lufs" => Some("loudness_lufs"),
+        "lang" | "speech_language" | "transcript_language" => Some("language"),
+        "colors" | "colours" | "brand_colours" => Some("brand_colors"),
+        _ => None,
+    };
+    let hint = meant.map_or(String::new(), |m| format!(" (did you mean {m:?}?)"));
+    format!("{name:?} is not a field of the brief{hint}; it has {}", known.join(", "))
+}
+
 /// A brief from JSON, its type styles and their motion held to the known
 /// fields (a field the style doesn't keep is refused by name, never
 /// dropped): what `set_brief` reads, and what `update_brief` reads once
 /// merged.
 pub(crate) fn brief_from_value(value: serde_json::Value) -> Result<klipp_timeline::Brief, String> {
+    // A field the brief doesn't keep is refused by name, as an update
+    // refuses it, never dropped (#1914).
+    if let Some(fields) = value.as_object() {
+        let known = brief_fields();
+        if let Some(name) = fields.keys().find(|k| !known.contains(k)) {
+            return Err(unknown_brief_field(name, &known));
+        }
+    }
     if let Some(styles) = value.get("type_styles").and_then(serde_json::Value::as_array) {
         let known = type_style_fields();
         for style in styles {
@@ -1504,6 +1537,24 @@ mod tests {
                 "title": {"text": "Hi", "exit": {"kind": "fade", "durations_secs": 1.0}}}]}
         });
         assert!(serde_json::from_value::<Request>(plan).is_err());
+    }
+
+    /// #1914: a brief given whole is held to its fields as a merge is: a
+    /// misspelt one is refused, naming the field it likely means, not
+    /// dropped. #1915: `language` is one of them.
+    #[test]
+    fn a_whole_brief_refuses_a_field_it_doesnt_keep() {
+        let brief = |b: serde_json::Value| serde_json::from_value::<Request>(json!({"method": "set_brief", "brief": b}));
+        let err = brief(json!({"title": "Swansong", "target_duration_secs": 60})).unwrap_err().to_string();
+        assert!(err.contains("target_duration_secs") && err.contains("\"target_secs\""), "{err}");
+        let err = brief(json!({"target_lufs": -14})).unwrap_err().to_string();
+        assert!(err.contains("\"loudness_lufs\""), "{err}");
+        let kept = brief(json!({"target_secs": 60, "loudness_lufs": -14, "language": "sv"})).unwrap();
+        let super::ControlCommand::SetBrief { brief: b } = kept.command else { panic!("a set_brief") };
+        assert_eq!((b.target_secs, b.loudness_lufs, b.language.as_deref()), (Some(60.0), Some(-14.0), Some("sv")));
+        // Every field the brief writes is one it reads.
+        let all = super::brief_fields();
+        assert!(all.iter().any(|f| f == "language") && all.iter().any(|f| f == "look"), "{all:?}");
     }
 
     /// #1567: a type style keeps its shadow, and a field it doesn't keep
