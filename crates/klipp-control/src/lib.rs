@@ -1006,18 +1006,18 @@ mod grade_limit_tests {
     #[test]
     fn knobs_stay_within_reach_of_where_the_shot_started() {
         let start = PrimaryStep { saturation: 1.0, ..Default::default() };
-        let greedy = PrimaryStep { saturation: 0.3, temperature: 5.0, exposure: 0.1, ..Default::default() };
+        let greedy = PrimaryStep { saturation: 0.3, temperature: 9.0, exposure: 0.1, ..Default::default() };
         let gentle = GradeLimits::named("gentle").unwrap();
         let (one, held) = gentle.clamp(&start, &start, &greedy);
         assert!((one.saturation - 1.12).abs() < 1e-4 && held == vec!["saturation"], "{one:?} {held:?}");
         // A second round asking for the same is held where the first was.
         let (two, held) = gentle.clamp(&start, &one, &greedy);
-        assert!((two.saturation - 1.12).abs() < 1e-4 && (two.temperature - 8.0).abs() < 1e-4, "{two:?}");
+        assert!((two.saturation - 1.12).abs() < 1e-4 && (two.temperature - 15.0).abs() < 1e-4, "{two:?}");
         assert_eq!(held, vec!["temperature", "saturation"]);
         let bold = GradeLimits::named("bold").unwrap();
         assert!((bold.clamp(&start, &start, &greedy).0.saturation - 1.3).abs() < 1e-4, "bold reaches the 1.3x gentle refused");
         assert!(GradeLimits::named("wild").is_err());
-        assert_eq!(describe_step(&start, &one), "exposure +0.10, temperature +5.00, saturation x1.12");
+        assert_eq!(describe_step(&start, &one), "exposure +0.10, temperature +9.00, saturation x1.12");
     }
 }
 
