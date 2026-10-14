@@ -1894,3 +1894,58 @@ fn a_subject_bound_grade_follows_its_media() {
     let _ = std::fs::remove_dir_all(all);
     let _ = std::fs::remove_dir_all(none);
 }
+
+/// A grade bound to a tracked subject, on two 2 s clips meeting in a
+/// dissolve: the outgoing one is read 0.2 s past its media's end, the
+/// incoming 0.2 s before its start. Each matte is read at the media's
+/// last or first frame there, as the picture is, on both routes, with
+/// nothing declined; the export's check counts those frames there too.
+#[test]
+fn a_grade_matte_read_past_the_media_ends_is_held_there() {
+    use klipp_nodes::{graph::{Edge, Node, NodeGraph, NodeId}, kinds::NodeKind, matte_sequence, params::NodeParams};
+    let manifest = matte_sequence::Manifest { format: matte_sequence::FORMAT, fps: 25.0, width: 32, height: 18, rotation: 0, model: "test".into(), model_bytes: 0, provider: "cpu".into(), algorithm: 1, steadied: true };
+    let dir = std::env::temp_dir().join(format!("klipp-grade-matte-ends-{}-{}", std::process::id(), ClipId::new().0));
+    matte_sequence::create(&dir, &manifest).unwrap();
+    // The media's frames, 0 to 1.96 s.
+    for f in 0..50i64 {
+        matte_sequence::put(&dir, &manifest, f * 40_000, &[255; 32 * 18]).unwrap();
+    }
+    let graded = |c: &mut Clip| {
+        let mut g = NodeGraph::default();
+        let corr = g.ensure_corrector();
+        g.nodes.iter_mut().find(|n| n.id == corr).unwrap().params.saturation = Some(0.0);
+        let matte = NodeId::new_v4();
+        let params = NodeParams { matte_subject: Some(klipp_nodes::SubjectMatte::Subject), ..Default::default() };
+        g.nodes.push(Node { id: matte, kind: NodeKind::ExternalMatte, label: "Subject".into(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+        g.edges.push(Edge { from_node: matte, from_port: 0, to_node: corr, to_port: 1 });
+        c.set_grade(g);
+    };
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    let mut v = Track::new("V1", TrackKind::Video);
+    let mut a = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 2.0);
+    let mut b = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 2.0, 4.0);
+    graded(&mut a);
+    graded(&mut b);
+    let mut frames = HashMap::new();
+    frames.insert(a.id, (W, H, picture(0.0)));
+    frames.insert(b.id, (W, H, picture(0.5)));
+    v.transitions.push(klipp_timeline::Transition { id: klipp_core::TransitionId::new(), clip_a_id: a.id, clip_b_id: b.id, kind: klipp_core::TransitionKind::CrossDissolve, duration: tc(0.4), alignment: Default::default(), user_params: Default::default() });
+    v.clips = vec![a, b];
+    seq.tracks = vec![v];
+    let mut src = Shaped { frames, dir: dir.clone(), length: Some(2.0) };
+    // 1.8 s: the incoming clip at -0.2 s; 2.2 s: the outgoing at 2.2 s.
+    for t in [1.8, 2.2] {
+        let mut r = renderer();
+        let (_, found) = r.render_inspected(&seq, tc(t), W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
+        assert!(found.declines.iter().all(|d| !d.fails()), "CPU at {t} s: {:?}", found.declines);
+        match r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut src, RenderOptions::default()) {
+            Some(_) => assert!(r.frame_declines().iter().all(|d| !d.fails()), "GPU at {t} s: {:?}", r.frame_declines()),
+            None => assert!(klipp_effects::gpu::GpuEffectsPipeline::new().is_none(), "the GPU stack declined: {:?}", r.last_decline()),
+        }
+    }
+    let last = klipp_compose::subject_matte::last_frame_secs(2.0, 25.0);
+    assert!(klipp_compose::subject_matte::uncovered_with(&seq, |_, _| Some(dir.clone()), |_| Some(last)).is_empty(), "the check holds them at the ends too");
+    assert!(!klipp_compose::subject_matte::uncovered_with(&seq, |_, _| Some(dir.clone()), |_| None).is_empty(), "unheld, the outgoing handle could never be covered");
+    let _ = std::fs::remove_dir_all(dir);
+}

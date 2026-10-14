@@ -124,6 +124,14 @@ pub fn transition_subjects_with(seq: &Sequence, last_of: impl Fn(&Clip) -> Optio
 /// every sequence frame it is drawn at, through its speed, ramp and
 /// direction, and the frames either side a blend reads, never before 0.
 pub fn source_times(seq: &Sequence, clip: &Clip) -> Vec<f64> {
+    source_times_held(seq, clip, None)
+}
+
+/// [`source_times`], each held to the media's frames: before its start
+/// at its first, past its end at its last (`last`, its last frame in
+/// seconds, when known), where the decoder shows the picture and a
+/// matte is read.
+pub fn source_times_held(seq: &Sequence, clip: &Clip, last: Option<f64>) -> Vec<f64> {
     let fps = seq.fps.as_f64();
     let (start, end) = span(seq, clip);
     let step = klipp_core::RationalTime::from_frames(1, seq.fps.rate());
@@ -139,7 +147,14 @@ pub fn source_times(seq: &Sequence, clip: &Clip) -> Vec<f64> {
         out.push((lo - frame).max(0.0));
         out.push(hi + frame);
     }
-    out.retain(|s| *s >= 0.0);
+    match last {
+        Some(last) => {
+            for s in &mut out {
+                *s = s.max(0.0).min(last);
+            }
+        }
+        None => out.retain(|s| *s >= 0.0),
+    }
     out
 }
 
@@ -213,7 +228,7 @@ pub struct Uncovered {
 /// covered. `last_of` is the clip's media's last frame, in seconds
 /// ([`transition_subjects_with`]).
 pub fn uncovered_with(seq: &Sequence, dir_of: impl Fn(&Clip, u32) -> Option<PathBuf>, last_of: impl Fn(&Clip) -> Option<f64>) -> Vec<Uncovered> {
-    let mut out = uncovered(seq);
+    let mut out = uncovered_held(seq, &last_of);
     // Grades bound to a tracked subject (#1881): its folder by the media
     // as linked now; none found is none covered.
     for clip in seq.tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| c.enabled) {
@@ -221,7 +236,7 @@ pub fn uncovered_with(seq: &Sequence, dir_of: impl Fn(&Clip, u32) -> Option<Path
         if models.is_empty() {
             continue;
         }
-        let times = source_times(seq, clip);
+        let times = source_times_held(seq, clip, last_of(clip));
         let (from_secs, to_secs) = times.iter().fold((f64::MAX, f64::MIN), |(a, b), t| (a.min(*t), b.max(*t)));
         for model in models {
             let folder = dir_of(clip, model).unwrap_or_default();
@@ -231,7 +246,7 @@ pub fn uncovered_with(seq: &Sequence, dir_of: impl Fn(&Clip, u32) -> Option<Path
             }
         }
     }
-    for ts in transition_subjects_with(seq, last_of) {
+    for ts in transition_subjects_with(seq, &last_of) {
         let Some(clip) = seq.tracks.iter().find_map(|t| t.find_clip(ts.clip)) else { continue };
         let folder = dir_of(clip, ts.model).unwrap_or_default();
         let (covered, needed) = coverage(&folder, &ts.times).unwrap_or((0, ts.times.len()));
@@ -247,6 +262,12 @@ pub fn uncovered_with(seq: &Sequence, dir_of: impl Fn(&Clip, u32) -> Option<Path
 /// source times a render asks it for: what an export checks before its
 /// first frame.
 pub fn uncovered(seq: &Sequence) -> Vec<Uncovered> {
+    uncovered_held(seq, |_| None)
+}
+
+/// [`uncovered`], each clip's times held to its media's frames (`last_of`,
+/// its media's last frame: [`source_times_held`]).
+fn uncovered_held(seq: &Sequence, last_of: impl Fn(&Clip) -> Option<f64>) -> Vec<Uncovered> {
     let mut out = Vec::new();
     for track in &seq.tracks {
         for clip in track.clips.iter().filter(|c| c.enabled) {
@@ -254,7 +275,7 @@ pub fn uncovered(seq: &Sequence) -> Vec<Uncovered> {
             if folders.is_empty() {
                 continue;
             }
-            let times = source_times(seq, clip);
+            let times = source_times_held(seq, clip, last_of(clip));
             let (from_secs, to_secs) = times.iter().fold((f64::MAX, f64::MIN), |(a, b), t| (a.min(*t), b.max(*t)));
             for folder in folders {
                 if let Some((covered, needed)) = coverage(&folder, &times) {

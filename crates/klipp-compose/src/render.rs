@@ -883,6 +883,9 @@ pub struct Renderer {
     /// source found them from its media as linked now (#1881), for its
     /// grade's External Mattes bound to a subject.
     clip_subject_dirs: HashMap<ClipId, [Option<std::path::PathBuf>; 2]>,
+    /// The last frame of each clip's media whose grade reads a matte
+    /// sequence, seconds: read there past the media's end.
+    clip_media_last: HashMap<ClipId, f64>,
     /// Effect runs that couldn't be applied as a plan of their own and
     /// took the CPU kernels instead (`effects_by`), for the stats' counts.
     plan_misses: u64,
@@ -1047,6 +1050,7 @@ impl Renderer {
             still_generators: HashMap::new(),
             subject_mattes: HashMap::new(),
             clip_subject_dirs: HashMap::new(),
+            clip_media_last: HashMap::new(),
             assets: Box::new(klipp_analysis::assets::CacheStore::default()),
             derived: HashMap::new(),
             clip_analysis: None,
@@ -3321,9 +3325,11 @@ impl Renderer {
         g.edges.push(klipp_nodes::Edge { from_node: from, from_port: port, to_node: out, to_port: 0 });
         let (encoding, working, scale, tetrahedral) = (self.grade_encoding, self.working, self.px_scale, self.lut_tetrahedral);
         let subject_dirs = self.clip_subject_dirs.get(&clip.id).cloned().unwrap_or_default();
+        let media_last = self.clip_media_last.get(&clip.id).copied();
         self.on_cpu_executor(|r| {
             r.executor.prepare_clip(clip.grade());
             r.executor.set_current_clip_subject_mattes(subject_dirs);
+            r.executor.set_current_clip_media_last(media_last);
             r.executor.set_grade_encoding(encoding);
             r.executor.set_working_colorspace(working);
             r.executor.set_render_scale(scale);
@@ -3811,6 +3817,19 @@ impl Renderer {
         } else {
             self.clip_subject_dirs.remove(&clip.id);
         }
+        // A matte sequence, bound either way, is read at the media's last
+        // frame past its end, as the picture is.
+        let reads_sequence = clip.grade().nodes.iter().any(|n| {
+            n.kind == klipp_nodes::NodeKind::ExternalMatte && (n.params.matte_subject.is_some() || n.params.matte_image_path.as_deref().is_some_and(klipp_nodes::matte_sequence::is_sequence))
+        });
+        let last = reads_sequence.then(|| src.media_range(clip)).flatten().map(|(_, end)| {
+            let rate = src.media_fps(clip).filter(|r| *r > 0.0).unwrap_or(24.0);
+            crate::subject_matte::last_frame_secs(end, rate)
+        });
+        match last {
+            Some(last) => self.clip_media_last.insert(clip.id, last),
+            None => self.clip_media_last.remove(&clip.id),
+        };
     }
 
     fn authored_colour(&self, c: [f32; 4]) -> [f32; 4] {
@@ -4099,6 +4118,7 @@ impl Renderer {
         let t = Instant::now();
         self.executor.prepare_clip(clip.grade());
         self.executor.set_current_clip_subject_mattes(self.clip_subject_dirs.get(&clip.id).cloned().unwrap_or_default());
+        self.executor.set_current_clip_media_last(self.clip_media_last.get(&clip.id).copied());
         self.executor.set_grade_encoding(self.grade_encoding);
         self.executor.set_working_colorspace(self.working);
         self.executor.set_render_scale(self.px_scale);

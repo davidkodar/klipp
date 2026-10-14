@@ -45,7 +45,7 @@ impl KlippApp {
         let model = model_of(model_name);
         let seq = self.state.sequence();
         let Some(clip) = seq.all_clips().find(|c| c.id == clip_id).cloned() else { return };
-        let times = klipp_compose::subject_matte::source_times(seq, &clip);
+        let times = klipp_compose::subject_matte::source_times_held(seq, &clip, last_frame_of(&self.state.media_pool, &clip));
         let Some(mut item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)).cloned() else {
             self.state.toast.show("Track Subject needs a clip with a picture from a file");
             return;
@@ -264,7 +264,7 @@ impl KlippApp {
         if folders.is_empty() {
             return;
         }
-        let times = klipp_compose::subject_matte::source_times(seq, clip);
+        let times = klipp_compose::subject_matte::source_times_held(seq, clip, last_frame_of(&self.state.media_pool, clip));
         let running = self.state.tracking_subjects.get(&clip_id).and_then(|t| klipp_analysis::service::subject_matte_status(t.media)).filter(|s| matches!(s.state, klipp_analysis::service::State::Running | klipp_analysis::service::State::Queued));
         for (dir, subject) in folders {
             let (covered, needed) = match (klipp_compose::subject_matte::coverage(&dir, &times), subject) {

@@ -293,6 +293,11 @@ pub struct GraphExecutor {
     /// (#1881); cleared by every `prepare_clip`, so a run never reads
     /// another clip's.
     clip_subject_mattes: [Option<PathBuf>; 2],
+    /// The time of the current clip's media's last frame, when known: a
+    /// matte sequence is read there past the media's end, as the decoder
+    /// shows the picture (and at its first frame before its start).
+    /// Cleared by every `prepare_clip`.
+    clip_media_last: Option<f64>,
     /// The same plate already resized to the frame, keyed by path and
     /// target size. `matte_image_cache` above saves the *decode*; this
     /// saves the resize, which is a full-frame write — 33 MB at 4K — and
@@ -854,6 +859,7 @@ impl GraphExecutor {
             unreadable_images: HashSet::new(),
             matte_sequences: HashMap::new(),
             clip_subject_mattes: [None, None],
+            clip_media_last: None,
             plate_resize_cache: HashMap::new(),
             matte_cache: HashMap::new(),
             gpu_chain_preseeded: false,
@@ -943,6 +949,7 @@ impl GraphExecutor {
             unreadable_images: HashSet::new(),
             matte_sequences: HashMap::new(),
             clip_subject_mattes: [None, None],
+            clip_media_last: None,
             plate_resize_cache: HashMap::new(),
             matte_cache: HashMap::new(),
             gpu_chain_preseeded: false,
@@ -1009,6 +1016,12 @@ impl GraphExecutor {
     /// a subject (#1881). Set after `prepare_clip`, which clears them.
     pub fn set_current_clip_subject_mattes(&mut self, dirs: [Option<PathBuf>; 2]) {
         self.clip_subject_mattes = dirs;
+    }
+
+    /// The current clip's media's last frame, seconds, for its matte
+    /// sequences read past the media's end. Set after `prepare_clip`.
+    pub fn set_current_clip_media_last(&mut self, last: Option<f64>) {
+        self.clip_media_last = last;
     }
 
     pub fn set_current_clip_track_points(&mut self, points: &[klipp_core::TrackPoint]) {
@@ -1693,6 +1706,7 @@ impl GraphExecutor {
         self.curve_lut_cache.clear();
         // The last clip's subject mattes are its own (#1881).
         self.clip_subject_mattes = [None, None];
+        self.clip_media_last = None;
         for node in &graph.nodes {
             if node.kind == NodeKind::RGBCurves {
                 if let Some(curves) = &node.params.curves {
@@ -5782,7 +5796,10 @@ impl GraphExecutor {
                 // the matte; invert applies.
                 if path.is_dir() {
                     use crate::matte_sequence as seq;
-                    let secs = ctx.as_ref().map_or(clip_time_secs, |c| c.source_secs);
+                    // Held to the media's frames: its first before its
+                    // start, its last past its end, as the picture is.
+                    let secs = ctx.as_ref().map_or(clip_time_secs, |c| c.source_secs).max(0.0);
+                    let secs = self.clip_media_last.map_or(secs, |last| secs.min(last));
                     // Read once: the manifest and the frames there. A time
                     // with no frame of its own looks again, in case the
                     // pass has made it since.
