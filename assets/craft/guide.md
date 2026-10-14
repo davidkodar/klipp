@@ -248,7 +248,12 @@ exist until the plan runs.
   in_cubic, or a curve of its own as `cubic-bezier(x1, y1, x2, y2)` (CSS's
   handles: x is time within 0..1, a y above 1 overshoots); `stagger` by char, word or line, `stagger_secs` apart;
   `distance` (font sizes) for rise, drop and the slides only; `scale`
-  for grow, shrink, scale_up and scale_down only.
+  for grow, shrink, scale_up and scale_down only: grow above 1 and at
+  most 50, shrink at least 0 and below 1. Whether a grown word matte
+  fills the frame at its last frame depends on the letters (a thin one,
+  a small size or an anchor near an edge needs more scale); a plan the
+  app accepts does not show that, so look at the last frame
+  (`frame_at`) before cutting on it.
 - `volume {clip_id, keys: [{at, db}]}`: a clip's volume drawn by hand,
   levels in decibels from the clip's own level (0 as set, -9 a duck,
   -60 near silence) at timeline
@@ -609,10 +614,22 @@ exist until the plan runs.
   from one scale to another (1 as shot, up to 4). `x,y` can move the
   focus toward a frame point (-1 to 1), for a Ken Burns move on a
   still. It renders on the GPU.
-- `pan {clip_id, keys:[{secs, scale?, x?, y?}]}`: animate a crop through
+- `pan {clip_id, keys:[{secs, scale?, x?, y?, ease?}]}`: animate a crop through
   poses in the clip's own seconds. `scale` is 1 to 4, centred on frame
   point `x,y` from 0 to 1; Klipp eases between poses without crossing
-  the picture edge.
+  the picture edge. `ease` is the move into the key (see Easing below,
+  `in_out` when left out).
+- Easing, for `compose` poses, `pan` and `camera` keys and `zoom`:
+  `ease` is the curve of the move into a key from the one before:
+  `linear` (constant speed), `in` (starts slowly), `out` (settles),
+  `in_out` (slow at both ends), `expo_out` (a fast arrival that settles
+  long) or `back_out` (overshoots a little and settles back). `compose`,
+  `pan` and `camera` default to `in_out`, so each key is a rest and keys
+  a few tenths of a second apart pulse; `zoom` defaults to `linear`. For
+  one continuous move through several points give the keys after the
+  first `ease: linear`: `{op: pan, clip_id: ID, keys:[{secs:0, scale:1},
+  {secs:2, scale:1.15, x:0.45, y:0.5, ease:linear}, {secs:4, scale:1.3,
+  x:0.4, y:0.48, ease:linear}]}`.
 - `follow {clip_id, scale?, hold_secs?}`: make a pan from the beat
   sheet's spots, pushing to each event, holding, then easing out.
 - `highlight {at, secs?, x, y, w, h, kind?, color?, stroke?, track?}`:
@@ -622,7 +639,7 @@ exist until the plan runs.
 - `ramp {clip_id, from, to, secs?}`: ramp speed from `from` times to
   `to` times over timeline seconds, then hold the new speed; the clip's
   length follows. The ramp's sound is silent.
-- `compose {clip_id, poses:[{secs?, x?, y?, width?, height?, rotation_deg?, opacity?}]}`:
+- `compose {clip_id, poses:[{secs?, x?, y?, width?, height?, rotation_deg?, opacity?, ease?}]}`:
   place a picture inside the frame. One pose holds; more animate.
   A pose with no `x`, `y`, `width` or `height` keeps the clip where it
   is, as reframed or composed before: poses of `opacity` alone fade a
@@ -666,6 +683,11 @@ exist until the plan runs.
   stroke:[r,g,b,a],stroke_width,stroke_glow?:{radius,strength}}`,
   optional `keyframes:[{time_secs,pose,easing}]` and optional
   `trim:{range:{start,end,offset},keyframes:[{time_secs,range,easing}]}`.
+  `easing` takes the title easings (`linear`, `out_cubic`, …, the saved
+  `Linear`, `OutCubic`… too), `linear` when left out. A stroke drawn on
+  over a second: `trim:{keyframes:[{time_secs:0, range:{start:0, end:0,
+  offset:0}, easing:linear}, {time_secs:1, range:{start:0, end:1,
+  offset:0}, easing:linear}]}`.
   Coordinates are normalized to the title box; keyed contours must
   keep their topology. Open paths clip, closed paths wrap trim offset,
   and the glow follows only the revealed stroke. Trim leaves the fill

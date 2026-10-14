@@ -9892,6 +9892,25 @@ mod tests {
         let (left_edge, _) = on_screen(1.5, end, (0.0, 0.5));
         assert!(left_edge.abs() < 0.5, "pushed left, the picture's left edge meets the frame's: {left_edge}");
     }
+    /// #1920: the guide's continuous pan, as written there, keeps moving
+    /// through its middle key with `ease: linear`; left to its `in_out`
+    /// default, it stops there.
+    #[test]
+    fn a_linear_pan_moves_through_its_middle_key() {
+        let (seq, pool, _, a, _) = fixture();
+        let speed_at_middle = |ease: &str| {
+            let json = format!(r#"[{{"op":"pan","clip_id":"{}","keys":[{{"secs":0,"scale":1}},{{"secs":2,"scale":1.15,"x":0.45,"y":0.5{ease}}},{{"secs":4,"scale":1.3,"x":0.4,"y":0.48{ease}}}]}}]"#, a.0);
+            let ops: Vec<Op> = serde_json::from_str(&json).unwrap();
+            let plan = resolve(&seq, &pool, &ops).unwrap();
+            let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[0].edit else { panic!("keyframes") };
+            let k = &new_state.transform_scale_keyframes;
+            let at = |t: f64| klipp_core::keyframe::evaluate(k, t, 1.0);
+            (at(2.05) - at(1.95)) / 0.1
+        };
+        assert!(speed_at_middle(r#","ease":"linear""#) > 0.05, "linear: still moving through the key");
+        assert!(speed_at_middle("") < 0.02, "in_out, the default: at rest at the key");
+    }
+
     /// A pan keys scale and position from frame points, held at the
     /// picture's edge; a highlight's spot is four panels round the
     /// region on a faded title clip; a ramp's clip length follows the
