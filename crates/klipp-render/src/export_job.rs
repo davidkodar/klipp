@@ -35,7 +35,7 @@ use klipp_core::ExportSettings;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use tracing::info;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 /// Top-level export coordinator. Ties together the renderer, the encoder
@@ -170,24 +170,93 @@ impl ExportJob {
                 *r = Some(format!("Loudness: {target_lufs:.1} LUFS requested\u{2026}"));
             }
             // A limited delivery's gain and limiter margin are measured
-            // through the chain, not taken from the arithmetic (#781).
-            let (gain_db, margin_db) = if analysis.peak_limited {
-                let (snapshot, cancel, id) = (&self.snapshot, &self.cancel, self.id);
-                fit_limited(snapshot.sample_rate, target_lufs, ceiling_dbtp, analysis.applied_gain_db, id, |trial| {
-                    let mut trial_mix = AudioMixdown::new(snapshot)?;
-                    for frame_num in start_frame..end_frame {
-                        if cancel.load(Ordering::Relaxed) {
-                            return Err(RenderError::Cancelled);
-                        }
-                        let mut audio = trial_mix.get_frame_audio(frame_num);
-                        trial.process(&mut audio);
+            // through the chain, not taken from the arithmetic (#781), and
+            // through the delivery's own encoder when it is lossy: the codec
+            // rings round transients and adds peak of its own (#1930).
+            let (snapshot, cancel, id, stage) = (&self.snapshot, &self.cancel, self.id, &self.render_stage);
+            let codec = self.delivered_audio_codec();
+            let (rate, bitrate) = (snapshot.sample_rate, self.settings.audio_bitrate_kbps);
+            // Why the file's peak couldn't be checked through its encoder,
+            // once a trial failed: the delivery then holds the ceiling on
+            // the mix's meter, and the status says so.
+            let unverified: std::cell::RefCell<Option<String>> = Default::default();
+            let trial_path = trial_path_for(&partial_path);
+            let trial_run = |trial: &mut DeliveryChain, pass: Option<usize>| -> Result<Option<f32>, RenderError> {
+                let what = match pass {
+                    Some(n) => format!("Fitting loudness under the ceiling, trial {n} of up to {LIMITED_GAIN_PASSES}"),
+                    None => format!("Checking the {} file's true peak", codec.label()),
+                };
+                let mut file = None;
+                if unverified.borrow().is_none() {
+                    match CodecTrial::open(&trial_path, codec, bitrate, rate) {
+                        Ok(f) => file = f,
+                        Err(e) => *unverified.borrow_mut() = Some(e.to_string()),
                     }
-                    Ok(())
-                })?
+                }
+                let mut trial_mix = AudioMixdown::new(snapshot)?;
+                let frames = end_frame.saturating_sub(start_frame).max(1);
+                let mut shown = u64::MAX;
+                for frame_num in start_frame..end_frame {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err(RenderError::Cancelled);
+                    }
+                    let pct = (frame_num - start_frame) * 100 / frames;
+                    if pct != shown {
+                        shown = pct;
+                        Self::set_stage(stage, &format!("{what}\u{2026} {pct}%"));
+                    }
+                    let mut audio = trial_mix.get_frame_audio(frame_num);
+                    trial.process(&mut audio);
+                    if let Some(f) = &mut file {
+                        if let Err(e) = f.write(&audio) {
+                            *unverified.borrow_mut() = Some(e.to_string());
+                            file = None;
+                        }
+                    }
+                }
+                let Some(f) = file else { return Ok(None) };
+                Self::set_stage(stage, &format!("{what}: reading the {} file back\u{2026}", codec.label()));
+                match f.peak(cancel) {
+                    Ok(p) => Ok(p),
+                    Err(RenderError::Cancelled) => Err(RenderError::Cancelled),
+                    Err(e) => {
+                        *unverified.borrow_mut() = Some(e.to_string());
+                        Ok(None)
+                    }
+                }
+            };
+            let mut limit = analysis.peak_limited;
+            if !limit && crate::audio_only::trial_muxer(codec).is_some() {
+                // Under the ceiling as the live meter reads the mix; the
+                // file may not be, encoded and read as an outside check
+                // reads it.
+                let mut trial = DeliveryChain::limited_by(rate, target_lufs, analysis.applied_gain_db, false, ceiling_dbtp, LIMITER_CEILING_MARGIN_DB);
+                if let Some(peak) = trial_run(&mut trial, None)? {
+                    if peak > ceiling_dbtp {
+                        info!("ExportJob {id}: the {} file would peak at {peak:.2} dBTP, over the {ceiling_dbtp:.1} ceiling; a limiter holds it", codec.label());
+                        limit = true;
+                    }
+                }
+            }
+            let (gain_db, margin_db) = if limit {
+                match fit_limited(rate, target_lufs, ceiling_dbtp, analysis.applied_gain_db, id, trial_run)? {
+                    Some(fit) => fit,
+                    None => {
+                        // No trial measured a loudness (a silent mix): the
+                        // arithmetic, said as not checked.
+                        unverified.borrow_mut().get_or_insert_with(|| "no trial of the mix measured a loudness".into());
+                        (analysis.applied_gain_db, LIMITER_CEILING_MARGIN_DB)
+                    }
+                }
             } else {
                 (analysis.applied_gain_db, LIMITER_CEILING_MARGIN_DB)
             };
-            DeliveryChain::limited_by(self.snapshot.sample_rate, target_lufs, gain_db, analysis.peak_limited, ceiling_dbtp, margin_db)
+            let mut chain = DeliveryChain::limited_by(self.snapshot.sample_rate, target_lufs, gain_db, limit, ceiling_dbtp, margin_db);
+            if let Some(why) = unverified.into_inner() {
+                warn!("ExportJob {id}: the ceiling was not verified through the {} encoder: {why}", codec.label());
+                chain.unverified = Some(format!("the ceiling was not checked through the {} encoder ({why})", codec.label()));
+            }
+            chain
         } else {
             DeliveryChain::unity()
         };
@@ -337,6 +406,15 @@ impl ExportJob {
         // Ok the `.partial` file is a fully-valid container.
         encoder.finalise()?;
 
+        // What the written file measures, decoded, beside the mix's meter
+        // (#1930): the ceiling is held against the file.
+        if let Some(status) = delivery_status(&delivery, measure_written(&partial_path, self.duration_secs(), &self.cancel)?) {
+            info!("ExportJob {}: {status}", self.id);
+            if let Ok(mut r) = self.loudness_result.lock() {
+                *r = Some(status);
+            }
+        }
+
         // R-5: atomic publish. The rename is the single observable
         // moment when the output path appears — concurrent readers
         // never see a truncated MP4.
@@ -367,6 +445,22 @@ impl ExportJob {
         );
 
         Ok(())
+    }
+
+    /// The audio codec the file is written with: the settings', or, for
+    /// sound alone, what the audio-only writer resolves them to.
+    fn delivered_audio_codec(&self) -> klipp_core::ExportAudioCodec {
+        if self.settings.format.is_audio_only() {
+            crate::audio_only::resolve(self.settings.format, self.settings.audio_codec).1
+        } else {
+            self.settings.audio_codec
+        }
+    }
+
+    /// How long the delivery runs, in seconds.
+    fn duration_secs(&self) -> f64 {
+        let fps = self.snapshot.fps.max(1.0);
+        (self.snapshot.end_frame().saturating_sub(self.snapshot.start_frame())) as f64 / fps
     }
 
     /// The mix alone, frame by frame through `delivery`, as MP3, WAV or
@@ -405,6 +499,12 @@ impl ExportJob {
         }
         Self::set_stage(&self.render_stage, "Finalizing file\u{2026}");
         writer.finish()?;
+        if let Some(status) = delivery_status(&delivery, measure_written(&partial_path, self.duration_secs(), &self.cancel)?) {
+            info!("ExportJob {}: {status}", self.id);
+            if let Ok(mut r) = self.loudness_result.lock() {
+                *r = Some(status);
+            }
+        }
         if let Err(e) = std::fs::rename(&partial_path, &output_path) {
             return Err(RenderError::Publish(format!("{e} (encode complete at {partial_path:?})")));
         }
@@ -624,19 +724,26 @@ const DEFAULT_PEAK_CEILING_DBTP: f32 = klipp_core::DEFAULT_TRUE_PEAK_DBTP;
 /// threshold 1.3 dB under that — -1.7 and -3.0 for a -1 dBTP delivery.
 const LIMITER_CEILING_MARGIN_DB: f32 = 0.7;
 const LIMITER_KNEE_DB: f32 = 1.3;
-/// How many times a limited delivery's gain is corrected against a
-/// measurement through the limiter, and how far past the arithmetic
-/// gain the corrections may take it.
-const LIMITED_GAIN_PASSES: usize = 3;
+/// How many trials a limited delivery's gain and margin are fitted in,
+/// each a run of the mix through the chain and, for the file's true peak,
+/// an encode of the sound alone and a decode (#1930): seconds for a
+/// long mix, no picture. The delivery is the best trial measured. And
+/// how far past the arithmetic gain the corrections may take it.
+const LIMITED_GAIN_PASSES: usize = 5;
 const LIMITED_GAIN_EXTRA_DB: f32 = 3.0;
 /// How far under the true-peak ceiling the limiter's own ceiling may be
 /// pushed when a pass through it measures true peaks over: bright
 /// transients (a whoosh, a hi-hat) run further over their samples than
 /// the margin allows for (#781).
-const LIMITER_CEILING_MARGIN_MAX_DB: f32 = 3.0;
+const LIMITER_CEILING_MARGIN_MAX_DB: f32 = 4.5;
 /// Taken off with each correction on top of the overshoot measured, so
 /// the next pass lands under the ceiling rather than on it.
 const LIMITER_OVERSHOOT_PAD_DB: f32 = 0.05;
+/// Taken off on top of that when the overshoot was measured through a
+/// lossy codec: its peak moves by a few tenths with any change to what it
+/// encodes, so a correction aimed at the ceiling itself lands either side
+/// of it (#1930).
+const CODEC_OVERSHOOT_PAD_DB: f32 = 0.25;
 
 /// The gain and the limiter margin that bring a limited delivery to
 /// `target_lufs` with its true peak under `ceiling_dbtp`, starting from
@@ -652,30 +759,181 @@ fn fit_limited(
     ceiling_dbtp: f32,
     arithmetic_gain_db: f32,
     id: impl std::fmt::Display,
-    mut run: impl FnMut(&mut DeliveryChain) -> Result<(), RenderError>,
-) -> Result<(f32, f32), RenderError> {
+    mut run: impl FnMut(&mut DeliveryChain, Option<usize>) -> Result<Option<f32>, RenderError>,
+) -> Result<Option<(f32, f32)>, RenderError> {
+    /// One measured trial: its gain and margin, how far over the ceiling
+    /// its file was, and its loudness.
+    struct Tried {
+        gain_db: f32,
+        margin_db: f32,
+        over: f32,
+        lufs: f32,
+    }
     let (mut gain_db, mut margin_db) = (arithmetic_gain_db, LIMITER_CEILING_MARGIN_DB);
+    // No gain at or above one a trial found over the ceiling: the loudness
+    // can't climb back to a peak already measured (#1930).
+    let mut gain_cap = f32::INFINITY;
+    let mut tried: Vec<Tried> = Vec::new();
     for pass in 0..LIMITED_GAIN_PASSES {
         let mut trial = DeliveryChain::limited_by(sample_rate, target_lufs, gain_db, true, ceiling_dbtp, margin_db);
-        run(&mut trial)?;
+        let coded = run(&mut trial, Some(pass + 1))?;
         let Some(got) = trial.measured_lufs().filter(|l| l.is_finite()) else { break };
         let shortfall = target_lufs - got;
-        let over = trial.measured_true_peak_dbtp().map_or(0.0, |p| p - ceiling_dbtp);
+        // Over the ceiling as mixed, or as the delivery's file decodes
+        // (#1930): whichever is further.
+        let mixed = trial.measured_true_peak_dbtp().map_or(0.0, |p| p - ceiling_dbtp);
+        let coded = coded.map(|p| p - ceiling_dbtp);
+        let over = coded.map_or(mixed, |c| c.max(mixed));
         info!(
             "ExportJob {id}: limited pass {}: {gain_db:.2} dB of gain under a {:.2} dB margin measures {got:.2} LUFS, \
-             {shortfall:+.2} from the target, true peak {over:+.2} dB from the ceiling",
+             {shortfall:+.2} from the target, true peak {mixed:+.2} dB from the ceiling as mixed{}",
             pass + 1, margin_db,
+            coded.map_or(String::new(), |c| format!(", {c:+.2} as encoded")),
         );
-        if shortfall.abs() < 0.1 && over <= 0.0 {
+        tried.push(Tried { gain_db, margin_db, over, lufs: got });
+        if (shortfall.abs() < 0.1 && over <= 0.0) || pass + 1 == LIMITED_GAIN_PASSES {
             break;
         }
         if over > 0.0 {
-            margin_db = (margin_db + over + LIMITER_OVERSHOOT_PAD_DB).min(LIMITER_CEILING_MARGIN_MAX_DB);
+            // Over: the ceiling first, with room for a lossy codec, whose
+            // overshoot moves a little with every change to its input. The
+            // limiter's margin takes it while it can, from where its
+            // ceiling is or from the peaks going into it when they are
+            // under it and it held nothing, costing loudness only on the
+            // peaks it catches; past its widest, the gain takes the rest
+            // (a peak between samples the limiter leaves alone, or one the
+            // codec rings up), the loudness short by that.
+            let pad = LIMITER_OVERSHOOT_PAD_DB + if coded.is_some() { CODEC_OVERSHOOT_PAD_DB } else { 0.0 };
+            gain_cap = gain_cap.min(gain_db);
+            let now = (ceiling_dbtp - margin_db).min(trial.limiter_input_peak_dbfs());
+            let wanted = ceiling_dbtp - (now - over - pad);
+            let wider = wanted.min(LIMITER_CEILING_MARGIN_MAX_DB).max(margin_db);
+            margin_db = wider;
+            // Too loud as well: down to the target, which lowers the peak
+            // too. Never up while over.
+            gain_db += shortfall.min(0.0) - (wanted - wider).max(0.0);
+        } else {
+            // Under: the loudness, never more than the limiter can take
+            // without pumping, nor back to a gain found over.
+            gain_db = (gain_db + shortfall).min(arithmetic_gain_db + LIMITED_GAIN_EXTRA_DB).min(gain_cap - LIMITER_OVERSHOOT_PAD_DB);
         }
-        // Never more than the limiter can take without pumping.
-        gain_db = (gain_db + shortfall).min(arithmetic_gain_db + LIMITED_GAIN_EXTRA_DB);
     }
-    Ok((gain_db, margin_db))
+    // The delivery is a trial that was measured, never a correction nobody
+    // measured: the one under the ceiling nearest the target loudness, or
+    // with none under, the one least over, which the status then reports;
+    // none when no trial measured a loudness.
+    let best = tried
+        .iter()
+        .filter(|t| t.over <= 0.0)
+        .min_by(|a, b| (a.lufs - target_lufs).abs().total_cmp(&(b.lufs - target_lufs).abs()))
+        .or_else(|| tried.iter().min_by(|a, b| a.over.total_cmp(&b.over)));
+    Ok(best.map(|t| (t.gain_db, t.margin_db)))
+}
+
+/// Where the trial encodes of a delivery's sound go (#1930): beside the
+/// `.partial` file, on the disk the export writes to.
+fn trial_path_for(partial: &Path) -> PathBuf {
+    let mut buf = partial.as_os_str().to_owned();
+    buf.push(".peak-trial");
+    PathBuf::from(buf)
+}
+
+/// A trial encode of the delivery's sound (#1930): written as the export
+/// writes it, frame by frame while the mix runs, then decoded and its true
+/// peak read as FFmpeg's EBU R128 meter reads it
+/// ([`crate::normalize::true_peak_dbtp`]). A lossy codec's ringing is in
+/// it, and so is every inter-sample peak the live meter's 4x filter
+/// misses. The file is removed when the trial is dropped.
+struct CodecTrial {
+    writer: Option<crate::audio_only::AudioOnly>,
+    path: PathBuf,
+    samples: u64,
+    rate: u32,
+}
+
+impl CodecTrial {
+    /// `None` for no audio, or a codec this FFmpeg can't encode.
+    fn open(path: &Path, codec: klipp_core::ExportAudioCodec, bitrate_kbps: Option<u32>, rate: u32) -> Result<Option<Self>, RenderError> {
+        let Some(mux) = crate::audio_only::trial_muxer(codec) else { return Ok(None) };
+        if !crate::audio_only::has_encoder(codec) {
+            return Ok(None);
+        }
+        let _ = std::fs::remove_file(path);
+        let writer = crate::audio_only::AudioOnly::open_muxer(path, mux, codec, bitrate_kbps, rate)?;
+        Ok(Some(Self { writer: Some(writer), path: path.to_path_buf(), samples: 0, rate }))
+    }
+
+    /// Interleaved stereo, in order.
+    fn write(&mut self, interleaved: &[f32]) -> Result<(), RenderError> {
+        self.samples += interleaved.len() as u64;
+        match &mut self.writer {
+            Some(w) => w.write(interleaved),
+            None => Ok(()),
+        }
+    }
+
+    /// The file's true peak, dBTP; `None` for a trial of silence.
+    fn peak(mut self, cancel: &AtomicBool) -> Result<Option<f32>, RenderError> {
+        let secs = self.samples as f64 / 2.0 / self.rate.max(1) as f64;
+        let Some(writer) = self.writer.take().filter(|_| self.samples > 0) else { return Ok(None) };
+        writer.finish()?;
+        // A second over the length: an encoder's padding at the end.
+        let peak = crate::normalize::true_peak_dbtp(&self.path, secs + 1.0, cancel)? as f32;
+        Ok(peak.is_finite().then_some(peak))
+    }
+}
+
+impl Drop for CodecTrial {
+    fn drop(&mut self) {
+        // The writer first: it holds the file open.
+        self.writer = None;
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// The written file at `path`, `secs` long, decoded and metered: what the
+/// delivery measures as anyone else will measure it (#1930), its loudness
+/// by the BS.1770 meter and its true peak as FFmpeg's EBU R128 meter
+/// reads one, read in windows. `None` when it has no sound or can't be
+/// read; a cancel stops it.
+fn measure_written(path: &Path, secs: f64, cancel: &AtomicBool) -> Result<Option<klipp_core::normalize::Level>, RenderError> {
+    // A second over the length: an encoder's padding at the end.
+    let secs = secs.max(0.0) + 1.0;
+    match crate::normalize::file_level(path, secs, cancel) {
+        Ok(level) => Ok((level.integrated_lufs.is_finite() || level.true_peak_dbtp.is_finite()).then_some(level)),
+        Err(RenderError::Cancelled) => Err(RenderError::Cancelled),
+        Err(e) => {
+            warn!("the written file at {path:?} could not be measured: {e}");
+            Ok(None)
+        }
+    }
+}
+
+/// What a normalised delivery's status says once its file is written
+/// (#1930): the mix as metered before the encoder, and the written file
+/// decoded and metered, the ceiling held against the file's figure. With
+/// the file unreadable, the mix's report as before.
+fn delivery_status(delivery: &DeliveryChain, written: Option<klipp_core::normalize::Level>) -> Option<String> {
+    let mix = delivery.report()?;
+    let Some(file) = written else {
+        let why = delivery.unverified.as_ref().map_or(String::new(), |why| format!("; {why}"));
+        return Some(format!("{mix} (the written file could not be measured{why})"));
+    };
+    let (lufs, peak) = (delivery.measured_lufs()?, delivery.measured_true_peak_dbtp()?);
+    let ceiling = delivery.ceiling_dbtp;
+    let limited = if delivery.limiter.is_some() { "; the peaks were limited to reach it" } else { "" };
+    let target = delivery.target_lufs.map_or(String::new(), |t| format!(" (requested {t:.1}{limited})"));
+    let unverified = delivery.unverified.as_ref().map_or(String::new(), |why| format!("; {why}"));
+    let base = format!(
+        "Loudness — mix: {lufs:.1} LUFS, true peak {peak:.1} dBTP · written file: {:.1} LUFS, true peak {:.1} dBTP{target}{unverified}",
+        file.integrated_lufs, file.true_peak_dbtp,
+    );
+    let over = file.true_peak_dbtp as f32 - ceiling;
+    Some(if over > 0.05 {
+        format!("{base} \u{2014} the written file is {over:.1} dB over the {ceiling:.1} dBTP ceiling")
+    } else {
+        base
+    })
 }
 
 /// The delivery's sound: the normalisation gain, a limiter when that
@@ -689,6 +947,12 @@ struct DeliveryChain {
     meter: Option<klipp_audio::LufsMeter>,
     target_lufs: Option<f32>,
     ceiling_dbtp: f32,
+    /// The highest sample that went into the limiter, linear (#1930): where
+    /// the limiter's ceiling has to come down to before it holds anything.
+    limiter_input_peak: f32,
+    /// Why the ceiling wasn't checked through the delivery's encoder, when
+    /// a trial of it failed (#1930): the status says so.
+    unverified: Option<String>,
 }
 
 impl DeliveryChain {
@@ -701,6 +965,8 @@ impl DeliveryChain {
             meter: None,
             target_lufs: None,
             ceiling_dbtp: DEFAULT_PEAK_CEILING_DBTP,
+            limiter_input_peak: 0.0,
+            unverified: None,
         }
     }
 
@@ -735,6 +1001,8 @@ impl DeliveryChain {
             meter: Some(klipp_audio::LufsMeter::new(sample_rate as f32, true)),
             target_lufs: Some(target_lufs),
             ceiling_dbtp,
+            limiter_input_peak: 0.0,
+            unverified: None,
         }
     }
 
@@ -747,11 +1015,17 @@ impl DeliveryChain {
             }
         }
         if let Some(l) = &mut self.limiter {
+            self.limiter_input_peak = audio.iter().fold(self.limiter_input_peak, |p, s| p.max(s.abs()));
             l.process(audio, &self.ctx);
         }
         if let Some(m) = &mut self.meter {
             m.process(audio);
         }
+    }
+
+    /// The highest sample that went into the limiter, dBFS.
+    fn limiter_input_peak_dbfs(&self) -> f32 {
+        20.0 * self.limiter_input_peak.max(1e-9).log10()
     }
 
     /// The integrated loudness of what went through so far.
@@ -1110,11 +1384,12 @@ mod tests {
         feed(&mut fixed);
         assert!(fixed.report().unwrap().contains("over the -1.0 dBTP ceiling"), "the case needs the fit: {}", fixed.report().unwrap());
 
-        let (gain_db, margin_db) = fit_limited(sr, -14.0, -1.0, 0.0, "test", |trial| {
+        let (gain_db, margin_db) = fit_limited(sr, -14.0, -1.0, 0.0, "test", |trial, _| {
             feed(trial);
-            Ok(())
+            Ok(None)
         })
-        .unwrap();
+        .unwrap()
+        .expect("a measured trial");
         assert!(margin_db > LIMITER_CEILING_MARGIN_DB, "the margin was not widened: {margin_db}");
         let mut fitted = DeliveryChain::limited_by(sr, -14.0, gain_db, true, -1.0, margin_db);
         feed(&mut fitted);
@@ -1123,6 +1398,65 @@ mod tests {
         let lufs = fitted.measured_lufs().unwrap();
         assert!((lufs + 14.0).abs() < 0.3, "the loudness left the target: {lufs:.2} LUFS");
         assert!(!fitted.report().unwrap().contains("over the"), "{}", fitted.report().unwrap());
+    }
+
+    /// #1930: with no trial measuring a loudness, the fit gives no gain
+    /// rather than one nothing measured; the export says the ceiling
+    /// wasn't checked.
+    #[test]
+    fn a_fit_with_nothing_measured_gives_no_gain() {
+        let mut passes = 0;
+        let fit = fit_limited(48000, -14.0, -1.0, 2.0, "test", |_, _| {
+            passes += 1;
+            Ok(Some(0.0))
+        })
+        .unwrap();
+        assert_eq!(fit, None, "a gain no trial measured");
+        assert_eq!(passes, 1, "nothing to correct from");
+    }
+
+    /// #1930: a trial encode goes beside the `.partial` file, stops on a
+    /// cancel while it is read back, and leaves no file behind either way.
+    #[test]
+    fn a_trial_encode_stops_on_cancel_and_leaves_nothing() {
+        let codec = klipp_core::ExportAudioCodec::Pcm16;
+        let dir = klipp_testing::scratch::scratch_dir("klipp-codec-trial");
+        let partial = partial_path_for(&dir.join("out.mp4"));
+        let path = trial_path_for(&partial);
+        assert_eq!(path.parent(), partial.parent(), "beside the partial");
+        let tone: Vec<f32> = (0..48000 * 2).map(|i| 0.25 * ((i / 2) as f32 * 0.05).sin()).collect();
+        for cancelled in [true, false] {
+            let mut trial = CodecTrial::open(&path, codec, None, 48000).unwrap().expect("a WAV trial");
+            trial.write(&tone).unwrap();
+            assert!(path.exists(), "written as the mix runs");
+            let got = trial.peak(&AtomicBool::new(cancelled));
+            if cancelled {
+                assert!(matches!(got, Err(RenderError::Cancelled)), "{got:?}");
+            } else {
+                let peak = got.unwrap().expect("a peak");
+                assert!((peak - 20.0 * 0.25f32.log10()).abs() < 0.2, "{peak}");
+            }
+            assert!(!path.exists(), "the trial file is removed");
+        }
+    }
+
+    /// #1930: a trial encode that failed is said in the status, beside the
+    /// written file's figures.
+    #[test]
+    fn an_unverified_ceiling_is_said_in_the_status() {
+        let sr = 48000;
+        let mut chain = DeliveryChain::limited_by(sr, -14.0, 0.0, true, -1.0, LIMITER_CEILING_MARGIN_DB);
+        let mut tone: Vec<f32> = (0..sr as usize * 4).flat_map(|i| {
+            let v = 0.2 * (i as f32 * 440.0 * std::f32::consts::TAU / sr as f32).sin();
+            [v, v]
+        }).collect();
+        chain.process(&mut tone);
+        let file = klipp_core::normalize::Level { integrated_lufs: -14.0, sample_peak_dbfs: -2.0, true_peak_dbtp: -1.5 };
+        assert!(!delivery_status(&chain, Some(file)).unwrap().contains("not checked"));
+        chain.unverified = Some("the ceiling was not checked through the AAC encoder (open audio encoder: refused)".into());
+        let status = delivery_status(&chain, Some(file)).unwrap();
+        assert!(status.contains("written file") && status.contains("not checked through the AAC encoder"), "{status}");
+        assert!(delivery_status(&chain, None).unwrap().contains("not checked through the AAC encoder"));
     }
 
     #[test]

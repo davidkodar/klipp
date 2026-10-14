@@ -19,6 +19,7 @@ pub struct Encoder {
     output_ctx: ffmpeg_next::format::context::Output,
     video_encoder: ffmpeg_next::codec::encoder::video::Encoder,
     audio_encoder: Option<ffmpeg_next::codec::encoder::audio::Encoder>,
+    audio_bitrate_kbps: Option<u32>,
     video_stream_idx: usize,
     audio_stream_idx: Option<usize>,
     /// Monotonically increasing PTS counter for video.
@@ -849,23 +850,10 @@ impl Encoder {
                 .audio()
                 .map_err(|e| RenderError::Encode(format!("audio encoder context: {e}")))?;
 
-            audio_ctx.set_rate(snapshot.sample_rate as i32);
-            audio_ctx.set_channel_layout(ffmpeg_next::ChannelLayout::STEREO);
-            // Use the codec's preferred sample format (not always f32)
-            let sample_fmt = audio_codec
-                .audio()
-                .ok()
-                .and_then(|a| a.formats())
-                .and_then(|mut fmts| fmts.next())
-                .unwrap_or(ffmpeg_next::format::Sample::F32(
-                    ffmpeg_next::format::sample::Type::Packed,
-                ));
-            audio_ctx.set_format(sample_fmt);
-            audio_ctx.set_time_base(ffmpeg_next::Rational::new(1, snapshot.sample_rate as i32));
-
-            if let Some(bitrate) = settings.audio_bitrate_kbps {
-                audio_ctx.set_bit_rate(bitrate as usize * 1000);
-            }
+            // The codec's preferred sample format (not always f32), set
+            // up as the sound-alone writer and the true-peak trials set
+            // theirs (#1930).
+            let sample_fmt = crate::audio_only::configure_audio_encoder(&mut audio_ctx, audio_codec, snapshot.sample_rate, settings.audio_bitrate_kbps);
 
             // Global header flag
             if output_ctx
@@ -1101,6 +1089,7 @@ impl Encoder {
             output_ctx,
             video_encoder,
             audio_encoder,
+            audio_bitrate_kbps: settings.audio_bitrate_kbps,
             video_stream_idx,
             audio_stream_idx,
             video_pts: 0,
@@ -1148,6 +1137,11 @@ impl Encoder {
     /// layout it uploads from).
     pub fn video_format(&self) -> ffmpeg_next::format::Pixel {
         self.frame_format
+    }
+
+    /// What its audio encoder opened as, if it has one (#1930).
+    pub fn opened_audio(&self) -> Option<crate::audio_only::OpenedAudio> {
+        self.audio_encoder.as_ref().map(|e| crate::audio_only::OpenedAudio::of(e, self.audio_bitrate_kbps))
     }
 
     /// Human-readable hardware info for the video encoder.

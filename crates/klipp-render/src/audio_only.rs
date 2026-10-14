@@ -21,6 +21,62 @@ fn muxer(format: ExportFormat) -> Option<&'static str> {
     }
 }
 
+/// The container a trial encode of `codec` is written in (#1930), to
+/// measure what the delivery's file will: a lossy codec's ringing round
+/// transients, and a lossless one's quantisation. `None` for no audio.
+pub fn trial_muxer(codec: ExportAudioCodec) -> Option<&'static str> {
+    match codec {
+        ExportAudioCodec::Aac => Some("ipod"),
+        ExportAudioCodec::Mp3 => Some("mp3"),
+        ExportAudioCodec::Opus => Some("ogg"),
+        ExportAudioCodec::Flac => Some("flac"),
+        ExportAudioCodec::Pcm16 | ExportAudioCodec::Pcm24 => Some("wav"),
+        ExportAudioCodec::Copy => None,
+    }
+}
+
+/// How an export's audio encoder is set up (#1930): the codec's first
+/// sample format, stereo, the sequence's rate, the bitrate when given.
+/// The video export, the sound-alone writer and the true-peak trials all
+/// set theirs up from this, so a trial encodes what the delivery will.
+pub(crate) fn configure_audio_encoder(ctx: &mut ffmpeg_next::codec::encoder::audio::Audio, found: ffmpeg_next::Codec, rate: u32, bitrate_kbps: Option<u32>) -> ffmpeg_next::format::Sample {
+    use ffmpeg_next::format::{sample::Type, Sample};
+    let sample = found.audio().ok().and_then(|a| a.formats()).and_then(|mut f| f.next()).unwrap_or(Sample::F32(Type::Packed));
+    ctx.set_rate(rate as i32);
+    ctx.set_channel_layout(ffmpeg_next::ChannelLayout::STEREO);
+    ctx.set_format(sample);
+    ctx.set_time_base(ffmpeg_next::Rational::new(1, rate as i32));
+    if let Some(kbps) = bitrate_kbps {
+        ctx.set_bit_rate(kbps as usize * 1000);
+    }
+    sample
+}
+
+/// What an opened audio encoder runs as (#1930): compared between an
+/// export's encoder and a trial's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenedAudio {
+    pub codec: Option<String>,
+    pub format: ffmpeg_next::format::Sample,
+    pub rate: u32,
+    pub channels: u16,
+    pub frame_size: u32,
+    pub bit_rate_kbps: Option<u32>,
+}
+
+impl OpenedAudio {
+    pub(crate) fn of(enc: &ffmpeg_next::codec::encoder::audio::Encoder, bitrate_kbps: Option<u32>) -> Self {
+        Self {
+            codec: enc.codec().map(|c| c.name().to_string()),
+            format: enc.format(),
+            rate: enc.rate(),
+            channels: enc.channels(),
+            frame_size: enc.frame_size(),
+            bit_rate_kbps: bitrate_kbps,
+        }
+    }
+}
+
 /// Whether this FFmpeg build has an encoder for `codec`.
 pub fn has_encoder(codec: ExportAudioCodec) -> bool {
     ffmpeg_next::encoder::find_by_name(codec.ffmpeg_codec()).is_some()
@@ -52,24 +108,26 @@ pub struct AudioOnly {
     pts: i64,
     resampler: Option<ffmpeg_next::software::resampling::Context>,
     rate: u32,
+    bitrate_kbps: Option<u32>,
 }
 
 impl AudioOnly {
     /// Open `path` for `format` with `codec` at `rate` Hz stereo.
     pub fn open(path: &std::path::Path, format: ExportFormat, codec: ExportAudioCodec, bitrate_kbps: Option<u32>, rate: u32) -> Result<Self, RenderError> {
-        use ffmpeg_next::format::{sample::Type, Sample};
         let mux = muxer(format).ok_or_else(|| RenderError::Encode(format!("{} has a picture; the video export writes it", format.label())))?;
+        Self::open_muxer(path, mux, codec, bitrate_kbps, rate)
+    }
+
+    /// [`Self::open`] into the muxer named `mux`: the encoder set up as the
+    /// video export sets up its audio (the codec's first sample format,
+    /// stereo, `rate`, the bitrate when given), so what it encodes is what
+    /// an export would (#1930).
+    pub fn open_muxer(path: &std::path::Path, mux: &str, codec: ExportAudioCodec, bitrate_kbps: Option<u32>, rate: u32) -> Result<Self, RenderError> {
+        use ffmpeg_next::format::{sample::Type, Sample};
         let mut octx = ffmpeg_next::format::output_as(path, mux).map_err(|e| err("audio output", e))?;
         let found = ffmpeg_next::encoder::find_by_name(codec.ffmpeg_codec()).ok_or_else(|| RenderError::Encode(format!("no {} encoder in this FFmpeg", codec.ffmpeg_codec())))?;
         let mut ctx = ffmpeg_next::codec::context::Context::new_with_codec(found).encoder().audio().map_err(|e| err("audio encoder context", e))?;
-        let sample = found.audio().ok().and_then(|a| a.formats()).and_then(|mut f| f.next()).unwrap_or(Sample::F32(Type::Packed));
-        ctx.set_rate(rate as i32);
-        ctx.set_channel_layout(ffmpeg_next::ChannelLayout::STEREO);
-        ctx.set_format(sample);
-        ctx.set_time_base(ffmpeg_next::Rational::new(1, rate as i32));
-        if let Some(kbps) = bitrate_kbps {
-            ctx.set_bit_rate(kbps as usize * 1000);
-        }
+        let sample = configure_audio_encoder(&mut ctx, found, rate, bitrate_kbps);
         if octx.format().flags().contains(ffmpeg_next::format::flag::Flags::GLOBAL_HEADER) {
             ctx.set_flags(ffmpeg_next::codec::Flags::GLOBAL_HEADER);
         }
@@ -93,7 +151,12 @@ impl AudioOnly {
             0 => 1024,
             n => n as usize,
         };
-        Ok(Self { octx, enc, stream, stream_tb, enc_tb, frame_size, pending: Vec::new(), pts: 0, resampler, rate })
+        Ok(Self { octx, enc, stream, stream_tb, enc_tb, frame_size, pending: Vec::new(), pts: 0, resampler, rate, bitrate_kbps })
+    }
+
+    /// What its encoder opened as.
+    pub fn opened(&self) -> OpenedAudio {
+        OpenedAudio::of(&self.enc, self.bitrate_kbps)
     }
 
     /// Interleaved stereo f32, in order.

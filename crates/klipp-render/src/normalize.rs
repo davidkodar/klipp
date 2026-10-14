@@ -48,6 +48,65 @@ pub fn clip_sounds(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool
     (found, skipped)
 }
 
+/// The sound in `path`'s first `secs`, decoded at `rate` Hz stereo in
+/// windows of 20 s, each window to `take` in order, so a long film is
+/// never held whole (#1930). Each window but the first starts `lead`
+/// seconds early, for a resampler to settle, and those samples aren't
+/// passed on. Stops with [`RenderError::Cancelled`] between windows when
+/// `cancel` is set. `Ok(false)`: the file has no sound.
+fn decode_windows(path: &std::path::Path, secs: f64, rate: u32, lead: f64, cancel: &AtomicBool, mut take: impl FnMut(&[f32])) -> Result<bool, RenderError> {
+    const WINDOW: f64 = 20.0;
+    let mut at = 0.0f64;
+    while at < secs {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(RenderError::Cancelled);
+        }
+        let from = (at - lead).max(0.0);
+        let to = (at + WINDOW).min(secs);
+        let samples = match crate::audio_mixdown::decode_clip_audio(path, from, Some(to), rate) {
+            Ok(s) => s,
+            Err(RenderError::NoAudioStream(_)) => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        let skip = (((at - from) * rate as f64).round() as usize * 2).min(samples.len());
+        let end = (((to - from) * rate as f64).round() as usize * 2).clamp(skip, samples.len());
+        take(&samples[skip..end]);
+        at += WINDOW;
+    }
+    Ok(true)
+}
+
+/// The true peak of the sound in `path`'s first `secs`, in dBTP, read as
+/// FFmpeg's EBU R128 meter reads it (#1930): decoded and upsampled to
+/// 192 kHz by FFmpeg's resampler, the highest sample of that. The live
+/// meter's 4x filter reads impulsive peaks lower than this, and a
+/// delivery is held to what an outside check will measure. Read in
+/// windows, so a long film is never held whole at 192 kHz.
+pub fn true_peak_dbtp(path: &std::path::Path, secs: f64, cancel: &AtomicBool) -> Result<f64, RenderError> {
+    // Each window starts a little early, so the resampler has settled by
+    // the samples the window before ended on.
+    let mut peak = 0.0f32;
+    if !decode_windows(path, secs, 192_000, 0.05, cancel, |s| peak = s.iter().fold(peak, |p, v| p.max(v.abs())))? {
+        return Ok(f64::NEG_INFINITY);
+    }
+    Ok(db(peak as f64))
+}
+
+/// The level of the written file at `path`, its first `secs` (#1930):
+/// its loudness by the BS.1770 meter, read in windows as
+/// [`true_peak_dbtp`] reads, and its true peak by that.
+pub fn file_level(path: &std::path::Path, secs: f64, cancel: &AtomicBool) -> Result<Level, RenderError> {
+    let mut meter = klipp_audio::lufs::LufsMeter::new(RATE as f32, true);
+    let mut sample_peak = 0.0f32;
+    decode_windows(path, secs, RATE, 0.0, cancel, |s| {
+        sample_peak = s.iter().fold(sample_peak, |p, v| p.max(v.abs()));
+        meter.process(s);
+    })?;
+    let mut level = level_of(&meter, sample_peak);
+    level.true_peak_dbtp = true_peak_dbtp(path, secs, cancel)?;
+    Ok(level)
+}
+
 /// What [`measure`] found: each clip's level, in order, and theirs
 /// together.
 #[derive(Debug, Clone)]
