@@ -6269,10 +6269,20 @@ fn ofx_graph(clip: &Clip) -> Option<klipp_nodes::NodeGraph> {
     // Counted over every entry, on or off: switching one off moves no
     // other's slot.
     let mut seen: HashMap<&str, u32> = HashMap::new();
+    // An entry's own id, when it has one (#1500): its node follows it
+    // through any reorder, past a copy of its own plug-in too. Taken once:
+    // a second entry holding the same id (a hand-edited file) runs under
+    // the id derived from its place, never on the first's instance.
+    let mut owned: std::collections::HashSet<u128> = std::collections::HashSet::new();
     for e in &entries {
         let nth = seen.entry(e.plugin_name.as_str()).or_insert(0);
-        let k = (u128::from(name(&e.plugin_name)) << 32) | u128::from(*nth) | 1 << 31;
+        let derived = (u128::from(name(&e.plugin_name)) << 32) | u128::from(*nth) | 1 << 31;
         *nth += 1;
+        let own = e.id.as_deref().map(|s| s.replace('-', "")).filter(|h| h.len() == 32).and_then(|h| u128::from_str_radix(&h, 16).ok());
+        let k = match own {
+            Some(u) if owned.insert(u) => u,
+            _ => derived,
+        };
         if !e.enabled {
             continue;
         }
@@ -6875,6 +6885,76 @@ mod ofx_graph_tests {
         let mut other = other;
         other.set_ofx_effects(vec![entry("A", true), entry("A", true)]);
         assert_ne!(ids(&other)[1].1, second, "another clip, another slot");
+    }
+
+    /// #1500: two copies of one plug-in, told apart by a value, swapped
+    /// through the app's edit path: each keeps its node, so its instance.
+    #[test]
+    fn two_copies_of_one_plugin_keep_their_nodes_when_swapped() {
+        let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        let copy = |tag: i32| AppliedEffect { param_values: [("tag".to_string(), klipp_core::OfxValue::Int(tag))].into(), ..entry("A", true) };
+        clip.apply_ofx_edits(&[klipp_timeline::OfxEdit::Add(&copy(1)), klipp_timeline::OfxEdit::Add(&copy(2))]).unwrap();
+        let by_tag = |clip: &klipp_timeline::Clip| -> Vec<(i32, klipp_nodes::NodeId)> {
+            let g = ofx_graph(clip).expect("plug-ins on");
+            g.nodes.iter().filter(|n| n.kind == NodeKind::Ofx).map(|n| match n.params.ofx.as_ref().unwrap().values.get("tag") { Some(klipp_core::OfxValue::Int(t)) => (*t, n.id), other => panic!("{other:?}") }).collect()
+        };
+        let before = by_tag(&clip);
+        assert_eq!(before.iter().map(|(t, _)| *t).collect::<Vec<_>>(), [1, 2]);
+        clip.apply_ofx_edits(&[klipp_timeline::OfxEdit::Move { from: 0, to: 1 }]).unwrap();
+        let after = by_tag(&clip);
+        assert_eq!(after.iter().map(|(t, _)| *t).collect::<Vec<_>>(), [2, 1], "drawn in the new order");
+        for (t, id) in &before {
+            assert_eq!(after.iter().find(|(u, _)| u == t).map(|(_, i)| i), Some(id), "copy {t} kept its node");
+        }
+        // A value set, the other copy switched off and on, one updated
+        // whole: each keeps its node through all of them.
+        clip.apply_ofx_edits(&[klipp_timeline::OfxEdit::SetParam(1, "gain", &klipp_core::OfxValue::Double(0.5))]).unwrap();
+        clip.apply_ofx_edits(&[klipp_timeline::OfxEdit::SetEnabled(0, false)]).unwrap();
+        clip.apply_ofx_edits(&[klipp_timeline::OfxEdit::SetEnabled(0, true)]).unwrap();
+        clip.apply_ofx_edits(&[klipp_timeline::OfxEdit::Update(0, &copy(2))]).unwrap();
+        let edited = by_tag(&clip);
+        for (t, id) in &before {
+            assert_eq!(edited.iter().find(|(u, _)| u == t).map(|(_, i)| i), Some(id), "copy {t} kept its node through the edits");
+        }
+    }
+
+    /// #1500: a pasted copy (an entry added with its source's id) gets an
+    /// id of its own; and if two entries on a clip did hold one id, the
+    /// second runs on a node of its own, never on the first's instance.
+    #[test]
+    fn no_two_entries_share_a_node() {
+        let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        clip.apply_ofx_edits(&[klipp_timeline::OfxEdit::Add(&entry("A", true))]).unwrap();
+        let read = |clip: &klipp_timeline::Clip| clip.picture_ofx().unwrap().into_iter().map(|o| o.entry).collect::<Vec<_>>();
+        let first = read(&clip)[0].clone();
+        assert!(first.id.is_some(), "an added entry has an id");
+        clip.apply_ofx_edits(&[klipp_timeline::OfxEdit::Add(&first)]).unwrap();
+        assert_ne!(read(&clip)[1].id, first.id, "a pasted copy gets its own");
+        // An entry updated whole with the first's id (as a hand-edited
+        // file could hold): two entries, one id.
+        clip.apply_ofx_edits(&[klipp_timeline::OfxEdit::Update(1, &first)]).unwrap();
+        assert_eq!(read(&clip)[1].id, first.id);
+        let g = ids(&clip);
+        assert_eq!(g.len(), 2);
+        assert_ne!(g[0].1, g[1].1, "one id, two nodes");
+    }
+
+    /// #1500: a split clip's halves carry the same entry, id and all, and
+    /// run it on two different nodes: each half its own instance.
+    #[test]
+    fn a_split_clips_halves_run_their_plugin_on_their_own_nodes() {
+        let tc = |s| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut clip = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        clip.apply_ofx_edits(&[klipp_timeline::OfxEdit::Add(&entry("A", true))]).unwrap();
+        let mut track = klipp_timeline::Track::new("V", klipp_timeline::TrackKind::Video);
+        let id = clip.id;
+        track.clips.push(clip);
+        let (left, right) = track.split_at(id, tc(1.0)).expect("split");
+        let id_of = |c: &klipp_timeline::Clip| c.picture_ofx().unwrap()[0].entry.id.clone();
+        assert_eq!(id_of(&left), id_of(&right), "the same entry on both halves");
+        assert_ne!(ids(&left)[0].1, ids(&right)[0].1, "two nodes, two instances");
     }
 }
 

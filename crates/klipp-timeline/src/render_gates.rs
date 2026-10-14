@@ -315,6 +315,7 @@ mod tests {
                     context: klipp_plugin::OfxCategory::Filter,
                     transition_input: None,
                     transition_amount: 0.0,
+                    id: None,
                 }));
             }
             assert_eq!(c.has_plugin_entries(), present);

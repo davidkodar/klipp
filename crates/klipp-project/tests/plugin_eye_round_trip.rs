@@ -39,3 +39,27 @@ fn a_plug_ins_eye_switched_off_comes_back_off() {
     assert_eq!(back.builtin_effects_enabled().first(), Some(&false), "the frei0r effect is off");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #1500: an OFX entry's own id is saved and comes back, so its plug-in
+/// runs on the same node, and instance, after a reload. Control: an entry
+/// without one comes back without one.
+#[test]
+fn a_plug_ins_own_id_survives_save_and_load() {
+    let dir = std::env::temp_dir().join(format!("klipp_plugin_id_test_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut c = clip_with_plugins();
+    let echo = klipp_plugin::AppliedEffect { plugin_name: "org.example.Echo".into(), enabled: true, ..Default::default() };
+    c.apply_ofx_edits(&[klipp_timeline::OfxEdit::Add(&echo)]).unwrap();
+    let ids_of = |c: &klipp_timeline::Clip| c.picture_ofx().unwrap().into_iter().map(|o| o.entry.id).collect::<Vec<_>>();
+    let ids = ids_of(&c);
+    assert!(ids[0].is_none() && ids[1].is_some(), "{ids:?}");
+    let id = c.id;
+    let mut seq = Sequence::new_default();
+    seq.tracks[0].clips.push(c);
+    save_project(&dir, &[seq], &MediaPool::new()).unwrap();
+    let (sequences, ..) = load_project(&dir).unwrap();
+    let back = sequences[0].all_clips().find(|c| c.id == id).expect("the clip");
+    assert_eq!(ids_of(back), ids, "each entry's id, or none, as saved");
+    let _ = std::fs::remove_dir_all(&dir);
+}

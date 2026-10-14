@@ -2180,6 +2180,13 @@ pub struct AppliedEffect {
     /// Transition amount (0.0 = fully "from", 1.0 = fully "to").
     #[serde(default)]
     pub transition_amount: f64,
+    /// The entry's own id (a UUID's text), given when it is added to a
+    /// clip and kept through every edit: the plug-in node it runs as, so
+    /// its instance, follows it through any reorder, even past a copy of
+    /// its own plug-in (#1500). `None` for an entry from before, which
+    /// runs under an id derived from its place among its plug-in's copies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 fn default_filter_context() -> OfxCategory {

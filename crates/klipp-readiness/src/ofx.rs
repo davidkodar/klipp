@@ -62,7 +62,7 @@ impl Source for Still {
 }
 
 fn entry(plugin: &str, enabled: bool, context: OfxCategory) -> AppliedEffect {
-    AppliedEffect { plugin_name: plugin.into(), enabled, param_values: Default::default(), context, transition_input: None, transition_amount: 0.0 }
+    AppliedEffect { plugin_name: plugin.into(), enabled, param_values: Default::default(), context, transition_input: None, transition_amount: 0.0, id: None }
 }
 
 /// `clip` carrying `entries`, through its picture.
