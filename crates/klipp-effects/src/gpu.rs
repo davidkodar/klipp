@@ -277,6 +277,7 @@ pub struct GpuEffectsPipeline {
     lut3d_buf_size: u64,
     // Compute pipeline — color balance (temperature/tint/hue)
     color_balance_pipeline: wgpu::ComputePipeline,
+    hdr_zones_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — wheel sat/bri (per-wheel saturation & brightness)
     wheel_sat_bri_pipeline: wgpu::ComputePipeline,
     // Compute pipeline — RGB curves (LUT-based, reuses huesat_bgl 4-binding layout)
@@ -1231,6 +1232,7 @@ impl GpuEffectsPipeline {
         let layer_over_pipeline = create_pipeline(&device, &huesat_pl, "layer_over", SHADER_LAYER_OVER);
         let mask_pipeline = create_pipeline(&device, &mask_v2_pl, "mask_v2", SHADER_MASK_V2);
         let color_balance_pipeline = create_pipeline(&device, &pipeline_layout, "color_balance", SHADER_COLOR_BALANCE);
+        let hdr_zones_pipeline = create_pipeline(&device, &pipeline_layout, "hdr_zones", SHADER_HDR_ZONES);
         let wheel_sat_bri_pipeline = create_pipeline(&device, &pipeline_layout, "wheel_sat_bri", SHADER_WHEEL_SAT_BRI);
         let rgb_curves_pipeline = create_pipeline(&device, &huesat_pl, "rgb_curves", SHADER_RGB_CURVES);
         let qualifier_pipeline = create_pipeline(&device, &pipeline_layout, "qualifier", SHADER_QUALIFIER);
@@ -1638,6 +1640,7 @@ impl GpuEffectsPipeline {
             grade_mix_src: None,
             mask_pipeline,
             color_balance_pipeline,
+            hdr_zones_pipeline,
             wheel_sat_bri_pipeline,
             rgb_curves_pipeline,
             rgb_curves_lut_buf,
@@ -2104,6 +2107,23 @@ impl GpuEffectsPipeline {
         });
         self.dispatch(&self.color_balance_pipeline, buf_a, buf_b, workgroups);
 
+        self.download_linear_rgba_f32(buf_b, (width * height) as usize)
+    }
+
+    /// Apply the HDR zones (#240) on the GPU, as
+    /// [`crate::cpu_grade::hdr_zones`] does on the CPU.
+    pub fn apply_hdr_zones_gpu(&mut self, linear_rgba: &[f32], width: u32, height: u32, terms: &klipp_grade_model::hdr_zones::Terms) -> Vec<f32> {
+        if self.is_device_lost() {
+            return linear_rgba.to_vec();
+        }
+        let byte_size = (width * height * 16) as u64;
+        self.ensure_buffers(byte_size);
+        let buf_a = self.buf_a.as_ref().unwrap();
+        let buf_b = self.buf_b.as_ref().unwrap();
+        self.upload_frame(buf_a, bytemuck::cast_slice(linear_rgba));
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        self.write_params(&GpuHdrZonesParams::new(width, height, terms));
+        self.dispatch(&self.hdr_zones_pipeline, buf_a, buf_b, workgroups);
         self.download_linear_rgba_f32(buf_b, (width * height) as usize)
     }
 
@@ -4479,6 +4499,21 @@ impl GpuEffectsPipeline {
             .expect(Self::CHAIN_BG_EXPECT);
         let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
         Self::record_compute_dispatch(enc, &self.color_balance_pipeline, bind_group, workgroups);
+    }
+
+    /// Dispatch-only HDR zones pass (#240).
+    pub fn apply_hdr_zones_chain(&mut self, in_is_a: bool, width: u32, height: u32, terms: &klipp_grade_model::hdr_zones::Terms) {
+        if self.is_device_lost() {
+            return;
+        }
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuHdrZonesParams::new(width, height, terms));
+        let workgroups = (width * height).div_ceil(WORKGROUP_SIZE);
+        let bind_group = self.chain_bg_3binding[slot * 4 + Self::chain_cfg_3b_ab(in_is_a)]
+            .as_ref()
+            .expect(Self::CHAIN_BG_EXPECT);
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.hdr_zones_pipeline, bind_group, workgroups);
     }
 
     /// Dispatch-only wheel sat/bri pass.
@@ -8005,6 +8040,36 @@ struct GpuColorBalanceParams {
     _pad0: u32,
     _pad1: u32,
 }
+
+/// `SHADER_HDR_ZONES`'s uniform: each zone's gain in stops per channel
+/// and its saturation, then its boundary and falloff. 256 bytes, the
+/// whole params slot.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuHdrZonesParams {
+    width: u32,
+    height: u32,
+    _pad0: u32,
+    _pad1: u32,
+    luma: [f32; 4],
+    gain_sat: [[f32; 4]; klipp_grade_model::hdr_zones::ZONES],
+    edge: [[f32; 4]; klipp_grade_model::hdr_zones::ZONES],
+}
+
+impl GpuHdrZonesParams {
+    fn new(width: u32, height: u32, t: &klipp_grade_model::hdr_zones::Terms) -> Self {
+        let mut gain_sat = [[0.0; 4]; klipp_grade_model::hdr_zones::ZONES];
+        let mut edge = [[0.0; 4]; klipp_grade_model::hdr_zones::ZONES];
+        for i in 0..klipp_grade_model::hdr_zones::ZONES {
+            let g = t.gain_stops[i];
+            gain_sat[i] = [g[0], g[1], g[2], t.saturation[i]];
+            edge[i] = [t.boundary[i], t.falloff[i], 0.0, 0.0];
+        }
+        Self { width, height, _pad0: 0, _pad1: 0, luma: [t.luma[0], t.luma[1], t.luma[2], 0.0], gain_sat, edge }
+    }
+}
+
+const _: () = assert!(std::mem::size_of::<GpuHdrZonesParams>() as u64 <= PARAMS_SIZE);
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -16964,6 +17029,66 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
+// HDR zones (#240): `klipp_grade_model::hdr_zones::apply` per pixel.
+// Zone 0 is Global, 1 to 3 reach down from their boundary, 4 to 6 up.
+const SHADER_HDR_ZONES: &str = concat!(
+    "
+struct Params {
+    width: u32,
+    height: u32,
+    _pad0: u32,
+    _pad1: u32,
+    luma: vec4<f32>,
+    gain_sat: array<vec4<f32>, 7>,
+    edge: array<vec4<f32>, 7>,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+",
+    shader_linear_helpers_wgsl!(),
+    "
+fn zone_weight(i: u32, s: f32, b: f32, f: f32) -> f32 {
+    if i == 0u { return 1.0; }
+    let half = max(f, 0.0) * 0.5;
+    let lo = b - half;
+    let hi = b + half;
+    var up: f32;
+    if hi <= lo {
+        up = select(0.0, 1.0, s >= lo);
+    } else {
+        let t = clamp((s - lo) / (hi - lo), 0.0, 1.0);
+        up = t * t * (3.0 - 2.0 * t);
+    }
+    if i <= 3u { return 1.0 - up; }
+    return up;
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let orig = unpack(input[idx]);
+    let luma = params.luma.xyz;
+    let s = log2(max(dot(luma, orig.xyz), 0.18 / 1048576.0) / 0.18);
+    var sum = vec3<f32>(0.0);
+    var sat = 1.0;
+    for (var i = 0u; i < 7u; i = i + 1u) {
+        let w = zone_weight(i, s, params.edge[i].x, params.edge[i].y);
+        sum = sum + w * params.gain_sat[i].xyz;
+        sat = sat * (1.0 + w * (params.gain_sat[i].w - 1.0));
+    }
+    var c = select(orig.xyz * exp2(sum), orig.xyz, sum == vec3<f32>(0.0));
+    if sat != 1.0 {
+        let y = dot(luma, c);
+        c = vec3<f32>(y) + (c - vec3<f32>(y)) * sat;
+    }
+    output[idx] = pack(vec4<f32>(c, orig.w));
+}
+"
+);
+
 // Wheel sat/bri — per-wheel saturation and brightness adjustments,
 // band-weighted. Same formula as the sRGB version but in linear so
 // BT.709 luma sits in its defined domain and the wheel-band curves
@@ -17781,6 +17906,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_ROLLING_SHUTTER", SHADER_ROLLING_SHUTTER),
         ("SHADER_STABILIZATION", SHADER_STABILIZATION),
         ("SHADER_COLOR_BALANCE", SHADER_COLOR_BALANCE),
+        ("SHADER_HDR_ZONES", SHADER_HDR_ZONES),
         ("SHADER_WHEEL_SAT_BRI", SHADER_WHEEL_SAT_BRI),
         ("SHADER_RGB_CURVES", SHADER_RGB_CURVES),
         ("SHADER_MASK_V2", SHADER_MASK_V2),

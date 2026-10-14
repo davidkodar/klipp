@@ -400,6 +400,56 @@ impl Default for SoftClipSettings {
     }
 }
 
+/// HDR zones (#240): exposure, colour and saturation by tonal zone, each
+/// zone's reach set in stops about mid grey. Seven zones, in order:
+/// Global, Black, Dark, Shadow, Light, Highlight, Specular
+/// (`klipp_grade_model::hdr_zones`, which holds the maths). Global's
+/// boundary and falloff are unused: it reaches everything.
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HdrZonesSettings {
+    /// Each zone's exposure, in stops.
+    pub exposure: [f32; 7],
+    /// Each zone's colour, as a balance in stops for red, green and blue;
+    /// its luma-weighted mean is taken out, so it never changes brightness.
+    pub colour_r: [f32; 7],
+    pub colour_g: [f32; 7],
+    pub colour_b: [f32; 7],
+    /// Each zone's saturation, about the pixel's luminance (1: none).
+    pub saturation: [f32; 7],
+    /// Each zone's boundary, in stops from mid grey.
+    pub boundary: [f32; 7],
+    /// Each zone's falloff width, in stops (0: a hard edge).
+    pub falloff: [f32; 7],
+}
+
+impl HdrZonesSettings {
+    /// The zones' boundaries as a new node has them, in stops.
+    pub const DEFAULT_BOUNDARY: [f32; 7] = [0.0, -4.5, -2.5, -1.0, 1.0, 2.5, 4.5];
+    /// A new zone's falloff, in stops.
+    pub const DEFAULT_FALLOFF: f32 = 1.0;
+
+    /// Whether the zones change no pixel: every exposure and colour 0,
+    /// every saturation 1. The boundaries place nothing then.
+    pub fn is_neutral(&self) -> bool {
+        [&self.exposure, &self.colour_r, &self.colour_g, &self.colour_b].iter().all(|a| a.iter().all(|v| *v == 0.0)) && self.saturation.iter().all(|v| *v == 1.0)
+    }
+}
+
+impl Default for HdrZonesSettings {
+    fn default() -> Self {
+        Self {
+            exposure: [0.0; 7],
+            colour_r: [0.0; 7],
+            colour_g: [0.0; 7],
+            colour_b: [0.0; 7],
+            saturation: [1.0; 7],
+            boundary: Self::DEFAULT_BOUNDARY,
+            falloff: [Self::DEFAULT_FALLOFF; 7],
+        }
+    }
+}
+
 /// Shape-based mask for regional color grading (power windows).
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 pub enum MaskShape {

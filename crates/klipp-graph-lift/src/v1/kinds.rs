@@ -16,6 +16,8 @@ pub enum NodeKind {
     RGBCurves,
     HueSatCurves,
     ColorBalance,
+    // HDR zones (#240), added after the freeze: a node of it reads.
+    HdrZones,
 
     Qualifier,
     LumaKey,

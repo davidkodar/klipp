@@ -2608,6 +2608,38 @@ impl NodeInspectorPanel {
                     cmds.push(AppCommand::SetNodeLumaKey { clip_id, node_id, luma_key: edited });
                 }
             }
+            NodeKind::HdrZones => {
+                // HDR zones (#240): each zone's rows under its name, every
+                // one set by its key as a keyframe track names it. The
+                // zone menu, its wheel and the zone map are the inspector
+                // page's to come.
+                let mut zones = params.hdr_zones.clone().unwrap_or_default();
+                let mut changed = false;
+                let descs = klipp_nodes::registry::node_type(NodeKind::HdrZones).map_or(&[][..], |t| t.desc.params);
+                for (i, zone) in klipp_color::grade_model::hdr_zones::ZONE_NAMES.iter().enumerate() {
+                    let key = klipp_nodes::params::HDR_ZONE_KEYS[i];
+                    egui::CollapsingHeader::new(*zone).id_salt(("hdr_zone", node_id, i)).default_open(true).show(ui, |ui| {
+                        for d in descs.iter().filter(|d| d.key.strip_prefix("hdr_").and_then(|r| r.strip_prefix(key)).is_some_and(|r| r.starts_with('_'))) {
+                            let Some(slot) = klipp_nodes::params::hdr_zone_slot(&mut zones, d.key) else { continue };
+                            let mut v = *slot;
+                            let (lo, hi) = d.soft.unwrap_or((-1.0, 1.0));
+                            // The zone's name too: every zone has an Exposure.
+                            let label = d.label;
+                            let suffix = if d.key.ends_with("_saturation") { "" } else { "stops" };
+                            #[cfg(any(test, feature = "row-recorder"))]
+                            crate::widgets::row_recorder::next_parameter(d.key);
+                            if grade_slider(ui, label, &mut v, lo..=hi, suffix, cmds, clip_id, theme) {
+                                *slot = v;
+                                changed = true;
+                                cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: d.key.into(), value: v });
+                            }
+                        }
+                    });
+                }
+                if changed {
+                    params.hdr_zones = Some(zones);
+                }
+            }
             NodeKind::SoftClip => {
                 // As the qualifier: a copy, sent once when it changed (#894).
                 let before = params.soft_clip.clone().unwrap_or_default();

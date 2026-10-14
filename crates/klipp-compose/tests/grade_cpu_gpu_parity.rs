@@ -174,6 +174,15 @@ fn cases() -> Vec<(&'static str, NodeKind, NodeParams)> {
         ("RGB Curves", RGBCurves, p(|p| { p.curves = Some(curves()); p.curves_preserve_luma = Some(true) })),
         ("Hue/Sat Curves", HueSatCurves, p(|p| p.huesat = Some(huesat()))),
         ("Color Warper", ColorWarper, p(|p| p.warper_params = Some(warper()))),
+        // HDR zones (#240): each zone moved alone, then a placed one.
+        ("HDR Zones global", HdrZones, p(|p| p.hdr_zones = Some(zone(0)))),
+        ("HDR Zones black, placed into the chart", HdrZones, p(|p| p.hdr_zones = Some(klipp_core::HdrZonesSettings { boundary: [0.0, -1.5, -2.5, -1.0, 1.0, 2.5, 4.5], ..zone(1) }))),
+        ("HDR Zones dark", HdrZones, p(|p| p.hdr_zones = Some(zone(2)))),
+        ("HDR Zones shadow", HdrZones, p(|p| p.hdr_zones = Some(zone(3)))),
+        ("HDR Zones light", HdrZones, p(|p| p.hdr_zones = Some(zone(4)))),
+        ("HDR Zones highlight", HdrZones, p(|p| p.hdr_zones = Some(zone(5)))),
+        ("HDR Zones specular, placed into the chart", HdrZones, p(|p| p.hdr_zones = Some(klipp_core::HdrZonesSettings { boundary: [0.0, -4.5, -2.5, -1.0, 1.0, 2.5, 0.0], ..zone(6) }))),
+        ("HDR Zones light, placed", HdrZones, p(|p| p.hdr_zones = Some(klipp_core::HdrZonesSettings { boundary: [0.0, -4.5, -2.5, -1.0, -0.5, 2.5, 4.5], falloff: [1.0, 1.0, 1.0, 1.0, 2.0, 1.0, 1.0], ..zone(4) }))),
         ("Qualifier", Qualifier, p(|p| p.qualifier = Some(red_window()))),
         ("Qualifier off-centre", Qualifier, p(|p| p.qualifier = Some(off_centre_window()))),
         ("Qualifier with matte finesse", Qualifier, p(|p| {
@@ -185,6 +194,17 @@ fn cases() -> Vec<(&'static str, NodeKind, NodeParams)> {
         // The 3D mode (#895): a skin volume with a lip colour taken out.
         ("Qualifier 3D", Qualifier, p(|p| p.qualifier = Some(skin_volume()))),
     ]
+}
+
+/// HDR zone `i` moved alone (#240): exposure, a colour, saturation. The
+/// chart reaches about 4 stops either side of mid grey, so Black and
+/// Specular are placed into it to be seen.
+fn zone(i: usize) -> klipp_core::HdrZonesSettings {
+    let mut z = klipp_core::HdrZonesSettings::default();
+    z.exposure[i] = 0.6;
+    z.colour_b[i] = 0.3;
+    z.saturation[i] = 1.4;
+    z
 }
 
 /// A flat frame, for the behaviour tests below.

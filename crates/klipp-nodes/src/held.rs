@@ -356,6 +356,7 @@ fn pure(node: &Node) -> bool {
                 | NodeKind::RGBCurves
                 | NodeKind::HueSatCurves
                 | NodeKind::ColorBalance
+                | NodeKind::HdrZones
         )
 }
 

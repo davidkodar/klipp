@@ -1584,6 +1584,8 @@ pub(crate) fn per_node_kind(kind: klipp_nodes::NodeKind) -> bool {
         | klipp_nodes::NodeKind::Qualifier
         | klipp_nodes::NodeKind::LumaKey
         | klipp_nodes::NodeKind::SoftClip
+        // Its zones' rows are its own page (#240).
+        | klipp_nodes::NodeKind::HdrZones
         | klipp_nodes::NodeKind::FilmGrain
         | klipp_nodes::NodeKind::Lut3D
         | klipp_nodes::NodeKind::ColorMatch

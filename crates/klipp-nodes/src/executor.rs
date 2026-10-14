@@ -518,6 +518,13 @@ const MAX_PLANS: usize = 256;
 /// The grade shaders' white balance for no temperature or tint.
 const NO_WHITE_BALANCE: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
+/// The HDR zones' settings (#240) as a pixel uses them, in working space
+/// `ws`: its luminance places each pixel in stops.
+pub(crate) fn hdr_zone_terms(z: &klipp_core::HdrZonesSettings, ws: klipp_core::WorkingColorspace) -> klipp_color::grade_model::hdr_zones::Terms {
+    let colour = std::array::from_fn(|i| [z.colour_r[i], z.colour_g[i], z.colour_b[i]]);
+    klipp_color::grade_model::hdr_zones::Terms::new(z.exposure, colour, z.saturation, z.boundary, z.falloff, klipp_color::primaries::luminance_weights(ws))
+}
+
 /// Temperature / tint as the grade shaders take them: a white-balance
 /// matrix on linear light in the working space.
 fn white_balance(temperature: f32, tint: f32, ws: klipp_core::WorkingColorspace) -> [[f32; 3]; 3] {
@@ -2224,6 +2231,7 @@ impl GraphExecutor {
                     | NodeKind::RGBCurves
                     | NodeKind::HueSatCurves
                     | NodeKind::ColorBalance
+                    | NodeKind::HdrZones
                     | NodeKind::Lut3D
                     | NodeKind::FilmGrain
                     | NodeKind::ColorMatch
@@ -3376,6 +3384,7 @@ impl GraphExecutor {
                 .huesat
                 .as_ref()
                 .is_some_and(|h| !h.is_all_identity()),
+            NodeKind::HdrZones => params.hdr_zones.as_ref().is_some_and(|z| !z.is_neutral()),
             NodeKind::ColorBalance => {
                 // Same story as WheelSatBri — all four params default
                 // to identity (temp/tint/hue = 0, global_mix = 1).
@@ -4427,6 +4436,11 @@ impl GraphExecutor {
                     .apply_huesat_chain(in_is_a, width, height, mix, &lut_data, huesat_active(huesat));
                 Some(1)
             }
+            NodeKind::HdrZones => {
+                let terms = hdr_zone_terms(params.hdr_zones.as_ref()?, self.working_colorspace);
+                self.gpu.as_mut().unwrap().apply_hdr_zones_chain(in_is_a, width, height, &terms);
+                Some(1)
+            }
             NodeKind::ColorBalance => {
                 self.gpu.as_mut().unwrap().apply_color_balance_chain(
                     in_is_a, width, height,
@@ -5435,6 +5449,20 @@ impl GraphExecutor {
                     vec![1.0f32; (width * height * 4) as usize]
                 }
             }
+
+            NodeKind::HdrZones => match params.hdr_zones.as_ref().filter(|z| !z.is_neutral()) {
+                None => primary_input.to_vec(),
+                Some(z) => {
+                    let terms = hdr_zone_terms(z, self.working_colorspace);
+                    if let Some(gpu) = &mut self.gpu {
+                        gpu.apply_hdr_zones_gpu(primary_input, width, height, &terms)
+                    } else {
+                        let mut frame = primary_input.to_vec();
+                        klipp_effects::cpu_grade::hdr_zones(&mut frame, &terms);
+                        frame
+                    }
+                }
+            },
 
             NodeKind::SoftClip => {
                 // Value transform — primary signal in, primary signal

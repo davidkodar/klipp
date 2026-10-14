@@ -54,6 +54,8 @@ mod nothing_chosen_selects_everything;
 mod presentation;
 #[path = "../registry_coverage.rs"]
 mod registry_coverage;
+#[path = "../hdr_zones_node.rs"]
+mod hdr_zones_node;
 #[path = "../scene_to_display_node.rs"]
 mod scene_to_display_node;
 #[path = "../wireless_loop.rs"]
