@@ -412,6 +412,7 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
             source_out: Some(s.source_out_secs),
             insert: false,
             with_audio: s.with_audio,
+            sync_source_secs: None,
         });
         if let Some(z) = &s.zoom {
             if (z.from - z.to).abs() < 1e-4 {
@@ -473,6 +474,7 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
             source_out: Some(from + laid),
             insert: false,
             with_audio: true,
+            sync_source_secs: None,
         });
         // The bed is what it is to the mix, and at the level asked for.
         ops.push(Op::Role { clip_id: ClipRef::At { track: music_track, secs: start + laid / 2.0 }, role: "music".into() });
@@ -507,6 +509,7 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
                     source_out: Some(from + secs),
                     insert: false,
                     with_audio: true,
+                    sync_source_secs: None,
                 });
                 ops.push(Op::Role { clip_id: ClipRef::At { track: sfx_track, secs: when + secs / 2.0 }, role: "sfx".into() });
                 if let Some(v) = x.volume_db {
@@ -595,7 +598,7 @@ fn scene_layers(plan: &EditPlan, start: f64, brief: Option<&Brief>, ops: &mut Ve
                 PlanLayer::Media { media_id, source_in_secs, placement, enter, exit, .. } => {
                     let track = card_track(*level);
                     let from_file = source_in_secs.unwrap_or(0.0);
-                    ops.push(Op::Place { media_id: *media_id, track: TrackRef::Index(track), at: Anchor::Secs(begin), source_in: Some(from_file), source_out: Some(from_file + held), insert: false, with_audio: false });
+                    ops.push(Op::Place { media_id: *media_id, track: TrackRef::Index(track), at: Anchor::Secs(begin), source_in: Some(from_file), source_out: Some(from_file + held), insert: false, with_audio: false, sync_source_secs: None });
                     if let Some(poses) = card_poses(placement.as_ref(), enter.as_ref(), exit.as_ref()) {
                         ops.push(Op::Compose { clip_id: ClipRef::At { track, secs: begin + held / 2.0 }, poses });
                     }

@@ -717,6 +717,12 @@ pub enum Op {
         /// default; off for B-roll over a voice.
         #[serde(default = "default_true")]
         with_audio: bool,
+        /// The moment of the file, in seconds from its start, that lands on
+        /// `at` (#1928): a sound's peak (search_sfx's `heard.peak_secs`) on
+        /// a cut. The clip starts that much before `at`. Left out, `at` is
+        /// where the clip starts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sync_source_secs: Option<f64>,
     },
     /// A track: a video or text track goes on top (it becomes track 0
     /// and every other index moves down by one), an audio track at the
@@ -3418,7 +3424,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             Ok((what, EditCommand::AddTrack { index, track }, Vec::new()))
         }
 
-        Op::Place { media_id, track, at, source_in, source_out, insert, with_audio } => {
+        Op::Place { media_id, track, at, source_in, source_out, insert, with_audio, sync_source_secs } => {
             let item = pool.get(media_id).ok_or_else(|| refuse(i, format!("no media item {}", media_id.0), "media ids are in list_media"))?;
             if item.offline {
                 return Err(refuse(i, format!("{} is offline", item.filename), "relink the media first"));
@@ -3475,6 +3481,22 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                     .filter(|(end, _)| *end == tl_in.value)
                     .map_or(secs(tl_in), |(_, exact)| *exact),
                 _ => secs(tl_in),
+            };
+            // The file's moment `sync` lands where `at` is (#1928): the
+            // clip starts that much before it, on the track's grid.
+            let (tl_in, exact_start, landing) = match sync_source_secs {
+                None => (tl_in, exact_start, None),
+                Some(sync) => {
+                    if !sync.is_finite() || *sync < s_in || *sync > s_out {
+                        return Err(refuse(i, format!("sync_source_secs {sync:.3} s is outside the stretch placed, {s_in:.3}-{s_out:.3} s of {}", item.filename), "give the moment of the file to line up, inside source_in to source_out"));
+                    }
+                    let start = exact_start - (sync - s_in);
+                    if start < -1e-9 {
+                        return Err(refuse(i, format!("its {sync:.3} s on {exact_start:.3} s would start it {:.3} s before the timeline does", -start), format!("give source_in {:.3} or later, so it starts at 0", s_in - start)));
+                    }
+                    let start = start.max(0.0);
+                    (snap(start, grid), start, Some((*sync, exact_start)))
+                }
             };
             let exact_end = exact_start + (s_out - s_in);
             let end = snap(exact_end, grid).rescale_to(tl_in.rate);
@@ -3545,6 +3567,17 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 _ => sound_note,
             };
             let format_note = autoset.map(|(_, (r, f))| format!("; the sequence becomes {}x{} at {:.3} fps", r.width, r.height, f.as_f64())).unwrap_or_default();
+            // Where the moment really lands, the clip on its grid: on a
+            // picture track a frame's rounding can move it.
+            let sound_note = match landing {
+                Some((sync, on)) => {
+                    let lands = secs(tl_in) + (sync - secs(src_in));
+                    let off = lands - on;
+                    let miss = if off.abs() > 0.5 / 48_000.0 { format!(" ({off:+.4} s off it, on the frame grid)") } else { String::new() };
+                    format!("{sound_note}; its {sync:.3} s lands on {on:.3} s{miss}")
+                }
+                None => sound_note,
+            };
             let ids: Vec<ClipId> = std::iter::once(clip.id).chain(audio.iter().map(|(a, _)| a.id)).collect();
             if *insert {
                 let mut scratch = seq.clone();
@@ -4555,7 +4588,7 @@ pub fn place_narration(seq: &Sequence, media_id: MediaId, at: f64) -> Vec<Op> {
             seq.tracks.len()
         }
     };
-    ops.push(Op::Place { media_id, track: TrackRef::Index(track), at: Anchor::Secs(at), source_in: None, source_out: None, insert: false, with_audio: true });
+    ops.push(Op::Place { media_id, track: TrackRef::Index(track), at: Anchor::Secs(at), source_in: None, source_out: None, insert: false, with_audio: true, sync_source_secs: None });
     ops.push(Op::Role { clip_id: ClipRef::At { track, secs: at + 0.05 }, role: "dialogue".into() });
     ops
 }
@@ -11164,7 +11197,7 @@ mod tests {
         // 99 BPM, a bar of four beats: 2.4242 s, 72.7 frames a bar.
         let bar = 4.0 * 60.0 / 99.0;
         let ops: Vec<Op> = (0..31)
-            .map(|k| Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::TrackEnd(TrackRef::Index(0)), source_in: Some(k as f64 * 3.1), source_out: Some(k as f64 * 3.1 + bar), insert: false, with_audio: false })
+            .map(|k| Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::TrackEnd(TrackRef::Index(0)), source_in: Some(k as f64 * 3.1), source_out: Some(k as f64 * 3.1 + bar), insert: false, with_audio: false, sync_source_secs: None })
             .collect();
         let plan = resolve(&seq, &pool, &ops).unwrap();
         let frame = 1.0 / 30.0;
@@ -11466,7 +11499,7 @@ mod tests {
         };
         let (song, whip) = (sound("/tmp/song.mp3"), sound("/tmp/whip.mp3"));
         let lib = Library(song, whip);
-        let place = |id: MediaId| Op::Place { media_id: id, track: TrackRef::Index(1), at: Anchor::TrackEnd(TrackRef::Index(1)), source_in: Some(0.0), source_out: Some(1.0), insert: false, with_audio: false };
+        let place = |id: MediaId| Op::Place { media_id: id, track: TrackRef::Index(1), at: Anchor::TrackEnd(TrackRef::Index(1)), source_in: Some(0.0), source_out: Some(1.0), insert: false, with_audio: false, sync_source_secs: None };
         let placed = |id: MediaId| {
             let plan = resolve_with(&seq, &pool, &[place(id)], &lib).unwrap_or_else(|r| panic!("refused: {}", r.why));
             let role = match &plan.steps[0].edit {
@@ -11660,7 +11693,7 @@ mod tests {
         item.duration = RationalTime::from_secs_f64(1.1, 48000);
         item.has_audio = true;
         let sfx = pool.add(item);
-        let place = Op::Place { media_id: sfx, track: TrackRef::Index(1), at: Anchor::TrackEnd(TrackRef::Index(1)), source_in: Some(0.0), source_out: Some(1.1), insert: false, with_audio: false };
+        let place = Op::Place { media_id: sfx, track: TrackRef::Index(1), at: Anchor::TrackEnd(TrackRef::Index(1)), source_in: Some(0.0), source_out: Some(1.1), insert: false, with_audio: false, sync_source_secs: None };
         let plan = resolve(&seq, &pool, std::slice::from_ref(&place)).unwrap_or_else(|r| panic!("refused: {}", r.why));
         let end = plan.steps[0].after[0].source_out_secs;
         // The clip's length is whole frames of the sequence, so its end is
@@ -11686,7 +11719,7 @@ mod tests {
         item.duration = RationalTime::from_secs_f64(0.4186, 48000);
         item.has_audio = true;
         let sfx = pool.add(item);
-        let place = |end: f64| Op::Place { media_id: sfx, track: TrackRef::Index(1), at: Anchor::TrackEnd(TrackRef::Index(1)), source_in: Some(0.0), source_out: Some(end), insert: false, with_audio: false };
+        let place = |end: f64| Op::Place { media_id: sfx, track: TrackRef::Index(1), at: Anchor::TrackEnd(TrackRef::Index(1)), source_in: Some(0.0), source_out: Some(end), insert: false, with_audio: false, sync_source_secs: None };
         let plan = resolve(&seq, &pool, &[place(0.42)]).unwrap_or_else(|r| panic!("refused: {}", r.why));
         assert!(plan.duration_secs <= 8.0 + 0.4186 + 1e-6, "ran past the file's end: {}", plan.duration_secs);
         assert!(resolve(&seq, &pool, &[place(0.45)]).unwrap_err().why.contains("is not inside"));
@@ -11707,14 +11740,14 @@ mod tests {
         let sound = |k: usize| {
             let at = k as f64 * 1.5;
             [
-                Op::Place { media_id: sfx, track: TrackRef::Index(2), at: Anchor::Secs(at), source_in: Some(0.1), source_out: Some(0.9), insert: false, with_audio: true },
+                Op::Place { media_id: sfx, track: TrackRef::Index(2), at: Anchor::Secs(at), source_in: Some(0.1), source_out: Some(0.9), insert: false, with_audio: true, sync_source_secs: None },
                 Op::Audio { clip_id: Some(ClipRef::At { track: 2, secs: at + 0.4 }), track: None, from: None, to: None, volume_db: Some(-6.0), gain_db: None, pan: None, fade_in: Some(0.05), fade_out: Some(0.2) },
                 Op::Role { clip_id: ClipRef::At { track: 2, secs: at + 0.4 }, role: "sfx".into() },
             ]
         };
         let mut ops: Vec<Op> = (0..10).flat_map(sound).collect();
         // A picture with its sound: one step on two clips.
-        ops.push(Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::TrackEnd(TrackRef::Index(0)), source_in: Some(0.0), source_out: Some(1.0), insert: false, with_audio: true });
+        ops.push(Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::TrackEnd(TrackRef::Index(0)), source_in: Some(0.0), source_out: Some(1.0), insert: false, with_audio: true, sync_source_secs: None });
         ops.extend((10..21).flat_map(sound));
         let plan = resolve(&seq, &pool, &ops).unwrap();
         let folded = plan.text_folded();
@@ -11731,11 +11764,52 @@ mod tests {
         assert_eq!(plan.text().lines().count(), ops.len() + 1, "every step in full when asked");
     }
 
+    /// #1928: a sound placed by its transient starts that much before the
+    /// anchor, on the sample grid of an audio track, and says where its
+    /// moment lands; on a picture track it lands within half a frame and
+    /// says by how much it misses. A moment outside the stretch, or one
+    /// that would start the clip before the timeline, is refused with what
+    /// would fit. Left out, the op is as it was, and saved without it.
+    #[test]
+    fn a_sound_placed_by_its_transient_lands_it_on_the_anchor() {
+        let (mut seq, mut pool, media, a, _) = fixture();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/whoosh.wav".into(), None);
+        item.duration = tc(2.0);
+        item.has_audio = true;
+        let sfx = pool.add(item);
+        seq.tracks.push(Track::new("SFX", TrackKind::Audio));
+        let place = |at: Anchor, source_in: Option<f64>, sync: Option<f64>| Op::Place { media_id: sfx, track: TrackRef::Index(2), at, source_in, source_out: Some(1.5), insert: false, with_audio: true, sync_source_secs: sync };
+        let start = |op: Op| -> (f64, String) {
+            let plan = resolve(&seq, &pool, &[op]).unwrap_or_else(|e| panic!("{e}"));
+            (plan.steps[0].after[0].timeline_in_secs, plan.steps[0].what.clone())
+        };
+        let near = |x: f64, y: f64| (x - y).abs() <= 1.0 / 48_000.0 + 1e-9;
+        let (at, what) = start(place(Anchor::Secs(1.70), None, Some(0.43)));
+        assert!(near(at, 1.27) && what.contains("its 0.430 s lands on 1.700 s") && !what.contains("off it"), "{at} {what}");
+        let (at, _) = start(place(Anchor::Secs(1.70), Some(0.2), Some(0.43)));
+        assert!(near(at, 1.47), "the stretch from 0.2 s: its 0.43 s is 0.23 s in: {at}");
+        let (at, _) = start(place(Anchor::ClipEnd(ClipRef::Id(a)), None, Some(0.43)));
+        assert!(near(at, 3.57), "on a clip's end: {at}");
+        let (at, _) = start(place(Anchor::Secs(1.70), None, None));
+        assert!(near(at, 1.70), "left out, the anchor is the start: {at}");
+        let refused = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err();
+        let early = refused(place(Anchor::Secs(0.2), None, Some(0.43)));
+        assert!(early.why.contains("before the timeline") && early.hint.contains("source_in 0.230"), "{early}");
+        let outside = refused(place(Anchor::Secs(1.7), None, Some(1.8)));
+        assert!(outside.why.contains("outside the stretch"), "{outside}");
+        // A picture track's frames: 9.00 - 0.43 = 8.57 s is no frame at 25 fps.
+        let picture = Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(9.0), source_in: Some(0.0), source_out: Some(1.0), insert: false, with_audio: false, sync_source_secs: Some(0.43) };
+        let (at, what) = start(picture);
+        assert!((at - 8.57).abs() <= 0.02 + 1e-9 && what.contains("off it, on the frame grid"), "{at} {what}");
+        let saved = serde_json::to_value(place(Anchor::Secs(1.0), None, None)).unwrap();
+        assert!(saved.get("sync_source_secs").is_none(), "saved as it was: {saved}");
+    }
+
     #[test]
     fn a_long_plan_folds_its_runs_and_says_long_names_once_shortly() {
         let (seq, pool, media, _, _) = fixture();
         let ops: Vec<Op> = (0..9)
-            .map(|k| Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::TrackEnd(TrackRef::Index(0)), source_in: Some(k as f64 * 0.5), source_out: Some(k as f64 * 0.5 + 0.4), insert: false, with_audio: true })
+            .map(|k| Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::TrackEnd(TrackRef::Index(0)), source_in: Some(k as f64 * 0.5), source_out: Some(k as f64 * 0.5 + 0.4), insert: false, with_audio: true, sync_source_secs: None })
             .collect();
         let plan = resolve(&seq, &pool, &ops).unwrap();
         let folded = plan.text_folded();
@@ -11751,18 +11825,18 @@ mod tests {
     fn an_assembly_names_its_own_clips_and_the_end_of_a_track() {
         let (seq, pool, media, _, _) = fixture();
         let plan = resolve(&seq, &pool, &[
-            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::TrackEnd(TrackRef::Kind("video".into())), source_in: Some(1.0), source_out: Some(2.0), insert: false, with_audio: true },
+            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::TrackEnd(TrackRef::Kind("video".into())), source_in: Some(1.0), source_out: Some(2.0), insert: false, with_audio: true, sync_source_secs: None },
             // The clip that place made, by where it is: the next goes at its end.
-            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::ClipEnd(ClipRef::At { track: 0, secs: 8.5 }), source_in: Some(2.0), source_out: Some(3.0), insert: false, with_audio: true },
-            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::ClipStart(ClipRef::At { track: 0, secs: 9.5 }), source_in: Some(2.0), source_out: Some(3.0), insert: false, with_audio: true },
+            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::ClipEnd(ClipRef::At { track: 0, secs: 8.5 }), source_in: Some(2.0), source_out: Some(3.0), insert: false, with_audio: true, sync_source_secs: None },
+            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::ClipStart(ClipRef::At { track: 0, secs: 9.5 }), source_in: Some(2.0), source_out: Some(3.0), insert: false, with_audio: true, sync_source_secs: None },
         ]);
         // The first two land end to end; the third names the second's start, where the second is.
         let err = plan.unwrap_err();
         assert_eq!(err.step, 2);
         assert!(err.why.contains("overlap"), "{err}");
         let plan = resolve(&seq, &pool, &[
-            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::TrackEnd(TrackRef::Index(0)), source_in: Some(1.0), source_out: Some(2.0), insert: false, with_audio: true },
-            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::ClipEnd(ClipRef::At { track: 0, secs: 8.5 }), source_in: Some(2.0), source_out: Some(3.0), insert: false, with_audio: true },
+            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::TrackEnd(TrackRef::Index(0)), source_in: Some(1.0), source_out: Some(2.0), insert: false, with_audio: true, sync_source_secs: None },
+            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::ClipEnd(ClipRef::At { track: 0, secs: 8.5 }), source_in: Some(2.0), source_out: Some(3.0), insert: false, with_audio: true, sync_source_secs: None },
         ]).unwrap();
         assert_eq!((plan.steps[0].after[0].timeline_in_secs, plan.steps[0].after[0].timeline_out_secs), (8.0, 9.0));
         assert_eq!((plan.steps[1].after[0].timeline_in_secs, plan.steps[1].after[0].timeline_out_secs), (9.0, 10.0));
@@ -12933,7 +13007,7 @@ mod tests {
     fn a_pose_at_the_length_asked_for_lands_on_the_clips_end() {
         let (mut seq, pool, media, _, _) = fixture();
         seq.fps = Fps::new(30, 1);
-        let place = Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(28.15), source_in: Some(0.0), source_out: Some(9.55), insert: false, with_audio: false };
+        let place = Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(28.15), source_in: Some(0.0), source_out: Some(9.55), insert: false, with_audio: false, sync_source_secs: None };
         let compose = |poses: Vec<ComposePose>| resolve(&seq, &pool, &[place.clone(), Op::Compose { clip_id: ClipRef::Made(StepRef(0)), poses }]);
         let start = ComposePose { secs: 0.0, x: Some(0.25), ..Default::default() };
         let plan = compose(vec![start]).unwrap();
@@ -14217,7 +14291,7 @@ mod tests {
         let (seq, pool, media, a, b) = fixture();
         let ops = vec![
             Op::Split { clip_id: ClipRef::Id(b), at: Anchor::Marker("intro".into()) },
-            Op::Place { media_id: media, track: TrackRef::Kind("video".into()), at: Anchor::ClipEnd(ClipRef::Id(b)), source_in: Some(8.0), source_out: Some(9.0), insert: false, with_audio: false },
+            Op::Place { media_id: media, track: TrackRef::Kind("video".into()), at: Anchor::ClipEnd(ClipRef::Id(b)), source_in: Some(8.0), source_out: Some(9.0), insert: false, with_audio: false, sync_source_secs: None },
             Op::Trim { clip_id: ClipRef::Id(a), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: false, linked: false },
         ];
         // The split replaces b, so its end no longer exists as `b`:
@@ -14227,7 +14301,7 @@ mod tests {
         assert!(err.why.contains("no clip"), "{err}");
 
         let ops = vec![
-            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::ClipEnd(ClipRef::Id(b)), source_in: Some(8.0), source_out: Some(9.0), insert: false, with_audio: false },
+            Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::ClipEnd(ClipRef::Id(b)), source_in: Some(8.0), source_out: Some(9.0), insert: false, with_audio: false, sync_source_secs: None },
             Op::Split { clip_id: ClipRef::Id(b), at: Anchor::Marker("intro".into()) },
             Op::Trim { clip_id: ClipRef::Id(a), edge: Edge::Out, to: Anchor::Secs(3.0), ripple: false, linked: false },
         ];
@@ -14248,7 +14322,7 @@ mod tests {
     #[test]
     fn refusals_say_why_and_what_would_help() {
         let (seq, pool, media, a, b) = fixture();
-        let over = resolve(&seq, &pool, &[Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(2.0), source_in: None, source_out: Some(1.0), insert: false, with_audio: false }]).unwrap_err();
+        let over = resolve(&seq, &pool, &[Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(2.0), source_in: None, source_out: Some(1.0), insert: false, with_audio: false, sync_source_secs: None }]).unwrap_err();
         assert!(over.why.contains("overlap"), "{over}");
         assert!(over.hint.contains("clip_end"), "{over}");
         let past = resolve(&seq, &pool, &[Op::Trim { clip_id: ClipRef::Id(b), edge: Edge::Out, to: Anchor::Secs(11.0), ripple: false, linked: false }]).unwrap_err();
@@ -14361,7 +14435,7 @@ mod tests {
             seq.tracks = vec![Track::new("V1", TrackKind::Video), Track::new("A1", TrackKind::Audio)];
             seq
         };
-        let place = |media_id, track| Op::Place { media_id, track: TrackRef::Index(track), at: Anchor::Secs(0.0), source_in: None, source_out: None, insert: false, with_audio: true };
+        let place = |media_id, track| Op::Place { media_id, track: TrackRef::Index(track), at: Anchor::Secs(0.0), source_in: None, source_out: None, insert: false, with_audio: true, sync_source_secs: None };
         let format_after = |seq: Sequence, op: Op| {
             let plan = resolve(&seq, &pool, &[op]).unwrap();
             let (mut seqs, mut p, mut fps) = (vec![seq.clone()], pool.clone(), seq.fps);
@@ -14816,7 +14890,7 @@ mod tests {
         let (seq, pool, media, a, b) = fixture();
         // Insert one second of the file at 2 s: a is split there and
         // everything after moves a second later, on every track.
-        let plan = resolve(&seq, &pool, &[Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(2.0), source_in: Some(9.0), source_out: Some(10.0), insert: true, with_audio: false }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(2.0), source_in: Some(9.0), source_out: Some(10.0), insert: true, with_audio: false, sync_source_secs: None }]).unwrap();
         assert!(plan.steps[0].what.contains("2 clip(s) split"), "the picture and its audio: {}", plan.steps[0].what);
         assert!((plan.duration_secs - 9.0).abs() < 1e-9, "{}", plan.text());
         let mut seqs = vec![seq.clone()];
@@ -14901,13 +14975,13 @@ mod tests {
         item.has_audio = true;
         let media2 = pool2.add(item);
         let plan = resolve(&empty, &pool2, &[
-            Op::Place { media_id: media2, track: TrackRef::Kind("video".into()), at: Anchor::Secs(0.0), source_in: Some(1.0), source_out: Some(3.0), insert: false, with_audio: true },
+            Op::Place { media_id: media2, track: TrackRef::Kind("video".into()), at: Anchor::Secs(0.0), source_in: Some(1.0), source_out: Some(3.0), insert: false, with_audio: true, sync_source_secs: None },
             Op::Split { clip_id: ClipRef::At { track: 0, secs: 0.5 }, at: Anchor::Secs(1.0) },
             Op::JCut { incoming_clip: ClipRef::At { track: 0, secs: 1.5 }, frames: 6 },
             // Frames count at the rate the sequence has by now, 24, not
             // the 25 it started with: 48 frames is 2.0 s, the first clip's
             // end, and the source range was snapped at 24 too.
-            Op::Place { media_id: media2, track: TrackRef::Index(0), at: Anchor::Frame(48), source_in: Some(4.0), source_out: Some(5.0), insert: false, with_audio: true },
+            Op::Place { media_id: media2, track: TrackRef::Index(0), at: Anchor::Frame(48), source_in: Some(4.0), source_out: Some(5.0), insert: false, with_audio: true, sync_source_secs: None },
         ]).unwrap();
         let w = &plan.steps[0].what;
         assert!(w.contains("new audio track 1") && w.contains("1280x720 at 24.000 fps"), "{w}");
@@ -14932,7 +15006,7 @@ mod tests {
 
         // Without its sound, a video clip is muted: the engine would
         // otherwise play the sound in its file.
-        let plan = resolve(&seq, &pool, &[Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(20.0), source_in: Some(1.0), source_out: Some(2.0), insert: false, with_audio: false }]).unwrap();
+        let plan = resolve(&seq, &pool, &[Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(20.0), source_in: Some(1.0), source_out: Some(2.0), insert: false, with_audio: false, sync_source_secs: None }]).unwrap();
         assert!(plan.steps[0].what.ends_with("its sound muted"), "{}", plan.steps[0].what);
         assert_eq!(plan.steps[0].after.len(), 1);
         match &plan.steps[0].edit {
@@ -14996,7 +15070,7 @@ mod still_placement_tests {
         item.is_still = true;
         item.duration = snap(5.0, seq.fps);
         let media = pool.add(item);
-        let place = |from, to| Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(2.0), source_in: Some(from), source_out: to, insert: false, with_audio: false };
+        let place = |from, to| Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(2.0), source_in: Some(from), source_out: to, insert: false, with_audio: false, sync_source_secs: None };
         let plan = resolve(&seq, &pool, &[place(0.0, Some(20.0)), Op::Trim { clip_id: ClipRef::At { track: 0, secs: 3.0 }, edge: Edge::Out, to: Anchor::Secs(32.0), ripple: false, linked: false }]).unwrap();
         assert_eq!(plan.steps[0].after[0].timeline_out_secs, 22.0);
         assert_eq!(plan.steps[1].after[0].timeline_out_secs, 32.0);

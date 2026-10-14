@@ -62,3 +62,5 @@ mod title_fit_export;
 mod pan_inside_a_card;
 #[path = "../scene_layers.rs"]
 mod scene_layers;
+#[path = "../place_by_sync.rs"]
+mod place_by_sync;
