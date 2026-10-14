@@ -657,13 +657,23 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
     // them: text cut to the music is timed by them, not by reading
     // speed alone (#1908).
     let mut beats_at: Vec<f64> = Vec::new();
+    // The beds whose beats are not read yet: titles under them are timed
+    // without the music, and the report says so (#1977).
+    let mut unread_beds: Vec<String> = Vec::new();
     for t in &seq.tracks {
         for m in t.clips.iter().filter(|m| is_heard(seq, pool, t, m)) {
             let Some(item) = m.media_id().and_then(|id| pool.get(&id)) else { continue };
             if sound_role(seq, m) != klipp_core::ClipRole::Music && transcripts.library_role(item) != Some(klipp_core::ClipRole::Music) {
                 continue;
             }
-            let Some((_, beats)) = transcripts.beats(item).filter(|(sure, _)| *sure > BEAT_SURE) else { continue };
+            let Some(read) = transcripts.beats(item) else {
+                let name = clip_label(pool, m);
+                if !unread_beds.contains(&name) {
+                    unread_beds.push(name);
+                }
+                continue;
+            };
+            let Some((_, beats)) = Some(read).filter(|(sure, _)| *sure > BEAT_SURE) else { continue };
             let (s_in, s_out, speed) = (secs(m.source_in), secs(m.source_out), m.speed.abs().max(1e-3));
             beats_at.extend(beats.iter().filter(|b| **b >= s_in && **b < s_out).map(|b| secs(m.timeline_in) + (b - s_in) / speed));
         }
@@ -678,6 +688,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
         let after = cuts.iter().copied().filter(|e| *e >= b - near && *e <= b + BEAT_CONTEXT_SECS).reduce(f64::min);
         matches!((before, after), (Some(x), Some(y)) if on_beat(x) && on_beat(y))
     };
+    let mut timing_flagged = false;
     for c in &titles {
         let ClipKind::Title(td) = &c.kind else { continue };
         let (a, b) = (secs(c.timeline_in), secs(c.timeline_out));
@@ -690,6 +701,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             if rhythmic && crossed.iter().all(|e| on_beat(*e)) {
                 add(Severity::Note, "title_over_beat_cuts", Some(a), format!("{} is held from {a:.2} to {b:.2} s over {} cut{} on the music's beats: a heading over a cut-to-music run", clip_label(pool, c), crossed.len(), if crossed.len() == 1 { "" } else { "s" }), "Nothing to change if it is meant as one");
             } else {
+                timing_flagged = true;
                 add(Severity::Warning, "title_across_cut", Some(cut), format!("{} is up from {a:.2} to {b:.2} s and the picture changes at {cut:.2} s", clip_label(pool, c)), "A title does not run across a shot change: move it inside one shot");
             }
         }
@@ -701,6 +713,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             if rhythmic && b - a + 1e-6 >= on_the_music {
                 add(Severity::Note, "title_on_beat", Some(a), format!("{} has {words} word{} and {:.1} s, in and out on the music's beats: rhythmic text, held to a third of a second a word", clip_label(pool, c), if words == 1 { "" } else { "s" }, b - a), "Keep it if it is cut to the music; hold it longer if it has to be read");
             } else {
+                timing_flagged = true;
                 add(Severity::Warning, "title_short", Some(a), format!("{} has {words} word{} and {:.1} s to be read in", clip_label(pool, c), if words == 1 { "" } else { "s" }, b - a), &format!("Hold it at least {needs:.1} s: about a third of a second a word{}", if montage { " in a montage" } else { ", never under a second and a half" }));
             }
         }
@@ -759,6 +772,10 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
                 }
             }
         }
+    }
+
+    if timing_flagged && !unread_beds.is_empty() {
+        add(Severity::Note, "beats_unread", None, format!("the beats of {} are not read yet, so the titles above were timed without the music: a title cut to it may be flagged that is not", unread_beds.join(", ")), "Check again once the beats are read; they are being read now");
     }
 
     // Sound: cuts inside a word, music left at full level under speech.
@@ -1264,7 +1281,13 @@ mod tests {
         let found = |seq: &Sequence, t: &dyn Transcripts| rules(&check(seq, &pool, t));
         let got = found(&seq, &Bed(bed, 0.5));
         assert!(got.contains(&"title_on_beat") && !got.contains(&"title_short"), "{got:?}");
-        assert!(found(&seq, &crate::ops::NoTranscripts).contains(&"title_short"), "no beats read: judged as before");
+        let unread = found(&seq, &crate::ops::NoTranscripts);
+        assert!(unread.contains(&"title_short"), "no beats read: judged as before");
+        assert!(unread.contains(&"beats_unread"), "and said to be judged without the music (#1977): {unread:?}");
+        assert!(!got.contains(&"beats_unread"), "read beats: nothing to say");
+        seq.tracks[0].clips[0] = title("Colour.", 0.2, 1.9);
+        assert!(!found(&seq, &crate::ops::NoTranscripts).contains(&"beats_unread"), "no title judged on its timing: nothing to say");
+        seq.tracks[0].clips[0] = title("Colour.", 1.0, 2.0);
         seq.tracks[0].clips[0] = title("Colour.", 1.15, 2.15);
         assert!(found(&seq, &Bed(bed, 0.5)).contains(&"title_short"), "off the beat: judged as before");
         // At 140 BPM, on the beats, but the cuts round it are not: chance,
