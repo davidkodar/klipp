@@ -514,11 +514,24 @@ pub fn search_music(query: &str, limit: u32) -> Result<Vec<Track>, String> {
 }
 
 pub fn search_music_filtered(query: &str, limit: u32, filter: MusicFilter) -> Result<Vec<Track>, String> {
-    let limit = limit.clamp(1, 50);
-    // A pool larger than wanted, to rank by the query's own words: the
-    // library orders by popularity, so its first answer to "chill
-    // acoustic guitar" was a dance track (#739).
-    let page = (limit * 3).clamp(30, 200);
+    let mut tracks = ranked_pool(query, &filter, |extra, page, offset| jamendo_tracks(extra, page, offset, &filter))?;
+    tracks.truncate(limit.clamp(1, 50) as usize);
+    for t in &mut tracks {
+        t.tags.truncate(8);
+    }
+    Ok(tracks)
+}
+
+/// A search's candidates, ranked by the query's words, before any limit:
+/// the library asked through `fetch(query part, page size, offset)`.
+///
+/// A pool larger than wanted, to rank by the query's own words: the
+/// library orders by popularity, so its first answer to "chill acoustic
+/// guitar" was a dance track (#739). The same pool whatever the limit, so
+/// the best match is the same with limit 1 as with 20, and a limit only
+/// cuts the ranked list (#1895).
+fn ranked_pool(query: &str, filter: &MusicFilter, mut fetch: impl FnMut(&str, u32, u32) -> Result<Vec<Track>, String>) -> Result<Vec<Track>, String> {
+    let page = RANK_PAGE;
     let words: Vec<String> = query.split_whitespace().map(|w| w.to_lowercase()).collect();
     let mut attempts: Vec<String> = vec![format!("fuzzytags={}", encode(&words.join("+"))), format!("search={}", encode(query.trim()))];
     if words.len() > 1 {
@@ -530,14 +543,14 @@ pub fn search_music_filtered(query: &str, limit: u32, filter: MusicFilter) -> Re
         // a second page is read when they thin the first, so a limit of
         // six gives six, not the two of a page's six that passed (#739).
         for offset in [0, page] {
-            let mut got = jamendo_tracks(&extra, page, offset, &filter)?;
+            let mut got = fetch(&extra, page, offset)?;
             let read = got.len();
             // Before ranking and the limit, so a limit of eight gives
             // eight that pass (#1931).
             got.retain(|t| filter.keeps(t));
             got.retain(|t| !tracks.iter().any(|k: &Track| k.id == t.id));
             tracks.extend(got);
-            if tracks.len() >= limit as usize || read < page as usize {
+            if tracks.len() >= RANK_POOL || read < page as usize {
                 break;
             }
         }
@@ -546,11 +559,25 @@ pub fn search_music_filtered(query: &str, limit: u32, filter: MusicFilter) -> Re
         }
     }
     rank_by_query(&mut tracks, &words);
-    tracks.truncate(limit as usize);
-    for t in &mut tracks {
-        t.tags.truncate(8);
-    }
     Ok(tracks)
+}
+
+/// How many tracks a music search asks the library for at a time, and how
+/// many that pass its filters it ranks: fixed, not taken from the limit,
+/// so a search ranks the same pool however many results it gives back
+/// (#1895). The pool holds the largest limit.
+const RANK_PAGE: u32 = 150;
+const RANK_POOL: usize = 50;
+
+/// Tracks by their library ids (#1895): the ones a search was asked to
+/// listen to by id that its results don't hold. An id the library
+/// doesn't know is left out; the caller says so.
+pub fn music_tracks_by_id(ids: &[String]) -> Result<Vec<Track>, String> {
+    let ids: Vec<&str> = ids.iter().map(|i| i.trim()).filter(|i| !i.is_empty() && i.chars().all(|c| c.is_ascii_digit())).collect();
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    jamendo_tracks(&format!("id={}", ids.join("+")), ids.len() as u32, 0, &MusicFilter::default())
 }
 
 /// Moods that pull against each other: a track tagged with one side is
@@ -1262,6 +1289,33 @@ mod tests {
         for url in ["publicdomain/zero/1.0/", "licenses/by/4.0/", "licenses/by-sa/3.0/", "licenses/by-nc/3.0/", "licenses/by-nc-sa/3.0/", "licenses/by-nd/3.0/", "licenses/by-nc-nd/3.0/"] {
             let label = cc_label(&format!("https://creativecommons.org/{url}")).0;
             assert!(LICENCE_FAMILIES.contains(&label.as_str()), "{label}");
+        }
+    }
+
+    /// #1895: the ranked list is the same whatever the limit asks for:
+    /// the pool read doesn't depend on it, and the limit only cuts it. A
+    /// library that orders by popularity puts the best match far down;
+    /// asked with a pool sized by the limit, limit 1 read too little to
+    /// find it.
+    #[test]
+    fn the_best_match_is_the_same_at_any_limit() {
+        let track = |id: usize, tags: &[&str]| Track {
+            source: Source::JamendoMusic, id: id.to_string(), title: format!("t{id}"), artist: "a".into(), duration_secs: 60.0,
+            license: "CC BY".into(), license_url: String::new(), commercial_ok: true, preview_url: "https://p".into(),
+            download_url: String::new(), page_url: String::new(), image_url: String::new(), tags: tags.iter().map(|t| t.to_string()).collect(), pace: String::new(), original: None,
+        };
+        // Popularity order: 120 tracks, the one tagged with both words 90th.
+        let library: Vec<Track> = (0..120).map(|i| if i == 90 { track(i, &["ambient", "cinematic"]) } else { track(i, &["pop"]) }).collect();
+        let mut asked = Vec::new();
+        let mut fetch = |_: &str, page: u32, offset: u32| {
+            asked.push((page, offset));
+            Ok(library.iter().skip(offset as usize).take(page as usize).cloned().collect::<Vec<_>>())
+        };
+        let pool = ranked_pool("ambient cinematic", &MusicFilter::default(), &mut fetch).unwrap();
+        assert_eq!(pool[0].id, "90", "the best match leads the pool");
+        assert!(asked.iter().all(|(page, _)| *page == RANK_PAGE), "the page is fixed: {asked:?}");
+        for limit in [1usize, 8, 20] {
+            assert_eq!(pool.iter().take(limit).next().map(|t| t.id.as_str()), Some("90"), "limit {limit}");
         }
     }
 
