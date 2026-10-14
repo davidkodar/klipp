@@ -79,10 +79,20 @@ fn held_drag(label: &str, src: std::path::PathBuf, width: u32, height: u32, fps:
     let taken = held_hits(&parked) - hits;
     assert!(taken >= 3, "{label}: the steps took the held output {taken} times: {:#?}", parked.trail());
     assert_ne!(frames[0], frames[1], "{label}: a step changed nothing");
+    // Letting go (#1939): the parked frame presented again takes the
+    // held output on the GPU too, not the full render.
+    let before = held_hits(&parked);
+    parked.end_drag().expect("letting go showed no frame");
+    parked.settle();
+    let release = parked.perf().last().copied().expect("the release's sample");
+    assert!(release.reencode_ms == 0.0 && release.composite_ms == 0.0, "{label}: the release went through the full render ({release:?})");
+    assert!(held_hits(&parked) > before, "{label}: the release took nothing held: {:#?}", parked.trail());
+    let released = parked.frame();
     let fresh = common::Parked::start_with_at_unheld(src, width, height, fps, graded(heavy, 1.25));
     let off = worst(frames.last().unwrap(), &fresh.frame());
-    eprintln!("{label}: {taken} held, worst {off} levels from an engine holding nothing");
-    assert!(off <= 1, "{label}: the drag showed a picture {off} levels off the full render");
+    let off_released = worst(&released, &fresh.frame());
+    eprintln!("{label}: {taken} held, worst {off} levels from an engine holding nothing, the release {off_released}");
+    assert!(off <= 1 && off_released <= 1, "{label}: the drag / release showed a picture {off} / {off_released} levels off the full render");
 }
 
 #[test]
