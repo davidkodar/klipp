@@ -655,3 +655,35 @@ fn collect_keeps_a_missing_global_luts_path() {
         let _ = std::fs::remove_dir_all(d);
     }
 }
+
+/// #1893: a library download's credit and licence file goes with it into
+/// a collected project, beside its copy; a sound with none gets none.
+#[test]
+fn a_collected_download_keeps_its_credit() {
+    let source_dir = tmp_path("credit_src");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    save_project_with_color(&source_dir, &[Sequence::new_default()], &MediaPool::new(), &ColorSettings::default(), None, None, "").unwrap();
+    let downloads = tmp_path("credit_downloads");
+    std::fs::create_dir_all(&downloads).unwrap();
+    let song = downloads.join("Dan_Falvey-Swansong-.mp3");
+    let plain = downloads.join("room-tone.wav");
+    std::fs::write(&song, b"fake song").unwrap();
+    std::fs::write(&plain, b"fake tone").unwrap();
+    std::fs::write(song.with_extension("klipp-credit.txt"), b"Swansong by Dan Falvey, CC BY 3.0").unwrap();
+
+    let mut pool = MediaPool::new();
+    pool.add(make_media_item(song.clone()));
+    pool.add(make_media_item(plain.clone()));
+    let dest = tmp_path("credit_dest");
+    let result = run_consolidate(&source_dir, &pool, dest.clone()).unwrap();
+
+    let credit = dest.join("media/Dan_Falvey-Swansong-.klipp-credit.txt");
+    assert!(dest.join("media/Dan_Falvey-Swansong-.mp3").exists());
+    assert_eq!(std::fs::read(&credit).ok().as_deref(), Some(&b"Swansong by Dan Falvey, CC BY 3.0"[..]), "the credit beside the copy");
+    assert!(!dest.join("media/room-tone.klipp-credit.txt").exists(), "none made up");
+    assert!(result.warnings.iter().all(|w| !w.contains("credit")), "{:?}", result.warnings);
+
+    let _ = std::fs::remove_dir_all(&source_dir);
+    let _ = std::fs::remove_dir_all(&downloads);
+    let _ = std::fs::remove_dir_all(&dest);
+}
