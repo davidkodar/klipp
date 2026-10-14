@@ -2487,33 +2487,99 @@ impl Plan {
         self.steps.iter().map(|s| StepReport { op: s.op.clone(), what: s.what.clone(), after: s.after.clone() }).collect()
     }
 
-    /// [`Self::text`] with long runs of one kind of step folded: the
-    /// first two and the last of a run of five or more, and how many
-    /// were left out. A sixty-step assembly said every step twice, in
-    /// text and as JSON, and cost its caller fifteen thousand tokens.
+    /// [`Self::text`], short: the steps on one clip on one line, and long
+    /// runs of lines alike folded to the first two and the last, the fold
+    /// saying how many it left out and where their clips went. A
+    /// sixty-step assembly said every step twice, in text and as JSON,
+    /// and cost its caller fifteen thousand tokens; a batch of sounds,
+    /// each placed, levelled and given its role, folded nothing, its
+    /// three kinds of step taking turns (#1929).
     pub fn text_folded(&self) -> String {
-        let kind = |s: &Step| std::mem::discriminant(&s.op);
+        let groups = self.clip_groups();
+        let shape = |&(a, b): &(usize, usize)| self.steps[a..=b].iter().map(|s| std::mem::discriminant(&s.op)).collect::<Vec<_>>();
         let mut out = String::new();
-        let mut i = 0;
-        while i < self.steps.len() {
-            let mut j = i;
-            while j + 1 < self.steps.len() && kind(&self.steps[j + 1]) == kind(&self.steps[i]) {
-                j += 1;
+        let mut g = 0;
+        while g < groups.len() {
+            let mut h = g;
+            while h + 1 < groups.len() && shape(&groups[h + 1]) == shape(&groups[g]) {
+                h += 1;
             }
-            let run = j - i + 1;
-            for k in i..=j {
-                if run >= 5 && k > i + 1 && k < j {
-                    if k == i + 2 {
-                        out.push_str(&format!("   … {} more like these …\n", run - 3));
+            let run = h - g + 1;
+            for k in g..=h {
+                if run >= 5 && k > g + 1 && k < h {
+                    if k == g + 2 {
+                        out.push_str(&self.fold_line(&groups[g + 2..h]));
                     }
                     continue;
                 }
-                out.push_str(&format!("{}. {}\n", k + 1, self.steps[k].what));
+                out.push_str(&self.group_line(groups[k]));
             }
-            i = j + 1;
+            g = h + 1;
         }
         out.push_str(&self.ending());
         out
+    }
+
+    /// The steps as runs on one clip, by index: a step that touches one
+    /// clip and the steps right after it that touch only that clip.
+    fn clip_groups(&self) -> Vec<(usize, usize)> {
+        let one = |s: &Step| match s.after.as_slice() {
+            [c] => Some(c.clip_id),
+            _ => None,
+        };
+        let mut groups = Vec::new();
+        let mut i = 0;
+        while i < self.steps.len() {
+            let mut j = i;
+            if let Some(clip) = one(&self.steps[i]) {
+                while j + 1 < self.steps.len() && one(&self.steps[j + 1]) == Some(clip) {
+                    j += 1;
+                }
+            }
+            groups.push((i, j));
+            i = j + 1;
+        }
+        groups
+    }
+
+    /// Steps `a` to `b`, all on one clip, in a line: the first in full,
+    /// each after it as what it changes.
+    fn group_line(&self, (a, b): (usize, usize)) -> String {
+        if a == b {
+            return format!("{}. {}\n", a + 1, self.steps[a].what);
+        }
+        let mut line = format!("{}-{}. {}", a + 1, b + 1, self.steps[a].what);
+        for s in &self.steps[a + 1..=b] {
+            let change = match &s.op {
+                Op::Role { role, .. } => format!("role {role}"),
+                _ => s.what.split_once(": ").map_or(s.what.as_str(), |(_, change)| change).to_string(),
+            };
+            line.push_str("; ");
+            line.push_str(&change);
+        }
+        line.push('\n');
+        line
+    }
+
+    /// The line that stands for `groups` folded away: how many, their
+    /// steps, and where each one's clip lies on the timeline.
+    fn fold_line(&self, groups: &[(usize, usize)]) -> String {
+        let (Some(first), Some(last)) = (groups.first(), groups.last()) else { return String::new() };
+        let lies: Vec<&ClipAfter> = groups.iter().filter_map(|&(_, b)| match self.steps[b].after.as_slice() {
+            [c] => Some(c),
+            _ => None,
+        }).collect();
+        let steps = format!("steps {}-{}", first.0 + 1, last.1 + 1);
+        if lies.len() < groups.len() {
+            return format!("   … {} more like these ({steps}) …\n", groups.len());
+        }
+        let span = |c: &ClipAfter| format!("{:.2}-{:.2}", c.timeline_in_secs, c.timeline_out_secs);
+        let at = if lies.iter().all(|c| c.track == lies[0].track) {
+            format!("track {} at {} s", lies[0].track, lies.iter().map(|c| span(c)).collect::<Vec<_>>().join(", "))
+        } else {
+            lies.iter().map(|c| format!("{} s on track {}", span(c), c.track)).collect::<Vec<_>>().join(", ")
+        };
+        format!("   … {} more like these ({steps}): {at} …\n", groups.len())
     }
 
     /// How long the timeline is afterwards — and where the picture ends,
@@ -11412,6 +11478,45 @@ mod tests {
         let plan = resolve(&seq, &pool, &[place(0.42)]).unwrap_or_else(|r| panic!("refused: {}", r.why));
         assert!(plan.duration_secs <= 8.0 + 0.4186 + 1e-6, "ran past the file's end: {}", plan.duration_secs);
         assert!(resolve(&seq, &pool, &[place(0.45)]).unwrap_err().why.contains("is not inside"));
+    }
+
+    /// #1929: a batch of 21 sounds, each placed, levelled and given its
+    /// role, reads one line per sound, the run of them folded; the fold
+    /// keeps where every sound it hides went, and a step on two clips in
+    /// the middle stays a line of its own. In full when asked.
+    #[test]
+    fn a_batch_of_sounds_reads_a_line_a_sound_and_keeps_every_range() {
+        let (mut seq, mut pool, media, _, _) = fixture();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/whoosh.wav".into(), None);
+        item.duration = tc(2.0);
+        item.has_audio = true;
+        let sfx = pool.add(item);
+        seq.tracks.push(Track::new("SFX", TrackKind::Audio));
+        let sound = |k: usize| {
+            let at = k as f64 * 1.5;
+            [
+                Op::Place { media_id: sfx, track: TrackRef::Index(2), at: Anchor::Secs(at), source_in: Some(0.1), source_out: Some(0.9), insert: false, with_audio: true },
+                Op::Audio { clip_id: Some(ClipRef::At { track: 2, secs: at + 0.4 }), track: None, from: None, to: None, volume_db: Some(-6.0), gain_db: None, pan: None, fade_in: Some(0.05), fade_out: Some(0.2) },
+                Op::Role { clip_id: ClipRef::At { track: 2, secs: at + 0.4 }, role: "sfx".into() },
+            ]
+        };
+        let mut ops: Vec<Op> = (0..10).flat_map(sound).collect();
+        // A picture with its sound: one step on two clips.
+        ops.push(Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::TrackEnd(TrackRef::Index(0)), source_in: Some(0.0), source_out: Some(1.0), insert: false, with_audio: true });
+        ops.extend((10..21).flat_map(sound));
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let folded = plan.text_folded();
+        let lines: Vec<&str> = folded.lines().collect();
+        assert_eq!(lines.len(), 10, "two sounds, the fold, the last, the picture, again, and the length:\n{folded}");
+        assert!(lines[0].starts_with("1-3. place whoosh.wav on track 2 at 0.00 s") && lines[0].contains("; volume -6.0 dB (was 0.0), fade in 0.05 s, fade out 0.20 s; role sfx"), "{folded}");
+        assert!(lines[2].contains("7 more like these (steps 7-27): track 2 at "), "{folded}");
+        assert!(lines[4].starts_with("31. place a.mov"), "the step on two clips is its own line: {folded}");
+        for step in plan.steps.iter().filter(|s| matches!(s.op, Op::Place { media_id, .. } if media_id == sfx)) {
+            let c = &step.after[0];
+            let (range, at) = (format!("{:.2}-{:.2}", c.timeline_in_secs, c.timeline_out_secs), format!("at {:.2} s", c.timeline_in_secs));
+            assert!(folded.contains(&range) || folded.contains(&at), "where the sound at {range} went: {folded}");
+        }
+        assert_eq!(plan.text().lines().count(), ops.len() + 1, "every step in full when asked");
     }
 
     #[test]
