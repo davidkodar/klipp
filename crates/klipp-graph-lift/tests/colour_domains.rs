@@ -203,3 +203,41 @@ fn a_reroute_before_the_display_step_keeps_its_pictures_domain() {
     };
     assert_eq!(klipp_graph_lift::domains::fault(&g, PictureDomain::Scene, &klipp_graph_lift::registry_catalog::RegistryCatalog), None);
 }
+
+/// An effect node for `e`, as the Picture view makes one.
+fn effect_node(n: u128, e: &klipp_effects::BuiltinEffect) -> Node {
+    let payload = serde_json::to_value(e).unwrap();
+    serde_json::from_value(serde_json::json!({
+        "id": id(n), "type_id": klipp_graph_lift::names::effect_node_type(payload["type"].as_str().unwrap()), "type_version": 1, "label": "", "enabled": true,
+        "legacy": { "payload": payload },
+    }))
+    .unwrap()
+}
+
+/// A media source's frame is display-referred, an HDR or log item's given
+/// its display step as it is read (#1857): wired into a merge after the
+/// picture's display step it is taken, into one before it (scene light)
+/// refused. Control: a generator declares no domain, so either merge
+/// takes it.
+#[test]
+fn a_media_source_is_display_referred_and_refused_before_the_display_step() {
+    use klipp_effects::BuiltinEffect as E;
+    // Source(1) -> merge(9) -> fx(2) -> display step(3) -> merge(5) ->
+    // Output(6), the media source (8) and a generator (10) beside, each
+    // reading the source as the Picture view wires one.
+    let media = effect_node(8, &E::MediaSource { media: "6f1d1c34-5b0e-4c55-9a39-0d3b3c7b2a10".into(), offset: 0.0 });
+    let generator = effect_node(10, &klipp_effects::registry::effect_type("generator").map(|t| (t.sample)()).unwrap());
+    let g = Graph {
+        nodes: vec![node(1, lt::SOURCE), node(9, "merge"), node(2, "fx"), node(3, lt::SCENE_TO_DISPLAY), node(5, "merge"), node(6, lt::OUTPUT), media, generator],
+        edges: vec![edge(1, 9, "in"), edge(9, 2, "in"), edge(2, 3, "in"), edge(3, 5, "in"), edge(5, 6, "in"), edge(1, 8, "in"), edge(1, 10, "in")],
+        output: id(6),
+        ..Graph::empty()
+    };
+    let mut d = docs(g.clone());
+    ops::apply_with_catalog(&mut d, &connect(8, 5, "fg"), &Catalog).expect("display-referred with display-referred");
+    refused(g.clone(), connect(8, 9, "fg"), "mix a scene-referred picture with a display-referred one");
+    for to in [9, 5] {
+        let mut d = docs(g.clone());
+        ops::apply_with_catalog(&mut d, &connect(10, to, "fg"), &Catalog).expect("a generator mixes with either");
+    }
+}

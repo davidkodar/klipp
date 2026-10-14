@@ -10,9 +10,11 @@
 //! a group its input carries the domain of what the group reads, and the
 //! group gives its inside's output. A plug-in (OFX, frei0r), a generator
 //! (its picture made from colours authored for it, not from what it
-//! reads), a media source (another item's frame), and a node its catalog
-//! describes nothing of, declare no domain; what is below a clip is the
-//! composite, display-referred. A matte, by its
+//! reads), and a node its catalog describes nothing of, declare no domain;
+//! what is below a clip is the composite, display-referred, and a media
+//! source's frame is display-referred too, given its display step as it is
+//! read (#1857), so one wired before the picture's display step is
+//! refused. A matte, by its
 //! port's declared type, carries none. Checked with a catalog only, as the
 //! ports and masks are.
 
@@ -40,15 +42,14 @@ fn is_matte(n: &Node, port: &PortKey, out: bool, catalog: &dyn PortCatalog) -> b
     }
 }
 
-/// Whether `n` is an effect whose picture isn't the one it reads: a
-/// plug-in's (frei0r), which declares no domain, a generator's, made
-/// from colours authored for it, or a media source's, another item's
-/// frame (#1746).
+/// Whether `n` is an effect whose picture isn't the one it reads and
+/// declares no domain: a plug-in's (frei0r), or a generator's, made from
+/// colours authored for it.
 fn makes_its_own(n: &Node) -> bool {
     let ty = crate::effect_params::tag(n)
         .and_then(klipp_effects::registry::effect_type)
         .or_else(|| klipp_effects::registry::effect_types().find(|t| t.desc.id == n.type_id.as_str()));
-    ty.is_some_and(|t| t.desc.category == klipp_effects::registry::Category::PlugIn || matches!(t.tag, "generator" | "media_source"))
+    ty.is_some_and(|t| t.desc.category == klipp_effects::registry::Category::PlugIn || t.tag == "generator")
 }
 
 /// What `n` does to the domain, switched on (a group is walked inside).
@@ -61,8 +62,9 @@ fn node_step(n: &Node, catalog: &dyn PortCatalog) -> DomainStep {
         lt::OFX | lt::FREI0R => DomainStep::Undeclared,
         lt::SOURCE | lt::OUTPUT | lt::GROUP | lt::GROUP_INPUT | lt::GROUP_OUTPUT | lt::GROUP_FRAME | lt::MERGE | lt::PLACEMENT | lt::TEMPORAL_DENOISE | lt::FRAME_BLEND => DomainStep::Keeps,
         // What is below the clip: the composite, display-referred (#1746,
-        // #1867).
-        _ if crate::effect_params::tag(n) == Some("clip_below") => DomainStep::Gives(PictureDomain::Display),
+        // #1867). Another media item's frame, given its display step as it
+        // is read (#1857).
+        _ if matches!(crate::effect_params::tag(n), Some("clip_below" | "media_source")) => DomainStep::Gives(PictureDomain::Display),
         _ if makes_its_own(n) => DomainStep::Undeclared,
         _ if catalog.node_spec(n).is_none() => DomainStep::Undeclared,
         _ => DomainStep::Keeps,

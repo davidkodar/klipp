@@ -252,10 +252,10 @@ pub trait FrameSource {
         Err(klipp_nodes::side_picture::SideMissing::Unavailable)
     }
 
-    /// The item's name when its frames are scene-referred (HDR or camera
-    /// log): a media source reading it after a display step is mixed
-    /// without its own (#1857). `None` (the default) for an SDR item.
-    fn media_scene_referred(&mut self, _media: &str) -> Option<String> {
+    /// The transfer another media item's frames decode scene-referred
+    /// through (HDR or camera log): a media source gives its frame that
+    /// display step (#1857). `None` (the default) for an SDR item.
+    fn media_transfer(&mut self, _media: &str) -> Option<klipp_color::hdr::HdrTransfer> {
         None
     }
 }
@@ -3357,29 +3357,22 @@ impl Renderer {
 
     /// The frames `clip`'s media sources draw at `clip_time` (#1746), read
     /// from `src` at the render size: the first of the executor's side
-    /// pictures for the clip, the map cleared of the clip before's.
+    /// pictures for the clip, the map cleared of the clip before's. An HDR
+    /// or log item's frame is given its display step there, from its own
+    /// transfer under this render's delivery, as a clip's own source is
+    /// ([`Self::display_render`]): display-referred, as every media
+    /// source's picture is (#1857).
     fn read_media_frames(&mut self, clip: &Clip, clip_time: f64, width: u32, height: u32, src: &mut dyn FrameSource) {
         self.executor.clear_side_pictures();
         for (media, offset) in crate::resolve::media_sources(clip) {
-            let got = src.media_frame(&media, clip_time + f64::from(offset), self.working, width, height).map(Arc::new);
-            self.executor.put_side_picture(klipp_nodes::side_picture::SideKey::Media { item: media, offset_bits: offset.to_bits() }, got);
-        }
-        // An HDR or log item mixed after the display step has no display
-        // step of its own yet (#1857): said, never silently wrong.
-        for (node, media) in crate::resolve::media_mixed_after_display(clip) {
-            let Some(item) = src.media_scene_referred(&media) else { continue };
-            if self.found.declines.iter().any(|d| d.clip == Some(clip.id) && d.node == node) {
-                continue;
-            }
-            self.found.declines.push(klipp_nodes::Decline {
-                clip: Some(clip.id),
-                node,
-                kind: klipp_nodes::NodeKind::SidePicture,
-                outcome: klipp_nodes::DeclineOutcome::Fallback,
-                name: klipp_nodes::decline::effect_name(&BuiltinEffect::MediaSource { media: String::new(), offset: 0.0 }),
-                reason: format!("{item} is HDR/log; it is mixed without its display step"),
-                why: "a media source's item has no display step yet (#1857)".into(),
+            let transfer = src.media_transfer(&media);
+            let got = src.media_frame(&media, clip_time + f64::from(offset), self.working, width, height).map(|mut frame| {
+                if let Some(t) = transfer {
+                    self.display_render(&mut frame, t);
+                }
+                Arc::new(frame)
             });
+            self.executor.put_side_picture(klipp_nodes::side_picture::SideKey::Media { item: media, offset_bits: offset.to_bits() }, got);
         }
     }
 

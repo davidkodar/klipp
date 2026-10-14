@@ -378,10 +378,9 @@ impl FrameSource for ExportFrameSource<'_> {
             .map(|reader| klipp_compose::render::fit_linear_reader(reader, width, height))
     }
 
-    /// The file's name, when the snapshot says its frames are scene-referred.
-    fn media_scene_referred(&mut self, media: &str) -> Option<String> {
-        let file = klipp_compose::resolve::media_id(media).and_then(|id| self.media.get(&id))?;
-        file.scene_referred.then(|| file.path.file_name().map_or_else(|| file.path.display().to_string(), |n| n.to_string_lossy().into_owned()))
+    /// The transfer the snapshot says the file's frames decode through.
+    fn media_transfer(&mut self, media: &str) -> Option<klipp_color::hdr::HdrTransfer> {
+        klipp_compose::resolve::media_id(media).and_then(|id| self.media.get(&id))?.scene_transfer
     }
 
     /// From the snapshot's media and readers kept across the export.

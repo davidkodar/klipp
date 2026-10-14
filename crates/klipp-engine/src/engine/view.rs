@@ -379,11 +379,11 @@ impl FrameSource for ViewerSource<'_> {
         }))
     }
 
-    /// The item's name, when the pool says its frames are scene-referred.
-    fn media_scene_referred(&mut self, media: &str) -> Option<String> {
+    /// The transfer the pool says the item's frames decode through, as
+    /// export's snapshot takes it.
+    fn media_transfer(&mut self, media: &str) -> Option<klipp_color::hdr::HdrTransfer> {
         let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
-        let item = klipp_compose::resolve::media_id(media).and_then(|id| pool.get(&id))?;
-        item.scene_referred().then(|| item.filename.clone())
+        klipp_compose::resolve::media_id(media).and_then(|id| pool.get(&id))?.scene_transfer()
     }
 
     /// The item's original file, as export reads it: a proxy is the
