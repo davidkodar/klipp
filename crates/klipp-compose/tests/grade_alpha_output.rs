@@ -111,11 +111,10 @@ fn a_matte_into_the_grades_output_keys_the_clip_over_the_track_below() {
 /// in, so they move picture and alpha together.
 #[test]
 fn a_placed_cut_out_clip_is_cut_where_it_lands_on_the_stack() {
-    let mut top = graded(true);
     let shrink = klipp_effects::BuiltinEffect::Transform { position_x: 0.0, position_y: 0.0, scale_x: 0.6, scale_y: 0.6, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
     // With an effect beside it, so the clip's effects are spliced into
     // its grade's run on the stack rather than drawn as its layer's pose.
-    top.set_effect_list(vec![shrink, klipp_effects::BuiltinEffect::Invert { mix: 0.25 }], vec![true, true]);
+    let top = klipp_timeline::test_clip::TestClip::of(graded(true)).effects([shrink, klipp_effects::BuiltinEffect::Invert { mix: 0.25 }]).build();
     let below = media();
     let mut seq = Sequence::new_default();
     seq.resolution = klipp_core::Resolution { width: W, height: H };
