@@ -38,6 +38,12 @@ fn graph(before: Option<Node>) -> (NodeGraph, NodeId) {
 /// Park on a frame of the clip graded by `graph`, pick at the centre
 /// under `node`, and return the engine's answer.
 fn pick(graph: NodeGraph, node: NodeId, placed: bool) -> Option<Result<[f32; 3], NodeSampleRefusal>> {
+    pick_after(graph, node, placed, Duration::from_millis(1500))
+}
+
+/// [`pick`], `wait` after the playhead is set: no wait sends the pick
+/// before the parked frame has been decoded.
+fn pick_after(graph: NodeGraph, node: NodeId, placed: bool, wait: Duration) -> Option<Result<[f32; 3], NodeSampleRefusal>> {
     let src = common::ramp("p587", &["-c:v", "ffv1"], "avi")?;
     let fps = Fps::new(common::FPS, 1);
     let id = MediaId::new();
@@ -75,8 +81,8 @@ fn pick(graph: NodeGraph, node: NodeId, placed: bool) -> Option<Result<[f32; 3],
     );
     let thread = std::thread::spawn(move || engine.run());
     cmd.send(AppCommand::SetPlayhead(tc(20))).unwrap();
-    // Parked, and the first composite's pipelines built.
-    std::thread::sleep(Duration::from_millis(1500));
+    // Parked, and the first composite's pipelines built (or not yet).
+    std::thread::sleep(wait);
     cmd.send(AppCommand::SampleNodeInput { clip_id, node_id: node, at: klipp_compose::inspect::grade_node(clip_id, node).path, nx: 0.5, ny: 0.5 }).unwrap();
     let t0 = Instant::now();
     let mut answer = None;
@@ -100,6 +106,16 @@ fn the_pick_reads_what_the_qualifier_receives() {
     let Some(source) = pick(first, q, false) else { return };
     let source = source.expect("a Qualifier after Source reads the source");
     assert!(source[0] > 0.05 && source[0] < 0.45, "a mid grey of the ramp: {source:?}");
+
+    // Sent before the parked frame is decoded (as a loaded machine sends
+    // it): answered once the frame is there, the same picture.
+    let (early, q) = graph(None);
+    let early = pick_after(early, q, false, Duration::ZERO).unwrap().expect("a pick before the frame waits for it");
+    // Within a step of 8 bits: the parked frame's later picks read its
+    // kept 8-bit pre-grade, the first its decoded frame.
+    for c in 0..3 {
+        assert!((early[c] - source[c]).abs() < 0.005, "channel {c}: the pick before the frame read {early:?}, after it {source:?}");
+    }
 
     // One stop up before the Qualifier doubles what it receives. The
     // screen shows the Qualifier's matte, which the old pick read.
