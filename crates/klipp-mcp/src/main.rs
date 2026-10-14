@@ -1694,7 +1694,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec![]),
         tool("klipp_list_media",
-             "The media pool: media ids, paths, duration, fps, resolution, codec.",
+             "The media pool: media ids, paths, kind (video, still or audio), duration, fps, resolution, codec. A sound has no width, height or fps; it gives sample_rate and audio_channels, and its cover art as artwork, never as a picture size.",
              json!({}), vec![]),
         tool("klipp_generator",
              "Preview a native generator clip; apply true places it as one undo step. Give at_secs and secs; data describes the native generator. Overlaps and locked tracks are refused. Details: klipp_guide topic generator.",
