@@ -215,6 +215,126 @@ mod tests {
         (a - b).abs() < 1e-4
     }
 
+    /// The title clip `id` placed by keys on its own lanes (#2014), held
+    /// over the clip: `lanes` of `(param, value)`, positions in frame
+    /// pixels.
+    fn place(v: &mut Viewer, id: ClipId, lanes: &[(&str, f32)]) {
+        let seq = &mut v.state.sequences[0];
+        let clip = seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == id).unwrap();
+        let mut b = klipp_timeline::test_clip::TestClip::of(clip.clone());
+        for (param, value) in lanes {
+            b = b.lane(param, 0.0, *value).lane(param, 5.0, *value);
+        }
+        *clip = b.build();
+        v.frame(Vec::new());
+    }
+
+    /// The frame's size, pixels.
+    fn frame_size(v: &Viewer) -> (f32, f32) {
+        let r = v.state.sequence().resolution;
+        (r.width as f32, r.height as f32)
+    }
+
+    /// Where layer `n`'s body is grabbed on screen with its canvas
+    /// unplaced: a quarter of its box right of its middle, clear of the
+    /// handle at the middle.
+    fn middle(v: &Viewer, id: ClipId, n: usize) -> egui::Pos2 {
+        let seen = shown(v, id, n);
+        let c = corners(v, &seen);
+        c[0].lerp(c[2], 0.5) + (c[1] - c[0]) * 0.25
+    }
+
+    // The layers below stand off the frame's centre, where a selected
+    // clip's hyperzoom focal handle would take the press.
+
+    /// #2014: a title composed to the right is edited where it is drawn:
+    /// its layer is grabbed there and moved as far as the pointer goes,
+    /// and where it would be unmoved there is nothing to grab.
+    #[test]
+    fn a_composed_titles_layer_is_grabbed_where_it_is_drawn() {
+        let (mut v, id) = viewer(&[("Hello", (0.3, 0.5), 0.0)]);
+        let (fw, _) = frame_size(&v);
+        place(&mut v, id, &[("pos_x", 0.4 * fw)]);
+        let w = v.image_rect().width();
+        let unmoved = middle(&v, id, 0);
+        let drawn = unmoved + egui::vec2(0.4 * w, 0.0);
+        // Where it would be, unmoved: nothing to grab.
+        v.modifiers = egui::Modifiers::ALT;
+        v.drag(unmoved, unmoved + egui::vec2(30.0, 0.0));
+        assert!(close(layer(&v, id, 0).transform.center.x, 0.3), "nothing moved where the title isn't");
+        // Where it is drawn: moved with the pointer.
+        v.drag(drawn, drawn + egui::vec2(40.0, 0.0));
+        let c = layer(&v, id, 0).transform.center;
+        assert!(close(c.x, 0.3 + 40.0 / w) && close(c.y, 0.5), "{c:?}");
+    }
+
+    /// #2014: on a title scaled to half, a drag moves its layer twice as
+    /// far in the title's own space; on one turned a quarter, a drag to
+    /// the right moves it up the title's canvas.
+    #[test]
+    fn a_drag_follows_a_scaled_or_turned_title() {
+        let (mut v, id) = viewer(&[("Hello", (0.3, 0.5), 0.0)]);
+        place(&mut v, id, &[("scale", 0.5)]);
+        let w = v.image_rect().width();
+        let centre = v.image_rect().center();
+        // Scaled to half about the frame's centre.
+        let at = centre + (middle(&v, id, 0) - centre) * 0.5;
+        v.modifiers = egui::Modifiers::ALT;
+        v.drag(at, at + egui::vec2(20.0, 0.0));
+        let c = layer(&v, id, 0).transform.center;
+        assert!(close(c.x, 0.3 + 40.0 / w) && close(c.y, 0.5), "twice as far: {c:?}");
+
+        let (mut v, id) = viewer(&[("Hello", (0.3, 0.5), 0.0)]);
+        place(&mut v, id, &[("rotation", 90.0)]);
+        let (fw, fh) = frame_size(&v);
+        let w = v.image_rect().width();
+        let centre = v.image_rect().center();
+        // Turned a quarter, clockwise on screen, about the frame's centre.
+        let d = middle(&v, id, 0) - centre;
+        let at = centre + egui::vec2(-d.y, d.x);
+        v.modifiers = egui::Modifiers::ALT;
+        v.drag(at, at + egui::vec2(40.0, 0.0));
+        let c = layer(&v, id, 0).transform.center;
+        assert!(close(c.x, 0.3) && close(c.y, 0.5 - 40.0 / w * fw / fh), "up the canvas: {c:?}");
+    }
+
+    /// #2014: on a title tilted in perspective, or scaled to nothing, the
+    /// canvas has nothing to grab: no handle where the title isn't.
+    #[test]
+    fn a_tilted_or_vanished_title_has_no_handles() {
+        for lanes in [&[("tilt_x", 25.0)][..], &[("scale", 0.0)][..]] {
+            let (mut v, id) = viewer(&[("Hello", (0.3, 0.5), 0.0)]);
+            place(&mut v, id, lanes);
+            let before = title(&v, id);
+            let at = middle(&v, id, 0);
+            v.modifiers = egui::Modifiers::ALT;
+            v.drag(at, at + egui::vec2(40.0, 0.0));
+            assert_eq!(title(&v, id), before, "{lanes:?}: nothing moved");
+            assert_eq!(steps(&v), 0, "{lanes:?}: no step");
+        }
+        // The control: unplaced, the same press moves the layer.
+        let (mut v, id) = viewer(&[("Hello", (0.3, 0.5), 0.0)]);
+        let at = middle(&v, id, 0);
+        v.modifiers = egui::Modifiers::ALT;
+        v.drag(at, at + egui::vec2(40.0, 0.0));
+        assert!(!close(layer(&v, id, 0).transform.center.x, 0.3), "the control moved");
+    }
+
+    /// #2014: a layer of a composed title snaps to its own canvas's centre
+    /// line, where the placed title draws that line, not to the frame's.
+    #[test]
+    fn a_composed_titles_layer_snaps_to_its_own_canvas() {
+        let (mut v, id) = viewer(&[("Hello", (0.48, 0.5), 0.0)]);
+        let (fw, _) = frame_size(&v);
+        place(&mut v, id, &[("pos_x", 0.2 * fw)]);
+        let w = v.image_rect().width();
+        let at = middle(&v, id, 0) + egui::vec2(0.2 * w, 0.0);
+        v.modifiers = egui::Modifiers::NONE;
+        // A little short of the canvas's centre: snapped onto it.
+        v.drag(at, at + egui::vec2(0.018 * w, 0.0));
+        assert!(close(layer(&v, id, 0).transform.center.x, 0.5), "{:?}", layer(&v, id, 0).transform.center);
+    }
+
     /// An edge handle resizes the box from the box as it is seen (the
     /// layout box behind it is the whole frame): the right edge moves
     /// with the pointer and the left stays. The drag is one undo step,

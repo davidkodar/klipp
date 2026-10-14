@@ -40,6 +40,141 @@ pub fn eval_with_modifiers(
 /// fields the title / V2 paths feed into `BuiltinEffect::Transform`.
 pub type ResolvedTransform = (f32, f32, f32, f32, f32, f32, f32);
 
+/// Why a clip's contents can't be edited on the canvas at a moment: its
+/// picture is placed in a way the canvas editor can't follow as a flat
+/// move (#2014). Each says what to do instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotFollowed {
+    /// Tilted in perspective.
+    Tilted,
+    /// Scaled to nothing, or nearly.
+    ScaledAway,
+    /// Its transform is linked to another clip's.
+    Linked,
+    /// Its track's own effects move it again.
+    TrackMoves,
+    /// An adjustment layer over it moves it again.
+    AdjustmentMoves,
+    /// A transition that moves or distorts its pictures is running over it.
+    InTransition,
+}
+
+impl NotFollowed {
+    /// The hint the canvas shows in place of the handles.
+    pub fn hint(self) -> &'static str {
+        match self {
+            Self::Tilted => "This title is tilted: edit its layers in the Title panel, or untilt it to drag them here",
+            Self::ScaledAway => "This title is scaled to nothing here: move the playhead, or edit its layers in the Title panel",
+            Self::Linked => "This title's transform follows another clip's: edit its layers in the Title panel",
+            Self::TrackMoves => "This title's track moves it with a Transform: edit its layers in the Title panel",
+            Self::AdjustmentMoves => "An adjustment layer above moves this title: edit its layers in the Title panel",
+            Self::InTransition => "A transition is moving this title here: move the playhead out of it, or edit its layers in the Title panel",
+        }
+    }
+}
+
+/// Whether `t` places a picture where it is: no move, scale or turn.
+fn is_identity(t: ResolvedTransform) -> bool {
+    let (px, py, sx, sy, ro, _, _) = t;
+    px.abs() < 1e-4 && py.abs() < 1e-4 && (sx - 1.0).abs() < 1e-5 && (sy - 1.0).abs() < 1e-5 && ro.abs() < 1e-4
+}
+
+/// Whether a transition of `kind` leaves its pictures where they are:
+/// it blends, dips, tints or wipes between them, and nothing in it moves,
+/// scales or distorts them. The rest are refused, not guessed.
+fn keeps_place(kind: klipp_core::TransitionKind) -> bool {
+    use klipp_core::TransitionKind::*;
+    matches!(
+        kind,
+        CrossDissolve | DipToBlack | DipToWhite | FilmDissolve | AdditiveDissolve | LuminanceDissolve | FadeToColor
+            | Flash | NegativeFlash | ColorizeFlash | Desaturate | Sepia | HueRotate
+            | WipeLeft | WipeRight | WipeUp | WipeDown | CircleWipeIn | CircleWipeOut | ClockWipe | BarnDoorOpen | BarnDoorClose
+            | StarWipe | SplitWipeHorizontal | SplitWipeVertical | VenetianBlindHorizontal | VenetianBlindVertical
+            | CheckerboardWipe | DiagonalWipeTLBR | DiagonalWipeTRBL | BoxWipeIn | BoxWipeOut
+    )
+}
+
+/// Whether a Transform effect in a list moves what it is on.
+fn moves(fx: &[klipp_effects::BuiltinEffect]) -> bool {
+    fx.iter().any(|e| match e {
+        klipp_effects::BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, rotation_x, rotation_y, .. } => {
+            position_x.abs() > 1e-4 || position_y.abs() > 1e-4 || (scale_x - 1.0).abs() > 1e-5 || (scale_y - 1.0).abs() > 1e-5 || rotation.abs() > 1e-4 || rotation_x.abs() > 1e-4 || rotation_y.abs() > 1e-4
+        }
+        _ => false,
+    })
+}
+
+/// Where `clip`'s picture is placed on the frame at `playhead`, as the
+/// renderer places it, for editing its contents on the canvas (#2014): its
+/// own transform, then the sequence's camera seen from its depth, in the
+/// sequence's pixels. `Ok(None)`: not moved at all. `Err`: placed in a way
+/// the canvas can't follow as a flat move, and why.
+pub fn placement_for_editing(clip: &klipp_timeline::Clip, seq: &klipp_timeline::Sequence, playhead: klipp_core::Timecode) -> Result<Option<ResolvedTransform>, NotFollowed> {
+    let fps = seq.fps.as_f64();
+    if clip.transform_link.is_some() {
+        return Err(NotFollowed::Linked);
+    }
+    let elapsed = (playhead - clip.timeline_in).to_secs_f64().max(0.0);
+    let ctx = eval_context(clip, playhead, fps);
+    let own = evaluate_clip_own_transform(clip, elapsed, &ctx);
+    // A title is picture-truth: its tilt is in its picture, not a list.
+    let (rx, ry, _) = crate::render::tilt(clip, &[], elapsed);
+    if rx.abs() > 1e-4 || ry.abs() > 1e-4 {
+        return Err(NotFollowed::Tilted);
+    }
+    let (w, h) = (seq.resolution.width, seq.resolution.height);
+    let placed = match camera_at(seq, playhead).and_then(|cam| camera_at_depth(cam, clip.depth)) {
+        Some(cam) => apply_camera(own, cam, w, h),
+        None => own,
+    };
+    if placed.2.abs() < 1e-3 || placed.3.abs() < 1e-3 {
+        return Err(NotFollowed::ScaledAway);
+    }
+    // What moves it again after its own placement: its track's effects, or
+    // an adjustment layer composited over it.
+    let layers = crate::render::active_layers(seq, playhead);
+    let Some(at) = layers.iter().position(|l| l.clips.iter().any(|c| c.id == clip.id)) else {
+        return Ok((!is_identity(placed)).then_some(placed));
+    };
+    if layers[at].transition {
+        let kind = seq.tracks.get(layers[at].track).and_then(|t| crate::render::running_transition(seq, t, playhead));
+        if !kind.is_some_and(keeps_place) {
+            return Err(NotFollowed::InTransition);
+        }
+    }
+    if let Some(track) = seq.tracks.get(layers[at].track).filter(|t| t.effects.touches_picture()) {
+        // The track's effects as the renderer lays them on the clip: baked
+        // onto a copy of it, each with its track's flag. A Transform there
+        // that its own list hasn't moves it again.
+        let mut probe = klipp_timeline::Sequence::new_default();
+        let mut alone = klipp_timeline::Track::new(&track.name, track.kind);
+        alone.effects = track.effects.clone();
+        alone.clips.push(clip.clone());
+        probe.tracks = vec![alone];
+        probe.bake_track_effects();
+        let (before, _) = crate::render::clip_effects(clip, playhead, fps, None, None);
+        let (after, _) = crate::render::clip_effects(&probe.tracks[0].clips[0], playhead, fps, None, None);
+        if !moves(&before) && moves(&after) {
+            return Err(NotFollowed::TrackMoves);
+        }
+    }
+    // Only this sequence's own layers: a precomposition's inner layers
+    // follow it in the list, but they adjust its scene, not the frame.
+    let own = |c: &klipp_timeline::Clip, track: usize| seq.tracks.get(track).is_some_and(|t| t.clips.iter().any(|x| std::ptr::eq(x, c)));
+    for layer in &layers[at + 1..] {
+        for c in layer.clips.iter().filter(|c| matches!(c.kind, klipp_timeline::ClipKind::AdjustmentLayer) && own(c, layer.track)) {
+            // Its placement keys, or a Transform among its effects.
+            let t = (layer.at - c.timeline_in).to_secs_f64().max(0.0);
+            let own = evaluate_clip_own_transform(c, t, &eval_context(c, layer.at, layer.fps));
+            let (fx, _) = crate::render::clip_effects(c, layer.at, layer.fps, None, None);
+            if !is_identity(own) || moves(&fx) {
+                return Err(NotFollowed::AdjustmentMoves);
+            }
+        }
+    }
+    Ok((!is_identity(placed)).then_some(placed))
+}
+
 /// Where a pinned clip's corner pin puts its corners at `time`, in
 /// fractions of the frame (#684): the surface's corners on the host's
 /// picture shown then, carried through the host's fit and placement
@@ -1422,3 +1557,148 @@ mod opacity_multiply_tests {
         assert!((evaluate_clip_opacity(&c, at, 24.0) - 0.25).abs() < 1e-6, "{}", evaluate_clip_opacity(&c, at, 24.0));
     }
 }
+
+#[cfg(test)]
+mod placement_for_editing_tests {
+    use super::{placement_for_editing, NotFollowed};
+    use klipp_timeline::{test_clip::TestClip, Clip, ClipKind, Sequence, TextBox, TitleData, Track, TrackKind};
+
+    fn tc(s: f64) -> klipp_core::Timecode {
+        klipp_core::Timecode::from_secs_f64(s, 24)
+    }
+
+    fn title() -> Clip {
+        Clip { kind: ClipKind::Title(TitleData::single_text(TextBox { text: "Hello".into(), ..Default::default() })), ..Clip::gap(tc(0.0), tc(4.0)) }
+    }
+
+    fn held(c: Clip, lanes: &[(&str, f32)]) -> Clip {
+        let mut b = TestClip::of(c);
+        for (p, v) in lanes {
+            b = b.lane(p, 0.0, *v).lane(p, 4.0, *v);
+        }
+        b.build()
+    }
+
+    fn sequence(clips: Vec<(TrackKind, Clip)>) -> Sequence {
+        let mut seq = Sequence::new_default();
+        seq.tracks = clips.into_iter().enumerate().map(|(i, (kind, c))| {
+            let mut t = Track::new(&format!("T{i}"), kind);
+            t.clips.push(c);
+            t
+        }).collect();
+        seq
+    }
+
+    /// #2014: a title as placed for its canvas editor: unmoved, none; moved,
+    /// where the renderer puts it; and each way the editor can't follow,
+    /// named.
+    #[test]
+    fn a_titles_placement_is_the_renderers_or_says_why_not() {
+        let plain = title();
+        let seq = sequence(vec![(TrackKind::Text, plain.clone())]);
+        assert_eq!(placement_for_editing(&plain, &seq, tc(1.0)), Ok(None), "unmoved");
+
+        let moved = held(title(), &[("pos_x", 200.0), ("scale", 0.5)]);
+        let seq = sequence(vec![(TrackKind::Text, moved.clone())]);
+        let p = placement_for_editing(&moved, &seq, tc(1.0)).unwrap().expect("placed");
+        assert!((p.0 - 200.0).abs() < 1e-3 && (p.2 - 0.5).abs() < 1e-5, "{p:?}");
+
+        for (lanes, why) in [(&[("tilt_x", 20.0)][..], NotFollowed::Tilted), (&[("scale", 0.0)][..], NotFollowed::ScaledAway)] {
+            let c = held(title(), lanes);
+            let seq = sequence(vec![(TrackKind::Text, c.clone())]);
+            assert_eq!(placement_for_editing(&c, &seq, tc(1.0)), Err(why), "{lanes:?}");
+        }
+
+        // Moved again by its track's own Transform.
+        let c = title();
+        let mut seq = sequence(vec![(TrackKind::Text, c.clone())]);
+        let shift = klipp_effects::BuiltinEffect::Transform { position_x: 30.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+        seq.tracks[0].effects.video_effect_list = klipp_timeline::TrackEffectList::new(vec![shift.clone()], vec![true]);
+        assert_eq!(placement_for_editing(&c, &seq, tc(1.0)), Err(NotFollowed::TrackMoves));
+        // The same Transform, its flag off: nothing moves it.
+        seq.tracks[0].effects.video_effect_list = klipp_timeline::TrackEffectList::new(vec![shift], vec![false]);
+        assert_eq!(placement_for_editing(&c, &seq, tc(1.0)), Ok(None), "a disabled Transform");
+
+        // An adjustment layer over it, itself moved.
+        let c = title();
+        let adj = held(Clip { kind: ClipKind::AdjustmentLayer, ..Clip::gap(tc(0.0), tc(4.0)) }, &[("pos_x", 50.0)]);
+        let seq = sequence(vec![(TrackKind::Text, c.clone()), (TrackKind::Video, adj)]);
+        // Over it or under it, as the renderer stacks the two tracks.
+        let layers = crate::render::active_layers(&seq, tc(1.0));
+        let (title_at, adj_at) = (
+            layers.iter().position(|l| l.clips.iter().any(|x| x.id == c.id)).unwrap(),
+            layers.iter().position(|l| l.clips.iter().any(|x| matches!(x.kind, ClipKind::AdjustmentLayer))).unwrap(),
+        );
+        let want = if adj_at > title_at { Err(NotFollowed::AdjustmentMoves) } else { Ok(None) };
+        assert_eq!(placement_for_editing(&c, &seq, tc(1.0)), want, "the adjustment layer at {adj_at}, the title at {title_at}");
+        // And the other way up, so both cases are seen.
+        let mut flipped = seq.clone();
+        flipped.tracks.reverse();
+        let want = if adj_at > title_at { Ok(None) } else { Err(NotFollowed::AdjustmentMoves) };
+        assert_eq!(placement_for_editing(&c, &flipped, tc(1.0)), want, "flipped");
+        assert!(!NotFollowed::Tilted.hint().is_empty());
+    }
+
+    fn key(time_secs: f64, value: f32) -> klipp_core::Keyframe {
+        klipp_core::Keyframe { time_secs, value, interpolation: Default::default(), tangent_in: (0.0, 0.0), tangent_out: (0.0, 0.0) }
+    }
+
+    /// #2014: the sequence's camera places a title on the composed plane
+    /// (depth 1) as it places the picture; one fixed to the screen (depth
+    /// 0) it leaves where it is.
+    #[test]
+    fn the_camera_places_a_title_at_its_depth() {
+        for (depth, want_zoom) in [(1.0, Some(2.0)), (0.0, None)] {
+            let c = Clip { depth, ..title() };
+            let mut seq = sequence(vec![(TrackKind::Text, c.clone())]);
+            seq.camera.zoom_keyframes = vec![key(0.0, 2.0)];
+            let got = placement_for_editing(&c, &seq, tc(1.0)).unwrap();
+            assert_eq!(got.map(|p| p.2), want_zoom, "depth {depth}: {got:?}");
+        }
+    }
+
+    /// #2014: inside a transition that moves its pictures (a push) the
+    /// canvas can't follow the title; inside one that only blends them (a
+    /// dissolve) it can.
+    #[test]
+    fn a_moving_transition_is_refused_and_a_dissolve_followed() {
+        for (kind, want) in [(klipp_timeline::TransitionKind::PushLeft, Err(NotFollowed::InTransition)), (klipp_timeline::TransitionKind::CrossDissolve, Ok(None))] {
+            let a = Clip { kind: ClipKind::Title(TitleData::single_text(TextBox { text: "A".into(), ..Default::default() })), ..Clip::gap(tc(0.0), tc(2.0)) };
+            let b = Clip { kind: ClipKind::Title(TitleData::single_text(TextBox { text: "B".into(), ..Default::default() })), ..Clip::gap(tc(2.0), tc(4.0)) };
+            let mut seq = sequence(vec![(TrackKind::Text, a.clone())]);
+            seq.tracks[0].clips.push(b.clone());
+            seq.tracks[0].transitions.push(klipp_timeline::Transition {
+                id: klipp_core::TransitionId::new(),
+                kind,
+                duration: tc(1.0),
+                clip_a_id: a.id,
+                clip_b_id: b.id,
+                user_params: Default::default(),
+                alignment: Default::default(),
+            });
+            assert_eq!(placement_for_editing(&b, &seq, tc(2.1)), want, "{kind:?}");
+            assert_eq!(placement_for_editing(&b, &seq, tc(3.5)), Ok(None), "{kind:?}: after it");
+        }
+    }
+
+    /// #2014: an adjustment layer inside a precomposition stacked over the
+    /// title adjusts the precomposition's scene, not the title: followed,
+    /// the precomposition over the title or under it.
+    #[test]
+    fn an_adjustment_layer_inside_a_precomposition_is_not_over_the_title() {
+        let adj = held(Clip { kind: ClipKind::AdjustmentLayer, ..Clip::gap(tc(0.0), tc(4.0)) }, &[("pos_x", 50.0)]);
+        let scene = sequence(vec![(TrackKind::Video, adj)]);
+        let scene_id = klipp_core::SequenceId::new();
+        let pre = Clip { kind: ClipKind::Sequence { sequence_id: scene_id }, precomp: Some(std::sync::Arc::new(scene)), ..Clip::gap(tc(0.0), tc(4.0)) };
+        let c = title();
+        let seq = sequence(vec![(TrackKind::Text, c.clone()), (TrackKind::Video, pre)]);
+        // The scene's adjustment layer is in play, as a layer of its own.
+        assert!(crate::render::active_layers(&seq, tc(1.0)).iter().any(|l| l.clips.iter().any(|x| matches!(x.kind, ClipKind::AdjustmentLayer))));
+        let mut flipped = seq.clone();
+        flipped.tracks.reverse();
+        for s in [&seq, &flipped] {
+            assert_eq!(placement_for_editing(&c, s, tc(1.0)), Ok(None));
+        }
+    }
+}
+

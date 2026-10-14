@@ -76,6 +76,91 @@ pub(crate) fn viewer_norm_to_screen(image_rect: egui::Rect, nx: f32, ny: f32) ->
     )
 }
 
+/// A title's canvas as it is drawn on the viewer (#2014): the frame-sized
+/// canvas its layers are laid out on, placed by the clip's own transform
+/// (and the camera at its depth) as the renderer places it. Points are
+/// worked out on the unplaced canvas, `image_rect`'s own coordinates, as
+/// the editor always has, then `place`d onto the screen; the pointer is
+/// `unplace`d back. With no placement both are the identity.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TitleView {
+    pub(crate) image_rect: egui::Rect,
+    /// `(px, py, sx, sy, rotation°, anchor_x, anchor_y)`, positions in the
+    /// sequence's pixels, of a frame `frame` big.
+    pub(crate) placement: Option<klipp_compose::eval::ResolvedTransform>,
+    pub(crate) frame: (f32, f32),
+}
+
+impl TitleView {
+    /// The canvas at `image_rect`, unplaced.
+    pub(crate) fn flat(image_rect: egui::Rect) -> Self {
+        Self { image_rect, placement: None, frame: (1.0, 1.0) }
+    }
+
+    /// A point of the unplaced canvas (screen coordinates over
+    /// `image_rect`) where the placed canvas draws it: about the anchor,
+    /// scaled, turned, then moved, as the Transform maps forward.
+    pub(crate) fn place(&self, p: egui::Pos2) -> egui::Pos2 {
+        let Some((px, py, sx, sy, rot, ax, ay)) = self.placement else { return p };
+        let (fw, fh) = (self.frame.0.max(1.0), self.frame.1.max(1.0));
+        let (nx, ny) = viewer_screen_to_norm(self.image_rect, p);
+        let (x, y) = (nx * fw, ny * fh);
+        let (ax, ay) = (ax * fw, ay * fh);
+        let (dx, dy) = ((x - ax) * sx, (y - ay) * sy);
+        let (sin, cos) = rot.to_radians().sin_cos();
+        let (x, y) = (ax + px + dx * cos - dy * sin, ay + py + dx * sin + dy * cos);
+        viewer_norm_to_screen(self.image_rect, x / fw, y / fh)
+    }
+
+    /// The inverse of [`Self::place`]: a screen point where the unplaced
+    /// canvas has it. The caller hides the editor where the scale is near
+    /// nothing (`placement_for_editing`), so the inverse is well defined.
+    pub(crate) fn unplace(&self, p: egui::Pos2) -> egui::Pos2 {
+        let Some((px, py, sx, sy, rot, ax, ay)) = self.placement else { return p };
+        let (fw, fh) = (self.frame.0.max(1.0), self.frame.1.max(1.0));
+        let (nx, ny) = viewer_screen_to_norm(self.image_rect, p);
+        let (x, y) = (nx * fw, ny * fh);
+        let (ax, ay) = (ax * fw, ay * fh);
+        let (dx, dy) = (x - ax - px, y - ay - py);
+        let (sin, cos) = rot.to_radians().sin_cos();
+        let (rx, ry) = (dx * cos + dy * sin, -dx * sin + dy * cos);
+        let (x, y) = (ax + rx / sx, ay + ry / sy);
+        viewer_norm_to_screen(self.image_rect, x / fw, y / fh)
+    }
+
+    /// A canvas point, normalised, on the screen.
+    pub(crate) fn to_screen(self, nx: f32, ny: f32) -> egui::Pos2 {
+        self.place(viewer_norm_to_screen(self.image_rect, nx, ny))
+    }
+
+    /// A screen point as a normalised canvas point.
+    pub(crate) fn to_norm(self, p: egui::Pos2) -> (f32, f32) {
+        viewer_screen_to_norm(self.image_rect, self.unplace(p))
+    }
+
+    /// How much bigger the canvas is drawn than unplaced: the geometric
+    /// mean of its scales, for sizes (a snap distance, a font) that
+    /// follow it.
+    pub(crate) fn scale(&self) -> f32 {
+        self.placement.map_or(1.0, |(_, _, sx, sy, ..)| (sx.abs() * sy.abs()).sqrt().max(1e-3))
+    }
+}
+
+/// The time a title's canvas is edited at: the smoothed playhead the
+/// editor reads its layers at, so the placement and the layers it carries
+/// don't drift apart while scrubbing or playing.
+fn title_edit_time(state: &AppState) -> klipp_core::Timecode {
+    klipp_core::RationalTime::from_secs_f64(state.playhead_smooth_secs.max(0.0), state.playhead.rate)
+}
+
+/// The canvas of title clip `clip` drawn at `image_rect` at the playhead
+/// (#2014), or why its contents can't be edited there.
+pub(crate) fn title_view_of(state: &AppState, clip: &klipp_timeline::Clip, image_rect: egui::Rect) -> Result<TitleView, klipp_compose::eval::NotFollowed> {
+    let res = state.sequence().resolution;
+    klipp_compose::eval::placement_for_editing(clip, state.sequence(), title_edit_time(state))
+        .map(|placement| TitleView { image_rect, placement, frame: (res.width as f32, res.height as f32) })
+}
+
 /// Inverse of [`viewer_norm_to_screen`]. Returns the clip-space
 /// `(nx, ny)` for a screen-space pointer position. Result is **not**
 /// clamped — callers that want `[0, 1]` (e.g. focal-point storage)
@@ -1470,6 +1555,10 @@ impl ViewerPanel {
             Some(td) => td,
             None => return,
         };
+        // Where the title is drawn (#2014): the press, back on its canvas.
+        // A title placed so the canvas can't follow isn't edited here.
+        let Some(view) = state.sequence().tracks.iter().find_map(|t| t.find_clip(clip_id)).and_then(|c| title_view_of(state, c, image_rect).ok()) else { return };
+        let pos = view.unplace(pos);
         tighten_text_editor_boxes(&mut td, (frame.video_w.max(1.0) as u32, frame.video_h.max(1.0) as u32));
         let clip_time = state.sequence().tracks.iter()
             .find_map(|t| t.find_clip(clip_id))
@@ -1664,6 +1753,11 @@ impl ViewerPanel {
         let Some(td) = clip.title_data().cloned() else {
             return;
         };
+        // Where the title is drawn (#2014). Glyphs are found under the
+        // pointer on the unplaced canvas, where they stand upright, and
+        // drawn where the placed title draws them. Placed so the canvas
+        // can't follow, the keys still edit the text; nothing is drawn.
+        let view = title_view_of(state, clip, image_rect);
         let mut td = td;
         tighten_text_editor_boxes(&mut td, (video_w.max(1.0) as u32, video_h.max(1.0) as u32));
         let clip_time = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
@@ -1679,10 +1773,13 @@ impl ViewerPanel {
             state.viewer_text_edit_object = Some(obj.id);
             state.viewer_char_positions.clear();
         }
-        let bb = object_screen_bb(&obj, image_rect);
-        let to_screen = |x: f32, y: f32| {
+        let drawn = view.is_ok();
+        let view = view.unwrap_or_else(|_| TitleView::flat(image_rect));
+        let bb = points_bb(&object_screen_points(&obj, image_rect).map(|p| view.place(p)));
+        let on_canvas = |x: f32, y: f32| {
             egui::pos2(image_rect.min.x + x / video_w * image_rect.width(), image_rect.min.y + y / video_h * image_rect.height())
         };
+        let to_screen = |x: f32, y: f32| view.place(on_canvas(x, y));
 
         // ── The pointer on the text: caret and selection by glyph box ──
         let hit = ui.interact(bb.expand(8.0), edit_id.with("hit"), egui::Sense::click_and_drag());
@@ -1693,7 +1790,7 @@ impl ViewerPanel {
             // Vertical text (#1704): the column under the pointer, then
             // the nearest cell edge down it.
             if positions[0].vertical {
-                let column_of = |cp: &klipp_title::CharPosition| (to_screen(cp.x, cp.y).x, to_screen(cp.x + cp.height, cp.y).x);
+                let column_of = |cp: &klipp_title::CharPosition| (on_canvas(cp.x, cp.y).x, on_canvas(cp.x + cp.height, cp.y).x);
                 let mut best_column: Option<(f32, f32)> = None;
                 for cp in positions.iter() {
                     let (left, right) = column_of(cp);
@@ -1705,7 +1802,7 @@ impl ViewerPanel {
                 let column_left = best_column?.1;
                 let mut best: Option<(f32, usize)> = None;
                 for cp in positions.iter().filter(|cp| (column_of(cp).0 - column_left).abs() <= 0.5) {
-                    let (top, foot) = (to_screen(cp.x, cp.y).y, to_screen(cp.x, cp.y + cp.advance).y);
+                    let (top, foot) = (on_canvas(cp.x, cp.y).y, on_canvas(cp.x, cp.y + cp.advance).y);
                     for (edge, idx) in [(top, cp.char_index), (foot, cp.char_index + 1)] {
                         let d = (p.y - edge).abs();
                         if best.is_none_or(|(bd, _)| d < bd) {
@@ -1717,7 +1814,7 @@ impl ViewerPanel {
             }
             // The row under the pointer (nearest row when between
             // lines), then the nearest glyph edge within it.
-            let row_of = |cp: &klipp_title::CharPosition| (to_screen(cp.x, cp.y).y, to_screen(cp.x, cp.y + cp.height).y);
+            let row_of = |cp: &klipp_title::CharPosition| (on_canvas(cp.x, cp.y).y, on_canvas(cp.x, cp.y + cp.height).y);
             let mut best_row: Option<(f32, f32)> = None;
             for cp in positions.iter() {
                 let (top, bottom) = row_of(cp);
@@ -1732,8 +1829,8 @@ impl ViewerPanel {
                 if (row_of(cp).0 - row_top).abs() > 0.5 {
                     continue;
                 }
-                let left = to_screen(cp.x, cp.y).x;
-                let right = to_screen(cp.x + cp.advance, cp.y).x;
+                let left = on_canvas(cp.x, cp.y).x;
+                let right = on_canvas(cp.x + cp.advance, cp.y).x;
                 // A right-to-left character's start is its right edge (#1693).
                 let (before, after) = if cp.rtl { (right, left) } else { (left, right) };
                 for (edge, idx) in [(before, cp.char_index), (after, cp.char_index + 1)] {
@@ -1748,12 +1845,12 @@ impl ViewerPanel {
         let mut set_range: Option<(usize, usize)> = None;
         if let Some(p) = hit.interact_pointer_pos() {
             if hit.drag_started() || hit.clicked() {
-                if let Some(i) = index_at(&state.viewer_char_positions, p) {
+                if let Some(i) = index_at(&state.viewer_char_positions, view.unplace(p)) {
                     state.viewer_text_select_anchor = Some(i);
                     set_range = Some((i, i));
                 }
             } else if hit.dragged() {
-                if let (Some(a), Some(i)) = (state.viewer_text_select_anchor, index_at(&state.viewer_char_positions, p)) {
+                if let (Some(a), Some(i)) = (state.viewer_text_select_anchor, index_at(&state.viewer_char_positions, view.unplace(p))) {
                     set_range = Some((a, i));
                 }
             }
@@ -1825,7 +1922,10 @@ impl ViewerPanel {
         }
 
         // ── Paint: box, selection, caret, badge ──
+        // Nothing drawn where the canvas can't follow (#2014); the typing
+        // and the way out below still run.
         let painter = ui.painter_at(viewer_rect);
+        let painter = if drawn { painter } else { painter.with_clip_rect(egui::Rect::NOTHING) };
         painter.rect_stroke(bb.expand(4.0), crate::theme::radius::CONTROL, egui::Stroke::new(1.5_f32, theme.accent));
         let positions = &state.viewer_char_positions;
         if let Some((s, e)) = state.viewer_text_selection {
@@ -4001,6 +4101,25 @@ impl ViewerPanel {
         let raw_title = title.clone();
         let time = (state.playhead_smooth_secs - clip.timeline_in.to_secs_f64()).max(0.0);
         let resolution = state.sequence().resolution;
+        // Where the title is drawn, as the renderer places it (#2014): its
+        // own transform and the camera at its depth. Placed in a way the
+        // canvas can't follow (tilted, scaled away, moved again by its
+        // track or an adjustment layer), it says so instead of drawing
+        // handles where the title isn't.
+        let view = match klipp_compose::eval::placement_for_editing(clip, state.sequence(), title_edit_time(state)) {
+            Ok(placement) => TitleView { image_rect, placement, frame: (resolution.width as f32, resolution.height as f32) },
+            Err(why) => {
+                if let Some(drag) = state.title_object_drag.take() {
+                    cmds.push(AppCommand::EndTitleObjectDrag { clip_id: drag.clip_id });
+                }
+                let painter = ui.painter_at(image_rect);
+                let galley = painter.layout(why.hint().to_string(), egui::FontId::proportional(crate::theme::type_scale::CAPTION), egui::Color32::WHITE, (image_rect.width() - 24.0).max(40.0));
+                let r = egui::Rect::from_min_size(image_rect.left_top() + egui::vec2(12.0, 12.0), galley.size() + egui::vec2(12.0, 6.0));
+                painter.rect_filled(r, 3.0, egui::Color32::from_rgba_unmultiplied(20, 20, 24, 220));
+                painter.galley(r.min + egui::vec2(6.0, 3.0), galley, egui::Color32::WHITE);
+                return;
+            }
+        };
         let td = editor_title_geometry(
             title, (resolution.width, resolution.height), time,
             &mut self.title_fit_geometry.borrow_mut(),
@@ -4017,8 +4136,10 @@ impl ViewerPanel {
         // helpers — keeps the rest of `draw_title_object_editor`'s
         // body byte-identical (avoids touching every `to_screen` /
         // `to_norm` site for a no-behaviour-change refactor).
-        let to_screen = |nx: f32, ny: f32| viewer_norm_to_screen(image_rect, nx, ny);
-        let to_norm = |p: egui::Pos2| viewer_screen_to_norm(image_rect, p);
+        // Through the title's placement (#2014): canvas points where they
+        // are drawn, the pointer back onto the canvas.
+        let to_screen = |nx: f32, ny: f32| view.to_screen(nx, ny);
+        let to_norm = |p: egui::Pos2| view.to_norm(p);
 
         // ── Paint each visible object's bounding box ──
         // Skip the object that's currently in inline-edit mode —
@@ -4037,8 +4158,8 @@ impl ViewerPanel {
             if Some(obj.id) == edit_oid {
                 continue;
             }
-            let points = object_screen_points(obj, image_rect);
-            let bb = object_screen_bb(obj, image_rect);
+            let points = object_screen_points(obj, image_rect).map(|p| view.place(p));
+            let bb = points_bb(&points);
             let is_selected = state.selected_title_object == Some((clip_id, obj.id));
             let stroke = if is_selected {
                 egui::Stroke::new(2.0_f32, accent)
@@ -4108,7 +4229,7 @@ impl ViewerPanel {
 
             // The start of a text set on an arc (#1714): a diamond on
             // the arc, dragged round the layer's centre.
-            if let Some(a) = arc_start_screen_point(obj, image_rect, (resolution.width, resolution.height)) {
+            if let Some(a) = arc_start_screen_point(obj, image_rect, (resolution.width, resolution.height)).map(|a| view.place(a)) {
                 let d = 5.5;
                 painter.add(egui::Shape::convex_polygon(
                     vec![a + egui::vec2(0.0, -d), a + egui::vec2(d, 0.0), a + egui::vec2(0.0, d), a + egui::vec2(-d, 0.0)],
@@ -4126,7 +4247,7 @@ impl ViewerPanel {
         if resp.hovered() {
             if let Some(p) = resp.interact_pointer_pos() {
                 let over_text = td.objects.iter().rev().any(|obj| {
-                    obj.visible && !obj.locked && object_contains_screen_point(obj, image_rect, p)
+                    obj.visible && !obj.locked && object_contains_screen_point(obj, image_rect, view.unplace(p))
                 });
                 if over_text {
                     resp.clone().on_hover_text("Double-click text to edit");
@@ -4171,7 +4292,9 @@ impl ViewerPanel {
                     // to. A move snaps the layer's edges and centre; an
                     // edge of an upright box snaps itself. Alt drags free.
                     let (xs, ys) = title_snap_lines(&td, drag.object_id, &state.viewer_prefs, drag.frame_aspect);
-                    let (within_x, within_y) = (TITLE_SNAP_PX / image_rect.width().max(1.0), TITLE_SNAP_PX / image_rect.height().max(1.0));
+                    // The snap distance as it is seen: on a scaled title,
+                    // the same pixels on screen (#2014).
+                    let (within_x, within_y) = (TITLE_SNAP_PX / (image_rect.width().max(1.0) * view.scale()), TITLE_SNAP_PX / (image_rect.height().max(1.0) * view.scale()));
                     let upright = new_t.rotation.rem_euclid(360.0) == 0.0;
                     match drag.handle {
                         H::Body if !free => {
@@ -4226,12 +4349,11 @@ impl ViewerPanel {
                     }
                     let guide_stroke = egui::Stroke::new(1.0_f32, accent);
                     for (vertical, g) in guides {
+                        // The canvas's line, where the placed title draws it.
                         if vertical {
-                            let x = to_screen(g, 0.0).x;
-                            painter.line_segment([egui::pos2(x, image_rect.min.y), egui::pos2(x, image_rect.max.y)], guide_stroke);
+                            painter.line_segment([to_screen(g, 0.0), to_screen(g, 1.0)], guide_stroke);
                         } else {
-                            let y = to_screen(0.0, g).y;
-                            painter.line_segment([egui::pos2(image_rect.min.x, y), egui::pos2(image_rect.max.x, y)], guide_stroke);
+                            painter.line_segment([to_screen(0.0, g), to_screen(1.0, g)], guide_stroke);
                         }
                     }
                     // A resize draws the box being drawn: the frame drawn
@@ -4239,7 +4361,7 @@ impl ViewerPanel {
                     if !matches!(drag.handle, H::Body | H::Anchor) {
                         if let Some(mut live) = td.object(drag.object_id).cloned() {
                             live.transform = new_t.clone();
-                            let pts = object_screen_points(&live, image_rect);
+                            let pts = object_screen_points(&live, image_rect).map(|p| view.place(p));
                             for i in 0..4 {
                                 painter.line_segment([pts[i], pts[(i + 1) % 4]], egui::Stroke::new(1.0_f32, accent));
                             }
@@ -4348,11 +4470,11 @@ impl ViewerPanel {
                     .and_then(|(_, oid)| td.object(oid).cloned());
                 if let Some(obj) = &selected {
                     let on_arc_start = arc_start_screen_point(obj, image_rect, (resolution.width, resolution.height))
-                        .is_some_and(|a| a.distance(p) <= 10.0);
+                        .is_some_and(|a| view.place(a).distance(p) <= 10.0);
                     let handle = if on_arc_start {
                         Some(crate::state::TitleObjectHandle::PathStart)
                     } else {
-                        hit_test_handles(obj, image_rect, p)
+                        hit_test_handles(obj, image_rect, view.unplace(p))
                     };
                     if let Some(handle) = handle {
                         let mut initial_transform = raw_title.object(obj.id)
@@ -4386,7 +4508,7 @@ impl ViewerPanel {
                     if !obj.visible || obj.locked {
                         continue;
                     }
-                    if object_contains_screen_point(obj, image_rect, p) {
+                    if object_contains_screen_point(obj, image_rect, view.unplace(p)) {
                         // Select this object and start a body drag.
                         cmds.push(AppCommand::SelectTitleObject {
                             clip_id,
@@ -6242,6 +6364,15 @@ fn tighten_with(renderer: &mut klipp_title::TitleRenderer, title: &mut klipp_tim
     }
 }
 
+/// The upright box round four points: a layer's corners as drawn.
+fn points_bb(points: &[egui::Pos2; 4]) -> egui::Rect {
+    let min_x = points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min);
+    let max_x = points.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max);
+    let min_y = points.iter().map(|p| p.y).fold(f32::INFINITY, f32::min);
+    let max_y = points.iter().map(|p| p.y).fold(f32::NEG_INFINITY, f32::max);
+    egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y))
+}
+
 fn object_screen_bb(
     obj: &klipp_timeline::TitleObject,
     image_rect: egui::Rect,
@@ -7888,5 +8019,34 @@ mod viewed_node_tests {
         run(&state, vec![egui::Event::PointerMoved(at), egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }]);
         let (_, cmds) = run(&state, vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }]);
         assert!(matches!(cmds.as_slice(), [AppCommand::SetNodeSolo { at: None }]), "{cmds:?}");
+    }
+}
+
+#[cfg(test)]
+mod title_view_tests {
+    use super::TitleView;
+
+    /// #2014: the placed canvas and the pointer's way back are each other's
+    /// inverse, for a turn, an unequal scale and an anchor off centre; and
+    /// unplaced, both are the identity.
+    #[test]
+    fn placing_and_unplacing_a_point_round_trip() {
+        let rect = egui::Rect::from_min_size(egui::pos2(40.0, 30.0), egui::vec2(960.0, 540.0));
+        let view = TitleView { image_rect: rect, placement: Some((120.0, -80.0, 0.6, 1.4, 33.0, 0.3, 0.7)), frame: (1920.0, 1080.0) };
+        for p in [egui::pos2(40.0, 30.0), egui::pos2(500.0, 300.0), egui::pos2(1000.0, 570.0), egui::pos2(-200.0, 900.0)] {
+            let back = view.unplace(view.place(p));
+            assert!((back - p).length() < 1e-2, "{p:?} came back {back:?}");
+            let there = view.place(view.unplace(p));
+            assert!((there - p).length() < 1e-2, "{p:?} went to {there:?}");
+        }
+        assert!((view.place(egui::pos2(500.0, 300.0)) - egui::pos2(500.0, 300.0)).length() > 10.0, "the placement moves points");
+        let flat = TitleView::flat(rect);
+        assert_eq!(flat.place(egui::pos2(123.0, 45.0)), egui::pos2(123.0, 45.0));
+        assert_eq!(flat.unplace(egui::pos2(123.0, 45.0)), egui::pos2(123.0, 45.0));
+        assert_eq!(flat.scale(), 1.0);
+        // A pure move: a canvas point goes as far on screen, in proportion.
+        let moved = TitleView { image_rect: rect, placement: Some((192.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5)), frame: (1920.0, 1080.0) };
+        let d = moved.to_screen(0.5, 0.5) - TitleView::flat(rect).to_screen(0.5, 0.5);
+        assert!((d.x - 96.0).abs() < 1e-3 && d.y.abs() < 1e-3, "{d:?}");
     }
 }

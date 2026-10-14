@@ -4945,6 +4945,14 @@ fn active_item<'a>(seq: &'a Sequence, track: &'a Track, time: Timecode) -> Optio
     multicam_angle(seq, track, clip, time).map(TrackItem::Clip)
 }
 
+/// The kind of the transition running on `track` at `time`, if one is.
+pub(crate) fn running_transition(seq: &Sequence, track: &Track, time: Timecode) -> Option<klipp_core::TransitionKind> {
+    track.transitions.iter().find_map(|tr| match transition_at(seq, track, tr, time)? {
+        TrackItem::Transition { kind, .. } => Some(kind),
+        TrackItem::Clip(_) => None,
+    })
+}
+
 /// `tr`, when it is running at `time` between two enabled clips.
 fn transition_at<'a>(seq: &Sequence, track: &'a Track, tr: &klipp_timeline::Transition, time: Timecode) -> Option<TrackItem<'a>> {
     let (a, b) = (track.find_clip(tr.clip_a_id)?, track.find_clip(tr.clip_b_id)?);
