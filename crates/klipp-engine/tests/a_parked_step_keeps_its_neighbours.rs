@@ -105,8 +105,10 @@ fn playing_empties_the_held_outputs() {
 /// A file rewritten on disk while parked (#1863): the next step reads the
 /// new file's frames either side, never the ones held from the old file.
 /// The parked frame itself is the decoder's and stays, so the same grade
-/// draws a different picture only through the neighbours — and exactly
-/// the picture of an engine parked alike that holds nothing.
+/// draws a different picture only through the neighbours — and the picture
+/// of an engine parked alike that holds nothing, to a level: that one
+/// draws its denoise on the GPU chain, the holding one on the CPU, where
+/// its output is the pixels held (#1988).
 #[test]
 fn a_file_rewritten_while_parked_is_read_again() {
     let Some(src) = common::source("tnr-rewrite", 320, 180, common::PQ_TAGS) else {
@@ -151,7 +153,8 @@ fn a_file_rewritten_while_parked_is_read_again() {
     let before = at(&parked, 0.6);
     // Both dragged once on the old file, so both hold their parked frame
     // from it, and agree there.
-    assert!(at(&unheld, 0.6) == before, "the two engines differ before the rewrite");
+    let levels = |a: &[u8], b: &[u8]| a.iter().zip(b).map(|(x, y)| (i32::from(*x) - i32::from(*y)).abs()).max().unwrap_or(0);
+    assert!(levels(&at(&unheld, 0.6), &before) <= 1, "the two engines differ before the rewrite");
     // Replaced, as an editor saving over it would: a new file renamed in.
     let staged = dir.join("take.new.mkv");
     std::fs::copy(&negative, &staged).unwrap();
@@ -161,6 +164,6 @@ fn a_file_rewritten_while_parked_is_read_again() {
     let _ = std::fs::remove_dir_all(&dir);
     let differ = before.iter().zip(&after).filter(|(x, y)| x != y).count();
     assert!(differ > 0, "the step after the file was rewritten drew the old file's neighbours");
-    let off = after.iter().zip(&reference).filter(|(x, y)| x != y).count();
-    assert_eq!(off, 0, "{off} bytes differ from an engine that holds nothing");
+    let off = levels(&after, &reference);
+    assert!(off <= 1, "{off} levels from an engine that holds nothing");
 }

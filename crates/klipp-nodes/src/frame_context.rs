@@ -104,6 +104,32 @@ pub struct LinearFrame {
     pub pts: Option<f64>,
 }
 
+/// A source frame already on the GPU, linear working-space f32 at the
+/// render size on the executor's own device (#1988): what a temporal
+/// denoise on the chain binds as a neighbour, with no readback and no
+/// upload. `read` brings it to the CPU for a node that ends up there.
+pub trait GpuFramePixels: Send + Sync {
+    fn buffer(&self) -> &wgpu::Buffer;
+    fn read(&self) -> std::sync::Arc<Vec<f32>>;
+}
+
+/// A source frame on the GPU (#1988), as [`SourceProvider::linear_on_gpu`]
+/// gives it.
+#[derive(Clone)]
+pub struct GpuLinearFrame {
+    pub pixels: std::sync::Arc<dyn GpuFramePixels>,
+    pub width: u32,
+    pub height: u32,
+    /// The source time it is the frame of.
+    pub source_secs: f64,
+}
+
+impl std::fmt::Debug for GpuLinearFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuLinearFrame").field("width", &self.width).field("height", &self.height).field("source_secs", &self.source_secs).finish()
+    }
+}
+
 /// A frame's size.
 pub trait FrameSize {
     fn size(&self) -> (u32, u32);
@@ -121,6 +147,12 @@ impl FrameSize for LinearFrame {
     }
 }
 
+impl FrameSize for GpuLinearFrame {
+    fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+}
+
 /// The clip's source at another time, in source seconds. Implementors
 /// give what the source has; [`BoundedSources`] holds the requests to the
 /// contract.
@@ -132,6 +164,13 @@ pub trait SourceProvider {
     fn for_node(&mut self, _node: NodeId, _budget: usize) {}
     fn encoded(&mut self, source_secs: f64) -> Neighbour<EncodedFrame>;
     fn linear(&mut self, source_secs: f64) -> Neighbour<LinearFrame>;
+    /// [`Self::linear`]'s frame where it is already on the GPU (#1988): a
+    /// neighbour the chain binds as it is. `Unavailable` (the default)
+    /// where the source has it only on the CPU, or not at all: the caller
+    /// asks [`Self::linear`] then, and only that request is counted.
+    fn linear_on_gpu(&mut self, _source_secs: f64) -> Neighbour<GpuLinearFrame> {
+        Neighbour::Missing(Missing::Unavailable)
+    }
     /// One of the media's frames, in seconds (1 / its rate), when known: a
     /// node's neighbours are the captures either side, whatever the
     /// sequence's rate. `None` when the source can't say.
@@ -251,6 +290,26 @@ impl SourceProvider for BoundedSources<'_> {
         }
         let got = self.inner.linear(source_secs);
         self.sized(got)
+    }
+
+    /// Counted against the budget only when it gives a frame: one it
+    /// hasn't on the GPU is asked for again with [`Self::linear`], which
+    /// counts then, so a frame read either way is one request.
+    fn linear_on_gpu(&mut self, source_secs: f64) -> Neighbour<GpuLinearFrame> {
+        if let Err(m) = self.admit(source_secs) {
+            return Neighbour::Missing(m);
+        }
+        let got = self.inner.linear_on_gpu(source_secs);
+        match self.sized(got) {
+            Neighbour::Missing(Missing::Unavailable) => {
+                let (node, _) = self.node.unwrap_or_default();
+                if let Some(asked) = self.asked.get_mut(&node) {
+                    *asked = asked.saturating_sub(1);
+                }
+                Neighbour::Missing(Missing::Unavailable)
+            }
+            got => got,
+        }
     }
 
     /// Counted against the budget like any request; the next frame past

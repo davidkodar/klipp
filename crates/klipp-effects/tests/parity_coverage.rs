@@ -229,6 +229,7 @@ const SHADERS: &[(&str, Cover)] = &[
     ("SHADER_SPRITE_ROWS_F16", Test(COMPOSITE, "the_gpu_stack_is_the_renderers_frame")),
     ("SHADER_SPRITE_BOX_F16", Test("klipp-compose/tests/title_routes_f16.rs", "each_route_lands_within_a_level_of_the_byte_frame")),
     ("SHADER_DIFFERENCE_KEY", Test(SECONDARY, "the_other_matte_sources_ride_the_chain_too")),
+    ("SHADER_TEMPORAL_DENOISE", Test("klipp-effects/tests/temporal_denoise_gpu.rs", "the_gpu_draws_what_the_cpu_draws")),
     ("SHADER_FILM_GRAIN", EVERY_EFFECT),
     ("SHADER_FOCUS_BLUR_BLEND", EVERY_EFFECT),
     ("SHADER_FOCUS_BLUR_PREMULTIPLY", EVERY_EFFECT),

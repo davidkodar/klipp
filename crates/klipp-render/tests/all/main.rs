@@ -72,3 +72,5 @@ mod place_by_sync;
 mod tnr_export_cost;
 #[path = "../tnr_neighbours_kept.rs"]
 mod tnr_neighbours_kept;
+#[path = "../tnr_on_the_chain.rs"]
+mod tnr_on_the_chain;

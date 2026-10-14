@@ -387,6 +387,31 @@ pub struct GraphExecutor {
     /// frei0r nodes rendered padded, and refused (`ChainStats`).
     run_frei0r_fallbacks: u32,
     run_frei0r_refused: u32,
+    /// The run has a frame context, so a temporal node can read its
+    /// source's neighbours and may go on the chain (#1988).
+    run_has_sources: bool,
+    /// A temporal-denoise node's neighbours, read once for the node this
+    /// run (#1988): the chain dispatch uploads them, and the CPU route, if
+    /// the node ends up there, denoises with the same frames rather than
+    /// read (and decline) them again.
+    run_denoise: Option<RunDenoise>,
+    /// Neighbour frames the chain binds this run, held until the run's
+    /// chain is submitted (#1988).
+    run_neighbour_bufs: Vec<HeldNeighbour>,
+    /// Neighbours uploaded from the CPU for the chain this run, and last
+    /// run's (#1988): one the source had on the GPU is bound as it is.
+    run_neighbour_uploads: u32,
+    last_neighbour_uploads: u32,
+    /// Whether a temporal denoise may draw on the chain at all (#1988), on
+    /// unless turned off (`set_denoise_on_chain`).
+    denoise_chain_allowed: bool,
+    /// The node being run may put a temporal denoise on the chain: no
+    /// parked frame is to hold its output (#1863, #1988).
+    node_denoise_on_chain: bool,
+    /// Temporal-denoise nodes drawn on the chain this run, and last run's
+    /// (#1988).
+    run_denoise_on_chain: u32,
+    last_denoise_on_chain: u32,
     /// The run's declines so far (step 10), and the last run's.
     run_declines: Vec<crate::Decline>,
     /// The pictures the render handed the run beside its source (#1746).
@@ -872,6 +897,15 @@ impl GraphExecutor {
             source_unavailable: 0,
             run_frei0r_fallbacks: 0,
             run_frei0r_refused: 0,
+            run_has_sources: false,
+            run_denoise: None,
+            run_neighbour_bufs: Vec::new(),
+            run_neighbour_uploads: 0,
+            last_neighbour_uploads: 0,
+            denoise_chain_allowed: true,
+            node_denoise_on_chain: true,
+            run_denoise_on_chain: 0,
+            last_denoise_on_chain: 0,
             run_declines: Vec::new(),
             side_pictures: Default::default(),
             last_run_declines: Vec::new(),
@@ -962,6 +996,15 @@ impl GraphExecutor {
             source_unavailable: 0,
             run_frei0r_fallbacks: 0,
             run_frei0r_refused: 0,
+            run_has_sources: false,
+            run_denoise: None,
+            run_neighbour_bufs: Vec::new(),
+            run_neighbour_uploads: 0,
+            last_neighbour_uploads: 0,
+            denoise_chain_allowed: true,
+            node_denoise_on_chain: true,
+            run_denoise_on_chain: 0,
+            last_denoise_on_chain: 0,
             run_declines: Vec::new(),
             side_pictures: Default::default(),
             last_run_declines: Vec::new(),
@@ -1615,6 +1658,24 @@ impl GraphExecutor {
         self.source_domain = domain;
     }
 
+    /// Whether a temporal denoise may draw on the GPU chain (#1988), on
+    /// unless turned off; off, it always takes the CPU route, as before:
+    /// what a test compares the chain against, or holds a CPU picture to.
+    pub fn set_denoise_on_chain(&mut self, on: bool) {
+        self.denoise_chain_allowed = on;
+    }
+
+    /// Temporal-denoise nodes the last run drew on the chain (#1988).
+    pub fn last_denoise_on_chain(&self) -> u32 {
+        self.last_denoise_on_chain
+    }
+
+    /// Neighbours the last run uploaded from the CPU for the chain
+    /// (#1988); one the source had on the GPU isn't one.
+    pub fn last_neighbour_uploads(&self) -> u32 {
+        self.last_neighbour_uploads
+    }
+
     pub fn last_run_declines(&self) -> &[crate::Decline] {
         &self.last_run_declines
     }
@@ -2072,6 +2133,11 @@ impl GraphExecutor {
         self.run_mix_refused = 0;
         self.run_frei0r_fallbacks = 0;
         self.run_frei0r_refused = 0;
+        self.run_has_sources = ctx.is_some();
+        self.node_denoise_on_chain = true;
+        self.run_denoise = None;
+        self.run_denoise_on_chain = 0;
+        self.run_neighbour_uploads = 0;
         // A run that errors leaves no declines of an earlier run behind.
         self.run_declines.clear();
         self.last_run_declines.clear();
@@ -2236,6 +2302,10 @@ impl GraphExecutor {
             if !feeding.contains(&node_id) && !matches!(node.kind, NodeKind::Source | NodeKind::Output) {
                 continue;
             }
+            // A heavy node the parked frame is to hold (#1863) runs on the
+            // CPU, where its output is the pixels held; a temporal denoise
+            // goes on the chain (#1988) only when nothing is to hold it.
+            self.node_denoise_on_chain = !held_run.store.contains_key(&node_id);
             // Held (#1863): its output as the run that made it left it,
             // with what it declined; above one, nothing to run.
             if let Some((pixels, declines)) = held_run.hits.get(&node_id) {
@@ -2735,6 +2805,11 @@ impl GraphExecutor {
             // common case); only clone + mutate when keyframe tracks exist.
             let params_cow = params_for_frame(node, clip_time_secs);
             let params = &*params_cow;
+            // A temporal denoise that may draw on the chain (#1988): its
+            // neighbours read now, once, whichever route then draws it.
+            if !bypass && self.gpu.is_some() && matches!(node.kind, NodeKind::Effect | NodeKind::EffectSegment) && self.denoise_on_chain(params) {
+                self.read_denoise_for_chain(node_id, params, ctx.as_deref_mut());
+            }
 
             // ── GPU chain fast-path ────────────────────────────────────
             // Does this node extend an active chain? If so, dispatch on
@@ -3353,6 +3428,11 @@ impl GraphExecutor {
         };
         chain_stats_ledger(&self.last_run_chain_stats);
         self.last_run_declines = std::mem::take(&mut self.run_declines);
+        // The run's chain is submitted: the neighbours it read can go.
+        self.run_neighbour_bufs.clear();
+        self.run_denoise = None;
+        self.last_denoise_on_chain = std::mem::take(&mut self.run_denoise_on_chain);
+        self.last_neighbour_uploads = std::mem::take(&mut self.run_neighbour_uploads);
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
         // Only when it is printed: it builds a map and formats every entry.
         if total_ms > 5.0 && tracing::enabled!(tracing::Level::DEBUG) {
@@ -3425,6 +3505,20 @@ impl GraphExecutor {
         Ok((result, tapped_vec, node_thumbs))
     }
 
+    /// Whether a source-boundary node with `params` draws on the chain
+    /// (#1988): temporal noise reduction alone (a frame blend stays on the
+    /// CPU), unmixed, in a run that has a frame context to read the
+    /// neighbours from, and not a node the parked frame is to hold (whose
+    /// output must be pixels). A mixed or masked one keeps the CPU route.
+    fn denoise_on_chain(&self, params: &NodeParams) -> bool {
+        self.denoise_chain_allowed
+            && self.run_has_sources
+            && self.node_denoise_on_chain
+            && params.effect_blend.is_none()
+            && !params.effects.is_empty()
+            && params.effects.iter().all(|e| matches!(e, klipp_effects::BuiltinEffect::TemporalDenoise { .. }))
+    }
+
     /// Returns true if this (kind, params) pair has a GPU-resident chain
     /// dispatch entry. Must be a single-input filter kind and produce a
     /// non-degenerate GPU dispatch — kinds that pass the frame through
@@ -3441,7 +3535,8 @@ impl GraphExecutor {
             NodeKind::Effect | NodeKind::EffectSegment => {
                 !params.effects.is_empty()
                     && !klipp_effects::has_frei0r(&params.effects)
-                    && !params.effects.iter().any(klipp_effects::registry::needs_source_neighbours)
+                    && (!params.effects.iter().any(klipp_effects::registry::needs_source_neighbours)
+                        || self.denoise_on_chain(params))
             }
             NodeKind::SceneToDisplay => params.scene_to_display.is_some(),
             // Its picture is the render's, on the CPU: a node reading it
@@ -3798,6 +3893,59 @@ impl GraphExecutor {
         dispatches
     }
 
+}
+
+/// A temporal-denoise node's neighbours, read for this run (#1988).
+struct RunDenoise {
+    node: NodeId,
+    neighbours: Vec<NeighbourPixels>,
+}
+
+/// A neighbour buffer the chain binds (#1988): the source's own, or one
+/// uploaded for it.
+enum HeldNeighbour {
+    Source(Arc<dyn crate::frame_context::GpuFramePixels>),
+    Uploaded(Arc<wgpu::Buffer>),
+}
+
+impl HeldNeighbour {
+    fn buffer(&self) -> &wgpu::Buffer {
+        match self {
+            HeldNeighbour::Source(g) => g.buffer(),
+            HeldNeighbour::Uploaded(b) => b,
+        }
+    }
+}
+
+/// A neighbour frame where the source had it (#1988).
+#[derive(Clone)]
+enum NeighbourPixels {
+    Cpu(Arc<Vec<f32>>),
+    /// On the GPU already: the chain binds it as it is.
+    Gpu(Arc<dyn crate::frame_context::GpuFramePixels>),
+}
+
+impl NeighbourPixels {
+    /// On the CPU, read back if it was on the GPU.
+    fn cpu(&self) -> Arc<Vec<f32>> {
+        match self {
+            NeighbourPixels::Cpu(p) => Arc::clone(p),
+            NeighbourPixels::Gpu(g) => g.read(),
+        }
+    }
+}
+
+/// Tell the source which source-boundary node's requests follow, and the
+/// frames its effects read together: the blend the next frame (and the
+/// one after when the frame shown was the one before the time), the
+/// denoiser the frame either side.
+fn source_node_budget(node_id: NodeId, effects: &[klipp_effects::BuiltinEffect], ctx: &mut crate::frame_context::FrameContext<'_>) {
+    let budget = effects.iter().map(|e| match e {
+        klipp_effects::BuiltinEffect::SpeedRamp { .. } => 2,
+        klipp_effects::BuiltinEffect::TemporalDenoise { .. } => klipp_effects::temporal_denoise::NEIGHBOURS,
+        _ => 0,
+    }).sum();
+    ctx.sources.for_node(node_id, budget);
 }
 
 /// How many reads of `picture` the recognised secondaries make: each gate
@@ -4292,6 +4440,60 @@ impl GraphExecutor {
         (h.finish(), width, height)
     }
 
+    /// Temporal noise reduction on the chain (#1988): the chain's picture
+    /// against the neighbours `read_denoise_for_chain` read for this node,
+    /// uploaded to buffers of their own, each of the node's denoises one
+    /// dispatch. The slot flips it made (2, the picture where it was,
+    /// for none), or `None` when the neighbours weren't read for it or
+    /// won't go up: the CPU route draws it then, with the same frames.
+    fn denoise_chain(&mut self, node_id: NodeId, params: &NodeParams, width: u32, height: u32, in_is_a: bool) -> Option<u32> {
+        let read = self.run_denoise.as_ref().filter(|r| r.node == node_id)?;
+        let pixels = (width as usize) * (height as usize) * 4;
+        let gpu = self.gpu.as_ref()?;
+        // Each neighbour as a buffer: one on the GPU already as it is, one
+        // on the CPU uploaded to a buffer of its own. Both held until the
+        // run's chain is submitted.
+        let mut held: Vec<HeldNeighbour> = Vec::with_capacity(read.neighbours.len());
+        for n in &read.neighbours {
+            held.push(match n {
+                NeighbourPixels::Gpu(g) => HeldNeighbour::Source(Arc::clone(g)),
+                NeighbourPixels::Cpu(p) if p.len() == pixels => {
+                    self.run_neighbour_uploads += 1;
+                    HeldNeighbour::Uploaded(gpu.upload_neighbour(p)?)
+                }
+                NeighbourPixels::Cpu(_) => return None,
+            });
+        }
+        let bufs: Vec<&wgpu::Buffer> = held.iter().map(HeldNeighbour::buffer).collect();
+        let gpu = self.gpu.as_mut()?;
+        let mut flips = 0u32;
+        let mut slot_a = in_is_a;
+        for effect in &params.effects {
+            let klipp_effects::BuiltinEffect::TemporalDenoise { strength, threshold } = *effect else { continue };
+            // Nothing to average, or nothing mixed back: the CPU's
+            // `denoise_frame` hands the frame back as it was.
+            if strength <= 0.0 || bufs.is_empty() {
+                continue;
+            }
+            if !gpu.apply_temporal_denoise_chain(slot_a, width, height, &bufs, threshold, strength, klipp_effects::temporal_denoise::LUMA) {
+                // Nothing recorded for this one; any before it are, so
+                // the chain can't hand over to the CPU mid-node: the run
+                // says its picture lacks an effect.
+                if flips == 0 {
+                    return None;
+                }
+                self.run_effects_incomplete = true;
+                continue;
+            }
+            slot_a = !slot_a;
+            flips += 1;
+        }
+        self.run_neighbour_bufs.extend(held);
+        self.run_denoise = None;
+        self.run_denoise_on_chain += 1;
+        Some(if flips == 0 { 2 } else { flips })
+    }
+
     fn dispatch_chain_node_slots(
         &mut self,
         node_id: NodeId,
@@ -4309,6 +4511,9 @@ impl GraphExecutor {
             // declines it.
             if params.effects.iter().any(crate::fault::faults) {
                 return None;
+            }
+            if self.denoise_on_chain(params) {
+                return self.denoise_chain(node_id, params, width, height, in_is_a);
             }
             // An analysis node's motion goes up just before it records, and
             // a warp without an analysis clears it, so it passes the frame
@@ -5006,16 +5211,7 @@ impl GraphExecutor {
             self.source_unavailable += 1;
             return input.to_vec();
         };
-        // The node's budget, its effects' together: the blend reads the
-        // next frame, the denoiser the frame either side.
-        let budget = effects.iter().map(|e| match e {
-            // The next frame, and the one after when the frame shown was
-            // the one before the time.
-            klipp_effects::BuiltinEffect::SpeedRamp { .. } => 2,
-            klipp_effects::BuiltinEffect::TemporalDenoise { .. } => klipp_effects::temporal_denoise::NEIGHBOURS,
-            _ => 0,
-        }).sum();
-        ctx.sources.for_node(node_id, budget);
+        source_node_budget(node_id, effects, ctx);
         let mut out = input.to_vec();
         for effect in effects {
             // A faulted effect (a test's, `fault`): left out, declined as a
@@ -5064,26 +5260,68 @@ impl GraphExecutor {
                 continue;
             }
             let klipp_effects::BuiltinEffect::TemporalDenoise { strength, threshold } = *effect else { continue };
-            // The captures either side: one of the media's frames away,
-            // whatever the sequence's rate (its rate when the source can't
-            // say).
-            let dt = ctx.sources.frame_secs().unwrap_or(1.0 / ctx.fps.max(1.0));
-            let mut missed = Vec::new();
-            let neighbours: Vec<Arc<Vec<f32>>> = [ctx.source_secs - dt, ctx.source_secs + dt]
-                .into_iter()
-                .filter_map(|t| match ctx.sources.linear(t) {
-                    Neighbour::Frame(f) => Some(f.rgba),
-                    Neighbour::Missing(m) => {
-                        missed.push(m);
-                        None
-                    }
-                })
-                .collect();
-            self.decline_neighbours(node_id, effect, &missed);
+            // Read already for the chain (`denoise_on_chain`), and it fell
+            // to here: the same frames, not read or declined again.
+            let neighbours = match self.run_denoise.take() {
+                Some(read) if read.node == node_id => read.neighbours,
+                other => {
+                    self.run_denoise = other;
+                    self.denoise_neighbours(node_id, effect, ctx, false)
+                }
+            };
+            let neighbours: Vec<Arc<Vec<f32>>> = neighbours.iter().map(NeighbourPixels::cpu).collect();
             let refs: Vec<&[f32]> = neighbours.iter().map(|n| n.as_slice()).collect();
             out = klipp_effects::temporal_denoise::denoise_frame(&out, &refs, threshold, strength);
         }
         out
+    }
+
+    /// The source's frames either side of the one drawn, for temporal
+    /// noise reduction in `node_id` (#1988): one of the media's frames
+    /// away each, whatever the sequence's rate (its rate when the source
+    /// can't say). A frame the source hasn't is left out and declined
+    /// (step 10). The one reader of them, for the CPU route and the
+    /// chain's alike, so the two read and decline the same.
+    ///
+    /// `on_gpu`: a frame the source has on the GPU already comes as it is
+    /// (for the chain to bind); any other is read to the CPU.
+    fn denoise_neighbours(&mut self, node_id: NodeId, effect: &klipp_effects::BuiltinEffect, ctx: &mut crate::frame_context::FrameContext<'_>, on_gpu: bool) -> Vec<NeighbourPixels> {
+        use crate::frame_context::{Missing, Neighbour};
+        let dt = ctx.sources.frame_secs().unwrap_or(1.0 / ctx.fps.max(1.0));
+        let mut missed = Vec::new();
+        let mut neighbours = Vec::new();
+        for t in [ctx.source_secs - dt, ctx.source_secs + dt] {
+            if on_gpu {
+                match ctx.sources.linear_on_gpu(t) {
+                    Neighbour::Frame(f) => {
+                        neighbours.push(NeighbourPixels::Gpu(f.pixels));
+                        continue;
+                    }
+                    Neighbour::Missing(Missing::Unavailable) => {}
+                    Neighbour::Missing(m) => {
+                        missed.push(m);
+                        continue;
+                    }
+                }
+            }
+            match ctx.sources.linear(t) {
+                Neighbour::Frame(f) => neighbours.push(NeighbourPixels::Cpu(f.rgba)),
+                Neighbour::Missing(m) => missed.push(m),
+            }
+        }
+        self.decline_neighbours(node_id, effect, &missed);
+        neighbours
+    }
+
+    /// Before a temporal-denoise node that may go on the chain (#1988):
+    /// its neighbours read, once, for whichever route draws it.
+    fn read_denoise_for_chain(&mut self, node_id: NodeId, params: &NodeParams, ctx: Option<&mut crate::frame_context::FrameContext<'_>>) {
+        self.run_denoise = None;
+        let Some(ctx) = ctx else { return };
+        let Some(effect) = params.effects.iter().find(|e| matches!(e, klipp_effects::BuiltinEffect::TemporalDenoise { .. })) else { return };
+        source_node_budget(node_id, &params.effects, ctx);
+        let neighbours = self.denoise_neighbours(node_id, effect, ctx, true);
+        self.run_denoise = Some(RunDenoise { node: node_id, neighbours });
     }
 
     /// Records a source-boundary node's `effect` that ran without the

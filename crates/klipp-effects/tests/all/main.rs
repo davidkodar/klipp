@@ -60,6 +60,8 @@ mod piece_transitions;
 mod presentation;
 #[path = "../recorded_effects.rs"]
 mod recorded_effects;
+#[path = "../temporal_denoise_gpu.rs"]
+mod temporal_denoise_gpu;
 #[path = "../registry_coverage.rs"]
 mod registry_coverage;
 #[path = "../render_faults_1020.rs"]

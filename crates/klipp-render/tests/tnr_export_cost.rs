@@ -1,8 +1,10 @@
 //! What a clip with temporal noise reduction costs an export at 4K
 //! (#1980): a probe, not a pass/fail test. Run with
 //! `cargo test -p klipp-render --test all tnr_export_cost -- --ignored --nocapture`.
-//! Exports 25 frames of a 3840x2160 FFV1 clip with and without the
-//! denoise and prints the time a frame and the readers opened.
+//! Exports 25 frames of a 3840x2160 clip, FFV1 (software-decoded) and
+//! H.264 (hardware-decoded where it can be), with and without the
+//! denoise, and prints the time a frame; then what uploading one 4K
+//! neighbour costs, which the viewer pays for each (#1988).
 
 use klipp_core::*;
 use klipp_render::*;
@@ -16,14 +18,14 @@ fn tmp(name: &str) -> PathBuf {
     klipp_testing::scratch::scratch_file("klipp-tnr-export-cost", name)
 }
 
-fn source() -> Option<PathBuf> {
-    let path = tmp("uhd.mkv");
+fn source(name: &str, codec: &[&str]) -> Option<PathBuf> {
+    let path = tmp(name);
     if path.exists() {
         return Some(path);
     }
     std::process::Command::new("ffmpeg")
         .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=3840x2160:r=25:d=1.5"])
-        .args(["-vf", "format=yuv420p10le", "-c:v", "ffv1"])
+        .args(codec)
         .arg(&path)
         .status()
         .is_ok_and(|s| s.success())
@@ -56,12 +58,13 @@ fn snapshot(src: &std::path::Path, denoise: bool) -> SequenceSnapshot {
 #[test]
 #[ignore = "perf probe: run explicitly"]
 fn tnr_export_cost() {
-    let Some(src) = source() else {
-        eprintln!("skipping: ffmpeg could not write the source");
-        return;
-    };
     // The job's own per-frame breakdown, in its log.
     let _ = tracing_subscriber::fmt().with_env_filter("klipp_render=info").with_test_writer().try_init();
+    for (name, codec) in [("uhd.mkv", &["-vf", "format=yuv420p10le", "-c:v", "ffv1"][..]), ("uhd.mp4", &["-vf", "format=yuv420p", "-c:v", "libx264", "-crf", "18"][..])] {
+    let Some(src) = source(name, codec) else {
+        eprintln!("skipping {name}: ffmpeg could not write the source");
+        continue;
+    };
     for denoise in [false, true] {
         let out = tmp(if denoise { "tnr.mp4" } else { "plain.mp4" });
         let settings = ExportSettings { output_path: out.clone(), format: ExportFormat::Mp4, video_codec: ExportVideoCodec::H264, audio_codec: ExportAudioCodec::Copy, ..Default::default() };
@@ -76,6 +79,23 @@ fn tnr_export_cost() {
         .run()
         .unwrap();
         let ms = t0.elapsed().as_secs_f64() * 1000.0 / FRAMES as f64;
-        eprintln!("{}: {ms:.1} ms a frame over {FRAMES} frames at 3840x2160", if denoise { "temporal NR" } else { "plain" });
+        eprintln!("{name}, {}: {ms:.1} ms a frame over {FRAMES} frames at 3840x2160", if denoise { "temporal NR" } else { "plain" });
+    }
+    }
+    // One 4K neighbour up to the GPU, as the viewer's route sends each.
+    if let Some(mut g) = klipp_effects::gpu::GpuEffectsPipeline::new() {
+        let frame = vec![0.25f32; 3840 * 2160 * 4];
+        g.ensure_chain_buffers(16);
+        let mut times = Vec::new();
+        for _ in 0..6 {
+            let t0 = std::time::Instant::now();
+            let held = g.upload_neighbour(&frame);
+            // The write lands with the next submit: one, and wait for it.
+            g.begin_chain();
+            let _ = g.flush_chain_and_download_linear(true, 1);
+            drop(held);
+            times.push(t0.elapsed().as_secs_f64() * 1000.0);
+        }
+        eprintln!("a 4K neighbour uploaded: {:.1} ms (of {:?})", times[1..].iter().sum::<f64>() / 5.0, times.iter().map(|t| (t * 10.0).round() / 10.0).collect::<Vec<_>>());
     }
 }
