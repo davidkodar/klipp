@@ -333,23 +333,25 @@ fn foliage_candidate(c: Lab) -> bool {
 /// as it was before the grade: the sky leaving blue (olive, under a warm
 /// push), foliage leaving green, either going neon, skin leaving its
 /// band, or the picture's strongest colours going garish. `None` when
-/// none of them moved too far (#742).
-pub fn memory_colours_broken(start: &FrameMeasure, now: &FrameMeasure) -> Option<String> {
+/// none of them moved too far (#742). A colour `look` doesn't protect may
+/// leave its place (a golden look warms the sky, #1579); none may go
+/// neon or garish.
+pub fn memory_colours_broken(start: &FrameMeasure, now: &FrameMeasure, look: &LookTarget) -> Option<String> {
     let (a, b) = (start.memory, now.memory);
-    if a.sky_pct >= 3.0 && b.sky_pct < a.sky_pct * 0.6 {
+    if look.protects("sky") && a.sky_pct >= 3.0 && b.sky_pct < a.sky_pct * 0.6 {
         return Some(format!("the sky leaves blue ({:.0}% of the frame was sky, {:.0}% is)", a.sky_pct, b.sky_pct));
     }
     if a.sky_pct >= 3.0 && b.sky_chroma > (a.sky_chroma * 1.35).max(a.sky_chroma + 8.0) {
         return Some(format!("the sky goes neon (chroma {:.0} from {:.0})", b.sky_chroma, a.sky_chroma));
     }
-    if a.foliage_pct >= 3.0 && b.foliage_pct < a.foliage_pct * 0.6 {
+    if look.protects("foliage") && a.foliage_pct >= 3.0 && b.foliage_pct < a.foliage_pct * 0.6 {
         return Some(format!("foliage leaves green ({:.0}% of the frame was green, {:.0}% is)", a.foliage_pct, b.foliage_pct));
     }
     if a.foliage_pct >= 3.0 && b.foliage_chroma > (a.foliage_chroma * 1.35).max(a.foliage_chroma + 8.0) {
         return Some(format!("foliage goes neon (chroma {:.0} from {:.0})", b.foliage_chroma, a.foliage_chroma));
     }
     let skin_off = |m: &FrameMeasure| m.faces.iter().find(|f| f.readable()).map(|f| hue_off_skin_band(f.hue)).or(m.skin_all.map(|s| hue_off_skin_band(s.hue)));
-    if let (Some(x), Some(y)) = (skin_off(start), skin_off(now)) {
+    if let (Some(x), Some(y), true) = (skin_off(start), skin_off(now), look.protects("skin")) {
         if y > x + 6.0 {
             return Some(format!("skin leaves its band ({y:.0}° off it, from {x:.0}°)"));
         }
@@ -1339,6 +1341,12 @@ pub struct LookTarget {
     /// cast, the clipping a grade adds, and skin are judged.
     #[serde(default)]
     pub screencast: bool,
+    /// The colours an eye knows that the look keeps where they were: any
+    /// of "sky", "foliage" and "skin" (#1579). `None` keeps all three. A
+    /// warm look that names only skin may warm a sky and the leaves; none
+    /// may turn them neon or the picture garish.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protect: Option<Vec<String>>,
 }
 
 impl LookTarget {
@@ -1351,6 +1359,9 @@ impl LookTarget {
             "web_punchy" | "punchy" | "web" => LookTarget { black_l: Some(3.0), white_l: Some(97.0), mid_l: Some(50.0), contrast_range: Some(75.0), chroma_mean: Some(30.0), cast_a: Some(0.0), cast_b: Some(0.0), skin_l: Some(63.0), ..base("web_punchy") },
             "film_soft" | "film" | "filmic" => LookTarget { black_l: Some(8.0), white_l: Some(92.0), mid_l: Some(46.0), contrast_range: Some(55.0), chroma_mean: Some(18.0), cast_a: Some(1.0), cast_b: Some(3.0), skin_l: Some(58.0), ..base("film_soft") },
             "warm_interview" | "warm" | "interview" => LookTarget { black_l: Some(5.0), white_l: Some(94.0), mid_l: Some(50.0), contrast_range: Some(62.0), chroma_mean: Some(24.0), cast_a: Some(2.0), cast_b: Some(5.0), skin_hue: Some(50.0), skin_l: Some(62.0), ..base("warm_interview") },
+            // Golden hour: warm, soft and bright, the sky and leaves
+            // warmed with everything else, skin kept in its band (#1579).
+            "golden" | "golden_hour" => LookTarget { black_l: Some(6.0), white_l: Some(93.0), mid_l: Some(50.0), contrast_range: Some(60.0), chroma_mean: Some(26.0), cast_a: Some(3.0), cast_b: Some(12.0), skin_hue: Some(55.0), skin_l: Some(62.0), protect: Some(vec!["skin".into()]), ..base("golden") },
             "cool_tech" | "cool" | "tech" => LookTarget { black_l: Some(4.0), white_l: Some(95.0), mid_l: Some(47.0), contrast_range: Some(68.0), chroma_mean: Some(20.0), cast_a: Some(-1.0), cast_b: Some(-5.0), skin_l: Some(60.0), ..base("cool_tech") },
             "screencast" | "screen" => LookTarget { cast_a: Some(0.0), cast_b: Some(0.0), screencast: true, ..base("screencast") },
             // No brief: only what is right for every scene — nothing
@@ -1365,7 +1376,13 @@ impl LookTarget {
         })
     }
 
-    pub const PRESETS: [&'static str; 6] = ["broadcast_neutral", "web_punchy", "film_soft", "warm_interview", "cool_tech", "screencast"];
+    pub const PRESETS: [&'static str; 7] = ["broadcast_neutral", "web_punchy", "film_soft", "warm_interview", "golden", "cool_tech", "screencast"];
+
+    /// Whether the look keeps `colour` ("sky", "foliage", "skin") where
+    /// it was: every one unless it names which (#1579).
+    pub fn protects(&self, colour: &str) -> bool {
+        self.protect.as_ref().is_none_or(|p| p.iter().any(|c| c.eq_ignore_ascii_case(colour)))
+    }
 
     /// What a frame is judged against when the piece has no brief: see
     /// the `unbriefed` preset. Not in [`Self::PRESETS`], which lists the
@@ -1397,6 +1414,7 @@ impl LookTarget {
                 (!ls.is_empty()).then(|| ls.iter().sum::<f32>() / ls.len() as f32)
             },
             screencast: false,
+            protect: None,
         })
     }
 }
@@ -2624,11 +2642,36 @@ mod memory_tests {
     fn a_grade_that_turns_the_sky_or_the_leaves_is_caught() {
         let start = frame([120, 170, 230], [70, 120, 55]);
         assert!(start.memory.sky_pct > 40.0 && start.memory.foliage_pct > 40.0, "{:?}", start.memory);
-        assert_eq!(memory_colours_broken(&start, &frame([126, 170, 222], [74, 121, 52])), None, "a gentle warm step");
-        let olive = memory_colours_broken(&start, &frame([165, 168, 130], [80, 120, 45])).unwrap();
+        let every = LookTarget::unbriefed();
+        assert_eq!(memory_colours_broken(&start, &frame([126, 170, 222], [74, 121, 52]), &every), None, "a gentle warm step");
+        let olive = memory_colours_broken(&start, &frame([165, 168, 130], [80, 120, 45]), &every).unwrap();
         assert!(olive.contains("sky leaves blue"), "{olive}");
-        let neon = memory_colours_broken(&start, &frame([120, 170, 230], [60, 170, 20])).unwrap();
+        let neon = memory_colours_broken(&start, &frame([120, 170, 230], [60, 170, 20]), &every).unwrap();
         assert!(neon.contains("foliage goes neon") || neon.contains("garish"), "{neon}");
+    }
+
+    /// #1579: a golden look keeps skin only, so the warm push that turns
+    /// the sky olive is its point, not a fault; the leaves going neon is
+    /// still caught under it (the control), and a look that names nothing
+    /// keeps everything, as before.
+    #[test]
+    fn a_golden_look_may_warm_the_sky_but_not_turn_it_neon() {
+        let start = frame([120, 170, 230], [70, 120, 55]);
+        let golden = LookTarget::preset("golden").unwrap();
+        assert_eq!(LookTarget::preset("Golden_Hour"), Some(golden.clone()));
+        assert!(LookTarget::PRESETS.contains(&"golden"));
+        assert!(golden.protects("skin") && !golden.protects("sky") && !golden.protects("foliage"));
+        assert!(golden.cast_b.unwrap() > LookTarget::preset("warm_interview").unwrap().cast_b.unwrap(), "warmer than warm_interview");
+        let warmed = frame([165, 168, 130], [80, 120, 45]);
+        assert_eq!(memory_colours_broken(&start, &warmed, &golden), None, "the golden look warms the sky");
+        assert!(memory_colours_broken(&start, &warmed, &LookTarget::preset("warm_interview").unwrap()).is_some(), "a look that names nothing keeps the sky");
+        let neon = memory_colours_broken(&start, &frame([120, 170, 230], [60, 170, 20]), &golden).unwrap();
+        assert!(neon.contains("foliage goes neon") || neon.contains("garish"), "{neon}");
+        // A brief's own look names what it keeps.
+        let custom: LookTarget = serde_json::from_str(r#"{"name": "dusk", "cast_b": 9.0, "protect": ["skin", "foliage"]}"#).unwrap();
+        assert!(custom.protects("foliage") && !custom.protects("sky"));
+        let back: LookTarget = serde_json::from_str(&serde_json::to_string(&custom).unwrap()).unwrap();
+        assert_eq!(back, custom);
     }
 }
 

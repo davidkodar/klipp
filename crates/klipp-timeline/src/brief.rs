@@ -101,7 +101,7 @@ pub struct Brief {
     /// The look the piece is graded to, as numbers: black, white and
     /// mid lightness, contrast, chroma, the cast on neutrals, skin hue.
     /// `{name: "web_punchy"}` alone takes a preset (broadcast_neutral,
-    /// web_punchy, film_soft, warm_interview, cool_tech, screencast);
+    /// web_punchy, film_soft, warm_interview, golden, cool_tech, screencast);
     /// style_profile lifts one from a reference. Left out: neutral, and
     /// a screen recording judged as one.
     #[serde(default)]

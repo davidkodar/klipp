@@ -423,13 +423,15 @@ pub(crate) fn departing_look() -> klipp_color::measure::LookTarget {
     klipp_color::measure::LookTarget { name: "off the look on purpose".into(), ..Default::default() }
 }
 
-/// A look given by name alone takes the preset's numbers.
+/// A look given by name alone takes the preset's numbers, and keeps what
+/// it says it protects when it says (#1579): `warm_interview` with
+/// `protect: ["skin"]` may warm the sky.
 pub(crate) fn resolve_look_target(look: klipp_color::measure::LookTarget) -> klipp_color::measure::LookTarget {
     use klipp_color::measure::LookTarget;
     let bare = look.black_l.is_none() && look.white_l.is_none() && look.mid_l.is_none() && look.contrast_range.is_none() && look.chroma_mean.is_none() && look.cast_a.is_none() && look.skin_hue.is_none();
     if bare {
         if let Some(p) = LookTarget::preset(&look.name) {
-            return p;
+            return LookTarget { protect: look.protect.or(p.protect.clone()), ..p };
         }
     }
     look
@@ -761,5 +763,25 @@ mod limit_tests {
             assert!((got - want).abs() < 1.0, "{name}: b* {got}, not about {want}");
         }
         assert!(grey_b(16.0) < 4.5, "the old normal limit moved a grey {}", grey_b(16.0));
+    }
+}
+
+#[cfg(test)]
+mod look_resolve_tests {
+    use super::resolve_look_target;
+    use klipp_color::measure::LookTarget;
+
+    /// #1579: a preset named alone takes its numbers and what it protects;
+    /// named with a list of its own, keeps that list. Control: a look of
+    /// numbers is left as given.
+    #[test]
+    fn a_named_look_keeps_what_it_says_it_protects() {
+        let golden = resolve_look_target(LookTarget { name: "golden".into(), ..Default::default() });
+        assert_eq!(golden, LookTarget::preset("golden").unwrap());
+        let warm = resolve_look_target(LookTarget { name: "warm_interview".into(), protect: Some(vec!["skin".into()]), ..Default::default() });
+        assert_eq!(warm.cast_b, LookTarget::preset("warm_interview").unwrap().cast_b);
+        assert!(warm.protects("skin") && !warm.protects("sky"));
+        let numbers = LookTarget { name: "mine".into(), cast_b: Some(7.0), mid_l: Some(50.0), ..Default::default() };
+        assert_eq!(resolve_look_target(numbers.clone()), numbers);
     }
 }

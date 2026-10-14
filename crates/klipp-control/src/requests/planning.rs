@@ -267,7 +267,7 @@ pub(crate) fn respond(
                 let name = look.name.clone();
                 let resolved = resolve_look_target(look);
                 if resolved.mid_l.is_none() && resolved.cast_a.is_none() && !resolved.screencast {
-                    return Err(format!("look \"{name}\" is neither a preset ({}) nor numbers; give a name, or the fields black_l, white_l, mid_l, contrast_range, chroma_mean, cast_a, cast_b, skin_hue — style_profile lifts them from a reference", klipp_color::measure::LookTarget::PRESETS.join(", ")));
+                    return Err(format!("look \"{name}\" is neither a preset ({}) nor numbers; give a name, or the fields black_l, white_l, mid_l, contrast_range, chroma_mean, cast_a, cast_b, skin_hue, protect — style_profile lifts them from a reference", klipp_color::measure::LookTarget::PRESETS.join(", ")));
                 }
                 brief.look = Some(resolved);
             }
