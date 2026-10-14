@@ -24,6 +24,9 @@ const BEAT_NEAR_SECS: f64 = 0.04;
 const BEAT_CONTEXT_SECS: f64 = 4.0;
 /// Under this the beat analysis is not sure there is a pulse to cut to.
 const BEAT_SURE: f32 = 0.3;
+/// A detected body shorter than this share of the frame is too small for
+/// a title to hide (#1590).
+const PERSON_MIN_HEIGHT: f32 = 0.1;
 /// A title over a screen that is changing for longer than this fights it.
 const BUSY_UNDER_TITLE_SECS: f64 = 0.5;
 /// Shots all within this much of their mean length are a flat cadence.
@@ -749,7 +752,9 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             } else {
                 // Across someone, if not their face: a walker in a
                 // handheld shot moves under words placed at one frame (#510).
-                let people = crate::ops::people_under(seq, pool, transcripts, a, b);
+                // A figure under a tenth of the frame's height is part of
+                // a wide shot, not someone the words hide (#1590).
+                let people: Vec<[f32; 4]> = crate::ops::people_under(seq, pool, transcripts, a, b).into_iter().filter(|p| p[3] >= PERSON_MIN_HEIGHT).collect();
                 if people.iter().any(|p| crate::ops::boxes_overlap(tb, *p, 0.02)) {
                     let all: Vec<[f32; 4]> = people.iter().chain(&faces).copied().collect();
                     let zone = crate::ops::clear_zone((tb[0] + tb[2] / 2.0, tb[1] + tb[3] / 2.0), (tb[2], tb[3]), &all).and_then(|(_, z)| z);
@@ -1138,6 +1143,17 @@ mod tests {
         assert_eq!(f.len(), 1, "{}", r.text());
         assert!(f[0].hint.contains("Move it to the"), "{}", f[0].hint);
         assert!((f[0].at_secs.unwrap() - 1.0).abs() < 1e-6);
+        // #1590: a figure a few pixels tall on a wide beach is not crossed.
+        struct Tiny(klipp_core::MediaId);
+        impl Transcripts for Tiny {
+            fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+            fn people(&self, item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
+                if item.id == self.0 { vec![(41.0, [0.49, 0.56, 0.01, 0.04])] } else { vec![] }
+            }
+        }
+        assert!(!rules(&check(&seq, &pool, &Tiny(media))).contains(&"title_over_person"));
     }
 
     /// One screen recording cut into shots, no sound.
