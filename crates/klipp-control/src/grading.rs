@@ -351,12 +351,16 @@ pub(crate) fn merge_brief(current: &klipp_timeline::Brief, fields: &serde_json::
         return Err("fields is an object: the brief's fields to change, by name".into());
     };
     let empty = object(&klipp_timeline::Brief::default())?;
+    // The same names a whole brief is held to: `language`, left out of
+    // an empty brief's JSON, is one (#1915).
+    let known = protocol::brief_fields();
     let mut merged = object(current)?;
     for (name, value) in fields {
-        let Some(cleared) = empty.get(name) else {
-            return Err(format!("{name:?} is not a field of the brief; it has {}", empty.keys().cloned().collect::<Vec<_>>().join(", ")));
-        };
-        merged.insert(name.clone(), if value.is_null() { cleared.clone() } else { value.clone() });
+        if !known.contains(name) {
+            return Err(protocol::unknown_brief_field(name, &known));
+        }
+        let cleared = empty.get(name).cloned().unwrap_or(serde_json::Value::Null);
+        merged.insert(name.clone(), if value.is_null() { cleared } else { value.clone() });
     }
     protocol::brief_from_value(serde_json::Value::Object(merged))
 }

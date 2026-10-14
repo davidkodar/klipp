@@ -823,6 +823,13 @@ mod tests {
         assert!(merge_brief(&current, &serde_json::json!({
             "type_styles": [{"name": "place", "enter": {"kind": "rise", "delai_secs": 1.0}}]
         })).is_err());
+        // #1915: the speech's language is a field of the brief, set and
+        // cleared like the rest; #1914: a misspelt one names the field.
+        let spoken = merge_brief(&current, &serde_json::json!({ "language": "en" })).unwrap();
+        assert_eq!(spoken.language.as_deref(), Some("en"));
+        assert_eq!(merge_brief(&spoken, &serde_json::json!({ "language": null })).unwrap().language, None);
+        let err = merge_brief(&current, &serde_json::json!({ "target_lufs": -14 })).unwrap_err();
+        assert!(err.contains("\"loudness_lufs\""), "{err}");
     }
 
     #[test]
