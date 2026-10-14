@@ -3091,6 +3091,7 @@ impl NodeInspectorPanel {
             | NodeKind::Ofx
             | NodeKind::SceneToDisplay
             | NodeKind::SidePicture
+            | NodeKind::OutputAlpha
             | NodeKind::Unknown => {
                 ui.label(egui::RichText::new("No parameters").color(theme.text_dim));
             }

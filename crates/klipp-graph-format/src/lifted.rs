@@ -518,6 +518,11 @@ fn structural_direction(n: &crate::Node) -> Option<PortDirection> {
 }
 
 fn port_spec(n: &crate::Node, port: &crate::PortKey, input: bool, catalog: Option<&dyn PortCatalog>) -> Option<PortSpec> {
+    // A grade's Output takes a matte as the alpha its picture leaves with
+    // (#898).
+    if n.type_id.as_str() == types::GROUP_OUTPUT && input && port.as_str() == "alpha" {
+        return Some(PortSpec { key: port.to_string(), ty: PortType::Matte, optional: true, params: Vec::new() });
+    }
     if let Some(direction) = structural_direction(n) {
         return ((direction == PortDirection::Input) == input && port.as_str() == if input { "in" } else { "out" }).then(|| PortSpec {
             key: port.to_string(), ty: PortType::Image, optional: false, params: Vec::new(),

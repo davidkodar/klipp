@@ -26,6 +26,9 @@ fn named_input(kind: &str, port: u8) -> Option<String> {
         "Layer" => &["fg", "bg"],
         "Blend" | "CombineMattes" => &["a", "b"],
         "MaskCutout" => &["in", "matte"],
+        // The grade's picture, and the matte it leaves with as its alpha
+        // (#898).
+        "Output" => &["in", "alpha"],
         "RGBCombiner" => &["r", "g", "b"],
         "ColorMatch" => &["in", "ref"],
         "LayerMixer" => return Some(format!("in{port}")),

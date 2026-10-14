@@ -86,6 +86,8 @@ mod refused_clip_is_named;
 mod reroute_round_trip;
 #[path = "../save_is_one_generation.rs"]
 mod save_is_one_generation;
+#[path = "../grade_alpha_round_trip.rs"]
+mod grade_alpha_round_trip;
 #[path = "../grade_version_mix.rs"]
 mod grade_version_mix;
 #[path = "../track_grade_save.rs"]

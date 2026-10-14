@@ -701,6 +701,11 @@ impl NodeGraph {
     /// way to its output. A node not feeding the output is not counted:
     /// it does nothing to the picture, whatever its settings.
     pub fn is_identity(&self) -> bool {
+        // A matte into the Output's alpha (#898) cuts the picture, whatever
+        // the nodes making it hold.
+        if self.input_of(self.output_node_id, 1).is_some() {
+            return false;
+        }
         let feeding = self.nodes_feeding_output();
         // A keyframed node is not an identity even when its static params
         // are neutral: an exposure ramp starting at 0 or a fade-in grade
@@ -1656,6 +1661,9 @@ impl NodeGraph {
     /// A correction with a mix (M3 step 17a) gets one too, gated or not:
     /// the gate takes its mix, and reads its matte from the correction's
     /// mask channel; with no matte it takes the whole frame by the mix.
+    ///
+    /// A matte wired into the Output's alpha (#898) is taken where the
+    /// grade ends, too ([`Self::with_output_alpha_applied`]).
     pub fn with_gates_applied(&self) -> Option<NodeGraph> {
         let gated: Vec<NodeId> = self
             .nodes
@@ -1664,7 +1672,7 @@ impl NodeGraph {
             .map(|n| n.id)
             .collect();
         if gated.is_empty() {
-            return None;
+            return self.with_output_alpha_applied();
         }
         let mut g = self.clone();
         for corr in gated {
@@ -1711,6 +1719,40 @@ impl NodeGraph {
                     input_links: Vec::new(),
                 },
             );
+        }
+        Some(g.with_output_alpha_applied().unwrap_or(g))
+    }
+
+    /// The graph with the matte wired into its Output's alpha (#898) taken
+    /// where the grade ends: an `OutputAlpha` between what fed the Output
+    /// and the Output, reading the picture and that matte. `None` when no
+    /// matte is wired there. The renderer splices a clip's effects in
+    /// before the Output, so they then come after the alpha and move
+    /// picture and alpha together, as the CPU route draws them. Its id is
+    /// derived from the Output's, the same from frame to frame.
+    pub fn with_output_alpha_applied(&self) -> Option<NodeGraph> {
+        let out = self.output_node_id;
+        let matte = self.input_of(out, 1)?;
+        let mut g = self.clone();
+        let alpha = Uuid::from_u128(out.as_u128() ^ 0x6f75_7470_7574_5f61_6c70_6861_5f6e_6f64);
+        g.edges.retain(|e| !(e.to_node == out && e.to_port == 1));
+        // An Output with no picture wired leaves with none: the alpha has
+        // nothing to cut.
+        if let Some(e) = g.edges.iter_mut().find(|e| e.to_node == out && e.to_port == 0) {
+            e.to_node = alpha;
+            g.edges.push(Edge { from_node: alpha, from_port: 0, to_node: out, to_port: 0 });
+            g.edges.push(Edge { from_node: matte, from_port: 0, to_node: alpha, to_port: 1 });
+            let at = g.nodes.iter().position(|n| n.id == out).unwrap_or(g.nodes.len());
+            g.nodes.insert(at, Node {
+                id: alpha,
+                kind: NodeKind::OutputAlpha,
+                label: "Output Alpha".into(),
+                enabled: true,
+                params: NodeParams::default(),
+                keyframes: NodeKeyframeTracks::default(),
+                output_link: None,
+                input_links: Vec::new(),
+            });
         }
         Some(g)
     }

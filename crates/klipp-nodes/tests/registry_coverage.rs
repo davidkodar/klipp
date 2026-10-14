@@ -42,7 +42,7 @@ fn declared_kinds() -> BTreeSet<String> {
             let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
             Some(name)
         })
-        .filter(|n| !["Unknown", "Effect", "EffectSegment", "Frei0r", "Ofx", "SceneToDisplay", "SidePicture"].contains(&n.as_str()))
+        .filter(|n| !["Unknown", "Effect", "EffectSegment", "Frei0r", "Ofx", "SceneToDisplay", "SidePicture", "OutputAlpha"].contains(&n.as_str()))
         .collect()
 }
 

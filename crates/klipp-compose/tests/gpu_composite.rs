@@ -606,6 +606,16 @@ fn every_multi_port_grade_node_is_drawn_by_the_stack_or_declined() {
                 }
                 let other = bright();
                 let other_id = other.id;
+                if t.kind == K::Output {
+                    // The grade's own Output (#898): the source into its
+                    // picture, a stop brighter into its alpha, read as the
+                    // coverage it carries.
+                    g.edges.push(klipp_nodes::Edge { from_node: source, from_port: 0, to_node: other_id, to_port: 0 });
+                    g.edges.push(klipp_nodes::Edge { from_node: source, from_port: 0, to_node: out, to_port: 0 });
+                    g.edges.push(klipp_nodes::Edge { from_node: other_id, from_port: 0, to_node: out, to_port: 1 });
+                    g.nodes.push(other);
+                    return Some(());
+                }
                 g.edges.push(klipp_nodes::Edge { from_node: source, from_port: 0, to_node: other_id, to_port: 0 });
                 for port in 0..t.desc.inputs.len() as u8 {
                     let from = if port == 0 { source } else { other_id };

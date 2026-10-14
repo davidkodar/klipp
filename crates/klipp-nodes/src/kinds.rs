@@ -196,6 +196,13 @@ pub enum NodeKind {
     /// holds ([`crate::side_picture`]). It reads nothing. Made by the
     /// renderer for a run, never by the user or saved.
     SidePicture,
+    /// Where a grade's picture takes the matte wired into its Output's
+    /// alpha (#898): port 0 the picture, port 1 the matte; the picture's
+    /// alpha times the matte's coverage, its colour as it is. Put at the
+    /// grade's end by `NodeGraph::with_gates_applied` (and so before any
+    /// effect the renderer splices in, which then moves picture and alpha
+    /// together). Made for a run, never by the user or saved.
+    OutputAlpha,
 
     // ── Future ──────────────────────────────────────────────────
     #[serde(other)]
@@ -334,7 +341,10 @@ impl NodeKind {
             | NodeKind::ColorMatch
             | NodeKind::LayerMixer => 2,
             NodeKind::RGBCombiner => 3,
-            NodeKind::MaskCutout => 2,
+            NodeKind::MaskCutout | NodeKind::OutputAlpha => 2,
+            // The picture, and the matte it leaves with as its alpha
+            // (#898), when one is wired.
+            NodeKind::Output => 2,
             _ => 1,
         }
     }
@@ -382,6 +392,7 @@ impl NodeKind {
             (NodeKind::RGBCombiner, 2) => PortRole::ChannelBlue,
             (NodeKind::MaskCutout, 0) => PortRole::Primary,
             (NodeKind::MaskCutout, 1) => PortRole::Matte,
+            (NodeKind::Output, 1) | (NodeKind::OutputAlpha, 1) => PortRole::Matte,
             // Default — every other (kind, port) is the colour signal.
             _ => PortRole::Primary,
         }
@@ -432,6 +443,7 @@ impl NodeKind {
             (NodeKind::RGBCombiner, 2) => "B",
             (NodeKind::MaskCutout, 0) => "Source",
             (NodeKind::MaskCutout, 1) => "Matte",
+            (NodeKind::Output, 1) | (NodeKind::OutputAlpha, 1) => "Alpha",
             _ => "Input",
         }
     }
@@ -495,6 +507,7 @@ impl NodeKind {
             NodeKind::Frei0r => "frei0r Plug-in",
             NodeKind::Ofx => "OFX Plug-in",
             NodeKind::SceneToDisplay => "Scene to Display",
+            NodeKind::OutputAlpha => "Output Alpha",
             NodeKind::SidePicture => "Side Picture",
             NodeKind::Unknown => "Unknown",
         }

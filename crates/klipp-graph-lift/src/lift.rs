@@ -363,6 +363,14 @@ fn lift_grade_body_at(group: &Node, migrate: bool, depth: u32, notes: &mut Vec<L
             overridden.push((e.to.0, e.to.1.clone()));
             continue;
         }
+        // The Output wired into its own port 1 is how a grade that's off
+        // is saved (a loop today's ordering refuses, counted above). That
+        // port is the Output's alpha now (#898), which reads a matte, so
+        // the marker goes as an edge into a port the kind didn't read did.
+        if e.from.0 == e.to.0 && to_kind == "Output" {
+            drop("the Output into itself, a grade saved off", notes, &mut group_flags);
+            continue;
+        }
         if !seen.insert((e.to.0, e.to.1.clone())) {
             drop("after another edge into the same port", notes, &mut group_flags);
             continue;

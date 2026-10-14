@@ -3209,6 +3209,21 @@ impl GraphExecutor {
             {
                 return Err(ExecutorError::MaskUnavailable(node_id));
             }
+            // The matte a grade's alpha takes (#898) is there, or the run
+            // is refused: a clip shown whole where it should be cut out
+            // would say nothing. No pixels is a window with nothing
+            // chosen, which keeps everything.
+            if node.kind == NodeKind::OutputAlpha
+                && graph.input_of(node_id, 1).is_some()
+                && !match secondary_slice {
+                    Some(m) => m.len() == primary_slice.len(),
+                    // Its producer gave no pixels, and no window or key of
+                    // it is drawn elsewhere (both read above).
+                    None => secondary.is_some_and(|m| m.is_empty()),
+                }
+            {
+                return Err(ExecutorError::MaskUnavailable(node_id));
+            }
 
             // Execute the node
             let output = self.execute_node(
@@ -6313,6 +6328,20 @@ impl GraphExecutor {
             // execute_node is called (it needs N inputs, not 3) — if
             // we ever reach this arm via a non-standard call path the
             // safest thing is a passthrough.
+            // The picture's alpha times the matte's coverage (red, as a
+            // matte carries it), its colour as it is (#898): a picture with
+            // transparency of its own keeps it where the matte keeps
+            // everything. The matte was checked in the dispatch loop.
+            NodeKind::OutputAlpha => {
+                let mut out = primary_input.to_vec();
+                if let Some(m) = secondary_input.filter(|m| m.len() == out.len()) {
+                    for (p, m) in out.chunks_exact_mut(4).zip(m.chunks_exact(4)) {
+                        p[3] *= m[0].clamp(0.0, 1.0);
+                    }
+                }
+                out
+            }
+
             NodeKind::LayerMixer
             | NodeKind::Output
             | NodeKind::Unknown => primary_input.to_vec(),
