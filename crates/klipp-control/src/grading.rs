@@ -616,7 +616,9 @@ impl GradeLimits {
             "bold" => ("bold", 3.0),
             other => return Err(format!("strength {other:?} is not one of gentle, normal or bold")),
         };
-        Ok(Self { name, exposure: 0.5 * k, lift: 0.05 * k, gain: 0.1 * k, temperature: 8.0 * k, tint: 6.0 * k, saturation: 1.0 + 0.12 * k })
+        // Temperature in mireds, about 0.2 b* on mid grey a unit: gentle
+        // moves a grey about 3 b*, normal 6, bold 9 (#1580); tint alike.
+        Ok(Self { name, exposure: 0.5 * k, lift: 0.05 * k, gain: 0.1 * k, temperature: 15.0 * k, tint: 11.0 * k, saturation: 1.0 + 0.12 * k })
     }
 
     /// The knobs after `step` from `now`, held within the limits around
@@ -734,5 +736,30 @@ mod loudness_drop_tests {
         let mut start = vec![-11.0f32; 30];
         start[0..2].fill(-30.0);
         assert!(loudness_drops(&rows(&start), 1.0, &none).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::GradeLimits;
+
+    /// How far a temperature of `t` moves a mid grey, in Lab b*.
+    fn grey_b(t: f32) -> f32 {
+        let m = klipp_color::white_balance::white_balance_matrix(t, 0.0, klipp_core::WorkingColorspace::Rec709Linear).unwrap();
+        let g = 0.18;
+        let c = [0, 1, 2].map(|i| m[i][0] * g + m[i][1] * g + m[i][2] * g);
+        klipp_color::measure::linear_to_lab(c[0], c[1], c[2]).b
+    }
+
+    /// Each strength's temperature limit is a step a colourist reads
+    /// (#1580): gentle moves a mid grey about 3 b*, normal 6, bold 9, the
+    /// knob's own scale. Control: the old normal limit, 16, moved it 4.
+    #[test]
+    fn the_strengths_move_a_grey_as_far_as_they_say() {
+        for (name, want) in [("gentle", 3.0), ("normal", 6.0), ("bold", 9.0)] {
+            let got = grey_b(GradeLimits::named(name).unwrap().temperature);
+            assert!((got - want).abs() < 1.0, "{name}: b* {got}, not about {want}");
+        }
+        assert!(grey_b(16.0) < 4.5, "the old normal limit moved a grey {}", grey_b(16.0));
     }
 }

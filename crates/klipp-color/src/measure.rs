@@ -528,6 +528,48 @@ pub fn crop_rgba(rgba: &[u8], width: u32, area: (u32, u32, u32, u32)) -> Vec<u8>
     out
 }
 
+/// Where a frame's grey surfaces sit in a*b* (#1580): the densest point
+/// of its mid-tone pixels with chroma under 20 (every lamp from candle to
+/// shade moves a grey by less), each counted with those within 4 of it,
+/// the count weighed a little toward the axis so a true grey is preferred
+/// to a muted backdrop as dense. `(0, 0)` when there are none.
+fn grey_mode(mids: &[(f32, f32, f32)]) -> (f32, f32) {
+    const R: i32 = 20;
+    const N: usize = (2 * R + 1) as usize;
+    let mut hist = vec![0u32; N * N];
+    for (c, a, b) in mids {
+        if *c < 20.0 {
+            let (i, j) = ((a.round() as i32 + R) as usize, (b.round() as i32 + R) as usize);
+            if i < N && j < N {
+                hist[i * N + j] += 1;
+            }
+        }
+    }
+    let mut best = (0.0f32, 0i32, 0i32);
+    for ia in -R..=R {
+        for ib in -R..=R {
+            let mut near = 0u32;
+            for da in -4..=4i32 {
+                for db in -4..=4i32 {
+                    let (a, b) = (ia + da, ib + db);
+                    if da * da + db * db <= 16 && a.abs() <= R && b.abs() <= R {
+                        near += hist[((a + R) as usize) * N + (b + R) as usize];
+                    }
+                }
+            }
+            let d = ((ia * ia + ib * ib) as f32).sqrt();
+            let score = near as f32 * if d <= 6.0 { 1.0 } else { (1.0 - (d - 6.0) / 28.0).max(0.5) };
+            if score > best.0 || (score == best.0 && d < (best.1 as f32).hypot(best.2 as f32)) {
+                best = (score, ia, ib);
+            }
+        }
+    }
+    if best.0 == 0.0 {
+        return (0.0, 0.0);
+    }
+    (best.1 as f32, best.2 as f32)
+}
+
 /// Measure an sRGB8 RGBA frame. `faces` are regions (x, y, w, h as
 /// fractions of the frame) known to be skin — the cheek band of a
 /// detected face, or where a skin search found one. They are read as
@@ -615,7 +657,13 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
     // holds too few — a close-up of grass, a neon sign — does the
     // reading fall back to its least-coloured quarter, and then it says
     // so, because that quarter may be the grass.
-    let solid: Vec<&(f32, f32, f32)> = mids.iter().filter(|(c, _, _)| *c < 8.0).collect();
+    //
+    // Neutral is read about where the greys went, not about zero: a
+    // warm balance moves every grey surface together, and a gate about
+    // zero lost them and read whatever had been bluish instead, the cast
+    // read the wrong way at +50 (#1580).
+    let (mode_a, mode_b) = grey_mode(&mids);
+    let solid: Vec<&(f32, f32, f32)> = mids.iter().filter(|(_, a, b)| (a - mode_a).hypot(b - mode_b) < 6.0).collect();
     let enough = solid.len() as f32 >= 0.01 * n.max(1) as f32 && solid.len() >= 40;
     let (mut na, mut nb): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
     if enough {
@@ -1823,6 +1871,57 @@ pub fn primaries_toward(m: &FrameMeasure, t: &LookTarget) -> PrimaryStep {
         }
     }
     s
+}
+
+#[cfg(test)]
+mod warm_cast_tests {
+    use super::*;
+
+    /// A scene, mostly grey surfaces with a bluish shade, skin, foliage
+    /// and sky, balanced by `temperature` in linear light and encoded as
+    /// sRGB8; and its grey ramp's mean b*, the truth.
+    fn scene(temperature: f32) -> (Vec<u8>, f32) {
+        let (w, h) = (200u32, 100u32);
+        let mut lin = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                let t = x as f32 / w as f32;
+                let c = match if y < 40 { 0 } else { (y - 40) / 15 + 1 } {
+                    0 => { let v = 0.05 + 0.6 * t; [v, v, v] }
+                    1 => { let v = 0.05 + 0.5 * t; [v * 0.92, v * 0.97, v * 1.08] }
+                    2 => { let v = 0.1 + 0.3 * t; [v * 1.3, v * 0.95, v * 0.75] }
+                    3 => { let v = 0.05 + 0.2 * t; [v * 0.6, v * 1.1, v * 0.5] }
+                    _ => { let v = 0.2 + 0.4 * t; [v * 0.7, v * 0.9, v * 1.3] }
+                };
+                lin.extend_from_slice(&[c[0], c[1], c[2], 1.0]);
+            }
+        }
+        if let Some(m) = crate::white_balance::white_balance_matrix(temperature, 0.0, klipp_core::WorkingColorspace::Rec709Linear) {
+            crate::white_balance::apply_white_balance(&mut lin, &m);
+        }
+        let enc = |v: f32| (crate::transfer::linear_to_srgb(v.clamp(0.0, 1.0)) * 255.0).round() as u8;
+        let bytes: Vec<u8> = lin.chunks(4).flat_map(|p| [enc(p[0]), enc(p[1]), enc(p[2]), 255]).collect();
+        let greys: Vec<f32> = (50..150).map(|x| { let i = x * 4; srgb8_to_lab(bytes[i], bytes[i + 1], bytes[i + 2]).b }).collect();
+        (bytes, greys.iter().sum::<f32>() / greys.len() as f32)
+    }
+
+    /// A warm balance moves every grey together and the cast is read
+    /// where they went (#1580): within 1.5 b* of the greys' own, the
+    /// right way, up to +50. Control: neutrals gated about zero, as they
+    /// were, lose the greys and read the bluish shade instead, the wrong
+    /// way at +50.
+    #[test]
+    fn a_warm_cast_is_read_where_the_greys_went() {
+        for t in [0.0f32, 10.0, 25.0, 50.0] {
+            let (bytes, truth) = scene(t);
+            let m = measure_frame(&bytes, 200, 100, &[]);
+            assert!((m.cast_b - truth).abs() < 1.5, "+{t}: read b* {} where the greys are at {truth}", m.cast_b);
+        }
+        let (bytes, truth) = scene(50.0);
+        let mut about_zero: Vec<f32> = bytes.chunks(4).map(|p| srgb8_to_lab(p[0], p[1], p[2])).filter(|c| (20.0..=90.0).contains(&c.l) && c.chroma() < 8.0).map(|c| c.b).collect();
+        let old = median(&mut about_zero);
+        assert!(old < truth - 5.0, "the gate about zero read {old} where the greys are at {truth}");
+    }
 }
 
 #[cfg(test)]
