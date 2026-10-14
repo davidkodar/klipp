@@ -70,8 +70,14 @@ operation currently handles static shapes.
 
 ## Current limits and refusals
 
-Graph writes currently support clip roots. Track, timeline-grade and group-stage
-roots can be read, but cannot yet be written through this tool. Placed kinds are
+Graph writes take every root a read takes: a clip, `{"timeline_grade":SEQ}`,
+`{"group_stage":GROUP,"stage":"pre"}` (or `"post"`), and
+`{"track":TRACK,"part":"grade"}` or `"part":"effects"`. Each batch is one undo
+step of that root. A grade the sequence doesn't have yet has no node to name and
+is refused; make it in the Colour workspace first. A track's effects keep no
+keyframes, so key operations there are refused. A track's effects are named by
+their place in its list: after an add, remove or move, use the `created` paths
+and read the track again before naming its other effects. Placed kinds are
 owned by the clip's placement model and cannot be edited as ordinary nodes.
 Effect-node mix, mask connections/channel and custom labels are refused because
 the current clip model cannot preserve them. Publishing group ports is also

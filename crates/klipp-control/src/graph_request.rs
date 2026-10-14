@@ -10,10 +10,10 @@ pub(crate) fn write(ctx: &ControlContext, ops: &[GraphWireOp], expected_revision
     let Some(first) = ops.first().filter(|_| ops.len() <= 64) else {
         return Ok(refuse(None, "a graph batch needs 1 to 64 operations".into()));
     };
+    // Any picture the graph reads: a clip's, the timeline grade, a grade
+    // group's stage, a track's grade or effects (#1911). Each commits as
+    // one step of its own kind on the app thread.
     let root = first.path().root.root();
-    if !matches!(root, klipp_graph_format::path::Root::Clip { .. }) {
-        return Ok(refuse(Some(0), "graph writes currently support clip roots only".into()));
-    }
     let identity = project_status(ctx)?.identity;
     if expected_project_identity.is_some_and(|want| want != identity) {
         return Ok(refuse(None, "the project changed; read the graph again".into()));
