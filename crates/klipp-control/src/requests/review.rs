@@ -126,64 +126,93 @@ pub(crate) fn respond(
             Ok(v)
         }
 
-        ControlCommand::Record { secs, target, fps, path, import } => {
+        ControlCommand::Record { secs, target, fps, path, import, wait, action, recording_id, codec, quality } => {
+            use super::recording::{captured, recorder_args, Capture, Recorder, Recording, State};
             if in_batch {
                 return Err("record takes the time it records; send it on its own".into());
             }
+            // The finished file, imported unless asked not to, with what
+            // was captured: the reply both ways of recording end in.
+            let finish = |rec: &Recording| -> Result<serde_json::Value, String> {
+                let stopped = rec.stop();
+                // Given once, then gone from the registry.
+                Recording::forget(&rec.id);
+                let how = stopped?;
+                let out = &rec.path;
+                let secs = rec.started.elapsed().as_secs_f64().min(rec.max_secs);
+                let mut v = json!({ "recording_id": rec.id, "state": "finished", "stopped": how, "path": out, "secs": secs, "target": rec.capture.target,
+                    "asked": { "recorder": rec.recorder.name(), "codec": rec.capture.codec, "quality": rec.capture.quality, "fps": rec.capture.fps } });
+                if let Some(c) = captured(out) {
+                    v["captured"] = c;
+                }
+                if import.unwrap_or(true) {
+                    if imported_id(ctx, out).is_none() {
+                        handle(ctx, ControlCommand::import_one(out.to_string_lossy().to_string(), true), &mut None)?;
+                    }
+                    v["media_id"] = json!(imported_id(ctx, out));
+                    v["next"] = json!("Recorded and imported; analyze reads it (the beat sheet finds the reveals), then place or plan with it.");
+                } else {
+                    v["next"] = json!("Recorded. import_media brings it into the pool.");
+                }
+                let size = v["captured"].as_object().map_or(String::new(), |c| format!(", {}x{} {} at {} fps", c["width"], c["height"], c["codec"].as_str().unwrap_or("?"), c["fps"]));
+                v["text"] = json!(format!("Recorded {secs:.1} s of {} to {}{size}", rec.capture.target, out.display()));
+                Ok(v)
+            };
+            match action.as_deref().unwrap_or("start") {
+                "start" => {}
+                which @ ("status" | "stop") => {
+                    let id = recording_id.as_deref().ok_or_else(|| format!("record {which} needs the recording_id start gave"))?;
+                    let rec = Recording::find(id).ok_or_else(|| format!("no recording {id}; start one with record, wait false"))?;
+                    if which == "stop" {
+                        return finish(&rec);
+                    }
+                    // A status only reads: one that reached its length is
+                    // `ended` until a stop finishes and imports it.
+                    let bytes = rec.bytes();
+                    let state = rec.state();
+                    return Ok(json!({ "recording_id": rec.id, "state": state.label(), "ready": state == State::Recording,
+                        "elapsed_secs": rec.started.elapsed().as_secs_f64(), "max_secs": rec.max_secs, "bytes": bytes, "path": rec.path,
+                        "text": format!("{} {}: {:.1} s of at most {:.0}, {bytes} bytes written", rec.id, state.label(), rec.started.elapsed().as_secs_f64(), rec.max_secs),
+                        "next": match state {
+                            State::Recording => "Recording. Do the live action, then record with action stop.",
+                            State::Ended => "It reached its length and stopped: record with action stop finishes the file and imports it.",
+                            State::Stopping => "Being stopped: ask again in a moment.",
+                            _ => "Not writing yet: ask again in a moment; begin once ready is true.",
+                        } }));
+                }
+                other => return Err(format!("record action is start, status or stop, not {other:?}")),
+            }
+            let secs = secs.ok_or("record needs secs: how long to record (with wait false, the most)")?;
             if !secs.is_finite() || !(0.5..=600.0).contains(&secs) {
                 return Err("secs is how long to record, half a second to ten minutes".into());
             }
+            // Its own id, and its own file: two in one second don't share.
+            let id = format!("rec-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
             let out = match path {
                 Some(p) => std::path::PathBuf::from(p),
                 None => {
                     let dir = klipp_media::made::made_dir("recordings");
                     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-                    dir.join(format!("klipp-recording-{}.mp4", chrono_stamp()))
+                    dir.join(format!("klipp-recording-{}-{}.mp4", chrono_stamp(), &id[4..]))
                 }
             };
-            let target = target.unwrap_or_else(|| "focused".into());
-            let fps = fps.unwrap_or(60).clamp(1, 240);
-            let child = if let Some(gsr) = which("gpu-screen-recorder") {
-                let mut c = std::process::Command::new(gsr);
-                if target.contains('+') && target.contains('x') {
-                    c.args(["-w", "region", "-region", &target]);
-                } else {
-                    c.args(["-w", &target]);
-                }
-                c.args(["-f", &fps.to_string(), "-k", "h264", "-q", "high", "-cursor", "yes", "-o"]).arg(&out);
-                c
+            let capture = Capture { target: target.unwrap_or_else(|| "focused".into()), fps: fps.unwrap_or(60).clamp(1, 240), codec: codec.unwrap_or_else(|| "h264".into()), quality };
+            let (program, recorder) = if let Some(gsr) = which("gpu-screen-recorder") {
+                (gsr, Recorder::GpuScreenRecorder)
             } else if let Some(wfr) = which("wf-recorder") {
-                let mut c = std::process::Command::new(wfr);
-                if target.contains('+') && target.contains('x') {
-                    // wf-recorder wants "X,Y WxH".
-                    let (size, pos) = target.split_once('+').unwrap_or((&target, "0+0"));
-                    c.args(["-g", &format!("{} {}", pos.replace('+', ","), size)]);
-                }
-                c.args(["-r", &fps.to_string(), "-f"]).arg(&out);
-                c
+                (wfr, Recorder::WfRecorder)
             } else {
                 return Err("no screen recorder found: install gpu-screen-recorder (or wf-recorder) and it is used".into());
+            };
+            let args = recorder_args(recorder, &capture, &out)?;
+            let rec = Recording::start(id, &program, &args, out, secs, capture, recorder)?;
+            if wait.unwrap_or(true) {
+                std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+                return finish(&rec);
             }
-            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped())
-            .spawn().map_err(|e| format!("could not start the recorder: {e}"))?;
-            std::thread::sleep(std::time::Duration::from_secs_f64(secs));
-            #[cfg(unix)]
-            // SAFETY: SIGINT to a child this process spawned; the recorder finishes its file on it.
-            unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGINT); }
-            let done = child.wait_with_output().map_err(|e| format!("the recorder: {e}"))?;
-            if !out.is_file() {
-                return Err(format!("the recorder wrote nothing ({}): {}", done.status, String::from_utf8_lossy(&done.stderr).lines().last().unwrap_or("")));
-            }
-            let mut v = json!({ "path": out, "secs": secs, "target": target });
-            if import.unwrap_or(true) {
-                handle(ctx, ControlCommand::import_one(out.to_string_lossy().to_string(), true), &mut None)?;
-                v["media_id"] = json!(imported_id(ctx, &out));
-                v["next"] = json!("Recorded and imported; analyze reads it (the beat sheet finds the reveals), then place or plan with it.");
-            } else {
-                v["next"] = json!("Recorded. import_media brings it into the pool.");
-            }
-            v["text"] = json!(format!("Recorded {secs:.1} s of {target} to {}", out.display()));
-            Ok(v)
+            Ok(json!({ "recording_id": rec.id, "state": "starting", "path": rec.path, "max_secs": secs,
+                "text": format!("Recording {} as {}, for at most {secs:.0} s", rec.capture.target, rec.id),
+                "next": "record with action status and this recording_id until ready is true, do the live action, then record with action stop." }))
         }
 
         ControlCommand::WindowScreenshot { path, max_width } => {

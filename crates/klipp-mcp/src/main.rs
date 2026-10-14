@@ -821,14 +821,13 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "apply": args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false),
             "path": args.get("path").cloned().unwrap_or(serde_json::Value::Null),
         }),
-        "klipp_record" => json!({
-            "method": "record",
-            "secs": args.get("secs").and_then(|v| v.as_f64()).ok_or("missing required argument: secs")?,
-            "target": args.get("target").cloned().unwrap_or(serde_json::Value::Null),
-            "fps": args.get("fps").cloned().unwrap_or(serde_json::Value::Null),
-            "path": args.get("path").cloned().unwrap_or(serde_json::Value::Null),
-            "import": args.get("import").cloned().unwrap_or(serde_json::Value::Null),
-        }),
+        "klipp_record" => {
+            let mut v = json!({ "method": "record" });
+            for key in ["secs", "target", "fps", "path", "import", "wait", "action", "recording_id", "codec", "quality"] {
+                if let Some(x) = args.get(key).filter(|x| !x.is_null()) { v[key] = x.clone(); }
+            }
+            v
+        }
         "klipp_mix_loudness" => json!({
             "method": "mix_loudness",
             "from_secs": args.get("from_secs").cloned().unwrap_or(serde_json::Value::Null),
@@ -1967,8 +1966,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Create local narration and import the take; apply true places it on a Voice track. Nothing downloads unless download_models is true. Voices, licences and prerequisites: klipp_guide topic narrate.",
              json!({ "text": { "type": "string" }, "at_secs": { "type": "number" }, "voice": { "type": "string" }, "speed": { "type": "number" }, "pause_secs": { "type": "number" }, "fit_secs": { "type": "number", "description": "seconds the take must last" }, "variation": { "type": "number", "description": "Piper: 0 flat to 2" }, "download_models": { "type": "boolean" }, "apply": { "type": "boolean" }, "path": { "type": "string" } }), vec!["text"]),
         tool("klipp_record",
-             "Record the screen (the focused window, the screen, a monitor or a region) for secs, imported into the pool. Details: klipp_guide topic record.",
-             json!({ "secs": { "type": "number" }, "target": { "type": "string" }, "fps": { "type": "integer" }, "path": { "type": "string" }, "import": { "type": "boolean" } }), vec!["secs"]),
+             "Record the screen (focused window, screen, monitor or region), imported into the pool. Details: klipp_guide topic record.",
+             json!({ "secs": { "type": "number" }, "target": { "type": "string" }, "fps": { "type": "integer" }, "path": { "type": "string" }, "import": { "type": "boolean" },
+                     "wait": { "type": "boolean" }, "action": { "type": "string", "enum": ["start", "status", "stop"] }, "recording_id": { "type": "string" },
+                     "codec": { "type": "string" }, "quality": { "type": "string" } }), vec![]),
         tool("klipp_mix_loudness",
              "The mix's loudness over a stretch as the export mixes it, step by step, the steps 4 dB over the median marked. Details: klipp_guide topic mix_loudness.",
              json!({ "from_secs": { "type": "number" }, "to_secs": { "type": "number" }, "step_secs": { "type": "number" } }), vec![]),

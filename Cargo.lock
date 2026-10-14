@@ -2987,7 +2987,6 @@ dependencies = [
  "klipp-render",
  "klipp-timeline",
  "klipp-title",
- "libc",
  "png 0.18.1",
  "serde",
  "serde_json",

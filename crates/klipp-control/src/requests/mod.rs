@@ -10,6 +10,8 @@ pub(crate) mod editing;
 pub(crate) mod cutting;
 pub(crate) mod planning;
 pub(crate) mod output;
+/// Not an area: the recordings `review`'s record starts and stops.
+pub(crate) mod recording;
 
 #[cfg(test)]
 mod routing_tests {
