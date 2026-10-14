@@ -5058,13 +5058,14 @@ impl GpuEffectsPipeline {
     /// Dispatch-only ApplyMatte: blend the chain's picture (graded) with
     /// `kept` (ungraded), through `matte` (M3 step 17b). Standard chain
     /// conventions — reads the `in_is_a` slot, writes the opposite.
-    pub fn apply_matte_chain(&mut self, in_is_a: bool, width: u32, height: u32, mix: f32, channel: crate::mask_mix::MaskChannel, kept: &KeptPicture, matte: &KeyedMatte) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_matte_chain(&mut self, in_is_a: bool, width: u32, height: u32, mix: f32, channel: crate::mask_mix::MaskChannel, invert: bool, kept: &KeptPicture, matte: &KeyedMatte) {
         if self.is_device_lost() {
             return;
         }
         let slot = self.next_params_slot();
         let [luma_yr, luma_yg, luma_yb] = self.luma_coefs;
-        self.write_chain_params(slot, &GpuApplyMatteParams { width, height, mix, channel: channel as u32, luma_yr, luma_yg, luma_yb, _pad: 0 });
+        self.write_chain_params(slot, &GpuApplyMatteParams { width, height, mix, channel: channel as u32, luma_yr, luma_yg, luma_yb, invert: invert as u32 });
         let (a, b) = (
             self.buf_a.as_ref().expect(Self::CHAIN_BG_EXPECT),
             self.buf_b.as_ref().expect(Self::CHAIN_BG_EXPECT),
@@ -8404,8 +8405,12 @@ struct GpuApplyMatteParams {
     luma_yr: f32,
     luma_yg: f32,
     luma_yb: f32,
-    _pad: u32,
+    /// 1: the matte taken inverted, an outside node's key (#898). The
+    /// word that padded the struct to 32 bytes; the size is unchanged.
+    invert: u32,
 }
+
+const _: () = assert!(std::mem::size_of::<GpuApplyMatteParams>() == 32, "the WGSL Params is 32 bytes");
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -17976,7 +17981,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 /// the two are compared against each other.
 const SHADER_APPLY_MATTE_CHAIN: &str = concat!(
     "
-struct Params { width: u32, height: u32, mix: f32, channel: u32, luma: vec3<f32>, _pad: u32, }
+struct Params { width: u32, height: u32, mix: f32, channel: u32, luma: vec3<f32>, invert: u32, }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(2) var<uniform> params: Params;
@@ -17994,6 +17999,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let m = unpack(matte[idx]);
     var c = m.x;
     if params.channel == 1u { c = dot(m.xyz, params.luma); } else if params.channel == 2u { c = m.w; }
+    if params.invert == 1u { c = 1.0 - clamp(c, 0.0, 1.0); }
     let k = clamp(c * params.mix, 0.0, 1.0);
     output[idx] = pack(vec4<f32>(
         plain.x + (graded.x - plain.x) * k,

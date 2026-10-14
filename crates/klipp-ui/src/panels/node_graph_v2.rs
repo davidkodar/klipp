@@ -4756,6 +4756,12 @@ impl NodeGraphV2Panel {
                             cmds.push(AppCommand::CopyNodes { clip_id, node_ids: targets });
                             close = true;
                         }
+                        // The grade where this node's key isn't (#898): a
+                        // correction after it, the key the other way round.
+                        if graph.takes_outside_node(node_id) && ui.button("Add Outside Node").clicked() {
+                            cmds.push(AppCommand::AddOutsideNode { clip_id, node_id });
+                            close = true;
+                        }
                         if !kind.is_group() && !is_passthrough_kind && ui.button("Reset to defaults").clicked() {
                             cmds.push(AppCommand::ResetNode { clip_id, node_id });
                             close = true;
@@ -6226,6 +6232,30 @@ mod editing_tests {
                 assert!((end.x - start.x - 41.0 / h.panel.zoom).abs() < 0.01, "{start:?} to {end:?}");
             }
         }
+    }
+
+    /// A correction a key gates offers its outside node (#898) from its
+    /// menu, sending the command for it; one no key gates doesn't offer it.
+    #[test]
+    fn a_keyed_correction_offers_its_outside_node() {
+        let (mut h, corrector, _) = canvas();
+        let (_, rect) = h.card(NodeKind::Corrector);
+        h.click(rect.center(), egui::PointerButton::Secondary);
+        h.settle();
+        assert!(!h.has("Add Outside Node"), "no key, no outside node");
+        h.key(egui::Key::Escape);
+        h.settle();
+        let mut graph = h.graph.clone();
+        let (key, keyed) = graph.ensure_masked_secondary(NodeKind::Corrector);
+        assert!(graph.input_of(keyed, 1) == Some(key), "keyed");
+        for (id, y) in [(key, -220.0), (keyed, 220.0)] {
+            graph.node_positions.entry(id).or_insert(NodePos { x: 0.0, y });
+        }
+        let _ = corrector;
+        let mut h = Harness::on(graph, ClipId::new());
+        let rect = h.card_of(keyed);
+        let sent = h.menu_item(rect.center(), "Add Outside Node");
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::AddOutsideNode { node_id, .. } if *node_id == keyed)), "{sent:?}");
     }
 
     /// The node menu offers the node's editing, each sending its command:

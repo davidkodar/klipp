@@ -32,6 +32,12 @@ pub struct NodeParams {
     /// own setting, never saved: a clip's picture holds it.
     #[serde(skip)]
     pub correction_blend: Option<EffectBlend>,
+    /// A gateable correction: its gate takes the matte on its port 1
+    /// inverted, `1 - coverage` (#898), so it grades where the key isn't:
+    /// an outside node, reading the same key as the inside one. `None` is
+    /// as the key is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_invert: Option<bool>,
 
     /// `SceneToDisplay`: the display step it runs (phase 2b M2, step 11c).
     /// The run's own setting, never saved.
@@ -810,6 +816,7 @@ impl NodeParams {
             }
 
             // ── Luminance key ────────────────────────────────────────
+            "key_invert" => self.key_invert = (value != 0.0).then_some(true),
             "key_mixer_output_gain" => self.key_mixer.get_or_insert_with(Default::default).output_gain = value,
             "key_mixer_output_offset" => self.key_mixer.get_or_insert_with(Default::default).output_offset = value,
             p if p.starts_with("key_mixer_gain_") || p.starts_with("key_mixer_invert_") => {

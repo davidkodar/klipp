@@ -1061,6 +1061,18 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::AddOutsideNode { clip_id, node_id } => {
+                let node_id = *node_id;
+                let Some(path) = self.graph_holding(*clip_id, &[node_id]) else { return true };
+                let mut added = None;
+                self.with_clip_graph_mut_at(*clip_id, &path, needs_refresh, |graph| {
+                    added = graph.add_outside_node(node_id);
+                });
+                if added.is_none() {
+                    self.state.toast.show("An outside node needs a correction gated by a key on the grade's chain".to_string());
+                }
+                true
+            }
             AppCommand::ToggleNodeEnabled { clip_id, node_id } | AppCommand::ResetNode { clip_id, node_id } => {
                 let node_id = *node_id;
                 let Some(path) = self.graph_holding(*clip_id, &[node_id]) else { return true };

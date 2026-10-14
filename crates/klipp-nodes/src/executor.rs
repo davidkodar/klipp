@@ -2911,7 +2911,7 @@ impl GraphExecutor {
                         let matte = drawn.as_ref().or(secondary_matte.as_ref().filter(|(id, _)| *id == sec.matte).map(|(_, m)| m));
                         let applied = match (picture, matte, self.gpu.as_mut()) {
                             (Some(picture), Some(matte), Some(gpu)) => {
-                                gpu.apply_matte_chain(chain_slot_a, width, height, params.mix.unwrap_or(1.0), channel, picture, matte);
+                                gpu.apply_matte_chain(chain_slot_a, width, height, params.mix.unwrap_or(1.0), channel, params.key_invert == Some(true), picture, matte);
                                 Some(1)
                             }
                             _ => None,
@@ -6330,10 +6330,15 @@ impl GraphExecutor {
                 // The gate after a correction with a mix and no matte
                 // (M3 step 17a) takes the whole frame by the mix.
                 let whole = params.correction_blend.is_some() && gpu_matte.is_none() && secondary_input.is_none();
+                // An outside node's gate takes the key inverted (#898): it
+                // grades where the key isn't, so a matte selecting nothing
+                // grades everything and one selecting everything (or none
+                // wired) grades nothing.
+                let invert = params.key_invert == Some(true);
                 let matte = match (downloaded.as_deref(), secondary_input) {
                     (Some(m), _) => Some(m),
                     (None, Some(m)) if m.len() == n => Some(m),
-                    _ if whole => None,
+                    _ if whole || invert => None,
                     // Unwired, or a Mask whose shapes are all disabled (it
                     // returns an empty Vec rather than allocating 130 MB of
                     // 1.0 at 4K).
@@ -6353,11 +6358,17 @@ impl GraphExecutor {
                 // step 17a).
                 let channel = params.correction_blend.map_or(klipp_effects::mask_mix::MaskChannel::Red, |b| b.channel);
                 let luma = klipp_color::linear::luma_coefs(self.working_colorspace);
-                let coverage = |m: &[f32]| match channel {
-                    klipp_effects::mask_mix::MaskChannel::Red => m[0],
-                    klipp_effects::mask_mix::MaskChannel::Luminance => m[0] * luma[0] + m[1] * luma[1] + m[2] * luma[2],
-                    klipp_effects::mask_mix::MaskChannel::Alpha => m[3],
+                let coverage = |m: &[f32]| {
+                    let c = match channel {
+                        klipp_effects::mask_mix::MaskChannel::Red => m[0],
+                        klipp_effects::mask_mix::MaskChannel::Luminance => m[0] * luma[0] + m[1] * luma[1] + m[2] * luma[2],
+                        klipp_effects::mask_mix::MaskChannel::Alpha => m[3],
+                    };
+                    if invert { 1.0 - c.clamp(0.0, 1.0) } else { c }
                 };
+                // No matte: the whole frame by the mix, or, inverted, none
+                // of it.
+                let whole_k = if invert { 0.0 } else { mix.clamp(0.0, 1.0) };
                 // A gate's alpha is 1, as every gate's was; a mix with no
                 // matte keeps the correction's alpha, so a clip with
                 // transparency keeps it.
@@ -6371,7 +6382,7 @@ impl GraphExecutor {
                 let pairs = out.par_chunks_exact_mut(4).zip(primary_input.par_chunks_exact(4)).zip(ungraded.par_chunks_exact(4));
                 match matte {
                     Some(matte) => pairs.zip(matte.par_chunks_exact(4)).for_each(|(((dst, graded), plain), m)| blend(dst, graded, plain, (coverage(m) * mix).clamp(0.0, 1.0), 1.0)),
-                    None => pairs.for_each(|((dst, graded), plain)| blend(dst, graded, plain, mix.clamp(0.0, 1.0), graded[3])),
+                    None => pairs.for_each(|((dst, graded), plain)| blend(dst, graded, plain, whole_k, graded[3])),
                 }
                 out
             }
