@@ -691,6 +691,13 @@ pub(crate) fn respond(
             Ok(json!({ "path": p.to_string_lossy(), "from_secs": from, "to_secs": to, "bytes": bytes, "format": "wav 16 kHz mono 16-bit" }))
         }
 
+        ControlCommand::Audition { action, media_id, clip_id, sequence, from_secs, to_secs, preview_urls } => {
+            if in_batch {
+                return read_in_batch("audition");
+            }
+            audition(ctx, action.as_deref(), media_id, clip_id, sequence, from_secs, to_secs, preview_urls)
+        }
+
         ControlCommand::Transcript { media_id, from_secs, to_secs, words } => {
             if in_batch {
                 return read_in_batch("transcript");
@@ -777,5 +784,192 @@ pub(crate) fn respond(
         }
 
         _ => Err("internal: a request was routed to the wrong area".into()),
+    }
+}
+
+/// The most an audition plays of one stretch, and how many previews it
+/// queues: as `audio_excerpt`'s cut, and `listen`'s five.
+const AUDITION_SECS: f64 = 60.0;
+const AUDITION_PREVIEWS: usize = 5;
+
+/// What an audition plays, checked before anything is cut or fetched.
+#[derive(Debug, PartialEq)]
+enum AuditionSource {
+    Media { id: String, from: f64, to: f64 },
+    Clip { id: String, from: Option<f64>, to: Option<f64> },
+    Mix { from: f64, to: f64 },
+    Previews(Vec<String>),
+}
+
+fn audition_source(media_id: Option<String>, clip_id: Option<String>, sequence: bool, from: Option<f64>, to: Option<f64>, urls: Vec<String>) -> Result<AuditionSource, String> {
+    let given = [media_id.is_some(), clip_id.is_some(), sequence, !urls.is_empty()].iter().filter(|g| **g).count();
+    if given != 1 {
+        return Err("audition plays one thing: media_id, clip_id, sequence true, or preview_urls".into());
+    }
+    let range = |what: &str| -> Result<(f64, f64), String> {
+        let (Some(a), Some(b)) = (from, to) else { return Err(format!("{what} needs from_secs and to_secs")) };
+        if !(a.is_finite() && b.is_finite() && a >= 0.0 && b > a) {
+            return Err("from_secs and to_secs are a stretch: 0 or more, to after from".into());
+        }
+        Ok((a, b.min(a + AUDITION_SECS)))
+    };
+    Ok(if let Some(id) = media_id {
+        let (from, to) = range("a media item")?;
+        AuditionSource::Media { id, from, to }
+    } else if let Some(id) = clip_id {
+        AuditionSource::Clip { id, from, to }
+    } else if sequence {
+        let (from, to) = range("the mix")?;
+        AuditionSource::Mix { from, to }
+    } else {
+        if urls.len() > AUDITION_PREVIEWS {
+            return Err(format!("at most {AUDITION_PREVIEWS} previews at once, played in turn"));
+        }
+        if let Some(bad) = urls.iter().find(|u| !u.starts_with("https://")) {
+            return Err(format!("{bad:?} is not a preview URL from a search result"));
+        }
+        AuditionSource::Previews(urls)
+    })
+}
+
+/// `path`'s sound from `from` to `to` seconds of the file, as a WAV at the
+/// file's own sample rate and channels (#1891): what an editor hears,
+/// not `audio_excerpt`'s 16 kHz mono reading copy.
+fn source_rate_wav(path: &std::path::Path, from: f64, to: f64) -> Result<Vec<u8>, String> {
+    let out = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-nostats", "-loglevel", "error", "-ss", &format!("{from:.3}"), "-t", &format!("{:.3}", (to - from).max(0.0))])
+        .arg("-i")
+        .arg(path)
+        .args(["-vn", "-c:a", "pcm_s16le", "-f", "wav", "pipe:1"])
+        .output()
+        .map_err(|e| format!("could not run ffmpeg: {e}"))?;
+    if !out.status.success() || out.stdout.len() <= 44 {
+        return Err(format!("no sound could be cut from {}: {}", path.display(), String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(out.stdout)
+}
+
+/// `audition` (#1891, #1927): play, stop, or say what is playing.
+#[allow(clippy::too_many_arguments)]
+fn audition(ctx: &ControlContext, action: Option<&str>, media_id: Option<String>, clip_id: Option<String>, sequence: bool, from: Option<f64>, to: Option<f64>, urls: Vec<String>) -> Result<serde_json::Value, String> {
+    use klipp_audio_search::audition as player;
+    let said = |p: &player::Playing| if p.active { format!("Playing for the person at the machine: {}.", p.queue.join(", then ")) } else { "Nothing is playing.".to_string() };
+    match action.unwrap_or("play") {
+        "stop" => {
+            player::stop();
+            return Ok(json!({ "playing": false, "text": "Stopped." }));
+        }
+        "status" => {
+            let p = player::playing();
+            return Ok(json!({ "playing": p.active, "queue": p.queue, "text": said(&p) }));
+        }
+        "play" => {}
+        other => return Err(format!("audition action is play, stop or status, not {other:?}")),
+    }
+    let source = audition_source(media_id, clip_id, sequence, from, to, urls)?;
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    let mut pieces: Vec<player::Piece> = Vec::new();
+    let mut add = |label: String, bytes: Vec<u8>, from: Option<f64>, to: Option<f64>| {
+        let (rate, channels) = player::wav_format(&bytes).map_or((None, None), |(r, c)| (Some(r), Some(c)));
+        items.push(json!({ "source": label, "from_secs": from, "to_secs": to, "secs": from.zip(to).map(|(a, b)| b - a), "sample_rate": rate, "channels": channels }));
+        pieces.push(player::Piece { label, bytes });
+    };
+    match source {
+        AuditionSource::Media { id, from, to } => {
+            let (path, duration) = media_path_and_duration(ctx, &id)?;
+            let to = to.min(duration);
+            let name = path.file_name().map_or(id.clone(), |n| n.to_string_lossy().into_owned());
+            add(format!("{name} {from:.2}-{to:.2} s"), source_rate_wav(&path, from, to)?, Some(from), Some(to));
+        }
+        AuditionSource::Clip { id, from, to } => {
+            let cid = crate::lookups::clip_id(&id)?;
+            let (path, name, src_from, src_to) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                let clip = seq.all_clips().find(|c| c.id == cid).ok_or_else(|| format!("no clip {id}"))?;
+                let item = clip.media_id().and_then(|m| pool.get(&m)).filter(|m| m.has_audio).ok_or_else(|| format!("clip {id} has no sound to play"))?;
+                let (t_in, t_out) = (clip.timeline_in.to_secs_f64(), clip.timeline_out.to_secs_f64());
+                let (a, b) = (from.unwrap_or(t_in).clamp(t_in, t_out), to.unwrap_or(t_out).clamp(t_in, t_out));
+                let s_in = clip.source_in.to_secs_f64();
+                (item.path.clone(), item.filename.clone(), s_in + (a - t_in), s_in + (b - t_in).min(a - t_in + AUDITION_SECS))
+            };
+            add(format!("clip {name}, source {src_from:.2}-{src_to:.2} s"), source_rate_wav(&path, src_from, src_to)?, Some(src_from), Some(src_to));
+        }
+        AuditionSource::Mix { from, to } => {
+            let snapshot = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                klipp_render::SequenceSnapshot::from_sequence(&seq, &pool, &klipp_core::ExportSettings::default(), None, false, klipp_core::WorkingColorspace::Rec709Linear)
+                    .map_err(|e| format!("the mix could not be read: {e}"))?
+            };
+            let end = snapshot.end_frame() as f64 / snapshot.fps.max(1.0);
+            let (from, to) = (from.min(end), to.min(end));
+            if to - from < 0.1 {
+                return Err(format!("{from:.2}-{to:.2} s holds no sound of the timeline (it ends at {end:.2} s)"));
+            }
+            let out = temp_output(None, "klipp-audition-mix", "wav")?;
+            let p = mix_excerpt_as(&snapshot, from, to, &out, None, 2)?;
+            let bytes = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+            let _ = std::fs::remove_file(&p);
+            add(format!("the mix {from:.2}-{to:.2} s"), bytes, Some(from), Some(to));
+        }
+        AuditionSource::Previews(urls) => {
+            for (i, url) in urls.iter().enumerate() {
+                let bytes = klipp_audio_search::download_bytes(url)?;
+                add(format!("preview {}", i + 1), bytes, None, None);
+            }
+        }
+    }
+    player::play(pieces)?;
+    let p = player::playing();
+    Ok(json!({
+        "playing": items, "heard_by": "the person at the machine",
+        "text": format!("{} The assistant does not hear it: ask the person what they hear.", said(&p)),
+        "next": "audition with action stop ends it; status says what is playing.",
+    }))
+}
+
+#[cfg(test)]
+mod audition_tests {
+    use super::*;
+
+    /// #1891: one source at a time, a stretch for a file or the mix, at
+    /// most a minute of it, at most five previews, and only search URLs.
+    #[test]
+    fn an_audition_plays_one_thing_and_says_what_it_needs() {
+        let id = || Some("m".to_string());
+        assert!(audition_source(None, None, false, None, None, vec![]).unwrap_err().contains("one thing"));
+        assert!(audition_source(id(), None, true, Some(0.0), Some(1.0), vec![]).is_err(), "two at once");
+        assert!(audition_source(id(), None, false, None, None, vec![]).unwrap_err().contains("from_secs"));
+        assert_eq!(audition_source(id(), None, false, Some(10.0), Some(500.0), vec![]), Ok(AuditionSource::Media { id: "m".into(), from: 10.0, to: 70.0 }), "a minute at most");
+        assert!(audition_source(None, None, true, Some(5.0), Some(2.0), vec![]).is_err(), "to before from");
+        assert_eq!(audition_source(None, Some("c".into()), false, None, None, vec![]), Ok(AuditionSource::Clip { id: "c".into(), from: None, to: None }));
+        let six: Vec<String> = (0..6).map(|i| format!("https://cdn.freesound.org/{i}.mp3")).collect();
+        assert!(audition_source(None, None, false, None, None, six).unwrap_err().contains("at most 5"));
+        assert!(audition_source(None, None, false, None, None, vec!["file:///etc/passwd".into()]).is_err());
+    }
+
+    /// #1891: the stretch played is cut at the file's own rate and
+    /// channels; the mix's reading copy is 16 kHz mono. Skipped, said,
+    /// without ffmpeg.
+    #[test]
+    fn an_audition_keeps_the_sources_rate_and_channels() {
+        let dir = std::env::temp_dir().join(format!("klipp-audition-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("stereo.wav");
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=f=440:d=3:r=44100", "-ac", "2"])
+            .arg(&src)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !made {
+            eprintln!("UNVERIFIED: no ffmpeg, the cut is not checked");
+            return;
+        }
+        let bytes = source_rate_wav(&src, 0.5, 1.5).unwrap();
+        assert_eq!(klipp_audio_search::audition::wav_format(&bytes), Some((44_100, 2)));
+        // About a second of 16-bit stereo at 44.1 kHz.
+        assert!((bytes.len() as f64 - 44.0 - 176_400.0).abs() < 4_000.0, "{} bytes", bytes.len());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
