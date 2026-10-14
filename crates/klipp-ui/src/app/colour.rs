@@ -2091,6 +2091,18 @@ impl KlippApp {
         }
     }
 
+    /// Tell the control socket what the viewer's frame goes through after
+    /// the grade, when it has changed (#1976): read each frame from the
+    /// state, so every writer of those settings is covered.
+    pub(super) fn publish_picture_transform(&self) {
+        let now = picture_transform_text(self.state.global_lut_path.as_deref(), self.state.global_lut_enabled, self.state.global_lut_opacity, self.prefs.color.sdr_display_transfer, self.state.hdr_monitor);
+        if let Ok(mut project) = self.state.control_shared.project.lock() {
+            if project.picture_transform != now {
+                project.picture_transform = now;
+            }
+        }
+    }
+
     /// Tell the control socket which global LUT the project names, for
     /// `check`.
     /// The project's colour set-up changed to `colour` as one undo step
@@ -3825,3 +3837,33 @@ mod grade_track_menu_tests {
     }
 }
 
+
+/// The viewer's after-grade transform as one stable text (#1976): the
+/// global LUT (its path, switch and opacity to the percent the inspector
+/// shows, so float noise does not change it), the SDR viewer transfer
+/// and the HDR monitor mode.
+pub(crate) fn picture_transform_text(lut: Option<&std::path::Path>, enabled: bool, opacity: f32, sdr: klipp_core::SdrTransfer, hdr: klipp_core::HdrMonitor) -> String {
+    let lut = match lut {
+        Some(p) => format!("lut {} {} {:.0}%", p.display(), if enabled { "on" } else { "off" }, (opacity.clamp(0.0, 1.0) * 100.0).round()),
+        None => "no lut".to_string(),
+    };
+    format!("{lut}|sdr {sdr:?}|hdr {hdr:?}")
+}
+
+#[cfg(test)]
+mod picture_transform_tests {
+    use super::picture_transform_text as text;
+
+    /// #1976: each setting the viewer's frame goes through changes the
+    /// text; a wobble under the inspector's percent does not.
+    #[test]
+    fn each_setting_after_the_grade_changes_the_text() {
+        let p = std::path::Path::new("/luts/show.cube");
+        let base = text(Some(p), true, 1.0, Default::default(), klipp_core::HdrMonitor::Off);
+        assert_ne!(base, text(Some(p), false, 1.0, Default::default(), klipp_core::HdrMonitor::Off), "switched off");
+        assert_ne!(base, text(Some(p), true, 0.5, Default::default(), klipp_core::HdrMonitor::Off), "opacity");
+        assert_ne!(base, text(None, true, 1.0, Default::default(), klipp_core::HdrMonitor::Off), "no LUT");
+        assert_ne!(base, text(Some(p), true, 1.0, Default::default(), klipp_core::HdrMonitor::Preview), "HDR monitor");
+        assert_eq!(base, text(Some(p), true, 0.999_9, Default::default(), klipp_core::HdrMonitor::Off), "float noise");
+    }
+}

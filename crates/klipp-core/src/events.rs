@@ -5097,6 +5097,13 @@ pub struct ProjectStatus {
     /// so `check` can say so.
     #[serde(default)]
     pub global_lut: Option<PathBuf>,
+    /// What the viewer's frame goes through after the grade, as the UI
+    /// has it set: the global LUT's path, switch and opacity, the SDR
+    /// viewer transfer and the HDR monitor mode, as one text. A reviewed
+    /// colour finding's id holds it, so a change to any lapses the
+    /// review (#1976).
+    #[serde(default)]
+    pub picture_transform: String,
     /// Every sequence in the project, in the order its tabs list them,
     /// and which one is open: a client can reach each (M3 step 18).
     #[serde(default)]
@@ -5116,7 +5123,7 @@ pub struct SequenceSummary {
 
 impl Default for ProjectStatus {
     fn default() -> Self {
-        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None, undo: None, redo: None, undo_depth: 0, redo_depth: 0, sequences: Vec::new(), active_sequence: 0, global_lut: None }
+        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None, undo: None, redo: None, undo_depth: 0, redo_depth: 0, sequences: Vec::new(), active_sequence: 0, global_lut: None, picture_transform: String::new() }
     }
 }
 
