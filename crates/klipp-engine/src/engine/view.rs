@@ -968,7 +968,7 @@ impl PlaybackEngine {
                     }
                 }
             } else if !progress
-                && super::PlaybackEngine::only_the_graded_path_handles(&blockers)
+                && super::PlaybackEngine::only_the_graded_path_handles(&super::PlaybackEngine::held_may_lift(&blockers))
                 && self.regrade_parked_on_gpu_for(super::FastPath::PausedPresent)
             {
                 // Only the clip's own graph stands between the decoded

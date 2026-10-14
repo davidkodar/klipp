@@ -71,7 +71,7 @@ fn held_counts(parked: &common::Parked) -> (u64, u64) {
 }
 
 /// Playing empties the held outputs (#1863): back on the same parked
-/// frame, the next step runs the denoise again, a miss, though its key
+/// frame, presenting it runs the denoise again, a miss, though its key
 /// is the one held before.
 #[test]
 fn playing_empties_the_held_outputs() {
@@ -92,16 +92,14 @@ fn playing_empties_the_held_outputs() {
     std::thread::sleep(std::time::Duration::from_millis(300));
     parked.send(klipp_core::AppCommand::Pause);
     parked.settle();
+    let (_, misses) = held_counts(&parked);
+    // Back on the frame held before playing: presenting it misses, the
+    // held outputs gone with the play, though its key is the same.
     let g = parked.generation();
     parked.send(klipp_core::AppCommand::SetPlayhead(common::frame_tc(10, parked.fps)));
     parked.settle_after(g, std::time::Duration::from_secs(20)).expect("the frame parked again");
-    let (_, misses) = held_counts(&parked);
-    parked.begin_drag();
-    parked.step(0.8).expect("a step shows a frame");
-    parked.end_drag().expect("the release shows a frame");
-    parked.settle();
     let (_, after) = held_counts(&parked);
-    assert!(after > misses, "the step after playing missed: {misses} -> {after} {:#?}", parked.trail());
+    assert!(after > misses, "the frame held before playing missed: {misses} -> {after} {:#?}", parked.trail());
 }
 
 /// A file rewritten on disk while parked (#1863): the next step reads the

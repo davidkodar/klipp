@@ -7820,6 +7820,13 @@ impl PlaybackEngine {
     /// `tests/fast_paths_match_renderer.rs` holds it to. Kept in one
     /// place because both graded gates ask the same question, and a new
     /// GPU display transform must reach both.
+    /// `blockers` without the one a held heavy output may lift (#1863,
+    /// #1939): whether it does is `regrade_parked_on_gpu_for`'s to say,
+    /// for the parked frame it holds.
+    fn held_may_lift(blockers: &[&'static str]) -> Vec<&'static str> {
+        blockers.iter().copied().filter(|b| *b != "builtin effects on clip").collect()
+    }
+
     fn only_the_graded_path_handles(blockers: &[&'static str]) -> bool {
         blockers.iter().all(|b| {
             matches!(
@@ -8346,7 +8353,9 @@ impl PlaybackEngine {
         // The pre-grade is kept at the decoded picture's own size (the
         // frame the renderer reads is made from it at that size), so that
         // is the key's decoded size, whatever size the viewer shows.
-        let held = (mode == FastPath::ParkedDrag).then(|| self.parked_held_source(&pixels, width, height)).flatten();
+        // The drag's steps and a paused present of the parked frame alike:
+        // the release after a drag is one (#1939).
+        let held = matches!(mode, FastPath::ParkedDrag | FastPath::PausedPresent).then(|| self.parked_held_source(&pixels, width, height)).flatten();
         if held.is_some() {
             blockers.retain(|b| *b != "builtin effects on clip");
         }
