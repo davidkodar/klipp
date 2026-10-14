@@ -1962,11 +1962,10 @@ fn a_grade_matte_read_past_the_media_ends_is_held_there() {
 }
 
 /// #1922: with the camera's shutter open, an animated clip's hold is the
-/// GPU stack's: the stack takes the frames where the clip stands still
-/// and they match the CPU's, and turns away, saying why, only the frames
-/// where it moves. Where the entrance gives way to the hold, the last
-/// blurred frame (the CPU's) and the first held one (the stack's) put the
-/// card in the same place: switching paths does not make it jump.
+/// GPU stack's, and since #1923 so is its entrance, blurred there: the
+/// stack's frames match the CPU's, held and moving. Where the entrance
+/// gives way to the hold, the last blurred frame and the first held one
+/// put the card in the same place: no jump where the blur stops.
 #[test]
 fn an_animated_clip_s_hold_stays_on_the_stack_without_a_jump() {
     let mut seq = Sequence::new_default();
@@ -1990,12 +1989,16 @@ fn an_animated_clip_s_hold_stays_on_the_stack_without_a_jump() {
     let cpu = display(&r.render(&seq, tc(2.0), W, H, &mut src, RenderOptions::default()));
     let d = worst(&cpu, &held);
     assert!(d <= 1, "the held card on the stack differs from the CPU's by {d} levels");
-    assert!(r.render_display_u8_on_gpu(&seq, tc(0.5), W, H, &mut src, RenderOptions::default()).is_none(), "the entrance moves: the CPU stack's");
-    assert_eq!(r.last_decline(), Some("motion blur"));
+    for t in [0.5, 1.0] {
+        let Some((moving, _)) = r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut src, RenderOptions::default()) else {
+            panic!("the entrance at {t} s is blurred on the stack: declined for {:?}", r.last_decline());
+        };
+        let d = worst(&display(&r.render(&seq, tc(t), W, H, &mut src, RenderOptions::default())), &moving);
+        assert!(d <= 1, "the blurred card at {t} s differs from the CPU's by {d} levels");
+    }
     // Frame 24 (1.000 s) still moves at the start of its shutter; frame 25
     // (1.042 s) is held.
-    assert!(r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none(), "frame 24 is blurred");
-    let last_blurred = display(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+    let (last_blurred, _) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).expect("frame 24 on the stack");
     let Some((first_held, _)) = r.render_display_u8_on_gpu(&seq, tc(25.0 / 24.0), W, H, &mut src, RenderOptions::default()) else {
         panic!("frame 25 is held and the stack's: declined for {:?}", r.last_decline());
     };
@@ -2017,4 +2020,130 @@ fn an_animated_clip_s_hold_stays_on_the_stack_without_a_jump() {
     let cpu_first_held = display(&r.render(&seq, tc(25.0 / 24.0), W, H, &mut src, RenderOptions::default()));
     let d = worst(&cpu_first_held, &first_held);
     assert!(d <= 1, "the first held frame differs between the paths by {d} levels");
+}
+
+/// #1923: a clip that moves under the camera's open shutter is smeared on
+/// the stack as the CPU smears it: its effects before the move once, the
+/// picture placed at every sample and averaged premultiplied, the
+/// layer's opacity and blend once on the average. A fast card leaving
+/// its own place, one carried by the camera, one following another, one
+/// tilting, one cropped before the move, one with a second Transform
+/// after its first, one cut out by its grade's Output alpha, and one at
+/// half opacity in Screen, at a 180 degree
+/// shutter of 8 samples and a 90 degree one of 12: the stack takes each
+/// and matches the CPU's frame. (A picture is placed once, by its first
+/// Transform; a second draws nothing, shutter open or shut, on either
+/// path.)
+#[test]
+fn a_moving_clip_is_smeared_on_the_stack_as_the_cpu_smears_it() {
+    let media = || clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 2.0);
+    let fast = |c: Clip| TestClip::of(c).lane("scale", 0.0, 0.3).lane("pos_x", 0.0, -150.0).lane("pos_x", 2.0, 150.0);
+    let still = || TestClip::of(media()).lane("scale", 0.0, 0.3).build();
+    let cases: Vec<(&str, Box<dyn Fn() -> (Vec<Clip>, bool)>)> = vec![
+        ("fast", Box::new(move || (vec![fast(media()).build()], false))),
+        ("camera", Box::new(move || (vec![still()], true))),
+        ("linked", Box::new(move || {
+            let parent = fast(media()).lane("opacity", 0.0, 0.0).build();
+            let mut card = still();
+            card.transform_link = Some(klipp_timeline::TransformLink::new(parent.id));
+            (vec![card, parent], false)
+        })),
+        ("tilting", Box::new(move || (vec![TestClip::of(media()).lane("scale", 0.0, 0.4).lane("tilt_y", 0.0, 0.0).lane("tilt_y", 2.0, 60.0).build()], false))),
+        ("cropped", Box::new(move || (vec![fast(media()).effect(klipp_effects::BuiltinEffect::Crop { left: 0.2, right: 0.1, top: 0.15, bottom: 0.0, feather: 0.0 }).build()], false))),
+        ("two transforms", Box::new(move || {
+            let turn = |deg: f32| klipp_effects::BuiltinEffect::Transform {
+                position_x: 0.0, position_y: 0.0, scale_x: 1.0, scale_y: 1.0, rotation: deg,
+                anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
+            };
+            (vec![fast(media()).effect(turn(10.0)).effect(turn(-25.0)).build()], false)
+        })),
+        ("cut out", Box::new(move || {
+            // Its grade's Output takes a hard circle as its alpha (#898):
+            // the alpha travels with the picture into every sample.
+            let mut c = fast(media()).build();
+            let mut g = klipp_nodes::NodeGraph::default();
+            g.ensure_corrector();
+            let source = g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source).expect("the Source").id;
+            let circle = klipp_core::MaskStack { masks: vec![klipp_core::Mask { shape: klipp_core::MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 }, feather: 0.0, ..klipp_core::Mask::default() }] };
+            let id = klipp_nodes::NodeId::new_v4();
+            g.nodes.push(klipp_nodes::Node {
+                id,
+                kind: klipp_nodes::NodeKind::Mask,
+                label: "Mask".into(),
+                enabled: true,
+                params: klipp_nodes::NodeParams { masks: Some(circle), ..Default::default() },
+                keyframes: Default::default(),
+                output_link: None,
+                input_links: Vec::new(),
+            });
+            g.edges.push(klipp_nodes::Edge { from_node: source, from_port: 0, to_node: id, to_port: 0 });
+            g.edges.push(klipp_nodes::Edge { from_node: id, from_port: 0, to_node: g.output_node_id, to_port: 1 });
+            c.set_grade(g);
+            (vec![c], false)
+        })),
+        ("half in screen", Box::new(move || {
+            let mut c = fast(media()).lane("opacity", 0.0, 0.5).build();
+            c.blend_mode = klipp_core::BlendMode::Screen;
+            (vec![c], false)
+        })),
+    ];
+    for (shutter, samples) in [(180.0, 8u8), (90.0, 12)] {
+        for (name, make) in &cases {
+            let (clips, camera) = make();
+            let mut seq = Sequence::new_default();
+            seq.resolution = klipp_core::Resolution { width: W, height: H };
+            let mut src = Flat::default();
+            let mut tracks = Vec::new();
+            for (k, c) in clips.into_iter().enumerate() {
+                src.0.insert(c.id, picture(0.3 + k as f32 * 0.2));
+                let mut t = Track::new(&format!("V{}", k + 2), TrackKind::Video);
+                t.clips = vec![c];
+                tracks.push(t);
+            }
+            let base = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 2.0);
+            src.0.insert(base.id, picture(0.05));
+            let mut b = Track::new("V1", TrackKind::Video);
+            b.clips = vec![base];
+            tracks.push(b);
+            seq.tracks = tracks;
+            seq.camera.shutter_deg = shutter;
+            seq.camera.shutter_samples = samples;
+            if camera {
+                klipp_core::keyframe::upsert_keyframe(&mut seq.camera.x_keyframes, 0.0, 0.2);
+                klipp_core::keyframe::upsert_keyframe(&mut seq.camera.x_keyframes, 2.0, 0.8);
+            }
+            let mut r = renderer();
+            let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
+                let why = r.last_decline();
+                assert_ne!(why, Some("motion blur"), "{name}: a moving clip is the stack's now");
+                eprintln!("UNVERIFIED: {name}: the GPU stack declined ({why:?})");
+                return;
+            };
+            let cpu = display(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+            let d = worst(&cpu, &gpu);
+            assert!(d <= 1, "{name} at {shutter} degrees, {samples} samples: the stack's smear differs from the CPU's by {d} levels");
+        }
+    }
+}
+
+/// #1923: a moving clip with an effect after its move (a drop shadow,
+/// cast once from the smeared picture) is still the CPU stack's, and the
+/// stack says so.
+#[test]
+fn a_moving_clip_with_an_effect_after_its_move_is_left_to_the_cpu() {
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    let card = TestClip::of(clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 2.0))
+        .lane("scale", 0.0, 0.3).lane("pos_x", 0.0, -150.0).lane("pos_x", 2.0, 150.0)
+        .effect(klipp_effects::BuiltinEffect::DropShadow { offset_x: 0.02, offset_y: 0.02, blur: 0.01, color: [0, 0, 0], opacity: 0.6 })
+        .build();
+    let mut src = Flat::default();
+    src.0.insert(card.id, picture(0.3));
+    let mut v = Track::new("V1", TrackKind::Video);
+    v.clips = vec![card];
+    seq.tracks = vec![v];
+    seq.camera.shutter_deg = 180.0;
+    let mut r = renderer();
+    assert!(r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none());
+    assert_eq!(r.last_decline(), Some("motion blur with effects after the move"));
 }
