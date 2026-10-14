@@ -1587,3 +1587,234 @@ fn a_matte_sequence_gates_the_grade_frame_by_frame_on_both_routes() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A flat source whose media has a subject matte in `dir` (#985 phase 3).
+struct Matted(Flat, Option<std::path::PathBuf>);
+
+impl FrameSource for Matted {
+    fn frame(&mut self, clip: &Clip, source_secs: f64, width: u32, height: u32) -> Option<SourceFrame> {
+        self.0.frame(clip, source_secs, width, height)
+    }
+
+    fn subject_matte_dir(&mut self, _clip: &Clip, _model: u32) -> Option<std::path::PathBuf> {
+        self.1.clone()
+    }
+}
+
+/// #985 phase 3: a shatter cutting round the outgoing shot's subject, its
+/// matte a tracked sequence: the viewer (the GPU stack) and the export
+/// (the CPU) draw the same frame, the subject still in place half way;
+/// with no matte made, both draw the plain pieces and decline, so the
+/// viewer says why and an export refuses.
+#[test]
+fn a_transition_cuts_round_the_subject_on_both_routes() {
+    use klipp_core::piece_transition::{PieceParams, SubjectCut};
+    use klipp_nodes::matte_sequence;
+    let dir = std::env::temp_dir().join(format!("klipp-transition-subject-{}-{}", std::process::id(), ClipId::new().0));
+    let (mw, mh) = (32u32, 18u32);
+    let manifest = matte_sequence::Manifest { format: matte_sequence::FORMAT, fps: 25.0, width: mw, height: mh, rotation: 0, model: "test".into(), model_bytes: 0, provider: "cpu".into(), algorithm: 1, steadied: true };
+    matte_sequence::create(&dir, &manifest).unwrap();
+    // A disc in the middle, every frame of the first four seconds.
+    let disc: Vec<u8> = (0..mw * mh).map(|i| { let (x, y) = ((i % mw) as f32 + 0.5 - 16.0, (i / mw) as f32 + 0.5 - 9.0); if x * x + y * y < 36.0 { 255 } else { 0 } }).collect();
+    for f in 0..=100i64 {
+        matte_sequence::put(&dir, &manifest, f * 40_000, &disc).unwrap();
+    }
+    let kind = klipp_core::TransitionKind::Shatter;
+    let user_params = PieceParams { subject: Some(SubjectCut::default()), ..PieceParams::read(kind, &klipp_core::spec_for_kind(kind).default_params) }.to_user(kind);
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    let mut v = Track::new("V1", TrackKind::Video);
+    let a = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 2.0);
+    let b = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 2.0, 4.0);
+    let mut flat = Flat::default();
+    flat.0.insert(a.id, picture(0.0));
+    flat.0.insert(b.id, picture(0.5));
+    v.transitions.push(klipp_timeline::Transition { id: klipp_core::TransitionId::new(), clip_a_id: a.id, clip_b_id: b.id, kind, duration: tc(2.0), alignment: Default::default(), user_params });
+    v.clips = vec![a, b];
+    seq.tracks = vec![v];
+    let outgoing = display(&picture(0.0));
+    let centre = (((H / 2) * W + W / 2) * 4) as usize;
+
+    let mut src = Matted(flat, Some(dir.clone()));
+    let mut r = renderer();
+    // 1.9 s: 45% through, the shards most of the way gone, the subject still.
+    let (cpu, found) = r.render_inspected(&seq, tc(1.9), W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
+    let cpu = display(&cpu);
+    assert!(found.declines.iter().all(|d| !d.fails()), "{:?}", found.declines);
+    assert_eq!(&cpu[centre..centre + 3], &outgoing[centre..centre + 3], "the subject in place");
+    assert!(cpu != outgoing, "the rest under way");
+    // The viewer's route must take the frame wherever there is a GPU: a
+    // decline would leave "the viewer draws what the export does" unheld.
+    match r.render_display_u8_on_gpu(&seq, tc(1.9), W, H, &mut src, RenderOptions::default()) {
+        Some((gpu, _)) => {
+            assert!(r.frame_declines().iter().all(|d| !d.fails()), "GPU: {:?}", r.frame_declines());
+            let d = worst(&cpu, &gpu);
+            assert!(d <= 1, "the stack differs from the CPU by {d} levels");
+        }
+        None => assert!(klipp_effects::gpu::GpuEffectsPipeline::new().is_none(), "the GPU stack declined a subject transition: {:?}", r.last_decline()),
+    }
+
+    // No matte made: the plain pieces, said on both routes.
+    src.1 = None;
+    let mut r = renderer();
+    let (plain, found) = r.render_inspected(&seq, tc(1.9), W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
+    let plain = display(&plain);
+    let mut routes = vec![("CPU", found.declines, plain.clone())];
+    match r.render_display_u8_on_gpu(&seq, tc(1.9), W, H, &mut src, RenderOptions::default()) {
+        Some((gpu, _)) => routes.push(("GPU", r.frame_declines().to_vec(), gpu)),
+        None => assert!(klipp_effects::gpu::GpuEffectsPipeline::new().is_none(), "the GPU stack declined: {:?}", r.last_decline()),
+    }
+    for (route, declines, frame) in routes {
+        let missing: Vec<_> = declines.iter().filter(|d| d.outcome == klipp_nodes::DeclineOutcome::FileMissing).collect();
+        assert_eq!(missing.len(), 1, "{route}: {declines:?}");
+        assert!(missing[0].fails() && missing[0].reason.contains("track its subject"), "{route}: {}", missing[0].reason);
+        assert!(worst(&frame, &plain) <= 1, "{route}: the plain pieces");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A source whose clips' frames are their own size (a portrait phone
+/// clip), each with a subject matte (#985 phase 3).
+struct Shaped {
+    frames: HashMap<ClipId, (u32, u32, Arc<Vec<f32>>)>,
+    dir: std::path::PathBuf,
+    /// Every clip's media's length in seconds at 25 fps, when known.
+    length: Option<f64>,
+}
+
+impl FrameSource for Shaped {
+    fn frame(&mut self, clip: &Clip, _source_secs: f64, _width: u32, _height: u32) -> Option<SourceFrame> {
+        self.frames.get(&clip.id).map(|(w, h, p)| SourceFrame { pixels: SourcePixels::Linear(Arc::clone(p)), width: *w, height: *h, pts: None })
+    }
+
+    fn subject_matte_dir(&mut self, _clip: &Clip, _model: u32) -> Option<std::path::PathBuf> {
+        Some(self.dir.clone())
+    }
+
+    fn media_range(&mut self, _clip: &Clip) -> Option<(f64, f64)> {
+        self.length.map(|l| (0.0, l))
+    }
+
+    fn media_fps(&mut self, _clip: &Clip) -> Option<f64> {
+        self.length.map(|_| 25.0)
+    }
+}
+
+/// #985 phase 3: the subject's matte lands where the clip's picture
+/// does: a portrait source pillarboxed in the frame, and a clip shrunk to
+/// 60% and moved right. Strips leave round the subject; while it stays,
+/// the disc's place in the frame shows the outgoing picture and the rest
+/// of the middle the incoming, on both routes.
+#[test]
+fn a_transitions_subject_matte_is_placed_as_its_picture() {
+    use klipp_core::piece_transition::{PieceEase, PieceOrder, PieceParams, SubjectCut};
+    use klipp_nodes::matte_sequence;
+    let (a_col, b_col) = ([0.8f32, 0.2, 0.1, 1.0], [0.1f32, 0.3, 0.8, 1.0]);
+    let shown = |c: [f32; 4]| display(&c.repeat(4))[..3].to_vec();
+    let (want_a, want_b) = (shown(a_col), shown(b_col));
+    let kind = klipp_core::TransitionKind::SlideStrips;
+    let user_params = PieceParams { count: 4, stagger: 0.0, order: PieceOrder::AllAtOnce, ease: PieceEase::Linear, alternate: true, subject: Some(SubjectCut::default()), ..Default::default() }.to_user(kind);
+    // (source size, matte size, disc radius in matte pixels, the clip's
+    // effects, where the disc is in the frame, a point of the middle
+    // outside it).
+    let shrink_right = klipp_effects::BuiltinEffect::Transform { position_x: 60.0, position_y: 0.0, scale_x: 0.6, scale_y: 0.6, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+    let cases: [(&str, (u32, u32), (u32, u32), f32, Vec<klipp_effects::BuiltinEffect>, (u32, u32), Vec<(u32, u32)>); 2] = [
+        // 90 x 160 fitted to 101 x 180, centred: the disc's 28 px round
+        // the middle; 80 px right is a bar, where a matte stretched to the
+        // frame would have put the subject.
+        ("portrait", (90, 160), (18, 32), 5.0, Vec::new(), (W / 2, H / 2), vec![(W / 2 + 50, H / 2), (W / 2 + 80, H / 2)]),
+        // Shrunk and moved: the disc 24 px round 60 px right of the
+        // middle; the middle itself is not the subject.
+        ("picture in picture", (W, H), (32, 18), 4.0, vec![shrink_right], (W / 2 + 60, H / 2), vec![(W / 2, H / 2), (W / 2 - 40, H / 2)]),
+    ];
+    for (what, (sw, sh), (mw, mh), radius, effects, subject_at, elsewhere) in cases {
+        let dir = std::env::temp_dir().join(format!("klipp-transition-placed-{}-{}", std::process::id(), ClipId::new().0));
+        let manifest = matte_sequence::Manifest { format: matte_sequence::FORMAT, fps: 25.0, width: mw, height: mh, rotation: 0, model: "test".into(), model_bytes: 0, provider: "cpu".into(), algorithm: 1, steadied: true };
+        matte_sequence::create(&dir, &manifest).unwrap();
+        let disc: Vec<u8> = (0..mw * mh).map(|i| { let (x, y) = ((i % mw) as f32 + 0.5 - mw as f32 * 0.5, (i / mw) as f32 + 0.5 - mh as f32 * 0.5); if x * x + y * y < radius * radius { 255 } else { 0 } }).collect();
+        for f in 0..=100i64 {
+            matte_sequence::put(&dir, &manifest, f * 40_000, &disc).unwrap();
+        }
+        let mut seq = Sequence::new_default();
+        seq.resolution = klipp_core::Resolution { width: W, height: H };
+        let mut v = Track::new("V1", TrackKind::Video);
+        let a = TestClip::of(clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 2.0)).effects(effects).build();
+        let b = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 2.0, 4.0);
+        let mut frames = HashMap::new();
+        frames.insert(a.id, (sw, sh, Arc::new(a_col.repeat((sw * sh) as usize))));
+        frames.insert(b.id, (W, H, Arc::new(b_col.repeat((W * H) as usize))));
+        v.transitions.push(klipp_timeline::Transition { id: klipp_core::TransitionId::new(), clip_a_id: a.id, clip_b_id: b.id, kind, duration: tc(2.0), alignment: Default::default(), user_params });
+        v.clips = vec![a, b];
+        seq.tracks = vec![v];
+        let mut src = Shaped { frames, dir: dir.clone(), length: None };
+        // 2.17 s: 58% through; the strips are most of the way out, the
+        // subject not yet moving.
+        let at = tc(2.2);
+        let mut r = renderer();
+        let (cpu, found) = r.render_inspected(&seq, at, W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
+        assert!(found.declines.iter().all(|d| !d.fails()), "{what}: {:?}", found.declines);
+        let mut routes = vec![("CPU", display(&cpu))];
+        match r.render_display_u8_on_gpu(&seq, at, W, H, &mut src, RenderOptions::default()) {
+            Some((gpu, _)) => routes.push(("GPU", gpu)),
+            None => assert!(klipp_effects::gpu::GpuEffectsPipeline::new().is_none(), "{what}: the GPU stack declined: {:?}", r.last_decline()),
+        }
+        for (route, frame) in routes {
+            let px = |(x, y): (u32, u32)| frame[((y * W + x) * 4) as usize..((y * W + x) * 4) as usize + 3].to_vec();
+            let near = |got: Vec<u8>, want: &[u8]| got.iter().zip(want).all(|(g, w)| (*g as i32 - *w as i32).abs() <= 1);
+            assert!(near(px(subject_at), &want_a), "{what} {route}: the subject at {subject_at:?}: {:?}", px(subject_at));
+            for p in &elsewhere {
+                assert!(near(px(*p), &want_b), "{what} {route}: not the subject at {p:?}: {:?}", px(*p));
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// #985 phase 3: an outgoing clip whose handle runs 0.2 s past its
+/// media's end is read there at its last frame, picture and matte alike:
+/// a matte made to the end covers the transition, on both routes, with
+/// nothing declined; a matte short of the end is still said.
+#[test]
+fn a_handle_past_the_media_end_reads_its_last_matte() {
+    use klipp_core::piece_transition::{PieceParams, SubjectCut};
+    use klipp_nodes::matte_sequence;
+    let dir = std::env::temp_dir().join(format!("klipp-transition-end-{}-{}", std::process::id(), ClipId::new().0));
+    let (mw, mh) = (32u32, 18u32);
+    let manifest = matte_sequence::Manifest { format: matte_sequence::FORMAT, fps: 25.0, width: mw, height: mh, rotation: 0, model: "test".into(), model_bytes: 0, provider: "cpu".into(), algorithm: 1, steadied: true };
+    matte_sequence::create(&dir, &manifest).unwrap();
+    // A 2 s media: its frames, and the matte's, 0 to 1.96 s.
+    for f in 0..50i64 {
+        matte_sequence::put(&dir, &manifest, f * 40_000, &[255; 32 * 18]).unwrap();
+    }
+    let kind = klipp_core::TransitionKind::SlideStrips;
+    let user_params = PieceParams { subject: Some(SubjectCut::default()), ..PieceParams::read(kind, &klipp_core::spec_for_kind(kind).default_params) }.to_user(kind);
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    let mut v = Track::new("V1", TrackKind::Video);
+    // The cut at 2 s, the media's end: the transition, 1.6 s to 2.4 s,
+    // reads the outgoing clip to 2.4 s.
+    let a = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 2.0);
+    let b = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 2.0, 4.0);
+    let mut frames = HashMap::new();
+    frames.insert(a.id, (W, H, picture(0.0)));
+    frames.insert(b.id, (W, H, picture(0.5)));
+    v.transitions.push(klipp_timeline::Transition { id: klipp_core::TransitionId::new(), clip_a_id: a.id, clip_b_id: b.id, kind, duration: tc(0.8), alignment: Default::default(), user_params });
+    v.clips = vec![a, b];
+    seq.tracks = vec![v];
+    let mut src = Shaped { frames, dir: dir.clone(), length: Some(2.0) };
+    for t in [2.1, 2.3] {
+        let mut r = renderer();
+        let (_, found) = r.render_inspected(&seq, tc(t), W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
+        assert!(found.declines.iter().all(|d| !d.fails()), "at {t} s: {:?}", found.declines);
+        match r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut src, RenderOptions::default()) {
+            Some(_) => assert!(r.frame_declines().iter().all(|d| !d.fails()), "GPU at {t} s: {:?}", r.frame_declines()),
+            None => assert!(klipp_effects::gpu::GpuEffectsPipeline::new().is_none(), "the GPU stack declined: {:?}", r.last_decline()),
+        }
+    }
+    // The last frame not made: said, not stood in for silently.
+    std::fs::remove_file(matte_sequence::frame_path(&dir, 49 * 40_000)).unwrap();
+    let mut r = renderer();
+    let (_, found) = r.render_inspected(&seq, tc(2.3), W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
+    assert!(found.declines.iter().any(|d| d.fails()), "{:?}", found.declines);
+    let _ = std::fs::remove_dir_all(dir);
+}

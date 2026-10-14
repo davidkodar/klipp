@@ -652,7 +652,7 @@ impl KlippApp {
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
-                    ui.label("These clips are graded by a tracked subject that doesn't cover every frame yet:");
+                    ui.label("These clips are graded by a tracked subject, or cut round one by a transition, that doesn't cover every frame yet:");
                     ui.add_space(4.0);
                     for (_, _, line) in &lines {
                         ui.label(format!("  \u{2022} {line}"));
@@ -663,9 +663,9 @@ impl KlippApp {
                             close = true;
                         }
                         if ui.button("Track the rest").clicked() {
-                            for (clip_id, model, _) in &lines {
+                            for (clip_id, track, _) in &lines {
                                 if !self.state.tracking_subjects.contains_key(clip_id) {
-                                    cmds.push(AppCommand::TrackSubject { clip_id: *clip_id, model: (*model).into() });
+                                    cmds.push(track.clone());
                                 }
                             }
                             close = true;

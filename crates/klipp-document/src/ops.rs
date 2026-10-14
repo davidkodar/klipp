@@ -7649,7 +7649,7 @@ fn transition(
                 if let (Some(m), Some(g)) = (merged.as_object_mut(), given.as_object()) {
                     m.extend(g.clone());
                 }
-                let p: klipp_core::piece_transition::PieceParams = serde_json::from_value(merged).map_err(|e| refuse(i, format!("the pieces {given}: {e}"), "give count, angle, stagger, order, ease, motion, assemble, alternate, gap, shear, shadow or seed"))?;
+                let p: klipp_core::piece_transition::PieceParams = serde_json::from_value(merged).map_err(|e| refuse(i, format!("the pieces {given}: {e}"), "give count, angle, stagger, order, ease, motion, assemble, alternate, gap, shear, shadow, seed, subject ({motion: stays, steps_forward or goes_first, model: subject or foreground}, or null)"))?;
                 p.to_user(spec.kind)
             }
             None => klipp_core::TransitionUserParams::default_for_kind(spec.kind_id),

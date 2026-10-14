@@ -22,6 +22,10 @@ impl KlippApp {
                 self.track_subject(*clip_id, model, needs_refresh);
                 true
             }
+            AppCommand::TrackTransitionSubject { transition_id } => {
+                self.track_transition_subject(*transition_id);
+                true
+            }
             AppCommand::CancelTrackSubject { clip_id } => {
                 if let Some(t) = self.state.tracking_subjects.get(clip_id) {
                     if let Err(why) = klipp_analysis::service::cancel_subject_matte(t.media) {
@@ -42,10 +46,12 @@ impl KlippApp {
         let seq = self.state.sequence();
         let Some(clip) = seq.all_clips().find(|c| c.id == clip_id).cloned() else { return };
         let times = klipp_compose::subject_matte::source_times(seq, &clip);
-        let Some(item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)).cloned() else {
+        let Some(mut item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)).cloned() else {
             self.state.toast.show("Track Subject needs a clip with a picture from a file");
             return;
         };
+        // Made upright by the turn the clip is decoded by, as it is read.
+        item.source_rotation = klipp_compose::subject_matte::decode_rotation(&clip, item.source_rotation);
         if item.is_still || item.video_codec.is_empty() {
             self.state.toast.show("Track Subject needs a video clip");
             return;
@@ -53,7 +59,7 @@ impl KlippApp {
         let Some((model_id, weights)) = subject_matte::model_path(model) else {
             // The download is offered, not begun; the track starts once
             // the model is there (`tick_track_subject`).
-            self.state.pending_track_subject = Some((clip_id, model_name.to_string()));
+            self.state.pending_track_subject = Some((AppCommand::TrackSubject { clip_id, model: model_name.to_string() }, model_name.to_string()));
             let id = *model.ids().last().expect("a model id");
             self.request_model_download(id);
             return;
@@ -78,11 +84,59 @@ impl KlippApp {
                 *needs_refresh = true;
             }
         }
-        let status = klipp_analysis::service::request_subject_matte(&item, model, None, from, to + 1.0 / fps);
+        self.start_subject_pass(clip_id, &item, model, dir, from, to + 1.0 / fps);
+    }
+
+    /// The matte pass over `from`..`to` of `item`, its frames going to
+    /// `dir`, watched for `clip_id`'s sake.
+    fn start_subject_pass(&mut self, clip_id: klipp_core::ClipId, item: &klipp_media::MediaItem, model: MatteModel, dir: std::path::PathBuf, from: f64, to: f64) {
+        let status = klipp_analysis::service::request_subject_matte(item, model, None, from, to);
         if matches!(status.state, klipp_analysis::service::State::Running | klipp_analysis::service::State::Queued) {
             let seen = klipp_nodes::matte_sequence::frames(&dir);
             self.state.tracking_subjects.insert(clip_id, crate::state::Tracking { media: item.id, folder: dir, seen, started: std::time::Instant::now(), name: item.filename.clone() });
         }
+    }
+
+    /// Track the subject a piece transition cuts round (#985 phase 3):
+    /// the pass over the frames of its subject side it reads, nothing
+    /// bound to the grade. The model's download is offered, not begun.
+    fn track_transition_subject(&mut self, transition_id: klipp_core::TransitionId) {
+        let seq = self.state.sequence();
+        let pool = &self.state.media_pool;
+        let Some(ts) = klipp_compose::subject_matte::transition_subjects_with(seq, |c| last_frame_of(pool, c)).into_iter().find(|t| t.transition == transition_id) else {
+            self.state.toast.show("Choose how the subject moves in this transition first");
+            return;
+        };
+        let fps_seq = seq.fps.as_f64();
+        let Some(clip) = seq.all_clips().find(|c| c.id == ts.clip).cloned() else { return };
+        let name = if ts.model == 1 { "foreground" } else { "subject" };
+        let model = model_of(name);
+        let Some(mut item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)).cloned() else {
+            self.state.toast.show("The subject needs a clip with a picture from a file");
+            return;
+        };
+        item.source_rotation = klipp_compose::subject_matte::decode_rotation(&clip, item.source_rotation);
+        if item.is_still || item.video_codec.is_empty() {
+            self.state.toast.show("The subject needs a video clip");
+            return;
+        }
+        let Some((model_id, weights)) = subject_matte::model_path(model) else {
+            self.state.pending_track_subject = Some((AppCommand::TrackTransitionSubject { transition_id }, name.to_string()));
+            let id = *model.ids().last().expect("a model id");
+            self.request_model_download(id);
+            return;
+        };
+        let bytes = std::fs::metadata(&weights).map(|m| m.len()).unwrap_or(0);
+        let Some(dir) = subject_matte::sequence_dir(&item, model_id, bytes, item.source_rotation) else {
+            self.state.toast.show(format!("{} isn't readable", item.filename));
+            return;
+        };
+        let (from, to) = ts.times.iter().fold((f64::MAX, f64::MIN), |(a, b), t| (a.min(*t), b.max(*t)));
+        if from > to {
+            return;
+        }
+        let frame = 1.0 / item.fps.as_f64().max(fps_seq).max(1.0);
+        self.start_subject_pass(clip.id, &item, model, dir, from, to + frame);
     }
 
     /// Each moment: a Track Subject waiting on its model started once the
@@ -96,10 +150,10 @@ impl KlippApp {
                 None => self.state.toast.show("Select a clip to track its subject"),
             }
         }
-        if let Some((clip, model)) = self.state.pending_track_subject.clone() {
+        if let Some((cmd, model)) = self.state.pending_track_subject.clone() {
             if subject_matte::model_path(model_of(&model)).is_some() {
                 self.state.pending_track_subject = None;
-                self.send_commands(vec![AppCommand::TrackSubject { clip_id: clip, model }]);
+                self.send_commands(vec![cmd]);
             } else if matches!(self.state.model_download, crate::model_download::ModelDownloadState::Idle | crate::model_download::ModelDownloadState::Failed { .. }) {
                 self.state.pending_track_subject = None;
             }
@@ -167,8 +221,10 @@ impl KlippApp {
             let half = (500_000.0 / fps.max(1.0)) as i64;
             let step = klipp_core::RationalTime::from_frames(1, seq.fps.rate());
             let (mut first, mut last) = (None, None);
-            let mut t = clip.timeline_in;
-            while t < clip.timeline_out {
+            // Its transitions' frames too (#985 phase 3).
+            let (start, end) = klipp_compose::subject_matte::span(seq, clip);
+            let mut t = start;
+            while t < end {
                 let k = klipp_nodes::matte_sequence::key_of(klipp_compose::render::source_secs(clip, t, fps));
                 if k >= lo - half && k <= hi + half {
                     first.get_or_insert(t);
@@ -189,6 +245,9 @@ impl KlippApp {
     /// The cards of the tracked mattes on the selected clip: their
     /// coverage of what the render reads, and their pass's progress.
     fn refresh_track_cards(&mut self) {
+        if let Some((_, tid)) = self.state.selected_transition {
+            self.refresh_transition_card(tid);
+        }
         let Some(clip_id) = self.state.selected_clip else { return };
         let seq = self.state.sequence();
         let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) else { return };
@@ -215,6 +274,36 @@ impl KlippApp {
             });
         }
     }
+}
+
+impl KlippApp {
+    /// The card of the subject a piece transition cuts round (#985 phase
+    /// 3): its matte's coverage of the frames it reads, and its pass.
+    fn refresh_transition_card(&mut self, tid: klipp_core::TransitionId) {
+        let seq = self.state.sequence();
+        let pool = &self.state.media_pool;
+        let Some(ts) = klipp_compose::subject_matte::transition_subjects_with(seq, |c| last_frame_of(pool, c)).into_iter().find(|t| t.transition == tid) else { return };
+        let Some(clip) = seq.all_clips().find(|c| c.id == ts.clip) else { return };
+        let Some(item) = clip.media_id().and_then(|m| self.state.media_pool.get(&m)) else { return };
+        let dir = klipp_compose::subject_matte::media_dir(&item.path, klipp_compose::subject_matte::decode_rotation(clip, item.source_rotation), ts.model);
+        let (covered, needed) = dir.as_deref().and_then(|d| klipp_compose::subject_matte::coverage(d, &ts.times)).unwrap_or((0, ts.times.len()));
+        let lost = dir.as_deref().map_or(0, lost_frames);
+        let running = self
+            .state
+            .tracking_subjects
+            .get(&ts.clip)
+            .and_then(|t| klipp_analysis::service::subject_matte_status(t.media))
+            .filter(|s| matches!(s.state, klipp_analysis::service::State::Running | klipp_analysis::service::State::Queued))
+            .map(|s| s.progress.unwrap_or(0.0));
+        crate::subject_track::set_transition_card(tid, crate::subject_track::TrackCard { running, covered, needed, lost, model: if ts.model == 1 { "foreground" } else { "subject" }, gates: None });
+    }
+}
+
+/// The time of the last frame of `clip`'s media, where it is read past
+/// its end (#985 phase 3).
+fn last_frame_of(pool: &klipp_media::MediaPool, clip: &klipp_timeline::Clip) -> Option<f64> {
+    let item = pool.get(&clip.media_id()?)?;
+    Some(klipp_compose::subject_matte::last_frame_secs(item.duration.to_secs_f64(), item.fps.as_f64()))
 }
 
 /// The frames of the sequence in `dir` where the subject wasn't found:

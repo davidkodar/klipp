@@ -2166,6 +2166,11 @@ pub enum AppCommand {
     /// Stop tracking the subject through `clip_id`: the frames made so far
     /// are kept (#239).
     CancelTrackSubject { clip_id: ClipId },
+    /// Track the subject a piece transition cuts round (#985 phase 3):
+    /// the matte pass over just the frames of its subject side it reads,
+    /// bound to nothing else. The model is downloaded only after the
+    /// person agrees to it.
+    TrackTransitionSubject { transition_id: crate::TransitionId },
     /// Tell the engine which nodes the V2 canvas currently has
     /// visible — the executor captures a downsampled thumbnail of
     /// each of them on the paused / post-seek re-grade so the canvas

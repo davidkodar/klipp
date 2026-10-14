@@ -320,6 +320,13 @@ impl FrameSource for ViewerSource<'_> {
         viewer_media_range(&self.media_pool.read().unwrap_or_else(|e| e.into_inner()), clip)
     }
 
+    /// By the original file, proxy or not (#985 phase 3).
+    fn subject_matte_dir(&mut self, clip: &Clip, model: u32) -> Option<std::path::PathBuf> {
+        let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+        let item = pool.get(&clip.media_id()?)?;
+        klipp_compose::subject_matte::media_dir(&item.path, klipp_compose::subject_matte::decode_rotation(clip, item.source_rotation), model)
+    }
+
     /// By the original file, proxy or not (`viewer_analysis_key`).
     fn analysis_key(&mut self, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
         let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());

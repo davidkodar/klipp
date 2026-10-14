@@ -495,8 +495,15 @@ pub enum ControlCommand {
     /// grade (gating its correction) in one undo step. Its job is
     /// `<media id>:subject_matte`, read with job_status and stopped with
     /// cancel_job; frames already made are kept.
+    ///
+    /// With `transition_id` in place of `clip_id`, the subject a piece
+    /// transition cuts round (#985 phase 3): the pass over the frames it
+    /// reads, by the model the transition names, bound to no grade.
     TrackSubject {
-        clip_id: String,
+        #[serde(default)]
+        clip_id: Option<String>,
+        #[serde(default)]
+        transition_id: Option<String>,
         /// "subject" (one detected subject, followed) or "foreground"
         /// (the whole foreground); "subject" when left out.
         #[serde(default)]
