@@ -31,3 +31,7 @@ Search Jamendo royalty-free music by mood/genre, best textual match first. Resul
 ## klipp_search_sfx
 
 Search royalty-free sound effects by keyword (e.g. "whoosh", "door slam", "rain", "impact") from Freesound. Each result shows its licence and whether it clears commercial use. max_secs keeps to short sounds (a transition's whoosh, not a long design file); listen (a count, or [track_id, …], at most 5) hears previews and says each one's length, when it peaks and how loud it is, which is where it goes: the peak on the cut. Then add it with klipp_add_music (it takes a sound effect the same as a track). Needs a Freesound token in the user's key config.
+
+## klipp_normalize
+
+Bring clips to a loudness or peak target by their gain (one undo step; the media is not changed): each on its own, or group true for one gain that keeps their balance. Never raises a clip past the true-peak ceiling. Answers each clip's measured LUFS, sample peak and true peak and the gain set; apply false only answers.

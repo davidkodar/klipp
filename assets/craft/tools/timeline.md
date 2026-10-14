@@ -67,3 +67,23 @@ The timeline as text: tracks top first, every clip with its range in seconds and
 ## klipp_timeline_sheet
 
 A contact sheet of the timeline as one image: a tile for each shot (each stretch between cuts on the picture tracks), or frames tiles evenly spaced, over a range of it. The look at a whole cut — framing, grade continuity, titles — in one call instead of a frame_at per shot. The reply lists each tile's time and what is on it.
+
+## klipp_apply
+
+Apply a list of editorial operations as ONE undo step, after resolving them the way klipp_plan does; pass its expected_revision and optionally expected_project_identity to refuse the whole edit if the timeline or project changed since planning. Replies with the steps and the revision. Ops: klipp_guide topic ops.
+
+## klipp_list_markers
+
+Every marker on the timeline in time order, with its id, time, range, label, note, colour and kind: the editor's notes to you, and yours to them. Read them at the start of a session: a todo marker is work asked for.
+
+## klipp_frame_at
+
+The frame at a time on the timeline, as a PNG, without leaving the playhead where it was: seeks there, waits for the frame, captures, seeks back. Use it to look at what you did at a specific point. Seconds from timeline start.
+
+## klipp_fonts
+
+The font families a title or a brief's type style can name: those bundled with Klipp, always there, and those installed on this machine. Any other name falls back to Inter; set_brief, plan and apply warn when one is named.
+
+## klipp_screenshot
+
+Capture what the viewer is currently showing, as a PNG. Returns the file path, and inlines the image when it is small enough. This is how to actually see the result of a grade rather than infer it.
