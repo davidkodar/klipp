@@ -6330,11 +6330,15 @@ fn fps_label(fps: f64) -> String {
 /// and may sit anywhere in it, including past its edge; what shows
 /// behind is whatever is on a lower track.
 fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, poses: &[ComposePose]) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
-    // A generator is a picture too: a colour card fades in like footage (#728).
-    if !matches!(clip.kind, ClipKind::Generator(_)) {
-        require_picture(seq, pool, i, ti, clip, "compose")?;
-    } else if seq.tracks[ti].locked {
+    // A generator is a picture too: a colour card fades in like footage
+    // (#728). So is a title, moved, scaled and turned whole (#1921): the
+    // poses are the clip's own transform keys, its text and shapes left
+    // as they are and still editable.
+    if seq.tracks[ti].locked {
         return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+    }
+    if !matches!(clip.kind, ClipKind::Media { .. } | ClipKind::Generator(_) | ClipKind::Title(_)) {
+        return Err(refuse(i, format!("{} is not a picture clip", clip_name(seq, pool, clip)), "compose a media clip, a generator or a title"));
     }
     if poses.is_empty() {
         return Err(refuse(i, "a compose needs a pose", "give at least one pose: where the picture sits and how much of the frame it covers"));
@@ -13312,6 +13316,57 @@ mod tests {
         assert!(bad(Op::CleanAudio { clip_id: ClipRef::Id(a), voice: false, reduction_db: None, wind: false, hiss: false, hum: false, deess: false }).why.contains("nothing to clean"));
         let _: Vec<Op> = serde_json::from_str(r#"[{"op":"effect","clip_id":{"track":0,"secs":1.0},"kind":"glow"},{"op":"retime","clip_id":{"track":0,"secs":1.0},"speed":0.5},{"op":"clean_audio","clip_id":{"track":0,"secs":1.0},"wind":true},{"op":"clean_audio","clip_id":{"track":0,"secs":1.0},"voice":true,"reduction_db":12}]"#).unwrap();
         let _ = media;
+    }
+
+    /// #1921: a title is composed whole, as a picture is: the issue's own
+    /// plan, a title then a compose of it, moves it with the clip's
+    /// transform keys, its text untouched and editable; undone, it is as
+    /// it was. A clip that is no picture is still refused.
+    #[test]
+    fn a_title_is_composed_whole() {
+        let seq = Sequence::new_default();
+        let pool = MediaPool::new();
+        // A card under it, so the timeline runs to 5 s as it did in the report.
+        let ops: Vec<Op> = serde_json::from_str(r#"[
+            {"op":"generator","data":{"SolidColor":{"color":[0,0,0,255]}},"at":{"secs":0},"secs":5},
+            {"op":"title","text":"Klipp","at":{"secs":0},"secs":5,"size":100},
+            {"op":"compose","clip_id":"@1","poses":[{"secs":0,"x":0.2},{"secs":5,"x":0.8}]}
+        ]"#).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap_or_else(|r| panic!("refused: {}", r.why));
+        let mut seqs = vec![seq.clone()];
+        let mut p = pool.clone();
+        let mut fps = seq.fps;
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        view.apply_forward(&plan.steps[0].edit);
+        view.apply_forward(&plan.steps[1].edit);
+        let title_of = |v: &crate::apply::DocumentView| v.sequences[0].tracks.iter().flat_map(|t| &t.clips).find(|c| c.title_data().is_some()).cloned().expect("the title");
+        let before = title_of(&view);
+        view.apply_forward(&plan.steps[2].edit);
+        let after = title_of(&view);
+        assert_eq!(after.title_data(), before.title_data(), "its text and layers are as they were");
+        // The move as the renderer reads it: the clip's picture lane.
+        let lane = |c: &Clip| c.truth_lane(&klipp_core::ParamId::PositionX).map(|(keys, _)| keys).unwrap_or_default();
+        let at = |kf: &[klipp_core::Keyframe], t: f64| klipp_core::keyframe::evaluate(kf, t, f32::NAN);
+        let fw = view.sequences[0].resolution.width as f32;
+        let keys = lane(&after);
+        assert!(!keys.is_empty(), "the move is in the title's picture");
+        let (x0, x1) = (at(&keys, 0.0), at(&keys, 4.9));
+        assert!(x0 < -0.2 * fw && x1 > 0.2 * fw, "it moves left to right across the frame: {x0} to {x1}");
+        view.apply_inverse(&plan.steps[2].edit);
+        let undone = title_of(&view);
+        assert!(lane(&undone).is_empty(), "undone, it holds still again");
+        assert_eq!(undone.title_data(), before.title_data());
+
+        // Not a picture: still refused, saying what it takes.
+        let mut seq = Sequence::new_default();
+        let mut t = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        let adj = Clip { kind: ClipKind::AdjustmentLayer, ..Clip::gap(Timecode::from_secs_f64(0.0, 24), Timecode::from_secs_f64(2.0, 24)) };
+        let id = adj.id;
+        t.clips.push(adj);
+        seq.tracks = vec![t];
+        let ops: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"compose","clip_id":"{}","poses":[{{"x":0.3}}]}}]"#, id.0)).unwrap();
+        let why = resolve(&seq, &pool, &ops).unwrap_err().why;
+        assert!(why.contains("not a picture clip"), "{why}");
     }
 
     /// #728: fading a reframed shot in with compose keeps its framing:
