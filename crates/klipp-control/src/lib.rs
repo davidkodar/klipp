@@ -269,6 +269,11 @@ fn serve_connection(stream: UnixStream, ctx: ControlContext) {
     }
 }
 
+// The labelled corpus the review checks' thresholds are tuned against (#1994).
+#[cfg(test)]
+#[path = "qc_corpus_tests.rs"]
+mod qc_corpus_tests;
+
 #[cfg(test)]
 mod made_media_tests {
     /// #730: downloaded music, effects and narration land in the kept
