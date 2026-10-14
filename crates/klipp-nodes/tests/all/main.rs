@@ -46,6 +46,8 @@ mod mask_cutout_gpu_parity;
 mod mask_mix_node;
 #[path = "../masked_corrector.rs"]
 mod masked_corrector;
+#[path = "../moving_mask_playback.rs"]
+mod moving_mask_playback;
 #[path = "../neutral_corrector.rs"]
 mod neutral_corrector;
 #[path = "../nothing_chosen_selects_everything.rs"]

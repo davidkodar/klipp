@@ -103,6 +103,139 @@ impl<'de> Deserialize<'de> for BezierPoint {
     }
 }
 
+/// How a freeform mask's shape moves from one key to the next (#74).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum PathEase {
+    /// At an even pace.
+    #[default]
+    Linear,
+    /// Slowing into the next key and out of this one.
+    Ease,
+    /// Holding this shape until the next key.
+    Hold,
+}
+
+/// A freeform mask's shape at one moment (#74): every point and handle,
+/// as many points as every other key of the mask holds, in the same
+/// order, so each point has a place in every key to move between.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PathKey {
+    pub time_secs: f64,
+    pub points: Vec<BezierPoint>,
+    #[serde(default, skip_serializing_if = "is_linear")]
+    pub ease: PathEase,
+}
+
+fn is_linear(e: &PathEase) -> bool {
+    *e == PathEase::Linear
+}
+
+/// The shape `keys` (earliest first) give at `time_secs`: before the
+/// first and after the last, held; between two, each point and handle
+/// moved as the earlier key's ease says. `None` without keys, or between
+/// two that don't hold the same number of points, which no edit makes.
+pub fn shape_at(keys: &[PathKey], time_secs: f64) -> Option<Vec<BezierPoint>> {
+    let (first, last) = (keys.first()?, keys.last()?);
+    if time_secs <= first.time_secs {
+        return Some(first.points.clone());
+    }
+    if time_secs >= last.time_secs {
+        return Some(last.points.clone());
+    }
+    let i = keys.partition_point(|k| k.time_secs <= time_secs);
+    let (a, b) = (&keys[i - 1], &keys[i]);
+    if a.points.len() != b.points.len() {
+        return Some(a.points.clone());
+    }
+    let span = b.time_secs - a.time_secs;
+    let t = if span > 0.0 { ((time_secs - a.time_secs) / span) as f32 } else { 0.0 };
+    let t = match a.ease {
+        PathEase::Linear => t,
+        PathEase::Ease => t * t * (3.0 - 2.0 * t),
+        PathEase::Hold => return Some(a.points.clone()),
+    };
+    let l = |x: f32, y: f32| x + (y - x) * t;
+    Some(
+        a.points
+            .iter()
+            .zip(&b.points)
+            .map(|(p, q)| BezierPoint {
+                x: l(p.x, q.x),
+                y: l(p.y, q.y),
+                in_dx: l(p.in_dx, q.in_dx),
+                in_dy: l(p.in_dy, q.in_dy),
+                out_dx: l(p.out_dx, q.out_dx),
+                out_dy: l(p.out_dy, q.out_dy),
+                smooth: p.smooth,
+            })
+            .collect(),
+    )
+}
+
+/// `keys` with the shape at `time_secs` set to `points`: the key there
+/// (within `tolerance`) changed, else a key added in its place, as Linear.
+pub fn with_key(keys: &[PathKey], time_secs: f64, points: Vec<BezierPoint>, tolerance: f64) -> Vec<PathKey> {
+    let mut out = keys.to_vec();
+    match out.iter_mut().find(|k| (k.time_secs - time_secs).abs() <= tolerance) {
+        Some(k) => k.points = points,
+        None => {
+            let at = out.partition_point(|k| k.time_secs < time_secs);
+            out.insert(at, PathKey { time_secs, points, ease: PathEase::Linear });
+        }
+    }
+    out
+}
+
+type P = (f32, f32);
+
+fn lerp(a: P, b: P, t: f32) -> P {
+    (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+}
+
+/// The cubic from point `i` to the next, its four control points.
+fn segment(points: &[BezierPoint], i: usize) -> [P; 4] {
+    let (a, b) = (&points[i], &points[(i + 1) % points.len()]);
+    [a.pos(), a.out_handle(), b.in_handle(), b.pos()]
+}
+
+/// `points` with a point put on the curve from point `seg` to the next,
+/// at `t` along it, the curve keeping its shape: the segment's handles
+/// are split as de Casteljau splits it. The new point is at `seg + 1`;
+/// it is smooth when the curve through it is.
+pub fn split_segment(points: &[BezierPoint], seg: usize, t: f32) -> Vec<BezierPoint> {
+    let n = points.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let seg = seg % n;
+    let t = t.clamp(0.0, 1.0);
+    let c = segment(points, seg);
+    let (ab, bc, cd) = (lerp(c[0], c[1], t), lerp(c[1], c[2], t), lerp(c[2], c[3], t));
+    let (abc, bcd) = (lerp(ab, bc, t), lerp(bc, cd, t));
+    let m = lerp(abc, bcd, t);
+    let mut out = points.to_vec();
+    let next = (seg + 1) % n;
+    out[seg].out_dx = ab.0 - c[0].0;
+    out[seg].out_dy = ab.1 - c[0].1;
+    out[next].in_dx = cd.0 - c[3].0;
+    out[next].in_dy = cd.1 - c[3].1;
+    let straight = points[seg].out_dx == 0.0 && points[seg].out_dy == 0.0 && points[next].in_dx == 0.0 && points[next].in_dy == 0.0;
+    let new = if straight {
+        BezierPoint::corner(m.0, m.1)
+    } else {
+        BezierPoint { x: m.0, y: m.1, in_dx: abc.0 - m.0, in_dy: abc.1 - m.1, out_dx: bcd.0 - m.0, out_dy: bcd.1 - m.1, smooth: true }
+    };
+    out.insert(seg + 1, new);
+    out
+}
+
+/// `points` less those in `remove`, or `None` when fewer than three
+/// would be left: a shape needs three.
+pub fn without_points(points: &[BezierPoint], remove: &std::collections::BTreeSet<usize>) -> Option<Vec<BezierPoint>> {
+    let kept: Vec<BezierPoint> = points.iter().enumerate().filter(|(i, _)| !remove.contains(i)).map(|(_, p)| *p).collect();
+    (kept.len() >= 3 && kept.len() < points.len()).then_some(kept)
+}
+
 /// The most points one outline is flattened to.
 pub const MAX_OUTLINE_POINTS: usize = 4096;
 
@@ -313,5 +446,83 @@ mod tests {
         }
         let text = serde_json::to_string(&curved).unwrap();
         assert_eq!(serde_json::from_str::<crate::MaskStack>(&text).unwrap(), curved, "{text}");
+    }
+
+    fn sq(off: f32) -> Vec<BezierPoint> {
+        [(0.2, 0.2), (0.6, 0.2), (0.6, 0.6), (0.2, 0.6)].into_iter().map(|(x, y)| BezierPoint::corner(x + off, y)).collect()
+    }
+
+    fn key(t: f64, off: f32, ease: PathEase) -> PathKey {
+        PathKey { time_secs: t, points: sq(off), ease }
+    }
+
+    /// #74: a keyed shape is held before its first key and after its
+    /// last, moves evenly between two Linear keys, slowly at the ends of
+    /// an Ease, and not at all from a Hold.
+    #[test]
+    fn a_keyed_shape_moves_between_its_keys() {
+        let keys = vec![key(1.0, 0.0, PathEase::Linear), key(3.0, 0.2, PathEase::Hold), key(5.0, 0.0, PathEase::Linear)];
+        assert_eq!(shape_at(&keys, 0.0).unwrap()[0].x, 0.2);
+        assert!((shape_at(&keys, 2.0).unwrap()[0].x - 0.3).abs() < 1e-6, "halfway");
+        assert_eq!(shape_at(&keys, 4.5).unwrap()[0].x, 0.4, "held");
+        assert_eq!(shape_at(&keys, 9.0).unwrap()[0].x, 0.2);
+        let eased = vec![key(0.0, 0.0, PathEase::Ease), key(1.0, 0.4, PathEase::Linear)];
+        let early = shape_at(&eased, 0.1).unwrap()[0].x - 0.2;
+        assert!(early < 0.4 * 0.1, "slow out of an ease: {early}");
+        assert!((shape_at(&eased, 0.5).unwrap()[0].x - 0.4).abs() < 1e-6);
+        assert!(shape_at(&[], 1.0).is_none());
+        // Handles move with the points.
+        let mut a = key(0.0, 0.0, PathEase::Linear);
+        a.points[0].out_dx = 0.1;
+        let b = key(2.0, 0.0, PathEase::Linear);
+        assert!((shape_at(&[a, b], 1.0).unwrap()[0].out_dx - 0.05).abs() < 1e-6);
+    }
+
+    /// A key is changed where there is one, else added in time order.
+    #[test]
+    fn a_key_is_set_where_one_is_or_added_in_order() {
+        let keys = vec![key(1.0, 0.0, PathEase::Ease), key(3.0, 0.2, PathEase::Linear)];
+        let set = with_key(&keys, 1.01, sq(0.1), 0.02);
+        assert_eq!(set.len(), 2);
+        assert_eq!((set[0].points[0].x, set[0].ease), (0.3, PathEase::Ease), "changed, its ease kept");
+        let added = with_key(&keys, 2.0, sq(0.1), 0.02);
+        assert_eq!(added.iter().map(|k| k.time_secs).collect::<Vec<_>>(), [1.0, 2.0, 3.0]);
+    }
+
+    /// A keyed mask saves its keys and reads them back; Linear isn't
+    /// written.
+    #[test]
+    fn shape_keys_save_and_read_back() {
+        let mut m = crate::Mask { shape: crate::MaskShape::Bezier { points: sq(0.0) }, ..crate::Mask::default() };
+        m.keyframes.path = vec![key(0.5, 0.0, PathEase::Linear), key(1.5, 0.1, PathEase::Hold)];
+        let text = serde_json::to_string(&m).unwrap();
+        assert!(text.contains("\"path\"") && text.contains("Hold") && !text.contains("Linear"), "{text}");
+        assert_eq!(serde_json::from_str::<crate::Mask>(&text).unwrap(), m);
+    }
+
+    /// A point added or taken away goes into every key alike, each keeping
+    /// its shape and as many points as the others; keying on keeps the
+    /// shape as drawn, keying off keeps it as it is at that moment.
+    #[test]
+    fn points_come_and_go_in_every_key() {
+        let mut m = crate::Mask { shape: crate::MaskShape::Bezier { points: sq(0.0) }, ..crate::Mask::default() };
+        m.keyframes.path = vec![key(0.0, 0.0, PathEase::Linear), key(2.0, 0.2, PathEase::Linear)];
+        let split = m.with_point_split(2, 0.5);
+        assert!(split.keyframes.path.iter().all(|k| k.points.len() == 5));
+        assert_eq!(split.keyframes.path[1].points[3].pos(), (0.6, 0.6), "on the key's own side: (0.8+0.4)/2");
+        assert_eq!(split.path_at(1.0).unwrap().len(), 5);
+        let fewer = split.without_path_points(&[3].into()).unwrap();
+        assert!(fewer.keyframes.path.iter().all(|k| k.points == sq(k.time_secs as f32 / 10.0)));
+        assert!(m.without_path_points(&[0, 1].into()).is_none(), "two left");
+
+        let on = crate::Mask { shape: crate::MaskShape::Bezier { points: sq(0.1) }, ..crate::Mask::default() }.with_path_keyed(true, 1.5);
+        assert_eq!(on.keyframes.path, vec![key(1.5, 0.1, PathEase::Linear)]);
+        let off = m.with_path_keyed(false, 1.0);
+        assert!(off.keyframes.path.is_empty());
+        assert_eq!(off.path_at(9.0).unwrap()[0].x, 0.3, "the shape as it was at 1 s");
+        // Edited at a moment: the key there, or a new one.
+        let edited = m.with_path_at(1.0, sq(0.05), 0.02);
+        assert_eq!(edited.keyframes.path.len(), 3);
+        assert_eq!(edited.evaluated_at(1.0).path_at(1.0).unwrap()[0].x, 0.25);
     }
 }

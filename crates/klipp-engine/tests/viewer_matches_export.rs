@@ -840,6 +840,76 @@ fn the_secondary_changes_both_the_viewer_and_the_export() {
     assert!(d > 5, "the key made no difference to the export ({d} levels)");
 }
 
+/// A freeform mask keyed to move across the frame (#74), cutting the
+/// clip's picture out: the viewer and the export draw it where its keys
+/// put it on each frame, both evaluating the keys the same way.
+fn moving_mask_timeline() -> Timeline {
+    use klipp_core::mask_path::{BezierPoint, PathEase, PathKey};
+    use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams, NodePos};
+    let node = |kind, params| Node { id: NodeId::new_v4(), kind, label: format!("{kind:?}"), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![] };
+    let shape = |off: f32| -> Vec<BezierPoint> {
+        [(0.1, 0.3), (0.3, 0.3), (0.3, 0.7), (0.1, 0.7)]
+            .into_iter()
+            .map(|(x, y)| BezierPoint { x: x + off, y, out_dx: 0.04, out_dy: -0.03, in_dx: -0.04, in_dy: 0.03, smooth: true })
+            .collect()
+    };
+    let mut mask = klipp_core::Mask { shape: klipp_core::MaskShape::Bezier { points: shape(0.0) }, feather: 0.02, ..klipp_core::Mask::default() };
+    mask.keyframes.path = vec![
+        PathKey { time_secs: 0.0, points: shape(0.0), ease: PathEase::Ease },
+        PathKey { time_secs: 90.0 / FPS as f64, points: shape(0.55), ease: PathEase::Linear },
+    ];
+    let src = node(NodeKind::Source, NodeParams::default());
+    let m = node(NodeKind::Mask, NodeParams { masks: Some(klipp_core::MaskStack { masks: vec![mask] }), ..Default::default() });
+    let cut = node(NodeKind::MaskCutout, NodeParams::default());
+    let out = node(NodeKind::Output, NodeParams::default());
+    let edges = vec![
+        Edge { from_node: src.id, from_port: 0, to_node: cut.id, to_port: 0 },
+        Edge { from_node: m.id, from_port: 0, to_node: cut.id, to_port: 1 },
+        Edge { from_node: cut.id, from_port: 0, to_node: out.id, to_port: 0 },
+    ];
+    let output_node_id = out.id;
+    let nodes = vec![src, m, cut, out];
+    let node_positions = nodes.iter().enumerate().map(|(i, n)| (n.id, NodePos { x: i as f32 * 150.0, y: 0.0 })).collect();
+    let graph = NodeGraph { output_node_id, nodes, edges, node_positions, working_space_override: None, frames: vec![], sticky_notes: vec![] };
+    let g = MediaId::new();
+    let files = HashMap::from([(g, rgb_source("flat.mkv", "200", "150", "90"))]);
+    let mut clip = media_clip(g, 0, 100, 0);
+    clip.set_grade(graph);
+    let mut seq = Sequence::new_default();
+    seq.fps = Fps::new(FPS as u32, 1);
+    seq.resolution = Resolution { width: W, height: H };
+    let mut v1 = Track::new("V1", TrackKind::Video);
+    v1.clips = vec![clip];
+    seq.tracks = vec![v1];
+    Timeline { seq, files, coded: HashMap::new() }
+}
+
+#[test]
+fn a_moving_freeform_mask_exports_as_the_viewer_shows_it() {
+    let _decoders = decoders_at_speed();
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let t = moving_mask_timeline();
+    let out = exported(&t);
+    let viewer = Viewer::start(&t);
+    let mut worst = 0;
+    let mut frames = Vec::new();
+    for n in [5, 30, 60, 85] {
+        let (v, e) = (viewer.frame_at(n), exported_frame(&out, n));
+        worst = worst.max(compare(&format!("moving mask frame {n:3}"), &v, &e));
+        frames.push(e);
+    }
+    eprintln!("moving mask, viewer vs export: worst {worst} levels");
+    assert!(worst <= 3, "the export differs from the viewer by {worst} levels");
+    // And it moved: lit on the left early, dark there late, and the
+    // other way round on the right.
+    let lit = |f: &[u8], x: f32| px(f, (x * W as f32) as u32, H / 2)[0] > 100;
+    assert!(lit(&frames[0], 0.2) && !lit(&frames[0], 0.75), "frame 5");
+    assert!(!lit(&frames[3], 0.2) && lit(&frames[3], 0.75), "frame 85");
+}
+
 /// The main timeline — graded clip, dissolve, scaled and faded layers —
 /// under a timeline grade: the viewer and the export both run it over
 /// the composite, and it changes the picture.
