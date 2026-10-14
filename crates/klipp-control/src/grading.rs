@@ -306,6 +306,68 @@ pub(crate) fn measure_at(ctx: &ControlContext, secs: f64, only: Option<klipp_cor
     Ok(m)
 }
 
+/// The clip's own file at timeline second `secs`, decoded as the file
+/// holds it — no grade, no input transform — for the rules that tell
+/// what the grade did from what the scene is (#1896). `None` for a clip
+/// not from a file, a file that is not there or will not decode, and a
+/// file that reads as camera log, whose floor is the encoding's and says
+/// nothing about the scene. Only a display-referred SDR file is read:
+/// an HDR or wide-gamut file decoded as it is holds its lightness on
+/// another scale from the graded frame's, which goes through the output
+/// transform (#1896 review).
+pub(crate) fn source_reading(ctx: &ControlContext, clip: klipp_core::ClipId, secs: f64) -> Option<klipp_color::measure::SourceReading> {
+    let (path, at, prior, size) = {
+        let seq = ctx.sequence.read().ok()?;
+        let pool = ctx.media_pool.read().ok()?;
+        let c = seq.all_clips().find(|c| c.id == clip && is_picture_clip(c))?;
+        let item = pool.get(&c.media_id()?)?;
+        if item.offline || !item.path.exists() || !display_sdr(item) {
+            return None;
+        }
+        (item.path.clone(), c.source_secs_at(secs - c.timeline_in.to_secs_f64(), seq.fps.as_f64()), item.log_prior(), shown_size(item))
+    };
+    let (rgba, w, h) = decode_frame_rgba_sized(&path, at.max(0.0), size.0, size.1).ok()?;
+    let mut m = klipp_color::measure::measure_frame(&rgba, w, h, &[]);
+    m.log_prior = prior;
+    (!klipp_color::measure::looks_like_log(&m)).then(|| klipp_color::measure::SourceReading::of(&m))
+}
+
+/// Whether `item` is display-referred SDR as it is decoded: not HDR, not
+/// BT.2020, not log by its tags or the user's choice. Only such a file's
+/// own frame reads on the graded frame's scale.
+pub(crate) fn display_sdr(item: &klipp_media::MediaItem) -> bool {
+    let tagged = |v: &Option<String>, bad: &[&str]| v.as_deref().is_some_and(|s| { let s = s.to_ascii_lowercase(); bad.iter().any(|b| s.contains(b)) });
+    !matches!(item.colour_space, klipp_media::ColourSpace::Hdr10 | klipp_media::ColourSpace::Hlg)
+        && !tagged(&item.color_primaries, &["2020", "p3", "dci"])
+        && !tagged(&item.color_transfer, &["2084", "pq", "hlg", "arib", "log", "2020"])
+        && item.effective_log_format() == klipp_core::LogFormat::Srgb
+}
+
+/// The size a file's frame is shown at, its rotation applied, at most
+/// 3840 wide: the size its own frame is read at.
+fn shown_size(item: &klipp_media::MediaItem) -> (u32, u32) {
+    let (w, h) = (item.resolution.width.max(2), item.resolution.height.max(2));
+    let (w, h) = if item.source_rotation.rem_euclid(180) == 90 { (h, w) } else { (w, h) };
+    if w <= 3840 { (w, h) } else { (3840, ((h as u64 * 3840 / w as u64) as u32).max(2) & !1) }
+}
+
+/// The top visible picture clip at timeline second `secs`, the one a
+/// frame read there shows.
+pub(crate) fn picture_clip_at(ctx: &ControlContext, secs: f64) -> Option<klipp_core::ClipId> {
+    let seq = ctx.sequence.read().ok()?;
+    let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
+    seq.tracks.iter()
+        .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
+        .find_map(|t| t.clip_at_timecode(tc).map(|(_, c)| c).filter(|c| is_picture_clip(c)))
+        .map(|c| c.id)
+}
+
+/// Whether one of `found` waits on the file's own reading before it can
+/// be called the grade's (#1896).
+pub(crate) fn needs_source(found: &[klipp_color::measure::Finding]) -> bool {
+    found.iter().any(|f| f.verdict != klipp_color::measure::Verdict::Pass && f.rule == "black_point")
+}
+
 /// The measured clip's metadata: the isolated clip when requested, otherwise
 /// the visible picture at `secs`. An overlay must not supply a solo read's prior.
 pub(crate) fn log_prior_at(ctx: &ControlContext, secs: f64, only: Option<klipp_core::ClipId>) -> klipp_color::measure::LogPrior {

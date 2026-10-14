@@ -363,8 +363,11 @@ pub(crate) fn respond(
             let (data, width, height) = grab_frame_rgba(ctx, secs, timeout_ms)?;
             let mut v = frame_stats(&data, width, height, secs);
             let faces = skin_regions(ctx, secs, &data, width, height);
-            let m = klipp_color::measure::measure_frame(&data, width, height, &faces);
+            let mut m = klipp_color::measure::measure_frame(&data, width, height, &faces);
             let look = look_for(ctx, secs);
+            if needs_source(&klipp_color::measure::judge(&m, &look)) {
+                m.source = picture_clip_at(ctx, secs).and_then(|c| source_reading(ctx, c, secs));
+            }
             let findings = klipp_color::measure::judge(&m, &look);
             let mut text = v["text"].as_str().unwrap_or("").to_string();
             text.push_str(&format!("\nLab (D65): L* p1 {:.0} p50 {:.0} p99 {:.0}, contrast {:.0}, chroma mean {:.0}; neutrals a* {:.1} b* {:.1} ({}, {:.0}% of the frame)", m.l_p1, m.l_p50, m.l_p99, m.contrast_range, m.chroma_mean, m.cast_a, m.cast_b, if m.cast() < 3.0 { "neutral".to_string() } else { format!("cast toward {}", klipp_color::measure::cast_name(m.cast_a, m.cast_b)) }, m.neutral_pct));
