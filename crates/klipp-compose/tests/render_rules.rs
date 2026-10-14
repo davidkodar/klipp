@@ -2220,3 +2220,36 @@ fn a_slow_drift_moves_alike_in_a_preview_and_the_export() {
     assert!(export, "0.08 px a shutter is a move at full size");
     assert_eq!(preview, export, "the half-size preview decides as the export does");
 }
+
+/// #2017: a moving picture's blur trail composites at the picture's
+/// coverage. A red card smeared across a blue background mixes red and
+/// blue in the trail by how much of the shutter the card covers each
+/// pixel, so the two always sum to the whole: no dark (or light) fringe
+/// along its path. Averaged as straight colour, a pixel the card covered
+/// for half the shutter came out a quarter red over half blue: the
+/// trail dipped to three quarters of the whole.
+///
+/// What is left, a few hundredths at most, is a sample whose edge lands
+/// part way across a pixel: the Transform blends its picture with the
+/// transparent outside as straight colour, as it does for a still card.
+#[test]
+fn a_moving_cards_blur_trail_composites_at_its_coverage() {
+    let (w, h) = (128u32, 72u32);
+    let card = TestClip::of(solid([255, 0, 0], 0.0, 1.0)).lane("scale", 0.0, 0.25).lane("pos_x", 0.0, -48.0).lane("pos_x", 1.0, 48.0).build();
+    let mut seq = sequence(vec![vec![card], vec![solid([0, 0, 255], 0.0, 1.0)]]);
+    seq.resolution = klipp_core::Resolution { width: w, height: h };
+    seq.camera.shutter_deg = 360.0;
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(false);
+    let img = r.render(&seq, tc(0.5), w, h, &mut White, RenderOptions::default());
+    let row = h / 2;
+    let mut trail = 0;
+    for x in 0..w {
+        let p = &img[((row * w + x) * 4) as usize..][..4];
+        assert!((p[0] + p[2] - 1.0).abs() < 0.04 && p[1].abs() < 0.01, "x {x}: red {:.3} and blue {:.3} should share the pixel whole", p[0], p[2]);
+        if (0.05..0.95).contains(&p[0]) {
+            trail += 1;
+        }
+    }
+    assert!(trail >= 6, "the card is smeared: {trail} pixels part red");
+}

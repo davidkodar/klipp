@@ -693,13 +693,17 @@ fn effects_after_a_plugin_that_cannot_be_applied_take_the_cpu_kernels() {
 /// Step 11c-3: a moving clip under an open shutter runs its effects as
 /// plans of their own around the sampling (the colour effects before its
 /// transform once, the transform at each of eight samples, a vignette and
-/// a blur after it once on the average) and draws the legacy frame bit
-/// for bit, since the same shaders run on the same floats and the samples
-/// are averaged on the CPU either way. The shutter really smears: the
+/// a blur after it once on the average). The shutter really smears: the
 /// frame differs from the same clip with it shut.
+///
+/// It was held to the legacy route's stored frame bit for bit until the
+/// samples came to be averaged premultiplied (#2017), which changes the
+/// smear at the picture's moving edges on purpose: that stored frame was
+/// averaged straight and can't be drawn again. The picture is held by
+/// `golden_corpus`'s "shutter over a moving camera, effects around the
+/// transform", recorded again with that change.
 #[test]
 fn a_moving_clip_under_an_open_shutter_runs_its_effects_as_plans() {
-    let _goldens = scope("effects_follow_grade.a_moving_clip_under_an_open_shutter_runs_its_effects_as_plans");
     let transform = E::Transform {
         position_x: 0.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5, rotation: 0.0,
         anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
@@ -728,11 +732,6 @@ fn a_moving_clip_under_an_open_shutter_runs_its_effects_as_plans() {
     };
     let open = shot(180.0);
     let (new, shuttered, followed) = run(&open, false);
-    let legacy = legacy_f32(|| {
-        let (frame, legacy_shuttered, _) = run(&open, true);
-        assert_eq!(legacy_shuttered, 0, "the legacy route runs no plan");
-        frame
-    });
     assert_eq!(followed, 0, "a shuttered clip splices nothing into its grade");
     if shuttered == 0 {
         assert!(!required(), "required, but the shuttered effects did not run as plans");
@@ -740,9 +739,6 @@ fn a_moving_clip_under_an_open_shutter_runs_its_effects_as_plans() {
         return;
     }
     assert_eq!(shuttered, 1);
-    let worst = new.iter().zip(&legacy).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
-    eprintln!("shutter: plans vs legacy: worst {worst}");
-    assert!(matches_f32(&new, &legacy), "differs from the legacy route by {worst}");
     let (shut, _, shut_followed) = run(&shot(0.0), false);
     assert_eq!(shut_followed, 1, "with the shutter shut the effects follow the grade as before");
     assert!(shut != new, "the shutter smears the moving clip");

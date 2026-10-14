@@ -4634,12 +4634,9 @@ impl Renderer {
         let mut acc = vec![0.0f32; base.len()];
         for &(xf, t) in samples {
             let placed = self.effects_by(plan, clip, &[transform_effect(xf, tilt(clip, fx, t))], &[], base.clone(), t, fps, width, height);
-            for (a, s) in acc.iter_mut().zip(&placed) {
-                *a += *s;
-            }
+            add_premultiplied(&mut acc, &placed);
         }
-        let inv = 1.0 / samples.len() as f32;
-        acc.iter_mut().for_each(|v| *v *= inv);
+        average_premultiplied(&mut acc, samples.len());
         self.effects_by(plan, clip, &after, &after_blends, acc, clip_time, fps, width, height)
     }
 
@@ -4714,12 +4711,9 @@ impl Renderer {
                 (None, None) => unreachable!("a still picture is drawn when the title's drawing does not move"),
             };
             let placed = self.effects_by(plan, clip, &[transform_effect(xf, tilt(clip, fx, t))], &[], picture, t, fps, width, height);
-            for (a, s) in acc.iter_mut().zip(&placed) {
-                *a += *s;
-            }
+            add_premultiplied(&mut acc, &placed);
         }
-        let inv = 1.0 / samples.len().max(1) as f32;
-        acc.iter_mut().for_each(|v| *v *= inv);
+        average_premultiplied(&mut acc, samples.len());
         self.effects_by(plan, clip, &after, &after_blends, acc, clip_time, fps, width, height)
     }
 
@@ -5663,6 +5657,41 @@ pub(crate) fn transform_effect(xf: ResolvedTransform, (rx, ry, persp): (f32, f32
         position_x: px, position_y: py, scale_x: sx, scale_y: sy, rotation: ro,
         anchor_x: ax, anchor_y: ay, rotation_x: rx, rotation_y: ry, perspective: persp,
         focal_ref: None,
+    }
+}
+
+/// `sample`, straight RGBA, added to `acc` premultiplied: its colour
+/// weighted by its alpha, so where a moving picture covers a pixel for
+/// part of the shutter only what covers it counts (#2017).
+fn add_premultiplied(acc: &mut [f32], sample: &[f32]) {
+    for (a, s) in acc.chunks_exact_mut(4).zip(sample.chunks_exact(4)) {
+        let alpha = s[3];
+        a[0] += s[0] * alpha;
+        a[1] += s[1] * alpha;
+        a[2] += s[2] * alpha;
+        a[3] += alpha;
+    }
+}
+
+/// The mean of `n` samples [`add_premultiplied`] summed into `acc`, back
+/// as straight RGBA: the colour of what covered each pixel, and how much
+/// of the shutter it covered it. Averaged straight, a pixel a white card
+/// covered for half the shutter came out half-grey at half coverage,
+/// and a moving picture's blur trail composited darker than the picture
+/// all along its path (#2017).
+fn average_premultiplied(acc: &mut [f32], n: usize) {
+    let inv = 1.0 / n.max(1) as f32;
+    for a in acc.chunks_exact_mut(4) {
+        let covered = a[3];
+        if covered > 1e-6 {
+            let unweight = 1.0 / covered;
+            a[0] *= unweight;
+            a[1] *= unweight;
+            a[2] *= unweight;
+        } else {
+            a[..3].fill(0.0);
+        }
+        a[3] = covered * inv;
     }
 }
 

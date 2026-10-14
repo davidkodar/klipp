@@ -1,6 +1,6 @@
 {
-  "recorded_on": "ce87ebfb",
-  "reason": "#1279: the GPU stack takes ACEScg and BT.2020 projects, and the export path BT.2020",
+  "recorded_on": "494527e1",
+  "reason": "#2017: shutter samples are averaged premultiplied, so a moving picture's blur trail composites at its coverage instead of darker",
   "frames": [
   {"case":"effect/Opacity","kind":"rgba","len":9216,"offset":0,"path":"cpu","t":"0.5"},
   {"case":"effect/Opacity","kind":"rgba","len":9216,"offset":9216,"path":"CpuWithGpu","t":"0.5"},
