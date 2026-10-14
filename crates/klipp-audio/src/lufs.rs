@@ -169,7 +169,7 @@ impl LufsMeter {
             block_loudness_history: Vec::new(),
             short_term_history: Vec::new(),
             true_peak_linear: 0.0,
-            tp_detector: TruePeakDetector::new(),
+            tp_detector: TruePeakDetector::new(sample_rate.round() as u32),
             oversample,
             momentary_lufs: f32::NEG_INFINITY,
             short_term_lufs: f32::NEG_INFINITY,
@@ -198,7 +198,8 @@ impl LufsMeter {
             // True peak — 4× oversampled when enabled (BS.1770-4
             // Annex 2 compliant), sample-hold otherwise.
             let peak = if self.oversample {
-                self.tp_detector.process(l as f32, r as f32)
+                // Only what can raise the running maximum is computed.
+                self.tp_detector.process_above(l as f32, r as f32, self.true_peak_linear)
             } else {
                 (l.abs() as f32).max(r.abs() as f32)
             };
@@ -326,13 +327,17 @@ impl LufsMeter {
 
     /// Get current readings as a snapshot.
     pub fn readings(&self) -> LufsReadings {
+        // The peaks of the last frames, which the true-peak resampler makes
+        // only once the stream ends (#1942): read on a copy, so the meter
+        // goes on as it was.
+        let tail = if self.oversample { self.tp_detector.clone().flush() } else { 0.0 };
         LufsReadings {
             momentary: self.momentary_lufs,
             short_term: self.short_term_lufs,
             integrated: self.integrated_lufs,
             loudness_range: self.loudness_range,
-            true_peak_dbfs: self.true_peak_dbfs,
-            true_peak_linear: self.true_peak_linear,
+            true_peak_dbfs: if tail > self.true_peak_linear { 20.0 * tail.log10() } else { self.true_peak_dbfs },
+            true_peak_linear: self.true_peak_linear.max(tail),
         }
     }
 
