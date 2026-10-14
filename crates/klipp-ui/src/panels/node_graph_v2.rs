@@ -323,6 +323,12 @@ pub struct NodeGraphV2Panel {
     /// the viewers to their right) is fitted again; framed for the old
     /// size, most of the graph sat off the canvas.
     fitted_view: Option<(egui::Vec2, f32, egui::Vec2)>,
+    /// A refit asked for by an edit, taken only while the view is still
+    /// the one framed ([`Self::refit_if_untouched`]).
+    refit_untouched: bool,
+    /// How many times an edit's refit has framed the view: for the tests.
+    #[cfg(test)]
+    edit_refits: usize,
     /// Per-ExternalMatte-node thumbnail cache. Keyed by node id so
     /// two ExternalMatte nodes with different images don't collide;
     /// the stored `PathBuf` lets us invalidate when the user picks a
@@ -524,6 +530,9 @@ impl Default for NodeGraphV2Panel {
             grade_move_root: None,
             fit_pending: false,
             fitted_view: None,
+            refit_untouched: false,
+            #[cfg(test)]
+            edit_refits: 0,
             matte_thumbs: std::collections::HashMap::new(),
             output_thumbs: std::collections::HashMap::new(),
             last_visible_thumb_nodes: Vec::new(),
@@ -559,6 +568,13 @@ impl NodeGraphV2Panel {
 
     /// Reframe the graph after moving its panel to a different dock.
     pub fn request_fit(&mut self) { self.fit_pending = true; }
+
+    /// Reframe the graph after an edit that may have put nodes outside
+    /// the view (a batch of graph ops, #1905), on the next frame, unless
+    /// the view has been moved since it was last framed: a view the
+    /// person moved stays where they put it. Asked any number of times
+    /// before that frame, it frames once.
+    pub fn refit_if_untouched(&mut self) { self.refit_untouched = true; }
 
     /// Capture the current pan + zoom into bookmark slot `slot`
     /// (0..8 → hotkeys 1..9). Out-of-range slots are silently
@@ -1129,10 +1145,17 @@ impl NodeGraphV2Panel {
         let resized_fit = self.fitted_view.is_some_and(|(pan, zoom, size)| {
             pan == self.pan && zoom == self.zoom && (size - canvas_rect.size()).length() > 2.0
         });
+        let untouched = self.fitted_view.is_some_and(|(pan, zoom, _)| pan == self.pan && zoom == self.zoom);
+        let edit_refit = std::mem::take(&mut self.refit_untouched) && untouched;
+        #[cfg(test)]
+        if edit_refit {
+            self.edit_refits += 1;
+        }
         let need_fit = fit_clicked
             || f_pressed
             || self.fit_pending
             || resized_fit
+            || edit_refit
             || self.last_fit_clip != Some(clip_id);
         if need_fit && !graph.nodes().is_empty() {
             self.fit_to_nodes(graph, canvas_rect);
@@ -5908,6 +5931,34 @@ pub(crate) mod canvas_command_tests {
         assert!(tall < wide * 0.6, "fitted again for the narrow canvas: {wide} then {tall}");
         h.panel.zoom = 1.7;
         assert_eq!(show(&mut h, egui::vec2(1600.0, 260.0)), 1.7, "a zoomed view is left alone");
+    }
+
+    /// After a batch of graph ops (#1905), an untouched view is framed
+    /// again, once however many edits asked, and takes in a node the
+    /// batch put far off; a view moved by hand stays as it was.
+    #[test]
+    fn an_edit_refits_an_untouched_view_once() {
+        let mut h = Harness::new();
+        h.panel.request_fit();
+        h.settle();
+        let framed = (h.panel.pan, h.panel.zoom);
+        // A node far to the right, as a batch might add it.
+        let far = h.graph.nodes.last().unwrap().id;
+        h.graph.node_positions.insert(far, NodePos { x: 4000.0, y: 900.0 });
+        for _ in 0..3 {
+            h.panel.refit_if_untouched();
+        }
+        h.settle();
+        assert_eq!(h.panel.edit_refits, 1, "one refit for the batch");
+        assert_ne!((h.panel.pan, h.panel.zoom), framed, "framed again to take in the far node");
+        // Moved by hand: left alone.
+        h.panel.pan += egui::vec2(37.0, 0.0);
+        let moved = (h.panel.pan, h.panel.zoom);
+        h.graph.node_positions.insert(far, NodePos { x: -4000.0, y: -900.0 });
+        h.panel.refit_if_untouched();
+        h.settle();
+        assert_eq!((h.panel.pan, h.panel.zoom), moved, "a moved view stays");
+        assert_eq!(h.panel.edit_refits, 1);
     }
 
     /// Real pointer interactions, held against the commands from the grade
