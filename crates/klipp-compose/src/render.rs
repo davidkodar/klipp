@@ -129,6 +129,10 @@ pub struct SourceFrame {
     pub pts: Option<f64>,
 }
 
+/// A clip's frames on the GPU by clip time (#1988), as
+/// [`FrameSource::temporal_frames_on_gpu`] gives them.
+pub type GpuFrameProviderFn = Box<dyn FnMut(f64) -> Option<Arc<dyn klipp_nodes::frame_context::GpuFramePixels>> + Send>;
+
 /// Where decoded frames come from. The viewer answers from its playback
 /// decoders, export from its sequential ones; the renderer does not care.
 /// Frames of a clip's media at other clip times, in linear RGBA f32 in
@@ -211,6 +215,15 @@ pub trait FrameSource {
     /// bounds check. File readers override this to fit their native samples.
     fn temporal_frames_linear_at_size(&mut self, clip: &Clip, working: WorkingColorspace, _width: u32, _height: u32) -> Option<LinearFrameProviderFn> {
         self.temporal_frames_linear(clip, working)
+    }
+
+    /// [`Self::temporal_frames_linear_at_size`]'s frames where the source
+    /// holds them on the GPU already, linear in `working` at `width` ×
+    /// `height` on the render's device (#1988): a temporal denoise on the
+    /// chain binds them as they are. `None` (the default), or a time it
+    /// gives `None` for, and the neighbour is read the CPU way.
+    fn temporal_frames_on_gpu(&mut self, _clip: &Clip, _working: WorkingColorspace, _width: u32, _height: u32) -> Option<GpuFrameProviderFn> {
+        None
     }
 
     /// The source times `clip`'s media can be read at, `[start, end)` in
@@ -377,6 +390,7 @@ pub struct ClipSources<'s> {
     current: Option<(f64, Option<klipp_color::hdr::HdrTransfer>, u32, u32)>,
     encoded: Option<Option<klipp_plugin::FrameProviderFn>>,
     linear: Option<Option<LinearFrameProviderFn>>,
+    on_gpu: Option<Option<GpuFrameProviderFn>>,
 }
 
 impl<'s> ClipSources<'s> {
@@ -390,7 +404,7 @@ impl<'s> ClipSources<'s> {
             Some(_) => src.media_range(clip).unwrap_or((0.0, f64::INFINITY)),
         };
         let frame_secs = src.media_fps(clip).filter(|f| f.is_finite() && *f > 0.0).map(|f| 1.0 / f);
-        Self { src, clip, working, range, frame_secs, current: None, encoded: None, linear: None }
+        Self { src, clip, working, range, frame_secs, current: None, encoded: None, linear: None, on_gpu: None }
     }
 
     /// The frame being rendered, shown at `source_secs` with `hdr`'s
@@ -451,6 +465,21 @@ impl klipp_nodes::frame_context::SourceProvider for ClipSources<'_> {
         let t = self.reader_time(source_secs);
         match self.linear.as_mut().and_then(|r| r.as_mut()).and_then(|read| read(t)) {
             Some((rgba, width, height)) => Neighbour::Frame(LinearFrame { rgba, width, height, source_secs, pts: None }),
+            None => Neighbour::Missing(Missing::Unavailable),
+        }
+    }
+
+    /// The frame on the GPU, at the render size, where the source holds it
+    /// there (#1988); only for a render, which knows its size.
+    fn linear_on_gpu(&mut self, source_secs: f64) -> klipp_nodes::frame_context::Neighbour<klipp_nodes::frame_context::GpuLinearFrame> {
+        use klipp_nodes::frame_context::{GpuLinearFrame, Missing, Neighbour};
+        let Some((_, _, width, height)) = self.current else { return Neighbour::Missing(Missing::Unavailable) };
+        if self.on_gpu.is_none() {
+            self.on_gpu = Some(self.src.temporal_frames_on_gpu(self.clip, self.working, width, height));
+        }
+        let t = self.reader_time(source_secs);
+        match self.on_gpu.as_mut().and_then(|r| r.as_mut()).and_then(|read| read(t)) {
+            Some(pixels) => Neighbour::Frame(GpuLinearFrame { pixels, width, height, source_secs }),
             None => Neighbour::Missing(Missing::Unavailable),
         }
     }

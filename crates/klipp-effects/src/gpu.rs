@@ -331,6 +331,10 @@ pub struct GpuEffectsPipeline {
     /// (#1266): a different plate can't go in until that chain is
     /// submitted, since an upload lands before the whole encoder runs.
     plate_read_in_chain: bool,
+    /// Temporal noise reduction on the chain (#1988): the chain's picture
+    /// against up to two neighbour frames in buffers of their own.
+    temporal_denoise_pipeline: wgpu::ComputePipeline,
+    temporal_denoise_bgl: wgpu::BindGroupLayout,
     // Compute pipeline — standalone soft-clip / hard-clip transform
     // (per-channel Reinhard rolloff above threshold). Value
     // transform, not a matte producer.
@@ -1155,6 +1159,34 @@ impl GpuEffectsPipeline {
             SHADER_DIFFERENCE_KEY,
         );
 
+        // Temporal noise reduction (#1988): the effects layout plus the
+        // two neighbour frames, linear working-space like the input.
+        let temporal_denoise_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("temporal_denoise_bgl"),
+            entries: &[
+                storage(0, true),
+                storage(1, false),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                storage(3, true),
+                storage(4, true),
+            ],
+        });
+        let temporal_denoise_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("temporal_denoise_pl"),
+            bind_group_layouts: &[&temporal_denoise_bgl],
+            push_constant_ranges: &[],
+        });
+        let temporal_denoise_pipeline = create_pipeline(&device, &temporal_denoise_pl, "temporal_denoise", SHADER_TEMPORAL_DENOISE);
+
         // Mask v2 bind group layout — purpose-built for the
         // storage-buffer mask architecture. 4 bindings:
         //   0: output (storage, write) — the matte vec4<f32> buffer
@@ -1656,6 +1688,8 @@ impl GpuEffectsPipeline {
             plate_buf: None,
             plate_key: None,
             plate_read_in_chain: false,
+            temporal_denoise_pipeline,
+            temporal_denoise_bgl,
             soft_clip_pipeline,
             grain_pipeline,
             alpha_blur_h_pipeline,
@@ -4947,6 +4981,78 @@ impl GpuEffectsPipeline {
     /// executor can skip building the resized plate at all.
     pub fn has_difference_key_plate(&self, key: (u64, u32, u32)) -> bool {
         self.plate_buf.is_some() && self.plate_key == Some(key)
+    }
+
+    /// A neighbour frame for [`Self::apply_temporal_denoise_chain`], from
+    /// linear working-space pixels on the CPU: a buffer of its own, never
+    /// the chain's or the stack's, which the caller holds (an `Arc`) until
+    /// the chain that reads it is submitted. `None` without a device or
+    /// when the buffer can't be made.
+    pub fn upload_neighbour(&self, linear: &[f32]) -> Option<std::sync::Arc<wgpu::Buffer>> {
+        if self.is_device_lost() || linear.is_empty() {
+            return None;
+        }
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("temporal_neighbour"),
+            size: std::mem::size_of_val(linear) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.upload_frame(&buf, bytemuck::cast_slice(linear));
+        Some(std::sync::Arc::new(buf))
+    }
+
+    /// Dispatch-only temporal noise reduction (#1988): the chain's picture
+    /// (in `buf_a` when `in_is_a`) against `neighbours` (none to two, each
+    /// a frame of the picture's size), written to the other slot, as
+    /// `temporal_denoise::denoise_frame` draws it. `false`, nothing
+    /// recorded, without a chain, with more than two neighbours or one of
+    /// the wrong size; the caller takes the CPU route then. `luma` is the
+    /// guard's brightness weights, `temporal_denoise::LUMA` as the CPU
+    /// takes them.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_temporal_denoise_chain(&mut self, in_is_a: bool, width: u32, height: u32, neighbours: &[&wgpu::Buffer], threshold: f32, strength: f32, luma: [f32; 3]) -> bool {
+        let bytes = u64::from(width) * u64::from(height) * 16;
+        if self.is_device_lost() || self.chain_encoder.is_none() || neighbours.len() > 2 || neighbours.iter().any(|n| n.size() < bytes) {
+            return false;
+        }
+        if self.buf_a.is_none() || self.buf_b.is_none() {
+            return false;
+        }
+        let slot = self.next_params_slot();
+        self.write_chain_params(slot, &GpuTemporalDenoiseParams {
+            width,
+            height,
+            count: neighbours.len() as u32,
+            _pad0: 0,
+            denom: crate::temporal_denoise::denominator(threshold),
+            strength: strength.clamp(0.0, 1.0),
+            _pad1: 0,
+            _pad2: 0,
+            luma: [luma[0], luma[1], luma[2], 0.0],
+        });
+        let (input, output) = match (self.buf_a.as_ref(), self.buf_b.as_ref()) {
+            (Some(a), Some(b)) if in_is_a => (a, b),
+            (Some(a), Some(b)) => (b, a),
+            _ => return false,
+        };
+        // An unread slot still needs a buffer bound: the input, read only.
+        let before = neighbours.first().copied().unwrap_or(input);
+        let after = neighbours.get(1).copied().unwrap_or(input);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("chain_bg_temporal_denoise"),
+            layout: &self.temporal_denoise_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: self.chain_params.buffer(slot).as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: before.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: after.as_entire_binding() },
+            ],
+        });
+        let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
+        Self::record_compute_dispatch(enc, &self.temporal_denoise_pipeline, &bind_group, (width * height).div_ceil(WORKGROUP_SIZE));
+        true
     }
 
     /// Dispatch-only ApplyMatte: blend the chain's picture (graded) with
@@ -8480,6 +8586,23 @@ struct GpuLumaKeyParams {
     luma: [f32; 4],
 }
 // 8 u32 + vec4 = 48 bytes (well under 256-byte PARAMS_SIZE)
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuTemporalDenoiseParams {
+    width: u32,
+    height: u32,
+    /// Neighbours bound (0 to 2); a slot past it is bound but not read.
+    count: u32,
+    _pad0: u32,
+    /// `temporal_denoise::denominator(threshold)`, worked out on the host.
+    denom: f32,
+    strength: f32,
+    _pad1: u32,
+    _pad2: u32,
+    /// The guard's luma weights, as the caller passes them; `.w` unused.
+    luma: [f32; 4],
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -14650,6 +14773,67 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
+/// Temporal noise reduction (#1988): `temporal_denoise::denoise_frame`
+/// for one pixel, line for line. The current pixel weighs 1; each
+/// neighbour weighs a gaussian on its luma's difference from the
+/// current one's; the weighted average is mixed back by `strength`.
+/// Alpha is the current pixel's.
+const SHADER_TEMPORAL_DENOISE: &str = concat!(
+    "
+struct Params {
+    width: u32,
+    height: u32,
+    count: u32,
+    _pad0: u32,
+    denom: f32,
+    strength: f32,
+    _pad1: u32,
+    _pad2: u32,
+    luma: vec4<f32>,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(3) var<storage, read> before: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read> after: array<vec4<f32>>;
+",
+    shader_pixel_storage_wgsl!(),
+    "
+
+fn td_luma(p: vec3<f32>) -> f32 {
+    return params.luma.x * p.x + params.luma.y * p.y + params.luma.z * p.z;
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let cur = unpack(input[idx]);
+    let cur_luma = td_luma(cur.xyz);
+    var sum = cur.xyz;
+    var weight = 1.0;
+    if params.count > 0u {
+        let n = unpack(before[idx]).xyz;
+        let d = cur_luma - td_luma(n);
+        let w = exp(-(d * d) / params.denom);
+        sum = sum + n * w;
+        weight = weight + w;
+    }
+    if params.count > 1u {
+        let n = unpack(after[idx]).xyz;
+        let d = cur_luma - td_luma(n);
+        let w = exp(-(d * d) / params.denom);
+        sum = sum + n * w;
+        weight = weight + w;
+    }
+    let averaged = sum * (1.0 / weight);
+    let out = cur.xyz + (averaged - cur.xyz) * params.strength;
+    output[idx] = pack(vec4<f32>(out, cur.w));
+}
+"
+);
+
 const SHADER_LUMA_KEY: &str = concat!(
     "
 struct Params {
@@ -18234,6 +18418,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_SPRITE_ROWS_F16", SHADER_SPRITE_ROWS_F16),
         ("SHADER_SPRITE_BOX_F16", SHADER_SPRITE_BOX_F16),
         ("SHADER_DIFFERENCE_KEY", SHADER_DIFFERENCE_KEY),
+        ("SHADER_TEMPORAL_DENOISE", SHADER_TEMPORAL_DENOISE),
         ("SHADER_FILM_GRAIN", SHADER_FILM_GRAIN),
         ("SHADER_FOCUS_BLUR_BLEND", SHADER_FOCUS_BLUR_BLEND),
         ("SHADER_FOCUS_BLUR_PREMULTIPLY", SHADER_FOCUS_BLUR_PREMULTIPLY),

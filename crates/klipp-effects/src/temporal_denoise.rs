@@ -33,6 +33,18 @@ use rayon::prelude::*;
 /// which is a frame blend rather than a denoise.
 pub const MIN_THRESHOLD: f32 = 1e-4;
 
+/// The weights the guard's brightness is taken with, BT.709, in every
+/// working space (#2019). One copy: the CPU passes below and the GPU
+/// kernel (`gpu::GpuContext::apply_temporal_denoise_chain`) both read it.
+pub const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
+
+/// The gaussian's denominator for a `threshold`: `2 · t²`, the threshold
+/// floored at [`MIN_THRESHOLD`] first. Shared with the GPU kernel.
+pub fn denominator(threshold: f32) -> f32 {
+    let t = threshold.max(MIN_THRESHOLD);
+    2.0 * t * t
+}
+
 /// The luma of a linear RGB pixel, BT.709.
 ///
 /// The guard compares brightness rather than each channel: chroma noise
@@ -41,7 +53,7 @@ pub const MIN_THRESHOLD: f32 = 1e-4;
 /// at removing.
 #[inline]
 fn luma(p: &[f32]) -> f32 {
-    0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]
+    LUMA[0] * p[0] + LUMA[1] * p[1] + LUMA[2] * p[2]
 }
 
 /// One pixel's temporal average, given its neighbours' values.
@@ -50,12 +62,12 @@ fn luma(p: &[f32]) -> f32 {
 /// parallel loop should not each carry their own copy of it.
 #[inline]
 pub fn blend_pixel(cur: [f32; 3], neighbours: &[[f32; 3]], threshold: f32, strength: f32) -> [f32; 3] {
-    let cur_luma = 0.2126 * cur[0] + 0.7152 * cur[1] + 0.0722 * cur[2];
+    let cur_luma = luma(&cur);
     let denom = 2.0 * threshold * threshold;
     let mut sum = cur;
     let mut weight = 1.0f32;
     for n in neighbours {
-        let n_luma = 0.2126 * n[0] + 0.7152 * n[1] + 0.0722 * n[2];
+        let n_luma = luma(n);
         let d = cur_luma - n_luma;
         // A gaussian on the brightness difference: identical pixels
         // weigh 1, and the weight falls away as the pixel changes, so
@@ -99,12 +111,11 @@ pub fn denoise_frame(
     if strength <= 0.0 || neighbours.is_empty() {
         return current.to_vec();
     }
-    let threshold = threshold.max(MIN_THRESHOLD);
     let usable: Vec<&&[f32]> = neighbours.iter().filter(|n| n.len() == current.len()).collect();
     if usable.is_empty() {
         return current.to_vec();
     }
-    let denom = 2.0 * threshold * threshold;
+    let denom = denominator(threshold);
 
     let mut out = current.to_vec();
     out.par_chunks_exact_mut(4).enumerate().for_each(|(i, px)| {
@@ -114,7 +125,7 @@ pub fn denoise_frame(
         let mut weight = 1.0f32;
         for n in &usable {
             let np = &n[base..base + 3];
-            let n_luma = 0.2126 * np[0] + 0.7152 * np[1] + 0.0722 * np[2];
+            let n_luma = luma(np);
             let d = cur_luma - n_luma;
             let w = (-(d * d) / denom).exp();
             for c in 0..3 {

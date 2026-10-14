@@ -225,6 +225,38 @@ impl<'a> ExportFrameSource<'a> {
         }
     }
 
+    /// A forward clip's stream frames a temporal node may take as its
+    /// neighbours (#1988): the one shown last, the one shown and the one
+    /// read next, with half a source frame (the match tolerance), the
+    /// basis change and the stream's size. `None` where the neighbours
+    /// stay with the reader: turned off, a reversed clip, another working
+    /// space, no stream yet, or a scene-referred source.
+    #[allow(clippy::type_complexity)]
+    fn stream_neighbours(&mut self, clip: &Clip, working: WorkingColorspace) -> Option<(Vec<Decoded>, f64, Option<[[f32; 3]; 3]>, u32, u32)> {
+        if !self.neighbours_from_stream || clip.is_reversed() || working != self.working {
+            return None;
+        }
+        let Self { streams, gpu, .. } = self;
+        let stream = streams.get_mut(&clip.id)?;
+        // A scene-referred frame (log, HLG, PQ) travels as codes the
+        // renderer expands itself, a route the neighbour reader matches
+        // and `source_linear` is not yet held to: its neighbours stay
+        // with the reader until an export test holds the two together.
+        if stream.decoder.is_scene_referred() {
+            return None;
+        }
+        stream.keeps_previous = true;
+        // The frame after is the one the stream reads next anyway:
+        // pulling it now moves that decode earlier, it does not add one
+        // or change the order the decoder gives frames in.
+        if stream.next.is_none() {
+            stream.next = stream.pull(gpu);
+        }
+        let half_frame = 0.5 / stream.decoder.source_fps().max(1.0);
+        let held: Vec<Decoded> = [&stream.previous, &stream.current, &stream.next].into_iter().flatten().cloned().collect();
+        Some((held, half_frame, stream.to_working, stream.width, stream.height))
+    }
+
     /// Whether temporal nodes' neighbours come from the clips' streams
     /// (#1988), on unless turned off; off, every neighbour is decoded
     /// again by the neighbour reader, as before: what a test compares
@@ -447,34 +479,34 @@ impl FrameSource for ExportFrameSource<'_> {
     /// reader, as before. A forward export then decodes nothing twice.
     fn temporal_frames_linear_at_size(&mut self, clip: &Clip, working: WorkingColorspace, width: u32, height: u32) -> Option<klipp_compose::LinearFrameProviderFn> {
         let mut reader = self.temporal_frames_linear(clip, working).map(|reader| klipp_compose::render::fit_linear_reader(reader, width, height));
-        if !self.neighbours_from_stream || clip.is_reversed() || working != self.working {
-            return reader;
-        }
-        let Self { streams, gpu, .. } = self;
-        let Some(stream) = streams.get_mut(&clip.id) else { return reader };
-        // A scene-referred frame (log, HLG, PQ) travels as codes the
-        // renderer expands itself, a route the neighbour reader matches
-        // and `source_linear` is not yet held to: its neighbours stay
-        // with the reader until an export test holds the two together.
-        if stream.decoder.is_scene_referred() {
-            return reader;
-        }
-        stream.keeps_previous = true;
-        // The frame after is the one the stream reads next anyway:
-        // pulling it now moves that decode earlier, it does not add one
-        // or change the order the decoder gives frames in.
-        if stream.next.is_none() {
-            stream.next = stream.pull(gpu);
-        }
-        let half_frame = 0.5 / stream.decoder.source_fps().max(1.0);
-        let held: Vec<Decoded> = [&stream.previous, &stream.current, &stream.next].into_iter().flatten().cloned().collect();
-        let (to_working, sw, sh) = (stream.to_working, stream.width, stream.height);
+        let Some((held, half_frame, to_working, sw, sh)) = self.stream_neighbours(clip, working) else { return reader };
         let source_in = clip.source_in.to_secs_f64();
         Some(Box::new(move |t: f64| {
             let secs = (source_in + t).max(0.0);
             match held.iter().find(|d| (d.pts - secs).abs() < half_frame) {
                 Some(d) => Some((klipp_compose::render::source_linear(source_frame(d, to_working, sw, sh), width, height), width, height)),
                 None => reader.as_mut()?(t),
+            }
+        }))
+    }
+
+    /// The stream's held frames that are on the GPU already, at the render
+    /// size (#1988): a temporal denoise on the chain binds them as they
+    /// are, nothing read back or uploaded. A software-decoded frame, or one
+    /// of another size (a picture fitted into the frame), is `None`, and
+    /// read the CPU way.
+    fn temporal_frames_on_gpu(&mut self, clip: &Clip, working: WorkingColorspace, width: u32, height: u32) -> Option<klipp_compose::GpuFrameProviderFn> {
+        let (held, half_frame, _, sw, sh) = self.stream_neighbours(clip, working)?;
+        if (sw, sh) != (width, height) {
+            return None;
+        }
+        let source_in = clip.source_in.to_secs_f64();
+        Some(Box::new(move |t: f64| {
+            let secs = (source_in + t).max(0.0);
+            let d = held.iter().find(|d| (d.pts - secs).abs() < half_frame)?;
+            match &d.pixels {
+                DecodedFrame::GpuLinear(buf) => Some(Arc::new(GpuLinearFrame { buf: Arc::clone(buf), width, height, linear: Arc::clone(&d.linear) }) as Arc<dyn klipp_nodes::frame_context::GpuFramePixels>),
+                DecodedFrame::Rgba64(_) => None,
             }
         }))
     }
@@ -641,6 +673,16 @@ struct GpuLinearFrame {
     width: u32,
     height: u32,
     linear: Arc<std::sync::OnceLock<Arc<Vec<f32>>>>,
+}
+
+impl klipp_nodes::frame_context::GpuFramePixels for GpuLinearFrame {
+    fn buffer(&self) -> &wgpu::Buffer {
+        &self.buf
+    }
+
+    fn read(&self) -> Arc<Vec<f32>> {
+        klipp_compose::GpuPixels::read(self)
+    }
 }
 
 impl klipp_compose::GpuPixels for GpuLinearFrame {
