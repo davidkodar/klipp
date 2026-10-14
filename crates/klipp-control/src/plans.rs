@@ -270,6 +270,12 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
         Some(klipp_compose::eval::evaluate_clip_own_transform(clip, clip_secs.max(0.0), &klipp_compose::eval::eval_context(clip, when, fps)))
     }
 
+    /// The bed's beats when they have been read; asking starts a read in
+    /// the background for the next check, as a cut to the music does.
+    fn beats(&self, item: &klipp_media::MediaItem) -> Option<(f32, Vec<f64>)> {
+        crate::cuts::bed_beats(&item.path).map(|b| (b.confidence, b.beat_times))
+    }
+
     /// The beat sheet, for a screen recording only: one made for camera
     /// footage the metadata took for a screen would hold its shots to a
     /// screen's rules (#1568).

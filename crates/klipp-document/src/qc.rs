@@ -15,6 +15,15 @@ const SETTLE_NEAR_SECS: f64 = 0.6;
 const READ_MIN_SECS: f64 = 2.0;
 /// A feature of the brief needs at least this long on screen to register.
 const FEATURE_MIN_SECS: f64 = 3.0;
+/// An edge this close to one of the music's beats is on it, at the
+/// least: a frame is the finer bound (#1908 review). A wider window
+/// against beats half a second apart catches half the timeline.
+const BEAT_NEAR_SECS: f64 = 0.04;
+/// How far either side of a title the picture cuts around it are looked
+/// for, to see the stretch is cut to the music too.
+const BEAT_CONTEXT_SECS: f64 = 4.0;
+/// Under this the beat analysis is not sure there is a pulse to cut to.
+const BEAT_SURE: f32 = 0.3;
 /// A title over a screen that is changing for longer than this fights it.
 const BUSY_UNDER_TITLE_SECS: f64 = 0.5;
 /// Shots all within this much of their mean length are a flat cadence.
@@ -644,17 +653,56 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
     let cuts: Vec<f64> = pictures.iter().flat_map(|(_, c)| [secs(c.timeline_in), secs(c.timeline_out)]).collect();
     let titles: Vec<&Clip> = seq.tracks.iter().filter(|t| t.kind == TrackKind::Text && t.visible).flat_map(|t| t.clips.iter()).filter(|c| c.enabled && matches!(c.kind, ClipKind::Title(_))).collect();
     let captions: Vec<&Clip> = seq.tracks.iter().filter(|t| t.kind == TrackKind::Subtitle && t.visible).flat_map(|t| t.clips.iter()).filter(|c| c.enabled).collect();
+    // The music's beats on the timeline, when the analysis is sure of
+    // them: text cut to the music is timed by them, not by reading
+    // speed alone (#1908).
+    let mut beats_at: Vec<f64> = Vec::new();
+    for t in &seq.tracks {
+        for m in t.clips.iter().filter(|m| is_heard(seq, pool, t, m)) {
+            let Some(item) = m.media_id().and_then(|id| pool.get(&id)) else { continue };
+            if sound_role(seq, m) != klipp_core::ClipRole::Music && transcripts.library_role(item) != Some(klipp_core::ClipRole::Music) {
+                continue;
+            }
+            let Some((_, beats)) = transcripts.beats(item).filter(|(sure, _)| *sure > BEAT_SURE) else { continue };
+            let (s_in, s_out, speed) = (secs(m.source_in), secs(m.source_out), m.speed.abs().max(1e-3));
+            beats_at.extend(beats.iter().filter(|b| **b >= s_in && **b < s_out).map(|b| secs(m.timeline_in) + (b - s_in) / speed));
+        }
+    }
+    let near = BEAT_NEAR_SECS.min(frame.max(1e-3));
+    let on_beat = |t: f64| beats_at.iter().any(|b| (b - t).abs() <= near + 1e-6);
+    // The stretch round a title is cut to the music when the picture
+    // cuts on either side of it land on beats too: one title's edges on
+    // beats can be chance, a run of cuts on them is not.
+    let beat_cut_round = |a: f64, b: f64| {
+        let before = cuts.iter().copied().filter(|e| *e <= a + near && *e >= a - BEAT_CONTEXT_SECS).reduce(f64::max);
+        let after = cuts.iter().copied().filter(|e| *e >= b - near && *e <= b + BEAT_CONTEXT_SECS).reduce(f64::min);
+        matches!((before, after), (Some(x), Some(y)) if on_beat(x) && on_beat(y))
+    };
     for c in &titles {
         let ClipKind::Title(td) = &c.kind else { continue };
         let (a, b) = (secs(c.timeline_in), secs(c.timeline_out));
-        if let Some(cut) = cuts.iter().copied().filter(|e| *e > a + frame && *e < b - frame).reduce(f64::min) {
-            add(Severity::Warning, "title_across_cut", Some(cut), format!("{} is up from {a:.2} to {b:.2} s and the picture changes at {cut:.2} s", clip_label(pool, c)), "A title does not run across a shot change: move it inside one shot");
+        // In and out on the music's beats: text cut to the music.
+        let rhythmic = on_beat(a) && on_beat(b) && beat_cut_round(a, b);
+        let mut crossed: Vec<f64> = cuts.iter().copied().filter(|e| *e > a + frame && *e < b - frame).collect();
+        crossed.sort_by(f64::total_cmp);
+        crossed.dedup_by(|x, y| (*x - *y).abs() < 1e-6);
+        if let Some(&cut) = crossed.first() {
+            if rhythmic && crossed.iter().all(|e| on_beat(*e)) {
+                add(Severity::Note, "title_over_beat_cuts", Some(a), format!("{} is held from {a:.2} to {b:.2} s over {} cut{} on the music's beats: a heading over a cut-to-music run", clip_label(pool, c), crossed.len(), if crossed.len() == 1 { "" } else { "s" }), "Nothing to change if it is meant as one");
+            } else {
+                add(Severity::Warning, "title_across_cut", Some(cut), format!("{} is up from {a:.2} to {b:.2} s and the picture changes at {cut:.2} s", clip_label(pool, c)), "A title does not run across a shot change: move it inside one shot");
+            }
         }
         let words: usize = td.objects.iter().filter_map(|o| match &o.content { TitleObjectContent::TextBox(tb) if o.visible => Some(tb.text.split_whitespace().count()), _ => None }).sum();
         let montage = in_montage(a, b);
         let needs = (words as f64 * 0.3).max(if montage { 0.3 } else { 1.5 });
+        let on_the_music = (words as f64 * 0.3).max(0.3);
         if b - a + 1e-6 < needs {
-            add(Severity::Warning, "title_short", Some(a), format!("{} has {words} word{} and {:.1} s to be read in", clip_label(pool, c), if words == 1 { "" } else { "s" }, b - a), &format!("Hold it at least {needs:.1} s: about a third of a second a word{}", if montage { " in a montage" } else { ", never under a second and a half" }));
+            if rhythmic && b - a + 1e-6 >= on_the_music {
+                add(Severity::Note, "title_on_beat", Some(a), format!("{} has {words} word{} and {:.1} s, in and out on the music's beats: rhythmic text, held to a third of a second a word", clip_label(pool, c), if words == 1 { "" } else { "s" }, b - a), "Keep it if it is cut to the music; hold it longer if it has to be read");
+            } else {
+                add(Severity::Warning, "title_short", Some(a), format!("{} has {words} word{} and {:.1} s to be read in", clip_label(pool, c), if words == 1 { "" } else { "s" }, b - a), &format!("Hold it at least {needs:.1} s: about a third of a second a word{}", if montage { " in a montage" } else { ", never under a second and a half" }));
+            }
         }
         // Over a screen that is changing, a title fights the picture —
         // when the change is under it: captions in a footer beneath an
@@ -1181,6 +1229,76 @@ mod tests {
         seq.tracks[0].clips[0].timeline_in = tc(0.0);
         seq.tracks[0].clips[0].timeline_out = tc(3.5);
         assert!(!rules(&check(&seq, &pool, &Screen(screen))).contains(&"title_over_busy"));
+    }
+
+    /// #1908: a promo's text cut to the music. A one-word title in and
+    /// out on the bed's beats is rhythmic, a note not a reading fault; a
+    /// heading held over cuts that land on the beats is one too. Off the
+    /// beat, or with no music under it, both are judged as before.
+    #[test]
+    fn text_cut_to_the_music_is_read_as_rhythm() {
+        struct Bed(klipp_core::MediaId, f64);
+        impl Transcripts for Bed {
+            fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+            fn beats(&self, item: &klipp_media::MediaItem) -> Option<(f32, Vec<f64>)> {
+                (item.id == self.0).then(|| (0.9, (0..200).map(|i| f64::from(i) * self.1).collect()))
+            }
+        }
+        // Shots cut at 2, 4 and 6 s, on the beats; a music bed under them.
+        let (mut seq, mut pool, _) = screencast(&[(0.0, 2.0, 0.0), (2.0, 4.0, 20.0), (4.0, 6.0, 40.0), (6.0, 8.0, 50.0)]);
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/bed.wav".into(), None);
+        item.duration = tc(60.0);
+        item.has_audio = true;
+        let bed = pool.add(item);
+        let mut a = Track::new("A1", TrackKind::Audio);
+        let mut music = Clip::media(bed, tc(0.0), tc(8.0), tc(0.0), tc(8.0));
+        music.role = klipp_core::ClipRole::Music;
+        a.clips.push(music);
+        seq.tracks.push(a);
+        let title = |text: &str, from: f64, to: f64| Clip { id: klipp_core::ClipId::new(), kind: ClipKind::Title(klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: text.into(), ..Default::default() })), source_in: tc(0.0), source_out: tc(to - from), ..Clip::gap(tc(from), tc(to)) };
+        let mut text = Track::new("T1", TrackKind::Text);
+        text.clips.push(title("Colour.", 1.0, 2.0));
+        seq.tracks.insert(0, text);
+        let found = |seq: &Sequence, t: &dyn Transcripts| rules(&check(seq, &pool, t));
+        let got = found(&seq, &Bed(bed, 0.5));
+        assert!(got.contains(&"title_on_beat") && !got.contains(&"title_short"), "{got:?}");
+        assert!(found(&seq, &crate::ops::NoTranscripts).contains(&"title_short"), "no beats read: judged as before");
+        seq.tracks[0].clips[0] = title("Colour.", 1.15, 2.15);
+        assert!(found(&seq, &Bed(bed, 0.5)).contains(&"title_short"), "off the beat: judged as before");
+        // At 140 BPM, on the beats, but the cuts round it are not: chance,
+        // not rhythm.
+        let beat = 60.0 / 140.0;
+        seq.tracks[0].clips[0] = title("Create.", 6.0 * beat, 8.0 * beat);
+        assert!(found(&seq, &Bed(bed, beat)).contains(&"title_short"), "cuts at 2, 4, 6 s are off a 140 BPM grid");
+        // Cut to that grid, a 0.8 s title whose edges sit 0.1 s off two
+        // beats is still not on them.
+        {
+            let v = seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+            for (k, c) in seq.tracks[v].clips.iter_mut().enumerate() {
+                (c.timeline_in, c.timeline_out) = (tc(k as f64 * 5.0 * beat), tc((k + 1) as f64 * 5.0 * beat));
+            }
+        }
+        seq.tracks[0].clips[0] = title("Create.", 3.0 * beat + 0.1, 3.0 * beat + 0.9);
+        assert!(found(&seq, &Bed(bed, beat)).contains(&"title_short"), "a tenth of a second off is off");
+        seq.tracks[0].clips[0] = title("Create.", 3.0 * beat, 5.0 * beat);
+        assert!(found(&seq, &Bed(bed, beat)).contains(&"title_on_beat"), "on that grid it is rhythm");
+        {
+            let v = seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+            for (k, c) in seq.tracks[v].clips.iter_mut().enumerate() {
+                (c.timeline_in, c.timeline_out) = (tc(k as f64 * 2.0), tc((k + 1) as f64 * 2.0));
+            }
+        }
+        // A heading held over the cuts at 2 and 4 s.
+        seq.tracks[0].clips[0] = title("Keep your flow.", 1.5, 5.0);
+        let got = found(&seq, &Bed(bed, 0.5));
+        assert!(got.contains(&"title_over_beat_cuts") && !got.contains(&"title_across_cut"), "{got:?}");
+        // A cut off the beat under it.
+        let v = seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+        seq.tracks[v].clips[1].timeline_out = tc(4.3);
+        seq.tracks[v].clips[2].timeline_in = tc(4.3);
+        assert!(found(&seq, &Bed(bed, 0.5)).contains(&"title_across_cut"));
     }
 
     /// #1909: feature captions in a footer beneath an inset recording
