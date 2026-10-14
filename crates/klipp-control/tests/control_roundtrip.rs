@@ -2134,6 +2134,16 @@ fn a_reviewed_finding_is_kept_apart_with_its_reason() {
 
     // The stand-in UI does not apply edits: put the decision, and one
     // whose finding is gone, where the app would.
+    // A finding marked to fix stays counted and carries its review (#1978).
+    let mut to_fix = saved[0].clone();
+    to_fix.decision = klipp_timeline::ReviewDecision::ToFix;
+    to_fix.rationale = "write a brief".into();
+    h.sequence.write().unwrap().reviews = vec![to_fix];
+    let r = h.ok(json!({ "method": "check" }));
+    let f = r["findings"].as_array().unwrap().iter().find(|f| f["rule"] == "no_brief").unwrap_or_else(|| panic!("{r}")).clone();
+    assert_eq!(f["review"]["decision"], "to_fix", "{f}");
+    assert_eq!(f["review"]["rationale"], "write a brief");
+
     let gone = klipp_timeline::FindingReview { finding_id: "check/flash/25/0123456789ab".into(), decision: klipp_timeline::ReviewDecision::Accepted, rationale: "a flash on the beat".into(), at_secs: Some(1.0), clip_id: None, revision: 1 };
     h.sequence.write().unwrap().reviews = vec![saved[0].clone(), gone];
     let r = h.ok(json!({ "method": "check" }));

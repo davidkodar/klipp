@@ -133,6 +133,8 @@ impl KlippApp {
             colour_check: Default::default(),
             local_control: None,
             colour_tool_reply: None,
+            delivery_check: Default::default(),
+            delivery_reply: None,
             sound_over_time: Default::default(),
             narrate: Default::default(),
             preferences_panel: PreferencesPanel::default(),

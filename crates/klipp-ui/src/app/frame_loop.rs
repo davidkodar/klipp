@@ -1233,6 +1233,19 @@ impl KlippApp {
             self.take_colour_tool_reply(ctx);
         }
 
+        // Delivery Check window (#1978): the check's findings, reviewed
+        // where they are read. Its request keeps running with the window
+        // closed; the answer is there when it opens again.
+        if self.state.show_delivery_check {
+            let mut open = self.state.show_delivery_check;
+            let action = self.delivery_check.show(ctx, &self.theme, self.local_control.is_some(), &mut open);
+            self.state.show_delivery_check = open;
+            self.act_on_delivery_check(action);
+        }
+        if self.delivery_reply.is_some() {
+            self.take_delivery_reply(ctx);
+        }
+
         // Sound Over Time window: a whole file's sound at once.
         if self.state.show_sound_over_time {
             let mut open = self.state.show_sound_over_time;
