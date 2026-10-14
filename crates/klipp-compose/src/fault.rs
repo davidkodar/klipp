@@ -15,6 +15,8 @@ use std::sync::Mutex;
 static ANY: AtomicBool = AtomicBool::new(false);
 /// The clips whose grade runs fail.
 static CLIPS: Mutex<Vec<ClipId>> = Mutex::new(Vec::new());
+/// The clips whose grade runs give an empty picture (#1913).
+static EMPTY: Mutex<Vec<ClipId>> = Mutex::new(Vec::new());
 
 /// Runs of `clip`'s grade fail until the guard is dropped.
 #[cfg(feature = "fault-hook")]
@@ -48,4 +50,37 @@ pub(crate) fn grade_fails(clip: ClipId) -> bool {
         return false;
     }
     CLIPS.lock().unwrap_or_else(|e| e.into_inner()).contains(&clip)
+}
+
+/// Runs of `clip`'s grade give an empty picture, as a run whose result
+/// was a node with no picture did (#1913), until the guard is dropped.
+#[cfg(feature = "fault-hook")]
+pub fn empty_grade(clip: ClipId) -> EmptyFault {
+    EMPTY.lock().unwrap_or_else(|e| e.into_inner()).push(clip);
+    ANY.store(true, Ordering::SeqCst);
+    EmptyFault { clip }
+}
+
+/// A fault set by [`empty_grade`]; dropped, it's taken off.
+#[cfg(feature = "fault-hook")]
+pub struct EmptyFault {
+    clip: ClipId,
+}
+
+#[cfg(feature = "fault-hook")]
+impl Drop for EmptyFault {
+    fn drop(&mut self) {
+        let mut clips = EMPTY.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = clips.iter().position(|c| *c == self.clip) {
+            clips.remove(i);
+        }
+    }
+}
+
+/// Whether `clip`'s grade run is to give an empty picture.
+pub(crate) fn grade_gives_nothing(clip: ClipId) -> bool {
+    if !ANY.load(Ordering::SeqCst) {
+        return false;
+    }
+    EMPTY.lock().unwrap_or_else(|e| e.into_inner()).contains(&clip)
 }

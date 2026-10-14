@@ -112,8 +112,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut GradeLibraryPanelState, library: &mut
         for grade in library.iter_mut().filter(|g| g.matches(&state.filter)) {
             if grade.texture.is_none() {
                 if let Some(t) = &grade.thumbnail {
-                    let image = egui::ColorImage::from_rgba_unmultiplied([t.width as usize, t.height as usize], &t.rgba);
-                    grade.texture = Some(ui.ctx().load_texture(format!("grade_library_{}", grade.name), image, egui::TextureOptions::LINEAR));
+                    if let Some(image) = crate::ui_util::checked_image([t.width as usize, t.height as usize], &t.rgba, "grade library thumbnail") {
+                        grade.texture = Some(ui.ctx().load_texture(format!("grade_library_{}", grade.name), image, egui::TextureOptions::LINEAR));
+                    }
                 }
             }
             let picked = state.picked.as_deref() == Some(grade.name.as_str());

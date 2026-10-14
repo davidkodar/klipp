@@ -377,7 +377,7 @@ impl KlippApp {
         {
             return;
         }
-        let color_image = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
+        let Some(color_image) = crate::ui_util::checked_image([w, h], &rgba, "source viewer frame") else { return };
         let new_size = egui::vec2(w as f32, h as f32);
         let needs_alloc = match &self.state.source_live_texture {
             Some(tex) => tex.size_vec2() != new_size,

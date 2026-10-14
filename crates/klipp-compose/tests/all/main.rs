@@ -102,3 +102,5 @@ mod truth_lanes_render;
 mod vector_glow_parity;
 #[path = "../wide_gamut_scene_export.rs"]
 mod wide_gamut_scene_export;
+#[path = "../a_grade_of_the_wrong_size.rs"]
+mod a_grade_of_the_wrong_size;

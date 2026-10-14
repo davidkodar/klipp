@@ -994,10 +994,9 @@ impl KlippApp {
                     }
                 }
                 klipp_core::ViewerMode::Source => {
-                    let image = egui::ColorImage::from_rgba_unmultiplied(
-                        [width as usize, height as usize],
-                        &rgba,
-                    );
+                    let Some(image) = crate::ui_util::checked_image([width as usize, height as usize], &rgba, "skim frame") else {
+                        return;
+                    };
                     let new_size = egui::vec2(width as f32, height as f32);
                     // Reuse the existing handle when dimensions match —
                     // avoids an allocation + lifetime crossing on every
