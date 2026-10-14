@@ -10,6 +10,10 @@ Download a searched music track OR sound effect into the media pool, keeping its
 
 Line a clip's sound up with another's — dual-system sound, a separate recorder against the camera's scratch track. It cross-correlates the two clips' audio, finds the offset, and moves clip_id so it plays in sync with reference_clip_id; it reports the match confidence and refuses when the two share no common sound. max_offset_secs bounds the search (30 by default). Both clips must carry audio.
 
+## klipp_audio_excerpt
+
+Hear a stretch of sound, from_secs to to_secs, as a 16 kHz mono 16-bit WAV: enough to judge speech, a beat or a mix, not a master. With media_id it is that file's own sound, its times the file's (clamped to its length). Without one (or with sequence true) it is the timeline's mix as the export mixes it, before loudness normalisation, at most sixty seconds from from_secs; the reply's source says so. Give both media_id and sequence and it is refused. A small excerpt (about thirty seconds) comes inline; otherwise read the WAV at the reply's path, or give path (absolute) to write it there. Use it to check a cut's sound, find where a line starts, or hear what the mix does under a title; for loudness numbers use klipp_mix_loudness, and for words klipp_transcript.
+
 ## klipp_auto_sfx
 
 Preview sound design; apply true commits one undo step: whooshes on cuts, clicks on reveals, riser into last cut. on cuts is default; transitions selects cuts with transitions; stylised selects zoom/whip/glitch/film-burn, excluding dissolve/dip. Optional media ids select sounds; otherwise preview built-in whooshes, then synthesise/import on apply. Skip conflicting placements, preserve existing clips. Place on SFX track with sfx role. When both sources are analysed, whooshes are 3 dB above the loudest underlying sound and clicks 3 dB below; otherwise -6/-8 dB.
