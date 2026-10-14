@@ -52,6 +52,14 @@ pub mod corner_pin;
 pub mod frei0r_effect;
 pub mod generator;
 pub mod gpu;
+
+/// The alpha below which a premultiplied pixel has no colour to give
+/// back: unpremultiplied, it is left black rather than divided by next to
+/// nothing. One rule for every mean and mix that unpremultiplies, on the
+/// CPU and in the shaders (`unpremultiply_min_alpha_wgsl!` in `gpu.rs`):
+/// a transition's mix, and the shutter's mean of a moving picture
+/// (#2017, #1923).
+pub const UNPREMULTIPLY_MIN_ALPHA: f32 = 1e-6;
 pub mod gpu_context;
 pub mod gpu_scopes;
 pub mod homography;

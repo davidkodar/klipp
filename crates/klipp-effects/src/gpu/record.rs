@@ -352,40 +352,9 @@ impl GpuEffectsPipeline {
                 {
                     return Recorded::Identity;
                 }
-                let rot_rad = rotation.to_radians();
-                let cos_r = rot_rad.cos();
-                let sin_r = rot_rad.sin();
-                let inv_sx = if scale_x.abs() > f32::EPSILON {
-                    1.0 / scale_x
-                } else {
-                    1.0
-                };
-                let inv_sy = if scale_y.abs() > f32::EPSILON {
-                    1.0 / scale_y
-                } else {
-                    1.0
-                };
-                let rx_rad = rotation_x.to_radians();
-                let ry_rad = rotation_y.to_radians();
-                let focal = if *perspective > 0.001 { width as f32 / *perspective } else { 0.0 };
-                let slot = rec.slots.claim(q, &TransformParams {
-                    width,
-                    height,
-                    anchor_x: *anchor_x * width as f32,
-                    anchor_y: *anchor_y * height as f32,
-                    position_x: *position_x,
-                    position_y: *position_y,
-                    cos_r,
-                    sin_r,
-                    inv_sx,
-                    inv_sy,
-                    cos_rx: rx_rad.cos(),
-                    sin_rx: rx_rad.sin(),
-                    cos_ry: ry_rad.cos(),
-                    sin_ry: ry_rad.sin(),
-                    focal,
-                    _pad: [0; 3],
-                });
+                let _ = (anchor_x, anchor_y, perspective);
+                let params = TransformParams::of(effect, width, height).expect("a Transform");
+                let slot = rec.slots.claim(q, &params);
                 (&self.transform_pipeline, slot)
             }
             BuiltinEffect::Mirror { horizontal, vertical } => {

@@ -345,6 +345,8 @@ pub struct GpuEffectsPipeline {
     transition_pipeline: wgpu::ComputePipeline,
     /// Posed piece transitions (#985): `SHADER_PIECES`.
     pieces_pipeline: wgpu::ComputePipeline,
+    /// A layer smeared across the shutter, in one pass (#1923).
+    shutter_pipeline: wgpu::ComputePipeline,
     // ── linear-f32 → sRGB-u8 pixel encode pipeline ─────────────────
     // GPU replacement for the CPU `linear_rgba_to_u8` LUT pass that
     // costs 40-90 ms per 4K frame. Reads `array<vec4<f32>>` linear,
@@ -1278,6 +1280,7 @@ impl GpuEffectsPipeline {
 
         let transition_pipeline = create_pipeline(&device, &transition_pl, "transition", SHADER_TRANSITION);
         let pieces_pipeline = create_pipeline(&device, &pieces_pl, "pieces", SHADER_PIECES);
+        let shutter_pipeline = create_pipeline(&device, &transition_pl, "shutter", SHADER_SHUTTER);
         // Linear-to-u8 bridge — uses the same 3-binding effects BGL.
         // Input: array<vec4<f32>>. Output: array<u32> (packed u8 RGBA).
         // Output buffer is 4× smaller than input; readback dominates
@@ -1660,6 +1663,7 @@ impl GpuEffectsPipeline {
             alpha_dilate_pipeline,
             transition_pipeline,
             pieces_pipeline,
+            shutter_pipeline,
             bridge_u8_pipeline,
             bridge_u8_to_linear_pipeline,
             bridge_u8_fit_pipeline,
@@ -7164,6 +7168,51 @@ impl GpuEffectsPipeline {
         self.download_linear_rgba_f32(buf_b, (plan.width * plan.height) as usize)
     }
 
+    /// Layer `i` smeared across the camera's shutter (#1923): placed by
+    /// each of `placements` (one Transform a shutter sample) and averaged
+    /// premultiplied, given back straight, as the CPU's `shuttered`
+    /// averages (#2017). One pass over the whole frame into `buf_c`, then
+    /// back into the layer: a placed sample can reach past where the
+    /// picture was. `false` for anything but Transforms, or no layer.
+    pub fn stack_shutter(&mut self, i: usize, placements: &[BuiltinEffect]) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() || placements.is_empty() {
+            return false;
+        }
+        let (width, height) = self.stack_dims;
+        let rows: Option<Vec<[f32; 16]>> = placements.iter().map(|e| TransformParams::of(e, width, height).map(|p| p.shutter_row())).collect();
+        let (Some(rows), Some(out)) = (rows, self.buf_c.as_ref()) else { return false };
+        let samples = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("shutter_samples"),
+            size: (rows.len() * 64) as u64,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: true,
+        });
+        samples.slice(..).get_mapped_range_mut().copy_from_slice(bytemuck::cast_slice(&rows));
+        samples.unmap();
+        self.write_params(&ShutterParams { width, height, n: rows.len() as u32, _pad: 0 });
+        let layer = std::sync::Arc::clone(&self.stack_layers[i]);
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stack_shutter"),
+            layout: &self.transition_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: layer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: samples.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: out.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: self.params_binding() },
+            ],
+        });
+        let mut enc = self.encoder(Some("stack_shutter"));
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: None, timestamp_writes: None });
+            pass.set_pipeline(&self.shutter_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups((self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
+        }
+        enc.copy_buffer_to_buffer(out, 0, &layer, 0, self.stack_pixel_count() * 16);
+        self.submit(enc);
+        true
+    }
+
     /// Posed piece transitions (#985) on the stack: layers `from` and `to`
     /// into `out`, mixed premultiplied as `stack_transition` mixes.
     pub fn stack_pieces(&mut self, from: usize, to: usize, out: usize, plan: &crate::pieces::PiecePlan) -> bool {
@@ -7757,6 +7806,59 @@ struct TransformParams {
     sin_ry: f32,
     focal: f32,
     _pad: [u32; 3],
+}
+
+impl TransformParams {
+    /// The Transform effect's inverse map at `width` × `height`: what its
+    /// pass reads, and what the shutter's pass reads for each sample
+    /// (#1923), so the two place a picture alike. `None` for any other
+    /// effect.
+    pub(crate) fn of(effect: &BuiltinEffect, width: u32, height: u32) -> Option<Self> {
+        let BuiltinEffect::Transform { position_x, position_y, scale_x, scale_y, rotation, anchor_x, anchor_y, rotation_x, rotation_y, perspective, .. } = effect else {
+            return None;
+        };
+        let rot = rotation.to_radians();
+        let inverse = |s: f32| if s.abs() > f32::EPSILON { 1.0 / s } else { 1.0 };
+        let (rx, ry) = (rotation_x.to_radians(), rotation_y.to_radians());
+        Some(Self {
+            width,
+            height,
+            anchor_x: *anchor_x * width as f32,
+            anchor_y: *anchor_y * height as f32,
+            position_x: *position_x,
+            position_y: *position_y,
+            cos_r: rot.cos(),
+            sin_r: rot.sin(),
+            inv_sx: inverse(*scale_x),
+            inv_sy: inverse(*scale_y),
+            cos_rx: rx.cos(),
+            sin_rx: rx.sin(),
+            cos_ry: ry.cos(),
+            sin_ry: ry.sin(),
+            focal: if *perspective > 0.001 { width as f32 / *perspective } else { 0.0 },
+            _pad: [0; 3],
+        })
+    }
+
+    /// A sample's row for the shutter's pass: four vec4s.
+    fn shutter_row(&self) -> [f32; 16] {
+        [
+            self.anchor_x, self.anchor_y, self.position_x, self.position_y,
+            self.cos_r, self.sin_r, self.inv_sx, self.inv_sy,
+            self.cos_rx, self.sin_rx, self.cos_ry, self.sin_ry,
+            self.focal, 0.0, 0.0, 0.0,
+        ]
+    }
+}
+
+/// The shutter pass's size and sample count (#1923).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ShutterParams {
+    width: u32,
+    height: u32,
+    n: u32,
+    _pad: u32,
 }
 
 /// The corner pin's inverse map, nine coefficients row-major, from
@@ -8836,6 +8938,121 @@ fn pack(v: vec4<f32>) -> vec4<f32> { return v; }
 "
     };
 }
+
+/// [`crate::UNPREMULTIPLY_MIN_ALPHA`] as WGSL: the same literal, which a
+/// test holds equal to the constant.
+macro_rules! unpremultiply_min_alpha_wgsl {
+    () => {
+        "1e-6"
+    };
+}
+
+/// A layer smeared across the camera's shutter (#1923), in one pass: each
+/// pixel is the mean of the layer as each sample's transform places it,
+/// the Transform's own inverse map and bilinear sample (transparent
+/// outside the picture), averaged premultiplied and given back straight,
+/// as the CPU's `shuttered` averages (#2017). `samples` holds a
+/// `Sample` of four vec4s each: anchor and position; rotation and inverse
+/// scale; tilt; focal length.
+const SHADER_SHUTTER: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    "
+struct Params { width: u32, height: u32, n: u32, _pad: u32 }
+// A sample's placement: anchor and position; rotation and inverse scale;
+// tilt; focal length. Numbers, not pixels.
+struct Sample { place: vec4<f32>, turn: vec4<f32>, tilt: vec4<f32>, lens: vec4<f32> }
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> samples: array<Sample>;
+@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(3) var<uniform> params: Params;
+
+fn texel(x: i32, y: i32) -> vec4<f32> {
+    if x < 0 || y < 0 || x >= i32(params.width) || y >= i32(params.height) {
+        return vec4<f32>(0.0);
+    }
+    return unpack(input[u32(y) * params.width + u32(x)]);
+}
+
+// The picture as sample `k` places it, at pixel (x, y): the Transform
+// shader's inverse map and bilinear read, line for line.
+fn placed(k: u32, x: f32, y: f32) -> vec4<f32> {
+    let a = samples[k].place;
+    let r = samples[k].turn;
+    let t = samples[k].tilt;
+    let focal = samples[k].lens.x;
+    let dx = x - a.x - a.z;
+    let dy = y - a.y - a.w;
+    let rx = dx * r.x + dy * r.y;
+    let ry = -dx * r.y + dy * r.x;
+    var sx = rx * r.z;
+    var sy = ry * r.w;
+    let cos_rx = t.x;
+    let sin_rx = t.y;
+    let cos_ry = t.z;
+    let sin_ry = t.w;
+    if cos_rx != 1.0 || cos_ry != 1.0 {
+        var u = 0.0;
+        var v = 0.0;
+        var seen = true;
+        if focal > 0.0 {
+            let a11 = sx * sin_ry - focal * cos_ry;
+            let a12 = -sx * sin_rx * cos_ry - focal * sin_rx * sin_ry;
+            let a21 = sy * sin_ry;
+            let a22 = -sy * sin_rx * cos_ry - focal * cos_rx;
+            let det = a11 * a22 - a12 * a21;
+            if abs(det) < 1e-9 {
+                seen = false;
+            } else {
+                let b1 = -sx * focal;
+                let b2 = -sy * focal;
+                u = (b1 * a22 - a12 * b2) / det;
+                v = (a11 * b2 - b1 * a21) / det;
+                seen = focal + (u * sin_ry - v * sin_rx * cos_ry) > 0.0;
+            }
+        } else if abs(cos_rx) < 1e-6 || abs(cos_ry) < 1e-6 {
+            seen = false;
+        } else {
+            v = sy / cos_rx;
+            u = (sx - v * sin_rx * sin_ry) / cos_ry;
+        }
+        if seen {
+            sx = u;
+            sy = v;
+        } else {
+            sx = -1.0e9;
+            sy = -1.0e9;
+        }
+    }
+    sx = sx + a.x;
+    sy = sy + a.y;
+    let x0 = i32(floor(sx));
+    let y0 = i32(floor(sy));
+    let fx = sx - f32(x0);
+    let fy = sy - f32(y0);
+    let top = mix(texel(x0, y0), texel(x0 + 1, y0), fx);
+    let bot = mix(texel(x0, y0 + 1), texel(x0 + 1, y0 + 1), fx);
+    return mix(top, bot, fy);
+}
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = f32(idx % params.width);
+    let y = f32(idx / params.width);
+    var rgb = vec3<f32>(0.0);
+    var covered = 0.0;
+    for (var k = 0u; k < params.n; k = k + 1u) {
+        let p = placed(k, x, y);
+        rgb = rgb + p.xyz * p.w;
+        covered = covered + p.w;
+    }
+    var colour = vec3<f32>(0.0);
+    if covered > ", unpremultiply_min_alpha_wgsl!(), " { colour = rgb / covered; }
+    output[idx] = pack(vec4<f32>(colour, covered / f32(max(params.n, 1u))));
+}
+"
+);
 
 /// A mapped GPU buffer copied into `Vec<f32>`, in parallel, without
 /// zeroing the destination first.
@@ -10793,7 +11010,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var rgb = p.xyz * p.w;
     if params.unpremultiply != 0u {
         rgb = p.xyz;
-        if p.w > 1e-6 { rgb = p.xyz / p.w; }
+        if p.w > ", unpremultiply_min_alpha_wgsl!(), " { rgb = p.xyz / p.w; }
     }
     output[idx] = pack(vec4<f32>(rgb, p.w));
 }
@@ -17765,6 +17982,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // via the sRGB OETF so a mid-grey (linear 0.18) lands at bin ~118 instead of
 // bin ~46, restoring the FCP / DaVinci trace distribution.
 #[cfg(test)]
+mod unpremultiply_rule_tests {
+    /// The shaders unpremultiply by the rule the CPU does (#1923): the
+    /// literal they're written with is the constant.
+    #[test]
+    fn the_shaders_and_the_cpu_share_one_alpha_rule() {
+        assert_eq!(unpremultiply_min_alpha_wgsl!().parse::<f32>().unwrap(), crate::UNPREMULTIPLY_MIN_ALPHA);
+        for shader in [super::SHADER_SHUTTER, super::SHADER_ALPHA_FORM] {
+            assert!(shader.contains(concat!("> ", unpremultiply_min_alpha_wgsl!(), " {")), "the rule is in the shader");
+        }
+    }
+}
+
+#[cfg(test)]
 mod bridge_u8_tests {
     use super::*;
 
@@ -17924,6 +18154,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_BT2020_DISPLAY_U8", SHADER_BT2020_DISPLAY_U8),
         ("SHADER_TRANSITION", SHADER_TRANSITION),
         ("SHADER_PIECES", SHADER_PIECES),
+        ("SHADER_SHUTTER", SHADER_SHUTTER),
         ("SHADER_COLOR_GRADE", SHADER_COLOR_GRADE),
         ("SHADER_HUESAT", SHADER_HUESAT),
         ("SHADER_QUALIFIER", SHADER_QUALIFIER),

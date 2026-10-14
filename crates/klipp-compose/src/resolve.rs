@@ -177,6 +177,12 @@ pub fn resolve_effect_nodes_and_identities(
     Ok((kept, identities))
 }
 
+/// The node of `picture` that places it, its placement, when it has one:
+/// what a resolved effect list names its move by (#1923).
+pub(crate) fn placement_node_of(picture: &ClipPicture) -> Option<NodeId> {
+    chain(picture).ok()?.iter().find(|n| n.type_id.as_str() == lt::PLACEMENT).map(|n| n.id)
+}
+
 /// Where the clip's transform goes among its pixel effects (R2-R4), the
 /// one rule both renderer routes and the inspector read (M3 step 8).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
