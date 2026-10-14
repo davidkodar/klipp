@@ -464,6 +464,112 @@ mod look_tests {
         assert_eq!(look_in(&seq, &pool, tc(5.0), &is_app).name, "film_soft", "a group's own look comes first");
     }
 
+    /// #1974: the check's judging of a generated layer on rendered frames,
+    /// read as `check` reads them — the composite, and the layer alone —
+    /// through the compositor, encoded as the viewer shows them.
+    mod rendered {
+        use super::super::*;
+        use klipp_compose::{FrameSource, RenderOptions, Renderer, SourceFrame, SourcePixels};
+        use klipp_core::{GeneratorData, RationalTime};
+        use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
+        use std::sync::Arc;
+
+        const W: u32 = 64;
+        const H: u32 = 36;
+
+        fn tc(s: f64) -> RationalTime {
+            RationalTime::from_secs_f64(s, 24)
+        }
+
+        /// A bright, flat plate: the footage under the graphics.
+        struct Plate;
+        impl FrameSource for Plate {
+            fn frame(&mut self, _: &Clip, _: f64, w: u32, h: u32) -> Option<SourceFrame> {
+                Some(SourceFrame { pixels: SourcePixels::Linear(Arc::new([0.75f32, 0.75, 0.75, 1.0].repeat((w * h) as usize))), width: w, height: h, pts: None })
+            }
+        }
+
+        /// A gradient generator, mid to light grey, in `blend` at `opacity`.
+        fn gradient(blend: klipp_core::BlendMode, opacity: f32) -> Clip {
+            let kind = ClipKind::Generator(GeneratorData::Gradient { top: [120, 120, 120, 255], bottom: [200, 200, 200, 255], angle_deg: 0.0, four_point: None });
+            let mut c = Clip { kind, ..Clip::gap(tc(0.0), tc(2.0)) };
+            c.blend_mode = blend;
+            if opacity < 1.0 {
+                c = klipp_timeline::test_clip::TestClip::of(c).effect(klipp_effects::BuiltinEffect::Opacity { value: opacity }).build();
+            }
+            c
+        }
+
+        /// Tracks top first, each a list of clips.
+        fn sequence(tracks: Vec<Vec<Clip>>) -> Sequence {
+            let mut seq = Sequence::new_default();
+            seq.resolution = klipp_core::Resolution { width: W, height: H };
+            seq.tracks = tracks.into_iter().enumerate().map(|(i, clips)| {
+                let mut t = Track::new(&format!("V{i}"), TrackKind::Video);
+                t.clips = clips;
+                t
+            }).collect();
+            seq
+        }
+
+        /// `seq` at 0.5 s as the viewer shows it, measured and judged as
+        /// graphics: the colour findings `check` would report.
+        fn judged(seq: &Sequence) -> Vec<(String, f64, String, String)> {
+            let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+            r.set_gpu_enabled(false);
+            let linear = r.render(seq, tc(0.5), W, H, &mut Plate, RenderOptions::default());
+            let rgba: Vec<u8> = linear.chunks(4).flat_map(|p| {
+                let enc = |v: f32| (klipp_color::transfer::linear_to_srgb(v.clamp(0.0, 1.0)) * 255.0).round() as u8;
+                [enc(p[0]), enc(p[1]), enc(p[2]), 255]
+            }).collect();
+            let m = klipp_color::measure::measure_frame(&rgba, W, H, &[]);
+            colour_report(&m, &klipp_color::measure::LookTarget::graphics(), 0.5)
+        }
+
+        fn plate() -> Clip {
+            Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) }
+        }
+
+        fn clips_white(found: &[(String, f64, String, String)]) -> bool {
+            found.iter().any(|f| colour_rule(&f.2) == "clipped_white")
+        }
+
+        /// In Add over a bright plate the layer clips only in the composite;
+        /// alone it is clean, and the finding says so.
+        #[test]
+        fn an_added_gradient_clips_only_in_the_composite() {
+            let layer = gradient(klipp_core::BlendMode::Add, 1.0);
+            let composite = judged(&sequence(vec![vec![layer.clone()], vec![plate()]]));
+            let alone = judged(&sequence(vec![vec![layer]]));
+            assert!(clips_white(&composite), "{composite:?}");
+            assert!(!clips_white(&alone), "{alone:?}");
+            let said = attribute_to_layer(composite, &alone);
+            let f = said.iter().find(|f| colour_rule(&f.2) == "clipped_white").unwrap();
+            assert!(f.3.contains("only in the composite"), "{}", f.3);
+        }
+
+        /// The same layer in Normal at partial opacity over the same plate
+        /// is clean: the clip came from the blend, not the plate.
+        #[test]
+        fn the_same_gradient_at_partial_opacity_is_clean() {
+            let composite = judged(&sequence(vec![vec![gradient(klipp_core::BlendMode::Normal, 0.5)], vec![plate()]]));
+            assert!(!clips_white(&composite), "{composite:?}");
+        }
+
+        /// Under an adjustment layer whose levels push it past white, the
+        /// layer clips in the composite and not alone.
+        #[test]
+        fn a_gradient_under_a_levels_layer_clips_in_the_composite() {
+            let push = klipp_effects::BuiltinEffect::Levels { in_black: 0.0, in_white: 0.3, gamma: 1.0, out_black: 0.0, out_white: 1.0 };
+            let adjust = klipp_timeline::test_clip::TestClip::of(Clip { kind: ClipKind::AdjustmentLayer, ..Clip::gap(tc(0.0), tc(2.0)) }).effect(push).build();
+            let layer = gradient(klipp_core::BlendMode::Normal, 1.0);
+            let composite = judged(&sequence(vec![vec![adjust], vec![layer.clone()]]));
+            let alone = judged(&sequence(vec![vec![layer]]));
+            assert!(clips_white(&composite), "{composite:?}");
+            assert!(attribute_to_layer(composite, &alone).iter().any(|f| f.3.contains("only in the composite")));
+        }
+    }
+
     /// #1919 review: a generated picture is judged on the composite, and
     /// each finding says whether the layer alone has it.
     #[test]

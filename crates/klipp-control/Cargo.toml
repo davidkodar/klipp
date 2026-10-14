@@ -47,6 +47,7 @@ png = "0.18"
 
 [dev-dependencies]
 klipp-document = { workspace = true }
+klipp-plugin = { workspace = true }
 klipp-timeline = { workspace = true, features = ["test-clip"] }
 
 [features]
