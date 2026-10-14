@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use klipp_color::hdr::{HdrTransfer, SceneToDisplay};
 use klipp_compose::{FrameSource, Inspect, RenderOptions, Renderer, SourceFrame, SourcePixels};
 use klipp_core::{RationalTime, WorkingColorspace};
 use klipp_effects::{BlendMode, BuiltinEffect as E};
@@ -49,18 +50,24 @@ impl FrameSource for Sources {
 
     fn media_frame(&mut self, media: &str, secs: f64, _working: WorkingColorspace, w: u32, h: u32) -> Result<Vec<f32>, SideMissing> {
         match media {
-            ITEM | HDR_ITEM => Ok(item_frame(secs, w, h)),
+            ITEM | HDR_ITEM | LOG_ITEM => Ok(item_frame(secs, w, h)),
             other => Err(SideMissing::File(format!("{other}.mov"))),
         }
     }
 
-    fn media_scene_referred(&mut self, media: &str) -> Option<String> {
-        (media == HDR_ITEM).then(|| "hdr-plate.mov".into())
+    fn media_transfer(&mut self, media: &str) -> Option<HdrTransfer> {
+        match media {
+            HDR_ITEM => Some(HdrTransfer::Hlg),
+            LOG_ITEM => Some(HdrTransfer::Log(klipp_core::ColorTransfer::SLog3)),
+            _ => None,
+        }
     }
 }
 
-/// An item whose frames are HDR, which the source reads as `ITEM`'s.
+/// An item whose frames are HLG, which the source reads as `ITEM`'s.
 const HDR_ITEM: &str = "9d2e4b71-0c3a-4f58-b6e1-27a4c8d5f390";
+/// An item whose frames are S-Log3, read the same.
+const LOG_ITEM: &str = "3c8a1f20-7d4b-4e19-a5c6-81b0e2f4d937";
 
 fn tc(s: f64) -> RationalTime {
     RationalTime::from_secs_f64(s, 24)
@@ -115,9 +122,15 @@ fn sequence(c: Clip) -> Sequence {
 }
 
 fn render(gpu: bool, c: &Clip) -> (Vec<f32>, klipp_compose::Inspection) {
+    render_for(gpu, c, None)
+}
+
+/// [`render`] for a delivery of `peak` nits (`None`: SDR).
+fn render_for(gpu: bool, c: &Clip, peak: Option<f32>) -> (Vec<f32>, klipp_compose::Inspection) {
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(gpu);
-    r.render_inspected(&sequence(c.clone()), tc(1.0), W, H, &mut Sources, RenderOptions::default(), Inspect::default())
+    let opts = RenderOptions { hdr_peak_nits: peak, ..RenderOptions::default() };
+    r.render_inspected(&sequence(c.clone()), tc(1.0), W, H, &mut Sources, opts, Inspect::default())
 }
 
 fn worst_levels(a: &[f32], b: &[f32]) -> u8 {
@@ -194,18 +207,40 @@ fn a_media_source_with_no_item_passes_the_picture() {
     assert_eq!(worst_levels(&out, &plain), 0);
 }
 
-/// An HDR or log item merged after the display step is drawn, and said
-/// to be mixed without its own display step (#1857), named: never silently
-/// wrong. An SDR one says nothing.
+/// An HDR or log item merged after the display step is given its own
+/// display step as it is read (#1857): its transfer, the delivery's peak,
+/// as a clip's source is. Drawn so on the CPU and the GPU alike, the
+/// viewer's route and the export's, and declined nowhere. Controls: the
+/// item's frame without the step is far from what is drawn, and an SDR
+/// item is drawn as it is read.
 #[test]
-fn an_hdr_item_merged_after_the_display_step_is_said() {
-    let c = clip(Some(E::Merge { blend_mode: BlendMode::Normal, opacity: 1.0 }), Some(media(HDR_ITEM, 0.0)));
-    let (out, found) = render(false, &c);
-    let (sdr, _) = render(false, &clip(Some(E::Merge { blend_mode: BlendMode::Normal, opacity: 1.0 }), Some(media(ITEM, 0.0))));
-    assert_eq!(worst_levels(&out, &sdr), 0, "drawn as the SDR item is");
-    let d = found.declines.iter().find(|d| d.kind == klipp_nodes::NodeKind::SidePicture).unwrap_or_else(|| panic!("{:?}", found.declines));
-    assert_eq!(d.outcome, klipp_nodes::DeclineOutcome::Fallback, "an export still writes it");
-    assert_eq!(d.reason, "hdr-plate.mov is HDR/log; it is mixed without its display step");
-    let (_, found) = render(false, &clip(Some(E::Merge { blend_mode: BlendMode::Normal, opacity: 1.0 }), Some(media(ITEM, 0.0))));
+fn an_hdr_or_log_item_merged_after_the_display_step_is_drawn_display_mapped() {
+    let normal = || E::Merge { blend_mode: BlendMode::Normal, opacity: 1.0 };
+    let (sdr, found) = render(false, &clip(Some(normal()), Some(media(ITEM, 0.0))));
     assert!(found.declines.is_empty(), "{:?}", found.declines);
+    assert!(worst_levels(&sdr, &item_frame(1.0, W, H)) <= 1, "an SDR item as it is read");
+    for (item, transfer) in [(HDR_ITEM, HdrTransfer::Hlg), (LOG_ITEM, HdrTransfer::Log(klipp_core::ColorTransfer::SLog3))] {
+        for peak in [None, Some(1000.0)] {
+            let c = clip(Some(normal()), Some(media(item, 0.0)));
+            let raw = item_frame(1.0, W, H);
+            let mut want = raw.clone();
+            SceneToDisplay { transfer, peak_nits: peak, luma: klipp_color::primaries::luminance_weights(WorkingColorspace::Rec709Linear) }.apply(&mut want);
+            assert!(worst_levels(&want, &raw) > 10, "{transfer:?} {peak:?}: the step changes the frame");
+            let (cpu, found) = render_for(false, &c, peak);
+            assert!(found.declines.is_empty(), "{transfer:?} {peak:?}: {:?}", found.declines);
+            let worst = worst_levels(&cpu, &want);
+            eprintln!("{transfer:?} {peak:?}: CPU against the display-mapped item: worst {worst} levels");
+            assert!(worst <= 1, "{transfer:?} {peak:?}: the CPU draws {worst} levels from the display-mapped item");
+            assert!(worst_levels(&cpu, &raw) > 10, "{transfer:?} {peak:?}: not the item without its step");
+            if !gpu() {
+                eprintln!("UNVERIFIED: no GPU");
+                continue;
+            }
+            let (on_gpu, found) = render_for(true, &c, peak);
+            assert!(found.declines.is_empty(), "{transfer:?} {peak:?}: {:?}", found.declines);
+            let worst = worst_levels(&on_gpu, &cpu);
+            eprintln!("{transfer:?} {peak:?}: GPU against CPU: worst {worst} levels");
+            assert!(worst <= 1, "{transfer:?} {peak:?}: the GPU draws {worst} levels from the CPU");
+        }
+    }
 }

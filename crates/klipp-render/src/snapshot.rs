@@ -112,9 +112,10 @@ pub struct MediaFile {
     pub fps: Option<(u32, u32)>,
     /// The media's size, when known: its analysis assets' key (M4 step 9).
     pub resolution: Option<(u32, u32)>,
-    /// Its frames are scene-referred (HDR or camera log): a media source
-    /// reading it is mixed without its display step (#1857).
-    pub scene_referred: bool,
+    /// The transfer its frames decode scene-referred through (HDR or
+    /// camera log), `None` for SDR: a media source reading it gives its
+    /// frame this display step (#1857).
+    pub scene_transfer: Option<klipp_color::hdr::HdrTransfer>,
 }
 
 impl MediaFile {
@@ -123,7 +124,7 @@ impl MediaFile {
         MediaFile {
             path: item.path.clone(),
             log_format: item.camera_log_format(),
-            scene_referred: item.scene_referred(),
+            scene_transfer: item.scene_transfer(),
             source_rotation: item.source_rotation,
             duration_secs: Some(item.duration.to_secs_f64()),
             fps: Some((item.fps.num, item.fps.den)),
@@ -1486,7 +1487,7 @@ mod tests {
         assert_eq!(snap.video.sequence.tracks[0].clips[0].id, seq.tracks[0].clips[0].id);
         assert_eq!(
             snap.video.media.get(&media_id),
-            Some(&MediaFile { path: PathBuf::from("/media/clip1.mp4"), log_format: None, source_rotation: 0, duration_secs: Some(pool.get(&media_id).unwrap().duration.to_secs_f64()), fps: Some((pool.get(&media_id).unwrap().fps.num, pool.get(&media_id).unwrap().fps.den)), resolution: Some((pool.get(&media_id).unwrap().resolution.width, pool.get(&media_id).unwrap().resolution.height)), scene_referred: false }),
+            Some(&MediaFile { path: PathBuf::from("/media/clip1.mp4"), log_format: None, source_rotation: 0, duration_secs: Some(pool.get(&media_id).unwrap().duration.to_secs_f64()), fps: Some((pool.get(&media_id).unwrap().fps.num, pool.get(&media_id).unwrap().fps.den)), resolution: Some((pool.get(&media_id).unwrap().resolution.width, pool.get(&media_id).unwrap().resolution.height)), scene_transfer: None }),
         );
     }
 

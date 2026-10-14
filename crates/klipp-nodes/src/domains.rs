@@ -115,10 +115,10 @@ pub fn kind_step(kind: NodeKind, params: &crate::params::NodeParams) -> DomainSt
         NodeKind::Ofx | NodeKind::Frei0r => DomainStep::Undeclared,
         // A picture handed to the run (#1746), not made from what the node
         // reads. What is below the clip is the composite: display-referred
-        // (#1867). Another media item's frame declares none until it has a
-        // display step of its own (#1857).
+        // (#1867). Another media item's frame is too: an HDR or log one is
+        // given its display step as it is read (#1857).
         NodeKind::SidePicture => match params.side_picture.clone().or_else(|| params.effects.iter().find_map(crate::side_picture::SideKey::of)) {
-            Some(crate::side_picture::SideKey::Below) => DomainStep::Gives(PictureDomain::Display),
+            Some(crate::side_picture::SideKey::Below | crate::side_picture::SideKey::Media { .. }) => DomainStep::Gives(PictureDomain::Display),
             _ => DomainStep::Undeclared,
         },
         // A plug-in's picture, or a generator's, made from colours

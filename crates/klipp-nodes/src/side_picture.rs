@@ -118,19 +118,21 @@ mod tests {
         assert_eq!(ex.last_run_declines()[0].outcome, crate::DeclineOutcome::NeighbourMissing);
     }
 
-    /// A media source's frame isn't made from what its node reads and has
-    /// no display step of its own yet: it declares no colour domain (#1857).
-    /// What is below a clip is the composite, display-referred (#1867), by
-    /// its effect or its key.
+    /// A media source's frame is display-referred, an HDR or log item's
+    /// given its display step as it is read (#1857), and so is what is
+    /// below a clip, the composite (#1867), each by its effect or its key.
+    /// A side picture naming none, and the grade's input, declare none.
     #[test]
     fn a_side_pictures_domain_is_its_pictures() {
         use crate::domains::{kind_step, DomainStep, PictureDomain};
         assert_eq!(kind_step(NodeKind::SidePicture, &NodeParams::default()), DomainStep::Undeclared);
-        let media = NodeParams { effects: vec![media("a")], ..Default::default() };
-        assert_eq!(kind_step(NodeKind::SidePicture, &media), DomainStep::Undeclared);
+        let grade_input = NodeParams { side_picture: Some(SideKey::GradeInput), ..Default::default() };
+        assert_eq!(kind_step(NodeKind::SidePicture, &grade_input), DomainStep::Undeclared);
+        let media_by_effect = NodeParams { effects: vec![media("a")], ..Default::default() };
+        let media_by_key = NodeParams { side_picture: Some(key("a")), ..Default::default() };
         let by_effect = NodeParams { effects: vec![klipp_effects::BuiltinEffect::ClipBelow {}], ..Default::default() };
         let by_key = NodeParams { side_picture: Some(SideKey::Below), ..Default::default() };
-        for p in [by_effect, by_key] {
+        for p in [media_by_effect, media_by_key, by_effect, by_key] {
             assert_eq!(kind_step(NodeKind::SidePicture, &p), DomainStep::Gives(PictureDomain::Display));
         }
     }

@@ -434,7 +434,23 @@ impl MediaItem {
     /// Whether the file's frames decode scene-referred: HDR (PQ, HLG) or
     /// camera log.
     pub fn scene_referred(&self) -> bool {
-        matches!(self.colour_space, ColourSpace::Hdr10 | ColourSpace::Hlg) || self.camera_log_format().is_some()
+        self.scene_transfer().is_some()
+    }
+
+    /// The transfer the file's frames decode scene-referred through: its
+    /// camera log curve when it decodes as one, else PQ or HLG. `None` for
+    /// an SDR file. A media source's display step (#1857) takes it, as a
+    /// clip's takes its decoded frame's.
+    pub fn scene_transfer(&self) -> Option<klipp_color::hdr::HdrTransfer> {
+        use klipp_color::hdr::HdrTransfer;
+        if let Some((transfer, _)) = self.camera_log_format().and_then(klipp_core::LogFormat::camera_colourspace) {
+            return Some(HdrTransfer::Log(transfer));
+        }
+        match self.colour_space {
+            ColourSpace::Hdr10 => Some(HdrTransfer::Pq),
+            ColourSpace::Hlg => Some(HdrTransfer::Hlg),
+            _ => None,
+        }
     }
 
     /// The camera log format the file decodes through, when it is one:
@@ -1079,6 +1095,26 @@ mod reprobe_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A media source's display step (#1857) takes the item's transfer:
+    /// its camera log when it decodes as one, PQ or HLG by its colour
+    /// space, none for an SDR file (the control).
+    #[test]
+    fn an_items_scene_transfer_is_how_its_frames_decode() {
+        use klipp_color::hdr::HdrTransfer;
+        let mut item = MediaItem::synthetic_for_test(PathBuf::from("plate.mov"), None);
+        assert_eq!(item.scene_transfer(), None, "an SDR file");
+        assert!(!item.scene_referred());
+        item.colour_space = ColourSpace::Hlg;
+        assert_eq!(item.scene_transfer(), Some(HdrTransfer::Hlg));
+        item.colour_space = ColourSpace::Hdr10;
+        assert_eq!(item.scene_transfer(), Some(HdrTransfer::Pq));
+        assert!(item.scene_referred());
+        item.colour_space = ColourSpace::Unknown;
+        item.log_format = klipp_core::LogFormat::SLog3;
+        item.log_format_user_set = true;
+        assert_eq!(item.scene_transfer(), Some(HdrTransfer::Log(klipp_core::ColorTransfer::SLog3)));
+    }
 
     #[test]
     fn untagged_eight_bit_h264_haze_is_not_enough_to_call_camera_log() {
