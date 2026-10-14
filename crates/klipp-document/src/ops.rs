@@ -2360,6 +2360,14 @@ pub trait Transcripts {
     fn library_role(&self, _item: &klipp_media::MediaItem) -> Option<klipp_core::ClipRole> {
         None
     }
+    /// Where `clip` sits on the frame `clip_secs` into it, as the
+    /// renderer places it: position in frame pixels, scale, aspect-kept
+    /// height scale, rotation in degrees, anchor in fractions. The check
+    /// asks it for what is under a title (#1909). `None` when the host
+    /// cannot say, and the picture is then taken as fitted to the frame.
+    fn placement(&self, _clip: &Clip, _clip_secs: f64, _fps: f64) -> Option<klipp_timeline::surface::Placement> {
+        None
+    }
 }
 
 /// The faces under a stretch of the timeline: every picture clip that

@@ -263,6 +263,13 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
     fn faces(&self, item: &klipp_media::MediaItem) -> Vec<(f64, [f32; 4])> {
         klipp_analysis::report::MediaAnalysis::load(&item.path).framing.map(|f| f.samples.iter().flat_map(|s| face_or_head_regions(&f, s).into_iter().map(move |b| (s.secs, b))).collect()).unwrap_or_default()
     }
+    /// As the compositor places the clip, keys and picture-truth lanes
+    /// included (#1909).
+    fn placement(&self, clip: &klipp_timeline::Clip, clip_secs: f64, fps: f64) -> Option<klipp_timeline::surface::Placement> {
+        let when = clip.timeline_in + klipp_core::Timecode::from_secs_f64(clip_secs.max(0.0), clip.timeline_in.rate.max(1));
+        Some(klipp_compose::eval::evaluate_clip_own_transform(clip, clip_secs.max(0.0), &klipp_compose::eval::eval_context(clip, when, fps)))
+    }
+
     /// The beat sheet, for a screen recording only: one made for camera
     /// footage the metadata took for a screen would hold its shots to a
     /// screen's rules (#1568).
