@@ -322,12 +322,22 @@ pub struct SourceReading {
     pub l_p1: f32,
     pub clip_lo_pct: f32,
     pub clip_hi_pct: f32,
+    /// How much of the file's flat picture steps in bands, read at the
+    /// size the frame is shown (#1906 review).
+    #[serde(default)]
+    pub banding_pct: f32,
+    /// Whether the file says its range (limited or full). A file that
+    /// does not can be decoded with the wrong one, which crushes or lifts
+    /// the rails in the decode itself, so its share at a rail is not
+    /// taken as the picture's own (#1906 review).
+    #[serde(default)]
+    pub range_stated: bool,
 }
 
 impl SourceReading {
     /// The reading of an ungraded measurement of the file.
     pub fn of(m: &FrameMeasure) -> SourceReading {
-        SourceReading { l_p1: m.l_p1, clip_lo_pct: m.clip_lo_pct, clip_hi_pct: m.clip_hi_pct }
+        SourceReading { l_p1: m.l_p1, clip_lo_pct: m.clip_lo_pct, clip_hi_pct: m.clip_hi_pct, banding_pct: m.banding_pct, range_stated: false }
     }
 }
 
@@ -336,6 +346,18 @@ impl SourceReading {
 /// (see [`match_distance`]), and the source is read off a small decode
 /// whose darkest specks are averaged away, which raises its floor too.
 pub const SOURCE_FLOOR_SLACK: f32 = 3.0;
+
+/// How much more of a screen recording may sit on a rail than the file
+/// holds and still be the app's own: a point of the frame, about what
+/// the small decode the file is read off and the frame's own scaling
+/// move a rail's share by.
+pub const SOURCE_RAIL_SLACK: f32 = 1.0;
+
+/// How much more of a screen recording's flat picture may band than the
+/// file's own and still be the app's drawing: half the warning's
+/// threshold, under which a reading is within the material's own spread
+/// (see [`BANDING_WARN`]).
+pub const SOURCE_BANDING_SLACK: f32 = BANDING_WARN / 2.0;
 
 /// Whether a black point above `target` is the scene's and not the
 /// grade's (#1896): the file's own darkest is already above the
@@ -1687,8 +1709,19 @@ pub fn judge(m: &FrameMeasure, t: &LookTarget) -> Vec<Finding> {
     // Clipping is a fault in every look, but a screen recording's pure
     // whites and blacks are its own: a higher bar there.
     let (hi_warn, hi_fail) = if t.screencast { (30.0, 60.0) } else { (0.5, 2.0) };
-    out.push(Finding { rule: "clipped_white", verdict: if m.clip_hi_pct > hi_fail { Verdict::Fail } else if m.clip_hi_pct > hi_warn { Verdict::Warn } else { Verdict::Pass }, reading: m.clip_hi_pct, target: 0.0, tolerance: hi_warn, what: format!("{:.1}% of the frame is at white", m.clip_hi_pct), fix: "highlights or gain down until nothing clips" });
-    out.push(Finding { rule: "crushed_black", verdict: if m.clip_lo_pct > hi_fail { Verdict::Fail } else if m.clip_lo_pct > hi_warn { Verdict::Warn } else { Verdict::Pass }, reading: m.clip_lo_pct, target: 0.0, tolerance: hi_warn, what: format!("{:.1}% of the frame is at black", m.clip_lo_pct), fix: "shadows or lift up until the blacks hold detail" });
+    let rail = |rule: &'static str, share: f32, file: Option<f32>, at: &str, fix: &'static str| {
+        let verdict = if share > hi_fail { Verdict::Fail } else if share > hi_warn { Verdict::Warn } else { Verdict::Pass };
+        // A screen recording's black panels and white pages are what the
+        // app drew: as much of the frame on the rail as the file itself
+        // holds is the UI's own, not the grade's (#1906).
+        match file.filter(|f| t.screencast && verdict != Verdict::Pass && share <= f + SOURCE_RAIL_SLACK) {
+            Some(f) => Finding { rule, verdict: Verdict::Pass, reading: share, target: 0.0, tolerance: hi_warn, what: format!("{share:.1}% of the frame is at {at}, as in the recording itself ({f:.1}%): the app's own"), fix },
+            None => Finding { rule, verdict, reading: share, target: 0.0, tolerance: hi_warn, what: format!("{share:.1}% of the frame is at {at}"), fix },
+        }
+    };
+    let stated = m.source.filter(|s| s.range_stated);
+    out.push(rail("clipped_white", m.clip_hi_pct, stated.map(|s| s.clip_hi_pct), "white", "highlights or gain down until nothing clips"));
+    out.push(rail("crushed_black", m.clip_lo_pct, stated.map(|s| s.clip_lo_pct), "black", "shadows or lift up until the blacks hold detail"));
     if !t.screencast {
         if let Some(b) = t.black_l {
             let mut f = graded("black_point", m.l_p1, b, 4.0, 9.0, format!("black point L* {:.0} (target {b:.0})", m.l_p1), "lift");
@@ -1770,11 +1803,20 @@ pub fn judge(m: &FrameMeasure, t: &LookTarget) -> Vec<Finding> {
         });
     }
     let level = |v: f32, warn: f32, fail: f32| if v > fail { Verdict::Fail } else if v > warn { Verdict::Warn } else { Verdict::Pass };
-    if m.noise_l > NOISE_WARN {
+    // Noise is a camera picture's, and its fix a grade's: not asked of a
+    // screen recording (#1906).
+    if !t.screencast && m.noise_l > NOISE_WARN {
         out.push(Finding { rule: "noise", verdict: level(m.noise_l, NOISE_WARN, NOISE_FAIL), reading: m.noise_l, target: 0.0, tolerance: NOISE_WARN, what: format!("the flat parts of the picture carry {:.1} L* of noise", m.noise_l), fix: "denoise before lifting the shadows — a lift multiplies what is already there" });
     }
+    // A screen recording's flat panels, graticules and graph backgrounds
+    // read as bands, and the file holds them too: what is judged is what
+    // the grade or the delivery adds beyond the file's own (#1906).
     if m.banding_pct > BANDING_WARN {
-        out.push(Finding { rule: "banding", verdict: level(m.banding_pct, BANDING_WARN, BANDING_FAIL), reading: m.banding_pct, target: 0.0, tolerance: BANDING_WARN, what: format!("{:.0}% of the flat picture steps in bands", m.banding_pct), fix: "less stretch in the shadows, or a touch of grain to break the steps" });
+        let fix = "less stretch in the shadows, or a touch of grain to break the steps";
+        match m.source.filter(|s| t.screencast && m.banding_pct <= s.banding_pct + SOURCE_BANDING_SLACK) {
+            Some(s) => out.push(Finding { rule: "banding", verdict: Verdict::Pass, reading: m.banding_pct, target: 0.0, tolerance: BANDING_WARN, what: format!("{:.0}% of the flat picture steps in bands, as in the recording itself ({:.0}%): the app's own", m.banding_pct, s.banding_pct), fix }),
+            None => out.push(Finding { rule: "banding", verdict: level(m.banding_pct, BANDING_WARN, BANDING_FAIL), reading: m.banding_pct, target: 0.0, tolerance: BANDING_WARN, what: format!("{:.0}% of the flat picture steps in bands", m.banding_pct), fix }),
+        }
     }
     if m.gamut_clip_pct > GAMUT_WARN {
         out.push(Finding { rule: "gamut", verdict: level(m.gamut_clip_pct, GAMUT_WARN, GAMUT_FAIL), reading: m.gamut_clip_pct, target: 0.0, tolerance: GAMUT_WARN, what: format!("{:.1}% of the picture has a channel pinned at the rail — colour the delivery cannot hold", m.gamut_clip_pct), fix: "saturation down, or pull the offending colour back with a secondary" });
@@ -2778,5 +2820,43 @@ mod taste_tests {
         let further = FrameMeasure { source: Some(SourceReading { l_p1: 28.0, ..Default::default() }), ..water.clone() };
         assert_eq!(black_point(&further).verdict, Verdict::Fail);
         assert_eq!(black_point(&water).verdict, Verdict::Fail, "with no source the floor is judged as before");
+    }
+
+    /// #1906: a dark app recording — a third of it on black, its flat
+    /// panels reading as bands — is not camera footage. Judged as a
+    /// screen, noise is not asked about, and the share at black and the
+    /// banding the recording itself holds are the app's; a grade or an
+    /// encode that adds to them is still flagged, and so is a share at a
+    /// rail read off a file that does not state its range, which may have
+    /// been decoded wrong. Footage is judged as before.
+    #[test]
+    fn a_screen_recording_s_own_panels_are_not_grading_faults() {
+        let screen = LookTarget::preset("screencast").unwrap();
+        let ui = FrameMeasure { l_p50: 20.0, clip_lo_pct: 33.7, banding_pct: 21.0, noise_l: 2.0, ..FrameMeasure::default() };
+        let rule = |m: &FrameMeasure, t: &LookTarget, rule: &str| judge(m, t).into_iter().find(|f| f.rule == rule);
+        assert!(rule(&ui, &screen, "noise").is_none(), "{:?}", judge(&ui, &screen));
+        assert_eq!(rule(&ui, &screen, "crushed_black").unwrap().verdict, Verdict::Warn, "with no file read, the bar stands");
+        assert_eq!(rule(&ui, &screen, "banding").unwrap().verdict, Verdict::Warn, "with no file read, banding is judged");
+        let file = SourceReading { clip_lo_pct: 33.2, banding_pct: 19.0, range_stated: true, ..Default::default() };
+        let as_recorded = FrameMeasure { source: Some(file), ..ui.clone() };
+        let f = rule(&as_recorded, &screen, "crushed_black").unwrap();
+        assert_eq!(f.verdict, Verdict::Pass, "{f:?}");
+        assert!(f.what.contains("the app's own"), "{}", f.what);
+        assert_eq!(rule(&as_recorded, &screen, "banding").unwrap().verdict, Verdict::Pass, "the recording's own panels");
+        let crushed = FrameMeasure { source: Some(SourceReading { clip_lo_pct: 12.0, ..file }), ..ui.clone() };
+        assert_eq!(rule(&crushed, &screen, "crushed_black").unwrap().verdict, Verdict::Warn, "the grade put it there");
+        // A full-range capture read as limited holds the crush in its own
+        // decode: a file that does not say its range is not taken at its word.
+        let unstated = FrameMeasure { source: Some(SourceReading { range_stated: false, ..file }), ..ui.clone() };
+        assert_eq!(rule(&unstated, &screen, "crushed_black").unwrap().verdict, Verdict::Warn);
+        // A smooth gradient in the recording that the grade or the encode
+        // bands is still flagged.
+        let banded = FrameMeasure { source: Some(SourceReading { banding_pct: 1.0, ..file }), ..ui.clone() };
+        assert_eq!(rule(&banded, &screen, "banding").unwrap().verdict, Verdict::Warn);
+        // Footage keeps every rule, and its clipping ignores the file.
+        let camera = LookTarget::unbriefed();
+        assert_eq!(rule(&as_recorded, &camera, "banding").map(|f| f.verdict), Some(Verdict::Warn));
+        assert!(rule(&as_recorded, &camera, "noise").is_some());
+        assert_eq!(rule(&as_recorded, &camera, "crushed_black").unwrap().verdict, Verdict::Fail);
     }
 }

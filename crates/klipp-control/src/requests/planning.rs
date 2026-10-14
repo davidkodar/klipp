@@ -452,7 +452,7 @@ pub(crate) fn respond(
                 let look = look_for(ctx, *t);
                 // A floor the file already holds is the scene's, not the
                 // grade's: the file is read only when a finding hangs on it.
-                if needs_source(&klipp_color::measure::judge(&m, &look)) {
+                if needs_source(&klipp_color::measure::judge(&m, &look), &look) {
                     m.source = source_reading(ctx, *clip, *t);
                 }
                 let mut found = colour_report(&m, &look, *t);
