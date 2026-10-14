@@ -874,6 +874,12 @@ pub struct Mask {
     /// How it joins the masks before it (#74).
     #[serde(default, skip_serializing_if = "MaskCombine::is_add")]
     pub combine: MaskCombine,
+    /// Its name in the mask list; empty shows "Mask n".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// Kept from edits in the viewer (#74).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locked: bool,
 }
 
 fn is_zero_f32(v: &f32) -> bool {
@@ -891,6 +897,8 @@ impl Default for Mask {
             keyframes: MaskKeyframes::default(),
             feather_inner: 0.0,
             combine: MaskCombine::Add,
+            name: String::new(),
+            locked: false,
         }
     }
 }

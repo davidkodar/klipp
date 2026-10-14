@@ -2074,7 +2074,7 @@ impl ViewerPanel {
 
         // ── Interactive mask handles on viewer ──
         // Draw and interact with masks from the selected node in the clip's node graph.
-        self.draw_mask_handles(ui, state, image_rect, cmds);
+        self.draw_mask_handles(ui, state, image_rect, cmds, theme);
 
         // ── Point tracking overlay ──
         self.draw_track_points(ui, state, image_rect, cmds, theme);
@@ -3172,7 +3172,7 @@ impl ViewerPanel {
         };
 
         let rec_line = if state.perf_recording_active {
-            Some("● REC  (Ctrl+Shift+P to stop)".to_string())
+            Some("● REC  (Ctrl+Alt+P to stop)".to_string())
         } else {
             None
         };
@@ -3454,8 +3454,16 @@ impl ViewerPanel {
         state: &mut AppState,
         image_rect: egui::Rect,
         cmds: &mut Vec<AppCommand>,
+        theme: &KlippTheme,
     ) {
         use crate::state::{MaskHandle, ViewerMaskDrag};
+        // The Mask tool draws and edits the freeform masks itself (#74),
+        // with or without a mask yet; the other shapes keep their handles
+        // below.
+        let mask_tool = state.active_tool == klipp_core::Tool::Mask;
+        if mask_tool {
+            crate::mask_edit::mask_tool(ui, state, image_rect, cmds, theme);
+        }
 
         // Show masks whenever the clip has at least one Mask node
         // with shapes — selection is not required. Prefer the
@@ -3769,6 +3777,7 @@ impl ViewerPanel {
                     }
                 }
                 // Bezier freeform path
+                klipp_core::MaskShape::Bezier { .. } if mask_tool => {}
                 klipp_core::MaskShape::Bezier { points } => {
                     if points.len() >= 2 {
                         let screen_pts: Vec<egui::Pos2> = points.iter().map(|p| to_screen(p.x, p.y)).collect();
@@ -3784,15 +3793,9 @@ impl ViewerPanel {
                             let b = outline[(i + 1) % outline.len()];
                             ui.painter().line_segment([a, b], egui::Stroke::new(1.5_f32, outline_color));
                         }
-                        // Bezier-specific edits that don't go through the
-                        // drag-handle loop: double-click an edge to insert
-                        // a vertex at the click point, shift-click a
-                        // vertex to delete it. Collected here and flushed
-                        // via SetNodeMasks on the next frame; mutating
-                        // `masks` in place would fight the borrow.
-                        let mut insert_at_edge: Option<(usize, (f32, f32))> = None;
-                        let mut delete_vertex: Option<usize> = None;
-                        // Draw control point handles + handle shift-click delete
+                        // Adding, removing and reshaping points is the Mask
+                        // tool's (#74); here a point only moves.
+                        // Draw control point handles
                         if state.viewer_mask_drag.is_none() {
                             for (pi, sp) in screen_pts.iter().enumerate() {
                                 let handle_rect = egui::Rect::from_center_size(*sp, egui::vec2(12.0, 12.0));
@@ -3803,10 +3806,7 @@ impl ViewerPanel {
                                     outline_color
                                 };
                                 ui.painter().circle_filled(*sp, 4.0, color);
-                                let shift = ui.input(|i| i.modifiers.shift);
-                                if resp.clicked() && shift && points.len() > 3 {
-                                    delete_vertex = Some(pi);
-                                } else if resp.drag_started() {
+                                if resp.drag_started() {
                                     if let Some(pos) = resp.interact_pointer_pos() {
                                         state.selected_node_id = Some(node_id);
                                         cmds.push(AppCommand::FocusMaskInspector);
@@ -3826,64 +3826,10 @@ impl ViewerPanel {
                                         });
                                     }
                                 }
-                                if resp.hovered() && shift && points.len() > 3 {
-                                    ui.ctx().set_cursor_icon(egui::CursorIcon::NotAllowed);
-                                } else if resp.hovered() || resp.dragged() {
+                                if resp.hovered() || resp.dragged() {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
                                 }
                             }
-                            // Double-click an edge to insert a vertex.
-                            // Checked against each edge's distance; the
-                            // closest within ~10 px wins.
-                            let dbl = ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary));
-                            if dbl {
-                                if let Some(click) = ui.input(|i| i.pointer.interact_pos()) {
-                                    let mut best: Option<(usize, f32, (f32, f32))> = None;
-                                    let n = screen_pts.len();
-                                    for i in 0..n {
-                                        let a = screen_pts[i];
-                                        let b = screen_pts[(i + 1) % n];
-                                        let (dist, proj) = point_segment_distance(click, a, b);
-                                        if dist < 10.0 {
-                                            let on = ((proj.x - image_rect.min.x) / image_rect.width(), (proj.y - image_rect.min.y) / image_rect.height());
-                                            // Back to the window as drawn, when it is
-                                            // carried in perspective.
-                                            let on = mask.keyframes.warp.and_then(|w| w.apply(on)).unwrap_or(on);
-                                            let (nx, ny) = (on.0.clamp(0.0, 1.0), on.1.clamp(0.0, 1.0));
-                                            match best {
-                                                Some((_, d, _)) if d <= dist => {}
-                                                _ => best = Some((i, dist, (nx, ny))),
-                                            }
-                                        }
-                                    }
-                                    if let Some((edge_idx, _, pt)) = best {
-                                        insert_at_edge = Some((edge_idx, pt));
-                                    }
-                                }
-                            }
-                        }
-                        // Flush edit (only one op per frame is possible
-                        // because the viewer routes both through the
-                        // same double-click / click inputs — but belt
-                        // and braces: handle delete first, then insert).
-                        if delete_vertex.is_some() || insert_at_edge.is_some() {
-                            let mut updated = masks.clone();
-                            if let Some(m) = updated.masks.get_mut(mask_idx) {
-                                if let klipp_core::MaskShape::Bezier { points } = &mut m.shape {
-                                    if let Some(di) = delete_vertex {
-                                        if di < points.len() && points.len() > 3 {
-                                            points.remove(di);
-                                        }
-                                    }
-                                    if let Some((edge_idx, pt)) = insert_at_edge {
-                                        let insert_at = (edge_idx + 1).min(points.len());
-                                        points.insert(insert_at, pt.into());
-                                    }
-                                }
-                            }
-                            cmds.push(AppCommand::SetNodeMasks {
-                                clip_id, node_id, masks: updated,
-                            });
                         }
                     }
                 }
@@ -6196,10 +6142,6 @@ impl ViewerPanel {
 }
 
 /// Rotate a point around a center by the given angle in radians.
-/// Distance from `p` to the closed segment [`a`, `b`] and the
-/// projected point on the segment (clamped to the endpoints).
-/// Used by the Bezier-mask edit flow to decide which edge a
-/// double-click should insert a new vertex into.
 /// Compute the bounding box of a Title object in screen coords,
 /// derived from its normalised `transform.center` / `transform.size`
 /// mapped through the rendered video's `image_rect`.
@@ -6587,20 +6529,6 @@ fn compute_drag_transform(
         t.size = klipp_timeline::TitlePosition { x: nw / aspect, y: nh };
     }
     t
-}
-
-fn point_segment_distance(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> (f32, egui::Pos2) {
-    let ab = b - a;
-    let len_sq = ab.x * ab.x + ab.y * ab.y;
-    let proj = if len_sq < 1e-6 {
-        a
-    } else {
-        let ap = p - a;
-        let t = ((ap.x * ab.x + ap.y * ab.y) / len_sq).clamp(0.0, 1.0);
-        egui::pos2(a.x + ab.x * t, a.y + ab.y * t)
-    };
-    let d = p - proj;
-    ((d.x * d.x + d.y * d.y).sqrt(), proj)
 }
 
 fn rotate_point(point: egui::Pos2, center: egui::Pos2, angle_rad: f32) -> egui::Pos2 {

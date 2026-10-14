@@ -132,7 +132,7 @@ impl KlippApp {
         }
 
         // Consume any menu / toolbar request to toggle the perf
-        // recording. The direct Ctrl+Shift+P keybinding calls
+        // recording. The direct Ctrl+Alt+P keybinding calls
         // `toggle_perf_recording` inline during shortcut handling
         // for snappier UX; this pending-flag path covers everything
         // else that doesn't have easy access to `&mut self`.

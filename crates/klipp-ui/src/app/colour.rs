@@ -1425,6 +1425,26 @@ impl KlippApp {
                 self.layout.active_inspector_tab = crate::layout_state::InspectorTab::Color;
                 true
             }
+            AppCommand::MoveMaskShape { clip_id, node_id, from, to } => {
+                let (clip_id, node_id, from, to) = (*clip_id, *node_id, *from, *to);
+                let mut moved = false;
+                self.with_current_clip_graph_mut(clip_id, needs_refresh, |graph| {
+                    moved = move_mask(graph, node_id, from, to);
+                });
+                if moved {
+                    let seq = &mut self.state.sequences[self.state.active_sequence_idx];
+                    if let Some(clip) = seq.all_clips_mut().find(|c| c.id == clip_id) {
+                        for tp in &mut clip.track_points {
+                            if let Some((tn, mi)) = tp.linked_mask.filter(|(tn, _)| *tn == node_id) {
+                                tp.linked_mask = Some((tn, moved_index(mi, from, to)));
+                            }
+                        }
+                    }
+                    // The tool's selection named the old places.
+                    self.state.mask_edit = Default::default();
+                }
+                true
+            }
             AppCommand::RemoveMaskShape { clip_id, mask_index } => {
                 let clip_id = *clip_id;
                 let mask_index = *mask_index;
@@ -3150,6 +3170,31 @@ pub(super) fn reset_node_params(params: &mut klipp_nodes::NodeParams) {
 /// command carries, or a mask shape added to (or removed from) the grade's
 /// Mask node. One place, so the app's dispatch and the inspector parity
 /// apply them alike. `false` when `cmd` is none of these.
+/// The mask at `from` in node `node_id`'s stack moved to `to` (#74):
+/// whether it moved.
+pub(super) fn move_mask(graph: &mut klipp_nodes::NodeGraph, node_id: klipp_nodes::NodeId, from: usize, to: usize) -> bool {
+    let Some(masks) = graph.nodes.iter_mut().find(|n| n.id == node_id).and_then(|n| n.params.masks.as_mut()) else { return false };
+    if from == to || from >= masks.masks.len() || to >= masks.masks.len() {
+        return false;
+    }
+    let m = masks.masks.remove(from);
+    masks.masks.insert(to, m);
+    true
+}
+
+/// Where the mask at `i` is after the one at `from` moved to `to`.
+pub(super) fn moved_index(i: usize, from: usize, to: usize) -> usize {
+    if i == from {
+        to
+    } else if from < to && i > from && i <= to {
+        i - 1
+    } else if to < from && i >= to && i < from {
+        i + 1
+    } else {
+        i
+    }
+}
+
 pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppCommand) -> bool {
     // A mask shape added or removed names its clip, not its node: the
     // grade's Mask node takes it, made (with its cutout) when there's none.

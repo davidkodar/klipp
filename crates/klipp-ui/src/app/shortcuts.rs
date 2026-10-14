@@ -247,7 +247,7 @@ impl KlippApp {
         // Delete over the Transcript panel is the panel's: it cuts the
         // selected words. Taking the selected clip as well would remove
         // a clip the cut has just split.
-        if self.state.show_transcript_panel && self.state.transcript_panel_hovered {
+        if !delete_reaches_timeline(&self.state) {
             return;
         }
         let kb = self.key_bindings.clone();
@@ -287,24 +287,7 @@ impl KlippApp {
             }
             // Delete/Backspace — remove selected clip OR extract range (plain, no shift)
             else if !keyframe_deleted && kb.is_action_pressed("delete_clip", i) {
-                // A selected transition goes, not the clips around it (#918).
-                if let (Some((track_index, transition_id)), None) = (self.state.selected_transition, self.state.selected_clip) {
-                    cmds.push(AppCommand::RemoveTransition { track_index, transition_id });
-                    self.state.selected_transition = None;
-                } else if let (Some((track_index, gap_start, gap_end)), None) = (self.state.selected_gap.take(), self.state.selected_clip) {
-                    // A selected gap closes, the clips after it moving up (#925).
-                    let still = self.state.sequence().tracks.get(track_index).and_then(|t| crate::selection::gap_at(t, gap_start)) == Some((gap_start, gap_end));
-                    if still {
-                        cmds.push(AppCommand::CloseGap { track_index, gap_start, gap_end });
-                    }
-                } else if let Some(clip_id) = self.state.selected_clip {
-                    cmds.push(AppCommand::RemoveClip { clip_id });
-                } else if self.state.selected_clips.is_empty()
-                    && self.state.sequence().in_point.is_some()
-                    && self.state.sequence().out_point.is_some()
-                {
-                    cmds.push(AppCommand::ExtractEdit);
-                }
+                cmds.extend(delete_selection(&mut self.state));
             }
 
         });
@@ -361,12 +344,9 @@ impl KlippApp {
             // (`toggle_scrub_audio` action removed — Shift+S now drives
             // `toggle_audio_skim` in shortcuts_magnetic_skim. JKL
             // transport audio still flips through the prefs panel.)
-            // Cut clip
-            if kb.is_action_pressed("cut_clip", i) {
-                if let Some(clip_id) = self.state.selected_clip {
-                    cmds.push(AppCommand::CutClip { clip_id });
-                }
-            }
+            // Cut clip, Lift and Extract: the timeline's, unless the
+            // Mask tool has the keys (#74).
+            cmds.extend(removal_keys(&self.state, &kb, i));
             // Ctrl+Shift+B / Ctrl+Shift+I — collapse a side panel to its
             // rail. The View menu has advertised shortcuts for these
             // since it was written; `shortcut_text` only draws a label,
@@ -632,6 +612,11 @@ impl KlippApp {
             if kb.is_action_pressed("text_tool", i) {
                 cmds.push(AppCommand::SetActiveTool(Tool::Text));
             }
+            // P — Mask tool: draw and edit a freeform mask in the viewer
+            // (#74)
+            if kb.is_action_pressed("mask_tool", i) {
+                cmds.push(AppCommand::SetActiveTool(Tool::Mask));
+            }
             // X — Set range to clip at playhead / Alt+X — Clear range
             // Clearing the range used to live in here as an Alt branch
             // as well as in its own clear_in_out handler, so Alt+X ran
@@ -670,11 +655,11 @@ impl KlippApp {
             if kb.is_action_pressed("toggle_fullscreen", i) {
                 cmds.push(AppCommand::ToggleFullscreen);
             }
-            // P — Toggle performance overlay
+            // Ctrl+Shift+P — Toggle performance overlay
             if kb.is_action_pressed("toggle_perf_overlay", i) {
                 self.state.show_perf_overlay = !self.state.show_perf_overlay;
             }
-            // Ctrl+Shift+P — Toggle perf recording session. Captured
+            // Ctrl+Alt+P — Toggle perf recording session. Captured
             // as a boolean here; the actual ring-buffer mark/dump
             // happens in `update` after the input phase so the
             // borrow on self can release cleanly.
@@ -792,7 +777,10 @@ impl KlippApp {
             // Escape — deselect clips, clear range drag, or return Range tool to Select
             if i.key_pressed(egui::Key::Escape) {
                 // Unlock scope cursor on Escape
-                if self.state.dynamic_trim.is_some() {
+                if self.state.mask_keys_owned() {
+                    // The Mask tool's (#74): it drops the drawn shape or
+                    // the point selection itself.
+                } else if self.state.dynamic_trim.is_some() {
                     // A dynamic trim goes back to its cut (#914).
                     cmds.push(AppCommand::CancelDynamicTrim);
                 } else if self.state.surface_tool.is_some() {
@@ -810,8 +798,9 @@ impl KlippApp {
                 } else if self.state.selected_clip.is_some() || !self.state.selected_clips.is_empty() {
                     self.state.selected_clips.clear();
                     cmds.push(AppCommand::SelectClip(None));
-                } else if matches!(self.state.active_tool, Tool::Range | Tool::Text) {
-                    // Esc puts the Range and Text tools down (#1713).
+                } else if matches!(self.state.active_tool, Tool::Range | Tool::Text | Tool::Mask) {
+                    // Esc puts the Range, Text and Mask tools down (#1713,
+                    // #74).
                     cmds.push(AppCommand::SetActiveTool(Tool::Select));
                 }
                 self.state.ruler_press_origin = None;
@@ -873,14 +862,6 @@ impl KlippApp {
             }
             if kb.is_action_pressed("replace_edit", i) {
                 cmds.push(AppCommand::ReplaceEdit);
-            }
-            // Lift edit
-            if kb.is_action_pressed("lift_edit", i) {
-                cmds.push(AppCommand::LiftEdit);
-            }
-            // Extract edit
-            if kb.is_action_pressed("extract_edit", i) {
-                cmds.push(AppCommand::ExtractEdit);
             }
         });
     }
@@ -1331,4 +1312,60 @@ pub(super) fn key_scope(state: &crate::state::AppState, text_editing: bool) -> K
         Some(crate::state::PanelKind::PictureGraph) => KeyScope::CtrlOnly,
         _ => KeyScope::All,
     }
+}
+
+/// Whether Delete goes to the timeline's selection: not while the
+/// Transcript panel under the pointer takes it for its words, nor while
+/// the viewer's Mask tool has points selected or a shape being drawn
+/// (#74), whose Delete it is. The clip behind them stays.
+pub(super) fn delete_reaches_timeline(state: &crate::state::AppState) -> bool {
+    !(state.show_transcript_panel && state.transcript_panel_hovered) && !state.mask_keys_owned()
+}
+
+/// What a plain Delete removes from the timeline's selection: a selected
+/// transition, a selected gap, the selected clip, or the marked range.
+pub(super) fn delete_selection(state: &mut crate::state::AppState) -> Vec<AppCommand> {
+    let mut cmds = Vec::new();
+    // A selected transition goes, not the clips around it (#918).
+    if let (Some((track_index, transition_id)), None) = (state.selected_transition, state.selected_clip) {
+        cmds.push(AppCommand::RemoveTransition { track_index, transition_id });
+        state.selected_transition = None;
+    } else if let (Some((track_index, gap_start, gap_end)), None) = (state.selected_gap.take(), state.selected_clip) {
+        // A selected gap closes, the clips after it moving up (#925).
+        let still = state.sequence().tracks.get(track_index).and_then(|t| crate::selection::gap_at(t, gap_start)) == Some((gap_start, gap_end));
+        if still {
+            cmds.push(AppCommand::CloseGap { track_index, gap_start, gap_end });
+        }
+    } else if let Some(clip_id) = state.selected_clip {
+        cmds.push(AppCommand::RemoveClip { clip_id });
+    } else if state.selected_clips.is_empty()
+        && state.sequence().in_point.is_some()
+        && state.sequence().out_point.is_some()
+    {
+        cmds.push(AppCommand::ExtractEdit);
+    }
+    cmds
+}
+
+/// The keys besides Delete that take clips out of the timeline: Cut
+/// (Ctrl+X), Lift and Extract. None while the viewer's Mask tool has the
+/// keys (#74), as Delete is not: its selected points are what the
+/// person is working on.
+pub(super) fn removal_keys(state: &crate::state::AppState, kb: &crate::keybindings::KeyBindings, i: &egui::InputState) -> Vec<AppCommand> {
+    let mut cmds = Vec::new();
+    if state.mask_keys_owned() {
+        return cmds;
+    }
+    if kb.is_action_pressed("cut_clip", i) {
+        if let Some(clip_id) = state.selected_clip {
+            cmds.push(AppCommand::CutClip { clip_id });
+        }
+    }
+    if kb.is_action_pressed("lift_edit", i) {
+        cmds.push(AppCommand::LiftEdit);
+    }
+    if kb.is_action_pressed("extract_edit", i) {
+        cmds.push(AppCommand::ExtractEdit);
+    }
+    cmds
 }

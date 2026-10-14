@@ -8033,7 +8033,7 @@ mod tests {
     // ── apply_tracker_overrides_to_masks ────────────────────────────
 
     fn make_circle_mask(cx: f32, cy: f32) -> klipp_core::Mask {
-        klipp_core::Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+        klipp_core::Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
             shape: klipp_core::MaskShape::Circle { center_x: cx, center_y: cy, radius: 0.1 },
             feather: 0.0,
             invert: false,

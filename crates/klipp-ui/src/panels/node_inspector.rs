@@ -771,13 +771,31 @@ impl NodeInspectorPanel {
 
             ui.add_space(4.0);
             let mut delete_this = false;
+            let mut duplicate_this = false;
+            let mut move_to: Option<usize> = None;
             {
                 let mask = &mut masks.masks[mask_idx];
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
                     if ui.checkbox(&mut mask.enabled, "").changed() { masks_changed = true; }
-                    ui.label(egui::RichText::new(format!("Mask {} - {}", mask_idx + 1, shape_label))
-                        .size(11.0).color(theme.text_accent));
+                    let title = if mask.name.trim().is_empty() { format!("Mask {}", mask_idx + 1) } else { mask.name.clone() };
+                    // Its copy and its place in the stack, from its menu (#74).
+                    let header = ui.add(egui::Label::new(egui::RichText::new(format!("{title} \u{00B7} {shape_label}"))
+                        .size(11.0).color(theme.text_accent)).sense(egui::Sense::click()));
+                    header.context_menu(|ui| crate::widgets::menu::menu_body(ui, |ui| {
+                        if crate::widgets::menu::menu_item(ui, "Duplicate", "").clicked() {
+                            duplicate_this = true;
+                            ui.close_menu();
+                        }
+                        if mask_idx > 0 && crate::widgets::menu::menu_item(ui, "Move Up", "").clicked() {
+                            move_to = Some(mask_idx - 1);
+                            ui.close_menu();
+                        }
+                        if mask_idx + 1 < mask_count && crate::widgets::menu::menu_item(ui, "Move Down", "").clicked() {
+                            move_to = Some(mask_idx + 1);
+                            ui.close_menu();
+                        }
+                    }));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Push everything well off the right edge so
                         // the × delete button doesn't overlap the
@@ -855,6 +873,45 @@ impl NodeInspectorPanel {
                     });
                 });
             }
+            // Its name and lock (#74).
+            {
+                let mask = &mut masks.masks[mask_idx];
+                ui.horizontal(|ui| {
+                    ui.add_space(30.0);
+                    let name = ui.add(egui::TextEdit::singleline(&mut mask.name).hint_text(format!("Mask {}", mask_idx + 1)).desired_width(110.0).font(egui::FontId::proportional(crate::theme::type_scale::CAPTION)));
+                    // Typing is one step: begun as the field takes the
+                    // keys, ended as it lets them go.
+                    if name.gained_focus() {
+                        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+                    }
+                    if name.changed() {
+                        masks_changed = true;
+                    }
+                    if name.lost_focus() {
+                        ended = Some(|clip_id| AppCommand::EndNodeParamEdit { clip_id });
+                    }
+                    let tip = "Keep the mask from edits in the viewer";
+                    let lock = ui.add(crate::widgets::toggle::toggle(&mut mask.locked)).on_hover_text(tip);
+                    let label = ui.add(egui::Label::new(egui::RichText::new("Lock").size(crate::theme::type_scale::CAPTION).color(theme.text_dim)).sense(egui::Sense::click())).on_hover_text(tip);
+                    if label.clicked() {
+                        mask.locked = !mask.locked;
+                    }
+                    if lock.changed() || label.clicked() {
+                        masks_changed = true;
+                    }
+                    if let klipp_core::MaskShape::Bezier { points } = &mask.shape {
+                        ui.label(egui::RichText::new(format!("{} points", points.len())).size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
+                    }
+                });
+            }
+            if duplicate_this {
+                let copy = masks.masks[mask_idx].clone();
+                masks.masks.push(copy);
+                masks_changed = true;
+            }
+            if let Some(to) = move_to {
+                cmds.push(AppCommand::MoveMaskShape { clip_id, node_id, from: mask_idx, to });
+            }
             if delete_this {
                 // Route through the AppCommand handler so the
                 // centralized cleanup runs — it drops any TrackPoint
@@ -914,8 +971,8 @@ impl NodeInspectorPanel {
                     } else {
                         "Add keyframe at playhead"
                     });
-                    ui.label(egui::RichText::new(info.name.replace('_', " "))
-                        .size(10.0).color(theme.text_dim));
+                    ui.label(egui::RichText::new(param_label(info.name))
+                        .size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
                     ui.add_space(4.0);
                     let mut val = info.display_val;
                     let resp = ui.add(egui::Slider::new(&mut val, info.range.clone())
@@ -977,7 +1034,36 @@ impl NodeInspectorPanel {
                 let mask = &mut masks.masks[mask_idx];
                 ui.horizontal(|ui| {
                     ui.add_space(30.0);
-                    if ui.checkbox(&mut mask.invert, egui::RichText::new("Invert").size(10.0)).changed() {
+                    if ui.checkbox(&mut mask.invert, egui::RichText::new("Invert").size(crate::theme::type_scale::CAPTION)).changed() {
+                        masks_changed = true;
+                    }
+                    // How it joins the masks above it (#74).
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("Mode").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
+                    egui::ComboBox::from_id_salt(("mask_combine", node_id, mask_idx))
+                        .selected_text(egui::RichText::new(combine_label(mask.combine)).size(crate::theme::type_scale::CAPTION))
+                        .width(84.0)
+                        .show_ui(ui, |ui| crate::widgets::menu::menu_body(ui, |ui| {
+                            for c in [klipp_core::MaskCombine::Add, klipp_core::MaskCombine::Subtract, klipp_core::MaskCombine::Intersect] {
+                                if crate::widgets::menu::menu_choice(ui, combine_label(c), "", mask.combine == c).clicked() && mask.combine != c {
+                                    mask.combine = c;
+                                    masks_changed = true;
+                                }
+                            }
+                        }));
+                });
+                // The soft edge inside the line (#74), beside the
+                // feather's outside one.
+                ui.horizontal(|ui| {
+                    ui.add_space(30.0);
+                    ui.label(egui::RichText::new("Feather inside").size(crate::theme::type_scale::CAPTION).color(theme.text_dim));
+                    let resp = ui.add(egui::Slider::new(&mut mask.feather_inner, 0.0..=1.0).custom_formatter(|v, _| format!("{:.3}", v)).min_decimals(3));
+                    let (began, end) = gesture_of(ui, resp.drag_started(), resp.drag_stopped());
+                    if began {
+                        cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+                    }
+                    ended = ended.or(end);
+                    if resp.changed() {
                         masks_changed = true;
                     }
                 });
@@ -4533,6 +4619,22 @@ fn grade_slider_with(
 /// frame, and how it ended, if it did: committed on release
 /// (`EndNodeParamEdit`), or taken back when Escape ended it
 /// (`AbandonNodeParamEdit`), as the other rows' drags are.
+/// A mask parameter's name in the list: "center_x" is "Center x".
+fn param_label(name: &str) -> String {
+    let words = name.replace('_', " ");
+    let mut c = words.chars();
+    c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
+}
+
+/// A mask's join, as the Mode menu names it (#74).
+fn combine_label(c: klipp_core::MaskCombine) -> &'static str {
+    match c {
+        klipp_core::MaskCombine::Add => "Add",
+        klipp_core::MaskCombine::Subtract => "Subtract",
+        klipp_core::MaskCombine::Intersect => "Intersect",
+    }
+}
+
 fn gesture_of(ui: &mut egui::Ui, started: bool, ended: bool) -> (bool, Option<fn(ClipId) -> AppCommand>) {
     let end: Option<fn(ClipId) -> AppCommand> = ended.then(|| {
         if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
@@ -5321,4 +5423,136 @@ fn render_wheel_layout_review(ctx: &egui::Context, out: &egui::FullOutput, textu
     let mapped = buffer.slice(..).get_mapped_range();
     let pixels: Vec<u8> = mapped.chunks(stride as usize).flat_map(|row| row[..width as usize * 4].iter().copied()).collect();
     image::save_buffer(path, &pixels, width, 2000, image::ColorType::Rgba8).unwrap();
+}
+
+#[cfg(test)]
+mod mask_list_tests {
+    //! The mask list (#74): each mask's mode, inner feather, name, lock,
+    //! copy and place in the stack, edited with real pointer events.
+    use super::*;
+    use klipp_core::{Mask, MaskCombine, MaskShape, MaskStack};
+
+    struct Rig {
+        ctx: egui::Context,
+        time: f64,
+        masks: MaskStack,
+        sent: Vec<AppCommand>,
+        texts: Vec<(String, egui::Pos2)>,
+        node: NodeId,
+        clip: ClipId,
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            let masks = MaskStack { masks: vec![
+                Mask { shape: MaskShape::Rectangle { center_x: 0.5, center_y: 0.5, width: 0.5, height: 0.5, rotation: 0.0 }, ..Mask::default() },
+                Mask { shape: MaskShape::polygon([(0.3, 0.3), (0.7, 0.3), (0.5, 0.7)]), name: "Face".into(), ..Mask::default() },
+            ] };
+            let mut r = Rig { ctx: egui::Context::default(), time: 0.0, masks, sent: Vec::new(), texts: Vec::new(), node: NodeId::new_v4(), clip: ClipId::new() };
+            r.frame(Vec::new());
+            r.frame(Vec::new());
+            r
+        }
+
+        /// One frame; what it sent applied as the app applies the stack.
+        fn frame(&mut self, events: Vec<egui::Event>) {
+            self.time += 1.0 / 60.0;
+            let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(520.0, 1200.0))), time: Some(self.time), events, ..Default::default() };
+            let frame = crate::inspector::keyframe_selection::FrameSelection::new(klipp_core::Timecode::zero(), klipp_core::Timecode::zero(), 0.02);
+            let mut masks = self.masks.clone();
+            let mut cmds = Vec::new();
+            let (node, clip) = (self.node, self.clip);
+            let out = self.ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    NodeInspectorPanel::render_masks_body(ui, &mut masks, node, clip, &mut cmds, &KlippTheme::default(), frame, &[]);
+                });
+            });
+            self.texts = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos + t.galley.size() / 2.0)), _ => None,
+            }).collect();
+            for cmd in &cmds {
+                match cmd {
+                    AppCommand::SetNodeMasks { masks, .. } => self.masks = masks.clone(),
+                    AppCommand::MoveMaskShape { from, to, .. } => {
+                        let m = self.masks.masks.remove(*from);
+                        self.masks.masks.insert(*to, m);
+                    }
+                    _ => {}
+                }
+            }
+            self.sent.extend(cmds);
+        }
+
+        fn at(&self, text: &str, nth: usize) -> egui::Pos2 {
+            self.texts.iter().filter(|(t, _)| t == text).nth(nth).unwrap_or_else(|| panic!("no {text:?} #{nth}: {:?}", self.texts)).1
+        }
+
+        fn click(&mut self, p: egui::Pos2) {
+            self.press(p, egui::PointerButton::Primary);
+        }
+
+        fn press(&mut self, p: egui::Pos2, button: egui::PointerButton) {
+            self.frame(vec![egui::Event::PointerMoved(p), egui::Event::PointerButton { pos: p, button, pressed: true, modifiers: egui::Modifiers::NONE }]);
+            self.frame(vec![egui::Event::PointerButton { pos: p, button, pressed: false, modifiers: egui::Modifiers::NONE }]);
+            self.frame(Vec::new());
+        }
+
+        /// `item` from the menu of the mask titled `title`.
+        fn menu(&mut self, title: &str, item: &str) {
+            let p = self.at(title, 0);
+            self.press(p, egui::PointerButton::Secondary);
+            let p = self.at(item, 0);
+            self.click(p);
+        }
+    }
+
+    /// A mask's mode is picked from its menu; the second mask moved up
+    /// from its own menu takes the first place, by its own command; a
+    /// copy goes at the end; a lock keeps it from the viewer; the list
+    /// names a mask by its name, and counts a freeform one's points.
+    #[test]
+    fn the_mask_list_sets_mode_order_copy_and_lock() {
+        let mut r = Rig::new();
+        assert!(r.texts.iter().any(|(t, _)| t == "Face \u{00B7} Bezier"), "{:?}", r.texts);
+        assert!(r.texts.iter().any(|(t, _)| t == "3 points"));
+
+        let p = r.at("Add", 1);
+        r.click(p);
+        let p = r.at("Subtract", 0);
+        r.click(p);
+        assert_eq!(r.masks.masks[1].combine, MaskCombine::Subtract, "{:?}", r.sent);
+
+        r.menu("Face \u{00B7} Bezier", "Move Up");
+        assert!(r.sent.iter().any(|c| matches!(c, AppCommand::MoveMaskShape { from: 1, to: 0, .. })), "{:?}", r.sent);
+        assert_eq!(r.masks.masks[0].name, "Face");
+
+        r.menu("Face \u{00B7} Bezier", "Duplicate");
+        assert_eq!(r.masks.masks.len(), 3);
+        assert_eq!(r.masks.masks[2].name, "Face");
+
+        let p = r.at("Lock", 0);
+        r.click(p);
+        assert!(r.masks.masks[0].locked);
+        assert!(!r.texts.iter().any(|(t, _)| t.contains('\u{1F512}') || t.contains('\u{1F513}')), "the lock is the shared toggle, not an emoji");
+    }
+
+    /// The inner feather is a slider of its own, and a drag on it is one
+    /// undo step.
+    #[test]
+    fn the_inner_feather_drags_as_one_step() {
+        let mut r = Rig::new();
+        let label = r.at("Feather inside", 0);
+        let from = label + egui::vec2(80.0, 0.0);
+        let to = from + egui::vec2(60.0, 0.0);
+        let b = |p, d| egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed: d, modifiers: egui::Modifiers::NONE };
+        r.frame(vec![egui::Event::PointerMoved(from), b(from, true)]);
+        for i in 1..=4 {
+            r.frame(vec![egui::Event::PointerMoved(from + (to - from) * (i as f32 / 4.0))]);
+        }
+        r.frame(vec![b(to, false)]);
+        r.frame(Vec::new());
+        assert!(r.masks.masks[0].feather_inner > 0.0, "{:?}", r.masks.masks[0]);
+        assert_eq!(r.sent.iter().filter(|c| matches!(c, AppCommand::BeginNodeParamEdit { .. })).count(), 1, "{:?}", r.sent);
+        assert_eq!(r.sent.iter().filter(|c| matches!(c, AppCommand::EndNodeParamEdit { .. })).count(), 1);
+    }
 }

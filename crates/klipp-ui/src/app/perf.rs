@@ -157,7 +157,7 @@ impl KlippApp {
             self.state.perf_recording_active = true;
             // Auto-show the overlay so the user sees the REC badge.
             self.state.show_perf_overlay = true;
-            self.state.toast.show("Perf recording started · Ctrl+Shift+P to stop");
+            self.state.toast.show(format!("Perf recording started · {} to stop", self.key_bindings.display_for("toggle_perf_recording")));
         }
     }
 }

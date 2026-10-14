@@ -14,6 +14,8 @@
 /// Adobe's "Default keyboard shortcuts in Premiere Pro" (helpx.adobe.com,
 /// 2025/2026 pages; tools and Zoom to Sequence from the 2018 page).
 pub(crate) const PREMIERE: &[(&str, &[&str])] = &[
+    // The Mask tool's pen (#74).
+    ("mask_tool", &["P"]),
     ("save_project", &["Ctrl+S"]),
     ("save_project_as", &["Ctrl+Shift+S"]),
     ("open_project", &["Ctrl+O"]),
@@ -95,6 +97,8 @@ pub(crate) const PREMIERE: &[(&str, &[&str])] = &[
 /// Editors". Add Marker, Match Frame and Add Edit have no default key in
 /// Avid (the guide says to map them yourself), so they keep Klipp's.
 pub(crate) const AVID: &[(&str, &[&str])] = &[
+    // The Mask tool's pen (#74).
+    ("mask_tool", &["P"]),
     ("save_project", &["Ctrl+S"]),
     ("undo", &["Ctrl+Z"]),
     ("redo", &["Ctrl+R"]),
@@ -146,6 +150,8 @@ pub(crate) const AVID: &[(&str, &[&str])] = &[
 /// Windows layout, cross-checked against newer references for the keys
 /// Resolve added later (ripple to playhead, Paste Attributes).
 pub(crate) const RESOLVE: &[(&str, &[&str])] = &[
+    // The Mask tool's pen (#74).
+    ("mask_tool", &["P"]),
     ("save_project", &["Ctrl+S"]),
     ("import_media", &["Ctrl+I"]),
     ("preferences", &["Ctrl+,"]),
@@ -208,6 +214,8 @@ pub(crate) const RESOLVE: &[(&str, &[&str])] = &[
 /// (support.apple.com). Shortcuts that need the Control key have no
 /// equivalent here, since Ctrl already stands for Command.
 pub(crate) const FINAL_CUT: &[(&str, &[&str])] = &[
+    // The Mask tool's pen (#74).
+    ("mask_tool", &["P"]),
     ("open_project", &["Ctrl+O"]),
     ("new_project", &["Ctrl+N"]),
     ("import_media", &["Ctrl+I"]),
