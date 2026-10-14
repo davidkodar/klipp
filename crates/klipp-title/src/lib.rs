@@ -2091,6 +2091,19 @@ impl TitleRenderer {
         bytes
     }
 
+    /// [`Self::render`] kept as the box it covers in half floats (#190),
+    /// through the same cache: for a caller that keeps more than eight
+    /// bits.
+    pub fn render_raster(&mut self, title: &TitleData, width: u32, height: u32) -> std::sync::Arc<BoxRaster> {
+        if let Some(hit) = self.cache_lookup(title, width, height) {
+            self.last_rows = hit.rows;
+            return hit.pixels;
+        }
+        let raster = self.raster_at(title, width, height, None, None);
+        self.last_rows = raster_rows(&raster);
+        self.cache_store(title.clone(), width, height, raster).pixels
+    }
+
     /// Render at a specific clip-relative time for time-aware
     /// animations such as per-character entrance staggering. The
     /// cache is bypassed entirely when ANY object's `char_animation`

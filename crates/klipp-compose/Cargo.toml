@@ -35,6 +35,8 @@ klipp-frei0r = { workspace = true }
 # The golden corpus's stored frames are one PNG (#1089).
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde_json = { workspace = true }
+# Reading a generator's half-float frame in its tests (#190).
+half = { workspace = true }
 
 [features]
 # A test-only fault on a clip's grade run (`fault`, #1276): turned on only
