@@ -532,6 +532,8 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
         action: PaletteAction::ToggleState(|s| s.show_edit_list = !s.show_edit_list), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Colour Check"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::ToggleState(|s| s.show_colour_check = !s.show_colour_check), enabled: true });
+    e.push(PaletteEntry { label: Cow::Borrowed("Toggle Delivery Check"), shortcut: Cow::Borrowed(""),
+        action: PaletteAction::ToggleState(|s| s.show_delivery_check = !s.show_delivery_check), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Sound Over Time"), shortcut: Cow::Borrowed(""),
         action: PaletteAction::ToggleState(|s| s.show_sound_over_time = !s.show_sound_over_time), enabled: true });
     e.push(PaletteEntry { label: Cow::Borrowed("Toggle Narrate"), shortcut: Cow::Borrowed(""),

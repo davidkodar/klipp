@@ -646,13 +646,17 @@ pub(crate) fn respond(
                     text.push_str(&format!("\n[lapsed, was {decision}]{}  {}: {}", r.at_secs.map(|t| format!(" {t:.2} s")).unwrap_or_default(), r.finding_id, r.rationale));
                 }
             }
+            // A finding still counted carries its review, a to-fix one's,
+            // so a client shows its state without reading the hint (#1978).
+            let review_of = |id: &str| reviews.iter().find(|r| r.finding_id == id).map(|r| json!({ "decision": r.decision, "rationale": r.rationale, "revision": r.revision }));
             let craft_json: Vec<serde_json::Value> = craft.iter().map(|(f, id)| {
                 let mut v = json!(f);
                 v["id"] = json!(id);
+                v["review"] = json!(review_of(id));
                 v
             }).collect();
-            let findings_json: Vec<serde_json::Value> = color_findings.iter().map(|f| json!({ "id": f.4, "severity": f.0, "rule": "color", "at_secs": f.1, "what": f.2, "hint": f.3 })).collect();
-            let audio_json: Vec<serde_json::Value> = audio_findings.iter().zip(&sound_ids).map(|(f, id)| json!({ "id": id, "severity": f.severity, "rule": "sound", "at_secs": f.at, "media": f.media, "what": f.what, "hint": f.hint, "role": f.role })).collect();
+            let findings_json: Vec<serde_json::Value> = color_findings.iter().map(|f| json!({ "id": f.4, "severity": f.0, "rule": "color", "at_secs": f.1, "what": f.2, "hint": f.3, "review": review_of(&f.4) })).collect();
+            let audio_json: Vec<serde_json::Value> = audio_findings.iter().zip(&sound_ids).map(|(f, id)| json!({ "id": id, "severity": f.severity, "rule": "sound", "at_secs": f.at, "media": f.media, "what": f.what, "hint": f.hint, "role": f.role, "review": review_of(id) })).collect();
             Ok(json!({ "text": text, "errors": errors, "warnings": warnings, "findings": craft_json, "accepted": accepted, "lapsed_reviews": lapsed, "color_findings": findings_json, "departing_groups": departing, "shots_on_target": shots_on_target, "colour_coverage": if color { json!({ "footage": color_times.len() - unread.len() - graphics_read, "graphics": graphics_read, "unread": unread.len() }) } else { json!(null) }, "sound_findings": audio_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
         }
 

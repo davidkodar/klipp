@@ -1271,6 +1271,9 @@ pub struct AppState {
     /// The Colour Check window: what a colourist would read off the
     /// frame on screen, with the fault named and the knob to turn.
     pub show_colour_check: bool,
+    /// The Delivery Check window (#1978): the check's findings, each
+    /// reviewed where it is read.
+    pub show_delivery_check: bool,
     /// The Edit List window (#923): the sequence's clips, transitions and
     /// markers in a sortable table.
     pub show_edit_list: bool,
@@ -4712,6 +4715,7 @@ impl Default for AppState {
             show_project_notes: false,
             show_edit_plan: false,
             show_colour_check: false,
+            show_delivery_check: false,
             show_edit_list: false,
             show_sound_over_time: false,
             show_narrate: false,

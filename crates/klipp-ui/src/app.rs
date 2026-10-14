@@ -41,6 +41,7 @@ mod startup;
 mod shortcuts;
 mod frame_loop;
 mod colour_workspace;
+mod delivery_check;
 mod main_layout;
 mod dialogs;
 mod control_bridge;
@@ -320,6 +321,11 @@ pub struct KlippApp {
     local_control: Option<LocalControl>,
     /// The running colour tool's answer, when it comes.
     colour_tool_reply: Option<std::sync::mpsc::Receiver<Result<serde_json::Value, String>>>,
+    /// The Delivery Check window's own state (#1978).
+    delivery_check: crate::panels::delivery_check::DeliveryCheckPanel,
+    /// The answer of the request the Delivery Check window sent, and
+    /// whether it was the check itself.
+    delivery_reply: Option<(bool, std::sync::mpsc::Receiver<Result<serde_json::Value, String>>)>,
     /// The Sound Over Time window's own state: the reading in hand or
     /// the thread still making it.
     sound_over_time: crate::panels::sound_over_time::SoundOverTimePanel,
