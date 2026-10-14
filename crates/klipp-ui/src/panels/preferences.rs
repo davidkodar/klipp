@@ -22,6 +22,7 @@ enum PrefsTab {
     Viewer,
     Proxy,
     ExternalTools,
+    Accounts,
     Advanced,
     Keyboard,
     About,
@@ -45,6 +46,20 @@ pub struct PreferencesPanel {
     /// filled and changed on worker threads, since an assistant's own
     /// command takes a second or two.
     assistant: std::sync::Arc<std::sync::Mutex<AssistantConnect>>,
+    /// Preferences → Accounts (#1894): a Freesound sign-in under way on a
+    /// worker thread, and the code a person pastes when the redirect
+    /// can't come back.
+    accounts: std::sync::Arc<std::sync::Mutex<AccountsState>>,
+    freesound_code: String,
+}
+
+/// The Accounts page's sign-in, as its worker leaves it (#1894).
+#[derive(Default)]
+struct AccountsState {
+    /// Waiting on the browser's approval.
+    waiting: bool,
+    /// The last sign-in's or sign-out's failure, said until the next try.
+    error: Option<String>,
 }
 
 /// `path` with the home directory written `~`, as a person reads it.
@@ -98,6 +113,8 @@ impl Default for PreferencesPanel {
             search_query: String::new(),
             clear_all_confirm: None,
             assistant: Default::default(),
+            accounts: Default::default(),
+            freesound_code: String::new(),
         }
     }
 }
@@ -271,7 +288,7 @@ impl PreferencesPanel {
                             ("PROJECT", &[(PrefsTab::General, "General"), (PrefsTab::Appearance, "Appearance")]),
                             ("PERFORMANCE", &[(PrefsTab::System, "System"), (PrefsTab::Playback, "Playback"), (PrefsTab::MediaCache, "Cache")]),
                             ("EDITING", &[(PrefsTab::Editing, "Editing"), (PrefsTab::Timeline, "Timeline"), (PrefsTab::Viewer, "Viewer")]),
-                            ("MEDIA & AUDIO", &[(PrefsTab::FileBrowser, "File Browser"), (PrefsTab::Audio, "Audio"), (PrefsTab::AudioHardware, "Audio HW"), (PrefsTab::Proxy, "Proxy"), (PrefsTab::ExternalTools, "External Tools")]),
+                            ("MEDIA & AUDIO", &[(PrefsTab::FileBrowser, "File Browser"), (PrefsTab::Audio, "Audio"), (PrefsTab::AudioHardware, "Audio HW"), (PrefsTab::Proxy, "Proxy"), (PrefsTab::ExternalTools, "External Tools"), (PrefsTab::Accounts, "Accounts")]),
                             ("COLOUR & EXPORT", &[(PrefsTab::Color, "Colour"), (PrefsTab::Export, "Export")]),
                             ("AI", &[(PrefsTab::Ai, "AI")]),
                             ("INTERFACE", &[(PrefsTab::Title, "Titles"), (PrefsTab::Keyboard, "Keyboard"), (PrefsTab::Advanced, "Advanced")]),
@@ -327,6 +344,7 @@ impl PreferencesPanel {
                             PrefsTab::Export => self.show_export(ui, prefs, prefs_dirty, &mut cmds, theme),
                             PrefsTab::Proxy => self.show_proxy(ui, prefs, prefs_dirty, &mut cmds, theme),
                             PrefsTab::ExternalTools => self.show_external_tools(ui, prefs, prefs_dirty, theme),
+                            PrefsTab::Accounts => self.show_accounts(ui, theme),
                             PrefsTab::Ai => self.show_ai(ui, prefs, prefs_dirty, &mut cmds, theme),
                             PrefsTab::System => self.show_system(ui, prefs, prefs_dirty, theme),
                             PrefsTab::Appearance => self.show_appearance(ui, prefs, prefs_dirty, theme_registry, theme),
@@ -438,6 +456,7 @@ impl PreferencesPanel {
             PrefsTab::Audio => &["audio", "pan law", "fade", "curve", "loudness", "normalize", "peak hold", "anti-click", "mixing"],
             PrefsTab::AudioHardware => &["audio hardware", "output device", "sample rate", "buffer size", "monitoring", "pipewire", "alsa"],
             PrefsTab::Proxy => &["proxy", "auto-generate", "resolution", "proxy cache", "transcode"],
+            PrefsTab::Accounts => &["accounts", "account", "freesound", "sign in", "sign-in", "login", "log in", "sign out", "original", "originals", "sound effects", "oauth"],
             PrefsTab::ExternalTools => &["external tools", "external app", "handoff", "round-trip", "round trip", "gimp", "krita", "audacity", "kdenlive", "editor", "image editor", "audio editor", "video editor"],
             PrefsTab::Color => &["color", "working space", "rec.709", "lut", "calibration", "monitor", "interpolation", "scopes", "vectorscope", "skin angle"],
             PrefsTab::Export => &["export", "encoder", "h.264", "h.265", "prores", "colour space", "color space", "audio sample rate", "overwrite", "parallel render"],
@@ -1967,6 +1986,109 @@ impl PreferencesPanel {
                 }
             },
         );
+    }
+
+    /// Accounts (#1894): the person's Freesound sign-in, for sound effects
+    /// as their original recordings. The same sign-in an assistant does
+    /// over the socket, here without one.
+    fn show_accounts(&mut self, ui: &mut egui::Ui, theme: &KlippTheme) {
+        use klipp_audio_search::freesound_auth as auth;
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.label(egui::RichText::new("Accounts").strong().size(16.0).color(theme.text_primary));
+        });
+        ui.add_space(4.0);
+        Self::section_header(ui, "FREESOUND", theme);
+        let client = auth::Client::from_keys();
+        let signed_in = client.as_ref().and_then(|_| auth::signed_in());
+        let (waiting, error) = {
+            let st = self.accounts.lock().unwrap_or_else(|e| e.into_inner());
+            (st.waiting, st.error.clone())
+        };
+        match (&client, &signed_in) {
+            (None, _) => {
+                Self::setting_row_with_subtitle(
+                    ui,
+                    "Freesound",
+                    "Signing in brings sound effects as their original recordings, not previews. It needs your own Freesound API credential: make one at freesound.org/apiv2/apply with the callback URL below, and put freesound_client_id and freesound_client_secret in ~/.config/klipp/keys.toml.",
+                    theme,
+                    |ui| {
+                        ui.label(egui::RichText::new("No credential").color(theme.text_dim));
+                    },
+                );
+                Self::setting_row(ui, "Callback URL", theme, |ui| {
+                    if ui.button("Copy").on_hover_text(auth::REDIRECT_URI).clicked() {
+                        ui.ctx().copy_text(auth::REDIRECT_URI.to_string());
+                    }
+                    ui.label(egui::RichText::new(auth::REDIRECT_URI).monospace().size(11.0));
+                });
+            }
+            (Some(_), Some(tokens)) => {
+                let who = tokens.username.clone().map_or("Signed in".to_string(), |n| format!("Signed in as {n}"));
+                Self::setting_row_with_subtitle(ui, "Freesound", "Sound effects come as their original recordings.", theme, |ui| {
+                    if ui.button("Sign out").clicked() {
+                        let err = auth::sign_out().err();
+                        self.accounts.lock().unwrap_or_else(|e| e.into_inner()).error = err;
+                    }
+                    ui.label(egui::RichText::new(who).color(theme.text_primary));
+                });
+            }
+            (Some(client), None) => {
+                Self::setting_row_with_subtitle(ui, "Freesound", "Not signed in: sound effects come as previews. Sign in opens Freesound in your browser to approve.", theme, |ui| {
+                    if waiting {
+                        ui.add(egui::Spinner::new());
+                        ui.label(egui::RichText::new("Waiting for the browser\u{2026}").color(theme.text_dim));
+                    } else if ui.button("Sign in\u{2026}").clicked() {
+                        self.start_freesound_sign_in(client.clone(), ui.ctx().clone());
+                    }
+                });
+                if waiting {
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+                }
+                // Where Freesound shows a code instead of coming back.
+                Self::setting_row_with_subtitle(ui, "Code from Freesound", "Only if Freesound showed you a code instead of returning to Klipp.", theme, |ui| {
+                    let ready = !self.freesound_code.trim().is_empty();
+                    if ui.add_enabled(ready, egui::Button::new("Finish")).clicked() {
+                        let code = std::mem::take(&mut self.freesound_code);
+                        let err = auth::finish_sign_in(client, &code).err();
+                        self.accounts.lock().unwrap_or_else(|e| e.into_inner()).error = err;
+                    }
+                    ui.add(egui::TextEdit::singleline(&mut self.freesound_code).desired_width(150.0).hint_text("paste the code"));
+                });
+            }
+        }
+        if let Some(e) = error {
+            ui.horizontal(|ui| {
+                ui.add_space(14.0);
+                ui.label(egui::RichText::new(e).color(theme.marker_warning).size(11.0));
+            });
+        }
+    }
+
+    /// Start a sign-in on a worker: the listener bound first, then the
+    /// browser opened at the approval page; the page shows how it went.
+    fn start_freesound_sign_in(&self, client: klipp_audio_search::freesound_auth::Client, ctx: egui::Context) {
+        use klipp_audio_search::freesound_auth as auth;
+        {
+            let mut st = self.accounts.lock().unwrap_or_else(|e| e.into_inner());
+            st.waiting = true;
+            st.error = None;
+        }
+        let state_out = std::sync::Arc::clone(&self.accounts);
+        std::thread::spawn(move || {
+            let state = auth::new_state();
+            let url = client.authorize_url(&state);
+            let outcome = auth::await_redirect_signalling(&state, std::time::Duration::from_secs(300), || {
+                if let Err(e) = auth::open_browser(&url) {
+                    tracing::warn!("Freesound sign-in: {e}");
+                }
+            })
+            .and_then(|code| auth::finish_sign_in(&client, &code));
+            let mut st = state_out.lock().unwrap_or_else(|e| e.into_inner());
+            st.waiting = false;
+            st.error = outcome.err().map(|e| format!("{e}. If Freesound showed a code, paste it below."));
+            ctx.request_repaint();
+        });
     }
 
     fn show_external_tools(
@@ -4634,10 +4756,10 @@ mod connect_assistant_tests {
 mod layout_tests {
     use super::*;
 
-    const TABS: [PrefsTab; 20] = [
+    const TABS: [PrefsTab; 21] = [
         PrefsTab::General, PrefsTab::Ai, PrefsTab::System, PrefsTab::Appearance, PrefsTab::Playback, PrefsTab::Editing,
         PrefsTab::FileBrowser, PrefsTab::Audio, PrefsTab::AudioHardware, PrefsTab::Export, PrefsTab::MediaCache, PrefsTab::Color,
-        PrefsTab::Title, PrefsTab::Timeline, PrefsTab::Viewer, PrefsTab::Proxy, PrefsTab::ExternalTools, PrefsTab::Advanced,
+        PrefsTab::Title, PrefsTab::Timeline, PrefsTab::Viewer, PrefsTab::Proxy, PrefsTab::ExternalTools, PrefsTab::Accounts, PrefsTab::Advanced,
         PrefsTab::Keyboard, PrefsTab::About,
     ];
 
@@ -4993,6 +5115,16 @@ mod layout_tests {
     /// it showed before, and within a page the only rules are the
     /// section headers' (and the window's own edges): no rule between
     /// rows.
+    /// #1894: the Accounts page has the Freesound sign-in, whichever state
+    /// the machine's keys put it in.
+    #[test]
+    fn the_accounts_page_has_the_freesound_sign_in() {
+        let mut prefs = Preferences::default();
+        let d = tab(PrefsTab::Accounts, &mut prefs);
+        let texts: Vec<&str> = d.texts.iter().map(|(s, _)| s.as_str()).collect();
+        assert!(texts.contains(&"FREESOUND") && texts.contains(&"Freesound"), "{texts:?}");
+    }
+
     #[test]
     fn every_setting_is_kept_and_rows_have_no_rules() {
         let mut prefs = Preferences::default();
