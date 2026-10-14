@@ -2043,10 +2043,23 @@ impl Default for CameraKey {
 /// All of it is fractions of the frame, so the same pose means the same
 /// thing whatever the delivery size. `x` and `y` reach past the frame so
 /// a picture can start off screen and move in.
+///
+/// A clip's ends sit on frames, so its length can differ from the one
+/// asked for by up to a frame: at 30 fps a clip placed from 28.15 s to
+/// 37.70 s starts on 28.167 s and is 9.533 s long. A step's report gives
+/// the clip's times as placed (`after`). A pose up to one frame past the
+/// end is taken as the end; `from_end_secs` names a time from the end
+/// whatever the snapping did (#1925).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ComposePose {
+    /// Seconds into the clip, 0 to its length once its ends are on frames.
     #[serde(default)]
     pub secs: f64,
+    /// Seconds before the clip's end, in place of `secs`: 0 is its end.
+    /// Measured from where the end landed on a frame, so a closing pose
+    /// needs no arithmetic on the length asked for (#1925).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_end_secs: Option<f64>,
     /// Where the picture's centre goes, fractions of the frame. Left
     /// out, with `width` and `height`, the pose keeps where the clip is
     /// and how large, as reframed or composed before (#728): an opacity
@@ -2079,7 +2092,7 @@ pub struct ComposePose {
 
 impl Default for ComposePose {
     fn default() -> Self {
-        Self { secs: 0.0, x: None, y: None, width: None, height: None, rotation_deg: None, opacity: 1.0, ease: klipp_core::keyframe::Ease::InOut, tilt_x_deg: None, tilt_y_deg: None }
+        Self { secs: 0.0, from_end_secs: None, x: None, y: None, width: None, height: None, rotation_deg: None, opacity: 1.0, ease: klipp_core::keyframe::Ease::InOut, tilt_x_deg: None, tilt_y_deg: None }
     }
 }
 
@@ -6128,6 +6141,15 @@ fn is_card(clip: &Clip, fw: f32, fh: f32) -> bool {
     min_scale < 0.999 || values(&xk, x).iter().any(|v| v.abs() > reach(min_scale, fw) + 0.5) || values(&yk, y).iter().any(|v| v.abs() > reach(min_scale, fh) + 0.5)
 }
 
+/// A frame rate as a person writes it: 30, 25, 29.97.
+fn fps_label(fps: f64) -> String {
+    if (fps - fps.round()).abs() < 1e-6 {
+        format!("{}", fps.round() as i64)
+    } else {
+        format!("{fps:.2}")
+    }
+}
+
 /// Place a picture in the frame at one pose, or animate it between
 /// several. Unlike `reframe`, the picture may be smaller than the frame
 /// and may sit anywhere in it, including past its edge; what shows
@@ -6143,6 +6165,32 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
         return Err(refuse(i, "a compose needs a pose", "give at least one pose: where the picture sits and how much of the frame it covers"));
     }
     let dur = (secs(clip.timeline_out) - secs(clip.timeline_in)).max(0.05);
+    // Each pose's time in the clip as it was placed, its ends on frames
+    // (#1925): from its end when given so, and a pose up to a frame past
+    // the end, which is all the snapping can take off, at the end.
+    let fps = seq.fps.as_f64().max(1.0);
+    let frame = 1.0 / fps;
+    let length = format!("{dur:.3} s, {} frames at {} fps, its ends on frames", (dur * fps).round() as i64, fps_label(fps));
+    let mut at_end: Vec<f64> = Vec::new();
+    let poses: Vec<ComposePose> = poses
+        .iter()
+        .map(|p| {
+            let t = match p.from_end_secs {
+                Some(_) if p.secs != 0.0 => return Err(refuse(i, "a pose gives both secs and from_end_secs", "give one: secs into the clip, or from_end_secs before its end")),
+                Some(back) if !back.is_finite() || back < 0.0 || back > dur + 1e-6 => {
+                    return Err(refuse(i, format!("a pose {back:.2} s from the end is outside the clip"), format!("the clip is {length}; give from_end_secs from 0 to {dur:.3}")));
+                }
+                Some(back) => (dur - back).max(0.0),
+                None if p.secs.is_finite() && p.secs > dur + 1e-6 && p.secs <= dur + frame + 1e-6 => {
+                    at_end.push(p.secs);
+                    dur
+                }
+                None => p.secs,
+            };
+            Ok(ComposePose { secs: t, from_end_secs: None, ..*p })
+        })
+        .collect::<Result<_, _>>()?;
+    let poses = poses.as_slice();
     let gave_geometry = poses.iter().any(|p| p.x.is_some() || p.y.is_some() || p.width.is_some() || p.height.is_some());
     // Where the clip is now at each pose's time, in the units the keyframes
     // hold: its compose keyframes if it has them, else its static
@@ -6185,7 +6233,7 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
     let poses = poses.as_slice();
     for p in poses {
         if !p.secs.is_finite() || p.secs < 0.0 || p.secs > dur + 1e-6 {
-            return Err(refuse(i, format!("a pose at {:.2} s is outside the clip", p.secs), format!("poses are seconds into the clip, 0 to {dur:.2}")));
+            return Err(refuse(i, format!("a pose at {:.2} s is outside the clip, which ends at {dur:.3} s", p.secs), format!("the clip is {length}; give secs from 0 to {dur:.3}, or from_end_secs 0 for its end")));
         }
         for (name, v) in [("x", p.x), ("y", p.y)].into_iter().filter_map(|(n, v)| v.map(|v| (n, v))) {
             if !v.is_finite() || !(-1.0..=2.0).contains(&v) {
@@ -6312,7 +6360,10 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
             format!("{:.2}s {:.2} of the frame {at}{turn}{lean}{fade}", p.secs, p.width.unwrap_or(1.0))
         })
         .collect();
-    let what = format!("compose {}: {}", clip_name(seq, pool, clip), poses_text.join(" \u{2192} "));
+    let mut what = format!("compose {}: {}", clip_name(seq, pool, clip), poses_text.join(" \u{2192} "));
+    for asked in at_end {
+        what.push_str(&format!(" (a pose at {asked:.2} s is taken as the clip's end, {dur:.3} s: {length})"));
+    }
     let edit = EditCommand::EditKeyframes {
         clip_id: clip.id,
         linked_clip_id: None,
@@ -12528,6 +12579,44 @@ mod tests {
             assert!(evaluate(keys, 0.5 / rate, 99.0) > -240.0);
             assert!(evaluate(keys, 1.5 / rate, 99.0) < 240.0);
         }
+    }
+
+    /// #1925: at 30 fps a clip placed from 28.15 s for 9.55 s lands with
+    /// its ends on frames, 9.533 s long. A closing pose at the length
+    /// asked for is taken as the clip's end; one further out is refused
+    /// with the length the clip has; `from_end_secs` is measured from
+    /// where the end landed.
+    #[test]
+    fn a_pose_at_the_length_asked_for_lands_on_the_clips_end() {
+        let (mut seq, pool, media, _, _) = fixture();
+        seq.fps = Fps::new(30, 1);
+        let place = Op::Place { media_id: media, track: TrackRef::Index(0), at: Anchor::Secs(28.15), source_in: Some(0.0), source_out: Some(9.55), insert: false, with_audio: false };
+        let compose = |poses: Vec<ComposePose>| resolve(&seq, &pool, &[place.clone(), Op::Compose { clip_id: ClipRef::Made(StepRef(0)), poses }]);
+        let start = ComposePose { secs: 0.0, x: Some(0.25), ..Default::default() };
+        let plan = compose(vec![start]).unwrap();
+        let placed = &plan.steps[0].after[0];
+        let dur = placed.timeline_out_secs - placed.timeline_in_secs;
+        assert!((dur - 286.0 / 30.0).abs() < 1e-9, "the clip is {dur} s, its ends on frames");
+        let end_key = |plan: &Plan| {
+            let EditCommand::EditKeyframes { new_state, .. } = &plan.steps[1].edit else { panic!("keyframe edit") };
+            new_state.transform_pos_x_keyframes.iter().map(|k| k.time_secs).collect::<Vec<_>>()
+        };
+
+        let asked = compose(vec![start, ComposePose { secs: 9.55, x: Some(0.75), ..Default::default() }]).expect("a pose at the length asked for");
+        assert!((end_key(&asked)[1] - dur).abs() < 1e-9, "{:?}", end_key(&asked));
+        assert!(asked.steps[1].what.contains("taken as the clip's end"), "{}", asked.steps[1].what);
+
+        let past = compose(vec![start, ComposePose { secs: 9.60, x: Some(0.75), ..Default::default() }]).unwrap_err();
+        assert!(past.why.contains("outside the clip") && past.hint.contains("286 frames at 30 fps") && past.hint.contains("from_end_secs"), "{past}");
+
+        let from_end = |back: f64| compose(vec![start, ComposePose { from_end_secs: Some(back), x: Some(0.75), ..Default::default() }]);
+        assert!((end_key(&from_end(0.0).unwrap())[1] - dur).abs() < 1e-9);
+        assert!((end_key(&from_end(0.5).unwrap())[1] - (dur - 0.5)).abs() < 1e-9);
+        for back in [-0.1, 9.6] {
+            assert!(from_end(back).unwrap_err().why.contains("from the end is outside the clip"), "{back}");
+        }
+        let both = compose(vec![ComposePose { secs: 1.0, from_end_secs: Some(0.0), ..Default::default() }]).unwrap_err();
+        assert!(both.why.contains("both"), "{both}");
     }
 
     #[test]

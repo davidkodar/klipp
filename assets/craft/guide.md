@@ -644,7 +644,7 @@ exist until the plan runs.
 - `ramp {clip_id, from, to, secs?}`: ramp speed from `from` times to
   `to` times over timeline seconds, then hold the new speed; the clip's
   length follows. The ramp's sound is silent.
-- `compose {clip_id, poses:[{secs?, x?, y?, width?, height?, rotation_deg?, opacity?, ease?}]}`:
+- `compose {clip_id, poses:[{secs? | from_end_secs?, x?, y?, width?, height?, rotation_deg?, opacity?, ease?}]}`:
   place a picture inside the frame. One pose holds; more animate.
   A pose with no `x`, `y`, `width` or `height` keeps the clip where it
   is, as reframed or composed before: poses of `opacity` alone fade a
@@ -656,6 +656,12 @@ exist until the plan runs.
   y:0.7, width:0.4, height:0.4}]}`. On a clip panned inside its card
   it moves the card and keeps the pan, the card in one place (poses may
   still fade it).
+  A clip's ends sit on frames, so it can be up to a frame shorter
+  than the length asked for: at 30 fps, placed from 28.15 s to 37.70 s,
+  it starts on 28.167 s and is 9.533 s long (the step's `after` gives
+  its times as placed). A pose up to one frame past the end is taken as
+  the end; for a closing pose use `from_end_secs` (seconds before the
+  clip's end, 0 is the end) in place of `secs`.
 - `camera {keys:[{secs?, x?, y?, zoom?, roll_deg?}]}`: move the whole
   sequence, including all its layers. `secs` is timeline time, not a
   clip offset. `x,y` are the look point (-1 to 2, default 0.5), `zoom`
