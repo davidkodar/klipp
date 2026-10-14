@@ -8,16 +8,27 @@ use serde::{Deserialize, Serialize};
 /// A named curve saves as its name, a custom one as its four handles.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 pub enum Easing {
+    // The snake_case aliases take the spelling the title op, compose and
+    // pan use, so a vector path's keys accept `linear` as well as the
+    // saved `Linear` (#1920). What is saved does not change.
+    #[serde(alias = "linear")]
     Linear,
     #[default]
+    #[serde(alias = "out_cubic")]
     OutCubic,
+    #[serde(alias = "out_quint")]
     OutQuint,
+    #[serde(alias = "out_expo")]
     OutExpo,
     /// Overshoots the rest pose a little before settling.
+    #[serde(alias = "out_back")]
     OutBack,
+    #[serde(alias = "in_out_cubic")]
     InOutCubic,
+    #[serde(alias = "in_cubic")]
     InCubic,
     /// Lands and bounces a few times before settling.
+    #[serde(alias = "out_bounce")]
     OutBounce,
     /// A curve of its own (#1511).
     Custom(CubicBezier),
@@ -1468,6 +1479,21 @@ pub fn format_counter_value(value: f64, decimals: u8) -> String {
 
 #[cfg(test)]
 mod loop_tests {
+
+    /// #1920: an easing is read in the saved spelling and in the
+    /// snake_case one the ops use, and saved as before.
+    #[test]
+    fn an_easing_reads_either_spelling_and_saves_as_before() {
+        for (saved, snake, e) in [("\"Linear\"", "\"linear\"", Easing::Linear), ("\"OutCubic\"", "\"out_cubic\"", Easing::OutCubic), ("\"InOutCubic\"", "\"in_out_cubic\"", Easing::InOutCubic), ("\"OutBounce\"", "\"out_bounce\"", Easing::OutBounce)] {
+            assert_eq!(serde_json::from_str::<Easing>(saved).unwrap(), e);
+            assert_eq!(serde_json::from_str::<Easing>(snake).unwrap(), e);
+            assert_eq!(serde_json::to_string(&e).unwrap(), saved, "saved as before");
+        }
+        // The guide's two-key reveal, as written there.
+        let trim: crate::vector_path::PathTrim = serde_json::from_str(r#"{"keyframes":[{"time_secs":0,"range":{"start":0,"end":0,"offset":0},"easing":"linear"},{"time_secs":1,"range":{"start":0,"end":1,"offset":0},"easing":"linear"}]}"#).unwrap();
+        assert_eq!(trim.keyframes.len(), 2);
+        assert!(trim.keyframes.iter().all(|k| k.easing == Easing::Linear));
+    }
     use super::*;
 
     fn geo() -> LoopGeometry {
