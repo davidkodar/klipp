@@ -1331,12 +1331,71 @@ fn guide_topic(topic: &str) -> Result<String, String> {
                 let rest = &page[at + heading.len()..];
                 Some(format!("{}{}", heading, &rest[..rest.find("\n## ").map_or(rest.len(), |e| e + 1)]))
             });
-            return section.ok_or_else(|| {
+            // A tool with no section of its own is answered from the
+            // catalog: what it does and what it takes, so no tool is
+            // missing from the guide (#1898).
+            return section.or_else(|| tool_reference(other)).ok_or_else(|| {
                 let pages: Vec<&str> = TOOL_PAGES.iter().map(|(n, _)| *n).collect();
                 format!("unknown topic {other}; use guide, graph, craft, recipes, abilities, ops, all, {}, or a tool's name", pages.join(", "))
             });
         }
     })
+}
+
+/// A tool's entry in the guide, made from its catalog entry (#1898): its
+/// description, then each argument with its type, whether it is needed,
+/// its description and the values it takes. `None` for no such tool.
+fn tool_reference(name: &str) -> Option<String> {
+    let full = format!("klipp_{}", name.strip_prefix("klipp_").unwrap_or(name));
+    let tools = tool_definitions_for(false);
+    let tool = tools.iter().find(|t| t["name"] == full.as_str())?;
+    let mut out = format!("## {full}\n\n{}\n", tool["description"].as_str().unwrap_or(""));
+    match tool["inputSchema"]["properties"].as_object().filter(|p| !p.is_empty()) {
+        None => out.push_str("\nIt takes no arguments.\n"),
+        Some(properties) => {
+            out.push_str("\nArguments:\n");
+            describe_arguments(properties, &tool["inputSchema"]["required"], 0, &mut out);
+        }
+    }
+    // Said, so a reader looking for more knows there is none yet (#1898).
+    out.push_str("\nNo guide section yet: this is the tool's catalog entry, made from its schema.\n");
+    Some(out)
+}
+
+/// Each argument in `properties`: its type, whether `required` names it,
+/// its description and the values it takes; an object's fields, or an
+/// array's items' fields, one level down, and said when they aren't
+/// listed.
+fn describe_arguments(properties: &serde_json::Map<String, Value>, required: &Value, depth: usize, out: &mut String) {
+    let required: Vec<&str> = required.as_array().map(|r| r.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    let pad = "  ".repeat(depth);
+    for (arg, spec) in properties {
+        let kind = spec["type"].as_str().unwrap_or("any");
+        let need = if required.contains(&arg.as_str()) { ", required" } else { "" };
+        out.push_str(&format!("{pad}- `{arg}` ({kind}{need})"));
+        if let Some(d) = spec["description"].as_str() {
+            out.push_str(&format!(": {d}"));
+        }
+        if let Some(values) = spec["enum"].as_array() {
+            let values: Vec<String> = values.iter().map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_owned)).collect();
+            out.push_str(&format!(" One of: {}.", values.join(", ")));
+        }
+        out.push('\n');
+        // What is inside an object or an array of objects.
+        let (inner, label) = match kind {
+            "object" => (spec, "its fields"),
+            "array" => (&spec["items"], "each item's fields"),
+            _ => continue,
+        };
+        match inner["properties"].as_object().filter(|p| !p.is_empty()) {
+            Some(fields) if depth == 0 => {
+                out.push_str(&format!("{pad}  {label}:\n"));
+                describe_arguments(fields, &inner["required"], depth + 2, out);
+            }
+            _ if inner["type"].as_str().is_some_and(|t| t != "object") => {}
+            _ => out.push_str(&format!("{pad}  ({label} are not listed here; the tool's description and its reply say what it takes)\n")),
+        }
+    }
 }
 
 /// Sent with `initialize`, which clients put before the model in every
@@ -2412,6 +2471,56 @@ mod interface_tests {
         assert!(!ops.contains("## Batches"), "and the list ends where the guide's next part starts");
         let err = guide_topic("nope").unwrap_err();
         assert!(err.contains("ops") && err.contains("timeline-tools") && err.contains("a tool's name"), "{err}");
+    }
+
+    fn describe_nested_for_test() -> String {
+        let props = json!({
+            "clips": { "type": "array", "items": { "type": "object", "properties": { "id": { "type": "string" }, "secs": { "type": "number" } }, "required": ["id"] } },
+            "options": { "type": "object" },
+            "names": { "type": "array", "items": { "type": "string" } },
+        });
+        let mut out = String::new();
+        describe_arguments(props.as_object().unwrap(), &json!([]), 0, &mut out);
+        out
+    }
+
+    /// #1898: every tool in the catalog answers as a guide topic, by its
+    /// name with or without `klipp_`: its own section where it has one,
+    /// else its catalog entry, its arguments with it.
+    #[test]
+    fn every_tool_is_a_guide_topic() {
+        let tools = tool_definitions_for(false);
+        assert!(tools.len() > 100, "{} tools", tools.len());
+        for tool in &tools {
+            let name = tool["name"].as_str().unwrap();
+            let text = guide_topic(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(text.starts_with(&format!("## {name}\n")), "{name}: {text}");
+            // The short name reads the same, but for a tool named as a
+            // page is (klipp_guide, klipp_graph): that name is the page.
+            let short = &name["klipp_".len()..];
+            if !["guide", "graph", "craft", "recipes", "abilities", "ops", "all"].contains(&short) {
+                assert_eq!(guide_topic(short).unwrap(), text, "{name}: the short name reads the same");
+            }
+            let generated = !TOOL_PAGES.iter().any(|(_, page)| page.contains(&format!("## {name}\n")));
+            for arg in tool["inputSchema"]["properties"].as_object().into_iter().flat_map(|p| p.keys()) {
+                if generated {
+                    assert!(text.contains(&format!("`{arg}`")), "{name} names its argument {arg}: {text}");
+                }
+            }
+            if generated {
+                assert!(text.contains("No guide section yet"), "{name}: a made entry says it is one: {text}");
+            }
+        }
+        // An object or array argument shows what is inside it, or says it
+        // isn't listed (#1898 review).
+        let nested = describe_nested_for_test();
+        assert!(nested.contains("each item's fields:") && nested.contains("    - `id` (string, required)"), "{nested}");
+        assert!(nested.contains("(its fields are not listed here"), "{nested}");
+        // The report's tool has its own section now, and a made-up one is
+        // still unknown.
+        let excerpt = guide_topic("audio_excerpt").unwrap();
+        assert!(excerpt.contains("sixty seconds") && excerpt.contains("sequence"), "{excerpt}");
+        assert!(guide_topic("klipp_teleport").is_err());
     }
 
     #[test]
