@@ -63,3 +63,31 @@ Whether Klipp is there and what is open, read live without changing anything: fi
 ## klipp_window_screenshot
 
 The whole Klipp window as the person sees it, panels and dialogs included, as a PNG (1600 wide by default): for checking a layout, a panel or a dialog. The viewer in it is drawn through its monitor LUT and overlays, so measure colour with klipp_screenshot or klipp_frame_stats, never from this.
+
+## klipp_orient
+
+Start here. One call for where you are: the build, the project and whether it is saved, the brief, every media item with its analysis state, the sequence so far, and — in "next" — what to do now. Call it first, and again whenever you are unsure of the state.
+
+## klipp_brief
+
+The brief: what the piece is for. Its length, platform, picture size, loudness, whether it is captioned and has music, and the cast with names and roles as they should appear on screen. Read it before you plan; if there is none, ask the user for what it should say and set it.
+
+## klipp_approve_edit_plan
+
+Mark the edit plan approved, as one undo step. Call it only after the user has read the plan and said to build it — never on your own judgement. The user can also approve and build it themselves in Klipp's Edit Plan window (Window menu).
+
+## klipp_edit_plan
+
+The edit plan: the paper edit, as text and as JSON, with whether it is approved and the ops it lowers to. Read it to show the user what is proposed, or to see what build_edit_plan would build.
+
+## klipp_new_sequence
+
+Add a sequence to the project and open it, at a picture size and rate: a vertical 1080x1920 at 30 for a phone cut beside the 16:9 master, a 1080x1080 square. The media pool is shared; place clips on it as on any sequence.
+
+## klipp_rename_sequence
+
+Name the active sequence: what the timeline is called in the app and in the project file. A new project's sequence has a default or inherited name until it is named; the brief's title does not rename it.
+
+## klipp_open_project
+
+Open the project at an absolute path, replacing the one that is open. Refused while the open project has unsaved changes: save it first, or pass discard_changes true to lose them on purpose.

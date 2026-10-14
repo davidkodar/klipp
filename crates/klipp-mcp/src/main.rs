@@ -1666,10 +1666,9 @@ fn base64_encode(bytes: &[u8]) -> String {
 
 fn tool(name: &str, description: &str, mut properties: Value, required: Vec<&str>) -> Value {
     if WRITE_TOOLS.contains(&name) || RETRYABLE_TOOLS.contains(&name) {
-        properties["idempotency_key"] = json!({
-            "type": "string",
-            "description": "Lost-reply retry: same key, identical write. Keys expire on app exit."
-        });
+        // What it is, said once, in klipp_guide's description: here it
+        // was the same sentence on 62 tools (#1984).
+        properties["idempotency_key"] = json!({ "type": "string" });
     }
     // A tool says what it does in a sentence or two and names the guide
     // topic its details are in (#1667); where those details are an
@@ -1713,7 +1712,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               craft reference (what a professional does without being asked), and the \
               recipes (worked plans for an interview with B-roll, a social cut-down, a \
               montage). Files the user can read and change. A tool's details are under its \
-              name as the topic.",
+              name as the topic. Every write takes an optional idempotency_key: on a lost reply, \
+              retry the identical call with the same key (kept until Klipp exits).",
              json!({ "topic": { "type": "string", "description": "guide (default), graph (read before graph edits), craft, recipes, abilities (what a person can do here, for answering them when they ask), ops (every edit op), all, an area (session-tools, timeline-tools, analysis-tools, colour-tools, sound-tools), or a tool's name (find_shots) for its details" } }),
              vec![]),
         tool("klipp_status",
@@ -1779,7 +1779,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "clip_id": { "type": "string", "description": "From klipp_list_clips" } }),
              vec!["clip_id"]),
         tool("klipp_normalize",
-             "Bring clips to a loudness or peak target by their gain (one undo step; the media is not changed): each on its own, or group true for one gain that keeps their balance. Never raises a clip past the true-peak ceiling. Answers each clip's measured LUFS, sample peak and true peak and the gain set; apply false only answers.",
+             "Bring clips to a loudness or peak target by their gain, as one undo step; the media is not changed. Details: klipp_guide topic normalize.",
              json!({
                  "clip_ids": { "type": "array", "items": { "type": "string" }, "description": "From klipp_list_clips" },
                  "mode": { "type": "string", "enum": ["loudness", "peak"], "description": "loudness: integrated LUFS (ITU-R BS.1770); peak: sample peak dBFS. Default loudness" },
@@ -1816,10 +1816,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "clip_id": { "type": "string", "description": "Omit to deselect" } }),
              vec![]),
         tool("klipp_get_grade",
-             "The clip's colour node graph as JSON, including every node id and its \
-              parameters, and what runs with it on the picture: its grade group's \
-              stages, its track's grade and the timeline grade. Read this before \
-              changing a grade — node ids come from here.",
+             "The clip's colour node graph as JSON, every node id with it: read it before changing a grade. Details: klipp_guide topic get_grade.",
              json!({ "clip_id": { "type": "string" } }), vec!["clip_id"]),
         tool("klipp_add_node",
              "Add an unconnected colour node (a NodeKind name, or ofx:<identifier>) to a clip's grade graph; replies with its node_id. Wire it with klipp_connect_nodes. Details: klipp_guide topic add_node.",
@@ -1873,9 +1870,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec!["clip_id", "format"]),
         tool("klipp_screenshot",
-             "Capture what the viewer is currently showing, as a PNG. Returns the file \
-              path, and inlines the image when it is small enough. This is how to \
-              actually see the result of a grade rather than infer it.",
+             "What the viewer shows now, as a PNG: how to see a grade's result. Details: klipp_guide topic screenshot.",
              json!({
                  "path": { "type": "string", "description": "Where to write the PNG; omit for a temp file" },
                  "max_width": { "type": "integer", "description": "Downscale to this width (default 1280)" },
@@ -1951,10 +1946,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Send a ColorChecker through the CPU and GPU render paths and read it back, to see whether the pipeline itself moves colour. Run once before grading to targets. Details: klipp_guide topic colour_selfcheck.",
              json!({ "size": { "type": "integer" } }), vec![]),
         tool("klipp_measure_region",
-             "One box of the frame read on its own, in the same numbers as klipp_frame_stats: a \
-              face against its background, a sky, a product, a corner of a screen. x, y, w and h \
-              are fractions of the frame. Use it when the whole-frame reading is the average of \
-              two different things.",
+             "One box of the frame read alone, in klipp_frame_stats's numbers; x, y, w, h are fractions. Details: klipp_guide topic measure_region.",
              json!({ "secs": { "type": "number" }, "x": { "type": "number" }, "y": { "type": "number" }, "w": { "type": "number" }, "h": { "type": "number" }, "timeout_ms": { "type": "integer" } }), vec!["secs", "x", "y", "w", "h"]),
         tool("klipp_skin_balance",
              "Turn faces' skin hue onto the 40-65 degree band by measurement, with a skin secondary, up to three rounds with apply true. Details: klipp_guide topic skin_balance.",
@@ -1985,7 +1977,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
               up, the text and where on the frame.",
              json!({ "query": { "type": "string" }, "max_hits": { "type": "integer" } }),
              vec!["query"]),
-        tool("klipp_analysis_queue", "Put media_id first in the pending analysis queue. With cancel_pending true, cancel other queued items (all if no ID). Running work finishes normally. Call analyze first for an item that has no active request.",
+        tool("klipp_analysis_queue", "Put media_id first in the analysis queue, or cancel the pending items. Details: klipp_guide topic analysis_queue.",
              json!({ "media_id": { "type": "string" }, "cancel_pending": { "type": "boolean" } }), vec![]),
         tool("klipp_analysis_status", "Where analysis stands. With wait true, holds the response until the selected items end or timeout. Reports finished, succeeded and timed_out; failed items carry errors.",
              json!({ "wait": { "type": "boolean" }, "media_id": { "type": "string" }, "timeout_ms": { "type": "integer", "description": "Maximum wait, default one hour; does not cancel work" } }), vec![]),
@@ -2031,7 +2023,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                      "detail": { "type": "boolean", "description": "every step in full and each touched clip's range as JSON; off by default, when long runs of one kind of step are folded" } }),
              vec!["ops"]),
         tool("klipp_apply",
-             "Apply a list of editorial operations as ONE undo step, after resolving them the way klipp_plan does; pass its expected_revision and optionally expected_project_identity to refuse the whole edit if the timeline or project changed since planning. Replies with the steps and the revision. Ops: klipp_guide topic ops.",
+             "Apply editorial operations as ONE undo step, resolved as klipp_plan does; expected_revision refuses a changed timeline. Ops: klipp_guide topic ops; details: topic apply.",
              json!({ "ops": { "type": "array", "items": { "type": "object" } },
                      "expected_revision": { "type": "integer", "minimum": 0, "description": "Revision from klipp_plan or a timeline read; refuse if it changed" },
                      "expected_project_identity": { "type": "integer", "minimum": 0, "description": "Optional project identity from klipp_plan; refuse if the open project changed" },
@@ -2119,17 +2111,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Title templates, built-in by category and saved, and their fields by label, for the template op.",
              json!({}), vec![]),
         tool("klipp_fonts",
-             "The font families a title or a brief's type style can name: those bundled with Klipp, \
-              always there, and those installed on this machine. Any other name falls back to Inter; \
-              set_brief, plan and apply warn when one is named.",
+             "The font families a title can name. Details: klipp_guide topic fonts.",
              json!({}), vec![]),
         tool("klipp_graph",
-             "Edit one clip graph atomically as one undo step; send alone. Read graph_read and node_types first. \
-              Paths contain a root and node IDs; {new:k} refers to the node made by earlier op k. Values follow \
-              catalog kinds; choices use labels. Created nodes return full paths. Current clip persistence \
-              refuses placed kinds, effect mix/masks/labels, and publication; unsupported parameter shapes \
-              are refused with the failing op_index. Revision and project identity guard commit. \
-              add_beside inserts unwired; connect required inputs in the same batch. Mask shapes use the masks JSON described by node_types.",
+             "Edit one clip graph atomically as one undo step; send alone, after graph_read and node_types. Details: klipp_guide topic graph.",
              json!({"ops":graph_schema::ops_schema(),"label":{"type":"string"},"expected_revision":{"type":"integer","minimum":0},"expected_project_identity":{"type":"integer","minimum":0}}), vec!["ops"]),
         tool("klipp_graph_read",
              "Read graph at path; empty nodes reads root. Depth controls nested bodies. Omissions are flagged; \
@@ -2146,32 +2131,22 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "clip_id": { "type": "string" }, "on": { "description": "instead of clip_id: \"timeline\", {\"group\": name, \"stage\": \"post\" (default) or \"pre\"}, or {\"track\": index or kind, \"from\"?, \"to\"?} for every picture clip of a track, with \"itself\": true for the track's own grade" }, "name": { "type": "string", "description": "a look name from klipp_looks, or an absolute .cube path" }, "opacity": { "type": "number" }, "remove": { "type": "boolean" } }),
              vec![]),
         tool("klipp_orient",
-             "Start here. One call for where you are: the build, the project and whether it is \
-              saved, the brief, every media item with its analysis state, the sequence so far, \
-              and — in \"next\" — what to do now. Call it first, and again whenever you are \
-              unsure of the state.",
+             "Start here: the project, the brief, the media and what to do next, in one call. Details: klipp_guide topic orient.",
              json!({}), vec![]),
         tool("klipp_brief",
-             "The brief: what the piece is for. Its length, platform, picture size, loudness, \
-              whether it is captioned and has music, and the cast with names and roles as \
-              they should appear on screen. Read it before you plan; if there is none, ask \
-              the user for what it should say and set it.",
+             "The brief: what the piece is for. Read it before you plan. Details: klipp_guide topic brief.",
              json!({}), vec![]),
         tool("klipp_set_brief",
              "Replace the project brief as one undo step. With merge true, change only supplied fields; null clears a field. Details: klipp_guide topic set_brief.",
              json!({ "brief": { "type": "object" }, "merge": { "type": "boolean", "description": "change only the fields given; the rest stay" } }), vec!["brief"]),
         tool("klipp_edit_plan",
-             "The edit plan: the paper edit, as text and as JSON, with whether it is approved and \
-              the ops it lowers to. Read it to show the user what is proposed, or to see what \
-              build_edit_plan would build.",
+             "The edit plan as text and JSON, whether it is approved, and its ops. Details: klipp_guide topic edit_plan.",
              json!({}), vec![]),
         tool("klipp_set_edit_plan",
              "Propose a paper edit (segments, music, montage, titles) for user approval as one undo step. Show the resulting plan to the user and ask. Details: klipp_guide topic set_edit_plan.",
              json!({ "plan": { "type": "object" } }), vec!["plan"]),
         tool("klipp_approve_edit_plan",
-             "Mark the edit plan approved, as one undo step. Call it only after the user has \
-              read the plan and said to build it — never on your own judgement. The user can \
-              also approve and build it themselves in Klipp's Edit Plan window (Window menu).",
+             "Mark the edit plan approved, one undo step, only once the user said to build it. Details: klipp_guide topic approve_edit_plan.",
              json!({}), vec![]),
         tool("klipp_build_edit_plan",
              "Build the approved edit plan onto the timeline: a dry run unless apply is true, then one undo step. Details: klipp_guide topic build_edit_plan.",
@@ -2180,9 +2155,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Read-only checks of the cut before export, against craft and the brief: each finding with where, why and the fix. Optional colour and loudness passes. Details: klipp_guide topic check.",
              json!({ "color": { "type": "boolean" }, "loudness": { "type": "boolean" } }), vec![]),
         tool("klipp_rename_sequence",
-             "Name the active sequence: what the timeline is called in the app and in the \
-              project file. A new project's sequence has a default or inherited name until \
-              it is named; the brief's title does not rename it.",
+             "Name the active sequence. Details: klipp_guide topic rename_sequence.",
              json!({ "name": { "type": "string" } }), vec!["name"]),
         tool("klipp_switch_sequence",
              "Open another of the project's sequences, as clicking its tab does: by index or sequence_id, as \
@@ -2217,9 +2190,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "kind": { "type": "string", "enum": ["chapter", "todo", "comment", "best_take", "section"] }
              }), vec!["at_secs"]),
         tool("klipp_list_markers",
-             "Every marker on the timeline in time order, with its id, time, range, label, \
-              note, colour and kind: the editor's notes to you, and yours to them. Read them \
-              at the start of a session: a todo marker is work asked for.",
+             "Every timeline marker in time order: id, time, label, note, kind; a todo is work asked for. Details: klipp_guide topic list_markers.",
              json!({}), vec![]),
         tool("klipp_update_marker",
              "Change a marker's label, note, colour or kind, by id (from klipp_list_markers). \
@@ -2256,9 +2227,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  }, "required": ["name"] }
              }), vec![]),
         tool("klipp_new_sequence",
-             "Add a sequence to the project and open it, at a picture size and rate: a vertical \
-              1080x1920 at 30 for a phone cut beside the 16:9 master, a 1080x1080 square. \
-              The media pool is shared; place clips on it as on any sequence.",
+             "Add a sequence at a picture size and rate, and open it. Details: klipp_guide topic new_sequence.",
              json!({
                  "name": { "type": "string" },
                  "width": { "type": "integer" },
@@ -2287,9 +2256,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "The whole Klipp window as the person sees it, as a PNG, for checking a layout or a dialog; never for measuring colour. Details: klipp_guide topic window_screenshot.",
              json!({ "path": { "type": "string" }, "max_width": { "type": "integer" } }), vec![]),
         tool("klipp_open_project",
-             "Open the project at an absolute path, replacing the one that is open. Refused \
-              while the open project has unsaved changes: save it first, or pass \
-              discard_changes true to lose them on purpose.",
+             "Open the project at an absolute path; refused over unsaved changes unless discard_changes. Details: klipp_guide topic open_project.",
              json!({ "path": { "type": "string" }, "discard_changes": { "type": "boolean" } }), vec!["path"]),
         tool("klipp_frame_stats",
              "The scope numbers of the frame at a time (luma points, balance, saturation, clipping, CIELAB lightness, cast and faces), judged against the brief's look. Details: klipp_guide topic frame_stats.",
@@ -2306,9 +2273,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "inline": { "type": "boolean", "description": "Also return the picture in the reply; by default only when no path is given" },
              }), vec![]),
         tool("klipp_frame_at",
-             "The frame at a time on the timeline, as a PNG, without leaving the playhead \
-              where it was: seeks there, waits for the frame, captures, seeks back. Use \
-              it to look at what you did at a specific point. Seconds from timeline start.",
+             "The timeline's frame at a time, as a PNG, the playhead left where it was. Details: klipp_guide topic frame_at.",
              json!({
                  "secs": { "type": "number" },
                  "max_width": { "type": "integer", "description": "Downscale to at most this wide (default 1280)" },
@@ -2434,7 +2399,17 @@ mod interface_tests {
             assert!(size <= budget,"{name}: {size} > {budget}");
         }
         let catalog = serde_json::to_vec(&tools).unwrap().len();
-        assert!(catalog < 66_000, "keep the catalogue short; details go in guide topics (#1667): {catalog} bytes");
+        // Trimmed to 58 KB (#1984): the catalog goes into every agent's
+        // context, so it is held with room to spare, not let creep up.
+        assert!(catalog < 60_000, "keep the catalogue short; details go in guide topics (#1667, #1984): {catalog} bytes");
+        // Every write tool takes a retry key, its use said once, in
+        // klipp_guide, not again on each tool (#1984).
+        let guide = tools.iter().find(|t| t["name"] == "klipp_guide").unwrap();
+        assert!(guide["description"].as_str().unwrap().contains("idempotency_key"));
+        for t in tools.iter().filter(|t| WRITE_TOOLS.contains(&t["name"].as_str().unwrap())) {
+            let key = &t["inputSchema"]["properties"]["idempotency_key"];
+            assert_eq!(key, &json!({ "type": "string" }), "{}", t["name"]);
+        }
     }
 
     /// #1667: a tool's description names the guide topic its details are

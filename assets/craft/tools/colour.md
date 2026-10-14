@@ -67,3 +67,11 @@ Skin onto the skin band, by measurement: the faces in the clip's frame (the fram
 ## klipp_track_surface
 
 Track a planar surface in perspective for the pin op. Supply click or corners (see fields), measured with klipp_frame_at at at_secs. Runs asynchronously as one undo step; klipp_list_clips reports the surface id and tracked range. Tracking stops on occlusion, blur or leaving frame; inspect nearby frames. Resume by correcting corners on a later frame, specifying the same surface and direction forward/backward. The new range replaces overlapping tracking and preserves the rest.
+
+## klipp_get_grade
+
+The clip's colour node graph as JSON, including every node id and its parameters, and what runs with it on the picture: its grade group's stages, its track's grade and the timeline grade. Read this before changing a grade — node ids come from here.
+
+## klipp_measure_region
+
+One box of the frame read on its own, in the same numbers as klipp_frame_stats: a face against its background, a sky, a product, a corner of a screen. x, y, w and h are fractions of the frame. Use it when the whole-frame reading is the average of two different things.

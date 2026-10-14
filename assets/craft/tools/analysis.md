@@ -71,3 +71,7 @@ With transition_id in place of clip_id, it tracks the subject a piece transition
 ## klipp_transcript
 
 What is said in a media file between two times, with when, in seconds of the file: the segments, and with words true every word with its start and end, and the stretches measured silent in that range. Use it to put a cut on the edge of a word or in a silence (a cut in measured silence is clean), and to read a stretch the analysis text cut short.
+
+## klipp_analysis_queue
+
+Put media_id first in the pending analysis queue. With cancel_pending true, cancel other queued items (all if no ID). Running work finishes normally. Call analyze first for an item that has no active request.
