@@ -9500,7 +9500,7 @@ impl PlaybackEngine {
                 // in the viewer. An import while parked then had the next
                 // edit drawn from the wrong decoder.
                 let fps = container_fps;
-                let duration = RationalTime::from_secs_f64(duration_secs, fps.rate());
+                let duration = probed_duration(duration_secs, picture_stream.is_some().then_some(fps), sample_rate);
 
                 let fs_meta = std::fs::metadata(&path).ok();
                 let file_size_bytes = fs_meta.as_ref().map(|m| m.len()).unwrap_or(0);
@@ -13485,3 +13485,33 @@ mod report_floor_tests {
         assert_eq!(said(&ev_rx), vec![3]);
     }
 }
+
+/// A probed file's duration (#1910): counted in frames of its picture, or,
+/// for sound alone, in its own samples. A WAV of 1.1 s timed at a frame
+/// rate it doesn't have lost its last 0.017 s to the rounding, and a trim
+/// to its real end was refused.
+fn probed_duration(secs: f64, picture_fps: Option<Fps>, sample_rate: Option<u32>) -> RationalTime {
+    match (picture_fps, sample_rate) {
+        (Some(fps), _) => RationalTime::from_secs_f64(secs, fps.rate()),
+        (None, Some(rate)) if rate > 0 => RationalTime::from_secs_f64(secs, rate),
+        (None, _) => RationalTime::from_secs_f64(secs, Fps::film_24().rate()),
+    }
+}
+
+#[cfg(test)]
+mod probed_duration_tests {
+    use super::*;
+
+    /// Sound alone keeps its length to the sample; a picture is timed in
+    /// its frames as before.
+    #[test]
+    fn a_sound_is_timed_in_its_samples() {
+        let d = probed_duration(1.1, None, Some(48000));
+        assert_eq!((d.value, d.rate), (52800, 48000));
+        assert!((d.to_secs_f64() - 1.1).abs() < 1.0 / 48000.0);
+        let v = probed_duration(1.1, Some(Fps::film_24()), Some(48000));
+        assert_eq!(v.rate, Fps::film_24().rate(), "a picture keeps its frame rate");
+        assert_eq!(probed_duration(2.0, None, None).rate, Fps::film_24().rate(), "nothing to time it by: the default");
+    }
+}
+
