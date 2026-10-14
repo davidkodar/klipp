@@ -48,7 +48,7 @@ pub(crate) fn respond(
             }))
         }
 
-        ControlCommand::SearchMusic { query, limit, commercial_only, instrumental, listen } => {
+        ControlCommand::SearchMusic { query, limit, commercial_only, instrumental, edits_only, licences, listen } => {
             let listen = listen.unwrap_or(Listen::First(0));
             if in_batch {
                 return read_in_batch("search_music");
@@ -56,7 +56,8 @@ pub(crate) fn respond(
             if !klipp_audio_search::music_available() {
                 return Err("music search is not set up: put jamendo_client_id in ~/.config/klipp/keys.toml (or set KLIPP_JAMENDO_CLIENT_ID)".into());
             }
-            let tracks = klipp_audio_search::search_music_filtered(&query, limit.unwrap_or(12), klipp_audio_search::MusicFilter { commercial_only, instrumental })?;
+            let licences = licences.iter().map(|l| klipp_audio_search::licence_family(l)).collect::<Result<Vec<_>, _>>()?;
+            let tracks = klipp_audio_search::search_music_filtered(&query, limit.unwrap_or(12), klipp_audio_search::MusicFilter { commercial_only, instrumental, edits_only, licences })?;
             // The previews asked for heard, side by side, so a candidate is
             // judged before it is imported (#739): the first few, or those
             // named by id (#795).

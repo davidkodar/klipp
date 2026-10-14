@@ -28,6 +28,8 @@ Narration from text, made on the machine. voice is a manifest id; the default is
 
 Search Jamendo royalty-free music by mood/genre, best textual match first. Results give title, artist, duration, tags, pace and licence/commercial clearance. listen previews up to five without importing (count from first or track-id list), reporting tempo, beat clarity and energy evolution. Import via klipp_add_music. Requires Jamendo client id in user key config. Match reference energy using style_profile; never reuse its track.
 
+To cut, fit or loop a track its licence has to allow edits: edits_only true leaves out every ND licence, and licences narrows to families as the results label them (CC0, CC BY, CC BY-SA, CC BY-NC, CC BY-NC-SA, CC BY-ND, CC BY-NC-ND; "by-sa" works too). Both are applied before the ranking and the limit, so a limit of eight gives eight that pass. commercial_only is the same for paid work.
+
 ## klipp_search_sfx
 
 Search royalty-free sound effects by keyword (e.g. "whoosh", "door slam", "rain", "impact") from Freesound. Each result shows its licence and whether it clears commercial use. max_secs keeps to short sounds (a transition's whoosh, not a long design file); listen (a count, or [track_id, …], at most 5) hears previews and says each one's length, when it peaks and how loud it is, which is where it goes: the peak on the cut. Then add it with klipp_add_music (it takes a sound effect the same as a track). Needs a Freesound token in the user's key config.

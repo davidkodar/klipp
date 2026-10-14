@@ -439,13 +439,44 @@ pub fn forbids_edits(license: &str) -> bool {
     license.split(|c: char| !c.is_ascii_alphanumeric()).any(|part| part.eq_ignore_ascii_case("ND"))
 }
 
+/// The licence families a music search can be narrowed to, as results
+/// label them (#1931).
+pub const LICENCE_FAMILIES: [&str; 7] = ["CC0", "CC BY", "CC BY-SA", "CC BY-NC", "CC BY-NC-SA", "CC BY-ND", "CC BY-NC-ND"];
+
+/// A licence family by the name an editor gives it, "by-sa" as well as
+/// "CC BY-SA"; the label results carry, or why not.
+pub fn licence_family(name: &str) -> Result<&'static str, String> {
+    let key = |s: &str| s.trim().to_ascii_uppercase().trim_start_matches("CC").trim().replace([' ', '_'], "-");
+    LICENCE_FAMILIES
+        .iter()
+        .find(|f| key(f) == key(name))
+        .copied()
+        .ok_or_else(|| format!("no licence family {name:?}; the families are {}", LICENCE_FAMILIES.join(", ")))
+}
+
 /// What a music search is narrowed to.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct MusicFilter {
     /// Only tracks whose licence allows commercial use.
     pub commercial_only: bool,
     /// Only instrumental tracks: no voice over a promo's own titles.
     pub instrumental: bool,
+    /// Only tracks whose licence allows cutting, fitting and remixing:
+    /// none that is ND (#1931).
+    pub edits_only: bool,
+    /// Only these licence families ([`LICENCE_FAMILIES`]); empty is any.
+    pub licences: Vec<&'static str>,
+}
+
+impl MusicFilter {
+    /// Whether `track` passes what the library can't be asked for, or
+    /// was asked and is held to again here.
+    fn keeps(&self, track: &Track) -> bool {
+        (!track.preview_url.is_empty() || !track.download_url.is_empty())
+            && (!self.commercial_only || track.commercial_ok)
+            && (!self.edits_only || !forbids_edits(&track.license))
+            && (self.licences.is_empty() || self.licences.contains(&track.license.as_str()))
+    }
 }
 
 /// Search Jamendo for music. `query` is matched as fuzzy tags (moods,
@@ -473,12 +504,11 @@ pub fn search_music_filtered(query: &str, limit: u32, filter: MusicFilter) -> Re
         // a second page is read when they thin the first, so a limit of
         // six gives six, not the two of a page's six that passed (#739).
         for offset in [0, page] {
-            let mut got = jamendo_tracks(&extra, page, offset, filter)?;
+            let mut got = jamendo_tracks(&extra, page, offset, &filter)?;
             let read = got.len();
-            got.retain(|t| !t.preview_url.is_empty() || !t.download_url.is_empty());
-            if filter.commercial_only {
-                got.retain(|t| t.commercial_ok);
-            }
+            // Before ranking and the limit, so a limit of eight gives
+            // eight that pass (#1931).
+            got.retain(|t| filter.keeps(t));
             got.retain(|t| !tracks.iter().any(|k: &Track| k.id == t.id));
             tracks.extend(got);
             if tracks.len() >= limit as usize || read < page as usize {
@@ -530,14 +560,28 @@ fn rank_by_query(tracks: &mut [Track], words: &[String]) {
     tracks.sort_by_key(|t| std::cmp::Reverse(score(t)));
 }
 
-fn jamendo_tracks(extra: &str, limit: u32, offset: u32, filter: MusicFilter) -> Result<Vec<Track>, String> {
+/// What the library is asked to leave out itself, before it counts a
+/// page: `ccnc=false` no non-commercial licences, `ccnd=false` none that
+/// forbids edits (#1931).
+fn library_filters(filter: &MusicFilter) -> String {
+    let mut out = String::new();
+    if filter.instrumental {
+        out.push_str("&vocalinstrumental=instrumental");
+    }
+    if filter.commercial_only {
+        out.push_str("&ccnc=false");
+    }
+    if filter.edits_only {
+        out.push_str("&ccnd=false");
+    }
+    out
+}
+
+fn jamendo_tracks(extra: &str, limit: u32, offset: u32, filter: &MusicFilter) -> Result<Vec<Track>, String> {
     let cid = jamendo_client_id().ok_or_else(|| "no Jamendo client id set — put jamendo_client_id in ~/.config/klipp/keys.toml or set KLIPP_JAMENDO_CLIENT_ID".to_string())?;
-    let vocal = if filter.instrumental { "&vocalinstrumental=instrumental" } else { "" };
-    // `ccnc=false`: no non-commercial licences, filtered by the library
-    // before it counts the page.
-    let commercial = if filter.commercial_only { "&ccnc=false" } else { "" };
+    let asked = library_filters(filter);
     let url = format!(
-        "https://api.jamendo.com/v3.0/tracks/?client_id={cid}&format=json&limit={limit}&offset={offset}&order=popularity_total&include=musicinfo+licenses&audioformat=mp32{vocal}{commercial}&{extra}"
+        "https://api.jamendo.com/v3.0/tracks/?client_id={cid}&format=json&limit={limit}&offset={offset}&order=popularity_total&include=musicinfo+licenses&audioformat=mp32{asked}&{extra}"
     );
     let text = ureq::get(&url)
         .timeout(std::time::Duration::from_secs(30))
@@ -1176,6 +1220,46 @@ mod tests {
         rank_by_query(&mut t, &words);
         let order: Vec<&str> = t.iter().map(|t| t.title.as_str()).collect();
         assert_eq!(order, vec!["Porch", "Morning", "Energy"]);
+    }
+
+    /// #1931: a family is named as results label it, or loosely; one that
+    /// isn't is refused with the families there are.
+    #[test]
+    fn a_licence_family_is_read_by_its_label() {
+        assert_eq!(licence_family("CC BY-SA"), Ok("CC BY-SA"));
+        assert_eq!(licence_family("by-sa"), Ok("CC BY-SA"));
+        assert_eq!(licence_family("cc0"), Ok("CC0"));
+        assert_eq!(licence_family("by nc nd"), Ok("CC BY-NC-ND"));
+        let err = licence_family("GPL").unwrap_err();
+        assert!(LICENCE_FAMILIES.iter().all(|f| err.contains(f)), "{err}");
+        // Every family is a label the licence reader gives.
+        for url in ["publicdomain/zero/1.0/", "licenses/by/4.0/", "licenses/by-sa/3.0/", "licenses/by-nc/3.0/", "licenses/by-nc-sa/3.0/", "licenses/by-nd/3.0/", "licenses/by-nc-nd/3.0/"] {
+            let label = cc_label(&format!("https://creativecommons.org/{url}")).0;
+            assert!(LICENCE_FAMILIES.contains(&label.as_str()), "{label}");
+        }
+    }
+
+    /// #1931: the filters drop what the editor can't use before the
+    /// ranking and the limit, and the library is asked to leave it out.
+    #[test]
+    fn a_music_filter_keeps_only_editable_tracks_of_its_families() {
+        let track = |license: &str, commercial_ok: bool| Track {
+            source: Source::JamendoMusic, id: license.into(), title: "t".into(), artist: "a".into(), duration_secs: 60.0,
+            license: license.into(), license_url: String::new(), commercial_ok, preview_url: "https://p".into(),
+            download_url: String::new(), page_url: String::new(), image_url: String::new(), tags: vec![], pace: String::new(), original: None,
+        };
+        let nd = track("CC BY-ND", true);
+        let sa = track("CC BY-SA", true);
+        let zero = track("CC0", true);
+        let nc = track("CC BY-NC", false);
+        let edits = MusicFilter { edits_only: true, ..Default::default() };
+        assert!(!edits.keeps(&nd) && edits.keeps(&sa) && edits.keeps(&zero) && edits.keeps(&nc));
+        let families = MusicFilter { licences: vec!["CC0", "CC BY-SA"], ..Default::default() };
+        assert!(families.keeps(&sa) && families.keeps(&zero) && !families.keeps(&nd) && !families.keeps(&nc));
+        let both = MusicFilter { commercial_only: true, edits_only: true, ..Default::default() };
+        assert!(!both.keeps(&nc) && !both.keeps(&nd) && both.keeps(&sa));
+        assert_eq!(library_filters(&both), "&ccnc=false&ccnd=false");
+        assert_eq!(library_filters(&MusicFilter::default()), "");
     }
 
     #[test]

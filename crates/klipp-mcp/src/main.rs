@@ -1034,6 +1034,8 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             if let Some(x) = args.get("limit").and_then(|v| v.as_u64()) { v["limit"] = json!(x); }
             if let Some(c) = args.get("commercial_only").and_then(|v| v.as_bool()) { v["commercial_only"] = json!(c); }
             if let Some(c) = args.get("instrumental").and_then(|v| v.as_bool()) { v["instrumental"] = json!(c); }
+            if let Some(c) = args.get("edits_only").and_then(|v| v.as_bool()) { v["edits_only"] = json!(c); }
+            if let Some(l) = args.get("licences").filter(|l| l.is_array()) { v["licences"] = l.clone(); }
             if let Some(x) = listen_arg(args) { v["listen"] = x; }
             v
         }
@@ -2111,7 +2113,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "media_id": { "type": "string" } }), vec!["media_id"]),
         tool("klipp_search_music",
              "Search royalty-free music on Jamendo by mood or genre, with licences; listen previews up to five. Import with klipp_add_music. Details: klipp_guide topic search_music.",
-             json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "commercial_only": { "type": "boolean", "description": "only tracks whose licence allows commercial use" }, "instrumental": { "type": "boolean", "description": "only instrumental tracks, for a promo with its own titles" }, "listen": { "description": "hear previews (at most 5): the first this-many, or [track_id, …]; tempo, beat and energy, nothing imported", "oneOf": [{ "type": "integer" }, { "type": "array", "items": { "type": "string" } }] } }), vec!["query"]),
+             json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "commercial_only": { "type": "boolean", "description": "only tracks whose licence allows commercial use" }, "instrumental": { "type": "boolean", "description": "only instrumental tracks, for a promo with its own titles" }, "edits_only": { "type": "boolean", "description": "no ND" }, "licences": { "type": "array", "items": { "type": "string", "enum": klipp_control::LICENCE_FAMILIES } }, "listen": { "description": "hear previews (at most 5): the first this-many, or [track_id, …]; tempo, beat and energy, nothing imported", "oneOf": [{ "type": "integer" }, { "type": "array", "items": { "type": "string" } }] } }), vec!["query"]),
         tool("klipp_search_sfx",
              "Search royalty-free sound effects on Freesound by keyword, with licences; listen hears up to five and says where each peaks. Import with klipp_add_music. Details: klipp_guide topic search_sfx.",
              json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "max_secs": { "type": "number", "description": "only sounds this long or shorter" }, "commercial_only": { "type": "boolean", "description": "only sounds whose licence allows commercial use" }, "listen": { "description": "hear previews (at most 5): the first this-many, or [track_id, …]; length, peak time, loudness", "oneOf": [{ "type": "integer" }, { "type": "array", "items": { "type": "string" } }] } }), vec!["query"]),
