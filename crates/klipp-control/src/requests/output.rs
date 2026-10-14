@@ -365,7 +365,7 @@ pub(crate) fn respond(
             let faces = skin_regions(ctx, secs, &data, width, height);
             let mut m = klipp_color::measure::measure_frame(&data, width, height, &faces);
             let look = look_for(ctx, secs);
-            if needs_source(&klipp_color::measure::judge(&m, &look)) {
+            if needs_source(&klipp_color::measure::judge(&m, &look), &look) {
                 m.source = picture_clip_at(ctx, secs).and_then(|c| source_reading(ctx, c, secs));
             }
             let findings = klipp_color::measure::judge(&m, &look);

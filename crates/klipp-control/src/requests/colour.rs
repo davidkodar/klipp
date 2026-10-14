@@ -677,7 +677,7 @@ pub(crate) fn respond(
                 // The file's own floor, when a floor finding hangs on it:
                 // a bright scene is not graded down to a black it does not
                 // hold (#1896). The file does not change between rounds.
-                let source = if needs_source(&klipp_color::measure::judge(&m, &look)) { clip_of(id).and_then(|c| source_reading(ctx, c, *mid)) } else { None };
+                let source = if needs_source(&klipp_color::measure::judge(&m, &look), &look) { clip_of(id).and_then(|c| source_reading(ctx, c, *mid)) } else { None };
                 m.source = source;
                 let before = colour_report(&m, &look, *mid);
                 let mut step = klipp_color::measure::primaries_toward(&m, &look);

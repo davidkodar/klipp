@@ -102,8 +102,9 @@ pub struct Brief {
     /// mid lightness, contrast, chroma, the cast on neutrals, skin hue.
     /// `{name: "web_punchy"}` alone takes a preset (broadcast_neutral,
     /// web_punchy, film_soft, warm_interview, golden, cool_tech, screencast);
-    /// style_profile lifts one from a reference. Left out: neutral, and
-    /// a screen recording judged as one.
+    /// style_profile lifts one from a reference. Left out: neutral. It is
+    /// the camera footage's look: a screen recording, or a clip marked
+    /// graphics, is judged as a screen whatever it says (#1906).
     #[serde(default)]
     pub look: Option<klipp_color::measure::LookTarget>,
 }

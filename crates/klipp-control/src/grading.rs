@@ -329,7 +329,7 @@ pub(crate) fn source_reading(ctx: &ControlContext, clip: klipp_core::ClipId, sec
     let (rgba, w, h) = decode_frame_rgba_sized(&path, at.max(0.0), size.0, size.1).ok()?;
     let mut m = klipp_color::measure::measure_frame(&rgba, w, h, &[]);
     m.log_prior = prior;
-    (!klipp_color::measure::looks_like_log(&m)).then(|| klipp_color::measure::SourceReading::of(&m))
+    (!klipp_color::measure::looks_like_log(&m)).then(|| klipp_color::measure::SourceReading { range_stated: stated_range(&path), ..klipp_color::measure::SourceReading::of(&m) })
 }
 
 /// Whether `item` is display-referred SDR as it is decoded: not HDR, not
@@ -362,10 +362,26 @@ pub(crate) fn picture_clip_at(ctx: &ControlContext, secs: f64) -> Option<klipp_c
         .map(|c| c.id)
 }
 
-/// Whether one of `found` waits on the file's own reading before it can
-/// be called the grade's (#1896).
-pub(crate) fn needs_source(found: &[klipp_color::measure::Finding]) -> bool {
-    found.iter().any(|f| f.verdict != klipp_color::measure::Verdict::Pass && f.rule == "black_point")
+/// Whether the file's video stream says its range, limited ("tv") or
+/// full ("pc"), as ffprobe reads it (#1906 review).
+fn stated_range(path: &std::path::Path) -> bool {
+    std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_range", "-of", "csv=p=0"])
+        .arg(path)
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .is_some_and(|o| matches!(String::from_utf8_lossy(&o.stdout).trim(), "tv" | "pc"))
+}
+
+/// Whether one of `found`, judged against `look`, waits on the file's
+/// own reading before it can be called the grade's: a black point
+/// (#1896), and a screen recording's share at either rail (#1906).
+pub(crate) fn needs_source(found: &[klipp_color::measure::Finding], look: &klipp_color::measure::LookTarget) -> bool {
+    found.iter().any(|f| {
+        f.verdict != klipp_color::measure::Verdict::Pass
+            && (f.rule == "black_point" || (look.screencast && matches!(f.rule, "crushed_black" | "clipped_white" | "banding")))
+    })
 }
 
 /// The measured clip's metadata: the isolated clip when requested, otherwise
@@ -386,6 +402,42 @@ pub(crate) fn log_prior_at(ctx: &ControlContext, secs: f64, only: Option<klipp_c
 #[cfg(test)]
 #[path = "grading_log_prior_tests.rs"]
 mod log_prior_tests;
+
+#[cfg(test)]
+mod look_tests {
+    use super::*;
+
+    /// #1906: an app recording marked graphics in a piece whose brief
+    /// names a look is judged as a screen, not against the look; the
+    /// camera footage beside it is judged against the look, and a grade
+    /// group's own look still comes first.
+    #[test]
+    fn a_screen_or_graphics_clip_is_judged_as_a_screen_under_a_briefed_look() {
+        let mut pool = klipp_media::MediaPool::new();
+        let camera = pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/klipp-1906/camera.mov".into(), None));
+        let app = pool.add(klipp_media::MediaItem::synthetic_for_test("/tmp/klipp-1906/app.mp4".into(), None));
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 25);
+        let mut seq = klipp_timeline::Sequence::new_default();
+        let mut v = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v.clips.push(klipp_timeline::Clip::media(camera, tc(0.0), tc(4.0), tc(0.0), tc(4.0)));
+        let mut ui = klipp_timeline::Clip::media(camera, tc(4.0), tc(8.0), tc(0.0), tc(4.0));
+        ui.role = klipp_core::ClipRole::Graphics;
+        v.clips.push(ui);
+        v.clips.push(klipp_timeline::Clip::media(app, tc(8.0), tc(12.0), tc(0.0), tc(4.0)));
+        seq.tracks = vec![v];
+        seq.brief = Some(klipp_timeline::Brief { look: Some(klipp_color::measure::LookTarget::preset("web_punchy").unwrap()), ..Default::default() });
+        let is_app = |item: &klipp_media::MediaItem| item.id == app;
+        let name = |s: f64| look_in(&seq, &pool, tc(s), &is_app).name;
+        assert_eq!(name(1.0), "web_punchy", "camera footage takes the brief's look");
+        assert_eq!(name(5.0), "screencast", "a clip marked graphics is a screen");
+        assert_eq!(name(9.0), "screencast", "a screen recording is a screen");
+        let group = klipp_timeline::GradeGroup { look: Some(klipp_color::measure::LookTarget::preset("film_soft").unwrap()), ..klipp_timeline::GradeGroup::new("night") };
+        let id = group.id;
+        seq.grade_groups.push(group);
+        seq.tracks[0].clips[1].grade_group = Some(id);
+        assert_eq!(look_in(&seq, &pool, tc(5.0), &is_app).name, "film_soft", "a group's own look comes first");
+    }
+}
 
 /// Whether the colour tools grade this clip: an enabled clip of media.
 pub(crate) fn is_picture_clip(c: &klipp_timeline::Clip) -> bool {
@@ -429,34 +481,43 @@ pub(crate) fn merge_brief(current: &klipp_timeline::Brief, fields: &serde_json::
 
 /// The look a frame is judged against: its grade group's when the group
 /// has one, or none past faults when the group leaves the look on
-/// purpose (#793); else the brief's, else neutral; a screen recording
-/// (the beat sheet found holds) is judged as one when the brief names no
-/// look.
+/// purpose (#793); else, for a screen recording or a clip marked
+/// graphics, the screen recording's; else the brief's, else neutral. See
+/// [`look_in`].
 pub(crate) fn look_for(ctx: &ControlContext, secs: f64) -> klipp_color::measure::LookTarget {
+    let (Ok(seq), Ok(pool)) = (ctx.sequence.read(), ctx.media_pool.read()) else { return klipp_color::measure::LookTarget::unbriefed() };
+    let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
+    look_in(&seq, &pool, tc, &|item| {
+        // A still picture held on screen also "never changes", and a
+        // locked-off camera shot holds too, so the beat sheet alone is
+        // not enough: a file with a person in it is footage.
+        let a = klipp_analysis::report::MediaAnalysis::load(&item.path);
+        let holds = a.screen_beatsheet(item).is_some_and(|b| b.has_freeze);
+        let people = a.framing.as_ref().is_some_and(|f| f.samples.iter().any(|s| !s.people.is_empty() || !s.faces.is_empty()));
+        holds && !people
+    })
+}
+
+/// [`look_for`] on the timeline itself, `screen_recording` saying
+/// whether a file is one. A recording of an app, or a clip marked
+/// graphics, is judged as a screen whatever the brief's look: the
+/// brief's look is for camera footage, and judged by it a dark UI's
+/// panels and scopes read as crushed blacks (#1906). A grade group's
+/// own look still comes first: that is a choice made for those clips.
+pub(crate) fn look_in(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool, tc: klipp_core::Timecode, screen_recording: &dyn Fn(&klipp_media::MediaItem) -> bool) -> klipp_color::measure::LookTarget {
     use klipp_color::measure::LookTarget;
-    if let Ok(seq) = ctx.sequence.read() {
-        let tc = klipp_core::Timecode::from_secs_f64(secs.max(0.0), seq.fps.rate());
-        if let Some(look) = group_look(&seq, tc) {
-            return look;
+    if let Some(look) = group_look(seq, tc) {
+        return look;
+    }
+    let top = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).find_map(|t| t.clip_at_timecode(tc)).map(|(_, c)| c);
+    if let Some(c) = top {
+        let screen = c.role == klipp_core::ClipRole::Graphics || c.media_id().and_then(|id| pool.get(&id)).is_some_and(screen_recording);
+        if screen {
+            return LookTarget::preset("screencast").expect("the screencast preset exists");
         }
-        if let Some(look) = seq.brief.as_ref().and_then(|b| b.look.clone()) {
-            return resolve_look_target(look);
-        }
-        if let Ok(pool) = ctx.media_pool.read() {
-            // A screen recording, judged only for cast and clipping. A
-            // still picture held on screen also "never changes", and a
-            // locked-off camera shot holds too, so the beat sheet alone
-            // is not enough: a file with a person in it is footage.
-            let item = seq.tracks.iter().filter(|t| t.kind == klipp_timeline::TrackKind::Video).find_map(|t| t.clip_at_timecode(tc)).and_then(|(_, c)| pool.get(&c.media_id()?));
-            if let Some(item) = item {
-                let a = klipp_analysis::report::MediaAnalysis::load(&item.path);
-                let holds = a.screen_beatsheet(item).is_some_and(|b| b.has_freeze);
-                let people = a.framing.as_ref().is_some_and(|f| f.samples.iter().any(|s| !s.people.is_empty() || !s.faces.is_empty()));
-                if holds && !people {
-                    return LookTarget::preset("screencast").unwrap();
-                }
-            }
-        }
+    }
+    if let Some(look) = seq.brief.as_ref().and_then(|b| b.look.clone()) {
+        return resolve_look_target(look);
     }
     LookTarget::unbriefed()
 }
