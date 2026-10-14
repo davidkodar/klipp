@@ -368,6 +368,9 @@ fn media_listing(m: &klipp_media::MediaItem, artwork: Option<(u32, u32)>) -> ser
         "log_format": log_format_json(m),
         "offline": m.offline,
         "tags": m.tags,
+        // A library download's file, as its credit records it: preview,
+        // original or the library's download (#1894).
+        "download": klipp_audio_search::read_credit(&m.path).and_then(|c| c.quality),
     })
 }
 

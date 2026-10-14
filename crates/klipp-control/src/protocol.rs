@@ -170,6 +170,10 @@ pub struct MusicPick {
     pub license_url: String,
     #[serde(default)]
     pub page_url: String,
+    /// A Freesound sound's file: "original" (signed in), or "preview".
+    /// Left out, the original when signed in, else the preview (#1894).
+    #[serde(default)]
+    pub quality: Option<String>,
 }
 
 impl ControlCommand {
@@ -1154,6 +1158,20 @@ pub enum ControlCommand {
         /// own (#1587): a batch can't hold a download.
         #[serde(default)]
         tracks: Vec<MusicPick>,
+        /// A Freesound sound's file: "original" or "preview" (#1894).
+        #[serde(default)]
+        quality: Option<String>,
+    },
+    /// Sign in to the user's own Freesound account, for original
+    /// recordings (#1894): opens the browser at the approval page and
+    /// takes Freesound's redirect itself; asked again, says how it went.
+    /// `code` is the one Freesound showed, where its redirect can't come
+    /// back; `sign_out` forgets the sign-in.
+    FreesoundSignIn {
+        #[serde(default)]
+        code: Option<String>,
+        #[serde(default)]
+        sign_out: bool,
     },
     /// The tempo and beat grid of a clip's sound: BPM, a confidence, and
     /// the beat times, for cutting to the music; and for music, its

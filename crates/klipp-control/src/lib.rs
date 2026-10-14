@@ -717,6 +717,7 @@ fn handle(
             | ControlCommand::SearchMusic { .. }
             | ControlCommand::SearchSfx { .. }
             | ControlCommand::AddMusic { .. }
+            | ControlCommand::FreesoundSignIn { .. }
             | ControlCommand::Beats { .. }
             | ControlCommand::StyleProfile { .. }
             | ControlCommand::CutPoints { .. }

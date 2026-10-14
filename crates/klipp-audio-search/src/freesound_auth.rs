@@ -154,8 +154,16 @@ pub fn code_from_request(line: &str, state: &str) -> Result<String, String> {
 /// answer the browser. `Err` when the port can't be had (another program
 /// holds it) or nothing came: then the code is pasted.
 pub fn await_redirect(state: &str, timeout: std::time::Duration) -> Result<String, String> {
+    await_redirect_signalling(state, timeout, || {})
+}
+
+/// [`await_redirect`], calling `listening` once the port is held, so the
+/// browser is sent to the approval page only when the redirect has
+/// somewhere to come back to.
+pub fn await_redirect_signalling(state: &str, timeout: std::time::Duration, listening: impl FnOnce()) -> Result<String, String> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", REDIRECT_PORT)).map_err(|e| format!("could not listen on {REDIRECT_URI}: {e}"))?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+    listening();
     let deadline = std::time::Instant::now() + timeout;
     loop {
         match listener.accept() {

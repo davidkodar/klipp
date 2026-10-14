@@ -115,8 +115,12 @@ pub(crate) fn respond(
             if !tracks.is_empty() && found.matched_query != query.trim() {
                 text.push_str(&format!("  (nothing matched all of \"{}\"; these match \"{}\")\n", query.trim(), found.matched_query));
             }
+            // What add_music would bring: the original when signed in.
+            let signed_in = klipp_audio_search::freesound_auth::signed_in().is_some();
+            let fetch = if signed_in { "original" } else { "preview" };
             for (t, h) in tracks.iter().zip(&heard) {
-                text.push_str(&format!("  {} — {}  ({}, {:.1}s){}  id {}\n", t.title, t.artist, t.license, t.duration_secs, if t.commercial_ok { "" } else { " [non-commercial]" }, t.id));
+                let original = t.original.as_ref().map_or(String::new(), |o| format!("  original {}", o.describe()));
+                text.push_str(&format!("  {} — {}  ({}, {:.1}s){}  id {}{original}\n", t.title, t.artist, t.license, t.duration_secs, if t.commercial_ok { "" } else { " [non-commercial]" }, t.id));
                 match h {
                     Some(Ok(l)) => text.push_str(&format!("      heard: {}\n", l.describe())),
                     Some(Err(e)) => text.push_str(&format!("      not heard: {e}\n")),
@@ -129,28 +133,36 @@ pub(crate) fn respond(
                     "duration_secs": t.duration_secs, "license": t.license, "license_url": t.license_url,
                     "commercial_ok": t.commercial_ok, "preview_url": t.preview_url, "download_url": t.download_url,
                     "page_url": t.page_url, "tags": t.tags,
+                    "original": t.original.as_ref().map(|o| json!({ "format": o.kind, "sample_rate": o.sample_rate, "channels": o.channels, "bit_depth": o.bit_depth, "bitrate_kbps": o.bitrate_kbps, "bytes": o.bytes, "described": o.describe() })),
+                    "download": fetch,
                 });
                 if let Some(Ok(l)) = h {
                     v["heard"] = json!({ "secs": l.secs, "peak_secs": l.peak_secs, "loudness_db": l.loudness_db, "peak_db": l.peak_db });
                 }
                 v
             }).collect();
-            Ok(json!({ "text": text, "results": results, "next": "Hear candidates with listen (a count, or [track_id, …]): a sound's length and when it peaks say where it goes, the peak on the cut: place it with sync_source_secs set to its heard.peak_secs and at on the cut. Add one with add_music (it takes a sound effect just the same: pass title, artist, preview_url, license, license_url, page_url); it brings Freesound's 128 kbps preview MP3, not the original file. The credit is kept; honour the licence." }))
+            let brings = if signed_in {
+                "it brings the original recording (signed in to Freesound); quality preview takes the preview instead"
+            } else {
+                "it brings Freesound's preview MP3, not the original; freesound_sign_in, with the person, brings originals"
+            };
+            Ok(json!({ "text": text, "results": results, "signed_in": signed_in, "next": format!("Hear candidates with listen (a count, or [track_id, …]): a sound's length and when it peaks say where it goes, the peak on the cut: place it with sync_source_secs set to its heard.peak_secs and at on the cut. Add one with add_music (it takes a sound effect just the same: pass title, artist, preview_url, license, license_url, page_url); {brings}. Its reply measures the file it brought. The credit is kept; honour the licence.") }))
         }
 
-        ControlCommand::AddMusic { title, artist, track_id, download_url, preview_url, license, license_url, page_url, tracks } => {
+        ControlCommand::AddMusic { title, artist, track_id, download_url, preview_url, license, license_url, page_url, tracks, quality } => {
             if in_batch {
                 return Err("add_music downloads and imports a file; send it on its own, not in a batch (it takes many at once as tracks)".into());
             }
             if tracks.is_empty() {
-                return add_one_track(ctx, MusicPick { title, artist, track_id, download_url, preview_url, license, license_url, page_url });
+                return add_one_track(ctx, MusicPick { title, artist, track_id, download_url, preview_url, license, license_url, page_url, quality });
             }
             // Many at once (#1587): each downloaded and imported in turn,
             // each answered on its own; one that fails doesn't stop the
             // rest. Fifteen effects took fifteen calls.
             let mut results = Vec::with_capacity(tracks.len());
             let mut failed = 0;
-            for pick in tracks {
+            for mut pick in tracks {
+                pick.quality = pick.quality.or_else(|| quality.clone());
                 let title = pick.title.clone();
                 match add_one_track(ctx, pick) {
                     Ok(v) => results.push(json!({ "title": title, "media_id": v["media_id"], "already_imported": v["already_imported"] == true, "job_id": v["job_id"], "attribution": v["attribution"] })),
@@ -169,6 +181,13 @@ pub(crate) fn respond(
                 "results": results,
                 "next": "Place each on an audio track (place marks it music, or sfx for an effect) and duck it under any speech. The credits are saved beside the files for your export notes.",
             }))
+        }
+
+        ControlCommand::FreesoundSignIn { code, sign_out } => {
+            if in_batch {
+                return Err("freesound_sign_in waits on the browser; send it on its own".into());
+            }
+            freesound_sign_in(code.as_deref(), sign_out)
         }
 
         ControlCommand::Beats { media_id, target_secs, skip_intro, at_secs, track } => {
@@ -406,22 +425,45 @@ fn music_destination(project: Option<&std::path::Path>) -> std::path::PathBuf {
 }
 
 fn add_one_track(ctx: &ControlContext, pick: MusicPick) -> Result<serde_json::Value, String> {
-    let MusicPick { title, artist, track_id, download_url, preview_url, license, license_url, page_url } = pick;
-    let track = klipp_audio_search::Track {
-        source: klipp_audio_search::Source::JamendoMusic,
+    let MusicPick { title, artist, track_id, download_url, preview_url, license, license_url, page_url, quality } = pick;
+    // A Freesound sound comes as its original when signed in (#1894).
+    let freesound = [&page_url, &preview_url].iter().any(|u| u.contains("freesound.org"));
+    let signed_in = klipp_audio_search::freesound_auth::signed_in().is_some();
+    let choice = download_choice(freesound, signed_in, quality.as_deref())?;
+    let source = if freesound { klipp_audio_search::Source::Freesound } else { klipp_audio_search::Source::JamendoMusic };
+    let mut track = klipp_audio_search::Track {
+        source,
         id: track_id, title: title.clone(), artist: artist.clone(),
         duration_secs: 0.0, license: license.clone(), license_url,
         commercial_ok: true, preview_url, download_url, page_url, image_url: String::new(), tags: Vec::new(), pace: String::new(), original: None,
     };
     let project = ctx.shared.project.lock().ok().and_then(|p| p.path.clone());
-    let path = klipp_audio_search::download_track(&track, &music_destination(project.as_deref()))
+    let bearer = if choice == "original" {
+        // What the original is, from the library: a pick carries only
+        // what a search printed.
+        track.original = klipp_audio_search::freesound_sound(&track.id)?.original;
+        Some(klipp_audio_search::freesound_auth::access_token()?)
+    } else {
+        None
+    };
+    let fetch = |dir: &std::path::Path| match &bearer {
+        Some(b) => klipp_audio_search::download_original(&track, dir, b),
+        None => klipp_audio_search::download_track(&track, dir),
+    };
+    let path = fetch(&music_destination(project.as_deref()))
         // A project folder that can't be written to (read-only, gone):
         // the kept folder, and the next save adopts from there.
-        .or_else(|e| if project.is_some() { klipp_audio_search::download_track(&track, &klipp_audio_search::download_dir()) } else { Err(e) })?;
+        .or_else(|e| if project.is_some() { fetch(&klipp_audio_search::download_dir()) } else { Err(e) })?;
+    let download = klipp_audio_search::Download::measure(&path, if choice == "original" { "original" } else if freesound || track.download_url.is_empty() { "preview" } else { "download" });
     let mut v = handle(ctx, ControlCommand::import_one(path.to_string_lossy().to_string(), true), &mut None)?;
-    v["text"] = json!(format!("Added \"{title}\" by {artist} ({license}) to the media pool. Place it on an audio track (place marks it music) and duck it under speech.", license = if license.is_empty() { "licence with the file".to_string() } else { license }));
+    v["text"] = json!(format!("Added \"{title}\" by {artist} ({license}) to the media pool as the {}. Place it on an audio track (place marks it music) and duck it under speech.", download.describe(), license = if license.is_empty() { "licence with the file".to_string() } else { license }));
     v["attribution"] = json!(track.attribution());
-    v["next"] = json!("Place it on an audio track (place marks it music, or sfx for an effect) and duck it under any speech. The credit is saved beside the file for your export notes.");
+    v["download"] = json!(download);
+    v["next"] = json!(if freesound && !signed_in {
+        "Place it on an audio track (place marks it music, or sfx for an effect) and duck it under any speech. This is Freesound's preview; freesound_sign_in brings originals. The credit is saved beside the file for your export notes."
+    } else {
+        "Place it on an audio track (place marks it music, or sfx for an effect) and duck it under any speech. The credit is saved beside the file for your export notes."
+    });
     Ok(v)
 }
 
@@ -440,5 +482,106 @@ mod music_destination_tests {
         let adopted = project.join("media").join(rel);
         assert_eq!(Some(music_destination(Some(project)).as_path()), adopted.parent(), "beside what a save adopts");
         assert_eq!(music_destination(None), kept);
+    }
+}
+
+/// A sign-in in progress: waiting on the browser, or how it ended.
+enum SignIn {
+    Waiting,
+    Done(Result<Option<String>, String>),
+}
+
+fn pending_sign_in() -> &'static std::sync::Mutex<Option<SignIn>> {
+    static PENDING: std::sync::OnceLock<std::sync::Mutex<Option<SignIn>>> = std::sync::OnceLock::new();
+    PENDING.get_or_init(Default::default)
+}
+
+/// `freesound_sign_in` (#1894): sign out; finish with a pasted code; or
+/// start in the browser, Freesound's redirect taken by a listener on the
+/// sign-in's own port, and answer at once. Asked again, how it went.
+fn freesound_sign_in(code: Option<&str>, sign_out: bool) -> Result<serde_json::Value, String> {
+    use klipp_audio_search::freesound_auth as auth;
+    if sign_out {
+        auth::sign_out()?;
+        *pending_sign_in().lock().unwrap_or_else(|e| e.into_inner()) = None;
+        return Ok(json!({ "signed_in": false, "text": "Signed out of Freesound: sounds come as previews." }));
+    }
+    let client = auth::Client::from_keys().ok_or_else(|| format!(
+        "Freesound sign-in needs the person's own API credential: make one at https://freesound.org/apiv2/apply with the callback URL {}, and put freesound_client_id and freesound_client_secret in ~/.config/klipp/keys.toml",
+        auth::REDIRECT_URI
+    ))?;
+    let signed = |name: Option<String>| json!({ "signed_in": true, "username": name, "text": format!("Signed in to Freesound{}: sounds come as their originals.", name.as_ref().map_or(String::new(), |n| format!(" as {n}"))) });
+    if let Some(code) = code.filter(|c| !c.trim().is_empty()) {
+        let tokens = auth::finish_sign_in(&client, code)?;
+        *pending_sign_in().lock().unwrap_or_else(|e| e.into_inner()) = None;
+        return Ok(signed(tokens.username));
+    }
+    let mut pending = pending_sign_in().lock().unwrap_or_else(|e| e.into_inner());
+    match pending.take() {
+        Some(SignIn::Waiting) => {
+            *pending = Some(SignIn::Waiting);
+            return Ok(json!({ "signed_in": false, "waiting": true, "text": "Waiting for the approval in the browser.", "next": "Ask the person to approve in the browser, then ask again. If Freesound shows a code instead, pass it as code." }));
+        }
+        Some(SignIn::Done(Ok(name))) => return Ok(signed(name)),
+        Some(SignIn::Done(Err(e))) => return Err(format!("the Freesound sign-in did not finish: {e}. If Freesound showed a code, pass it as code; else ask again to start over")),
+        None => {}
+    }
+    if let Some(t) = auth::signed_in() {
+        return Ok(signed(t.username));
+    }
+    let state = auth::new_state();
+    let url = client.authorize_url(&state);
+    // Listening before the browser opens, so the redirect can't come back
+    // to nobody.
+    *pending = Some(SignIn::Waiting);
+    drop(pending);
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let outcome = auth::await_redirect_signalling(&state, std::time::Duration::from_secs(300), || { let _ = ready_tx.send(()); })
+            .and_then(|code| auth::finish_sign_in(&client, &code))
+            .map(|t| t.username);
+        *pending_sign_in().lock().unwrap_or_else(|e| e.into_inner()) = Some(SignIn::Done(outcome));
+    });
+    let listening = ready_rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok();
+    let opened = auth::open_browser(&url).is_ok();
+    Ok(json!({
+        "signed_in": false, "waiting": listening, "url": url, "redirect_uri": auth::REDIRECT_URI, "browser_opened": opened,
+        "text": if opened { "The Freesound approval page is open in the browser." } else { "Open this page in a browser to approve the sign-in." },
+        "next": "Ask the person to approve the sign-in, then freesound_sign_in again to see it finished. If Freesound shows a code instead of coming back, pass it as code.",
+    }))
+}
+
+/// Which file an import fetches (#1894): a Freesound sound's original
+/// when signed in or asked for, its preview when asked or signed out; a
+/// music library's track as it offers it. Asking for an original that
+/// can't be had is refused, never quietly a preview.
+fn download_choice(freesound: bool, signed_in: bool, asked: Option<&str>) -> Result<&'static str, String> {
+    match (asked.map(str::trim), freesound) {
+        (Some("original"), false) => Err("only a Freesound sound comes as an original; leave quality out for a music track".into()),
+        (Some("original"), true) if !signed_in => Err("an original needs a Freesound sign-in: freesound_sign_in, then add it again (or quality preview for the preview)".into()),
+        (Some("original"), true) => Ok("original"),
+        (Some("preview"), _) => Ok("preview"),
+        (None, true) if signed_in => Ok("original"),
+        (None, _) => Ok("preview"),
+        (Some(other), _) => Err(format!("quality is original or preview, not {other:?}")),
+    }
+}
+
+#[cfg(test)]
+mod download_choice_tests {
+    use super::*;
+
+    /// #1894: the original when signed in or asked, the preview when asked
+    /// or signed out; an original that can't be had is refused, never a
+    /// quiet preview.
+    #[test]
+    fn an_import_fetches_the_original_only_where_it_can() {
+        assert_eq!(download_choice(true, true, None), Ok("original"));
+        assert_eq!(download_choice(true, false, None), Ok("preview"));
+        assert_eq!(download_choice(true, true, Some("preview")), Ok("preview"));
+        assert!(download_choice(true, false, Some("original")).unwrap_err().contains("freesound_sign_in"));
+        assert!(download_choice(false, true, Some("original")).unwrap_err().contains("only a Freesound sound"));
+        assert_eq!(download_choice(false, true, None), Ok("preview"), "music: as the library offers it");
+        assert!(download_choice(true, true, Some("lossless")).is_err());
     }
 }
