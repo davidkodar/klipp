@@ -1666,11 +1666,13 @@ pub(crate) fn gate_id(corr: NodeId) -> NodeId {
     Uuid::from_u128(corr.as_u128() ^ 0x6761_7465_645f_6d61_7474_655f_6170_706c)
 }
 
-/// The settings of the gate after a correction with `blend`: its mix and
-/// the channel its matte is read from (M3 step 17a), or a whole gate read
-/// from red, as every gate was before.
-pub(crate) fn gate_params(blend: Option<crate::params::EffectBlend>) -> NodeParams {
-    NodeParams { mix: blend.map(|b| b.mix), correction_blend: blend, ..NodeParams::default() }
+/// The settings of the gate after the correction `corr`: its mix and the
+/// channel its matte is read from (M3 step 17a), or a whole gate read from
+/// red, as every gate was before; and whether it takes the matte inverted
+/// (`key_invert`, #898), an outside node's.
+pub(crate) fn gate_params(corr: &NodeParams) -> NodeParams {
+    let blend = corr.correction_blend;
+    NodeParams { mix: blend.map(|b| b.mix), correction_blend: blend, key_invert: corr.key_invert, ..NodeParams::default() }
 }
 
 impl NodeGraph {
@@ -1711,7 +1713,7 @@ impl NodeGraph {
             let Some(plain) = g.input_of(corr, 0) else { continue };
             let matte = g.input_of(corr, 1);
             let apply = gate_id(corr);
-            let blend = g.nodes.iter().find(|n| n.id == corr).and_then(|n| n.params.correction_blend);
+            let corr_params = g.nodes.iter().find(|n| n.id == corr).map(|n| n.params.clone()).unwrap_or_default();
             let at = g.nodes.iter().position(|n| n.id == corr).map_or(g.nodes.len(), |i| i + 1);
             // Whoever read the correction reads the blend now.
             for e in &mut g.edges {
@@ -1742,7 +1744,7 @@ impl NodeGraph {
                     kind: NodeKind::ApplyMatte,
                     label: "Gate".into(),
                     enabled: true,
-                    params: gate_params(blend),
+                    params: gate_params(&corr_params),
                     keyframes: NodeKeyframeTracks::default(),
                     output_link,
                     input_links: Vec::new(),
@@ -1784,6 +1786,43 @@ impl NodeGraph {
             });
         }
         Some(g)
+    }
+
+    /// Add the outside node of the gated correction `inside` (#898): a
+    /// Corrector straight after it on the chain, reading the same key on
+    /// its port 1 with the gate the other way round (`key_invert`), so it
+    /// grades where `inside` doesn't. Only the chain's reader of `inside`
+    /// moves to read the new node; anything else reading `inside` (a
+    /// mixer's other input, a side branch) keeps reading it. The new
+    /// node's id, or `None` when `inside` is no correction gated by a key
+    /// on the chain.
+    pub fn add_outside_node(&mut self, inside: NodeId) -> Option<NodeId> {
+        let node = self.nodes.iter().find(|n| n.id == inside).filter(|n| gateable(n.kind))?;
+        let key = self.input_of(inside, 1)?;
+        let invert = node.params.key_invert != Some(true);
+        let chain = self.chain();
+        let at = chain.iter().position(|l| l.id == inside)?;
+        let next = chain.get(at + 1)?.id;
+        let reader = self.edges.iter().position(|e| e.from_node == inside && e.to_node == next && e.to_port == 0)?;
+        let outside = NodeId::new_v4();
+        self.edges[reader].from_node = outside;
+        self.edges.push(Edge { from_node: inside, from_port: 0, to_node: outside, to_port: 0 });
+        self.edges.push(Edge { from_node: key, from_port: 0, to_node: outside, to_port: 1 });
+        let index = self.nodes.iter().position(|n| n.id == inside).map_or(self.nodes.len(), |i| i + 1);
+        self.nodes.insert(index, Node {
+            id: outside,
+            kind: NodeKind::Corrector,
+            label: "Outside".into(),
+            enabled: true,
+            params: NodeParams { key_invert: invert.then_some(true), ..NodeParams::default() },
+            keyframes: NodeKeyframeTracks::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        });
+        if let Some(pos) = self.node_positions.get(&inside).copied() {
+            self.node_positions.insert(outside, NodePos { x: pos.x + 180.0, y: pos.y });
+        }
+        Some(outside)
     }
 
     /// The chain from the source to the output, in flow order, with each

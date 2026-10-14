@@ -446,6 +446,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::MoveNode { .. }
         | AppCommand::ToggleNodeEnabled { .. }
         | AppCommand::ResetNode { .. }
+        | AppCommand::AddOutsideNode { .. }
         | AppCommand::AutoLayoutNodeGraph { .. }
         | AppCommand::CreateNodeFrame { .. }
         | AppCommand::RenameNodeFrame { .. }

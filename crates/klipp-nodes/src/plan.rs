@@ -104,7 +104,7 @@ impl ExecPlan {
             } else if let Some(corr) = gates.get(&node.id).and_then(|c| by_id.get(c)) {
                 // An inserted gate takes its correction's mix and channel
                 // as they are now (M3 step 17a).
-                node.params = crate::graph::gate_params(corr.params.correction_blend);
+                node.params = crate::graph::gate_params(&corr.params);
             }
         }
         gated.working_space_override = live.working_space_override;

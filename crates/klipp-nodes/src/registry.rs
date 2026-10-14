@@ -83,6 +83,9 @@ static P_OUTPUT: &[ParamDesc] = &[];
 static P_INPUT_TRANSFORM: &[ParamDesc] = &[
     ParamDesc { field: "log_format", index: None, key: "log_format", label: "Camera encoding", kind: ParamKind::Other, default: f32::NAN, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: false, derived: false },
 ];
+/// A gateable correction's gate taking its key inverted, so it grades where
+/// the key isn't: an outside node (#898). Stepped when keyed, as a switch.
+const KEY_INVERT: ParamDesc = ParamDesc { field: "key_invert", index: None, key: "key_invert", label: "Invert key", kind: ParamKind::Bool, default: 0.0, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: true, derived: false };
 static P_CORRECTOR: &[ParamDesc] = &[
     ParamDesc { field: "exposure", index: None, key: "exposure", label: "Exposure", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-3.0, 3.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "contrast", index: None, key: "contrast", label: "Contrast", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-1.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
@@ -160,24 +163,29 @@ static P_CORRECTOR: &[ParamDesc] = &[
     ParamDesc { field: "warper_params.sat_shifts", index: Some(9), key: "warper_sat_9", label: "Saturation 10", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-1.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "warper_params.sat_shifts", index: Some(10), key: "warper_sat_10", label: "Saturation 11", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-1.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "warper_params.sat_shifts", index: Some(11), key: "warper_sat_11", label: "Saturation 12", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-1.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
+    KEY_INVERT,
 ];
 static P_EXPOSURE: &[ParamDesc] = &[
     ParamDesc { field: "exposure", index: None, key: "exposure", label: "Exposure", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-3.0, 3.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
+    KEY_INVERT,
 ];
 static P_CONTRAST: &[ParamDesc] = &[
     ParamDesc { field: "contrast", index: None, key: "contrast", label: "Contrast", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-1.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "contrast_pivot", index: None, key: "contrast_pivot", label: "Pivot", kind: ParamKind::Float, default: 0.18, range: None, soft: Some((0.01, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "clarity", index: None, key: "clarity", label: "Clarity", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-1.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
+    KEY_INVERT,
 ];
 static P_SATURATION: &[ParamDesc] = &[
     ParamDesc { field: "saturation", index: None, key: "saturation", label: "Saturation", kind: ParamKind::Float, default: 1.0, range: None, soft: Some((0.0, 2.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "vibrance", index: None, key: "vibrance", label: "Vibrance", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-1.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
+    KEY_INVERT,
 ];
 static P_TONE_CONTROLS: &[ParamDesc] = &[
     ParamDesc { field: "highlights", index: None, key: "highlights", label: "Highlights", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-1.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "shadows", index: None, key: "shadows", label: "Shadows", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-1.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "whites", index: None, key: "whites", label: "Whites", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-1.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "blacks", index: None, key: "blacks", label: "Blacks", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-1.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
+    KEY_INVERT,
 ];
 static P_COLOR_WHEELS: &[ParamDesc] = &[
     ParamDesc { field: "lift_x", index: None, key: "lift_x", label: "Lift x", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-2.0, 2.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
@@ -205,6 +213,7 @@ static P_COLOR_WHEELS: &[ParamDesc] = &[
     ParamDesc { field: "log_low_range", index: None, key: "log_low_range", label: "Low range", kind: ParamKind::Float, default: 0.2, range: None, soft: Some((0.0, LOG_LOW_RANGE_MAX)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "log_high_range", index: None, key: "log_high_range", label: "High range", kind: ParamKind::Float, default: 0.78, range: None, soft: Some((LOG_HIGH_RANGE_MIN, 1.2)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "luma_mix", index: None, key: "luma_mix", label: "Luma mix", kind: ParamKind::Float, default: 1.0, range: None, soft: Some((0.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
+    KEY_INVERT,
 ];
 static P_WHEEL_SAT_BRI: &[ParamDesc] = &[
     ParamDesc { field: "lift_sat", index: None, key: "lift_sat", label: "Lift saturation", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-1.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
@@ -220,6 +229,7 @@ static P_RGB_CURVES: &[ParamDesc] = &[
     ParamDesc { field: "curves", index: None, key: "curves", label: "Curves", kind: ParamKind::Other, default: f32::NAN, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: false, derived: false },
     ParamDesc { field: "curves_preserve_luma", index: None, key: "curves_preserve_luma", label: "Preserve luma", kind: ParamKind::Bool, default: 0.0, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "curves_mix", index: None, key: "curves_mix", label: "Mix", kind: ParamKind::Float, default: 1.0, range: None, soft: Some((0.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
+    KEY_INVERT,
 ];
 static P_HUE_SAT_CURVES: &[ParamDesc] = &[
     ParamDesc { field: "huesat", index: None, key: "huesat", label: "Hue/Sat curves", kind: ParamKind::Other, default: f32::NAN, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: false, derived: false },
@@ -230,6 +240,7 @@ static P_COLOR_BALANCE: &[ParamDesc] = &[
     ParamDesc { field: "tint", index: None, key: "tint", label: "Tint", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-50.0, 50.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "hue", index: None, key: "hue", label: "Hue", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((0.0, 360.0)), unit: Unit::Degrees, scaling: Scaling::None, keyframable: true, derived: false },
     ParamDesc { field: "global_mix", index: None, key: "global_mix", label: "Mix", kind: ParamKind::Float, default: 1.0, range: None, soft: Some((0.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
+    KEY_INVERT,
 ];
 /// HDR zones (#240): per zone (Global, Black, Dark, Shadow, Light,
 /// Highlight, Specular) its exposure in stops, colour (its wheel's

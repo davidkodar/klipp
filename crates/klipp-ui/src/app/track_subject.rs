@@ -390,11 +390,16 @@ pub(super) fn bind_subject(graph: &mut klipp_nodes::NodeGraph, model: klipp_node
         graph.output_node_id
     } else {
         let is_correction = |n: &&klipp_nodes::graph::Node| n.kind == klipp_nodes::NodeKind::Corrector;
+        // Unchosen, never an outside node (#898): its gate takes its key
+        // inverted, so the subject would grade everywhere but the subject.
+        let inside = |n: &&klipp_nodes::graph::Node| is_correction(n) && n.params.key_invert != Some(true);
         chosen
             .and_then(|id| graph.nodes.iter().filter(is_correction).find(|n| n.id == id))
-            .or_else(|| graph.nodes.iter().find(is_correction))
+            .or_else(|| graph.nodes.iter().find(inside))
             .map(|n| n.id)
-            .unwrap_or_else(|| graph.ensure_corrector())
+            // None to gate: a new one, never an outside node (which
+            // `ensure_corrector` would hand back as the first Corrector).
+            .unwrap_or_else(|| graph.insert_corrector(klipp_nodes::NodeId::new_v4()))
     };
     graph.edges.retain(|e| !(e.to_node == target && e.to_port == 1));
     graph.edges.push(klipp_nodes::graph::Edge { from_node: matte, from_port: 0, to_node: target, to_port: 1 });
@@ -472,6 +477,32 @@ mod tests {
         bare.nodes.retain(|n| n.kind != klipp_nodes::NodeKind::Corrector);
         bind_subject(&mut bare, klipp_nodes::SubjectMatte::Subject, None, false);
         assert!(bare.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Corrector), "a correction made for it");
+    }
+
+    /// Unchosen, the subject never gates an outside node (#898), whose gate
+    /// takes its key inverted: the first correction that isn't one, or one
+    /// made when every correction is.
+    #[test]
+    fn the_subject_skips_an_outside_node() {
+        let mut g = klipp_nodes::NodeGraph::default();
+        let corr = g.ensure_corrector();
+        g.nodes.iter_mut().find(|n| n.id == corr).unwrap().params.key_invert = Some(true);
+        let inside = klipp_nodes::NodeId::new_v4();
+        g.nodes.push(klipp_nodes::graph::Node { id: inside, kind: klipp_nodes::NodeKind::Corrector, label: "Inside".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+        bind_subject(&mut g, klipp_nodes::SubjectMatte::Subject, None, false);
+        assert!(g.input_of(inside, 1).is_some() && g.input_of(corr, 1).is_none(), "the inside correction gated, not the outside one");
+        // Chosen, it is the person's pick.
+        bind_subject(&mut g, klipp_nodes::SubjectMatte::Subject, Some(corr), false);
+        assert!(g.input_of(corr, 1).is_some());
+        // The only correction an outside node: a new one is made for it.
+        let mut only = klipp_nodes::NodeGraph::default();
+        let outside = only.ensure_corrector();
+        only.nodes.iter_mut().find(|n| n.id == outside).unwrap().params.key_invert = Some(true);
+        bind_subject(&mut only, klipp_nodes::SubjectMatte::Subject, None, false);
+        assert!(only.input_of(outside, 1).is_none(), "the outside node left ungated");
+        let made: Vec<_> = only.nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::Corrector && n.id != outside).collect();
+        assert_eq!(made.len(), 1, "one made");
+        assert!(only.input_of(made[0].id, 1).is_some(), "and gated by the subject");
     }
 
     /// #73: Cut Out wires the subject's matte into the Output's alpha and

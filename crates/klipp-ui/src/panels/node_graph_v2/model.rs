@@ -69,6 +69,9 @@ pub(super) trait CanvasGraph {
     }
     fn grade_tools(&self) -> bool { true }
     fn keyboard_enabled(&self) -> bool { true }
+    /// Whether `node` takes an outside node (#898): a correction a key
+    /// gates, on the chain. Only a grade's.
+    fn takes_outside_node(&self, _node: NodeId) -> bool { false }
 }
 
 /// The grade's graph on the canvas, and whether the canvas has the keys
@@ -87,6 +90,7 @@ impl CanvasGraph for GradeCanvas<'_> {
     fn add_menu(&self) -> &[MenuCategory] { grade_menu() }
     fn command(&self, command: AppCommand) -> Option<AppCommand> { Some(command) }
     fn keyboard_enabled(&self) -> bool { self.1 }
+    fn takes_outside_node(&self, node: NodeId) -> bool { self.0.clone().add_outside_node(node).is_some() }
 }
 
 impl CanvasNode for Node {
