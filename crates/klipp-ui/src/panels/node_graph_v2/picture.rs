@@ -158,6 +158,12 @@ impl<'a> PictureCanvas<'a> {
                     _ => (vec![image_port("in")], vec![image_port("out")]),
                 }
             });
+            // A reroute's pins take the colour of what reaches it (#1877).
+            if let Some(ty) = klipp_graph_format::lifted::reroute_type(graph, node.id, &klipp_timeline::RegistryCatalog) {
+                for p in inputs.iter_mut().chain(outputs.iter_mut()) {
+                    p.ty = ty;
+                }
+            }
             if let Some(group) = &node.group {
                 if group.graph.nodes.iter().any(|n| n.type_id.as_str() == lt::GROUP_FRAME) {
                     inputs.push(image_port("frame"));
@@ -583,6 +589,37 @@ mod tests {
     }
 
     fn root(clip: &Clip) -> NodePath { NodePath::new(Root::Clip { clip: clip.id.0 }, []) }
+
+    /// #1877: a reroute's pins are the colour of what reaches it: a
+    /// matte's when a window feeds it, a picture's when a picture does.
+    #[test]
+    fn a_reroutes_pins_follow_what_reaches_it() {
+        let mut c = clip();
+        let picture = c.picture_v2().unwrap().picture.clone();
+        let at = |id| NodePath::new(Root::Clip { clip: c.id.0 }, [id]);
+        let source = picture.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::SOURCE).unwrap().id;
+        let blur = picture.graph.nodes.iter().find(|n| n.type_id.as_str() == klipp_graph_lift::names::effect_node_type("gaussian_blur")).unwrap().id;
+        let legacy = |kind: &str, params: serde_json::Value| -> klipp_graph_format::Node {
+            serde_json::from_value(serde_json::json!({ "id": NodeId::new_v4(), "type_id": "klipp.legacy.node", "label": "", "legacy": { "payload": { "kind": kind, "label": kind, "params": params } } })).unwrap()
+        };
+        let window = legacy("Mask", serde_json::json!({ "masks": { "masks": [{ "shape": { "Circle": { "center_x": 0.5, "center_y": 0.5, "radius": 0.3 } } }] } }));
+        let (matte_route, picture_route) = (legacy("Reroute", serde_json::json!({})), legacy("Reroute", serde_json::json!({})));
+        c.apply_picture_ops(&[
+            GraphOp::AddNodeBeside { at: at(source), node: Box::new(window.clone()) },
+            GraphOp::Connect { from: at(source), from_port: "out".into(), to: at(window.id), to_port: "in".into() },
+            GraphOp::AddNodeBeside { at: at(source), node: Box::new(matte_route.clone()) },
+            GraphOp::Connect { from: at(window.id), from_port: "out".into(), to: at(matte_route.id), to_port: "in".into() },
+            GraphOp::Connect { from: at(matte_route.id), from_port: "out".into(), to: at(blur), to_port: "mask".into() },
+            GraphOp::AddNode { after: at(blur), node: Box::new(picture_route.clone()) },
+        ])
+        .unwrap_or_else(|e| panic!("{e}"));
+        let picture = c.picture_v2().unwrap().picture.clone();
+        let model = PictureCanvas::new(&picture.graph, root(&c), None).unwrap();
+        let drawn = |id| model.nodes.iter().find(|n| n.id() == id).unwrap();
+        let roles = |id| { let k = drawn(id).kind(); (k.input_port_role(0), k.output_port_role(0)) };
+        assert_eq!(roles(matte_route.id), (PortRole::Matte, PortRole::Matte));
+        assert_eq!(roles(picture_route.id), (PortRole::Primary, PortRole::Primary));
+    }
 
     fn check_level(graph: &Graph, level: NodePath) -> usize {
         let model = PictureCanvas::new(graph, level.clone(), None).unwrap();

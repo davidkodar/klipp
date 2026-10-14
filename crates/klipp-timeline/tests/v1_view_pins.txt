@@ -93,14 +93,14 @@ video_param_value 16
 # an effect node's defaults and a swapped effect are written through its
 # payload, as every picture effect edit is until revision 5's rows.
 Legacy 48
-LegacyFlags 21
+LegacyFlags 20
 ClipRecordV2 31
 LegacyClipAnim 15
 MissingLegacy 5
 SetPayload 24
 SetPayloadAt 17
 legacy 167
-legacy_flags 46
+legacy_flags 44
 LEGACY_NODE 55
 LEGACY_GRADE 24
 LEGACY_OPACITY 25

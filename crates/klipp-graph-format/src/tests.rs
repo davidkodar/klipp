@@ -413,6 +413,11 @@ mod lifted_checks {
         }
     }
 
+    /// A correction gated as a lifted grade's is: a mask needs the gate.
+    fn gate(n: &mut Node) {
+        n.legacy_flags = Some(crate::lifted::LegacyFlags { alpha_one: true, ..Default::default() });
+    }
+
     fn body(g: &mut Graph) -> &mut Graph {
         &mut g.nodes[1].group.as_mut().unwrap().graph
     }
@@ -509,15 +514,14 @@ mod lifted_checks {
     fn a_loop_is_refused() {
         let mut g = valid();
         // A gated correction: a mask without the gate is refused first.
-        let gated = || Some(crate::lifted::LegacyFlags { alpha_one: true, ..Default::default() });
         body(&mut g).edges.push(e(12, 12, "mask"));
         body(&mut g).nodes[1].legacy = legacy(json!({"kind": "Corrector"}));
-        body(&mut g).nodes[1].legacy_flags = gated();
+        gate(&mut body(&mut g).nodes[1]);
         assert!(matches!(g.check_lifted(false), Err(LiftedError::Cycle { .. })));
         let mut g = valid();
         let b = body(&mut g);
         b.nodes[1].legacy = legacy(json!({"kind": "Corrector"}));
-        b.nodes[1].legacy_flags = gated();
+        gate(&mut b.nodes[1]);
         b.nodes[2].wireless.output_link = Some("back".into());
         b.nodes[1].wireless.input_links.insert("mask".into(), "back".into());
         assert!(matches!(g.check_lifted(false), Err(LiftedError::Cycle { .. })));
@@ -543,6 +547,7 @@ mod lifted_checks {
                 return match node.legacy.as_ref()?.payload.get("kind")?.as_str()? {
                     "Corrector" => self.node("test.fx"),
                     "ExternalMatte" => self.node("test.matte"),
+                    "Reroute" => self.node("test.reroute"),
                     _ => None,
                 };
             }
@@ -561,6 +566,8 @@ mod lifted_checks {
                     outputs: vec![port("out", PortType::Image, false)], mixable: false,
                 }),
                 "test.matte" => Some(NodeSpec { inputs: Vec::new(), outputs: vec![port("out", PortType::Matte, false)], mixable: false }),
+                // As the registry has it: a picture's ports (#1877).
+                "test.reroute" => Some(NodeSpec { inputs: vec![port("in", PortType::Image, false)], outputs: vec![port("out", PortType::Image, false)], mixable: false }),
                 _ => None,
             }
         }
@@ -741,6 +748,53 @@ mod lifted_checks {
         }
     }
 
+    /// #1877: a reroute takes the type of what reaches it. A matte goes
+    /// through one, or two in a row, to a correction's mask; through one
+    /// to a picture's input it is refused there, also when the reroute
+    /// feeds a mask as well.
+    #[test]
+    fn a_reroute_carries_a_matte_to_a_mask_and_not_to_a_picture() {
+        let with = |edit: &dyn Fn(&mut Graph)| {
+            let mut g = valid();
+            let b = body(&mut g);
+            b.nodes.push(legacy_node(14, "ExternalMatte"));
+            b.nodes.push(legacy_node(15, "Reroute"));
+            b.nodes.push(legacy_node(16, "Reroute"));
+            gate(&mut b.nodes[1]);
+            b.edges.push(e(14, 15, "in"));
+            b.edges.push(e(15, 16, "in"));
+            edit(b);
+            g.check_lifted_with_catalog(false, &Catalog)
+        };
+        with(&|b| b.edges.push(e(16, 12, "mask"))).unwrap();
+        // Into a picture's input, it is refused there.
+        // Said through the reroute it last passed, by name, so the wire can
+        // be found.
+        let refused = |r: Result<(), LiftedError>| {
+            let ok = matches!(&r, Err(LiftedError::ThroughReroute { node, port, reroute, carries: PortType::Matte, .. }) if *node == id(12) && port == "in" && *reroute == id(16));
+            let said = r.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
+            ok && said.contains("a matte goes through Reroute") && said.contains("which takes a picture")
+        };
+        assert!(refused(with(&|b| {
+            b.edges.retain(|x| x.to != (id(12), "in".into()));
+            b.edges.push(e(16, 12, "in"));
+        })));
+        // Fanned out: a mask and a picture.
+        assert!(refused(with(&|b| {
+            b.edges.retain(|x| x.to != (id(12), "in".into()));
+            b.edges.push(e(16, 12, "mask"));
+            b.edges.push(e(16, 12, "in"));
+        })));
+        // A picture through a reroute into a picture is as before.
+        let mut g = valid();
+        let b = body(&mut g);
+        b.nodes.push(legacy_node(15, "Reroute"));
+        b.edges.retain(|x| x.to != (id(12), "in".into()));
+        b.edges.push(e(11, 15, "in"));
+        b.edges.push(e(15, 12, "in"));
+        g.check_lifted_with_catalog(false, &Catalog).unwrap();
+    }
+
     #[test]
     fn legacy_endpoint_typing_uses_the_catalog_without_rewriting_ids() {
         let mut g = published();
@@ -775,7 +829,7 @@ mod lifted_checks {
         let b = body(&mut g);
         b.nodes.push(legacy_node(14, "ExternalMatte"));
         b.edges.push(e(14, 12, "mask"));
-        b.nodes[1].legacy_flags = Some(crate::lifted::LegacyFlags { alpha_one: true, ..Default::default() });
+        gate(&mut b.nodes[1]);
         g.check_lifted_with_catalog(false, &GradeCatalog).unwrap();
         body(&mut g).nodes[1].mix = Some(0.5);
         assert!(matches!(g.check_lifted_with_catalog(false, &GradeCatalog), Err(LiftedError::MixNotSupported(_))));
