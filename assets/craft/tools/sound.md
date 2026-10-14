@@ -6,6 +6,10 @@ What each of these tools does in full: the details its short description leaves 
 
 Download a searched music track OR sound effect into the media pool, keeping its licence and attribution beside the file for your export credits. Pass a klipp_search_music result's fields, or several as tracks. Then place it on an audio track (place marks it music) and duck it under speech. Honour the licence — keep non-commercial tracks out of commercial work.
 
+## klipp_freesound_sign_in
+
+Signs in to the person's own Freesound account, so klipp_add_music brings a sound's original recording (WAV, FLAC, AIFF at its own rate and depth) instead of the preview MP3. It needs their Freesound API credential, made at freesound.org/apiv2/apply with the callback URL http://127.0.0.1:47861/freesound/callback, its client id and secret in ~/.config/klipp/keys.toml as freesound_client_id and freesound_client_secret; without them the refusal says so. Called with nothing, it opens the approval page in the browser and listens for Freesound's answer; ask the person to approve, then call it again to see it finished (signed in as their name). Where Freesound shows a code instead of coming back, pass it as code. sign_out forgets the sign-in. Signed in, add_music takes the original by default (quality preview for the preview); signed out, the preview, and quality original is refused rather than quietly a preview. Every import reply says what it brought, measured: preview or original, codec, bitrate, rate, channels and depth, and the credit beside the file says it too.
+
 ## klipp_align_audio
 
 Line a clip's sound up with another's — dual-system sound, a separate recorder against the camera's scratch track. It cross-correlates the two clips' audio, finds the offset, and moves clip_id so it plays in sync with reference_clip_id; it reports the match confidence and refuses when the two share no common sound. max_offset_secs bounds the search (30 by default). Both clips must carry audio.

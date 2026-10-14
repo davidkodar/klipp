@@ -381,6 +381,57 @@ fn freesound_original(r: &serde_json::Value) -> Option<Original> {
     })
 }
 
+/// The fields a Freesound search or sound lookup asks for.
+const FREESOUND_FIELDS: &str = "id,name,username,duration,license,previews,url,tags,type,samplerate,channels,bitrate,bitdepth,filesize";
+
+/// One Freesound result as a [`Track`].
+fn freesound_track(r: &serde_json::Value) -> Track {
+    let str_of = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let license_url = str_of("license");
+    let (license, commercial_ok) = if license_url.is_empty() { ("Creative Commons".to_string(), false) } else { cc_label(&license_url) };
+    let preview = r.get("previews").and_then(|p| p.get("preview-hq-mp3").or_else(|| p.get("preview-lq-mp3"))).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let tags = r.get("tags").and_then(|t| t.as_array()).map(|a| {
+        let mut v: Vec<String> = a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect();
+        v.truncate(8);
+        v
+    }).unwrap_or_default();
+    Track {
+        source: Source::Freesound,
+        id: r.get("id").and_then(|v| v.as_i64()).map(|n| n.to_string()).unwrap_or_default(),
+        title: str_of("name"),
+        artist: str_of("username"),
+        duration_secs: r.get("duration").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        license,
+        license_url,
+        commercial_ok,
+        preview_url: preview,
+        download_url: String::new(),
+        page_url: str_of("url"),
+        image_url: String::new(),
+        tags,
+        pace: String::new(),
+        original: freesound_original(r),
+    }
+}
+
+/// A Freesound sound by its id, as a search gives it, its original
+/// described (#1894): for an import that was handed only the id.
+pub fn freesound_sound(id: &str) -> Result<Track, String> {
+    let token = freesound_token().ok_or("no Freesound token set — put freesound_token in ~/.config/klipp/keys.toml or set KLIPP_FREESOUND_TOKEN")?;
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
+        return Err(format!("{id:?} is not a Freesound sound id"));
+    }
+    let url = format!("https://freesound.org/apiv2/sounds/{id}/?token={token}&fields={FREESOUND_FIELDS}");
+    let text = ureq::get(&url)
+        .timeout(std::time::Duration::from_secs(30))
+        .call()
+        .map_err(|e| format!("Freesound could not be asked for sound {id}: {}", e.kind()))?
+        .into_string()
+        .map_err(|e| format!("Freesound returned an unreadable body: {e}"))?;
+    let body: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("Freesound returned unreadable JSON: {e}"))?;
+    Ok(freesound_track(&body))
+}
+
 fn freesound_page(token: &str, query: &str, page: u32, max_secs: Option<f64>) -> Result<Vec<Track>, String> {
     let q = encode(query.trim());
     let filter = match max_secs.filter(|m| m.is_finite() && *m > 0.0) {
@@ -388,7 +439,7 @@ fn freesound_page(token: &str, query: &str, page: u32, max_secs: Option<f64>) ->
         None => String::new(),
     };
     let url = format!(
-        "https://freesound.org/apiv2/search/text/?query={q}&token={token}&page_size={page}&sort=rating_desc&fields=id,name,username,duration,license,previews,url,tags,type,samplerate,channels,bitrate,bitdepth,filesize{filter}"
+        "https://freesound.org/apiv2/search/text/?query={q}&token={token}&page_size={page}&sort=rating_desc&fields={FREESOUND_FIELDS}{filter}"
     );
     let text = ureq::get(&url)
         .timeout(std::time::Duration::from_secs(30))
@@ -402,32 +453,7 @@ fn freesound_page(token: &str, query: &str, page: u32, max_secs: Option<f64>) ->
     let results = body.get("results").and_then(|r| r.as_array()).unwrap_or(&empty);
     let mut tracks = Vec::with_capacity(results.len());
     for r in results {
-        let str_of = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let license_url = str_of("license");
-        let (license, commercial_ok) = if license_url.is_empty() { ("Creative Commons".to_string(), false) } else { cc_label(&license_url) };
-        let preview = r.get("previews").and_then(|p| p.get("preview-hq-mp3").or_else(|| p.get("preview-lq-mp3"))).and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let tags = r.get("tags").and_then(|t| t.as_array()).map(|a| {
-            let mut v: Vec<String> = a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect();
-            v.truncate(8);
-            v
-        }).unwrap_or_default();
-        tracks.push(Track {
-            source: Source::Freesound,
-            id: r.get("id").and_then(|v| v.as_i64()).map(|n| n.to_string()).unwrap_or_default(),
-            title: str_of("name"),
-            artist: str_of("username"),
-            duration_secs: r.get("duration").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            license,
-            license_url,
-            commercial_ok,
-            preview_url: preview,
-            download_url: String::new(),
-            page_url: str_of("url"),
-            image_url: String::new(),
-            tags,
-            pace: String::new(),
-            original: freesound_original(r),
-        });
+        tracks.push(freesound_track(r));
     }
     Ok(tracks)
 }

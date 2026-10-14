@@ -1047,10 +1047,15 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         }
         "klipp_add_music" => {
             let mut v = json!({ "method": "add_music" });
-            for key in ["title", "artist", "track_id", "download_url", "preview_url", "license", "license_url", "page_url"] {
+            for key in ["title", "artist", "track_id", "download_url", "preview_url", "license", "license_url", "page_url", "quality"] {
                 if let Some(x) = args.get(key).and_then(|v| v.as_str()) { v[key] = json!(x); }
             }
             if let Some(t) = args.get("tracks").filter(|t| !t.is_null()) { v["tracks"] = t.clone(); }
+            v
+        }
+        "klipp_freesound_sign_in" => {
+            let mut v = json!({ "method": "freesound_sign_in", "sign_out": args.get("sign_out").and_then(Value::as_bool).unwrap_or(false) });
+            if let Some(c) = args.get("code").and_then(Value::as_str) { v["code"] = json!(c); }
             v
         }
         "klipp_style_profile" => json!({ "method": "style_profile", "media_id": arg_str(args, "media_id")? }),
@@ -2117,8 +2122,11 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "query": { "type": "string" }, "limit": { "type": "integer" }, "max_secs": { "type": "number", "description": "only sounds this long or shorter" }, "commercial_only": { "type": "boolean", "description": "only sounds whose licence allows commercial use" }, "listen": { "description": "hear previews (at most 5): the first this-many, or [track_id, …]; length, peak time, loudness", "oneOf": [{ "type": "integer" }, { "type": "array", "items": { "type": "string" } }] } }), vec!["query"]),
         tool("klipp_add_music",
              "Download a searched music track or sound effect into the pool, its licence and attribution kept for the credits. Details: klipp_guide topic add_music.",
-             json!({ "title": { "type": "string" }, "artist": { "type": "string" }, "track_id": { "type": "string" }, "download_url": { "type": "string" }, "preview_url": { "type": "string" }, "license": { "type": "string" }, "license_url": { "type": "string" }, "page_url": { "type": "string" }, "tracks": { "type": "array", "items": { "type": "object" } } }),
+             json!({ "title": { "type": "string" }, "artist": { "type": "string" }, "track_id": { "type": "string" }, "download_url": { "type": "string" }, "preview_url": { "type": "string" }, "license": { "type": "string" }, "license_url": { "type": "string" }, "page_url": { "type": "string" }, "tracks": { "type": "array", "items": { "type": "object" } }, "quality": { "type": "string", "enum": ["original", "preview"] } }),
              vec![]),
+        tool("klipp_freesound_sign_in",
+             "Freesound sign-in, for original sounds. Details: klipp_guide topic freesound_sign_in.",
+             json!({ "code": { "type": "string" }, "sign_out": { "type": "boolean" } }), vec![]),
         tool("klipp_match_grade",
              "Match picture clips to a reference by scope measurements (exposure, lift, gain, temperature, tint), as one undo step. Details: klipp_guide topic match_grade.",
              json!({ "clip_id": { "type": "string", "description": "the shot to grade" }, "reference_clip_id": { "type": "string", "description": "the shot to match it to" }, "secs": { "type": "number", "description": "the target frame to read, timeline seconds inside the clip" }, "reference_secs": { "type": "number", "description": "the reference frame to read, timeline seconds inside it" } }),
