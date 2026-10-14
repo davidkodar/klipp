@@ -114,11 +114,13 @@ pub fn kind_step(kind: NodeKind, params: &crate::params::NodeParams) -> DomainSt
         NodeKind::SceneToDisplay => DomainStep::ToDisplay,
         NodeKind::Ofx | NodeKind::Frei0r => DomainStep::Undeclared,
         // A picture handed to the run (#1746), not made from what the node
-        // reads: another media item's frame, or what is below the clip.
-        // Neither declares a domain: an SDR clip's run has no display step
-        // to turn its own picture, so naming one display-referred would
-        // refuse every merge of it (#1857).
-        NodeKind::SidePicture => DomainStep::Undeclared,
+        // reads. What is below the clip is the composite: display-referred
+        // (#1867). Another media item's frame declares none until it has a
+        // display step of its own (#1857).
+        NodeKind::SidePicture => match params.side_picture.clone().or_else(|| params.effects.iter().find_map(crate::side_picture::SideKey::of)) {
+            Some(crate::side_picture::SideKey::Below) => DomainStep::Gives(PictureDomain::Display),
+            _ => DomainStep::Undeclared,
+        },
         // A plug-in's picture, or a generator's, made from colours
         // authored for it: neither is the domain of what it reads.
         NodeKind::Effect | NodeKind::EffectSegment
