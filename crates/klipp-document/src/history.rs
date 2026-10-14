@@ -147,6 +147,15 @@ impl TrackContents {
     }
 }
 
+/// A clip whose grade a change of working space converted (#1875): its
+/// sequence, and its picture before and after.
+#[derive(Debug, Clone)]
+pub struct ConvertedGrade {
+    pub sequence: klipp_core::SequenceId,
+    pub clip: ClipId,
+    pub edit: Box<klipp_timeline::PictureEdit>,
+}
+
 #[derive(Debug, Clone)]
 pub enum EditCommand {
     // === LEGACY (Free tracks only — existing behaviour unchanged) ===
@@ -566,6 +575,15 @@ pub enum EditCommand {
         new: Option<Box<klipp_nodes::NodeGraph>>,
     },
 
+    /// The project's colour set-up before and after (#1875), and the
+    /// picture of each clip a change of working space converted, in
+    /// whichever sequence holds it, so the conversion is taken back whole.
+    SetProjectColour {
+        old: Box<klipp_core::ProjectColour>,
+        new: Box<klipp_core::ProjectColour>,
+        grades: Vec<ConvertedGrade>,
+    },
+
     // === PICTURE (graph ops, node-graph M2 step 15) ===
     /// A batch of graph ops on a clip's picture: its fields before and
     /// after, effect ids included (`Clip::apply_picture_ops`), so undo
@@ -807,6 +825,7 @@ impl EditCommand {
     pub fn label(&self) -> &str {
         match self {
             EditCommand::Named { label, .. } => label,
+            EditCommand::SetProjectColour { .. } => "Project Colour",
             EditCommand::AddTitleClip { .. } => "Add Title",
             EditCommand::RetargetTransition { .. } => "Retarget Transition",
             EditCommand::AddTrack { .. } => "Add Track",

@@ -65,6 +65,23 @@ impl KlippApp {
     /// What the document asked for once a command ran, done here where
     /// the engine and the viewer are.
     fn run_document_effects(&mut self, effects: klipp_document::apply::Effects) {
+        // The project's colour set-up an undo or redo put back (#1875),
+        // before the sequence goes to the engine: the engine's output LUT
+        // with it, sent only when it changed.
+        if let Some(colour) = &effects.project_colour {
+            let (lut, on) = (self.state.global_lut_path.clone(), self.state.global_lut_enabled);
+            crate::panels::colour_management::take_project_colour(&mut self.state, colour);
+            if lut != colour.output_lut {
+                let _ = self.cmd_tx.send(match &colour.output_lut {
+                    Some(path) => AppCommand::LoadGlobalLut { path: path.clone() },
+                    None => AppCommand::ClearGlobalLut,
+                });
+                self.publish_global_lut();
+            }
+            if on != colour.output_lut_enabled || (lut != colour.output_lut && colour.output_lut.is_some()) {
+                let _ = self.cmd_tx.send(AppCommand::SetGlobalLutEnabled(colour.output_lut_enabled));
+            }
+        }
         if effects.sync_sequence {
             self.sync_sequence_to_engine();
         }

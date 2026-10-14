@@ -1059,6 +1059,24 @@ pub struct ScopeLut {
     pub table: std::sync::Arc<Vec<f32>>,
 }
 
+/// The project's colour set-up, whole (#1875): what Colour Management
+/// sets, as one value, so a change to it is one undo step. The output
+/// LUT is the project's global LUT: its file and whether it is on. Its
+/// opacity is a slider of its own and not part of this, or every drag of
+/// it would be taken back with the next colour change undone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectColour {
+    pub working_colorspace: crate::WorkingColorspace,
+    pub grade_encoding: crate::GradeEncoding,
+    pub default_odt: OdtChoice,
+    pub default_input_format: Option<crate::types::LogFormat>,
+    pub input_lut: Option<PathBuf>,
+    pub viewing_lut: Option<PathBuf>,
+    pub scopes_after_viewing_lut: bool,
+    pub output_lut: Option<PathBuf>,
+    pub output_lut_enabled: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum AppCommand {
     /// A batch of graph ops on one picture, applied as one undo step named
@@ -1317,6 +1335,10 @@ pub enum AppCommand {
     SetProjectViewingLut { path: Option<PathBuf> },
     /// The LUT new clips start their grade with, or none (#466).
     SetProjectInputLut { path: Option<PathBuf> },
+    /// The project's colour set-up changed to `colour`, as one undo step
+    /// (#1875). With `convert_grades`, a change of working space wraps each
+    /// clip's grade so it keeps its look.
+    SetProjectColour { colour: Box<ProjectColour>, convert_grades: bool },
     /// Remember the frame rate chosen for a welcome-screen format (#1864).
     SetFormatRate { rate: (u32, u32) },
     /// Open a new, unsaved Untitled project in this format, or from the

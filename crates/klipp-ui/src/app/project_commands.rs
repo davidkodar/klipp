@@ -370,14 +370,17 @@ impl KlippApp {
                 self.prefs_dirty = true;
                 true
             }
+            // Part of the project's colour set-up: an undo step (#1875).
             AppCommand::SetProjectViewingLut { path } => {
-                self.state.project_viewing_lut = path.clone();
-                self.state.dirty = true;
+                let mut colour = crate::panels::colour_management::project_colour(&self.state);
+                colour.viewing_lut = path.clone();
+                self.set_project_colour(colour, false);
                 true
             }
             AppCommand::SetProjectInputLut { path } => {
-                self.state.project_default_input_lut = path.clone();
-                self.state.dirty = true;
+                let mut colour = crate::panels::colour_management::project_colour(&self.state);
+                colour.input_lut = path.clone();
+                self.set_project_colour(colour, false);
                 true
             }
             AppCommand::SetFormatRate { rate } => {

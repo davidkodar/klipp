@@ -109,9 +109,14 @@ pub fn show_page(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, ca
             .response
             .on_hover_text("For a clip whose file says nothing of its encoding. What a file says, or a format chosen for it, still wins.");
     });
+    // Every change here is an undo step of the project's colour (#1875).
+    let set = |cmds: &mut Vec<AppCommand>, convert: bool, change: &dyn Fn(&mut klipp_core::ProjectColour)| {
+        let mut colour = project_colour(state);
+        change(&mut colour);
+        cmds.push(AppCommand::SetProjectColour { colour: Box::new(colour), convert_grades: convert });
+    };
     if input != state.project_default_input_format {
-        state.project_default_input_format = input;
-        state.dirty = true;
+        set(cmds, false, &|c| c.default_input_format = input);
     }
     row(ui, theme, "Input LUT", |ui| {
         match state.project_default_input_lut.clone() {
@@ -159,7 +164,7 @@ pub fn show_page(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, ca
         if graded {
             ui.data_mut(|d| d.insert_temp(pending_id, ws));
         } else {
-            switch_working_space(state, ws, false);
+            set(cmds, false, &|c| c.working_colorspace = ws);
         }
     }
     if let Some(to) = ui.data(|d| d.get_temp::<WorkingColorspace>(pending_id)) {
@@ -167,11 +172,11 @@ pub fn show_page(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, ca
         ui.horizontal(|ui| {
             let mut done = false;
             if ui.button("Convert grades (keep the look)").clicked() {
-                switch_working_space(state, to, true);
+                set(cmds, true, &|c| c.working_colorspace = to);
                 done = true;
             }
             if ui.button("Switch without converting").on_hover_text("Each grade is re-based on the new space and will look different").clicked() {
-                switch_working_space(state, to, false);
+                set(cmds, false, &|c| c.working_colorspace = to);
                 done = true;
             }
             if ui.button("Cancel").clicked() {
@@ -202,10 +207,7 @@ pub fn show_page(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, ca
         });
     });
     if enc != state.project_grade_encoding {
-        state.project_grade_encoding = enc;
-        state.dirty = true;
-        // The executors read it with the working space each frame.
-        klipp_core::set_grade_encoding(enc);
+        set(cmds, false, &|c| c.grade_encoding = enc);
     }
 
     // ── Output ──
@@ -224,8 +226,7 @@ pub fn show_page(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, ca
             });
     });
     if odt != state.project_default_odt {
-        state.project_default_odt = odt;
-        state.dirty = true;
+        set(cmds, false, &|c| c.default_odt = odt);
     }
     row(ui, theme, "Output LUT", |ui| {
         match state.global_lut_path.as_ref() {
@@ -291,8 +292,7 @@ pub fn show_page(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, ca
         }
     });
     if after != state.project_scopes_after_viewing_lut {
-        state.project_scopes_after_viewing_lut = after;
-        state.dirty = true;
+        set(cmds, false, &|c| c.scopes_after_viewing_lut = after);
     }
 }
 
@@ -319,36 +319,122 @@ pub fn add_input_lut(clip: &mut klipp_timeline::Clip, lut: &std::path::Path) {
     });
 }
 
-/// The project's working space switched to `to`. With `convert`, each
-/// clip's grade is wrapped in primaries conversions so it keeps its
-/// look, and a toast says how many; without, the grades are re-based as
-/// they are. Pushed to the engine at once: the decoder reads it per frame,
-/// and without the push the change waits for the next project load.
-pub fn switch_working_space(state: &mut AppState, to: WorkingColorspace, convert: bool) {
-    let from = state.project_working_colorspace;
-    if from == to {
-        return;
+/// The project's colour set-up as the app holds it (#1875).
+pub fn project_colour(state: &AppState) -> klipp_core::ProjectColour {
+    klipp_core::ProjectColour {
+        working_colorspace: state.project_working_colorspace,
+        grade_encoding: state.project_grade_encoding,
+        default_odt: state.project_default_odt,
+        default_input_format: state.project_default_input_format,
+        input_lut: state.project_default_input_lut.clone(),
+        viewing_lut: state.project_viewing_lut.clone(),
+        scopes_after_viewing_lut: state.project_scopes_after_viewing_lut,
+        output_lut: state.global_lut_path.clone(),
+        output_lut_enabled: state.global_lut_enabled,
     }
-    if convert {
-        let mut migrated = 0usize;
-        for sequence in &mut state.sequences {
-            for track in &mut sequence.tracks {
-                for clip in &mut track.clips {
-                    if clip.edit_grade(|g| g.migrate_working_space(from, to)) {
-                        migrated += 1;
-                    }
+}
+
+/// Take on `colour` (#1875): the app's fields, and the working space and
+/// grade encoding the decoder and the executors read each frame. The
+/// output LUT is the engine's too; the app sends it, having the channel.
+pub fn take_project_colour(state: &mut AppState, colour: &klipp_core::ProjectColour) {
+    state.project_working_colorspace = colour.working_colorspace;
+    state.project_grade_encoding = colour.grade_encoding;
+    state.project_default_odt = colour.default_odt;
+    state.project_default_input_format = colour.default_input_format;
+    state.project_default_input_lut = colour.input_lut.clone();
+    state.project_viewing_lut = colour.viewing_lut.clone();
+    state.project_scopes_after_viewing_lut = colour.scopes_after_viewing_lut;
+    state.global_lut_path = colour.output_lut.clone();
+    state.global_lut_enabled = colour.output_lut_enabled;
+    state.dirty = true;
+    klipp_engine::video_decoder::set_working_colorspace(colour.working_colorspace);
+    klipp_core::set_grade_encoding(colour.grade_encoding);
+}
+
+/// What a change from `old` to `new` is, for its undo step's name:
+/// "Project Colour: ACEScg" (#1875). The first setting that changed
+/// names it; the Edit menu reads "Undo Project Colour: ACEScg".
+pub fn colour_change_label(old: &klipp_core::ProjectColour, new: &klipp_core::ProjectColour) -> String {
+    let file = |p: &Option<std::path::PathBuf>, what: &str| match p {
+        Some(p) => format!("{what} {}", p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+        None => format!("no {what}"),
+    };
+    let what = if old.working_colorspace != new.working_colorspace {
+        working_colorspace_label(new.working_colorspace).to_string()
+    } else if old.grade_encoding != new.grade_encoding {
+        format!("grade in {}", grade_encoding_label(new.grade_encoding))
+    } else if old.default_odt != new.default_odt {
+        format!("output {}", new.default_odt.label())
+    } else if old.default_input_format != new.default_input_format {
+        match new.default_input_format {
+            None => "input detected from the file".to_string(),
+            Some(f) => format!("input {f:?}"),
+        }
+    } else if old.input_lut != new.input_lut {
+        file(&new.input_lut, "input LUT")
+    } else if old.viewing_lut != new.viewing_lut {
+        file(&new.viewing_lut, "viewing LUT")
+    } else if old.output_lut != new.output_lut {
+        file(&new.output_lut, "output LUT")
+    } else if old.output_lut_enabled != new.output_lut_enabled {
+        if new.output_lut_enabled { "output LUT on" } else { "output LUT off" }.to_string()
+    } else {
+        if new.scopes_after_viewing_lut { "scopes after the viewing LUT" } else { "scopes before the viewing LUT" }.to_string()
+    };
+    format!("Project Colour: {what}")
+}
+
+/// The undo step that takes the project from its colour set-up to `new`
+/// (#1875), its name, and how many clips' grades it converts; `None` when
+/// nothing changes. With `convert` and a new working space, each clip's
+/// grade, in every sequence, is wrapped so it keeps its look, its picture
+/// before and after kept so undo puts it back exactly. An output
+/// transform the new space can't use goes back to the default.
+pub fn colour_edit(state: &AppState, mut new: klipp_core::ProjectColour, convert: bool) -> Option<(klipp_document::history::EditCommand, String, usize)> {
+    let old = project_colour(state);
+    if !new.default_odt.suits_working_space(new.working_colorspace) {
+        new.default_odt = OdtChoice::MatchViewer;
+    }
+    if new == old {
+        return None;
+    }
+    let mut grades = Vec::new();
+    let (from, to) = (old.working_colorspace, new.working_colorspace);
+    if convert && from != to {
+        for sequence in &state.sequences {
+            for clip in sequence.tracks.iter().flat_map(|t| &t.clips) {
+                let mut converted = clip.clone();
+                if converted.edit_grade(|g| g.migrate_working_space(from, to)) {
+                    grades.push(klipp_document::history::ConvertedGrade { sequence: sequence.id, clip: clip.id, edit: Box::new(klipp_timeline::PictureEdit { before: clip.picture.clone(), after: converted.picture }) });
                 }
             }
         }
-        state.toast.show(format!("Migrated {migrated} clip{} to {}", if migrated == 1 { "" } else { "s" }, working_colorspace_label(to)));
     }
-    state.project_working_colorspace = to;
-    // An output transform the new space cannot use goes back to the default.
-    if !state.project_default_odt.suits_working_space(to) {
-        state.project_default_odt = OdtChoice::MatchViewer;
+    let label = colour_change_label(&old, &new);
+    let migrated = grades.len();
+    Some((klipp_document::history::EditCommand::SetProjectColour { old: Box::new(old), new: Box::new(new), grades }, label, migrated))
+}
+
+/// A change of the project's colour as the app makes it, its undo step
+/// applied but kept nowhere: for tests of what the page and the app do.
+#[cfg(test)]
+pub(crate) fn apply_colour_change(state: &mut AppState, colour: klipp_core::ProjectColour, convert: bool) -> Option<klipp_document::history::EditCommand> {
+    let (edit, ..) = colour_edit(state, colour, convert)?;
+    apply_colour_step(state, &edit, false);
+    Some(edit)
+}
+
+/// `edit` applied to `state` forward, or undone, as the app's history
+/// applies it, the colour set-up it leaves taken on.
+#[cfg(test)]
+pub(crate) fn apply_colour_step(state: &mut AppState, edit: &klipp_document::history::EditCommand, undo: bool) {
+    let active = state.active_sequence_idx;
+    let mut view = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps };
+    let effects = if undo { view.apply_inverse(edit) } else { view.apply_forward(edit) };
+    if let Some(colour) = effects.project_colour {
+        take_project_colour(state, &colour);
     }
-    state.dirty = true;
-    klipp_engine::video_decoder::set_working_colorspace(to);
 }
 
 #[cfg(test)]
@@ -383,10 +469,25 @@ mod tests {
         texts.iter().rev().find(|(t, _)| t == label).map(|(_, r)| r.center()).unwrap_or_else(|| panic!("{label} is drawn: {:?}", texts.iter().map(|t| &t.0).collect::<Vec<_>>()))
     }
 
+    /// The page, its colour changes applied as the app applies them.
     fn page(state: &mut AppState) -> impl FnMut(&egui::Context, &mut Vec<AppCommand>) + '_ {
         let theme = KlippTheme::default();
         move |ctx, cmds| {
             egui::CentralPanel::default().show(ctx, |ui| show_page(ui, state, &theme, None, cmds));
+            settle(state, cmds);
+        }
+    }
+
+    /// The colour changes among `cmds` applied as the app applies them,
+    /// the rest left for the test to read.
+    fn settle(state: &mut AppState, cmds: &mut Vec<AppCommand>) {
+        for cmd in std::mem::take(cmds) {
+            match cmd {
+                AppCommand::SetProjectColour { colour, convert_grades } => {
+                    apply_colour_change(state, *colour, convert_grades);
+                }
+                other => cmds.push(other),
+            }
         }
     }
 
@@ -397,6 +498,82 @@ mod tests {
         let texts = frame(ctx, Vec::new(), run).1;
         click(ctx, at(&texts, choice), run);
         frame(ctx, Vec::new(), run).1
+    }
+
+    /// A project with a graded clip in each of two sequences.
+    fn graded_in_two_sequences() -> AppState {
+        let mut state = AppState::default();
+        state.sequences.push(klipp_timeline::Sequence::new_default());
+        for (k, seq) in state.sequences.iter_mut().enumerate() {
+            let mut clip = klipp_timeline::Clip::gap(klipp_core::Timecode::from_secs_f64(0.0, 24), klipp_core::Timecode::from_secs_f64(1.0, 24));
+            let id = clip.edit_grade(|g| g.ensure_corrector());
+            assert!(clip.set_grade_param(id, "exposure", 0.3 + k as f32 * 0.2));
+            assert!(clip.set_grade_param(id, "saturation", 1.2));
+            seq.tracks[0].clips.push(clip);
+        }
+        state.project_default_odt = OdtChoice::Rec709Sdr;
+        state
+    }
+
+    /// Every sequence as it is saved.
+    fn saved(state: &AppState) -> Vec<String> {
+        state.sequences.iter().map(|s| serde_json::to_string(s).unwrap()).collect()
+    }
+
+    /// #1875: a working-space switch that converts the grades is one undo
+    /// step named for it. Undone, every clip's grade in every sequence is
+    /// what it was, exactly as saved, with the working space and output
+    /// transform; redone, the converted grades come back exactly.
+    #[test]
+    fn a_converting_switch_of_working_space_undoes_exactly() {
+        let mut state = graded_in_two_sequences();
+        let before = saved(&state);
+        let to = klipp_core::ProjectColour { working_colorspace: WorkingColorspace::AcesCG, ..project_colour(&state) };
+        let (edit, label, migrated) = colour_edit(&state, to, true).expect("a change");
+        assert_eq!((label.as_str(), migrated), ("Project Colour: ACEScg (AP1)", 2), "named for what Ctrl+Z takes back; a clip in each sequence");
+        apply_colour_step(&mut state, &edit, false);
+        let after = saved(&state);
+        assert_eq!(state.project_working_colorspace, WorkingColorspace::AcesCG);
+        assert!(before.iter().zip(&after).all(|(b, a)| b != a), "each sequence's grade converted");
+        apply_colour_step(&mut state, &edit, true);
+        assert_eq!(saved(&state), before, "undone: every grade exactly as it was");
+        assert_eq!((state.project_working_colorspace, state.project_default_odt), (WorkingColorspace::Rec709Linear, OdtChoice::Rec709Sdr));
+        apply_colour_step(&mut state, &edit, false);
+        assert_eq!(saved(&state), after, "redone: the converted grades exactly");
+        assert_eq!(state.project_working_colorspace, WorkingColorspace::AcesCG);
+        apply_colour_step(&mut state, &edit, true);
+        restore_globals();
+    }
+
+    /// #1875: each colour setting changed is one undo step, named for it,
+    /// and undone gives the old value back; no change is no step.
+    #[test]
+    fn each_colour_setting_is_an_undo_step() {
+        let mut state = AppState { project_working_colorspace: WorkingColorspace::AcesCG, ..Default::default() };
+        let start = project_colour(&state);
+        let lut = |n: &str| Some(PathBuf::from(format!("/luts/{n}.cube")));
+        let changes: Vec<(&str, Box<dyn Fn(&mut klipp_core::ProjectColour)>)> = vec![
+            ("Project Colour: grade in ACEScct", Box::new(|c| c.grade_encoding = GradeEncoding::AcesCct)),
+            ("Project Colour: output Rec.2100 PQ (1000 nit)", Box::new(|c| c.default_odt = OdtChoice::Rec2100Pq1000)),
+            ("Project Colour: input SLog3", Box::new(|c| c.default_input_format = Some(klipp_core::LogFormat::SLog3))),
+            ("Project Colour: input LUT in.cube", Box::new(move |c| c.input_lut = lut("in"))),
+            ("Project Colour: viewing LUT look.cube", Box::new(move |c| c.viewing_lut = lut("look"))),
+            ("Project Colour: scopes after the viewing LUT", Box::new(|c| c.scopes_after_viewing_lut = true)),
+            ("Project Colour: output LUT out.cube", Box::new(move |c| c.output_lut = lut("out"))),
+            ("Project Colour: output LUT on", Box::new(|c| c.output_lut_enabled = !c.output_lut_enabled)),
+        ];
+        for (name, change) in changes {
+            let mut to = project_colour(&state);
+            change(&mut to);
+            let (edit, label, _) = colour_edit(&state, to.clone(), false).unwrap_or_else(|| panic!("{name}: a change"));
+            assert!(label == name || (name.ends_with(" on") && label.starts_with("Project Colour: output LUT")), "{label} for {name}");
+            apply_colour_step(&mut state, &edit, false);
+            assert_eq!(project_colour(&state), to, "{name}: set");
+            apply_colour_step(&mut state, &edit, true);
+            assert_eq!(project_colour(&state), start, "{name}: undone");
+        }
+        assert!(colour_edit(&state, start, false).is_none(), "no change, no step");
+        restore_globals();
     }
 
     /// The engine globals the page sets, put back for other tests.
@@ -594,6 +771,7 @@ mod tests {
         {
             let mut run = |ctx: &egui::Context, cmds: &mut Vec<AppCommand>| {
                 egui::CentralPanel::default().show(ctx, |ui| show_page(ui, &mut state, &theme, Some(&cal), cmds));
+                settle(&mut state, cmds);
             };
             let texts = frame(&ctx, Vec::new(), &mut run).1;
             let look = at(&texts, "Show Look.cube");
