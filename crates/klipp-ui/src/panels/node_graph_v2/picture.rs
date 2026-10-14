@@ -535,11 +535,16 @@ pub(super) const MOVE_NOTE: &str = "Move note";
 /// which passes its picture on.
 pub(super) const REROUTE: &str = "reroute";
 
-/// A new node of the picture for the menu tag `kind`: an effect, or a
-/// reroute (a grade's reroute, which the renderer passes through).
+/// The menu tag of a grade in the picture's chain (#1746).
+pub(super) const GRADE: &str = "grade";
+
+/// A new node of the picture for the menu tag `kind`: an effect, a
+/// reroute (a grade's reroute, which the renderer passes through), or a
+/// grade compound with one Corrector.
 fn picture_node(kind: &str) -> Option<Node> {
     match kind {
         REROUTE => Some(crate::inspector::grade_view::new_grade_node(NodeKind::Reroute, NodeId::new_v4())),
+        GRADE => klipp_graph_lift::grade_compound::new_compound(NodeId::new_v4()).ok(),
         _ => crate::inspector::stack_view::new_effect_node(kind),
     }
 }
@@ -559,6 +564,8 @@ pub(super) fn picture_menu() -> &'static [MenuCategory] {
         .chain([("Sources", crate::picture_mattes::SOURCES.iter().map(|s| (s.name, s.tag)).collect())])
         // A point to route a wire through (#1746).
         .chain([("Wiring", vec![("Reroute", REROUTE)])])
+        // A grade in the chain, after its display step (#1746).
+        .chain([("Grade", vec![("Grade", GRADE)])])
         .collect()
     })
 }
@@ -684,6 +691,33 @@ mod tests {
         let added = changed.picture.graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("sharpen")).unwrap();
         assert_eq!(changed.picture.graph.ui.positions[&added.id], serde_json::json!({"x":300.0,"y":120.0}));
         assert_eq!(changed.picture.graph.nodes.len(), p.picture.graph.nodes.len() + 1);
+        c.restore_picture(&edit.before);
+        assert_eq!(*c.picture_v2().unwrap(), before);
+    }
+
+    /// "Grade" from the Add menu puts a grade compound with one Corrector
+    /// in the chain after the last effect, one undoable step, the clip now
+    /// a picture-truth clip; the canvas enters it, and its Corrector is
+    /// there (#1746).
+    #[test]
+    fn a_grade_from_the_add_menu_goes_in_the_chain_and_opens() {
+        let mut c = clip();
+        let p = c.picture_v2().unwrap();
+        let before = (*p).clone();
+        let model = PictureCanvas::new(&p.picture.graph, root(&c), None).unwrap();
+        assert!(picture_menu().iter().any(|(label, entries)| *label == "Grade" && entries.iter().any(|(_, tag)| *tag == GRADE)), "the Add menu's Grade heading");
+        let command = model.command(AppCommand::AddNode { clip_id: c.id, kind: GRADE.into(), node_id: None, position: (420.0, 120.0) }).unwrap();
+        let AppCommand::GraphOps { ops, .. } = command else { panic!("one graph batch") };
+        let edit = c.apply_picture_ops(&ops).unwrap();
+        assert!(c.is_picture_truth());
+        let changed = c.picture_v2().unwrap();
+        let blur = changed.picture.graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("gaussian_blur")).unwrap().id;
+        let compound = changed.picture.graph.nodes.iter().find(|n| klipp_graph_lift::grade_compound::is_compound(n)).expect("a compound");
+        assert!(changed.picture.graph.edges.iter().any(|e| e.from.0 == blur && e.to.0 == compound.id), "after the last effect");
+        let model = PictureCanvas::new(&changed.picture.graph, root(&c), None).unwrap();
+        let Some(AppCommand::RevealGraph { path, .. }) = model.command(AppCommand::DescendIntoCompound { clip_id: c.id, node_id: compound.id }) else { panic!("the canvas enters it") };
+        let inside = PictureCanvas::new(&changed.picture.graph, NodePath::new(path.root, path.nodes[..path.nodes.len() - 1].iter().copied()), None).unwrap();
+        assert!(inside.nodes.iter().any(|n| klipp_graph_lift::structure::kind_of(n.node) == "Corrector"), "its Corrector is inside");
         c.restore_picture(&edit.before);
         assert_eq!(*c.picture_v2().unwrap(), before);
     }

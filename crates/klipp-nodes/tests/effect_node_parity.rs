@@ -40,6 +40,7 @@ const EXEMPT: &[(&str, &str)] = &[
     ("merge", "draws its fg port's picture with the layer mixer; alone it passes the picture (#1746)"),
     ("media_source", "draws another media item's frame the render reads for it; alone it is a clear picture (#1746)"),
     ("clip_below", "draws what the render composited below the clip; alone it is a clear picture (#1746)"),
+    ("grade_compound", "a marker for a grade compound, which the plan runs as a compound node (#1746)"),
 ];
 
 /// A2's one named exemption: Equalize builds its histogram from a
@@ -134,7 +135,7 @@ fn every_effect_node_matches_the_legacy_chain_on_the_cpu() {
     let (cases, exempt) = cases();
     assert_eq!(cases.len() / 2 + exempt, effect_types().count(), "covered + exempt is every type");
     // The luma key among them (#1638).
-    assert_eq!(effect_types().count(), 65, "the registry's size the spec counts");
+    assert_eq!(effect_types().count(), 66, "the registry's size the spec counts");
     let mut unchanged = Vec::new();
     for (tag, effect) in &cases {
         let mut ex = GraphExecutor::new_cpu_only();

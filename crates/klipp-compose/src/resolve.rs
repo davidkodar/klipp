@@ -65,6 +65,9 @@ pub struct Blend {
     pub blend: klipp_nodes::params::EffectBlend,
     pub mask: Option<MaskSource>,
     pub fg: Option<MaskSource>,
+    /// A grade compound's grade (#1746), for its `GradeCompound` marker:
+    /// the executor's compound node runs it.
+    pub compound: Option<std::sync::Arc<klipp_nodes::NodeGraph>>,
 }
 
 /// Where a masked effect's matte comes from, for the run that draws it;
@@ -239,6 +242,18 @@ fn walk(clip: &Clip, picture: &ClipPicture, time: Timecode, fps: f64, resolved: 
             placement = Some((fx.len(), fixed));
             continue;
         }
+        // A grade in the chain (#1746): its marker, and its grade for the
+        // run, which only a plan draws.
+        if node.enabled && kind == lt::GRADE_COMPOUND {
+            let body = &node.group.as_ref().ok_or_else(|| format!("grade compound {} has no body", node.id))?.graph;
+            let run = klipp_timeline::lowered_grade(body)?;
+            fx.push(BuiltinEffect::GradeCompound {});
+            nodes.push(node.id);
+            // Its own mix: what it grades, the picture it read the rest.
+            let blend = klipp_nodes::params::EffectBlend { mix: node.mix.unwrap_or(1.0), channel: klipp_effects::mask_mix::MaskChannel::Red };
+            blends.push(Some(Blend { blend, mask: None, fg: None, compound: Some(std::sync::Arc::new(run)) }));
+            continue;
+        }
         // Opacity, a speed ramp, temporal denoise and extra Transforms are
         // other node types, or disabled: none is a pixel effect here.
         if !node.enabled || kind != types::LEGACY_EFFECT {
@@ -404,7 +419,7 @@ fn blend_of(picture: &ClipPicture, node: &Node, t: f64, ctx: &klipp_core::EvalCo
         Some(why) => MaskSource::Unavailable(why.clone()),
         None => mask_source(picture, &e.from.0, e.from.1.as_str(), t, ctx),
     });
-    Some(Blend { blend, mask, fg })
+    Some(Blend { blend, mask, fg, compound: None })
 }
 
 /// Where the matte (or a Merge's picture) an edge from `from`'s `port`
@@ -486,6 +501,11 @@ pub fn media_sources(clip: &Clip) -> Vec<(String, f32)> {
 /// clip is drawn over what is below it.
 pub fn reads_below(clip: &Clip) -> bool {
     clip.picture_v2().is_ok_and(|p| p.picture.graph.nodes.iter().any(|n| n.enabled && klipp_graph_lift::effect_params::tag(n) == Some("clip_below")))
+}
+
+/// Whether `clip`'s picture holds an enabled grade compound (#1746).
+pub fn has_grade_compound(clip: &Clip) -> bool {
+    clip.is_picture_truth() && clip.picture_v2().is_ok_and(|p| p.picture.graph.nodes.iter().any(|n| n.enabled && klipp_graph_lift::grade_compound::is_compound(n)))
 }
 
 /// A media source's item id as the pool keys it.

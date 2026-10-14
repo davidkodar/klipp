@@ -63,7 +63,7 @@ mod grade_access;
 mod grade_roots;
 mod node_labels;
 pub use node_labels::{carry_node_labels, grade_group_id, grade_node_labels, remap_grade_node_labels, with_grade_node_labels, GradeNodeLabel, NodeLabel, NODE_LABEL_COLOURS};
-pub use grade_roots::grade_node_for_run;
+pub use grade_roots::{grade_node_for_run, lowered_grade};
 pub use grade_access::{Grade, GradeAccess, GradeSlot};
 mod render_gates;
 pub use effect_slots::{EffectId, EffectList, EffectsState};

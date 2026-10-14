@@ -53,6 +53,12 @@ impl PortCatalog for RegistryCatalog {
     }
 
     fn node_spec(&self, node: &Node) -> Option<NodeSpec> {
+        // A grade in the chain (#1746): a picture in and out, its mix how
+        // far its grade takes the picture it reads.
+        if crate::grade_compound::is_compound(node) {
+            let image = |key: &str| klipp_graph_format::PortSpec { key: key.into(), ty: klipp_graph_format::PortType::Image, optional: false, params: Vec::new() };
+            return Some(NodeSpec { inputs: vec![image("in")], outputs: vec![image("out")], mixable: true });
+        }
         if node.type_id.as_str() == types::LEGACY_NODE {
             let name = node.legacy.as_ref()?.payload.get("kind")?.as_str()?;
             let kind: klipp_nodes::NodeKind = serde_json::from_value(serde_json::json!(name)).ok()?;

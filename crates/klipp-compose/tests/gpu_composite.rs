@@ -332,6 +332,7 @@ const UNPROVEN: &[(&str, &str)] = &[
     ("effect klipp.fx.deflicker", "draws from a deflicker analysis of the media, which the fixture has none of"),
     ("effect klipp.fx.video_stabilization", "warps by a stabilisation analysis, which the fixture has none of"),
     ("effect klipp.fx.rolling_shutter_correction", "warps by a motion analysis, which the fixture has none of"),
+    ("effect klipp.fx.grade_compound", "a marker: alone, with no compound's grade beside it, it runs nothing; a clip with a grade compound is declined by the stack (\"grade compound\") and drawn in grade_compound_render"),
     ("effect klipp.fx.merge", "lays the picture wired into its fg port over; the probe's effect list wires none, so alone it passes the picture (drawn with one in merge_render)"),
     ("grade node Reroute", "passes its input on by design"),
     ("grade node InputTransform", "records the source's format; the decoder has already decoded it, so it passes the picture on"),

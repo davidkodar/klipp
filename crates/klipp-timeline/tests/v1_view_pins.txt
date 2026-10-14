@@ -15,7 +15,7 @@ builtin_effects 111
 builtin_effects_enabled 40
 ClipPictureFields 18
 ClipPictureParts 14
-delift 39
+delift 38
 edit_effect_keyframes 19
 edit_effect_keyframes_of 19
 edit_effect_modifiers 9
@@ -71,7 +71,7 @@ set_ofx_effects 17
 set_own_effects 1
 set_video_effect_list 16
 # +1 (#1214): a track's effect list edited by path is lowered to its stored v1 list, as unlift lowers it.
-to_v1 51
+to_v1 50
 transform_pos_x_keyframes 15
 transform_pos_y_keyframes 13
 transform_rotation_keyframes 10

@@ -620,7 +620,7 @@ mod tests {
             n += 1;
         }
         // The luma key among them (#1638).
-        assert_eq!(n, 65, "every described effect");
+        assert_eq!(n, 66, "every described effect");
     }
 
     /// A frei0r plug-in is stored as `klipp.frei0r` (picture revision 4):

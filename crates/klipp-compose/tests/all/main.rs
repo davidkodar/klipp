@@ -34,6 +34,8 @@ mod gates_keyed_off_the_frame;
 mod golden_corpus;
 #[path = "../gpu_composite.rs"]
 mod gpu_composite;
+#[path = "../grade_compound_render.rs"]
+mod grade_compound_render;
 #[path = "../grade_cpu_gpu_parity.rs"]
 mod grade_cpu_gpu_parity;
 #[path = "../grade_keys_render.rs"]

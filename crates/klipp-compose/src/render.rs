@@ -1861,6 +1861,10 @@ impl Renderer {
             } else if crate::resolve::reads_below(c) {
                 // What is below is the CPU stacking loop's for now (#1746).
                 Some("clip below")
+            } else if crate::resolve::has_grade_compound(c) {
+                // A grade in the chain runs in the timeline render's plan
+                // for now (#1746).
+                Some("grade compound")
             } else if frame_blends(c, time) {
                 Some("frame blending")
             } else if title_motion_blur(c).is_some() {
@@ -5066,6 +5070,8 @@ fn splice_blended(
             // Another media item's frame, or what is below, handed to the
             // run (#1746).
             BuiltinEffect::MediaSource { .. } | BuiltinEffect::ClipBelow {} => klipp_nodes::NodeKind::SidePicture,
+            // A grade in the chain (#1746): the executor's compound node.
+            BuiltinEffect::GradeCompound {} => klipp_nodes::NodeKind::Compound,
             // A merge with a picture to lay over: the grade's layer mixer
             // draws it, that picture on top (#1746).
             BuiltinEffect::Merge { .. } if blend(i).is_some_and(|b| b.fg.is_some()) => klipp_nodes::NodeKind::LayerMixer,
@@ -5139,6 +5145,38 @@ fn splice_blended(
     for (g, (kind, effects, b)) in groups.iter().enumerate() {
         let Some(b) = b else { continue };
         let node = id(g);
+        // A grade compound's grade, the compound node's body (#1746); at a
+        // mix below full, a Blend after it takes the picture it read that
+        // far toward what it made.
+        if let (klipp_nodes::NodeKind::Compound, Some(run)) = (kind, &b.compound) {
+            if let Some(n) = graph.nodes.iter_mut().find(|n| n.id == node) {
+                n.params.effects.clear();
+                n.params.compound_subgraph = Some((**run).clone());
+            }
+            let mix = b.blend.mix.clamp(0.0, 1.0);
+            if mix < 1.0 {
+                let read = graph.edges.iter().find(|e| e.to_node == node && e.to_port == 0).map(|e| (e.from_node, e.from_port));
+                if let Some((from, from_port)) = read {
+                    let blend = klipp_nodes::NodeId::from_u128(node.as_u128() ^ 0x00b1_e4d0_u128);
+                    for e in graph.edges.iter_mut().filter(|e| e.from_node == node) {
+                        e.from_node = blend;
+                    }
+                    graph.edges.push(klipp_nodes::Edge { from_node: from, from_port, to_node: blend, to_port: 0 });
+                    graph.edges.push(klipp_nodes::Edge { from_node: node, from_port: 0, to_node: blend, to_port: 1 });
+                    graph.nodes.push(klipp_nodes::Node {
+                        id: blend,
+                        kind: klipp_nodes::NodeKind::Blend,
+                        label: String::new(),
+                        enabled: true,
+                        params: klipp_nodes::NodeParams { mix: Some(mix), ..Default::default() },
+                        keyframes: Default::default(),
+                        output_link: None,
+                        input_links: Vec::new(),
+                    });
+                }
+            }
+            continue;
+        }
         // A merge's picture on the mixer's top port, the picture so far
         // under it; its blend and opacity on the top one (#1746).
         if let (klipp_nodes::NodeKind::LayerMixer, Some(fg), Some(BuiltinEffect::Merge { blend_mode, opacity })) = (kind, &b.fg, effects.first()) {

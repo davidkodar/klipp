@@ -14,6 +14,7 @@ pub mod delift;
 pub mod domains;
 pub mod edit_planner;
 pub mod effect_params;
+pub mod grade_compound;
 pub mod ids;
 pub mod journal;
 pub mod lift;

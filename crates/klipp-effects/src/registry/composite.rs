@@ -103,4 +103,15 @@ pub(super) static TYPES: &[EffectType] = &[
         tag: "clip_below",
         sample: || BuiltinEffect::ClipBelow {},
     },
+    EffectType {
+        desc: NodeTypeDesc {
+            // A grade, run by the executor as a compound of grade nodes:
+            // never an effect a menu offers.
+            category: Category::Grade,
+            gpu: false,
+            ..composite("klipp.fx.grade_compound", "Grade", IMAGE_IN, &[], Spatial::Global)
+        },
+        tag: "grade_compound",
+        sample: || BuiltinEffect::GradeCompound {},
+    },
 ];

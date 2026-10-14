@@ -292,6 +292,7 @@ impl BuiltinEffect {
             // Its offset is a time; keyed, it would be a speed curve.
             | E::MediaSource { .. }
             | E::ClipBelow {}
+            | E::GradeCompound {}
             | E::Frei0r { .. } => {}
         }
     }
