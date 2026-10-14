@@ -1061,6 +1061,11 @@ pub fn flat_field(rgba: &[u8], w: usize, h: usize) -> (f32, f32) {
     };
     // Pass one: where the flat tiles are, and how quiet they are.
     let mut flat: Vec<(usize, usize, f32)> = Vec::new();
+    // Each flat tile's step-blind spread, for the staircase below: the
+    // median of its neighbour-to-neighbour differences, scaled to a
+    // standard deviation. Steps are a few of a tile's differences, so the
+    // median does not see them; grain moves every one (#1996).
+    let mut step_blind: Vec<f32> = Vec::new();
     let mut y0 = 0;
     while y0 + TILE <= h {
         let mut x0 = 0;
@@ -1076,6 +1081,10 @@ pub fn flat_field(rgba: &[u8], w: usize, h: usize) -> (f32, f32) {
             // A tile with detail in it says nothing about noise.
             if sd < 4.0 && mean > 6.0 && mean < 94.0 {
                 flat.push((x0, y0, sd));
+                let mut d: Vec<f32> = ls.chunks(TILE).flat_map(|row| row.windows(2).map(|p| (p[1] - p[0]).abs()).collect::<Vec<_>>()).collect();
+                // For independent noise of spread σ, the median absolute
+                // difference of two neighbours is 0.954 σ.
+                step_blind.push(median(&mut d) / 0.954);
             }
             x0 += step_x;
         }
@@ -1103,24 +1112,34 @@ pub fn flat_field(rgba: &[u8], w: usize, h: usize) -> (f32, f32) {
     // The floor is the reference rather than each tile's own spread,
     // because a banded tile's steps are most of its spread — judging a
     // step against it would hide exactly what is being looked for.
-    let visible_step = (noise * 2.5).max(0.35);
+    // The floor the steps are judged against, read blind to the steps: a
+    // tile's spread counts its own steps, and where the plateaus are
+    // narrower than a tile every tile holds one, so judged against
+    // their spread the steps hid themselves (#1996).
+    step_blind.sort_by(|a, b| a.total_cmp(b));
+    let visible_step = (percentile(&step_blind, 0.2) * 2.5).max(0.35);
     let mut banded_tiles = 0usize;
     for (x0, y0, _) in &flat {
         let mut banded = false;
         for y in (*y0..*y0 + TILE).step_by(4) {
-            let (mut run, mut last) = (0usize, luma(*x0, y));
-            for x in *x0 + 1..*x0 + TILE {
-                let v = luma(x, y);
-                let d = (v - last).abs();
-                if d < 0.02 {
-                    run += 1;
-                } else {
-                    if run >= 6 && d > visible_step {
-                        banded = true;
-                    }
-                    run = 0;
+            // A band edge is a run of one level, a visible step, and a run
+            // of the new level: the next plateau. A dither's step goes back
+            // within its period, and is not one (#1996).
+            let row: Vec<f32> = (*x0..*x0 + TILE).map(|x| luma(x, y)).collect();
+            let runs = |from: usize, dir: i32| {
+                let mut n = 0usize;
+                let mut i = from as i32;
+                while (0..TILE as i32).contains(&(i + dir)) && (row[(i + dir) as usize] - row[i as usize]).abs() < 0.02 {
+                    n += 1;
+                    i += dir;
                 }
-                last = v;
+                n
+            };
+            for x in 1..TILE {
+                if (row[x] - row[x - 1]).abs() > visible_step && runs(x - 1, -1) >= 6 && runs(x, 1) >= 5 {
+                    banded = true;
+                    break;
+                }
             }
         }
         if banded {
