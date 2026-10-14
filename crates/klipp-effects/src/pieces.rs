@@ -38,6 +38,7 @@ pub const O_SHADE: usize = 15; // its light, turned away
 pub const O_OPACITY: usize = 16;
 pub const O_SHADOW: usize = 17; // 4: the shadow's offset x, y, its strength and softness
 pub const O_AA: usize = 21; // the soft edge's width, in screen pixels (0: a hard edge)
+pub const O_MATTE: usize = 22; // the subject matte's part (#985 phase 3): 1 the subject, -1 the rest of its side, 0 none
 pub const O_PLANES: usize = 24; // 12 × 3: its edges, a x + b y + c >= 0 inside, in picture pixels
 
 /// The piece kinds' ids in the transition registry.
@@ -62,6 +63,13 @@ pub fn is_posed(kind_id: u32, param3: f32) -> bool {
     kind_id == SHARDS || ((STRIPS..=HALVES).contains(&kind_id) && motion(param3) != 0)
 }
 
+/// Whether the transition draws posed pieces with `subject` (see
+/// [`plan_with`]; 0 none) cut out: a subject cut out is always posed,
+/// sliding included (#985 phase 3).
+pub fn is_posed_with(kind_id: u32, param3: f32, subject: u32) -> bool {
+    is_posed(kind_id, param3) || ((STRIPS..=SHARDS).contains(&kind_id) && subject != 0)
+}
+
 /// The pieces of a frame, posed, for [`render`] and the shader.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PiecePlan {
@@ -75,6 +83,31 @@ pub struct PiecePlan {
     /// leaving), or the outgoing (pieces arriving).
     pub background_to: bool,
     pub data: Vec<f32>,
+    /// How the subject moves (see [`plan_with`]); 0 none.
+    pub subject: u32,
+    /// The subject side's matte, the frame's size, one value a pixel:
+    /// the outgoing picture's when pieces leave, the incoming's when they
+    /// assemble ([`PiecePlan::matte_side_to`]). With none, the subject
+    /// isn't seen and its side's pieces are whole: the plain pieces.
+    pub matte: Option<Vec<f32>>,
+}
+
+impl PiecePlan {
+    /// Whether the subject is the incoming picture's (pieces assembling)
+    /// rather than the outgoing's.
+    pub fn matte_side_to(&self) -> bool {
+        !self.background_to
+    }
+
+    /// The matte the subject piece reads, as the renderers do: `None`
+    /// with no subject, an empty one (nothing is subject) without a
+    /// matte.
+    fn matte_for(&self) -> Option<&[f32]> {
+        if self.subject == 0 {
+            return None;
+        }
+        Some(self.matte.as_deref().unwrap_or(&[]))
+    }
 }
 
 fn hash_u(v: u32) -> u32 {
@@ -137,6 +170,7 @@ struct Piece {
 }
 
 /// The settings, unpacked.
+#[derive(Clone)]
 struct Settings {
     order: u32,
     ease: u32,
@@ -398,6 +432,11 @@ fn pose(pc: &Piece, s: &Settings, t: f64, e: f64, side: f32, w: f64, h: f64) -> 
                 return None;
             }
         }
+        5 => {
+            // The subject stepping forward (#985 phase 3): larger, in
+            // place, `t` below 0.
+            scale = 1.0 - tt;
+        }
         _ => {
             // Slide (the shards only come here sliding).
             mv = [d[0] * tt * out, d[1] * tt * out, 0.0];
@@ -493,20 +532,80 @@ fn pose(pc: &Piece, s: &Settings, t: f64, e: f64, side: f32, w: f64, h: f64) -> 
 /// a `width` × `height` frame; with motion blur, `samples` instants across
 /// `shutter` of the progress centred on it.
 pub fn plan(kind_id: u32, progress: f32, width: u32, height: u32, p: [f32; 4], shutter: f32, samples: u32) -> PiecePlan {
+    plan_with(kind_id, progress, width, height, p, 0, shutter, samples)
+}
+
+/// `t` of the way through `[lo, hi]`, held at either end.
+fn window(t: f32, lo: f32, hi: f32) -> f32 {
+    ((t - lo) / (hi - lo)).clamp(0.0, 1.0)
+}
+
+/// Where the background pieces and the subject move within the
+/// transition, for pieces leaving (#985 phase 3): the subject staying
+/// goes once the rest has nearly gone; going first, the rest follows it;
+/// stepping forward, it grows while the rest leaves, then fades.
+fn windows(subject: u32) -> ([f32; 2], [f32; 2]) {
+    match subject {
+        1 => ([0.0, 0.7], [0.6, 1.0]),
+        2 => ([0.0, 0.75], [0.0, 0.75]),
+        3 => ([0.3, 1.0], [0.0, 0.4]),
+        _ => ([0.0, 1.0], [0.0, 1.0]),
+    }
+}
+
+/// [`plan`] with the subject cut out as its own piece (#985 phase 3),
+/// moving as `subject` says: 0 not cut out, 1 it stays and goes last, 2
+/// it steps forward and fades, 3 it goes first. Its matte is put on the
+/// plan by whoever has it.
+#[allow(clippy::too_many_arguments)]
+pub fn plan_with(kind_id: u32, progress: f32, width: u32, height: u32, p: [f32; 4], subject: u32, shutter: f32, samples: u32) -> PiecePlan {
     let s = settings(p);
     let (w, h) = (width as f64, height as f64);
     let pieces = cut(kind_id, p, &s, w, h);
     let samples = if shutter > 0.0 { samples.clamp(2, MAX_SAMPLES) } else { 1 };
-    let count = pieces.len();
+    let side = if s.assemble { 1.0 } else { 0.0 };
+    // The subject: the whole frame, kept to the matte as it is drawn.
+    let ang = (p[1] * 0.017453292) as f64;
+    let whole = Piece { poly: vec![[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]], centre: [w * 0.5, h * 0.5], dir: [ang.cos(), ang.sin()], key: 0.0, id: 977 };
+    let (bg_win, subject_win) = windows(subject);
+    // Assembling runs the leaving windows backwards.
+    let bg_win = if s.assemble { [1.0 - bg_win[1], 1.0 - bg_win[0]] } else { bg_win };
+    let count = pieces.len() + usize::from(subject != 0);
     let mut data = Vec::with_capacity(samples as usize * count * STRIDE);
     for k in 0..samples {
         let at = if samples > 1 { (progress + shutter * (k as f32 / (samples - 1) as f32 - 0.5)).clamp(0.0, 1.0) } else { progress };
         let mut posed: Vec<([f32; STRIDE], f64)> = Vec::with_capacity(count);
+        let bg_at = if subject != 0 { window(at, bg_win[0], bg_win[1]) } else { at };
         for pc in &pieces {
-            let e = travel(&s, at, pc.key) as f64;
+            let e = travel(&s, bg_at, pc.key) as f64;
             let t = if s.assemble { 1.0 - e } else { e };
-            if let Some(v) = pose(pc, &s, t, e, if s.assemble { 1.0 } else { 0.0 }, w, h) {
+            if let Some(mut v) = pose(pc, &s, t, e, side, w, h) {
+                if subject != 0 {
+                    v.0[O_MATTE] = -1.0;
+                }
                 posed.push(v);
+            }
+        }
+        if subject != 0 {
+            // Worked as if leaving: assembling is that, backwards.
+            let u = if s.assemble { 1.0 - at } else { at };
+            let local = window(u, subject_win[0], subject_win[1]);
+            let still = Settings { stagger: 0.0, ..s.clone() };
+            let posed_subject = if subject == 2 {
+                let forward = Settings { motion: 5, shadow: true, ..still };
+                let grow = travel(&forward, local, 0.0) as f64;
+                pose(&whole, &forward, -0.12 * grow, 0.0, side, w, h).map(|(mut v, z)| {
+                    v[O_OPACITY] *= 1.0 - smoothstep(0.75, 1.0, u as f64) as f32;
+                    (v, z)
+                })
+            } else {
+                let e = travel(&still, local, 0.0) as f64;
+                pose(&whole, &still, e, e, side, w, h)
+            };
+            if let Some((mut v, _)) = posed_subject.filter(|(v, _)| v[O_OPACITY] > 1e-4) {
+                v[O_MATTE] = 1.0;
+                // Nearest of all, so the rest of its side is cut around it.
+                posed.push((v, f64::MIN));
             }
         }
         posed.sort_by(|a, b| a.1.total_cmp(&b.1));
@@ -517,7 +616,39 @@ pub fn plan(kind_id: u32, progress: f32, width: u32, height: u32, p: [f32; 4], s
             data.extend_from_slice(posed.get(i).map(|v| &v.0[..]).unwrap_or(&hidden[..]));
         }
     }
-    PiecePlan { width, height, count: count as u32, samples, background_to: !s.assemble, data }
+    PiecePlan { width, height, count: count as u32, samples, background_to: !s.assemble, data, subject, matte: None }
+}
+
+/// The matte at picture point `(sx, sy)`, bilinear and clamped as the
+/// pictures are; nothing where there is no matte.
+fn matte_sample(m: &[f32], w: u32, h: u32, sx: f32, sy: f32) -> f32 {
+    if m.len() < (w as usize) * (h as usize) {
+        return 0.0;
+    }
+    let fx = sx.max(0.0).min(w as f32 - 1.0);
+    let fy = sy.max(0.0).min(h as f32 - 1.0);
+    let x0 = fx.floor() as u32;
+    let y0 = fy.floor() as u32;
+    let x1 = (x0 + 1).min(w - 1);
+    let y1 = (y0 + 1).min(h - 1);
+    let tx = fx - x0 as f32;
+    let ty = fy - y0 as f32;
+    let at = |x: u32, y: u32| m[(y * w + x) as usize];
+    let top = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * tx;
+    let bot = at(x0, y1) + (at(x1, y1) - at(x0, y1)) * tx;
+    (top + (bot - top) * ty).clamp(0.0, 1.0)
+}
+
+/// The share of piece `d` the matte leaves at picture point `(sx, sy)`:
+/// the matte for the subject, the rest for the other pieces of its side.
+fn matte_share(d: &[f32], matte: Option<&[f32]>, w: u32, h: u32, sx: f32, sy: f32) -> f32 {
+    match matte {
+        Some(m) if d[O_MATTE] != 0.0 => {
+            let v = matte_sample(m, w, h, sx - 0.5, sy - 0.5);
+            if d[O_MATTE] > 0.0 { v } else { 1.0 - v }
+        }
+        _ => 1.0,
+    }
 }
 
 /// A bilinear sample of `buf`, clamped to the frame: the shader's
@@ -590,11 +721,15 @@ fn pixel(plan: &PiecePlan, from: &[f32], to: &[f32], idx: u32) -> [f32; 4] {
     let i4 = (idx * 4) as usize;
     let bg_src = if plan.background_to { to } else { from };
     let bg = [bg_src[i4], bg_src[i4 + 1], bg_src[i4 + 2], bg_src[i4 + 3]];
+    let matte = plan.matte_for();
     let mut total = [0.0f32; 4];
     for s in 0..plan.samples {
         let mut acc = [0.0f32; 4];
         let mut alpha = 0.0f32;
         let mut shadow = 0.0f32;
+        // The subject's share of this pixel: the rest of its side fills
+        // what it leaves, so at rest the two make the picture whole.
+        let mut subject_alpha = 0.0f32;
         for i in 0..plan.count {
             let base = ((s * plan.count + i) as usize) * STRIDE;
             let d = &plan.data[base..base + STRIDE];
@@ -603,8 +738,16 @@ fn pixel(plan: &PiecePlan, from: &[f32], to: &[f32], idx: u32) -> [f32; 4] {
                     let cov = coverage(d, sd) * d[O_OPACITY];
                     if cov > 0.0 {
                         let (_, sx, sy) = piece_at(d, x, y).unwrap_or((sd, 0.0, 0.0));
+                        let cov = cov * matte_share(d, matte, w, h, sx, sy);
                         let c = sample(if d[O_SIDE] > 0.5 { to } else { from }, w, h, sx - 0.5, sy - 0.5);
-                        let k = (1.0 - alpha) * cov;
+                        let k = if d[O_MATTE] < 0.0 && matte.is_some() {
+                            ((1.0 - alpha) * cov / (1.0 - subject_alpha)).min(1.0 - alpha)
+                        } else {
+                            (1.0 - alpha) * cov
+                        };
+                        if d[O_MATTE] > 0.0 {
+                            subject_alpha += k;
+                        }
                         acc[0] += k * c[0] * d[O_SHADE];
                         acc[1] += k * c[1] * d[O_SHADE];
                         acc[2] += k * c[2] * d[O_SHADE];
@@ -615,8 +758,8 @@ fn pixel(plan: &PiecePlan, from: &[f32], to: &[f32], idx: u32) -> [f32; 4] {
             }
             // Its shadow on what is behind every piece.
             if d[O_SHADOW + 2] > 0.0 {
-                if let Some((sd, _, _)) = piece_at(d, hx - d[O_SHADOW], hy - d[O_SHADOW + 1]) {
-                    let a = d[O_SHADOW + 2] * (sd / d[O_JAC] / d[O_SHADOW + 3] + 0.5).clamp(0.0, 1.0);
+                if let Some((sd, sx, sy)) = piece_at(d, hx - d[O_SHADOW], hy - d[O_SHADOW + 1]) {
+                    let a = d[O_SHADOW + 2] * (sd / d[O_JAC] / d[O_SHADOW + 3] + 0.5).clamp(0.0, 1.0) * matte_share(d, matte, w, h, sx, sy);
                     shadow = 1.0 - (1.0 - shadow) * (1.0 - a);
                 }
             }

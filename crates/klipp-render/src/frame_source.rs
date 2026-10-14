@@ -354,6 +354,13 @@ impl FrameSource for ExportFrameSource<'_> {
         }))
     }
 
+    /// The original file's subject matte (#985 phase 3).
+    fn subject_matte_dir(&mut self, clip: &Clip, model: u32) -> Option<std::path::PathBuf> {
+        let ClipKind::Media { media_id } = &clip.kind else { return None };
+        let file = self.media.get(media_id)?;
+        klipp_compose::subject_matte::media_dir(&file.path, klipp_compose::subject_matte::decode_rotation(clip, file.source_rotation), model)
+    }
+
     /// The original file's analysis key, at the analysis width and the
     /// media's rate (M4 step 9).
     fn analysis_key(&mut self, clip: &Clip, kind: klipp_analysis::assets::AssetKind) -> Option<klipp_analysis::assets::AssetKey> {
@@ -665,6 +672,31 @@ mod temporal_frames_tests {
             ..Clip::gap(tc(0), tc(48))
         };
         (media, clip)
+    }
+
+    /// #985 phase 3: the subject matte is read by the turn the clip is
+    /// decoded by: its own when it has one, else its media's, as `open`
+    /// decodes it, never the media's alone.
+    #[test]
+    fn a_subject_matte_is_read_by_the_clips_turn() {
+        let dir = std::env::temp_dir().join(format!("klipp-matte-turn-{}", ClipId::new().0));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("take.mov");
+        std::fs::write(&file, b"not a film").unwrap();
+        let (mut media, mut clip) = source_and_clip(file.clone(), 0);
+        let id = clip.media_id().unwrap();
+        media.get_mut(&id).unwrap().source_rotation = 270;
+        let mut src = ExportFrameSource::new(&media, 24.0, klipp_core::WorkingColorspace::Rec709Linear);
+        let at = |turn: i32| klipp_compose::subject_matte::media_dir(&file, turn, 0);
+        assert_eq!(src.subject_matte_dir(&clip, 0), at(270), "the media's turn when the clip has none");
+        clip.source_rotation = 90;
+        assert_eq!(src.subject_matte_dir(&clip, 0), at(90), "the clip's own turn");
+        if let (Some(a), Some(b)) = (at(90), at(270)) {
+            assert_ne!(a, b);
+            assert!(a.to_string_lossy().ends_with("-r90"), "{}", a.display());
+        }
+        assert_eq!(klipp_compose::subject_matte::decode_rotation(&clip, 270), 90);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Export used to take the trait's `None` here, so an OFX plugin

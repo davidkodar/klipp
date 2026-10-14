@@ -725,7 +725,16 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             v
         }
         "klipp_track_subject" => {
-            let mut v = json!({ "method": "track_subject", "clip_id": arg_str(args, "clip_id")? });
+            let mut v = json!({ "method": "track_subject" });
+            // A clip, or a piece transition cutting round its subject (#985).
+            for key in ["clip_id", "transition_id"] {
+                if let Some(id) = args.get(key).and_then(|v| v.as_str()) {
+                    v[key] = json!(id);
+                }
+            }
+            if v.get("clip_id").is_none() && v.get("transition_id").is_none() {
+                return Err("clip_id or transition_id is required".into());
+            }
             if let Some(m) = args.get("model").and_then(|v| v.as_str()) {
                 v["model"] = json!(m);
             }
@@ -1851,10 +1860,11 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Track the subject through a clip: a matte that follows it, made in the background and added to the clip's grade as one undo step; returns a job_id. The model is fetched only with download_model. Details: klipp_guide topic track_subject.",
              json!({
                  "clip_id": { "type": "string", "description": "From klipp_list_clips" },
+                 "transition_id": { "type": "string", "description": "In place of clip_id: a piece transition whose pieces cut round the subject" },
                  "model": { "type": "string", "enum": ["subject", "foreground"], "description": "subject: one detected subject, followed (default); foreground: the whole foreground" },
                  "download_model": { "type": "boolean", "description": "Fetch the model first when missing (the user should know a download happens)" },
              }),
-             vec!["clip_id"]),
+             vec![]),
         tool("klipp_search_transcripts",
              "Find where something is said: every transcript segment containing the query, \
               case-insensitively, with its media item and its start and end in the file.",
@@ -2653,6 +2663,8 @@ mod wait_tests {
         assert!(tool_to_command("klipp_track_subject", &json!({})).is_err(), "a clip is needed");
         let request: klipp_control::protocol::Request = serde_json::from_value(json!({ "id": 1, "method": "track_subject", "clip_id": "c1" })).unwrap_or_else(|e| panic!("{e}"));
         assert!(matches!(request.command, klipp_control::protocol::ControlCommand::TrackSubject { model: None, download_model: false, .. }));
+        let transition = tool_to_command("klipp_track_subject", &json!({ "transition_id": "t1" })).unwrap();
+        assert_eq!(transition, json!({ "method": "track_subject", "transition_id": "t1" }));
     }
 
     #[test]

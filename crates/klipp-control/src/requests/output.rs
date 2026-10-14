@@ -40,16 +40,28 @@ pub(crate) fn respond(
             }
             // A tracked subject matte short of the clip would render its
             // missing frames with a neighbour's matte (#239).
-            let short: Vec<String> = klipp_compose::subject_matte::uncovered(&seq)
+            let gaps = klipp_compose::subject_matte::uncovered_with(&seq, |clip, model| {
+                let item = pool.get(&clip.media_id()?)?;
+                klipp_compose::subject_matte::media_dir(&item.path, klipp_compose::subject_matte::decode_rotation(clip, item.source_rotation), model)
+            }, |clip| {
+                // Past its end, its last frame is read (#985 phase 3).
+                let item = pool.get(&clip.media_id()?)?;
+                Some(klipp_compose::subject_matte::last_frame_secs(item.duration.to_secs_f64(), item.fps.as_f64()))
+            });
+            let short: Vec<String> = gaps
                 .iter()
                 .filter_map(|g| {
                     let clip = seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == g.clip)?;
                     let name = clip.media_id().and_then(|m| pool.get(&m)).map_or("a clip", |m| m.filename.as_str());
-                    Some(format!("{name} (clip {}): {} of {} frames tracked", g.clip.0, g.covered, g.needed))
+                    Some(match g.transition {
+                        // A piece transition cutting round it (#985 phase 3).
+                        Some((t, _)) => format!("{name} (transition {}): {} of {} frames tracked", t.0, g.covered, g.needed),
+                        None => format!("{name} (clip {}): {} of {} frames tracked", g.clip.0, g.covered, g.needed),
+                    })
                 })
                 .collect();
             if !short.is_empty() {
-                return Err(format!("subject mattes aren't finished, export refused: {}. Run klipp_track_subject on each clip and wait for its job.", short.join("; ")));
+                return Err(format!("subject mattes aren't finished, export refused: {}. Run klipp_track_subject on each clip or transition and wait for its job.", short.join("; ")));
             }
             // What the export does not say for itself, the brief says.
             let brief = seq.brief.clone();

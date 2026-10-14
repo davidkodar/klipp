@@ -409,6 +409,10 @@ pub struct TransitionUserParams {
     pub param3: f32,
     /// RGBA in 0.0–1.0 range.
     pub color: [f32; 4],
+    /// The piece transitions' subject cut out as its own piece (#985
+    /// phase 3); none for every other kind, and unless set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<crate::piece_transition::SubjectCut>,
 }
 
 impl Default for TransitionUserParams {
@@ -419,6 +423,7 @@ impl Default for TransitionUserParams {
             param2: 0.0,
             param3: 0.0,
             color: [1.0, 1.0, 1.0, 1.0],
+            subject: None,
         }
     }
 }

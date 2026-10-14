@@ -47,15 +47,40 @@ pub(crate) fn respond(
             Ok(json!({ "items": statuses, "models_downloaded": downloaded, "next": next }))
         }
 
-        ControlCommand::TrackSubject { clip_id, model, download_model } => {
+        ControlCommand::TrackSubject { clip_id, transition_id, model, download_model } => {
             use klipp_analysis::subject_matte::MatteModel;
-            let name = model.as_deref().unwrap_or("subject").trim().to_ascii_lowercase();
+            // A piece transition's subject (#985 phase 3): its side and
+            // model are the transition's.
+            let transition = match (&clip_id, &transition_id) {
+                (Some(_), Some(_)) => return Err("give clip_id or transition_id, not both".into()),
+                (None, None) => return Err("give the clip_id to track, or the transition_id of a piece transition cutting round its subject".into()),
+                (None, Some(t)) => {
+                    let want = klipp_core::TransitionId(parse_uuid(t, "transition_id")?);
+                    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                    let found = klipp_compose::subject_matte::transition_subjects(&seq).into_iter().find(|ts| ts.transition == want);
+                    let on_track = seq.tracks.iter().any(|tr| tr.transitions.iter().any(|x| x.id == want));
+                    match found {
+                        Some(ts) => Some(ts),
+                        None if on_track => return Err("that transition cuts round no subject: set its pieces' subject ({motion: stays, steps_forward or goes_first}) first".into()),
+                        None => return Err(format!("no transition {t}")),
+                    }
+                }
+                (Some(_), None) => None,
+            };
+            let name = match &transition {
+                Some(ts) => (if ts.model == 1 { "foreground" } else { "subject" }).to_string(),
+                None => model.as_deref().unwrap_or("subject").trim().to_ascii_lowercase(),
+            };
             let which = match name.as_str() {
                 "subject" => MatteModel::Subject,
                 "foreground" => MatteModel::Foreground,
                 other => return Err(format!("no model \"{other}\"; use subject or foreground")),
             };
-            let clip = existing_clip_id(ctx, &clip_id)?;
+            let clip = match (&transition, &clip_id) {
+                (Some(ts), _) => ts.clip,
+                (None, Some(c)) => existing_clip_id(ctx, c)?,
+                (None, None) => unreachable!("refused above"),
+            };
             let media = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
@@ -71,7 +96,10 @@ pub(crate) fn respond(
             }
             klipp_analysis::subject_matte::ensure_model(which, download_model).map_err(|e| format!("{e} (pass download_model: true to fetch it)"))?;
             let mut send = sender!(ctx, collect);
-            let mut reply = send(AppCommand::TrackSubject { clip_id: clip, model: name })?;
+            let mut reply = match &transition {
+                Some(ts) => send(AppCommand::TrackTransitionSubject { transition_id: ts.transition })?,
+                None => send(AppCommand::TrackSubject { clip_id: clip, model: name })?,
+            };
             reply["job_id"] = json!(format!("{}:{}", media.0, klipp_analysis::subject_matte::ID));
             reply["next"] = json!("The matte is made in the background and shows on the clip's grade as it goes. Read job_status with this job_id for its progress; cancel_job stops it and keeps the frames made.");
             Ok(reply)

@@ -349,3 +349,115 @@ fn posed_pieces_cost_at_4k() {
         eprintln!("{count} shards, {samples} instants: plan {planned:?}, frame (with upload and readback) {:?}", t.elapsed());
     }
 }
+
+/// A disc in the middle of the frame: the subject's matte (#985 phase 3).
+fn disc() -> Vec<f32> {
+    (0..W * H)
+        .map(|i| {
+            let (x, y) = ((i % W) as f32 + 0.5 - W as f32 * 0.5, (i / W) as f32 + 0.5 - H as f32 * 0.5);
+            if (x * x + y * y).sqrt() < 12.0 { 1.0 } else { 0.0 }
+        })
+        .collect()
+}
+
+fn subject_plan(kind: TransitionKind, p: PieceParams, progress: f32, matte: Option<Vec<f32>>) -> pieces::PiecePlan {
+    let u = p.to_user(kind);
+    let id = spec_for_kind(kind).kind_id as u32;
+    let mut plan = pieces::plan_with(id, progress, W, H, [u.param0, u.param1, u.param2, u.param3], u.subject.map_or(0, |c| c.code()), 0.0, 1);
+    plan.matte = matte;
+    plan
+}
+
+/// #985 phase 3: with the subject cut out, the transition still runs
+/// from the outgoing picture to the incoming one exactly, every subject
+/// motion, leaving and arriving; and with the subject off the plan is the
+/// plain one.
+#[test]
+fn a_subject_cut_out_runs_from_the_outgoing_picture_to_the_incoming() {
+    use klipp_core::piece_transition::{SubjectCut, SubjectMotion};
+    let (a, b) = (ramp(), blue());
+    for kind in [TransitionKind::SlideStrips, TransitionKind::Shatter] {
+        for motion_s in SubjectMotion::ALL {
+            let subject = Some(SubjectCut { motion: motion_s, ..Default::default() });
+            for assemble in [false, true] {
+                let p = PieceParams { subject, assemble, motion: PieceMotion::Tilt, shadow: true, ..PieceParams::read(kind, &spec_for_kind(kind).default_params) };
+                let what = format!("{kind:?} {subject:?} assemble {assemble}");
+                // The subject is the outgoing picture's, or the incoming's.
+                let start = pieces::render(&a, &b, &subject_plan(kind, p, 0.0, Some(disc())));
+                let end = pieces::render(&a, &b, &subject_plan(kind, p, 1.0, Some(disc())));
+                assert!(close(&start, &a, 2e-3), "{what}: the outgoing picture at the start");
+                assert!(close(&end, &b, 2e-3), "{what}: the incoming picture at the end");
+            }
+        }
+    }
+    let id = spec_for_kind(TransitionKind::Shatter).kind_id as u32;
+    let u = spec_for_kind(TransitionKind::Shatter).default_params;
+    assert_eq!(u.subject, None);
+    assert_eq!(pieces::plan_with(id, 0.4, W, H, [u.param0, u.param1, u.param2, u.param3], 0, 0.0, 1), pieces::plan(id, 0.4, W, H, [u.param0, u.param1, u.param2, u.param3], 0.0, 1));
+}
+
+/// #985 phase 3: the subject stays while the pieces round it leave, its
+/// matte's shape cut out of them: half way the disc is still the outgoing
+/// picture and the pieces have left round it; arriving, the incoming
+/// subject is there first. With no matte made, nothing is subject and
+/// the pieces are whole.
+#[test]
+fn the_subject_stays_while_the_rest_breaks_away() {
+    use klipp_core::piece_transition::SubjectCut;
+    let (a, b) = (ramp(), blue());
+    let kind = TransitionKind::SlideStrips;
+    let base = PieceParams { count: 4, stagger: 0.0, order: PieceOrder::AllAtOnce, ease: PieceEase::Linear, alternate: true, subject: Some(SubjectCut::default()), ..Default::default() };
+    // The pieces leave over the first 70%; the subject stays in place
+    // until 0.6, when they are most of the way out.
+    let img = pieces::render(&a, &b, &subject_plan(kind, base, 0.6, Some(disc())));
+    let (cx, cy) = (W / 2, H / 2);
+    assert!(close(&px(&img, cx, cy), &px(&a, cx, cy), 1e-4), "the subject in place: {:?}", px(&img, cx, cy));
+    for x in [cx - 20, cx + 20] {
+        assert!(is_blue(px(&img, x, cy)), "the rest gone round it at {x}: {:?}", px(&img, x, cy));
+    }
+    assert!(blue_share(&img) > 0.5, "{}", blue_share(&img));
+    // No matte: the strips leave whole, the subject's place with them.
+    let plain = pieces::render(&a, &b, &subject_plan(kind, base, 0.6, None));
+    assert!(is_blue(px(&plain, cx, cy)), "{:?}", px(&plain, cx, cy));
+    // Arriving: the incoming subject first, the outgoing picture round it.
+    let arriving = pieces::render(&a, &b, &subject_plan(kind, PieceParams { assemble: true, ..base }, 0.4, Some(disc())));
+    assert!(is_blue(px(&arriving, cx, cy)), "the incoming subject there: {:?}", px(&arriving, cx, cy));
+    for x in [cx - 20, cx + 20] {
+        assert!(close(&px(&arriving, x, cy), &px(&a, x, cy), 1e-4), "the outgoing picture round it at {x}: {:?}", px(&arriving, x, cy));
+    }
+}
+
+/// #985 phase 3: the GPU cuts the subject out as the CPU does, every
+/// subject motion, with the matte and without.
+#[test]
+fn a_subject_cut_out_matches_between_cpu_and_gpu() {
+    use klipp_core::piece_transition::{SubjectCut, SubjectMotion};
+    let Some(mut gpu) = GpuEffectsPipeline::new() else {
+        eprintln!("skipping: no GPU");
+        return;
+    };
+    let from = ramp();
+    let to: Vec<f32> = (0..W * H).flat_map(|i| [0.1, (i % 7) as f32 / 7.0, 0.5, 1.0]).collect();
+    // A soft disc: its edge between 0 and 1.
+    let soft: Vec<f32> = disc().iter().enumerate().map(|(i, m)| if *m > 0.5 { 1.0 } else if (i as u32 % W).is_multiple_of(3) { 0.4 } else { 0.0 }).collect();
+    let mut failures = Vec::new();
+    for kind in [TransitionKind::SlideStrips, TransitionKind::PartHalves, TransitionKind::Shatter] {
+        for motion_s in SubjectMotion::ALL {
+            let subject = Some(SubjectCut { motion: motion_s, ..Default::default() });
+            for (assemble, motion) in [(false, PieceMotion::Slide), (true, PieceMotion::Turn)] {
+                let p = PieceParams { subject, assemble, motion, shadow: true, ..PieceParams::read(kind, &spec_for_kind(kind).default_params) };
+                for (progress, matte) in [(0.3f32, Some(soft.clone())), (0.7, Some(soft.clone())), (0.5, None)] {
+                    let plan = subject_plan(kind, p, progress, matte.clone());
+                    let cpu = pieces::render(&from, &to, &plan);
+                    let g = gpu.render_pieces_linear(&from, &to, &plan);
+                    let (c, g) = (linear_f32_rgba_to_srgb_u8(&cpu), linear_f32_rgba_to_srgb_u8(&g));
+                    let over = c.iter().zip(&g).enumerate().filter(|(i, (x, y))| i % 4 != 3 && (**x as i32 - **y as i32).abs() > 1).count();
+                    if over > 6 {
+                        failures.push(format!("{kind:?} {subject:?} assemble {assemble} p {progress} matte {}: {over} values over 1", matte.is_some()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}

@@ -94,8 +94,37 @@ pub fn ensure_model(model: MatteModel, download: bool) -> Result<(&'static str, 
 /// folder, by model, provider, method and turn. `None` when the media
 /// file isn't there.
 pub fn sequence_dir(item: &MediaItem, model_id: &str, model_bytes: u64, rotation: i32) -> Option<PathBuf> {
-    let key = crate::store::key_for(&item.path)?;
+    sequence_dir_at(&item.path, model_id, model_bytes, rotation)
+}
+
+/// [`sequence_dir`] for the media file at `path`.
+pub fn sequence_dir_at(path: &Path, model_id: &str, model_bytes: u64, rotation: i32) -> Option<PathBuf> {
+    let key = crate::store::key_for(path)?;
     Some(crate::store::analysis_dir().join(key).join(format!("subject-matte-{model_id}-{model_bytes}-{PROVIDER}-a{ALGORITHM}-r{}", rotation.rem_euclid(360))))
+}
+
+/// Where the subject matte of the media file at `path`, made by `model`
+/// upright by `rotation`, is or would be kept (#985 phase 3): the folder
+/// the model as downloaded makes; without the model, the one it made
+/// before that is there (the newest), so a matte made stays read.
+/// `None` when the file isn't there, or there is neither.
+pub fn dir_for(path: &Path, rotation: i32, model: MatteModel) -> Option<PathBuf> {
+    if let Some((id, weights)) = model_path(model) {
+        let bytes = std::fs::metadata(&weights).map(|m| m.len()).unwrap_or(0);
+        return sequence_dir_at(path, id, bytes, rotation);
+    }
+    let key = crate::store::key_for(path)?;
+    let base = crate::store::analysis_dir().join(key);
+    let tail = format!("-{PROVIDER}-a{ALGORITHM}-r{}", rotation.rem_euclid(360));
+    std::fs::read_dir(&base)
+        .ok()?
+        .flatten()
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.ends_with(&tail) && model.ids().iter().any(|id| name.starts_with(&format!("subject-matte-{id}-")))
+        })
+        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
+        .map(|e| e.path())
 }
 
 /// The kept mattes' size for a `w` × `h` (upright) picture: `MATTE_HEIGHT`

@@ -551,30 +551,53 @@ pub(super) fn export_step(confirmed: Confirmed, offline: Vec<(String, String)>, 
 }
 
 /// One line per clip whose tracked subject matte falls short of what a
-/// render reads (#239): its media's name and place, and how far the
-/// matte is, or the pass's percent while it runs (`running`); with the
-/// model that made it, for tracking the rest the same way.
+/// render reads (#239), and per piece transition cutting round a subject
+/// whose matte does (#985 phase 3): its media's name and place, and how
+/// far the matte is, or the pass's percent while it runs (`running`);
+/// with the command that tracks the rest the same way.
 pub(super) fn matte_gap_lines(
     gaps: &[klipp_compose::subject_matte::Uncovered],
     seq: &klipp_timeline::Sequence,
     pool: &klipp_media::MediaPool,
     running: impl Fn(klipp_core::ClipId) -> Option<f32>,
-) -> Vec<(klipp_core::ClipId, &'static str, String)> {
-    let mut out: Vec<(klipp_core::ClipId, &'static str, String)> = Vec::new();
+) -> Vec<(klipp_core::ClipId, AppCommand, String)> {
+    let mut out: Vec<(klipp_core::ClipId, AppCommand, String)> = Vec::new();
+    let mut seen = Vec::new();
     for gap in gaps {
-        if out.iter().any(|(c, _, _)| *c == gap.clip) {
+        let key = (gap.clip, gap.transition.map(|t| t.0));
+        if seen.contains(&key) {
             continue;
         }
+        seen.push(key);
         let Some(clip) = seq.all_clips().find(|c| c.id == gap.clip) else { continue };
         let name = clip.media_id().and_then(|m| pool.get(&m)).map_or_else(|| "Clip".to_string(), |i| i.filename.clone());
         let how = match running(gap.clip) {
             Some(p) => format!("tracking, {:.0}%", (p * 100.0).clamp(0.0, 100.0)),
             None => format!("{} of {} frames tracked", gap.covered, gap.needed),
         };
-        let model = klipp_nodes::matte_sequence::read_manifest(&gap.folder).map_or("subject", |m| crate::subject_track::model_name(&m.model));
-        out.push((gap.clip, model, format!("{name} at {}: {how}", clip.timeline_in.to_timecode_string())));
+        let (track, place) = match gap.transition {
+            Some((transition_id, _)) => (AppCommand::TrackTransitionSubject { transition_id }, " (transition)"),
+            None => {
+                let model = klipp_nodes::matte_sequence::read_manifest(&gap.folder).map_or("subject", |m| crate::subject_track::model_name(&m.model));
+                (AppCommand::TrackSubject { clip_id: gap.clip, model: model.to_string() }, "")
+            }
+        };
+        out.push((gap.clip, track, format!("{name} at {}{place}: {how}", clip.timeline_in.to_timecode_string())));
     }
     out
+}
+
+/// The tracked subject mattes `seq` reads that don't cover what it
+/// reads: on clips' grades (#239) and cut by piece transitions (#985
+/// phase 3), the latter found by the media as linked now.
+pub(super) fn matte_gaps(seq: &klipp_timeline::Sequence, pool: &klipp_media::MediaPool) -> Vec<klipp_compose::subject_matte::Uncovered> {
+    klipp_compose::subject_matte::uncovered_with(seq, |clip, model| {
+        let item = pool.get(&clip.media_id()?)?;
+        klipp_compose::subject_matte::media_dir(&item.path, klipp_compose::subject_matte::decode_rotation(clip, item.source_rotation), model)
+    }, |clip: &klipp_timeline::Clip| {
+        let item = pool.get(&clip.media_id()?)?;
+        Some(klipp_compose::subject_matte::last_frame_secs(item.duration.to_secs_f64(), item.fps.as_f64()))
+    })
 }
 
 /// The clips of `seq` whose media is offline, by file name and timeline
@@ -896,7 +919,7 @@ impl KlippApp {
     /// with its neighbour's matte (#239).
     pub(super) fn ask_matte_gaps(&mut self) -> bool {
         let seq = &self.state.sequences[self.state.active_sequence_idx];
-        let gaps = klipp_compose::subject_matte::uncovered(seq);
+        let gaps = matte_gaps(seq, &self.state.media_pool);
         if gaps.is_empty() {
             return false;
         }
@@ -2641,16 +2664,20 @@ mod export_rule_tests {
         let mut seq = klipp_timeline::Sequence::new_default();
         seq.tracks[0].clips = vec![klipp_timeline::Clip::media(a, tc(0.0), tc(2.0), tc(0.0), tc(2.0)), klipp_timeline::Clip::media(b, tc(2.0), tc(4.0), tc(0.0), tc(2.0))];
         let (ca, cb) = (seq.tracks[0].clips[0].id, seq.tracks[0].clips[1].id);
-        let gap = |clip, folder: &str| klipp_compose::subject_matte::Uncovered { clip, folder: PathBuf::from(folder), covered: 20, needed: 50, from_secs: 0.0, to_secs: 2.0 };
-        // Two folders on the first clip: one line for it.
-        let gaps = [gap(ca, "/nowhere/a"), gap(ca, "/nowhere/b"), gap(cb, "/nowhere/c")];
+        let gap = |clip, folder: &str| klipp_compose::subject_matte::Uncovered { clip, transition: None, folder: PathBuf::from(folder), covered: 20, needed: 50, from_secs: 0.0, to_secs: 2.0 };
+        // Two folders on the first clip: one line for it; a transition
+        // cutting round its subject (#985 phase 3), another.
+        let tid = klipp_core::TransitionId::new();
+        let gaps = [gap(ca, "/nowhere/a"), gap(ca, "/nowhere/b"), gap(cb, "/nowhere/c"), klipp_compose::subject_matte::Uncovered { transition: Some((tid, 0)), ..gap(ca, "") }];
         let lines = matte_gap_lines(&gaps, &seq, &pool, |c| (c == cb).then_some(0.42));
-        assert_eq!(lines.len(), 2);
+        assert_eq!(lines.len(), 3);
         assert_eq!(lines[0].0, ca);
-        assert_eq!(lines[0].1, "subject");
+        assert!(matches!(&lines[0].1, klipp_core::AppCommand::TrackSubject { clip_id, model } if *clip_id == ca && model == "subject"));
         assert!(lines[0].2.starts_with("walk.mov at "), "{}", lines[0].2);
         assert!(lines[0].2.ends_with("20 of 50 frames tracked"), "{}", lines[0].2);
         assert!(lines[1].2.ends_with("tracking, 42%"), "{}", lines[1].2);
+        assert!(matches!(&lines[2].1, klipp_core::AppCommand::TrackTransitionSubject { transition_id } if *transition_id == tid));
+        assert!(lines[2].2.contains("(transition): 20 of 50"), "{}", lines[2].2);
     }
 
     #[test]
@@ -2907,7 +2934,7 @@ impl KlippApp {
             self.state.toast.show(format!("{} is source media in this project; rendering over it would destroy it", name));
             return;
         }
-        if !klipp_compose::subject_matte::uncovered(&self.state.sequences[seq_idx]).is_empty() {
+        if !matte_gaps(&self.state.sequences[seq_idx], &self.state.media_pool).is_empty() {
             self.state.toast.show("A tracked subject matte in it isn't finished; track the rest before rendering again");
             return;
         }

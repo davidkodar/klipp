@@ -244,6 +244,14 @@ pub trait FrameSource {
         None
     }
 
+    /// The folder of the subject matte `model` made of `clip`'s media
+    /// (#985 phase 3; 0 the subject, 1 the foreground), by the media as it
+    /// is linked now. `None` (the default) when the source can't say: a
+    /// transition cutting round the subject then declines.
+    fn subject_matte_dir(&mut self, _clip: &Clip, _model: u32) -> Option<std::path::PathBuf> {
+        None
+    }
+
     /// Another media item's frame at `secs` in it (a media source, #1746),
     /// by the pool item's id: linear RGBA f32 in `working`, fitted to
     /// `width × height` ([`fit_linear`]). The default reads no other
@@ -868,6 +876,9 @@ pub struct Renderer {
     /// every frame at one size; rasterising and packing a 720p one cost
     /// 2.6 ms a frame (#1850).
     still_generators: HashMap<ClipId, (klipp_core::GeneratorData, u32, u32, Arc<Vec<u32>>)>,
+    /// The subject matte sequences piece transitions read (#985 phase 3):
+    /// each folder's manifest and frames, as last looked.
+    subject_mattes: HashMap<std::path::PathBuf, (klipp_nodes::matte_sequence::Manifest, Vec<i64>)>,
     /// Effect runs that couldn't be applied as a plan of their own and
     /// took the CPU kernels instead (`effects_by`), for the stats' counts.
     plan_misses: u64,
@@ -1030,6 +1041,7 @@ impl Renderer {
             source_decoded: None,
             grade_source_scene: false,
             still_generators: HashMap::new(),
+            subject_mattes: HashMap::new(),
             assets: Box::new(klipp_analysis::assets::CacheStore::default()),
             derived: HashMap::new(),
             clip_analysis: None,
@@ -2007,9 +2019,10 @@ impl Renderer {
                     let p = [params.param0, params.param1, params.param2, params.param3];
                     let colour = self.authored_colour(params.color);
                     let t = Instant::now();
-                    let done = if klipp_effects::pieces::is_posed(kind_id, p[3]) {
-                        // Posed pieces (#985), blurred across the shutter.
-                        let plan = klipp_effects::pieces::plan(kind_id, eased, width, height, p, shutter.0, shutter.1);
+                    let done = if klipp_effects::pieces::is_posed_with(kind_id, p[3], subject_code(*kind, params)) {
+                        // Posed pieces (#985), blurred across the shutter,
+                        // cut round the subject when asked.
+                        let plan = self.piece_plan(a, b, *kind, eased, params, *shutter, time, fps, width, height, src, &transforms);
                         self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_pieces(slots[0], slots[1], slots[2], &plan))
                     } else {
                         self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_transition(slots[0], slots[1], slots[2], kind_id, eased, p, colour))
@@ -3665,6 +3678,113 @@ impl Renderer {
     /// takes it) in the working space, still sRGB-encoded for the shader
     /// to decode: picked in BT.709 like a title's, so in an ACEScg or a
     /// BT.2020 project it means the colour picked (#1653).
+    /// The posed-pieces plan of a piece transition at `time`, with the
+    /// subject's matte on it when it cuts round one (#985 phase 3): the
+    /// matte of the subject side (`a` leaving, `b` assembling) at that
+    /// clip's source time, at the frame's size. A matte not made, or a
+    /// frame of it missing, is a decline: the viewer says so and an
+    /// export refuses; the nearest frame stands in on screen meanwhile,
+    /// and with none the pieces are plain. The matte reaches the frame as
+    /// the clip's picture does: fitted as its source is, then placed by
+    /// its placement effects (Transform, crop, pin, mirror). One matte
+    /// serves every shutter sample: a subject moves little in a frame.
+    #[allow(clippy::too_many_arguments)]
+    fn piece_plan(
+        &mut self,
+        a: &Clip,
+        b: &Clip,
+        kind: klipp_core::TransitionKind,
+        eased: f32,
+        params: &klipp_core::TransitionUserParams,
+        shutter: (f32, u32),
+        time: Timecode,
+        fps: f64,
+        width: u32,
+        height: u32,
+        src: &mut dyn FrameSource,
+        transforms: &HashMap<ClipId, ResolvedTransform>,
+    ) -> klipp_effects::pieces::PiecePlan {
+        let kind_id = klipp_core::spec_for_kind(kind).kind_id as u32;
+        let p = [params.param0, params.param1, params.param2, params.param3];
+        let subject = subject_code(kind, params);
+        let mut plan = klipp_effects::pieces::plan_with(kind_id, eased, width, height, p, subject, shutter.0, shutter.1);
+        let Some((model, incoming)) = crate::subject_matte::transition_subject_of(kind, params) else { return plan };
+        let side = if incoming { b } else { a };
+        let decline = |r: &mut Self, reason: &str, why: String| {
+            r.found.declines.push(klipp_nodes::Decline {
+                clip: Some(side.id),
+                node: NodeId::nil(),
+                kind: klipp_nodes::NodeKind::ExternalMatte,
+                outcome: klipp_nodes::DeclineOutcome::FileMissing,
+                name: "Transition subject".into(),
+                reason: reason.into(),
+                why,
+            });
+        };
+        let Some(dir) = src.subject_matte_dir(side, model) else {
+            decline(self, "no subject matte for this media; track its subject", "no matte folder for the clip's media".into());
+            return plan;
+        };
+        // Before the media's start the decoder shows its first frame, past
+        // its end its last; so does the matte (and the export's check
+        // counts them so).
+        let mut secs = source_secs(side, time, fps).max(0.0);
+        if let Some((_, end)) = src.media_range(side) {
+            let rate = src.media_fps(side).filter(|r| *r > 0.0).unwrap_or(fps);
+            secs = secs.min(crate::subject_matte::last_frame_secs(end, rate));
+        }
+        use klipp_nodes::matte_sequence as seq;
+        let fresh = |dir: &std::path::Path| seq::read_manifest(dir).map(|m| (m, seq::frames(dir)));
+        let mut known = match self.subject_mattes.get(&dir) {
+            Some(k) => Some(k.clone()),
+            None => fresh(&dir),
+        };
+        let mut at = known.as_ref().and_then(|(m, keys)| seq::matte_at(&dir, m, keys, secs));
+        // A time with no frame of its own looks again: the pass may have
+        // made it since.
+        if at.as_ref().is_none_or(|a| !a.exact) {
+            known = fresh(&dir);
+            at = known.as_ref().and_then(|(m, keys)| seq::matte_at(&dir, m, keys, secs));
+        }
+        if let Some(k) = known {
+            self.subject_mattes.insert(dir.clone(), k);
+        }
+        let Some(at) = at else {
+            decline(self, "no subject matte for this media yet; track its subject", format!("{}: no matte frames", dir.display()));
+            return plan;
+        };
+        if !at.exact {
+            decline(
+                self,
+                &format!("the frame at {secs:.3} s of its media has no subject matte yet"),
+                format!("{}: no matte at {secs:.6} s; the one at {:.6} s stands in", dir.display(), at.read as f64 / 1_000_000.0),
+            );
+        }
+        plan.matte = self.placed_matte(side, &at.values, at.width, at.height, time, fps, width, height, transforms);
+        plan
+    }
+
+    /// A source-space matte `mw × mh` where `clip`'s picture lands in the
+    /// frame (#985 phase 3): fitted as the source is (one scale, centred,
+    /// bars empty), then through the clip's placement effects, as one
+    /// channel. `None` for a malformed matte.
+    #[allow(clippy::too_many_arguments)]
+    fn placed_matte(&self, clip: &Clip, values: &[f32], mw: u32, mh: u32, time: Timecode, fps: f64, width: u32, height: u32, transforms: &HashMap<ClipId, ResolvedTransform>) -> Option<Vec<f32>> {
+        let rgba: Vec<f32> = values.iter().flat_map(|m| [*m, *m, *m, 1.0]).collect();
+        let fitted = fit_linear(rgba, mw, mh, width, height)?;
+        let (fx, _) = clip_effects(clip, time, fps, transforms.get(&clip.id).copied(), self.pins.get(&clip.id).copied());
+        let mut place: Vec<BuiltinEffect> = fx
+            .into_iter()
+            .filter(|e| matches!(e, BuiltinEffect::Transform { .. } | BuiltinEffect::PictureTransform { .. } | BuiltinEffect::Crop { .. } | BuiltinEffect::CornerPin { .. } | BuiltinEffect::Mirror { .. }))
+            .filter(|e| !klipp_effects::is_identity_effect(e))
+            .collect();
+        self.at_render_scale(&mut place);
+        let placed = if place.is_empty() { fitted } else { klipp_effects::apply_effects(&place, fitted, width, height) };
+        // Where the placed picture is partly there (its edge, a feather),
+        // the matte is as much there.
+        Some(placed.chunks_exact(4).map(|p| (p[0] * p[3].clamp(0.0, 1.0)).clamp(0.0, 1.0)).collect())
+    }
+
     fn authored_colour(&self, c: [f32; 4]) -> [f32; 4] {
         let Some(m) = klipp_color::primaries::working_space_conversion_matrix(WorkingColorspace::Rec709Linear, self.working) else {
             return c;
@@ -4563,10 +4683,10 @@ impl Renderer {
             }
         }
         let colour = self.authored_colour(params.color);
-        let p4 = [params.param0, params.param1, params.param2, params.param3];
-        let mut mixed = if klipp_effects::pieces::is_posed(kind_id, params.param3) {
-            // Posed pieces (#985), blurred across the shutter.
-            let plan = klipp_effects::pieces::plan(kind_id, eased, width, height, p4, shutter.0, shutter.1);
+        let mut mixed = if klipp_effects::pieces::is_posed_with(kind_id, params.param3, subject_code(kind, params)) {
+            // Posed pieces (#985), blurred across the shutter, cut round
+            // the subject when asked.
+            let plan = self.piece_plan(a, b, kind, eased, params, shutter, time, fps, width, height, src, transforms);
             match self.gpu() {
                 Some(gpu) => gpu.render_pieces_linear(&from, &to, &plan),
                 None => klipp_effects::pieces::render(&from, &to, &plan),
@@ -4778,6 +4898,12 @@ pub fn frame_index(secs: f64, fps: f64) -> i64 {
 /// Source time for `time`, through the clip's speed curve. Outside the
 /// clip (a transition running into a handle) it extends at the edge speed.
 /// A reversed clip walks back from the end of its range (#617).
+/// The subject a piece transition cuts out, as the renderers take it
+/// (`klipp_effects::pieces::plan_with`; #985 phase 3): 0 none.
+fn subject_code(kind: klipp_core::TransitionKind, params: &klipp_core::TransitionUserParams) -> u32 {
+    params.subject.filter(|_| klipp_core::piece_transition::is_piece_kind(kind)).map_or(0, |c| c.code())
+}
+
 pub fn source_secs(clip: &Clip, time: Timecode, fps: f64) -> f64 {
     clip.source_secs_at((time - clip.timeline_in).to_secs_f64(), fps)
 }

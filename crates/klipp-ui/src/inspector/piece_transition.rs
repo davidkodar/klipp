@@ -1,10 +1,11 @@
 //! The transition inspector's controls for the piece transitions (#985):
 //! how many strips, rows or shards, which way they go, how they move
 //! (slide, tilt, turn, fall, shrink), in what order, how they ease,
-//! whether they leave or arrive, the gap between them and their shadows. Typed as
+//! whether they leave or arrive, the gap between them, their shadows and
+//! the subject cut out as its own piece (phase 3). Typed as
 //! `PieceParams`; what changed comes back as the transition's parameters.
 
-use klipp_core::piece_transition::{PieceEase, PieceMotion, PieceOrder, PieceParams};
+use klipp_core::piece_transition::{PieceEase, PieceMotion, PieceOrder, PieceParams, SubjectCut, SubjectModel, SubjectMotion};
 use klipp_core::{TransitionKind, TransitionUserParams};
 
 use crate::theme::KlippTheme;
@@ -139,6 +140,35 @@ pub fn show(ui: &mut egui::Ui, theme: &KlippTheme, kind: TransitionKind, params:
             ui.add(egui::DragValue::new(&mut p.seed).range(0..=255).speed(0.3)).on_hover_text("Another cut of the shards, another way for each piece to turn");
         });
     }
+    // The subject, cut out by its tracked matte, moving on its own
+    // (#985 phase 3); its matte's card is the caller's, below.
+    ui.horizontal(|ui| {
+        label(ui, theme, "Subject");
+        let shown = p.subject.map_or("Off", |c| c.motion.label());
+        egui::ComboBox::from_id_salt("piece_subject").selected_text(shown).show_ui(ui, |ui| {
+            if ui.selectable_label(p.subject.is_none(), "Off").clicked() {
+                p.subject = None;
+            }
+            for v in SubjectMotion::ALL {
+                if ui.selectable_label(p.subject.is_some_and(|c| c.motion == v), v.label()).clicked() {
+                    p.subject = Some(SubjectCut { motion: v, model: p.subject.map(|c| c.model).unwrap_or_default() });
+                }
+            }
+        })
+        .response
+        .on_hover_text(if p.assemble { "The incoming shot's subject as its own piece: it arrives on its own, the rest locks together round it" } else { "The outgoing shot's subject as its own piece: the rest breaks away round it" });
+    });
+    if let Some(cut) = p.subject.as_mut() {
+        ui.horizontal(|ui| {
+            label(ui, theme, "Cut by");
+            if ui.selectable_label(cut.model == SubjectModel::Subject, "Subject").on_hover_text("One detected subject, followed").clicked() {
+                cut.model = SubjectModel::Subject;
+            }
+            if ui.selectable_label(cut.model == SubjectModel::Foreground, "Foreground").on_hover_text("Everything in front").clicked() {
+                cut.model = SubjectModel::Foreground;
+            }
+        });
+    }
     if p.motion != PieceMotion::Slide && kind == TransitionKind::SlidePanels {
         p.count = p.count.min(8);
     }
@@ -236,6 +266,22 @@ mod tests {
         panels.click("Tilt away");
         assert_eq!(panels.read().motion, PieceMotion::Tilt);
         assert!(panels.frame(Vec::new()).iter().any(|(t, _)| t == "Shadows"));
+
+        // #985 phase 3: the subject from its list, then the model that
+        // cuts it; off, no model to choose.
+        let mut strips = Panel::new(TransitionKind::SlideStrips);
+        strips.frame(Vec::new());
+        assert!(strips.frame(Vec::new()).iter().all(|(t, _)| t != "Foreground"), "no subject, no model");
+        strips.click("Off");
+        strips.click("Stays, goes last");
+        assert_eq!(strips.read().subject, Some(SubjectCut { motion: SubjectMotion::Stays, model: SubjectModel::Subject }));
+        strips.click("Foreground");
+        let p = strips.read();
+        assert_eq!((p.subject, p.count), (Some(SubjectCut { motion: SubjectMotion::Stays, model: SubjectModel::Foreground }), 8), "{p:?}");
+        assert_eq!(strips.params.color, [1.0; 4], "the colour untouched");
+        strips.click("Stays, goes last");
+        strips.click("Off");
+        assert_eq!(strips.read().subject, None);
 
         // Nothing touched, nothing sent.
         let theme = KlippTheme::default();

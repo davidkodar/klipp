@@ -25,6 +25,9 @@
 //!   between pieces in pixels (bits 7-11), the motion (bits 12-14),
 //!   shadows (bit 15) and the shards' and the tumbling's seed (bits
 //!   16-23).
+//!
+//! The subject cut out as its own piece (#985 phase 3) is a field of its
+//! own, `TransitionUserParams::subject`: none unless set.
 
 use serde::{Deserialize, Serialize};
 
@@ -122,6 +125,64 @@ impl PieceMotion {
     }
 }
 
+/// How the subject cut out of a piece transition moves (#985 phase 3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubjectMotion {
+    /// Stays while the rest breaks away round it, then goes last.
+    #[default]
+    Stays,
+    /// Steps forward, a little larger, while the rest leaves, then fades.
+    StepsForward,
+    /// Goes first; the rest follows.
+    GoesFirst,
+}
+
+impl SubjectMotion {
+    pub const ALL: [SubjectMotion; 3] = [SubjectMotion::Stays, SubjectMotion::StepsForward, SubjectMotion::GoesFirst];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SubjectMotion::Stays => "Stays, goes last",
+            SubjectMotion::StepsForward => "Steps forward",
+            SubjectMotion::GoesFirst => "Goes first",
+        }
+    }
+}
+
+/// Which model's matte cuts the subject out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubjectModel {
+    /// One detected subject, followed.
+    #[default]
+    Subject,
+    /// Everything in front.
+    Foreground,
+}
+
+/// The subject a piece transition cuts out as its own piece (#985 phase
+/// 3), by a tracked matte of the outgoing shot (pieces leaving) or the
+/// incoming one (pieces assembling).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SubjectCut {
+    pub motion: SubjectMotion,
+    pub model: SubjectModel,
+}
+
+impl SubjectCut {
+    /// The motion as the renderers take it (`klipp_effects::pieces::plan_with`):
+    /// 1 stays, 2 steps forward, 3 goes first.
+    pub fn code(self) -> u32 {
+        match self.motion {
+            SubjectMotion::Stays => 1,
+            SubjectMotion::StepsForward => 2,
+            SubjectMotion::GoesFirst => 3,
+        }
+    }
+}
+
 /// A piece transition's settings.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -149,11 +210,13 @@ pub struct PieceParams {
     pub shadow: bool,
     /// Which shards, and which way each tumbles (0-255).
     pub seed: u32,
+    /// The subject cut out as its own piece; none by default.
+    pub subject: Option<SubjectCut>,
 }
 
 impl Default for PieceParams {
     fn default() -> Self {
-        PieceParams { count: 8, angle: 0.0, stagger: 0.35, order: PieceOrder::InSequence, ease: PieceEase::Smooth, assemble: false, alternate: true, gap: 0, shear: false, motion: PieceMotion::Slide, shadow: false, seed: 0 }
+        PieceParams { count: 8, angle: 0.0, stagger: 0.35, order: PieceOrder::InSequence, ease: PieceEase::Smooth, assemble: false, alternate: true, gap: 0, shear: false, motion: PieceMotion::Slide, shadow: false, seed: 0, subject: None }
     }
 }
 
@@ -182,6 +245,7 @@ impl PieceParams {
             motion: PieceMotion::ALL.get(((bits >> 12) & 7) as usize).copied().unwrap_or_default(),
             shadow: bits & (1 << 15) != 0,
             seed: (bits >> 16) & 255,
+            subject: params.subject,
         }
     }
 
@@ -204,6 +268,7 @@ impl PieceParams {
         let ease = PieceEase::ALL.iter().position(|e| *e == self.ease).unwrap_or(0) as u32;
         let motion = PieceMotion::ALL.iter().position(|m| *m == self.motion).unwrap_or(0) as u32;
         params.param3 = (order | ease << 3 | (self.assemble as u32) << 5 | (self.alternate as u32) << 6 | self.gap.min(31) << 7 | motion << 12 | (self.shadow as u32) << 15 | self.seed.min(255) << 16) as f32;
+        params.subject = self.subject;
     }
 
     /// `kind`'s default parameters with these settings.
@@ -222,7 +287,7 @@ mod tests {
     /// the registry's defaults read as the settings meant.
     #[test]
     fn settings_round_trip_through_the_slots() {
-        let all = PieceParams { count: 12, angle: 37.5, stagger: 0.6, order: PieceOrder::Random, ease: PieceEase::Overshoot, assemble: true, alternate: false, gap: 9, shear: false, motion: PieceMotion::Fall, shadow: true, seed: 201 };
+        let all = PieceParams { count: 12, angle: 37.5, stagger: 0.6, order: PieceOrder::Random, ease: PieceEase::Overshoot, assemble: true, alternate: false, gap: 9, shear: false, motion: PieceMotion::Fall, shadow: true, seed: 201, subject: Some(SubjectCut { motion: SubjectMotion::StepsForward, model: SubjectModel::Foreground }) };
         for kind in [TransitionKind::SlideStrips, TransitionKind::Shatter, TransitionKind::SlidePanels] {
             let all = if kind == TransitionKind::SlidePanels { PieceParams { count: 6, ..all } } else { all };
             assert_eq!(PieceParams::read(kind, &all.to_user(kind)), all, "{kind:?}");
@@ -250,5 +315,25 @@ mod tests {
         // Posed panels are held to fewer rows.
         assert_eq!(PieceParams { count: 12, motion: PieceMotion::Tilt, ..Default::default() }.to_user(TransitionKind::SlidePanels).param0, 8.0);
         assert!(is_piece_kind(TransitionKind::SlidePanels) && !is_piece_kind(TransitionKind::PushLeft));
+        // #985 phase 3: no subject by default, each one kept, and the
+        // colour left alone.
+        for kind in [TransitionKind::SlideStrips, TransitionKind::SlidePanels, TransitionKind::PartHalves, TransitionKind::Shatter] {
+            let plain = crate::spec_for_kind(kind).default_params;
+            assert_eq!(PieceParams::read(kind, &plain).subject, None);
+            for motion in SubjectMotion::ALL {
+                for model in [SubjectModel::Subject, SubjectModel::Foreground] {
+                    let cut = Some(SubjectCut { motion, model });
+                    let user = PieceParams { subject: cut, ..PieceParams::read(kind, &plain) }.to_user(kind);
+                    assert_eq!(PieceParams::read(kind, &user).subject, cut, "{kind:?}");
+                    assert_eq!(user.color, plain.color, "{kind:?}: the colour is the colour");
+                }
+            }
+        }
+        // Saved without it when none, read back as none from a file without it.
+        let json = serde_json::to_value(crate::spec_for_kind(TransitionKind::Shatter).default_params).unwrap();
+        assert!(json.get("subject").is_none(), "{json}");
+        let cut = PieceParams { subject: Some(SubjectCut::default()), ..Default::default() }.to_user(TransitionKind::Shatter);
+        let back: TransitionUserParams = serde_json::from_value(serde_json::to_value(cut).unwrap()).unwrap();
+        assert_eq!(back.subject, Some(SubjectCut::default()));
     }
 }

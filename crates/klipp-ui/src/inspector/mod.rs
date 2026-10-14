@@ -7373,6 +7373,13 @@ fn show_transition_inspector(
                 if let Some(user_params) = piece_transition::show(ui, theme, transition.kind, &transition.user_params) {
                     cmds.push(AppCommand::SetTransitionParam { track_index: track_idx, transition_id: transition.id, user_params });
                 }
+                // The subject's matte: how much of the transition it
+                // covers, and Track (#985 phase 3).
+                if let Some((_, incoming)) = klipp_compose::subject_matte::transition_subject_of(transition.kind, &transition.user_params) {
+                    let side = if incoming { transition.clip_b_id } else { transition.clip_a_id };
+                    let card = crate::subject_track::transition_card(transition.id);
+                    cmds.extend(crate::subject_track::transition_card_ui(ui, card.as_ref(), transition.id, side, theme));
+                }
             }
             if matches!(transition.kind, klipp_timeline::TransitionKind::WaterDrop) {
                 ui.add_space(6.0);

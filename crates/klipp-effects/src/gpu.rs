@@ -452,7 +452,7 @@ pub struct GpuEffectsPipeline {
     // Bind group layouts
     bind_group_layout: wgpu::BindGroupLayout,         // effects: input, output, params
     transition_bgl: wgpu::BindGroupLayout,             // transitions: from, to, output, params
-    pieces_bgl: wgpu::BindGroupLayout,                 // posed pieces: from, to, output, params, pieces
+    pieces_bgl: wgpu::BindGroupLayout,                 // posed pieces: from, to, output, params, pieces, matte
     // Reusable buffers — resized when frame dimensions change
     buf_a: Option<wgpu::Buffer>,
     buf_b: Option<wgpu::Buffer>,
@@ -951,6 +951,8 @@ impl GpuEffectsPipeline {
                     count: None,
                 },
                 storage(4, true),
+                // The subject's matte (#985 phase 3).
+                storage(5, true),
             ],
         });
         let pieces_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -7075,8 +7077,21 @@ impl GpuEffectsPipeline {
 
     /// `SHADER_PIECES` over `from` and `to` into `out`, with `plan`.
     fn dispatch_pieces(&self, from: &wgpu::Buffer, to: &wgpu::Buffer, out: &wgpu::Buffer, plan: &crate::pieces::PiecePlan, label: &str) {
-        self.write_params(&PiecesParams { width: plan.width, height: plan.height, count: plan.count, samples: plan.samples, background_to: plan.background_to as u32, _pad0: 0, _pad1: 0, _pad2: 0 });
+        let full = (plan.width as usize) * (plan.height as usize);
+        let matte = plan.matte.as_deref().filter(|m| plan.subject != 0 && m.len() >= full);
+        let subject = if plan.subject == 0 { 0 } else if matte.is_some() { 2 } else { 1 };
+        self.write_params(&PiecesParams { width: plan.width, height: plan.height, count: plan.count, samples: plan.samples, background_to: plan.background_to as u32, subject, _pad1: 0, _pad2: 0 });
         let pieces = self.pieces_buffer(plan);
+        // A buffer of its own, as the plan's: one value when there's none.
+        let matte_data: &[f32] = matte.map_or(&[0.0][..], |m| &m[..full]);
+        let matte_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pieces_matte"),
+            size: (matte_data.len() * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: true,
+        });
+        matte_buf.slice(..).get_mapped_range_mut().copy_from_slice(bytemuck::cast_slice(matte_data));
+        matte_buf.unmap();
         let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some(label),
             layout: &self.pieces_bgl,
@@ -7086,6 +7101,7 @@ impl GpuEffectsPipeline {
                 wgpu::BindGroupEntry { binding: 2, resource: out.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: self.params_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: pieces.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: matte_buf.as_entire_binding() },
             ],
         });
         let mut enc = self.encoder(Some(label));
@@ -7888,7 +7904,8 @@ struct PiecesParams {
     count: u32,
     samples: u32,
     background_to: u32,
-    _pad0: u32,
+    /// 1 when the subject is cut out (#985 phase 3), 2 with its matte.
+    subject: u32,
     _pad1: u32,
     _pad2: u32,
 }
@@ -13536,7 +13553,7 @@ struct Params {
     count: u32,
     samples: u32,
     background_to: u32,
-    _pad0: u32,
+    subject: u32,
     _pad1: u32,
     _pad2: u32,
 }
@@ -13546,6 +13563,7 @@ struct Params {
 @group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(3) var<uniform> params: Params;
 @group(0) @binding(4) var<storage, read> pieces: array<f32>;
+@group(0) @binding(5) var<storage, read> matte: array<f32>;
 
 const STRIDE: u32 = 60u;
 const O_BOX: u32 = 9u;
@@ -13555,7 +13573,45 @@ const O_SHADE: u32 = 15u;
 const O_OPACITY: u32 = 16u;
 const O_SHADOW: u32 = 17u;
 const O_AA: u32 = 21u;
+const O_MATTE: u32 = 22u;
 const O_PLANES: u32 = 24u;
+
+// The matte at a picture point, as `piece_sample` reads the pictures;
+// nothing without one (`pieces::matte_sample`).
+fn matte_sample(sx: f32, sy: f32) -> f32 {
+    if params.subject != 2u {
+        return 0.0;
+    }
+    let fx = min(max(sx, 0.0), f32(params.width) - 1.0);
+    let fy = min(max(sy, 0.0), f32(params.height) - 1.0);
+    let x0 = u32(floor(fx));
+    let y0 = u32(floor(fy));
+    let x1 = min(x0 + 1u, params.width - 1u);
+    let y1 = min(y0 + 1u, params.height - 1u);
+    let tx = fx - f32(x0);
+    let ty = fy - f32(y0);
+    let m00 = matte[y0 * params.width + x0];
+    let m10 = matte[y0 * params.width + x1];
+    let m01 = matte[y1 * params.width + x0];
+    let m11 = matte[y1 * params.width + x1];
+    let top = m00 + (m10 - m00) * tx;
+    let bot = m01 + (m11 - m01) * tx;
+    return clamp(top + (bot - top) * ty, 0.0, 1.0);
+}
+
+// The share of the piece at `base` the matte leaves at a picture point
+// (`pieces::matte_share`).
+fn matte_share(base: u32, sx: f32, sy: f32) -> f32 {
+    let part = pieces[base + O_MATTE];
+    if params.subject == 0u || part == 0.0 {
+        return 1.0;
+    }
+    let v = matte_sample(sx - 0.5, sy - 0.5);
+    if part > 0.0 {
+        return v;
+    }
+    return 1.0 - v;
+}
 
 fn piece_sample(to_side: bool, sx: f32, sy: f32) -> vec4<f32> {
     let fx = min(max(sx, 0.0), f32(params.width) - 1.0);
@@ -13640,7 +13696,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         var acc = vec4<f32>(0.0, 0.0, 0.0, 0.0);
         var alpha: f32 = 0.0;
         var shadow: f32 = 0.0;
-        for (var i: u32 = 0u; i < 128u; i = i + 1u) {
+        var subject_alpha: f32 = 0.0;
+        for (var i: u32 = 0u; i < 129u; i = i + 1u) {
             if i >= params.count {
                 break;
             }
@@ -13648,14 +13705,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             if alpha < 0.999 {
                 let hit = piece_at(base, hx, hy);
                 if hit.w > 0.0 {
-                    let cov = coverage(base, hit.x) * pieces[base + O_OPACITY];
-                    if cov > 0.0 {
+                    let cov0 = coverage(base, hit.x) * pieces[base + O_OPACITY];
+                    if cov0 > 0.0 {
                         var at = piece_at(base, x, y);
                         if at.w <= 0.0 {
                             at = vec4<f32>(hit.x, 0.0, 0.0, 1.0);
                         }
+                        let cov = cov0 * matte_share(base, at.y, at.z);
                         let c = piece_sample(pieces[base + O_SIDE] > 0.5, at.y - 0.5, at.z - 0.5);
-                        let k = (1.0 - alpha) * cov;
+                        var k = (1.0 - alpha) * cov;
+                        if pieces[base + O_MATTE] < 0.0 && params.subject != 0u {
+                            k = min((1.0 - alpha) * cov / (1.0 - subject_alpha), 1.0 - alpha);
+                        }
+                        if pieces[base + O_MATTE] > 0.0 {
+                            subject_alpha = subject_alpha + k;
+                        }
                         let shade = pieces[base + O_SHADE];
                         acc = acc + vec4<f32>(k * c.x * shade, k * c.y * shade, k * c.z * shade, k * c.w);
                         alpha = alpha + k;
@@ -13665,7 +13729,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             if pieces[base + O_SHADOW + 2u] > 0.0 {
                 let sh = piece_at(base, hx - pieces[base + O_SHADOW], hy - pieces[base + O_SHADOW + 1u]);
                 if sh.w > 0.0 {
-                    let a = pieces[base + O_SHADOW + 2u] * clamp(sh.x / pieces[base + O_JAC] / pieces[base + O_SHADOW + 3u] + 0.5, 0.0, 1.0);
+                    let a = pieces[base + O_SHADOW + 2u] * clamp(sh.x / pieces[base + O_JAC] / pieces[base + O_SHADOW + 3u] + 0.5, 0.0, 1.0) * matte_share(base, sh.y, sh.z);
                     shadow = 1.0 - (1.0 - shadow) * (1.0 - a);
                 }
             }

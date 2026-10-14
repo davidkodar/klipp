@@ -2599,9 +2599,9 @@ pub struct AppState {
     pub export_source_overwrite_warning: Option<(String, Box<klipp_core::ExportSettings>)>,
     /// Clips whose tracked subject matte doesn't cover what an export
     /// would read, one line each: the export waits for them, never
-    /// shipping a stale matte (#239). Each: the clip, the model its
-    /// matte was made by ("subject" | "foreground"), the line.
-    pub export_matte_warning: Option<Vec<(klipp_core::ClipId, &'static str, String)>>,
+    /// shipping a stale matte (#239, #985). Each: the clip, the command
+    /// that tracks the rest, the line.
+    pub export_matte_warning: Option<Vec<(klipp_core::ClipId, klipp_core::AppCommand, String)>>,
 
     // Usage count cache: MediaId → number of clips referencing it.
     // Rebuilt lazily when media_usage_cache_dirty is set (after any timeline edit).
@@ -2638,9 +2638,9 @@ pub struct AppState {
     /// The clip whose Frame Glide is being framed in the viewer (#611):
     /// the viewer shows it without its move, its Start and End over it.
     pub frame_glide_clip: Option<ClipId>,
-    /// A Track Subject waiting on its model's download (#239): the clip
-    /// and the model, started once the model is there.
-    pub pending_track_subject: Option<(ClipId, String)>,
+    /// A Track Subject waiting on its model's download (#239, #985): the
+    /// command, sent once the model it names is there.
+    pub pending_track_subject: Option<(klipp_core::AppCommand, String)>,
     /// The clips whose subject is being tracked (#239), with their media
     /// and folder, and how many frames the render could see when last
     /// looked (to refresh the picture as more come).
