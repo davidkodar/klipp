@@ -1875,7 +1875,7 @@ pub struct AppState {
     /// captures samples from the `begin_recording` mark forward.
     pub perf_recording_active: bool,
     /// UI-side signal that something (menu / toolbar / keybinding
-    /// other than the `P`/`Ctrl+Shift+P` shortcut) requested the
+    /// other than the `Ctrl+Alt+P` shortcut) requested the
     /// recording be toggled. `KlippApp::update` consumes this on
     /// each paint and dispatches to `toggle_perf_recording`.
     pub pending_perf_recording_toggle: bool,
@@ -2798,6 +2798,8 @@ pub struct AppState {
     pub title_object_drag: Option<TitleObjectDrag>,
     /// Active drag on a viewer mask handle
     pub viewer_mask_drag: Option<ViewerMaskDrag>,
+    /// What the Mask tool is doing in the viewer (#74).
+    pub mask_edit: crate::mask_edit::MaskEdit,
 
     /// Whether the curve editor panel is visible
     pub show_curve_editor: bool,
@@ -4828,6 +4830,7 @@ impl Default for AppState {
             selected_title_object: None,
             title_object_drag: None,
             viewer_mask_drag: None,
+            mask_edit: Default::default(),
             show_curve_editor: false,
             show_audio_mixer: false,
             show_history_panel: false,
@@ -4958,6 +4961,14 @@ impl AppState {
         } else {
             self.multicam_opened = None;
         }
+    }
+
+    /// Whether the viewer's Mask tool takes Delete, Enter and Escape
+    /// (#74): the tool is up, the viewer has the focus, and there are
+    /// points selected or a shape being drawn. Then they are the
+    /// mask's, and never reach the timeline's clip.
+    pub fn mask_keys_owned(&self) -> bool {
+        self.active_tool == klipp_core::Tool::Mask && self.active_panel == Some(PanelKind::Viewer) && self.mask_edit.has_keys()
     }
 
     /// The scope dock under the viewer exists only in the Color

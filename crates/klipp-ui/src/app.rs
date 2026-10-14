@@ -139,6 +139,8 @@ mod title_library_tests;
 #[cfg(test)]
 mod viewer_harness;
 #[cfg(test)]
+mod mask_tool_tests;
+#[cfg(test)]
 mod qualifier_3d_tests;
 #[cfg(test)]
 mod wipe_tests;

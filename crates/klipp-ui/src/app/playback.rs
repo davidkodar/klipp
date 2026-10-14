@@ -217,6 +217,7 @@ impl KlippApp {
                     Tool::Range => crate::layout_state::EditTool::Range,
                     Tool::Trim => crate::layout_state::EditTool::Trim,
                     Tool::Text => crate::layout_state::EditTool::Text,
+                    Tool::Mask => crate::layout_state::EditTool::Mask,
                 };
                 // Clear range drag state on tool change
                 self.state.range_drag = None;

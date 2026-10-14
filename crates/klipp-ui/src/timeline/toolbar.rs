@@ -24,6 +24,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, cmds: &
             (klipp_core::Tool::Range, "Range Tool", "range_tool", draw_tl_range_icon),
             // Works in the viewer: a click or a drag there makes a title (#1713).
             (klipp_core::Tool::Text, "Text Tool: click or drag in the viewer to add a title", "text_tool", draw_tl_text_icon),
+            // Works in the viewer: draws and edits a freeform mask (#74).
+            (klipp_core::Tool::Mask, "Mask Tool: click in the viewer to draw a mask's points, drag to pull out curves", "mask_tool", draw_tl_mask_icon),
         ];
         for (tool, tip, action, draw_fn) in tool_defs {
             let active = state.active_tool == *tool;
@@ -530,6 +532,19 @@ fn draw_tl_text_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32)
     // Stem and foot
     painter.line_segment([egui::pos2(ir.center().x, ir.min.y + 2.0), egui::pos2(ir.center().x, ir.max.y - 1.0)], s);
     painter.line_segment([egui::pos2(ir.center().x - 2.0, ir.max.y - 1.0), egui::pos2(ir.center().x + 2.0, ir.max.y - 1.0)], s);
+}
+
+fn draw_tl_mask_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {
+    let ir = icon_area(btn);
+    let s = egui::Stroke::new(1.3_f32, c);
+    // A curve between two points, a handle out of the first
+    let (a, b) = (egui::pos2(ir.min.x + 2.0, ir.max.y - 2.0), egui::pos2(ir.max.x - 2.0, ir.min.y + 3.0));
+    let (ca, cb) = (egui::pos2(ir.min.x + 2.0, ir.min.y + 2.0), egui::pos2(ir.center().x, ir.max.y - 1.0));
+    let curve = egui::epaint::CubicBezierShape::from_points_stroke([a, ca, cb, b], false, egui::Color32::TRANSPARENT, s);
+    painter.add(curve);
+    painter.line_segment([a, ca], egui::Stroke::new(1.0_f32, c.gamma_multiply(0.6)));
+    painter.rect_filled(egui::Rect::from_center_size(a, egui::vec2(3.0, 3.0)), 0.0, c);
+    painter.rect_filled(egui::Rect::from_center_size(b, egui::vec2(3.0, 3.0)), 0.0, c);
 }
 
 fn draw_tl_snap_icon(painter: &egui::Painter, btn: egui::Rect, c: egui::Color32) {

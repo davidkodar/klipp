@@ -526,7 +526,7 @@ impl NodeGraph {
         const PAD: f32 = 1.25;
         let radius = |b: [f32; 4]| ((b[2] / 2.0).max(b[3] * aspect / 2.0) * PAD).clamp(0.02, 1.2);
         let (cx, cy) = centre(first.1);
-        let mut mask = Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+        let mut mask = Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
             shape: MaskShape::Circle { center_x: cx, center_y: cy, radius: radius(first.1) },
             feather: feather.clamp(0.0, 1.0),
             invert: false,

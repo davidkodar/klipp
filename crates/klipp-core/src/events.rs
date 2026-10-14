@@ -2236,6 +2236,10 @@ pub enum AppCommand {
     /// Remove mask at `mask_index` from the first Mask node on the
     /// clip's graph. No-op if index out of range.
     RemoveMaskShape { clip_id: ClipId, mask_index: usize },
+    /// Move the mask at `from` in the Mask node `node_id`'s stack to
+    /// `to` (#74): the order masks join in. Trackers bound to the masks
+    /// keep following theirs. One undo step.
+    MoveMaskShape { clip_id: ClipId, node_id: uuid::Uuid, from: usize, to: usize },
     /// Route inspector focus to the mask-editor view. Fired when the
     /// user interacts with a mask on the Program viewer (click a
     /// handle / grab to move) — without this the Edit-workspace user
@@ -4198,6 +4202,11 @@ pub enum Tool {
     /// point, a drag draws its text box, and typing goes straight into
     /// it. The timeline treats it as Select.
     Text,
+    /// Mask tool (#74): draws a freeform mask on the clip in the viewer
+    /// and edits its points and curve handles, the viewer taking Delete,
+    /// Enter, Escape and Alt-click for them. The timeline treats it as
+    /// Select.
+    Mask,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]

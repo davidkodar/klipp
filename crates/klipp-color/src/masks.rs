@@ -141,7 +141,7 @@ mod tests {
 
     fn make_circle_mask(cx: f32, cy: f32, r: f32, feather: f32) -> MaskStack {
         MaskStack {
-            masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+            masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                 shape: MaskShape::Circle { center_x: cx, center_y: cy, radius: r },
                 feather,
                 invert: false,
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn rectangle_mask_inside() {
         let masks = MaskStack {
-            masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+            masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                 shape: MaskShape::Rectangle {
                     center_x: 0.5, center_y: 0.5,
                     width: 0.4, height: 0.4, rotation: 0.0,
@@ -223,7 +223,7 @@ mod tests {
     #[test]
     fn rectangle_mask_outside() {
         let masks = MaskStack {
-            masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+            masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                 shape: MaskShape::Rectangle {
                     center_x: 0.5, center_y: 0.5,
                     width: 0.4, height: 0.4, rotation: 0.0,
@@ -240,11 +240,11 @@ mod tests {
         // Two non-overlapping circles
         let masks = MaskStack {
             masks: vec![
-                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                     shape: MaskShape::Circle { center_x: 0.2, center_y: 0.5, radius: 0.1 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true, keyframes: Default::default(),
                 },
-                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                     shape: MaskShape::Circle { center_x: 0.8, center_y: 0.5, radius: 0.1 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true, keyframes: Default::default(),
                 },
@@ -539,7 +539,7 @@ mod tests {
     #[test]
     fn feather_zone_has_intermediate_values() {
         let masks = MaskStack {
-            masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+            masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                 shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.2 },
                 feather: 0.15,
                 invert: false,
@@ -620,7 +620,7 @@ mod tests {
     #[test]
     fn invert_rectangle() {
         let masks = MaskStack {
-            masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+            masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                 shape: MaskShape::Rectangle {
                     center_x: 0.5, center_y: 0.5,
                     width: 0.4, height: 0.4, rotation: 0.0,
@@ -680,11 +680,11 @@ mod tests {
         // Two circles with different opacities overlapping at center
         let masks = MaskStack {
             masks: vec![
-                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                     shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 },
                     feather: 0.0, invert: false, opacity: 0.3, enabled: true, keyframes: Default::default(),
                 },
-                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                     shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 },
                     feather: 0.0, invert: false, opacity: 0.7, enabled: true, keyframes: Default::default(),
                 },
@@ -700,11 +700,11 @@ mod tests {
         // Left circle and right rectangle — no overlap
         let masks = MaskStack {
             masks: vec![
-                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                     shape: MaskShape::Circle { center_x: 0.15, center_y: 0.5, radius: 0.1 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true, keyframes: Default::default(),
                 },
-                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                     shape: MaskShape::Rectangle {
                         center_x: 0.85, center_y: 0.5, width: 0.2, height: 0.2, rotation: 0.0,
                     },
@@ -726,7 +726,7 @@ mod tests {
     #[test]
     fn disabled_mask_is_ignored() {
         let masks = MaskStack {
-            masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+            masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                 shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 },
                 feather: 0.0, invert: false, opacity: 1.0, enabled: false, keyframes: Default::default(),
             }],

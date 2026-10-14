@@ -162,7 +162,9 @@ fn case(kind: Kind) -> Result<(), String> {
     }
     // The view types the radius; the expected clip has it set by path.
     let mut run = Run::new(start.clone());
-    type_value(&mut run, RowLabel { text: "Radius", group: None }, "12")?;
+    // The blur's Radius, under its preset row: the circle mask drawn
+    // above it in the card has a Radius too.
+    type_value(&mut run, RowLabel { text: "Radius", group: Some("Preset") }, "12")?;
     if !run.unapplied.is_empty() {
         return Err(format!("unapplied {:?}", run.unapplied));
     }

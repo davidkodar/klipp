@@ -260,7 +260,7 @@ pub(super) fn run_masks(report: &mut Report) {
     // were, no step.
     report.case("mask drag cancelled", [key(MASK_ENTRY, Interaction::CancelDrag)], || {
         let mut g = mask_node(true)?.twin();
-        let at = mask_slider(&mut g, "radius")?;
+        let at = mask_slider(&mut g, "Radius")?;
         let (before, picture) = (masks(&g), g.picture());
         let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
         g.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
@@ -476,7 +476,7 @@ fn a_mask_slider_drag_is_one_step_and_escape_takes_it_back() {
     let button = |pos, pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
     for escape in [false, true] {
         let mut g = base.twin();
-        let at = mask_slider(&mut g, "radius").unwrap();
+        let at = mask_slider(&mut g, "Radius").unwrap();
         let before = masks(&g);
         g.frame(vec![egui::Event::PointerMoved(at), button(at, true)]);
         for dx in [8.0, 16.0, 24.0] {
@@ -513,7 +513,7 @@ fn a_keyed_mask_slider_click_is_one_step() {
         n.params.masks.as_mut().unwrap().masks[0].keyframes.radius = vec![key(0.0, 0.2), key(1.0, 0.3)];
     }));
     let mut g = base.twin();
-    let at = mask_slider(&mut g, "radius").unwrap();
+    let at = mask_slider(&mut g, "Radius").unwrap();
     let before = masks(&g);
     g.click_at(at + egui::vec2(12.0, 0.0));
     assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);

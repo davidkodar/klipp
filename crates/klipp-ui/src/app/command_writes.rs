@@ -493,6 +493,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::MatchClipToColorReference { .. }
         | AppCommand::AddMaskShape { .. }
         | AppCommand::RemoveMaskShape { .. }
+        | AppCommand::MoveMaskShape { .. }
         | AppCommand::ApplyColorMatch { .. }
         | AppCommand::AddMaskKeyframe { .. }
         | AppCommand::RemoveMaskKeyframe { .. }

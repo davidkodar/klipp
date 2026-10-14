@@ -156,7 +156,7 @@ fn old_fixtures() -> Vec<ParityCase> {
         ParityCase {
             name: "circle_centered_no_feather",
             width: 96, height: 64,
-            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                 shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.25 },
                 feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                 keyframes: Default::default(),
@@ -166,7 +166,7 @@ fn old_fixtures() -> Vec<ParityCase> {
         ParityCase {
             name: "circle_with_feather",
             width: 96, height: 64,
-            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                 shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.2 },
                 feather: 0.1, invert: false, opacity: 1.0, enabled: true,
                 keyframes: Default::default(),
@@ -176,7 +176,7 @@ fn old_fixtures() -> Vec<ParityCase> {
         ParityCase {
             name: "rectangle_rotated",
             width: 96, height: 64,
-            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                 shape: MaskShape::Rectangle {
                     center_x: 0.5, center_y: 0.5,
                     width: 0.4, height: 0.3, rotation: 30.0,
@@ -189,7 +189,7 @@ fn old_fixtures() -> Vec<ParityCase> {
         ParityCase {
             name: "linear_gradient",
             width: 96, height: 64,
-            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                 shape: MaskShape::LinearGradient {
                     start_x: 0.2, start_y: 0.5, end_x: 0.8, end_y: 0.5,
                 },
@@ -201,7 +201,7 @@ fn old_fixtures() -> Vec<ParityCase> {
         ParityCase {
             name: "circle_inverted",
             width: 96, height: 64,
-            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                 shape: MaskShape::Circle { center_x: 0.5, center_y: 0.5, radius: 0.3 },
                 feather: 0.05, invert: true, opacity: 1.0, enabled: true,
                 keyframes: Default::default(),
@@ -212,7 +212,7 @@ fn old_fixtures() -> Vec<ParityCase> {
         ParityCase {
             name: "bezier_triangle",
             width: 96, height: 64,
-            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                 shape: MaskShape::polygon(vec![
                     (0.5, 0.2),
                     (0.2, 0.8),
@@ -226,7 +226,7 @@ fn old_fixtures() -> Vec<ParityCase> {
         ParityCase {
             name: "bezier_square_with_feather",
             width: 96, height: 64,
-            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+            masks: MaskStack { masks: vec![Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                 shape: MaskShape::polygon(vec![
                     (0.3, 0.3),
                     (0.7, 0.3),
@@ -245,12 +245,12 @@ fn old_fixtures() -> Vec<ParityCase> {
             name: "circle_union_bezier",
             width: 96, height: 64,
             masks: MaskStack { masks: vec![
-                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                     shape: MaskShape::Circle { center_x: 0.3, center_y: 0.5, radius: 0.15 },
                     feather: 0.05, invert: false, opacity: 1.0, enabled: true,
                     keyframes: Default::default(),
                 },
-                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                     shape: MaskShape::polygon(vec![
                         (0.6, 0.3), (0.85, 0.5), (0.6, 0.7),
                     ]),
@@ -267,42 +267,42 @@ fn old_fixtures() -> Vec<ParityCase> {
             name: "eight_mask_stack_no_cap",
             width: 96, height: 64,
             masks: MaskStack { masks: vec![
-                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                     shape: MaskShape::Circle { center_x: 0.15, center_y: 0.3, radius: 0.06 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                     keyframes: Default::default(),
                 },
-                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                     shape: MaskShape::Circle { center_x: 0.35, center_y: 0.3, radius: 0.06 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                     keyframes: Default::default(),
                 },
-                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                     shape: MaskShape::Circle { center_x: 0.55, center_y: 0.3, radius: 0.06 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                     keyframes: Default::default(),
                 },
-                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                     shape: MaskShape::Circle { center_x: 0.75, center_y: 0.3, radius: 0.06 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                     keyframes: Default::default(),
                 },
-                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                     shape: MaskShape::Rectangle { center_x: 0.2, center_y: 0.7, width: 0.1, height: 0.1, rotation: 0.0 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                     keyframes: Default::default(),
                 },
-                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                     shape: MaskShape::Rectangle { center_x: 0.5, center_y: 0.7, width: 0.1, height: 0.1, rotation: 0.0 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                     keyframes: Default::default(),
                 },
-                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                     shape: MaskShape::Rectangle { center_x: 0.8, center_y: 0.7, width: 0.1, height: 0.1, rotation: 0.0 },
                     feather: 0.0, invert: false, opacity: 1.0, enabled: true,
                     keyframes: Default::default(),
                 },
-                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
+                Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false,
                     shape: MaskShape::polygon(vec![
                         (0.05, 0.05), (0.95, 0.05), (0.95, 0.15), (0.05, 0.15),
                     ]),
@@ -343,7 +343,7 @@ fn old_fixtures() -> Vec<ParityCase> {
 /// A window drawn as `shape`, tracked in perspective from the corners
 /// `from` to `to`, evaluated where it has gone.
 fn in_perspective(shape: MaskShape, feather: f32, from: [[f32; 2]; 4], to: [[f32; 2]; 4]) -> Mask {
-    let mut m = Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, shape, feather, invert: false, opacity: 1.0, enabled: true, keyframes: Default::default() };
+    let mut m = Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add, name: String::new(), locked: false, shape, feather, invert: false, opacity: 1.0, enabled: true, keyframes: Default::default() };
     m.keyframes.track_perspective = Some(klipp_core::PerspectiveTrack { from, keys: vec![klipp_core::CornerKey { time_secs: 0.0, corners: to }] });
     let e = m.evaluated_in(0.0, 64.0 / 96.0);
     assert!(e.keyframes.warp.is_some());

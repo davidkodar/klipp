@@ -58,6 +58,7 @@ The tables below are the **Klipp** layout.
 | Blade Tool | `B` |
 | Range Tool | `R` |
 | Trim Tool | `T` |
+| Mask Tool | `P` |
 
 ## Timeline
 
@@ -113,8 +114,8 @@ The tables below are the **Klipp** layout.
 | Toggle Scopes | `Alt+V` |
 | Toggle Zebra Overlay | `Alt+Z` |
 | Toggle False Colour | `Alt+F` |
-| Toggle Perf Overlay | `P` |
-| Toggle Perf Recording | `Ctrl+Shift+P` |
+| Toggle Perf Overlay | `Ctrl+Shift+P` |
+| Toggle Perf Recording | `Ctrl+Alt+P` |
 | Toggle Matte Preview | `Alt+M` |
 | Toggle Safe Areas | `Alt+S` |
 | Toggle Grid & Crosshair | `Alt+G` |
