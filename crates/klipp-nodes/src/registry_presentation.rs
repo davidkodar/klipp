@@ -306,6 +306,17 @@ const NODES: &[ParamEntry] = &[
     at("klipp.grade.key_mixer", "key_mixer", editor("key_mixer_inputs")),
     at("klipp.grade.key_mixer", "key_mixer_output_gain", slider(0.0025)),
     at("klipp.grade.key_mixer", "key_mixer_output_offset", slider(0.0025)),
+    // A gate taking its key inverted (#898): set by Add Outside Node, over
+    // MCP and by undo; no row of its own yet (the tabbed page edits the
+    // first Corrector, not an outside one).
+    at("klipp.grade.corrector", "key_invert", P::shown_as(Widget::Hidden)),
+    at("klipp.grade.color_balance", "key_invert", P::shown_as(Widget::Hidden)),
+    at("klipp.grade.exposure", "key_invert", P::shown_as(Widget::Hidden)),
+    at("klipp.grade.contrast", "key_invert", P::shown_as(Widget::Hidden)),
+    at("klipp.grade.saturation", "key_invert", P::shown_as(Widget::Hidden)),
+    at("klipp.grade.color_wheels", "key_invert", P::shown_as(Widget::Hidden)),
+    at("klipp.grade.tone_controls", "key_invert", P::shown_as(Widget::Hidden)),
+    at("klipp.grade.rgb_curves", "key_invert", P::shown_as(Widget::Hidden)),
     at("klipp.grade.layer_mixer", "layer_mixer", editor("layer_mixer_inputs")),
     at(LUT, "lut_path", editor("lut_file").label("LUT")),
     at(LUT, "lut_opacity", slider(0.00125)),

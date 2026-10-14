@@ -204,6 +204,8 @@ pub(super) fn entry_exclusion(entry: &CatalogEntry) -> Option<&'static str> {
             Some("#1348: a masked card's Mask channel row (stack and grade page) is tested on its own; no parity case yet"),
         CatalogValue::Mix if entry.grade =>
             Some("#1348: a grade node's Node mix row is tested on its own; no parity case yet"),
+        CatalogValue::Parameter { desc, .. } if entry.grade && desc.key == "key_invert" =>
+            Some("#898: a gate's key inverted is set by Add Outside Node, over MCP and by undo; it has no row yet, and its gate is tested in klipp-nodes outside_node"),
         _ => None,
     }
 }

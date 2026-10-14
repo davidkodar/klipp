@@ -1959,6 +1959,10 @@ pub enum AppCommand {
     /// grade it is (#1742). What it is stays: its effect, plug-in, LUT or
     /// matte file, and a group's nodes.
     ResetNode { clip_id: ClipId, node_id: uuid::Uuid },
+    /// The outside node of a correction gated by a key (#898): a Corrector
+    /// straight after it, reading the same key inverted, so it grades
+    /// where the inside one doesn't. One undo step.
+    AddOutsideNode { clip_id: ClipId, node_id: uuid::Uuid },
     /// Auto-layout the clip's node graph — recompute every node's
     /// position using a hierarchical layered layout. Pushed as a
     /// single undoable batch (one entry on the history stack

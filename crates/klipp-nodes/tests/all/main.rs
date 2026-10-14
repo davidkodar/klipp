@@ -58,6 +58,8 @@ mod moving_mask_playback;
 mod neutral_corrector;
 #[path = "../nothing_chosen_selects_everything.rs"]
 mod nothing_chosen_selects_everything;
+#[path = "../outside_node.rs"]
+mod outside_node;
 #[path = "../presentation.rs"]
 mod presentation;
 #[path = "../registry_coverage.rs"]
