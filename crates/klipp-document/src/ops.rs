@@ -11372,6 +11372,32 @@ mod tests {
         assert!(plan.steps[0].what.contains("1 clip refused it"), "{}", plan.steps[0].what);
     }
 
+    /// #1910: a sound 1.1 s long, timed in its samples as the probe now
+    /// times sound alone, takes a source end at its last sample; timed at a
+    /// frame rate it doesn't have, its last 0.017 s were not there.
+    #[test]
+    fn a_sound_timed_in_samples_can_be_trimmed_to_its_end() {
+        let (seq, mut pool, _, _, _) = fixture();
+        let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/soft-impact.wav".into(), None);
+        item.duration = RationalTime::from_secs_f64(1.1, 48000);
+        item.has_audio = true;
+        let sfx = pool.add(item);
+        let place = Op::Place { media_id: sfx, track: TrackRef::Index(1), at: Anchor::TrackEnd(TrackRef::Index(1)), source_in: Some(0.0), source_out: Some(1.1), insert: false, with_audio: false };
+        let plan = resolve(&seq, &pool, std::slice::from_ref(&place)).unwrap_or_else(|r| panic!("refused: {}", r.why));
+        let end = plan.steps[0].after[0].source_out_secs;
+        // The clip's length is whole frames of the sequence, so its end is
+        // the frame that holds the file's last sample.
+        assert!(end >= 1.1 - 1e-6, "the clip runs to the file's last sample: {end}");
+        // As the probe had timed it: 26 frames at 24 fps, 1.083 s. Within
+        // half a frame of the sequence the end was taken as the file's end
+        // and the tail cut; past it, refused (the report's 1.1 s).
+        pool.get_mut(&sfx).unwrap().duration = RationalTime::from_secs_f64(1.1, 24);
+        match resolve(&seq, &pool, &[place]) {
+            Ok(plan) => assert!(plan.steps[0].after[0].source_out_secs < 1.09, "timed at 24 fps the tail was lost"),
+            Err(r) => assert!(r.why.contains("is not inside"), "{}", r.why),
+        }
+    }
+
     /// #782: a sound effect 0.4186 s long, reported as 0.42 s, placed
     /// with that end: taken as the file's end, not refused; an end past
     /// it by more than the rounding is still outside the file.
