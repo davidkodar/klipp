@@ -6263,7 +6263,18 @@ impl GraphExecutor {
                             self.inside.tapped = tapped;
                         }
                         self.inside.found_thumbs.extend(found);
-                        output
+                        // A sub-graph whose result is a node with no
+                        // picture of its own — a Mask with no shapes yet,
+                        // which gives an empty matte meaning "all of it" —
+                        // passes its input through, as any node reading an
+                        // empty picture reads the source (#1913). Handed
+                        // on empty, it left the whole grade with no
+                        // picture, and the thumbnail drawn from it crashed.
+                        if output.is_empty() {
+                            primary_input.to_vec()
+                        } else {
+                            output
+                        }
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -7462,6 +7473,24 @@ mod tests {
 
     fn grade_node(kind: NodeKind, params: NodeParams) -> crate::graph::Node {
         crate::graph::Node { id: NodeId::new_v4(), kind, label: String::new(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: Vec::new() }
+    }
+
+    /// #1913: a compound whose result is a Mask with no shapes yet (its
+    /// empty matte: "all of it") passes its picture through, as a node
+    /// reading an empty picture reads the source. It used to hand on an
+    /// empty picture, and the whole grade came out empty: the crash.
+    #[test]
+    fn a_compound_ending_in_an_empty_mask_passes_its_picture_through() {
+        let exposure = |stops| grade_node(NodeKind::Exposure, NodeParams { exposure: Some(stops), ..Default::default() });
+        let group = grade_node(NodeKind::Compound, NodeParams { compound_subgraph: Some(chain_of(vec![grade_node(NodeKind::Mask, NodeParams::default())])), ..Default::default() });
+        let graph = chain_of(vec![exposure(1.0), group]);
+        let without = chain_of(vec![exposure(1.0)]);
+        let frame = [0.18f32, 0.18, 0.18, 1.0].repeat(4);
+        let mut exec = GraphExecutor::new_cpu_only();
+        let (out, _, _) = exec.execute_linear_with_thumbs(&frame, &graph, 2, 2, 0.0, 0, None, None, None).unwrap();
+        let (want, _, _) = exec.execute_linear_with_thumbs(&frame, &without, 2, 2, 0.0, 0, None, None, None).unwrap();
+        assert_eq!(out.len(), frame.len(), "a whole picture");
+        assert_eq!(out, want, "the group passes the picture through");
     }
 
     /// A node inside a compound, and inside a compound inside that,
