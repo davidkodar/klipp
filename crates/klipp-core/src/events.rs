@@ -2183,8 +2183,10 @@ pub enum AppCommand {
     /// matte that follows the subject, made in the background over every
     /// frame the render reads. `model` is "subject" (one detected person
     /// or thing) or "foreground" (everything in front). The model is
-    /// downloaded only after the person agrees to it.
-    TrackSubject { clip_id: ClipId, model: String },
+    /// downloaded only after the person agrees to it. With `cut_out`
+    /// the matte cuts the clip out instead (#73): it becomes the alpha the
+    /// grade leaves with, so the tracks below show round the subject.
+    TrackSubject { clip_id: ClipId, model: String, cut_out: bool },
     /// Stop tracking the subject through `clip_id`: the frames made so far
     /// are kept (#239).
     CancelTrackSubject { clip_id: ClipId },

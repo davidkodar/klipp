@@ -19,6 +19,9 @@ pub struct TrackCard {
     pub model: &'static str,
     /// The correction it gates, by name.
     pub gates: Option<String>,
+    /// It is the alpha the clip's grade leaves with: it cuts the clip out
+    /// (#73).
+    pub cuts_out: bool,
 }
 
 impl TrackCard {
@@ -136,6 +139,9 @@ pub fn card_ui(ui: &mut egui::Ui, card: Option<&TrackCard>, clip_id: klipp_core:
         if let Some(gates) = card.and_then(|c| c.gates.as_deref()) {
             ui.label(egui::RichText::new(format!("gates \u{201c}{gates}\u{201d}")).small().color(theme.text_dim));
         }
+        if card.is_some_and(|c| c.cuts_out) {
+            ui.label(egui::RichText::new("cuts the clip out").small().color(theme.text_dim));
+        }
     });
     ui.horizontal(|ui| {
         ui.add_space(8.0);
@@ -152,7 +158,8 @@ pub fn card_ui(ui: &mut egui::Ui, card: Option<&TrackCard>, clip_id: klipp_core:
         } else if card.covered < card.needed {
             ui.label(egui::RichText::new(card.line()).small().color(theme.marker_warning));
             if ui.small_button("Track the rest").on_hover_text("Track the subject through the frames this clip shows that have no matte yet").clicked() {
-                cmds.push(AppCommand::TrackSubject { clip_id, model: card.model.to_string() });
+                // Bound already: the rest tracked, the binding as it is.
+                cmds.push(AppCommand::TrackSubject { clip_id, model: card.model.to_string(), cut_out: card.cuts_out && card.gates.is_none() });
             }
         } else {
             ui.label(egui::RichText::new(card.line()).small().color(theme.text_secondary));
@@ -193,10 +200,23 @@ mod tests {
             frame(Vec::new(), &mut sent, 0.25);
             sent
         };
-        let card = |running, covered| TrackCard { running, covered, needed: 12, lost: 0, model: "subject", gates: None };
+        let card = |running, covered| TrackCard { running, covered, needed: 12, lost: 0, model: "subject", gates: None, cuts_out: false };
         let sent = run(card(None, 0), "Track");
         assert!(matches!(&sent[..], [klipp_core::AppCommand::TrackTransitionSubject { transition_id }] if *transition_id == tid), "{sent:?}");
         assert!(matches!(&run(card(Some(0.5), 6), "Cancel")[..], [klipp_core::AppCommand::CancelTrackSubject { clip_id }] if *clip_id == side));
+    }
+
+    /// #73: a matte that is the clip's alpha says it cuts the clip out.
+    #[test]
+    fn the_card_says_a_cut_out() {
+        let ctx = egui::Context::default();
+        let theme = crate::theme::KlippTheme::default();
+        let card = TrackCard { running: None, covered: 10, needed: 10, lost: 0, model: "subject", gates: None, cuts_out: true };
+        let out = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| { let _ = card_ui(ui, Some(&card), klipp_core::ClipId::new(), &theme); });
+        });
+        let texts: Vec<String> = out.shapes.iter().filter_map(|s| match &s.shape { egui::Shape::Text(t) => Some(t.galley.text().to_string()), _ => None }).collect();
+        assert!(texts.iter().any(|t| t == "cuts the clip out"), "{texts:?}");
     }
 
     #[test]
@@ -226,15 +246,15 @@ mod tests {
             }
             sent
         };
-        let card = |running, covered| TrackCard { running, covered, needed: 290, lost: 0, model: "subject", gates: Some("Corrector".into()) };
+        let card = |running, covered| TrackCard { running, covered, needed: 290, lost: 0, model: "subject", gates: Some("Corrector".into()), cuts_out: false };
         assert!(matches!(&run(card(Some(0.4), 116), "Cancel")[..], [klipp_core::AppCommand::CancelTrackSubject { clip_id }] if *clip_id == clip));
-        assert!(matches!(&run(card(None, 116), "Track the rest")[..], [klipp_core::AppCommand::TrackSubject { clip_id, model }] if *clip_id == clip && model == "subject"));
+        assert!(matches!(&run(card(None, 116), "Track the rest")[..], [klipp_core::AppCommand::TrackSubject { clip_id, model, .. }] if *clip_id == clip && model == "subject"));
         assert!(run(card(None, 290), "").is_empty());
     }
 
     #[test]
     fn the_cards_line_says_where_it_stands() {
-        let card = |running, covered, needed, lost| TrackCard { running, covered, needed, lost, model: "subject", gates: None };
+        let card = |running, covered, needed, lost| TrackCard { running, covered, needed, lost, model: "subject", gates: None, cuts_out: false };
         assert_eq!(card(Some(0.414), 120, 290, 0).line(), "Tracking subject \u{b7} 41% (120 of 290 frames)");
         assert_eq!(card(None, 120, 290, 0).line(), "Covers 120 of 290 frames");
         assert_eq!(card(None, 290, 290, 0).line(), "Subject tracked \u{b7} 290 frames");

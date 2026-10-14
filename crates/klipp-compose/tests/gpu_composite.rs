@@ -2147,3 +2147,111 @@ fn a_moving_clip_with_an_effect_after_its_move_is_left_to_the_cpu() {
     assert!(r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none());
     assert_eq!(r.last_decline(), Some("motion blur with effects after the move"));
 }
+
+/// #73: a tracked subject's matte wired into the grade's Output alpha
+/// cuts the clip out over the track below, on both routes: inside the
+/// disc the clip, outside it the lower track.
+#[test]
+fn a_subject_matte_cuts_the_clip_out() {
+    use klipp_nodes::{graph::{Edge, Node, NodeGraph, NodeId}, kinds::NodeKind, matte_sequence, params::NodeParams};
+    let (mw, mh) = (32u32, 18u32);
+    let manifest = matte_sequence::Manifest { format: matte_sequence::FORMAT, fps: 25.0, width: mw, height: mh, rotation: 0, model: "test".into(), model_bytes: 0, provider: "cpu".into(), algorithm: 1, steadied: true };
+    let dir = std::env::temp_dir().join(format!("klipp-cut-out-{}-{}", std::process::id(), ClipId::new().0));
+    matte_sequence::create(&dir, &manifest).unwrap();
+    let disc: Vec<u8> = (0..mw * mh).map(|i| { let (x, y) = ((i % mw) as f32 + 0.5 - 16.0, (i / mw) as f32 + 0.5 - 9.0); if x * x + y * y < 36.0 { 255 } else { 0 } }).collect();
+    for f in 0..=100i64 {
+        matte_sequence::put(&dir, &manifest, f * 40_000, &disc).unwrap();
+    }
+    // Unplaced, and shrunk to 60% and moved 60 px right: the cut follows
+    // the picture where it lands (#1982 takes the alpha before the
+    // clip's placement).
+    let shrink_right = klipp_effects::BuiltinEffect::Transform { position_x: 60.0, position_y: 0.0, scale_x: 0.6, scale_y: 0.6, rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5, rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None };
+    let cases: [(&str, Vec<klipp_effects::BuiltinEffect>, (u32, u32), Vec<(u32, u32)>); 2] = [
+        ("in place", Vec::new(), (W / 2, H / 2), vec![(4, 4)]),
+        // The disc's 36 px round 60 px right of the middle; the middle is
+        // inside the moved picture but outside the subject.
+        ("moved", vec![shrink_right], (W / 2 + 60, H / 2), vec![(W / 2, H / 2), (4, 4)]),
+    ];
+    for (what, effects, subject_at, outside) in cases {
+        let mut g = NodeGraph::default();
+        let matte = NodeId::new_v4();
+        g.nodes.push(Node { id: matte, kind: NodeKind::ExternalMatte, label: "Subject".into(), enabled: true, params: NodeParams { matte_subject: Some(klipp_nodes::SubjectMatte::Subject), ..Default::default() }, keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+        g.edges.push(Edge { from_node: matte, from_port: 0, to_node: g.output_node_id, to_port: 1 });
+        let (top_col, below_col) = ([0.8f32, 0.2, 0.1, 1.0], [0.1f32, 0.3, 0.8, 1.0]);
+        let mut seq = Sequence::new_default();
+        seq.resolution = klipp_core::Resolution { width: W, height: H };
+        let below = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 4.0);
+        let mut top = TestClip::of(clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 4.0)).effects(effects.clone()).build();
+        top.set_grade(g);
+        let mut frames = HashMap::new();
+        frames.insert(top.id, (W, H, Arc::new(top_col.repeat((W * H) as usize))));
+        frames.insert(below.id, (W, H, Arc::new(below_col.repeat((W * H) as usize))));
+        let mut v1 = Track::new("V1", TrackKind::Video);
+        v1.clips = vec![below];
+        let mut v2 = Track::new("V2", TrackKind::Video);
+        v2.clips = vec![top];
+        // The first track is the top layer.
+        seq.tracks = vec![v2, v1];
+        let mut src = Shaped { frames, dir: dir.clone(), length: None };
+        let shown = |c: [f32; 4]| display(&c.repeat(4))[..3].to_vec();
+        let (want_top, want_below) = (shown(top_col), shown(below_col));
+        let mut r = renderer();
+        let (cpu, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
+        assert!(found.declines.iter().all(|d| !d.fails()), "{what}: {:?}", found.declines);
+        let mut routes = vec![("CPU", display(&cpu))];
+        match r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) {
+            Some((gpu, _)) => routes.push(("GPU", gpu)),
+            None => assert!(klipp_effects::gpu::GpuEffectsPipeline::new().is_none(), "{what}: the GPU stack declined: {:?}", r.last_decline()),
+        }
+        // The viewer's stack draws what the export's CPU route does.
+        if let [(_, cpu), (_, gpu)] = &routes[..] {
+            let d = worst(cpu, gpu);
+            assert!(d <= 2, "{what}: the stack differs from the CPU by {d} levels");
+        }
+        for (route, frame) in routes {
+            let px = |x: u32, y: u32| frame[((y * W + x) * 4) as usize..((y * W + x) * 4) as usize + 3].to_vec();
+            let near = |got: Vec<u8>, want: &[u8]| got.iter().zip(want).all(|(g, w)| (*g as i32 - *w as i32).abs() <= 1);
+            assert!(near(px(subject_at.0, subject_at.1), &want_top), "{what} {route}: the clip inside the subject at {subject_at:?}: {:?}", px(subject_at.0, subject_at.1));
+            for (x, y) in &outside {
+                assert!(near(px(*x, *y), &want_below), "{what} {route}: the track below outside it at {:?}: {:?}", (x, y), px(*x, *y));
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// #73: a cut-out grade pasted onto a clip whose subject was never
+/// tracked (its media has no matte folder) is never shown whole and
+/// silent: the frame declines, failing, on both routes, and the export's
+/// check counts the clip as not covered.
+#[test]
+fn an_untracked_cut_out_fails_the_frame_and_the_check() {
+    use klipp_nodes::{graph::{Edge, Node, NodeGraph, NodeId}, kinds::NodeKind, params::NodeParams};
+    let mut g = NodeGraph::default();
+    let matte = NodeId::new_v4();
+    g.nodes.push(Node { id: matte, kind: NodeKind::ExternalMatte, label: "Subject".into(), enabled: true, params: NodeParams { matte_subject: Some(klipp_nodes::SubjectMatte::Subject), ..Default::default() }, keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+    g.edges.push(Edge { from_node: matte, from_port: 0, to_node: g.output_node_id, to_port: 1 });
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    let mut top = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 4.0);
+    top.set_grade(g);
+    // A source with no matte folders: `subject_matte_dir`'s default.
+    let mut src = Flat::default();
+    src.0.insert(top.id, picture(0.2));
+    let mut v = Track::new("V1", TrackKind::Video);
+    v.clips = vec![top];
+    seq.tracks = vec![v];
+    let mut r = renderer();
+    let (_, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
+    let mut routes = vec![("CPU", found.declines)];
+    match r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) {
+        Some(_) => routes.push(("GPU", r.frame_declines().to_vec())),
+        None => assert!(klipp_effects::gpu::GpuEffectsPipeline::new().is_none(), "the GPU stack declined: {:?}", r.last_decline()),
+    }
+    for (route, declines) in routes {
+        assert!(declines.iter().any(|d| d.fails() && d.reason.contains("track its subject")), "{route}: {declines:?}");
+    }
+    let short = klipp_compose::subject_matte::uncovered_with(&seq, |_, _| None, |_| None);
+    assert_eq!(short.len(), 1, "the export's check counts it: {short:?}");
+    assert_eq!((short[0].subject, short[0].covered), (Some(0), 0));
+}

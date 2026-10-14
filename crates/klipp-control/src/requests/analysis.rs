@@ -47,7 +47,15 @@ pub(crate) fn respond(
             Ok(json!({ "items": statuses, "models_downloaded": downloaded, "next": next }))
         }
 
-        ControlCommand::TrackSubject { clip_id, transition_id, model, download_model } => {
+        ControlCommand::TrackSubject { clip_id, transition_id, model, download_model, into } => {
+            let cut_out = match into.as_deref().map(str::trim) {
+                None | Some("grade") => false,
+                Some("cut_out") => true,
+                Some(other) => return Err(format!("into is \"grade\" or \"cut_out\", not \"{other}\"")),
+            };
+            if cut_out && transition_id.is_some() {
+                return Err("a transition's subject is cut round by its pieces: into is for a clip".into());
+            }
             use klipp_analysis::subject_matte::MatteModel;
             // A piece transition's subject (#985 phase 3): its side and
             // model are the transition's.
@@ -98,7 +106,7 @@ pub(crate) fn respond(
             let mut send = sender!(ctx, collect);
             let mut reply = match &transition {
                 Some(ts) => send(AppCommand::TrackTransitionSubject { transition_id: ts.transition })?,
-                None => send(AppCommand::TrackSubject { clip_id: clip, model: name })?,
+                None => send(AppCommand::TrackSubject { clip_id: clip, model: name, cut_out })?,
             };
             reply["job_id"] = json!(format!("{}:{}", media.0, klipp_analysis::subject_matte::ID));
             reply["next"] = json!("The matte is made in the background and shows on the clip's grade as it goes. Read job_status with this job_id for its progress; cancel_job stops it and keeps the frames made.");
