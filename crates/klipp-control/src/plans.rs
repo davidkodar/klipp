@@ -272,8 +272,15 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
 
     /// The bed's beats when they have been read; asking starts a read in
     /// the background for the next check, as a cut to the music does.
+    /// Not read yet, the read is started and waited for, a bounded
+    /// while, once per file (#1977).
     fn beats(&self, item: &klipp_media::MediaItem) -> Option<(f32, Vec<f64>)> {
-        crate::cuts::bed_beats(&item.path).map(|b| (b.confidence, b.beat_times))
+        let found = crate::cuts::bed_beats(&item.path).or_else(|| {
+            static WAITED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>> = std::sync::OnceLock::new();
+            let first = WAITED.get_or_init(Default::default).lock().map(|mut w| w.insert(item.path.clone())).unwrap_or(false);
+            first.then(|| wait_for(BEATS_WAIT, std::time::Duration::from_millis(100), || klipp_analysis::beats::cached(&item.path))).flatten()
+        });
+        found.map(|b| (b.confidence, b.beat_times))
     }
 
     /// The beat sheet, for a screen recording only: one made for camera
@@ -291,6 +298,42 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
             holds: bs.title_windows.iter().map(|w| (w.start_secs, w.end_secs)).collect(),
             spots: bs.spots.iter().map(|s| (s.secs, s.x, s.y)).collect(),
         })
+    }
+}
+
+/// How long the check waits for a bed's beats it has just started
+/// reading (#1977).
+const BEATS_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// `look` every `every` until it finds something or `bound` has passed.
+pub(crate) fn wait_for<T>(bound: std::time::Duration, every: std::time::Duration, mut look: impl FnMut() -> Option<T>) -> Option<T> {
+    let until = std::time::Instant::now() + bound;
+    loop {
+        if let Some(found) = look() {
+            return Some(found);
+        }
+        if std::time::Instant::now() >= until {
+            return None;
+        }
+        std::thread::sleep(every.min(until.saturating_duration_since(std::time::Instant::now())));
+    }
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::wait_for;
+    use std::time::{Duration, Instant};
+
+    /// #1977: what arrives within the bound is used; what never arrives
+    /// is given up on at the bound.
+    #[test]
+    fn a_wait_ends_at_its_answer_or_its_bound() {
+        let mut n = 0;
+        assert_eq!(wait_for(Duration::from_secs(2), Duration::from_millis(1), || { n += 1; (n == 3).then_some(n) }), Some(3));
+        let start = Instant::now();
+        assert_eq!(wait_for::<()>(Duration::from_millis(50), Duration::from_millis(5), || None), None);
+        let took = start.elapsed();
+        assert!(took >= Duration::from_millis(50) && took < Duration::from_millis(500), "{took:?}");
     }
 }
 
