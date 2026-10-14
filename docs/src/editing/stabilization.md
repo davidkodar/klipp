@@ -63,6 +63,6 @@ Motion data is cached in the project under `analysis/stabilization/<clip_id>.jso
 
 To clear the cache and re-analyse: select the clip → **Clip → Re-analyze Stabilization** from the command palette.
 
-## Combine with Optical Flow Effects
+## Combine with Other Effects
 
 Stabilisation runs *before* the effect chain, so any blur, sharpen, or transform you stack on top sees the stabilised frame. This is the order most editors expect — the effect chain operates on what looks like a tripod-mounted shot.
