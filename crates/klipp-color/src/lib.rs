@@ -51,6 +51,7 @@
 //! Rec.709's coefficients, plus the vectorscope's target boxes and the
 //! histograms.
 
+pub mod ofx;
 pub mod measure;
 pub mod aces;
 pub mod camera_log;

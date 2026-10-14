@@ -405,6 +405,9 @@ impl SeekableFrameReader<Vec<u8>> {
                 if let Some(rgba) = unsafe { colour.scene_referred_rgba8(frame.as_ptr(), w, h) } {
                     return Ok(rgba);
                 }
+                if let Some(rgba) = display_referred_rgba8(&colour, frame, w, h) {
+                    return Ok(rgba);
+                }
                 swscale_rgba(frame, w, h)
             })
         })
@@ -417,6 +420,9 @@ impl SeekableFrameReader<Vec<u8>> {
             let colour = SourceColour::from_stream(format_ctx, stream_index, log_format);
             Box::new(move |frame: &ffmpeg_next::frame::Video, _: u32, _: u32| {
                 if let Some(rgba) = unsafe { colour.scene_referred_rgba8(frame.as_ptr(), w, h) } {
+                    return Ok(rgba);
+                }
+                if let Some(rgba) = display_referred_rgba8(&colour, frame, w, h) {
                     return Ok(rgba);
                 }
                 swscale_rgba(frame, w, h)
@@ -593,6 +599,19 @@ fn display_referred_linear(
     // SAFETY: as above.
     let yuv = unsafe { crate::yuv_samples::read_yuv_samples(frame.as_ptr()) }?;
     Some(klipp_color::camera_log::yuv_to_linear_display(&yuv.samples(), w, h, 0, cs, working))
+}
+
+/// A display-referred Y'CbCr frame as sRGB-encoded 8-bit RGBA, the form
+/// an OFX plug-in is given its own frame in (#2013): decoded as
+/// [`display_referred_linear`] decodes it (the frame's matrix, range and
+/// primaries, at native depth) in Rec.709 linear, then encoded by
+/// [`klipp_color::ofx::encode`], the plug-in's own frame's encoder. Through
+/// plain swscale it took BT.601 whatever the file said, so a plug-in's
+/// neighbours on BT.709 footage were another colour from its frame.
+/// `None` for a frame with no Y'CbCr samples to read.
+fn display_referred_rgba8(colour: &SourceColour, frame: &ffmpeg_next::frame::Video, w: u32, h: u32) -> Option<Vec<u8>> {
+    let linear = display_referred_linear(colour, frame, w, h, klipp_core::WorkingColorspace::Rec709Linear)?;
+    Some(klipp_color::ofx::encode(&linear, klipp_core::WorkingColorspace::Rec709Linear))
 }
 
 /// A picture of `sw`×`sh` fitted into a `fw`×`fh` frame, aspect kept:
@@ -1299,6 +1318,44 @@ mod matrix_tests {
                 .collect();
             for (c, (g, want)) in got.iter().zip(want).enumerate() {
                 assert!(g.abs_diff(want) <= 1, "{name}: channel {c} is {g}, ffmpeg decodes {want} ({got:?})");
+            }
+            std::fs::remove_file(&path).ok();
+        }
+    }
+
+    /// An OFX plug-in's neighbour frame (#2013) is decoded the same way:
+    /// the colour ffmpeg decodes, told the file's matrix and range, within
+    /// a level, for BT.709, BT.601 full range and BT.2020, at 8, 10 and 12
+    /// bits. Control: plain swscale, which the reader fell back to, takes
+    /// BT.601 and is many levels off on BT.709.
+    #[test]
+    fn a_plug_ins_neighbour_decodes_with_the_files_matrix_and_range() {
+        let red = [200u8, 40, 40];
+        for (name, pix_fmt, matrix, range) in [
+            ("ofx-709-tv-444", "yuv444p", "bt709", "tv"),
+            ("ofx-709-tv-420-10", "yuv420p10le", "bt709", "tv"),
+            ("ofx-601-pc-444", "yuv444p", "bt470bg", "pc"),
+            ("ofx-2020-tv-444-12", "yuv444p12le", "bt2020nc", "tv"),
+        ] {
+            let Some(path) = flat(name, red, pix_fmt, matrix, range) else {
+                eprintln!("skipped {name}: ffmpeg could not write the test clip");
+                continue;
+            };
+            let want = ffmpeg_rgb(&path, matrix, range);
+            for sized in [false, true] {
+                let mut r = if sized { SeekableFrameReader::open_colour_managed_sized(&path, None, 32, 32) } else { SeekableFrameReader::open_colour_managed(&path, None) }.expect("opens");
+                let (px, w, h) = r.decode_at(0.0).expect("a frame");
+                let mid = ((h / 2 * w + w / 2) * 4) as usize;
+                for (c, (g, want)) in px[mid..mid + 3].iter().zip(want).enumerate() {
+                    assert!(g.abs_diff(want) <= 1, "{name} (sized {sized}): channel {c} is {g}, ffmpeg decodes {want} ({:?})", &px[mid..mid + 3]);
+                }
+            }
+            if name == "ofx-709-tv-444" {
+                let mut plain = SeekableFrameReader::open_rgba(&path).expect("opens");
+                let (px, w, h) = plain.decode_at(0.0).expect("a frame");
+                let mid = ((h / 2 * w + w / 2) * 4) as usize;
+                let off = px[mid..mid + 3].iter().zip(want).map(|(g, w)| g.abs_diff(w)).max().unwrap();
+                assert!(off > 5, "swscale's BT.601 is {off} levels off, which the control expects to see");
             }
             std::fs::remove_file(&path).ok();
         }

@@ -11453,50 +11453,6 @@ pub fn generate_thumbnail_at_size_with_rotation(
     }
 }
 
-/// Cached frame decoder — keeps the ffmpeg context open for fast temporal access.
-/// Optimized for sequential and near-sequential access patterns (common in Retime).
-/// Only seeks when the requested time is far from the current position.
-///
-/// This is what an OFX plugin gets when it asks for frames at arbitrary
-/// times (`FrameSource::temporal_frames`): a frame it cannot have comes
-/// back as `None`, never as the frame before it. A temporal effect — a
-/// frame blend, an echo, optical flow — given a stale frame in place of
-/// the one it asked for produces a picture that is wrong and looks
-/// plausible, which is worse than a frame it knows it does not have.
-/// The viewer's seekable reader: frames of a clip's media at arbitrary
-/// times, for OFX plugins that read other times than the one being
-/// shown.
-///
-/// The seek-or-read-forward loop lives in
-/// [`klipp_media::frame_reader::SeekableFrameReader`], because export
-/// needs the same thing and had been opening the file once per
-/// request. What stays here is the colour: a frame's colourspace comes
-/// from its own tags over the stream baseline, then the file's camera
-/// log format, and a scene-referred source is converted as the viewer
-/// shows it ungraded rather than through plain swscale.
-struct CachedFrameDecoder {
-    reader: klipp_media::frame_reader::SeekableFrameReader,
-}
-
-impl CachedFrameDecoder {
-    fn open(path: &std::path::Path) -> Option<Self> {
-        let owned = path.to_path_buf();
-        let reader = klipp_media::frame_reader::SeekableFrameReader::open_with(
-            path,
-            move |format_ctx, stream_index| {
-                let colour = ThumbColour::new(&owned, format_ctx, stream_index);
-                Box::new(move |frame: &ffmpeg_next::frame::Video, w: u32, h: u32| {
-                    sw_frame_to_rgba(frame, w, h, &colour)
-                })
-            },
-        )?;
-        Some(Self { reader })
-    }
-
-    fn decode_at(&mut self, seek_secs: f64) -> Option<(Vec<u8>, u32, u32)> {
-        self.reader.decode_at(seek_secs)
-    }
-}
 
 /// Check if an RGBA frame is effectively black (< 5% average brightness).
 /// Samples ~64 evenly spaced pixels for speed.

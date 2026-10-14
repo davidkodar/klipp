@@ -355,11 +355,15 @@ impl FrameSource for ViewerSource<'_> {
         Some(source_frame(&next))
     }
 
+    /// From the file the viewer decodes the clip from, the proxy when it
+    /// shows one, read as export reads its neighbours, by a reader kept
+    /// across frames (#2013).
     fn temporal_frames(&mut self, clip: &Clip) -> Option<klipp_plugin::FrameProviderFn> {
-        let path = self.original_path(clip)?;
+        let held = held_file_of(&self.media_pool.read().unwrap_or_else(|e| e.into_inner()), clip, self.use_proxies)?;
+        let decoded = held.proxy.as_ref().map_or(&held.path, |(p, ..)| p);
+        let reader = self.streams.neighbour_reader(decoded, held.log_format)?;
         let source_in = clip.source_in.to_secs_f64();
-        let decoder = std::cell::RefCell::new(super::CachedFrameDecoder::open(&path)?);
-        Some(Box::new(move |t: f64| decoder.borrow_mut().decode_at((source_in + t).max(0.0))))
+        Some(Box::new(move |t: f64| reader.lock().ok()?.decode_at((source_in + t).max(0.0))))
     }
 
     /// The file's frames at the render size, opened on the first frame
@@ -1694,6 +1698,70 @@ mod analysis_key_tests {
         let exported = export.analysis_key(&clip, AssetKind::Stabilisation).expect("export's key");
         assert_eq!(viewer, exported, "one asset for both");
         assert_eq!(Some(viewer.media), klipp_analysis::store::key_for(&original), "the original's file, not the proxy's");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod neighbour_tests {
+    use super::ViewerSource;
+    use klipp_compose::FrameSource;
+
+    /// A flat BT.709 red written 4:4:4 at `w × h`; `None` without ffmpeg.
+    fn red(path: &std::path::Path, w: u32, h: u32) -> Option<()> {
+        std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", &format!("color=c=0xC82828:s={w}x{h}:r=24:d=1"), "-vf",
+                "format=rgb24,scale=out_color_matrix=bt709:out_range=limited,format=yuv444p,setparams=color_primaries=bt709:color_trc=bt709",
+                "-colorspace", "bt709", "-color_range", "tv", "-c:v", "ffv1"])
+            .arg(path)
+            .status()
+            .ok()?
+            .success()
+            .then_some(())
+    }
+
+    /// #2013: the viewer hands an OFX plug-in export's neighbours, byte
+    /// for byte, from the file it decodes: the proxy when it shows one
+    /// (its own size), the original when proxies are off. One reader per
+    /// file is kept across frames, not opened for each. Control: plain
+    /// swscale, the old route, is many levels off the file's red.
+    #[test]
+    fn the_viewers_neighbours_are_exports_from_the_file_it_shows() {
+        let dir = std::env::temp_dir().join(format!("klipp-viewer-neighbours-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (original, proxy) = (dir.join("clip.mkv"), dir.join("clip.proxy.mkv"));
+        if red(&original, 64, 36).is_none() || red(&proxy, 32, 18).is_none() {
+            eprintln!("skipped: ffmpeg could not write the test clips");
+            return;
+        }
+        let mut item = klipp_media::MediaItem::synthetic_for_test(original.clone(), Some(proxy.to_str().unwrap()));
+        item.proxy_ready = true;
+        item.fps = klipp_core::Fps::new(24, 1);
+        let id = item.id;
+        let mut pool = klipp_media::MediaPool::new();
+        pool.add(item);
+        let pool = std::sync::RwLock::new(pool);
+        let tc = |f| klipp_core::RationalTime::from_frames(f, 24);
+        let clip = klipp_timeline::Clip::media(id, tc(0), tc(24), tc(0), tc(24));
+        let mut streams = super::super::streams::ClipStreams::new(2);
+        for (use_proxies, file, size) in [(true, &proxy, (32, 18)), (false, &original, (64, 36))] {
+            let mut view = ViewerSource { primary: None, primary_queue: None, streams: &mut streams, media_pool: &pool, hold: None, use_proxies };
+            let read = view.temporal_frames(&clip).expect("a reader");
+            let (viewer, w, h) = read(0.5).expect("a frame");
+            assert_eq!((w, h), size, "proxies {use_proxies}: read from {}", file.display());
+            let (export, ..) = klipp_media::frame_reader::SeekableFrameReader::open_colour_managed(file, None).unwrap().decode_at(0.5).unwrap();
+            assert_eq!(viewer, export, "proxies {use_proxies}: the viewer's neighbour is export's");
+            let mid = ((h / 2 * w + w / 2) * 4) as usize;
+            let (plain, ..) = klipp_media::frame_reader::SeekableFrameReader::open_rgba(file).unwrap().decode_at(0.5).unwrap();
+            let off = plain[mid..mid + 3].iter().zip(&viewer[mid..mid + 3]).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+            assert!(off > 5, "the control: swscale is {off} off");
+        }
+        // Three frames of the proxy: one reader, kept.
+        for _ in 0..3 {
+            let mut view = ViewerSource { primary: None, primary_queue: None, streams: &mut streams, media_pool: &pool, hold: None, use_proxies: true };
+            view.temporal_frames(&clip).expect("a reader")(0.25).expect("a frame");
+        }
+        assert_eq!(streams.neighbour_readers(), 2, "the proxy's reader and the original's, each opened once");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
