@@ -278,11 +278,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let nx = f32(x) / f32(max(params.width - 1u, 1u));
     let ny = f32(y) / f32(max(params.height - 1u, 1u));
     let aspect = f32(params.height) / f32(params.width);
-    var matte: f32 = 0.0;
-    for (var i: u32 = 0u; i < params.mask_count; i = i + 1u) {
-        matte = max(matte, eval_record(records[i], nx, ny, aspect));
-    }
-    let mv = clamp(matte, 0.0, 1.0);
+    let mv = clamp(window_matte(nx, ny, aspect, params.mask_count), 0.0, 1.0);
     let m = vec4<f32>(mv, mv, mv, 1.0);
     // From here, SHADER_MASK_MIX with `m` for the matte it would read.
     var coverage = m.r;

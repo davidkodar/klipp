@@ -120,8 +120,10 @@ pub(super) fn window_quad(shape: &klipp_core::MaskShape, aspect: f32) -> [(f32, 
             bbox(mx - half, my - half / aspect, mx + half, my + half / aspect)
         }
         MaskShape::Bezier { points } => {
-            let (x0, x1) = points.iter().fold((1.0f32, 0.0f32), |(a, b), p| (a.min(p.0), b.max(p.0)));
-            let (y0, y1) = points.iter().fold((1.0f32, 0.0f32), |(a, b), p| (a.min(p.1), b.max(p.1)));
+            // Round its curves too, not only its points (#74).
+            let outline = klipp_core::mask_path::flatten(points, 1e-3, aspect);
+            let (x0, x1) = outline.iter().fold((1.0f32, 0.0f32), |(a, b), p| (a.min(p.0), b.max(p.0)));
+            let (y0, y1) = outline.iter().fold((1.0f32, 0.0f32), |(a, b), p| (a.min(p.1), b.max(p.1)));
             bbox(x0, y0, x1, y1)
         }
     };

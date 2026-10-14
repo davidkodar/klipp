@@ -47,7 +47,7 @@ pub const MATTES: &[Matte] = &[
         tag: "matte.roto",
         name: "Roto Shape",
         kind: NodeKind::Mask,
-        params: || window(MaskShape::Bezier { points: vec![(0.5, 0.3), (0.7, 0.5), (0.5, 0.7), (0.3, 0.5)] }),
+        params: || window(MaskShape::polygon(vec![(0.5, 0.3), (0.7, 0.5), (0.5, 0.7), (0.3, 0.5)])),
     },
     Matte {
         tag: "matte.luma_key",

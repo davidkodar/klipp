@@ -3771,11 +3771,17 @@ impl ViewerPanel {
                 // Bezier freeform path
                 klipp_core::MaskShape::Bezier { points } => {
                     if points.len() >= 2 {
-                        let screen_pts: Vec<egui::Pos2> = points.iter().map(|&(px, py)| to_screen(px, py)).collect();
-                        // Draw path edges
-                        for i in 0..screen_pts.len() {
-                            let a = screen_pts[i];
-                            let b = screen_pts[(i + 1) % screen_pts.len()];
+                        let screen_pts: Vec<egui::Pos2> = points.iter().map(|p| to_screen(p.x, p.y)).collect();
+                        // Draw the path as it is filled: its curves
+                        // flattened at the drawn size (#74).
+                        let aspect = image_rect.height() / image_rect.width().max(1.0);
+                        let outline: Vec<egui::Pos2> = klipp_core::mask_path::flatten(points, 0.5 / image_rect.width().max(1.0), aspect)
+                            .into_iter()
+                            .map(|(px, py)| to_screen(px, py))
+                            .collect();
+                        for i in 0..outline.len() {
+                            let a = outline[i];
+                            let b = outline[(i + 1) % outline.len()];
                             ui.painter().line_segment([a, b], egui::Stroke::new(1.5_f32, outline_color));
                         }
                         // Bezier-specific edits that don't go through the
@@ -3871,7 +3877,7 @@ impl ViewerPanel {
                                     }
                                     if let Some((edge_idx, pt)) = insert_at_edge {
                                         let insert_at = (edge_idx + 1).min(points.len());
-                                        points.insert(insert_at, pt);
+                                        points.insert(insert_at, pt.into());
                                     }
                                 }
                             }
@@ -3977,11 +3983,10 @@ impl ViewerPanel {
                     }
                     (klipp_core::MaskShape::Bezier { points }, MaskHandle::BezierPoint(idx)) => {
                         let mut new_points = points.clone();
-                        if idx < new_points.len() {
-                            new_points[idx] = (
-                                ((current_pos.x - image_rect.min.x) / iw).clamp(0.0, 1.0),
-                                ((current_pos.y - image_rect.min.y) / ih).clamp(0.0, 1.0),
-                            );
+                        // The point moves; its handles go with it.
+                        if let Some(p) = new_points.get_mut(idx) {
+                            p.x = ((current_pos.x - image_rect.min.x) / iw).clamp(0.0, 1.0);
+                            p.y = ((current_pos.y - image_rect.min.y) / ih).clamp(0.0, 1.0);
                         }
                         klipp_core::MaskShape::Bezier { points: new_points }
                     }

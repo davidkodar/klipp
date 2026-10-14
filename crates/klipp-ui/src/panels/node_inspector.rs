@@ -702,12 +702,10 @@ impl NodeInspectorPanel {
                 }
                 if ui.button("Bezier").clicked() {
                     masks.masks.push(klipp_core::Mask {
-                        shape: klipp_core::MaskShape::Bezier {
-                            points: vec![
+                        shape: klipp_core::MaskShape::polygon(vec![
                                 (0.5, 0.35), (0.65, 0.5),
                                 (0.5, 0.65), (0.35, 0.5),
-                            ],
-                        },
+                            ]),
                         ..Default::default()
                     });
                     masks_changed = true;
@@ -1436,12 +1434,10 @@ impl NodeInspectorPanel {
                         if ui.button("Bezier").clicked() {
                             cmds.push(AppCommand::AddMaskShape {
                                 clip_id,
-                                shape: klipp_core::MaskShape::Bezier {
-                                    points: vec![
+                                shape: klipp_core::MaskShape::polygon(vec![
                                         (0.5, 0.35), (0.65, 0.5),
                                         (0.5, 0.65), (0.35, 0.5),
-                                    ],
-                                },
+                                    ]),
                             });
                             ui.close_menu();
                         }

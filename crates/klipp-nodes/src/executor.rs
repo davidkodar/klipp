@@ -728,6 +728,8 @@ fn matte_fingerprint(
     for mask in &masks.masks {
         if !mask.enabled { continue; }
         mask.feather.to_bits().hash(&mut h);
+        mask.feather_inner.to_bits().hash(&mut h);
+        mask.combine.code().hash(&mut h);
         mask.opacity.to_bits().hash(&mut h);
         mask.invert.hash(&mut h);
         match &mask.shape {
@@ -755,9 +757,10 @@ fn matte_fingerprint(
             klipp_core::MaskShape::Bezier { points } => {
                 3u8.hash(&mut h);
                 points.len().hash(&mut h);
-                for (x, y) in points {
-                    x.to_bits().hash(&mut h);
-                    y.to_bits().hash(&mut h);
+                for p in points {
+                    for v in [p.x, p.y, p.in_dx, p.in_dy, p.out_dx, p.out_dy] {
+                        v.to_bits().hash(&mut h);
+                    }
                 }
             }
         }
@@ -2461,7 +2464,7 @@ impl GraphExecutor {
                     // As drawn now: keyframes, then the window's tracked motion (#238).
                     let masks = node.params.masks.as_ref().map(|ms| ms.evaluated_in(clip_time_secs, height as f32 / width.max(1) as f32));
                     let enabled: Vec<&klipp_core::Mask> = masks.iter().flat_map(|ms| ms.masks.iter()).filter(|m| m.enabled).collect();
-                    let defs: Vec<_> = enabled.iter().filter_map(|m| mask_to_gpu_def(m)).collect();
+                    let defs: Vec<_> = enabled.iter().filter_map(|m| mask_to_gpu_def(m, width, height)).collect();
                     if !defs.is_empty() && defs.len() == enabled.len() {
                         window_mattes.insert(node_id, Arc::new(defs));
                         // It reads none of its input's pixels, so that edge
@@ -2955,7 +2958,7 @@ impl GraphExecutor {
                 let gpu_ready_masks: Vec<klipp_effects::gpu::GpuMaskDef> = masks_opt.as_ref()
                     .map(|ms| ms.masks.iter()
                         .filter(|m| m.enabled)
-                        .filter_map(mask_to_gpu_def)
+                        .filter_map(|m| mask_to_gpu_def(m, width, height))
                         .collect())
                     .unwrap_or_default();
                 // Bezier shapes are now supported on the GPU path
@@ -5543,7 +5546,7 @@ impl GraphExecutor {
                     let gpu_matte_u8 = if let Some(gpu) = &mut self.gpu {
                         let gpu_masks: Vec<klipp_effects::gpu::GpuMaskDef> = evaluated.masks.iter()
                             .filter(|m| m.enabled)
-                            .filter_map(mask_to_gpu_def)
+                            .filter_map(|m| mask_to_gpu_def(m, width, height))
                             .collect();
                         // Bezier shapes are now first-class on the
                         // GPU path; the v2 mask pipeline (storage-
@@ -6353,12 +6356,13 @@ fn corrector_has_active_stage(p: &NodeParams) -> bool {
         || log_wheels(p).is_some()
 }
 
-/// Convert a klipp_core::Mask to a GpuMaskDef. Every shape variant
-/// is supported on the GPU as of the v2 mask pipeline (storage-buffer
-/// records + pooled bezier points). Bezier shapes carry their
-/// control points through verbatim — the dispatch helper pools them
+/// Convert a klipp_core::Mask to a GpuMaskDef for a `width` by `height`
+/// frame. Every shape variant is supported on the GPU as of the v2 mask
+/// pipeline (storage-buffer records + pooled bezier points). A freeform
+/// shape goes as its outline, flattened for that size as the CPU
+/// rasteriser flattens it (#74) — the dispatch helper pools the outlines
 /// across all masks in the stack into a single storage buffer.
-fn mask_to_gpu_def(mask: &klipp_core::Mask) -> Option<klipp_effects::gpu::GpuMaskDef> {
+fn mask_to_gpu_def(mask: &klipp_core::Mask, width: u32, height: u32) -> Option<klipp_effects::gpu::GpuMaskDef> {
     use klipp_core::MaskShape;
     use klipp_effects::gpu::GpuMaskDef;
     let def = match &mask.shape {
@@ -6369,9 +6373,9 @@ fn mask_to_gpu_def(mask: &klipp_core::Mask) -> Option<klipp_effects::gpu::GpuMas
         MaskShape::LinearGradient { start_x, start_y, end_x, end_y } =>
             Some(GpuMaskDef::linear_gradient(*start_x, *start_y, *end_x, *end_y, mask.feather, mask.invert, mask.opacity)),
         MaskShape::Bezier { points } =>
-            Some(GpuMaskDef::bezier(points.clone(), mask.feather, mask.invert, mask.opacity)),
+            Some(GpuMaskDef::bezier(klipp_core::mask_path::outline(points, width, height).to_vec(), mask.feather, mask.invert, mask.opacity)),
     };
-    def.map(|d| d.with_warp(mask.keyframes.warp.map(|w| w.0)))
+    def.map(|d| d.with_warp(mask.keyframes.warp.map(|w| w.0)).with_feather_inner(mask.feather_inner).with_combine(mask.combine.code()))
 }
 
 /// The four curves as the curves shader and its CPU twin read them:
@@ -7994,7 +7998,7 @@ mod tests {
     // ── apply_tracker_overrides_to_masks ────────────────────────────
 
     fn make_circle_mask(cx: f32, cy: f32) -> klipp_core::Mask {
-        klipp_core::Mask {
+        klipp_core::Mask { feather_inner: 0.0, combine: klipp_core::MaskCombine::Add,
             shape: klipp_core::MaskShape::Circle { center_x: cx, center_y: cy, radius: 0.1 },
             feather: 0.0,
             invert: false,
@@ -8035,12 +8039,12 @@ mod tests {
     #[test]
     fn a_window_in_perspective_takes_its_map_to_the_gpu() {
         let mut mask = make_circle_mask(0.5, 0.5);
-        assert_eq!(mask_to_gpu_def(&mask.evaluated_in(0.0, 0.5625)).unwrap().flags & 2, 0);
+        assert_eq!(mask_to_gpu_def(&mask.evaluated_in(0.0, 0.5625), 64, 36).unwrap().flags & 2, 0);
         let from = [[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]];
         let to = [[0.4, 0.4], [0.58, 0.43], [0.58, 0.57], [0.4, 0.6]];
         mask.keyframes.track_perspective = Some(klipp_core::PerspectiveTrack { from, keys: vec![klipp_core::CornerKey { time_secs: 0.0, corners: to }] });
         let evaluated = mask.evaluated_in(0.0, 0.5625);
-        let def = mask_to_gpu_def(&evaluated).unwrap();
+        let def = mask_to_gpu_def(&evaluated, 64, 36).unwrap();
         assert_eq!(def.flags & 2, 2);
         assert_eq!(def.warp, evaluated.keyframes.warp.unwrap().0);
     }
