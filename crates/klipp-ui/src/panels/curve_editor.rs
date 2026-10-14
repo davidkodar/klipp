@@ -27,6 +27,9 @@ pub enum CurveParam {
     /// One of the sequence camera's moving values: the sequence's own
     /// curve, over the sequence's time, shown when no clip is selected.
     Camera(CameraParam),
+    /// A mask's parameter, or a freeform mask's shape (#1947), named as
+    /// the list shows it ("Face · Shape").
+    Mask { track: crate::mask_tracks::MaskTrack, name: String },
 }
 
 /// An effect parameter as the catalog describes it, by the effect's saved
@@ -82,6 +85,14 @@ fn startable_tracks(clip: &klipp_timeline::Clip) -> Vec<(String, Vec<(String, Cu
             out.push((label, params));
         }
     }
+    // Each mask's unkeyed parameters, its shape among them (#1947).
+    for (mask, params) in crate::mask_tracks::startable(clip) {
+        let params = params.into_iter().map(|(track, label, value)| {
+            let name = format!("{mask} \u{00B7} {label}");
+            (label, CurveParam::Mask { track, name }, value)
+        }).collect();
+        out.push((mask, params));
+    }
     out
 }
 
@@ -116,8 +127,13 @@ fn start_track_menu(ui: &mut egui::Ui, state: &AppState, clip_id: klipp_core::Cl
     .response
     .on_hover_text("Start a keyframe track: a key at the playhead with the parameter's value now");
     let (param, value) = picked?;
-    let CurveParam::Node { path, key, .. } = &param else { return None };
     let t = (state.playhead.to_secs_f64() - clip.timeline_in.to_secs_f64()).clamp(0.0, clip.duration().to_secs_f64());
+    // A mask's track: its key by the mask's own command (#1947).
+    if let CurveParam::Mask { track, .. } = &param {
+        let cmd = AppCommand::AddMaskKeyframe { clip_id, node_id: track.node, mask_index: track.mask, param: track.param.clone(), time_secs: t, value };
+        return Some((cmd, param));
+    }
+    let CurveParam::Node { path, key, .. } = &param else { return None };
     let keyframe = serde_json::to_value(Keyframe { time_secs: t, value, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }).ok()?;
     Some((AppCommand::AddKeyAt { addr: path.clone(), key: key.clone(), keyframe }, param))
 }
@@ -157,6 +173,7 @@ impl CurveParam {
                 }
             }
             CurveParam::Camera(p) => format!("Camera {}", p.label()),
+            CurveParam::Mask { name, .. } => name.clone(),
         }
     }
 
@@ -200,6 +217,7 @@ impl CurveParam {
             CurveParam::Camera(CameraParam::X | CameraParam::Y) => (0.0, 1.0, 0.5),
             CurveParam::Camera(CameraParam::Zoom) => (0.25, 4.0, 1.0),
             CurveParam::Camera(CameraParam::Roll) => (-180.0, 180.0, 0.0),
+            CurveParam::Mask { track, .. } => crate::mask_tracks::range(&track.param),
         }
     }
 }
@@ -293,6 +311,10 @@ impl CurveEditorPanel {
         // The effect track shown, for Previous / Next keyframe (#1401).
         state.curve_editor_track = match (&self.param, state.selected_clip) {
             (CurveParam::Node { path, key, .. }, Some(clip)) => Some((clip, path.clone(), key.clone())),
+            _ => None,
+        };
+        state.curve_editor_mask_track = match (&self.param, state.selected_clip) {
+            (CurveParam::Mask { track, .. }, Some(clip)) => Some((clip, track.clone())),
             _ => None,
         };
         // A placed kind's track (a Temporal Denoise's) is edited through
@@ -554,6 +576,16 @@ impl CurveEditorPanel {
                                 }
                             }
                             CurveParam::Camera(_) => {}
+                            // A mask's key there; the shape's is the shape as
+                            // it is then (#1947).
+                            CurveParam::Mask { track, .. } => cmds.push(AppCommand::AddMaskKeyframe {
+                                clip_id,
+                                node_id: track.node,
+                                mask_index: track.mask,
+                                param: track.param.clone(),
+                                time_secs: t,
+                                value: v,
+                            }),
                         }
                     }
                 }
@@ -678,6 +710,7 @@ impl CurveEditorPanel {
                     CurveParam::Node { path, key, .. } => clip.node_key_state(path, key).map(|s| s.keys).unwrap_or_default(),
                     CurveParam::AudioEffect(key) => clip.audio_effect_keyframes.get(key).cloned().unwrap_or_default(),
                     CurveParam::Camera(_) => Vec::new(),
+                    CurveParam::Mask { track, .. } => crate::mask_tracks::keys(clip, track),
                 };
             }
         }
@@ -767,6 +800,10 @@ impl CurveEditorPanel {
                 // Then the grade's, by path through its group (#891).
                 for (path, key, type_id) in clip.animated_grade_keys() {
                     params.push(CurveParam::Node { path, key, tag: type_id });
+                }
+                // Then its masks' keys, by mask (#1947).
+                for (track, name) in crate::mask_tracks::keyed(clip) {
+                    params.push(CurveParam::Mask { track, name });
                 }
                 let mut audio_effect_keys: Vec<String> =
                     clip.audio_effect_keyframes.keys().cloned().collect();
@@ -1239,6 +1276,10 @@ impl CurveEditorPanel {
                                 if let CurveParam::Node { path, key, .. } = &self.param {
                                     cmds.push(AppCommand::BeginParamEditAt { addr: path.clone(), key: key.clone() });
                                 }
+                                // A mask's key too, as the grade's edits are (#1947).
+                                if let CurveParam::Mask { .. } = &self.param {
+                                    cmds.push(AppCommand::BeginNodeParamEdit { clip_id });
+                                }
                                 // A clip lane's key too, as the timeline's
                                 // lanes bracket theirs (#1424).
                                 if matches!(self.param, CurveParam::Video(_) | CurveParam::Audio(_)) {
@@ -1303,6 +1344,21 @@ impl CurveEditorPanel {
                                         cmds.push(AppCommand::MoveKeyAt { addr: path.clone(), key: key.clone(), time_secs: kf.time_secs, new_time_secs: new_t, value: new_v });
                                         moved_title_index = Some(keyframes.iter().enumerate().filter(|(i, k)| *i != kf_idx && (k.time_secs < new_t || (k.time_secs == new_t && *i < kf_idx))).count());
                                     }
+                                    // A mask's key, by its time now, never onto
+                                    // another's; a shape key moves in time only.
+                                    CurveParam::Mask { .. } if keyframes.iter().enumerate().any(|(i, k)| i != kf_idx && (k.time_secs - new_t).abs() < 1e-9) => {}
+                                    CurveParam::Mask { track, .. } => {
+                                        cmds.push(AppCommand::MoveMaskKeyframe {
+                                            clip_id,
+                                            node_id: track.node,
+                                            mask_index: track.mask,
+                                            param: track.param.clone(),
+                                            time_secs: kf.time_secs,
+                                            new_time_secs: new_t,
+                                            value: (!track.is_shape()).then_some(new_v),
+                                        });
+                                        moved_title_index = Some(keyframes.iter().enumerate().filter(|(i, k)| *i != kf_idx && (k.time_secs < new_t || (k.time_secs == new_t && *i < kf_idx))).count());
+                                    }
                                     CurveParam::Speed
                                     | CurveParam::AudioEffect(_)
                                     | CurveParam::Camera(_) => {
@@ -1344,7 +1400,8 @@ impl CurveEditorPanel {
                                     CurveParam::Speed
                                     | CurveParam::Node { .. }
                                     | CurveParam::AudioEffect(_)
-                                    | CurveParam::Camera(_) => {
+                                    | CurveParam::Camera(_)
+                                    | CurveParam::Mask { .. } => {
                                         // Tangent editing not yet wired for speed/effects
                                     }
                                 }
@@ -1362,6 +1419,9 @@ impl CurveEditorPanel {
         if response.drag_stopped() {
             if let (Some(CurveDrag { handle: None, .. }), CurveParam::Node { path, key, .. }) = (&self.drag, &self.param) {
                 cmds.push(AppCommand::EndParamEditAt { addr: path.clone(), key: key.clone() });
+            }
+            if let (Some(CurveDrag { handle: None, .. }), CurveParam::Mask { .. }) = (&self.drag, &self.param) {
+                cmds.push(AppCommand::EndNodeParamEdit { clip_id });
             }
             if let (Some(_), CurveParam::Video(_) | CurveParam::Audio(_)) = (&self.drag, &self.param) {
                 cmds.push(AppCommand::EndKeyframeDrag { key: lane_drag_key(clip_id, &self.param), clip_id });
@@ -1561,6 +1621,7 @@ impl CurveEditorPanel {
                 KeyframeParamKind::Video(VideoParam::Opacity)
             }
             CurveParam::Node { path, key, .. } => KeyframeParamKind::Node { path: path.clone(), key: key.clone() },
+            CurveParam::Mask { track, .. } => KeyframeParamKind::Mask(track.clone()),
             CurveParam::Speed | CurveParam::Camera(_) => {
                 KeyframeParamKind::Video(VideoParam::Opacity) // fallback
             }
@@ -1576,6 +1637,7 @@ impl CurveEditorPanel {
                 key == &format!("{effect_index}:{param_name}")
             }
             (CurveParam::Node { path: a, key: k, .. }, KeyframeParamKind::Node { path: b, key: l }) => a == b && k == l,
+            (CurveParam::Mask { track: a, .. }, KeyframeParamKind::Mask(b)) => a == b,
             _ => false,
         }
     }

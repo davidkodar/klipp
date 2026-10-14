@@ -1138,9 +1138,19 @@ pub(super) fn keyframe_jump(state: &crate::state::AppState, forward: bool) -> Op
     let node_keys: Vec<klipp_core::Keyframe>;
     // The video rubber band's lane as the picture holds it (M4 step 12c).
     let video_lane = crate::inspector::placement_by_path::param_keys(clip, state.video_rubber_band_param);
+    // A mask's track (#1947): the curve editor's, else the one the
+    // timeline's key lane shows on the clip.
+    let mask_track = match &state.curve_editor_mask_track {
+        Some((on, t)) if *on == clip_id && state.show_curve_editor => Some(t.clone()),
+        _ => crate::timeline::mask_lane::shown(state, clip, ["opacity", "pos_x", "pos_y", "scale", "rotation"].iter().any(|k| !crate::inspector::placement_by_path::lane_keys(clip, k).is_empty())),
+    };
     let keyframes: &[klipp_core::Keyframe] = match &state.curve_editor_track {
         Some((on, path, key)) if *on == clip_id && state.show_curve_editor => {
             node_keys = clip.node_key_state(path, key).map(|s| s.keys).unwrap_or_default();
+            &node_keys
+        }
+        _ if mask_track.is_some() => {
+            node_keys = mask_track.as_ref().map(|t| crate::mask_tracks::keys(clip, t)).unwrap_or_default();
             &node_keys
         }
         _ if track_kind == klipp_timeline::TrackKind::Audio => match &state.rubber_band_param {
@@ -1189,6 +1199,7 @@ pub(super) fn remove_selected_keyframe(state: &crate::state::AppState, sk: &crat
         crate::state::KeyframeParamKind::Node { path, key } => {
             clip.node_key_state(path, key).and_then(|s| s.keys.get(sk.keyframe_index).map(|kf| kf.time_secs))
         }
+        crate::state::KeyframeParamKind::Mask(track) => crate::mask_tracks::keys(clip, track).get(sk.keyframe_index).map(|kf| kf.time_secs),
     };
     let time_secs = kf_time?;
     let cmd = match &sk.param_kind {
@@ -1210,6 +1221,14 @@ pub(super) fn remove_selected_keyframe(state: &crate::state::AppState, sk: &crat
         crate::state::KeyframeParamKind::Node { path, key } => {
             AppCommand::RemoveKeyAt { addr: path.clone(), key: key.clone(), time_secs }
         }
+        // A mask's key; the shape's last one off keeps the shape (#1947).
+        crate::state::KeyframeParamKind::Mask(track) => AppCommand::RemoveMaskKeyframe {
+            clip_id: sk.clip_id,
+            node_id: track.node,
+            mask_index: track.mask,
+            param: track.param.clone(),
+            time_secs,
+        },
     };
     // A placed kind's key (a Temporal Denoise's) goes through the clip's
     // effect list, as its card takes one off (#1419).

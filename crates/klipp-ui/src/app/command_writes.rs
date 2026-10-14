@@ -20,6 +20,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         // arrives later.
         AppCommand::SetSplitCompareNode { .. }
         | AppCommand::ShowPanel { .. }
+        | AppCommand::ShowMaskKeysOnTimeline { .. }
         | AppCommand::SetViewerOverlay { .. }
         | AppCommand::SetMulticamMode { .. }
         | AppCommand::GradeTrackInColour { .. }
@@ -497,6 +498,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::MoveMaskShape { .. }
         | AppCommand::ApplyColorMatch { .. }
         | AppCommand::AddMaskKeyframe { .. }
+        | AppCommand::MoveMaskKeyframe { .. }
+        | AppCommand::SetMaskKeyframeInterpolation { .. }
         | AppCommand::RemoveMaskKeyframe { .. }
         | AppCommand::ClearMaskKeyframes { .. }
         | AppCommand::AddKeyframe { .. }

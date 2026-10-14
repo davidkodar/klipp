@@ -8,6 +8,7 @@ pub mod time_utils;
 pub mod range_visuals;
 pub mod grid_snap;
 pub mod camera_lane;
+pub mod mask_lane;
 pub mod markers;
 
 use crate::state::AppState;
