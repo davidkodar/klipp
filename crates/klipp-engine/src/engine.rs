@@ -10322,17 +10322,7 @@ impl PlaybackEngine {
 /// keeps it off the video track (otherwise the cover art becomes a bogus
 /// video clip linked to the sound, which cannot be dragged).
 fn picture_stream_index(ictx: &ffmpeg_next::format::context::Input) -> Option<usize> {
-    let attached = |s: &ffmpeg_next::Stream| s.disposition().contains(ffmpeg_next::format::stream::Disposition::ATTACHED_PIC);
-    let best = ictx.streams().best(ffmpeg_next::media::Type::Video);
-    match best {
-        Some(s) if !attached(&s) => Some(s.index()),
-        // The best video stream is cover art: use another real video
-        // stream if there is one, else treat the file as audio (None).
-        _ => ictx
-            .streams()
-            .find(|s| s.parameters().medium() == ffmpeg_next::media::Type::Video && !attached(s))
-            .map(|s| s.index()),
-    }
+    klipp_media::picture_stream(ictx)
 }
 
 /// One-shot ffmpeg probe to read a media file's frame rate. Returns

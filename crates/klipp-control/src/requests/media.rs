@@ -82,20 +82,10 @@ pub(crate) fn respond(
         ControlCommand::ListMedia => {
             let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
             Ok(json!({
-                "items": pool.all().map(|m| json!({
-                    "media_id": m.id.0.to_string(),
-                    "filename": m.filename,
-                    "path": m.path.to_string_lossy(),
-                    "duration_secs": m.duration.to_secs_f64(),
-                    "fps": m.fps.as_f64(),
-                    "width": m.resolution.width,
-                    "height": m.resolution.height,
-                    "video_codec": m.video_codec,
-                    "has_audio": m.has_audio,
-                    "log_format": log_format_json(m),
-                    "offline": m.offline,
-                    "tags": m.tags,
-                })).collect::<Vec<_>>(),
+                "items": pool.all().map(|m| {
+                    let artwork = (media_kind(m) == "audio" && !m.offline).then(|| klipp_media::artwork_size(&m.path)).flatten();
+                    media_listing(m, artwork)
+                }).collect::<Vec<_>>(),
             }))
         }
 
@@ -342,4 +332,68 @@ fn media_in_folder(dir: &std::path::Path) -> Result<Vec<String>, String> {
         .collect();
     files.sort();
     Ok(files)
+}
+
+/// What a media item is: a sound, a still or footage (#1892).
+fn media_kind(m: &klipp_media::MediaItem) -> &'static str {
+    if m.is_still {
+        "still"
+    } else if m.video_codec.is_empty() || m.resolution.width == 0 || m.resolution.height == 0 {
+        "audio"
+    } else {
+        "video"
+    }
+}
+
+/// One item of `list_media`. A sound says so, with its rate and channels
+/// and no picture size; its cover art, `artwork`, is apart from it, so
+/// neither a default nor an album cover reads as footage (#1892).
+fn media_listing(m: &klipp_media::MediaItem, artwork: Option<(u32, u32)>) -> serde_json::Value {
+    let kind = media_kind(m);
+    let picture = kind != "audio";
+    json!({
+        "media_id": m.id.0.to_string(),
+        "filename": m.filename,
+        "path": m.path.to_string_lossy(),
+        "kind": kind,
+        "duration_secs": m.duration.to_secs_f64(),
+        "fps": if picture { Some(m.fps.as_f64()) } else { None },
+        "width": if picture { Some(m.resolution.width) } else { None },
+        "height": if picture { Some(m.resolution.height) } else { None },
+        "video_codec": m.video_codec,
+        "has_audio": m.has_audio,
+        "sample_rate": m.sample_rate,
+        "audio_channels": m.audio_channels,
+        "artwork": artwork.map(|(width, height)| json!({ "width": width, "height": height })),
+        "log_format": log_format_json(m),
+        "offline": m.offline,
+        "tags": m.tags,
+    })
+}
+
+#[cfg(test)]
+mod listing_tests {
+    use super::*;
+
+    /// #1892: a sound is listed as one, with no picture size, its rate and
+    /// channels, and its cover art apart; footage keeps its size.
+    #[test]
+    fn a_sound_is_listed_as_sound_and_its_art_apart() {
+        let mut song = klipp_media::MediaItem::synthetic_for_test("/music/swansong.mp3".into(), None);
+        song.video_codec.clear();
+        song.resolution = klipp_core::Resolution { width: 0, height: 0 };
+        song.sample_rate = Some(44100);
+        song.audio_channels = Some(2);
+        let v = media_listing(&song, Some((400, 400)));
+        assert_eq!(v["kind"], "audio");
+        assert!(v["width"].is_null() && v["height"].is_null() && v["fps"].is_null(), "{v}");
+        assert_eq!((v["sample_rate"].as_u64(), v["audio_channels"].as_u64()), (Some(44100), Some(2)));
+        assert_eq!((v["artwork"]["width"].as_u64(), v["artwork"]["height"].as_u64()), (Some(400), Some(400)));
+
+        let shot = klipp_media::MediaItem::synthetic_for_test("/footage/a.mov".into(), None);
+        let v = media_listing(&shot, None);
+        assert_eq!(v["kind"], "video");
+        assert_eq!((v["width"].as_u64(), v["height"].as_u64()), (Some(shot.resolution.width as u64), Some(shot.resolution.height as u64)));
+        assert!(v["artwork"].is_null());
+    }
 }

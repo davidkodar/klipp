@@ -645,7 +645,9 @@ pub fn read_facts(path: &Path) -> Option<Facts> {
         if dur > 0 {
             facts.duration_secs = Some(dur as f64 / 1_000_000.0);
         }
-        if let Some(stream) = ctx.streams().best(ffmpeg_next::media::Type::Video) {
+        // The file's picture, not its cover art (#1892): an MP3's album
+        // art read as a 400×400 picture.
+        if let Some(stream) = crate::picture_stream(&ctx).and_then(|i| ctx.stream(i)) {
             let fr = stream.avg_frame_rate();
             if fr.numerator() > 0 && fr.denominator() > 0 {
                 facts.fps = Some(fr.numerator() as f64 / fr.denominator() as f64);
@@ -819,6 +821,31 @@ mod tests {
         assert_eq!(found.candidates.len(), 1, "only media files are candidates");
         assert!(found.candidates[0].path.ends_with("a/b/c/d/e/f/g/C0001.MP4"));
         assert!(!found.hit_file_limit && !found.cancelled);
+    }
+
+    /// #1892: a sound with cover art has no picture; its art is told
+    /// apart, at its own size.
+    #[test]
+    fn a_sound_with_cover_art_has_no_picture() {
+        let root = std::env::temp_dir().join(format!("klipp-relink-art-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mp3 = root.join("song.mp3");
+        let made = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=440:d=1", "-f", "lavfi", "-i", "color=c=red:size=40x30:d=1"])
+            .args(["-map", "0:a", "-map", "1:v", "-frames:v", "1", "-c:a", "libmp3lame", "-c:v", "mjpeg", "-disposition:v", "attached_pic"])
+            .arg(&mp3)
+            .status()
+            .is_ok_and(|s| s.success());
+        if !made {
+            std::fs::remove_dir_all(&root).ok();
+            eprintln!("skipped: ffmpeg could not write the test song");
+            return;
+        }
+        let facts = read_facts(&mp3).expect("readable");
+        let art = crate::artwork_size(&mp3);
+        std::fs::remove_dir_all(&root).ok();
+        assert_eq!(facts.resolution, None, "the album art is not the picture: {facts:?}");
+        assert_eq!(art, Some((40, 30)));
     }
 
     /// Real files, so the header reader is checked against what ffmpeg

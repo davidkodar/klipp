@@ -157,6 +157,17 @@ pub fn sanitize_fps(num: u32, den: u32) -> klipp_core::Fps {
     klipp_core::Fps::new(num, den)
 }
 
+/// A media item's picture size as saved: 0×0 is kept, a file with no
+/// picture (a sound, its cover art not counted); anything else as
+/// [`sanitize_resolution`] has it (#1892). Read through that, a sound
+/// came back from its project as 1920×1080 footage.
+pub fn sanitize_media_resolution(width: u32, height: u32) -> klipp_core::Resolution {
+    if width == 0 && height == 0 {
+        return klipp_core::Resolution { width: 0, height: 0 };
+    }
+    sanitize_resolution(width, height)
+}
+
 /// Clamp a frame resolution into the GPU-texture-safe range. Zero
 /// dimensions are replaced with 1080p defaults; oversize dimensions are
 /// clamped to `MAX_FRAME_DIMENSION` so a crafted file can't ask us to
@@ -461,6 +472,16 @@ mod tests {
             klipp_core::Resolution { width: 1920, height: 1080 });
         assert_eq!(sanitize_resolution(1920, 0),
             klipp_core::Resolution { width: 1920, height: 1080 });
+    }
+
+    /// #1892: a sound has no picture, and keeps none through its project;
+    /// a size with one side lost is still mended as before.
+    #[test]
+    fn a_media_item_with_no_picture_keeps_none() {
+        assert_eq!(sanitize_media_resolution(0, 0), klipp_core::Resolution { width: 0, height: 0 });
+        assert_eq!(sanitize_resolution(0, 0), klipp_core::Resolution { width: 1920, height: 1080 }, "the control: what it was read through");
+        assert_eq!(sanitize_media_resolution(0, 1080), klipp_core::Resolution { width: 1920, height: 1080 });
+        assert_eq!(sanitize_media_resolution(3840, 2160), klipp_core::Resolution { width: 3840, height: 2160 });
     }
 
     #[test]

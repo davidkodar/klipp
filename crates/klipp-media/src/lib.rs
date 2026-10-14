@@ -60,6 +60,35 @@ pub fn readable(path: &std::path::Path) -> Result<(), String> {
     if any { Ok(()) } else { Err("it has no picture or sound in it".into()) }
 }
 
+/// Whether `stream` is an attached picture: cover art in an MP3, FLAC or
+/// M4A, one still frame marked as the file's artwork, not footage.
+fn is_artwork(stream: &ffmpeg_next::Stream) -> bool {
+    stream.disposition().contains(ffmpeg_next::format::stream::Disposition::ATTACHED_PIC)
+}
+
+/// The index of the video stream that is the file's picture: the one
+/// ffmpeg ranks best, unless that is an attached picture (cover art), then
+/// another real video stream. `None`: the file has no picture; a sound
+/// with album art is a sound. The one rule for the probe, a relink's
+/// check and what a listing reports (#1892).
+pub fn picture_stream(input: &ffmpeg_next::format::context::Input) -> Option<usize> {
+    match input.streams().best(ffmpeg_next::media::Type::Video) {
+        Some(s) if !is_artwork(&s) => Some(s.index()),
+        _ => input
+            .streams()
+            .find(|s| s.parameters().medium() == ffmpeg_next::media::Type::Video && !is_artwork(s))
+            .map(|s| s.index()),
+    }
+}
+
+/// The size of the file's cover art, if it carries one (#1892).
+pub fn artwork_size(path: &std::path::Path) -> Option<(u32, u32)> {
+    let input = ffmpeg_next::format::input(path).ok()?;
+    let art = input.streams().find(is_artwork)?;
+    let video = ffmpeg_next::codec::context::Context::from_parameters(art.parameters()).ok()?.decoder().video().ok()?;
+    (video.width() > 0 && video.height() > 0).then(|| (video.width(), video.height()))
+}
+
 pub use audio_cache::AudioCacheEntry;
 pub use item::{describe_secs, merge_reprobed, same_file_as_probed, Bin, ColorLabel, ColourSpace, MediaItem, MediaItemKind};
 pub use pool::MediaPool;

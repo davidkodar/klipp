@@ -1,6 +1,6 @@
 use crate::format::*;
 use crate::path_util::{
-    resolve_media_path, read_to_string_capped, sanitize_fps, sanitize_resolution,
+    resolve_media_path, read_to_string_capped, sanitize_fps, sanitize_media_resolution, sanitize_resolution,
     MAX_INPUT_FILE_BYTES,
 };
 use klipp_core::*;
@@ -502,7 +502,7 @@ fn load_project_as(dir: &Path, form: crate::FileForm, strict: bool) -> Result<Lo
             filename: item_json.filename.clone(),
             duration: RationalTime { value: item_json.duration_frames, rate: item_json.duration_rate },
             fps: sanitize_fps(item_json.fps.num, item_json.fps.den),
-            resolution: sanitize_resolution(
+            resolution: sanitize_media_resolution(
                 item_json.resolution.width,
                 item_json.resolution.height,
             ),
