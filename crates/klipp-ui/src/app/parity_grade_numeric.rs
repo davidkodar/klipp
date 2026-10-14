@@ -260,8 +260,10 @@ pub(super) fn shown_in_frame(start: &Grade, ty: &NodeType, desc: &ParamDesc) -> 
         // switch something to switch.
         "luma_key_soft" | "luma_key_enabled" => vec![param("luma_key_low", 0.3)],
         // Two mattes that each select part of the frame, a key's and a
-        // window's, so intersecting, joining and subtracting them differ.
-        "matte_combine_op" => {
+        // window's, so intersecting, joining and subtracting them differ;
+        // for a Key Mixer, each at half gain, so its output's gain and
+        // offset move a sum inside the clamp.
+        "matte_combine_op" | "key_mixer_output_gain" | "key_mixer_output_offset" => {
             let grade = g.grade();
             let of = |kind: NodeKind| grade.nodes.iter().find(|n| n.kind == kind).map(|n| n.id);
             let mut cmds = Vec::new();
@@ -272,6 +274,9 @@ pub(super) fn shown_in_frame(start: &Grade, ty: &NodeType, desc: &ParamDesc) -> 
             if let Some(qualifier) = of(NodeKind::Qualifier) {
                 let qualifier_settings = klipp_core::color_grade::QualifierSettings { enabled: true, lum_low: 0.0, lum_high: 0.5, ..Default::default() };
                 cmds.push(AppCommand::SetNodeQualifier { clip_id, node_id: qualifier, qualifier: qualifier_settings });
+            }
+            if desc.key.starts_with("key_mixer_") {
+                cmds.extend([param("key_mixer_gain_0", 0.5), param("key_mixer_gain_1", 0.5)]);
             }
             cmds
         }

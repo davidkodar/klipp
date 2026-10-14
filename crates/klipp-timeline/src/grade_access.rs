@@ -128,17 +128,14 @@ fn remove_node(g: &mut NodeGraph, node: NodeId) {
 }
 
 /// Wire `from`'s output to `to`'s input, as the Colour page's
-/// `ConnectNodes` does: the port's old wire goes, a Layer Mixer grows to
-/// the port, and a wire that would loop is not made. Whether it was.
+/// `ConnectNodes` does: the port's old wire goes, a Layer or Key Mixer
+/// grows to the port, and a wire that would loop is not made. Whether it was.
 fn connect(g: &mut NodeGraph, from: NodeId, from_port: u8, to: NodeId, to_port: u8) -> bool {
     let before = g.clone();
     g.edges.retain(|e| !(e.to_node == to && e.to_port == to_port));
     g.edges.push(Edge { from_node: from, from_port, to_node: to, to_port });
-    if let Some(target) = g.nodes.iter_mut().find(|n| n.id == to && n.kind == NodeKind::LayerMixer) {
-        let mixer = target.params.layer_mixer.get_or_insert_with(Default::default);
-        if mixer.inputs.len() < usize::from(to_port) + 1 {
-            mixer.inputs.resize_with(usize::from(to_port) + 1, klipp_nodes::LayerMixerInput::default);
-        }
+    if let Some(target) = g.nodes.iter_mut().find(|n| n.id == to) {
+        target.grow_to_port(to_port);
     }
     if g.topo_sort().is_err() {
         *g = before;

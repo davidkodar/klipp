@@ -111,7 +111,7 @@ impl CanvasKind for NodeKind {
     fn is_reroute(self) -> bool { self == NodeKind::Reroute }
     fn is_group(self) -> bool { self == NodeKind::Compound }
     fn is_external_matte(self) -> bool { self == NodeKind::ExternalMatte }
-    fn is_variadic(self) -> bool { self == NodeKind::LayerMixer }
+    fn is_variadic(self) -> bool { matches!(self, NodeKind::LayerMixer | NodeKind::KeyMixer) }
     fn palette(self) -> Palette { grade_palette(&self) }
     fn glyph(self) -> &'static str { grade_glyph(&self) }
     fn display_name(&self) -> &'static str { NodeKind::display_name(self) }
@@ -172,6 +172,7 @@ fn grade_palette(kind: &NodeKind) -> Palette {
         | NodeKind::LumaKey
         | NodeKind::Mask
         | NodeKind::CombineMattes
+        | NodeKind::KeyMixer
         | NodeKind::ExternalMatte
         | NodeKind::DifferenceKey
         | NodeKind::MaskCutout => Palette::Matte,
@@ -222,6 +223,7 @@ fn grade_glyph(kind: &NodeKind) -> &'static str {
         | NodeKind::LumaKey
         | NodeKind::Mask
         | NodeKind::CombineMattes
+        | NodeKind::KeyMixer
         | NodeKind::ExternalMatte
         | NodeKind::DifferenceKey
         | NodeKind::MaskCutout => "M",
@@ -262,6 +264,7 @@ const GRADE_MENU_PRESENTATION: &[(&str, &[(&str, &str)])] = &[
         ("External Matte", "ExternalMatte"),
         ("Difference Key", "DifferenceKey"),
         ("Combine Mattes", "CombineMattes"),
+        ("Key Mixer", "KeyMixer"),
         ("Mask Cutout", "MaskCutout"),
     ]),
     ("Compositing", &[

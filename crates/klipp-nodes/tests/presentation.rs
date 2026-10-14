@@ -255,5 +255,5 @@ fn every_other_param_names_a_custom_editor() {
             }
         }
     }
-    assert_eq!(named.into_iter().collect::<Vec<_>>(), ["camera_encoding", "compound_body", "curves", "huesat_curves", "layer_mixer_inputs", "lut_file", "mask_stack", "matte_file", "plate_file"]);
+    assert_eq!(named.into_iter().collect::<Vec<_>>(), ["camera_encoding", "compound_body", "curves", "huesat_curves", "key_mixer_inputs", "layer_mixer_inputs", "lut_file", "mask_stack", "matte_file", "plate_file"]);
 }

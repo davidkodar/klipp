@@ -1313,6 +1313,14 @@ pub(super) fn placed(kind: klipp_nodes::NodeKind) -> Option<(AppState, ClipId, k
         NodeKind::Qualifier => qualifier,
         NodeKind::Mask => mask,
         NodeKind::CombineMattes => g.nodes.iter().find(|n| n.kind == kind)?.id,
+        // A Key Mixer stands where the key and window are combined, both
+        // wired into it.
+        NodeKind::KeyMixer => {
+            let n = g.nodes.iter_mut().find(|n| n.kind == NodeKind::CombineMattes)?;
+            n.kind = kind;
+            n.label = kind.display_name().to_string();
+            n.id
+        }
         // A key of one picture input stands where the Qualifier stood; a
         // matte of none (read from a file) too, without the picture.
         _ if ty.desc.inputs.is_empty() || (ty.desc.inputs.len() == 1 && ty.desc.inputs[0].ty == klipp_effects::registry::PortType::Image) => {

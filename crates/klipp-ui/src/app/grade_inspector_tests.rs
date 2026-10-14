@@ -254,7 +254,9 @@ fn every_keyframable_grade_param_shows_a_diamond() {
     // The Qualifier's rows shown at its defaults: its switch, its mode and
     // the HSL mode's ranges (#895).
     let qualifier = ["enabled", "mode", "hue_center", "hue_width", "hue_soft", "sat_low", "sat_high", "sat_soft", "lum_low", "lum_high", "lum_soft"].map(|k| format!("Qualifier qual_{k}"));
-    let want: Vec<String> = qualifier.into_iter().chain(["LumaKey luma_key_enabled".to_string()]).collect();
+    // The Key Mixer's output rows (#898), its fixture a matte chained the same way.
+    let key_mixer = ["KeyMixer key_mixer_output_gain", "KeyMixer key_mixer_output_offset"].map(String::from);
+    let want: Vec<String> = qualifier.into_iter().chain(["LumaKey luma_key_enabled".to_string()]).chain(key_mixer).collect();
     assert_eq!(unwritable, want, "the rows whose fixture takes no edit");
 }
 

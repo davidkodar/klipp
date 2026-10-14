@@ -2664,7 +2664,8 @@ impl GraphExecutor {
             // 17b): the chain moved past it (and is flushed by now), so it
             // is read back for a reader off the chain, a bypassed one too
             // (a gate whose key is looked at, a key switched off here).
-            for port in 0..3u8 {
+            // Every port the node has: a mixer's past the third too.
+            for port in 0..node.dynamic_input_port_count().max(3) {
                 let Some(id) = graph.input_of(node_id, port) else { continue };
                 if node_outputs.get(&id).is_some_and(|a| a.is_empty()) {
                     let pixels = kept.get(&id).and_then(|(picture, _)| self.gpu.as_ref()?.read_picture(picture, (width as usize) * (height as usize)));
@@ -3118,6 +3119,47 @@ impl GraphExecutor {
                         .map(|m| m.inputs.as_slice())
                         .unwrap_or(&[]);
                     layer_mixer_compose(&wired, inputs_params, pixel_count)
+                };
+                node_outputs.insert(node_id, Arc::new(output));
+                cpu_fallback_count += 1;
+                per_node_ms.push((format!("{node_kind_name}#mixer"), t_node.elapsed().as_secs_f64() * 1000.0));
+                continue;
+            }
+
+            // ── KeyMixer (N mattes into one, #898) ─────────────────────
+            // Outside `execute_node` for the same reason as LayerMixer: as
+            // many inputs as it has ports. Each wired input's red channel
+            // is its coverage; an input with no pixels is a producer with
+            // nothing chosen, which selects everything, as every matte
+            // consumer reads it; one of the wrong size is left out. With
+            // nothing wired the mixer selects everything (no pixels). A
+            // picture left on the GPU (the Source of a GPU-seeded run) has
+            // no pixels either, and is no empty matte: the run goes to the
+            // CPU, as for a Layer Mixer.
+            if node.kind == NodeKind::KeyMixer {
+                let pixel_count = (width as usize) * (height as usize);
+                let mixer = params.key_mixer.clone().unwrap_or_default();
+                let mut wired: Vec<(crate::params::KeyMixerInput, Option<&[f32]>)> = Vec::new();
+                for port in 0..node.dynamic_input_port_count() {
+                    let Some(src) = graph.input_of(node_id, port) else { continue };
+                    let Some(arc) = node_outputs.get(&src) else { continue };
+                    match arc.len() {
+                        0 if is_gpu_source(src) => return Err(ExecutorError::CpuSourceRequired),
+                        0 => wired.push((mixer.input(port), None)),
+                        n if n == pixel_count * 4 => wired.push((mixer.input(port), Some(arc.as_slice()))),
+                        _ => {}
+                    }
+                }
+                let output = if wired.is_empty() {
+                    Vec::new()
+                } else {
+                    use rayon::prelude::*;
+                    let mut out = vec![0.0f32; pixel_count * 4];
+                    out.par_chunks_exact_mut(4).enumerate().for_each(|(i, px)| {
+                        let k = mixer.mix_inputs(wired.iter().map(|(input, m)| (*input, m.map_or(1.0, |m| m[i * 4]))));
+                        px.copy_from_slice(&[k, k, k, 1.0]);
+                    });
+                    out
                 };
                 node_outputs.insert(node_id, Arc::new(output));
                 cpu_fallback_count += 1;
@@ -6343,6 +6385,7 @@ impl GraphExecutor {
             }
 
             NodeKind::LayerMixer
+            | NodeKind::KeyMixer
             | NodeKind::Output
             | NodeKind::Unknown => primary_input.to_vec(),
 

@@ -1609,6 +1609,7 @@ pub(crate) fn per_node_kind(kind: klipp_nodes::NodeKind) -> bool {
         | klipp_nodes::NodeKind::Layer
         | klipp_nodes::NodeKind::Blend
         | klipp_nodes::NodeKind::CombineMattes
+        | klipp_nodes::NodeKind::KeyMixer
         | klipp_nodes::NodeKind::ApplyMatte
         | klipp_nodes::NodeKind::Compound
         | klipp_nodes::NodeKind::RGBSplitter

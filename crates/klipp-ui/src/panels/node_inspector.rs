@@ -1723,6 +1723,7 @@ impl NodeInspectorPanel {
             "lut_file" => lut_picker(ui, params, node_id, clip_id, cmds, theme),
             "camera_encoding" => self.show_input_colour_space(ui, clip_id, cmds, theme),
             "compound_body" => compound_summary(ui, params, theme),
+            "key_mixer_inputs" => key_mixer_inputs(ui, params, node_id, clip_id, cmds, theme),
             _ => return false,
         }
         true
@@ -3043,6 +3044,15 @@ impl NodeInspectorPanel {
                             .position(|c| *c == chosen)
                             .unwrap_or(0) as u8,
                     });
+                }
+            }
+            NodeKind::KeyMixer => {
+                key_mixer_inputs(ui, params, node_id, clip_id, cmds, theme);
+                let mixer = params.key_mixer.get_or_insert_with(Default::default);
+                for (param, label, value, range) in [("key_mixer_output_gain", "Output gain", &mut mixer.output_gain, 0.0..=2.0), ("key_mixer_output_offset", "Output offset", &mut mixer.output_offset, -1.0..=1.0)] {
+                    if grade_slider(ui, label, value, range, "", cmds, clip_id, theme) {
+                        cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: param.into(), value: *value });
+                    }
                 }
             }
             NodeKind::ExternalMatte => {
@@ -5915,5 +5925,34 @@ mod mask_list_tests {
         r.click(d);
         assert!(r.masks.masks[1].keyframes.path.is_empty());
         assert!(matches!(r.masks.masks[1].shape, MaskShape::Bezier { ref points } if points.len() == 3), "the shape kept");
+    }
+}
+
+/// A Key Mixer's inputs (#898): a row per port, its gain and whether it is
+/// inverted, each set by name (`key_mixer_gain_{n}`, `key_mixer_invert_{n}`)
+/// as `set_node_param` sets them, one undo step an edit. Before anything is
+/// wired, how to wire.
+fn key_mixer_inputs(ui: &mut egui::Ui, params: &mut NodeParams, node_id: NodeId, clip_id: ClipId, cmds: &mut Vec<AppCommand>, theme: &KlippTheme) {
+    let mixer = params.key_mixer.get_or_insert_with(Default::default);
+    #[cfg(any(test, feature = "row-recorder"))]
+    crate::widgets::row_recorder::control(ui.next_auto_id(), "key_mixer", "key_mixer", "Inputs", &*mixer);
+    if mixer.inputs.is_empty() {
+        ui.label(egui::RichText::new("Wire mattes into this node; drop a wire on its left edge to add an input.").color(theme.text_dim).small());
+        return;
+    }
+    for port in 0..mixer.inputs.len() {
+        let mut input = mixer.inputs[port];
+        if grade_slider(ui, &format!("Key {} gain", port + 1), &mut input.gain, -1.0..=1.0, "", cmds, clip_id, theme) {
+            cmds.push(AppCommand::SetNodeParam { clip_id, node_id, param: format!("key_mixer_gain_{port}"), value: input.gain });
+        }
+        if ui.checkbox(&mut input.invert, "Invert").changed() {
+            let value = if input.invert { 1.0 } else { 0.0 };
+            cmds.extend([
+                AppCommand::BeginNodeParamEdit { clip_id },
+                AppCommand::SetNodeParam { clip_id, node_id, param: format!("key_mixer_invert_{port}"), value },
+                AppCommand::EndNodeParamEdit { clip_id },
+            ]);
+        }
+        mixer.inputs[port] = input;
     }
 }
