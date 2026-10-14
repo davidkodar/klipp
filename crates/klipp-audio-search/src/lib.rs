@@ -541,8 +541,10 @@ fn parse_credit(text: &str) -> Option<Credit> {
 }
 
 /// The credits text for `credits`: each track once, grouped by licence,
-/// the licences that ask to be credited first, then those that don't.
-/// Empty for no credits.
+/// the licences that ask to be credited first, then those that don't. A
+/// licence is its label and its deed together: two tracks under "CC BY"
+/// at 3.0 and at 4.0 are credited under each their own (#1933). Empty for
+/// no credits.
 pub fn credits_text(credits: &[Credit]) -> String {
     let mut unique: Vec<&Credit> = Vec::new();
     for c in credits {
@@ -555,11 +557,11 @@ pub fn credits_text(credits: &[Credit]) -> String {
     }
     let mut licences: Vec<(&str, &str, bool)> = Vec::new();
     for c in &unique {
-        if !licences.iter().any(|(l, _, _)| *l == c.licence) {
+        if !licences.iter().any(|(l, u, _)| *l == c.licence && *u == c.licence_url) {
             licences.push((c.licence.as_str(), c.licence_url.as_str(), c.needs_attribution()));
         }
     }
-    licences.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(b.0)));
+    licences.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(b.0)).then_with(|| a.1.cmp(b.1)));
     let mut out = String::from("Credits\n");
     let mut heading = None;
     for (licence, url, attribute) in licences {
@@ -568,7 +570,7 @@ pub fn credits_text(credits: &[Credit]) -> String {
             heading = Some(attribute);
         }
         out.push_str(&format!("\n{licence}{}\n", if url.is_empty() { String::new() } else { format!(" ({url})") }));
-        let mut tracks: Vec<&&Credit> = unique.iter().filter(|c| c.licence == licence).collect();
+        let mut tracks: Vec<&&Credit> = unique.iter().filter(|c| c.licence == licence && c.licence_url == url).collect();
         tracks.sort_by(|a, b| a.title.cmp(&b.title));
         for c in tracks {
             out.push_str(&format!("  \"{}\" by {}{}\n", c.title, c.author, if c.source.is_empty() { String::new() } else { format!(" — {}", c.source) }));
@@ -859,6 +861,28 @@ mod tests {
         assert!(at("CC BY-SA") < at("No attribution required") && at("No attribution required") < at("CC0"), "{list}");
         assert!(list.contains("  \"Hit\" by Papkin — https://freesound.org/people/Papkin/sounds/3/"), "{list}");
         assert_eq!(credits_text(&[]), "");
+    }
+
+    /// #1933: two tracks with the same label and different deeds are each
+    /// credited under their own, never one's deed given to the other; the
+    /// same label and deed still group.
+    #[test]
+    fn equal_licence_labels_keep_their_own_versions() {
+        let credit = |title: &str, deed: &str| Credit {
+            title: title.into(),
+            author: "Ana".into(),
+            licence: "CC BY".into(),
+            licence_url: deed.into(),
+            source: format!("https://www.jamendo.com/track/{title}"),
+        };
+        let (three, four) = ("https://creativecommons.org/licenses/by/3.0/", "https://creativecommons.org/licenses/by/4.0/");
+        let list = credits_text(&[credit("Old", three), credit("New", four), credit("Newer", four)]);
+        let (h3, h4) = (format!("CC BY ({three})"), format!("CC BY ({four})"));
+        assert_eq!(list.matches(&h3).count(), 1, "the 3.0 deed has its heading:\n{list}");
+        assert_eq!(list.matches(&h4).count(), 1, "the 4.0 deed has its heading, once for both its tracks:\n{list}");
+        let at = |s: &str| list.find(s).unwrap_or_else(|| panic!("{s} missing:\n{list}"));
+        assert!(at(&h3) < at("\"Old\"") && at("\"Old\"") < at(&h4), "Old is under 3.0:\n{list}");
+        assert!(at(&h4) < at("\"New\"") && at(&h4) < at("\"Newer\""), "New and Newer are under 4.0:\n{list}");
     }
 
     use super::*;
