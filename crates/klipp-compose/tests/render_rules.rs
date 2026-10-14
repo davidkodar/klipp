@@ -2150,3 +2150,73 @@ fn a_blur_entrance_is_the_same_on_cpu_and_gpu_under_an_effect() {
     // Fixed, the two agree to the level here; a little room for drivers.
     assert!(mean < 0.1 && worst <= 2, "the blur entrance under a 2x scale differs between CPU and GPU: mean {mean} levels, worst {worst}");
 }
+
+/// #1922: with the shutter open, a clip is blurred, and so drawn by the
+/// CPU stack, only on frames where it really moves while the shutter is
+/// open: through an entrance and an exit, and on the frame whose shutter
+/// reaches into the entrance, but not through the hold between them.
+/// The same for a clip carried by the camera, by a clip it follows, and
+/// turned by its own tilt.
+#[test]
+fn a_clip_is_blurred_only_while_it_moves_under_the_shutter() {
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(false);
+    let shuttered = |tracks: Vec<Vec<Clip>>| {
+        let mut seq = sequence(tracks);
+        seq.resolution = klipp_core::Resolution { width: W, height: H };
+        seq.camera.shutter_deg = 180.0;
+        seq
+    };
+    // Its own keys: in from the left over a second, held two, out again.
+    let card = TestClip::of(media(0.0, 4.0)).lane("scale", 0.0, 0.25).lane("pos_x", 0.0, -48.0).lane("pos_x", 1.0, 0.0).lane("pos_x", 3.0, 0.0).lane("pos_x", 4.0, 48.0).build();
+    let seq = shuttered(vec![vec![card.clone()]]);
+    let frame = 1.0 / 24.0;
+    for (t, moving) in [(0.5, true), (1.0, true), (1.0 + frame, false), (2.0, false), (3.0 - frame, false), (3.5, true)] {
+        assert_eq!(r.moves_in_shutter(&seq, &card, tc(t), W, H), moving, "own keys at {t:.3} s");
+    }
+    // The camera's: a still card at depth 1 under a camera that moves, then holds.
+    let still = TestClip::of(media(0.0, 4.0)).lane("scale", 0.0, 0.25).build();
+    let mut seq = shuttered(vec![vec![still.clone()]]);
+    klipp_core::keyframe::upsert_keyframe(&mut seq.camera.x_keyframes, 0.0, 0.1);
+    klipp_core::keyframe::upsert_keyframe(&mut seq.camera.x_keyframes, 1.0, 0.5);
+    klipp_core::keyframe::upsert_keyframe(&mut seq.camera.x_keyframes, 3.0, 0.5);
+    for (t, moving) in [(0.5, true), (2.0, false)] {
+        assert_eq!(r.moves_in_shutter(&seq, &still, tc(t), W, H), moving, "carried by the camera at {t} s");
+    }
+    // A link's: a card following a parent that enters, then holds.
+    let parent = TestClip::of(media(0.0, 4.0)).lane("pos_x", 0.0, -48.0).lane("pos_x", 1.0, 0.0).lane("pos_x", 3.0, 0.0).build();
+    let mut follower = TestClip::of(media(0.0, 4.0)).lane("scale", 0.0, 0.25).build();
+    follower.transform_link = Some(klipp_timeline::TransformLink::new(parent.id));
+    let seq = shuttered(vec![vec![follower.clone()], vec![parent]]);
+    for (t, moving) in [(0.5, true), (2.0, false)] {
+        assert_eq!(r.moves_in_shutter(&seq, &follower, tc(t), W, H), moving, "carried by its parent at {t} s");
+    }
+    // Its own tilt: tipping back over a second, then held.
+    let tipped = TestClip::of(media(0.0, 4.0)).lane("scale", 0.0, 0.25).lane("tilt_x", 0.0, 0.0).lane("tilt_x", 1.0, 30.0).lane("tilt_x", 3.0, 30.0).build();
+    let seq = shuttered(vec![vec![tipped.clone()]]);
+    for (t, moving) in [(0.5, true), (2.0, false)] {
+        assert_eq!(r.moves_in_shutter(&seq, &tipped, tc(t), W, H), moving, "tilting at {t} s");
+    }
+}
+
+/// #1922: whether a clip moves under the shutter is judged in the
+/// sequence's pixels, so a preview at half size and the export at full
+/// size decide alike: a drift of 0.08 of the sequence's pixels while the
+/// shutter is open is 0.04 of the preview's, under the 0.05 the samples
+/// are told apart by, and was still in the preview but moving in the
+/// export.
+#[test]
+fn a_slow_drift_moves_alike_in_a_preview_and_the_export() {
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(false);
+    // A 180 degree shutter at 24 fps is open 1/48 s: 3.84 px a second
+    // is 0.08 px while it is open.
+    let card = TestClip::of(media(0.0, 4.0)).lane("scale", 0.0, 0.25).lane("pos_x", 0.0, 0.0).lane("pos_x", 4.0, 4.0 * 3.84).build();
+    let mut seq = sequence(vec![vec![card.clone()]]);
+    seq.resolution = klipp_core::Resolution { width: 2 * W, height: 2 * H };
+    seq.camera.shutter_deg = 180.0;
+    let export = r.moves_in_shutter(&seq, &card, tc(2.0), 2 * W, 2 * H);
+    let preview = r.moves_in_shutter(&seq, &card, tc(2.0), W, H);
+    assert!(export, "0.08 px a shutter is a move at full size");
+    assert_eq!(preview, export, "the half-size preview decides as the export does");
+}

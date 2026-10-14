@@ -1544,7 +1544,10 @@ impl Renderer {
         if frame_blends(clip, time) {
             return Single::ForTheStack;
         }
-        if title_motion_blur(clip).is_some() || may_blur(seq, clip) {
+        // Only while it really moves under the open shutter: a still
+        // stretch of an animated clip, its hold, is drawn unblurred by the
+        // CPU too, and stays here (#1922).
+        if title_motion_blur(clip).is_some() || self.moves_in_shutter(seq, clip, time, width, height) {
             return Single::ForTheStack;
         }
         // Temporal noise reduction too: it averages CPU-decoded
@@ -1893,8 +1896,6 @@ impl Renderer {
                 Some("frame blending")
             } else if title_motion_blur(c).is_some() {
                 Some("title motion blur")
-            } else if may_blur(seq, c) {
-                Some("motion blur")
             } else if temporal_denoise_of(c, time, fps).is_some() {
                 // Run on the CPU-decoded source and its neighbours, and
                 // lifted out of the effects the stack runs (#996).
@@ -1973,6 +1974,13 @@ impl Renderer {
         self.px_scale = render_scale(seq, width, height).1;
         behind_the_camera(seq, time, width, height, &mut transforms);
         self.open_shutter(seq, time, fps, width, height, &transforms);
+        // A clip the camera's shutter blurs this frame, one that really
+        // moves while it is open, is the CPU stack's (#1922). Asked here,
+        // once each clip's samples are taken, not of its keys alone: an
+        // animated clip's hold stays on the stack.
+        if !self.shutter.is_empty() {
+            return self.gpu_stack_declines("motion blur");
+        }
 
         self.executor.set_grade_encoding(self.grade_encoding);
         self.executor.set_working_colorspace(self.working);
@@ -4510,7 +4518,6 @@ impl Renderer {
             return;
         }
         let offsets = shutter_offsets(cam.shutter_deg, fps, cam.shutter_samples.clamp(2, 32));
-        let n = offsets.len();
         for id in transforms.keys() {
             let Some(c) = clips.get(id).copied() else { continue };
             // A title carrying its own blur keeps it; sampling the
@@ -4518,19 +4525,51 @@ impl Renderer {
             if title_motion_blur(c).is_some() {
                 continue;
             }
-            let samples: Vec<(ResolvedTransform, f64)> = offsets.iter().map(|&o| self.shutter_sample(seq, c, time, o, fps, width, height)).collect();
-            let [tx, ty] = c.tilt_lanes();
-            let tilt_at = |t: f64| (klipp_core::keyframe::evaluate(&tx, t, 0.0), klipp_core::keyframe::evaluate(&ty, t, 0.0));
-            let (first, last) = (samples[0], samples[n - 1]);
-            let moved = (first.0 .0 - last.0 .0).abs() > 0.05
-                || (first.0 .1 - last.0 .1).abs() > 0.05
-                || (first.0 .2 - last.0 .2).abs() > 1e-4
-                || (first.0 .4 - last.0 .4).abs() > 0.01
-                || tilt_at(first.1) != tilt_at(last.1);
-            if moved {
+            if let Some(samples) = self.samples_if_moving(seq, c, time, fps, width, height, &offsets) {
                 self.shutter.insert(*id, samples);
             }
         }
+    }
+
+    /// Whether `c` really moves while the sequence camera's shutter is
+    /// open at `time` (#1922): what decides that it is blurred, and so that
+    /// the CPU stack draws it. [`may_blur`] first, so a clip nothing
+    /// animates is never sampled; then its samples, as
+    /// [`Self::samples_if_moving`] compares them. A clip with a title
+    /// blur of its own is blurred by that, not by the camera's shutter.
+    pub fn moves_in_shutter(&mut self, seq: &Sequence, c: &Clip, time: Timecode, width: u32, height: u32) -> bool {
+        if !may_blur(seq, c) || title_motion_blur(c).is_some() {
+            return false;
+        }
+        let fps = seq.fps.as_f64();
+        let offsets = shutter_offsets(seq.camera.shutter_deg, fps, seq.camera.shutter_samples.clamp(2, 32));
+        self.samples_if_moving(seq, c, time, fps, width, height, &offsets).is_some()
+    }
+
+    /// `c`'s transform sampled at each of the shutter's `offsets` from
+    /// `time`, when it moves across them: its first and last samples
+    /// apart by more than 0.05 of the sequence's pixels in position, or in
+    /// scale, rotation or its own tilt. Position is compared in the
+    /// sequence's pixels, not the render's, so a preview at a reduced size
+    /// and the export decide alike (#1922).
+    ///
+    /// Only the first and last samples are compared: a move that comes
+    /// back within one shutter, a short bounce or a whole turn, reads as
+    /// still and is drawn unblurred. A clip carried by a link is judged
+    /// by where it is carried and its own tilt, not its target's tilt.
+    #[allow(clippy::too_many_arguments)]
+    fn samples_if_moving(&mut self, seq: &Sequence, c: &Clip, time: Timecode, fps: f64, width: u32, height: u32, offsets: &[f64]) -> Option<Vec<(ResolvedTransform, f64)>> {
+        let samples: Vec<(ResolvedTransform, f64)> = offsets.iter().map(|&o| self.shutter_sample(seq, c, time, o, fps, width, height)).collect();
+        let (first, last) = (*samples.first()?, *samples.last()?);
+        let [tx, ty] = c.tilt_lanes();
+        let tilt_at = |t: f64| (klipp_core::keyframe::evaluate(&tx, t, 0.0), klipp_core::keyframe::evaluate(&ty, t, 0.0));
+        let (sx, sy) = render_scale(seq, width, height);
+        let moved = ((first.0 .0 - last.0 .0) / sx.max(1e-6)).abs() > 0.05
+            || ((first.0 .1 - last.0 .1) / sy.max(1e-6)).abs() > 0.05
+            || (first.0 .2 - last.0 .2).abs() > 1e-4
+            || (first.0 .4 - last.0 .4).abs() > 0.01
+            || tilt_at(first.1) != tilt_at(last.1);
+        moved.then_some(samples)
     }
 
     /// `c`'s transform at shutter offset `o` from `time`, as the frame

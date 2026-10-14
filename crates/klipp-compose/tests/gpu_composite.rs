@@ -1950,3 +1950,61 @@ fn a_grade_matte_read_past_the_media_ends_is_held_there() {
     assert!(!klipp_compose::subject_matte::uncovered_with(&seq, |_, _| Some(dir.clone()), |_| None).is_empty(), "unheld, the outgoing handle could never be covered");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// #1922: with the camera's shutter open, an animated clip's hold is the
+/// GPU stack's: the stack takes the frames where the clip stands still
+/// and they match the CPU's, and turns away, saying why, only the frames
+/// where it moves. Where the entrance gives way to the hold, the last
+/// blurred frame (the CPU's) and the first held one (the stack's) put the
+/// card in the same place: switching paths does not make it jump.
+#[test]
+fn an_animated_clip_s_hold_stays_on_the_stack_without_a_jump() {
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    let card = TestClip::of(clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 4.0))
+        .lane("scale", 0.0, 0.3).lane("pos_x", 0.0, -120.0).lane("pos_x", 1.0, 0.0).lane("pos_x", 3.0, 0.0).lane("pos_x", 4.0, 120.0)
+        .build();
+    let mut src = Flat::default();
+    src.0.insert(card.id, picture(0.3));
+    let mut v = Track::new("V1", TrackKind::Video);
+    v.clips = vec![card];
+    seq.tracks = vec![v];
+    seq.camera.shutter_deg = 180.0;
+    seq.camera.shutter_samples = 8;
+    let mut r = renderer();
+    let Some((held, _)) = r.render_display_u8_on_gpu(&seq, tc(2.0), W, H, &mut src, RenderOptions::default()) else {
+        assert_ne!(r.last_decline(), Some("motion blur"), "the hold is not turned away for blur");
+        eprintln!("UNVERIFIED: the GPU stack declined the hold ({:?})", r.last_decline());
+        return;
+    };
+    let cpu = display(&r.render(&seq, tc(2.0), W, H, &mut src, RenderOptions::default()));
+    let d = worst(&cpu, &held);
+    assert!(d <= 1, "the held card on the stack differs from the CPU's by {d} levels");
+    assert!(r.render_display_u8_on_gpu(&seq, tc(0.5), W, H, &mut src, RenderOptions::default()).is_none(), "the entrance moves: the CPU stack's");
+    assert_eq!(r.last_decline(), Some("motion blur"));
+    // Frame 24 (1.000 s) still moves at the start of its shutter; frame 25
+    // (1.042 s) is held.
+    assert!(r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none(), "frame 24 is blurred");
+    let last_blurred = display(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+    let Some((first_held, _)) = r.render_display_u8_on_gpu(&seq, tc(25.0 / 24.0), W, H, &mut src, RenderOptions::default()) else {
+        panic!("frame 25 is held and the stack's: declined for {:?}", r.last_decline());
+    };
+    let centre = |img: &[u8]| {
+        let (mut sx, mut n) = (0.0f64, 0.0f64);
+        for y in 0..H {
+            for x in 0..W {
+                let p = &img[((y * W + x) * 4) as usize..][..3];
+                if p.iter().any(|&c| c > 8) {
+                    sx += x as f64;
+                    n += 1.0;
+                }
+            }
+        }
+        sx / n.max(1.0)
+    };
+    let (a, b) = (centre(&last_blurred), centre(&first_held));
+    assert!((a - b).abs() < 1.0, "the card jumps {:.2} px where the stack takes over: {a:.2} then {b:.2}", b - a);
+    let cpu_first_held = display(&r.render(&seq, tc(25.0 / 24.0), W, H, &mut src, RenderOptions::default()));
+    let d = worst(&cpu_first_held, &first_held);
+    assert!(d <= 1, "the first held frame differs between the paths by {d} levels");
+}
