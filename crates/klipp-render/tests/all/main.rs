@@ -56,3 +56,5 @@ mod temporal_export_size;
 mod title_authoring_export;
 #[path = "../title_fit_export.rs"]
 mod title_fit_export;
+#[path = "../pan_inside_a_card.rs"]
+mod pan_inside_a_card;

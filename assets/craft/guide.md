@@ -618,7 +618,12 @@ exist until the plan runs.
   poses in the clip's own seconds. `scale` is 1 to 4, centred on frame
   point `x,y` from 0 to 1; Klipp eases between poses without crossing
   the picture edge. `ease` is the move into the key (see Easing below,
-  `in_out` when left out).
+  `in_out` when left out). On a picture composed as a card (smaller
+  than the frame, moved, or cropped), it pans inside the card: the card
+  keeps its place and size, `x,y` are points across the card, and the
+  clip's crop is keyed (one is added when there is none, an ordinary
+  Crop the inspector shows). A card that moves is refused: compose it
+  with one pose, pan, then compose again to move it with the pan kept.
 - Easing, for `compose` poses, `pan` and `camera` keys and `zoom`:
   `ease` is the curve of the move into a key from the one before:
   `linear` (constant speed), `in` (starts slowly), `out` (settles),
@@ -648,7 +653,9 @@ exist until the plan runs.
   fractions (-1 to 2, default 0.5). `width` and `height` must be equal
   (0.01 to 4, default 1); rotation is -360 to 360 degrees and opacity
   0 to 1. Example: `{op: compose, clip_id: ID, poses:[{x:0.7,
-  y:0.7, width:0.4, height:0.4}]}`.
+  y:0.7, width:0.4, height:0.4}]}`. On a clip panned inside its card
+  it moves the card and keeps the pan, the card in one place (poses may
+  still fade it).
 - `camera {keys:[{secs?, x?, y?, zoom?, roll_deg?}]}`: move the whole
   sequence, including all its layers. `secs` is timeline time, not a
   clip offset. `x,y` are the look point (-1 to 2, default 0.5), `zoom`
@@ -657,7 +664,8 @@ exist until the plan runs.
 - `crop {clip_id, left?, right?, top?, bottom?}`: take those fractions
   off the picture's sides. The remainder is transparent, so a cropped
   screen window can be composed as a card and rounded with `corners`.
-  All four zero removes the crop.
+  All four zero removes the crop. A new crop replaces a pan inside the
+  card, which keys the crop.
 - `generator {data, at, secs?|end?, track?}`: place native generator
   data as in `klipp_generator`. Give exactly one duration, `secs` or
   an `end` anchor. Without a track it uses a bottom Background video

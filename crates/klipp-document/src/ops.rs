@@ -5370,6 +5370,11 @@ enum Place {
 /// whose picture refuses the edit (a picture-truth clip's placed kind)
 /// is refused, why named; nothing is written as a whole list.
 fn effects_edit(clip: &Clip, remove: impl Fn(&klipp_effects::BuiltinEffect) -> bool, add: Option<(klipp_effects::BuiltinEffect, Place)>) -> Result<EditCommand, String> {
+    effects_edit_and_after(clip, remove, add).map(|(edit, _)| edit)
+}
+
+/// [`effects_edit`], and the clip as the edit leaves it.
+fn effects_edit_and_after(clip: &Clip, remove: impl Fn(&klipp_effects::BuiltinEffect) -> bool, add: Option<(klipp_effects::BuiltinEffect, Place)>) -> Result<(EditCommand, Clip), String> {
     use klipp_timeline::EffectEdit;
     let gone: Vec<usize> = clip.builtin_effects().iter().enumerate().filter(|(_, e)| remove(e)).map(|(i, _)| i).rev().collect();
     let kept = clip.builtin_effects().len() - gone.len();
@@ -5388,7 +5393,7 @@ fn effects_edit(clip: &Clip, remove: impl Fn(&klipp_effects::BuiltinEffect) -> b
     };
     let mut scratch = clip.clone();
     match scratch.apply_effect_edits(&edits) {
-        Some(Ok(edit)) => Ok(EditCommand::PictureEdit { description, clip_id: clip.id, edit: Box::new(edit) }),
+        Some(Ok(edit)) => Ok((EditCommand::PictureEdit { description, clip_id: clip.id, edit: Box::new(edit) }, scratch)),
         Some(Err(why)) => Err(why),
         None => Err("an edit the clip's picture doesn't take yet".into()),
     }
@@ -5994,8 +5999,14 @@ fn cropped_centre(clip: &Clip, pool: &MediaPool, w: f32, h: f32) -> (f32, f32) {
     }) else {
         return (0.0, 0.0);
     };
-    // The picture fitted inside the frame, never stretched.
-    let (pw, ph) = match &clip.kind {
+    let (pw, ph) = fitted_size(clip, pool, w, h);
+    (pw * ((left + 1.0 - right) / 2.0 - 0.5), ph * ((top + 1.0 - bottom) / 2.0 - 0.5))
+}
+
+/// The picture of `clip` fitted inside a `w` by `h` frame, never
+/// stretched, in frame pixels.
+fn fitted_size(clip: &Clip, pool: &MediaPool, w: f32, h: f32) -> (f32, f32) {
+    match &clip.kind {
         ClipKind::Media { media_id } => pool
             .get(media_id)
             .filter(|m| m.resolution.width > 0 && m.resolution.height > 0)
@@ -6005,8 +6016,116 @@ fn cropped_centre(clip: &Clip, pool: &MediaPool, w: f32, h: f32) -> (f32, f32) {
             })
             .unwrap_or((w, h)),
         _ => (w, h),
-    };
-    (pw * ((left + 1.0 - right) / 2.0 - 0.5), ph * ((top + 1.0 - bottom) / 2.0 - 0.5))
+    }
+}
+
+/// The crop sides' parameter names, in [`Crop`](klipp_effects::BuiltinEffect::Crop)'s order.
+const CROP_SIDES: [&str; 4] = ["left", "right", "top", "bottom"];
+
+/// The clip's crop as its picture holds it (#1917): its place in the
+/// clip's effect list, and each side's value and keys.
+struct CropSides {
+    index: usize,
+    sides: [(Vec<klipp_core::Keyframe>, Option<f32>); 4],
+}
+
+impl CropSides {
+    fn of(clip: &Clip) -> Option<Self> {
+        let (path, _, _) = clip.effect_nodes().into_iter().find(|(_, tag, _)| tag == "crop")?;
+        let (false, index) = clip.effect_slot_of_node(*path.nodes.last()?)? else { return None };
+        let side = |name: &str| clip.node_key_state(&path, &klipp_graph_format::ParamKey::from(name)).map(|s| (s.keys, s.value)).unwrap_or_default();
+        Some(Self { index, sides: CROP_SIDES.map(side) })
+    }
+
+    /// The sides as set, before any keys.
+    fn base(&self) -> [f32; 4] {
+        self.sides.each_ref().map(|(_, value)| value.unwrap_or(0.0))
+    }
+
+    /// The sides at clip time `t`.
+    fn at(&self, t: f64) -> [f32; 4] {
+        self.sides.each_ref().map(|(keys, value)| klipp_core::keyframe::evaluate(keys, t, value.unwrap_or(0.0)))
+    }
+
+    /// Whether a side is keyed: a pan inside the card.
+    fn keyed(&self) -> bool {
+        self.sides.iter().any(|(keys, _)| !keys.is_empty())
+    }
+
+    /// Every time a side is keyed at.
+    fn key_times(&self) -> impl Iterator<Item = f64> + '_ {
+        self.sides.iter().flat_map(|(keys, _)| keys.iter().map(|k| k.time_secs))
+    }
+}
+
+/// The clip's placement as its picture holds it: position x and y, scale
+/// and turn, each a lane of keys over its value.
+fn placement_lanes(clip: &Clip) -> [(Vec<klipp_core::Keyframe>, f32); 4] {
+    use klipp_core::ParamId as P;
+    let still = clip.picture_v2().map(|l| {
+        let p = &l.picture.placement;
+        [p.pos_x.unwrap_or(0.0), p.pos_y.unwrap_or(0.0), p.scale.unwrap_or(1.0), p.rotation.unwrap_or(0.0)]
+    }).unwrap_or([0.0, 0.0, 1.0, 0.0]);
+    let keys = |param: P| clip.truth_lane(&param).map(|(k, _)| k).unwrap_or_default();
+    [(keys(P::PositionX), still[0]), (keys(P::PositionY), still[1]), (keys(P::Scale), still[2]), (keys(P::Rotation), still[3])]
+}
+
+/// What of a picture `pw` by `ph` the crop `sides` leaves: its centre,
+/// in pixels from the picture's, and its width.
+fn window_of(sides: [f32; 4], pw: f32, ph: f32) -> ((f32, f32), f32) {
+    let [left, right, top, bottom] = sides;
+    ((pw * ((left + 1.0 - right) / 2.0 - 0.5), ph * ((top + 1.0 - bottom) / 2.0 - 0.5)), pw * (1.0 - left - right))
+}
+
+/// A picture placed into the frame as a card (#1917): where the part of
+/// it that shows sits, its centre in pixels from the frame's, how wide it
+/// is on screen, and its turn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Card {
+    x: f32,
+    y: f32,
+    width: f32,
+    turn: f32,
+}
+
+impl Card {
+    fn same_as(&self, other: &Card) -> bool {
+        (self.x - other.x).abs() < 0.5 && (self.y - other.y).abs() < 0.5 && (self.width - other.width).abs() < 0.5 && (self.turn - other.turn).abs() < 1e-3
+    }
+
+    /// The transform's scale and position that show the crop `sides` of a
+    /// picture `pw` by `ph` as this card: the window as wide as the card,
+    /// its centre on the card's.
+    fn transform_for(&self, sides: [f32; 4], pw: f32, ph: f32) -> (f32, f32, f32) {
+        let ((cx, cy), ww) = window_of(sides, pw, ph);
+        let scale = self.width / ww.max(1e-3);
+        let (sin, cos) = self.turn.to_radians().sin_cos();
+        (scale, self.x - scale * (cx * cos - cy * sin), self.y - scale * (cx * sin + cy * cos))
+    }
+}
+
+/// The card `clip` shows at clip time `t`: its placement there, taken
+/// with its crop there.
+fn card_at(clip: &Clip, pool: &MediaPool, fw: f32, fh: f32, t: f64) -> Card {
+    let [px, py, scale, turn] = placement_lanes(clip).map(|(keys, still)| if keys.is_empty() { still } else { klipp_core::keyframe::evaluate(&keys, t, still) });
+    let (pw, ph) = fitted_size(clip, pool, fw, fh);
+    let sides = CropSides::of(clip).map_or([0.0; 4], |c| c.at(t));
+    let ((cx, cy), ww) = window_of(sides, pw, ph);
+    let (sin, cos) = turn.to_radians().sin_cos();
+    Card { x: px + scale * (cx * cos - cy * sin), y: py + scale * (cx * sin + cy * cos), width: scale * ww, turn }
+}
+
+/// Whether `clip` is placed into the frame as a card (#1917) rather than
+/// filling it: it is cropped, or smaller than the frame, or moved further
+/// than a picture filling it can be. A pan on it pans inside the card.
+fn is_card(clip: &Clip, fw: f32, fh: f32) -> bool {
+    if CropSides::of(clip).is_some() {
+        return true;
+    }
+    let [(xk, x), (yk, y), (sk, scale), _] = placement_lanes(clip);
+    let values = |keys: &[klipp_core::Keyframe], still: f32| if keys.is_empty() { vec![still] } else { keys.iter().map(|k| k.value).collect() };
+    let min_scale = values(&sk, scale).into_iter().fold(f32::MAX, f32::min);
+    min_scale < 0.999 || values(&xk, x).iter().any(|v| v.abs() > reach(min_scale, fw) + 0.5) || values(&yk, y).iter().any(|v| v.abs() > reach(min_scale, fh) + 0.5)
 }
 
 /// Place a picture in the frame at one pose, or animate it between
@@ -6024,6 +6143,7 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
         return Err(refuse(i, "a compose needs a pose", "give at least one pose: where the picture sits and how much of the frame it covers"));
     }
     let dur = (secs(clip.timeline_out) - secs(clip.timeline_in)).max(0.05);
+    let gave_geometry = poses.iter().any(|p| p.x.is_some() || p.y.is_some() || p.width.is_some() || p.height.is_some());
     // Where the clip is now at each pose's time, in the units the keyframes
     // hold: its compose keyframes if it has them, else its static
     // transform (a reframe's scale and pan), else full frame and centred.
@@ -6104,6 +6224,30 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
     // the anchor sits; the fractions are turned into them here so a plan
     // written once holds at any delivery size.
     let (fw, fh) = (seq.resolution.width as f32, seq.resolution.height as f32);
+    // A clip panned inside its card (#1917): its crop is keyed. The card
+    // is placed as the pose says and the pan inside it kept, the
+    // transform keyed with the crop so the window fills the card. The
+    // card holds still: one place for it, however many poses fade it.
+    let inside = match CropSides::of(clip).filter(CropSides::keyed) {
+        None => None,
+        Some(crop) => {
+            let base = crop.base();
+            let geometry = |p: &ComposePose| (p.x, p.y, p.width, p.rotation_deg);
+            if sorted.windows(2).any(|w| geometry(&w[0]) != geometry(&w[1])) {
+                return Err(refuse(i, format!("{} pans inside its card", clip_name(seq, pool, clip)), "compose it with one place for the card (poses may still fade it), or take its crop off to move it freely"));
+            }
+            let card = if gave_geometry {
+                let p = sorted[0];
+                let (pw, ph) = fitted_size(clip, pool, fw, fh);
+                let (_, ow) = window_of(base, pw, ph);
+                Card { x: (p.x.unwrap_or(0.5) - 0.5) * fw, y: (p.y.unwrap_or(0.5) - 0.5) * fh, width: p.width.unwrap_or(1.0) * ow, turn: p.rotation_deg.unwrap_or(0.0) }
+            } else {
+                card_at(clip, pool, fw, fh, 0.0)
+            };
+            let times = sample_times(crop.key_times().chain(sorted.iter().map(|p| p.secs)), 1);
+            Some((crop, card, times))
+        }
+    };
     let (ox, oy) = cropped_centre(clip, pool, fw, fh);
     let (mut px, mut py, mut sk, mut rk, mut ok) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for p in &sorted {
@@ -6119,6 +6263,19 @@ fn compose(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, p
         klipp_core::keyframe::upsert_keyframe(&mut sk, p.secs, width);
         klipp_core::keyframe::upsert_keyframe(&mut rk, p.secs, p.rotation_deg.unwrap_or(0.0));
         klipp_core::keyframe::upsert_keyframe(&mut ok, p.secs, p.opacity);
+    }
+    if let Some((crop, card, times)) = &inside {
+        let (pw, ph) = fitted_size(clip, pool, fw, fh);
+        (px, py, sk) = (Vec::new(), Vec::new(), Vec::new());
+        for &t in times {
+            let (scale, x, y) = card.transform_for(crop.at(t), pw, ph);
+            klipp_core::keyframe::upsert_keyframe(&mut sk, t, scale);
+            klipp_core::keyframe::upsert_keyframe(&mut px, t, x);
+            klipp_core::keyframe::upsert_keyframe(&mut py, t, y);
+        }
+        // The card's turn is its pose's, the same at every key.
+        rk = vec![];
+        klipp_core::keyframe::upsert_keyframe(&mut rk, sorted[0].secs, card.turn);
     }
     let eases: Vec<_> = sorted.iter().map(|p| p.ease).collect();
     ease_tracks(&mut [&mut px, &mut py, &mut sk, &mut rk, &mut ok], &eases);
@@ -6187,6 +6344,9 @@ fn pan(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, keys:
     }
     let mut sorted: Vec<PanKey> = keys.to_vec();
     sorted.sort_by(|a, b| a.secs.total_cmp(&b.secs));
+    if is_card(clip, seq.resolution.width as f32, seq.resolution.height as f32) {
+        return pan_inside(seq, pool, i, clip, &sorted, verb);
+    }
     let old_state = crate::history::KeyframeSnapshot::from_clip(clip);
     let mut new_state = old_state.clone();
     let (mut sk, mut px, mut py) = (Vec::new(), Vec::new(), Vec::new());
@@ -6214,6 +6374,114 @@ fn pan(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, keys:
         old_linked_state: None,
         new_linked_state: None,
     };
+    Ok((what, edit, vec![clip.id]))
+}
+
+/// The steps a pan inside a card is keyed at through each move between
+/// two of its keys (#1917).
+const PAN_INSIDE_STEPS: usize = 12;
+
+/// `keys`' times, sorted, and `steps` evenly between each two.
+fn sample_times(keys: impl Iterator<Item = f64>, steps: usize) -> Vec<f64> {
+    let mut keys: Vec<f64> = keys.collect();
+    keys.sort_by(f64::total_cmp);
+    keys.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+    let mut out = Vec::new();
+    for w in keys.windows(2) {
+        for s in 0..steps {
+            out.push(w[0] + (w[1] - w[0]) * s as f64 / steps as f64);
+        }
+    }
+    out.extend(keys.last());
+    out
+}
+
+/// A pan on a picture placed as a card (#1917): the card stays where it
+/// is, and the picture moves inside it. Each key's `scale` and point
+/// choose the part of the picture shown — 1/`scale` of what the crop as
+/// set leaves, centred on the point (fractions across the card), held
+/// inside it — as keys on the clip's crop, and the transform is keyed so
+/// that part fills the card. A clip with no crop gets one, an ordinary
+/// Crop effect the inspector shows and edits, in the same undo step.
+fn pan_inside(seq: &Sequence, pool: &MediaPool, i: usize, clip: &Clip, sorted: &[PanKey], verb: &str) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    let (fw, fh) = (seq.resolution.width as f32, seq.resolution.height as f32);
+    let card = card_at(clip, pool, fw, fh, 0.0);
+    // The card must hold still: the pan moves the picture inside it.
+    for t in std::iter::once(0.0).chain(sorted.iter().map(|k| k.secs)) {
+        if !card_at(clip, pool, fw, fh, t).same_as(&card) {
+            return Err(refuse(i, format!("{} is a card that moves", clip_name(seq, pool, clip)), "pan inside a card that holds still: compose it with one pose, pan, then compose it again to move it"));
+        }
+    }
+    // The clip with its crop: as it is, or with one added first in its
+    // chain, taking nothing off until keyed.
+    let mut scratch = clip.clone();
+    let mut steps = Vec::new();
+    let (index, base) = match CropSides::of(clip) {
+        Some(c) => (c.index, c.base()),
+        None => {
+            let crop = klipp_effects::BuiltinEffect::Crop { left: 0.0, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 };
+            let (edit, after) = effects_edit_and_after(clip, |_| false, Some((crop, Place::First))).map_err(|why| refuse(i, why, "crop it in its node view first"))?;
+            steps.push(edit);
+            scratch = after;
+            CropSides::of(&scratch).map(|c| (c.index, c.base())).ok_or_else(|| refuse(i, "the crop wasn't added", "crop it in its node view first"))?
+        }
+    };
+    let (pw, ph) = fitted_size(clip, pool, fw, fh);
+    let [left, right, top, bottom] = base;
+    let (ow, oh) = (1.0 - left - right, 1.0 - top - bottom);
+    // The move itself, eased as asked between the keys: how far in and
+    // where. The crop and the transform are keyed together from it at
+    // steps through each move, straight between: the card's size is the
+    // window's width times the scale, which no pair of eased curves keeps
+    // still on its own (a 2x push would swell the card by an eighth
+    // half-way).
+    let (mut ms, mut mx, mut my) = (Vec::new(), Vec::new(), Vec::new());
+    for k in sorted {
+        klipp_core::keyframe::upsert_keyframe(&mut ms, k.secs, k.scale);
+        klipp_core::keyframe::upsert_keyframe(&mut mx, k.secs, k.x);
+        klipp_core::keyframe::upsert_keyframe(&mut my, k.secs, k.y);
+    }
+    let eases: Vec<_> = sorted.iter().map(|k| k.ease).collect();
+    ease_tracks(&mut [&mut ms, &mut mx, &mut my], &eases);
+    let times = sample_times(sorted.iter().map(|k| k.secs), PAN_INSIDE_STEPS);
+    let old_state = crate::history::KeyframeSnapshot::from_clip(&scratch);
+    let mut new_state = old_state.clone();
+    let mut sides: [Vec<klipp_core::Keyframe>; 4] = Default::default();
+    let (mut sk, mut px, mut py) = (Vec::new(), Vec::new(), Vec::new());
+    for t in times {
+        let ev = |kf: &[klipp_core::Keyframe]| klipp_core::keyframe::evaluate(kf, t, 0.0);
+        let (scale, x, y) = (ev(&ms).max(1.0), ev(&mx), ev(&my));
+        let (w, h) = (ow / scale, oh / scale);
+        let cx = (left + x * ow).clamp(left + w / 2.0, 1.0 - right - w / 2.0);
+        let cy = (top + y * oh).clamp(top + h / 2.0, 1.0 - bottom - h / 2.0);
+        let window = [cx - w / 2.0, 1.0 - (cx + w / 2.0), cy - h / 2.0, 1.0 - (cy + h / 2.0)];
+        for (track, v) in sides.iter_mut().zip(window) {
+            klipp_core::keyframe::upsert_keyframe(track, t, v);
+        }
+        let (scale, x, y) = card.transform_for(window, pw, ph);
+        klipp_core::keyframe::upsert_keyframe(&mut sk, t, scale);
+        klipp_core::keyframe::upsert_keyframe(&mut px, t, x);
+        klipp_core::keyframe::upsert_keyframe(&mut py, t, y);
+    }
+    for (side, keys) in CROP_SIDES.iter().zip(sides) {
+        new_state.effect_keyframes.insert(format!("{index}:{side}"), keys);
+    }
+    new_state.transform_scale_keyframes = sk;
+    new_state.transform_scale_y_keyframes = Vec::new();
+    new_state.transform_pos_x_keyframes = px;
+    new_state.transform_pos_y_keyframes = py;
+    let poses: Vec<String> = sorted.iter().map(|k| format!("{:.2}s {:.2}x@{:.2},{:.2}", k.secs, k.scale, k.x, k.y)).collect();
+    let what = format!("{verb} {} inside its card at {:.2} of the frame: {}", clip_name(seq, pool, clip), card.width / fw, poses.join(" \u{2192} "));
+    steps.push(EditCommand::EditKeyframes {
+        clip_id: clip.id,
+        linked_clip_id: None,
+        description: "Pan",
+        old_state,
+        new_state,
+        old_linked_state: None,
+        new_linked_state: None,
+    });
+    let edit = if steps.len() == 1 { steps.pop().expect("one step") } else { EditCommand::Batch(steps) };
     Ok((what, edit, vec![clip.id]))
 }
 
@@ -9892,6 +10160,103 @@ mod tests {
         let (left_edge, _) = on_screen(1.5, end, (0.0, 0.5));
         assert!(left_edge.abs() < 0.5, "pushed left, the picture's left edge meets the frame's: {left_edge}");
     }
+    /// Apply `edit` to `seqs`, forward or undone.
+    fn applied(seqs: &mut Vec<Sequence>, pool: &MediaPool, edit: &EditCommand, undo: bool) {
+        let mut p = pool.clone();
+        let mut fps = seqs[0].fps;
+        let mut view = crate::apply::DocumentView { sequences: seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        if undo {
+            view.apply_inverse(edit);
+        } else {
+            view.apply_forward(edit);
+        }
+    }
+
+    fn clip_in(seq: &Sequence, id: ClipId) -> Clip {
+        seq.tracks.iter().flat_map(|t| t.clips.iter()).find(|c| c.id == id).cloned().expect("the clip")
+    }
+
+    /// #1917: a pan on a recording composed as an inset pans inside its
+    /// card. The card keeps its place and size at every moment of the
+    /// move, the picture inside it is the pan's window (1/1.23 of it at
+    /// the end), the crop it uses is an ordinary Crop effect, and one
+    /// undo takes the crop and its keys off with the pan.
+    #[test]
+    fn a_pan_on_an_inset_pans_inside_its_card() {
+        let (seq, pool, _, a, _) = fixture();
+        let (fw, fh) = (seq.resolution.width as f32, seq.resolution.height as f32);
+        let mut seqs = vec![seq];
+        let inset = ComposePose { x: Some(0.5), y: Some(0.46), width: Some(0.91), height: Some(0.91), ..Default::default() };
+        let plan = resolve(&seqs[0], &pool, &[Op::Compose { clip_id: ClipRef::Id(a), poses: vec![inset] }]).unwrap();
+        applied(&mut seqs, &pool, &plan.steps[0].edit, false);
+        let composed = clip_in(&seqs[0], a);
+        let card = card_at(&composed, &pool, fw, fh, 0.0);
+        assert!((card.width - 0.91 * fw).abs() < 0.5, "the inset: {card:?}");
+
+        let keys = vec![PanKey { secs: 0.0, scale: 1.0, x: 0.5, y: 0.5, ease: klipp_core::keyframe::Ease::InOut }, PanKey { secs: 2.0, scale: 1.23, x: 0.5, y: 0.5, ease: klipp_core::keyframe::Ease::InOut }];
+        let plan = resolve(&seqs[0], &pool, &[Op::Pan { clip_id: ClipRef::Id(a), keys }]).unwrap();
+        assert_eq!(plan.steps.len(), 1, "one step");
+        assert!(plan.steps[0].what.contains("inside its card"), "{}", plan.steps[0].what);
+        let pan = plan.steps[0].edit.clone();
+        applied(&mut seqs, &pool, &pan, false);
+        let panned = clip_in(&seqs[0], a);
+        for t in [0.0, 0.3, 0.7, 1.0, 1.37, 1.8, 2.0, 3.0] {
+            let now = card_at(&panned, &pool, fw, fh, t);
+            assert!(now.same_as(&card), "at {t} s the card is {now:?}, not {card:?}");
+        }
+        let crop = CropSides::of(&panned).expect("an ordinary Crop effect");
+        let end = crop.at(2.0);
+        assert!(((1.0 - end[0] - end[1]) - 1.0 / 1.23).abs() < 1e-4, "1/1.23 of the picture shows: {end:?}");
+        assert!(crop.at(0.0).iter().all(|v| v.abs() < 1e-5), "all of it at the start");
+        // The crop is the inspector's like any keyed effect: its node and
+        // its keyed sides are what the keyframe lanes read.
+        let lanes: Vec<_> = panned.animated_effect_keys().into_iter().filter(|(_, _, tag)| tag == "crop").collect();
+        for side in CROP_SIDES {
+            let (path, key, _) = lanes.iter().find(|(_, k, _)| k.as_str() == side).unwrap_or_else(|| panic!("a {side} lane: {lanes:?}"));
+            assert!(panned.node_key_state(path, key).is_some_and(|s| s.keys.len() > 2), "{side} is keyed on the crop's node");
+        }
+
+        applied(&mut seqs, &pool, &pan, true);
+        let undone = clip_in(&seqs[0], a);
+        assert!(CropSides::of(&undone).is_none(), "the crop it added goes with the undo, and its keys");
+        assert!(!undone.animated_effect_keys().iter().any(|(_, _, tag)| tag == "crop"));
+        assert!(card_at(&undone, &pool, fw, fh, 1.0).same_as(&card));
+    }
+
+    /// #1917: composing again after a pan inside the card moves the card
+    /// and keeps the pan; a card that moves can't be panned inside, and
+    /// two places for a panned card are refused, each saying why.
+    #[test]
+    fn a_panned_card_moves_with_compose_and_a_moving_card_refuses_a_pan() {
+        let (seq, pool, _, a, _) = fixture();
+        let (fw, fh) = (seq.resolution.width as f32, seq.resolution.height as f32);
+        let mut seqs = vec![seq];
+        let pose = |x: f32, y: f32, w: f32, secs: f64| ComposePose { secs, x: Some(x), y: Some(y), width: Some(w), height: Some(w), ..Default::default() };
+        let keys = vec![PanKey { secs: 0.0, scale: 1.0, x: 0.5, y: 0.5, ease: klipp_core::keyframe::Ease::InOut }, PanKey { secs: 2.0, scale: 2.0, x: 0.3, y: 0.6, ease: klipp_core::keyframe::Ease::InOut }];
+        for op in [Op::Compose { clip_id: ClipRef::Id(a), poses: vec![pose(0.5, 0.5, 0.8, 0.0)] }, Op::Pan { clip_id: ClipRef::Id(a), keys: keys.clone() }, Op::Compose { clip_id: ClipRef::Id(a), poses: vec![pose(0.3, 0.3, 0.5, 0.0)] }] {
+            let plan = resolve(&seqs[0], &pool, &[op]).unwrap();
+            applied(&mut seqs, &pool, &plan.steps[0].edit, false);
+        }
+        let clip = clip_in(&seqs[0], a);
+        let moved = card_at(&clip, &pool, fw, fh, 0.0);
+        assert!((moved.x - (0.3 - 0.5) * fw).abs() < 0.5 && (moved.y - (0.3 - 0.5) * fh).abs() < 0.5 && (moved.width - 0.5 * fw).abs() < 0.5, "{moved:?}");
+        for t in [0.5, 1.0, 1.5, 2.0] {
+            assert!(card_at(&clip, &pool, fw, fh, t).same_as(&moved), "the card holds at {t} s");
+        }
+        let end = CropSides::of(&clip).unwrap().at(2.0);
+        assert!((1.0 - end[0] - end[1] - 0.5).abs() < 1e-4, "the pan is kept");
+
+        let err = resolve(&seqs[0], &pool, &[Op::Compose { clip_id: ClipRef::Id(a), poses: vec![pose(0.3, 0.3, 0.5, 0.0), pose(0.6, 0.6, 0.5, 2.0)] }]).unwrap_err();
+        assert!(format!("{err:?}").contains("pans inside its card"), "{err:?}");
+
+        let (seq, pool, _, b, _) = fixture();
+        let mut seqs = vec![seq];
+        let plan = resolve(&seqs[0], &pool, &[Op::Compose { clip_id: ClipRef::Id(b), poses: vec![pose(0.3, 0.5, 0.5, 0.0), pose(0.7, 0.5, 0.5, 2.0)] }]).unwrap();
+        applied(&mut seqs, &pool, &plan.steps[0].edit, false);
+        let err = resolve(&seqs[0], &pool, &[Op::Pan { clip_id: ClipRef::Id(b), keys }]).unwrap_err();
+        assert!(format!("{err:?}").contains("a card that moves"), "{err:?}");
+    }
+
     /// #1920: the guide's continuous pan, as written there, keeps moving
     /// through its middle key with `ease: linear`; left to its `in_out`
     /// default, it stops there.
