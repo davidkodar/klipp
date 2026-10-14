@@ -2110,15 +2110,20 @@ impl GraphExecutor {
         // the clip the source was given for, with its frame context.
         // Heavy nodes found held are taken as they are, and the nodes
         // above them that only they read are not run.
-        let held_source = self.held.token.clone().filter(|t| self.compound_depth == 0 && ctx.as_ref().is_some_and(|c| c.clip == t.clip));
+        // A run with no frame context is the viewer's GPU path on the
+        // parked frame (step B3): it may only take outputs held, never run
+        // a heavy node, which needs the context it hasn't.
+        let contextless = ctx.is_none();
+        let held_source = self.held.token.clone().filter(|t| self.compound_depth == 0 && ctx.as_ref().is_none_or(|c| c.clip == t.clip));
         let held_run = match held_source {
             Some(source) => {
-                let c = ctx.as_ref().expect("filtered above");
                 let env = crate::held::RunEnv {
                     width,
                     height,
                     clip_time_secs,
-                    source_secs: c.source_secs,
+                    // The renderer's context reads the source at the
+                    // retime's sample; the GPU path, with none, the same.
+                    source_secs: ctx.as_ref().map_or(source.retime.source_at_clip_time, |c| c.source_secs),
                     frame_number,
                     working: self.working_colorspace,
                     encoding: self.project_grade_encoding,
@@ -2128,17 +2133,42 @@ impl GraphExecutor {
                     seeded: gpu_resident_source,
                     source_domain: format!("{:?}", self.source_domain),
                 };
-                let host = c.ofx;
+                let host = ctx.as_ref().and_then(|c| c.ofx);
                 let solo = self.solo_node;
                 let analysed: HashSet<NodeId> = self.run_analysis.keys().copied().collect();
                 let looked_at = |id: NodeId| {
                     Some(id) == matte_tap || Some(id) == matte_preview_node || Some(id) == solo || visible_nodes.is_some_and(|v| v.contains(&id)) || analysed.contains(&id)
                 };
-                let history = |n: &Node| held_history(n, host);
+                // Without a host the plug-in can't be asked; an entry under
+                // its key was stored by a run that asked it.
+                let history = |n: &Node| !contextless && held_history(n, host);
                 self.held.plan(graph, order, feeding, &source, &env, &looked_at, &history)
             }
             None => crate::held::HeldRun::default(),
         };
+        if contextless && (!held_run.store.is_empty() || !held_run.refused.is_empty()) {
+            return Err(ExecutorError::CpuSourceRequired);
+        }
+        // A seed is the Source's picture. With the Source not run, a chain
+        // starting below a held output would read the seed in its place
+        // (`start_chain`): the held pixels are uploaded instead.
+        let source_skipped = node_by_id.values().any(|n| n.kind == NodeKind::Source && held_run.skip.contains(&n.id));
+        if source_skipped {
+            self.run_seed_dims = None;
+        }
+        // With the Source not run, a held output the next node to run
+        // reads alone, and nothing else, can seed that node's chain from
+        // its GPU copy (step B3): the chain's input slot filled on the
+        // device, as a seed is, instead of uploaded.
+        let seed_at = held_run
+            .hits
+            .keys()
+            .filter(|h| source_skipped && self.gpu.is_some() && !held_run.skip.contains(h))
+            .find(|h| {
+                fan_out.get(h).copied().unwrap_or(0) <= 1
+                    && order.iter().skip_while(|n| *n != *h).skip(1).find(|n| feeding.contains(n) || **n == graph.output_node_id).is_some_and(|next| graph.input_of(*next, 0) == Some(**h))
+            })
+            .copied();
 
         // 3. Execute nodes in topo order
         for &node_id in order {
@@ -2159,6 +2189,11 @@ impl GraphExecutor {
                         tapped_output = Some(Arc::clone(pixels));
                     }
                     node_outputs.insert(node_id, Arc::clone(pixels));
+                    if seed_at == Some(node_id) {
+                        if let Some(key) = held_run.keys.get(&node_id) {
+                            self.seed_from_held(key, pixels, width, height);
+                        }
+                    }
                 }
                 per_node_ms.push((format!("{:?}#held", node.kind), t_node.elapsed().as_secs_f64() * 1000.0));
                 continue;
@@ -4730,6 +4765,48 @@ impl GraphExecutor {
     /// around one clip's grade, and none outside it.
     pub fn holding_for(&self) -> Option<&crate::held::HeldSource> {
         self.held.token.as_ref()
+    }
+
+    /// Fill the chain's input slot with `pixels`, the held output under
+    /// `key`, from its GPU copy (made from them on first use), and mark it
+    /// the run's seed: the next chain starts from it with no upload. A
+    /// copy that fails (a lost device) is forgotten, and the chain uploads
+    /// the pixels as before.
+    fn seed_from_held(&mut self, key: &[u8], pixels: &Arc<Vec<f32>>, width: u32, height: u32) {
+        if pixels.len() != (width as usize) * (height as usize) * 4 {
+            return;
+        }
+        let Some(gpu) = self.gpu.as_mut() else { return };
+        if gpu.is_device_lost() {
+            self.held.drop_gpu();
+            return;
+        }
+        let device = gpu.device();
+        let buffer = match self.held.gpu_of(key, &device) {
+            Some(b) => b,
+            None => {
+                let b = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("held_output"),
+                    size: (pixels.len() * 4) as u64,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                gpu.queue().write_buffer(&b, 0, bytemuck::cast_slice(pixels.as_slice()));
+                let b = Arc::new(b);
+                self.held.set_gpu(key, Arc::clone(&b), &device);
+                b
+            }
+        };
+        if gpu.copy_linear_into_chain(&buffer, width, height) {
+            self.run_seed_dims = Some((width, height));
+        } else {
+            self.held.drop_gpu();
+        }
+    }
+
+    /// GPU copies of held outputs kept now.
+    pub fn held_gpu_len(&self) -> usize {
+        self.held.gpu_len()
     }
 
     /// The held outputs' counts: hits, misses, heavy nodes not held,

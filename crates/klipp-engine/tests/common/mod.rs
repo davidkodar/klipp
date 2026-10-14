@@ -192,6 +192,18 @@ impl Parked {
         Self::start_spanning(src, width, height, fps, graded, 50, |_| {}, true)
     }
 
+    /// [`Self::start_with`] on a timeline at `fps`, whatever the source's
+    /// rate.
+    pub fn start_with_at(src: PathBuf, width: u32, height: u32, fps: Fps, tweak: impl FnOnce(&mut Clip)) -> Self {
+        Self::start_spanning(src, width, height, fps, true, 50, tweak, true)
+    }
+
+    /// [`Self::start_with_at`] on an engine that keeps nothing between
+    /// renders.
+    pub fn start_with_at_unheld(src: PathBuf, width: u32, height: u32, fps: Fps, tweak: impl FnOnce(&mut Clip)) -> Self {
+        Self::start_spanning(src, width, height, fps, true, 50, tweak, false)
+    }
+
     /// [`Self::start_at`] with a clip `frames` long.
     fn start_spanning(src: PathBuf, width: u32, height: u32, fps: Fps, graded: bool, frames: i64, tweak: impl FnOnce(&mut Clip), hold: bool) -> Self {
         let tc = |f: i64| frame_tc(f, fps);
@@ -650,4 +662,24 @@ pub fn every_frame_damaged(src: &Path, name: &str) -> PathBuf {
     let out = std::env::temp_dir().join(format!("klipp-seq-ramp-{name}-{}", src.file_name().unwrap().to_string_lossy()));
     std::fs::write(&out, bytes).unwrap();
     out
+}
+
+/// The repository's C OFX fixture (`org.klipp.fixture.channels`, an 8-bit
+/// channel swap) built into a bundle under a scratch folder; the folder,
+/// for `OFX_PLUGIN_PATH`, or `None` without a C compiler.
+pub fn ofx_fixture_bundle() -> Option<std::path::PathBuf> {
+    let root = std::env::temp_dir().join(format!("klipp-probe-ofx-{}", std::process::id()));
+    let binary = root.join("KlippFixture.ofx.bundle/Contents/Linux-x86-64/KlippFixture.ofx");
+    std::fs::create_dir_all(binary.parent()?).ok()?;
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../klipp-plugin/tests/fixtures/ofx/fixture.c");
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    let ok = std::process::Command::new(cc)
+        .args(["-std=c11", "-O2", "-shared", "-fPIC"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .status()
+        .ok()?
+        .success();
+    ok.then_some(root)
 }
