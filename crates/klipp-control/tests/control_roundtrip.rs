@@ -138,6 +138,7 @@ fn harness() -> Harness {
                 // A plan made for another revision is refused, as the UI does.
                 let mut refused_op = None;
                 let mut ungated = Vec::new();
+                let mut renamed = Vec::new();
                 let mut refused = if let Some(want) = env.expected_project_identity {
                     if shared.project.lock().unwrap().identity != want {
                         Some(format!("project identity moved from {want}"))
@@ -159,7 +160,25 @@ fn harness() -> Harness {
                             let mut seq = sequence.write().unwrap();
                             let result = (|| {
                                 let root = ops.first().ok_or((None, "empty batch".to_owned()))?.path().root;
-                                let klipp_graph_format::path::Root::Clip { clip } = root else { return Err((Some(0), "only clip roots are supported".into())); };
+                                // The sequence's own pictures commit through
+                                // the same sequence adapters the UI uses (#1911).
+                                let clip = match root {
+                                    klipp_graph_format::path::Root::Clip { clip } => clip,
+                                    klipp_graph_format::path::Root::Track { track, part: klipp_graph_format::path::TrackPart::Effects } => {
+                                        let t = seq.tracks.iter().find(|t| t.id.0 == track).ok_or((None, "no track".to_owned()))?;
+                                        let (id, old) = (t.id, t.settings());
+                                        let (_, effects, written) = seq.apply_track_effect_ops(ops).map_err(|e| (None, e))?;
+                                        renamed = written;
+                                        let new = klipp_timeline::TrackSettings { effects, ..old.clone() };
+                                        edits_seen.lock().unwrap().push(klipp_document::history::EditCommand::SetTrackSettings { changes: vec![(id, old, new)] });
+                                        return Ok(());
+                                    }
+                                    _ => {
+                                        let (old, new) = seq.apply_root_grade_ops(ops, None).map_err(|e| (None, e))?;
+                                        edits_seen.lock().unwrap().push(klipp_document::history::EditCommand::SetRootGrade { description: "Graph Edit", root, old: old.map(Box::new), new: Some(Box::new(new)) });
+                                        return Ok(());
+                                    }
+                                };
                                 let clip = seq.tracks.iter_mut().flat_map(|t| &mut t.clips).find(|c| c.id.0 == clip).ok_or((None, "no clip".to_owned()))?;
                                 let before = serde_json::to_value(&clip.picture_v2().unwrap().picture).unwrap();
                                 match clip.apply_picture_ops_indexed(ops) {
@@ -211,7 +230,7 @@ fn harness() -> Harness {
                 }
                 let revision = if refused.is_none() { shared.bump_revision() } else { shared.revision() };
                 if let Some(ack) = env.ack {
-                    let _ = ack.send(klipp_document::control::ControlAck { revision, refused, refused_op, renamed: Vec::new(), ungated });
+                    let _ = ack.send(klipp_document::control::ControlAck { revision, refused, refused_op, renamed, ungated });
                 }
             }
         });
@@ -762,6 +781,67 @@ fn graph_misspelled_top_level_fields_never_reach_the_app() {
     assert_eq!(h.shared.revision(),0);
 }
 
+/// #1911: each of the sequence's own pictures takes a guarded write over
+/// the socket as a clip does: the timeline grade, a grade group's stage, a
+/// track's grade and its effects. Each write is one step of its kind, reads
+/// back, and a stale revision changes nothing.
+#[test]
+fn graph_writes_reach_the_sequence_s_own_pictures() {
+    use klipp_graph_format::path::{Root, TrackPart};
+    use klipp_graph_format::lifted::Stage;
+    let mut h = harness();
+    let (sequence, group, track) = {
+        let mut seq = h.sequence.write().unwrap();
+        let group = klipp_timeline::GradeGroup::new("Night");
+        let gid = group.id.0;
+        seq.grade_groups.push(group);
+        let tid = seq.tracks[0].id.0;
+        seq.tracks[0].effects = serde_json::from_value(json!({ "video": [{ "type": "gaussian_blur", "radius": 3.0 }], "video_enabled": [true] })).unwrap();
+        for root in [Root::TimelineGrade { sequence: seq.id.0 }, Root::GroupStage { group: gid, stage: Stage::Post }, Root::Track { track: tid, part: TrackPart::Grade }] {
+            seq.set_root_grade(root, Some(klipp_nodes::NodeGraph::default())).unwrap();
+        }
+        (seq.id.0, gid, tid)
+    };
+    for (root, kind, key, value) in [
+        (json!({"timeline_grade":sequence}), "klipp.grade.corrector", "exposure", 0.75),
+        (json!({"group_stage":group,"stage":"post"}), "klipp.grade.corrector", "exposure", 0.5),
+        (json!({"track":track,"part":"grade"}), "klipp.grade.corrector", "exposure", 0.25),
+        (json!({"track":track,"part":"effects"}), "klipp.fx.gaussian_blur", "radius", 6.0),
+    ] {
+        let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+        let node = graph["nodes"].as_array().unwrap().iter().find(|n| n["type"] == kind).unwrap_or_else(|| panic!("{root}: {graph}"))["id"].clone();
+        let path = json!({"root":root,"nodes":[node]});
+        let count = h.edits_seen.lock().unwrap().len();
+        let mut stale = json!({"method":"graph_ops","ops":[{"op":"set","path":path,"key":key,"value":value}]});
+        stale["expected_revision"] = json!(graph["revision"].as_u64().unwrap() + 1);
+        assert_eq!(h.call(stale)["ok"], false, "{root}: a stale revision is refused");
+        assert_eq!(h.edits_seen.lock().unwrap().len(), count, "{root}: and changes nothing");
+        let reply = h.ok(json!({"method":"graph_ops","expected_revision":graph["revision"],"expected_project_identity":graph["project_identity"],"ops":[{"op":"set","path":path,"key":key,"value":value}]}));
+        assert_eq!(reply["applied"], true, "{root}: {reply}");
+        assert_eq!(reply["revision"].as_u64().unwrap(), graph["revision"].as_u64().unwrap() + 1);
+        let seen = h.edits_seen.lock().unwrap();
+        assert_eq!(seen.len(), count + 1, "{root}: one step");
+        let step_kind = match &seen[count] {
+            klipp_document::history::EditCommand::SetRootGrade { .. } => "grade",
+            klipp_document::history::EditCommand::SetTrackSettings { .. } => "track",
+            other => panic!("{root}: {other:?}"),
+        };
+        assert_eq!(step_kind, if key == "radius" { "track" } else { "grade" }, "{root}");
+        drop(seen);
+        let read = h.ok(json!({"method":"graph_read","path":path}));
+        assert_eq!(read["nodes"][0]["params"][key], value, "{root}: reads back");
+    }
+    // An effect added to a track's list, which names its effects by place,
+    // is answered with the path the written list gives it.
+    let root = json!({"track":track,"part":"effects"});
+    let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let blur = graph["nodes"][0]["id"].clone();
+    let reply = h.ok(json!({"method":"graph_ops","ops":[{"op":"add","after":{"root":root,"nodes":[blur]},"type":"klipp.fx.sharpen","params":{"amount":0.4}}]}));
+    assert_eq!(reply["applied"], true, "{reply}");
+    let read = h.ok(json!({"method":"graph_read","path":reply["created"][0]["path"]}));
+    assert_eq!(read["nodes"][0]["type"], "klipp.fx.sharpen", "{reply}");
+}
+
 #[test]
 fn graph_batch_refusals_precede_document_preflight() {
     let mut h = harness();
@@ -773,9 +853,11 @@ fn graph_batch_refusals_precede_document_preflight() {
     assert_eq!(long_label["ok"],false);
     assert!(long_label["error"].as_str().unwrap().contains("undo label"));
     assert!(long_label["result"]["op_index"].is_null());
-    let non_clip = h.call(json!({"method":"graph_ops","ops":[{"op":"enable","path":{"root":{"timeline_grade":uuid::Uuid::nil()},"nodes":[uuid::Uuid::nil()]},"enabled":false}]}));
-    assert_eq!(non_clip["ok"],false);
-    assert!(non_clip["error"].as_str().unwrap().contains("clip roots only"));
+    // A grade the sequence doesn't have has no node to name (#1911).
+    let sequence = h.sequence.read().unwrap().id.0;
+    let no_grade = h.call(json!({"method":"graph_ops","ops":[{"op":"enable","path":{"root":{"timeline_grade":sequence},"nodes":[uuid::Uuid::nil()]},"enabled":false}]}));
+    assert_eq!(no_grade["ok"],false);
+    assert!(no_grade["error"].as_str().unwrap().contains("no timeline grade"), "{no_grade}");
     assert!(h.envelopes.lock().unwrap().is_empty());
     assert_eq!(h.shared.revision(),0);
 }

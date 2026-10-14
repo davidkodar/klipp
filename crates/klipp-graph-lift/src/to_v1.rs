@@ -142,7 +142,13 @@ impl Lists {
                     self.ofx.push(legacy.payload.clone());
                 }
                 _ => {
-                    check_slot(n, legacy.slot, self.effects.len())?;
+                    // A clip's keys name its effects by slot, so each must
+                    // stand at its own; a track's list keeps no keys and
+                    // names its entries by place, so one added, removed or
+                    // moved takes its place's (#1911).
+                    if allow == Allow::Clip {
+                        check_slot(n, legacy.slot, self.effects.len())?;
+                    }
                     if effect_type(&legacy.payload) != t {
                         return Err(format!("node {} is a {t} holding a {:?}", n.id, legacy.payload.get("type")));
                     }

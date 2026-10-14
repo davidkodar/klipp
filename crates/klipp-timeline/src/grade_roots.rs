@@ -251,10 +251,13 @@ impl Sequence {
     /// `TrackPart::Effects`), as one edit (#1214): the list lifted as its
     /// paths address it, the ops applied there with the registry's checks,
     /// and the result lowered to the track's own list. The track's effects
-    /// before and after, for the edit's undo and redo. A track's effects
-    /// keep no keyframes, so a key op is refused; nothing is stored when
-    /// any op is refused.
-    pub fn apply_track_effect_ops(&mut self, ops: &[GraphOp]) -> Result<(crate::TrackEffects, crate::TrackEffects), String> {
+    /// before and after, for the edit's undo and redo, and each node the
+    /// written list names by another id, as pairs of the batch's id and
+    /// the list's (#1911): the list keeps no effect ids, so an effect is
+    /// named by its place, and one added or moved takes its place's. A
+    /// track's effects keep no keyframes, so a key op is refused; nothing
+    /// is stored when any op is refused.
+    pub fn apply_track_effect_ops(&mut self, ops: &[GraphOp]) -> Result<(crate::TrackEffects, crate::TrackEffects, Vec<(uuid::Uuid, uuid::Uuid)>), String> {
         let root = ops.first().ok_or("an empty batch has no edit")?.path().root;
         let Root::Track { track, part: TrackPart::Effects } = root else { return Err("not a track's effects".into()) };
         if ops.iter().any(|op| op.path().root != root) {
@@ -273,6 +276,7 @@ impl Sequence {
         docs.track_effects.insert(track, nodes);
         klipp_graph_lift::ops::apply_batch_with_catalog(&mut docs, ops, &crate::RegistryCatalog)?;
         let mut nodes = docs.track_effects.remove(&track).ok_or("the edit lost the track's effects")?;
+        let edited: Vec<uuid::Uuid> = nodes.iter().map(|n| n.id).collect();
         for n in &mut nodes {
             klipp_graph_lift::effect_params::into_stored(n)?;
         }
@@ -293,8 +297,18 @@ impl Sequence {
         for (k, val) in fields.as_object().into_iter().flatten().filter(|(k, _)| matches!(k.as_str(), "video" | "video_enabled")) {
             o.insert(k.clone(), val.clone());
         }
-        t.effects = serde_json::from_value(v).map_err(|e| e.to_string())?;
-        Ok((before, t.effects.clone()))
+        let new: crate::TrackEffects = serde_json::from_value(v).map_err(|e| e.to_string())?;
+        let old = std::mem::replace(&mut t.effects, new);
+        let written: Vec<uuid::Uuid> = match self.lift_track_parts(track) {
+            Ok((nodes, _)) if nodes.len() == edited.len() => nodes.iter().map(|n| n.id).collect(),
+            Ok(_) | Err(_) => {
+                self.tracks.iter_mut().find(|t| t.id.0 == track).expect("found above").effects = old;
+                return Err("the track's written list doesn't hold the edit's effects".into());
+            }
+        };
+        let renamed = edited.into_iter().zip(written).filter(|(was, now)| was != now).collect();
+        let t = self.tracks.iter().find(|t| t.id.0 == track).expect("found above");
+        Ok((before, t.effects.clone(), renamed))
     }
 }
 

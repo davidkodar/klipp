@@ -62,10 +62,12 @@ pub(super) fn graph_ops_edit(seq: &klipp_timeline::Sequence, ops: &[GraphOp]) ->
         // A track's effect list, through its own list (#1214).
         Root::Track { track, part: klipp_graph_format::path::TrackPart::Effects } => {
             let t = seq.tracks.iter().find(|t| t.id.0 == track).ok_or_else(|| (None, format!("no track {track} on this sequence")))?;
-            let (_, effects) = seq.clone().apply_track_effect_ops(ops).map_err(|e| (None, e))?;
+            // Its effects are named by place once written: the reply names
+            // each by the id it then has (#1911).
+            let (_, effects, renamed) = seq.clone().apply_track_effect_ops(ops).map_err(|e| (None, e))?;
             let old = t.settings();
             let new = klipp_timeline::TrackSettings { effects, ..old.clone() };
-            return Ok(GraphOpsOutcome { edit: EditCommand::SetTrackSettings { changes: vec![(t.id, old, new)] }, renamed: Vec::new(), ungated: Vec::new() });
+            return Ok(GraphOpsOutcome { edit: EditCommand::SetTrackSettings { changes: vec![(t.id, old, new)] }, renamed, ungated: Vec::new() });
         }
         // The sequence's own grades, a track's among them, as the Colour
         // workspace edits them (#1214): whole, as one grade step. One the
@@ -189,17 +191,10 @@ mod tests {
         assert_eq!(format!("{:?}", test_clip::effects(&seq.tracks[0].clips[0])), before, "built on a copy");
     }
 
-    /// An effect added to a clip whose fields hold its effects keeps its id
-    /// (effects' node ids are their identity, M3 proposal 6): the edit's
-    /// clip holds it under the batch's id, the effect after it keeps its own
-    /// though it moved down a slot, and the reply renames nothing.
-    #[test]
-    fn an_added_effect_keeps_its_id() {
-        let (seq, clip, fx) = sequence();
-        let at = |id| NodePath::new(Root::Clip { clip: clip.0 }, [id]);
-        let added = uuid::Uuid::from_u128(0xd1);
-        let node = klipp_graph_format::Node {
-            id: added,
+    /// A Gamma effect node under `id`, as an add sends it.
+    fn gamma(id: uuid::Uuid) -> klipp_graph_format::Node {
+        klipp_graph_format::Node {
+            id,
             type_id: types::LEGACY_EFFECT.into(),
             type_version: 1,
             label: String::new(),
@@ -212,7 +207,19 @@ mod tests {
             legacy: Some(klipp_graph_format::Legacy { slot: None, payload: serde_json::to_value(klipp_effects::BuiltinEffect::Gamma { gamma: 1.3 }).unwrap(), keyframes: None, modifiers: Default::default() }),
             legacy_flags: None,
             origin: None,
-        };
+        }
+    }
+
+    /// An effect added to a clip whose fields hold its effects keeps its id
+    /// (effects' node ids are their identity, M3 proposal 6): the edit's
+    /// clip holds it under the batch's id, the effect after it keeps its own
+    /// though it moved down a slot, and the reply renames nothing.
+    #[test]
+    fn an_added_effect_keeps_its_id() {
+        let (seq, clip, fx) = sequence();
+        let at = |id| NodePath::new(Root::Clip { clip: clip.0 }, [id]);
+        let added = uuid::Uuid::from_u128(0xd1);
+        let node = gamma(added);
         let GraphOpsOutcome { edit, renamed, .. } = graph_ops_edit(&seq, &[GraphOp::AddNode { after: at(fx[0]), node: Box::new(node) }]).unwrap();
         let EditCommand::PictureEdit { edit, .. } = edit else { panic!("a picture edit") };
         let mut after = seq.tracks[0].clips[0].clone();
@@ -220,6 +227,141 @@ mod tests {
         let now: Vec<_> = after.picture_v2().unwrap().picture.graph.nodes.iter().filter(|n| n.type_id.as_str() == types::LEGACY_EFFECT).map(|n| n.id).collect();
         assert!(renamed.is_empty(), "{renamed:?}");
         assert_eq!(now, vec![fx[0], added, fx[1]], "each effect under its own id");
+    }
+
+    /// `edit` applied to `seqs` as the app's history does: forward, or undone.
+    fn applied(seqs: &mut Vec<klipp_timeline::Sequence>, edit: &EditCommand, undo: bool) {
+        let mut pool = klipp_media::MediaPool::new();
+        let mut fps = seqs[0].fps;
+        let mut view = klipp_document::apply::DocumentView { sequences: seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+        if undo {
+            view.apply_inverse(edit);
+        } else {
+            view.apply_forward(edit);
+        }
+    }
+
+    /// `seqs` saved as a project and opened again.
+    fn reopened(seqs: &[klipp_timeline::Sequence], name: &str) -> klipp_timeline::Sequence {
+        let dir = std::env::temp_dir().join(format!("klipp_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        klipp_project::save_project(&dir, seqs, &klipp_media::MediaPool::new()).unwrap();
+        let (mut sequences, ..) = klipp_project::load_project(&dir).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        sequences.remove(0)
+    }
+
+    /// A sequence with a timeline grade, a grade group's pre stage, a
+    /// grade on its video track and two effects in that track's list; the
+    /// track's id.
+    fn sequence_with_roots() -> (klipp_timeline::Sequence, uuid::Uuid) {
+        use klipp_graph_format::lifted::Stage;
+        use klipp_graph_format::path::TrackPart;
+        let (mut seq, ..) = sequence();
+        let group = klipp_timeline::GradeGroup::new("Night");
+        let gid = group.id.0;
+        seq.grade_groups.push(group);
+        let at = seq.tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        let tid = seq.tracks[at].id.0;
+        seq.tracks[at].effects = serde_json::from_value(serde_json::json!({
+            "video": [{ "type": "gaussian_blur", "radius": 3.0 }, { "type": "sharpen", "amount": 0.5 }],
+            "video_enabled": [true, true],
+        })).unwrap();
+        for root in [Root::TimelineGrade { sequence: seq.id.0 }, Root::GroupStage { group: gid, stage: Stage::Pre }, Root::Track { track: tid, part: TrackPart::Grade }] {
+            seq.set_root_grade(root, Some(klipp_nodes::NodeGraph::default())).unwrap();
+        }
+        (seq, tid)
+    }
+
+    /// The value a socket batch on `root` sets in the tests below: the
+    /// Corrector's exposure in a grade, the first effect's radius in a
+    /// track's list, as the saved sequence holds it.
+    fn written(seq: &klipp_timeline::Sequence, root: Root) -> Option<f64> {
+        use klipp_graph_format::path::TrackPart;
+        match root {
+            Root::Track { track, part: TrackPart::Effects } => {
+                let t = seq.tracks.iter().find(|t| t.id.0 == track)?;
+                serde_json::to_value(&t.effects).ok()?["video"][0]["radius"].as_f64()
+            }
+            _ => seq.root_grade(root).ok()??.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector)?.params.exposure.map(f64::from),
+        }
+    }
+
+    /// #1911: a socket batch on each of the sequence's own pictures (the
+    /// timeline grade, a grade group's stage, a track's grade and its
+    /// effects) is one step: undone, the sequence is as it was; redone, as
+    /// the batch left it; and its edit comes back with the project.
+    #[test]
+    fn a_batch_on_each_sequence_root_undoes_redoes_and_saves() {
+        use klipp_graph_format::lifted::Stage;
+        use klipp_graph_format::path::TrackPart;
+        let (seq, tid) = sequence_with_roots();
+        let gid = seq.grade_groups[0].id.0;
+        let roots = [
+            Root::TimelineGrade { sequence: seq.id.0 },
+            Root::GroupStage { group: gid, stage: Stage::Pre },
+            Root::Track { track: tid, part: TrackPart::Grade },
+            Root::Track { track: tid, part: TrackPart::Effects },
+        ];
+        let snapshot = |s: &klipp_timeline::Sequence| serde_json::to_value(s).unwrap();
+        for root in roots {
+            let mut seqs = vec![seq.clone()];
+            let (op, want) = match root {
+                Root::Track { part: TrackPart::Effects, .. } => {
+                    let node = seq.lift_track_parts(tid).unwrap().0[0].id;
+                    (GraphOp::SetParam { path: NodePath::new(root, [node]), key: "radius".into(), value: ParamValue::Float(6.0) }, 6.0)
+                }
+                _ => {
+                    let corrector = seq.root_grade(root).unwrap().unwrap().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Corrector).unwrap().id;
+                    (GraphOp::SetParam { path: NodePath::new(root, [corrector]), key: "exposure".into(), value: ParamValue::Float(0.75) }, 0.75)
+                }
+            };
+            let before = snapshot(&seqs[0]);
+            let GraphOpsOutcome { edit, .. } = graph_ops_edit(&seqs[0], &[op]).unwrap_or_else(|e| panic!("{root:?}: {e:?}"));
+            applied(&mut seqs, &edit, false);
+            assert_eq!(written(&seqs[0], root), Some(want), "{root:?}: the batch's edit");
+            let after = snapshot(&seqs[0]);
+            applied(&mut seqs, &edit, true);
+            assert_eq!(snapshot(&seqs[0]), before, "{root:?}: one undo restores the sequence");
+            applied(&mut seqs, &edit, false);
+            assert_eq!(snapshot(&seqs[0]), after, "{root:?}: redo brings the edit back");
+            assert_eq!(written(&reopened(&seqs, "graph_root_save"), root), Some(want), "{root:?}: the edit comes back with the project");
+        }
+    }
+
+    /// #1911: an effect added to a track's list, which keeps no effect
+    /// ids, is answered with the id the written list names it by, and the
+    /// effect it pushed down a slot with its new one: each id the reply
+    /// gives leads to its effect.
+    #[test]
+    fn an_effect_added_to_a_track_is_answered_with_its_written_id() {
+        use klipp_graph_format::path::TrackPart;
+        let (seq, tid) = sequence_with_roots();
+        let root = Root::Track { track: tid, part: TrackPart::Effects };
+        let fx: Vec<_> = seq.lift_track_parts(tid).unwrap().0.iter().map(|n| n.id).collect();
+        let added = uuid::Uuid::from_u128(0xd1);
+        let node = gamma(added);
+        let GraphOpsOutcome { edit, renamed, .. } = graph_ops_edit(&seq, &[GraphOp::AddNode { after: NodePath::new(root, [fx[0]]), node: Box::new(node) }]).unwrap();
+        let mut seqs = vec![seq.clone()];
+        applied(&mut seqs, &edit, false);
+        let now = seqs[0].lift_track_parts(tid).unwrap().0;
+        let named = |id: uuid::Uuid| renamed.iter().find(|(was, _)| *was == id).map_or(id, |(_, now)| *now);
+        let tag = |id: uuid::Uuid| now.iter().find(|n| n.id == named(id)).and_then(|n| klipp_graph_lift::effect_params::tag(n).map(str::to_owned));
+        assert_eq!(now.len(), 3);
+        assert_eq!(tag(fx[0]).as_deref(), Some("gaussian_blur"), "{renamed:?}");
+        assert_eq!(tag(added).as_deref(), Some("gamma"), "the added effect: {renamed:?}");
+        assert_eq!(tag(fx[1]).as_deref(), Some("sharpen"), "the effect pushed down a slot: {renamed:?}");
+        // Removed, the effects after it move up a slot and are named so.
+        let first = now[0].id;
+        let GraphOpsOutcome { edit, renamed, .. } = graph_ops_edit(&seqs[0], &[GraphOp::RemoveNode { path: NodePath::new(root, [first]) }]).unwrap();
+        let ids: Vec<_> = now.iter().map(|n| n.id).collect();
+        applied(&mut seqs, &edit, false);
+        let now = seqs[0].lift_track_parts(tid).unwrap().0;
+        let named = |id: uuid::Uuid| renamed.iter().find(|(was, _)| *was == id).map_or(id, |(_, now)| *now);
+        let tag = |id: uuid::Uuid| now.iter().find(|n| n.id == named(id)).and_then(|n| klipp_graph_lift::effect_params::tag(n).map(str::to_owned));
+        assert_eq!(now.len(), 2);
+        assert_eq!((tag(ids[1]).as_deref(), tag(ids[2]).as_deref()), (Some("gamma"), Some("sharpen")), "{renamed:?}");
     }
 
     /// A refusal names the op it stopped at: the first that couldn't be
