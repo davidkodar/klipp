@@ -393,6 +393,18 @@ fn music_shape(v: &mut serde_json::Value, path: &std::path::Path, id: klipp_core
 
 /// Download one searched track and import it, its licence and credit
 /// kept beside the file.
+/// Where a library download goes (#1893): into a saved project's own
+/// folder, where a save would bring it (`<project>/media/audio`), its
+/// credit beside it, so the project holds it from the start; for a
+/// project never saved, the kept folder, from which its first save
+/// adopts it.
+fn music_destination(project: Option<&std::path::Path>) -> std::path::PathBuf {
+    match project {
+        Some(dir) => dir.join("media").join("audio"),
+        None => klipp_audio_search::download_dir(),
+    }
+}
+
 fn add_one_track(ctx: &ControlContext, pick: MusicPick) -> Result<serde_json::Value, String> {
     let MusicPick { title, artist, track_id, download_url, preview_url, license, license_url, page_url } = pick;
     let track = klipp_audio_search::Track {
@@ -401,10 +413,32 @@ fn add_one_track(ctx: &ControlContext, pick: MusicPick) -> Result<serde_json::Va
         duration_secs: 0.0, license: license.clone(), license_url,
         commercial_ok: true, preview_url, download_url, page_url, image_url: String::new(), tags: Vec::new(), pace: String::new(),
     };
-    let path = klipp_audio_search::download_track(&track, &klipp_audio_search::download_dir())?;
+    let project = ctx.shared.project.lock().ok().and_then(|p| p.path.clone());
+    let path = klipp_audio_search::download_track(&track, &music_destination(project.as_deref()))
+        // A project folder that can't be written to (read-only, gone):
+        // the kept folder, and the next save adopts from there.
+        .or_else(|e| if project.is_some() { klipp_audio_search::download_track(&track, &klipp_audio_search::download_dir()) } else { Err(e) })?;
     let mut v = handle(ctx, ControlCommand::import_one(path.to_string_lossy().to_string(), true), &mut None)?;
     v["text"] = json!(format!("Added \"{title}\" by {artist} ({license}) to the media pool. Place it on an audio track (place marks it music) and duck it under speech.", license = if license.is_empty() { "licence with the file".to_string() } else { license }));
     v["attribution"] = json!(track.attribution());
     v["next"] = json!("Place it on an audio track (place marks it music, or sfx for an effect) and duck it under any speech. The credit is saved beside the file for your export notes.");
     Ok(v)
+}
+
+#[cfg(test)]
+mod music_destination_tests {
+    use super::*;
+
+    /// #1893: a download for a saved project goes where its save would
+    /// have brought it, so the project holds it at once and a save has
+    /// nothing to move; one never saved keeps the kept folder.
+    #[test]
+    fn a_download_goes_where_the_projects_save_would_put_it() {
+        let project = std::path::Path::new("/films/From-Source-to-Sea/From-Source-to-Sea.klipp");
+        let kept = klipp_audio_search::download_dir();
+        let rel = klipp_media::made::made_relative(&kept.join("song.mp3")).expect("the kept folder is made media");
+        let adopted = project.join("media").join(rel);
+        assert_eq!(Some(music_destination(Some(project)).as_path()), adopted.parent(), "beside what a save adopts");
+        assert_eq!(music_destination(None), kept);
+    }
 }

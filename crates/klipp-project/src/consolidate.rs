@@ -515,6 +515,34 @@ fn collision_safe_name(name: &str, used: &mut HashSet<String>) -> String {
 /// Execute all planned copies in order, invoking progress after each.
 /// Creates any needed subfolders. Returns the first copy failure, stopping
 /// the loop (caller will roll back the whole destination).
+/// The credit file kept beside a library download (`song.klipp-credit.txt`
+/// for `song.mp3`), copied beside each copy of the file: the whole copy,
+/// or each cut of it. What can't be copied is said, not fatal (#1893).
+fn copy_credits(original: &MediaPool, collected: &MediaPool, cuts: &HashMap<PathBuf, Vec<crate::consolidate_trim::Segment>>) -> Vec<String> {
+    let credit_of = |p: &Path| p.with_extension("klipp-credit.txt");
+    let mut warnings = Vec::new();
+    for item in original.all() {
+        let credit = credit_of(&item.path);
+        if !credit.is_file() || is_symlinked_leaf(&credit) {
+            continue;
+        }
+        let copies: Vec<PathBuf> = match cuts.get(&item.path) {
+            Some(segments) => segments.iter().map(|s| s.path.clone()).collect(),
+            None => collected.get(&item.id).map(|m| m.path.clone()).filter(|p| *p != item.path).into_iter().collect(),
+        };
+        for copy in copies {
+            let to = credit_of(&copy);
+            if to.exists() {
+                continue;
+            }
+            if let Err(e) = std::fs::copy(&credit, &to) {
+                warnings.push(format!("the credit for {} was not copied: {e}", item.filename));
+            }
+        }
+    }
+    warnings
+}
+
 fn execute_copy_plan(
     plan: &CopyPlan,
     dest_dir: &Path,
@@ -688,6 +716,10 @@ pub fn consolidate_project(
         }
         None => new_pool,
     };
+    // The credit and licence beside a library download go with its copy,
+    // or the collected project loses what its music asks of it (#1893).
+    let credit_warnings = copy_credits(media_pool, &new_pool, &cuts);
+    plan.warnings.extend(credit_warnings);
     let mut new_color = color_settings.clone();
     // A global LUT that was copied is read from its copy. One that could
     // not be (not on disk, or refused as a symlink) keeps the path the
