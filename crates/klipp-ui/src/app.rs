@@ -478,6 +478,9 @@ pub struct KlippApp {
     last_sent_scope_bloom: Option<bool>,
     /// Last `SetScopeLowPass` value sent to the engine.
     last_sent_scope_low_pass: Option<bool>,
+    /// Where the scopes read, last told the engine: after the viewing LUT
+    /// at this path, or before it (#466); with the key it was sent with.
+    last_sent_scope_lut: Option<(Option<PathBuf>, u64)>,
     /// Same change-tracking pattern as `last_sent_scope_mode` for the
     /// scope-panel visibility flag. The engine uses this to skip the
     /// per-frame `linear_rgba_to_u8` re-encode and the GPU scope

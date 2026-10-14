@@ -569,3 +569,43 @@ fn the_low_pass_filter_leaves_the_histogram_and_vectorscope_measuring_the_pictur
     assert!(sharp[1] == smooth[1], "the vectorscope measures the picture itself");
     assert!(sharp[2] == smooth[2], "the histogram counts the picture itself");
 }
+
+/// #466: with a viewing LUT set, the scopes measure the picture through
+/// it: grey code 118 under an inverting LUT reads as 137, from display
+/// bytes and from linear light alike; with the LUT taken away, as 118
+/// again.
+#[test]
+fn the_scopes_measure_after_a_viewing_lut_when_one_is_set() {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
+    let n = 5u32;
+    let mut invert = Vec::new();
+    for b in 0..n {
+        for g in 0..n {
+            for r in 0..n {
+                let v = |i: u32| 1.0 - i as f32 / (n - 1) as f32;
+                invert.extend_from_slice(&[v(r), v(g), v(b)]);
+            }
+        }
+    }
+    let grey: Vec<u8> = (0..W * H).flat_map(|_| [118u8, 118, 118, 255]).collect();
+    let display = ScopeInput::Display { rgba: &grey, width: W, height: H, luma: REC709 };
+    let line = |gpu: &mut GpuEffectsPipeline, input: &ScopeInput| {
+        let out = gpu.scopes().render(input, 1, &[job(WaveformMode::Luma, OUT)]);
+        brightest_row(out[0].as_ref().expect("a waveform"), OUT, 100).0 as f32
+    };
+    gpu.scopes().set_lut(Some((1, n, &invert)));
+    let through = line(&mut gpu, &display);
+    assert!((through - row_of(137.0 / 255.0)).abs() <= 1.5, "through the LUT: row {through}");
+    // Linear light encoded to the same code reads the same through it.
+    let lin = {
+        let c = 118.0f32 / 255.0;
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    let frame = flat(lin);
+    let linear = ScopeInput::Linear { rgba: &frame, width: W, height: H, matrix: IDENTITY, luma: REC709, transfer: ScopeTransfer::Srgb, scale: 1.0 };
+    let through_linear = line(&mut gpu, &linear);
+    assert!((through_linear - row_of(137.0 / 255.0)).abs() <= 2.0, "linear through the LUT: row {through_linear}");
+    gpu.scopes().set_lut(None);
+    let plain = line(&mut gpu, &display);
+    assert!((plain - row_of(118.0 / 255.0)).abs() <= 1.5, "without it: row {plain}");
+}

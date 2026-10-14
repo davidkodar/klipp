@@ -426,6 +426,20 @@ impl KlippApp {
                 });
                 self.last_sent_scope_bloom = Some(bloom_enabled);
             }
+            // After the project's viewing LUT, or before it (#466).
+            let after = self.state.project_viewing_lut.clone().filter(|_| self.state.project_scopes_after_viewing_lut);
+            if self.last_sent_scope_lut.as_ref().map(|(p, _)| p) != Some(&after) {
+                let key = self.last_sent_scope_lut.as_ref().map_or(1, |(_, k)| k + 1);
+                let lut = after.as_deref().and_then(|path| match klipp_color::lut::load_lut(path) {
+                    Ok(l) => Some(klipp_core::ScopeLut { key, size: l.size as u32, table: std::sync::Arc::new(l.data) }),
+                    Err(e) => {
+                        tracing::warn!("viewing LUT for the scopes {}: {e}", path.display());
+                        None
+                    }
+                });
+                let _ = self.cmd_tx.send(AppCommand::SetScopeLut { lut });
+                self.last_sent_scope_lut = Some((after, key));
+            }
             let low_pass = self.state.scope_low_pass;
             if self.last_sent_scope_low_pass != Some(low_pass) {
                 let _ = self.cmd_tx.send(AppCommand::SetScopeLowPass { enabled: low_pass });
@@ -775,6 +789,8 @@ impl KlippApp {
                     default_odt: self.state.project_default_odt,
                     default_input_format: self.state.project_default_input_format,
                     default_input_lut: self.state.project_default_input_lut.clone(),
+                    viewing_lut: self.state.project_viewing_lut.clone(),
+                    scopes_after_viewing_lut: self.state.project_scopes_after_viewing_lut,
                 };
                 let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
 

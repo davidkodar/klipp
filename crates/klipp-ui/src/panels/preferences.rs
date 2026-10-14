@@ -415,6 +415,7 @@ impl PreferencesPanel {
         match page {
             "cache" => self.active_tab = PrefsTab::MediaCache,
             "keyboard" => self.active_tab = PrefsTab::Keyboard,
+            "colour" => self.active_tab = PrefsTab::Color,
             _ => return,
         }
         self.search_query.clear();
@@ -438,7 +439,7 @@ impl PreferencesPanel {
             PrefsTab::AudioHardware => &["audio hardware", "output device", "sample rate", "buffer size", "monitoring", "pipewire", "alsa"],
             PrefsTab::Proxy => &["proxy", "auto-generate", "resolution", "proxy cache", "transcode"],
             PrefsTab::ExternalTools => &["external tools", "external app", "handoff", "round-trip", "round trip", "gimp", "krita", "audacity", "kdenlive", "editor", "image editor", "audio editor", "video editor"],
-            PrefsTab::Color => &["color", "working space", "rec.709", "lut", "interpolation", "scopes", "vectorscope", "skin angle"],
+            PrefsTab::Color => &["color", "working space", "rec.709", "lut", "calibration", "monitor", "interpolation", "scopes", "vectorscope", "skin angle"],
             PrefsTab::Export => &["export", "encoder", "h.264", "h.265", "prores", "colour space", "color space", "audio sample rate", "overwrite", "parallel render"],
             PrefsTab::Title => &["title", "font", "size", "alignment", "duration", "safe area", "text"],
             PrefsTab::Timeline => &["timeline", "clip colours", "clip colors", "clip gap", "trim handle", "track height", "waveform"],
@@ -3442,7 +3443,9 @@ impl PreferencesPanel {
         // project, the way every professional NLE handles it.
         Self::section_header(ui, "LUTs", theme);
 
-        Self::setting_row_with_subtitle(ui, "Viewer LUT", "A monitor LUT for the viewer only (SDR): never in exports, scopes or measurements", theme, |ui| {
+        // This monitor's calibration, applied last; a project's look to
+        // view through is its viewing LUT, in Colour Management (#466).
+        Self::setting_row_with_subtitle(ui, "Calibration LUT", "This monitor's calibration, applied to the viewer last (SDR): never in exports, scopes or measurements", theme, |ui| {
             let display = prefs.color.viewer_lut_path.as_ref()
                 .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
                 .unwrap_or_else(|| "None".into());
@@ -3461,7 +3464,7 @@ impl PreferencesPanel {
                     }
                     if ui.selectable_label(false, "Browse...").clicked() {
                         crate::file_dialog::pick_path(picker, || {
-                            rfd::FileDialog::new().set_title("Viewer LUT").add_filter("LUT", &["cube", "3dl"]).pick_file()
+                            rfd::FileDialog::new().set_title("Calibration LUT").add_filter("LUT", &["cube", "3dl"]).pick_file()
                         });
                     }
                 });
@@ -4682,6 +4685,7 @@ mod layout_tests {
         "COLUMNS",
         "CONNECT AN ASSISTANT",
         "CPU",
+        "Calibration LUT",
         "Check automatically",
         "Check the connection",
         "Checkerboard tile",
@@ -4870,7 +4874,6 @@ mod layout_tests {
         "Video",
         "Video editor",
         "Video hover skim",
-        "Viewer LUT",
         "Visible columns",
         "Voiceover",
         "Zoom step multiplier",
@@ -5026,7 +5029,9 @@ mod open_page_tests {
         assert_eq!(panel.active_tab, PrefsTab::MediaCache);
         panel.open_page("keyboard");
         assert_eq!(panel.active_tab, PrefsTab::Keyboard);
+        panel.open_page("colour");
+        assert_eq!(panel.active_tab, PrefsTab::Color, "the calibration LUT's page (#466)");
         panel.open_page("nonsense");
-        assert_eq!(panel.active_tab, PrefsTab::Keyboard);
+        assert_eq!(panel.active_tab, PrefsTab::Color);
     }
 }

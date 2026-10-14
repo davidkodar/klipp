@@ -1348,7 +1348,8 @@ impl KlippApp {
         if self.state.show_colour_management {
             let mut open = true;
             let colour_before = (self.state.project_working_colorspace, self.state.project_grade_encoding);
-            crate::panels::colour_management::show_window(ctx, &mut self.state, &self.theme, &mut open, cmds);
+            let calibration = self.prefs.color.viewer_lut_path.clone();
+            crate::panels::colour_management::show_window(ctx, &mut self.state, &self.theme, calibration.as_deref(), &mut open, cmds);
             if !open {
                 self.state.show_colour_management = false;
             }

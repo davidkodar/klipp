@@ -215,6 +215,7 @@ impl KlippApp {
             last_sent_scope_settings: None,
             last_sent_scope_bloom: None,
             last_sent_scope_low_pass: None,
+            last_sent_scope_lut: None,
             last_sent_scopes_visible: None,
             theme,
             theme_registry,

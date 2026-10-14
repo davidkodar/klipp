@@ -1049,6 +1049,16 @@ pub enum TitleFieldValue {
     Size(f32),
 }
 
+/// A viewing LUT for the scopes to measure the picture through (#466):
+/// `key` changes with the table; `table` is r,g,b per grid point, red
+/// fastest, `size` points a side.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScopeLut {
+    pub key: u64,
+    pub size: u32,
+    pub table: std::sync::Arc<Vec<f32>>,
+}
+
 #[derive(Debug, Clone)]
 pub enum AppCommand {
     /// A batch of graph ops on one picture, applied as one undo step named
@@ -1303,6 +1313,8 @@ pub enum AppCommand {
         /// Graded in a wide-gamut working space for HLG or PQ delivery.
         hdr: bool,
     },
+    /// The look the viewer shows through, on screen only, or none (#466).
+    SetProjectViewingLut { path: Option<PathBuf> },
     /// The LUT new clips start their grade with, or none (#466).
     SetProjectInputLut { path: Option<PathBuf> },
     /// Remember the frame rate chosen for a welcome-screen format (#1864).
@@ -2078,6 +2090,9 @@ pub enum AppCommand {
     /// Whether the GPU waveform and parade measure a low-passed copy of
     /// the picture. Sent on UI-side change only.
     SetScopeLowPass { enabled: bool },
+    /// Measure the picture after the project's viewing LUT, or before it
+    /// (`None`), in SDR (#466). Sent on change only.
+    SetScopeLut { lut: Option<ScopeLut> },
     /// Tell the engine whether the scope panel is actually visible
     /// in the UI. The engine uses this to skip the per-frame
     /// `linear_rgba_to_u8` re-encode and the GPU scope shader pass —

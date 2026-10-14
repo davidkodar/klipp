@@ -512,7 +512,8 @@ impl KlippApp {
     /// exports keep the graded frame. Not while the viewer shows HDR: the
     /// LUT reads a display-encoded SDR signal.
     pub(super) fn refresh_viewer_lut(&mut self, frame: &mut eframe::Frame) {
-        let changed = self.viewer.lut.follow(self.prefs.color.viewer_lut_path.as_deref());
+        // The project's viewing LUT, then this monitor's calibration (#466).
+        let changed = self.viewer.lut.follow(self.state.project_viewing_lut.as_deref(), self.prefs.color.viewer_lut_path.as_deref());
         let Some(render_state) = frame.wgpu_render_state() else {
             self.viewer.lut_live = false;
             return;

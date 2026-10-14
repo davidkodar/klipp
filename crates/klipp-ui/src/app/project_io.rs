@@ -254,6 +254,8 @@ impl KlippApp {
         self.state.project_default_odt = klipp_core::OdtChoice::default();
         self.state.project_default_input_format = None;
         self.state.project_default_input_lut = None;
+        self.state.project_viewing_lut = None;
+        self.state.project_scopes_after_viewing_lut = false;
         // The engine resolves clips through its own copy of the pool.
         self.sync_media_pool_to_engine();
         self.state.title_assets.clear();
@@ -600,6 +602,8 @@ impl KlippApp {
             default_odt: self.state.project_default_odt,
             default_input_format: self.state.project_default_input_format,
             default_input_lut: self.state.project_default_input_lut.clone(),
+            viewing_lut: self.state.project_viewing_lut.clone(),
+            scopes_after_viewing_lut: self.state.project_scopes_after_viewing_lut,
         };
         // Stills made while there was no folder of our own to write to —
         // a project never saved, or one open read-only — come along, or
@@ -900,6 +904,8 @@ impl KlippApp {
                 self.state.project_default_odt = color_settings.default_odt;
                 self.state.project_default_input_format = color_settings.default_input_format;
                 self.state.project_default_input_lut = color_settings.default_input_lut.clone();
+                self.state.project_viewing_lut = color_settings.viewing_lut.clone();
+                self.state.project_scopes_after_viewing_lut = color_settings.scopes_after_viewing_lut;
                 klipp_core::set_grade_encoding(color_settings.grade_encoding);
 
                 self.state.project_path = Some(path.to_path_buf());

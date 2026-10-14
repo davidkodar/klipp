@@ -241,34 +241,42 @@ impl ViewerLutPass {
     }
 }
 
-/// The LUT the preference names, loaded once per path.
+/// What the viewer looks through: the project's viewing LUT (a look) and
+/// then this monitor's calibration LUT from Preferences, made one LUT so
+/// the screen runs a single pass (#466). Loaded once per pair of paths.
 #[derive(Default)]
 pub struct ViewerLut {
-    path: Option<PathBuf>,
+    paths: (Option<PathBuf>, Option<PathBuf>),
     pub lut: Option<LutData>,
-    /// Why the named LUT could not be loaded, for the preferences row.
+    /// Why a named LUT could not be loaded, to say so.
     pub error: Option<String>,
 }
 
 impl ViewerLut {
-    /// Load `path` when it differs from the one loaded. Returns true
-    /// when the LUT changed.
-    pub fn follow(&mut self, path: Option<&Path>) -> bool {
-        if self.path.as_deref() == path {
+    /// Load the `viewing` and `calibration` LUTs when either differs from
+    /// those loaded. Returns true when the LUT on screen changed.
+    pub fn follow(&mut self, viewing: Option<&Path>, calibration: Option<&Path>) -> bool {
+        if (self.paths.0.as_deref(), self.paths.1.as_deref()) == (viewing, calibration) {
             return false;
         }
-        self.path = path.map(Path::to_path_buf);
+        self.paths = (viewing.map(Path::to_path_buf), calibration.map(Path::to_path_buf));
         self.error = None;
-        self.lut = match path {
-            None => None,
-            Some(p) => match klipp_color::lut::load_lut(p) {
+        let mut load = |what: &str, path: Option<&Path>| {
+            let p = path?;
+            match klipp_color::lut::load_lut(p) {
                 Ok(lut) => Some(lut),
                 Err(e) => {
-                    tracing::warn!("viewer LUT {}: {e}", p.display());
-                    self.error = Some(e.to_string());
+                    tracing::warn!("{what} LUT {}: {e}", p.display());
+                    self.error = Some(format!("{what} LUT: {e}"));
                     None
                 }
-            },
+            }
+        };
+        let viewing = load("viewing", viewing);
+        let calibration = load("calibration", calibration);
+        self.lut = match (viewing, calibration) {
+            (Some(v), Some(c)) => Some(klipp_color::lut::compose(&v, &c)),
+            (one, other) => one.or(other),
         };
         true
     }
@@ -371,13 +379,46 @@ mod tests {
         std::fs::write(&bad, "LUT_3D_SIZE 3\n0 0 0\n").unwrap();
 
         let mut v = ViewerLut::default();
-        assert!(v.follow(Some(&good)));
+        assert!(v.follow(None, Some(&good)));
         assert!(v.lut.is_some() && v.error.is_none());
-        assert!(!v.follow(Some(&good)), "the same path is not loaded again");
-        assert!(v.follow(Some(&bad)));
+        assert!(!v.follow(None, Some(&good)), "the same path is not loaded again");
+        assert!(v.follow(None, Some(&bad)));
         assert!(v.lut.is_none() && v.error.is_some(), "a broken LUT is not applied, and says why");
-        assert!(v.follow(None));
+        assert!(v.follow(None, None));
         assert!(v.lut.is_none() && v.error.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #466: the screen looks through the project's viewing LUT and then
+    /// the monitor's calibration, as one LUT; either alone is itself.
+    #[test]
+    fn the_viewing_lut_runs_before_the_calibration() {
+        let dir = std::env::temp_dir().join(format!("klipp-viewing-lut-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, lut: &LutData| {
+            let path = dir.join(name);
+            let table: Vec<[f32; 3]> = lut.data.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+            klipp_color::lut::write_cube(&path, &table, lut.size as u32, name).unwrap();
+            path
+        };
+        let look = warm_lut(5);
+        let mut cal = LutData::identity(5);
+        for v in &mut cal.data {
+            *v = (*v * 0.9 + 0.05).min(1.0);
+        }
+        let (look_path, cal_path) = (write("look.cube", &look), write("cal.cube", &cal));
+        let mut v = ViewerLut::default();
+        assert!(v.follow(Some(&look_path), Some(&cal_path)));
+        let both = v.lut.clone().expect("one LUT");
+        for rgb in [[0.2, 0.4, 0.6], [0.9, 0.1, 0.5]] {
+            let want = klipp_color::lut::lookup_3d(&cal, klipp_color::lut::lookup_3d(&look, rgb));
+            let got = klipp_color::lut::lookup_3d(&both, rgb);
+            assert!((0..3).all(|c| (want[c] - got[c]).abs() < 2e-3), "look then calibration: {want:?} vs {got:?}");
+        }
+        assert!(v.follow(Some(&look_path), None));
+        let alone = klipp_color::lut::lookup_3d(v.lut.as_ref().unwrap(), [0.2, 0.4, 0.6]);
+        let want = klipp_color::lut::lookup_3d(&look, [0.2, 0.4, 0.6]);
+        assert!((0..3).all(|c| (want[c] - alone[c]).abs() < 2e-3), "the look alone");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

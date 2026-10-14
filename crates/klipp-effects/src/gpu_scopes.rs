@@ -515,6 +515,96 @@ fn bin_sample(sx: u32, e: vec3<f32>) {
 }
 "#;
 
+/// The viewing-LUT pre-pass (#466): the picture the scopes measure, run
+/// through a 3D LUT first and written as display codes, which the
+/// display path then bins. The lookup is on the encoded values, as the
+/// viewer's LUT pass reads them.
+const WGSL_LUT_COMMON: &str = r#"
+struct LutParams {
+    width: u32, height: u32, step: u32, out_w: u32,
+    out_h: u32, size: u32, transfer: u32, scale: f32,
+    m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>,
+};
+@group(0) @binding(1) var<storage, read> lut: array<f32>;
+@group(0) @binding(2) var<storage, read_write> dst: array<u32>;
+@group(0) @binding(3) var<uniform> p: LutParams;
+
+fn srgb_encode(v: f32) -> f32 {
+    let c = clamp(v, 0.0, 1.0);
+    if (c <= 0.0031308) { return c * 12.92; }
+    return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+fn encode(v: f32) -> f32 {
+    switch p.transfer {
+        case 1u: { return pow(clamp(v, 0.0, 1.0), 1.0 / 2.4); }
+        default: { return srgb_encode(v); }
+    }
+}
+fn at(r: u32, g: u32, b: u32) -> vec3<f32> {
+    let i = ((b * p.size + g) * p.size + r) * 3u;
+    return vec3<f32>(lut[i], lut[i + 1u], lut[i + 2u]);
+}
+fn lookup(rgb: vec3<f32>) -> vec3<f32> {
+    let n1 = f32(p.size - 1u);
+    let q = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0)) * n1;
+    let i0 = min(vec3<u32>(floor(q)), vec3<u32>(p.size - 2u));
+    let f = q - vec3<f32>(i0);
+    let i1 = i0 + vec3<u32>(1u);
+    let c00 = mix(at(i0.x, i0.y, i0.z), at(i1.x, i0.y, i0.z), f.x);
+    let c10 = mix(at(i0.x, i1.y, i0.z), at(i1.x, i1.y, i0.z), f.x);
+    let c01 = mix(at(i0.x, i0.y, i1.z), at(i1.x, i0.y, i1.z), f.x);
+    let c11 = mix(at(i0.x, i1.y, i1.z), at(i1.x, i1.y, i1.z), f.x);
+    return mix(mix(c00, c10, f.y), mix(c01, c11, f.y), f.z);
+}
+fn pack(c: vec3<f32>) -> u32 {
+    let q = vec3<u32>(round(clamp(c, vec3<f32>(0.0), vec3<f32>(1.0)) * 255.0));
+    return q.x | (q.y << 8u) | (q.z << 16u) | (255u << 24u);
+}
+"#;
+
+const WGSL_LUT_LINEAR: &str = r#"
+@group(0) @binding(0) var<storage, read> src: array<vec4<f32>>;
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= p.out_w || gid.y >= p.out_h) { return; }
+    let sx = min(gid.x * p.step, p.width - 1u);
+    let sy = min(gid.y * p.step, p.height - 1u);
+    let c = src[sy * p.width + sx].rgb;
+    let m = vec3<f32>(dot(p.m0.xyz, c), dot(p.m1.xyz, c), dot(p.m2.xyz, c));
+    let e = vec3<f32>(encode(m.r), encode(m.g), encode(m.b));
+    dst[gid.y * p.out_w + gid.x] = pack(lookup(e));
+}
+"#;
+
+const WGSL_LUT_DISPLAY: &str = r#"
+@group(0) @binding(0) var<storage, read> src: array<u32>;
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= p.out_w || gid.y >= p.out_h) { return; }
+    let sx = min(gid.x * p.step, p.width - 1u);
+    let sy = min(gid.y * p.step, p.height - 1u);
+    let v = src[sy * p.width + sx];
+    let e = vec3<f32>(f32(v & 0xffu), f32((v >> 8u) & 0xffu), f32((v >> 16u) & 0xffu)) / 255.0;
+    dst[gid.y * p.out_w + gid.x] = pack(lookup(e));
+}
+"#;
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct LutParams {
+    width: u32,
+    height: u32,
+    step: u32,
+    out_w: u32,
+    out_h: u32,
+    size: u32,
+    transfer: u32,
+    scale: f32,
+    m0: [f32; 4],
+    m1: [f32; 4],
+    m2: [f32; 4],
+}
+
 const WGSL_COMMON_VECTOR: &str = r#"
 // One sample into the chroma plane: Cb across, Cr up, in the measured
 // space's own Y′CbCr — `Cb = (B′ − Y′) / 2(1 − Kb)`, `Cr = (R′ − Y′) /
@@ -1333,6 +1423,15 @@ pub struct ScopeRenderer {
     packed: Vec<wgpu::Buffer>,
     staging: Option<wgpu::Buffer>,
     staging_size: u64,
+    lut_layout: wgpu::BindGroupLayout,
+    lut_linear: wgpu::ComputePipeline,
+    lut_display: wgpu::ComputePipeline,
+    /// The viewing LUT the scopes measure after (#466): its key, its
+    /// size and its table on the device.
+    lut: Option<(u64, u32, wgpu::Buffer)>,
+    /// The picture through the LUT, as display codes.
+    lut_out: Option<wgpu::Buffer>,
+    lut_out_size: u64,
 }
 
 /// Every `step`-th pixel of `src` (RGBA, `width` wide), `w2 × h2`.
@@ -1425,6 +1524,9 @@ impl ScopeRenderer {
         let sat_cols_pipeline = pipeline(&device, "scope_sat_cols", &sat_cols_layout, WGSL_SAT_COLS);
         let sat_rows_layout = layout(&device, "scope_sat_rows", &[storage(false), UNIFORM]);
         let sat_rows_pipeline = pipeline(&device, "scope_sat_rows", &sat_rows_layout, WGSL_SAT_ROWS);
+        let lut_layout = layout(&device, "scope_lut", &[storage(true), storage(true), storage(false), UNIFORM]);
+        let lut_linear = pipeline(&device, "scope_lut_linear", &lut_layout, &format!("{WGSL_LUT_COMMON}{WGSL_LUT_LINEAR}"));
+        let lut_display = pipeline(&device, "scope_lut_display", &lut_layout, &format!("{WGSL_LUT_COMMON}{WGSL_LUT_DISPLAY}"));
         Self {
             device,
             queue,
@@ -1484,6 +1586,34 @@ impl ScopeRenderer {
             packed: Vec::new(),
             staging: None,
             staging_size: 0,
+            lut_layout,
+            lut_linear,
+            lut_display,
+            lut: None,
+            lut_out: None,
+            lut_out_size: 0,
+        }
+    }
+
+    /// Measure the picture after a viewing LUT (#466), or not. `lut` is a
+    /// key that changes with the table, its size, and the table: r,g,b
+    /// per grid point, red fastest, as `.cube` lays it out. The table is
+    /// put on the device once per key.
+    pub fn set_lut(&mut self, lut: Option<(u64, u32, &[f32])>) {
+        match lut {
+            None => self.lut = None,
+            Some((key, size, table)) => {
+                if self.lut.as_ref().is_some_and(|(k, _, _)| *k == key) {
+                    return;
+                }
+                if size < 2 || table.len() < (size as usize).pow(3) * 3 {
+                    self.lut = None;
+                    return;
+                }
+                let buf = buffer(&self.device, "scope_lut_table", (table.len() * 4) as u64, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+                self.queue.write_buffer(&buf, 0, bytemuck::cast_slice(table));
+                self.lut = Some((key, size, buf));
+            }
         }
     }
 
@@ -1512,6 +1642,98 @@ impl ScopeRenderer {
     /// of each job's `out_w × out_h`, in job order, `None` where a job
     /// could not be drawn.
     pub fn render(&mut self, input: &ScopeInput<'_>, step: u32, jobs: &[ScopeJob]) -> Vec<Option<Vec<u8>>> {
+        let Some((_, size, _)) = self.lut.as_ref() else {
+            return self.render_measured(input, step, jobs);
+        };
+        let size = *size;
+        let (width, height) = input.size();
+        if width == 0 || height == 0 || jobs.is_empty() {
+            return jobs.iter().map(|_| None).collect();
+        }
+        // Through the LUT first, at the step the scopes sample: the
+        // codes that come out are what the display path then bins.
+        let step = sample_step(width, height, step.max(1));
+        let (out_w, out_h) = (width.div_ceil(step), height.div_ceil(step));
+        let luma = match input {
+            ScopeInput::Linear { luma, .. } | ScopeInput::Display { luma, .. } | ScopeInput::DisplayOnGpu { luma, .. } => *luma,
+        };
+        let (m, transfer, scale) = match input {
+            ScopeInput::Linear { matrix, transfer, scale, .. } => (*matrix, *transfer as u32, *scale),
+            _ => ([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], 0, 1.0),
+        };
+        let uploaded: Option<wgpu::Buffer> = match input {
+            ScopeInput::Linear { rgba, .. } => {
+                if rgba.len() < (width as usize) * (height as usize) * 4 {
+                    return jobs.iter().map(|_| None).collect();
+                }
+                let buf = buffer(&self.device, "scope_lut_in", (rgba.len() * 4) as u64, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+                self.queue.write_buffer(&buf, 0, bytemuck::cast_slice(rgba));
+                Some(buf)
+            }
+            ScopeInput::Display { rgba, .. } => {
+                if rgba.len() < (width as usize) * (height as usize) * 4 {
+                    return jobs.iter().map(|_| None).collect();
+                }
+                let buf = buffer(&self.device, "scope_lut_in", rgba.len() as u64, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
+                self.queue.write_buffer(&buf, 0, rgba);
+                Some(buf)
+            }
+            ScopeInput::DisplayOnGpu { .. } => None,
+        };
+        let src: &wgpu::Buffer = match (&uploaded, input) {
+            (Some(b), _) => b,
+            (None, ScopeInput::DisplayOnGpu { buffer, .. }) => buffer,
+            (None, _) => unreachable!("a CPU picture is uploaded"),
+        };
+        let need = out_w as u64 * out_h as u64 * 4;
+        if self.lut_out.is_none() || self.lut_out_size < need {
+            self.lut_out = Some(buffer(&self.device, "scope_lut_out", need, wgpu::BufferUsages::STORAGE));
+            self.lut_out_size = need;
+        }
+        let params = self.uniform(
+            "scope_lut_params",
+            &LutParams {
+                width,
+                height,
+                step,
+                out_w,
+                out_h,
+                size,
+                transfer,
+                scale,
+                m0: [m[0][0], m[0][1], m[0][2], 0.0],
+                m1: [m[1][0], m[1][1], m[1][2], 0.0],
+                m2: [m[2][0], m[2][1], m[2][2], 0.0],
+            },
+        );
+        let (_, _, table) = self.lut.as_ref().expect("checked above");
+        let out = self.lut_out.as_ref().expect("made above");
+        let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("scope_lut_bg"),
+            layout: &self.lut_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: src.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: table.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: out.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: params.as_entire_binding() },
+            ],
+        });
+        let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("scope_lut") });
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("scope_lut"), timestamp_writes: None });
+            pass.set_pipeline(if matches!(input, ScopeInput::Linear { .. }) { &self.lut_linear } else { &self.lut_display });
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups(out_w.div_ceil(16), out_h.div_ceil(16), 1);
+        }
+        self.queue.submit(Some(enc.finish()));
+        let out = self.lut_out.take().expect("made above");
+        let results = self.render_measured(&ScopeInput::DisplayOnGpu { buffer: &out, width: out_w, height: out_h, luma }, 1, jobs);
+        self.lut_out = Some(out);
+        results
+    }
+
+    /// [`Self::render`] of the picture as given, with no LUT.
+    fn render_measured(&mut self, input: &ScopeInput<'_>, step: u32, jobs: &[ScopeJob]) -> Vec<Option<Vec<u8>>> {
         let step = step.max(1);
         let (width, height) = input.size();
         if width == 0 || height == 0 || jobs.is_empty() {
@@ -2215,6 +2437,8 @@ mod tests {
             ("shade_hist", WGSL_SHADE_HIST.to_string()),
             ("glow_h", WGSL_GLOW_H.to_string()),
             ("glow_v", WGSL_GLOW_V.to_string()),
+            ("lut_linear", format!("{WGSL_LUT_COMMON}{WGSL_LUT_LINEAR}")),
+            ("lut_display", format!("{WGSL_LUT_COMMON}{WGSL_LUT_DISPLAY}")),
         ];
         for (name, src) in shaders {
             let module = naga::front::wgsl::parse_str(&src).unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(&src)));
