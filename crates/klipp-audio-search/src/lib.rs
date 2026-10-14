@@ -53,6 +53,135 @@ pub struct Track {
     /// when it gives one.
     #[serde(default)]
     pub pace: String,
+    /// What a Freesound sound's original file is, as the library says
+    /// (#1894); `None` for music, and for a library that doesn't say.
+    #[serde(default)]
+    pub original: Option<Original>,
+}
+
+/// A sound's original file as the library describes it (#1894).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Original {
+    /// Its format: "wav", "flac", "aiff", "mp3", "ogg", "m4a".
+    pub kind: String,
+    pub sample_rate: Option<u32>,
+    pub channels: Option<u32>,
+    pub bitrate_kbps: Option<u32>,
+    pub bit_depth: Option<u32>,
+    pub bytes: Option<u64>,
+}
+
+impl Original {
+    /// "WAV 48 kHz 24-bit stereo, 2.1 MB".
+    pub fn describe(&self) -> String {
+        let mut parts = vec![self.kind.to_uppercase()];
+        if let Some(r) = self.sample_rate {
+            parts.push(khz(r));
+        }
+        if let Some(d) = self.bit_depth.filter(|d| *d > 0) {
+            parts.push(format!("{d}-bit"));
+        }
+        if let Some(b) = self.bitrate_kbps.filter(|_| !matches!(self.kind.as_str(), "wav" | "aiff" | "flac")) {
+            parts.push(format!("{b} kbps"));
+        }
+        if let Some(c) = self.channels {
+            parts.push(channels(c).into());
+        }
+        let mut out = parts.join(" ");
+        if let Some(n) = self.bytes {
+            out.push_str(&format!(", {:.1} MB", n as f64 / 1e6));
+        }
+        out
+    }
+
+    /// The file extension its download is kept under.
+    pub fn extension(&self) -> &'static str {
+        match self.kind.to_ascii_lowercase().as_str() {
+            "wav" => "wav",
+            "flac" => "flac",
+            "aif" | "aiff" => "aiff",
+            "mp3" => "mp3",
+            "ogg" => "ogg",
+            "m4a" => "m4a",
+            _ => "audio",
+        }
+    }
+}
+
+fn khz(rate: u32) -> String {
+    let k = rate as f64 / 1000.0;
+    if k.fract() == 0.0 { format!("{k:.0} kHz") } else { format!("{k:.1} kHz") }
+}
+
+fn channels(n: u32) -> &'static str {
+    match n {
+        1 => "mono",
+        2 => "stereo",
+        _ => "multichannel",
+    }
+}
+
+/// What a download is, measured off the file it wrote (#1894): the
+/// preview or the original, and its codec, rate and channels. The figure
+/// a credit, an import reply and the media pool give, never a fixed one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Download {
+    /// "preview", "original", or "download": the file a music library
+    /// offers, which is neither.
+    pub quality: String,
+    pub codec: String,
+    pub bitrate_kbps: Option<u32>,
+    pub sample_rate: Option<u32>,
+    pub channels: Option<u32>,
+    pub bit_depth: Option<u32>,
+}
+
+impl Download {
+    /// "preview (MP3 184 kbps, 44.1 kHz stereo)".
+    pub fn describe(&self) -> String {
+        let mut what = self.codec.to_uppercase();
+        if let Some(d) = self.bit_depth.filter(|d| *d > 0) {
+            what.push_str(&format!(" {d}-bit"));
+        }
+        if let Some(b) = self.bitrate_kbps.filter(|_| self.bit_depth.is_none()) {
+            what.push_str(&format!(" {b} kbps"));
+        }
+        let mut rest = Vec::new();
+        if let Some(r) = self.sample_rate {
+            rest.push(khz(r));
+        }
+        if let Some(c) = self.channels {
+            rest.push(channels(c).to_string());
+        }
+        if !rest.is_empty() {
+            what.push_str(&format!(", {}", rest.join(" ")));
+        }
+        format!("{} ({what})", self.quality)
+    }
+
+    /// The download measured off `path` by ffprobe, as `quality`; with no
+    /// ffprobe, the quality alone.
+    pub fn measure(path: &std::path::Path, quality: &str) -> Self {
+        let mut d = Self { quality: quality.into(), ..Default::default() };
+        let Ok(out) = std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name,sample_rate,channels,bit_rate,bits_per_raw_sample,bits_per_sample:format=bit_rate", "-of", "default=nw=1"])
+            .arg(path)
+            .output()
+        else {
+            return d;
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        let num = |k: &str| text.lines().filter_map(|l| l.strip_prefix(&format!("{k}="))).find_map(|v| v.trim().parse::<u64>().ok()).filter(|n| *n > 0);
+        d.codec = text.lines().find_map(|l| l.strip_prefix("codec_name=")).unwrap_or("").to_string();
+        d.sample_rate = num("sample_rate").map(|n| n as u32);
+        d.channels = num("channels").map(|n| n as u32);
+        d.bitrate_kbps = num("bit_rate").map(|b| ((b as f64) / 1000.0).round() as u32);
+        // A PCM or FLAC file's depth; a lossy one has none.
+        if d.codec.starts_with("pcm") || d.codec == "flac" {
+            d.bit_depth = num("bits_per_raw_sample").or_else(|| num("bits_per_sample")).map(|n| n as u32);
+        }
+        d
+    }
 }
 
 impl Track {
@@ -61,6 +190,8 @@ impl Track {
         format!("\"{}\" by {} — {} ({})", self.title, self.artist, self.license, self.page_url)
     }
 }
+
+pub mod freesound_auth;
 
 /// Percent-encode a query value for a URL (RFC 3986 unreserved kept).
 fn encode(s: &str) -> String {
@@ -75,8 +206,30 @@ fn encode(s: &str) -> String {
     out
 }
 
+/// A query value back from [`encode`]'s form: `%XX` and `+`.
+fn decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16) {
+                Ok(b) => {
+                    out.push(b);
+                    i += 2;
+                }
+                Err(_) => out.push(b'%'),
+            },
+            b => out.push(b),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Read a key: the environment variable first, then `keys.toml`.
-fn read_key(env: &str, toml_key: &str) -> Option<String> {
+pub(crate) fn read_key(env: &str, toml_key: &str) -> Option<String> {
     if let Ok(v) = std::env::var(env) {
         let v = v.trim();
         if !v.is_empty() {
@@ -213,6 +366,21 @@ pub fn search_sfx_filtered(query: &str, limit: u32, filter: SfxFilter) -> Result
     Ok(SfxSearch { tracks: Vec::new(), matched_query: query.trim().to_string() })
 }
 
+/// A Freesound result's original file, from its `type`, `samplerate`,
+/// `channels`, `bitrate`, `bitdepth` and `filesize` (#1894).
+fn freesound_original(r: &serde_json::Value) -> Option<Original> {
+    let kind = r.get("type").and_then(|v| v.as_str()).filter(|t| !t.is_empty())?.to_ascii_lowercase();
+    let num = |k: &str| r.get(k).and_then(|v| v.as_f64()).filter(|n| *n > 0.0);
+    Some(Original {
+        kind,
+        sample_rate: num("samplerate").map(|n| n as u32),
+        channels: num("channels").map(|n| n as u32),
+        bitrate_kbps: num("bitrate").map(|n| n as u32),
+        bit_depth: num("bitdepth").map(|n| n as u32),
+        bytes: num("filesize").map(|n| n as u64),
+    })
+}
+
 fn freesound_page(token: &str, query: &str, page: u32, max_secs: Option<f64>) -> Result<Vec<Track>, String> {
     let q = encode(query.trim());
     let filter = match max_secs.filter(|m| m.is_finite() && *m > 0.0) {
@@ -220,7 +388,7 @@ fn freesound_page(token: &str, query: &str, page: u32, max_secs: Option<f64>) ->
         None => String::new(),
     };
     let url = format!(
-        "https://freesound.org/apiv2/search/text/?query={q}&token={token}&page_size={page}&sort=rating_desc&fields=id,name,username,duration,license,previews,url,tags{filter}"
+        "https://freesound.org/apiv2/search/text/?query={q}&token={token}&page_size={page}&sort=rating_desc&fields=id,name,username,duration,license,previews,url,tags,type,samplerate,channels,bitrate,bitdepth,filesize{filter}"
     );
     let text = ureq::get(&url)
         .timeout(std::time::Duration::from_secs(30))
@@ -258,6 +426,7 @@ fn freesound_page(token: &str, query: &str, page: u32, max_secs: Option<f64>) ->
             image_url: String::new(),
             tags,
             pace: String::new(),
+            original: freesound_original(r),
         });
     }
     Ok(tracks)
@@ -418,6 +587,7 @@ fn jamendo_tracks(extra: &str, limit: u32, offset: u32, filter: MusicFilter) -> 
             image_url: get("image"),
             tags,
             pace,
+            original: None,
         });
     }
     Ok(tracks)
@@ -441,14 +611,43 @@ pub fn download_track(track: &Track, dest_dir: &std::path::Path) -> Result<std::
     if url.is_empty() {
         return Err(format!("\"{}\" has no downloadable audio", track.title));
     }
+    // A Freesound sound's preview is the preview, whatever its rate; a
+    // Jamendo track's download is the MP3 the library offers, not a
+    // master: "download".
+    let quality = if track.source == Source::Freesound || track.download_url.is_empty() { "preview" } else { "download" };
+    let resp = ureq::get(url).timeout(std::time::Duration::from_secs(45)).call().map_err(|e| format!("download failed: {e}"))?;
+    fetch_into(track, dest_dir, "mp3", resp, quality)
+}
+
+/// A Freesound sound's original recording (#1894), with `bearer` the
+/// signed-in user's token, kept under its own format's extension. `Err`
+/// when the library doesn't say what the original is, or refuses: never
+/// the preview in its place.
+pub fn download_original(track: &Track, dest_dir: &std::path::Path, bearer: &str) -> Result<std::path::PathBuf, String> {
+    let original = track.original.as_ref().ok_or_else(|| format!("Freesound didn't say what \"{}\"'s original is; search for it again", track.title))?;
+    if track.id.is_empty() || !track.id.chars().all(|c| c.is_ascii_digit()) {
+        return Err(format!("\"{}\" has no Freesound id to fetch the original by", track.title));
+    }
+    let url = format!("https://freesound.org/apiv2/sounds/{}/download/", track.id);
+    let resp = match ureq::get(&url).set("Authorization", &format!("Bearer {bearer}")).timeout(std::time::Duration::from_secs(120)).call() {
+        Ok(r) => r,
+        Err(ureq::Error::Status(code, _)) => return Err(format!("Freesound refused the original of \"{}\" ({code}); quality preview takes the preview instead", track.title)),
+        Err(e) => return Err(format!("the original of \"{}\" could not be downloaded ({}); quality preview takes the preview instead", track.title, e.kind())),
+    };
+    fetch_into(track, dest_dir, original.extension(), resp, "original")
+}
+
+/// `resp`'s body into `dest_dir` as the track's file with `ext`, capped
+/// and moved into place whole, and its credit beside it, with what it is
+/// as measured off the file.
+fn fetch_into(track: &Track, dest_dir: &std::path::Path, ext: &str, resp: ureq::Response, quality: &str) -> Result<std::path::PathBuf, String> {
     std::fs::create_dir_all(dest_dir).map_err(|e| format!("creating {}: {e}", dest_dir.display()))?;
     let base = format!("{}-{}-{}", safe_name(&track.artist), safe_name(&track.title), track.id);
-    let audio_path = dest_dir.join(format!("{base}.mp3"));
-    let resp = ureq::get(url).timeout(std::time::Duration::from_secs(45)).call().map_err(|e| format!("download failed: {e}"))?;
+    let audio_path = dest_dir.join(format!("{base}.{ext}"));
     refuse_announced_size(&resp, MAX_TRACK_BYTES)?;
     // Streamed to a file beside it, capped, and moved into place whole:
     // never held in memory, and never a half track under the real name.
-    let part = audio_path.with_extension("mp3.part");
+    let part = audio_path.with_extension(format!("{ext}.part"));
     let written = std::fs::File::create(&part)
         .map_err(|e| format!("writing {}: {e}", part.display()))
         .and_then(|file| {
@@ -463,13 +662,15 @@ pub fn download_track(track: &Track, dest_dir: &std::path::Path) -> Result<std::
         return Err(e);
     }
     std::fs::rename(&part, &audio_path).map_err(|e| format!("writing {}: {e}", audio_path.display()))?;
-    // The credit line, kept next to the file for export attribution.
-    let credit = format!("{}
-Licence: {} ({})
-Source page: {}
-", track.attribution(), track.license, track.license_url, track.page_url);
-    let _ = std::fs::write(dest_dir.join(format!("{base}.klipp-credit.txt")), credit);
+    // The credit line, kept next to the file for export attribution, and
+    // what the file is.
+    let _ = std::fs::write(audio_path.with_extension("klipp-credit.txt"), credit_text(track, &Download::measure(&audio_path, quality)));
     Ok(audio_path)
+}
+
+/// The credit file's text for `track` downloaded as `download`.
+fn credit_text(track: &Track, download: &Download) -> String {
+    format!("{}\nLicence: {} ({})\nSource page: {}\nQuality: {}\n", track.attribution(), track.license, track.license_url, track.page_url, download.describe())
 }
 
 /// A downloaded track's credit, as [`download_track`] keeps it beside the
@@ -484,6 +685,9 @@ pub struct Credit {
     pub licence_url: String,
     /// The page the track came from, to link back to.
     pub source: String,
+    /// What the file is, "preview (MP3 184 kbps, 44.1 kHz stereo)"
+    /// (#1894); `None` for a credit written before it was said.
+    pub quality: Option<String>,
 }
 
 impl Credit {
@@ -537,7 +741,7 @@ fn parse_credit(text: &str) -> Option<Credit> {
         Some((label, url)) => (label.trim().to_owned(), url.trim_end_matches(')').trim().to_owned()),
         None => (licence_line, String::new()),
     };
-    Some(Credit { title: title.to_owned(), author: author.trim().to_owned(), licence, licence_url, source: field("Source page:").unwrap_or_default() })
+    Some(Credit { title: title.to_owned(), author: author.trim().to_owned(), licence, licence_url, source: field("Source page:").unwrap_or_default(), quality: field("Quality:") })
 }
 
 /// The credits text for `credits`: each track once, grouped by licence,
@@ -573,7 +777,7 @@ pub fn credits_text(credits: &[Credit]) -> String {
         let mut tracks: Vec<&&Credit> = unique.iter().filter(|c| c.licence == licence && c.licence_url == url).collect();
         tracks.sort_by(|a, b| a.title.cmp(&b.title));
         for c in tracks {
-            out.push_str(&format!("  \"{}\" by {}{}\n", c.title, c.author, if c.source.is_empty() { String::new() } else { format!(" — {}", c.source) }));
+            out.push_str(&format!("  \"{}\" by {}{}{}\n", c.title, c.author, if c.source.is_empty() { String::new() } else { format!(" — {}", c.source) }, c.quality.as_ref().map_or(String::new(), |q| format!(" [{q}]"))));
         }
     }
     out
@@ -863,6 +1067,67 @@ mod tests {
         assert_eq!(credits_text(&[]), "");
     }
 
+    /// #1894: Freesound's description of an original reads as its format,
+    /// rate, depth and channels, and its download keeps its extension.
+    #[test]
+    fn an_original_is_described_as_freesound_gives_it() {
+        let r = serde_json::json!({"type": "wav", "samplerate": 48000.0, "channels": 2, "bitrate": 2304, "bitdepth": 24, "filesize": 2_100_000});
+        let o = freesound_original(&r).unwrap();
+        assert_eq!(o.describe(), "WAV 48 kHz 24-bit stereo, 2.1 MB");
+        assert_eq!(o.extension(), "wav");
+        let mp3 = freesound_original(&serde_json::json!({"type": "mp3", "samplerate": 44100, "channels": 1, "bitrate": 320})).unwrap();
+        assert_eq!(mp3.describe(), "MP3 44.1 kHz 320 kbps mono");
+        assert_eq!(freesound_original(&serde_json::json!({"type": "aif"})).unwrap().extension(), "aiff");
+        assert!(freesound_original(&serde_json::json!({"name": "x"})).is_none(), "no type: nothing said");
+    }
+
+    /// #1894: a download is described by what it measures, not a fixed
+    /// figure; a credit keeps it and the export credits carry it.
+    #[test]
+    fn a_download_says_what_it_measures_and_the_credit_keeps_it() {
+        let d = Download { quality: "preview".into(), codec: "mp3".into(), bitrate_kbps: Some(184), sample_rate: Some(44100), channels: Some(2), bit_depth: None };
+        assert_eq!(d.describe(), "preview (MP3 184 kbps, 44.1 kHz stereo)");
+        let o = Download { quality: "original".into(), codec: "pcm_s24le".into(), bitrate_kbps: Some(2304), sample_rate: Some(48000), channels: Some(1), bit_depth: Some(24) };
+        assert_eq!(o.describe(), "original (PCM_S24LE 24-bit, 48 kHz mono)");
+        let track = Track {
+            source: Source::Freesound, id: "1".into(), title: "Soft Impact".into(), artist: "dan".into(), duration_secs: 1.0, license: "CC0".into(),
+            license_url: "http://creativecommons.org/publicdomain/zero/1.0/".into(), commercial_ok: true, preview_url: String::new(), download_url: String::new(),
+            page_url: "https://freesound.org/s/1/".into(), image_url: String::new(), tags: vec![], pace: String::new(), original: None,
+        };
+        let credit = parse_credit(&credit_text(&track, &d)).expect("reads back");
+        assert_eq!(credit.quality.as_deref(), Some("preview (MP3 184 kbps, 44.1 kHz stereo)"));
+        assert!(credits_text(&[credit]).contains("[preview (MP3 184 kbps, 44.1 kHz stereo)]"));
+        // A credit from before, with no quality line, still reads.
+        let old = "\"Old\" by Ana — CC BY (https://x)\nLicence: CC BY (https://deed)\nSource page: https://x\n";
+        assert_eq!(parse_credit(old).map(|c| c.quality), Some(None));
+        assert_eq!(decode("a%2Fb+c%"), "a/b c%");
+    }
+
+    /// #1894: the measure reads a real file's codec, rate, channels and,
+    /// for PCM, depth; for a lossy one, its bitrate. Skipped, said, without
+    /// ffmpeg.
+    #[test]
+    fn a_download_is_measured_off_its_file() {
+        let dir = std::env::temp_dir().join(format!("klipp-download-measure-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let make = |name: &str, args: &[&str]| -> Option<std::path::PathBuf> {
+            let out = dir.join(name);
+            let ok = std::process::Command::new("ffmpeg").args(["-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=f=440:d=1:r=48000"]).args(args).arg(&out).status().is_ok_and(|s| s.success());
+            ok.then_some(out)
+        };
+        let (Some(wav), Some(mp3)) = (make("o.wav", &["-ac", "2", "-c:a", "pcm_s24le"]), make("p.mp3", &["-ar", "44100", "-b:a", "192k"])) else {
+            eprintln!("UNVERIFIED: no ffmpeg, downloads not measured");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        };
+        let w = Download::measure(&wav, "original");
+        assert_eq!((w.codec.as_str(), w.sample_rate, w.channels, w.bit_depth), ("pcm_s24le", Some(48000), Some(2), Some(24)), "{w:?}");
+        let m = Download::measure(&mp3, "preview");
+        assert_eq!((m.codec.as_str(), m.sample_rate, m.bit_depth), ("mp3", Some(44100), None), "{m:?}");
+        assert!(m.bitrate_kbps.is_some_and(|b| (180..=200).contains(&b)), "{m:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// #1933: two tracks with the same label and different deeds are each
     /// credited under their own, never one's deed given to the other; the
     /// same label and deed still group.
@@ -874,6 +1139,7 @@ mod tests {
             licence: "CC BY".into(),
             licence_url: deed.into(),
             source: format!("https://www.jamendo.com/track/{title}"),
+            quality: None,
         };
         let (three, four) = ("https://creativecommons.org/licenses/by/3.0/", "https://creativecommons.org/licenses/by/4.0/");
         let list = credits_text(&[credit("Old", three), credit("New", four), credit("Newer", four)]);
@@ -892,7 +1158,7 @@ mod tests {
             source: Source::JamendoMusic, id: title.into(), title: title.into(), artist: String::new(),
             duration_secs: 120.0, license: String::new(), license_url: String::new(), commercial_ok: true,
             preview_url: String::new(), download_url: String::new(), page_url: String::new(),
-            image_url: String::new(), tags: tags.iter().map(|t| t.to_string()).collect(), pace: String::new(),
+            image_url: String::new(), tags: tags.iter().map(|t| t.to_string()).collect(), pace: String::new(), original: None,
         }
     }
 
