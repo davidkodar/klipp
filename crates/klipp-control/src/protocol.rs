@@ -1414,6 +1414,17 @@ pub enum ControlCommand {
         #[serde(default)]
         loudness: bool,
     },
+    /// Save a decision about one of check's findings, by the id check
+    /// gave it (#1932): `accepted` keeps it on purpose and needs a
+    /// `rationale`, `to_fix` notes it, `clear` takes the decision back.
+    /// One undo step. A decision holds until what the finding judged
+    /// changes, which gives the finding a new id.
+    ReviewFinding {
+        finding_id: String,
+        decision: String,
+        #[serde(default)]
+        rationale: Option<String>,
+    },
     /// Save the project: to `path` (a `.klipp` folder, made if needed),
     /// or where it was last saved when `path` is left out. Refused for a
     /// project never saved when no path is given.

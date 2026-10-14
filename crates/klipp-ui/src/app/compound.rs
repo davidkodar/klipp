@@ -58,6 +58,7 @@ impl KlippApp {
             last_playhead: None,
             brief: None,
             edit_plan: None,
+            reviews: Vec::new(),
         };
 
         // Reproduce track structure and move clips (offset to start at 0)
@@ -758,6 +759,7 @@ mod compound_clip_cycle_tests {
             last_playhead: None,
             brief: None,
             edit_plan: None,
+            reviews: Vec::new(),
         }
     }
 

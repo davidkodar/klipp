@@ -57,6 +57,7 @@ pub use clip_anim::{EffectKeyframes, Keyframes, ParamModifiers};
 pub use picture_fields::ClipPictureParts;
 pub use picture_store::{ClipPictureFields, LiftedPicture, COLD_LIFTS};
 mod edit_plan;
+mod review;
 mod effect_slots;
 mod other_effect_slots;
 mod grade_access;
@@ -111,6 +112,7 @@ pub use clip_kind::{
     TitleBackground, TitleData, TitleObject, TitleObjectContent, TitleObjectId, TitlePosition,
     TitleShadow, GeneratorData, ImageFit, ImageLayer};
 pub use brief::{Brief, CastMember, Feature, MotionAnchorSpec, ShadowSpec, TitleMotionSpec, TypeStyle};
+pub use review::{FindingReview, ReviewDecision};
 pub use edit_plan::{EditPlan, LayerMotion, PlanBackground, PlanLayer, PlanMusic, PlanPlacement, PlanSegment, PlanSfx, PlanTitle, PlanZoom, LAYER_MOTIONS};
 pub use marker::Marker;
 pub use klipp_core::MulticamSound;

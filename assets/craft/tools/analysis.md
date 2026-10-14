@@ -26,6 +26,10 @@ The tempo and beat grid of a clip's sound: BPM, a confidence, and the beat times
 
 Read-only pre-export checks: black/flash frames, uncovered jump cuts, titles spanning cuts or too short, captions under lower thirds, cuts inside words, unducked music, mismatched picture/audio ends, offline media; brief length/size/captions/cast/music. With screen beat sheets: cuts during changes, short reading holds, titles over changing screens (suggests hold windows), flat cadence; cuts to settled screens are not jump cuts. With plans: missing brief features or under-three-second coverage, approved plans unbuilt or drifted. Each finding gives where, why and the fix; fix errors and weigh warnings before klipp_export. Slower: color true renders a frame a top-track shot for clipping, crushed blacks, dullness, oversaturation and skin-line drift; loudness true meters the mix for sections far under the rest.
 
+## klipp_review_finding
+
+Every klipp_check finding has an `id`. Save a decision about one by it: `accepted` keeps it on purpose and needs a `rationale` (why it is deliberate); `to_fix` notes it and leaves it counted; `clear` takes the decision back. One undo step, saved with the project. Check then lists accepted findings under "Accepted on purpose", not counted as errors or warnings, with their reason and the revision they were accepted at. The id holds while what the finding judged is unchanged: change a colour finding's clip (its media, range, grade or group look), or what a craft or sound finding says, and the finding returns under a new id, unreviewed, while the old decision is listed as no longer holding. Accept only what is deliberate; fix the rest.
+
 ## klipp_contact_sheet
 
 Look at a media file: a grid of frames evenly spaced over a range (the whole file by default), each with its time in the file burnt in, as one JPEG, inlined when small enough. Use it to see what a clip is before planning, and to check a range you cut to. Twelve frames, four to a row, 240 px tiles by default; the reply lists each tile's time.

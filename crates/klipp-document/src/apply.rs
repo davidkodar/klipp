@@ -230,6 +230,9 @@ impl DocumentView<'_> {
             EditCommand::SetEditPlan { old, .. } => {
                 self.sequences[self.active].edit_plan = old.as_deref().cloned();
             }
+            EditCommand::SetReviews { old, .. } => {
+                self.sequences[self.active].reviews = old.clone();
+            }
             EditCommand::SetClipRole { clip_id, old, .. } => {
                 if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {
                     c.role = *old;
@@ -932,6 +935,9 @@ impl DocumentView<'_> {
             }
             EditCommand::SetEditPlan { new, .. } => {
                 self.sequences[self.active].edit_plan = new.as_deref().cloned();
+            }
+            EditCommand::SetReviews { new, .. } => {
+                self.sequences[self.active].reviews = new.clone();
             }
             EditCommand::SetClipRole { clip_id, new, .. } => {
                 if let Some(c) = self.sequences[self.active].tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == *clip_id) {

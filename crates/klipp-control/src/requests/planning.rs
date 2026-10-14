@@ -431,7 +431,9 @@ pub(crate) fn respond(
             }
             // Every shot read in Lab against the brief's look (or the
             // neutral one, or the screen recording's), faces and all.
-            let mut color_findings: Vec<(String, f64, String, String)> = Vec::new();
+            // (severity, secs, what, hint, id): the id names the finding for
+            // a review of it (#1932).
+            let mut color_findings: Vec<(String, f64, String, String, String)> = Vec::new();
             let mut shots_on_target = 0usize;
             // A survey of many shots reads each once, at its middle; a few
             // are read three times across, so drift within a shot is said.
@@ -487,7 +489,21 @@ pub(crate) fn respond(
                 if found.is_empty() {
                     shots_on_target += 1;
                 }
-                color_findings.extend(found);
+                // Named by the shot and by what it was judged on, so a
+                // review of one holds until the shot changes (#1932).
+                let named: Vec<String> = {
+                    let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                    let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
+                    let named = match seq.all_clips().find(|c| c.id == *clip) {
+                        Some(c) => {
+                            let basis = klipp_document::qc_review::colour_basis(&seq, &pool, c, *span, &colour_management(ctx));
+                            found.iter().map(|f| klipp_document::qc_review::colour_finding_id(&colour_rule(&f.2), c, span.0, seq.fps.as_f64(), basis)).collect()
+                        }
+                        None => found.iter().map(|f| klipp_document::qc_review::finding_id("colour", &colour_rule(&f.2), Some(f.1), seq.fps.as_f64(), &f.2)).collect(),
+                    };
+                    named
+                };
+                color_findings.extend(found.into_iter().zip(named).map(|((a, b, c, d), id)| (a, b, c, d, id)));
             }
             let departing: Vec<String> = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
@@ -510,6 +526,54 @@ pub(crate) fn respond(
                 }
             }
 
+            // Each finding against the sequence's reviews of it (#1932): one
+            // kept on purpose leaves the counts for a section of its own,
+            // one to be fixed carries its note, and a review whose finding
+            // is gone is said, not dropped.
+            let (reviews, fps) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                (seq.reviews.clone(), seq.fps.as_f64())
+            };
+            let craft_ids: Vec<String> = report.findings.iter().map(|f| klipp_document::qc_review::finding_id("check", f.rule, f.at_secs, fps, &f.what)).collect();
+            let sound_ids: Vec<String> = audio_findings.iter().map(|f| klipp_document::qc_review::finding_id("sound", "sound", Some(f.at), fps, &format!("{}: {}", f.media, f.what))).collect();
+            let all_ids: Vec<String> = craft_ids.iter().chain(color_findings.iter().map(|f| &f.4)).chain(&sound_ids).cloned().collect();
+            let matched = klipp_document::qc_review::match_reviews(&all_ids, &reviews);
+            let (n_craft, n_colour) = (craft_ids.len(), color_findings.len());
+            let accepted_at: std::collections::HashMap<usize, &klipp_timeline::FindingReview> = matched.accepted.iter().copied().collect();
+            let to_fix_at: std::collections::HashMap<usize, &klipp_timeline::FindingReview> = matched.to_fix.iter().copied().collect();
+            let mut accepted: Vec<serde_json::Value> = Vec::new();
+            let mut accepted_lines: Vec<String> = Vec::new();
+            let mut keep = |i: usize, severity: &str, at: Option<f64>, what: &str, hint: &mut String| -> bool {
+                if let Some(r) = accepted_at.get(&i) {
+                    accepted_lines.push(format!("\n[accepted {severity}]{}  {what}. Why: {} (revision {})", at.map(|t| format!(" {t:.2} s")).unwrap_or_default(), r.rationale, r.revision));
+                    accepted.push(json!({ "id": all_ids[i], "severity": severity, "at_secs": at, "what": what, "rationale": r.rationale, "revision": r.revision }));
+                    return false;
+                }
+                if let Some(r) = to_fix_at.get(&i) {
+                    hint.push_str(&format!(" (to fix: {})", r.rationale));
+                }
+                true
+            };
+            let mut craft: Vec<(klipp_document::qc::Finding, String)> = Vec::new();
+            for (i, (mut f, id)) in std::mem::take(&mut report.findings).into_iter().zip(craft_ids).enumerate() {
+                let severity = match f.severity { klipp_document::qc::Severity::Error => "error", klipp_document::qc::Severity::Warning => "warning", klipp_document::qc::Severity::Note => "note" };
+                if keep(i, severity, f.at_secs, &f.what.clone(), &mut f.hint) {
+                    craft.push((f, id));
+                }
+            }
+            report.errors = craft.iter().filter(|(f, _)| f.severity == klipp_document::qc::Severity::Error).count();
+            report.warnings = craft.iter().filter(|(f, _)| f.severity == klipp_document::qc::Severity::Warning).count();
+            report.findings = craft.iter().map(|(f, _)| f.clone()).collect();
+            let color_findings: Vec<(String, f64, String, String, String)> = std::mem::take(&mut color_findings).into_iter().enumerate()
+                .filter_map(|(i, mut f)| keep(n_craft + i, &f.0.clone(), Some(f.1), &f.2.clone(), &mut f.3).then_some(f)).collect();
+            let (audio_findings, sound_ids): (Vec<SoundFinding>, Vec<String>) = std::mem::take(&mut audio_findings).into_iter().zip(sound_ids).enumerate()
+                .filter_map(|(i, (mut f, id))| {
+                    let what = format!("{}: {}", f.media, f.what);
+                    keep(n_craft + n_colour + i, f.severity, Some(f.at), &what, &mut f.hint).then_some((f, id))
+                })
+                .unzip();
+            let lapsed: Vec<&klipp_timeline::FindingReview> = matched.lapsed;
+
             // The headline counts everything the check found, colour
             // and sound included. It used to count only the craft
             // findings, so a timeline with ten colour errors under it
@@ -521,7 +585,7 @@ pub(crate) fn respond(
             let next = if errors > 0 {
                 "Fix the errors before you deliver — each finding says what and where. Then check again."
             } else if warnings > 0 {
-                "No errors. Decide each warning: fix it, or keep it on purpose and be able to say why. Then export."
+                "No errors. Decide each warning: fix it, or keep it on purpose with review_finding, its id and why. Then export."
             } else {
                 "Clean. Export at the brief's loudness, poll export_status, then save_project."
             };
@@ -569,9 +633,27 @@ pub(crate) fn respond(
                     text.push_str(&format!("\n[{}] {}: {}. {}", f.severity, f.media, f.what, f.hint));
                 }
             }
-            let findings_json: Vec<serde_json::Value> = color_findings.iter().map(|f| json!({ "severity": f.0, "rule": "color", "at_secs": f.1, "what": f.2, "hint": f.3 })).collect();
-            let audio_json: Vec<serde_json::Value> = audio_findings.iter().map(|f| json!({ "severity": f.severity, "rule": "sound", "at_secs": f.at, "media": f.media, "what": f.what, "hint": f.hint, "role": f.role })).collect();
-            Ok(json!({ "text": text, "errors": errors, "warnings": warnings, "findings": report.findings, "color_findings": findings_json, "departing_groups": departing, "shots_on_target": shots_on_target, "colour_coverage": if color { json!({ "footage": color_times.len() - unread.len() - graphics_read, "graphics": graphics_read, "unread": unread.len() }) } else { json!(null) }, "sound_findings": audio_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
+            if !accepted_lines.is_empty() {
+                text.push_str(&format!("\n\nAccepted on purpose, not counted ({}):", accepted_lines.len()));
+                for line in &accepted_lines {
+                    text.push_str(line);
+                }
+            }
+            if !lapsed.is_empty() {
+                text.push_str("\n\nReviews that no longer hold — what they judged has changed or is gone, so the finding, if it is still there, is counted again:");
+                for r in &lapsed {
+                    let decision = match r.decision { klipp_timeline::ReviewDecision::Accepted => "accepted", klipp_timeline::ReviewDecision::ToFix => "to fix" };
+                    text.push_str(&format!("\n[lapsed, was {decision}]{}  {}: {}", r.at_secs.map(|t| format!(" {t:.2} s")).unwrap_or_default(), r.finding_id, r.rationale));
+                }
+            }
+            let craft_json: Vec<serde_json::Value> = craft.iter().map(|(f, id)| {
+                let mut v = json!(f);
+                v["id"] = json!(id);
+                v
+            }).collect();
+            let findings_json: Vec<serde_json::Value> = color_findings.iter().map(|f| json!({ "id": f.4, "severity": f.0, "rule": "color", "at_secs": f.1, "what": f.2, "hint": f.3 })).collect();
+            let audio_json: Vec<serde_json::Value> = audio_findings.iter().zip(&sound_ids).map(|(f, id)| json!({ "id": id, "severity": f.severity, "rule": "sound", "at_secs": f.at, "media": f.media, "what": f.what, "hint": f.hint, "role": f.role })).collect();
+            Ok(json!({ "text": text, "errors": errors, "warnings": warnings, "findings": craft_json, "accepted": accepted, "lapsed_reviews": lapsed, "color_findings": findings_json, "departing_groups": departing, "shots_on_target": shots_on_target, "colour_coverage": if color { json!({ "footage": color_times.len() - unread.len() - graphics_read, "graphics": graphics_read, "unread": unread.len() }) } else { json!(null) }, "sound_findings": audio_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
         }
 
         // Said what they did (#741): the step taken back or put back, as
@@ -597,6 +679,42 @@ pub(crate) fn respond(
             v[if undo { "undid" } else { "redid" }] = json!(step);
             v["next_undo"] = json!(next_undo);
             v["next_redo"] = json!(next_redo);
+            v["text"] = json!(text);
+            Ok(v)
+        }
+
+        ControlCommand::ReviewFinding { finding_id, decision, rationale } => {
+            if in_batch {
+                return Err("review_finding is its own undo step; send it on its own".into());
+            }
+            let rationale = rationale.unwrap_or_default().trim().to_string();
+            let decision = match decision.trim() {
+                "accepted" => Some(klipp_timeline::ReviewDecision::Accepted),
+                "to_fix" => Some(klipp_timeline::ReviewDecision::ToFix),
+                "clear" => None,
+                other => return Err(format!("decision {other:?} is not one: accepted (kept on purpose), to_fix, or clear")),
+            };
+            if decision == Some(klipp_timeline::ReviewDecision::Accepted) && rationale.is_empty() {
+                return Err("an accepted finding needs a rationale: why it is kept on purpose".into());
+            }
+            let (old, review) = {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let Some((_, clip_id, at_secs)) = klipp_document::qc_review::locate(&seq, &finding_id) else {
+                    return Err(format!("{finding_id:?} is not a finding id: check gives every finding one"));
+                };
+                let review = decision.map(|decision| klipp_timeline::FindingReview { finding_id: finding_id.clone(), decision, rationale: rationale.clone(), at_secs, clip_id, revision: ctx.shared.revision() });
+                (seq.reviews.clone(), review)
+            };
+            let mut new: Vec<klipp_timeline::FindingReview> = old.iter().filter(|r| r.finding_id != finding_id).cloned().collect();
+            let text = match &review {
+                Some(r) if r.decision == klipp_timeline::ReviewDecision::Accepted => format!("Accepted {finding_id} on purpose: {rationale}. Check lists it apart from the faults until what it judged changes."),
+                Some(_) => format!("Marked {finding_id} to fix{}.", if rationale.is_empty() { String::new() } else { format!(": {rationale}") }),
+                None if new.len() == old.len() => return Err(format!("{finding_id} has no review to clear")),
+                None => format!("Cleared the review of {finding_id}."),
+            };
+            new.extend(review);
+            let edit = klipp_document::history::EditCommand::SetReviews { old, new };
+            let mut v = send_full_envelope(ctx, Vec::new(), vec![edit], true, None, Some("Review Finding".into()))?;
             v["text"] = json!(text);
             Ok(v)
         }

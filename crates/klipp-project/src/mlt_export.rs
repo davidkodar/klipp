@@ -342,6 +342,7 @@ mod tests {
             last_playhead: None,
             brief: None,
             edit_plan: None,
+            reviews: Vec::new(),
         }
     }
 
