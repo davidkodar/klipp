@@ -223,10 +223,11 @@ fn banding(out: &mut Vec<Outcome>) {
         }).collect()
     };
     for span in [6u32, 8, 12, 20, 40] {
-        // Each code's plateau is this wide, in pixels.
+        // Each code's plateau is this wide, in pixels. Steps under two
+        // tiles wide were missed until #1996; every width here is caught.
         let plateau = BW / span;
         let banded = measure_frame(&ramp(span, false), BW, BH, &[]);
-        out.push(Outcome { family: "gradients (banding)", case: format!("8-bit ramp over {span} codes, steps {plateau} px wide"), truth: Truth::Fault, verdict: verdict_of(&banded, &camera, "banding"), clear: plateau >= 48 });
+        out.push(Outcome { family: "gradients (banding)", case: format!("8-bit ramp over {span} codes, steps {plateau} px wide"), truth: Truth::Fault, verdict: verdict_of(&banded, &camera, "banding"), clear: plateau >= 12 });
         let dithered = measure_frame(&ramp(span, true), BW, BH, &[]);
         out.push(Outcome { family: "gradients (banding)", case: format!("dithered ramp over {span} codes"), truth: Truth::Meant, verdict: verdict_of(&dithered, &camera, "banding"), clear: false });
     }
@@ -313,11 +314,7 @@ fn qc_corpus_precision_and_recall() {
     // fault well clear of its threshold is caught — apart from the wrong
     // answers known and filed, listed here so a fix must take them off
     // and a new one fails.
-    const KNOWN: &[&str] = &[
-        // #1996: an ordered dither reads as banding.
-        "gradients (banding): dithered ramp over 6 codes",
-        "gradients (banding): dithered ramp over 8 codes",
-    ];
+    const KNOWN: &[&str] = &[];
     let named = |o: &&Outcome| format!("{}: {}", o.family, o.case);
     let mut wrong: Vec<String> = out.iter().filter(|o| (o.truth == Truth::Meant && o.verdict == Verdict::Fail) || (o.truth == Truth::Fault && o.clear && o.verdict == Verdict::Pass)).map(|o| named(&o)).collect();
     wrong.sort();
