@@ -2983,6 +2983,7 @@ dependencies = [
  "klipp-media",
  "klipp-ml",
  "klipp-nodes",
+ "klipp-plugin",
  "klipp-project",
  "klipp-render",
  "klipp-timeline",
