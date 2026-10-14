@@ -5093,6 +5093,13 @@ pub struct ProjectStatus {
     pub undo_depth: usize,
     #[serde(default)]
     pub redo_depth: usize,
+    /// Which history the next undo and redo come from: "project" for a
+    /// step of the whole project's, "sequence" for the open sequence's
+    /// (#1986).
+    #[serde(default)]
+    pub undo_scope: Option<String>,
+    #[serde(default)]
+    pub redo_scope: Option<String>,
     /// The project's global LUT, kept when its file is missing (#1019),
     /// so `check` can say so.
     #[serde(default)]
@@ -5123,7 +5130,7 @@ pub struct SequenceSummary {
 
 impl Default for ProjectStatus {
     fn default() -> Self {
-        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None, undo: None, redo: None, undo_depth: 0, redo_depth: 0, sequences: Vec::new(), active_sequence: 0, global_lut: None, picture_transform: String::new() }
+        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None, undo: None, redo: None, undo_depth: 0, redo_depth: 0, undo_scope: None, redo_scope: None, sequences: Vec::new(), active_sequence: 0, global_lut: None, picture_transform: String::new() }
     }
 }
 

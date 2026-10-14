@@ -545,6 +545,26 @@ mod tests {
         restore_globals();
     }
 
+    /// #1986: a working-space switch is the project's step, reachable from
+    /// a sequence other than the one it was made in. Once a sequence it
+    /// converted is gone, undo and redo both put back the rest and say the
+    /// missing clip, never stop on it.
+    #[test]
+    fn a_converting_switch_survives_a_sequence_it_converted_going() {
+        let mut state = graded_in_two_sequences();
+        let to = klipp_core::ProjectColour { working_colorspace: WorkingColorspace::AcesCG, ..project_colour(&state) };
+        let (edit, ..) = colour_edit(&state, to, true).expect("a change");
+        apply_colour_step(&mut state, &edit, false);
+        let kept_after = serde_json::to_string(&state.sequences[0]).unwrap();
+        state.sequences.remove(1);
+        apply_colour_step(&mut state, &edit, true);
+        assert_ne!(serde_json::to_string(&state.sequences[0]).unwrap(), kept_after, "undone in the sequence that is left");
+        apply_colour_step(&mut state, &edit, false);
+        assert_eq!(serde_json::to_string(&state.sequences[0]).unwrap(), kept_after, "and redone there");
+        apply_colour_step(&mut state, &edit, true);
+        restore_globals();
+    }
+
     /// #1875: each colour setting changed is one undo step, named for it,
     /// and undone gives the old value back; no change is no step.
     #[test]

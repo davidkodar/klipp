@@ -464,8 +464,8 @@ impl ToolbarPanel {
 
     fn edit_menu(ui: &mut egui::Ui, cmds: &mut Vec<AppCommand>, state: &mut AppState, kb: &crate::keybindings::KeyBindings) {
         ui.menu_button(egui::RichText::new("Edit").size(crate::theme::type_scale::CONTROL), |ui| {
-            if ui.add_enabled(state.active_history().can_undo(), egui::Button::new(state.active_history().undo_label().map(|d| format!("Undo {d}")).unwrap_or("Undo".into())).shortcut_text(kb.display_for("undo"))).clicked() { cmds.push(AppCommand::Undo); ui.close_menu(); }
-            if ui.add_enabled(state.active_history().can_redo(), egui::Button::new(state.active_history().redo_label().map(|d| format!("Redo {d}")).unwrap_or("Redo".into())).shortcut_text(kb.display_for("redo"))).clicked() { cmds.push(AppCommand::Redo); ui.close_menu(); }
+            if ui.add_enabled(state.next_undo().is_some(), egui::Button::new(state.undo_label().map(|d| format!("Undo {d}")).unwrap_or("Undo".into())).shortcut_text(kb.display_for("undo"))).clicked() { cmds.push(AppCommand::Undo); ui.close_menu(); }
+            if ui.add_enabled(state.next_redo().is_some(), egui::Button::new(state.redo_label().map(|d| format!("Redo {d}")).unwrap_or("Redo".into())).shortcut_text(kb.display_for("redo"))).clicked() { cmds.push(AppCommand::Redo); ui.close_menu(); }
             if ui.button("History...").clicked() { state.show_history_panel = true; ui.close_menu(); }
             if ui.button("Find and Replace in Titles\u{2026}").on_hover_text("Find words across every title, and replace them in one step").clicked() { state.show_title_find = true; ui.close_menu(); }
             ui.separator();

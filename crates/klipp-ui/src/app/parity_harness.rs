@@ -170,10 +170,12 @@ impl Run {
         } else {
             AppCommand::Undo
         });
+        // As the app takes it: the active sequence's step or the
+        // project's, whichever is next (#1986).
         let entry = if forward {
-            self.state.active_history_mut().redo()
+            self.state.take_redo()
         } else {
-            self.state.active_history_mut().undo()
+            self.state.take_undo()
         };
         let Some(entry) = entry else { return false };
         let mut view = klipp_document::apply::DocumentView {

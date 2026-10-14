@@ -542,7 +542,8 @@ fn a_camera_encoding_pick_sets_the_file_and_its_clip() {
     assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
     assert_eq!(format(&g), (klipp_core::LogFormat::SLog3, true), "the file's encoding");
     assert!(g.picture() != before.1, "the clip's Input Transform");
-    assert_eq!(g.state.active_history().undo_count(), 1, "one step");
+    assert_eq!(g.state.undo_depth(), 1, "one step");
+    assert_eq!(g.state.undo_scopes().0, Some("project"), "the file's: a project step (#1986)");
     g.step(false).unwrap();
     assert_eq!((format(&g), g.picture()), before, "undo gives back the file and the clip");
 }

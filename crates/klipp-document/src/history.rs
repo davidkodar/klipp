@@ -824,6 +824,29 @@ impl EditCommand {
             || matches!(self, EditCommand::ReplaceClip { description: "Blade Clip", .. })
     }
 
+    /// Whether the step belongs to the whole project or to the sequence
+    /// it was made in (#1986): the project's colour set-up, a file's
+    /// camera encoding and the media pool's own records are the
+    /// project's, reachable by undo from any sequence. A named step or a
+    /// batch is the project's only when all of it is. A pool edit that
+    /// comes with timeline changes (an import, a removal, a subclip) stays
+    /// with the sequence.
+    pub fn scope(&self) -> Scope {
+        match self {
+            EditCommand::SetProjectColour { .. }
+            | EditCommand::SetMediaLogFormat { .. }
+            | EditCommand::MoveMediaToBin { .. }
+            | EditCommand::SetMediaTags { .. }
+            | EditCommand::SetMediaRating { .. }
+            | EditCommand::SetMediaColorLabel { .. }
+            | EditCommand::RenameBin { .. }
+            | EditCommand::BatchRenameMediaItems { .. } => Scope::Project,
+            EditCommand::Named { edit, .. } => edit.scope(),
+            EditCommand::Batch(commands) if !commands.is_empty() && commands.iter().all(|c| c.scope() == Scope::Project) => Scope::Project,
+            _ => Scope::Sequence,
+        }
+    }
+
     pub fn label(&self) -> &str {
         match self {
             EditCommand::Named { label, .. } => label,
@@ -915,6 +938,26 @@ impl EditCommand {
     }
 }
 
+/// A step on a stack with when it last moved, from a clock the project's
+/// histories share (#1986): a push stamps its entry, and undo and redo
+/// stamp the entry they move. With two histories in reach of ctrl+z, the
+/// project's and a sequence's, the later stamp on top is the step to take
+/// back or put back. Kept with its entry, so eviction, folding and
+/// clearing move both together.
+#[derive(Debug, Clone)]
+struct Stamped {
+    stamp: u64,
+    entry: HistoryEntry,
+}
+
+/// Which history a step is kept in (#1986): the project's, reachable
+/// from every sequence, or the sequence's it was made in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    Project,
+    Sequence,
+}
+
 /// One entry on a sequence's undo/redo stack. The sequence is implicit
 /// in *which* `CommandHistory` the entry is stored on
 /// (`AppState::command_histories[seq_id]`) — there's no need to tag
@@ -932,8 +975,8 @@ impl HistoryEntry {
 
 #[derive(Default)]
 pub struct CommandHistory {
-    undo_stack: VecDeque<HistoryEntry>,
-    redo_stack: VecDeque<HistoryEntry>,
+    undo_stack: VecDeque<Stamped>,
+    redo_stack: VecDeque<Stamped>,
     max_size: usize,
 
     // Coalescing state — for drag gesture support
@@ -955,6 +998,14 @@ pub struct CommandHistory {
     /// While a batch is open, pushes collect here instead of landing on
     /// the stack; `end_batch` pushes them as one `Batch` entry.
     batch: Option<Vec<EditCommand>>,
+
+    clock: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+    /// The stamp when no shared clock is set: this history's own order.
+    local_clock: u64,
+    /// The stamp of the last edit made here: a push, or a change folded
+    /// into the top step. Not undo or redo. A step another history would
+    /// redo is stale once an edit here is newer than its undoing.
+    last_edit: u64,
 }
 
 impl CommandHistory {
@@ -968,6 +1019,9 @@ impl CommandHistory {
             last_title_text_edit: None,
             revision: None,
             batch: None,
+            clock: None,
+            local_clock: 0,
+            last_edit: 0,
         }
     }
 
@@ -1021,12 +1075,14 @@ impl CommandHistory {
         if self.batch.is_some() || n < 2 || self.undo_stack.len() < n {
             return false;
         }
-        if !self.undo_stack.iter().rev().take(n).all(|e| e.label() == only) {
+        if !self.undo_stack.iter().rev().take(n).all(|e| e.entry.label() == only) {
             return false;
         }
         let from = self.undo_stack.len() - n;
-        let commands: Vec<EditCommand> = self.undo_stack.drain(from..).map(|e| e.command).collect();
-        self.undo_stack.push_back(HistoryEntry { command: EditCommand::Named { label: label.to_string(), edit: Box::new(EditCommand::Batch(commands)) } });
+        let commands: Vec<EditCommand> = self.undo_stack.drain(from..).map(|e| e.entry.command).collect();
+        let stamp = self.tick();
+        self.undo_stack.push_back(Stamped { stamp, entry: HistoryEntry { command: EditCommand::Named { label: label.to_string(), edit: Box::new(EditCommand::Batch(commands)) } } });
+        self.last_edit = stamp;
         self.bump_revision();
         true
     }
@@ -1045,10 +1101,12 @@ impl CommandHistory {
             return false;
         }
         let Some(last) = self.undo_stack.back_mut() else { return false };
-        if !f(&mut last.command) {
+        if !f(&mut last.entry.command) {
             return false;
         }
         self.redo_stack.clear();
+        // The merged step is the newest edit.
+        self.restamp_top();
         self.bump_revision();
         true
     }
@@ -1067,7 +1125,9 @@ impl CommandHistory {
         if breaks_burst {
             self.last_title_text_edit = None;
         }
-        self.undo_stack.push_back(entry);
+        let now = self.tick();
+        self.undo_stack.push_back(Stamped { stamp: now, entry });
+        self.last_edit = now;
         self.redo_stack.clear();
         self.bump_revision();
         if self.max_size > 0 && self.undo_stack.len() > self.max_size {
@@ -1102,7 +1162,7 @@ impl CommandHistory {
         if !within_window {
             return false;
         }
-        let Some(entry) = self.undo_stack.back_mut() else {
+        let Some(Stamped { entry, .. }) = self.undo_stack.back_mut() else {
             return false;
         };
         let EditCommand::EditTitle {
@@ -1119,6 +1179,7 @@ impl CommandHistory {
         }
         *nd = new.clone();
         self.last_title_text_edit = Some((clip_id, now));
+        self.restamp_top();
         true
     }
 
@@ -1128,13 +1189,17 @@ impl CommandHistory {
     /// named `description`: a run of steps of one control (a colour
     /// picked as it's dragged) kept as the one step. Whether it did.
     pub fn amend_last_title(&mut self, clip_id: ClipId, description: &str, new: &klipp_timeline::TitleData) -> bool {
-        match self.undo_stack.back_mut().map(|e| &mut e.command) {
+        let amended = match self.undo_stack.back_mut().map(|e| &mut e.entry.command) {
             Some(EditCommand::EditTitle { clip_id: c, description: d, new_data, .. }) if *c == clip_id && *d == description => {
                 *new_data = new.clone();
                 true
             }
             _ => false,
+        };
+        if amended {
+            self.restamp_top();
         }
+        amended
     }
 
     pub fn note_title_text_edit(&mut self, clip_id: ClipId) {
@@ -1171,7 +1236,7 @@ impl CommandHistory {
             return false;
         }
         let Some(last) = self.undo_stack.back() else { return false };
-        if !f(&last.command) {
+        if !f(&last.entry.command) {
             return false;
         }
         self.undo_stack.pop_back();
@@ -1259,17 +1324,89 @@ impl CommandHistory {
     }
 
     pub fn undo(&mut self) -> Option<HistoryEntry> {
-        let entry = self.undo_stack.pop_back()?;
-        self.redo_stack.push_back(entry.clone());
+        let entry = self.undo_stack.pop_back()?.entry;
+        let stamp = self.tick();
+        self.redo_stack.push_back(Stamped { stamp, entry: entry.clone() });
         self.bump_revision();
         Some(entry)
     }
 
     pub fn redo(&mut self) -> Option<HistoryEntry> {
-        let entry = self.redo_stack.pop_back()?;
-        self.undo_stack.push_back(entry.clone());
+        let entry = self.redo_stack.pop_back()?.entry;
+        let stamp = self.tick();
+        self.undo_stack.push_back(Stamped { stamp, entry: entry.clone() });
         self.bump_revision();
         Some(entry)
+    }
+
+    /// Share `clock` with the project's other histories, so the stamps of
+    /// their steps compare (#1986).
+    pub fn set_clock(&mut self, clock: std::sync::Arc<std::sync::atomic::AtomicU64>) {
+        self.clock = Some(clock);
+    }
+
+    pub fn has_clock(&self) -> bool {
+        self.clock.is_some()
+    }
+
+    /// The step on top was just added to: it is the newest edit.
+    fn restamp_top(&mut self) {
+        let now = self.tick();
+        if let Some(top) = self.undo_stack.back_mut() {
+            top.stamp = now;
+        }
+        self.last_edit = now;
+    }
+
+    /// The undo stack with each step's stamp, oldest first (#1986).
+    pub fn undo_stamped(&self) -> impl Iterator<Item = (u64, &HistoryEntry)> {
+        self.undo_stack.iter().map(|e| (e.stamp, &e.entry))
+    }
+
+    /// The redo stack with each step's stamp, the next to redo last.
+    pub fn redo_stamped(&self) -> impl Iterator<Item = (u64, &HistoryEntry)> {
+        self.redo_stack.iter().map(|e| (e.stamp, &e.entry))
+    }
+
+    /// End a typing burst: the next keystroke is a step of its own. A
+    /// step made in another history in reach of ctrl+z ends it, so typing
+    /// on either side of it is never folded into one step (#1986).
+    pub fn end_burst(&mut self) {
+        self.last_title_text_edit = None;
+    }
+
+    /// The stamp of the last edit made in this history (#1986).
+    pub fn last_edit_stamp(&self) -> u64 {
+        self.last_edit
+    }
+
+    fn tick(&mut self) -> u64 {
+        match &self.clock {
+            Some(c) => c.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1,
+            None => {
+                self.local_clock += 1;
+                self.local_clock
+            }
+        }
+    }
+
+    /// When the step undo would take back last moved: its stamp (#1986).
+    pub fn undo_stamp(&self) -> Option<u64> {
+        self.undo_stack.back().map(|e| e.stamp)
+    }
+
+    /// When the step redo would put back was taken back: its stamp.
+    pub fn redo_stamp(&self) -> Option<u64> {
+        self.redo_stack.back().map(|e| e.stamp)
+    }
+
+    /// Forget what redo would put back: a new step in another history
+    /// in reach of ctrl+z has made it stale (#1986).
+    pub fn clear_redo(&mut self) {
+        if !self.redo_stack.is_empty() {
+            self.redo_stack.clear();
+            self.bump_revision();
+        }
     }
 
     /// Advance the shared document revision on every push, undo and
@@ -1297,21 +1434,21 @@ impl CommandHistory {
     }
 
     pub fn undo_label(&self) -> Option<&str> {
-        self.undo_stack.back().map(|e| e.label())
+        self.undo_stack.back().map(|e| e.entry.label())
     }
 
     pub fn redo_label(&self) -> Option<&str> {
-        self.redo_stack.back().map(|e| e.label())
+        self.redo_stack.back().map(|e| e.entry.label())
     }
 
     /// Get all undo stack entries (oldest first) for history panel display.
-    pub fn undo_entries(&self) -> &VecDeque<HistoryEntry> {
-        &self.undo_stack
+    pub fn undo_entries(&self) -> Vec<&HistoryEntry> {
+        self.undo_stack.iter().map(|e| &e.entry).collect()
     }
 
     /// Get all redo stack entries (oldest first) for history panel display.
-    pub fn redo_entries(&self) -> &VecDeque<HistoryEntry> {
-        &self.redo_stack
+    pub fn redo_entries(&self) -> Vec<&HistoryEntry> {
+        self.redo_stack.iter().map(|e| &e.entry).collect()
     }
 
     /// Undo N steps (for history panel click-to-jump).
@@ -2001,7 +2138,7 @@ mod drag_coalesce_tests {
         h.end_drag(final_state);
 
         assert_eq!(h.undo_stack.len(), 1, "final_state must reach the undo stack");
-        match &h.undo_stack[0].command {
+        match &h.undo_stack[0].entry.command {
             EditCommand::EditClipAudio { new_gain, .. } => {
                 assert_eq!(*new_gain, 2.5, "the pushed entry IS the final_state we passed");
             }
@@ -2059,7 +2196,7 @@ mod drag_coalesce_tests {
         }
         h.end_drag(entry(at(&moved), at(&moved)));
         assert_eq!(h.undo_stack.len(), 1, "one step");
-        let EditCommand::PictureEdit { edit, .. } = &h.undo_stack[0].command else { panic!("a picture edit") };
+        let EditCommand::PictureEdit { edit, .. } = &h.undo_stack[0].entry.command else { panic!("a picture edit") };
         let mut before = clip.clone();
         before.restore_picture(&edit.before);
         assert!(matches!(klipp_timeline::test_clip::effects(&before)[0], klipp_effects::BuiltinEffect::GaussianBlur { radius } if radius == 1.0), "before is its start");
@@ -2095,7 +2232,7 @@ mod drag_coalesce_tests {
         h.end_drag(effect_entry(clip, 1, 0.9));
         assert!(!h.is_any_drag_in_progress());
         assert_eq!(h.undo_stack.len(), 1, "one entry, for the gesture that closed");
-        match &h.undo_stack[0].command {
+        match &h.undo_stack[0].entry.command {
             EditCommand::EditBuiltinEffect { effect_index, old_effect, .. } => {
                 assert_eq!(*effect_index, 1);
                 assert_eq!(*old_effect, klipp_effects::BuiltinEffect::Crop { left: 0.5, right: 0.0, top: 0.0, bottom: 0.0, feather: 0.0 },
@@ -2572,7 +2709,7 @@ mod title_text_coalesce_tests {
         // Undo restores the original "before-burst" state, not the
         // intermediate "h" or "hi" snapshots.
         if let EditCommand::EditTitle { old_data, new_data, .. } =
-            &h.undo_stack.back().unwrap().command
+            &h.undo_stack.back().unwrap().entry.command
         {
             assert_eq!(old_data.text(), "");
             assert_eq!(new_data.text(), "hi!");
@@ -3096,7 +3233,7 @@ mod merge_tests {
         });
         assert!(took);
         assert_eq!(h.undo_stack.len(), 1);
-        assert!(matches!(h.undo_stack.back().unwrap().command, EditCommand::SetClipDepth { old, new, .. } if old == 1.0 && new == 3.0));
+        assert!(matches!(h.undo_stack.back().unwrap().entry.command, EditCommand::SetClipDepth { old, new, .. } if old == 1.0 && new == 3.0));
         // Something else on top is not merged into.
         h.push(HistoryEntry { command: EditCommand::SetSequenceCamera { old: Box::default(), new: Box::default() } });
         assert!(!h.merge_into_last(|last| matches!(last, EditCommand::SetClipDepth { .. })));
@@ -3126,7 +3263,7 @@ mod camera_drag_tests {
         assert!(h.is_dragging("camera:0"));
         h.end_drag(HistoryEntry { command: EditCommand::SetSequenceCamera { old: after.clone(), new: after.clone() } });
         assert_eq!(h.undo_stack.len(), 1);
-        match &h.undo_stack.back().unwrap().command {
+        match &h.undo_stack.back().unwrap().entry.command {
             EditCommand::SetSequenceCamera { old, new } => {
                 assert_eq!(old, &before, "undo returns to the camera from before the drag");
                 assert_eq!(new, &after, "redo returns to the camera from its end");
@@ -3157,7 +3294,7 @@ mod squash_tests {
         assert!(h.squash_last(4, "Grade To Target", "Grade To Target"));
         assert_eq!(h.undo_count(), 2, "the trim and the one pass");
         assert_eq!(h.undo_label(), Some("Grade To Target"));
-        let Some(HistoryEntry { command: EditCommand::Named { edit, .. } }) = h.undo_entries().back() else { panic!() };
+        let Some(HistoryEntry { command: EditCommand::Named { edit, .. } }) = h.undo_entries().last().copied() else { panic!() };
         assert!(matches!(edit.as_ref(), EditCommand::Batch(c) if c.len() == 4));
 
         let mut h = CommandHistory::new();
@@ -3167,5 +3304,59 @@ mod squash_tests {
         assert!(!h.squash_last(3, "Grade To Target", "Grade To Target"), "the trim is not the pass's");
         assert_eq!(h.undo_count(), 3);
         assert!(!h.squash_last(1, "Grade To Target", "Grade To Target"), "one step is one already");
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    fn tags() -> EditCommand {
+        EditCommand::SetMediaTags { media_id: MediaId::new(), old_tags: Vec::new(), new_tags: vec!["sea".into()] }
+    }
+
+    fn depth() -> EditCommand {
+        EditCommand::SetClipDepth { clip_id: ClipId::new(), old: 1.0, new: 2.0 }
+    }
+
+    /// #1986: the media pool's own records and the project's set-up are
+    /// the project's; a named step or batch is only when all of it is.
+    #[test]
+    fn a_step_is_the_project_s_only_when_all_of_it_is() {
+        assert_eq!(tags().scope(), Scope::Project);
+        assert_eq!(depth().scope(), Scope::Sequence);
+        assert_eq!(EditCommand::Named { label: "Tag".into(), edit: Box::new(tags()) }.scope(), Scope::Project);
+        assert_eq!(EditCommand::Batch(vec![tags(), tags()]).scope(), Scope::Project);
+        assert_eq!(EditCommand::Batch(vec![tags(), depth()]).scope(), Scope::Sequence, "a mixed batch stays with the sequence");
+        assert_eq!(EditCommand::Batch(Vec::new()).scope(), Scope::Sequence);
+    }
+
+    /// Histories sharing a clock stamp their steps in one order: a push,
+    /// an undo and a redo each make the moved step the latest, and a
+    /// merge into the top step does too.
+    #[test]
+    fn shared_stamps_order_steps_across_histories() {
+        let clock = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (mut a, mut b) = (CommandHistory::new(), CommandHistory::new());
+        a.set_clock(clock.clone());
+        b.set_clock(clock);
+        a.push(HistoryEntry { command: depth() });
+        b.push(HistoryEntry { command: tags() });
+        assert!(b.undo_stamp() > a.undo_stamp(), "pushed later");
+        a.push(HistoryEntry { command: depth() });
+        assert!(a.undo_stamp() > b.undo_stamp());
+        let edited = a.last_edit_stamp();
+        a.undo();
+        b.undo();
+        assert!(b.redo_stamp() > a.redo_stamp(), "undone later, redone first");
+        assert_eq!(a.last_edit_stamp(), edited, "an undo is no edit");
+        b.redo();
+        a.redo();
+        assert!(a.undo_stamp() > b.undo_stamp());
+        assert!(b.merge_into_last(|_| true));
+        assert!(b.undo_stamp() > a.undo_stamp(), "a merge makes the step the newest");
+        b.undo();
+        b.clear_redo();
+        assert!(!b.can_redo() && b.redo_stamp().is_none());
     }
 }

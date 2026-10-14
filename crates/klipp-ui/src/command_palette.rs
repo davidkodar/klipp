@@ -123,8 +123,8 @@ pub fn build(state: &AppState) -> Vec<PaletteEntry> {
     let has_source = state.source_media_id.is_some();
     let has_clipboard = state.clipboard.is_some();
     let has_attr_clipboard = state.attributes_clipboard.is_some();
-    let can_undo = state.active_history().can_undo();
-    let can_redo = state.active_history().can_redo();
+    let can_undo = state.next_undo().is_some();
+    let can_redo = state.next_redo().is_some();
     let has_in = state.sequence().in_point.is_some();
     let has_out = state.sequence().out_point.is_some();
 

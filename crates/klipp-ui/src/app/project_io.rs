@@ -273,6 +273,7 @@ impl KlippApp {
         // 3. Clear undo/redo history — entries reference clip IDs that no
         //    longer exist in the new project.
         self.state.command_histories.clear();
+        self.state.project_history = crate::history::CommandHistory::new();
         self.state.history_ops_since_save = 0;
 
         // 4. Clear selection / hover / drag state
