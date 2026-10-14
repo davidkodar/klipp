@@ -373,7 +373,10 @@ pub(crate) fn respond(
                 // the analysis (no rendering, so this is always on).
                 // With it, the fixes every clip that plays the file's
                 // sound already carries (#505).
-                let mut audio_media: Vec<(std::path::PathBuf, String, f64, AudioFixes)> = Vec::new();
+                // And the role its sound plays: designed (music, an effect,
+                // ambience, foley) only while every clip that plays it is
+                // (#1907).
+                let mut audio_media: Vec<(std::path::PathBuf, String, f64, AudioFixes, SoundUse)> = Vec::new();
                 for t in &seq.tracks {
                     for c in t.clips.iter().filter(|c| c.enabled) {
                         let Some(item) = c.media_id().and_then(|mid| pool.get(&mid)) else { continue };
@@ -388,9 +391,13 @@ pub(crate) fn respond(
                         // cleaners among them — on the picture clip, so they
                         // are read there (#725).
                         let fixes = if heard { AudioFixes::on(&sound_owner(&seq, c).audio_effects) } else { AudioFixes::ALL };
+                        let used = if heard { SoundUse::of(c.role) } else { SoundUse::Unheard };
                         match audio_media.iter_mut().find(|m| m.0 == item.path) {
-                            Some(m) => m.3 = m.3.and(fixes),
-                            None => audio_media.push((item.path.clone(), item.filename.clone(), (c.timeline_in.to_secs_f64() + c.timeline_out.to_secs_f64()) / 2.0, fixes)),
+                            Some(m) => {
+                                m.3 = m.3.and(fixes);
+                                m.4 = m.4.and(used);
+                            }
+                            None => audio_media.push((item.path.clone(), item.filename.clone(), (c.timeline_in.to_secs_f64() + c.timeline_out.to_secs_f64()) / 2.0, fixes, used)),
                         }
                     }
                 }
@@ -468,8 +475,8 @@ pub(crate) fn respond(
                 seq.grade_groups.iter().filter(|g| g.departs && seq.all_clips().any(|c| c.grade_group == Some(g.id))).map(|g| g.name.clone()).collect()
             };
             // Sound faults: wind, rumble, hum, hiss, from the analysis bands.
-            let mut audio_findings: Vec<(f64, String, String, String)> = Vec::new();
-            for (path, name, at, fixes) in &audio_media {
+            let mut audio_findings: Vec<SoundFinding> = Vec::new();
+            for (path, name, at, fixes, used) in &audio_media {
                 // A library track or effect is what it is: its low end is
                 // not a hum to clean.
                 if klipp_analysis::is_licensed_audio(path) {
@@ -479,7 +486,7 @@ pub(crate) fn respond(
                     // The analysis reads the file; a fault the clips already
                     // carry the fix for is not asked for again (#505).
                     for (what, fix) in au.faults().into_iter().filter(|(what, _)| !fixes.covers(what)) {
-                        audio_findings.push((*at, name.clone(), what, fix));
+                        audio_findings.push(sound_finding(*at, name, &what, &fix, *used));
                     }
                 }
             }
@@ -491,7 +498,7 @@ pub(crate) fn respond(
             // "Clean. Export." — which is what an agent reads.
             let colour_errors = color_findings.iter().filter(|f| f.0 == "error").count();
             let errors = report.errors + colour_errors;
-            let warnings = report.warnings + (color_findings.len() - colour_errors) + audio_findings.len();
+            let warnings = report.warnings + (color_findings.len() - colour_errors) + audio_findings.iter().filter(|f| f.severity == "warning").count();
             let next = if errors > 0 {
                 "Fix the errors before you deliver — each finding says what and where. Then check again."
             } else if warnings > 0 {
@@ -537,11 +544,11 @@ pub(crate) fn respond(
             if !audio_findings.is_empty() {
                 text.push_str("\n\nSound:");
                 for f in &audio_findings {
-                    text.push_str(&format!("\n[warning] {}: {}. {}", f.1, f.2, f.3));
+                    text.push_str(&format!("\n[{}] {}: {}. {}", f.severity, f.media, f.what, f.hint));
                 }
             }
             let findings_json: Vec<serde_json::Value> = color_findings.iter().map(|f| json!({ "severity": f.0, "rule": "color", "at_secs": f.1, "what": f.2, "hint": f.3 })).collect();
-            let audio_json: Vec<serde_json::Value> = audio_findings.iter().map(|f| json!({ "severity": "warning", "rule": "sound", "at_secs": f.0, "media": f.1, "what": f.2, "hint": f.3 })).collect();
+            let audio_json: Vec<serde_json::Value> = audio_findings.iter().map(|f| json!({ "severity": f.severity, "rule": "sound", "at_secs": f.at, "media": f.media, "what": f.what, "hint": f.hint, "role": f.role })).collect();
             Ok(json!({ "text": text, "errors": errors, "warnings": warnings, "findings": report.findings, "color_findings": findings_json, "departing_groups": departing, "shots_on_target": shots_on_target, "sound_findings": audio_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
         }
 
@@ -642,4 +649,122 @@ fn note_loudness_drops(report: &mut klipp_document::qc::Report, seq: &klipp_time
     }
     // The worst first, then by time, as the check orders the rest.
     report.findings.sort_by(|a, b| a.severity.cmp(&b.severity).then(a.at_secs.unwrap_or(-1.0).total_cmp(&b.at_secs.unwrap_or(-1.0))));
+}
+
+/// The role a file's sound plays across the clips that play it (#1907).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SoundUse {
+    /// No clip plays it: its picture's sound is a linked clip's.
+    Unheard,
+    /// Every clip playing it is music, an effect, ambience or foley.
+    Designed(klipp_core::ClipRole),
+    /// A clip plays it as dialogue, voice-over or picture sound.
+    Speech,
+}
+
+impl SoundUse {
+    fn of(role: klipp_core::ClipRole) -> Self {
+        use klipp_core::ClipRole as R;
+        match role {
+            R::Music | R::SFX | R::Ambience | R::Foley => Self::Designed(role),
+            _ => Self::Speech,
+        }
+    }
+
+    /// Two clips of one file: speech in either is speech.
+    fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Speech, _) | (_, Self::Speech) => Self::Speech,
+            (Self::Unheard, x) | (x, Self::Unheard) => x,
+            (x, Self::Designed(_)) => x,
+        }
+    }
+}
+
+/// One finding of the check's sound section.
+struct SoundFinding {
+    severity: &'static str,
+    at: f64,
+    media: String,
+    what: String,
+    hint: String,
+    role: Option<&'static str>,
+}
+
+/// A band fault the analysis found in `media`, judged by the role its
+/// sound plays (#1907). Under speech, rumble, hiss and a high floor are
+/// faults to clean. In a designed sound they are its character, a synth's
+/// bass, an impact's weight, an air sweep's air: a note, worded so, and
+/// cleaned only if unwanted. A mains hum is a fault in any role.
+fn sound_finding(at: f64, media: &str, what: &str, fix: &str, used: SoundUse) -> SoundFinding {
+    let role = match used {
+        SoundUse::Designed(r) => Some(match r {
+            klipp_core::ClipRole::Music => "music",
+            klipp_core::ClipRole::SFX => "sfx",
+            klipp_core::ClipRole::Ambience => "ambience",
+            _ => "foley",
+        }),
+        _ => None,
+    };
+    let hum = what.contains("hum");
+    match role.filter(|_| !hum) {
+        None => SoundFinding { severity: "warning", at, media: media.to_string(), what: what.to_string(), hint: fix.to_string(), role },
+        Some(r) => {
+            let character = if what.contains("rumble") {
+                "strong low end, likely the sound's own weight or bass"
+            } else if what.contains("hiss") {
+                "strong high end, likely the sound's own air or sizzle"
+            } else {
+                "a steady background under it, likely part of the sound"
+            };
+            let cleaner = if what.contains("rumble") { "wind" } else { "hiss" };
+            SoundFinding {
+                severity: "note",
+                at,
+                media: format!("{media} (its clips are {r})"),
+                what: character.to_string(),
+                hint: format!("Clean it only if it is unwanted (clean_audio {cleaner})"),
+                role,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod sound_role_tests {
+    use super::*;
+    use klipp_core::ClipRole as R;
+
+    const RUMBLE: &str = "a strong low-frequency rumble — wind or handling — sits under the sound";
+    const HISS: &str = "high-frequency hiss or air is loud against the sound";
+    const HUM: &str = "a mains hum near 50/60 Hz runs under the sound";
+
+    /// #1907: a designed sound's rumble and hiss are notes on its
+    /// character, not faults to clean; under speech they stay warnings with
+    /// their fix, and a mains hum is a warning in any role.
+    #[test]
+    fn a_designed_sounds_low_end_is_a_note_not_a_fault() {
+        for role in [R::Music, R::SFX, R::Ambience, R::Foley] {
+            for what in [RUMBLE, HISS] {
+                let f = sound_finding(1.0, "catalyst.mp3", what, "clean_audio ... else wind", SoundUse::of(role));
+                assert_eq!(f.severity, "note", "{role:?} {what}");
+                assert!(f.media.contains("its clips are") && f.hint.starts_with("Clean it only if"), "{role:?}: {} {}", f.media, f.hint);
+            }
+            assert_eq!(sound_finding(1.0, "x.wav", HUM, "clean_audio hum", SoundUse::of(role)).severity, "warning", "hum in {role:?}");
+        }
+        for role in [R::Dialogue, R::Voiceover, R::BRoll] {
+            let f = sound_finding(1.0, "interview.wav", RUMBLE, "clean_audio with voice", SoundUse::of(role));
+            assert_eq!((f.severity, f.hint.as_str()), ("warning", "clean_audio with voice"), "{role:?}");
+        }
+    }
+
+    /// A file one clip plays as music and another as dialogue is speech;
+    /// a clip that doesn't play the sound doesn't decide.
+    #[test]
+    fn speech_in_any_clip_makes_the_file_speech() {
+        assert_eq!(SoundUse::of(R::Music).and(SoundUse::of(R::Dialogue)), SoundUse::Speech);
+        assert_eq!(SoundUse::Unheard.and(SoundUse::of(R::SFX)), SoundUse::Designed(R::SFX));
+        assert_eq!(SoundUse::of(R::Music).and(SoundUse::Unheard), SoundUse::Designed(R::Music));
+        assert_eq!(sound_finding(0.0, "x", RUMBLE, "fix", SoundUse::Unheard).severity, "warning");
+    }
 }
