@@ -140,20 +140,8 @@ impl KlippApp {
                     self.state.dirty = true;
                     true
                 }
-                AppCommand::MoveAudioEffectKeyframe { clip_id, effect_index, param_name, keyframe_index, new_time_secs, new_value } => {
-                    let key = format!("{}:{}", effect_index, param_name);
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
-                                if let Some(kf) = keyframes.get_mut(*keyframe_index) {
-                                    kf.time_secs = *new_time_secs;
-                                    kf.value = *new_value;
-                                }
-                                keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
-                            }
-                            break;
-                        }
-                    }
+                AppCommand::MoveAudioEffectKeyframe { .. } => {
+                    audio_effect_key_write(&mut self.state, cmd);
                     self.sync_sequence_to_engine();
                     let _ = self.cmd_tx.send(AppCommand::SequenceUpdated);
                     self.state.dirty = true;
@@ -214,19 +202,8 @@ impl KlippApp {
                     self.state.dirty = true;
                     true
                 }
-                AppCommand::SetAudioEffectKeyframeTangent { clip_id, effect_index, param_name, keyframe_index, tangent_in, tangent_out } => {
-                    let key = format!("{}:{}", effect_index, param_name);
-                    for track in &mut self.state.sequences[self.state.active_sequence_idx].tracks {
-                        if let Some(clip) = track.find_clip_mut(*clip_id) {
-                            if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
-                                if let Some(kf) = keyframes.get_mut(*keyframe_index) {
-                                    if let Some(ti) = tangent_in { kf.tangent_in = *ti; }
-                                    if let Some(to) = tangent_out { kf.tangent_out = *to; }
-                                }
-                            }
-                            break;
-                        }
-                    }
+                AppCommand::SetAudioEffectKeyframeTangent { .. } => {
+                    audio_effect_key_write(&mut self.state, cmd);
                     // Tangent edits coalesce through the existing drag
                     // pipeline (BeginDrag / EndKeyframeDrag) so no
                     // separate history push here — matches the
@@ -532,4 +509,41 @@ pub(super) fn recalc_timeline_out_from_speed(clip: &mut klipp_timeline::Clip) {
     );
     let new_duration = klipp_core::RationalTime::from_secs_f64(new_dur_secs, rate);
     clip.timeline_out = clip.timeline_in + new_duration;
+}
+
+/// A sound effect key moved, or its tangents set, on the clip the command
+/// names: the keys' write alone, which records no step (the drag that
+/// holds it does). Shared by the app's handlers and the tests that drive
+/// the timeline and the curve editor (#1990).
+pub(super) fn audio_effect_key_write(state: &mut crate::state::AppState, cmd: &AppCommand) -> bool {
+    let (clip_id, effect_index, param_name, keyframe_index) = match cmd {
+        AppCommand::MoveAudioEffectKeyframe { clip_id, effect_index, param_name, keyframe_index, .. }
+        | AppCommand::SetAudioEffectKeyframeTangent { clip_id, effect_index, param_name, keyframe_index, .. } => (clip_id, effect_index, param_name, keyframe_index),
+        _ => return false,
+    };
+    let key = format!("{}:{}", effect_index, param_name);
+    for track in &mut state.sequences[state.active_sequence_idx].tracks {
+        if let Some(clip) = track.find_clip_mut(*clip_id) {
+            if let Some(keyframes) = clip.audio_effect_keyframes.get_mut(&key) {
+                match cmd {
+                    AppCommand::MoveAudioEffectKeyframe { new_time_secs, new_value, .. } => {
+                        if let Some(kf) = keyframes.get_mut(*keyframe_index) {
+                            kf.time_secs = *new_time_secs;
+                            kf.value = *new_value;
+                        }
+                        keyframes.sort_by(|a, b| a.time_secs.partial_cmp(&b.time_secs).unwrap_or(std::cmp::Ordering::Equal));
+                    }
+                    AppCommand::SetAudioEffectKeyframeTangent { tangent_in, tangent_out, .. } => {
+                        if let Some(kf) = keyframes.get_mut(*keyframe_index) {
+                            if let Some(ti) = tangent_in { kf.tangent_in = *ti; }
+                            if let Some(to) = tangent_out { kf.tangent_out = *to; }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            return true;
+        }
+    }
+    true
 }

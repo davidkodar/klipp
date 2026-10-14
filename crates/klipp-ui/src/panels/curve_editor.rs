@@ -1279,7 +1279,7 @@ impl CurveEditorPanel {
                 }
                 // A clip lane's Bezier handle dragged is one step too, as
                 // its key is.
-                if found_handle && matches!(self.param, CurveParam::Video(_) | CurveParam::Audio(_)) {
+                if found_handle && matches!(self.param, CurveParam::Video(_) | CurveParam::Audio(_) | CurveParam::AudioEffect(_)) {
                     cmds.push(AppCommand::BeginKeyframeDrag { key: lane_drag_key(clip_id, &self.param), clip_id });
                 }
                 // If no handle, check for diamond hit
@@ -1313,7 +1313,7 @@ impl CurveEditorPanel {
                                 }
                                 // A clip lane's key too, as the timeline's
                                 // lanes bracket theirs (#1424).
-                                if matches!(self.param, CurveParam::Video(_) | CurveParam::Audio(_)) {
+                                if matches!(self.param, CurveParam::Video(_) | CurveParam::Audio(_) | CurveParam::AudioEffect(_)) {
                                     cmds.push(AppCommand::BeginKeyframeDrag { key: lane_drag_key(clip_id, &self.param), clip_id });
                                 }
                                 let found = state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();
@@ -1432,10 +1432,17 @@ impl CurveEditorPanel {
                                         });
                                         moved_title_index = Some(keyframes.iter().enumerate().filter(|(i, k)| *i != kf_idx && (k.time_secs < new_t || (k.time_secs == new_t && *i < kf_idx))).count());
                                     }
+                                    // A sound effect's key (#1990), its place in
+                                    // time order followed as it passes another.
+                                    CurveParam::AudioEffect(_) => {
+                                        if let KeyframeParamKind::AudioEffect { effect_index, param_name } = self.param_to_kind() {
+                                            cmds.push(AppCommand::MoveAudioEffectKeyframe { clip_id, effect_index, param_name, keyframe_index: kf_idx, new_time_secs: new_t, new_value: new_v });
+                                            moved_title_index = Some(keyframes.iter().enumerate().filter(|(i, k)| *i != kf_idx && (k.time_secs < new_t || (k.time_secs == new_t && *i < kf_idx))).count());
+                                        }
+                                    }
                                     CurveParam::Speed
-                                    | CurveParam::AudioEffect(_)
                                     | CurveParam::Camera(_) => {
-                                        // Speed/effect keyframe move not yet wired to commands
+                                        // Speed keyframe move not yet wired to commands
                                     }
                                 }
                             }
@@ -1470,9 +1477,13 @@ impl CurveEditorPanel {
                                         });
                                     }
                                     CurveParam::Title { object_id, param } => cmds.push(param.tangent(clip_id, *object_id, kf_idx, tangent_in, tangent_out)),
+                                    CurveParam::AudioEffect(_) => {
+                                        if let KeyframeParamKind::AudioEffect { effect_index, param_name } = self.param_to_kind() {
+                                            cmds.push(AppCommand::SetAudioEffectKeyframeTangent { clip_id, effect_index, param_name, keyframe_index: kf_idx, tangent_in, tangent_out });
+                                        }
+                                    }
                                     CurveParam::Speed
                                     | CurveParam::Node { .. }
-                                    | CurveParam::AudioEffect(_)
                                     | CurveParam::Camera(_)
                                     | CurveParam::Mask { .. } => {
                                         // Tangent editing not yet wired for speed/effects
@@ -1496,7 +1507,7 @@ impl CurveEditorPanel {
             if let (Some(CurveDrag { handle: None, .. }), CurveParam::Mask { .. }) = (&self.drag, &self.param) {
                 cmds.push(AppCommand::EndNodeParamEdit { clip_id });
             }
-            if let (Some(_), CurveParam::Video(_) | CurveParam::Audio(_)) = (&self.drag, &self.param) {
+            if let (Some(_), CurveParam::Video(_) | CurveParam::Audio(_) | CurveParam::AudioEffect(_)) = (&self.drag, &self.param) {
                 cmds.push(AppCommand::EndKeyframeDrag { key: lane_drag_key(clip_id, &self.param), clip_id });
             }
             self.drag = None;
