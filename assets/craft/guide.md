@@ -685,6 +685,11 @@ exist until the plan runs.
   `shutter_deg` is the open shutter's share of a frame (180 is the film
   look, 360 a full frame, 0 off); `samples` defaults to 8, and higher
   values are smoother and slower.
+- `connector {at, secs, from: [x, y], to: [x, y], color?, stroke_width?, reveal_secs?, track?}`:
+  a line between two points of the frame (fractions, -1 to 2), as a
+  title with no words: drawn on from `from` over `reveal_secs` (at once
+  when left out), held `secs`, `color` `#rrggbb` (white), `stroke_width`
+  in pixels of a 1080 frame (6). An edit plan's scene layers make these.
 - `vector_path {clip_id, object_id?, path | shape, color?, stroke_width?, x?, y?, w?, h?}`:
   add or replace a title's editable path layer. `shape` is a ready-made
   one instead of a `path`: `"ellipse"`, `"triangle"`, `"arrow"` (pointing

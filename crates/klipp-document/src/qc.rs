@@ -1003,7 +1003,7 @@ mod tests {
     fn only_the_built_montage_relaxes_read_time_and_counts_title_features() {
         use klipp_timeline::{Brief, EditPlan, Feature, PlanSegment, PlanTitle};
         let (mut seq, pool, screen) = screencast(&[(5.0, 5.85, 0.0), (5.85, 6.7, 20.0)]);
-        let segment = |source, section: &str, title: &str| PlanSegment { media_id: screen, source_in_secs: source, source_out_secs: source + 0.85, section: section.into(), title: Some(PlanTitle { text: title.into(), ..Default::default() }), feature: String::new(), note: String::new(), with_audio: false, transition: None, sfx: None, zoom: None, placement: None, background: None };
+        let segment = |source, section: &str, title: &str| PlanSegment { media_id: screen, source_in_secs: source, source_out_secs: source + 0.85, section: section.into(), title: Some(PlanTitle { text: title.into(), ..Default::default() }), feature: String::new(), note: String::new(), with_audio: false, transition: None, sfx: None, zoom: None, placement: None, background: None, layers: Vec::new() };
         seq.edit_plan = Some(EditPlan { segments: vec![segment(0.0, "montage", "Search"), segment(20.0, "body", "Body")], approved: true, ..Default::default() });
         seq.brief = Some(Brief { features: vec![Feature { title: "Search".into(), rank: 1, ..Default::default() }], ..Default::default() });
         let mut text = Track::new("T", TrackKind::Text);
@@ -1097,7 +1097,7 @@ mod tests {
         seq.brief = Some(Brief { features: vec![Feature { title: "Timeline".into(), rank: 1, ..Default::default() }, Feature { title: "Grade".into(), rank: 2, ..Default::default() }], ..Default::default() });
         let got = rules(&check(&seq, &pool, &Screen(screen)));
         assert!(got.contains(&"no_edit_plan"), "{got:?}");
-        let seg = |feature: &str, a: f64, b: f64| PlanSegment { feature: feature.into(), media_id: screen, source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, sfx: None, zoom: None, placement: None, background: None, section: String::new() };
+        let seg = |feature: &str, a: f64, b: f64| PlanSegment { feature: feature.into(), media_id: screen, source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, sfx: None, zoom: None, placement: None, background: None, section: String::new(), layers: Vec::new() };
         // Timeline gets a second, Grade nothing; the plan is approved and not built.
         seq.edit_plan = Some(EditPlan { segments: vec![seg("Timeline", 40.0, 41.0)], approved: true, ..Default::default() });
         let r = check(&seq, &pool, &Screen(screen));

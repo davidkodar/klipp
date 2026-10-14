@@ -111,7 +111,7 @@ pub use clip_kind::{
     TitleBackground, TitleData, TitleObject, TitleObjectContent, TitleObjectId, TitlePosition,
     TitleShadow, GeneratorData, ImageFit, ImageLayer};
 pub use brief::{Brief, CastMember, Feature, MotionAnchorSpec, ShadowSpec, TitleMotionSpec, TypeStyle};
-pub use edit_plan::{EditPlan, PlanBackground, PlanMusic, PlanPlacement, PlanSegment, PlanSfx, PlanTitle, PlanZoom};
+pub use edit_plan::{EditPlan, LayerMotion, PlanBackground, PlanLayer, PlanMusic, PlanPlacement, PlanSegment, PlanSfx, PlanTitle, PlanZoom, LAYER_MOTIONS};
 pub use marker::Marker;
 pub use klipp_core::MulticamSound;
 pub use klipp_core::fill_gradient::{GradientKind, GradientStop, MAX_GRADIENT_STOPS};

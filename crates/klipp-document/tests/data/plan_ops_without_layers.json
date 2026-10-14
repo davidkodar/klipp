@@ -1,0 +1,337 @@
+[
+  {
+    "op": "place",
+    "media_id": "00000000-0000-0000-0000-000000000001",
+    "track": 0,
+    "at": {
+      "track_end": 0
+    },
+    "source_in": 0.0,
+    "source_out": 3.0,
+    "insert": false,
+    "with_audio": false
+  },
+  {
+    "op": "place",
+    "media_id": "00000000-0000-0000-0000-000000000001",
+    "track": 0,
+    "at": {
+      "track_end": 0
+    },
+    "source_in": 10.0,
+    "source_out": 16.0,
+    "insert": false,
+    "with_audio": true
+  },
+  {
+    "op": "zoom",
+    "clip_id": {
+      "track": 0,
+      "secs": 6.0
+    },
+    "from": 1.0,
+    "to": 1.15,
+    "x": 0.2,
+    "y": 0.1,
+    "ease": "linear"
+  },
+  {
+    "op": "place",
+    "media_id": "00000000-0000-0000-0000-000000000001",
+    "track": 0,
+    "at": {
+      "track_end": 0
+    },
+    "source_in": 30.0,
+    "source_out": 34.0,
+    "insert": false,
+    "with_audio": false
+  },
+  {
+    "op": "compose",
+    "clip_id": {
+      "track": 0,
+      "secs": 11.0
+    },
+    "poses": [
+      {
+        "secs": 0.0,
+        "x": 0.5,
+        "y": 0.5,
+        "width": 0.7,
+        "height": 0.7,
+        "rotation_deg": -3.0,
+        "opacity": 1.0,
+        "ease": "in_out",
+        "tilt_x_deg": null,
+        "tilt_y_deg": null
+      }
+    ]
+  },
+  {
+    "op": "transition",
+    "clip_id": {
+      "track": 0,
+      "secs": 6.0
+    },
+    "kind": "cross_dissolve",
+    "secs": 0.5,
+    "remove": false,
+    "pieces": null
+  },
+  {
+    "op": "add_track",
+    "kind": "audio",
+    "name": "Music"
+  },
+  {
+    "op": "place",
+    "media_id": "00000000-0000-0000-0000-000000000002",
+    "track": 2,
+    "at": {
+      "secs": 0.0
+    },
+    "source_in": 0.0,
+    "source_out": 13.0,
+    "insert": false,
+    "with_audio": true
+  },
+  {
+    "op": "role",
+    "clip_id": {
+      "track": 2,
+      "secs": 6.5
+    },
+    "role": "music"
+  },
+  {
+    "op": "audio",
+    "clip_id": {
+      "track": 2,
+      "secs": 6.5
+    },
+    "track": null,
+    "from": null,
+    "to": null,
+    "volume_db": null,
+    "gain_db": null,
+    "pan": null,
+    "fade_in": null,
+    "fade_out": 1.0
+  },
+  {
+    "op": "duck",
+    "clip_id": {
+      "track": 2,
+      "secs": 6.5
+    },
+    "by_db": 9.0,
+    "fade_secs": 0.5,
+    "bridge_secs": 2.0
+  },
+  {
+    "op": "add_track",
+    "kind": "audio",
+    "name": "SFX"
+  },
+  {
+    "op": "place",
+    "media_id": "00000000-0000-0000-0000-000000000003",
+    "track": 3,
+    "at": {
+      "secs": 3.5
+    },
+    "source_in": 0.0,
+    "source_out": 2.0,
+    "insert": false,
+    "with_audio": true
+  },
+  {
+    "op": "role",
+    "clip_id": {
+      "track": 3,
+      "secs": 4.5
+    },
+    "role": "sfx"
+  },
+  {
+    "op": "audio",
+    "clip_id": {
+      "track": 3,
+      "secs": 4.5
+    },
+    "track": null,
+    "from": null,
+    "to": null,
+    "volume_db": -6.0,
+    "gain_db": null,
+    "pan": null,
+    "fade_in": null,
+    "fade_out": null
+  },
+  {
+    "op": "add_track",
+    "kind": "text",
+    "name": "Titles"
+  },
+  {
+    "op": "title",
+    "text": "Klipp",
+    "at": {
+      "clip_start": {
+        "track": 1,
+        "secs": 1.5
+      }
+    },
+    "style": null,
+    "secs": 2.0,
+    "track": "text",
+    "x": 0.5,
+    "y": 0.5,
+    "size": 84.0,
+    "color": "#ffffff",
+    "font": null,
+    "bold": true,
+    "align": null,
+    "backing": null,
+    "backing_color": null,
+    "full_frame": "#101418",
+    "outline": null,
+    "outline_color": null,
+    "glow": null,
+    "glow_color": null,
+    "gradient": null,
+    "animate": "fade",
+    "animate_secs": 0.4,
+    "stagger": null,
+    "loop": null,
+    "glitch": null,
+    "chromatic": null,
+    "roll_shape": null,
+    "edge_fade": null,
+    "over_faces": false,
+    "shadow": null
+  },
+  {
+    "op": "title",
+    "text": "Search",
+    "at": {
+      "clip_start": {
+        "track": 1,
+        "secs": 6.0
+      }
+    },
+    "style": null,
+    "secs": 3.0,
+    "track": "text",
+    "x": 0.5,
+    "y": 0.1,
+    "size": 72.0,
+    "color": null,
+    "font": null,
+    "bold": true,
+    "align": null,
+    "backing": 0.45,
+    "backing_color": null,
+    "full_frame": null,
+    "outline": null,
+    "outline_color": null,
+    "glow": null,
+    "glow_color": null,
+    "gradient": null,
+    "animate": null,
+    "enter": {
+      "kind": "rise",
+      "duration_secs": null,
+      "delay_secs": null,
+      "easing": null,
+      "stagger": null,
+      "stagger_secs": null,
+      "distance": null,
+      "scale": null,
+      "anchor": null
+    },
+    "animate_secs": null,
+    "stagger": null,
+    "loop": null,
+    "glitch": null,
+    "chromatic": null,
+    "roll_shape": null,
+    "edge_fade": null,
+    "over_faces": false,
+    "shadow": null
+  },
+  {
+    "op": "title",
+    "text": "Try it",
+    "at": {
+      "clip_start": {
+        "track": 1,
+        "secs": 11.0
+      }
+    },
+    "style": null,
+    "secs": 4.0,
+    "track": "text",
+    "x": 0.5,
+    "y": 0.85,
+    "size": 40.0,
+    "color": null,
+    "font": null,
+    "bold": false,
+    "align": null,
+    "backing": 0.6,
+    "backing_color": null,
+    "full_frame": null,
+    "outline": null,
+    "outline_color": null,
+    "glow": null,
+    "glow_color": null,
+    "gradient": null,
+    "animate": "fade",
+    "animate_secs": 0.3,
+    "stagger": null,
+    "loop": null,
+    "glitch": null,
+    "chromatic": null,
+    "roll_shape": null,
+    "edge_fade": null,
+    "over_faces": false,
+    "shadow": null
+  },
+  {
+    "op": "generator",
+    "data": {
+      "Gradient": {
+        "top": [
+          16,
+          24,
+          32,
+          255
+        ],
+        "bottom": [
+          48,
+          64,
+          80,
+          255
+        ],
+        "angle_deg": 0.0,
+        "four_point": null
+      }
+    },
+    "at": {
+      "clip_start": {
+        "track": 1,
+        "secs": 11.0
+      }
+    },
+    "secs": null,
+    "end": {
+      "clip_end": {
+        "track": 1,
+        "secs": 11.0
+      }
+    },
+    "track": null
+  }
+]

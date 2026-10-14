@@ -173,6 +173,122 @@ pub struct PlanBackground {
     pub colors: Vec<String>,
 }
 
+/// How a scene's card comes in or goes (#1926): `kind` is fade, rise,
+/// drop, slide_left (in from the right), slide_right (in from the left)
+/// or scale_up, over `secs` (0.5 when left out). An exit leaves the way
+/// its kind came in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayerMotion {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secs: Option<f64>,
+    /// How the move eases; in and out when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ease: Option<klipp_core::keyframe::Ease>,
+}
+
+/// The kinds a card's motion takes.
+pub const LAYER_MOTIONS: &[&str] = &["fade", "rise", "drop", "slide_left", "slide_right", "scale_up"];
+
+impl LayerMotion {
+    /// How long it takes.
+    pub fn duration_secs(&self) -> f64 {
+        self.secs.unwrap_or(0.5)
+    }
+}
+
+/// One layer of a scene (#1926): something over a segment's picture
+/// with its own start and length inside the segment. `at_secs` is
+/// seconds into the segment; a layer later in the list sits above an
+/// earlier one it overlaps.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PlanLayer {
+    /// A card: a still, or a stretch of a file from `source_in_secs`,
+    /// placed in the frame and moving in and out.
+    Media {
+        media_id: MediaId,
+        #[serde(default)]
+        at_secs: f64,
+        /// How long it holds; to the segment's end when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        secs: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_in_secs: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        placement: Option<PlanPlacement>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enter: Option<LayerMotion>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit: Option<LayerMotion>,
+    },
+    /// A title, as a segment's takes it, starting `at_secs` in.
+    Title {
+        #[serde(default)]
+        at_secs: f64,
+        title: Box<PlanTitle>,
+    },
+    /// A straight line from `from` to `to` (fractions of the frame),
+    /// drawn on from `from` over `reveal_secs` (0.6 when left out).
+    Connector {
+        from: [f32; 2],
+        to: [f32; 2],
+        #[serde(default)]
+        at_secs: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        secs: Option<f64>,
+        /// `#rrggbb`; white when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        color: Option<String>,
+        /// The line's width in pixels of a 1080 frame; 6 when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stroke_width: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reveal_secs: Option<f64>,
+    },
+}
+
+impl PlanLayer {
+    /// Seconds into its segment it starts.
+    pub fn at_secs(&self) -> f64 {
+        match self {
+            Self::Media { at_secs, .. } | Self::Title { at_secs, .. } | Self::Connector { at_secs, .. } => *at_secs,
+        }
+    }
+
+    /// Where it starts and ends, in seconds into a segment
+    /// `segment_secs` long: a title holds as a segment's does, capped at
+    /// the segment's end; anything else to the end when `secs` is left out.
+    pub fn span(&self, segment_secs: f64) -> (f64, f64) {
+        let at = self.at_secs();
+        let rest = (segment_secs - at).max(0.0);
+        let held = match self {
+            Self::Title { title, .. } => title.duration_secs(rest),
+            Self::Media { secs, .. } | Self::Connector { secs, .. } => secs.unwrap_or(rest),
+        };
+        (at, at + held)
+    }
+
+    /// What it is, in a few words, for the plan's text.
+    fn describe(&self) -> String {
+        match self {
+            Self::Media { media_id, placement, enter, exit, .. } => {
+                let mut out = format!("card {}", media_id.0);
+                if let Some(p) = placement {
+                    out.push_str(&format!(" at {:.2},{:.2} sized {:.2}", p.x, p.y, p.width));
+                }
+                let motion = |m: &LayerMotion, way: &str| format!(", {} {way} {:.2} s", m.kind, m.duration_secs());
+                if let Some(m) = enter { out.push_str(&motion(m, "in")); }
+                if let Some(m) = exit { out.push_str(&motion(m, "out")); }
+                out
+            }
+            Self::Title { title, .. } => format!("title \"{}\"", title.text),
+            Self::Connector { from, to, reveal_secs, .. } => format!("connector {:.2},{:.2} to {:.2},{:.2}, drawn on over {:.2} s", from[0], from[1], to[0], to[1], reveal_secs.unwrap_or(0.6)),
+        }
+    }
+}
+
 /// One shot of the cut, in order.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlanSegment {
@@ -215,11 +331,32 @@ pub struct PlanSegment {
     /// purpose, and are not held long enough to read one by one.
     #[serde(default)]
     pub section: String,
+    /// What goes over the picture, each with its own timing: a scene
+    /// (#1926). The picture is the scene's base and sets its length.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<PlanLayer>,
 }
 
 impl PlanSegment {
     pub fn duration_secs(&self) -> f64 {
         (self.source_out_secs - self.source_in_secs).max(0.0)
+    }
+
+    /// Where each pair of its layers that overlap does, in seconds into
+    /// the segment: the layers by their place in the list, from 1.
+    pub fn layer_overlaps(&self) -> Vec<(usize, usize, f64, f64)> {
+        let d = self.duration_secs();
+        let spans: Vec<_> = self.layers.iter().map(|l| l.span(d)).collect();
+        let mut out = Vec::new();
+        for (a, sa) in spans.iter().enumerate() {
+            for (b, sb) in spans.iter().enumerate().skip(a + 1) {
+                let (from, to) = (sa.0.max(sb.0), sa.1.min(sb.1));
+                if to - from > 1e-6 {
+                    out.push((a + 1, b + 1, from, to));
+                }
+            }
+        }
+        out
     }
 }
 
@@ -351,6 +488,17 @@ impl EditPlan {
             if let Some(x) = &s.sfx {
                 out.push(format!("      sfx {} at +{:.2} s", x.media_id.0, x.at_secs.unwrap_or(0.0)));
             }
+            // A scene's layers where the timeline will have them, and
+            // where they overlap (#1926).
+            for (k, layer) in s.layers.iter().enumerate() {
+                let (from, to) = layer.span(d);
+                out.push(format!("      layer {} {}-{}  {}", k + 1, clock(at + from), clock(at + to), layer.describe()));
+            }
+            let overlaps = s.layer_overlaps();
+            if !overlaps.is_empty() {
+                let list: Vec<String> = overlaps.iter().map(|(a, b, from, to)| format!("{a}-{b} {}-{}", clock(at + from), clock(at + to))).collect();
+                out.push(format!("      overlap: layers {}", list.join(", ")));
+            }
             at += d;
         }
         if let Some(m) = &self.music {
@@ -386,7 +534,7 @@ mod tests {
     use super::*;
 
     fn seg(a: f64, b: f64) -> PlanSegment {
-        PlanSegment { feature: String::new(), media_id: MediaId::new(), source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, sfx: None, zoom: None, placement: None, background: None, section: String::new() }
+        PlanSegment { feature: String::new(), media_id: MediaId::new(), source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, sfx: None, zoom: None, placement: None, background: None, section: String::new(), layers: Vec::new() }
     }
 
     #[test]
