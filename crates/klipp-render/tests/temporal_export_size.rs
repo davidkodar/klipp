@@ -141,21 +141,30 @@ fn saved_temporal_clip_exports_at_another_size_and_both_media_edges() {
 /// to average away. The neighbours used to be decoded through 8-bit
 /// swscale with BT.601, so on a BT.709 source they were another colour
 /// and the "denoised" still came out shifted toward it (#1995).
-///
-/// 4:4:4, so the neighbour reader and export's software decode have the
-/// same chroma to start from; at a 4:2:0 edge the two rebuild chroma
-/// differently, which reading the neighbours from export's own stream
-/// settles (#1988).
 #[test]
 fn a_denoised_still_comes_out_unchanged() {
+    denoised_still_unchanged("yuv444p");
+}
+
+/// [`a_denoised_still_comes_out_unchanged`] from 4:2:0. The neighbour
+/// reader and export's software decode rebuild 4:2:0 chroma differently
+/// at an edge (#1995), 171 levels apart on this picture; export takes a
+/// forward clip's neighbours from its own stream (#1988), so they are
+/// the frame itself.
+#[test]
+fn a_denoised_420_still_comes_out_unchanged() {
+    denoised_still_unchanged("yuv420p");
+}
+
+fn denoised_still_unchanged(pix_fmt: &str) {
     let root = std::env::temp_dir().join(format!("klipp-temporal-still-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     let media = root.join("still.mkv");
     let made = std::process::Command::new("ffmpeg")
         .args(["-nostdin", "-v", "error", "-f", "lavfi", "-i",
-            "testsrc2=s=320x180:r=24,trim=end_frame=1,loop=loop=11:size=1,format=rgb24,\
-             scale=out_color_matrix=bt709:out_range=limited,format=yuv444p,\
-             setparams=color_primaries=bt709:color_trc=bt709",
+            &format!("testsrc2=s=320x180:r=24,trim=end_frame=1,loop=loop=11:size=1,format=rgb24,\
+             scale=out_color_matrix=bt709:out_range=limited,format={pix_fmt},\
+             setparams=color_primaries=bt709:color_trc=bt709"),
             "-frames:v", "12", "-colorspace", "bt709", "-color_range", "tv", "-c:v", "ffv1"])
         .arg(&media).output().expect("FFmpeg is required for the still regression");
     assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
@@ -210,12 +219,12 @@ fn a_denoised_still_comes_out_unchanged() {
         for route in ["cpu", "gpu"] {
             if at("denoised", route).is_file() {
                 let (off, _) = differ(&at("denoised", route), &still).unwrap();
-                assert!(off <= 1, "frame {frame}, {route}: the denoised still is {off} levels off the still");
+                assert!(off <= 1, "{pix_fmt} frame {frame}, {route}: the denoised still is {off} levels off the still");
             }
         }
         let (off, _) = differ(&at("denoised", "export"), &at("denoised", "cpu"))
             .unwrap_or_else(|e| panic!("frame {frame}: {e}; kept at {}", root.display()));
-        assert!(off <= 1, "frame {frame}: the denoised still's export is {off} levels off its render");
+        assert!(off <= 1, "{pix_fmt} frame {frame}: the denoised still's export is {off} levels off its render");
     }
     std::fs::remove_dir_all(root).unwrap();
 }
