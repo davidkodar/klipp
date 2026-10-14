@@ -79,7 +79,8 @@ pub(crate) fn draw(
         let d = 4.5;
         let diamond = vec![*p + egui::vec2(0.0, -d), *p + egui::vec2(d, 0.0), *p + egui::vec2(0.0, d), *p + egui::vec2(-d, 0.0)];
         painter.add(egui::Shape::convex_polygon(diamond.clone(), under, egui::Stroke::NONE));
-        let fill = if selected == Some(i) { theme.text_primary } else { line };
+        let marked = keys.get(i).is_some_and(|k| crate::key_selection::marked(state, clip.id, &KeyframeParamKind::Mask(track.clone()), k.time_secs));
+        let fill = if selected == Some(i) || marked { theme.text_primary } else { line };
         painter.add(egui::Shape::convex_polygon(diamond.iter().map(|q| *p + (*q - *p) * 0.75).collect(), fill, egui::Stroke::NONE));
     }
 
@@ -97,16 +98,38 @@ pub(crate) fn draw(
         return false;
     }
     let (pressed, released, secondary, down) = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.pointer.secondary_clicked(), i.pointer.primary_down()));
+    let (shift, clicked, decided, press_at) = ui.input(|i| (i.modifiers.shift, i.pointer.primary_clicked(), i.pointer.is_decidedly_dragging(), i.pointer.press_origin()));
     let hit = pointer_pos.and_then(|p| pts.iter().position(|q| q.distance(p) <= HIT_PX));
+    let kind = KeyframeParamKind::Mask(track.clone());
+    // Whether key `i` is one of several selected: a press on it may begin
+    // their drag, so it leaves the selection be until a click (#1958).
+    let in_several = |state: &AppState, i: usize| keys.get(i).is_some_and(|k| crate::key_selection::marked(state, clip.id, &kind, k.time_secs));
 
-    // A press: the pill, or a key (selected, and its drag begun).
+    // A press: the pill, or a key (selected, and its drag begun). With
+    // Shift, or on a key of several selected, the click or drag decides.
     if pressed {
         if let Some(p) = pointer_pos {
             if pill.contains(p) && clip_rect.width() > 30.0 {
                 cycle = true;
-            } else if let Some(i) = hit {
+            } else if let Some(i) = hit.filter(|i| !shift && !in_several(state, *i)) {
                 state.selected_keyframe = Some(SelectedKeyframe { clip_id: clip.id, param_kind: KeyframeParamKind::Mask(track.clone()), keyframe_index: i });
                 state.mask_lane_drag = Some((clip.id, track.clone(), keys[i].time_secs, false));
+            }
+        }
+    }
+    // A click with Shift adds the key or takes it out; one on a key of
+    // several selected selects it alone.
+    if clicked && state.multi_key_drag.is_none() {
+        if let Some(i) = hit.filter(|i| shift || in_several(state, *i)) {
+            crate::key_selection::lane_click(state, clip.id, kind.clone(), i, shift);
+        }
+    }
+    // A key of several selected dragged: every one moves with it, in time.
+    if decided && down && state.multi_key_drag.is_none() && state.mask_lane_drag.is_none() && !shift {
+        if let Some(origin) = press_at {
+            if let Some(i) = pts.iter().position(|q| q.distance(origin) <= HIT_PX).filter(|i| in_several(state, *i)) {
+                let pps = clip_rect.width() / duration as f32;
+                cmds.extend(crate::key_selection::lane_drag_begin(state, clip.id, &kind, i, origin.x, pps).unwrap_or_default());
             }
         }
     }

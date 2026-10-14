@@ -274,6 +274,11 @@ pub struct CurveEditorPanel {
     drag: Option<CurveDrag>,
     /// Auto-fit on first display
     needs_fit: bool,
+    /// Where a drag of the selected keys began, in time and value (#1958).
+    multi_from: Option<(f64, f32)>,
+    /// A box being drawn on empty graph, where it began, and whether
+    /// Shift adds what it holds to the selection (#1958).
+    box_from: Option<(egui::Pos2, bool)>,
     /// The last frame's graph, for a test to find a key on screen: its
     /// rect and the value range it maps.
     #[cfg(test)]
@@ -290,6 +295,8 @@ impl Default for CurveEditorPanel {
             selected_clip: None,
             drag: None,
             needs_fit: true,
+            multi_from: None,
+            box_from: None,
             #[cfg(test)]
             last_view: None,
         }
@@ -421,8 +428,16 @@ impl CurveEditorPanel {
                 // Parameter selector
                 let previous_param = self.param.clone();
                 self.param_selector(ui, theme, state);
+                // How many keys are selected, so several never go unseen
+                // (#1958).
+                if state.key_selection.len() > 1 && state.key_selection.clip_id == state.selected_clip {
+                    ui.label(egui::RichText::new(format!("{} keys", state.key_selection.len())).size(crate::theme::type_scale::CAPTION).color(theme.text_accent));
+                }
                 if self.param != previous_param {
-                    state.selected_keyframe = None;
+                    // A selection of several keys stays across tracks.
+                    if !crate::key_selection::several(state) {
+                        state.selected_keyframe = None;
+                    }
                     state.keyframe_context_menu = None;
                     self.drag = None;
                     self.needs_fit = true;
@@ -1173,7 +1188,8 @@ impl CurveEditorPanel {
             }
         });
 
-        self.draw_diamonds(painter, graph_rect, keyframes, selected_kf_idx, clip_duration, v_min, v_range, theme.accent, theme);
+        let marked = crate::key_selection::marked_indices(state, clip_id, &self.param_to_kind(), keyframes);
+        self.draw_diamonds(painter, graph_rect, keyframes, selected_kf_idx, &marked, clip_duration, v_min, v_range, theme.accent, theme);
 
         // ── Interaction: click to select, drag to move ──
         let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
@@ -1191,14 +1207,17 @@ impl CurveEditorPanel {
                         break;
                     }
                 }
-                if let Some(idx) = clicked_kf {
-                    state.selected_keyframe = Some(SelectedKeyframe {
-                        clip_id,
-                        param_kind: self.param_to_kind(),
-                        keyframe_index: idx,
-                    });
-                } else {
-                    state.selected_keyframe = None;
+                // Shift adds the key or takes it out; a plain click selects
+                // it alone, or, on empty graph, nothing (#1958).
+                let shift = ui.ctx().input(|i| i.modifiers.shift);
+                let clip = state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();
+                match (clicked_kf, clip) {
+                    (Some(idx), Some(clip)) => crate::key_selection::click(state, &clip, &self.param_to_kind(), idx, shift),
+                    (Some(idx), None) => {
+                        state.selected_keyframe = Some(SelectedKeyframe { clip_id, param_kind: self.param_to_kind(), keyframe_index: idx });
+                    }
+                    (None, _) if !shift => crate::key_selection::clear(state),
+                    (None, _) => {}
                 }
             }
         }
@@ -1230,10 +1249,14 @@ impl CurveEditorPanel {
                 let mut found_handle = false;
                 if let Some(sel_idx) = selected_kf_idx {
                     if let Some(kf) = keyframes.get(sel_idx) {
+                        // Only a handle drawn is taken: a linear key's
+                        // unset handles sit on the key itself, which a
+                        // press there means to move (#1958).
+                        let bezier = kf.interpolation == klipp_core::keyframe::Interpolation::Bezier;
                         // Check in-handle
                         let hx = self.time_to_x(kf.time_secs + kf.tangent_in.0, graph_rect, clip_duration);
                         let hy = self.value_to_y(kf.value + kf.tangent_in.1, graph_rect, v_min, v_range);
-                        if ((pos.x - hx).powi(2) + (pos.y - hy).powi(2)).sqrt() < 8.0 {
+                        if (bezier || kf.tangent_in != (0.0, 0.0)) && ((pos.x - hx).powi(2) + (pos.y - hy).powi(2)).sqrt() < 8.0 {
                             self.drag = Some(CurveDrag {
                                 keyframe_index: sel_idx,
                                 handle: Some(false), // in
@@ -1244,7 +1267,7 @@ impl CurveEditorPanel {
                             // Check out-handle
                             let hx = self.time_to_x(kf.time_secs + kf.tangent_out.0, graph_rect, clip_duration);
                             let hy = self.value_to_y(kf.value + kf.tangent_out.1, graph_rect, v_min, v_range);
-                            if ((pos.x - hx).powi(2) + (pos.y - hy).powi(2)).sqrt() < 8.0 {
+                            if (bezier || kf.tangent_out != (0.0, 0.0)) && ((pos.x - hx).powi(2) + (pos.y - hy).powi(2)).sqrt() < 8.0 {
                                 self.drag = Some(CurveDrag {
                                     keyframe_index: sel_idx,
                                     handle: Some(true), // out
@@ -1268,6 +1291,14 @@ impl CurveEditorPanel {
                             let y = self.value_to_y(kf.value, graph_rect, v_min, v_range);
                             let dist = ((pos.x - x).powi(2) + (pos.y - y).powi(2)).sqrt();
                             if dist < 10.0 {
+                                // A key of several selected: every one
+                                // moves with it, one step (#1958).
+                                let clip = state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();
+                                if let Some(clip) = clip.filter(|_| crate::key_selection::several(state) && state.key_selection.holds(clip_id, &self.param_to_kind(), kf.time_secs)) {
+                                    cmds.extend(crate::key_selection::begin_drag(state, &clip, Some(self.param_to_kind())));
+                                    self.multi_from = Some((self.x_to_time(pos.x, graph_rect, clip_duration), self.y_to_value(pos.y, graph_rect, v_min, v_range)));
+                                    break;
+                                }
                                 self.drag = Some(CurveDrag {
                                     keyframe_index: i,
                                     handle: None,
@@ -1285,16 +1316,58 @@ impl CurveEditorPanel {
                                 if matches!(self.param, CurveParam::Video(_) | CurveParam::Audio(_)) {
                                     cmds.push(AppCommand::BeginKeyframeDrag { key: lane_drag_key(clip_id, &self.param), clip_id });
                                 }
-                                state.selected_keyframe = Some(SelectedKeyframe {
-                                    clip_id,
-                                    param_kind: self.param_to_kind(),
-                                    keyframe_index: i,
-                                });
+                                let found = state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();
+                    if let Some(clip) = found {
+                                    crate::key_selection::click(state, &clip, &self.param_to_kind(), i, false);
+                                } else {
+                                    state.selected_keyframe = Some(SelectedKeyframe { clip_id, param_kind: self.param_to_kind(), keyframe_index: i });
+                                }
                                 break;
                             }
                         }
+                        // On empty graph: a box, selecting the keys it
+                        // holds when let go (#1958).
+                        if self.drag.is_none() && self.multi_from.is_none() {
+                            self.box_from = Some((pos, ui.ctx().input(|i| i.modifiers.shift)));
+                        }
                     }
                 }
+            }
+        }
+
+        // The selected keys dragged together (#1958).
+        if let Some((t0, v0)) = self.multi_from {
+            if response.dragged_by(egui::PointerButton::Primary) {
+                if let Some(pos) = pointer_pos {
+                    let dt = self.x_to_time(pos.x, graph_rect, clip_duration) - t0;
+                    let dv = self.y_to_value(pos.y, graph_rect, v_min, v_range) - v0;
+                    let found = state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();
+                    if let Some(clip) = found {
+                        cmds.extend(crate::key_selection::drag_to(state, &clip, dt, dv));
+                    }
+                }
+            }
+            if response.drag_stopped() {
+                cmds.extend(crate::key_selection::end_drag(state));
+                self.multi_from = None;
+            }
+        }
+        // The box drawn, and on release, what it holds selected.
+        if let Some((from, add)) = self.box_from {
+            if let Some(pos) = pointer_pos {
+                let r = Rect::from_two_pos(from, pos);
+                painter.rect_filled(r, 0.0, theme.accent.gamma_multiply(0.12));
+                painter.rect_stroke(r, 0.0, Stroke::new(1.0_f32, theme.accent));
+                if response.drag_stopped() {
+                    let at = |p: egui::Pos2| (self.x_to_time(p.x, graph_rect, clip_duration), self.y_to_value(p.y, graph_rect, v_min, v_range));
+                    let found = state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == clip_id).cloned();
+                    if let Some(clip) = found {
+                        crate::key_selection::select_box(state, &clip, &self.param_to_kind(), at(from), at(pos), add);
+                    }
+                }
+            }
+            if response.drag_stopped() || !ui.ctx().input(|i| i.pointer.primary_down()) {
+                self.box_from = None;
             }
         }
 
@@ -1442,6 +1515,7 @@ impl CurveEditorPanel {
         graph_rect: &Rect,
         keyframes: &[Keyframe],
         selected_kf_idx: Option<usize>,
+        marked: &[usize],
         clip_duration: f64,
         v_min: f32,
         v_range: f32,
@@ -1484,7 +1558,8 @@ impl CurveEditorPanel {
             }
 
             // Draw diamond
-            let is_selected = Some(i) == selected_kf_idx;
+            // The primary key, or one of several selected (#1958).
+            let is_selected = Some(i) == selected_kf_idx || marked.contains(&i);
             let diamond_color = if is_selected {
                 theme.text_primary
             } else {
@@ -1530,7 +1605,7 @@ impl CurveEditorPanel {
             .selected_camera_key
             .filter(|k| k.param == param)
             .and_then(|k| camera_lane::index_at(keyframes, k.time_secs));
-        self.draw_diamonds(ui.painter(), graph_rect, keyframes, selected, duration, v_min, v_range, camera_lane::colour(param, theme), theme);
+        self.draw_diamonds(ui.painter(), graph_rect, keyframes, selected, &[], duration, v_min, v_range, camera_lane::colour(param, theme), theme);
 
         let pointer_pos = ui.ctx().input(|i| i.pointer.hover_pos());
         let at = |t: f64, v: f32| pos2(self.time_to_x(t, graph_rect, duration), self.value_to_y(v, graph_rect, v_min, v_range));
