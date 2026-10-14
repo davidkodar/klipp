@@ -370,6 +370,21 @@ pub(crate) fn respond(
             }
             let findings = klipp_color::measure::judge(&m, &look);
             let mut text = v["text"].as_str().unwrap_or("").to_string();
+            // A face read in the frame backs the skin line; without one
+            // it stays a colour reading (#1897).
+            // Read inside the faces, so warm stone beside them does not
+            // move it (#1897 review).
+            let regions: Vec<[f32; 4]> = m.faces.iter().filter(|f| f.readable()).map(|f| f.region).collect();
+            let read_faces = regions.len();
+            if let Some((pct, _)) = (read_faces > 0).then(|| skin_line_share(&data, width, height, &regions)).flatten() {
+                v["skin_on_line_pct"] = json!(pct);
+                let note = skin_colour_note(pct, read_faces);
+                if let Some(old) = v["skin"].as_str() {
+                    text = text.replace(&format!("skin: {old}"), &format!("skin: {note}"));
+                }
+                v["skin"] = json!(note);
+                v["skin_from"] = json!("faces");
+            }
             text.push_str(&format!("\nLab (D65): L* p1 {:.0} p50 {:.0} p99 {:.0}, contrast {:.0}, chroma mean {:.0}; neutrals a* {:.1} b* {:.1} ({}, {:.0}% of the frame)", m.l_p1, m.l_p50, m.l_p99, m.contrast_range, m.chroma_mean, m.cast_a, m.cast_b, if m.cast() < 3.0 { "neutral".to_string() } else { format!("cast toward {}", klipp_color::measure::cast_name(m.cast_a, m.cast_b)) }, m.neutral_pct));
             for (i, f) in m.faces.iter().enumerate() {
                 if f.readable() {

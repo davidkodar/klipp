@@ -181,13 +181,18 @@ pub fn color_faults(stats: &serde_json::Value, secs: f64) -> Vec<(f64, String, S
             out.push((secs, format!("saturation is high at {sat:.0}% — colours may be over-cooked"), "Bring saturation down, or use vibrance which protects skin".into()));
         }
     }
-    if let Some(note) = stats.get("skin").and_then(|s| s.as_str()) {
-        if note.contains("sit on") {
-            if let Some(pct) = note.split('%').next().and_then(|n| n.trim().parse::<f64>().ok()) {
-                if pct < 60.0 {
-                    out.push((secs, format!("only {pct:.0}% of skin tones sit on the skin-tone line"), "Nudge the white balance (temperature, tint) until faces land on the line".into()));
-                }
-            }
+    // Skin off the line is a white-balance fault only where there is
+    // skin: a reading of skin-coloured pixels with no face behind it is
+    // stone, sand, wood or leaves as often as people (#1897).
+    // Without a face the reading is said for what it is, colour only, and
+    // only when much of the frame is skin-coloured: a detector misses
+    // small, turned and back-lit faces, and a cast on them must still
+    // show (#1897 review).
+    if let Some(pct) = g(stats, "skin_on_line_pct").filter(|p| *p < 60.0) {
+        if stats.get("skin_from").and_then(|s| s.as_str()) == Some("faces") {
+            out.push((secs, format!("only {pct:.0}% of skin tones sit on the skin-tone line"), "Nudge the white balance (temperature, tint) until faces land on the line".into()));
+        } else if g(stats, "skin_coloured_pct").is_some_and(|s| s >= SKIN_COLOURED_NOTABLE_PCT) {
+            out.push((secs, format!("colour only, no face found: {pct:.0}% of the skin-coloured pixels sit on the skin-tone line"), "Check any skin in the shot by eye; stone, sand, wood and leaves are not skin and need nothing".into()));
         }
     }
     out
@@ -272,7 +277,6 @@ pub fn frame_stats(data: &[u8], width: u32, height: u32, secs: f64) -> serde_jso
     let (mut r_sum, mut g_sum, mut b_sum) = (0f64, 0f64, 0f64);
     let (mut sat_sum, mut n) = (0f64, 0usize);
     let (mut clip_hi, mut clip_lo) = (0usize, 0usize);
-    let (mut skin_on, mut skin_total) = (0usize, 0usize);
     let mut i = 0;
     while i < w * h {
         let p = i * 4;
@@ -291,20 +295,6 @@ pub fn frame_stats(data: &[u8], width: u32, height: u32, secs: f64) -> serde_jso
             Some(klipp_color::measure::Rail::White) => clip_hi += 1,
             Some(klipp_color::measure::Rail::Black) => clip_lo += 1,
             None => {}
-        }
-        // A pixel bright and warm enough to be skin, and whether its hue
-        // sits on the I-line (the vectorscope's skin-tone axis, ~123°):
-        // colourists land skin there. Hue from the usual HSV formula.
-        if sat > 0.15 && luma > 60.0 && r > g && g >= b {
-            let hue = {
-                let d = mx - mn;
-                let hp = if mx == r { ((g - b) / d).rem_euclid(6.0) } else if mx == g { (b - r) / d + 2.0 } else { (r - g) / d + 4.0 };
-                hp * 60.0
-            };
-            skin_total += 1;
-            if (20.0..=50.0).contains(&hue) {
-                skin_on += 1;
-            }
         }
         n += 1;
         i += step;
@@ -337,10 +327,15 @@ pub fn frame_stats(data: &[u8], width: u32, height: u32, secs: f64) -> serde_jso
     };
     let clip_hi_pct = clip_hi as f64 / nn * 100.0;
     let clip_lo_pct = clip_lo as f64 / nn * 100.0;
-    let skin_note = if skin_total < (n / 200).max(20) {
-        "no clear skin tones".to_string()
-    } else {
-        format!("{:.0}% of skin-toned pixels sit on the skin-tone line", skin_on as f64 / skin_total as f64 * 100.0)
+    // Colour alone, as nothing here looks for a face: rock, sand, wood
+    // and leaves pass the same test as skin, so the share is said as a
+    // share of skin-coloured pixels, never as a reading of skin. The
+    // frame_stats request says when a face backs it (#1897).
+    let skin = skin_line_share(data, width, height, &[[0.0, 0.0, 1.0, 1.0]]);
+    let skin_on_line_pct = skin.map(|s| s.0);
+    let skin_note = match skin_on_line_pct {
+        None => "no clear skin tones".to_string(),
+        Some(pct) => skin_colour_note(pct, 0),
     };
     let text = format!(
         "Frame at {secs:.2} s, scope readings (luma in IRE, 0 black to 100 white):\n\
@@ -359,7 +354,62 @@ pub fn frame_stats(data: &[u8], width: u32, height: u32, secs: f64) -> serde_jso
         "saturation_pct": sat_sum / nn * 100.0,
         "clipping_pct": { "high": clip_hi_pct, "low": clip_lo_pct },
         "skin": skin_note,
+        "skin_on_line_pct": skin_on_line_pct,
+        "skin_coloured_pct": skin.map(|s| s.1),
+        "skin_from": "colour",
     })
+}
+
+/// Inside `regions` (fractions of the frame), the skin-coloured pixels —
+/// bright and warm enough to be skin — as (the share of them on the
+/// skin-tone line, the share of the regions they are), both per cent;
+/// `None` when there are too few to say. The line is the vectorscope's
+/// I-line (~123°), where colourists land skin; hue from the usual HSV
+/// formula. Read over the faces, it is a reading of skin; over the whole
+/// frame, of colour only (#1897).
+pub fn skin_line_share(data: &[u8], width: u32, height: u32, regions: &[[f32; 4]]) -> Option<(f64, f64)> {
+    let (w, h) = (width as usize, height as usize);
+    let step = ((w * h) / 200_000).max(1);
+    let inside = |x: usize, y: usize| {
+        let (fx, fy) = (x as f32 / w.max(1) as f32, y as f32 / h.max(1) as f32);
+        regions.iter().any(|r| fx >= r[0] && fx < r[0] + r[2] && fy >= r[1] && fy < r[1] + r[3])
+    };
+    let (mut on, mut total, mut n) = (0usize, 0usize, 0usize);
+    let mut i = 0;
+    while i < w * h && data.len() >= (i + 1) * 4 {
+        if inside(i % w, i / w) {
+            let p = i * 4;
+            let (r, g, b) = (data[p] as f32, data[p + 1] as f32, data[p + 2] as f32);
+            let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
+            let sat = if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
+            if sat > 0.15 && luma > 60.0 && r > g && g >= b {
+                let d = mx - mn;
+                let hp = if mx == r { ((g - b) / d).rem_euclid(6.0) } else if mx == g { (b - r) / d + 2.0 } else { (r - g) / d + 4.0 };
+                total += 1;
+                if (20.0..=50.0).contains(&(hp * 60.0)) {
+                    on += 1;
+                }
+            }
+            n += 1;
+        }
+        i += step;
+    }
+    (total >= (n / 200).max(20)).then(|| (on as f64 / total as f64 * 100.0, total as f64 / n.max(1) as f64 * 100.0))
+}
+
+/// How much of the frame skin-coloured pixels off the line must be before
+/// a colour-only reading is said as worth a look: a tenth.
+const SKIN_COLOURED_NOTABLE_PCT: f64 = 10.0;
+
+/// The skin line of the scope readings for a share `pct` of skin-coloured
+/// pixels on the skin-tone line, with `faces` faces read in the frame:
+/// with none it is a colour reading and says so (#1897).
+pub(crate) fn skin_colour_note(pct: f64, faces: usize) -> String {
+    match faces {
+        0 => format!("{pct:.0}% of skin-coloured pixels sit on the skin-tone line (colour only, no face detected: stone, sand, wood or leaves count too)"),
+        n => format!("{pct:.0}% of skin-coloured pixels sit on the skin-tone line, with {n} face{} read below", if n == 1 { "" } else { "s" }),
+    }
 }
 
 /// Nearest-neighbour downscale. Good enough for eyeballing a frame and
