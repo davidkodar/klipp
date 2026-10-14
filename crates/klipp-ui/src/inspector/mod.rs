@@ -2220,50 +2220,53 @@ fn show_title_pinned_core_textbox(
         }
         ui.add_space(6.0);
         let mut opacity_pct = ((display_color[3] as f32 / 255.0) * 100.0).round();
-        let pct_label_w = 44.0;
-        // Slider sits in a framed pill matching the % readout to its
-        // right, so the swatch / slider / % row reads as three
-        // equal-height components.
-        let slider_outer_w = (ui.available_width() - pct_label_w - 8.0).max(60.0);
-        let slider_changed = egui::Frame::none()
-            .fill(theme.bg_raised)
-            .rounding(4.0)
-            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
-            .show(ui, |ui| {
-                ui.set_width(slider_outer_w - 16.0);
-                ui.spacing_mut().slider_width = slider_outer_w - 16.0;
-                ui.add(
-                    egui::Slider::new(&mut opacity_pct, 0.0..=100.0)
-                        .step_by(1.0)
-                        .show_value(false),
-                )
-                .changed()
-            })
-            .inner;
-        if slider_changed {
-            new_alpha_u8 = Some((opacity_pct / 100.0 * 255.0).round() as u8);
-        }
-        ui.add_space(8.0);
-        egui::Frame::none()
-            .fill(theme.bg_raised)
-            .rounding(4.0)
-            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
-            .show(ui, |ui| {
-                ui.label(
-                    egui::RichText::new(format!("{}%", opacity_pct as u32))
-                        .size(11.0)
-                        .color(theme.text_secondary),
-                );
-            });
-        if color_is_mixed {
-            ui.label(egui::RichText::new("Mixed").size(rows::TEXT).color(theme.text_secondary));
-        }
-        // The whole text's colour is keyable on its layer, all four
-        // channels at once (#1511).
-        if size_target.is_some() {
-            let ks = title_object_keyframe_state(&tb.color_keyframes.r, clip_time_secs, keyframe_tolerance);
-            color_key_toggled = crate::widgets::scrubby_param::key_controls(ui, ks).toggled;
-        }
+        // Right to left from the row's edge (#1916): the key mark, "Mixed",
+        // the % readout, then the slider in what is left, so the row fits
+        // the inspector at any width; budgeting the slider first left the
+        // mark out and pushed every row below past the panel's edge.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if size_target.is_some() {
+                let ks = title_object_keyframe_state(&tb.color_keyframes.r, clip_time_secs, keyframe_tolerance);
+                color_key_toggled = crate::widgets::scrubby_param::key_controls(ui, ks).toggled;
+            }
+            if color_is_mixed {
+                ui.label(egui::RichText::new("Mixed").size(rows::TEXT).color(theme.text_secondary));
+            }
+            egui::Frame::none()
+                .fill(theme.bg_raised)
+                .rounding(4.0)
+                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{}%", opacity_pct as u32))
+                            .size(11.0)
+                            .color(theme.text_secondary),
+                    );
+                });
+            ui.add_space(8.0);
+            // Slider sits in a framed pill matching the % readout beside
+            // it, so the swatch / slider / % row reads as three
+            // equal-height components.
+            let slider_outer_w = ui.available_width().max(36.0);
+            let slider_changed = egui::Frame::none()
+                .fill(theme.bg_raised)
+                .rounding(4.0)
+                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                .show(ui, |ui| {
+                    ui.set_width(slider_outer_w - 16.0);
+                    ui.spacing_mut().slider_width = slider_outer_w - 16.0;
+                    ui.add(
+                        egui::Slider::new(&mut opacity_pct, 0.0..=100.0)
+                            .step_by(1.0)
+                            .show_value(false),
+                    )
+                    .changed()
+                })
+                .inner;
+            if slider_changed {
+                new_alpha_u8 = Some((opacity_pct / 100.0 * 255.0).round() as u8);
+            }
+        });
     });
     if let Some(a) = new_alpha_u8 {
         col = egui::Color32::from_rgba_premultiplied(col.r(), col.g(), col.b(), a);
@@ -8712,6 +8715,54 @@ mod title_row_style_tests {
             _ => None,
         }).collect();
         (cmds, texts, rules)
+    }
+
+    /// #1916: at the inspector's narrowest and its default width, nothing
+    /// of the Title tab is drawn past its right edge, where the panel
+    /// clips it: every row's controls are in reach.
+    #[test]
+    fn the_title_tab_fits_the_inspector_at_its_narrow_widths() {
+        let (clip, state) = title();
+        let mut failures = Vec::new();
+        for width in [crate::theme::INSPECTOR_MIN_W, 300.0, crate::theme::INSPECTOR_DEFAULT_W] {
+            let ctx = egui::Context::default();
+            ctx.data_mut(|d| {
+                let set: &mut std::collections::HashSet<String> = d.get_temp_mut_or_default(egui::Id::new(TITLE_EXPANDED_GROUPS_KEY));
+                for g in ["Advanced title tools", "Typography", "Text effects", "Background & Layer Opacity", "Motion Blur", "3D & Distortion", "Text Path"] {
+                    set.insert(g.to_string());
+                }
+            });
+            let mut cmds = Vec::new();
+            let mut chips = title_tab::TitleChips::default();
+            let mut run = || ctx.run(
+                egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 9000.0))), ..Default::default() },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| show_title_editor(ui, &KlippTheme::default(), &clip, &state, &mut cmds, &mut chips));
+                },
+            );
+            // A second frame: the first lays out what it learns sizes from.
+            run();
+            let out = run();
+            let texts: Vec<(String, egui::Rect)> = out.shapes.iter().filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), egui::Rect::from_min_size(t.pos, t.galley.size()))),
+                _ => None,
+            }).collect();
+            let past: Vec<String> = out.shapes.iter()
+                .map(|s| s.shape.visual_bounding_rect())
+                // Not the panel's own background, whose stroke sits on its
+                // edge, grown to the widest row (it read 17 px over at every
+                // width before this was fixed).
+                .filter(|r| r.is_finite() && r.height() < 4000.0 && r.max.x > width + 0.5)
+                .map(|r| {
+                    let near = texts.iter().filter(|(_, t)| (t.center().y - r.center().y).abs() < 10.0).map(|(t, _)| t.as_str()).collect::<Vec<_>>().join(" | ");
+                    format!("x {:.0}..{:.0} at y {:.0} [{near}]", r.min.x, r.max.x, r.center().y)
+                })
+                .collect();
+            if !past.is_empty() {
+                failures.push(format!("at {width} px wide, drawn past the right edge:\n{}", past.join("\n")));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n\n"));
     }
 
     fn title() -> (klipp_timeline::Clip, AppState) {
