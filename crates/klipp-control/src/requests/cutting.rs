@@ -57,13 +57,25 @@ pub(crate) fn respond(
                 return Err("music search is not set up: put jamendo_client_id in ~/.config/klipp/keys.toml (or set KLIPP_JAMENDO_CLIENT_ID)".into());
             }
             let licences = licences.iter().map(|l| klipp_audio_search::licence_family(l)).collect::<Result<Vec<_>, _>>()?;
-            let tracks = klipp_audio_search::search_music_filtered(&query, limit.unwrap_or(12), klipp_audio_search::MusicFilter { commercial_only, instrumental, edits_only, licences })?;
+            let mut tracks = klipp_audio_search::search_music_filtered(&query, limit.unwrap_or(12), klipp_audio_search::MusicFilter { commercial_only, instrumental, edits_only, licences })?;
+            // Ids asked for by name are heard whether or not the results
+            // hold them, after the ranked ones; one the library doesn't
+            // know is said, never skipped in silence (#1895).
+            let ranked = tracks.len();
+            let wanted = listen_ids_outside(&listen, &tracks);
+            if !wanted.is_empty() {
+                tracks.extend(klipp_audio_search::music_tracks_by_id(&wanted)?);
+            }
+            let not_found: Vec<String> = listen_ids_outside(&listen, &tracks);
             // The previews asked for heard, side by side, so a candidate is
             // judged before it is imported (#739): the first few, or those
             // named by id (#795).
             let heard = hear_previews(tracks.iter().enumerate().map(|(i, t)| listen.picks(i, &t.id).then(|| t.preview_url.clone())).collect(), listen_to_preview);
-            let mut text = format!("{} royalty-free music results for \"{query}\" (Jamendo), best match to the words first:\n", tracks.len());
-            for (t, h) in tracks.iter().zip(&heard) {
+            let mut text = format!("{ranked} royalty-free music results for \"{query}\" (Jamendo), best match to the words first:\n");
+            for (i, (t, h)) in tracks.iter().zip(&heard).enumerate() {
+                if i == ranked {
+                    text.push_str("Asked for by id, outside these results:\n");
+                }
                 let pace = if t.pace.is_empty() { String::new() } else { format!(", {} pace", t.pace) };
                 let no_edits = if klipp_audio_search::forbids_edits(&t.license) { " [no edits: ND forbids cutting, fitting or remixing]" } else { "" };
                 let preview_only = if t.download_url.is_empty() { " [preview only: add_music takes the preview MP3]" } else { "" };
@@ -87,12 +99,16 @@ pub(crate) fn respond(
                 }
                 v
             }).collect();
+            let (results, by_id) = { let mut r = results; let by_id = r.split_off(ranked.min(r.len())); (r, by_id) };
+            if !not_found.is_empty() {
+                text.push_str(&format!("No track with id {} in the library: nothing heard for it.\n", not_found.join(", ")));
+            }
             let next = if listen.is_none() {
                 "Judge candidates before importing: search again with listen: 3 to hear the first three, or listen: [track_id, …] for those you name (tempo, beat, energy over the track). Add one with add_music (copy its title, artist, download_url, license, license_url, page_url). Honour the licence: non-commercial tracks stay out of commercial work, and the credit is kept for you."
             } else {
                 "Pick by the brief's energy: a steady or gently building track sits under a calm piece, a driving one under a fast montage. Add one with add_music (copy its title, artist, download_url, license, license_url, page_url). Honour the licence: non-commercial tracks stay out of commercial work, and the credit is kept for you."
             };
-            Ok(json!({ "text": text, "results": results, "next": next }))
+            Ok(json!({ "text": text, "results": results, "listened_by_id": by_id, "not_found": not_found, "next": next }))
         }
 
         ControlCommand::SearchSfx { query, limit, max_secs, commercial_only, listen } => {
@@ -425,6 +441,14 @@ fn music_destination(project: Option<&std::path::Path>) -> std::path::PathBuf {
     }
 }
 
+/// The ids `listen` names that none of `tracks` has (#1895).
+fn listen_ids_outside(listen: &Listen, tracks: &[klipp_audio_search::Track]) -> Vec<String> {
+    match listen {
+        Listen::Ids(ids) => ids.iter().map(|i| i.trim().to_string()).filter(|i| !i.is_empty() && !tracks.iter().any(|t| t.id == *i)).collect(),
+        Listen::First(_) => Vec::new(),
+    }
+}
+
 fn add_one_track(ctx: &ControlContext, pick: MusicPick) -> Result<serde_json::Value, String> {
     let MusicPick { title, artist, track_id, download_url, preview_url, license, license_url, page_url, quality } = pick;
     // A Freesound sound comes as its original when signed in (#1894).
@@ -584,5 +608,28 @@ mod download_choice_tests {
         assert!(download_choice(false, true, Some("original")).unwrap_err().contains("only a Freesound sound"));
         assert_eq!(download_choice(false, true, None), Ok("preview"), "music: as the library offers it");
         assert!(download_choice(true, true, Some("lossless")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod listen_by_id_tests {
+    use super::*;
+
+    /// #1895: an id asked for by name that the results don't hold is
+    /// fetched on its own and heard, or said not found; ids the results
+    /// hold, and a listen by count, ask for nothing more.
+    #[test]
+    fn an_id_outside_the_results_is_asked_for() {
+        let track = |id: &str| klipp_audio_search::Track {
+            source: klipp_audio_search::Source::JamendoMusic, id: id.into(), title: "t".into(), artist: "a".into(), duration_secs: 60.0,
+            license: "CC BY".into(), license_url: String::new(), commercial_ok: true, preview_url: "https://p".into(),
+            download_url: String::new(), page_url: String::new(), image_url: String::new(), tags: vec![], pace: String::new(), original: None,
+        };
+        let results = [track("1167648")];
+        let ids = Listen::Ids(vec!["1439448".into(), " 1167648 ".into()]);
+        assert_eq!(listen_ids_outside(&ids, &results), ["1439448"], "the one the window missed");
+        assert!(listen_ids_outside(&Listen::First(3), &results).is_empty());
+        let fetched = [track("1167648"), track("1439448")];
+        assert!(listen_ids_outside(&ids, &fetched).is_empty(), "fetched: nothing left unfound");
     }
 }

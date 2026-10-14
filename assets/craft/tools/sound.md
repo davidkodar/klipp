@@ -34,6 +34,8 @@ Search Jamendo royalty-free music by mood/genre, best textual match first. Resul
 
 To cut, fit or loop a track its licence has to allow edits: edits_only true leaves out every ND licence, and licences narrows to families as the results label them (CC0, CC BY, CC BY-SA, CC BY-NC, CC BY-NC-SA, CC BY-ND, CC BY-NC-ND; "by-sa" works too). Both are applied before the ranking and the limit, so a limit of eight gives eight that pass. commercial_only is the same for paid work.
 
+A search ranks the same candidates whatever its limit, so the best match is first at limit 1 as at 20. listen with ids hears those tracks even when the results don't hold them: they come back as listened_by_id, after the results, and an id the library doesn't know is in not_found.
+
 ## klipp_search_sfx
 
 Search royalty-free sound effects by keyword (e.g. "whoosh", "door slam", "rain", "impact") from Freesound. Each result shows its licence and whether it clears commercial use. max_secs keeps to short sounds (a transition's whoosh, not a long design file); listen (a count, or [track_id, …], at most 5) hears previews and says each one's length, when it peaks and how loud it is, which is where it goes: the peak on the cut. Then add it with klipp_add_music (it takes a sound effect the same as a track). Needs a Freesound token in the user's key config.
