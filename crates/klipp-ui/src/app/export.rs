@@ -2776,6 +2776,10 @@ impl KlippApp {
                     .filter(|s| *s > 2.0 && j.frames_done > 0 && j.status == klipp_export::RenderJobStatus::Rendering)
                     .map(|s| ((j.total_frames.saturating_sub(j.frames_done)) as f32 * s / j.frames_done as f32) as u64),
                 projected_bytes: j.projected_bytes(),
+                encoder: j.timings.as_ref().and_then(|t| t.video_encoder.clone()),
+                audio_encoder: j.timings.as_ref().and_then(|t| t.audio_encoder.clone()),
+                compositing: j.timings.as_ref().and_then(|t| t.compositing()),
+                timings: j.timings.clone(),
             }));
         }
         for event in events {

@@ -2096,7 +2096,7 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec!["path"]),
         tool("klipp_export_status",
-             "Every render job: status, progress, frames, stage, error and loudness; wait true waits for one job or all. Details: klipp_guide topic export_status.",
+             "Every render job: status, progress, frames, stage, error, loudness, and where its time went (per-frame timings, encoders, GPU or CPU compositing and why); wait true waits for one job or all. Details: klipp_guide topic export_status.",
              json!({ "wait": { "type": "boolean" }, "job_id": { "type": "string" }, "timeout_ms": { "type": "integer", "description": "Maximum wait, default one hour" } }), vec![]),
         tool("klipp_export_subtitles",
              "Write the subtitle clips (text clips if none) to an absolute path, as the extension says: .srt, .vtt, .ass, .ssa, .ttml (IMSC), .scc (608) or .stl (EBU); format, if given, must match.",

@@ -1509,6 +1509,10 @@ fn export_is_refused_where_it_would_go_wrong_and_status_reads_the_queue() {
             fps: Some(28.0),
             eta_secs: Some(2),
             projected_bytes: None,
+            encoder: Some("h264_nvenc".into()),
+            audio_encoder: Some("aac".into()),
+            compositing: Some("GPU".into()),
+            timings: Some(klipp_core::ExportTimings { frames: 50, render_ms: 33.2, decode_ms: 7.5, encode_ms: 3.5, audio_ms: 0.6, gpu_composited: 50, ..Default::default() }),
         });
     });
     let r = h.ok(json!({ "method": "export", "path": "/tmp/klipp-control-test-out.mp4", "target_lufs": -14.0, "crf": 20 }));
@@ -1518,6 +1522,13 @@ fn export_is_refused_where_it_would_go_wrong_and_status_reads_the_queue() {
     let st = h.ok(json!({ "method": "export_status" }));
     assert_eq!(st["jobs"][0]["status"], json!("rendering"));
     assert_eq!(st["jobs"][0]["progress"], json!(0.5));
+    // Where the time goes and how frames were composited (#1924), apart
+    // from the codec's acceleration.
+    assert_eq!(st["jobs"][0]["encoder"], json!("h264_nvenc"));
+    assert_eq!(st["jobs"][0]["audio_encoder"], json!("aac"));
+    assert_eq!(st["jobs"][0]["compositing"], json!("GPU"));
+    assert_eq!(st["jobs"][0]["timings"]["render_ms"], json!(33.2));
+    assert_eq!(st["jobs"][0]["timings"]["gpu_composited"], json!(50));
     let unified = h.ok(json!({ "method": "job_status", "job_id": "j1" }));
     assert_eq!(unified["jobs"][0]["kind"], "render");
     assert_eq!(unified["jobs"][0]["state"], "running");
@@ -1581,6 +1592,7 @@ fn a_render_cancellation_names_the_job_it_stops() {
             job_id:id.clone(), path:"/tmp/render.mp4".into(), status:"rendering".into(),
             progress:0.4, frames_done:40, total_frames:100, stage:"Encoding".into(),
             error:None, loudness:None, hardware:String::new(), fps:None, eta_secs:None, projected_bytes:None,
+            encoder:None, audio_encoder:None, compositing:None, timings:None,
         });
     }
     let reply = h.ok(json!({"method":"cancel_job","job_id":requested}));

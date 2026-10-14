@@ -110,6 +110,13 @@ pub struct ExportFrameMaker {
     /// How long the last [`Self::frame`] spent padding, so a caller timing
     /// the render can keep the pad apart.
     pub last_pad: std::time::Duration,
+    /// Why the GPU stack declined the stretch in `declined_stack`.
+    declined_why: &'static str,
+    /// Why frames aren't asked of the GPU at all, when `gpu_yuv` is none.
+    no_gpu_why: &'static str,
+    /// Why the last frame was composited on the CPU; `None` when the GPU
+    /// stack made it (#1924).
+    last_cpu_why: Option<&'static str>,
 }
 
 impl ExportFrameMaker {
@@ -140,7 +147,8 @@ impl ExportFrameMaker {
         // An HLG or PQ delivery renders display light for the encoder's
         // HDR encode (an ACES PQ transform renders its own from SDR).
         let opts = RenderOptions { hdr_peak_nits: settings.renders_hdr().then(|| settings.hdr_peak_nits()), ..Default::default() };
-        Self { out, fit, opts, gpu_yuv, declined_stack: None, gpu_attempts: 0, label, last_pad: std::time::Duration::ZERO }
+        let no_gpu_why = if (fit.0, fit.1) != out { "the picture is letterboxed in the output, padded on the CPU" } else { "the encoder takes no frames made on the GPU" };
+        Self { out, fit, opts, gpu_yuv, declined_stack: None, gpu_attempts: 0, label, last_pad: std::time::Duration::ZERO, declined_why: "", no_gpu_why, last_cpu_why: None }
     }
 
     /// The output size frames come at.
@@ -159,6 +167,12 @@ impl ExportFrameMaker {
     /// the GPU and still says yes.
     pub fn converts_on_gpu(&self) -> bool {
         self.gpu_yuv.is_some()
+    }
+
+    /// Why the last frame was composited on the CPU, or `None` when the
+    /// GPU stack made it (#1924).
+    pub fn last_cpu_why(&self) -> Option<&'static str> {
+        self.last_cpu_why
     }
 
     /// How many frames were asked of the GPU way so far: a declined
@@ -190,8 +204,14 @@ impl ExportFrameMaker {
         });
         if let Some((planes, light)) = planes {
             frames.end_frame()?;
+            self.last_cpu_why = None;
             return Ok(ExportFrame::Planes { planes, light });
         }
+        self.last_cpu_why = Some(match ask {
+            Some(_) => renderer.last_decline().unwrap_or("the GPU stack declined the frame"),
+            None if self.declined_stack.is_some() => self.declined_why,
+            None => self.no_gpu_why,
+        });
         if ask.is_some() && renderer.gpu_export_declined_after_work() {
             // The miss came after the frame was rendered, so this frame was
             // rendered twice, and every frame of its stretch would be: the
@@ -202,9 +222,11 @@ impl ExportFrameMaker {
             // resumes.
             if renderer.gpu_pipeline().is_none_or(|g| g.is_device_lost()) {
                 self.gpu_yuv = None;
+                self.no_gpu_why = "the GPU device was lost";
                 debug!("{}: GPU frame conversion off from {time:?}: the device is lost", self.label);
             } else {
                 self.declined_stack = Some(on_screen(timeline, time));
+                self.declined_why = renderer.last_decline().unwrap_or("the GPU stack declined the frame");
                 debug!("{}: GPU frame conversion off from {time:?} while its clips are on screen", self.label);
             }
         }

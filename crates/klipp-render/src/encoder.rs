@@ -47,6 +47,8 @@ pub struct Encoder {
     audio_frame: Option<ffmpeg_next::frame::Audio>,
     /// Name of the video encoder in use (for reporting).
     video_codec_name: &'static str,
+    /// Name of the audio encoder in use, when there is sound (#1924).
+    audio_codec_name: Option<&'static str>,
     /// The pictures' layout in memory. The encoder's own format, except
     /// for VAAPI, which takes surfaces and is sent these uploaded.
     frame_format: ffmpeg_next::format::Pixel,
@@ -1085,9 +1087,11 @@ impl Encoder {
             output_path
         );
 
+        let audio_codec_name = audio_encoder.as_ref().map(|_| audio_codec_name);
         Ok(Self {
             output_ctx,
             video_encoder,
+            audio_codec_name,
             audio_encoder,
             audio_bitrate_kbps: settings.audio_bitrate_kbps,
             video_stream_idx,
@@ -1142,6 +1146,17 @@ impl Encoder {
     /// What its audio encoder opened as, if it has one (#1930).
     pub fn opened_audio(&self) -> Option<crate::audio_only::OpenedAudio> {
         self.audio_encoder.as_ref().map(|e| crate::audio_only::OpenedAudio::of(e, self.audio_bitrate_kbps))
+    }
+
+    /// The video encoder in use, as FFmpeg names it (`h264_nvenc`,
+    /// `libx264`): what a status reports beside [`Self::hw_info`] (#1924).
+    pub fn video_encoder_name(&self) -> &'static str {
+        self.video_codec_name
+    }
+
+    /// The audio encoder in use, as FFmpeg names it; `None` without sound.
+    pub fn audio_encoder_name(&self) -> Option<&'static str> {
+        self.audio_codec_name
     }
 
     /// Human-readable hardware info for the video encoder.

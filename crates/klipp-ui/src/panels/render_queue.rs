@@ -288,6 +288,12 @@ impl RenderQueuePanel {
             }
         }
 
+        // ── Where the time goes, and where frames were composited
+        //    (#1924): while it renders, and kept once it ends ──
+        if let Some(line) = job.timings.as_ref().and_then(Self::timings_line) {
+            ui.label(small(line, theme.text_dim));
+        }
+
         // ── Why it failed ──
         if let Some(err) = &job.error {
             ui.label(small(err.clone(), theme.marker_error));
@@ -324,6 +330,28 @@ impl RenderQueuePanel {
                 ui.label(small(format!("Full path: {}", job.output_path.display()), dim));
             });
         }
+    }
+
+    /// A render's timings in a line: per frame the render (its decode
+    /// inside it), the encode and the sound, where frames were composited,
+    /// and the loudness fit's trials before it. `None` before a frame.
+    fn timings_line(t: &klipp_core::ExportTimings) -> Option<String> {
+        if t.frames == 0 {
+            return None;
+        }
+        let mut line = if t.gpu_composited + t.cpu_composited == 0 {
+            // Sound alone.
+            format!("Sound {:.1} ms per frame", t.audio_ms)
+        } else {
+            format!("Render {:.1} ms \u{00B7} decode {:.1} \u{00B7} encode {:.1} \u{00B7} audio {:.1} per frame", t.render_ms, t.decode_ms, t.encode_ms, t.audio_ms)
+        };
+        if let Some(composited) = t.compositing() {
+            line.push_str(&format!(" \u{2014} composited on the {composited}"));
+        }
+        if t.loudness_trials > 0 {
+            line.push_str(&format!(" \u{2022} loudness fit {:.1} s, {} trial{}", t.loudness_verify_secs, t.loudness_trials, if t.loudness_trials == 1 { "" } else { "s" }));
+        }
+        Some(line)
     }
 
     /// The job at a glance: picture, rate, codec and quality, sound, and

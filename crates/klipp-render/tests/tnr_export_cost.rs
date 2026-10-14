@@ -69,7 +69,7 @@ fn tnr_export_cost() {
         ExportJob {
             id: uuid::Uuid::new_v4(), output_path: out, settings, snapshot: snapshot(&src, denoise),
             cancel: Arc::new(AtomicBool::new(false)), progress: Arc::new(AtomicU64::new(0)),
-            hw_info: Default::default(), render_stage: Default::default(), loudness_result: Default::default(),
+            hw_info: Default::default(), render_stage: Default::default(), loudness_result: Default::default(), timings: Default::default(),
             total_frames: FRAMES,
             analyser: None,
         }

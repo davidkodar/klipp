@@ -40,6 +40,9 @@ pub struct RenderJob {
     pub render_stage: String,
     /// Loudness normalization result (set on completion if normalization was enabled).
     pub loudness_result: Option<String>,
+    /// Where the render's time goes and how its frames were composited,
+    /// updated while it runs and kept once it ends (#1924).
+    pub timings: Option<klipp_core::ExportTimings>,
     /// The picture size delivered: the settings' when they name one, else
     /// the sequence's, so the window can always show it (#717).
     pub width: u32,
@@ -155,6 +158,7 @@ struct ActiveJob {
     event_rx: crossbeam_channel::Receiver<RenderThreadEvent>,
     hw_info: Arc<std::sync::Mutex<String>>,
     render_stage: Arc<std::sync::Mutex<String>>,
+    timings: Arc<std::sync::Mutex<Option<klipp_core::ExportTimings>>>,
 }
 
 pub struct RenderQueue {
@@ -238,6 +242,7 @@ impl RenderQueue {
             timeline_fps,
             render_stage: String::new(),
             loudness_result: None,
+            timings: Default::default(),
             width,
             height,
             export_range,
@@ -337,6 +342,15 @@ impl RenderQueue {
             if let Ok(s) = aj.render_stage.lock() {
                 if let Some(job) = self.jobs.iter_mut().find(|j| j.id == aj.job_id) {
                     job.render_stage = s.clone();
+                }
+            }
+            // Read before the terminal event below is drained, so a job
+            // that ended keeps its last figures.
+            if let Ok(t) = aj.timings.lock() {
+                if let Some(job) = self.jobs.iter_mut().find(|j| j.id == aj.job_id) {
+                    if t.is_some() {
+                        job.timings = t.clone();
+                    }
                 }
             }
         }
@@ -479,6 +493,8 @@ impl RenderQueue {
         let cancel_clone = cancel.clone();
         let progress_clone = progress.clone();
         let render_stage = Arc::new(std::sync::Mutex::new(String::new()));
+        let timings = Arc::new(std::sync::Mutex::new(None::<klipp_core::ExportTimings>));
+        let timings_clone = timings.clone();
         // P-9: we only need one Arc handle on this side; the thread
         // below moves it into the ExportJob.
         let loudness_result_clone = Arc::new(std::sync::Mutex::new(None::<String>));
@@ -501,6 +517,7 @@ impl RenderQueue {
                     hw_info: hw_info_clone.clone(),
                     render_stage: render_stage_clone,
                     loudness_result: loudness_result_clone,
+                    timings: timings_clone,
                     analyser,
                 };
 
@@ -550,6 +567,7 @@ impl RenderQueue {
             event_rx,
             hw_info,
             render_stage,
+            timings,
         });
         true
     }
@@ -598,6 +616,7 @@ mod tests {
             timeline_fps: 24.0,
             render_stage: String::new(),
             loudness_result: None,
+            timings: Default::default(),
             width: 1920,
             height: 1080,
             export_range: None,
@@ -758,5 +777,37 @@ mod tests {
         q.jobs.push(fake_job(RenderJobStatus::Rendering));
         q.jobs.push(fake_job(RenderJobStatus::Complete));
         assert_eq!(q.queued_count(), 2);
+    }
+
+    /// #1924: a render's timings are on its job while it runs, and stay
+    /// once it has ended (the render thread's last figures, read before
+    /// its ending is).
+    #[test]
+    fn a_finished_job_keeps_its_timings() {
+        let mut q = RenderQueue::new();
+        let job = fake_job(RenderJobStatus::Rendering);
+        let id = job.id;
+        q.jobs.push(job);
+        let (event_tx, event_rx) = crossbeam_channel::unbounded();
+        let timings = Arc::new(std::sync::Mutex::new(None::<klipp_core::ExportTimings>));
+        q.active_jobs.push(ActiveJob {
+            job_id: id,
+            handle: std::thread::spawn(|| {}),
+            cancel: Arc::new(AtomicBool::new(false)),
+            progress: (Arc::new(AtomicU64::new(10)), 100),
+            event_rx,
+            hw_info: Default::default(),
+            render_stage: Default::default(),
+            timings: Arc::clone(&timings),
+        });
+        // Its last figures, then its ending, as the render thread leaves them.
+        *timings.lock().unwrap() = Some(klipp_core::ExportTimings { frames: 100, render_ms: 33.2, gpu_composited: 100, ..Default::default() });
+        event_tx.send(RenderThreadEvent::Completed { id, loudness_result: None }).unwrap();
+        q.max_parallel = 0;
+        q.poll();
+        let job = q.jobs.iter().find(|j| j.id == id).unwrap();
+        assert_eq!(job.status, RenderJobStatus::Complete);
+        assert!(q.active_jobs.is_empty(), "its thread is let go");
+        assert_eq!(job.timings.as_ref().map(|t| (t.frames, t.render_ms)), Some((100, 33.2)), "{:?}", job.timings);
     }
 }

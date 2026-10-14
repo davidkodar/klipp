@@ -133,6 +133,7 @@ fn curved_connector_and_device_outline_draw_pause_and_retract() {
         hw_info: Default::default(),
         render_stage: Default::default(),
         loudness_result: Default::default(),
+        timings: Default::default(),
         analyser: None,
         total_frames: frames,
     }

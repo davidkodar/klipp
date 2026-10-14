@@ -75,6 +75,7 @@ fn export(td: TitleData, out: &std::path::Path) -> Vec<u8> {
         hw_info: Default::default(),
         render_stage: Default::default(),
         loudness_result: Default::default(),
+        timings: Default::default(),
         total_frames: frames,
         analyser: None,
     }
