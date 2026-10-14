@@ -163,6 +163,9 @@ impl KlippApp {
     /// Corrector's matte input (port 1) when one exists, and
     /// toasts "Mask applied to {track} · {clip_short}".
     fn execute_apply_mask_to_clip(&mut self) {
+        // Cut Out (#73): the mask is the alpha the clip's grade leaves
+        // with, rather than the gate of its correction.
+        let cut_out = std::mem::take(&mut self.state.ai_tools_state.pending_cut_out);
         // Snapshot what we need from inference state without
         // holding the borrow into mutating ops.
         let (mask, model_id) = match &self.state.ai_tools_state.inference {
@@ -285,6 +288,7 @@ impl KlippApp {
 
         let path_for_node = final_path.clone();
         let mut wired = false;
+        let mut taken: Option<String> = None;
         if let Some(track) = self.state.sequence_mut().tracks.get_mut(track_idx) {
             if let Some(clip) = track.clips.iter_mut().find(|c| c.id == clip_id) {
                 let matte_id = klipp_nodes::NodeId::new_v4();
@@ -303,6 +307,21 @@ impl KlippApp {
                         output_link: None,
                         input_links: Vec::new(),
                     });
+                    // Cut out: into the Output's alpha (port 1), a matte
+                    // already there replaced (#73, #898).
+                    if cut_out {
+                        let out = graph.output_node_id;
+                        // Another matte already the alpha: refused below,
+                        // by name, with the mask left unwired (#73).
+                        if let Some(other) = graph.input_of(out, 1) {
+                            taken = graph.nodes.iter().find(|n| n.id == other).map(|n| if n.label.is_empty() { n.kind.display_name().to_string() } else { n.label.clone() });
+                            return;
+                        }
+                        graph.edges.retain(|e| !(e.to_node == out && e.to_port == 1));
+                        graph.edges.push(klipp_nodes::graph::Edge { from_node: matte_id, from_port: 0, to_node: out, to_port: 1 });
+                        wired = true;
+                        return;
+                    }
                     // Find the first Corrector node — that's where the
                     // default-graph's grade-with-matte expects the
                     // matte input to feed (port 1).
@@ -337,7 +356,11 @@ impl KlippApp {
             .next()
             .map(|s| s.to_string())
             .unwrap_or_else(|| "clip".into());
-        if wired {
+        if let Some(name) = taken {
+            self.state.toast.show(format!("The grade's alpha already takes \u{201c}{name}\u{201d}: the mask was added unwired; unwire that one from the Output to cut out by it"));
+        } else if wired && cut_out {
+            self.state.toast.show(format!("{track_name} · {clip_short} cut out by the mask"));
+        } else if wired {
             self.state.toast.show(format!(
                 "Mask applied to {track_name} · {clip_short}",
             ));

@@ -70,6 +70,8 @@ A reference video's editing style as facts, to build a clip in its feel from oth
 
 A matte that follows the subject through one clip, frame by frame: model subject (one detected subject, followed; the default) or foreground (everything in front). It is added to the clip's grade as an External Matte gating its correction (the selected one, else the first, a new one when there is none), as one undo step, and filled in the background; the viewer shows each part as it is made. Its job_id is `<media id>:subject_matte`: klipp_job_status reads its progress, klipp_cancel_job stops it after the frame it is on and keeps the frames made. Running it again tracks only what is missing. An export is refused until the matte covers every frame the clip shows. The model is never fetched unasked: without it the call is refused, naming it; download_model true fetches it (tell the person, it is large).
 
+With into "cut_out" the matte cuts the clip out instead: it is the alpha the clip's grade leaves with, so the tracks below show everywhere but the subject; the same matte node serves both uses when asked for each.
+
 With transition_id in place of clip_id, it tracks the subject a piece transition (strips, panels, halves, shatter) cuts round as its own piece (`pieces.subject` on the transition op): only the frames of the subject side the transition shows, by the model the transition's subject names, and nothing is added to a grade. Without the matte the pieces are plain and the viewer says why; an export waits for it.
 
 ## klipp_transcript

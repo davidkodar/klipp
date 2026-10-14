@@ -1039,8 +1039,14 @@ fn run_section(
     if state.active_task == Some(AiTask::TrackObject) {
         ui.horizontal(|ui| {
             ui.add_space(8.0);
-            if ui.button("Track Subject").on_hover_text("Track the subject through the selected clip, in the background").clicked() {
+            if ui.button("Track Subject").on_hover_text("Track the subject through the selected clip, in the background, to grade it").clicked() {
                 state.pending_track_subject = true;
+                state.pending_cut_out = false;
+            }
+            // Or cut the clip out round it, over the tracks below (#73).
+            if ui.button("Cut Out Subject").on_hover_text("Track the subject and cut the clip out round it: the tracks below show everywhere else").clicked() {
+                state.pending_track_subject = true;
+                state.pending_cut_out = true;
             }
         });
         let _ = (registry, theme);
@@ -1426,10 +1432,10 @@ fn done_preview(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippTheme)
 
     ui.add_space(8.0);
 
-    // Action row — Re-run + Apply to clip.
+    // Action row — Re-run, Apply to clip (the grade), Cut out (#73).
     ui.horizontal(|ui| {
         let avail = ui.available_width();
-        let half = (avail / 2.0 - 4.0).max(80.0);
+        let half = (avail / 3.0 - 6.0).max(70.0);
         if ui
             .add_sized(
                 [half, 32.0],
@@ -1451,9 +1457,19 @@ fn done_preview(ui: &mut egui::Ui, state: &mut AiToolsState, theme: &KlippTheme)
                 )
                 .fill(theme.marker_warning),
             )
+            .on_hover_text("Grade inside the mask")
             .clicked()
         {
             state.pending_apply_to_clip = true;
+            state.pending_cut_out = false;
+        }
+        if ui
+            .add_sized([half, 32.0], egui::Button::new(egui::RichText::new("✂ Cut out").size(13.0)))
+            .on_hover_text("Cut the clip out by the mask: the tracks below show outside it")
+            .clicked()
+        {
+            state.pending_apply_to_clip = true;
+            state.pending_cut_out = true;
         }
     });
 }

@@ -18,8 +18,8 @@ fn model_of(name: &str) -> MatteModel {
 impl KlippApp {
     pub(super) fn handle_track_subject_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         match cmd {
-            AppCommand::TrackSubject { clip_id, model } => {
-                self.track_subject(*clip_id, model, needs_refresh);
+            AppCommand::TrackSubject { clip_id, model, cut_out } => {
+                self.track_subject(*clip_id, model, *cut_out, needs_refresh);
                 true
             }
             AppCommand::TrackTransitionSubject { transition_id } => {
@@ -41,7 +41,7 @@ impl KlippApp {
     /// Start tracking the subject through `clip_id`: the model checked
     /// (its download asked for, never begun, when it isn't there), the
     /// matte added to the grade as one undo step, the pass started.
-    fn track_subject(&mut self, clip_id: klipp_core::ClipId, model_name: &str, needs_refresh: &mut bool) {
+    fn track_subject(&mut self, clip_id: klipp_core::ClipId, model_name: &str, cut_out: bool, needs_refresh: &mut bool) {
         let model = model_of(model_name);
         let seq = self.state.sequence();
         let Some(clip) = seq.all_clips().find(|c| c.id == clip_id).cloned() else { return };
@@ -59,7 +59,7 @@ impl KlippApp {
         let Some((model_id, weights)) = subject_matte::model_path(model) else {
             // The download is offered, not begun; the track starts once
             // the model is there (`tick_track_subject`).
-            self.state.pending_track_subject = Some((AppCommand::TrackSubject { clip_id, model: model_name.to_string() }, model_name.to_string()));
+            self.state.pending_track_subject = Some((AppCommand::TrackSubject { clip_id, model: model_name.to_string(), cut_out }, model_name.to_string()));
             let id = *model.ids().last().expect("a model id");
             self.request_model_download(id);
             return;
@@ -75,13 +75,19 @@ impl KlippApp {
         }
         let fps = item.fps.as_f64().max(1.0);
         // The matte on the grade, once, by model: gating the first
-        // correction. Bound by the clip's media and the model, it follows a
-        // relink (#1881).
+        // correction, or cutting the clip out (#73), one node for both.
+        // Bound by the clip's media and the model, it follows a relink
+        // (#1881).
         let subject = if model == MatteModel::Foreground { klipp_nodes::SubjectMatte::Foreground } else { klipp_nodes::SubjectMatte::Subject };
-        let bound = clip.grade().nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::ExternalMatte && n.params.matte_subject == Some(subject));
-        if !bound {
+        // The Output's alpha already taken by another matte (a key mixer,
+        // a window) is refused by name, never replaced (#73).
+        if let Some(why) = cut_out.then(|| alpha_taken(clip.grade(), subject)).flatten() {
+            self.state.toast.show(why);
+            return;
+        }
+        if !subject_bound(clip.grade(), subject, cut_out) {
             let chosen = self.state.selected_node_id;
-            let edited = super::colour::edit_clip_graph(&mut self.state, clip_id, &[], true, move |graph| bind_subject(graph, subject, chosen));
+            let edited = super::colour::edit_clip_graph(&mut self.state, clip_id, &[], true, move |graph| bind_subject(graph, subject, chosen, cut_out));
             if matches!(edited, Some(Ok(()))) {
                 *needs_refresh = true;
             }
@@ -147,8 +153,10 @@ impl KlippApp {
     /// bar's line brought up to date.
     pub(super) fn tick_track_subject(&mut self, ctx: &egui::Context) {
         if std::mem::take(&mut self.state.ai_tools_state.pending_track_subject) {
+            // The tile's Cut Out asks for the clip cut out round it (#73).
+            let cut_out = std::mem::take(&mut self.state.ai_tools_state.pending_cut_out);
             match self.state.selected_clip {
-                Some(clip_id) => self.send_commands(vec![AppCommand::TrackSubject { clip_id, model: "subject".into() }]),
+                Some(clip_id) => self.send_commands(vec![AppCommand::TrackSubject { clip_id, model: "subject".into(), cut_out }]),
                 None => self.state.toast.show("Select a clip to track its subject"),
             }
         }
@@ -281,9 +289,17 @@ impl KlippApp {
                 Some(m) => n.params.matte_subject.is_some_and(|s| s.index() as u32 == m),
                 None => n.params.matte_image_path.as_deref() == Some(dir.as_path()),
             };
-            let gates = graph.nodes.iter().find(is_it).and_then(|m| graph.edges.iter().find(|e| e.from_node == m.id)).and_then(|e| graph.nodes.iter().find(|n| n.id == e.to_node)).map(|n| if n.label.is_empty() { format!("{:?}", n.kind) } else { n.label.clone() });
+            // A correction it gates, by its name, and whether it is the
+            // alpha the grade leaves with: it cuts the clip out (#73).
+            let matte = graph.nodes.iter().find(is_it).map(|n| n.id);
+            let cuts_out = matte.is_some() && graph.input_of(graph.output_node_id, 1) == matte;
+            let gates = matte
+                .and_then(|m| graph.edges.iter().find(|e| e.from_node == m && e.to_node != graph.output_node_id))
+                .and_then(|e| graph.nodes.iter().find(|n| n.id == e.to_node))
+                .map(|n| if n.label.is_empty() { format!("{:?}", n.kind) } else { n.label.clone() });
             let card = crate::subject_track::TrackCard {
                 gates,
+                cuts_out,
                 running: running.as_ref().filter(|s| s.artifact.as_deref().is_none_or(|a| std::path::Path::new(a) == dir)).map(|s| s.progress.unwrap_or(0.0)),
                 covered,
                 needed,
@@ -320,7 +336,7 @@ impl KlippApp {
             .and_then(|t| klipp_analysis::service::subject_matte_status(t.media))
             .filter(|s| matches!(s.state, klipp_analysis::service::State::Running | klipp_analysis::service::State::Queued))
             .map(|s| s.progress.unwrap_or(0.0));
-        crate::subject_track::set_transition_card(tid, crate::subject_track::TrackCard { running, covered, needed, lost, model: if ts.model == 1 { "foreground" } else { "subject" }, gates: None });
+        crate::subject_track::set_transition_card(tid, crate::subject_track::TrackCard { running, covered, needed, lost, model: if ts.model == 1 { "foreground" } else { "subject" }, gates: None, cuts_out: false });
     }
 }
 
@@ -343,29 +359,73 @@ fn lost_frames(dir: &std::path::Path) -> usize {
 /// sequence in `folder`, gating the correction `chosen` (the one picked in
 /// the grade view), else the first, made in the same step if it has none;
 /// a matte that gated it is replaced.
-pub(super) fn bind_subject(graph: &mut klipp_nodes::NodeGraph, model: klipp_nodes::SubjectMatte, chosen: Option<klipp_nodes::NodeId>) {
-    let is_correction = |n: &&klipp_nodes::graph::Node| n.kind == klipp_nodes::NodeKind::Corrector;
-    let corrector = chosen
-        .and_then(|id| graph.nodes.iter().filter(is_correction).find(|n| n.id == id))
-        .or_else(|| graph.nodes.iter().find(is_correction))
-        .map(|n| n.id)
-        .unwrap_or_else(|| graph.ensure_corrector());
-    let matte = klipp_nodes::NodeId::new_v4();
-    // Bound by the clip's media and the model, its folder found at render
-    // from the media as linked now (#1881).
-    let params = klipp_nodes::NodeParams { matte_subject: Some(model), ..Default::default() };
-    graph.nodes.push(klipp_nodes::graph::Node {
-        id: matte,
-        kind: klipp_nodes::NodeKind::ExternalMatte,
-        label: "Subject".into(),
-        enabled: true,
-        params,
-        keyframes: Default::default(),
-        output_link: None,
-        input_links: Vec::new(),
-    });
-    graph.edges.retain(|e| !(e.to_node == corrector && e.to_port == 1));
-    graph.edges.push(klipp_nodes::graph::Edge { from_node: matte, from_port: 0, to_node: corrector, to_port: 1 });
+pub(super) fn bind_subject(graph: &mut klipp_nodes::NodeGraph, model: klipp_nodes::SubjectMatte, chosen: Option<klipp_nodes::NodeId>, cut_out: bool) {
+    // One matte node per model, shared by the grade's gate and the cut
+    // out (#73). Two readers of it cost nothing more on the GPU: an
+    // External Matte is read from disk on the CPU, never drawn into a
+    // GPU matte slot, so it takes no slot path a second reader would lose.
+    let matte = match subject_node(graph, model) {
+        Some(id) => id,
+        None => {
+            let id = klipp_nodes::NodeId::new_v4();
+            // Bound by the clip's media and the model, its folder found at
+            // render from the media as linked now (#1881).
+            let params = klipp_nodes::NodeParams { matte_subject: Some(model), ..Default::default() };
+            graph.nodes.push(klipp_nodes::graph::Node {
+                id,
+                kind: klipp_nodes::NodeKind::ExternalMatte,
+                label: "Subject".into(),
+                enabled: true,
+                params,
+                keyframes: Default::default(),
+                output_link: None,
+                input_links: Vec::new(),
+            });
+            id
+        }
+    };
+    // Cut out: the matte is the alpha the grade leaves with (#73, #898),
+    // a matte already there replaced.
+    let target = if cut_out {
+        graph.output_node_id
+    } else {
+        let is_correction = |n: &&klipp_nodes::graph::Node| n.kind == klipp_nodes::NodeKind::Corrector;
+        chosen
+            .and_then(|id| graph.nodes.iter().filter(is_correction).find(|n| n.id == id))
+            .or_else(|| graph.nodes.iter().find(is_correction))
+            .map(|n| n.id)
+            .unwrap_or_else(|| graph.ensure_corrector())
+    };
+    graph.edges.retain(|e| !(e.to_node == target && e.to_port == 1));
+    graph.edges.push(klipp_nodes::graph::Edge { from_node: matte, from_port: 0, to_node: target, to_port: 1 });
+}
+
+/// Why `graph`'s Output alpha can't take the subject `model`'s matte, if
+/// it can't: another matte is already wired there (a key mixer, a window),
+/// named so the person can unwire it; the subject's own is no refusal.
+pub(super) fn alpha_taken(graph: &klipp_nodes::NodeGraph, model: klipp_nodes::SubjectMatte) -> Option<String> {
+    let there = graph.input_of(graph.output_node_id, 1)?;
+    if subject_node(graph, model) == Some(there) {
+        return None;
+    }
+    let node = graph.nodes.iter().find(|n| n.id == there)?;
+    let name = if node.label.is_empty() { node.kind.display_name().to_string() } else { node.label.clone() };
+    Some(format!("The grade's alpha already takes \u{201c}{name}\u{201d}: unwire it from the Output first to cut the clip out by the subject"))
+}
+
+/// The External Matte bound to the tracked subject `model` in `graph`.
+fn subject_node(graph: &klipp_nodes::NodeGraph, model: klipp_nodes::SubjectMatte) -> Option<klipp_nodes::NodeId> {
+    graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::ExternalMatte && n.params.matte_subject == Some(model)).map(|n| n.id)
+}
+
+/// Whether `graph`'s subject matte for `model` already does what is
+/// asked: cuts the clip out (`cut_out`), or gates a correction.
+pub(super) fn subject_bound(graph: &klipp_nodes::NodeGraph, model: klipp_nodes::SubjectMatte, cut_out: bool) -> bool {
+    let Some(matte) = subject_node(graph, model) else { return false };
+    if cut_out {
+        return graph.input_of(graph.output_node_id, 1) == Some(matte);
+    }
+    graph.edges.iter().any(|e| e.from_node == matte && e.to_port == 1 && graph.nodes.iter().any(|n| n.id == e.to_node && n.kind == klipp_nodes::NodeKind::Corrector))
 }
 
 /// A running pass's status-bar line: the file, how far, and, once it has
@@ -392,7 +452,7 @@ mod tests {
         let corr = g.ensure_corrector();
         let old = klipp_nodes::NodeId::new_v4();
         g.edges.push(klipp_nodes::graph::Edge { from_node: old, from_port: 0, to_node: corr, to_port: 1 });
-        bind_subject(&mut g, klipp_nodes::SubjectMatte::Subject, None);
+        bind_subject(&mut g, klipp_nodes::SubjectMatte::Subject, None, false);
         let matte = g.nodes.iter().find(|n| n.label == "Subject").unwrap();
         assert_eq!(matte.kind, klipp_nodes::NodeKind::ExternalMatte);
         // Bound by the model, not a folder's path (#1881).
@@ -406,12 +466,47 @@ mod tests {
         let first = g.ensure_corrector();
         let second = klipp_nodes::NodeId::new_v4();
         g.nodes.push(klipp_nodes::graph::Node { id: second, kind: klipp_nodes::NodeKind::Corrector, label: "Corrector 2".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() });
-        bind_subject(&mut g, klipp_nodes::SubjectMatte::Foreground, Some(second));
+        bind_subject(&mut g, klipp_nodes::SubjectMatte::Foreground, Some(second), false);
         assert!(g.edges.iter().any(|e| e.to_node == second && e.to_port == 1) && !g.edges.iter().any(|e| e.to_node == first && e.to_port == 1));
         let mut bare = klipp_nodes::NodeGraph::default();
         bare.nodes.retain(|n| n.kind != klipp_nodes::NodeKind::Corrector);
-        bind_subject(&mut bare, klipp_nodes::SubjectMatte::Subject, None);
+        bind_subject(&mut bare, klipp_nodes::SubjectMatte::Subject, None, false);
         assert!(bare.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Corrector), "a correction made for it");
+    }
+
+    /// #73: Cut Out wires the subject's matte into the Output's alpha and
+    /// gates no correction; asked for the grade as well, the one matte
+    /// node serves both, and each use is seen as bound.
+    #[test]
+    fn a_cut_out_feeds_the_outputs_alpha_and_shares_the_matte() {
+        use klipp_nodes::SubjectMatte::Subject;
+        let mut g = klipp_nodes::NodeGraph::default();
+        let corr = g.ensure_corrector();
+        assert!(!subject_bound(&g, Subject, true) && !subject_bound(&g, Subject, false));
+        bind_subject(&mut g, Subject, None, true);
+        let matte = subject_node(&g, Subject).expect("a subject matte");
+        assert_eq!(g.input_of(g.output_node_id, 1), Some(matte), "the Output's alpha");
+        assert!(!g.edges.iter().any(|e| e.to_node == corr && e.to_port == 1), "no correction gated");
+        assert!(subject_bound(&g, Subject, true) && !subject_bound(&g, Subject, false));
+        bind_subject(&mut g, Subject, None, false);
+        assert_eq!(g.nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::ExternalMatte).count(), 1, "one matte node for both");
+        assert_eq!(g.input_of(corr, 1), Some(matte));
+        assert_eq!(g.input_of(g.output_node_id, 1), Some(matte), "still the alpha");
+        assert!(subject_bound(&g, Subject, true) && subject_bound(&g, Subject, false));
+        assert_eq!(alpha_taken(&g, Subject), None, "the subject's own matte is no refusal");
+    }
+
+    /// #73: an Output alpha another matte already takes is refused by
+    /// that matte's name, and nothing is rewired.
+    #[test]
+    fn a_cut_out_refuses_an_alpha_already_taken() {
+        let mut g = klipp_nodes::NodeGraph::default();
+        let mixer = klipp_nodes::NodeId::new_v4();
+        g.nodes.push(klipp_nodes::graph::Node { id: mixer, kind: klipp_nodes::NodeKind::Mask, label: "Sky window".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+        g.edges.push(klipp_nodes::graph::Edge { from_node: mixer, from_port: 0, to_node: g.output_node_id, to_port: 1 });
+        let why = alpha_taken(&g, klipp_nodes::SubjectMatte::Subject).expect("refused");
+        assert!(why.contains("Sky window"), "{why}");
+        assert_eq!(g.input_of(g.output_node_id, 1), Some(mixer), "nothing rewired");
     }
 
     #[test]

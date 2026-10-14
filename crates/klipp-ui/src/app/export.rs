@@ -583,7 +583,7 @@ pub(super) fn matte_gap_lines(
                     Some(m) => if m == 1 { "foreground" } else { "subject" },
                     None => klipp_nodes::matte_sequence::read_manifest(&gap.folder).map_or("subject", |m| crate::subject_track::model_name(&m.model)),
                 };
-                (AppCommand::TrackSubject { clip_id: gap.clip, model: model.to_string() }, "")
+                (AppCommand::TrackSubject { clip_id: gap.clip, model: model.to_string(), cut_out: false }, "")
             }
         };
         out.push((gap.clip, track, format!("{name} at {}{place}: {how}", clip.timeline_in.to_timecode_string())));
@@ -2676,7 +2676,7 @@ mod export_rule_tests {
         let lines = matte_gap_lines(&gaps, &seq, &pool, |c| (c == cb).then_some(0.42));
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0].0, ca);
-        assert!(matches!(&lines[0].1, klipp_core::AppCommand::TrackSubject { clip_id, model } if *clip_id == ca && model == "subject"));
+        assert!(matches!(&lines[0].1, klipp_core::AppCommand::TrackSubject { clip_id, model, .. } if *clip_id == ca && model == "subject"));
         assert!(lines[0].2.starts_with("walk.mov at "), "{}", lines[0].2);
         assert!(lines[0].2.ends_with("20 of 50 frames tracked"), "{}", lines[0].2);
         assert!(lines[1].2.ends_with("tracking, 42%"), "{}", lines[1].2);

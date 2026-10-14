@@ -9064,9 +9064,17 @@ impl TimelinePanel {
                             cmds.push(AppCommand::CancelTrackSubject { clip_id });
                             ui.close_menu();
                         }
-                    } else if ui.button("Track Subject").on_hover_text("A matte that follows the person through the clip, gating its grade. Made in the background.").clicked() {
-                        cmds.push(AppCommand::TrackSubject { clip_id, model: "subject".into() });
-                        ui.close_menu();
+                    } else {
+                        if ui.button("Track Subject").on_hover_text("A matte that follows the person through the clip, gating its grade. Made in the background.").clicked() {
+                            cmds.push(AppCommand::TrackSubject { clip_id, model: "subject".into(), cut_out: false });
+                            ui.close_menu();
+                        }
+                        // Or the clip cut out round them, over the tracks
+                        // below (#73).
+                        if ui.button("Cut Out Subject").on_hover_text("The clip cut out round the person, frame by frame: the tracks below show everywhere else. Made in the background.").clicked() {
+                            cmds.push(AppCommand::TrackSubject { clip_id, model: "subject".into(), cut_out: true });
+                            ui.close_menu();
+                        }
                     }
                     // Offer the razor-split once markers exist. One atomic
                     // undo step restores the original clip.

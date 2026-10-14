@@ -831,7 +831,36 @@ mod menu_smoke_tests {
         timeline.frame(vec![button(false)]);
         sent.extend(std::mem::take(&mut timeline.sent));
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(sent.iter().any(|c| matches!(c, AppCommand::TrackSubject { clip_id, model } if *clip_id == id && model == "subject")), "{sent:?}");
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::TrackSubject { clip_id, model, cut_out: false } if *clip_id == id && model == "subject")), "{sent:?}");
+    }
+
+    /// #73: the same menu offers Cut Out Subject, which asks for the
+    /// subject's matte to cut the clip out.
+    #[test]
+    fn a_clips_menu_cuts_its_subject_out() {
+        let dir = std::env::temp_dir().join(format!("klipp-cut-menu-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("smoke.mov");
+        std::fs::write(&file, b"x").unwrap();
+        let mut timeline = Timeline::new();
+        // The analysis items sit low in a long menu.
+        timeline.height = 1400.0;
+        let media = timeline.state.media_pool.all().next().unwrap().id;
+        timeline.state.media_pool.get_mut(&media).unwrap().path = file;
+        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+        let id = timeline.state.sequences[0].tracks[v1].clips[0].id;
+        let drawn = timeline.frame(Vec::new());
+        let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
+        timeline.right_click(at);
+        let drawn = timeline.frame(Vec::new());
+        let item = drawn.iter().find(|(t, _)| t == "Cut Out Subject").unwrap_or_else(|| panic!("Cut Out Subject in the menu: {drawn:?}")).1;
+        let button = |pressed| egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        timeline.frame(vec![egui::Event::PointerMoved(item), button(true)]);
+        let mut sent = std::mem::take(&mut timeline.sent);
+        timeline.frame(vec![button(false)]);
+        sent.extend(std::mem::take(&mut timeline.sent));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::TrackSubject { clip_id, model, cut_out: true } if *clip_id == id && model == "subject")), "{sent:?}");
     }
 
     /// #1844: double-clicking a multicam clip on the timeline turns

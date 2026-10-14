@@ -515,6 +515,11 @@ pub enum ControlCommand {
         /// Fetch the model first when it isn't there; refused otherwise.
         #[serde(default)]
         download_model: bool,
+        /// "grade" (the default: the matte gates the clip's correction) or
+        /// "cut_out" (the clip cut out round the subject, #73). A
+        /// transition's subject takes neither.
+        #[serde(default)]
+        into: Option<String>,
     },
     /// Segments of every analysed item's transcript containing `query`,
     /// case-insensitively, with where they are in the file.
