@@ -449,6 +449,15 @@ mod look_tests {
         assert_eq!(colour_rule("x [grade order]"), "grade_order");
     }
 
+    /// #1976: what the viewer's frame goes through after the grade is part
+    /// of the colour management a colour finding's id holds.
+    #[test]
+    fn the_after_grade_transform_is_in_the_colour_management() {
+        let text = |after: &str| colour_management_text(Default::default(), Default::default(), None, after);
+        assert_ne!(text("lut /a.cube on 100%|sdr Bt1886|hdr Off"), text("lut /a.cube on 50%|sdr Bt1886|hdr Off"));
+        assert_ne!(text("lut /a.cube on 100%|sdr Bt1886|hdr Off"), text("lut /a.cube off 100%|sdr Bt1886|hdr Off"));
+    }
+
     /// #1919: zero shots read is "not measured", never a clean result;
     /// graphics are counted apart from footage and say what they were
     /// judged for.
@@ -478,10 +487,18 @@ pub(crate) fn is_generated_picture(c: &klipp_timeline::Clip) -> bool {
 
 /// The project's colour management as it changes a rendered picture,
 /// for a colour finding's basis (#1932): the working space, the grade
-/// encoding and the global LUT.
+/// encoding, and what the viewer's frame goes through after the grade —
+/// the global LUT with its switch and opacity, the viewer's output
+/// (#1976).
 pub(crate) fn colour_management(ctx: &ControlContext) -> String {
-    let lut = ctx.shared.project.lock().ok().and_then(|p| p.global_lut.clone()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "-".into());
-    format!("{:?}|{:?}|{lut}", klipp_engine::video_decoder::working_colorspace(), klipp_core::grade_encoding())
+    let (lut, after) = ctx.shared.project.lock().ok().map(|p| (p.global_lut.clone(), p.picture_transform.clone())).unwrap_or_default();
+    colour_management_text(klipp_engine::video_decoder::working_colorspace(), klipp_core::grade_encoding(), lut.as_deref(), &after)
+}
+
+/// [`colour_management`] from its parts.
+pub(crate) fn colour_management_text(working: klipp_core::WorkingColorspace, encoding: klipp_core::GradeEncoding, lut: Option<&std::path::Path>, after: &str) -> String {
+    let lut = lut.map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "-".into());
+    format!("{working:?}|{encoding:?}|{lut}|{after}")
 }
 
 /// The rule a colour finding's words end with, "[black_point]", as a

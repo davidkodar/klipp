@@ -1233,6 +1233,8 @@ impl KlippApp {
             self.take_colour_tool_reply(ctx);
         }
 
+        self.publish_picture_transform();
+
         // Delivery Check window (#1978): the check's findings, reviewed
         // where they are read. Its request keeps running with the window
         // closed; the answer is there when it opens again.
