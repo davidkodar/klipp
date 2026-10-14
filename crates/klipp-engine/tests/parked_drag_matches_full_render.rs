@@ -84,3 +84,50 @@ fn thumbnails_wait_for_the_release() {
     assert!(s.reencode_ms == 0.0 && s.composite_ms == 0.0, "thumbnails sent the drag through the full render ({s:?})");
     parked.end_drag().expect("letting go showed no frame");
 }
+
+/// Below temporal noise reduction (#1863): the drag's steps take the
+/// denoise's output the renderer held for the parked frame and grade it
+/// on the GPU, never through the full render, and show what letting go
+/// shows, and what an engine holding nothing shows at the same grade.
+#[test]
+fn a_drag_below_a_held_denoise_takes_the_gpu_path() {
+    let Some(src) = common::source("tnr-gpu-held", 640, 360, common::PQ_TAGS) else {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    };
+    let denoised = |stops: f32| {
+        move |clip: &mut klipp_timeline::Clip| {
+            use klipp_timeline::GradeAccess;
+            *clip = klipp_timeline::test_clip::TestClip::of(clip.clone())
+                .effect(klipp_effects::BuiltinEffect::TemporalDenoise { strength: 1.0, threshold: 0.2 })
+                .build();
+            let mut g = clip.grade().clone();
+            for n in g.nodes.iter_mut().filter(|n| n.kind == klipp_nodes::NodeKind::Exposure) {
+                n.params.exposure = Some(stops);
+            }
+            clip.set_grade(g);
+        }
+    };
+    let parked = common::Parked::start_with(src.clone(), 640, 360, denoised(0.5));
+    parked.begin_drag_seen(0.25);
+    let mut frames = Vec::new();
+    for stops in [0.75, 1.0, 1.25] {
+        parked.step(stops).expect("a drag step showed no frame");
+        frames.push(parked.frame());
+    }
+    let dragged = parked.perf();
+    parked.end_drag().expect("letting go showed no frame");
+    parked.settle();
+    let released = parked.frame();
+    for s in dragged.iter().rev().take(3) {
+        assert!(s.reencode_ms == 0.0 && s.composite_ms == 0.0, "a drag step went through the full render ({s:?})");
+    }
+    assert_ne!(frames[0], frames[1], "a step changed nothing");
+    let worst = |a: &[u8], b: &[u8]| a.iter().zip(b).enumerate().filter(|(i, _)| i % 4 != 3).map(|(_, (x, y))| (*x as i32 - *y as i32).abs()).max().unwrap();
+    let last = frames.last().unwrap();
+    let to_release = worst(last, &released);
+    let fresh = common::Parked::start_with_unheld(src, 640, 360, denoised(1.25));
+    let to_fresh = worst(last, &fresh.frame());
+    eprintln!("held denoise drag: worst {to_release} levels from the release, {to_fresh} from an engine holding nothing");
+    assert!(to_release <= 1 && to_fresh <= 1, "the drag showed a picture {to_release} / {to_fresh} levels off the full render");
+}

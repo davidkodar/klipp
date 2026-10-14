@@ -128,6 +128,10 @@ struct Held {
     /// The node's own declines on the run that made it, replayed on a
     /// hit so a hit says what the run would have.
     declines: Vec<Decline>,
+    /// The same pixels on the GPU, once a GPU run took them (#1863, step
+    /// B3): a chain then starts from them with a copy on the device, not
+    /// a 133 MB upload at 4K. Counted against the GPU's own budget.
+    gpu: Option<Arc<wgpu::Buffer>>,
 }
 
 impl Held {
@@ -154,11 +158,17 @@ pub struct HeldOutputs {
     /// takes it away (`GraphExecutor::hold_outputs_for(None)`).
     pub(crate) token: Option<HeldSource>,
     counts: HeldCounts,
+    /// The budget of the entries' GPU copies, apart from the CPU one: on
+    /// a card with its own memory they are two pools.
+    gpu_budget: usize,
+    /// The device the GPU copies live on: another device (one replaced)
+    /// can't read them.
+    gpu_device: Option<Arc<wgpu::Device>>,
 }
 
 impl Default for HeldOutputs {
     fn default() -> Self {
-        Self { entries: VecDeque::new(), budget: DEFAULT_BUDGET, token: None, counts: HeldCounts::default() }
+        Self { entries: VecDeque::new(), budget: DEFAULT_BUDGET, token: None, counts: HeldCounts::default(), gpu_budget: DEFAULT_BUDGET, gpu_device: None }
     }
 }
 
@@ -170,6 +180,10 @@ pub(crate) struct HeldRun {
     pub hits: HashMap<NodeId, (Arc<Vec<f32>>, Vec<Decline>)>,
     pub skip: HashSet<NodeId>,
     pub store: HashMap<NodeId, Vec<u8>>,
+    /// The heavy nodes not held, by [`refusal`] or for want of a key.
+    pub refused: Vec<NodeId>,
+    /// The keys of the hits, for their GPU copies.
+    pub keys: HashMap<NodeId, Vec<u8>>,
 }
 
 impl HeldOutputs {
@@ -221,10 +235,50 @@ impl HeldOutputs {
         self.entries.iter().any(|h| h.key == key)
     }
 
+    /// The GPU copy of the entry under `key` on `device`, if one was made
+    /// there. Copies made on another device (the one before a
+    /// replacement) are all forgotten.
+    pub(crate) fn gpu_of(&mut self, key: &[u8], device: &Arc<wgpu::Device>) -> Option<Arc<wgpu::Buffer>> {
+        if self.gpu_device.as_ref().is_some_and(|d| !Arc::ptr_eq(d, device)) {
+            self.drop_gpu();
+        }
+        self.entries.iter().find(|h| h.key == key)?.gpu.clone()
+    }
+
+    /// Keep `buffer`, made on `device`, as the GPU copy of the entry under
+    /// `key`, then drop the least recently used copies past the GPU
+    /// budget, keeping at least [`MIN_ENTRIES`].
+    pub(crate) fn set_gpu(&mut self, key: &[u8], buffer: Arc<wgpu::Buffer>, device: &Arc<wgpu::Device>) {
+        self.gpu_device = Some(Arc::clone(device));
+        if let Some(h) = self.entries.iter_mut().find(|h| h.key == key) {
+            h.gpu = Some(buffer);
+        }
+        let gpu_bytes = |e: &VecDeque<Held>| e.iter().filter_map(|h| h.gpu.as_ref()).map(|b| b.size() as usize).sum::<usize>();
+        while self.entries.iter().filter(|h| h.gpu.is_some()).count() > MIN_ENTRIES && gpu_bytes(&self.entries) > self.gpu_budget {
+            if let Some(h) = self.entries.iter_mut().find(|h| h.gpu.is_some()) {
+                h.gpu = None;
+            }
+        }
+    }
+
+    /// Forget every GPU copy: the device was lost or replaced, and its
+    /// buffers with it. The CPU pixels stay.
+    pub fn drop_gpu(&mut self) {
+        for h in &mut self.entries {
+            h.gpu = None;
+        }
+        self.gpu_device = None;
+    }
+
+    /// GPU copies held now.
+    pub fn gpu_len(&self) -> usize {
+        self.entries.iter().filter(|h| h.gpu.is_some()).count()
+    }
+
     /// Hold `pixels`, a heavy node's output, under its `key`.
     pub(crate) fn put(&mut self, key: Vec<u8>, pixels: Arc<Vec<f32>>, declines: Vec<Decline>) {
         self.entries.retain(|h| h.key != key);
-        self.entries.push_back(Held { key, pixels, declines });
+        self.entries.push_back(Held { key, pixels, declines, gpu: None });
         self.counts.stored += 1;
         self.evict();
     }
@@ -239,11 +293,15 @@ impl HeldOutputs {
         let mut run = HeldRun::default();
         for (id, found) in lookups(graph, order, feeding, source, env, looked_at, history) {
             match found {
-                Err(_) => self.counts.refused += 1,
+                Err(_) => {
+                    self.counts.refused += 1;
+                    run.refused.push(id);
+                }
                 Ok(key) => match self.get(&key) {
                     Some(hit) => {
                         self.counts.hits += 1;
                         run.hits.insert(id, hit);
+                        run.keys.insert(id, key);
                     }
                     None => {
                         self.counts.misses += 1;
@@ -348,12 +406,37 @@ pub(crate) fn refusal(graph: &NodeGraph, id: NodeId, above: &HashSet<NodeId>, by
 
 /// What the Source above a held node was, for the key. A heavy node
 /// never reads a source left on the GPU: the run refuses
-/// (`CpuSourceRequired`) and runs again with the CPU frame. So when only
-/// passthroughs stand between them, its input is the CPU frame however
-/// the run was seeded; with a node above it that ran on the chain, the
-/// seed is part of the picture.
-fn source_read(above: &HashSet<NodeId>, by_id: &HashMap<NodeId, &Node>, env: &RunEnv) -> bool {
-    env.seeded && !above.iter().all(|a| by_id.get(a).is_some_and(|n| passes_through(n, env.clip_time_secs)))
+/// (`CpuSourceRequired`) and runs again with the CPU frame, and its own
+/// output is on the CPU. So the seed is part of the picture only through
+/// a node that ran on the chain from it: one reached from the Source
+/// through passthroughs, not through a heavy node. With none, the held
+/// node's input is the same however the run was seeded.
+fn source_read(graph: &NodeGraph, above: &HashSet<NodeId>, by_id: &HashMap<NodeId, &Node>, env: &RunEnv) -> bool {
+    if !env.seeded {
+        return false;
+    }
+    let mut readers: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+    for (from, to) in graph.iter_dependencies() {
+        readers.entry(from).or_default().push(to);
+    }
+    let t = env.clip_time_secs;
+    let mut stack: Vec<NodeId> = above.iter().copied().filter(|a| by_id.get(a).is_some_and(|n| n.kind == NodeKind::Source)).collect();
+    let mut seen: HashSet<NodeId> = stack.iter().copied().collect();
+    while let Some(n) = stack.pop() {
+        for r in readers.get(&n).into_iter().flatten().filter(|r| above.contains(r)) {
+            let Some(node) = by_id.get(r) else { continue };
+            if is_heavy(node) && crate::executor::effective_enabled(node, t) {
+                continue;
+            }
+            if !passes_through(node, t) {
+                return true;
+            }
+            if seen.insert(*r) {
+                stack.push(*r);
+            }
+        }
+    }
+    false
 }
 
 /// The key of heavy node `id` with `above` its ancestors: every node from
@@ -399,7 +482,7 @@ pub(crate) fn key_of(graph: &NodeGraph, id: NodeId, above: &HashSet<NodeId>, by_
     let inside: HashSet<NodeId> = ids.iter().copied().collect();
     let mut edges: Vec<&crate::graph::Edge> = graph.edges.iter().filter(|e| inside.contains(&e.to_node)).collect();
     edges.sort_by_key(|e| (e.to_node, e.to_port, e.from_node, e.from_port));
-    let env = RunEnv { seeded: source_read(above, by_id, env), ..env.clone() };
+    let env = RunEnv { seeded: source_read(graph, above, by_id, env), ..env.clone() };
     let value = serde_json::to_value(Key { version: KEY_VERSION, source, env, nodes, edges }).ok()?;
     serde_json::to_vec(&value).ok()
 }
@@ -623,6 +706,22 @@ mod tests {
         let heavy = g.nodes[2].id;
         let seeded = RunEnv { seeded: true, ..env() };
         assert_eq!(key_in(&g, heavy, &source(), &seeded), key_in(&g, heavy, &source(), &env()));
+    }
+
+    /// Below a heavy node the seed is out of the picture: a plug-in under a
+    /// denoise keys alike seeded or not, since the denoise read the CPU
+    /// frame; one under an Exposure on the chain from the seed doesn't.
+    #[test]
+    fn a_seed_read_only_through_a_heavy_node_is_not_in_the_key() {
+        let mut tnr = node(NodeKind::Effect);
+        tnr.params.effects = vec![klipp_effects::BuiltinEffect::TemporalDenoise { strength: 1.0, threshold: 0.2 }];
+        let seeded = RunEnv { seeded: true, ..env() };
+        let g = chain(vec![node(NodeKind::Source), tnr.clone(), node(NodeKind::Exposure), node(NodeKind::Ofx), node(NodeKind::Exposure), node(NodeKind::Output)]);
+        let plugin = g.nodes[3].id;
+        assert_eq!(key_in(&g, plugin, &source(), &seeded), key_in(&g, plugin, &source(), &env()), "through the denoise");
+        let g = chain(vec![node(NodeKind::Source), node(NodeKind::Exposure), tnr, node(NodeKind::Ofx), node(NodeKind::Exposure), node(NodeKind::Output)]);
+        let plugin = g.nodes[3].id;
+        assert_ne!(key_in(&g, plugin, &source(), &seeded), key_in(&g, plugin, &source(), &env()), "an Exposure on the chain from the seed");
     }
 
     /// Refused: the graph's result, a node or one above it looked at, an

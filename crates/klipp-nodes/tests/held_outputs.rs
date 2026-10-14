@@ -351,3 +351,78 @@ fn a_denoise_and_a_plugin_both_stay() {
     ex.clear_held();
     assert_eq!(ex.held_len(), 0);
 }
+
+/// The viewer's GPU path runs the parked frame's grade with no frame
+/// context (#1863, step B3): it takes the heavy node held (a denoise, an
+/// OFX plug-in), starting the chain under it from the held output's GPU
+/// copy where there is a GPU, and draws bit for bit what the renderer's
+/// run draws. A step whose output isn't held fails, so the renderer draws
+/// it, rather than run the node without its context.
+#[test]
+fn a_run_without_context_takes_only_what_is_held() {
+    for (arm, make) in executors() {
+        for heavy in [denoise as fn() -> Node, || ofx_node("swap")] {
+            let (mut g, stops) = below(heavy());
+            let clip = ClipId::new();
+            let (mut held, mut plain) = (make(), make());
+            let host = Host::default();
+            let mut media = Media { end: 10.0 };
+            run(&mut held, &g, clip, Some(source(clip)), &mut media, &host, None);
+            for step in 0..3 {
+                set_stops(&mut g, stops, 0.6 + step as f32 * 0.1);
+                held.hold_outputs_for(Some(source(clip)));
+                let a = held.execute_linear_with_thumbs(&frame(), &g, W, H, AT, 10, None, None, None).expect("a held run").0;
+                held.hold_outputs_for(None);
+                let b = run(&mut plain, &g, clip, None, &mut media, &host, None);
+                assert_eq!(bits(&a), bits(&b.pixels), "{arm}: step {step} differs from the renderer's run");
+            }
+            assert_eq!(held.held_counts().hits, 3, "{arm}");
+            assert_eq!(held.held_counts().stored, 1, "{arm}: the node ran for the renderer only");
+            if arm == "gpu" {
+                assert_eq!(held.held_gpu_len(), 1, "the chain started from the held output's GPU copy");
+            }
+            let mut other = source(clip);
+            other.pts_micros += 40_000;
+            held.hold_outputs_for(Some(other));
+            let missed = held.execute_linear_with_thumbs(&frame(), &g, W, H, AT, 10, None, None, None);
+            held.hold_outputs_for(None);
+            assert!(matches!(missed, Err(klipp_nodes::executor::ExecutorError::CpuSourceRequired)), "{arm}: a miss without context must fail, not run the node blind");
+            assert_eq!(held.held_counts().stored, 1, "{arm}");
+        }
+    }
+}
+
+/// A GPU path's run seeded with the parked frame's picture, whose Source
+/// a held output stands in for (#1863): the seed is the Source's, never
+/// what a chain under the held output starts from. Here the held denoise
+/// is read twice (an Exposure and a Blend), so no chain starts from its
+/// GPU copy, and the Exposure's chain must start from its pixels.
+#[test]
+fn a_seed_whose_source_is_held_is_not_graded() {
+    let mut ex = GraphExecutor::new();
+    if ex.gpu_pipeline_or_init().is_none() {
+        assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none_or(|v| v != "1"), "required, but there is no GPU");
+        eprintln!("UNVERIFIED: no GPU");
+        return;
+    }
+    let s = node(NodeKind::Source, NodeParams::default());
+    let heavy = denoise();
+    let up = exposure(0.5);
+    let blend = node(NodeKind::Blend, NodeParams { mix: Some(0.5), ..Default::default() });
+    let out = node(NodeKind::Output, NodeParams::default());
+    let link = |a: &Node, b: &Node, port| Edge { from_node: a.id, from_port: 0, to_node: b.id, to_port: port };
+    let edges = vec![link(&s, &heavy, 0), link(&heavy, &up, 0), link(&up, &blend, 0), link(&heavy, &blend, 1), link(&blend, &out, 0)];
+    let g = NodeGraph { output_node_id: out.id, nodes: vec![s, heavy, up, blend, out], edges, node_positions: Default::default(), working_space_override: None, frames: vec![], sticky_notes: vec![] };
+    let clip = ClipId::new();
+    let host = Host::default();
+    let mut media = Media { end: 10.0 };
+    let want = run(&mut ex, &g, clip, Some(source(clip)), &mut media, &host, None).pixels;
+    // Another picture in the seed: what the GPU path's pre-grade would be.
+    let other: Vec<f32> = frame().iter().map(|v| 1.0 - v).collect();
+    assert!(ex.prime_chain_from_linear(&other, W, H));
+    ex.hold_outputs_for(Some(source(clip)));
+    let got = ex.execute_linear_with_thumbs(&[], &g, W, H, AT, 10, None, None, None).expect("a held run").0;
+    ex.hold_outputs_for(None);
+    assert_eq!(ex.held_counts().hits, 1);
+    assert_eq!(bits(&got), bits(&want), "the chain under the held output read the seed");
+}

@@ -3763,7 +3763,7 @@ impl Renderer {
         self.executor.hold_outputs_for(held);
         let mut sources = ClipSources::new(src, clip, self.working).with_current(at, hdr, width, height);
         let mut bounded = BoundedSources::new(&mut sources, width, height);
-        self.grade_source_scene = hdr.is_some();
+        self.grade_source_scene = source_domain(hdr) == klipp_nodes::domains::PictureDomain::Scene;
         let pixels = self.in_context(clip, clip_time, fps, at, source_pts, &mut bounded, |r, ctx| r.grade(clip, input, clip_time, fps, width, height, Some(ctx)));
         self.grade_source_scene = false;
         self.executor.hold_outputs_for(None);
@@ -3778,26 +3778,7 @@ impl Renderer {
     fn held_source(&mut self, clip: &Clip, clip_time: f64, at: f64, source_pts: Option<f64>, src: &mut dyn FrameSource) -> Option<klipp_nodes::held::HeldSource> {
         let (pts, decoded) = (source_pts?, self.source_decoded?);
         let file = src.held_file(clip)?;
-        let retime = klipp_nodes::held::Retime {
-            speed: clip.speed_at(clip_time),
-            reverse: clip.is_reversed(),
-            source_at_clip_time: at,
-            media_fps: src.media_fps(clip),
-            // Media plays at its own rate; there is no conform to say.
-            conform_fps: None,
-        };
-        Some(klipp_nodes::held::HeldSource {
-            clip: clip.id,
-            media: file.media,
-            path: file.path,
-            file_len: file.len,
-            file_modified: file.modified,
-            log_format: file.log_format,
-            pts_micros: (pts * 1e6).round() as i64,
-            decoded,
-            retime,
-            proxy: file.proxy,
-        })
+        Some(held_source_of(clip, clip_time, at, pts, decoded, file, src.media_fps(clip)))
     }
 
     /// `clip`'s enabled OFX plug-ins on `pixels`, each a node of its own
@@ -4918,6 +4899,69 @@ fn mattes_in_the_plan(clip: &Clip, blends: &[Option<crate::resolve::Blend>]) -> 
         })
         .collect();
     (moved > 0).then_some((out, moved))
+}
+
+/// The colour domain of a clip's picture as its grade reads it (#1867):
+/// scene-referred when it was decoded so (HDR or camera log, `hdr` its
+/// transfer), display-referred otherwise. The renderer's grade and the
+/// viewer's GPU path on the parked frame both ask here, so a held
+/// output's key (#1863) is the same from either.
+pub fn source_domain(hdr: Option<klipp_color::hdr::HdrTransfer>) -> klipp_nodes::domains::PictureDomain {
+    match hdr {
+        Some(_) => klipp_nodes::domains::PictureDomain::Scene,
+        None => klipp_nodes::domains::PictureDomain::Display,
+    }
+}
+
+/// What `clip`'s frame is the picture of, for its held outputs (#1863):
+/// `file`, the decoded frame's own `pts` and `decoded` size, and the
+/// clip's retime at `clip_time` (`at` the source time it shows there).
+/// One construction for the renderer, which stores the outputs, and the
+/// viewer's GPU path, which takes them: the two keys can't drift.
+pub fn held_source_of(clip: &Clip, clip_time: f64, at: f64, pts: f64, decoded: (u32, u32), file: HeldFile, media_fps: Option<f64>) -> klipp_nodes::held::HeldSource {
+    let retime = klipp_nodes::held::Retime {
+        speed: clip.speed_at(clip_time),
+        reverse: clip.is_reversed(),
+        source_at_clip_time: at,
+        media_fps,
+        // Media plays at its own rate; there is no conform to say.
+        conform_fps: None,
+    };
+    klipp_nodes::held::HeldSource {
+        clip: clip.id,
+        media: file.media,
+        path: file.path,
+        file_len: file.len,
+        file_modified: file.modified,
+        log_format: file.log_format,
+        pts_micros: (pts * 1e6).round() as i64,
+        decoded,
+        retime,
+        proxy: file.proxy,
+    }
+}
+
+/// `graph`, `clip`'s grade, with the clip's source-boundary node spliced
+/// after its Source as the renderer runs it at `time` (#1863): the graph
+/// the viewer's GPU path runs when it takes the node's output held. The
+/// node's id is the clip's, so the two key it alike.
+pub fn graph_with_source_nodes(clip: &Clip, time: Timecode, fps: f64, graph: &klipp_nodes::NodeGraph) -> klipp_nodes::NodeGraph {
+    let denoise = matches!(clip.kind, ClipKind::Media { .. }).then(|| temporal_denoise_of(clip, time, fps)).flatten();
+    let blend = matches!(clip.kind, ClipKind::Media { .. }) && frame_blends(clip, time);
+    let mut out = graph.clone();
+    for node in source_nodes(clip, blend, denoise, None).into_iter().rev() {
+        out.splice_after_source(node);
+    }
+    out
+}
+
+/// Whether every effect `clip` draws at `time` runs at its source (a
+/// temporal denoise, a frame blend; #1863): nothing of its effects comes
+/// after its grade, so a grade run with its source-boundary node is the
+/// whole picture.
+pub fn only_source_boundary_effects(clip: &Clip, time: Timecode, fps: f64) -> bool {
+    let (fx, opacity) = clip_effects(clip, time, fps, None, None);
+    (opacity - 1.0).abs() < 1e-6 && fx.iter().all(klipp_effects::registry::needs_source_neighbours)
 }
 
 /// A clip's source-boundary nodes (M4 steps 6 and 7): its frame blend and

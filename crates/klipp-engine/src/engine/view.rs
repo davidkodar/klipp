@@ -177,6 +177,19 @@ impl ViewerSource<'_> {
     }
 }
 
+/// `clip`'s files as the viewer decodes them, stamped now (#1863): the
+/// original, and the proxy when the decoder would pick it (ready, and
+/// there). The renderer's held outputs and the GPU path's lookups both
+/// read them here.
+pub(super) fn held_file_of(pool: &MediaPool, clip: &Clip, use_proxies: bool) -> Option<klipp_compose::HeldFile> {
+    let media = clip.media_id()?;
+    let item = pool.get(&media)?;
+    let proxy = item.proxy_path.clone().filter(|p| use_proxies && item.proxy_ready && p.exists());
+    let path = item.path.clone();
+    let log_format = crate::video_decoder::log_format_for_path(&path);
+    klipp_compose::HeldFile::stamp(media, path, log_format, proxy)
+}
+
 /// Whether two sizes are the same shape, to within a pixel of rounding.
 pub(super) fn same_shape((aw, ah): (u32, u32), (bw, bh): (u32, u32)) -> bool {
     if aw == 0 || ah == 0 || bw == 0 || bh == 0 {
@@ -300,16 +313,7 @@ impl FrameSource for ViewerSource<'_> {
     /// neighbours a denoiser reads), so a change to either is a new key.
     fn held_file(&mut self, clip: &Clip) -> Option<klipp_compose::HeldFile> {
         self.hold?;
-        let media = clip.media_id()?;
-        let (path, proxy) = {
-            let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
-            let item = pool.get(&media)?;
-            // As the decoder picks: the proxy when it is ready and there.
-            let proxy = item.proxy_path.clone().filter(|p| self.use_proxies && item.proxy_ready && p.exists());
-            (item.path.clone(), proxy)
-        };
-        let log_format = crate::video_decoder::log_format_for_path(&path);
-        klipp_compose::HeldFile::stamp(media, path, log_format, proxy)
+        held_file_of(&self.media_pool.read().unwrap_or_else(|e| e.into_inner()), clip, self.use_proxies)
     }
 
     fn media_range(&mut self, clip: &Clip) -> Option<(f64, f64)> {

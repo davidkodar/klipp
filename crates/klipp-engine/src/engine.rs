@@ -8337,6 +8337,19 @@ impl PlaybackEngine {
         };
         let mut blockers = self.fast_path_blockers_for(mode);
         blockers.extend(self.picture_shape_blocker((width, height)));
+        // A slider step below a heavy node whose output the renderer holds
+        // for this frame (#1863): the clip's effects all run at its source,
+        // so its grade with its source node is the whole picture, and the
+        // run takes the node's output held, or fails and the renderer draws
+        // the frame. The key is the pre-grade's own frame, so a held output
+        // is never another frame's.
+        // The pre-grade is kept at the decoded picture's own size (the
+        // frame the renderer reads is made from it at that size), so that
+        // is the key's decoded size, whatever size the viewer shows.
+        let held = (mode == FastPath::ParkedDrag).then(|| self.parked_held_source(&pixels, width, height)).flatten();
+        if held.is_some() {
+            blockers.retain(|b| *b != "builtin effects on clip");
+        }
         if !Self::only_the_graded_path_handles(&blockers) {
             return false;
         }
@@ -8344,6 +8357,14 @@ impl PlaybackEngine {
         let Some((graph, clip_time_secs, frame_number, track_points)) = self.v1_graph_setup() else {
             debug!("gpu regrade ({mode:?}): no graph setup for the primary clip");
             return false;
+        };
+        let graph = match &held {
+            Some(_) => {
+                let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+                let Some(clip) = seq.tracks.get(self.current_track_index).and_then(|t| t.clips.get(self.current_clip_index)) else { return false };
+                Arc::new(klipp_compose::render::graph_with_source_nodes(clip, self.playhead, seq.fps.as_f64(), &graph))
+            }
+            None => graph,
         };
         let seed = match &pixels.pixels {
             PregradePixels::Hdr(h) => match &h.codes {
@@ -8384,20 +8405,35 @@ impl PlaybackEngine {
             }
         };
         mark_stage(EngineStage::PostProcessInnerGradeExecute);
-        let Some(mut bytes) =
-            crate::fast_path::grade_to_display_on_gpu(self.renderer.executor(), seed, width, height, &at, &display)
-        else {
+        // With a held source the run keys as the renderer's did: the same
+        // source, and its picture's domain as the renderer gives it.
+        let holding = held.is_some();
+        if holding {
+            let transfer = match &pixels.pixels {
+                PregradePixels::Hdr(h) => Some(h.transfer),
+                PregradePixels::Srgb8(_) => None,
+            };
+            self.renderer.executor().set_source_domain(klipp_compose::render::source_domain(transfer));
+            self.renderer.executor().hold_outputs_for(held);
+        }
+        let graded = crate::fast_path::grade_to_display_on_gpu(self.renderer.executor(), seed, width, height, &at, &display);
+        if holding {
+            self.renderer.executor().hold_outputs_for(None);
+            self.renderer.executor().set_source_domain(klipp_nodes::domains::PictureDomain::Display);
+        }
+        let Some(mut bytes) = graded else {
             debug!("gpu regrade ({mode:?}): the graph did not run on the GPU");
             return false;
         };
         let grade_ms = t_frame.elapsed().as_secs_f64() * 1000.0;
         // The scopes measure the bytes about to be shown, when due.
         let scope_ms = self.draw_due_scopes(DisplayScopeFrame::working(&bytes), width, height);
+        let held_counts = self.renderer.executor().held_counts();
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame_swap(&mut bytes, width, height);
             fb.set_presented(self.playhead, self.published_complete());
-            fb.note(format!("graded on the GPU: {:?} {:?} complete {} (streams pending {}, progress {})", self.state, self.playhead.value, self.published_complete(), self.pending_stream_refresh, self.presenting_progress));
+            fb.note(format!("graded on the GPU: {:?} {:?} complete {} (streams pending {}, progress {}) held outputs {} hit {} missed", self.state, self.playhead.value, self.published_complete(), self.pending_stream_refresh, self.presenting_progress, held_counts.hits, held_counts.misses));
         }
         self.composite_scratch_u8 = bytes;
         let total_ms = t_frame.elapsed().as_secs_f64() * 1000.0;
@@ -8681,6 +8717,31 @@ impl PlaybackEngine {
 
     /// The pregrade of the frame at the playhead, if that is what the
     /// cached one is.
+    /// The parked frame's source as the renderer keyed its held outputs
+    /// by (#1863), for the GPU path to take them: the frame `pregrade`
+    /// shows (its own pts, decoded at `width × height`), its files, and
+    /// the primary clip's retime there. `None` unless parked with the
+    /// hold on, and the clip's effects all run at its source.
+    fn parked_held_source(&self, pregrade: &Pregrade, width: u32, height: u32) -> Option<klipp_nodes::held::HeldSource> {
+        if self.state == PlaybackState::Playing || !self.hold_neighbours {
+            return None;
+        }
+        let pts = pregrade.pts?;
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        let clip = seq.tracks.get(self.current_track_index)?.clips.get(self.current_clip_index)?;
+        let fps = seq.fps.as_f64();
+        if clip.has_enabled_plugins() || !klipp_compose::render::only_source_boundary_effects(clip, self.playhead, fps) {
+            return None;
+        }
+        let (file, media_fps) = {
+            let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+            (view::held_file_of(&pool, clip, self.use_proxies)?, pool.get(&clip.media_id()?).map(|m| m.fps.as_f64()))
+        };
+        let (clip_time, _) = klipp_compose::render::grade_time(clip, self.playhead, fps);
+        let at = klipp_compose::render::source_secs(clip, self.playhead, fps);
+        Some(klipp_compose::render::held_source_of(clip, clip_time, at, pts, (width, height), file, media_fps))
+    }
+
     fn parked_pregrade(&self) -> Option<&(Pregrade, u32, u32)> {
         if self.cached_pregrade_at == Some(self.playhead) {
             self.cached_pregrade_frame.as_ref()

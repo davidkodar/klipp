@@ -80,7 +80,7 @@ fn paused_4k_regrade_below_heavy_nodes() {
         eprintln!("skipping: no ffmpeg");
         return;
     };
-    let ofx = fixture_bundle();
+    let ofx = common::ofx_fixture_bundle();
     match &ofx {
         // Read once, when the engine discovers its plug-ins, which the
         // first `Parked` below does; no other thread reads it meanwhile.
@@ -175,21 +175,3 @@ fn split_temporal_nr(src: &std::path::Path) {
     );
 }
 
-/// The C OFX fixture built into a bundle under a scratch folder; the
-/// folder, or `None` without a C compiler.
-fn fixture_bundle() -> Option<std::path::PathBuf> {
-    let root = std::env::temp_dir().join(format!("klipp-probe-ofx-{}", std::process::id()));
-    let binary = root.join("KlippFixture.ofx.bundle/Contents/Linux-x86-64/KlippFixture.ofx");
-    std::fs::create_dir_all(binary.parent()?).ok()?;
-    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../klipp-plugin/tests/fixtures/ofx/fixture.c");
-    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
-    let ok = std::process::Command::new(cc)
-        .args(["-std=c11", "-O2", "-shared", "-fPIC"])
-        .arg(&source)
-        .arg("-o")
-        .arg(&binary)
-        .status()
-        .ok()?
-        .success();
-    ok.then_some(root)
-}
