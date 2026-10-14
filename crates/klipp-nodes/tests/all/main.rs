@@ -40,6 +40,8 @@ mod grain_denoise_parity;
 mod held_outputs;
 #[path = "../key_matte_parity.rs"]
 mod key_matte_parity;
+#[path = "../key_mixer.rs"]
+mod key_mixer;
 #[path = "../lut_node_tags_parity.rs"]
 mod lut_node_tags_parity;
 #[path = "../mask_cutout_gpu_parity.rs"]

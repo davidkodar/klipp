@@ -5674,6 +5674,7 @@ const ADD_MENU_CATEGORIES: &[(&str, &[(&str, &str)])] = &[
         ("External Matte", "ExternalMatte"),
         ("Difference Key", "DifferenceKey"),
         ("Combine Mattes", "CombineMattes"),
+        ("Key Mixer", "KeyMixer"),
         ("Mask Cutout", "MaskCutout"),
     ]),
     ("Compositing", &[

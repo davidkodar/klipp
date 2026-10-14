@@ -626,8 +626,8 @@ impl NodeGraph {
 }
 
 impl Node {
-    /// Effective input-port count, accounting for nodes (currently just
-    /// `LayerMixer`) whose port count is data-driven by their params
+    /// Effective input-port count, accounting for nodes (`LayerMixer`,
+    /// `KeyMixer`) whose port count is data-driven by their params
     /// rather than fixed by the kind alone.
     ///
     /// Always at least `kind.input_port_count()` — i.e. a freshly added
@@ -642,7 +642,36 @@ impl Node {
                 .map(|m| m.inputs.len() as u8)
                 .unwrap_or(0)
                 .max(static_count),
+            NodeKind::KeyMixer => self
+                .params
+                .key_mixer
+                .as_ref()
+                .map(|m| m.inputs.len() as u8)
+                .unwrap_or(0)
+                .max(static_count),
             _ => static_count,
+        }
+    }
+
+    /// Grow a mixer's settings (`LayerMixer`, `KeyMixer`) to cover input
+    /// `port`, as a wire dropped on it does, so the executor finds a
+    /// setting at that index. Other kinds are left as they are.
+    pub fn grow_to_port(&mut self, port: u8) {
+        let needed = usize::from(port) + 1;
+        match self.kind {
+            NodeKind::LayerMixer => {
+                let mixer = self.params.layer_mixer.get_or_insert_with(Default::default);
+                if mixer.inputs.len() < needed {
+                    mixer.inputs.resize_with(needed, klipp_core::LayerMixerInput::default);
+                }
+            }
+            NodeKind::KeyMixer => {
+                let mixer = self.params.key_mixer.get_or_insert_with(Default::default);
+                if mixer.inputs.len() < needed {
+                    mixer.inputs.resize_with(needed, crate::params::KeyMixerInput::default);
+                }
+            }
+            _ => {}
         }
     }
 }

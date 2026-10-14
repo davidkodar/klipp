@@ -307,6 +307,13 @@ pub struct NodeParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matte_combine_op: Option<MatteCombineOp>,
 
+    // KeyMixer
+    /// Each input's gain and invert, and the output's gain and offset.
+    /// `None` is every input at gain 1, not inverted, and the output as
+    /// summed. Grown with the ports, as `layer_mixer` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_mixer: Option<KeyMixerParams>,
+
     // Compound
     /// Sub-graph executed by a `NodeKind::Compound` node. The
     /// compound's input feeds the sub-graph's Source, the sub-
@@ -437,6 +444,77 @@ impl MatteChannel {
         MatteChannel::Alpha, MatteChannel::Luminance,
         MatteChannel::Red, MatteChannel::Green, MatteChannel::Blue,
     ];
+}
+
+// ── KeyMixer ──────────────────────────────────────────────────────
+
+/// One input of a `NodeKind::KeyMixer`.
+#[derive(PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct KeyMixerInput {
+    /// What its coverage is multiplied by before the sum; negative
+    /// subtracts it.
+    #[serde(default = "one")]
+    pub gain: f32,
+    /// Its coverage taken as `1 - c`.
+    #[serde(default)]
+    pub invert: bool,
+}
+
+impl Default for KeyMixerInput {
+    fn default() -> Self {
+        Self { gain: 1.0, invert: false }
+    }
+}
+
+/// How a `NodeKind::KeyMixer` mixes its mattes (#898): a plain sum,
+/// clamped once at the end.
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
+pub struct KeyMixerParams {
+    /// One entry per input port, `inputs[n]` port n; a port past the end
+    /// is at the default.
+    #[serde(default)]
+    pub inputs: Vec<KeyMixerInput>,
+    #[serde(default = "one")]
+    pub output_gain: f32,
+    #[serde(default)]
+    pub output_offset: f32,
+}
+
+impl Default for KeyMixerParams {
+    fn default() -> Self {
+        Self { inputs: Vec::new(), output_gain: 1.0, output_offset: 0.0 }
+    }
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+impl KeyMixerParams {
+    /// Input `port`'s settings.
+    pub fn input(&self, port: u8) -> KeyMixerInput {
+        self.inputs.get(usize::from(port)).copied().unwrap_or_default()
+    }
+
+    /// The mixed coverage of one pixel, from each wired input's
+    /// `(port, coverage)`: `clamp(offset + output_gain * Σ gain * c, 0, 1)`,
+    /// `c` taken as `1 - c` when the input is inverted.
+    pub fn mix(&self, coverages: impl IntoIterator<Item = (u8, f32)>) -> f32 {
+        self.mix_inputs(coverages.into_iter().map(|(port, c)| (self.input(port), c)))
+    }
+
+    /// [`Self::mix`] with each input's settings already looked up: the
+    /// executor resolves them once a frame, not once a pixel.
+    pub fn mix_inputs(&self, coverages: impl IntoIterator<Item = (KeyMixerInput, f32)>) -> f32 {
+        let sum: f32 = coverages
+            .into_iter()
+            .map(|(input, c)| {
+                let c = c.clamp(0.0, 1.0);
+                input.gain * if input.invert { 1.0 - c } else { c }
+            })
+            .sum();
+        (self.output_offset + self.output_gain * sum).clamp(0.0, 1.0)
+    }
 }
 
 // ── LayerMixer ────────────────────────────────────────────────────
@@ -732,6 +810,27 @@ impl NodeParams {
             }
 
             // ── Luminance key ────────────────────────────────────────
+            "key_mixer_output_gain" => self.key_mixer.get_or_insert_with(Default::default).output_gain = value,
+            "key_mixer_output_offset" => self.key_mixer.get_or_insert_with(Default::default).output_offset = value,
+            p if p.starts_with("key_mixer_gain_") || p.starts_with("key_mixer_invert_") => {
+                let (invert, n) = match p.strip_prefix("key_mixer_gain_") {
+                    Some(n) => (false, n),
+                    None => (true, &p["key_mixer_invert_".len()..]),
+                };
+                // A port the node could have: as many as an edge's port
+                // can name.
+                let Ok(port) = n.parse::<u8>() else { return false };
+                let mixer = self.key_mixer.get_or_insert_with(Default::default);
+                if mixer.inputs.len() <= usize::from(port) {
+                    mixer.inputs.resize_with(usize::from(port) + 1, KeyMixerInput::default);
+                }
+                let input = &mut mixer.inputs[usize::from(port)];
+                if invert {
+                    input.invert = value != 0.0;
+                } else {
+                    input.gain = value;
+                }
+            }
             p if p.starts_with("luma_key_") => {
                 let k = self.luma_key.get_or_insert_with(Default::default);
                 match &p["luma_key_".len()..] {

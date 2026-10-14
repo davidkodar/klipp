@@ -16,7 +16,7 @@ use klipp_nodes::NodeKind;
 use klipp_timeline::GradeAccess;
 
 /// The editors this family drives, by their editor's name.
-const EDITORS: [&str; 6] = ["curves", "huesat_curves", "camera_encoding", "layer_mixer_inputs", "matte_file", "plate_file"];
+const EDITORS: [&str; 7] = ["curves", "huesat_curves", "camera_encoding", "key_mixer_inputs", "layer_mixer_inputs", "matte_file", "plate_file"];
 
 /// The catalog entries of the editors driven here, with the page each is
 /// owed on.
@@ -278,6 +278,44 @@ pub(super) fn run(report: &mut Report) {
                 report.case(&format!("{name} opened"), [key(Interaction::OpenWithoutWrite)], || opened(&start()?));
                 report.case(&format!("{name} input's blend picked"), [key(Interaction::EditLayer), key(Interaction::UndoRedo)], || {
                     edit_case(&start()?, pick, |g| if blend(g) == Some(klipp_core::BlendMode::Multiply) { Ok(()) } else { Err(format!("the input's blend is {:?}", blend(g))) }).map(drop)
+                });
+                report.case_or_blocked(&format!("{name} drawn"), [key(Interaction::Pixels)], || {
+                    let s = start()?;
+                    let mut g = fresh(&s);
+                    pick(&mut g)?;
+                    super::parity_pixels::edit_drawn(&s.frame_sequence(), &g.frame_sequence())
+                });
+            }
+            "key_mixer_inputs" => {
+                let start = || -> Result<Grade, String> {
+                    let (mut state, clip, node) = placed(ty.kind).ok_or("the grade won't take one")?;
+                    // The key (keying everything at its defaults) and a
+                    // window round part of the frame, mixed, keying a
+                    // Corrector turned up: inverting the key leaves the
+                    // window alone keying, which shows.
+                    if let Some(c) = state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(clip)) {
+                        c.edit_grade(|g| {
+                            for n in g.nodes.iter_mut() {
+                                if n.kind == NodeKind::Corrector {
+                                    n.params.exposure = Some(1.5);
+                                }
+                                if n.kind == NodeKind::Mask {
+                                    let circle = klipp_core::Mask { shape: klipp_core::MaskShape::Circle { center_x: 0.35, center_y: 0.5, radius: 0.25 }, ..Default::default() };
+                                    n.params.masks = Some(klipp_core::MaskStack { masks: vec![circle] });
+                                }
+                                if n.id == node {
+                                    n.params.key_mixer.get_or_insert_with(Default::default).inputs = vec![klipp_nodes::KeyMixerInput::default(); 2];
+                                }
+                            }
+                        });
+                    }
+                    Ok(Grade::new(state, clip, node))
+                };
+                let inverted = |g: &Grade| params(g).key_mixer.is_some_and(|m| m.input(0).invert);
+                let pick = |g: &mut Grade| click_first(g, "Invert");
+                report.case(&format!("{name} opened"), [key(Interaction::OpenWithoutWrite)], || opened(&start()?));
+                report.case(&format!("{name} input inverted"), [key(Interaction::EditLayer), key(Interaction::UndoRedo)], || {
+                    edit_case(&start()?, pick, |g| if inverted(g) { Ok(()) } else { Err("the first input isn't inverted".into()) }).map(drop)
                 });
                 report.case_or_blocked(&format!("{name} drawn"), [key(Interaction::Pixels)], || {
                     let s = start()?;

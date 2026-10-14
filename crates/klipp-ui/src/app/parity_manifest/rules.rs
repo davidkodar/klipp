@@ -345,7 +345,7 @@ pub(super) fn key_exclusion(entry: &CatalogEntry, surface: Surface) -> Option<&'
 /// The specialist editors owed once, on the page their node is first drawn
 /// on (`specialist`): the same editor on another page or a sequence grade
 /// is the same widget writing the same command.
-pub(super) const LEAN_EDITORS: [&str; 6] = ["curves", "huesat_curves", "camera_encoding", "layer_mixer_inputs", "plate_file", "matte_file"];
+pub(super) const LEAN_EDITORS: [&str; 7] = ["curves", "huesat_curves", "camera_encoding", "key_mixer_inputs", "layer_mixer_inputs", "plate_file", "matte_file"];
 
 /// A Wheel Sat/Bri node's saturation or brightness cell.
 fn sat_bri_cell(entry: &CatalogEntry) -> bool {
@@ -586,6 +586,8 @@ fn specialist(id: &str) -> Result<Vec<Interaction>, String> {
         // The inspector edits an input's settings; inputs are added and
         // removed by wiring the node on the canvas.
         "layer_mixer_inputs" => vec![EditLayer, UndoRedo, Pixels],
+        // As a Layer Mixer's: each input's gain and invert.
+        "key_mixer_inputs" => vec![EditLayer, UndoRedo, Pixels],
         "compound_body" => vec![
             AddNode,
             RemoveNode,

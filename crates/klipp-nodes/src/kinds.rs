@@ -68,6 +68,15 @@ pub enum NodeKind {
     /// was all it could do), union, or A-minus-B. Coverage is combined
     /// in linear light, not as encoded bytes.
     CombineMattes,
+    /// Mix any number of mattes into one (#898): each input's coverage,
+    /// inverted when asked, times its gain, summed, then the output gain
+    /// and offset, clamped to [0, 1] once (see `KeyMixerParams`). A
+    /// negative gain subtracts. Its ports grow as wires are dropped onto
+    /// it, as `LayerMixer`'s do; it starts with two. With nothing wired it
+    /// can use (nothing wired, or every input of the wrong size) it selects
+    /// everything, as a matte producer with nothing chosen does, whatever
+    /// its output gain and offset: they act on a sum, and there is none.
+    KeyMixer,
     /// External image loaded from disk as a matte source (alpha or
     /// luminance / per-channel). No inputs; its only output is a matte
     /// signal that feeds ApplyMatte / CombineMattes. Useful for
@@ -308,6 +317,7 @@ impl NodeKind {
             | NodeKind::LumaKey
             | NodeKind::Mask
             | NodeKind::CombineMattes
+            | NodeKind::KeyMixer
             | NodeKind::ExternalMatte
             | NodeKind::DifferenceKey
             | NodeKind::ApplyMatte
@@ -338,6 +348,7 @@ impl NodeKind {
             NodeKind::Blend
             | NodeKind::Layer
             | NodeKind::CombineMattes
+            | NodeKind::KeyMixer
             | NodeKind::ColorMatch
             | NodeKind::LayerMixer => 2,
             NodeKind::RGBCombiner => 3,
@@ -377,6 +388,8 @@ impl NodeKind {
             (NodeKind::Blend, 1) => PortRole::Secondary,
             // CombineMattes: two mattes combined by its operator.
             (NodeKind::CombineMattes, _) => PortRole::Matte,
+            // KeyMixer: every input a matte of equal standing.
+            (NodeKind::KeyMixer, _) => PortRole::Matte,
             // ColorMatch: source + reference frame.
             (NodeKind::ColorMatch, 0) => PortRole::Primary,
             (NodeKind::ColorMatch, 1) => PortRole::Reference,
@@ -409,6 +422,7 @@ impl NodeKind {
             | (NodeKind::LumaKey, _)
             | (NodeKind::Mask, _)
             | (NodeKind::CombineMattes, _)
+            | (NodeKind::KeyMixer, _)
             | (NodeKind::ExternalMatte, _)
             | (NodeKind::DifferenceKey, _) => PortRole::Matte,
             (NodeKind::RGBSplitter, 0) => PortRole::ChannelRed,
@@ -432,6 +446,7 @@ impl NodeKind {
             (NodeKind::Blend, 1) => "Input B",
             (NodeKind::CombineMattes, 0) => "Matte A",
             (NodeKind::CombineMattes, 1) => "Matte B",
+            (NodeKind::KeyMixer, _) => "Key",
             (NodeKind::ColorMatch, 0) => "Source",
             (NodeKind::ColorMatch, 1) => "Reference",
             // LayerMixer ports are 1-indexed for users — port 0 reads
@@ -454,6 +469,7 @@ impl NodeKind {
             | (NodeKind::LumaKey, _)
             | (NodeKind::Mask, _)
             | (NodeKind::CombineMattes, _)
+            | (NodeKind::KeyMixer, _)
             | (NodeKind::ExternalMatte, _)
             | (NodeKind::DifferenceKey, _) => "Matte",
             (NodeKind::RGBSplitter, 0) => "R",
@@ -485,6 +501,7 @@ impl NodeKind {
             NodeKind::SoftClip => "Soft Clip",
             NodeKind::Mask => "Mask",
             NodeKind::CombineMattes => "Combine Mattes",
+            NodeKind::KeyMixer => "Key Mixer",
             NodeKind::ExternalMatte => "External Matte",
             NodeKind::DifferenceKey => "Difference Key",
             NodeKind::Layer => "Layer",
@@ -582,6 +599,7 @@ pub const ADDABLE_NODE_KINDS: &[(&str, NodeKind)] = &[
     ("SoftClip", NodeKind::SoftClip),
     ("Mask", NodeKind::Mask),
     ("CombineMattes", NodeKind::CombineMattes),
+    ("KeyMixer", NodeKind::KeyMixer),
     ("ExternalMatte", NodeKind::ExternalMatte),
     ("DifferenceKey", NodeKind::DifferenceKey),
     ("ApplyMatte", NodeKind::ApplyMatte),

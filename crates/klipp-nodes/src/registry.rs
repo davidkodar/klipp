@@ -323,6 +323,11 @@ static P_MASK: &[ParamDesc] = &[
 static P_COMBINE_MATTES: &[ParamDesc] = &[
     ParamDesc { field: "matte_combine_op", index: None, key: "matte_combine_op", label: "Operation", kind: ParamKind::Choice(&["Intersect", "Union", "Subtract"]), default: 0.0, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: false, derived: false },
 ];
+static P_KEY_MIXER: &[ParamDesc] = &[
+    ParamDesc { field: "key_mixer.inputs", index: None, key: "key_mixer", label: "Inputs", kind: ParamKind::Other, default: f32::NAN, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: false, derived: false },
+    ParamDesc { field: "key_mixer.output_gain", index: None, key: "key_mixer_output_gain", label: "Output gain", kind: ParamKind::Float, default: 1.0, range: None, soft: Some((0.0, 2.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
+    ParamDesc { field: "key_mixer.output_offset", index: None, key: "key_mixer_output_offset", label: "Output offset", kind: ParamKind::Float, default: 0.0, range: None, soft: Some((-1.0, 1.0)), unit: Unit::Ratio, scaling: Scaling::None, keyframable: true, derived: false },
+];
 static P_EXTERNAL_MATTE: &[ParamDesc] = &[
     ParamDesc { field: "matte_image_path", index: None, key: "matte_image_path", label: "Image", kind: ParamKind::Other, default: f32::NAN, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: false, derived: false },
     ParamDesc { field: "matte_channel", index: None, key: "matte_channel", label: "Channel", kind: ParamKind::Choice(&["Alpha", "Luminance", "Red", "Green", "Blue"]), default: 1.0, range: None, soft: None, unit: Unit::None, scaling: Scaling::None, keyframable: false, derived: false },
@@ -763,6 +768,26 @@ static TYPES: &[NodeType] = &[
             inputs: &[PortDesc { key: "a", ty: PortType::Matte, optional: false, params: &[] }, PortDesc { key: "b", ty: PortType::Matte, optional: true, params: &[] }],
             outputs: &[PortDesc { key: "matte", ty: PortType::Matte, optional: false, params: &[] }],
             params: P_COMBINE_MATTES,
+            domain: ColourDomain::Linear,
+            alpha: Alpha::Straight,
+            spatial: Spatial::PerPixel,
+            temporal: Temporal::None,
+            draws_outside: false,
+            gpu: false,
+            cpu: true,
+            mixable: false,
+        },
+    },
+    NodeType {
+        kind: NodeKind::KeyMixer,
+        desc: NodeTypeDesc {
+            id: "klipp.grade.key_mixer",
+            name: "Key Mixer",
+            category: Category::Grade,
+            // Two to start; more as wires are dropped on it (#898).
+            inputs: &[PortDesc { key: "in0", ty: PortType::Matte, optional: false, params: &[] }, PortDesc { key: "in1", ty: PortType::Matte, optional: true, params: &[] }],
+            outputs: &[PortDesc { key: "matte", ty: PortType::Matte, optional: false, params: &[] }],
+            params: P_KEY_MIXER,
             domain: ColourDomain::Linear,
             alpha: Alpha::Straight,
             spatial: Spatial::PerPixel,

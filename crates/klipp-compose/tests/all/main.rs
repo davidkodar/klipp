@@ -50,6 +50,8 @@ mod grade_render_scale;
 mod held_outputs_parked;
 #[path = "../inspect_by_path.rs"]
 mod inspect_by_path;
+#[path = "../key_mixer_render.rs"]
+mod key_mixer_render;
 #[path = "../legacy_route_gone.rs"]
 mod legacy_route_gone;
 #[path = "../masked_effects_render.rs"]

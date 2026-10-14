@@ -985,18 +985,10 @@ impl KlippApp {
                     graph.edges.push(klipp_nodes::Edge {
                         from_node, from_port, to_node, to_port,
                     });
-                    // LayerMixer auto-grow — if the editor dropped a
-                    // wire on a port past the current count, grow the
-                    // params Vec in lockstep so the executor finds a
-                    // setting at that index.
+                    // A mixer grows to a wire dropped on a port past its
+                    // count, so the executor finds a setting there.
                     if let Some(target) = graph.nodes.iter_mut().find(|n| n.id == to_node) {
-                        if target.kind == klipp_nodes::NodeKind::LayerMixer {
-                            let needed = (to_port as usize) + 1;
-                            let mixer = target.params.layer_mixer.get_or_insert_with(Default::default);
-                            if mixer.inputs.len() < needed {
-                                mixer.inputs.resize_with(needed, klipp_nodes::LayerMixerInput::default);
-                            }
-                        }
+                        target.grow_to_port(to_port);
                     }
                     // Roll back inside the closure if the new edge
                     // would introduce a cycle. The outer helper then

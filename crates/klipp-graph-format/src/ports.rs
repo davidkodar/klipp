@@ -31,7 +31,7 @@ fn named_input(kind: &str, port: u8) -> Option<String> {
         "Output" => &["in", "alpha"],
         "RGBCombiner" => &["r", "g", "b"],
         "ColorMatch" => &["in", "ref"],
-        "LayerMixer" => return Some(format!("in{port}")),
+        "LayerMixer" | "KeyMixer" => return Some(format!("in{port}")),
         k if GATEABLE.contains(&k) => &["in", "mask"],
         _ => &["in"],
     };
