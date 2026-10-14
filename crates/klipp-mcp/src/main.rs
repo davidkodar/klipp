@@ -964,7 +964,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
                     v[key] = json!(n);
                 }
             }
-            for key in ["preset", "codec", "audio_codec"] {
+            for key in ["preset", "codec", "audio_codec", "encoder_speed"] {
                 if let Some(x) = args.get(key).and_then(|v| v.as_str()) {
                     v[key] = json!(x);
                 }
@@ -1330,6 +1330,9 @@ fn guide_topic(topic: &str) -> Result<String, String> {
                 let rest = &page[at + heading.len()..];
                 Some(format!("{}{}", heading, &rest[..rest.find("\n## ").map_or(rest.len(), |e| e + 1)]))
             });
+            // The export's delivery presets, listed live from the list the
+            // export takes them from (#1899): too long for the catalog.
+            let section = section.map(|text| if heading == "## klipp_export\n" { format!("{text}\n{}\n", export_presets_line()) } else { text });
             // A tool with no section of its own is answered from the
             // catalog: what it does and what it takes, so no tool is
             // missing from the guide (#1898).
@@ -1395,6 +1398,21 @@ fn describe_arguments(properties: &serde_json::Map<String, Value>, required: &Va
             _ => out.push_str(&format!("{pad}  ({label} are not listed here; the tool's description and its reply say what it takes)\n")),
         }
     }
+}
+
+/// `klipp_export`'s `preset`: a built-in delivery preset by name, each
+/// with the container its path must end in (#1899).
+fn export_preset_schema() -> Value {
+    json!({
+        "type": "string",
+        "description": "Delivery preset: klipp_guide topic export",
+    })
+}
+
+/// The delivery presets `preset` takes, each with its container.
+fn export_presets_line() -> String {
+    let listed: Vec<String> = klipp_control::export_presets().into_iter().map(|(n, ext)| format!("{n} (.{ext})")).collect();
+    format!("The delivery presets: {}.", listed.join(", "))
 }
 
 /// Sent with `initialize`, which clients put before the model in every
@@ -2052,7 +2070,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "burn_captions": { "type": "boolean", "description": "Captions and titles burnt in (default on); the reply says which" },
                  "captions_608": { "type": "boolean", "description": "Captions as CEA-608 inside the video stream (h264/hevc)" },
                  "hdr10plus": { "type": "boolean", "description": "Per-shot ST 2094-40 metadata (hevc, PQ)" },
-                 "preset": { "type": "string" }, "codec": { "type": "string" }, "audio_codec": { "type": "string" },
+                 "preset": export_preset_schema(),
+                 "encoder_speed": { "type": "string", "enum": klipp_control::ENCODER_SPEEDS },
+                 "codec": { "type": "string" }, "audio_codec": { "type": "string" },
                  "bit_depth": { "type": "integer" }, "bitrate_kbps": { "type": "integer" },
              }),
              vec!["path"]),
@@ -2497,6 +2517,26 @@ mod interface_tests {
         let excerpt = guide_topic("audio_excerpt").unwrap();
         assert!(excerpt.contains("sixty seconds") && excerpt.contains("sequence"), "{excerpt}");
         assert!(guide_topic("klipp_teleport").is_err());
+    }
+
+    /// #1899: the export's preset lists the delivery presets the app
+    /// takes, and its encoder speed is a field apart.
+    #[test]
+    fn the_export_lists_its_presets_and_speeds() {
+        let tools = tool_definitions_for(false);
+        let export = tools.iter().find(|t| t["name"] == "klipp_export").unwrap();
+        let props = &export["inputSchema"]["properties"];
+        // Every preset the export takes is listed where the schema says.
+        let guide = guide_topic("export").unwrap();
+        for (name, ext) in klipp_control::export_presets() {
+            assert!(guide.contains(&format!("{name} (.{ext})")), "{name} in the export guide: {guide}");
+        }
+        assert!(props["preset"]["description"].as_str().unwrap().contains("klipp_guide topic export"));
+        assert!(props.get("encoder_speed").is_some(), "the speed is a field apart");
+        let speeds: Vec<&str> = props["encoder_speed"]["enum"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(speeds, klipp_control::ENCODER_SPEEDS);
+        let v = tool_to_command("klipp_export", &json!({"path": "/tmp/a.mp4", "encoder_speed": "slow"})).unwrap();
+        assert_eq!(v["encoder_speed"], "slow");
     }
 
     #[test]

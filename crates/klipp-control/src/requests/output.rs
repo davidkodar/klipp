@@ -12,7 +12,7 @@ pub(crate) fn respond(
     let mut send = sender!(ctx, collect);
 
     match cmd {
-        ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions, captions_608, hdr10plus, preset, codec, audio_codec, bitrate_kbps } => {
+        ControlCommand::Export { path, width, height, fps, crf, bit_depth, target_lufs, true_peak_dbtp, burn_captions, captions_608, hdr10plus, preset, codec, audio_codec, bitrate_kbps, encoder_speed } => {
             let out = std::path::PathBuf::from(&path);
             if !out.is_absolute() {
                 return Err(format!("export path must be absolute (got {path:?})"));
@@ -96,6 +96,9 @@ pub(crate) fn respond(
                 Some(name) => Some(apply_export_preset(&mut settings, name)?),
                 None => None,
             };
+            if let Some(speed) = encoder_speed.as_deref() {
+                settings.preset = encoder_speed_named(speed)?;
+            }
             if let (Some(w), Some(h)) = (width, height) {
                 let most = klipp_core::ExportSettings::MAX_SIDE;
                 if w > most || h > most || w < 2 || h < 2 {
@@ -140,6 +143,13 @@ pub(crate) fn respond(
             }
             if let Some(problem) = settings.container_problem() {
                 return Err(problem);
+            }
+            // Asked of an encoder with no speed to set, it would be taken
+            // and do nothing (#1899).
+            if encoder_speed.is_some() {
+                if let Some(why) = speed_ignored(&settings) {
+                    return Err(format!("encoder_speed does nothing here: {why}; leave it out"));
+                }
             }
             // Loudness: as asked, else the preset's, else the brief's.
             match target_lufs {
@@ -187,6 +197,9 @@ pub(crate) fn respond(
                 "video_codec": settings.video_codec.label(),
                 "audio_codec": settings.audio_codec.label(),
                 "preset": preset_name,
+                // The speed used: as asked, else the preset's own, else
+                // medium; none for an encoder that has none.
+                "encoder_speed": speed_ignored(&settings).is_none().then(|| settings.preset.ffmpeg_value()),
                 "rate": match (settings.rate_control, settings.video_bitrate_kbps) {
                     (klipp_core::RateControl::Crf, _) | (_, None) => format!("crf {}", settings.crf),
                     (_, Some(kbps)) => format!("{kbps} kbps"),
@@ -625,6 +638,40 @@ fn phases(p: &klipp_engine::perf::FramePhases) -> serde_json::Value {
     })
 }
 
+/// The encoder speeds an export takes, by the name an agent gives one.
+pub const ENCODER_SPEEDS: [&str; 4] = ["fast", "medium", "slow", "veryslow"];
+
+/// An encoder speed by name (#1899): how long the encoder spends on each
+/// frame, apart from the delivery preset.
+fn encoder_speed_named(name: &str) -> Result<klipp_core::EncoderPreset, String> {
+    use klipp_core::EncoderPreset as E;
+    [E::Fast, E::Medium, E::Slow, E::VerySlow]
+        .into_iter()
+        .find(|e| e.ffmpeg_value() == name.trim().to_ascii_lowercase().replace([' ', '_', '-'], ""))
+        .ok_or_else(|| format!("no encoder speed {name:?}; give {}", ENCODER_SPEEDS.join(", ")))
+}
+
+/// Why the encoder `settings` choose has no speed to set, if it has none:
+/// ProRes and DNxHD encode at their own fixed rates, a GIF and the sound
+/// alone have no video encoder to pace (#1899).
+fn speed_ignored(settings: &klipp_core::ExportSettings) -> Option<String> {
+    use klipp_core::ExportVideoCodec as V;
+    if settings.format.is_audio_only() {
+        return Some("the sound alone has no video encoder".into());
+    }
+    if settings.format == klipp_core::ExportFormat::Gif {
+        return Some("a GIF has no video encoder speed".into());
+    }
+    matches!(settings.video_codec, V::ProRes422 | V::ProRes422HQ | V::ProRes4444 | V::DNxHD115 | V::DNxHD145)
+        .then(|| format!("{} encodes at its own fixed rate, with no speed setting", settings.video_codec.label()))
+}
+
+/// The built-in delivery presets an export takes by name, each with the
+/// extension its path must end in (#1899).
+pub fn export_presets() -> Vec<(String, &'static str)> {
+    klipp_core::builtin_presets().into_iter().map(|p| (p.name, p.settings.format.extension())).collect()
+}
+
 fn apply_export_preset(settings: &mut klipp_core::ExportSettings, name: &str) -> Result<String, String> {
     let presets = klipp_core::builtin_presets();
     let wanted = name.trim().to_lowercase();
@@ -766,5 +813,58 @@ mod credits_tests {
         titles.sort();
         assert_eq!(titles, ["riser", "whoosh"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod export_choice_tests {
+    use super::*;
+
+    /// #1899: the encoder's speed is its own field, by the names the
+    /// schema lists; a delivery preset's name isn't one, and an unknown
+    /// speed is refused with the four there are.
+    #[test]
+    fn an_encoder_speed_is_its_own_field() {
+        use klipp_core::EncoderPreset as E;
+        let got: Vec<E> = ENCODER_SPEEDS.iter().map(|n| encoder_speed_named(n).unwrap()).collect();
+        assert_eq!(got, [E::Fast, E::Medium, E::Slow, E::VerySlow]);
+        assert_eq!(encoder_speed_named("Very Slow").unwrap(), E::VerySlow);
+        let err = encoder_speed_named("turbo").unwrap_err();
+        assert!(ENCODER_SPEEDS.iter().all(|s| err.contains(s)), "{err}");
+        // The speed set after a preset wins over the preset's own.
+        let mut settings = klipp_core::ExportSettings { format: klipp_core::ExportFormat::Mp4, ..Default::default() };
+        let (name, _) = export_presets().into_iter().find(|(_, ext)| *ext == "mp4").expect("an mp4 preset");
+        apply_export_preset(&mut settings, &name).unwrap();
+        settings.preset = encoder_speed_named("slow").unwrap();
+        assert_eq!(settings.preset, E::Slow);
+        assert!(apply_export_preset(&mut settings, "slow").is_err(), "a speed is not a delivery preset");
+    }
+
+    /// #1899: a speed asked of an encoder that has none is refused, not
+    /// taken and ignored: ProRes, DNxHD, a GIF, the sound alone.
+    #[test]
+    fn an_encoder_speed_is_refused_where_nothing_reads_it() {
+        use klipp_core::{ExportFormat as F, ExportVideoCodec as V};
+        let with = |format: F, codec: V| klipp_core::ExportSettings { format, video_codec: codec, ..Default::default() };
+        assert!(speed_ignored(&with(F::Mov, V::ProRes422HQ)).unwrap().contains("fixed rate"));
+        assert!(speed_ignored(&with(F::Mov, V::DNxHD145)).is_some());
+        assert!(speed_ignored(&with(F::Gif, V::H264)).is_some());
+        assert!(speed_ignored(&with(F::Mp3, V::H264)).is_some());
+        assert_eq!(speed_ignored(&with(F::Mp4, V::H264)), None);
+        assert_eq!(speed_ignored(&with(F::Mkv, V::Av1)), None);
+    }
+
+    /// #1899: every listed preset is one the export takes, at its listed
+    /// container.
+    #[test]
+    fn every_listed_preset_is_taken() {
+        let presets = export_presets();
+        assert!(presets.len() > 3);
+        for (name, ext) in presets {
+            let format = klipp_core::builtin_presets().into_iter().find(|p| p.name == name).unwrap().settings.format;
+            assert_eq!(format.extension(), ext);
+            let mut settings = klipp_core::ExportSettings { format, ..Default::default() };
+            assert_eq!(apply_export_preset(&mut settings, &name).unwrap(), name);
+        }
     }
 }
