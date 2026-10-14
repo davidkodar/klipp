@@ -77,6 +77,18 @@ impl OpenedAudio {
     }
 }
 
+/// The muxer options a file of `format` is opened with: MP4 and M4A, the
+/// web's files, put their index (`moov`) before the media (`mdat`), so a
+/// player can start before it has the whole file (#1901). The muxer moves
+/// it there when the file is finished, without touching the streams.
+pub(crate) fn header_options(format: ExportFormat) -> ffmpeg_next::Dictionary<'static> {
+    let mut options = ffmpeg_next::Dictionary::new();
+    if matches!(format, ExportFormat::Mp4 | ExportFormat::M4a) {
+        options.set("movflags", "+faststart");
+    }
+    options
+}
+
 /// Whether this FFmpeg build has an encoder for `codec`.
 pub fn has_encoder(codec: ExportAudioCodec) -> bool {
     ffmpeg_next::encoder::find_by_name(codec.ffmpeg_codec()).is_some()
@@ -115,14 +127,20 @@ impl AudioOnly {
     /// Open `path` for `format` with `codec` at `rate` Hz stereo.
     pub fn open(path: &std::path::Path, format: ExportFormat, codec: ExportAudioCodec, bitrate_kbps: Option<u32>, rate: u32) -> Result<Self, RenderError> {
         let mux = muxer(format).ok_or_else(|| RenderError::Encode(format!("{} has a picture; the video export writes it", format.label())))?;
-        Self::open_muxer(path, mux, codec, bitrate_kbps, rate)
+        Self::open_with(path, mux, codec, bitrate_kbps, rate, header_options(format))
     }
 
     /// [`Self::open`] into the muxer named `mux`: the encoder set up as the
     /// video export sets up its audio (the codec's first sample format,
     /// stereo, `rate`, the bitrate when given), so what it encodes is what
     /// an export would (#1930).
+    /// A trial's file is read once and removed, so it isn't laid out for
+    /// the web (#1901).
     pub fn open_muxer(path: &std::path::Path, mux: &str, codec: ExportAudioCodec, bitrate_kbps: Option<u32>, rate: u32) -> Result<Self, RenderError> {
+        Self::open_with(path, mux, codec, bitrate_kbps, rate, ffmpeg_next::Dictionary::new())
+    }
+
+    fn open_with(path: &std::path::Path, mux: &str, codec: ExportAudioCodec, bitrate_kbps: Option<u32>, rate: u32, header: ffmpeg_next::Dictionary<'static>) -> Result<Self, RenderError> {
         use ffmpeg_next::format::{sample::Type, Sample};
         let mut octx = ffmpeg_next::format::output_as(path, mux).map_err(|e| err("audio output", e))?;
         let found = ffmpeg_next::encoder::find_by_name(codec.ffmpeg_codec()).ok_or_else(|| RenderError::Encode(format!("no {} encoder in this FFmpeg", codec.ffmpeg_codec())))?;
@@ -139,7 +157,7 @@ impl AudioOnly {
             st.set_time_base(enc_tb);
             st.index()
         };
-        octx.write_header().map_err(|e| err("write audio header", e))?;
+        octx.write_header_with(header).map_err(|e| err("write audio header", e))?;
         let stream_tb = octx.stream(stream).map(|s| s.time_base()).unwrap_or(enc_tb);
         let resampler = (sample != Sample::F32(Type::Packed))
             .then(|| {

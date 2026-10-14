@@ -1070,7 +1070,7 @@ impl Encoder {
         // ═══════════════════════════════════════════════════════════
 
         output_ctx
-            .write_header()
+            .write_header_with(crate::audio_only::header_options(settings.format))
             .map_err(|e| RenderError::Encode(format!(
                 "write header: {e} (codec={video_codec_name}, {}x{} @{}/{}fps, path={:?})",
                 snapshot.width, snapshot.height, snapshot.fps_num, snapshot.fps_den, output_path
