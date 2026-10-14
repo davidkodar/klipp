@@ -158,6 +158,93 @@ fn montage_spans(seq: &Sequence) -> Vec<(f64, f64)> {
     merged
 }
 
+/// How much of a title's drawn box must lie over a changing screen for
+/// the title to be over it: a twentieth, so a graze of its glow along
+/// the screen's edge is not, and a caption with a third of it on the
+/// screen is (#1909 review).
+const TITLE_OVER_SHARE: f32 = 0.05;
+/// A margin round a title's drawn box for its anti-aliased edges and
+/// the renderer's rounding, as a fraction of the frame.
+const TITLE_EDGE_MARGIN: f32 = 0.01;
+
+/// `rect` of a clip's own picture (fractions of a picture of size
+/// `shown`) where it lands on the frame at timeline second `t`: fitted as
+/// the renderer fits it and moved by the clip's placement then, as the
+/// box round the quad.
+fn placed_box(seq: &Sequence, transcripts: &dyn Transcripts, c: &Clip, shown: [u32; 2], rect: [f32; 4], t: f64) -> [f32; 4] {
+    let frame = [seq.resolution.width, seq.resolution.height];
+    let [x, y, w, h] = rect;
+    let quad = [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
+    let placed = transcripts.placement(c, t - secs(c.timeline_in), seq.fps.as_f64());
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for [qx, qy] in klipp_timeline::surface::source_quad_in_frame(&quad, shown, frame, placed) {
+        (x0, y0, x1, y1) = (x0.min(qx), y0.min(qy), x1.max(qx), y1.max(qy));
+    }
+    [x0, y0, x1 - x0, y1 - y0]
+}
+
+/// The box a title draws in, as fractions of the frame: its text and
+/// shapes ([`crate::ops::title_box`]) grown by the widest outline, glow
+/// and shadow (offset and blur) its layers carry, its backing's padding,
+/// and an edge margin. `None` for a title with nothing visible.
+fn drawn_box(td: &klipp_timeline::TitleData, frame: klipp_core::Resolution) -> Option<[f32; 4]> {
+    let tb = crate::ops::title_box(td, frame)?;
+    let mut reach: f32 = 0.0;
+    for o in td.objects.iter().filter(|o| o.visible) {
+        let fx = o.fx();
+        let outline = fx.outlines.iter().filter(|x| x.enabled).map(|x| x.width).fold(0.0, f32::max);
+        let glow = fx.glows.iter().filter(|x| x.enabled).map(|x| x.radius).fold(0.0, f32::max);
+        let shadow = fx.shadows.iter().filter(|x| x.enabled).map(|x| x.offset_x.abs().max(x.offset_y.abs()) + x.blur).fold(0.0, f32::max);
+        reach = reach.max(outline).max(glow).max(shadow);
+    }
+    if let klipp_timeline::TitleBackground::Color { padding, .. } = td.background {
+        reach = reach.max(padding);
+    }
+    // Pixels at 1080 on the frame's short side, as the renderer scales a
+    // title's sizes.
+    let (w, h) = (frame.width.max(1) as f32, frame.height.max(1) as f32);
+    let px = reach * w.min(h) / 1080.0;
+    let (mx, my) = (px / w + TITLE_EDGE_MARGIN, px / h + TITLE_EDGE_MARGIN);
+    Some([tb[0] - mx, tb[1] - my, tb[2] + 2.0 * mx, tb[3] + 2.0 * my])
+}
+
+/// Whether a title's layers move on their own (an entrance or exit, a
+/// loop): where they are at a moment is not their resting box.
+fn title_moves(td: &klipp_timeline::TitleData) -> bool {
+    td.objects.iter().filter(|o| o.visible).any(|o| o.fx().motion.is_active() || !o.fx().loops.is_empty())
+}
+
+/// The share of box `a` that lies inside box `b`.
+fn share_over(a: [f32; 4], b: [f32; 4]) -> f32 {
+    let w = ((a[0] + a[2]).min(b[0] + b[2]) - a[0].max(b[0])).max(0.0);
+    let h = ((a[1] + a[3]).min(b[1] + b[3]) - a[1].max(b[1])).max(0.0);
+    w * h / (a[2] * a[3]).max(1e-6)
+}
+
+/// Whether title clip `title` is over picture clip `screen` anywhere in
+/// `from..to`: both placed as the renderer places them, sampled across
+/// the stretch, the title's drawn box against the screen's (#1909). A
+/// title whose layers move on their own is taken to be over it.
+#[allow(clippy::too_many_arguments)]
+fn title_over_screen(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, title: &Clip, td: &klipp_timeline::TitleData, screen: &Clip, from: f64, to: f64) -> bool {
+    let Some(drawn) = drawn_box(td, seq.resolution) else { return false };
+    if title_moves(td) {
+        return true;
+    }
+    let frame = [seq.resolution.width, seq.resolution.height];
+    let shown = screen.media_id().and_then(|id| pool.get(&id)).map_or(frame, |m| {
+        let (w, h) = (m.resolution.width, m.resolution.height);
+        if m.source_rotation.rem_euclid(180) == 90 { [h, w] } else { [w, h] }
+    });
+    let steps = ((to - from) / 0.25).ceil().clamp(1.0, 16.0) as usize;
+    (0..=steps).any(|k| {
+        let t = from + (to - from) * k as f64 / steps as f64;
+        let words = placed_box(seq, transcripts, title, frame, drawn, t);
+        let picture = placed_box(seq, transcripts, screen, shown, [0.0, 0.0, 1.0, 1.0], t);
+        share_over(words, picture) > TITLE_OVER_SHARE
+    })
+}
+
 /// A skip within one take shorter than this is a jump whatever the
 /// camera did: the travel films' real jump cuts skipped 0.6 to 1.7 s, the
 /// montage's cuts between places 4 s and more (#461).
@@ -569,7 +656,9 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
         if b - a + 1e-6 < needs {
             add(Severity::Warning, "title_short", Some(a), format!("{} has {words} word{} and {:.1} s to be read in", clip_label(pool, c), if words == 1 { "" } else { "s" }, b - a), &format!("Hold it at least {needs:.1} s: about a third of a second a word{}", if montage { " in a montage" } else { ", never under a second and a half" }));
         }
-        // Over a screen that is changing, a title fights the picture.
+        // Over a screen that is changing, a title fights the picture —
+        // when the change is under it: captions in a footer beneath an
+        // inset recording are beside the screen, not over it (#1909).
         for (_, p) in &pictures {
             let Some(beats) = p.media_id().and_then(&mut beats_of) else { continue };
             let (t_in, t_out) = (secs(p.timeline_in), secs(p.timeline_out));
@@ -579,8 +668,12 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             }
             let file_at = |t: f64| secs(p.source_in) + (t - t_in);
             let (f_lo, f_hi) = (file_at(lo), file_at(hi));
-            if let Some((x, _)) = beats.action.iter().find(|(x, y)| f_hi.min(*y) - f_lo.max(*x) > BUSY_UNDER_TITLE_SECS) {
-                let from = lo + (x - f_lo).max(0.0);
+            let busy = beats.action.iter().filter(|(x, y)| f_hi.min(*y) - f_lo.max(*x) > BUSY_UNDER_TITLE_SECS).find_map(|(x, y)| {
+                let (from, to) = (lo + (x - f_lo).max(0.0), lo + (y.min(f_hi) - f_lo));
+                let under = title_over_screen(seq, pool, transcripts, c, td, p, from, to);
+                under.then_some(from)
+            });
+            if let Some(from) = busy {
                 let holds: Vec<String> = beats.holds.iter().filter(|(h0, h1)| h1 - h0 >= b - a).take(3).map(|(h0, h1)| format!("{h0:.1}-{h1:.1} s")).collect();
                 add(Severity::Warning, "title_over_busy", Some(from), format!("{} is up over a changing screen from {from:.2} s", clip_label(pool, c)), &if holds.is_empty() { "Move it to where the screen holds still".to_string() } else { format!("Move it to where the screen holds still: {} of the file", holds.join(", ")) });
                 break;
@@ -1088,6 +1181,61 @@ mod tests {
         seq.tracks[0].clips[0].timeline_in = tc(0.0);
         seq.tracks[0].clips[0].timeline_out = tc(3.5);
         assert!(!rules(&check(&seq, &pool, &Screen(screen))).contains(&"title_over_busy"));
+    }
+
+    /// #1909: feature captions in a footer beneath an inset recording
+    /// were flagged as over the changing screen though they never touch
+    /// it. Placed inset, the footer is clear; the same footer over a
+    /// full-frame screen, or the title moved onto the inset, is not.
+    #[test]
+    fn a_title_beside_an_inset_screen_is_not_over_it() {
+        struct Inset(klipp_core::MediaId, bool, bool);
+        impl Transcripts for Inset {
+            fn words(&self, _item: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> {
+                None
+            }
+            fn screen_beats(&self, item: &klipp_media::MediaItem) -> Option<ScreenBeats> {
+                Screen(self.0).screen_beats(item)
+            }
+            // Three quarters of the frame, lifted 100 px: the screen
+            // spans 3% to 78% down the frame.
+            // With the third flag, the title clip rises 300 px two seconds in.
+            fn placement(&self, clip: &Clip, clip_secs: f64, _fps: f64) -> Option<klipp_timeline::surface::Placement> {
+                match clip.media_id() {
+                    Some(_) => self.1.then_some((0.0, -100.0, 0.75, 0.75, 0.0, 0.5, 0.5)),
+                    None => self.2.then_some((0.0, if clip_secs > 2.0 { -300.0 } else { 0.0 }, 1.0, 1.0, 0.0, 0.5, 0.5)),
+                }
+            }
+        }
+        // The screen changes at 10-12 s of the file: 4-6 s of the timeline.
+        let (mut seq, pool, screen) = screencast(&[(0.0, 8.0, 6.0)]);
+        let caption = |y: f32| {
+            let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Connected nodes".into(), font_size: 40.0, ..Default::default() });
+            td.objects[0].transform.center = klipp_timeline::TitlePosition { x: 0.5, y };
+            Clip { id: klipp_core::ClipId::new(), kind: ClipKind::Title(td), source_in: tc(0.0), source_out: tc(4.0), ..Clip::gap(tc(3.0), tc(7.0)) }
+        };
+        let mut text = Track::new("T1", TrackKind::Text);
+        text.clips.push(caption(0.92));
+        seq.tracks.insert(0, text);
+        let busy = |seq: &Sequence, t: &dyn Transcripts| {
+            let r = check(seq, &pool, t);
+            (rules(&r).contains(&"title_over_busy"), r.text())
+        };
+        let (flagged, text) = busy(&seq, &Inset(screen, true, false));
+        assert!(!flagged, "the footer is clear of the inset: {text}");
+        assert!(busy(&seq, &Inset(screen, false, false)).0, "over a full-frame screen it is flagged");
+        assert!(busy(&seq, &Inset(screen, true, true)).0, "carried up over the inset by its own placement, it is flagged");
+        // Its bottom third over the inset's bottom edge: over it.
+        seq.tracks[0].clips[0] = caption(0.79);
+        assert!(busy(&seq, &Inset(screen, true, false)).0, "a third of the caption over the screen is over it");
+        // Clear of it by its text, but not by its drawn shadow.
+        seq.tracks[0].clips[0] = caption(0.84);
+        assert!(!busy(&seq, &Inset(screen, true, false)).0, "just clear");
+        let ClipKind::Title(td) = &mut seq.tracks[0].clips[0].kind else { unreachable!() };
+        td.objects[0].fx_mut().shadows.push(klipp_timeline::TitleShadow { enabled: true, color: [0, 0, 0, 200], offset_x: 0.0, offset_x_keyframes: Vec::new(), offset_y: -40.0, offset_y_keyframes: Vec::new(), blur: 0.0, blur_keyframes: Vec::new() });
+        assert!(busy(&seq, &Inset(screen, true, false)).0, "its shadow falls on the screen");
+        seq.tracks[0].clips[0] = caption(0.5);
+        assert!(busy(&seq, &Inset(screen, true, false)).0, "moved onto the inset it is flagged");
     }
 
     #[test]
