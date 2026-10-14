@@ -30,6 +30,11 @@ pub mod types {
     /// main input carries the picture its stages hand on; unspliced the
     /// two are the same.
     pub const GROUP_FRAME: &str = "klipp.group.frame";
+    /// A grade in a picture's chain after its display step (#1746): a
+    /// grade graph in its body, between a Group input and output, run on
+    /// the picture it reads. Only the picture holds one; the clip's own
+    /// grade is its `GROUP`.
+    pub const GRADE_COMPOUND: &str = "klipp.grade_compound";
     /// v1's `Layer`, `Blend` and `LayerMixer`, with their legacy op in the
     /// `op` parameter ([`MERGE_OPS`]).
     pub const MERGE: &str = "klipp.merge";
@@ -574,7 +579,7 @@ fn check_level_running(g: &Graph, level: &str, body: bool, render_copy: bool, ru
         if !ids.insert(n.id) {
             return Err(LiftedError::DuplicateNode(n.id));
         }
-        if (n.type_id.as_str() == types::GROUP) != n.group.is_some() {
+        if matches!(n.type_id.as_str(), types::GROUP | types::GRADE_COMPOUND) != n.group.is_some() {
             return Err(LiftedError::GroupBody(n.id));
         }
         if other_level.contains(&n.type_id.as_str()) {
@@ -646,7 +651,7 @@ fn check_level_running(g: &Graph, level: &str, body: bool, render_copy: bool, ru
                 return Err(LiftedError::UnknownMergeOp(n.id));
             }
         }
-        if n.type_id.as_str() == types::GROUP {
+        if matches!(n.type_id.as_str(), types::GROUP | types::GRADE_COMPOUND) {
             if let Some(b) = &n.group {
                 let supplied: Vec<_> = b.interface.iter().filter(|p| p.direction == PortDirection::Input).map(|p| (p.binding.node, p.binding.port.clone())).collect();
                 check_level_running(&b.graph, &format!("{level}/{}", n.id), true, render_copy, running && n.enabled, catalog, &supplied)?;

@@ -102,7 +102,9 @@ fn picture_only(p: &ClipPicture, op: &GraphOp) -> bool {
     };
     let beside = !chain(p).iter().any(|n| n.id == first.id);
     // A reroute (#1746): only the picture has one, on the chain or off it.
-    if is_reroute(first) || matches!(op, GraphOp::AddNode { node, .. } if is_reroute(node)) {
+    // A grade compound, and anything inside one: the picture's alone too.
+    let picture_alone = |n: &Node| is_reroute(n) || klipp_graph_lift::grade_compound::is_compound(n);
+    if picture_alone(first) || matches!(op, GraphOp::AddNode { node, .. } if picture_alone(node)) {
         return true;
     }
     match op {
@@ -152,6 +154,17 @@ fn matte_into_reroute(p: &ClipPicture, op: &GraphOp) -> Option<String> {
     let source = from.nodes.last().and_then(|id| node(p, *id))?;
     let matte = RegistryCatalog.node_spec(source).is_some_and(|s| s.outputs.iter().any(|o| o.key == from_port.as_str() && o.ty == klipp_graph_format::PortType::Matte));
     matte.then(|| format!("the reroute {} takes a picture, not a matte: a matte can't be routed through a reroute yet (#1877); wire {} straight to what it masks", target.id, if source.label.is_empty() { source.id.to_string() } else { source.label.clone() }))
+}
+
+/// A grade compound on the chain before the display step, and why it
+/// can't stand there (#1746): it is run after the display step only, so
+/// there it would never be drawn. The clip's own grade is the one before.
+fn compound_before_display(p: &ClipPicture) -> Option<(NodeId, String)> {
+    let chain = chain(p);
+    let display = chain.iter().position(|n| n.type_id.as_str() == lt::SCENE_TO_DISPLAY).unwrap_or(chain.len());
+    let early = chain[..display].iter().find(|n| klipp_graph_lift::grade_compound::is_compound(n))?;
+    let name = if early.label.is_empty() { early.id.to_string() } else { format!("{} ({})", early.label, early.id) };
+    Some((early.id, format!("the grade {name} goes after the display step, where a grade in the chain is drawn; before it, the clip's own grade is the one to use")))
 }
 
 /// Why a node beside the clip's chain can't be wired as `op` wires it, if
@@ -742,6 +755,10 @@ impl Clip {
                 matches!(op, GraphOp::AddNodeBeside { node, .. } if node.id == id)));
             (index, error.why)
         })?;
+        if let Some((id, why)) = compound_before_display(&docs.clips[&self.id.0]) {
+            let index = ops.iter().position(|op| matches!(op, GraphOp::AddNode { node, .. } if node.id == id) || path_of(op).nodes.first() == Some(&id));
+            return Err((index, why));
+        }
 
         // Written to the fields; a write that fails puts them back. On a
         // picture-truth clip the fields are written as the picture's view,

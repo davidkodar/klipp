@@ -46,6 +46,8 @@ mod edit_planner_corpus;
 mod edits_survive_save_load;
 #[path = "../effect_list_round_trip.rs"]
 mod effect_list_round_trip;
+#[path = "../grade_compound_round_trip.rs"]
+mod grade_compound_round_trip;
 #[path = "../layer_fx_format.rs"]
 mod layer_fx_format;
 #[path = "../log_format_override.rs"]

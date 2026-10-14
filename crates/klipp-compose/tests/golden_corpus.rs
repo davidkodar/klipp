@@ -480,6 +480,10 @@ const EFFECTS_IN_A_LATER_BATCH: &[&str] = &[
     // What the tracks below composite to, which a one-clip case has
     // none of: drawn against its stack in `clip_below_render.rs`.
     "ClipBelow",
+    // A grade in the chain, a marker the plan turns into the executor's
+    // compound node: drawn against the clip's own grade in
+    // `grade_compound_render.rs`.
+    "GradeCompound",
 ];
 
 /// One moving, grainy clip carrying `fx` (#1024).

@@ -224,7 +224,9 @@ pub(super) fn catalog() -> Vec<CatalogEntry> {
             });
         }
     };
-    for ty in klipp_effects::registry::effect_types() {
+    // An effect type in the Grade category is a grade compound's marker in
+    // a clip's list (#1746): no card, no row, never added as an effect.
+    for ty in klipp_effects::registry::effect_types().filter(|t| t.desc.category != klipp_effects::registry::Category::Grade) {
         add(
             &ty.desc,
             false,
@@ -1014,7 +1016,8 @@ mod tests {
     #[test]
     fn required_surfaces_follow_actual_effect_controls_and_reviewed_grade_routes() {
         let entries = catalog();
-        for ty in klipp_effects::registry::effect_types() {
+        // A grade compound's marker (#1746) has no card: not catalogued.
+        for ty in klipp_effects::registry::effect_types().filter(|t| t.desc.category != klipp_effects::registry::Category::Grade) {
             let entry = entries
                 .iter()
                 .find(|e| e.type_id == ty.desc.id && matches!(e.value, CatalogValue::Enabled))

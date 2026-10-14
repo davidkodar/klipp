@@ -1329,6 +1329,48 @@ fn a_clip_merged_with_what_is_below_exports_as_the_viewer_shows_it() {
     assert!(d > 20, "only {d} levels inside V2's clip: the clip below is not in the export");
 }
 
+/// The main timeline with a grade in V1's clips' chains (#1746), after a
+/// glow: a compound holding a Corrector that lifts the exposure and takes
+/// saturation down. Both routes run it alike, and it is in the export.
+#[test]
+fn a_grade_compound_exports_as_the_viewer_shows_it() {
+    let _decoders = decoders_at_speed();
+    if !ffmpeg_ok() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    use klipp_graph_format::path::{NodePath, Root};
+    let mut t = timeline();
+    let mut grade = klipp_nodes::NodeGraph::default();
+    let corrector = grade.ensure_corrector();
+    let n = grade.nodes.iter_mut().find(|n| n.id == corrector).unwrap();
+    n.params.exposure = Some(0.6);
+    n.params.saturation = Some(0.3);
+    for c in t.seq.tracks.iter_mut().find(|t| t.name == "V1").unwrap().clips.iter_mut() {
+        add_after_display(c, &[BuiltinEffect::Glow { radius: 12.0, intensity: 0.4 }]);
+        let graph = c.picture_v2().unwrap().picture.graph.clone();
+        let glow = graph.nodes.iter().find(|n| klipp_graph_lift::effect_params::tag(n) == Some("glow")).unwrap().id;
+        let compound = klipp_graph_lift::grade_compound::compound_of(&grade, klipp_graph_format::NodeId::new_v4()).unwrap();
+        c.apply_picture_ops(&[klipp_graph_lift::ops::GraphOp::AddNode { after: NodePath::new(Root::Clip { clip: c.id.0 }, [glow]), node: Box::new(compound) }]).unwrap();
+    }
+    let mut shown = t.clone();
+    shown.seq = klipp_timeline::flatten::flatten_sequence(&t.seq, std::slice::from_ref(&t.seq));
+    let out = exported(&shown);
+    let viewer = Viewer::start(&shown);
+    let mut worst = 0;
+    for n in [10, 60, 110] {
+        let (v, e) = (viewer.frame_at(n), exported_frame(&out, n));
+        worst = worst.max(compare(&format!("grade compound frame {n:3}"), &v, &e));
+    }
+    eprintln!("grade compound, viewer vs export: worst {worst} levels");
+    assert!(worst <= 3, "the export differs from the viewer by {worst} levels");
+    let (_, plain) = main_fixture();
+    let (g, p) = (exported_frame(&out, 10), exported_frame(plain, 10));
+    let (a, b) = (px(&g, 30, 30), px(&p, 30, 30));
+    let d = (0..3).map(|c| (a[c] - b[c]).abs()).max().unwrap_or(0);
+    assert!(d > 20, "only {d} levels at the corner: the compound is not in the export");
+}
+
 /// `fx` added to `c`'s picture as the Picture view adds them: each after
 /// the last, from the display step.
 fn add_after_display(c: &mut Clip, fx: &[BuiltinEffect]) {

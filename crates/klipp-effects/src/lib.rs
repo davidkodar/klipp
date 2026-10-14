@@ -971,6 +971,12 @@ pub enum BuiltinEffect {
     /// lays over it. The executor draws it ([`draws_a_side_picture`]);
     /// these kernels pass the picture they are given.
     ClipBelow {},
+
+    /// A grade in the picture's chain after its display step (#1746): a
+    /// marker in a clip's effect list, the grade itself the executor's
+    /// compound node, which the renderer builds from the picture's
+    /// `klipp.grade_compound` node. These kernels pass the picture.
+    GradeCompound {},
 }
 
 /// Whether `effect` draws a picture the render hands its run (another
@@ -1185,10 +1191,11 @@ pub fn has_frei0r(effects: &[BuiltinEffect]) -> bool {
 }
 
 /// Whether the list holds an effect that only a node draws: a frei0r
-/// plug-in, or a side picture (#1746), which the render reads for the
-/// executor. These kernels would pass the picture instead.
+/// plug-in, a side picture (#1746), which the render reads for the
+/// executor, or a grade compound. These kernels would pass the picture
+/// instead.
 pub fn runs_only_as_a_node(effects: &[BuiltinEffect]) -> bool {
-    has_frei0r(effects) || effects.iter().any(draws_a_side_picture)
+    has_frei0r(effects) || effects.iter().any(|e| draws_a_side_picture(e) || matches!(e, BuiltinEffect::GradeCompound {}))
 }
 
 impl BuiltinEffect {

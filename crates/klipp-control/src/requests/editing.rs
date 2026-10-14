@@ -562,8 +562,11 @@ pub fn node_types(category: Option<&str>) -> serde_json::Value {
             .collect()
     };
     // The built-in effects, by their saved tag, and the grade nodes, by
-    // their saved kind.
+    // their saved kind. An effect type in the Grade category is a grade
+    // compound's marker in a clip's list (#1746), never added as an
+    // effect: not listed.
     let all = effect_types()
+        .filter(|t| t.desc.category != klipp_effects::registry::Category::Grade)
         .map(|t| (&t.desc, t.tag.to_owned(), false))
         .chain(klipp_nodes::registry::node_types().map(|t| (&t.desc, format!("{:?}", t.kind), true)));
     let types: Vec<serde_json::Value> = all
@@ -631,13 +634,16 @@ pub fn node_types(category: Option<&str>) -> serde_json::Value {
 mod node_types_tests {
     use super::node_types;
 
-    /// Every registered effect type is listed, with its parameters, and a
-    /// category narrows the list to its own.
+    /// Every registered effect type is listed, with its parameters, but a
+    /// grade compound's marker (#1746), and a category narrows the list to
+    /// its own.
     #[test]
     fn every_registered_type_is_listed_and_a_category_narrows() {
         let all = node_types(None);
         let types = all["types"].as_array().unwrap();
-        assert_eq!(types.len(), klipp_effects::registry::effect_types().count() + klipp_nodes::registry::node_types().count());
+        let effects = klipp_effects::registry::effect_types().filter(|t| t.desc.category != klipp_effects::registry::Category::Grade).count();
+        assert_eq!(types.len(), effects + klipp_nodes::registry::node_types().count());
+        assert!(types.iter().all(|t| t["tag"] != "grade_compound"), "the marker isn't listed");
         let gamma = types.iter().find(|t| t["tag"] == "gamma").expect("gamma is listed");
         let param = gamma["params"].as_array().unwrap().iter().find(|p| p["key"] == "gamma").expect("its gamma");
         assert_eq!(param["default"], 1.0);
