@@ -1058,7 +1058,7 @@ impl PlaybackEngine {
             .map(|key| (key, super::linear_rgba_to_u8(&linear)));
 
         self.show_split_views(&seq, primary_ref, w, h, inspected, found.ungraded.as_deref());
-        self.show_inspection(&found, w, h);
+        self.show_inspection(&found, w, h, progress);
         self.show_rendered(
             Rendered { picture: Picture::Linear(linear), width: w, height: h, stats: Some(found.stats) },
             t_frame,
@@ -1121,12 +1121,15 @@ impl PlaybackEngine {
         fb.original_data = original;
     }
 
-    /// Hand the grade tools what the render found.
-    fn show_inspection(&mut self, found: &Inspection, w: u32, h: u32) {
+    /// Hand the grade tools what the render found. A `progress` frame,
+    /// one short of the playhead while a seek still decodes, is not the
+    /// parked frame: a pick waits past it for the frame itself, as node
+    /// thumbnails do.
+    fn show_inspection(&mut self, found: &Inspection, w: u32, h: u32, progress: bool) {
         // An eyedropper read: answered here, from the tap it set.
         let borrowed = self.node_sample.is_some();
         match (self.node_sample.clone(), &found.scope_tap) {
-            (Some(s), Some(tap)) if tap.len() == (w as usize) * (h as usize) * 4 => {
+            (Some(s), Some(tap)) if !progress && tap.len() == (w as usize) * (h as usize) * 4 => {
                 self.node_sample = None;
                 let rgb = patch_mean(tap, w, h, s.nx, s.ny);
                 let _ = self.event_tx.send(AppEvent::NodeInputSampled { clip_id: s.clip, node_id: s.node, nx: s.nx, ny: s.ny, sample: Ok(rgb) });

@@ -1303,6 +1303,9 @@ pub struct PlaybackEngine {
     /// An eyedropper read of a node's input, waiting on the render
     /// `sample_node_input` asked for. See `NodeSample`.
     node_sample: Option<NodeSample>,
+    /// Since when a pick has waited for its frame (a seek still
+    /// decoding): refused when it has waited too long.
+    node_sample_since: Option<std::time::Instant>,
     /// Solo target — when set, the engine returns this node's output
     /// as the final image instead of the Output-node-input. Single
     /// global slot; auto-inactive when the id doesn't exist in the
@@ -2179,6 +2182,7 @@ impl PlaybackEngine {
             inspector_matte_preview_target: None,
             measure_only_clip: None,
             node_sample: None,
+            node_sample_since: None,
             solo: None,
             fast_solo: None,
             visible_node_thumbs: std::collections::HashSet::new(),
@@ -2517,6 +2521,10 @@ impl PlaybackEngine {
             // tick: paused it debounces/polls/paints, any other state it
             // just tears down leftover refresh state and returns.
             self.tick_parked_refresh();
+            // A pick waiting for its frame: answered once it is here.
+            if self.state != PlaybackState::Playing {
+                self.tick_node_sample();
+            }
 
             if self.state == PlaybackState::Playing {
                 // Playback already produces fresh frames at full res
@@ -8924,17 +8932,58 @@ impl PlaybackEngine {
         };
         self.inspect_clip = Some(inspected);
         self.node_sample = Some(NodeSample { clip: clip_id, node: node_id, tap, nx, ny });
+        self.node_sample_since = None;
         self.regrade_cached_frame();
         // Answered by the render (`show_inspection`), unless it drew
-        // without that grade: nothing there to read. A pick that came
-        // before the parked frame did (a seek still decoding) waits for
-        // it: the paused refresh that paints the frame renders it with
-        // the tap and answers. Refused there, a pick sent right after a
+        // without that grade. A pick that came before the parked frame did
+        // (a seek still decoding, a paused refresh still to drain) waits
+        // for it: the render that paints the frame answers, or the tick
+        // once it is parked. Refused there, a pick sent right after a
         // seek on a loaded machine failed for want of the frame.
-        let frame_owed = self.parked_pregrade().is_none() && self.v1_decoder.is_some();
-        if self.node_sample.is_some() && !frame_owed {
-            self.node_sample = None;
+        if self.node_sample.is_none() {
+            return;
+        }
+        if self.frame_owed() {
+            self.node_sample_since = Some(std::time::Instant::now());
+            return;
+        }
+        // The frame is here and the render didn't answer: once more.
+        self.regrade_cached_frame();
+        if self.node_sample.take().is_some() {
             answer(self, why("the node's picture could not be read on this frame"));
+        }
+    }
+
+    /// Whether the parked frame is still coming: no pre-grade of it yet,
+    /// and a decoder or a paused refresh that will bring it.
+    fn frame_owed(&self) -> bool {
+        self.parked_pregrade().is_none() && (self.v1_decoder.is_some() || self.pending_paused_refresh)
+    }
+
+    /// How long a pick waits for its frame before it is refused.
+    const NODE_SAMPLE_WAIT: Duration = Duration::from_secs(20);
+
+    /// A pick waiting for its frame (`sample_node_input`): once the frame
+    /// is parked and nothing more is coming, the frame is rendered with
+    /// the pick's tap, which answers; past [`Self::NODE_SAMPLE_WAIT`] it is
+    /// refused.
+    fn tick_node_sample(&mut self) {
+        let (Some(since), Some(s)) = (self.node_sample_since, self.node_sample.as_ref()) else { return };
+        let (clip_id, node_id, nx, ny) = (s.clip, s.node, s.nx, s.ny);
+        if !self.frame_owed() && !self.pending_paused_refresh {
+            self.regrade_cached_frame();
+        }
+        let refuse = |this: &mut Self, why: &str| {
+            this.node_sample = None;
+            this.node_sample_since = None;
+            let _ = this.event_tx.send(AppEvent::NodeInputSampled { clip_id, node_id, nx, ny, sample: Err(klipp_core::NodeSampleRefusal::Why(why.to_string())) });
+        };
+        if self.node_sample.is_none() {
+            self.node_sample_since = None;
+        } else if !self.frame_owed() && !self.pending_paused_refresh {
+            refuse(self, "the node's picture could not be read on this frame");
+        } else if since.elapsed() >= Self::NODE_SAMPLE_WAIT {
+            refuse(self, "the frame did not arrive to be read");
         }
     }
 
@@ -13391,6 +13440,85 @@ mod paused_refresh_tests {
             .ok()?
             .success();
         ok.then_some(out)
+    }
+
+    /// A pick on a node's input that comes while the parked frame is still
+    /// on its way (no pre-grade yet, a paused refresh still to drain)
+    /// waits for the frame and is answered once it is parked, never
+    /// refused for want of it: under load a pick sent after a seek was
+    /// refused with "could not be read on this frame".
+    #[test]
+    fn a_pick_while_its_frame_is_coming_waits_for_it() {
+        use klipp_timeline::GradeAccess;
+        let Some(path) = source() else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let fps = klipp_core::Fps::new(30, 1);
+        let tc = |f: i64| RationalTime { value: f, rate: 30 };
+        let mut item = klipp_media::MediaItem::synthetic_for_test(path.clone(), None);
+        item.fps = fps;
+        item.duration = tc(60);
+        item.resolution = klipp_core::Resolution { width: 64, height: 48 };
+        item.has_audio = false;
+        let id = item.id;
+        let mut pool = klipp_media::MediaPool::new();
+        pool.add(item);
+        // Source -> Qualifier -> Output: the pick reads the Qualifier's input.
+        let node = |kind, params| klipp_nodes::Node { id: klipp_nodes::NodeId::new_v4(), kind, label: String::new(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![] };
+        let nodes = vec![
+            node(klipp_nodes::NodeKind::Source, Default::default()),
+            node(klipp_nodes::NodeKind::Qualifier, klipp_nodes::NodeParams { qualifier: Some(Default::default()), ..Default::default() }),
+            node(klipp_nodes::NodeKind::Output, Default::default()),
+        ];
+        let q = nodes[1].id;
+        let edges = nodes.windows(2).map(|p| klipp_nodes::Edge { from_node: p[0].id, from_port: 0, to_node: p[1].id, to_port: 0 }).collect();
+        let graph = klipp_nodes::NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions: Default::default(), working_space_override: None, frames: vec![], sticky_notes: vec![] };
+        let mut clip = klipp_timeline::Clip::media(id, tc(0), tc(60), tc(0), tc(60));
+        clip.set_grade(graph);
+        let clip_id = clip.id;
+        let mut seq = Sequence::new_default();
+        seq.fps = fps;
+        seq.resolution = klipp_core::Resolution { width: 64, height: 48 };
+        let mut v1 = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        v1.clips = vec![clip];
+        seq.tracks = vec![v1];
+        let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, ev_rx) = crossbeam_channel::unbounded();
+        let shown = Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16)));
+        let mut engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, Arc::clone(&shown), Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16))),
+            Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        engine.state = PlaybackState::Paused;
+        engine.seek_in_sequence_with_timeout(tc(10), Duration::from_secs(5));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while engine.pending_paused_refresh && std::time::Instant::now() < deadline {
+            engine.tick_paused_refresh();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(engine.parked_pregrade().is_some(), "frame 10 is parked");
+        let picks = |rx: &crossbeam_channel::Receiver<AppEvent>| rx.try_iter().filter_map(|e| match e { AppEvent::NodeInputSampled { sample, .. } => Some(sample), _ => None }).collect::<Vec<_>>();
+        let _ = picks(&ev_rx);
+
+        // The frame still coming, as after a seek that missed it: no
+        // pre-grade of it, and a paused refresh still to drain.
+        let pregrade = engine.cached_pregrade_frame.take();
+        engine.pending_paused_refresh = true;
+        let at = klipp_compose::inspect::grade_node(clip_id, q).path;
+        engine.sample_node_input(clip_id, q, &at, 0.5, 0.5);
+        assert_eq!(picks(&ev_rx), vec![], "a pick refused while its frame was coming");
+        engine.tick_node_sample();
+        assert_eq!(picks(&ev_rx), vec![], "a pick refused while its frame was coming");
+
+        // The frame lands and is parked: the pick is answered from it on
+        // the next tick.
+        engine.cached_pregrade_frame = pregrade;
+        engine.pending_paused_refresh = false;
+        engine.tick_node_sample();
+        let answered = picks(&ev_rx);
+        assert!(matches!(answered.as_slice(), [Ok(_)]), "{answered:?}");
     }
 
     /// #1092: a seek that missed its frame arms the paused refresh. A
