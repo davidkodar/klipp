@@ -170,3 +170,50 @@ fn a_neutral_node_is_bypassed() {
         assert_eq!(ex.last_run_chain_stats().extends, 0, "nothing dispatched");
     }
 }
+
+/// The zones' presets (#240) are starting points that do what their names
+/// say: each named once, each changes the picture, the roll-off darkens
+/// only above the light zone, Lift shadows brightens only below mid grey,
+/// and the split tone warms the highlights and cools the shadows.
+/// Control: a neutral node changes nothing (`a_neutral_node_is_bypassed`).
+#[test]
+fn the_presets_do_what_their_names_say() {
+    let presets = HdrZonesSettings::presets();
+    let mut names: Vec<&str> = presets.iter().map(|(n, _, _)| *n).collect();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), presets.len(), "each named once");
+    let input = frame();
+    let luma = klipp_color::primaries::luminance_weights(WorkingColorspace::Rec709Linear);
+    let mut cpu = GraphExecutor::new_cpu_only();
+    let run = |cpu: &mut GraphExecutor, z: &HdrZonesSettings| cpu.execute_linear(&input, &graph(z.clone()), W, H, 0.0, 0, None, None).unwrap().0;
+    // The grey row's pixels by stop.
+    let grey = |out: &[f32]| -> Vec<(f32, [f32; 3])> {
+        (0..W as usize).map(|x| {
+            let (a, b) = (&out[x * 4..x * 4 + 3], &input[x * 4..x * 4 + 3]);
+            (stops(luma[0] * b[0] + luma[1] * b[1] + luma[2] * b[2]), [a[0], a[1], a[2]])
+        }).collect()
+    };
+    for (name, _, z) in &presets {
+        assert!(!z.is_neutral(), "{name}");
+        assert_ne!(run(&mut cpu, z), input, "{name} changes the picture");
+        assert_eq!(HdrZonesSettings::preset(&name.to_uppercase()).as_ref(), Some(z), "{name} found by name, any case");
+    }
+    let rolled = grey(&run(&mut cpu, &HdrZonesSettings::preset("HDR highlight roll-off").unwrap()));
+    for (s, px) in &rolled {
+        let was = 0.18 * s.exp2();
+        if *s < 1.4 { assert!((px[1] - was).abs() <= 1e-6 * was.max(1.0), "roll-off at {s} stops"); }
+        if *s > 3.5 { assert!(px[1] < was * 0.75, "roll-off darkens {s} stops"); }
+    }
+    let lifted = grey(&run(&mut cpu, &HdrZonesSettings::preset("Lift shadows").unwrap()));
+    for (s, px) in &lifted {
+        let was = 0.18 * s.exp2();
+        if *s > -0.4 { assert!((px[1] - was).abs() <= 1e-6 * was.max(1.0), "Lift shadows leaves {s} stops"); }
+        if (-3.0..-1.6).contains(s) { assert!(px[1] > was * 1.2, "Lift shadows opens {s} stops"); }
+    }
+    let split = grey(&run(&mut cpu, &HdrZonesSettings::preset("Warm highlights, cool shadows").unwrap()));
+    for (s, px) in &split {
+        if *s > 3.2 { assert!(px[0] > px[2], "warm at {s} stops: {px:?}"); }
+        if (-4.0..-1.6).contains(s) { assert!(px[2] > px[0], "cool at {s} stops: {px:?}"); }
+    }
+}

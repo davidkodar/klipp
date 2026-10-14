@@ -599,3 +599,26 @@ fn a_zone_picked_from_the_menu_and_its_exposure_dragged_moves_only_that_zone() {
     }
     assert!(moved > 0 && kept > 0, "moved {moved}, kept {kept}");
 }
+
+/// An HDR Zones page's Start from (#240): a preset picked from it sets
+/// every zone as the preset has them, one step, undone whole. Control:
+/// opening the menu writes nothing.
+#[test]
+fn a_zones_preset_picked_from_start_from_sets_every_zone_in_one_step() {
+    let (state, clip, node) = placed(NodeKind::HdrZones).expect("a grade takes one");
+    let mut g = Grade::new(state, clip, node);
+    let zones = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).and_then(|n| n.params.hdr_zones.clone()).unwrap_or_default();
+    let before = g.picture();
+    let drawn = g.drawn();
+    let at = drawn.iter().find(|(t, _)| t == "Start from").map(|(_, p)| *p).expect("Start from");
+    g.click_at(at);
+    assert_eq!(g.picture(), before, "opening the menu writes nothing");
+    let drawn = g.drawn();
+    let item = drawn.iter().find(|(t, _)| t == "Lift shadows").map(|(_, p)| *p).expect("the preset listed");
+    g.click_at(item);
+    assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+    assert_eq!(zones(&g), klipp_core::HdrZonesSettings::preset("Lift shadows").unwrap());
+    assert_eq!(g.state.active_history().undo_count(), 1, "one step");
+    g.step(false).unwrap();
+    assert_eq!(g.picture(), before, "undone whole");
+}

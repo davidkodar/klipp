@@ -5663,6 +5663,7 @@ const ADD_MENU_CATEGORIES: &[(&str, &[(&str, &str)])] = &[
         ("Curves", "RGBCurves"),
         ("Hue/Sat", "HueSatCurves"),
         ("Colour Balance", "ColorBalance"),
+        ("HDR Zones", "HdrZones"),
         ("Colour Match", "ColorMatch"),
     ]),
     ("Secondary", &[

@@ -1254,6 +1254,39 @@ pub enum Op {
         #[serde(default)]
         remove: bool,
     },
+    /// HDR zones (#240): exposure, colour and saturation placed by tonal
+    /// zone, each zone's reach in stops about mid grey, on a picture
+    /// clip's grade or `on` a group's or the timeline's. `zone` is global,
+    /// black, dark, shadow, light, highlight or specular (default global);
+    /// `exposure` in stops; `hue` (degrees on the colour wheel: 0 red, 30
+    /// orange, 210 a cool blue) and `amount` (0 none, 1 the wheel's rim)
+    /// its colour; `saturation` 1 as shot; `boundary` and `falloff` where
+    /// the zone reaches, in stops (not Global's). `preset` starts every
+    /// zone from a named starting point; `reset` from neutral.
+    Zones {
+        #[serde(default)]
+        clip_id: Option<ClipRef>,
+        #[serde(default)]
+        on: Option<GradeOn>,
+        #[serde(default)]
+        zone: Option<String>,
+        #[serde(default)]
+        exposure: Option<f32>,
+        #[serde(default)]
+        hue: Option<f32>,
+        #[serde(default)]
+        amount: Option<f32>,
+        #[serde(default)]
+        saturation: Option<f32>,
+        #[serde(default)]
+        boundary: Option<f32>,
+        #[serde(default)]
+        falloff: Option<f32>,
+        #[serde(default)]
+        preset: Option<String>,
+        #[serde(default)]
+        reset: bool,
+    },
     /// A secondary (HSL qualifier) grade on a picture clip: key a colour
     /// or tone range — by a named `target` (skin, sky, foliage, reds…) or
     /// an explicit `hue` with `hue_width`, and optional saturation and
@@ -1774,7 +1807,7 @@ pub const OP_NAMES: &[&str] = &[
     "vector_path", "place", "add_track", "remove_track", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
     "slip", "slide", "pin", "role", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "highlight",
-    "ramp", "grade_group", "remove_grade_group", "look", "qualify", "retime", "replace", "track_audio", "clean_audio",
+    "ramp", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "replace", "track_audio", "clean_audio",
     "transition", "style", "title", "compose", "camera", "crop", "generator", "depth", "label", "motion_blur",
     "strobe", "set_length", "over_edits", "template",
 ];
@@ -3122,6 +3155,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
         Op::Grade { clip_id, on, .. } => {
             let target = grade_target(seq, pool, fps, i, clip_id.as_ref(), on.as_ref(), "grade")?;
             grade_op(seq, pool, fps, i, target, op)
+        }
+        Op::Zones { clip_id, on, zone, exposure, hue, amount, saturation, boundary, falloff, preset, reset } => {
+            let target = grade_target(seq, pool, fps, i, clip_id.as_ref(), on.as_ref(), "set zones on")?;
+            zones(i, target, ZonesAsk { zone: zone.as_deref(), exposure: *exposure, hue: *hue, amount: *amount, saturation: *saturation, boundary: *boundary, falloff: *falloff, preset: preset.as_deref(), reset: *reset })
         }
         Op::Style { clip_id, track, from, to, size, color, font, bold, align, x, y, backing, outline, full_frame, shadow, backing_color, outline_color, glow, glow_color, gradient, glitch, chromatic, animate, enter, exit, animate_secs, stagger, loop_effect, roll_shape, edge_fade, typeset } => {
             if typeset.runs.is_some() && clip_id.is_none() {
@@ -7858,6 +7895,108 @@ fn grade(i: usize, target: GradeTarget, knobs: &[(&str, &str, Option<f32>, f32, 
         "grade {target_name}: {}",
         if said.is_empty() { "back to neutral".to_string() } else { format!("{}{}", if reset { "neutral, then " } else { "" }, said.join(", ")) },
     );
+    let edit = EditCommand::SetNodeGraph { clip_id: id, old_graph: current, new_graph: graph };
+    Ok((what, edit, touched))
+}
+
+/// What a `zones` op asks (#240).
+struct ZonesAsk<'a> {
+    zone: Option<&'a str>,
+    exposure: Option<f32>,
+    hue: Option<f32>,
+    amount: Option<f32>,
+    saturation: Option<f32>,
+    boundary: Option<f32>,
+    falloff: Option<f32>,
+    preset: Option<&'a str>,
+    reset: bool,
+}
+
+/// `zones`: the target's HDR Zones node (made before its output when it
+/// has none) set from `ask`: a preset or neutral first when asked, then
+/// the zone's values given.
+fn zones(i: usize, target: GradeTarget, ask: ZonesAsk) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    use klipp_core::HdrZonesSettings;
+    let GradeTarget { id, graph: current, name: target_name, touched } = target;
+    let names = klipp_nodes::params::HDR_ZONE_KEYS;
+    let zone_name = ask.zone.unwrap_or("global").trim().to_lowercase();
+    let zone = names.iter().position(|z| *z == zone_name).ok_or_else(|| refuse(i, format!("\"{zone_name}\" is not a zone"), format!("give zone as one of {}", names.join(", "))))?;
+    let knobs = [ask.exposure, ask.hue, ask.amount, ask.saturation, ask.boundary, ask.falloff];
+    if knobs.iter().all(Option::is_none) && ask.preset.is_none() && !ask.reset {
+        return Err(refuse(i, "nothing to set", "give exposure, hue and amount, saturation, boundary or falloff, a preset, or reset"));
+    }
+    if zone == 0 && (ask.boundary.is_some() || ask.falloff.is_some()) {
+        return Err(refuse(i, "the global zone reaches everything: it has no boundary or falloff", "give a zone with boundary or falloff, e.g. zone: \"highlight\""));
+    }
+    let shown = |v: f32| format!("{}", (v as f64 * 1000.0).round() / 1000.0);
+    for (what, v, lo, hi) in [("exposure", ask.exposure, -4.0, 4.0), ("amount", ask.amount, 0.0, 1.0), ("saturation", ask.saturation, 0.0, 2.0), ("boundary", ask.boundary, -8.0, 8.0), ("falloff", ask.falloff, 0.0, 4.0), ("hue", ask.hue, -360.0, 360.0)] {
+        if let Some(v) = v {
+            if !v.is_finite() || v < lo || v > hi {
+                return Err(refuse(i, format!("{what} {} is out of range", shown(v)), format!("give {what} between {} and {}", shown(lo), shown(hi))));
+            }
+        }
+    }
+    let preset = match ask.preset {
+        Some(p) => Some(HdrZonesSettings::preset(p).ok_or_else(|| {
+            let known: Vec<&str> = HdrZonesSettings::presets().into_iter().map(|(n, _, _)| n).collect();
+            refuse(i, format!("\"{p}\" is not a zones preset"), format!("give preset as one of: {}", known.join(", ")))
+        })?),
+        None => None,
+    };
+    let mut graph = current.clone();
+    // A grade never made has nothing feeding its output: the primary
+    // chain first, as `grade` makes it.
+    if graph.input_of(graph.output_node_id, 0).is_none() {
+        graph = klipp_nodes::defaults::default_graph();
+    }
+    let node_id = match graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::HdrZones && n.enabled) {
+        Some(n) => n.id,
+        None => {
+            let id = klipp_nodes::NodeId::new_v4();
+            graph.splice_before_output(klipp_nodes::Node { id, kind: klipp_nodes::NodeKind::HdrZones, label: "HDR Zones".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: vec![] });
+            id
+        }
+    };
+    let node = graph.nodes.iter_mut().find(|n| n.id == node_id).ok_or_else(|| refuse(i, "the grade took no zones node", "this is a bug: tell the user the zones went nowhere"))?;
+    let mut z = node.params.hdr_zones.clone().unwrap_or_default();
+    let mut said = Vec::new();
+    if ask.reset {
+        z = HdrZonesSettings::default();
+        said.push("neutral".to_string());
+    }
+    if let (Some(p), Some(name)) = (preset, ask.preset) {
+        z = p;
+        said.push(format!("from {}", name.trim()));
+    }
+    let zone_said = |what: &str, v: f32| format!("{} {what} {}", names[zone], shown(v));
+    if let Some(v) = ask.exposure {
+        z.exposure[zone] = v;
+        said.push(zone_said("exposure", v));
+    }
+    if ask.hue.is_some() || ask.amount.is_some() {
+        // What isn't given is the zone's own: its hue, or a quarter of the
+        // way out when it has no colour yet.
+        let (x, y) = (z.colour_x[zone], z.colour_y[zone]);
+        let had = (x * x + y * y).sqrt() / 2.0;
+        let hue = ask.hue.unwrap_or_else(|| y.atan2(x).to_degrees());
+        let amount = ask.amount.unwrap_or(if had > 0.0 { had } else { 0.25 });
+        (z.colour_x[zone], z.colour_y[zone]) = HdrZonesSettings::colour_puck(hue, amount);
+        said.push(format!("{} colour hue {} amount {}", names[zone], shown(hue.rem_euclid(360.0)), shown(amount)));
+    }
+    if let Some(v) = ask.saturation {
+        z.saturation[zone] = v;
+        said.push(zone_said("saturation", v));
+    }
+    if let Some(v) = ask.boundary {
+        z.boundary[zone] = v;
+        said.push(zone_said("boundary", v));
+    }
+    if let Some(v) = ask.falloff {
+        z.falloff[zone] = v;
+        said.push(zone_said("falloff", v));
+    }
+    node.params.hdr_zones = Some(z);
+    let what = format!("zones on {target_name}: {}", said.join(", "));
     let edit = EditCommand::SetNodeGraph { clip_id: id, old_graph: current, new_graph: graph };
     Ok((what, edit, touched))
 }
@@ -13105,6 +13244,61 @@ mod tests {
         assert!(new_graph.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Corrector && n.params.exposure == Some(-0.5)), "the correction it gates");
         assert!(resolve(&seq, &pool, &[q(Some([0.5, 1.0, 0.0, 0.4, 0.0, 0.3]), Some(20.0))]).unwrap_err().why.contains("at once"));
         assert!(resolve(&seq, &pool, &[q(Some([0.8, 0.2, 0.0, 0.4, 0.0, 0.3]), None)]).unwrap_err().why.contains("three ranges"));
+    }
+
+    /// `zones` (#240): a clip's grade takes an HDR Zones node, set by zone
+    /// (its exposure, its colour by hue and amount on the wheel, its reach),
+    /// or from a preset by name; a second op edits the same node. Refused:
+    /// a zone that isn't one, a reach for Global, a value out of range, an
+    /// unknown preset, and nothing to set.
+    #[test]
+    fn zones_set_a_zone_or_start_from_a_preset() {
+        use klipp_timeline::GradeAccess;
+        let (seq, pool, _media, a, _) = fixture();
+        let z = |zone: Option<&str>, exposure: Option<f32>, hue: Option<f32>, amount: Option<f32>, boundary: Option<f32>, preset: Option<&str>| Op::Zones {
+            clip_id: Some(ClipRef::Id(a)),
+            on: None,
+            zone: zone.map(str::to_owned),
+            exposure, hue, amount, saturation: None, boundary, falloff: None,
+            preset: preset.map(str::to_owned),
+            reset: false,
+        };
+        let graph_of = |edit: &EditCommand| match edit {
+            EditCommand::SetNodeGraph { new_graph, .. } => new_graph.clone(),
+            other => panic!("node-graph edit, not {other:?}"),
+        };
+        let zones_of = |g: &klipp_nodes::NodeGraph| {
+            let nodes: Vec<_> = g.nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::HdrZones).collect();
+            assert_eq!(nodes.len(), 1, "one zones node");
+            nodes[0].params.hdr_zones.clone().expect("its zones")
+        };
+        let plan = resolve(&seq, &pool, &[z(Some("highlight"), Some(-0.5), Some(30.0), Some(0.25), Some(2.0), None)]).unwrap();
+        let new_graph = &graph_of(&plan.steps[0].edit);
+        let got = zones_of(new_graph);
+        assert_eq!((got.exposure[5], got.boundary[5]), (-0.5, 2.0));
+        let (x, y) = klipp_core::HdrZonesSettings::colour_puck(30.0, 0.25);
+        assert_eq!((got.colour_x[5], got.colour_y[5]), (x, y));
+        assert!(got.exposure.iter().enumerate().all(|(i, e)| i == 5 || *e == 0.0), "no other zone moved");
+        assert!(plan.steps[0].what.contains("highlight exposure -0.5"), "{}", plan.steps[0].what);
+
+        // A second op on the graded clip edits the same node.
+        let mut graded = seq.clone();
+        graded.all_clips_mut().find(|c| c.id == a).unwrap().set_grade(new_graph.clone());
+        let plan = resolve(&graded, &pool, &[z(Some("shadow"), Some(0.3), None, None, None, None)]).unwrap();
+        let new_graph = &graph_of(&plan.steps[0].edit);
+        let again = zones_of(new_graph);
+        assert_eq!((again.exposure[3], again.exposure[5]), (0.3, -0.5), "the first op's kept");
+
+        let plan = resolve(&seq, &pool, &[z(None, None, None, None, None, Some("hdr highlight roll-off"))]).unwrap();
+        let new_graph = &graph_of(&plan.steps[0].edit);
+        assert_eq!(zones_of(new_graph), klipp_core::HdrZonesSettings::preset("HDR highlight roll-off").unwrap());
+
+        let why = |op: Op| resolve(&seq, &pool, &[op]).unwrap_err().why;
+        assert!(why(z(Some("midtones"), Some(1.0), None, None, None, None)).contains("not a zone"));
+        assert!(why(z(None, None, None, None, Some(1.0), None)).contains("no boundary"));
+        assert!(why(z(Some("light"), Some(9.0), None, None, None, None)).contains("out of range"));
+        assert!(why(z(None, None, None, None, None, Some("teal and orange"))).contains("not a zones preset"));
+        assert!(why(z(Some("light"), None, None, None, None, None)).contains("nothing to set"));
     }
 
     /// A 3D key (#895): the keyer in 3D mode with the colours to keep and

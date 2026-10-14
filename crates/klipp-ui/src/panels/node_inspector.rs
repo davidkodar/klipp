@@ -2347,8 +2347,25 @@ impl NodeInspectorPanel {
         }
 
         // Reset zone: its every value back as a new node has it, one step.
+        // Start from: a preset's every zone, one step.
         ui.horizontal(|ui| {
             ui.add_space(14.0);
+            egui::ComboBox::from_id_salt(("hdr_zones_start", node_id))
+                .selected_text("Start from")
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    for (preset, about, settings) in klipp_core::HdrZonesSettings::presets() {
+                        if ui.selectable_label(false, preset).on_hover_text(about).clicked() {
+                            let writes = hdr_zones_writes(&settings);
+                            zones = settings;
+                            atomic_node_edit_batch(cmds, clip_id, |c| {
+                                for (param, value) in writes {
+                                    c.push(AppCommand::SetNodeParam { clip_id, node_id, param, value });
+                                }
+                            });
+                        }
+                    }
+                });
             if ui.small_button("Reset zone").on_hover_text("Put this zone's colour, exposure, saturation and reach back").clicked() {
                 let fresh = klipp_core::HdrZonesSettings::default();
                 let mut values = vec![(name("exposure"), fresh.exposure[picked]), (name("colour_x"), 0.0), (name("colour_y"), 0.0), (name("saturation"), fresh.saturation[picked])];
@@ -4957,6 +4974,17 @@ impl NodeKeys<'_> {
 /// +8 about mid grey, each zone's weight over it, the picked zone's
 /// strongest and its boundary marked. Its only words are the axis's ends,
 /// written with a minus sign, never a number a row could be read as.
+/// Every value of the HDR zones `z` (#240) by its key, as a node's rows
+/// write them: what a preset sets, all of it.
+fn hdr_zones_writes(z: &klipp_core::HdrZonesSettings) -> Vec<(String, f32)> {
+    let mut z = z.clone();
+    klipp_nodes::registry::node_type(NodeKind::HdrZones)
+        .map_or(&[][..], |t| t.desc.params)
+        .iter()
+        .filter_map(|d| klipp_nodes::params::hdr_zone_slot(&mut z, d.key).map(|v| (d.key.to_owned(), *v)))
+        .collect()
+}
+
 pub(crate) fn hdr_zone_map(ui: &mut egui::Ui, zones: &klipp_core::HdrZonesSettings, picked: usize, theme: &KlippTheme) {
     use klipp_color::grade_model::hdr_zones::{weight, ZONES};
     const SPAN: f32 = 8.0;

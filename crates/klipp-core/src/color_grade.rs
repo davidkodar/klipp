@@ -437,6 +437,58 @@ impl HdrZonesSettings {
     }
 }
 
+impl HdrZonesSettings {
+    /// A zone colour wheel's puck for a tint of hue `hue` (degrees on the
+    /// wheel: 0 red, 30 orange, 210 a cool blue) and `amount` (0 none, 1
+    /// the wheel's rim).
+    pub fn colour_puck(hue: f32, amount: f32) -> (f32, f32) {
+        let dist = 2.0 * amount;
+        let (s, c) = hue.to_radians().sin_cos();
+        (dist * c, dist * s)
+    }
+
+    /// The zones' starting points (#240), as a colourist names them: each
+    /// its name, what it does, and its settings.
+    pub fn presets() -> Vec<(&'static str, &'static str, HdrZonesSettings)> {
+        let with = |f: &dyn Fn(&mut HdrZonesSettings)| {
+            let mut z = HdrZonesSettings::default();
+            f(&mut z);
+            z
+        };
+        let tint = |z: &mut HdrZonesSettings, zone: usize, hue: f32, amount: f32| {
+            (z.colour_x[zone], z.colour_y[zone]) = Self::colour_puck(hue, amount);
+        };
+        vec![
+            ("HDR highlight roll-off", "Brings the highlights down half a stop and the speculars a stop, and calms their colour.", with(&|z| {
+                z.exposure[5] = -0.5;
+                z.exposure[6] = -1.0;
+                z.saturation[6] = 0.8;
+            })),
+            ("Lift shadows", "Opens the shadows and the darks without touching black.", with(&|z| {
+                z.exposure[3] = 0.4;
+                z.exposure[2] = 0.3;
+            })),
+            ("Deepen blacks", "Sets the blacks down and the darks with them, for a denser floor.", with(&|z| {
+                z.exposure[1] = -0.6;
+                z.exposure[2] = -0.2;
+            })),
+            ("Midtone contrast", "Pushes the shadows down and the lights up about mid grey, black and white left where they are.", with(&|z| {
+                z.exposure[3] = -0.3;
+                z.exposure[4] = 0.3;
+            })),
+            ("Warm highlights, cool shadows", "A split tone: orange in the highlights, a cool blue in the shadows.", with(&|z| {
+                tint(z, 5, 30.0, 0.25);
+                tint(z, 3, 210.0, 0.25);
+            })),
+        ]
+    }
+
+    /// The preset named `name` (any case), when there is one.
+    pub fn preset(name: &str) -> Option<HdrZonesSettings> {
+        Self::presets().into_iter().find(|(n, _, _)| n.eq_ignore_ascii_case(name.trim())).map(|(_, _, z)| z)
+    }
+}
+
 impl Default for HdrZonesSettings {
     fn default() -> Self {
         Self {
