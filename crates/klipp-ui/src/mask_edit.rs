@@ -25,36 +25,7 @@ fn cubic_at(c: &[P; 4], t: f32) -> P {
     lerp(lerp(ab, bc, t), lerp(bc, cd, t), t)
 }
 
-/// `points` with a point put on the curve from point `seg` to the next,
-/// at `t` along it, the curve keeping its shape: the segment's handles
-/// are split as de Casteljau splits it. The new point is at `seg + 1`;
-/// it is smooth when the curve through it is.
-pub fn split_segment(points: &[BezierPoint], seg: usize, t: f32) -> Vec<BezierPoint> {
-    let n = points.len();
-    if n == 0 {
-        return Vec::new();
-    }
-    let seg = seg % n;
-    let t = t.clamp(0.0, 1.0);
-    let c = segment(points, seg);
-    let (ab, bc, cd) = (lerp(c[0], c[1], t), lerp(c[1], c[2], t), lerp(c[2], c[3], t));
-    let (abc, bcd) = (lerp(ab, bc, t), lerp(bc, cd, t));
-    let m = lerp(abc, bcd, t);
-    let mut out = points.to_vec();
-    let next = (seg + 1) % n;
-    out[seg].out_dx = ab.0 - c[0].0;
-    out[seg].out_dy = ab.1 - c[0].1;
-    out[next].in_dx = cd.0 - c[3].0;
-    out[next].in_dy = cd.1 - c[3].1;
-    let straight = points[seg].out_dx == 0.0 && points[seg].out_dy == 0.0 && points[next].in_dx == 0.0 && points[next].in_dy == 0.0;
-    let new = if straight {
-        BezierPoint::corner(m.0, m.1)
-    } else {
-        BezierPoint { x: m.0, y: m.1, in_dx: abc.0 - m.0, in_dy: abc.1 - m.1, out_dx: bcd.0 - m.0, out_dy: bcd.1 - m.1, smooth: true }
-    };
-    out.insert(seg + 1, new);
-    out
-}
+pub use klipp_core::mask_path::split_segment;
 
 /// The point on the path nearest `at`, as (segment, `t` along it, its
 /// position, its distance in frame widths), searched by sampling each
@@ -194,12 +165,7 @@ pub fn move_points(points: &[BezierPoint], selected: &std::collections::BTreeSet
         .collect()
 }
 
-/// `points` less those in `selected`, or `None` when fewer than three
-/// would be left: a shape needs three.
-pub fn delete_points(points: &[BezierPoint], selected: &std::collections::BTreeSet<usize>) -> Option<Vec<BezierPoint>> {
-    let kept: Vec<BezierPoint> = points.iter().enumerate().filter(|(i, _)| !selected.contains(i)).map(|(_, p)| *p).collect();
-    (kept.len() >= 3 && kept.len() < points.len()).then_some(kept)
-}
+pub use klipp_core::mask_path::without_points as delete_points;
 
 /// The points inside the rectangle from `a` to `b`.
 pub fn in_marquee(points: &[BezierPoint], a: P, b: P) -> std::collections::BTreeSet<usize> {
@@ -394,12 +360,10 @@ fn mask_node(state: &crate::state::AppState, clip: klipp_core::ClipId) -> Option
     Some((node.id, node.params.masks.clone().unwrap_or_default()))
 }
 
-fn bezier(mask: &klipp_core::Mask) -> Option<&Vec<BezierPoint>> {
-    match &mask.shape {
-        klipp_core::MaskShape::Bezier { points } => Some(points),
-        _ => None,
-    }
+fn is_freeform(mask: &klipp_core::Mask) -> bool {
+    matches!(mask.shape, klipp_core::MaskShape::Bezier { .. })
 }
+
 
 /// The Mask tool (#74), drawn over the picture in `rect` and following
 /// the pointer and, while the viewer has the keys, Delete, Enter and
@@ -424,13 +388,17 @@ pub(crate) fn mask_tool(ui: &mut egui::Ui, state: &mut crate::state::AppState, r
     }
     let node = mask_node(state, clip_id);
     let time = state.sequence().tracks.iter().find_map(|t| t.find_clip(clip_id)).map_or(0.0, |c| (state.playhead_smooth_secs - c.timeline_in.to_secs_f64()).max(0.0));
+    // A shape key is written at the canonical playhead, as the mask
+    // list's keys are, and is the one there within half a frame.
+    let key_time = state.sequence().tracks.iter().find_map(|t| t.find_clip(clip_id)).map_or(0.0, |c| (state.playhead.to_secs_f64() - c.timeline_in.to_secs_f64()).max(0.0));
+    let key_tolerance = crate::inspector::keyframe_selection::frame_tolerance(state.sequence());
     let ink = Ink::of(theme);
     let painter = ui.painter_at(rect);
     let edit = &mut state.mask_edit;
 
     // A shape just closed is selected once it is in the stack.
     if let (Some(at), Some((node_id, masks))) = (edit.select_new, &node) {
-        if let Some(points) = masks.masks.get(at).and_then(bezier) {
+        if let Some(points) = masks.masks.get(at).and_then(|m| m.path_at(time)) {
             edit.mask = Some((*node_id, at));
             edit.selected = (0..points.len()).collect();
             edit.select_new = None;
@@ -441,7 +409,7 @@ pub(crate) fn mask_tool(ui: &mut egui::Ui, state: &mut crate::state::AppState, r
         let (node_id, masks) = node.as_ref()?;
         (*node_id == id).then_some(())?;
         let m = masks.masks.get(i)?;
-        (m.enabled && !m.locked && bezier(m).is_some()).then_some(i)
+        (m.enabled && !m.locked && is_freeform(m)).then_some(i)
     });
     if edited.is_none() {
         edit.mask = None;
@@ -465,7 +433,9 @@ pub(crate) fn mask_tool(ui: &mut egui::Ui, state: &mut crate::state::AppState, r
     let mut near_curve: Option<(usize, f32, egui::Pos2)> = None;
     if let Some((_, masks)) = &node {
         for (i, m) in masks.masks.iter().enumerate() {
-            let Some(points) = bezier(m) else { continue };
+            // As its shape keys have it now (#74).
+            let Some(points) = m.path_at(time) else { continue };
+            let points = &points;
             if !m.enabled || points.len() < 2 {
                 continue;
             }
@@ -525,14 +495,20 @@ pub(crate) fn mask_tool(ui: &mut egui::Ui, state: &mut crate::state::AppState, r
     }
 
     let masks_of = |node: &Option<(klipp_nodes::NodeId, klipp_core::MaskStack)>| node.as_ref().map(|(_, m)| m.clone()).unwrap_or_default();
-    let set_points = |cmds: &mut Vec<AppCommand>, node: &Option<(klipp_nodes::NodeId, klipp_core::MaskStack)>, i: usize, points: Vec<BezierPoint>| {
+    // An edit of mask `i`, written whole.
+    let set_mask = |cmds: &mut Vec<AppCommand>, node: &Option<(klipp_nodes::NodeId, klipp_core::MaskStack)>, i: usize, edit: &dyn Fn(&klipp_core::Mask) -> Option<klipp_core::Mask>| {
         if let Some((node_id, masks)) = node {
             let mut masks = masks.clone();
-            if let Some(m) = masks.masks.get_mut(i) {
-                m.shape = klipp_core::MaskShape::Bezier { points };
+            if let Some(m) = masks.masks.get_mut(i).and_then(|m| edit(m)) {
+                masks.masks[i] = m;
                 cmds.push(AppCommand::SetNodeMasks { clip_id, node_id: *node_id, masks });
             }
         }
+    };
+    // Its points now: the shape key at the playhead when the shape is
+    // keyed (one added there when there is none), else the shape (#74).
+    let set_points = |cmds: &mut Vec<AppCommand>, node: &Option<(klipp_nodes::NodeId, klipp_core::MaskStack)>, i: usize, points: Vec<BezierPoint>| {
+        set_mask(cmds, node, i, &|m| Some(m.with_path_at(key_time, points.clone(), key_tolerance)));
     };
     let view_of = |i: usize| node.as_ref().and_then(|(_, m)| m.masks.get(i)).map_or(View::plain(rect), |m| View::of(rect, m, time));
 
@@ -549,10 +525,10 @@ pub(crate) fn mask_tool(ui: &mut egui::Ui, state: &mut crate::state::AppState, r
                     edit.gesture = Some(Gesture::Pen { at: f, to: f });
                 }
             } else if let (Some((k, out)), Some(i)) = (hit_handle, edited) {
-                let initial = masks_of(&node).masks.get(i).and_then(bezier).cloned().unwrap_or_default();
+                let initial = masks_of(&node).masks.get(i).and_then(|m| m.path_at(time)).unwrap_or_default();
                 edit.gesture = Some(Gesture::Handle { index: k, out, initial, began: false });
             } else if let Some((i, k)) = hit_point {
-                let points = masks_of(&node).masks.get(i).and_then(bezier).cloned().unwrap_or_default();
+                let points = masks_of(&node).masks.get(i).and_then(|m| m.path_at(time)).unwrap_or_default();
                 if edit.mask.map(|(_, j)| j) != Some(i) {
                     edit.selected.clear();
                 }
@@ -576,7 +552,7 @@ pub(crate) fn mask_tool(ui: &mut egui::Ui, state: &mut crate::state::AppState, r
                     edit.gesture = Some(Gesture::Points { start, initial: points, began: false });
                 }
             } else if let Some(i) = hit_inside.filter(|_| near_curve.is_none()) {
-                let points = masks_of(&node).masks.get(i).and_then(bezier).cloned().unwrap_or_default();
+                let points = masks_of(&node).masks.get(i).and_then(|m| m.path_at(time)).unwrap_or_default();
                 if edit.mask.map(|(_, j)| j) != Some(i) {
                     edit.selected.clear();
                 }
@@ -596,8 +572,8 @@ pub(crate) fn mask_tool(ui: &mut egui::Ui, state: &mut crate::state::AppState, r
     // A double-click on the curve: a point added there (egui tells of it
     // as the second press lets go).
     if let (true, Some((seg, t, _)), Some(i), None) = (double && resp.hovered(), near_curve, edited, hit_point) {
-        let points = masks_of(&node).masks.get(i).and_then(bezier).cloned().unwrap_or_default();
-        set_points(cmds, &node, i, split_segment(&points, seg, t));
+        // In every shape key alike, so each keeps as many points.
+        set_mask(cmds, &node, i, &|m| Some(m.with_point_split(seg, t)));
         edit.selected = [seg + 1].into();
         edit.gesture = None;
     }
@@ -662,7 +638,7 @@ pub(crate) fn mask_tool(ui: &mut egui::Ui, state: &mut crate::state::AppState, r
                 edit.pen.push(pen_point(at, drag));
             }
             Some(Gesture::Marquee { start, now, add }) => {
-                if let Some(points) = edit.mask.and_then(|(_, i)| masks_of(&node).masks.get(i).and_then(bezier).cloned()) {
+                if let Some(points) = edit.mask.and_then(|(_, i)| masks_of(&node).masks.get(i).and_then(|m| m.path_at(time))) {
                     let picked = in_marquee(&points, start, now);
                     if add {
                         edit.selected.extend(picked);
@@ -695,10 +671,9 @@ pub(crate) fn mask_tool(ui: &mut egui::Ui, state: &mut crate::state::AppState, r
             edit.selected.clear();
         } else if delete {
             if let Some(i) = edit.mask.map(|(_, i)| i) {
-                let points = masks_of(&node).masks.get(i).and_then(bezier).cloned().unwrap_or_default();
-                if let Some(kept) = delete_points(&points, &edit.selected) {
-                    set_points(cmds, &node, i, kept);
-                }
+                // From every shape key alike.
+                let selected = edit.selected.clone();
+                set_mask(cmds, &node, i, &|m| m.without_path_points(&selected));
                 edit.selected.clear();
             }
         }

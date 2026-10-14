@@ -421,3 +421,45 @@ fn cut_lift_and_extract_stand_aside_for_the_mask_points() {
     assert!(matches!(pressed(&v.state, egui::Key::Semicolon, egui::Modifiers::NONE).as_slice(), [AppCommand::LiftEdit]));
     assert!(matches!(pressed(&v.state, egui::Key::Quote, egui::Modifiers::NONE).as_slice(), [AppCommand::ExtractEdit]));
 }
+
+/// A keyed shape (#74) is drawn and edited as its keys have it at the
+/// playhead: a point dragged there makes a key there and leaves the
+/// others; a point added on the curve goes into every key.
+#[test]
+fn a_keyed_shape_is_edited_at_the_playhead() {
+    use klipp_core::mask_path::{PathEase, PathKey};
+    let moved = |off: f32| square().into_iter().map(|p| BezierPoint { x: p.x + off, ..p }).collect::<Vec<_>>();
+    let (mut v, id) = with_shape(square());
+    let c = v.state.sequences[0].tracks.iter_mut().find_map(|t| t.find_clip_mut(id)).unwrap();
+    c.edit_grade(|g| {
+        let m = &mut g.nodes.iter_mut().find(|n| n.kind == klipp_nodes::NodeKind::Mask).unwrap().params.masks.as_mut().unwrap().masks[0];
+        m.keyframes.path = vec![
+            PathKey { time_secs: 0.0, points: moved(0.0), ease: PathEase::Linear },
+            PathKey { time_secs: 2.0, points: moved(0.2), ease: PathEase::Linear },
+        ];
+    });
+    // At 1 s the shape is halfway: its first point at 0.4.
+    v.state.playhead = klipp_core::Timecode::from_secs_f64(1.0, 25);
+    v.state.playhead_smooth_secs = 1.0;
+    v.frame(Vec::new());
+    let from = v.sent.len();
+    let (a, b) = (at(&v, 0.4, 0.3), at(&v, 0.4, 0.2));
+    drag(&mut v, a, b);
+    apply(&mut v, id, from);
+    let keys = masks(&v, id)[0].keyframes.path.clone();
+    assert_eq!(keys.iter().map(|k| k.time_secs).collect::<Vec<_>>(), [0.0, 1.0, 2.0], "a key at the playhead");
+    assert!(close(keys[1].points[0].pos(), (0.4, 0.2)), "{:?}", keys[1].points[0]);
+    assert!(close(keys[0].points[0].pos(), (0.3, 0.3)) && close(keys[2].points[0].pos(), (0.5, 0.3)), "the others as they were");
+
+    let from = v.sent.len();
+    let edge = at(&v, 0.5, 0.7);
+    v.frame(vec![egui::Event::PointerMoved(edge), button(edge, true)]);
+    v.frame(vec![button(edge, false)]);
+    v.frame(vec![button(edge, true)]);
+    v.frame(vec![button(edge, false)]);
+    v.frame(Vec::new());
+    apply(&mut v, id, from);
+    let m = &masks(&v, id)[0];
+    assert!(m.keyframes.path.iter().all(|k| k.points.len() == 5), "{:?}", m.keyframes.path.iter().map(|k| k.points.len()).collect::<Vec<_>>());
+    assert_eq!(points(&v, id, 0).len(), 5);
+}

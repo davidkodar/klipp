@@ -710,7 +710,10 @@ struct MatteCacheEntry {
 /// Fast hash of a `MaskStack` + size + (when keyframed) time, used as
 /// the cache key. Time is quantised to 1 ms so adjacent ticks share
 /// hits; for static masks (no keyframes) time is excluded so EVERY
-/// frame hits the same entry.
+/// frame hits the same entry. A keyed mask is hashed as it is drawn at
+/// that time (#74): a key edited while the playhead rests, or a shape
+/// key's points, change the matte, which the static fields alone don't
+/// say.
 fn matte_fingerprint(
     masks: &klipp_core::MaskStack,
     clip_time_secs: f64,
@@ -725,8 +728,16 @@ fn matte_fingerprint(
     if any_kf {
         ((clip_time_secs * 1000.0) as i64).hash(&mut h);
     }
+    let aspect = height as f32 / width.max(1) as f32;
     for mask in &masks.masks {
         if !mask.enabled { continue; }
+        let drawn = if mask.keyframes.is_empty() { None } else { Some(mask.evaluated_in(clip_time_secs, aspect)) };
+        let mask = drawn.as_ref().unwrap_or(mask);
+        if let Some(w) = mask.keyframes.warp {
+            for v in w.0 {
+                v.to_bits().hash(&mut h);
+            }
+        }
         mask.feather.to_bits().hash(&mut h);
         mask.feather_inner.to_bits().hash(&mut h);
         mask.combine.code().hash(&mut h);

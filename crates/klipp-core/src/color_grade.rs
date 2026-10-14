@@ -759,6 +759,11 @@ pub struct MaskKeyframes {
     /// The window tracked in perspective instead (#238).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track_perspective: Option<PerspectiveTrack>,
+    /// A freeform mask's shape keyed over time (#74), earliest first:
+    /// each key holds every point, as many as the shape has. Applied
+    /// before the tracked motion, as the other keys are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<crate::mask_path::PathKey>,
     /// On an evaluated window only (see [`Mask::evaluated_in`]), never
     /// saved: the map from a point on the frame now to where it was on
     /// the frame the window was drawn on, where the window's shape is
@@ -782,6 +787,7 @@ impl MaskKeyframes {
             && self.start_y.is_empty()
             && self.end_x.is_empty()
             && self.end_y.is_empty()
+            && self.path.is_empty()
             && !self.is_tracked()
     }
 
@@ -968,12 +974,79 @@ impl Mask {
                 } else { *end_y };
                 result.shape = MaskShape::LinearGradient { start_x: sx, start_y: sy, end_x: ex, end_y: ey };
             }
+            // Its shape keys (#74).
             MaskShape::Bezier { .. } => {
-                // Bezier point animation deferred — too complex for initial implementation
+                if let Some(points) = crate::mask_path::shape_at(&self.keyframes.path, time_secs) {
+                    result.shape = MaskShape::Bezier { points };
+                }
             }
         }
 
         result
+    }
+
+    /// A freeform mask's points as its shape keys put them at
+    /// `time_secs` (#74), else as drawn; `None` for another shape.
+    pub fn path_at(&self, time_secs: f64) -> Option<Vec<crate::mask_path::BezierPoint>> {
+        let MaskShape::Bezier { points } = &self.shape else { return None };
+        Some(crate::mask_path::shape_at(&self.keyframes.path, time_secs).unwrap_or_else(|| points.clone()))
+    }
+
+    /// This mask with its freeform shape at `time_secs` set to `points`:
+    /// the shape key there (within `tolerance`) or a new one when the
+    /// shape is keyed, else the shape itself.
+    pub fn with_path_at(&self, time_secs: f64, points: Vec<crate::mask_path::BezierPoint>, tolerance: f64) -> Mask {
+        let mut m = self.clone();
+        if m.keyframes.path.is_empty() {
+            m.shape = MaskShape::Bezier { points };
+        } else {
+            m.keyframes.path = crate::mask_path::with_key(&m.keyframes.path, time_secs, points, tolerance);
+        }
+        m
+    }
+
+    /// This mask with a point added on segment `seg` at `along` in its
+    /// shape and in every shape key alike (#74), so each key keeps as
+    /// many points as the others, and its shape.
+    pub fn with_point_split(&self, seg: usize, along: f32) -> Mask {
+        let mut m = self.clone();
+        if let MaskShape::Bezier { points } = &m.shape {
+            m.shape = MaskShape::Bezier { points: crate::mask_path::split_segment(points, seg, along) };
+        }
+        for k in &mut m.keyframes.path {
+            k.points = crate::mask_path::split_segment(&k.points, seg, along);
+        }
+        m
+    }
+
+    /// This mask less the points in `remove`, from its shape and every
+    /// shape key alike; `None` when fewer than three would be left.
+    pub fn without_path_points(&self, remove: &std::collections::BTreeSet<usize>) -> Option<Mask> {
+        let mut m = self.clone();
+        if let MaskShape::Bezier { points } = &m.shape {
+            m.shape = MaskShape::Bezier { points: crate::mask_path::without_points(points, remove)? };
+        }
+        for k in &mut m.keyframes.path {
+            k.points = crate::mask_path::without_points(&k.points, remove)?;
+        }
+        Some(m)
+    }
+
+    /// This mask's freeform shape keyed from `time_secs` on (a first key
+    /// there, of the shape as drawn), or no longer keyed (the shape as it
+    /// is at `time_secs` kept, the keys dropped).
+    pub fn with_path_keyed(&self, keyed: bool, time_secs: f64) -> Mask {
+        let mut m = self.clone();
+        let Some(now) = self.path_at(time_secs) else { return m };
+        if keyed {
+            if m.keyframes.path.is_empty() {
+                m.keyframes.path = vec![crate::mask_path::PathKey { time_secs, points: now, ease: crate::mask_path::PathEase::Linear }];
+            }
+        } else {
+            m.shape = MaskShape::Bezier { points: now };
+            m.keyframes.path.clear();
+        }
+        m
     }
 
     /// [`Self::evaluated_at`], then the window's tracked motion (#238)

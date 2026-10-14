@@ -926,6 +926,83 @@ impl NodeInspectorPanel {
             }
             if !mask_enabled { continue; }
 
+            // A freeform mask's shape over time (#74): keyed on or off, its
+            // key at the playhead added or taken off, the keys either side
+            // gone to, and how the shape leaves the key here.
+            if matches!(masks.masks[mask_idx].shape, klipp_core::MaskShape::Bezier { .. }) {
+                let caption = crate::theme::type_scale::CAPTION;
+                let mask = masks.masks[mask_idx].clone();
+                let keys = &mask.keyframes.path;
+                let here = keys.iter().position(|k| (k.time_secs - clip_time_secs).abs() <= frame.tolerance);
+                let mut changed: Option<klipp_core::Mask> = None;
+                ui.horizontal(|ui| {
+                    ui.add_space(14.0);
+                    let keyed = !keys.is_empty();
+                    let diamond = if here.is_some() { "\u{25C6}" } else { "\u{25C7}" };
+                    let colour = if here.is_some() { theme.text_accent } else if keyed { theme.accent_dim } else { theme.text_dim };
+                    let tip = if here.is_some() { "Take off the shape key at the playhead" } else { "Key the shape at the playhead" };
+                    if ui.add(egui::Button::new(egui::RichText::new(diamond).size(12.0).color(colour)).frame(false)).on_hover_text(tip).clicked() {
+                        changed = Some(match here {
+                            Some(i) => {
+                                let mut m = mask.clone();
+                                // The last key gone: the shape stays as it was there.
+                                if m.keyframes.path.len() == 1 {
+                                    m = m.with_path_keyed(false, clip_time_secs);
+                                } else {
+                                    m.keyframes.path.remove(i);
+                                }
+                                m
+                            }
+                            None => {
+                                let now = mask.path_at(clip_time_secs).unwrap_or_default();
+                                mask.with_path_keyed(true, clip_time_secs).with_path_at(clip_time_secs, now, frame.tolerance)
+                            }
+                        });
+                    }
+                    ui.label(egui::RichText::new("Shape").size(caption).color(theme.text_dim));
+                    let before = keys.iter().rev().find(|k| k.time_secs < clip_time_secs - frame.tolerance).map(|k| k.time_secs);
+                    let after = keys.iter().find(|k| k.time_secs > clip_time_secs + frame.tolerance).map(|k| k.time_secs);
+                    if ui.add_enabled(before.is_some(), egui::Button::new(egui::RichText::new("\u{25C0}").size(caption)).frame(false)).on_hover_text("The shape key before").clicked() {
+                        cmds.push(frame.seek_to(before.unwrap_or_default()));
+                    }
+                    if ui.add_enabled(after.is_some(), egui::Button::new(egui::RichText::new("\u{25B6}").size(caption)).frame(false)).on_hover_text("The shape key after").clicked() {
+                        cmds.push(frame.seek_to(after.unwrap_or_default()));
+                    }
+                    if keyed {
+                        ui.label(egui::RichText::new(format!("{} key{}", keys.len(), if keys.len() == 1 { "" } else { "s" })).size(caption).color(theme.text_dim));
+                    }
+                    if let Some(i) = here {
+                        let ease = keys[i].ease;
+                        let name = |e: klipp_core::mask_path::PathEase| match e {
+                            klipp_core::mask_path::PathEase::Linear => "Linear",
+                            klipp_core::mask_path::PathEase::Ease => "Ease",
+                            klipp_core::mask_path::PathEase::Hold => "Hold",
+                        };
+                        egui::ComboBox::from_id_salt(("shape_ease", node_id, mask_idx))
+                            .selected_text(egui::RichText::new(name(ease)).size(caption))
+                            .width(70.0)
+                            .show_ui(ui, |ui| crate::widgets::menu::menu_body(ui, |ui| {
+                                for e in [klipp_core::mask_path::PathEase::Linear, klipp_core::mask_path::PathEase::Ease, klipp_core::mask_path::PathEase::Hold] {
+                                    if crate::widgets::menu::menu_choice(ui, name(e), "", ease == e).clicked() && ease != e {
+                                        let mut m = mask.clone();
+                                        m.keyframes.path[i].ease = e;
+                                        changed = Some(m);
+                                    }
+                                }
+                            }))
+                            .response
+                            .on_hover_text("How the shape moves on from this key");
+                    }
+                    if keyed && ui.small_button(egui::RichText::new("Clear").size(caption)).on_hover_text("Take off every shape key, keeping the shape as it is here").clicked() {
+                        changed = Some(mask.with_path_keyed(false, clip_time_secs));
+                    }
+                });
+                if let Some(m) = changed {
+                    masks.masks[mask_idx] = m;
+                    masks_changed = true;
+                }
+            }
+
             for info in &param_infos {
                 ui.horizontal(|ui| {
                     ui.add_space(14.0);
@@ -5554,5 +5631,34 @@ mod mask_list_tests {
         assert!(r.masks.masks[0].feather_inner > 0.0, "{:?}", r.masks.masks[0]);
         assert_eq!(r.sent.iter().filter(|c| matches!(c, AppCommand::BeginNodeParamEdit { .. })).count(), 1, "{:?}", r.sent);
         assert_eq!(r.sent.iter().filter(|c| matches!(c, AppCommand::EndNodeParamEdit { .. })).count(), 1);
+    }
+
+    /// A freeform mask's Shape row (#74): its diamond keys the shape at
+    /// the playhead, the key's ease is picked from its menu, and the
+    /// diamond again takes the last key off, the shape kept.
+    #[test]
+    fn the_shape_row_keys_eases_and_clears_the_shape() {
+        let mut r = Rig::new();
+        let diamond = |r: &Rig| {
+            let label = r.at("Shape", 0);
+            r.texts.iter().filter(|(t, p)| (t == "\u{25C7}" || t == "\u{25C6}") && (p.y - label.y).abs() < 6.0 && p.x < label.x).map(|(_, p)| *p).next_back().unwrap()
+        };
+        let d = diamond(&r);
+        r.click(d);
+        let keys = &r.masks.masks[1].keyframes.path;
+        assert_eq!(keys.len(), 1, "{:?}", r.sent);
+        assert_eq!(keys[0].time_secs, 0.0);
+        assert!(r.texts.iter().any(|(t, _)| t == "1 key"));
+
+        let p = r.at("Linear", 0);
+        r.click(p);
+        let p = r.at("Hold", 0);
+        r.click(p);
+        assert_eq!(r.masks.masks[1].keyframes.path[0].ease, klipp_core::mask_path::PathEase::Hold);
+
+        let d = diamond(&r);
+        r.click(d);
+        assert!(r.masks.masks[1].keyframes.path.is_empty());
+        assert!(matches!(r.masks.masks[1].shape, MaskShape::Bezier { ref points } if points.len() == 3), "the shape kept");
     }
 }
