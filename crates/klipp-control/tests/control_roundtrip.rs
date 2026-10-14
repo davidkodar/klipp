@@ -2202,6 +2202,38 @@ fn color_faults_flag_what_a_colourist_would() {
     assert!(klipp_control::color_faults(&dull, 3.0).iter().any(|f| f.1.contains("dull")), "{dull}");
 }
 
+/// #1897: a frame of warm stone with no person in it has plenty of
+/// skin-coloured pixels. The scopes say that as a colour reading, never
+/// as skin, and the colour faults ask for no white balance over it; the
+/// same reading backed by a face does.
+#[test]
+fn skin_coloured_pixels_without_a_face_are_not_skin() {
+    // Sandstone: bright, warm, off the skin-tone line's hue.
+    let stone = klipp_control::frame_stats(&std::iter::repeat_n([210u8, 160, 150, 255], 320*180).flatten().collect::<Vec<u8>>(), 320, 180, 23.0);
+    let note = stone["skin"].as_str().unwrap();
+    assert!(note.contains("skin-coloured pixels") && note.contains("no face detected"), "{stone}");
+    assert_eq!(stone["skin_from"], "colour");
+    assert!(stone["skin_on_line_pct"].as_f64().unwrap() < 60.0, "{stone}");
+    // Over most of the frame and off the line: said as colour only, to
+    // check by eye, never as faces to fix.
+    let said = klipp_control::color_faults(&stone, 23.0);
+    assert!(said.iter().any(|f| f.1.starts_with("colour only, no face found")) && !said.iter().any(|f| f.2.contains("faces land")), "{said:?}");
+    // A face beside a large warm rock: read inside the face, the share
+    // follows the face alone.
+    let (w, h) = (320usize, 180usize);
+    let face = [0.7f32, 0.1, 0.2, 0.3];
+    let scene: Vec<u8> = (0..w * h).flat_map(|i| {
+        let (x, y) = ((i % w) as f32 / w as f32, (i / w) as f32 / h as f32);
+        if x >= face[0] && x < face[0] + face[2] && y >= face[1] && y < face[1] + face[3] { [220u8, 170, 130, 255] } else { [210, 160, 150, 255] }
+    }).collect();
+    let whole = klipp_control::skin_line_share(&scene, w as u32, h as u32, &[[0.0, 0.0, 1.0, 1.0]]).unwrap();
+    let in_face = klipp_control::skin_line_share(&scene, w as u32, h as u32, &[face]).unwrap();
+    assert!(whole.0 < 60.0 && in_face.0 > 95.0, "the rock moves the frame's share, not the face's: {whole:?} {in_face:?}");
+    let mut faced = stone.clone();
+    faced["skin_from"] = serde_json::json!("faces");
+    assert!(klipp_control::color_faults(&faced, 23.0).iter().any(|f| f.1.contains("skin-tone line")), "a face off the line is a fault");
+}
+
 /// cut_points ranks pauses over sentence ends over phrase breaks, and
 /// tells the truth about a target that lands mid-word or mid-sentence.
 #[test]
