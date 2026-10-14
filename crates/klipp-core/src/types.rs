@@ -588,6 +588,31 @@ pub enum GeneratorData {
     },
 }
 
+impl GeneratorData {
+    /// Whether the picture shows the clip's own time (a count), so it
+    /// must be drawn only at times inside the clip: a count before the
+    /// clip starts or after it ends would show a number the clip never
+    /// reaches. Every other generator can be drawn at any time, before its
+    /// start too, as a transition's overlap asks (#1918). Each kind says,
+    /// so a new one decides.
+    pub fn shows_own_time(&self) -> bool {
+        match self {
+            GeneratorData::Countdown | GeneratorData::Timer { .. } => true,
+            GeneratorData::SolidColor { .. }
+            | GeneratorData::LivingGradient { .. }
+            | GeneratorData::Grain { .. }
+            | GeneratorData::Placeholder { .. }
+            | GeneratorData::Gradient { .. }
+            | GeneratorData::ColorBars
+            | GeneratorData::ColorBars100
+            | GeneratorData::Slate { .. }
+            | GeneratorData::StillFrame { .. }
+            | GeneratorData::Polygon { .. }
+            | GeneratorData::Star { .. } => false,
+        }
+    }
+}
+
 fn default_fill() -> bool { true }
 
 impl Default for GeneratorData {

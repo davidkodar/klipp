@@ -1150,7 +1150,7 @@ impl Renderer {
 
     pub fn render_title_layer_u8(&mut self, clip: &Clip, time: Timecode, width: u32, height: u32) -> Option<Vec<u8>> {
         let ClipKind::Title(td) = &clip.kind else { return None };
-        let clip_time = eval_clip_time(clip, time);
+        let clip_time = drawn_time(clip, time);
         let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
         let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
         let total = (clip.timeline_out - clip.timeline_in).to_secs_f64() as f32;
@@ -2363,6 +2363,7 @@ impl Renderer {
             }
             ClipKind::Title(td) if fx_on_gpu && c.grade_is_identity() => {
                 let total = (c.timeline_out - c.timeline_in).to_secs_f64() as f32;
+                let clip_time = drawn_time(c, time);
                 let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
                 let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
                 // A title that is its resting render moved and faded
@@ -2420,6 +2421,7 @@ impl Renderer {
             }
             ClipKind::Generator(g) if fx_on_gpu && c.grade_is_identity() => {
                 let total = (c.timeline_out - c.timeline_in).to_secs_f64();
+                let clip_time = drawn_time(c, time);
                 // Half floats, sRGB-encoded, decoded on the way into
                 // the layer: the precision eight bits could not hold,
                 // without moving sRGB's power curve onto the CPU.
@@ -2937,9 +2939,10 @@ impl Renderer {
                     }
                 }
             }
-            ClipKind::Title(td) => (GradeInput::Cpu(Arc::new(self.title_linear_at(clip, td, clip_time, width, height))), None),
+            ClipKind::Title(td) => (GradeInput::Cpu(Arc::new(self.title_linear_at(clip, td, drawn_time(clip, time), width, height))), None),
             ClipKind::Generator(g) => {
                 let total = (clip.timeline_out - clip.timeline_in).to_secs_f64();
+                let clip_time = drawn_time(clip, time);
                 let packed = crate::synth::render_generator_with_slate_f16(&mut self.titles, g, width, height, clip_time, total);
                 let mut linear = klipp_core::generator::srgb_f16_to_linear_f32(&packed);
                 self.authored_to_working(&mut linear);
@@ -5009,6 +5012,30 @@ pub(crate) fn eval_clip_time(clip: &Clip, time: Timecode) -> f64 {
     (time - clip.timeline_in).to_secs_f64().max(0.0)
 }
 
+/// When a clip drawn from its own time (a generator, a title) is drawn
+/// at `time`, the one rule for the CPU route and the GPU stack alike
+/// (#1918). In a transition's overlap a clip is drawn before its start
+/// (the incoming side) or past its end (the outgoing side):
+/// - a generator that shows no count of its own runs on at its own
+///   seconds, negative before its start, so its motion carries through
+///   the cut instead of freezing;
+/// - one that shows its own time (`GeneratorData::shows_own_time`), and
+///   a title, whose entrance and exit are timed from its ends, hold their
+///   first frame before the start and their last past the end.
+///
+/// Any other clip is `eval_clip_time`'s. Keyframed settings (a clip's
+/// transform, opacity, grade) are evaluated at `grade_time`, which
+/// clamps at zero: before its start they hold their first key.
+pub(crate) fn drawn_time(clip: &Clip, time: Timecode) -> f64 {
+    let own = (time - clip.timeline_in).to_secs_f64();
+    let total = (clip.timeline_out - clip.timeline_in).to_secs_f64().max(0.0);
+    match &clip.kind {
+        ClipKind::Generator(g) if !g.shows_own_time() => own,
+        ClipKind::Generator(_) | ClipKind::Title(_) => own.clamp(0.0, total),
+        _ => eval_clip_time(clip, time),
+    }
+}
+
 /// Where a clip's node graph is evaluated at `time`: clip-relative
 /// seconds, and the frame number there. The viewer's GPU fast path grades
 /// at exactly this too.
@@ -6348,6 +6375,53 @@ fn unshare(p: Arc<Vec<f32>>) -> Vec<f32> {
 
 fn ms_since(t: Instant) -> f64 {
     t.elapsed().as_secs_f64() * 1000.0
+}
+
+#[cfg(test)]
+mod generator_time_tests {
+    use super::*;
+
+    fn t(s: f64) -> Timecode {
+        Timecode::from_secs_f64(s, 25)
+    }
+
+    /// A clip from 2 s to 6 s of `kind`.
+    fn clip(kind: ClipKind) -> Clip {
+        Clip { kind, ..Clip::gap(t(2.0), t(6.0)) }
+    }
+
+    /// On a transition's incoming side, before its start, a generator is
+    /// drawn at its own (negative) time: a drifting gradient is a picture
+    /// there it isn't at its start, and grain a frame of its own rather
+    /// than its first. Past its end it runs on too (#1918).
+    #[test]
+    fn a_generator_runs_on_before_its_start_and_past_its_end() {
+        let drifting = klipp_core::GeneratorData::LivingGradient { a: [200, 40, 40, 255], b: [40, 40, 200, 255], angle_deg: 0.0, drift_deg_per_sec: 90.0, glow: 0.0 };
+        let c = clip(ClipKind::Generator(drifting.clone()));
+        let at = drawn_time(&c, t(1.6));
+        assert!((at + 0.4).abs() < 1e-9, "{at}");
+        assert_eq!(eval_clip_time(&c, t(1.6)), 0.0, "what it was held at before");
+        assert!((drawn_time(&c, t(6.4)) - 4.4).abs() < 1e-9, "past its end: on");
+        assert!((drawn_time(&c, t(3.0)) - 1.0).abs() < 1e-9, "inside the clip: as before");
+        let render = |g: &klipp_core::GeneratorData, s: f64| klipp_core::generator::render_generator(g, 32, 18, s, 4.0);
+        assert_ne!(render(&drifting, at), render(&drifting, 0.0), "its motion runs on before its start");
+        let grain = klipp_core::GeneratorData::Grain { color: [90, 90, 90, 255], amount: 1.0, size_px: 2.0, speed: 24.0 };
+        assert_ne!(render(&grain, -0.3), render(&grain, 0.0), "grain before the start is no copy of its first frame");
+        assert_ne!(render(&grain, -0.3), render(&grain, -0.6), "and changes as it goes");
+    }
+
+    /// A generator showing its own time, and a title, hold their first
+    /// frame before the start and their last past the end.
+    #[test]
+    fn a_count_and_a_title_hold_their_ends() {
+        let title = ClipKind::Title(klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Hi".into(), ..Default::default() }));
+        for kind in [ClipKind::Generator(klipp_core::GeneratorData::Countdown), title] {
+            let c = clip(kind);
+            assert_eq!(drawn_time(&c, t(1.7)), 0.0, "incoming: its first frame");
+            assert_eq!(drawn_time(&c, t(6.4)), 4.0, "outgoing: its last");
+            assert!((drawn_time(&c, t(3.0)) - 1.0).abs() < 1e-9);
+        }
+    }
 }
 
 #[cfg(test)]
