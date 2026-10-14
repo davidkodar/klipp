@@ -151,11 +151,39 @@ fn a_half_wired_mask_gives_a_whole_still_or_an_error() {
             }
         }
     }
+    // Then the variant's graph inside a Compound node of the clip's
+    // grade, as a group made in the node editor is: the crash's case.
+    for in_group in [false, true] {
+    let g = g.clone();
+    let g = if in_group {
+        let mut outer = NodeGraph::default();
+        let source_o = outer.nodes.iter().find(|n| n.kind == NodeKind::Source).unwrap().id;
+        let out_o = outer.output_node_id;
+        let compound = klipp_nodes::Node {
+            id: klipp_nodes::NodeId::new_v4(),
+            kind: NodeKind::Compound,
+            label: "Group".into(),
+            enabled: true,
+            params: klipp_nodes::NodeParams { compound_subgraph: Some(g), ..Default::default() },
+            keyframes: Default::default(),
+            output_link: None,
+            input_links: Vec::new(),
+        };
+        let cid = compound.id;
+        outer.nodes.push(compound);
+        outer.edges.retain(|e| e.to_node != out_o);
+        outer.edges.push(klipp_nodes::Edge { from_node: source_o, from_port: 0, to_node: cid, to_port: 0 });
+        outer.edges.push(klipp_nodes::Edge { from_node: cid, from_port: 0, to_node: out_o, to_port: 0 });
+        outer
+    } else {
+        g
+    };
     let mut clip = clip.clone();
     clip.set_grade(g);
     match klipp_render::still::clip_still(&clip, &pool, 0.0, 32, WorkingColorspace::Rec709Linear) {
-        Ok(still) => assert_eq!(still.rgba.len(), (still.width * still.height * 4) as usize, "variant {variant}: a whole picture"),
+        Ok(still) => assert_eq!(still.rgba.len(), (still.width * still.height * 4) as usize, "variant {variant}, in a group {in_group}: a whole picture"),
         Err(why) => eprintln!("variant {variant}: no still, as it should say: {why}"),
+    }
     }
     }
 }
