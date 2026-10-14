@@ -1049,6 +1049,149 @@ impl Mask {
         m
     }
 
+    /// The name a freeform mask's shape keys go by among its tracks
+    /// (#1947): beside "feather", "radius" and the rest.
+    pub const SHAPE_TRACK: &'static str = "shape";
+
+    /// This mask's tracks that hold keys, in the order its list shows
+    /// them, the shape's last (#1947).
+    pub fn keyed_tracks(&self) -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = MaskKeyframes::params_for_shape(&self.shape).iter().copied().filter(|p| self.keyframes.track(p).is_some_and(|t| !t.is_empty())).collect();
+        if !self.keyframes.path.is_empty() {
+            out.push(Self::SHAPE_TRACK);
+        }
+        out
+    }
+
+    /// Its tracks that can be keyed and hold no keys yet.
+    pub fn unkeyed_tracks(&self) -> Vec<&'static str> {
+        let mut out: Vec<&'static str> = MaskKeyframes::params_for_shape(&self.shape).iter().copied().filter(|p| self.keyframes.track(p).is_none_or(|t| t.is_empty())).collect();
+        if matches!(self.shape, MaskShape::Bezier { .. }) && self.keyframes.path.is_empty() {
+            out.push(Self::SHAPE_TRACK);
+        }
+        out
+    }
+
+    /// The track `param`'s keys as times and values: a shape key's value
+    /// is none, its interpolation said by its ease (Hold as Step, Ease as
+    /// Bezier).
+    pub fn track_keys(&self, param: &str) -> Vec<Keyframe> {
+        if param == Self::SHAPE_TRACK {
+            return self
+                .keyframes
+                .path
+                .iter()
+                .map(|k| Keyframe {
+                    time_secs: k.time_secs,
+                    value: 0.5,
+                    interpolation: match k.ease {
+                        crate::mask_path::PathEase::Linear => keyframe::Interpolation::Linear,
+                        crate::mask_path::PathEase::Hold => keyframe::Interpolation::Step,
+                        crate::mask_path::PathEase::Ease => keyframe::Interpolation::Bezier,
+                    },
+                    tangent_out: (0.0, 0.0),
+                    tangent_in: (0.0, 0.0),
+                })
+                .collect();
+        }
+        self.keyframes.track(param).cloned().unwrap_or_default()
+    }
+
+    /// A key on track `param` at `time_secs`: `value` for a value's track
+    /// (a key there takes it), the shape as it is then for the shape's.
+    pub fn add_key(&mut self, param: &str, time_secs: f64, value: f32) {
+        if param == Self::SHAPE_TRACK {
+            if let Some(now) = self.path_at(time_secs) {
+                *self = self.with_path_keyed(true, time_secs).with_path_at(time_secs, now, keyframe::KEYFRAME_TIME_EPSILON);
+            }
+            return;
+        }
+        let Some(track) = self.keyframes.track_mut(param) else { return };
+        let epsilon = keyframe::KEYFRAME_TIME_EPSILON;
+        if let Some(kf) = track.iter_mut().find(|k| (k.time_secs - time_secs).abs() < epsilon) {
+            kf.value = value;
+        } else {
+            track.push(Keyframe { time_secs, value, interpolation: keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) });
+            track.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+        }
+    }
+
+    /// The key on track `param` at `time_secs` taken off. The shape's last
+    /// key off keeps the shape as it was there.
+    pub fn remove_key(&mut self, param: &str, time_secs: f64) {
+        if param == Self::SHAPE_TRACK {
+            let epsilon = keyframe::KEYFRAME_TIME_EPSILON;
+            if let Some(i) = self.keyframes.path.iter().position(|k| (k.time_secs - time_secs).abs() < epsilon) {
+                if self.keyframes.path.len() == 1 {
+                    *self = self.with_path_keyed(false, time_secs);
+                } else {
+                    self.keyframes.path.remove(i);
+                }
+            }
+            return;
+        }
+        if let Some(track) = self.keyframes.track_mut(param) {
+            keyframe::remove_keyframe_at(track, time_secs);
+        }
+    }
+
+    /// Every key of track `param` taken off.
+    pub fn clear_track(&mut self, param: &str) {
+        if param == Self::SHAPE_TRACK {
+            let at = self.keyframes.path.first().map_or(0.0, |k| k.time_secs);
+            *self = self.with_path_keyed(false, at);
+        } else if let Some(track) = self.keyframes.track_mut(param) {
+            track.clear();
+        }
+    }
+
+    /// The key on track `param` at `time_secs` moved to `new_time_secs`,
+    /// with `value` when given (a shape key moves in time only). Refused,
+    /// and nothing changed, when no key is there or another key is at the
+    /// new time: whether it moved.
+    pub fn move_key(&mut self, param: &str, time_secs: f64, new_time_secs: f64, value: Option<f32>) -> bool {
+        let epsilon = keyframe::KEYFRAME_TIME_EPSILON;
+        let new_time_secs = new_time_secs.max(0.0);
+        if param == Self::SHAPE_TRACK {
+            let keys = &mut self.keyframes.path;
+            let Some(i) = keys.iter().position(|k| (k.time_secs - time_secs).abs() < epsilon) else { return false };
+            if keys.iter().enumerate().any(|(j, k)| j != i && (k.time_secs - new_time_secs).abs() < epsilon) {
+                return false;
+            }
+            keys[i].time_secs = new_time_secs;
+            keys.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+            return true;
+        }
+        let Some(track) = self.keyframes.track_mut(param) else { return false };
+        let Some(i) = track.iter().position(|k| (k.time_secs - time_secs).abs() < epsilon) else { return false };
+        if track.iter().enumerate().any(|(j, k)| j != i && (k.time_secs - new_time_secs).abs() < epsilon) {
+            return false;
+        }
+        track[i].time_secs = new_time_secs;
+        if let Some(v) = value {
+            track[i].value = v;
+        }
+        track.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+        true
+    }
+
+    /// How track `param` leaves its key at `time_secs`: a value's
+    /// interpolation, or a shape key's ease (Step holds, Bezier eases).
+    pub fn set_key_interpolation(&mut self, param: &str, time_secs: f64, interpolation: keyframe::Interpolation) {
+        let epsilon = keyframe::KEYFRAME_TIME_EPSILON;
+        if param == Self::SHAPE_TRACK {
+            if let Some(k) = self.keyframes.path.iter_mut().find(|k| (k.time_secs - time_secs).abs() < epsilon) {
+                k.ease = match interpolation {
+                    keyframe::Interpolation::Linear => crate::mask_path::PathEase::Linear,
+                    keyframe::Interpolation::Step => crate::mask_path::PathEase::Hold,
+                    keyframe::Interpolation::Bezier => crate::mask_path::PathEase::Ease,
+                };
+            }
+        } else if let Some(k) = self.keyframes.track_mut(param).and_then(|t| t.iter_mut().find(|k| (k.time_secs - time_secs).abs() < epsilon)) {
+            k.interpolation = interpolation;
+        }
+    }
+
     /// [`Self::evaluated_at`], then the window's tracked motion (#238)
     /// applied, on a frame `aspect` (height over width) tall: what is
     /// drawn at `time_secs`. A window tracked in perspective keeps its
@@ -1394,5 +1537,51 @@ mod window_motion_tests {
         // behind the eye.
         assert!(f.apply((0.3, 0.5)).is_none());
         assert!(PlaneMap::from_quads(&from, &[[0.1, 0.1], [0.2, 0.2], [0.3, 0.3], [0.4, 0.4]]).is_none_or(|m| m.inverse().is_none()));
+    }
+}
+
+#[cfg(test)]
+mod mask_track_tests {
+    use super::*;
+    use crate::mask_path::{BezierPoint, PathEase, PathKey};
+
+    fn kf(t: f64, v: f32) -> Keyframe {
+        Keyframe { time_secs: t, value: v, interpolation: keyframe::Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }
+    }
+
+    fn sq(off: f32) -> Vec<BezierPoint> {
+        [(0.2, 0.2), (0.4, 0.2), (0.4, 0.4)].into_iter().map(|(x, y)| BezierPoint::corner(x + off, y)).collect()
+    }
+
+    /// #1947: a mask's tracks, keyed and not; a key moved in time and
+    /// value, never onto another; a shape key moved in time, its ease set
+    /// from an interpolation; the shape's last key off keeps the shape.
+    #[test]
+    fn a_masks_keys_move_ease_and_go() {
+        let mut m = Mask { shape: MaskShape::Bezier { points: sq(0.0) }, ..Mask::default() };
+        m.keyframes.feather = vec![kf(0.5, 0.1), kf(1.5, 0.2)];
+        m.keyframes.path = vec![PathKey { time_secs: 1.0, points: sq(0.0), ease: PathEase::Linear }, PathKey { time_secs: 2.0, points: sq(0.2), ease: PathEase::Linear }];
+        assert_eq!(m.keyed_tracks(), ["feather", "shape"]);
+        assert_eq!(m.unkeyed_tracks(), ["opacity"]);
+
+        assert!(m.move_key("feather", 0.5, 1.0, Some(0.3)));
+        assert_eq!((m.keyframes.feather[0].time_secs, m.keyframes.feather[0].value), (1.0, 0.3));
+        assert!(!m.move_key("feather", 1.0, 1.5, None), "onto the other key: refused");
+        assert!(m.move_key("shape", 2.0, 0.5, Some(9.0)));
+        assert_eq!(m.keyframes.path.iter().map(|k| k.time_secs).collect::<Vec<_>>(), [0.5, 1.0], "in time order");
+        assert_eq!(m.keyframes.path[0].points, sq(0.2), "a shape key's points go with it");
+
+        m.set_key_interpolation("shape", 0.5, keyframe::Interpolation::Step);
+        assert_eq!(m.keyframes.path[0].ease, PathEase::Hold);
+        assert_eq!(m.track_keys("shape")[0].interpolation, keyframe::Interpolation::Step);
+
+        m.remove_key("shape", 0.5);
+        m.remove_key("shape", 1.0);
+        assert!(m.keyframes.path.is_empty());
+        assert_eq!(m.path_at(0.0).unwrap(), sq(0.0), "the shape as the last key had it");
+        m.add_key("shape", 3.0, 0.0);
+        assert_eq!(m.keyframes.path.len(), 1);
+        m.clear_track("feather");
+        assert!(m.keyframes.feather.is_empty());
     }
 }

@@ -795,6 +795,11 @@ impl NodeInspectorPanel {
                             move_to = Some(mask_idx + 1);
                             ui.close_menu();
                         }
+                        // Its keys on the clip's key lane (#1947).
+                        if !mask.keyed_tracks().is_empty() && crate::widgets::menu::menu_item(ui, "Show Keys on Timeline", "").clicked() {
+                            cmds.push(AppCommand::ShowMaskKeysOnTimeline { clip_id, node_id, mask_index: mask_idx });
+                            ui.close_menu();
+                        }
                     }));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Push everything well off the right edge so

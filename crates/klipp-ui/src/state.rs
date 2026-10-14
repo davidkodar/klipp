@@ -444,6 +444,8 @@ pub enum KeyframeParamKind {
     /// An effect node's parameter, by the node's path and its key (M3
     /// step 3).
     Node { path: klipp_graph_format::path::NodePath, key: klipp_graph_format::ParamKey },
+    /// A mask's parameter, or a freeform mask's shape (#1947).
+    Mask(crate::mask_tracks::MaskTrack),
 }
 
 /// State for the keyframe interpolation context menu (right-click on diamond).
@@ -2181,6 +2183,8 @@ pub struct AppState {
     /// then (#1401). Set by the panel each frame it's drawn, cleared when
     /// it isn't.
     pub curve_editor_track: Option<(ClipId, klipp_graph_format::path::NodePath, klipp_graph_format::ParamKey)>,
+    /// The mask track the curve editor shows, likewise (#1947).
+    pub curve_editor_mask_track: Option<(ClipId, crate::mask_tracks::MaskTrack)>,
     /// The id a clip's Corrector takes when the tabbed page's first edit
     /// makes it (M3 step 19): reserved, for the clip selected, while its
     /// grade has no enabled Corrector, so the rows and editors drawn before
@@ -2738,6 +2742,12 @@ pub struct AppState {
     pub rubber_band_param: RubberBandParam,
     /// Which video parameter the timeline rubber band displays.
     pub video_rubber_band_param: VideoParam,
+    /// The mask track the clip's key lane shows instead of a picture
+    /// parameter (#1947), and the clip it is chosen on.
+    pub timeline_mask_lane: Option<(ClipId, crate::mask_tracks::MaskTrack)>,
+    /// A mask key dragged on that lane: its clip and track, its time now,
+    /// and whether its gesture has begun.
+    pub mask_lane_drag: Option<(ClipId, crate::mask_tracks::MaskTrack, f64, bool)>,
     /// Audio prefs synced from preferences (fade overlay mode, show rubber band, show waveform)
     pub audio_fade_overlay_mode: crate::prefs::FadeOverlayMode,
     pub audio_show_rubber_band: bool,
@@ -4582,6 +4592,7 @@ impl Default for AppState {
             stabilization_compare_active: false,
             resumable_path_drag: None,
             curve_editor_track: None,
+            curve_editor_mask_track: None,
             pending_corrector: None,
             root_grade_start: None,
             selected_node_addr: None,
@@ -4807,6 +4818,8 @@ impl Default for AppState {
             show_camera_lane: false,
             rubber_band_param: RubberBandParam::default(),
             video_rubber_band_param: VideoParam::Opacity,
+            timeline_mask_lane: None,
+            mask_lane_drag: None,
             audio_fade_overlay_mode: crate::prefs::FadeOverlayMode::default(),
             audio_show_rubber_band: true,
             audio_show_waveform: true,

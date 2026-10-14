@@ -2259,7 +2259,20 @@ pub enum AppCommand {
     /// node via `SetNodeColorMatch`. No-op (with toast) when no
     /// reference has been captured yet.
     ApplyColorMatch { clip_id: ClipId, node_id: uuid::Uuid },
-    /// Add or update a keyframe on a mask parameter.
+    /// Move the key of mask parameter `param` at `time_secs` to
+    /// `new_time_secs`, its value to `value` when given (#1947). `param`
+    /// "shape" is a freeform mask's shape keys, which move in time only.
+    /// Refused where another key is. One step, or the drag's when inside
+    /// `BeginNodeParamEdit`.
+    MoveMaskKeyframe { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize, param: String, time_secs: f64, new_time_secs: f64, value: Option<f32> },
+    /// Show the mask's keys on the clip's timeline key lane, its first
+    /// keyed track (#1947). Layout only.
+    ShowMaskKeysOnTimeline { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize },
+    /// How mask parameter `param` leaves its key at `time_secs`: for the
+    /// shape's keys Linear, Step (holds) or Bezier (eases) (#1947).
+    SetMaskKeyframeInterpolation { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize, param: String, time_secs: f64, interpolation: crate::Interpolation },
+    /// Add or update a keyframe on a mask parameter ("shape": the
+    /// freeform shape as it is at that time).
     AddMaskKeyframe { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize, param: String, time_secs: f64, value: f32 },
     /// Remove a mask keyframe at a specific time.
     RemoveMaskKeyframe { clip_id: ClipId, node_id: uuid::Uuid, mask_index: usize, param: String, time_secs: f64 },
