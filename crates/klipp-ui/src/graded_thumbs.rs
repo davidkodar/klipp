@@ -188,7 +188,12 @@ impl GradedThumbs {
             self.asked.remove(&(d.clip, d.width, d.key));
             match d.still {
                 Ok(still) => {
-                    let image = egui::ColorImage::from_rgba_unmultiplied([still.width as usize, still.height as usize], &still.rgba);
+                    // A still of the wrong size is a failed render, kept
+                    // as failed like any other (#1913).
+                    let Some(image) = crate::ui_util::checked_image([still.width as usize, still.height as usize], &still.rgba, "graded thumbnail") else {
+                        self.failed.insert((d.clip, d.width), d.key);
+                        continue;
+                    };
                     let texture = ctx.load_texture(format!("graded_thumb_{}_{}", d.clip.0, d.width), image, egui::TextureOptions::LINEAR);
                     self.shown.insert((d.clip, d.width), (d.key, texture));
                     self.failed.remove(&(d.clip, d.width));
@@ -229,6 +234,25 @@ impl GradedThumbs {
 
 #[cfg(test)]
 mod tests {
+
+    /// #1913: a still whose bytes are not its size (the crash's: an empty
+    /// one for 192x108) is a failed thumbnail, not a panic, and is not
+    /// asked for again at that key.
+    #[test]
+    fn a_still_of_the_wrong_size_is_a_failed_thumbnail() {
+        let ctx = egui::Context::default();
+        let mut thumbs = GradedThumbs::default();
+        let (job_tx, _jobs) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        thumbs.worker = Some((job_tx, done_rx));
+        let clip = ClipId::new();
+        thumbs.asked.insert((clip, 192, 7));
+        done_tx.send(Done { width: 192, clip, key: 7, still: Ok(klipp_render::still::Still { rgba: Vec::new(), width: 192, height: 108 }) }).unwrap();
+        thumbs.take(&ctx);
+        assert!(thumbs.shown.is_empty(), "nothing shown");
+        assert_eq!(thumbs.failed.get(&(clip, 192)), Some(&7), "failed at its key");
+        assert!(thumbs.asked.is_empty());
+    }
     use super::*;
     use klipp_core::{MediaId, RationalTime, WipeClip};
 

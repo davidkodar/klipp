@@ -52,7 +52,17 @@ pub fn clip_still(clip: &Clip, pool: &klipp_media::MediaPool, at_secs: f64, widt
     let at = at_secs.clamp(0.0, (duration.to_secs_f64() - 1.0 / seq.fps.as_f64()).max(0.0));
     let linear = renderer.render(&seq, RationalTime::from_secs_f64(at, rate), width, height, &mut src, klipp_compose::RenderOptions::default());
     src.end_frame().map_err(|e| e.to_string())?;
+    still_from_linear(&linear, width, height, working)
+}
 
+/// The still of a rendered linear frame, `width × height`, encoded for
+/// display; an error, not a still, when the frame is not that size
+/// (#1913): a thumbnail of the wrong size crashed the app.
+pub fn still_from_linear(linear: &[f32], width: u32, height: u32, working: WorkingColorspace) -> Result<Still, String> {
+    let want = width as usize * height as usize * 4;
+    if linear.len() != want {
+        return Err(format!("the render gave {} values for a {width}x{height} picture, which takes {want}", linear.len()));
+    }
     let display = klipp_color::display::ExportDisplay::new(klipp_core::ToneMapOp::None, working, klipp_core::OdtChoice::MatchViewer);
     let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
     let rgba = linear
@@ -63,4 +73,19 @@ pub fn clip_still(clip: &Clip, pool: &klipp_media::MediaPool, at_secs: f64, widt
         })
         .collect();
     Ok(Still { rgba, width, height })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #1913: a render of the wrong size is an error, not a still whose
+    /// bytes don't fill it.
+    #[test]
+    fn a_render_of_the_wrong_size_is_no_still() {
+        assert!(still_from_linear(&[], 192, 108, WorkingColorspace::Rec709Linear).is_err());
+        assert!(still_from_linear(&[0.5; 4 * 3], 2, 2, WorkingColorspace::Rec709Linear).is_err());
+        let still = still_from_linear(&[0.5; 4 * 4], 2, 2, WorkingColorspace::Rec709Linear).expect("the right size");
+        assert_eq!(still.rgba.len(), 16);
+    }
 }

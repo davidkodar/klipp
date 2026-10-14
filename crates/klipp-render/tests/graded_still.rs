@@ -64,3 +64,98 @@ fn a_clips_still_is_its_frame_with_its_grade() {
     let title = klipp_timeline::Clip::gap(tc(0), tc(10));
     assert!(klipp_render::still::clip_still(&title, &pool, 0.0, 32, WorkingColorspace::Rec709Linear).is_err(), "only a media clip has a still");
 }
+
+/// #1913: a still of a clip whose grade has a Mask wired in half way
+/// (Source into the Mask, the Mask into the Corrector) is a whole
+/// picture, `width × height` of it, or an error: never a buffer of
+/// another size, which the thumbnail code then panicked on.
+#[test]
+fn a_half_wired_mask_gives_a_whole_still_or_an_error() {
+    let Some(path) = ramp() else {
+        eprintln!("skipping: ffmpeg could not write the source");
+        return;
+    };
+    let mut item = klipp_media::MediaItem::synthetic_for_test(path, None);
+    item.resolution = Resolution { width: 64, height: 36 };
+    item.fps = Fps::new(FPS, 1);
+    item.duration = RationalTime::from_frames(48, FPS);
+    let id = item.id;
+    let mut pool = klipp_media::MediaPool::new();
+    pool.add(item);
+    let tc = |f| RationalTime::from_frames(f, FPS);
+    let clip = klipp_timeline::Clip::media(id, tc(0), tc(40), tc(0), tc(40));
+    // The ways a Mask is met half wired: Source into it, it into the
+    // Corrector's picture or its matte, it with nothing in, it straight
+    // into the Output.
+    for variant in 0..12 {
+    let mut g = NodeGraph::default();
+    let corrector = g.ensure_corrector();
+    let source = g.nodes.iter().find(|n| n.kind == NodeKind::Source).expect("a Source").id;
+    let output = g.output_node_id;
+    let mask = klipp_nodes::Node {
+        id: klipp_nodes::NodeId::new_v4(),
+        kind: NodeKind::Mask,
+        label: "Mask".into(),
+        enabled: true,
+        params: Default::default(),
+        keyframes: Default::default(),
+        output_link: None,
+        input_links: Vec::new(),
+    };
+    let mask_id = mask.id;
+    g.nodes.push(mask);
+    let edge = |from_node, to_node, to_port| klipp_nodes::Edge { from_node, from_port: 0, to_node, to_port };
+    match variant {
+        0 => {
+            g.edges.push(edge(source, mask_id, 0));
+            for e in &mut g.edges {
+                if e.to_node == corrector && e.from_node == source {
+                    e.from_node = mask_id;
+                }
+            }
+        }
+        1 => {
+            g.edges.push(edge(source, mask_id, 0));
+            g.edges.push(edge(mask_id, corrector, 1));
+        }
+        2 => {
+            for e in &mut g.edges {
+                if e.to_node == corrector && e.from_node == source {
+                    e.from_node = mask_id;
+                }
+            }
+        }
+        3 => {
+            g.edges.push(edge(source, mask_id, 0));
+            for e in &mut g.edges {
+                if e.to_node == output {
+                    e.from_node = mask_id;
+                }
+            }
+        }
+        4 => {
+            g.edges.push(edge(mask_id, corrector, 1));
+        }
+        // Other matte makers, straight from the Source into the Output's
+        // picture, and with the Mask's matte gating them.
+        v => {
+            let kind = [NodeKind::Qualifier, NodeKind::LumaKey, NodeKind::CombineMattes, NodeKind::DifferenceKey, NodeKind::ApplyMatte, NodeKind::MaskCutout, NodeKind::ExternalMatte][v - 5];
+            let id = klipp_nodes::NodeId::new_v4();
+            g.nodes.push(klipp_nodes::Node { id, kind, label: String::new(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+            g.edges.push(edge(source, id, 0));
+            g.edges.push(edge(source, mask_id, 0));
+            for e in &mut g.edges {
+                if e.to_node == corrector && e.from_node == source {
+                    e.from_node = id;
+                }
+            }
+        }
+    }
+    let mut clip = clip.clone();
+    clip.set_grade(g);
+    match klipp_render::still::clip_still(&clip, &pool, 0.0, 32, WorkingColorspace::Rec709Linear) {
+        Ok(still) => assert_eq!(still.rgba.len(), (still.width * still.height * 4) as usize, "variant {variant}: a whole picture"),
+        Err(why) => eprintln!("variant {variant}: no still, as it should say: {why}"),
+    }
+    }
+}

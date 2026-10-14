@@ -352,7 +352,7 @@ impl GridRuntime {
                 continue;
             }
             self.tile_generation.insert(angle, generation);
-            let image = egui::ColorImage::from_rgba_unmultiplied([frame.width as usize, frame.height as usize], &frame.rgba);
+            let Some(image) = crate::ui_util::checked_image([frame.width as usize, frame.height as usize], &frame.rgba, "multicam angle") else { continue };
             match self.tiles.get_mut(&angle) {
                 Some(tex) if tex.size() == image.size => tex.set(image, egui::TextureOptions::LINEAR),
                 _ => {

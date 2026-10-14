@@ -644,11 +644,8 @@ fn render_pane_scope(
                             crate::state::ScopeMode::Vectorscope => 2,
                             crate::state::ScopeMode::Histogram => 3,
                         };
-                        fb.scope_textures.get(&mode_byte).map(|entry| {
-                            egui::ColorImage::from_rgba_unmultiplied(
-                                [entry.w as usize, entry.h as usize],
-                                &entry.data,
-                            )
+                        fb.scope_textures.get(&mode_byte).and_then(|entry| {
+                            crate::ui_util::checked_image([entry.w as usize, entry.h as usize], &entry.data, "scope")
                         })
                     });
 

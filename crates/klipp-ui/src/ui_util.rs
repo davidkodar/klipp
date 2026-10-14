@@ -42,6 +42,23 @@ pub fn elide(s: &str, max: usize) -> String {
 /// but a corrupted file in the tree (or a future move to runtime asset
 /// loading) would otherwise take the whole app down at startup.
 pub fn decode_png_or_fallback(bytes: &[u8]) -> egui::ColorImage {
+    decode_png_inner(bytes)
+}
+
+/// An image of `size` from `rgba`, or `None`, said in the log as `what`,
+/// when the bytes are not `size`'s. A rendered picture of the wrong size
+/// (#1913) is a failed render, not a crash: egui's own constructor
+/// panics on it.
+pub fn checked_image(size: [usize; 2], rgba: &[u8], what: &str) -> Option<egui::ColorImage> {
+    let want = size[0] * size[1] * 4;
+    if rgba.len() != want || want == 0 {
+        tracing::error!("{what}: {} bytes for a {}x{} picture, which takes {want}; not shown", rgba.len(), size[0], size[1]);
+        return None;
+    }
+    Some(egui::ColorImage::from_rgba_unmultiplied(size, rgba))
+}
+
+fn decode_png_inner(bytes: &[u8]) -> egui::ColorImage {
     fn fallback() -> egui::ColorImage {
         egui::ColorImage {
             size: [1, 1],
@@ -228,5 +245,15 @@ mod tests {
         let pid = dropped.id();
         drop(dropped);
         assert_eq!(settle(pid, false), Some('Z'), "the control should be a zombie");
+    }
+
+    /// #1913: bytes that are not the size's picture give no image, where
+    /// egui's own constructor would panic.
+    #[test]
+    fn a_picture_of_the_wrong_size_gives_no_image() {
+        assert!(super::checked_image([192, 108], &[], "test").is_none());
+        assert!(super::checked_image([2, 2], &[0; 12], "test").is_none());
+        let image = super::checked_image([2, 2], &[7; 16], "test").expect("the right size");
+        assert_eq!(image.size, [2, 2]);
     }
 }

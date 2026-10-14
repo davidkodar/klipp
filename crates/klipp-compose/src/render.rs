@@ -1213,6 +1213,16 @@ impl Renderer {
         self.hdr_peak = opts.hdr_peak_nits;
         self.title_nits = seq.title_nits;
         let out = self.render_stack(seq, time, width, height, src, opts);
+        // On the CPU a render is the whole frame (#1913): anything else is
+        // a fault somewhere above, said here, and a black frame of the
+        // right size goes on rather than a buffer that crashes its reader.
+        let whole = width as usize * height as usize * 4;
+        let out = if !self.allow_gpu && out.len() != whole {
+            tracing::error!("render gave {} values for a {width}x{height} frame, which takes {whole}; a black frame instead", out.len());
+            vec![0.0; whole]
+        } else {
+            out
+        };
         // The picture's Placement and Output show the finished frame.
         if !self.resolved.finished.is_empty() {
             let thumb = klipp_nodes::executor::downsample_to_thumb_u8(&out, width, height, klipp_nodes::executor::THUMB_W, klipp_nodes::executor::THUMB_H);
@@ -4017,6 +4027,28 @@ impl Renderer {
         // A test's fault (`fault`, #1276): the run, made as any run is,
         // fails as a graph that fails does.
         let out = if crate::fault::grade_fails(clip.id) { Err(klipp_nodes::executor::ExecutorError::MissingNodeOutput) } else { out };
+        let out = if crate::fault::grade_gives_nothing(clip.id) { out.map(|_| Vec::new()) } else { out };
+        // A CPU run gives the whole picture or fails: a picture of another
+        // size is a failed run (#1913), drawn without the grade and said,
+        // never handed on to crash whatever shows it.
+        let whole = width as usize * height as usize * 4;
+        let out = match out {
+            Ok(out) if !self.allow_gpu && out.len() != whole => {
+                let why = format!("the grade gave {} values for a {width}x{height} picture, which takes {whole}", out.len());
+                tracing::error!("clip {}: {why}; drawn without its grade", clip.id.0);
+                self.found.declines.push(klipp_nodes::Decline {
+                    clip: Some(clip.id),
+                    node: clip.grade().output_node_id,
+                    kind: klipp_nodes::NodeKind::Output,
+                    outcome: klipp_nodes::DeclineOutcome::RenderFailed,
+                    name: "grade".into(),
+                    reason: "its run gave a picture of the wrong size".into(),
+                    why,
+                });
+                return unshare(input.pixels());
+            }
+            other => other,
+        };
         match out {
             Ok(out) => {
                 self.grade_ran = true;
