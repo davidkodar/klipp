@@ -166,3 +166,51 @@ fn an_audio_only_export_takes_a_codec_it_can_write() {
         assert_eq!(resolve(ExportFormat::Mp3, ExportAudioCodec::Mp3).0, ExportFormat::Wav, "without MP3, WAV");
     }
 }
+
+/// The top-level boxes of an ISO media file, in order.
+fn top_boxes(path: &Path) -> Vec<String> {
+    let bytes = std::fs::read(path).unwrap();
+    let (mut at, mut names) = (0usize, Vec::new());
+    while at + 8 <= bytes.len() {
+        let size32 = u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+        names.push(String::from_utf8_lossy(&bytes[at + 4..at + 8]).into_owned());
+        let size = match size32 {
+            0 => bytes.len() - at,
+            1 => u64::from_be_bytes(bytes[at + 8..at + 16].try_into().unwrap()) as usize,
+            n => n,
+        };
+        if size < 8 {
+            break;
+        }
+        at += size;
+    }
+    names
+}
+
+/// #1901: an MP4 or M4A has its index before its media, so a web player
+/// can start before the whole file has arrived; the streams are as they
+/// were.
+#[test]
+fn a_web_file_has_its_index_before_its_media() {
+    if !ffmpeg_ok() {
+        return;
+    }
+    let dir = klipp_testing::scratch::scratch_dir("klipp-faststart");
+    for (format, name, want) in [
+        (ExportFormat::Mp4, "web.mp4", vec!["video:h264", "audio:aac"]),
+        (ExportFormat::M4a, "web.m4a", vec!["audio:aac"]),
+    ] {
+        let out = dir.join(name);
+        export(ExportSettings { output_path: out.clone(), format, audio_codec: ExportAudioCodec::Aac, ..Default::default() });
+        let boxes = top_boxes(&out);
+        let (moov, mdat) = (boxes.iter().position(|b| b == "moov"), boxes.iter().position(|b| b == "mdat"));
+        assert!(moov.is_some() && moov < mdat, "{name}: moov before mdat, got {boxes:?}");
+        let (streams, dur) = streams(&out);
+        let mut streams = streams;
+        streams.sort();
+        let mut want = want;
+        want.sort();
+        assert_eq!(streams, want, "{name}");
+        assert!((dur - 4.0).abs() < 0.1, "{name}: {dur} s");
+    }
+}
