@@ -733,7 +733,7 @@ pub(crate) fn respond(
                     // never moves the cast at all. Put the knobs back
                     // where they were and say why it stopped.
                     let after_round = colour_report(&m, &look, *mid);
-                    let turned = klipp_color::measure::memory_colours_broken(&start_m, &m);
+                    let turned = klipp_color::measure::memory_colours_broken(&start_m, &m, &look);
                     if after_round.len() > fails.len() || turned.is_some() {
                         let op: klipp_document::ops::Op = serde_json::from_value(json!({
                             "op": "grade", "clip_id": id,
