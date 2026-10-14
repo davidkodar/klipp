@@ -94,6 +94,10 @@ pub(crate) fn respond(
                         text.push_str(&format!(" {kind} ({phase});"));
                     }
                 }
+                // The rest counted, so the text and `active_jobs` agree (#1902).
+                if active_jobs.len() > 3 {
+                    text.push_str(&format!(" and {} more;", active_jobs.len() - 3));
+                }
                 text.push('\n');
             }
             Ok(json!({

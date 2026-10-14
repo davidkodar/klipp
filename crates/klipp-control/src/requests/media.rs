@@ -166,6 +166,9 @@ pub(crate) fn respond(
             // every file.
             match if v["applied"] == true { imported_id_within(ctx, &p, std::time::Duration::from_secs(10)) } else { None } {
                 Some(id) => {
+                    if let (Some(operation_id), Ok(uuid)) = (v["operation_id"].as_str(), id.parse()) {
+                        jobs::note_imported(operation_id, klipp_core::MediaId(uuid));
+                    }
                     v["media_id"] = json!(id);
                 }
                 None => {
