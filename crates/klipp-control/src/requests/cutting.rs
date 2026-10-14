@@ -69,7 +69,7 @@ pub(crate) fn respond(
                 let preview_only = if t.download_url.is_empty() { " [preview only: add_music takes the preview MP3]" } else { "" };
                 text.push_str(&format!("  {} — {}  ({}, {:.0}s{pace}){}{no_edits}{preview_only}  [{}]\n", t.title, t.artist, t.license, t.duration_secs, if t.commercial_ok { "" } else { " [non-commercial]" }, t.tags.join(", ")));
                 match h {
-                    Some(Ok(l)) => text.push_str(&format!("      heard: {}\n", l.describe())),
+                    Some(Ok(l)) => text.push_str(&format!("      measured (not played): {}\n", l.describe())),
                     Some(Err(e)) => text.push_str(&format!("      not heard: {e}\n")),
                     None => {}
                 }
@@ -123,7 +123,7 @@ pub(crate) fn respond(
                 let original = t.original.as_ref().map_or(String::new(), |o| format!("  original {}", o.describe()));
                 text.push_str(&format!("  {} — {}  ({}, {:.1}s){}  id {}{original}\n", t.title, t.artist, t.license, t.duration_secs, if t.commercial_ok { "" } else { " [non-commercial]" }, t.id));
                 match h {
-                    Some(Ok(l)) => text.push_str(&format!("      heard: {}\n", l.describe())),
+                    Some(Ok(l)) => text.push_str(&format!("      measured (not played): {}\n", l.describe())),
                     Some(Err(e)) => text.push_str(&format!("      not heard: {e}\n")),
                     None => {}
                 }

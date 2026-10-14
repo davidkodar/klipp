@@ -648,6 +648,7 @@ fn handle(
             | ControlCommand::FindShots { .. }
             | ControlCommand::ContactSheet { .. }
             | ControlCommand::AudioExcerpt { .. }
+            | ControlCommand::Audition { .. }
             | ControlCommand::Transcript { .. }
             | ControlCommand::AlignAudio { .. }
         ) => requests::analysis::respond(ctx, cmd, collect),

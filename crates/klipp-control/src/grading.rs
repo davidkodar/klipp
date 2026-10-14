@@ -532,6 +532,13 @@ pub(crate) fn loudness_drops(rows: &[(f64, f32, f32)], step: f64, excused: &dyn 
 /// written to `out` as 16 kHz mono 16-bit WAV (#1577): what an agent can
 /// listen to, or transcribe, before rendering.
 pub(crate) fn mix_excerpt(snapshot: &klipp_render::SequenceSnapshot, from: f64, to: f64, out: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    mix_excerpt_as(snapshot, from, to, out, Some(16_000), 1)
+}
+
+/// [`mix_excerpt`] at `rate` (the sequence's when `None`) with `channels`:
+/// 16 kHz mono to be read, the sequence's rate in stereo to be heard
+/// (#1891).
+pub(crate) fn mix_excerpt_as(snapshot: &klipp_render::SequenceSnapshot, from: f64, to: f64, out: &std::path::Path, out_rate: Option<u32>, channels: u8) -> Result<std::path::PathBuf, String> {
     use std::io::Write;
     let fps = snapshot.fps.max(1.0);
     let rate = snapshot.sample_rate;
@@ -550,7 +557,7 @@ pub(crate) fn mix_excerpt(snapshot: &klipp_render::SequenceSnapshot, from: f64, 
     let mut child = std::process::Command::new("ffmpeg")
         .args(["-hide_banner", "-nostats", "-loglevel", "error", "-y", "-f", "f32le", "-ar"])
         .arg(rate.to_string())
-        .args(["-ac", "2", "-i", "pipe:0", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"])
+        .args(["-ac", "2", "-i", "pipe:0", "-ac", &channels.to_string(), "-ar", &out_rate.unwrap_or(rate).to_string(), "-c:a", "pcm_s16le"])
         .arg(out)
         .stdin(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

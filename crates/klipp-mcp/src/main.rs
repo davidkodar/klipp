@@ -828,6 +828,13 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             }
             v
         }
+        "klipp_audition" => {
+            let mut v = json!({ "method": "audition" });
+            for key in ["action", "media_id", "clip_id", "sequence", "from_secs", "to_secs", "preview_urls"] {
+                if let Some(x) = args.get(key).filter(|x| !x.is_null()) { v[key] = x.clone(); }
+            }
+            v
+        }
         "klipp_mix_loudness" => json!({
             "method": "mix_loudness",
             "from_secs": args.get("from_secs").cloned().unwrap_or(serde_json::Value::Null),
@@ -1987,6 +1994,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "secs": { "type": "number" }, "target": { "type": "string" }, "fps": { "type": "integer" }, "path": { "type": "string" }, "import": { "type": "boolean" },
                      "wait": { "type": "boolean" }, "action": { "type": "string", "enum": ["start", "status", "stop"] }, "recording_id": { "type": "string" },
                      "codec": { "type": "string" }, "quality": { "type": "string" } }), vec![]),
+        tool("klipp_audition",
+             "Play a file's stretch, a clip, the mix or search previews through Klipp's output, for the person to hear. Details: klipp_guide topic audition.",
+             json!({ "action": { "type": "string", "enum": ["play", "stop", "status"] }, "media_id": { "type": "string" }, "clip_id": { "type": "string" }, "sequence": { "type": "boolean" },
+                     "from_secs": { "type": "number" }, "to_secs": { "type": "number" }, "preview_urls": { "type": "array", "items": { "type": "string" } } }), vec![]),
         tool("klipp_mix_loudness",
              "The mix's loudness over a stretch as the export mixes it, step by step, the steps 4 dB over the median marked. Details: klipp_guide topic mix_loudness.",
              json!({ "from_secs": { "type": "number" }, "to_secs": { "type": "number" }, "step_secs": { "type": "number" } }), vec![]),

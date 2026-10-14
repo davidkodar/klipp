@@ -192,6 +192,7 @@ impl Track {
 }
 
 pub mod freesound_auth;
+pub mod audition;
 
 /// Percent-encode a query value for a URL (RFC 3986 unreserved kept).
 fn encode(s: &str) -> String {

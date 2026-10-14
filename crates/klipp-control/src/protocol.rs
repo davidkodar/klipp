@@ -847,6 +847,26 @@ pub enum ControlCommand {
         #[serde(default)]
         sequence: bool,
     },
+    /// Play sound for the person at the machine to hear, through Klipp's
+    /// output (#1891, #1927): a pool file's stretch or a clip's at the
+    /// source's own rate and channels, the timeline's mix, or search
+    /// previews before import, in turn. `action` "stop" or "status".
+    Audition {
+        #[serde(default)]
+        action: Option<String>,
+        #[serde(default)]
+        media_id: Option<String>,
+        #[serde(default)]
+        clip_id: Option<String>,
+        #[serde(default)]
+        sequence: bool,
+        #[serde(default)]
+        from_secs: Option<f64>,
+        #[serde(default)]
+        to_secs: Option<f64>,
+        #[serde(default)]
+        preview_urls: Vec<String>,
+    },
 
     // ── Operations ────────────────────────────────────────────────
     /// Resolve editorial operations against the timeline and say what
