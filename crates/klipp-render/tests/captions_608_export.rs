@@ -55,6 +55,7 @@ fn export(seq: &Sequence, out: &std::path::Path, codec: ExportVideoCodec, format
         hw_info: Default::default(),
         render_stage: Default::default(),
         loudness_result: Default::default(),
+        timings: Default::default(),
         total_frames: frames,
         analyser: None,
     }
@@ -134,7 +135,7 @@ fn no_captions_unless_asked() {
     ExportJob {
         id: uuid::Uuid::new_v4(), output_path: out.clone(), settings, snapshot,
         cancel: Arc::new(AtomicBool::new(false)), progress: Arc::new(AtomicU64::new(0)),
-        hw_info: Default::default(), render_stage: Default::default(), loudness_result: Default::default(),
+        hw_info: Default::default(), render_stage: Default::default(), loudness_result: Default::default(), timings: Default::default(),
         total_frames: frames, analyser: None,
     }
     .run()

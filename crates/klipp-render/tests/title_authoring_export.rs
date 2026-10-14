@@ -101,6 +101,7 @@ fn authored_masked_word_stagger_and_exit_survive_project_export() {
         hw_info: Default::default(),
         render_stage: Default::default(),
         loudness_result: Default::default(),
+        timings: Default::default(),
         total_frames: frames,
         analyser: None,
     }

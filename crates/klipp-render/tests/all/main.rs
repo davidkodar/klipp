@@ -16,6 +16,8 @@ mod captions_608_export;
 mod clip_sources_reads_the_media;
 #[path = "../codec_true_peak.rs"]
 mod codec_true_peak;
+#[path = "../export_status_timings.rs"]
+mod export_status_timings;
 #[path = "../export_audio_plays_the_whole_source.rs"]
 mod export_audio_plays_the_whole_source;
 #[path = "../export_frames_shared.rs"]

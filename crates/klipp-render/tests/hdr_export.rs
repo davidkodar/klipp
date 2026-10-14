@@ -86,7 +86,7 @@ fn export_seq(
     ExportJob {
         id: uuid::Uuid::new_v4(), output_path: out.to_path_buf(), settings, snapshot,
         cancel: Arc::new(AtomicBool::new(false)), progress: Arc::new(AtomicU64::new(0)),
-        hw_info: Default::default(), render_stage: Default::default(), loudness_result: Default::default(),
+        hw_info: Default::default(), render_stage: Default::default(), loudness_result: Default::default(), timings: Default::default(),
         total_frames: FRAMES,
         analyser: None,
     }

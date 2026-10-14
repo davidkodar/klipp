@@ -54,6 +54,9 @@ pub struct ExportJob {
     pub render_stage: Arc<std::sync::Mutex<String>>,
     /// Loudness normalization result (set during run() if normalization enabled).
     pub loudness_result: Arc<std::sync::Mutex<Option<String>>>,
+    /// Where the export's time goes, updated about once a second while it
+    /// renders and left at its last figures when it ends (#1924).
+    pub timings: Arc<std::sync::Mutex<Option<klipp_core::ExportTimings>>>,
     /// Runs an analysis the export needs and hasn't got (M4 step 9).
     /// `None`: a missing analysis refuses the export.
     pub analyser: Option<crate::Analyser>,
@@ -144,6 +147,10 @@ impl ExportJob {
 
         // ─── Pass 1: Loudness measurement (if normalization enabled) ──
         let ceiling_dbtp = self.settings.true_peak_dbtp.unwrap_or(DEFAULT_PEAK_CEILING_DBTP);
+        // How long the loudness measurement and its fit's trials took, and
+        // how many trials it ran (#1924).
+        let t_loudness = std::time::Instant::now();
+        let trials = std::cell::Cell::new(0u32);
         let mut delivery = if let Some(target_lufs) = self.settings.target_lufs {
             Self::set_stage(&self.render_stage, "Measuring loudness\u{2026}");
             let total_frames = self.total_frames;
@@ -182,6 +189,7 @@ impl ExportJob {
             let unverified: std::cell::RefCell<Option<String>> = Default::default();
             let trial_path = trial_path_for(&partial_path);
             let trial_run = |trial: &mut DeliveryChain, pass: Option<usize>| -> Result<Option<f32>, RenderError> {
+                trials.set(trials.get() + 1);
                 let what = match pass {
                     Some(n) => format!("Fitting loudness under the ceiling, trial {n} of up to {LIMITED_GAIN_PASSES}"),
                     None => format!("Checking the {} file's true peak", codec.label()),
@@ -261,9 +269,11 @@ impl ExportJob {
             DeliveryChain::unity()
         };
 
+        let loudness = if self.settings.target_lufs.is_some() { (t_loudness.elapsed().as_secs_f64(), trials.get()) } else { (0.0, 0) };
+
         // Sound alone: the same mix and delivery, no picture (#1813).
         if self.settings.format.is_audio_only() {
-            return self.write_audio_only(audio_mixdown, delivery, start_frame, end_frame);
+            return self.write_audio_only(audio_mixdown, delivery, start_frame, end_frame, loudness);
         }
 
         let mut encoder =
@@ -290,6 +300,27 @@ impl ExportJob {
         let mut maker = ExportFrameMaker::new(&self.settings, &self.snapshot, &encoder, format!("ExportJob {}", self.id));
         let (out_w, out_h) = maker.out_size();
 
+        // The figures a status reads (#1924), filled from the counters
+        // above about once a second and at the end.
+        let mut timings = klipp_core::ExportTimings {
+            loudness_verify_secs: loudness.0,
+            loudness_trials: loudness.1,
+            video_encoder: Some(encoder.video_encoder_name().to_string()),
+            audio_encoder: encoder.audio_encoder_name().map(str::to_string),
+            ..Default::default()
+        };
+        let mut published = std::time::Instant::now();
+        let publish = |timings: &mut klipp_core::ExportTimings, done: u64, frames: &ExportFrameSource, t: [std::time::Duration; 4]| {
+            let per = |d: std::time::Duration| d.as_secs_f64() * 1000.0 / done.max(1) as f64;
+            timings.frames = done;
+            timings.wall_secs = loop_start.elapsed().as_secs_f64();
+            (timings.render_ms, timings.pad_ms, timings.encode_ms, timings.audio_ms) = (per(t[0]), per(t[1]), per(t[2]), per(t[3]));
+            (timings.decode_ms, timings.convert_ms) = (per(frames.t_decode), per(frames.t_convert));
+            if let Ok(mut shared) = self.timings.lock() {
+                *shared = Some(timings.clone());
+            }
+        };
+
         // ─── THE MAIN RENDER LOOP ─────────────────────────────────
         for frame_num in start_frame..end_frame {
             // Check cancellation
@@ -313,6 +344,30 @@ impl ExportJob {
             let frame = maker.frame(&mut renderer, timeline, time, &mut frames)?;
             t_render += t0.elapsed().saturating_sub(maker.last_pad);
             t_pad += maker.last_pad;
+            // Where the frame was composited, and why not on the GPU.
+            match maker.last_cpu_why() {
+                None => timings.gpu_composited += 1,
+                Some(why) => timings.cpu_frame(why),
+            }
+            if published.elapsed() >= std::time::Duration::from_secs(1) {
+                published = std::time::Instant::now();
+                publish(&mut timings, export_frame_num, &frames, [t_render, t_pad, t_encode, t_audio]);
+            }
+            // The hardware line, on the first frame whichever way it went:
+            // a frame made on the GPU used to skip it, and a finished
+            // export said nothing of its encoder (#1924).
+            if !hw_reported {
+                hw_reported = true;
+                let hw_str = format!(
+                    "Decode: {} | Encode: {}",
+                    frames.hw_accel_name().unwrap_or("N/A"),
+                    encoder.hw_info(),
+                );
+                info!("ExportJob {}: {}", self.id, hw_str);
+                if let Ok(mut hw) = self.hw_info.lock() {
+                    *hw = hw_str;
+                }
+            }
             let picture = match frame {
                 ExportFrame::Planes { planes, light } => {
                     let t2 = std::time::Instant::now();
@@ -334,18 +389,6 @@ impl ExportJob {
                 }
                 ExportFrame::Linear(picture) => picture,
             };
-            if !hw_reported {
-                hw_reported = true;
-                let hw_str = format!(
-                    "Decode: {} | Encode: {}",
-                    frames.hw_accel_name().unwrap_or("N/A"),
-                    encoder.hw_info(),
-                );
-                info!("ExportJob {}: {}", self.id, hw_str);
-                if let Ok(mut hw) = self.hw_info.lock() {
-                    *hw = hw_str;
-                }
-            }
             let t2 = std::time::Instant::now();
             encoder.encode_linear_frame(&picture, out_w, out_h)?;
             t_encode += t2.elapsed();
@@ -362,6 +405,7 @@ impl ExportJob {
             self.progress.store(export_frame_num, Ordering::Relaxed);
         }
 
+        publish(&mut timings, export_frame_num, &frames, [t_render, t_pad, t_encode, t_audio]);
         let frames_done = export_frame_num.max(1);
         let per = |d: std::time::Duration| d.as_secs_f64() * 1000.0 / frames_done as f64;
         info!(
@@ -467,7 +511,7 @@ impl ExportJob {
     /// M4A (#1813), then published as the video export is. Without an MP3
     /// encoder the file is WAV, at the same name with `.wav`, and the
     /// export's hardware line says so.
-    fn write_audio_only(&self, mut mixdown: AudioMixdown, mut delivery: DeliveryChain, start_frame: u64, end_frame: u64) -> Result<(), RenderError> {
+    fn write_audio_only(&self, mut mixdown: AudioMixdown, mut delivery: DeliveryChain, start_frame: u64, end_frame: u64, loudness: (f64, u32)) -> Result<(), RenderError> {
         let (format, codec, fallback) = crate::audio_only::resolve(self.settings.format, self.settings.audio_codec);
         let output_path = if format == self.settings.format { self.output_path.clone() } else { self.output_path.with_extension(format.extension()) };
         if let Some(note) = &fallback {
@@ -481,6 +525,8 @@ impl ExportJob {
         Self::set_stage(&self.render_stage, &format!("Encoding audio ({})\u{2026}", codec.label()));
         let mut writer = crate::audio_only::AudioOnly::open(&partial_path, format, codec, self.settings.audio_bitrate_kbps, self.snapshot.sample_rate)?;
         let mut done: u64 = 0;
+        let started = std::time::Instant::now();
+        let mut timings = klipp_core::ExportTimings { loudness_verify_secs: loudness.0, loudness_trials: loudness.1, audio_encoder: Some(codec.ffmpeg_codec().to_string()), ..Default::default() };
         for frame_num in start_frame..end_frame {
             if self.cancel.load(Ordering::Relaxed) {
                 return Err(RenderError::Cancelled);
@@ -490,6 +536,13 @@ impl ExportJob {
             writer.write(&audio)?;
             done += 1;
             self.progress.store(done, Ordering::Relaxed);
+        }
+        // Sound alone: every frame's time is its sound's (#1924).
+        timings.frames = done;
+        timings.wall_secs = started.elapsed().as_secs_f64();
+        timings.audio_ms = timings.wall_secs * 1000.0 / done.max(1) as f64;
+        if let Ok(mut shared) = self.timings.lock() {
+            *shared = Some(timings);
         }
         if let Some(report) = delivery.report() {
             info!("ExportJob {}: {report}", self.id);
@@ -1226,6 +1279,7 @@ mod tests {
             hw_info: Arc::new(std::sync::Mutex::new(String::new())),
             render_stage: Arc::new(std::sync::Mutex::new(String::new())),
             loudness_result: Arc::new(std::sync::Mutex::new(None)),
+            timings: Default::default(),
             total_frames: 100,
             analyser: None,
         };

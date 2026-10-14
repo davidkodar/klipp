@@ -18,7 +18,7 @@ preset is a delivery preset: one of those listed at the end of this section, eac
 
 ## klipp_export_status
 
-Every render job Klipp knows: status (queued, rendering, complete, failed, cancelled), progress 0 to 1, frames, stage, error, loudness result. With wait true, waits for job_id or all currently known jobs. Returns finished, succeeded and timed_out; failed or cancelled is not success. Timeout does not cancel renders.
+Every render job Klipp knows: status (queued, rendering, complete, failed, cancelled), progress 0 to 1, frames, stage, error, loudness result. Also where its time goes, kept once it ends: hardware (the codec's acceleration), encoder and audio_encoder (the encoders opened, e.g. h264_nvenc, aac), compositing (GPU, or CPU and why, with how many frames), and timings: per frame render_ms (decode_ms and convert_ms inside it), pad_ms, encode_ms and audio_ms, gpu_composited and cpu_composited with each fallback's reason, and loudness_verify_secs and loudness_trials for the loudness fit before the render. With wait true, waits for job_id or all currently known jobs. Returns finished, succeeded and timed_out; failed or cancelled is not success. Timeout does not cancel renders.
 
 ## klipp_follow_job
 

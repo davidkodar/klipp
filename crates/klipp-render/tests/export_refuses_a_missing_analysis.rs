@@ -53,7 +53,7 @@ fn a_clip_without_its_analysis_refuses_the_export_by_name() {
     let err = ExportJob {
         id: uuid::Uuid::new_v4(), output_path: out.clone(), settings, snapshot,
         cancel: Arc::new(AtomicBool::new(false)), progress: Arc::new(AtomicU64::new(0)),
-        hw_info: Default::default(), render_stage: Default::default(), loudness_result: Default::default(),
+        hw_info: Default::default(), render_stage: Default::default(), loudness_result: Default::default(), timings: Default::default(),
         analyser: None,
         total_frames: N as u64,
     }

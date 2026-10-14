@@ -5199,6 +5199,124 @@ pub struct ExportStatus {
     /// The size the file will be, from what is written so far (#19).
     #[serde(default)]
     pub projected_bytes: Option<u64>,
+    /// The video encoder the job opened (`h264_nvenc`, `libx264`, …):
+    /// what encodes, apart from where frames are made (#1924).
+    #[serde(default)]
+    pub encoder: Option<String>,
+    /// The audio encoder (`aac`, `libmp3lame`, `pcm_s24le`, …), also for
+    /// sound alone.
+    #[serde(default)]
+    pub audio_encoder: Option<String>,
+    /// Where frames were composited: `GPU`, or `CPU: <reason> (N of M
+    /// frames)`, apart from the codec's acceleration (`hardware`).
+    #[serde(default)]
+    pub compositing: Option<String>,
+    /// Where the time went, updated while the job runs and kept once it
+    /// ends (#1924).
+    #[serde(default)]
+    pub timings: Option<ExportTimings>,
+}
+
+/// Where an export's time goes (#1924): the loudness fit before the
+/// render, then per frame the render (decode and source convert inside
+/// it), padding, the video encode and the audio, and how frames were
+/// composited.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExportTimings {
+    /// Frames rendered so far.
+    pub frames: u64,
+    /// Seconds since the render loop started.
+    pub wall_secs: f64,
+    /// Per frame, milliseconds.
+    pub render_ms: f64,
+    pub decode_ms: f64,
+    pub convert_ms: f64,
+    pub pad_ms: f64,
+    pub encode_ms: f64,
+    pub audio_ms: f64,
+    /// Frames composited on the GPU stack, and on the CPU.
+    pub gpu_composited: u64,
+    pub cpu_composited: u64,
+    /// Why frames went to the CPU, most frames first.
+    pub fallbacks: Vec<CompositeFallback>,
+    /// Seconds the loudness measurement and its fit's trial encodes took
+    /// before the render (#1930), and how many trials it ran.
+    pub loudness_verify_secs: f64,
+    pub loudness_trials: u32,
+    /// The encoders opened.
+    pub video_encoder: Option<String>,
+    pub audio_encoder: Option<String>,
+}
+
+/// A reason frames were composited on the CPU, and how many.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CompositeFallback {
+    pub reason: String,
+    pub frames: u64,
+}
+
+impl ExportTimings {
+    /// Count one frame composited on the CPU for `reason`.
+    pub fn cpu_frame(&mut self, reason: &str) {
+        self.cpu_composited += 1;
+        match self.fallbacks.iter_mut().find(|f| f.reason == reason) {
+            Some(f) => f.frames += 1,
+            None => self.fallbacks.push(CompositeFallback { reason: reason.to_string(), frames: 1 }),
+        }
+        self.fallbacks.sort_by_key(|f| std::cmp::Reverse(f.frames));
+    }
+
+    /// Where frames were composited, in words: `GPU`, `CPU: <reason>
+    /// (N of M frames)`, or both. `None` before the first frame.
+    pub fn compositing(&self) -> Option<String> {
+        let all = self.gpu_composited + self.cpu_composited;
+        if all == 0 {
+            return None;
+        }
+        let Some(first) = self.fallbacks.first() else { return Some("GPU".to_string()) };
+        Some(match self.gpu_composited {
+            0 => format!("CPU: {} ({} of {all} frames)", first.reason, first.frames),
+            gpu => format!("GPU for {gpu} of {all} frames; CPU: {} ({} frames)", first.reason, first.frames),
+        })
+    }
+}
+
+#[cfg(test)]
+mod export_timings_tests {
+    use super::*;
+
+    /// #1924: a status written before the timings existed still reads,
+    /// and one with them round-trips.
+    #[test]
+    fn a_status_without_timings_still_reads() {
+        let old = r#"{"job_id":"j","path":"/o.mp4","status":"complete","progress":1.0,"frames_done":10,"total_frames":10,"stage":"Complete","error":null,"loudness":null}"#;
+        let status: ExportStatus = serde_json::from_str(old).unwrap();
+        assert!(status.timings.is_none() && status.encoder.is_none() && status.compositing.is_none());
+        let mut timings = ExportTimings { frames: 10, gpu_composited: 7, ..Default::default() };
+        for _ in 0..3 {
+            timings.cpu_frame("motion blur");
+        }
+        let status = ExportStatus { timings: Some(timings.clone()), compositing: timings.compositing(), ..status };
+        let back: ExportStatus = serde_json::from_str(&serde_json::to_string(&status).unwrap()).unwrap();
+        assert_eq!(back.timings, Some(timings));
+    }
+
+    /// Where frames were composited, in words, the commonest reason first.
+    #[test]
+    fn compositing_says_where_and_why() {
+        let mut t = ExportTimings::default();
+        assert_eq!(t.compositing(), None, "before a frame");
+        t.gpu_composited = 4;
+        assert_eq!(t.compositing().as_deref(), Some("GPU"));
+        t.cpu_frame("a transition");
+        t.cpu_frame("motion blur");
+        t.cpu_frame("motion blur");
+        assert_eq!(t.fallbacks[0], CompositeFallback { reason: "motion blur".into(), frames: 2 });
+        assert_eq!(t.compositing().as_deref(), Some("GPU for 4 of 7 frames; CPU: motion blur (2 frames)"));
+        t.gpu_composited = 0;
+        assert_eq!(t.compositing().as_deref(), Some("CPU: motion blur (2 of 3 frames)"));
+    }
 }
 
 #[cfg(test)]

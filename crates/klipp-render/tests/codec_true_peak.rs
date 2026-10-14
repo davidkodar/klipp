@@ -98,6 +98,7 @@ fn export(source: PathBuf, settings: ExportSettings) -> String {
         hw_info: Default::default(),
         render_stage: Default::default(),
         loudness_result: Arc::clone(&status),
+        timings: Default::default(),
         total_frames: FRAMES,
         analyser: None,
     }
