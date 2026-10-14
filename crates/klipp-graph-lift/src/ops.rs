@@ -503,6 +503,96 @@ fn held_node(node: &Node) -> Result<Node, String> {
     Ok(n)
 }
 
+/// The canvas's pitch between nodes along a chain, and between rows.
+const STEP_X: f32 = 230.0;
+const STEP_Y: f32 = 140.0;
+/// The largest card the canvas draws (every node's is 120 by 60; a
+/// reroute's dot is smaller), and how close two node centres may come,
+/// across and down, before their cards overlap: a card plus a margin.
+const CARD_W: f32 = 120.0;
+const CARD_H: f32 = 60.0;
+const CLEAR_X: f32 = CARD_W + 20.0;
+const CLEAR_Y: f32 = CARD_H + 20.0;
+/// How many rows down a spot is looked for before the last is taken.
+const MAX_ROWS: usize = 64;
+
+/// Where node `id` sits on the canvas, if anywhere.
+fn spot_of(g: &Graph, id: NodeId) -> Option<(f32, f32)> {
+    let v = g.ui.positions.get(&id)?;
+    Some((v.get("x")?.as_f64()? as f32, v.get("y")?.as_f64()? as f32))
+}
+
+/// Node `id` at `(x, y)`: its place's `x` and `y` set, whatever else the
+/// place keeps left as it is.
+fn put_spot(g: &mut Graph, id: NodeId, (x, y): (f32, f32)) {
+    let at = g.ui.positions.entry(id).or_insert_with(|| serde_json::json!({}));
+    if !at.is_object() {
+        *at = serde_json::json!({});
+    }
+    at["x"] = serde_json::json!(x);
+    at["y"] = serde_json::json!(y);
+}
+
+/// `(x, y)`, or the first spot a row at a time below it that no node
+/// but `id` covers. The look down is capped at `MAX_ROWS` rows, so a
+/// crowded column costs a bounded scan; past it, the spot is a row below
+/// the lowest node in the graph, which nothing covers.
+fn clear_spot(g: &Graph, id: NodeId, (x, y): (f32, f32)) -> (f32, f32) {
+    let others = || g.nodes.iter().filter(|n| n.id != id).filter_map(|n| spot_of(g, n.id));
+    let taken = |y: f32| others().any(|(nx, ny)| (nx - x).abs() < CLEAR_X && (ny - y).abs() < CLEAR_Y);
+    (0..MAX_ROWS)
+        .map(|row| y + row as f32 * STEP_Y)
+        .find(|y| !taken(*y))
+        .map_or_else(|| (x, others().map(|(_, ny)| ny).fold(y, f32::max) + STEP_Y), |y| (x, y))
+}
+
+/// A node added after `target` (#1905): on its row, a step right of it.
+/// When the node `target` fed is two steps or more away, the new one goes
+/// midway and nothing moves; else every node right of `target` (side
+/// branches, masks and keys too) moves a step right, so no wire is left
+/// stretched back over the new node, and so does every sticky note right
+/// of it. A frame keeps no place of its own (its box is drawn round its
+/// members), so it follows its nodes. Nothing is placed in a graph whose
+/// `target` has no place (one built without a layout keeps none), and a
+/// place the node already has is kept; a later `SetNodeMeta` places it
+/// as asked. In node order, so the same edit always lands the same way.
+fn place_after(g: &mut Graph, id: NodeId, target: NodeId, fed: &[NodeId]) {
+    if g.ui.positions.contains_key(&id) {
+        return;
+    }
+    let Some((tx, ty)) = spot_of(g, target) else { return };
+    let first = fed.iter().filter_map(|n| spot_of(g, *n)).map(|(x, _)| x).fold(None, |m: Option<f32>, x| Some(m.map_or(x, |m| m.min(x))));
+    let spot = match first {
+        Some(dx) if dx - tx >= 2.0 * STEP_X => ((tx + dx) / 2.0, ty),
+        _ => {
+            let right: Vec<(NodeId, (f32, f32))> = g.nodes.iter().filter(|n| n.id != id && n.id != target).filter_map(|n| spot_of(g, n.id).filter(|(x, _)| *x > tx + 1.0).map(|p| (n.id, p))).collect();
+            for (n, (x, y)) in right {
+                put_spot(g, n, (x + STEP_X, y));
+            }
+            for note in &mut g.ui.sticky_notes {
+                let x = note.pointer("/pos/x").and_then(Value::as_f64);
+                if let Some(x) = x.filter(|x| *x as f32 > tx + 1.0) {
+                    note["pos"]["x"] = serde_json::json!(x as f32 + STEP_X);
+                }
+            }
+            (tx + STEP_X, ty)
+        }
+    };
+    let spot = clear_spot(g, id, spot);
+    put_spot(g, id, spot);
+}
+
+/// A node added beside `target` (#1905): a row below it, or further down
+/// past any node there. Placed only when `target` has a place.
+fn place_beside(g: &mut Graph, id: NodeId, target: NodeId) {
+    if g.ui.positions.contains_key(&id) {
+        return;
+    }
+    let Some((tx, ty)) = spot_of(g, target) else { return };
+    let spot = clear_spot(g, id, (tx, ty + STEP_Y));
+    put_spot(g, id, spot);
+}
+
 /// The edits on a graph level.
 fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn PortCatalog>, interface: &[GroupPort]) -> Result<(), String> {
     let find = |g: &Graph, id: NodeId| g.nodes.iter().position(|n| n.id == id).ok_or_else(|| format!("{id} isn't in the graph"));
@@ -515,11 +605,13 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn
                 return Err("a graph's ends can't be added".into());
             }
             let at = find(g, target)?;
+            let fed: Vec<NodeId> = g.edges.iter().filter(|e| e.from == (target, PortKey::from("out"))).map(|e| e.to.0).collect();
             for e in g.edges.iter_mut().filter(|e| e.from == (target, PortKey::from("out"))) {
                 e.from = (node.id, "out".into());
             }
             g.edges.push(Edge { from: (target, "out".into()), to: (node.id, primary(node)) });
             g.nodes.insert(at + 1, held_node(node)?);
+            place_after(g, node.id, target, &fed);
         }
         GraphOp::AddNodeBeside { node, .. } => {
             if g.nodes.iter().any(|n| n.id == node.id) {
@@ -530,6 +622,7 @@ fn apply_graph(g: &mut Graph, op: &GraphOp, target: NodeId, catalog: Option<&dyn
             }
             find(g, target)?;
             g.nodes.push(held_node(node)?);
+            place_beside(g, node.id, target);
         }
         GraphOp::RemoveNode { path } => {
             if is_end(&g.nodes[find(g, target)?]) { return Err("a graph's ends can't be removed".into()); }
@@ -1015,5 +1108,179 @@ mod whole_struct_tests {
         assert!(back.masks.is_some(), "the other settings kept");
         assert_eq!(grade_param(&serde_json::json!({}), "not_a_field", &ParamValue::Text("{}".into())), None);
         assert_eq!(grade_param(&serde_json::json!({}), "masks", &ParamValue::Text("\"a string\"".into())), None);
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+
+    fn node(ty: &str) -> Node {
+        serde_json::from_value(serde_json::json!({"id": uuid::Uuid::new_v4(), "type_id": ty})).unwrap()
+    }
+
+    /// Source, a corrector and Output in a row at 0, 230 and 460.
+    fn graph() -> (Graph, [NodeId; 3]) {
+        let ids = [node("klipp.source"), node("klipp.grade.corrector"), node("klipp.output")];
+        let id: [NodeId; 3] = [ids[0].id, ids[1].id, ids[2].id];
+        let mut g: Graph = serde_json::from_value(serde_json::json!({"graph_version": klipp_graph_format::GRAPH_VERSION, "nodes": [], "edges": [], "output": id[2]})).unwrap();
+        g.nodes.extend(ids);
+        g.edges.push(Edge { from: (id[0], "out".into()), to: (id[1], "in".into()) });
+        g.edges.push(Edge { from: (id[1], "out".into()), to: (id[2], "in".into()) });
+        for (i, n) in id.iter().enumerate() {
+            put_spot(&mut g, *n, (i as f32 * STEP_X, 0.0));
+        }
+        (g, id)
+    }
+
+    fn no_overlap(g: &Graph) {
+        let spots: Vec<_> = g.nodes.iter().map(|n| (n.id, spot_of(g, n.id).unwrap_or_else(|| panic!("{} unplaced", n.type_id.as_str())))).collect();
+        for (i, (a, pa)) in spots.iter().enumerate() {
+            for (b, pb) in &spots[i + 1..] {
+                assert!((pa.0 - pb.0).abs() >= CLEAR_X || (pa.1 - pb.1).abs() >= CLEAR_Y, "{a} at {pa:?} covers {b} at {pb:?}");
+            }
+        }
+    }
+
+    /// A corrector added after a corrector sits right of it, Output moved
+    /// along, Source where it was, and no card on another.
+    #[test]
+    fn a_node_added_after_one_goes_right_of_it_and_moves_the_rest_along() {
+        let (mut g, [s, c, o]) = graph();
+        let new = node("klipp.grade.corrector");
+        let nid = new.id;
+        g.nodes.insert(2, new);
+        g.edges.retain(|e| e.from.0 != c);
+        g.edges.push(Edge { from: (c, "out".into()), to: (nid, "in".into()) });
+        g.edges.push(Edge { from: (nid, "out".into()), to: (o, "in".into()) });
+        place_after(&mut g, nid, c, &[o]);
+        assert_eq!(spot_of(&g, nid), Some((2.0 * STEP_X, 0.0)));
+        assert_eq!(spot_of(&g, o), Some((3.0 * STEP_X, 0.0)), "Output moved along");
+        assert_eq!(spot_of(&g, s), Some((0.0, 0.0)), "Source stays");
+        no_overlap(&g);
+    }
+
+    /// A side branch right of the corrector (a mask below Output) moves
+    /// along with Output; a node at the corrector's column stays.
+    #[test]
+    fn side_branches_right_of_the_slot_move_along_too() {
+        let (mut g, [_, c, o]) = graph();
+        let (side, under) = (node("klipp.grade.mask"), node("klipp.grade.mask"));
+        let (sid, uid) = (side.id, under.id);
+        g.nodes.push(side);
+        g.nodes.push(under);
+        put_spot(&mut g, sid, (2.0 * STEP_X, STEP_Y));
+        put_spot(&mut g, uid, (STEP_X, STEP_Y));
+        let new = node("klipp.grade.corrector");
+        let nid = new.id;
+        g.nodes.push(new);
+        place_after(&mut g, nid, c, &[o]);
+        assert_eq!(spot_of(&g, sid), Some((3.0 * STEP_X, STEP_Y)), "the side branch moved along");
+        assert_eq!(spot_of(&g, uid), Some((STEP_X, STEP_Y)), "the node under the corrector stays");
+        no_overlap(&g);
+    }
+
+    /// A wire running back (what the corrector fed sits left of it) still
+    /// takes the shift: the new node a step right, every node right of the
+    /// corrector moved, nothing left of it, and a sticky note right of it
+    /// moved, its other fields and a position's own extra fields kept.
+    #[test]
+    fn a_backward_wire_shifts_only_what_is_right_of_the_node() {
+        let (mut g, [s, c, o]) = graph();
+        put_spot(&mut g, o, (-300.0, 0.0));
+        let right = node("klipp.grade.mask");
+        let rid = right.id;
+        g.nodes.push(right);
+        g.ui.positions.insert(rid, serde_json::json!({"x": 500.0, "y": 0.0, "kept": true}));
+        g.ui.sticky_notes.push(serde_json::json!({"id": uuid::Uuid::new_v4(), "pos": {"x": 600.0, "y": 50.0}, "text": "note"}));
+        g.ui.sticky_notes.push(serde_json::json!({"id": uuid::Uuid::new_v4(), "pos": {"x": -50.0, "y": 50.0}, "text": "left"}));
+        let new = node("klipp.grade.corrector");
+        let nid = new.id;
+        g.nodes.push(new);
+        place_after(&mut g, nid, c, &[o]);
+        assert_eq!(spot_of(&g, nid), Some((2.0 * STEP_X, 0.0)));
+        assert_eq!(spot_of(&g, o), Some((-300.0, 0.0)), "left of the corrector: stays");
+        assert_eq!(spot_of(&g, s), Some((0.0, 0.0)));
+        assert_eq!(spot_of(&g, rid), Some((500.0 + STEP_X, 0.0)), "right of it: moved");
+        assert_eq!(g.ui.positions[&rid]["kept"], serde_json::json!(true), "the place's other fields kept");
+        assert_eq!(g.ui.sticky_notes[0]["pos"]["x"].as_f64(), Some((600.0 + STEP_X) as f64));
+        assert_eq!(g.ui.sticky_notes[0]["text"], "note");
+        assert_eq!(g.ui.sticky_notes[1]["pos"]["x"].as_f64(), Some(-50.0), "a note left of it stays");
+        no_overlap(&g);
+    }
+
+    /// A place the new node already has is kept.
+    #[test]
+    fn a_place_given_with_the_node_is_kept() {
+        let (mut g, [_, c, o]) = graph();
+        let new = node("klipp.grade.corrector");
+        let nid = new.id;
+        g.nodes.push(new);
+        put_spot(&mut g, nid, (999.0, 555.0));
+        place_after(&mut g, nid, c, &[o]);
+        place_beside(&mut g, nid, c);
+        assert_eq!(spot_of(&g, nid), Some((999.0, 555.0)));
+        assert_eq!(spot_of(&g, o), Some((2.0 * STEP_X, 0.0)), "nothing moved for it");
+    }
+
+    /// With room in the gap already, the node goes midway and nothing moves.
+    #[test]
+    fn a_node_added_into_a_wide_gap_goes_midway() {
+        let (mut g, [_, c, o]) = graph();
+        put_spot(&mut g, o, (800.0, 0.0));
+        let new = node("klipp.grade.corrector");
+        let nid = new.id;
+        g.nodes.push(new);
+        place_after(&mut g, nid, c, &[o]);
+        assert_eq!(spot_of(&g, nid), Some(((STEP_X + 800.0) / 2.0, 0.0)));
+        assert_eq!(spot_of(&g, o), Some((800.0, 0.0)));
+    }
+
+    /// Beside a node: a row below it; a second beside the same node goes
+    /// a row further down.
+    #[test]
+    fn nodes_added_beside_one_go_below_it_each_clear_of_the_last() {
+        let (mut g, [_, c, _]) = graph();
+        let (a, b) = (node("klipp.grade.mask"), node("klipp.grade.mask"));
+        let (aid, bid) = (a.id, b.id);
+        g.nodes.push(a);
+        place_beside(&mut g, aid, c);
+        g.nodes.push(b);
+        place_beside(&mut g, bid, c);
+        assert_eq!(spot_of(&g, aid), Some((STEP_X, STEP_Y)));
+        assert_eq!(spot_of(&g, bid), Some((STEP_X, 2.0 * STEP_Y)));
+        no_overlap(&g);
+    }
+
+    /// With every row below taken, the node goes a row below the lowest.
+    #[test]
+    fn a_full_column_places_below_the_lowest_node() {
+        let (mut g, [_, c, _]) = graph();
+        let mut ids = Vec::new();
+        for row in 1..=(MAX_ROWS as i32) {
+            let n = node("klipp.grade.mask");
+            ids.push(n.id);
+            put_spot(&mut g, n.id, (STEP_X, row as f32 * STEP_Y));
+            g.nodes.push(n);
+        }
+        let new = node("klipp.grade.mask");
+        let nid = new.id;
+        g.nodes.push(new);
+        place_beside(&mut g, nid, c);
+        assert_eq!(spot_of(&g, nid), Some((STEP_X, (MAX_ROWS as f32 + 1.0) * STEP_Y)));
+        no_overlap(&g);
+    }
+
+    /// A graph with no layout gets none.
+    #[test]
+    fn a_graph_without_places_stays_without() {
+        let (mut g, [_, c, o]) = graph();
+        g.ui.positions.clear();
+        let new = node("klipp.grade.corrector");
+        let nid = new.id;
+        g.nodes.push(new);
+        place_after(&mut g, nid, c, &[o]);
+        place_beside(&mut g, nid, c);
+        assert!(g.ui.positions.is_empty());
     }
 }

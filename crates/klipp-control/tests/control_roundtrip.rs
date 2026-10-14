@@ -413,6 +413,53 @@ fn graph_add_beside_connects_a_matte_in_one_undoable_batch() {
     assert_eq!(clip.picture_v2().unwrap().picture, after);
 }
 
+/// The batch #1905 saw, inside the clip's grade (a group's body): a
+/// corrector after the grade's corrector, a mask beside the new one, wired
+/// into its mask. Each new node lands on a place of its own, clear of
+/// every other placed card; Source stays put; the new corrector sits right of the old
+/// on its row, the mask below it; and undoing the one edit puts every
+/// node back, the ones moved along too.
+#[test]
+fn graph_adds_give_each_new_node_a_clear_place_undone_in_one_step() {
+    let mut h = harness();
+    let root = json!({"clip":h.ids.clip_a});
+    let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let group = graph["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.group").unwrap()["id"].clone();
+    let at = json!({"root":root,"nodes":[group,h.ids.corrector_a]});
+    let (first, second) = (json!({"root":root,"nodes":[group,{"new":0}]}), json!({"root":root,"nodes":[group,{"new":1}]}));
+    let grade = h.sequence.read().unwrap().tracks[0].clips[0].grade().clone();
+    assert!(!grade.node_positions.is_empty(), "the grade is laid out");
+    let source = grade.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source).unwrap().id;
+    let result = h.ok(json!({"method":"graph_ops","ops":[
+        {"op":"add","after":at,"type":"klipp.grade.corrector"},
+        {"op":"add_beside","at":first,"type":"klipp.grade.mask"},
+        {"op":"connect","from":second,"from_port":"out","to":first,"to_port":"mask"}
+    ]}));
+    assert_eq!(result["applied"], true, "{result}");
+    let id = |i: usize| uuid::Uuid::parse_str(result["created"][i]["path"]["nodes"][1].as_str().unwrap()).unwrap();
+    let (c2, mask) = (id(0), id(1));
+    let after = h.sequence.read().unwrap().tracks[0].clips[0].grade().clone();
+    assert!(after.node_positions.contains_key(&c2) && after.node_positions.contains_key(&mask), "the new nodes are placed");
+    // Every node with a place (the fixture's compound has none).
+    let spots: Vec<_> = after.nodes.iter().filter_map(|n| after.node_positions.get(&n.id).map(|p| (n.id, *p))).collect();
+    for (i, (a, pa)) in spots.iter().enumerate() {
+        for (b, pb) in &spots[i + 1..] {
+            assert!((pa.x - pb.x).abs() >= 140.0 || (pa.y - pb.y).abs() >= 80.0, "{a} at {pa:?} covers {b} at {pb:?}");
+        }
+    }
+    assert_eq!(after.node_positions.get(&source), grade.node_positions.get(&source), "Source stays");
+    let corrector = uuid::Uuid::parse_str(&h.ids.corrector_a).unwrap();
+    let (pc, p2) = (after.node_positions[&corrector], after.node_positions[&c2]);
+    assert!(p2.x > pc.x && p2.y == pc.y, "the new corrector right of the old: {pc:?} {p2:?}");
+    assert!(after.node_positions[&mask].y > p2.y, "the mask below its corrector");
+    let edits = h.edits_seen.lock().unwrap().clone();
+    assert_eq!(edits.len(), 1, "one edit");
+    let klipp_document::history::EditCommand::PictureEdit { edit, .. } = edits[0].clone() else { panic!("one picture edit") };
+    let mut clip = h.sequence.read().unwrap().tracks[0].clips[0].clone();
+    clip.restore_picture(&edit.before);
+    assert_eq!(clip.grade().node_positions, grade.node_positions, "undo puts every node back");
+}
+
 #[test]
 fn graph_mask_shapes_set_atomically_and_refuse_invalid_values() {
     let mut h = harness();
