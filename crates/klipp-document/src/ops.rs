@@ -2368,6 +2368,13 @@ pub trait Transcripts {
     fn placement(&self, _clip: &Clip, _clip_secs: f64, _fps: f64) -> Option<klipp_timeline::surface::Placement> {
         None
     }
+    /// The beats of `item`'s music, as the beat analysis read them: how
+    /// sure it is of a pulse (0 to 1) and the beats in the file's seconds.
+    /// `None` when they have not been read. The check reads text cut to
+    /// the music by them (#1908).
+    fn beats(&self, _item: &klipp_media::MediaItem) -> Option<(f32, Vec<f64>)> {
+        None
+    }
 }
 
 /// The faces under a stretch of the timeline: every picture clip that
