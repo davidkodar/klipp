@@ -3,7 +3,9 @@
 use crate::{FourPointGradient, GeneratorData, TimerFormat, TimerMode};
 
 /// Render a generator frame at the given resolution.
-/// `elapsed_secs` is the clip-relative time (used by Countdown + Timer);
+/// `elapsed_secs` is the clip-relative time, negative before the clip
+/// starts (a transition's overlap, #1918; Countdown and Timer are never
+/// drawn there, see `GeneratorData::shows_own_time`);
 /// `total_secs` is the clip's full duration (used by Countdown).
 /// A generator's frame as sRGB-encoded half floats, for the compositor.
 ///
@@ -504,7 +506,10 @@ pub fn render_grain(color: [u8; 4], amount: f32, size_px: f32, speed: f32, width
     let mut buf = render_solid_color(color, width, height);
     let scale = (height as f32 / 1080.0).max(0.1);
     let cell = (size_px * scale).max(1.0);
-    let frame = (elapsed_secs as f32 * speed.max(0.0)).floor() as u32;
+    // The grain frame, before the clip's start too (a transition's
+    // overlap, #1918): as a whole number first, so a negative one wraps to
+    // a frame of its own instead of every one saturating to frame 0.
+    let frame = (elapsed_secs as f32 * speed.max(0.0)).floor() as i64 as u32;
     let depth = amount.clamp(0.0, 1.0) * 110.0;
     for y in 0..height {
         let gy = (y as f32 / cell) as u32;

@@ -7936,10 +7936,14 @@ fn overlap(dur: Timecode, alignment: klipp_core::TransitionAlignment, fps: Fps) 
 }
 
 /// Whether `a` has `tail` of footage past its out point and `b` `head`
-/// before its in point.
+/// before its in point. A generator or a title has no footage: it is
+/// drawn from its own time, at any time, so it always has the room
+/// (#1918). Its `source_in` and `source_out` say nothing about that:
+/// they are not where it is drawn from.
 fn handle_room(pool: &MediaPool, a: &Clip, b: &Clip, tail: Timecode, head: Timecode) -> (bool, bool) {
     let media_dur = |c: &Clip| c.media_id().and_then(|m| pool.get(&m)).map(|m| m.duration);
-    (media_dur(a).is_none_or(|d| a.source_out + tail <= d), b.source_in >= head)
+    let drawn = |c: &Clip| matches!(c.kind, ClipKind::Generator(_) | ClipKind::Title(_));
+    (drawn(a) || media_dur(a).is_none_or(|d| a.source_out + tail <= d), drawn(b) || b.source_in >= head)
 }
 
 /// A transition on `track_index` given a new `duration` and
@@ -10964,6 +10968,52 @@ mod tests {
         assert_eq!(clips[1].grade(), clips[0].grade(), "the same grade");
         let both: Vec<Op> = serde_json::from_str(&format!(r#"[{{"op":"grade","clip_id":"{}","from":"{}","exposure":0.2}}]"#, b.0, a.0)).unwrap();
         assert!(resolve(&view.sequences[0], view.media_pool, &both).unwrap_err().why.contains("takes no knobs"));
+    }
+
+    /// #1918: a dissolve between two clips drawn from their own time (a
+    /// generator, a title), which have no footage past their cut, is
+    /// planned and applied, and undone as one step, with either on either
+    /// side. A head trim (rippled, so the clips still meet) leaves such a
+    /// clip's `source_in` where it was, which the old check read as no
+    /// handle; it changes nothing now. A media clip short of a handle is
+    /// still refused (the reshape test).
+    #[test]
+    fn a_dissolve_between_drawn_clips_needs_no_handles() {
+        let gradient = |a: [u8; 4]| ClipKind::Generator(klipp_core::GeneratorData::LivingGradient { a, b: [20, 20, 60, 255], angle_deg: 30.0, drift_deg_per_sec: 12.0, glow: 0.2 });
+        let title = || ClipKind::Title(klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Over".into(), ..Default::default() }));
+        let pairs = [("generators", gradient([200, 80, 40, 255]), gradient([40, 160, 90, 255])), ("into a title", gradient([200, 80, 40, 255]), title()), ("out of a title", title(), gradient([40, 160, 90, 255]))];
+        for (name, first_kind, second_kind) in pairs {
+            for trimmed in [false, true] {
+                let mut seq = Sequence::new_default();
+                seq.fps = Fps::new(25, 1);
+                let mut pool = MediaPool::new();
+                let ti = seq.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+                let first = Clip { kind: first_kind.clone(), ..Clip::gap(tc(0.0), tc(3.0)) };
+                let second = Clip { kind: second_kind.clone(), ..Clip::gap(tc(3.0), tc(6.0)) };
+                let (a, b) = (first.id, second.id);
+                seq.tracks[ti].clips.extend([first, second]);
+                let mut seqs = vec![seq];
+                if trimmed {
+                    // A second off the incoming clip's head, rippled.
+                    let trim = resolve(&seqs[0], &pool, &[Op::Trim { clip_id: ClipRef::Id(b), edge: Edge::In, to: Anchor::Secs(4.0), ripple: true, linked: true }]).unwrap_or_else(|e| panic!("{name}: {e}"));
+                    let mut fps = seqs[0].fps;
+                    let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+                    for step in &trim.steps {
+                        view.apply_forward(&step.edit);
+                    }
+                    let c = seqs[0].tracks[ti].clips.iter().find(|c| c.id == b).unwrap();
+                    assert_eq!((c.timeline_in, c.source_in), (tc(3.0), tc(0.0)), "{name}: still meets the first, its source_in where it was");
+                }
+                let plan = resolve(&seqs[0], &pool, &[Op::Transition { clip_id: ClipRef::Id(a), kind: "dissolve".into(), secs: 0.6, remove: false, pieces: None }])
+                    .unwrap_or_else(|e| panic!("{name}, trimmed {trimmed}: {e}"));
+                let mut fps = seqs[0].fps;
+                let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut pool, fps: &mut fps };
+                view.apply_forward(&plan.steps[0].edit);
+                assert_eq!(view.sequences[0].tracks[ti].transitions.len(), 1, "{name}, trimmed {trimmed}: the dissolve is on");
+                view.apply_inverse(&plan.steps[0].edit);
+                assert!(view.sequences[0].tracks[ti].transitions.is_empty(), "{name}, trimmed {trimmed}: one step undoes it");
+            }
+        }
     }
 
     /// #735: a transition comes off as one step, the crossfade a picture
