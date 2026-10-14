@@ -255,6 +255,9 @@ fn chain(root: Root, grade: Option<&Map<String, Value>>, ofx: &[Value], fx: Effe
         nodes.push(grade_group(root, g, what)?);
     }
     for (slot, entry) in ofx.iter().enumerate() {
+        // Named by its slot. An entry's own `id` (#1500) rides in its
+        // payload and keys the plug-in's node in the renderer
+        // (`ofx_graph`), not this one: the two are different ids.
         nodes.push(legacy_node(root.id_of("ofx", slot), types::LEGACY_OFX, true, Legacy {
             slot: Some(slot as u32),
             payload: entry.clone(),

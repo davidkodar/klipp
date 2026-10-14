@@ -594,23 +594,40 @@ impl Clip {
         let mut ids: Vec<NodeId> = (0..self.ofx_effects().len()).map(|i| self.effect_node_at(true, i).ok_or_else(|| format!("no plug-in at {i}"))).collect::<Result<_, _>>()?;
         let at = |ids: &[NodeId], i: usize| ids.get(i).copied().ok_or_else(|| format!("no plug-in at {i}"));
         let entry = |e: &klipp_plugin::AppliedEffect| serde_json::to_value(crate::picture_v1::EffectJson::of(e)).map_err(|e| e.to_string());
+        // The entries' own ids (#1500), by place, for an update to keep.
+        let mut entry_ids: Vec<Option<String>> = self.picture_ofx()?.into_iter().map(|o| o.entry.id).collect();
         let mut placed = Vec::with_capacity(edits.len());
         for edit in edits {
             match *edit {
+                // A new entry takes an id of its own, the node's, whatever
+                // it came with: a pasted copy never shares its source's.
                 OfxEdit::Add(e) => {
                     let id = uuid::Uuid::new_v4();
-                    placed.push(PlacedEdit::AddOfx { id, entry: entry(e)?, after: ids.last().copied() });
+                    let added = klipp_plugin::AppliedEffect { id: Some(id.to_string()), ..e.clone() };
+                    placed.push(PlacedEdit::AddOfx { id, entry: entry(&added)?, after: ids.last().copied() });
                     ids.push(id);
+                    entry_ids.push(added.id);
                 }
                 OfxEdit::Remove(i) => {
                     placed.push(PlacedEdit::Remove(at(&ids, i)?));
                     ids.remove(i);
+                    entry_ids.remove(i);
                 }
                 OfxEdit::SetEnabled(i, on) => placed.push(PlacedEdit::SetEnabled(at(&ids, i)?, on)),
-                OfxEdit::Update(i, e) => placed.push(PlacedEdit::SetPayload(at(&ids, i)?, entry(e)?)),
+                // Replaced whole, the place keeps its id unless the new
+                // entry brings one.
+                OfxEdit::Update(i, e) => {
+                    let kept = klipp_plugin::AppliedEffect { id: e.id.clone().or_else(|| entry_ids.get(i).cloned().flatten()), ..e.clone() };
+                    placed.push(PlacedEdit::SetPayload(at(&ids, i)?, entry(&kept)?));
+                    if let Some(slot) = entry_ids.get_mut(i) {
+                        *slot = kept.id;
+                    }
+                }
                 OfxEdit::Move { from, to } => {
                     let id = at(&ids, from)?;
                     ids.remove(from);
+                    let moved = entry_ids.remove(from);
+                    entry_ids.insert(to.min(entry_ids.len()), moved);
                     let after = match to {
                         0 => None,
                         _ => Some(at(&ids, to - 1)?),

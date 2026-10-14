@@ -269,3 +269,26 @@ mod canon_against_the_reader {
         }
     }
 }
+
+/// #1500: an OFX entry's own id rides through the conversion: the clip's
+/// picture lifted and written back is the clip as it was (canon keeps an
+/// entry's fields as written), and the lift of that again the same record,
+/// so the entry comes back with its id, value for value. Control: today's
+/// entry without one, beside it, comes back without one.
+#[test]
+fn an_ofx_entrys_id_survives_the_round_trip() {
+    let with = json!({ "plugin_name": "org.example.Echo", "enabled": true, "param_values": {}, "id": "2f0b7a1e-5c3d-4e8f-9a6b-1c2d3e4f5a6b" });
+    let without = json!({ "plugin_name": "org.example.Echo", "enabled": true, "param_values": {} });
+    let c = json!({ "id": uuid_n(77).to_string(), "effects": [with.clone(), without.clone()] });
+    crate::verify::check_clip(&c).unwrap_or_else(|e| panic!("{e}"));
+    // The check holds the round trip to canon, which keeps the entries as
+    // written: the id with the first, none made up for the second.
+    let kept = klipp_graph_lift::canon::canon(klipp_graph_lift::canon::Store::Clip, &c);
+    assert_eq!(kept["effects"], json!([with, without]));
+    // Control: an id changed in the written-back picture is caught.
+    let mut changed = c.clone();
+    changed["effects"][0]["id"] = json!("00000000-0000-0000-0000-000000000000");
+    let record = klipp_graph_lift::to_v2::clip_to_v2(c.as_object().unwrap()).unwrap();
+    let record_changed = klipp_graph_lift::to_v2::clip_to_v2(changed.as_object().unwrap()).unwrap();
+    assert_ne!(record, record_changed, "the id is part of what is lifted");
+}
