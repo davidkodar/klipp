@@ -674,6 +674,26 @@ pub enum Op {
         #[serde(default)]
         h: Option<f32>,
     },
+    /// A line from `from` to `to` (fractions of the frame) as a title of
+    /// its own, with no words (#1926): drawn on from `from` over
+    /// `reveal_secs` (at once when left out or 0) and held for `secs`.
+    /// `color` `#rrggbb` (white when left out), `stroke_width` in pixels
+    /// of a 1080 frame (6 when left out). On `track`, or a text track
+    /// with room as a title goes.
+    Connector {
+        at: Anchor,
+        secs: f64,
+        from: [f32; 2],
+        to: [f32; 2],
+        #[serde(default)]
+        color: Option<String>,
+        #[serde(default)]
+        stroke_width: Option<f32>,
+        #[serde(default)]
+        reveal_secs: Option<f64>,
+        #[serde(default)]
+        track: Option<TrackRef>,
+    },
     /// A media item onto a track at an anchor, the whole file unless
     /// `source_in` and `source_out` (seconds in the file) say otherwise.
     /// For still images these name the hold range: the import duration
@@ -1804,7 +1824,7 @@ fn one_piece() -> u32 {
 /// Serialized operation tags accepted by `Op`. Keep this in sync with the
 /// variants; the test below catches additions and renames.
 pub const OP_NAMES: &[&str] = &[
-    "vector_path", "place", "add_track", "remove_track", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
+    "vector_path", "connector", "place", "add_track", "remove_track", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
     "slip", "slide", "pin", "role", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "highlight",
     "ramp", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "replace", "track_audio", "clean_audio",
@@ -3152,6 +3172,10 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
                 new.add_object(content,t);
             }
             Ok(("Edit vector path geometry and paint".into(),EditCommand::EditTitle {clip_id:clip.id,description:"Edit Vector Path",old_data:old.clone(),new_data:new},vec![clip.id]))
+        }
+        Op::Connector { at, secs: held, from, to, color, stroke_width, reveal_secs, track } => {
+            let at = resolve_anchor(seq, fps, at, i)?;
+            connector(seq, fps, i, at, *held, [*from, *to], color.as_deref(), *stroke_width, *reveal_secs, track.as_ref())
         }
         Op::Highlight { at, secs: hold, x, y, w, h, kind, color, stroke, track } => {
             let at = resolve_anchor(seq, fps, at, i)?;
@@ -9561,6 +9585,55 @@ fn title_op(seq: &Sequence, fps: Fps, i: usize, at: Timecode, a: TitleArgs) -> R
     let short: String = text.chars().take(24).collect();
     let note = moved.map(|z| format!(", moved to the {z} to keep clear of {kept_from}")).unwrap_or_default();
     place_title(seq, fps, i, at, a.secs, a.track, td, &format!("title \"{short}\""), &note)
+}
+
+/// A connector (#1926): a title holding only an open path from one point
+/// of the frame to another, its box the whole frame so the points are
+/// the frame's, drawn on by keys on the path's trim.
+#[allow(clippy::too_many_arguments)]
+fn connector(seq: &Sequence, fps: Fps, i: usize, at: Timecode, held: f64, ends: [[f32; 2]; 2], color: Option<&str>, stroke_width: Option<f32>, reveal_secs: Option<f64>, track: Option<&TrackRef>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    use klipp_timeline::{PathContour, PathTrim, PathVertex, TrimRange};
+    if ends.iter().flatten().any(|v| !v.is_finite() || !(-1.0..=2.0).contains(v)) {
+        return Err(refuse(i, "a connector's ends are off the frame", "give from and to as fractions of the frame, -1 to 2"));
+    }
+    if ends[0] == ends[1] {
+        return Err(refuse(i, "a connector from a point to itself draws nothing", "give from and to apart"));
+    }
+    if !held.is_finite() || held < 0.2 {
+        return Err(refuse(i, format!("{held} s is too short"), "hold it at least a fraction of a second"));
+    }
+    let width = stroke_width.unwrap_or(6.0);
+    if !width.is_finite() || !(0.5..=100.0).contains(&width) {
+        return Err(refuse(i, format!("stroke_width {width} is out of range"), "give a stroke width 0.5 to 100, pixels of a 1080 frame"));
+    }
+    let reveal = reveal_secs.unwrap_or(0.0);
+    if !reveal.is_finite() || reveal < 0.0 || reveal > held {
+        return Err(refuse(i, format!("a reveal of {reveal} s"), format!("give reveal_secs from 0 to the {held:.2} s it holds")));
+    }
+    let paint = match color {
+        Some(c) => parse_color(c).ok_or_else(|| refuse(i, format!("\"{c}\" is not a colour"), "write it as #rrggbb or #rrggbbaa"))?,
+        None => [255, 255, 255, 255],
+    }
+    .map(|c| f32::from(c) / 255.0);
+    let vertex = |point: [f32; 2]| PathVertex { point, incoming: point, outgoing: point };
+    let mut path = klipp_timeline::VectorPath::default();
+    path.pose.fill = [0.0; 4];
+    path.pose.stroke = paint;
+    path.pose.stroke_width = width;
+    path.pose.contours = vec![PathContour { closed: false, vertices: vec![vertex(ends[0]), vertex(ends[1])] }];
+    if reveal > 0.0 {
+        let mut trim = PathTrim::default();
+        trim.key(0.0, TrimRange { end: 0.0, ..Default::default() }).map_err(|e| refuse(i, e, "give a shorter reveal"))?;
+        trim.key(reveal, TrimRange::default()).map_err(|e| refuse(i, e, "give a shorter reveal"))?;
+        path.trim = Some(trim);
+    }
+    path.validate().map_err(|e| refuse(i, e, "give from and to apart, inside -1 to 2"))?;
+    let mut td = klipp_timeline::TitleData::default();
+    td.objects.clear();
+    let whole = klipp_timeline::ObjectTransform { center: klipp_timeline::TitlePosition { x: 0.5, y: 0.5 }, size: klipp_timeline::TitlePosition { x: 1.0, y: 1.0 }, ..klipp_timeline::default_text_transform() };
+    td.add_object(klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Path(path), fill: None, gradient: None, stroke: None, fit: None }), whole);
+    let note = if reveal > 0.0 { format!(", drawn on over {reveal:.2} s") } else { String::new() };
+    place_title(seq, fps, i, at, held, track, td, &format!("connector {:.2},{:.2} to {:.2},{:.2}", ends[0][0], ends[0][1], ends[1][0], ends[1][1]), &note)
 }
 
 /// Put `td` on the timeline at `at` for `secs`, on `track` or on a text

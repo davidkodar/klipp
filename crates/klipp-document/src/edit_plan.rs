@@ -64,26 +64,9 @@ pub fn validate(plan: &EditPlan, pool: &MediaPool, brief: Option<&Brief>) -> Res
             }
         }
         if let Some(t) = &s.title {
-            if t.text.trim().is_empty() {
-                return Err(format!("segment {n}: a title needs text"));
-            }
-            let style = t.style.trim();
-            if !(style.is_empty() || crate::title_style::look(brief, style).is_some()) {
-                return Err(format!("segment {n}: \"{style}\" is not a title style; the styles are {}", crate::title_style::names(brief).join(", ")));
-            }
-            if t.secs.is_some_and(|x| !x.is_finite() || x < 0.0) {
-                return Err(format!("segment {n}: a title's secs must be zero or more"));
-            }
-            if t.glow.is_some_and(|g| !(0.0..=1.0).contains(&g)) {
-                return Err(format!("segment {n}: a title's glow is 0 to 1"));
-            }
-            let motion_style = crate::title_style::look(brief, if style.is_empty() { "heading" } else { style }).unwrap_or_default();
-            crate::title_style::effective_motion(&motion_style, t.enter.as_ref(), t.exit.as_ref(), t.animate.as_deref(), t.animate_secs, t.stagger.as_deref(), t.duration_secs(s.duration_secs()))
-                .map_err(|e| format!("segment {n}, style {:?}: {e}", motion_style.name))?;
-            if [t.x, t.y].iter().flatten().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v)) {
-                return Err(format!("segment {n}: a title's x and y are fractions of the frame, 0 to 1"));
-            }
+            check_title(t, t.duration_secs(s.duration_secs()), brief, &format!("segment {n}"))?;
         }
+        check_layers(s, pool, brief, n)?;
         if let Some(x) = &s.sfx {
             let item = pool.get(&x.media_id).ok_or_else(|| format!("segment {n}: sfx: no media item {}; media ids are in list_media, and search_sfx brings one in", x.media_id.0))?;
             if !item.has_audio {
@@ -156,6 +139,203 @@ pub fn validate(plan: &EditPlan, pool: &MediaPool, brief: Option<&Brief>) -> Res
         }
     }
     Ok(())
+}
+
+/// Why a title `hold` seconds long can't be built, said of `place`
+/// ("segment 3", "segment 3, layer 2").
+fn check_title(t: &PlanTitle, hold: f64, brief: Option<&Brief>, place: &str) -> Result<(), String> {
+    if t.text.trim().is_empty() {
+        return Err(format!("{place}: a title needs text"));
+    }
+    let style = t.style.trim();
+    if !(style.is_empty() || crate::title_style::look(brief, style).is_some()) {
+        return Err(format!("{place}: \"{style}\" is not a title style; the styles are {}", crate::title_style::names(brief).join(", ")));
+    }
+    if t.secs.is_some_and(|x| !x.is_finite() || x < 0.0) {
+        return Err(format!("{place}: a title's secs must be zero or more"));
+    }
+    if t.glow.is_some_and(|g| !(0.0..=1.0).contains(&g)) {
+        return Err(format!("{place}: a title's glow is 0 to 1"));
+    }
+    let motion_style = crate::title_style::look(brief, if style.is_empty() { "heading" } else { style }).unwrap_or_default();
+    crate::title_style::effective_motion(&motion_style, t.enter.as_ref(), t.exit.as_ref(), t.animate.as_deref(), t.animate_secs, t.stagger.as_deref(), hold)
+        .map_err(|e| format!("{place}, style {:?}: {e}", motion_style.name))?;
+    if [t.x, t.y].iter().flatten().any(|v| !v.is_finite() || !(0.0..=1.0).contains(v)) {
+        return Err(format!("{place}: a title's x and y are fractions of the frame, 0 to 1"));
+    }
+    Ok(())
+}
+
+/// The most layers a scene holds.
+const MAX_LAYERS: usize = 16;
+
+/// Why segment `n`'s layers can't be built (#1926): each must start
+/// and end inside the segment and hold long enough to see, its motion
+/// must fit inside it, and what it shows must be there.
+fn check_layers(s: &klipp_timeline::PlanSegment, pool: &MediaPool, brief: Option<&Brief>, n: usize) -> Result<(), String> {
+    use klipp_timeline::{PlanLayer, LAYER_MOTIONS};
+    if s.layers.len() > MAX_LAYERS {
+        return Err(format!("segment {n}: {} layers; a scene holds at most {MAX_LAYERS}, so split it into two segments", s.layers.len()));
+    }
+    let d = s.duration_secs();
+    for (k, layer) in s.layers.iter().enumerate() {
+        let place = format!("segment {n}, layer {}", k + 1);
+        let at = layer.at_secs();
+        if !at.is_finite() || at < 0.0 || at >= d {
+            return Err(format!("{place}: at_secs is seconds into the segment, 0 to below its {d:.2} s"));
+        }
+        let (from, to) = layer.span(d);
+        if !to.is_finite() || to > d + 1e-6 {
+            return Err(format!("{place}: it runs to {to:.2} s, past the segment's end at {d:.2} s; start it sooner or hold it shorter"));
+        }
+        let held = to - from;
+        if held < 0.2 {
+            return Err(format!("{place}: it holds {held:.2} s; hold a layer at least 0.2 s"));
+        }
+        match layer {
+            PlanLayer::Media { media_id, source_in_secs, placement, enter, exit, .. } => {
+                let item = pool.get(media_id).ok_or_else(|| format!("{place}: no media item {}; media ids are in list_media", media_id.0))?;
+                let from_file = source_in_secs.unwrap_or(0.0);
+                if !from_file.is_finite() || from_file < 0.0 {
+                    return Err(format!("{place}: source_in_secs is seconds into {}, 0 or more", item.filename));
+                }
+                if !item.is_still && from_file + held > item.duration.to_secs_f64() + 1e-6 {
+                    return Err(format!("{place}: {:.2} s from {:.2} s runs past the end of {} ({:.2} s)", held, from_file, item.filename, item.duration.to_secs_f64()));
+                }
+                if let Some(p) = placement {
+                    if ![p.x, p.y, p.width, p.height, p.rotation_deg].iter().all(|v| v.is_finite()) {
+                        return Err(format!("{place}: a placement's numbers must be real"));
+                    }
+                    if (p.width - p.height).abs() > 1e-4 {
+                        return Err(format!("{place}: width {:.2} and height {:.2} differ; a card is scaled evenly, so give the same for both", p.width, p.height));
+                    }
+                    if !(0.01..=4.0).contains(&p.width) {
+                        return Err(format!("{place}: a card's width is a fraction of the frame, 0.01 to 4"));
+                    }
+                    if !(-1.0..=2.0).contains(&p.x) || !(-1.0..=2.0).contains(&p.y) {
+                        return Err(format!("{place}: a card's x and y are its centre, -1 to 2; 0.5,0.5 is the middle of the frame"));
+                    }
+                    if !(-360.0..=360.0).contains(&p.rotation_deg) {
+                        return Err(format!("{place}: a card's turn is -360 to 360 degrees"));
+                    }
+                    if p.opacity.is_some_and(|o| !o.is_finite() || !(0.0..=1.0).contains(&o)) {
+                        return Err(format!("{place}: a card's opacity is 0 to 1"));
+                    }
+                }
+                let mut moving = 0.0;
+                for (m, way) in [(enter, "enter"), (exit, "exit")] {
+                    let Some(m) = m else { continue };
+                    if !LAYER_MOTIONS.contains(&m.kind.as_str()) {
+                        return Err(format!("{place}: {way} \"{}\" is not a card motion; use {}", m.kind, LAYER_MOTIONS.join(", ")));
+                    }
+                    let secs = m.duration_secs();
+                    if !secs.is_finite() || secs <= 0.0 {
+                        return Err(format!("{place}: {way} secs must be more than 0"));
+                    }
+                    moving += secs;
+                }
+                if moving > held + 1e-6 {
+                    return Err(format!("{place}: its entrance and exit take {moving:.2} s and it holds {held:.2} s; shorten them or hold it longer"));
+                }
+            }
+            PlanLayer::Title { title, .. } => check_title(title, held, brief, &place)?,
+            PlanLayer::Connector { from: a, to: b, color, stroke_width, reveal_secs, .. } => {
+                if a.iter().chain(b).any(|v| !v.is_finite() || !(-1.0..=2.0).contains(v)) {
+                    return Err(format!("{place}: a connector's from and to are fractions of the frame, -1 to 2"));
+                }
+                if a == b {
+                    return Err(format!("{place}: a connector from a point to itself draws nothing; give from and to apart"));
+                }
+                if let Some(c) = color.as_deref().filter(|c| !is_hex_colour(c)) {
+                    return Err(format!("{place}: \"{c}\" is not a colour; use #rrggbb"));
+                }
+                if stroke_width.is_some_and(|w| !w.is_finite() || !(0.5..=100.0).contains(&w)) {
+                    return Err(format!("{place}: a connector's stroke_width is 0.5 to 100, pixels of a 1080 frame"));
+                }
+                let reveal = reveal_secs.unwrap_or(DEFAULT_REVEAL_SECS);
+                if !reveal.is_finite() || reveal < 0.0 || reveal > held + 1e-6 {
+                    return Err(format!("{place}: reveal_secs is 0 to the {held:.2} s it holds"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A connector with no reveal length given is drawn on this fast.
+const DEFAULT_REVEAL_SECS: f64 = 0.6;
+
+/// The level each layer of the plan takes in its group (#1926), and
+/// how many levels each group needs: cards and connectors on one set of
+/// tracks, titles on another above them. A layer goes on the level
+/// above every earlier layer of its group it overlaps, so layers that
+/// overlap never share a track and a later one is always above.
+fn layer_levels(plan: &EditPlan) -> (Vec<Vec<usize>>, usize, usize) {
+    let mut levels = Vec::new();
+    let (mut cards, mut titles) = (0, 0);
+    for s in &plan.segments {
+        let d = s.duration_secs();
+        let spans: Vec<_> = s.layers.iter().map(|l| l.span(d)).collect();
+        let title = |k: usize| matches!(s.layers[k], klipp_timeline::PlanLayer::Title { .. });
+        let mut mine: Vec<usize> = Vec::new();
+        for k in 0..s.layers.len() {
+            let level = (0..k)
+                .filter(|&j| title(j) == title(k) && spans[j].0.max(spans[k].0) < spans[j].1.min(spans[k].1) - 1e-6)
+                .map(|j| mine[j] + 1)
+                .max()
+                .unwrap_or(0);
+            if title(k) { titles = titles.max(level + 1) } else { cards = cards.max(level + 1) }
+            mine.push(level);
+        }
+        levels.push(mine);
+    }
+    (levels, cards, titles)
+}
+
+/// A card's pose `kind` puts it in to come in or go: offset or shrunk
+/// from `rest`, and unseen.
+fn offstage(rest: &ComposePose, kind: &str) -> ComposePose {
+    let mut p = *rest;
+    p.opacity = 0.0;
+    let nudge = |v: Option<f32>, by: f32| v.map(|v| (v + by).clamp(-1.0, 2.0));
+    match kind {
+        "rise" => p.y = nudge(p.y, 0.08),
+        "drop" => p.y = nudge(p.y, -0.08),
+        "slide_left" => p.x = nudge(p.x, 0.15),
+        "slide_right" => p.x = nudge(p.x, -0.15),
+        "scale_up" => {
+            p.width = p.width.map(|w| (w * 0.6).max(0.01));
+            p.height = p.width;
+        }
+        _ => {}
+    }
+    p
+}
+
+/// The poses that place a card and move it in and out (#1926): resting
+/// where `placement` says, coming in from its entrance's pose over the
+/// entrance and leaving to its exit's over the exit, measured from its
+/// end. `None` when it neither moves nor leaves the full frame.
+fn card_poses(placement: Option<&klipp_timeline::PlanPlacement>, enter: Option<&klipp_timeline::LayerMotion>, exit: Option<&klipp_timeline::LayerMotion>) -> Option<Vec<ComposePose>> {
+    let p = placement.cloned().unwrap_or_default();
+    if p.fills_frame() && enter.is_none() && exit.is_none() {
+        return None;
+    }
+    let rest = ComposePose { secs: 0.0, x: Some(p.x), y: Some(p.y), width: Some(p.width), height: Some(p.width), rotation_deg: Some(p.rotation_deg), opacity: p.opacity.unwrap_or(1.0), ..Default::default() };
+    let ease = |m: &klipp_timeline::LayerMotion| m.ease.unwrap_or(klipp_core::keyframe::Ease::InOut);
+    let mut poses = Vec::new();
+    match enter {
+        Some(m) => {
+            poses.push(offstage(&rest, &m.kind));
+            poses.push(ComposePose { secs: m.duration_secs(), ease: ease(m), ..rest });
+        }
+        None => poses.push(rest),
+    }
+    if let Some(m) = exit {
+        poses.push(ComposePose { secs: 0.0, from_end_secs: Some(m.duration_secs()), ..rest });
+        poses.push(ComposePose { secs: 0.0, from_end_secs: Some(0.0), ease: ease(m), ..offstage(&rest, &m.kind) });
+    }
+    Some(poses)
 }
 
 /// Round every segment to the music's bars: a length under a bar goes
@@ -336,20 +516,35 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
             at += s.duration_secs();
         }
     }
+    // A scene's layers (#1926), on tracks of their own made on top: the
+    // cards and connectors' first, then the titles' above them, so every
+    // index below moves down by the tracks made.
+    let scene_tracks = scene_layers(plan, start, brief, &mut ops);
+    let video = video + scene_tracks;
     // The titles, last: a text track made on top shifts every index, so
     // it is made before any title and the picture is named one lower.
     let any_title = plan.segments.iter().any(|s| s.title.is_some());
     if any_title {
         let mut video_below = video;
+        // On the first text track the sequence had, which the scene's
+        // text tracks made above it would otherwise stand in for.
+        let mut on = TrackRef::Kind("text".into());
         if !has_text {
             ops.push(Op::AddTrack { kind: "text".into(), name: Some("Titles".into()) });
             video_below += 1;
+        } else if scene_tracks > 0 {
+            let first = seq.tracks.iter().position(|t| t.kind == TrackKind::Text).unwrap_or(0);
+            on = TrackRef::Index(first + usize::from(!has_video) + scene_tracks);
         }
         let color = brief.and_then(|b| b.primary_color()).map(str::to_string);
         for (i, s) in plan.segments.iter().enumerate() {
             if let Some(t) = &s.title {
                 let hold = t.duration_secs(s.duration_secs());
-                ops.push(title_op(t, hold, color.as_deref(), brief, ClipRef::At { track: video_below, secs: mids[i] }));
+                let mut op = title_op(t, hold, color.as_deref(), brief, ClipRef::At { track: video_below, secs: mids[i] });
+                if let Op::Title { track, .. } = &mut op {
+                    *track = Some(on.clone());
+                }
+                ops.push(op);
             }
         }
     }
@@ -368,6 +563,68 @@ pub fn to_ops(plan: &EditPlan, seq: &Sequence, pool: &MediaPool, brief: Option<&
         }
     }
     ops
+}
+
+/// The ops that lay a plan's scene layers onto tracks made for them
+/// (#1926), the plan starting at `start` seconds; how many tracks they
+/// made, all on top. "Scene cards" tracks hold cards and connectors,
+/// "Scene titles" tracks above them hold titles; each layer goes on its
+/// level's track, from its segment's start plus its `at_secs`.
+fn scene_layers(plan: &EditPlan, start: f64, brief: Option<&Brief>, ops: &mut Vec<Op>) -> usize {
+    use klipp_timeline::PlanLayer;
+    let (levels, cards, titles) = layer_levels(plan);
+    let name = |what: &str, k: usize, of: usize| if of == 1 { what.to_string() } else { format!("{what} {}", k + 1) };
+    // Each made on top: the last made is the highest level, and the
+    // titles' go above every card track.
+    for k in 0..cards {
+        ops.push(Op::AddTrack { kind: "video".into(), name: Some(name("Scene cards", k, cards)) });
+    }
+    for k in 0..titles {
+        ops.push(Op::AddTrack { kind: "text".into(), name: Some(name("Scene titles", k, titles)) });
+    }
+    let card_track = |level: usize| titles + cards - 1 - level;
+    let title_track = |level: usize| titles - 1 - level;
+    let color = brief.and_then(|b| b.primary_color()).map(str::to_string);
+    let mut at = start;
+    for (s, levels) in plan.segments.iter().zip(&levels) {
+        let d = s.duration_secs();
+        for (layer, level) in s.layers.iter().zip(levels) {
+            let (from, to) = layer.span(d);
+            let (begin, held) = (at + from, to - from);
+            match layer {
+                PlanLayer::Media { media_id, source_in_secs, placement, enter, exit, .. } => {
+                    let track = card_track(*level);
+                    let from_file = source_in_secs.unwrap_or(0.0);
+                    ops.push(Op::Place { media_id: *media_id, track: TrackRef::Index(track), at: Anchor::Secs(begin), source_in: Some(from_file), source_out: Some(from_file + held), insert: false, with_audio: false });
+                    if let Some(poses) = card_poses(placement.as_ref(), enter.as_ref(), exit.as_ref()) {
+                        ops.push(Op::Compose { clip_id: ClipRef::At { track, secs: begin + held / 2.0 }, poses });
+                    }
+                }
+                PlanLayer::Connector { from: a, to: b, color, stroke_width, reveal_secs, .. } => {
+                    ops.push(Op::Connector {
+                        at: Anchor::Secs(begin),
+                        secs: held,
+                        from: *a,
+                        to: *b,
+                        color: color.clone(),
+                        stroke_width: *stroke_width,
+                        reveal_secs: Some(reveal_secs.unwrap_or(DEFAULT_REVEAL_SECS)),
+                        track: Some(TrackRef::Index(card_track(*level))),
+                    });
+                }
+                PlanLayer::Title { title, .. } => {
+                    let mut op = title_op(title, held, color.as_deref(), brief, ClipRef::At { track: 0, secs: begin });
+                    if let Op::Title { at: when, track, .. } = &mut op {
+                        *when = Anchor::Secs(begin);
+                        *track = Some(TrackRef::Index(title_track(*level)));
+                    }
+                    ops.push(op);
+                }
+            }
+        }
+        at += d;
+    }
+    cards + titles
 }
 
 /// A title in one of the plan's three styles: a heading in the upper
@@ -437,7 +694,7 @@ mod tests {
     }
 
     fn seg(media: MediaId, a: f64, b: f64) -> PlanSegment {
-        PlanSegment { feature: String::new(), media_id: media, source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, sfx: None, zoom: None, placement: None, background: None, section: String::new() }
+        PlanSegment { feature: String::new(), media_id: media, source_in_secs: a, source_out_secs: b, note: String::new(), with_audio: false, title: None, transition: None, sfx: None, zoom: None, placement: None, background: None, section: String::new(), layers: Vec::new() }
     }
 
     #[test]
@@ -690,5 +947,141 @@ mod tests {
         assert_eq!((place.after[0].timeline_in_secs, place.after[0].timeline_out_secs), (4.0, 6.0));
         let title = built.steps.iter().find(|s| matches!(s.op, Op::Title { .. })).unwrap();
         assert_eq!((title.after[0].timeline_in_secs, title.after[0].timeline_out_secs), (4.0, 5.0));
+    }
+
+    /// The issue's scene (#1926): two cards that come in staggered and
+    /// overlap, a connector drawn on between them and a title, over one
+    /// segment, and a plain segment with a title after it.
+    fn scene_plan(screen: MediaId) -> EditPlan {
+        serde_json::from_value(serde_json::json!({
+            "segments": [
+                {"media_id": screen, "source_in_secs": 0.0, "source_out_secs": 6.0, "layers": [
+                    {"kind": "media", "media_id": screen, "source_in_secs": 20.0, "at_secs": 0.4, "secs": 5.2,
+                     "placement": {"x": 0.3, "y": 0.5, "width": 0.3, "height": 0.3},
+                     "enter": {"kind": "rise", "secs": 0.5}, "exit": {"kind": "fade", "secs": 0.4}},
+                    {"kind": "media", "media_id": screen, "source_in_secs": 30.0, "at_secs": 0.8, "secs": 4.8,
+                     "placement": {"x": 0.7, "y": 0.5, "width": 0.3, "height": 0.3}, "enter": {"kind": "rise", "secs": 0.5}},
+                    {"kind": "connector", "from": [0.45, 0.5], "to": [0.55, 0.5], "at_secs": 1.4, "secs": 4.2, "reveal_secs": 0.6},
+                    {"kind": "title", "at_secs": 2.0, "title": {"text": "Plan to ship", "secs": 3.0}}
+                ]},
+                {"media_id": screen, "source_in_secs": 10.0, "source_out_secs": 12.0, "title": {"text": "Next"}}
+            ]
+        }))
+        .unwrap()
+    }
+
+    /// `seq` with every step of `ops` applied, as the build applies them.
+    fn built_on(seq: &Sequence, pool: &MediaPool, ops: &[Op]) -> Sequence {
+        let plan = resolve(seq, pool, ops).unwrap_or_else(|e| panic!("{e:?}"));
+        let (mut seqs, mut p, mut fps) = (vec![seq.clone()], pool.clone(), seq.fps);
+        let mut view = crate::apply::DocumentView { sequences: &mut seqs, active: 0, media_pool: &mut p, fps: &mut fps };
+        for step in &plan.steps {
+            view.apply_forward(&step.edit);
+        }
+        seqs.remove(0)
+    }
+
+    /// The clips on the track named `name`: where each starts and ends.
+    fn spans_on(seq: &Sequence, name: &str) -> (usize, Vec<(f64, f64)>) {
+        let at = seq.tracks.iter().position(|t| t.name == name).unwrap_or_else(|| panic!("no track {name}: {:?}", seq.tracks.iter().map(|t| &t.name).collect::<Vec<_>>()));
+        (at, seq.tracks[at].clips.iter().map(|c| (c.timeline_in.to_secs_f64(), c.timeline_out.to_secs_f64())).collect())
+    }
+
+    /// #1926: the plan as reviewed and the timeline as built agree on
+    /// every layer's timing and on where layers overlap. Each layer sits
+    /// on a track named for what it holds, a layer later in the list above
+    /// those it overlaps, the titles' tracks above the cards', and the
+    /// plain segment's title on the plan's own Titles track on top.
+    #[test]
+    fn a_scene_s_layers_build_where_the_plan_says() {
+        let (seq, pool, screen, _) = fixture();
+        let plan = scene_plan(screen);
+        validate(&plan, &pool, None).unwrap();
+        let text = plan.text(None);
+        for line in ["layer 1 0:00.40-0:05.60", "layer 2 0:00.80-0:05.60", "layer 3 0:01.40-0:05.60", "layer 4 0:02.00-0:05.00",
+                     "overlap: layers 1-2 0:00.80-0:05.60, 1-3 0:01.40-0:05.60, 1-4 0:02.00-0:05.00, 2-3 0:01.40-0:05.60, 2-4 0:02.00-0:05.00, 3-4 0:02.00-0:05.00"] {
+            assert!(text.contains(line), "{line}: {text}");
+        }
+        let built = built_on(&seq, &pool, &to_ops(&plan, &seq, &pool, None));
+        let near = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() <= 0.04 + 1e-9 && (a.1 - b.1).abs() <= 0.04 + 1e-9;
+        let (a, card_a) = spans_on(&built, "Scene cards 1");
+        let (b, card_b) = spans_on(&built, "Scene cards 2");
+        let (c, connector) = spans_on(&built, "Scene cards 3");
+        let (t, title) = spans_on(&built, "Scene titles");
+        // What the plan says, absolute: the segment starts at 0.
+        let d = plan.segments[0].duration_secs();
+        let want: Vec<(f64, f64)> = plan.segments[0].layers.iter().map(|l| l.span(d)).collect();
+        for (name, got, want) in [("card 1", &card_a, want[0]), ("card 2", &card_b, want[1]), ("connector", &connector, want[2]), ("title", &title, want[3])] {
+            assert!(got.len() == 1 && near(got[0], want), "{name}: built {got:?}, planned {want:?}");
+        }
+        // The overlaps the timeline holds are the ones the text read out.
+        let laid = [card_a[0], card_b[0], connector[0], title[0]];
+        let mut overlaps = Vec::new();
+        for i in 0..4 {
+            for j in i + 1..4 {
+                let (from, to) = (laid[i].0.max(laid[j].0), laid[i].1.min(laid[j].1));
+                if to > from {
+                    overlaps.push((i + 1, j + 1));
+                }
+            }
+        }
+        assert_eq!(overlaps, plan.segments[0].layer_overlaps().iter().map(|o| (o.0, o.1)).collect::<Vec<_>>());
+        assert!(t < c && c < b && b < a, "stacked as listed, titles above cards: titles {t}, cards {c} {b} {a}");
+        let (titles, next) = spans_on(&built, "Titles");
+        assert!(titles < t && next.len() == 1 && near(next[0], (6.0, 8.0)), "the plain segment's title on the plan's Titles track on top: {titles} {next:?}");
+        let picture = built.tracks.iter().position(|tr| tr.kind == TrackKind::Video && !tr.name.starts_with("Scene")).unwrap();
+        assert!(a < picture, "the cards are over the picture");
+        // The connector is a title with no words: one path, drawn on.
+        let clip = &built.tracks[c].clips[0];
+        let data = clip.title_data().expect("a title clip");
+        let [object] = data.objects.as_slice() else { panic!("one object: {:?}", data.objects.len()) };
+        let klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Path(path), .. }) = &object.content else { panic!("a path") };
+        let keys: Vec<f64> = path.trim.as_ref().map(|t| t.keyframes.iter().map(|k| k.time_secs).collect()).unwrap_or_default();
+        assert_eq!(keys, vec![0.0, 0.6], "drawn on over its reveal");
+        // A card's entrance and exit are its poses.
+        let ops = to_ops(&plan, &seq, &pool, None);
+        let poses: Vec<_> = ops.iter().filter_map(|op| match op { Op::Compose { poses, .. } => Some(poses.len()), _ => None }).collect();
+        assert_eq!(poses, vec![4, 2], "card 1 comes in and goes; card 2 comes in");
+    }
+
+    /// #1926: with a text track already there, a plain segment's title
+    /// still goes on it and not on a scene's track made above it.
+    #[test]
+    fn a_scene_leaves_the_plain_titles_on_the_text_track_there_was() {
+        let (mut seq, pool, screen, _) = fixture();
+        seq.tracks.insert(0, klipp_timeline::Track::new("Words", TrackKind::Text));
+        let plan = scene_plan(screen);
+        let built = built_on(&seq, &pool, &to_ops(&plan, &seq, &pool, None));
+        let (_, words) = spans_on(&built, "Words");
+        assert_eq!(words.len(), 1, "the plain segment's title");
+        let (_, scene) = spans_on(&built, "Scene titles");
+        assert_eq!(scene.len(), 1, "the scene's title");
+    }
+
+    /// #1926: a layer that can't be built as planned is refused, saying
+    /// which segment and layer and what would fix it.
+    #[test]
+    fn a_layer_that_cannot_be_built_is_refused_by_name() {
+        let (_, pool, screen, _) = fixture();
+        let refused = |edit: &dyn Fn(&mut serde_json::Value)| {
+            let mut v = serde_json::to_value(scene_plan(screen)).unwrap();
+            edit(&mut v["segments"][0]["layers"]);
+            let plan: EditPlan = serde_json::from_value(v).unwrap();
+            validate(&plan, &pool, None).unwrap_err()
+        };
+        let why = refused(&|l| l[0]["secs"] = serde_json::json!(6.0));
+        assert!(why.contains("segment 1, layer 1") && why.contains("past the segment's end"), "{why}");
+        let why = refused(&|l| l[0]["exit"]["secs"] = serde_json::json!(5.0));
+        assert!(why.contains("entrance and exit"), "{why}");
+        let why = refused(&|l| l[1]["placement"]["height"] = serde_json::json!(0.5));
+        assert!(why.contains("layer 2") && why.contains("scaled evenly"), "{why}");
+        let why = refused(&|l| l[2]["to"] = serde_json::json!([0.45, 0.5]));
+        assert!(why.contains("layer 3") && why.contains("itself"), "{why}");
+        let why = refused(&|l| l[2]["reveal_secs"] = serde_json::json!(9.0));
+        assert!(why.contains("reveal_secs"), "{why}");
+        let why = refused(&|l| l[0]["enter"]["kind"] = serde_json::json!("spin"));
+        assert!(why.contains("not a card motion"), "{why}");
+        let why = refused(&|l| l[3]["title"]["text"] = serde_json::json!(""));
+        assert!(why.contains("segment 1, layer 4: a title needs text"), "{why}");
     }
 }
