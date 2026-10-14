@@ -34,7 +34,13 @@ fn finished_renders() -> &'static Mutex<HashMap<String, (u128, Value)>> {
 
 #[derive(Clone)]
 enum Submitted {
-    Import { path: std::path::PathBuf, analyze: bool, project_identity: u64 },
+    /// `media_id` once the pool has been seen holding it (#1902): from
+    /// then on the job is its item, wherever the file moves. A save brings
+    /// downloaded music into the project's folder and repoints the item,
+    /// and a relink or a folder move does the same; found by the path it
+    /// was imported from, the job read "probing" for the rest of the
+    /// session.
+    Import { path: std::path::PathBuf, analyze: bool, project_identity: u64, media_id: Option<klipp_core::MediaId> },
     Sync { media_ids: Vec<String>, existing_groups: Vec<String>, project_identity: u64 },
 }
 
@@ -50,7 +56,27 @@ fn project_identity(ctx: &ControlContext) -> u64 {
 
 pub(super) fn register_import(ctx: &ControlContext, operation_id: &str, path: std::path::PathBuf, analyze: bool) {
     submitted().lock().unwrap_or_else(|e| e.into_inner()).insert(operation_id.to_owned(),
-        Submitted::Import { path, analyze, project_identity: project_identity(ctx) });
+        Submitted::Import { path, analyze, project_identity: project_identity(ctx), media_id: None });
+}
+
+/// The media id an import made, once it is known (#1902).
+pub(super) fn note_imported(operation_id: &str, id: klipp_core::MediaId) {
+    if let Some(Submitted::Import { media_id, .. }) = submitted().lock().unwrap_or_else(|e| e.into_inner()).get_mut(operation_id) {
+        media_id.get_or_insert(id);
+    }
+}
+
+/// The pool item an import made: the one it was seen as, else the one
+/// at the path it was imported from, else, the file having been copied
+/// elsewhere since (a save adopting downloaded music), the one with the
+/// same content.
+fn imported_item(pool: &klipp_media::MediaPool, known: Option<klipp_core::MediaId>, path: &std::path::Path) -> Option<klipp_core::MediaId> {
+    if let Some(id) = known {
+        return pool.get(&id).map(|item| item.id);
+    }
+    pool.find_by_path(path)
+        .or_else(|| klipp_media::relink::fingerprint(path).and_then(|fp| pool.find_by_fingerprint(fp)))
+        .map(|item| item.id)
 }
 
 pub(super) fn existing_multicam_groups(ctx: &ControlContext) -> Vec<String> {
@@ -188,9 +214,13 @@ pub(super) fn snapshot(ctx: &ControlContext) -> Vec<Value> {
         let refused = operation.as_ref().is_some_and(|status| status["state"] == "refused");
         let error = operation.as_ref().and_then(|status| status["reason"].as_str()).map(str::to_owned);
         match work {
-            Submitted::Import { path, analyze, project_identity: expected_project } => {
+            Submitted::Import { path, analyze, project_identity: expected_project, media_id: known } => {
                 let project_changed = expected_project != project_identity(ctx);
-                let media_id = ctx.media_pool.read().ok().and_then(|pool| pool.find_by_path(&path).map(|item| item.id.0.to_string()));
+                let found = ctx.media_pool.read().ok().and_then(|pool| imported_item(&pool, known, &path));
+                if let (None, Some(id)) = (known, found) {
+                    note_imported(&operation_id, id);
+                }
+                let media_id = found.map(|id| id.0.to_string());
                 let state = if project_changed { "unavailable" } else if refused { "failed" } else if media_id.is_some() { "completed" }
                     else if operation.as_ref().is_some_and(|status| status["state"] == "queued") { "queued" } else { "running" };
                 jobs.push(json!({
@@ -361,6 +391,51 @@ mod tests {
         assert!(!cleared.iter().any(|j| j["job_id"] == "live-721"));
         assert!(summary(&cleared).contains("render completed — /tmp/out.mp4"), "{}", summary(&cleared));
         assert!(summary(&cleared).contains("removed from the render queue"));
+    }
+
+    /// #1902: an import is its item once seen, wherever the file then
+    /// goes. A save copies downloaded music into the project and repoints
+    /// the item; found by the path it was imported from, the job read
+    /// "probing" from then on. Repointed before it was ever seen, the copy
+    /// is found by its content.
+    #[test]
+    fn an_import_follows_its_item_when_the_file_is_adopted() {
+        let dir = std::env::temp_dir().join(format!("klipp-import-job-{}", uuid::Uuid::new_v4()));
+        let download = dir.join("swansong.mp3");
+        let adopted = dir.join("project").join("media").join("swansong.mp3");
+        std::fs::create_dir_all(adopted.parent().unwrap()).unwrap();
+        std::fs::write(&download, b"ID3 a downloaded track, its first bytes").unwrap();
+        std::fs::copy(&download, &adopted).unwrap();
+        let mut pool = klipp_media::MediaPool::new();
+        let mut item = klipp_media::MediaItem::synthetic_for_test(download.clone(), None);
+        item.fingerprint = klipp_media::relink::fingerprint(&download);
+        let id = pool.add(item);
+
+        assert_eq!(imported_item(&pool, None, &download), Some(id), "in the pool at its path");
+        // The save adopts it, as `adopt_made_media` does.
+        pool.get_mut(&id).unwrap().path = adopted.clone();
+        assert!(pool.find_by_path(&download).is_none(), "the path alone no longer finds it: the report");
+        assert_eq!(imported_item(&pool, Some(id), &download), Some(id), "seen once, followed");
+        assert_eq!(imported_item(&pool, None, &download), Some(id), "never seen: found by its content");
+        // Removed from the pool, the job no longer claims an item.
+        pool.remove(&id);
+        assert_eq!(imported_item(&pool, Some(id), &download), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #1902: the id an import made is kept on its job once noted, and a
+    /// later note doesn't replace it.
+    #[test]
+    fn an_imports_id_is_noted_once() {
+        let (first, second) = (klipp_core::MediaId::new(), klipp_core::MediaId::new());
+        submitted().lock().unwrap().insert("op-1902".into(), Submitted::Import { path: "/x.mp3".into(), analyze: true, project_identity: 0, media_id: None });
+        note_imported("op-1902", first);
+        note_imported("op-1902", second);
+        let kept = match submitted().lock().unwrap().remove("op-1902") {
+            Some(Submitted::Import { media_id, .. }) => media_id,
+            _ => None,
+        };
+        assert_eq!(kept, Some(first));
     }
 
     /// The state comes first, in words, then where it is and what it made.
