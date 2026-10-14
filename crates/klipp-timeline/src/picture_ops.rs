@@ -101,6 +101,10 @@ fn picture_only(p: &ClipPicture, op: &GraphOp) -> bool {
         return path.nodes.len() == 1;
     };
     let beside = !chain(p).iter().any(|n| n.id == first.id);
+    // A reroute (#1746): only the picture has one, on the chain or off it.
+    if is_reroute(first) || matches!(op, GraphOp::AddNode { node, .. } if is_reroute(node)) {
+        return true;
+    }
     match op {
         GraphOp::PublishOutput { .. } | GraphOp::Unpublish { .. } => first.type_id.as_str() == lt::GROUP && path.nodes.len() == 1,
         // A grade correction's mix or mask channel (M3 step 17a): the
@@ -118,6 +122,38 @@ fn picture_only(p: &ClipPicture, op: &GraphOp) -> bool {
     }
 }
 
+/// Whether `n` is a reroute (#1746): a point a wire is routed through,
+/// passing on what it reads.
+fn is_reroute(n: &Node) -> bool {
+    klipp_graph_lift::structure::kind_of(n) == "Reroute"
+}
+
+/// What `id` (at the picture's top) gives through any reroutes (#1746): the
+/// node that makes it.
+fn through_reroutes(p: &ClipPicture, mut id: NodeId) -> Option<&Node> {
+    for _ in 0..=p.graph.nodes.len() {
+        let n = node(p, id)?;
+        if !is_reroute(n) {
+            return Some(n);
+        }
+        id = p.graph.edges.iter().find(|e| e.to.0 == n.id)?.from.0;
+    }
+    None
+}
+
+/// Why `op` can't route a matte through a reroute, if it would: a
+/// reroute's ports are a picture's, so a window's or a key's wire can't go
+/// through one yet (#1877). Said by name here, before the graph's port
+/// check refuses it as a type mismatch.
+fn matte_into_reroute(p: &ClipPicture, op: &GraphOp) -> Option<String> {
+    use klipp_graph_format::PortCatalog;
+    let GraphOp::Connect { from, from_port, to, .. } = op else { return None };
+    let target = to.nodes.last().and_then(|id| node(p, *id)).filter(|n| is_reroute(n))?;
+    let source = from.nodes.last().and_then(|id| node(p, *id))?;
+    let matte = RegistryCatalog.node_spec(source).is_some_and(|s| s.outputs.iter().any(|o| o.key == from_port.as_str() && o.ty == klipp_graph_format::PortType::Matte));
+    matte.then(|| format!("the reroute {} takes a picture, not a matte: a matte can't be routed through a reroute yet (#1877); wire {} straight to what it masks", target.id, if source.label.is_empty() { source.id.to_string() } else { source.label.clone() }))
+}
+
 /// Why a node beside the clip's chain can't be wired as `op` wires it, if
 /// it can't: its picture comes from the clip's source or from what the
 /// grade made of it, which the renderer gives it; any other source is
@@ -126,21 +162,44 @@ fn picture_only(p: &ClipPicture, op: &GraphOp) -> bool {
 fn side_wiring_refusal(p: &ClipPicture, op: &GraphOp) -> Option<String> {
     let GraphOp::Connect { from, from_port, to, to_port } = op else { return None };
     let target = to.nodes.last().and_then(|id| node(p, *id))?;
-    if to.nodes.len() != 1 || chain(p).iter().any(|n| n.id == target.id) {
+    let chain = chain(p);
+    let in_chain = |id: NodeId| chain.iter().any(|n| n.id == id);
+    if to.nodes.len() != 1 || in_chain(target.id) {
         return None;
     }
-    let source = from.nodes.last().and_then(|id| node(p, *id));
+    let source = from.nodes.last().and_then(|id| through_reroutes(p, *id));
     let fed_by_the_clip = from.nodes.len() == 1
         && from_port.as_str() == "out"
         && source.is_some_and(|n| matches!(n.type_id.as_str(), lt::SOURCE | lt::GROUP));
-    (!fed_by_the_clip).then(|| {
+    let refusal = |reader: NodeId, port: &str| {
         format!(
-            "{}'s {} can read the clip's source or its grade's picture; {} isn't one it can be given",
-            target.id,
-            to_port.as_str(),
+            "{reader}'s {port} can read the clip's source or its grade's picture; {} isn't one it can be given",
             source.map_or_else(|| "that".to_owned(), |n| format!("{} {}", n.id, from_port.as_str())),
         )
-    })
+    };
+    // A reroute routes what it takes on to what reads it (#1746): each node
+    // beside the chain it feeds, through further reroutes, is checked as if
+    // wired here.
+    if is_reroute(target) {
+        let mut routes = vec![target.id];
+        let mut seen = Vec::new();
+        while let Some(r) = routes.pop() {
+            if seen.contains(&r) || seen.len() > p.graph.nodes.len() {
+                continue;
+            }
+            seen.push(r);
+            for e in p.graph.edges.iter().filter(|e| e.from.0 == r) {
+                let Some(reader) = node(p, e.to.0).filter(|n| !in_chain(n.id)) else { continue };
+                match is_reroute(reader) {
+                    true => routes.push(reader.id),
+                    false if !fed_by_the_clip => return Some(refusal(reader.id, e.to.1.as_str())),
+                    false => {}
+                }
+            }
+        }
+        return None;
+    }
+    (!fed_by_the_clip).then(|| refusal(target.id, to_port.as_str()))
 }
 
 /// Where `op` lands, or why it can't be written to the fields.
@@ -657,7 +716,7 @@ impl Clip {
             let before = docs.clips[&self.id.0].clone();
             // An op the fields can't hold goes to the picture alone, and
             // the clip is picture-truth from here on.
-            if let Some(why) = side_wiring_refusal(&before, op) {
+            if let Some(why) = side_wiring_refusal(&before, op).or_else(|| matte_into_reroute(&before, op)) {
                 return Err((Some(index), why));
             }
             let t = if picture_only(&before, op) {
@@ -912,7 +971,8 @@ impl Clip {
     fn truth_from(&self, mut edited: ClipPicture) -> Result<LiftedPicture, String> {
         let view = self.lift_picture()?;
         let listed = |p: &ClipPicture| -> Vec<NodeId> {
-            chain(p).into_iter().filter(|n| n.legacy.is_some() && !matches!(n.type_id.as_str(), lt::SOURCE | lt::OUTPUT | lt::SCENE_TO_DISPLAY | lt::GROUP | types::LEGACY_OFX)).map(|n| n.id).collect()
+            // A reroute is the picture's alone (#1746): no entry of the fields.
+            chain(p).into_iter().filter(|n| n.legacy.is_some() && !is_reroute(n) && !matches!(n.type_id.as_str(), lt::SOURCE | lt::OUTPUT | lt::SCENE_TO_DISPLAY | lt::GROUP | types::LEGACY_OFX)).map(|n| n.id).collect()
         };
         let (ours, theirs) = (listed(&edited), listed(&view.picture));
         if ours.len() != theirs.len() {

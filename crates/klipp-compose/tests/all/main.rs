@@ -68,6 +68,8 @@ mod render_counters;
 mod render_path_selfcheck;
 #[path = "../render_rules.rs"]
 mod render_rules;
+#[path = "../reroute_render.rs"]
+mod reroute_render;
 #[path = "../resolve_parity.rs"]
 mod resolve_parity;
 #[path = "../resolved_placement.rs"]

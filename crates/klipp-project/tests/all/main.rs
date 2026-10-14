@@ -80,6 +80,8 @@ mod precomposition_round_trip;
 mod published_port_refused;
 #[path = "../refused_clip_is_named.rs"]
 mod refused_clip_is_named;
+#[path = "../reroute_round_trip.rs"]
+mod reroute_round_trip;
 #[path = "../save_is_one_generation.rs"]
 mod save_is_one_generation;
 #[path = "../grade_version_mix.rs"]

@@ -31,7 +31,9 @@ fn payload(n: &Node) -> &Value {
     n.legacy.as_ref().map(|l| &l.payload).unwrap_or(&Value::Null)
 }
 
-fn kind_of(n: &Node) -> &str {
+/// A grade node's kind as its picture holds it ("Corrector", "Reroute"),
+/// or "" for any other node.
+pub fn kind_of(n: &Node) -> &str {
     payload(n).get("kind").and_then(Value::as_str).unwrap_or("")
 }
 

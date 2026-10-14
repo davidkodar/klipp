@@ -183,3 +183,23 @@ fn an_insert_between_rewires_through_a_mixed_state_in_one_batch() {
     let err = ops::check_batch_end(&d, &start, Root::Clip { clip: id(100) }, &Catalog).unwrap_err();
     assert!(err.why.contains("unable to take the pictures it reads"), "{err}");
 }
+
+/// A reroute (#1746) carries the picture it reads, its domain too: one
+/// between the grade and the display step feeds the step a scene-referred
+/// picture, which it takes. Read with the real catalog, whose reroute
+/// entry makes it keep its input's domain.
+#[test]
+fn a_reroute_before_the_display_step_keeps_its_pictures_domain() {
+    let reroute: Node = serde_json::from_value(serde_json::json!({
+        "id": id(8), "type_id": "klipp.legacy.node", "type_version": 1, "label": "", "enabled": true,
+        "legacy": { "payload": { "kind": "Reroute", "label": "Reroute", "params": {} } },
+    }))
+    .unwrap();
+    let g = Graph {
+        nodes: vec![node(1, lt::SOURCE), reroute, node(3, lt::SCENE_TO_DISPLAY), node(6, lt::OUTPUT)],
+        edges: vec![edge(1, 8, "in"), edge(8, 3, "in"), edge(3, 6, "in")],
+        output: id(6),
+        ..Graph::empty()
+    };
+    assert_eq!(klipp_graph_lift::domains::fault(&g, PictureDomain::Scene, &klipp_graph_lift::registry_catalog::RegistryCatalog), None);
+}

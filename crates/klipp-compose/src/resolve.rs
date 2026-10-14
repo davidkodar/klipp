@@ -407,10 +407,21 @@ fn blend_of(picture: &ClipPicture, node: &Node, t: f64, ctx: &klipp_core::EvalCo
 /// brings comes from, at clip time `t`.
 fn mask_source(picture: &ClipPicture, from: &NodeId, port: &str, t: f64, ctx: &klipp_core::EvalContext) -> MaskSource {
     let by_id = |id: &NodeId| picture.graph.nodes.iter().find(|n| n.id == *id);
+    let kind_of = |n: &Node| n.legacy.as_ref().and_then(|l| l.payload.get("kind")).and_then(serde_json::Value::as_str).unwrap_or("").to_owned();
+    // Through any reroutes (#1746) to the node that makes it: a reroute
+    // passes on what it reads.
+    let (mut from, mut port) = (*from, port.to_owned());
+    for _ in 0..=picture.graph.nodes.len() {
+        let Some(n) = by_id(&from).filter(|n| kind_of(n) == "Reroute") else { break };
+        let Some(e) = picture.graph.edges.iter().find(|e| e.to.0 == n.id) else {
+            return MaskSource::Unavailable(format!("{} reads nothing", n.id));
+        };
+        (from, port) = (e.from.0, e.from.1.as_str().to_owned());
+    }
+    let (from, port) = (&from, port.as_str());
     let Some(producer) = by_id(from) else {
         return MaskSource::Unavailable(format!("{from} isn't in the clip's picture"));
     };
-    let kind_of = |n: &Node| n.legacy.as_ref().and_then(|l| l.payload.get("kind")).and_then(serde_json::Value::as_str).unwrap_or("").to_owned();
     // An output this kind doesn't have isn't read as its first.
     let index = |n: &Node, key: &str| klipp_graph_format::ports::output_index(&kind_of(n), &key.into()).ok_or_else(|| format!("{} has no output {key}", n.id));
     if producer.type_id.as_str() == lt::GROUP {
@@ -430,7 +441,12 @@ fn mask_source(picture: &ClipPicture, from: &NodeId, port: &str, t: f64, ctx: &k
         return MaskSource::Unavailable(format!("{} is in the clip's chain, not beside it", producer.id));
     }
     // A node beside the chain: what it reads, and the node the run builds.
-    let input = picture.graph.edges.iter().find(|e| e.to.0 == producer.id).and_then(|e| by_id(&e.from.0).map(|n| (n, e.from.1.as_str())));
+    // What it reads, through any reroutes (#1746).
+    let mut input = picture.graph.edges.iter().find(|e| e.to.0 == producer.id).and_then(|e| by_id(&e.from.0).map(|n| (n, e.from.1.as_str())));
+    for _ in 0..=picture.graph.nodes.len() {
+        let Some((n, _)) = input.filter(|(n, _)| kind_of(n) == "Reroute") else { break };
+        input = picture.graph.edges.iter().find(|e| e.to.0 == n.id).and_then(|e| by_id(&e.from.0).map(|n| (n, e.from.1.as_str())));
+    }
     let input = match input {
         Some((n, "out")) if n.type_id.as_str() == lt::SOURCE => SideInput::Source,
         Some((n, "out")) if n.type_id.as_str() == lt::GROUP => SideInput::Graded,
