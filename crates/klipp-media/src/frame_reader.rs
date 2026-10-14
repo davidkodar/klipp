@@ -440,9 +440,11 @@ impl SeekableFrameReader<Vec<f32>> {
     /// Open `path` returning linear RGBA f32 in `working`.
     ///
     /// Scene-referred sources go through their own decode to scene
-    /// linear; everything else is swscale to sRGB, decoded, and put
-    /// into the working space. Either way the result is what the
-    /// renderer's `to_linear` would have produced for the same frame.
+    /// linear. Display-referred Y'CbCr converts as the viewer's software
+    /// decode does: native depth, the file's matrix, range, transfer and
+    /// primaries, into the working space (#1995). Only a frame with no
+    /// Y'CbCr (RGB, greyscale) goes through swscale to sRGB and is
+    /// decoded from there. See `linear_convert`.
     pub fn open_linear(
         path: &Path,
         log_format: Option<klipp_core::LogFormat>,
@@ -1260,8 +1262,9 @@ mod matrix_tests {
 
     /// A neighbour frame is decoded with the file's own matrix and range,
     /// at its own depth: it comes back the colour ffmpeg decodes, told
-    /// the file's matrix and range, for BT.709, BT.601 full range and
-    /// BT.2020, at 8, 10 and 12 bits. Through 8-bit swscale with its
+    /// the file's matrix and range, for BT.709 (limited, and full range
+    /// at 10 bits 4:2:0), BT.601 full range and BT.2020, at 8, 10 and 12
+    /// bits. Through 8-bit swscale with its
     /// default BT.601 matrix a BT.709 red came back 13 levels off
     /// (#1995).
     #[test]
@@ -1270,6 +1273,7 @@ mod matrix_tests {
         for (name, pix_fmt, matrix, range) in [
             ("709-tv-444", "yuv444p", "bt709", "tv"),
             ("709-tv-420-10", "yuv420p10le", "bt709", "tv"),
+            ("709-pc-420-10", "yuv420p10le", "bt709", "pc"),
             ("601-pc-444", "yuv444p", "bt470bg", "pc"),
             ("2020-tv-444-12", "yuv444p12le", "bt2020nc", "tv"),
         ] {
@@ -1277,6 +1281,14 @@ mod matrix_tests {
                 eprintln!("skipped {name}: ffmpeg could not write the test clip");
                 continue;
             };
+            let tagged = std::process::Command::new("ffprobe")
+                .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_range", "-of", "csv=p=0"])
+                .arg(&path)
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned());
+            if let Ok(tagged) = tagged {
+                assert_eq!(tagged, range, "{name}: the file was written {tagged}, not {range}");
+            }
             let want = ffmpeg_rgb(&path, matrix, range);
             let mut r = SeekableFrameReader::open_linear(&path, None, klipp_core::WorkingColorspace::Rec709Linear).expect("opens");
             let (px, w, h) = r.decode_at(0.0).expect("a frame");

@@ -5971,6 +5971,14 @@ fn split_above_white(px: &mut [f32]) -> Option<Vec<f32>> {
     Some(over)
 }
 
+/// A source frame in linear light at `width × height`, as the renderer
+/// takes a frame the grade reads on the CPU: what a frame source hands a
+/// temporal node as a neighbour, so the neighbour is the picture the frame
+/// beside it would have been (#1988).
+pub fn source_linear(f: SourceFrame, width: u32, height: u32) -> Arc<Vec<f32>> {
+    to_linear(f, width, height).0
+}
+
 fn to_linear(f: SourceFrame, width: u32, height: u32) -> (Arc<Vec<f32>>, Option<klipp_color::hdr::HdrTransfer>) {
     match f.pixels {
         SourcePixels::Linear(p) => (fit(p, f.width, f.height, width, height), None),
