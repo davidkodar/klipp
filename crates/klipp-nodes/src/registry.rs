@@ -435,7 +435,9 @@ static TYPES: &[NodeType] = &[
             id: "klipp.grade.output",
             name: "Output",
             category: Category::Grade,
-            inputs: &[PortDesc { key: "in", ty: PortType::Image, optional: false, params: &[] }],
+            // The grade's picture, and the matte it leaves with as its
+            // alpha (#898): the clip then composites by it.
+            inputs: &[PortDesc { key: "in", ty: PortType::Image, optional: false, params: &[] }, PortDesc { key: "alpha", ty: PortType::Matte, optional: true, params: &[] }],
             outputs: &[],
             params: P_OUTPUT,
             domain: ColourDomain::Linear,

@@ -4213,6 +4213,10 @@ impl Renderer {
             Err(e) => {
                 tracing::error!("node graph failed for clip {:?}: {e:?}", clip.id);
                 self.note_domain_refusal(clip, &e);
+                // Drawn without its grade from here, nothing to retry it:
+                // a matte that isn't there fails the frame, said, rather
+                // than show the clip whole (#898).
+                self.found.declines.extend(missing_matte_decline(clip, &e));
                 unshare(input.pixels())
             }
         }
@@ -5437,6 +5441,26 @@ fn effect_tag(effect: &BuiltinEffect) -> String {
     serde_json::to_value(effect).ok().and_then(|v| v.get("type").and_then(serde_json::Value::as_str).map(str::to_owned)).unwrap_or_else(|| "effect".into())
 }
 
+/// The failing decline of a grade run refused because a matte it reads
+/// isn't there (`MaskUnavailable`): the alpha a grade's Output takes
+/// (#898) or an effect's mask. Named against `clip`, so the viewer says
+/// why the clip is drawn without its grade and an export refuses the
+/// frame. `None` for any other refusal.
+fn missing_matte_decline(clip: &Clip, e: &klipp_nodes::executor::ExecutorError) -> Option<klipp_nodes::Decline> {
+    let klipp_nodes::executor::ExecutorError::MaskUnavailable(node) = e else { return None };
+    let kind = clip.grade_to_run().nodes.iter().find(|n| n.id == *node).map_or(klipp_nodes::NodeKind::Unknown, |n| n.kind);
+    let name = if kind == klipp_nodes::NodeKind::OutputAlpha { "grade's alpha" } else { "mask" };
+    Some(klipp_nodes::Decline {
+        clip: Some(clip.id),
+        node: *node,
+        kind,
+        outcome: klipp_nodes::DeclineOutcome::RenderFailed,
+        name: name.into(),
+        reason: "its matte isn't there".into(),
+        why: e.to_string(),
+    })
+}
+
 /// Whether the already evaluated pixel-effect list has work left.
 fn has_active_effects(fx: &[BuiltinEffect]) -> bool {
     !fx.is_empty()
@@ -5892,6 +5916,31 @@ fn fit(p: Arc<Vec<f32>>, w: u32, h: u32, ow: u32, oh: u32) -> Arc<Vec<f32>> {
         }
     });
     Arc::new(out)
+}
+
+#[cfg(test)]
+mod missing_matte_tests {
+    use super::*;
+    use klipp_timeline::GradeAccess;
+
+    /// A grade run refused for its alpha's matte (#898) is a failing
+    /// decline naming the grade's alpha, so the viewer says so and an
+    /// export refuses the frame; any other refusal is left to its own
+    /// handling (a grade saved looping passes the picture through).
+    #[test]
+    fn a_missing_alpha_matte_fails_the_frame() {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 24);
+        let mut clip = Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(2.0), tc(0.0), tc(2.0));
+        let mut g = klipp_nodes::NodeGraph::default();
+        let source = g.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Source).unwrap().id;
+        g.edges.push(klipp_nodes::Edge { from_node: source, from_port: 0, to_node: g.output_node_id, to_port: 1 });
+        clip.set_grade(g);
+        let alpha = clip.grade_to_run().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::OutputAlpha).expect("the run takes the alpha").id;
+        let d = missing_matte_decline(&clip, &klipp_nodes::executor::ExecutorError::MaskUnavailable(alpha)).expect("a decline");
+        assert!(d.fails(), "the frame fails: {d:?}");
+        assert_eq!((d.clip, d.node, d.kind), (Some(clip.id), alpha, klipp_nodes::NodeKind::OutputAlpha));
+        assert!(missing_matte_decline(&clip, &klipp_nodes::executor::ExecutorError::CpuSourceRequired).is_none());
+    }
 }
 
 #[cfg(test)]

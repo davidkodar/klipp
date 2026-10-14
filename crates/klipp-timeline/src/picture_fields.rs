@@ -125,7 +125,22 @@ impl Clip {
     /// stay with the picture that saves them.
     ///
     /// [`GradeAccess::grade`]: crate::GradeAccess::grade
+    ///
+    /// A matte into the Output's alpha (#898) is taken where the grade ends
+    /// (`with_output_alpha_applied`), so the effects the renderer splices
+    /// in before the Output come after it and move picture and alpha
+    /// together.
     pub fn grade_to_run(&self) -> std::borrow::Cow<'_, klipp_nodes::NodeGraph> {
+        let grade = self.grade_with_blends();
+        match grade.with_output_alpha_applied() {
+            Some(applied) => std::borrow::Cow::Owned(applied),
+            None => grade,
+        }
+    }
+
+    /// The grade with each correction's mix and mask channel set as its
+    /// run setting, as [`Self::grade_to_run`] reads it, nothing added.
+    fn grade_with_blends(&self) -> std::borrow::Cow<'_, klipp_nodes::NodeGraph> {
         use crate::GradeAccess;
         let Some(truth) = self.picture.truth().filter(|t| t.picture.grade_mix_used()) else { return std::borrow::Cow::Borrowed(self.grade()) };
         let mut run = self.grade().clone();
@@ -147,7 +162,7 @@ impl Clip {
     /// correction's mix and mask channel written in as its run setting
     /// (`correction_blend`), which the fields alone don't hold (#1322).
     pub fn grade_for_version(&self) -> klipp_nodes::NodeGraph {
-        self.grade_to_run().into_owned()
+        self.grade_with_blends().into_owned()
     }
 
     /// Version `n`'s corrections' mix and mask channel, as its grade holds

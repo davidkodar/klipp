@@ -5927,7 +5927,7 @@ pub(crate) mod canvas_command_tests {
         let (source, source_rect) = h.card(NodeKind::Source);
         let (output, output_rect) = h.card(NodeKind::Output);
         let from = output_port_pos(&source_rect, 0, &NodeKind::Source);
-        let to = input_port_pos(&output_rect, 0, 1);
+        let to = input_port_pos(&output_rect, 0, NodeKind::Output.input_port_count());
         h.frame(vec![egui::Event::PointerMoved(from), Harness::button(from, egui::PointerButton::Primary, true)]);
         h.frame(vec![egui::Event::PointerMoved(to)]);
         let commands = h.frame(vec![Harness::button(to, egui::PointerButton::Primary, false)]);

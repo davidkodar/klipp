@@ -8,6 +8,8 @@
 // per file here.
 #![allow(clippy::duplicate_mod)]
 
+#[path = "../alpha_output.rs"]
+mod alpha_output;
 #[path = "../chain_counters.rs"]
 mod chain_counters;
 #[path = "../chain_thumbnails.rs"]

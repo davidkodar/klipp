@@ -600,6 +600,23 @@ fn a_loop_through_an_edge_the_lift_drops_stays_off() {
     assert!(grade_runs(&ordered));
 }
 
+/// A grade saved switched off is its Output wired into its own port 1, a
+/// loop today's ordering refuses. That port is the Output's alpha (#898):
+/// the grade still lifts off, and the marker is dropped, never read as a
+/// matte that cuts the picture.
+#[test]
+fn a_grade_saved_off_lifts_off_with_no_alpha() {
+    let g = json!({
+        "nodes": [gn(SRC, "Source"), gn(COR, "Exposure"), gn(OUT, "Output")],
+        "edges": [edge(SRC, 0, COR, 0), edge(COR, 0, OUT, 0), edge(OUT, 0, OUT, 1)],
+        "output_node_id": OUT
+    });
+    assert!(!grade_runs(&g), "off, as saved");
+    let (p, notes) = lift(clip(json!({"node_graph": g})), ClipKind::Media);
+    assert!(!body(&p).edges.iter().any(|e| e.to.1.as_str() == "alpha"), "no alpha wired");
+    assert!(notes.iter().any(|n| matches!(n, LiftNote::EdgeDropped { why, .. } if why.contains("itself"))));
+}
+
 /// An edge from a node that isn't there holds its target back forever in
 /// today's ordering, so that grade never ran either.
 #[test]
