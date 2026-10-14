@@ -18098,6 +18098,7 @@ mod compound_filmstrip_tests {
             last_playhead: None,
             brief: None,
             edit_plan: None,
+            reviews: Vec::new(),
         }
     }
 

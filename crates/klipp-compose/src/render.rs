@@ -769,6 +769,7 @@ pub fn frame_snapshot(seq: &Sequence, time: Timecode) -> Sequence {
         last_playhead: None,
         brief: None,
         edit_plan: None,
+        reviews: Vec::new(),
     }
 }
 

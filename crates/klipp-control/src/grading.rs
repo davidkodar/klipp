@@ -476,6 +476,14 @@ pub(crate) fn is_generated_picture(c: &klipp_timeline::Clip) -> bool {
         }
 }
 
+/// The project's colour management as it changes a rendered picture,
+/// for a colour finding's basis (#1932): the working space, the grade
+/// encoding and the global LUT.
+pub(crate) fn colour_management(ctx: &ControlContext) -> String {
+    let lut = ctx.shared.project.lock().ok().and_then(|p| p.global_lut.clone()).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "-".into());
+    format!("{:?}|{:?}|{lut}", klipp_engine::video_decoder::working_colorspace(), klipp_core::grade_encoding())
+}
+
 /// The rule a colour finding's words end with, "[black_point]", as a
 /// name ("black_point").
 pub(crate) fn colour_rule(what: &str) -> String {

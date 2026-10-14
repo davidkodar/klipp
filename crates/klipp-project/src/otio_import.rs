@@ -796,6 +796,7 @@ pub fn load_otio(path: &Path) -> Result<ImportResult, OtioImportError> {
         last_playhead: None,
         brief: None,
         edit_plan: None,
+        reviews: Vec::new(),
     };
 
     tracing::info!(

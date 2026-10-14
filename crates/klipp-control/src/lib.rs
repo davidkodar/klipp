@@ -735,6 +735,7 @@ fn handle(
             | ControlCommand::UpdateBrief { .. }
             | ControlCommand::SetBrief { .. }
             | ControlCommand::Check { .. }
+            | ControlCommand::ReviewFinding { .. }
             | ControlCommand::Batch { .. }
             | ControlCommand::Undo
             | ControlCommand::Redo

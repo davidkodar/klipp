@@ -1151,6 +1151,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
         }),
         "klipp_check" => json!({ "method": "check", "color": args.get("color").and_then(|v| v.as_bool()).unwrap_or(false), "loudness": args.get("loudness").and_then(|v| v.as_bool()).unwrap_or(false) }),
         "klipp_rename_sequence" => json!({ "method": "rename_sequence", "name": arg_str(args, "name")? }),
+        "klipp_review_finding" => json!({ "method": "review_finding", "finding_id": arg_str(args, "finding_id")?, "decision": arg_str(args, "decision")?, "rationale": args.get("rationale").and_then(Value::as_str) }),
         "klipp_switch_sequence" => match (args.get("index").and_then(Value::as_u64), args.get("sequence_id").and_then(Value::as_str)) {
             (Some(index), None) => json!({ "method": "switch_sequence", "index": index }),
             (None, Some(id)) => json!({ "method": "switch_sequence", "sequence_id": id }),
@@ -2195,6 +2196,9 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
         tool("klipp_check",
              "Read-only checks of the cut before export, against craft and the brief: each finding with where, why and the fix. Optional colour and loudness passes. Details: klipp_guide topic check.",
              json!({ "color": { "type": "boolean" }, "loudness": { "type": "boolean" } }), vec![]),
+        tool("klipp_review_finding",
+             "Decide a klipp_check finding by id: accepted (with rationale), to_fix or clear. Details: klipp_guide topic review_finding.",
+             json!({ "finding_id": { "type": "string" }, "decision": { "type": "string" }, "rationale": { "type": "string" } }), vec!["finding_id", "decision"]),
         tool("klipp_rename_sequence",
              "Name the active sequence. Details: klipp_guide topic rename_sequence.",
              json!({ "name": { "type": "string" } }), vec!["name"]),

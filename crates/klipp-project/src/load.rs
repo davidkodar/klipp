@@ -1068,6 +1068,7 @@ fn load_sequence_from_json(
         last_playhead: seq_json.last_playhead.as_ref().map(|tc| RationalTime { value: tc.value, rate: tc.rate }),
         brief: seq_json.brief.clone(),
         edit_plan: seq_json.edit_plan.clone(),
+        reviews: seq_json.reviews.clone(),
         camera: seq_json.camera.clone(),
         // Said nothing: take the rate's default, which is drop-frame at
         // 29.97 and 59.94. A project from before this field is not

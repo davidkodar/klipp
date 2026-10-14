@@ -161,6 +161,10 @@ pub struct SequenceJson {
     /// The paper edit awaiting or past approval. Absent when there is none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edit_plan: Option<klipp_timeline::EditPlan>,
+    /// The decisions about the check's findings (#1932). Absent when
+    /// there are none, which is every project saved before there could be.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reviews: Vec<klipp_timeline::FindingReview>,
     /// The move over the whole sequence. Absent when there is no camera,
     /// which is every project saved before there could be one.
     #[serde(default, skip_serializing_if = "klipp_timeline::Camera::is_default")]

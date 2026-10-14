@@ -369,6 +369,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
         auto_generate_skim: color.auto_generate_skim,
         brief: seq.brief.clone(),
         edit_plan: seq.edit_plan.clone(),
+        reviews: seq.reviews.clone(),
         camera: seq.camera.clone(),
         timeline_graph: seq.timeline_grade().cloned(),
         grade_groups: seq.grade_groups.clone(),

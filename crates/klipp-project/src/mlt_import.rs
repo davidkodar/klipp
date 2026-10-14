@@ -1382,6 +1382,7 @@ pub fn load_kdenlive(path: &Path) -> Result<ImportResult, MltImportError> {
         last_playhead: None,
         brief: None,
         edit_plan: None,
+        reviews: Vec::new(),
     };
 
     let mut media_pool = MediaPool::new();

@@ -83,6 +83,10 @@ pub struct Sequence {
     /// [`crate::EditPlan`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub edit_plan: Option<crate::EditPlan>,
+    /// What was decided about the check's findings: kept on purpose or
+    /// to be fixed, with why (#1932). Empty for a sequence never reviewed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reviews: Vec<crate::FindingReview>,
     /// A move over the whole sequence; see [`Camera`]. Empty means none,
     /// which is what every sequence made before this had.
     #[serde(default, skip_serializing_if = "Camera::is_default")]
@@ -678,6 +682,7 @@ impl Sequence {
             last_playhead: None,
             brief: None,
             edit_plan: None,
+            reviews: Vec::new(),
         }
     }
 
@@ -4396,6 +4401,7 @@ mod tests {
             last_playhead: None,
             brief: None,
             edit_plan: None,
+            reviews: Vec::new(),
         }
     }
 

@@ -2104,6 +2104,48 @@ fn a_brief_is_set_and_the_piece_is_checked_against_it() {
     assert!(r["findings"].as_array().unwrap().iter().any(|f| f["rule"] == "no_brief"), "{r}");
 }
 
+/// #1932: every finding of check carries an id; review_finding saves a
+/// decision about one as an undo step, refusing an acceptance with no
+/// reason and an id check never gave. Saved, an accepted finding leaves
+/// the counts for a section of its own with its reason, and a review
+/// whose finding is gone is listed as no longer holding.
+#[test]
+fn a_reviewed_finding_is_kept_apart_with_its_reason() {
+    let mut h = harness();
+    let r = h.ok(json!({ "method": "check" }));
+    let finding = r["findings"].as_array().unwrap().iter().find(|f| f["rule"] == "no_brief").unwrap_or_else(|| panic!("{r}")).clone();
+    let id = finding["id"].as_str().unwrap_or_else(|| panic!("an id: {finding}")).to_string();
+    assert!(id.starts_with("check/no_brief/"), "{id}");
+    assert_eq!(h.ok(json!({ "method": "check" }))["findings"].as_array().unwrap().iter().find(|f| f["rule"] == "no_brief").unwrap()["id"], json!(id), "the same id on every run");
+
+    let refused = h.call(json!({ "method": "review_finding", "finding_id": id, "decision": "accepted" }));
+    assert!(refused["error"].as_str().unwrap().contains("rationale"), "{refused}");
+    let refused = h.call(json!({ "method": "review_finding", "finding_id": "no_brief", "decision": "accepted", "rationale": "x" }));
+    assert!(refused["error"].as_str().unwrap().contains("not a finding id"), "{refused}");
+
+    let v = h.ok(json!({ "method": "review_finding", "finding_id": id, "decision": "accepted", "rationale": "a test piece has no brief" }));
+    assert!(v["text"].as_str().unwrap().contains("Accepted"), "{v}");
+    let saved = match h.edits_seen.lock().unwrap().last() {
+        Some(klipp_document::history::EditCommand::SetReviews { new, .. }) => new.clone(),
+        other => panic!("a review edit: {other:?}"),
+    };
+    assert_eq!(saved.len(), 1);
+    assert_eq!((saved[0].finding_id.as_str(), saved[0].decision, saved[0].rationale.as_str()), (id.as_str(), klipp_timeline::ReviewDecision::Accepted, "a test piece has no brief"));
+
+    // The stand-in UI does not apply edits: put the decision, and one
+    // whose finding is gone, where the app would.
+    let gone = klipp_timeline::FindingReview { finding_id: "check/flash/25/0123456789ab".into(), decision: klipp_timeline::ReviewDecision::Accepted, rationale: "a flash on the beat".into(), at_secs: Some(1.0), clip_id: None, revision: 1 };
+    h.sequence.write().unwrap().reviews = vec![saved[0].clone(), gone];
+    let r = h.ok(json!({ "method": "check" }));
+    assert!(!r["findings"].as_array().unwrap().iter().any(|f| f["rule"] == "no_brief"), "accepted, not among the findings: {r}");
+    assert_eq!(r["accepted"][0]["id"], json!(id), "{r}");
+    assert_eq!(r["accepted"][0]["rationale"], "a test piece has no brief");
+    assert_eq!(r["lapsed_reviews"][0]["finding_id"], "check/flash/25/0123456789ab", "{r}");
+    let text = r["text"].as_str().unwrap();
+    assert!(text.contains("Accepted on purpose, not counted (1)") && text.contains("Why: a test piece has no brief"), "{text}");
+    assert!(text.contains("[lapsed, was accepted]"), "{text}");
+}
+
 /// The edit plan is proposed as a recorded edit, never approved by its
 /// proposer, and neither approved nor built when there is none; a plan
 /// that cannot be built is refused with which segment and why.

@@ -197,6 +197,8 @@ pub enum EditCommand {
     SetBrief { old: Option<Box<klipp_timeline::Brief>>, new: Option<Box<klipp_timeline::Brief>> },
     /// The sequence's edit plan, replaced whole.
     SetEditPlan { old: Option<Box<klipp_timeline::EditPlan>>, new: Option<Box<klipp_timeline::EditPlan>> },
+    /// The sequence's reviews of the check's findings, replaced whole (#1932).
+    SetReviews { old: Vec<klipp_timeline::FindingReview>, new: Vec<klipp_timeline::FindingReview> },
     /// A clip's role: dialogue, music, effects… what the mix and the
     /// checks treat it as.
     SetClipRole { clip_id: ClipId, old: klipp_core::ClipRole, new: klipp_core::ClipRole },
@@ -833,6 +835,7 @@ impl EditCommand {
             EditCommand::SetTrackSettings { .. } => "Track Settings",
             EditCommand::SetBrief { .. } => "Set Brief",
             EditCommand::SetEditPlan { .. } => "Set Edit Plan",
+            EditCommand::SetReviews { .. } => "Review Finding",
             EditCommand::SetClipRole { .. } => "Set Clip Role",
             EditCommand::SetSequenceFormat { .. } => "Sequence Format",
             EditCommand::SetMarkers { .. } => "Markers",
