@@ -354,16 +354,18 @@ pub(crate) fn respond(
                 // alone, so what is over it is not taken for it (#719).
                 // Up to six shots a clip (the longest), fewer when there
                 // are many clips, 48 in all.
-                let times: Vec<(f64, (f64, f64), klipp_core::ClipId)> = if color {
+                // Generators and title cards are pictures too, read and
+                // judged as graphics (#1919): a piece made only of them
+                // read as zero shots and "nothing amiss".
+                let times: Vec<(f64, (f64, f64), klipp_core::ClipId, bool)> = if color {
                     let clips: Vec<&klipp_timeline::Clip> = seq.tracks.iter()
-                        .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
-                        .flat_map(|t| t.clips.iter())
-                        .filter(|c| is_picture_clip(c))
+                        .filter(|t| matches!(t.kind, klipp_timeline::TrackKind::Video | klipp_timeline::TrackKind::Text) && t.visible)
+                        .flat_map(|t| t.clips.iter().filter(move |c| (t.kind == klipp_timeline::TrackKind::Video && is_picture_clip(c)) || is_generated_picture(c)))
                         .collect();
                     let per_clip = (48 / clips.len().max(1)).clamp(1, 6);
                     clips.into_iter()
-                        .flat_map(|c| clip_shot_spans(c, &pool, seq.fps.as_f64(), per_clip).into_iter().map(move |span| (span, c.id)))
-                        .map(|((a, b), id)| ((a + b) / 2.0, (a, b), id))
+                        .flat_map(|c| clip_shot_spans(c, &pool, seq.fps.as_f64(), per_clip).into_iter().map(move |span| (span, c.id, is_generated_picture(c))))
+                        .map(|((a, b), id, made)| ((a + b) / 2.0, (a, b), id, made))
                         .take(48).collect()
                 } else {
                     Vec::new()
@@ -435,8 +437,14 @@ pub(crate) fn respond(
             // are read three times across, so drift within a shot is said.
             let survey = color_times.len() > 8;
             let mut unread: Vec<String> = Vec::new();
-            for (t, span, clip) in &color_times {
-                let read = if survey {
+            let mut graphics_read = 0usize;
+            for (t, span, clip, made) in &color_times {
+                // A generated picture is judged as delivered, composited
+                // with whatever its blend, opacity or a layer over it
+                // makes of it; read alone below, to say whose it is (#1919).
+                let read = if *made {
+                    measure_at(ctx, *t, None, Some(4000)).map(|m| (vec![(*t, m)], None))
+                } else if survey {
                     measure_at(ctx, *t, Some(*clip), Some(4000)).map(|m| (vec![(*t, m)], None))
                 } else {
                     measure_clip(ctx, span.0, span.1, Some(*clip), Some(4000))
@@ -449,13 +457,19 @@ pub(crate) fn respond(
                     }
                 };
                 let (_, mut m) = median_measure(&reads);
-                let look = look_for(ctx, *t);
+                let look = if *made { klipp_color::measure::LookTarget::graphics() } else { look_for(ctx, *t) };
+                graphics_read += usize::from(*made);
                 // A floor the file already holds is the scene's, not the
                 // grade's: the file is read only when a finding hangs on it.
                 if needs_source(&klipp_color::measure::judge(&m, &look), &look) {
                     m.source = source_reading(ctx, *clip, *t);
                 }
                 let mut found = colour_report(&m, &look, *t);
+                if *made && !found.is_empty() {
+                    if let Ok(alone) = measure_at(ctx, *t, Some(*clip), Some(4000)) {
+                        found = attribute_to_layer(found, &colour_report(&alone, &look, *t));
+                    }
+                }
                 // The chain's own order, which no measurement can see:
                 // a balance behind a look never settles, however many
                 // rounds the loop runs.
@@ -528,8 +542,11 @@ pub(crate) fn respond(
             }
             if color {
                 let read = color_times.len() - unread.len();
-                text.push_str(&format!("\n\nColour (measured in Lab on {read} shot{}, {shots_on_target} on target):", if read == 1 { "" } else { "s" }));
-                if color_findings.is_empty() {
+                text.push_str("\n\n");
+                text.push_str(&colour_coverage_line(color_times.len(), read - graphics_read, graphics_read, shots_on_target));
+                if read == 0 {
+                    // Not measured is not clean: nothing more to say here.
+                } else if color_findings.is_empty() {
                     text.push_str(" nothing amiss.");
                 } else {
                     for f in &color_findings {
@@ -554,7 +571,7 @@ pub(crate) fn respond(
             }
             let findings_json: Vec<serde_json::Value> = color_findings.iter().map(|f| json!({ "severity": f.0, "rule": "color", "at_secs": f.1, "what": f.2, "hint": f.3 })).collect();
             let audio_json: Vec<serde_json::Value> = audio_findings.iter().map(|f| json!({ "severity": f.severity, "rule": "sound", "at_secs": f.at, "media": f.media, "what": f.what, "hint": f.hint, "role": f.role })).collect();
-            Ok(json!({ "text": text, "errors": errors, "warnings": warnings, "findings": report.findings, "color_findings": findings_json, "departing_groups": departing, "shots_on_target": shots_on_target, "sound_findings": audio_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
+            Ok(json!({ "text": text, "errors": errors, "warnings": warnings, "findings": report.findings, "color_findings": findings_json, "departing_groups": departing, "shots_on_target": shots_on_target, "colour_coverage": if color { json!({ "footage": color_times.len() - unread.len() - graphics_read, "graphics": graphics_read, "unread": unread.len() }) } else { json!(null) }, "sound_findings": audio_json, "duration_secs": report.duration_secs, "revision": ctx.shared.revision(), "next": next }))
         }
 
         // Said what they did (#741): the step taken back or put back, as

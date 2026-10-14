@@ -437,9 +437,82 @@ mod look_tests {
         seq.tracks[0].clips[1].grade_group = Some(id);
         assert_eq!(look_in(&seq, &pool, tc(5.0), &is_app).name, "film_soft", "a group's own look comes first");
     }
+
+    /// #1919 review: a generated picture is judged on the composite, and
+    /// each finding says whether the layer alone has it.
+    #[test]
+    fn a_composite_finding_says_whose_it_is() {
+        let f = |rule: &str| ("error".to_string(), 3.0, format!("12% of the frame is at white [{rule}]"), "highlights down".to_string());
+        let said = attribute_to_layer(vec![f("clipped_white"), f("gamut")], &[f("gamut")]);
+        assert!(said[0].3.contains("only in the composite"), "{said:?}");
+        assert!(said[1].3.contains("the layer's own"), "{said:?}");
+        assert_eq!(colour_rule("x [grade order]"), "grade_order");
+    }
+
+    /// #1919: zero shots read is "not measured", never a clean result;
+    /// graphics are counted apart from footage and say what they were
+    /// judged for.
+    #[test]
+    fn the_colour_section_says_what_it_covered() {
+        assert!(colour_coverage_line(0, 0, 0, 0).starts_with("Colour: not measured"));
+        assert!(colour_coverage_line(3, 0, 0, 0).contains("none of the 3 shots could be read"));
+        assert_eq!(colour_coverage_line(5, 5, 0, 4), "Colour (measured in Lab on 5 shots, 4 on target):");
+        let g = colour_coverage_line(6, 0, 6, 5);
+        assert!(g.contains("6 shots, all generated graphics") && g.contains("clipping, gamut and banding only; 5 on target"), "{g}");
+        let mixed = colour_coverage_line(4, 3, 1, 2);
+        assert!(mixed.contains("4 shots: 3 of footage, and 1 of generated graphics") && mixed.ends_with("2 on target):"), "{mixed}");
+    }
 }
 
-/// Whether the colour tools grade this clip: an enabled clip of media.
+/// A picture the timeline makes rather than a file: an enabled
+/// generator, or a title on a full-frame card. The colour check reads it
+/// too, judged as graphics (#1919).
+pub(crate) fn is_generated_picture(c: &klipp_timeline::Clip) -> bool {
+    c.enabled
+        && match &c.kind {
+            klipp_timeline::ClipKind::Generator(_) => true,
+            klipp_timeline::ClipKind::Title(td) => matches!(td.background, klipp_timeline::TitleBackground::FullFrame { color } if color[3] > 0),
+            _ => false,
+        }
+}
+
+/// The rule a colour finding's words end with, "[black_point]", as a
+/// name ("black_point").
+pub(crate) fn colour_rule(what: &str) -> String {
+    what.rsplit_once(" [").map_or("colour".to_string(), |(_, r)| r.trim_end_matches(']').replace(' ', "_"))
+}
+
+/// A generated picture's findings, read on the composite, each said as
+/// the layer's own when the layer read alone has it too, and else as the
+/// composite's: its blend, opacity or what is over or under it (#1919).
+pub(crate) fn attribute_to_layer(composite: Vec<(String, f64, String, String)>, alone: &[(String, f64, String, String)]) -> Vec<(String, f64, String, String)> {
+    composite.into_iter().map(|(severity, at, what, hint)| {
+        let rule = colour_rule(&what);
+        let own = alone.iter().any(|a| colour_rule(&a.2) == rule);
+        let whose = if own { "the layer's own: it is there read alone" } else { "only in the composite: the layer alone is clean, so look at its blend, its opacity, or what is over or under it" };
+        (severity, at, what, format!("{hint} ({whose})"))
+    }).collect()
+}
+
+/// The head of the check's colour section: how many shots were read, of
+/// footage and of generated graphics, and how many were on target. Zero
+/// read is said as not measured, never as a clean result (#1919):
+/// `listed` is how many shots there were to read.
+pub(crate) fn colour_coverage_line(listed: usize, footage: usize, graphics: usize, on_target: usize) -> String {
+    let shots = |n: usize| format!("{n} shot{}", if n == 1 { "" } else { "s" });
+    if footage + graphics == 0 {
+        return if listed == 0 {
+            "Colour: not measured — there is no footage, generator or title card on a visible track to read.".to_string()
+        } else {
+            format!("Colour: not measured — none of the {} could be read.", shots(listed))
+        };
+    }
+    match (footage, graphics) {
+        (f, 0) => format!("Colour (measured in Lab on {}, {on_target} on target):", shots(f)),
+        (0, g) => format!("Colour (measured on {}, all generated graphics judged for clipping, gamut and banding only; {on_target} on target):", shots(g)),
+        (f, g) => format!("Colour (measured in Lab on {}: {f} of footage, and {g} of generated graphics judged for clipping, gamut and banding only; {on_target} on target):", shots(f + g)),
+    }
+}
 pub(crate) fn is_picture_clip(c: &klipp_timeline::Clip) -> bool {
     c.enabled && matches!(c.kind, klipp_timeline::ClipKind::Media { .. })
 }

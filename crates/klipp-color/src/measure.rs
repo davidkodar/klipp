@@ -1437,6 +1437,25 @@ impl LookTarget {
         })
     }
 
+    /// What a picture the timeline makes — a generator, a title on a
+    /// full-frame card — is judged against (#1919): clipping at a
+    /// screen's bars, a colour the delivery cannot hold, and banding,
+    /// which a rendered gradient really has. Not cast, tone or skin: a
+    /// coloured field has no neutrals and no scene to expose for. Not
+    /// noise, which a generator makes on purpose, and not camera log,
+    /// which a pale gradient resembles and cannot be.
+    pub fn graphics() -> LookTarget {
+        LookTarget { name: Self::GRAPHICS.into(), screencast: true, ..Default::default() }
+    }
+
+    /// The name of [`Self::graphics`].
+    pub const GRAPHICS: &'static str = "graphics";
+
+    /// Whether this is the target for a picture the timeline makes.
+    pub fn is_graphics(&self) -> bool {
+        self.name == Self::GRAPHICS && self.screencast
+    }
+
     pub const PRESETS: [&'static str; 7] = ["broadcast_neutral", "web_punchy", "film_soft", "warm_interview", "golden", "cool_tech", "screencast"];
 
     /// Whether the look keeps `colour` ("sky", "foliage", "skin") where
@@ -1791,7 +1810,7 @@ pub fn judge(m: &FrameMeasure, t: &LookTarget) -> Vec<Finding> {
     }
     // Camera log with no input transform on it: everything below would
     // be read against a picture that is not meant to be looked at yet.
-    if looks_like_log(m) {
+    if !t.is_graphics() && looks_like_log(m) {
         out.push(Finding {
             rule: "looks_like_log",
             verdict: Verdict::Warn,
@@ -2820,6 +2839,19 @@ mod taste_tests {
         let further = FrameMeasure { source: Some(SourceReading { l_p1: 28.0, ..Default::default() }), ..water.clone() };
         assert_eq!(black_point(&further).verdict, Verdict::Fail);
         assert_eq!(black_point(&water).verdict, Verdict::Fail, "with no source the floor is judged as before");
+    }
+
+    /// #1919: a generated picture is judged for what a render can get
+    /// wrong — a banded gradient, a colour pinned at the rail — and not
+    /// for a cast, a log look or noise a coloured field cannot help.
+    #[test]
+    fn a_generated_picture_is_judged_as_graphics() {
+        let t = LookTarget::graphics();
+        let gradient = FrameMeasure { l_p1: 30.0, l_p50: 55.0, l_p99: 70.0, contrast_range: 30.0, chroma_mean: 8.0, cast_a: 9.0, cast_b: -14.0, neutral_pct: 20.0, banding_pct: 29.0, noise_l: 3.0, gamut_clip_pct: 9.0, ..FrameMeasure::default() };
+        assert!(looks_like_log(&gradient), "the fixture is pale enough to pass for log");
+        let found: Vec<(&str, Verdict)> = judge(&gradient, &t).into_iter().filter(|f| f.verdict != Verdict::Pass).map(|f| (f.rule, f.verdict)).collect();
+        assert_eq!(found, vec![("banding", Verdict::Fail), ("gamut", Verdict::Fail)]);
+        assert!(!LookTarget::preset("screencast").unwrap().is_graphics() && !LookTarget::unbriefed().is_graphics());
     }
 
     /// #1906: a dark app recording — a third of it on black, its flat
