@@ -33,6 +33,8 @@ struct ViewerSource<'a> {
     /// The neighbour frames kept while parked (#1863); `None` while
     /// playing, when every frame is a new time.
     hold: Option<&'a std::sync::Arc<std::sync::Mutex<NeighbourHold>>>,
+    /// Whether the viewer decodes proxies where a media item has one.
+    use_proxies: bool,
 }
 
 /// The source frames a temporal node read beside the parked frame, kept
@@ -291,6 +293,25 @@ impl FrameSource for ViewerSource<'_> {
         Some(pool.get(&clip.media_id()?)?.fps.as_f64())
     }
 
+    /// The files the parked frame is drawn from, stamped now, for the
+    /// renderer to hold the clip's heavy nodes' outputs by (#1863): only
+    /// while the neighbour hold is on, which is parked. A clip shown from
+    /// a proxy names both the proxy (its frame) and the original (the
+    /// neighbours a denoiser reads), so a change to either is a new key.
+    fn held_file(&mut self, clip: &Clip) -> Option<klipp_compose::HeldFile> {
+        self.hold?;
+        let media = clip.media_id()?;
+        let (path, proxy) = {
+            let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+            let item = pool.get(&media)?;
+            // As the decoder picks: the proxy when it is ready and there.
+            let proxy = item.proxy_path.clone().filter(|p| self.use_proxies && item.proxy_ready && p.exists());
+            (item.path.clone(), proxy)
+        };
+        let log_format = crate::video_decoder::log_format_for_path(&path);
+        klipp_compose::HeldFile::stamp(media, path, log_format, proxy)
+    }
+
     fn media_range(&mut self, clip: &Clip) -> Option<(f64, f64)> {
         viewer_media_range(&self.media_pool.read().unwrap_or_else(|e| e.into_inner()), clip)
     }
@@ -432,6 +453,18 @@ impl PlaybackEngine {
             None
         } else {
             Some(hold)
+        }
+    }
+
+    /// Empty the renderer's held outputs (#1863) when what they were held
+    /// for has gone: playback started or stopped, or the parked frame is
+    /// now another clip's (another clip, another sequence). The key keeps
+    /// a stale entry from being used; this keeps it from taking memory.
+    fn scope_held_outputs(&mut self, primary: Option<ClipId>) {
+        let scope = (self.state, primary);
+        if self.held_scope != Some(scope) || self.state == PlaybackState::Playing || !self.hold_neighbours {
+            self.renderer.executor().clear_held();
+            self.held_scope = Some(scope);
         }
     }
 
@@ -709,6 +742,7 @@ impl PlaybackEngine {
         self.renderer.set_grade_encoding(klipp_core::grade_encoding());
         self.renderer.set_lut_tetrahedral(self.color_pipeline.use_tetrahedral);
         self.push_global_lut();
+        self.scope_held_outputs(primary.map(|(id, _)| id));
         let time = self.playhead;
         let mut src = ViewerSource {
             primary,
@@ -716,6 +750,7 @@ impl PlaybackEngine {
             streams: &mut self.streams,
             media_pool: &self.media_pool,
             hold: Self::neighbour_hold_for(&self.neighbour_hold, self.state, self.hold_neighbours),
+            use_proxies: self.use_proxies,
         };
         let opts = RenderOptions {
             hdr_peak_nits: self
@@ -755,6 +790,7 @@ impl PlaybackEngine {
             self.drag_grade_count = self.drag_grade_count.saturating_add(1);
         }
         let (w, h) = if downsample { (width / 2, height / 2) } else { (width, height) };
+        self.scope_held_outputs(primary.map(|(id, _)| id));
         let time = self.playhead;
         let mut src = ViewerSource {
             primary,
@@ -762,6 +798,7 @@ impl PlaybackEngine {
             streams: &mut self.streams,
             media_pool: &self.media_pool,
             hold: Self::neighbour_hold_for(&self.neighbour_hold, self.state, self.hold_neighbours),
+            use_proxies: self.use_proxies,
         };
         // HDR monitoring renders what the export writes: display light,
         // 1.0 = 203 cd/m², mastered to the delivery's peak.
@@ -1251,11 +1288,12 @@ impl PlaybackEngine {
             }
         };
         let encode_ms = t_encode.elapsed().as_secs_f64() * 1000.0;
+        let held = self.renderer.executor().held_counts();
         {
             let mut fb = self.frame_buffer.lock().unwrap_or_else(|e| e.into_inner());
             fb.write_frame_swap(&mut bytes, w, h);
             fb.set_presented(self.playhead, self.published_complete());
-            fb.note(format!("shown as bytes: {:?} {:?} complete {} (streams pending {}, progress {})", self.state, self.playhead.value, self.published_complete(), self.pending_stream_refresh, self.presenting_progress));
+            fb.note(format!("shown as bytes: {:?} {:?} complete {} (streams pending {}, progress {}) held outputs {} hit {} missed", self.state, self.playhead.value, self.published_complete(), self.pending_stream_refresh, self.presenting_progress, held.hits, held.misses));
             match nits {
                 Some((map, mw, mh, step)) => {
                     fb.nit_map = map;

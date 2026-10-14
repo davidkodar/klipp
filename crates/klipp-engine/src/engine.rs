@@ -686,15 +686,24 @@ impl PregradePixels {
 pub struct Pregrade {
     pixels: PregradePixels,
     display: Arc<std::sync::OnceLock<Arc<Vec<u8>>>>,
+    /// The decoded frame's presentation time, when known: what a held
+    /// output of the frame is keyed by (#1863).
+    pts: Option<f64>,
 }
 
 impl Pregrade {
     fn new(pixels: PregradePixels) -> Self {
-        Self { pixels, display: Arc::new(std::sync::OnceLock::new()) }
+        Self { pixels, display: Arc::new(std::sync::OnceLock::new()), pts: None }
     }
 
     fn from_frame(frame: &crate::types::LinearFrame) -> Self {
-        Self::new(PregradePixels::from_frame(frame))
+        Self::new(PregradePixels::from_frame(frame)).with_pts(Some(frame.pts_secs()))
+    }
+
+    /// The same, of the frame at `pts`.
+    fn with_pts(mut self, pts: Option<f64>) -> Self {
+        self.pts = pts;
+        self
     }
 
     /// The ungraded picture, sRGB RGBA8 — made on first ask and kept.
@@ -1150,6 +1159,9 @@ pub struct PlaybackEngine {
     /// Neighbour frames a temporal node read beside the parked frame
     /// (#1863), kept between its renders.
     neighbour_hold: std::sync::Arc<std::sync::Mutex<view::NeighbourHold>>,
+    /// What the renderer's held outputs were last held for: the state and
+    /// the primary clip (#1863). A change empties them.
+    held_scope: Option<(PlaybackState, Option<klipp_core::ClipId>)>,
     /// Whether [`Self::neighbour_hold`] is used (`set_neighbour_hold`).
     hold_neighbours: bool,
     /// Renders every frame the viewer shows off the fast paths — the same
@@ -2107,6 +2119,7 @@ impl PlaybackEngine {
             v1_decoder: None,
             streams: streams::ClipStreams::new(MAX_CLIP_STREAMS),
             neighbour_hold: Default::default(),
+            held_scope: None,
             hold_neighbours: true,
             renderer: klipp_compose::Renderer::new(ofx_host, title_renderer),
             titles_warmed: std::collections::HashSet::new(),
@@ -7264,7 +7277,8 @@ impl PlaybackEngine {
                 let pixels = Pregrade::new(match frame.hdr.as_ref() {
                     Some(hdr) => PregradePixels::Hdr(hdr.to_cpu()),
                     None => PregradePixels::Srgb8(Arc::new(frame.to_rgba())),
-                });
+                })
+                .with_pts(Some(frame.pts_secs()));
                 let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                 let frame_num = if let Some(clip) = seq.tracks.get(self.current_track_index)
                     .and_then(|t| t.clips.get(self.current_clip_index))
@@ -7318,7 +7332,8 @@ impl PlaybackEngine {
                     let pixels = Pregrade::new(match frame.hdr.as_ref() {
                         Some(hdr) => PregradePixels::Hdr(hdr.to_cpu()),
                         None => PregradePixels::Srgb8(Arc::new(frame.to_rgba())),
-                    });
+                    })
+                    .with_pts(Some(frame.pts_secs()));
                     let frame_num = {
                         let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
                         if let Some(clip) = seq.tracks.get(self.current_track_index)

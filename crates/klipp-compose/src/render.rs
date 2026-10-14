@@ -236,6 +236,14 @@ pub trait FrameSource {
         None
     }
 
+    /// The file `clip`'s frames are decoded from, for a viewer parked on
+    /// a frame to hold its heavy nodes' outputs by (#1863). `None` (the
+    /// default) holds nothing: export, playback, and any source but a
+    /// parked viewer's.
+    fn held_file(&mut self, _clip: &Clip) -> Option<HeldFile> {
+        None
+    }
+
     /// Another media item's frame at `secs` in it (a media source, #1746),
     /// by the pool item's id: linear RGBA f32 in `working`, fitted to
     /// `width × height` ([`fit_linear`]). The default reads no other
@@ -249,6 +257,40 @@ pub trait FrameSource {
     /// without its own (#1857). `None` (the default) for an SDR item.
     fn media_scene_referred(&mut self, _media: &str) -> Option<String> {
         None
+    }
+}
+
+/// The file a parked viewer decodes a clip's frames from (#1863): the
+/// part of a held output's key the frame source knows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeldFile {
+    pub media: klipp_core::MediaId,
+    pub path: std::path::PathBuf,
+    pub len: u64,
+    pub modified: std::time::SystemTime,
+    pub log_format: Option<klipp_core::LogFormat>,
+    /// The proxy the frame is shown from, stamped alike, when it is: the
+    /// neighbours stay the original's.
+    pub proxy: Option<(std::path::PathBuf, u64, std::time::SystemTime)>,
+}
+
+impl HeldFile {
+    /// `path` as it is on disk now, and `proxy` when the frame is shown
+    /// from one; `None` when either can't be read.
+    pub fn stamp(media: klipp_core::MediaId, path: std::path::PathBuf, log_format: Option<klipp_core::LogFormat>, proxy: Option<std::path::PathBuf>) -> Option<Self> {
+        let stamp = |p: &std::path::Path| {
+            let meta = std::fs::metadata(p).ok()?;
+            Some((meta.len(), meta.modified().ok()?))
+        };
+        let (len, modified) = stamp(&path)?;
+        let proxy = match proxy {
+            Some(p) => {
+                let (len, modified) = stamp(&p)?;
+                Some((p, len, modified))
+            }
+            None => None,
+        };
+        Some(Self { media, len, modified, path, log_format, proxy })
     }
 }
 
@@ -813,6 +855,9 @@ pub struct Renderer {
     /// One node; one per effect, under its picture node's id, when the
     /// grade tools read the clip (#1305).
     run_source_nodes: Vec<klipp_nodes::Node>,
+    /// The size the clip being drawn was decoded at, before fitting:
+    /// part of its held outputs' key (#1863).
+    source_decoded: Option<(u32, u32)>,
     /// The grade being run reads a scene-referred clip's picture (HDR or
     /// log media, decoded to scene light on the CPU): its Source is
     /// scene-referred for the executor's colour domains (#1867).
@@ -982,6 +1027,7 @@ impl Renderer {
             global_lut: None,
             instances: Default::default(),
             run_source_nodes: Vec::new(),
+            source_decoded: None,
             grade_source_scene: false,
             still_generators: HashMap::new(),
             assets: Box::new(klipp_analysis::assets::CacheStore::default()),
@@ -2760,6 +2806,7 @@ impl Renderer {
         let clip_time = eval_clip_time(clip, time);
         // The rendered frame's presentation time, for its frame blend.
         let mut source_pts = None;
+        self.source_decoded = None;
         let (input, hdr) = match &clip.kind {
             ClipKind::Media { .. } => {
                 let at = source_secs(clip, time, fps);
@@ -2777,6 +2824,7 @@ impl Renderer {
                 };
                 let f = src.frame(clip, read_at, width, height)?;
                 source_pts = f.pts;
+                self.source_decoded = Some((f.width, f.height));
                 // Temporal noise reduction happens here, on the source,
                 // before the grade — so a clip using it gives up the
                 // GPU-resident fast path below and comes down to the
@@ -3706,13 +3754,47 @@ impl Renderer {
         // instance there whether or not anything reads the source, whose
         // readers open only when asked.
         let at = source_secs(clip, time, fps);
+        // A parked viewer's frame: its heavy nodes' outputs held for the
+        // next run of this clip's grade, and only this run (#1863).
+        let held = self.held_source(clip, clip_time, at, source_pts, src);
+        self.executor.hold_outputs_for(held);
         let mut sources = ClipSources::new(src, clip, self.working).with_current(at, hdr, width, height);
         let mut bounded = BoundedSources::new(&mut sources, width, height);
         self.grade_source_scene = hdr.is_some();
         let pixels = self.in_context(clip, clip_time, fps, at, source_pts, &mut bounded, |r, ctx| r.grade(clip, input, clip_time, fps, width, height, Some(ctx)));
         self.grade_source_scene = false;
+        self.executor.hold_outputs_for(None);
         self.run_source_nodes.clear();
         pixels
+    }
+
+    /// What `clip`'s frame at `at` (source seconds; clip time `clip_time`)
+    /// is the picture of, when `src` is a parked viewer's: its file, the
+    /// decoded frame's own pts and size, and the clip's retime there.
+    /// `None` without any of them, and then nothing is held.
+    fn held_source(&mut self, clip: &Clip, clip_time: f64, at: f64, source_pts: Option<f64>, src: &mut dyn FrameSource) -> Option<klipp_nodes::held::HeldSource> {
+        let (pts, decoded) = (source_pts?, self.source_decoded?);
+        let file = src.held_file(clip)?;
+        let retime = klipp_nodes::held::Retime {
+            speed: clip.speed_at(clip_time),
+            reverse: clip.is_reversed(),
+            source_at_clip_time: at,
+            media_fps: src.media_fps(clip),
+            // Media plays at its own rate; there is no conform to say.
+            conform_fps: None,
+        };
+        Some(klipp_nodes::held::HeldSource {
+            clip: clip.id,
+            media: file.media,
+            path: file.path,
+            file_len: file.len,
+            file_modified: file.modified,
+            log_format: file.log_format,
+            pts_micros: (pts * 1e6).round() as i64,
+            decoded,
+            retime,
+            proxy: file.proxy,
+        })
     }
 
     /// `clip`'s enabled OFX plug-ins on `pixels`, each a node of its own

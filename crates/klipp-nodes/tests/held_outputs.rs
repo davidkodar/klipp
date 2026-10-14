@@ -128,6 +128,7 @@ fn source(clip: ClipId) -> HeldSource {
         pts_micros: (AT * 1e6) as i64,
         decoded: (W, H),
         retime: Retime { speed: 1.0, reverse: false, source_at_clip_time: AT, media_fps: Some(FPS), conform_fps: None },
+        proxy: None,
     }
 }
 
