@@ -143,6 +143,8 @@ mod mask_tool_tests;
 #[cfg(test)]
 mod mask_key_lanes_tests;
 #[cfg(test)]
+mod key_selection_tests;
+#[cfg(test)]
 mod qualifier_3d_tests;
 #[cfg(test)]
 mod wipe_tests;
@@ -855,6 +857,11 @@ fn check_system_audio_muted() -> bool {
 fn capitalise(s: &str) -> String {
     let mut c = s.chars();
     c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+}
+
+/// [`shortcuts::remove_selected_keyframe`], for the key selection (#1958).
+pub(crate) fn remove_selected_keyframe_for(state: &crate::state::AppState, sk: &crate::state::SelectedKeyframe) -> Option<Vec<AppCommand>> {
+    shortcuts::remove_selected_keyframe(state, sk)
 }
 
 #[cfg(test)]

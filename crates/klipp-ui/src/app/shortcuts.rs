@@ -255,7 +255,12 @@ impl KlippApp {
             // Delete/Backspace — Remove selected keyframe (if one is selected on timeline)
             let mut keyframe_deleted = false;
             if kb.is_action_pressed("delete_clip", i) {
-                if let Some(sk) = self.state.selected_keyframe.take() {
+                // Several keys selected: every one, one step (#1958).
+                if let Some(all) = crate::key_selection::delete_all(&self.state) {
+                    cmds.extend(all);
+                    keyframe_deleted = true;
+                    crate::key_selection::clear(&mut self.state);
+                } else if let Some(sk) = self.state.selected_keyframe.take() {
                     if let Some(remove) = remove_selected_keyframe(&self.state, &sk) {
                         cmds.extend(remove);
                         keyframe_deleted = true;

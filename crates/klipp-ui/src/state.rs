@@ -2726,6 +2726,11 @@ pub struct AppState {
     pub keyframe_clipboard: Option<KeyframeClipboard>,
     /// Currently selected keyframe on timeline (click to select, right-click for menu)
     pub selected_keyframe: Option<SelectedKeyframe>,
+    /// The keys selected together, `selected_keyframe` the primary among
+    /// them (#1958).
+    pub key_selection: crate::key_selection::KeySelection,
+    /// A drag of those keys in progress.
+    pub multi_key_drag: Option<crate::key_selection::MultiKeyDrag>,
     /// The sequence camera's key that is selected, on the lane or in
     /// the curve editor. Separate from `selected_keyframe`, which is
     /// a clip's.
@@ -4812,6 +4817,8 @@ impl Default for AppState {
             automation_lane_param_menu: None,
             keyframe_clipboard: None,
             selected_keyframe: None,
+            key_selection: Default::default(),
+            multi_key_drag: None,
             selected_camera_key: None,
             camera_key_menu: None,
             dragging_camera_key: None,

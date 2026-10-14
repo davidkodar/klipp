@@ -1,6 +1,6 @@
 use klipp_timeline::GradeAccess;
 use crate::icons::Icon;
-use crate::state::{AppState, PlayheadFollow};
+use crate::state::{AppState, KeyframeContextMenu, PlayheadFollow};
 use crate::theme::KlippTheme;
 use klipp_core::{AppCommand, ClipId, MediaId, RationalTime, SequenceId, Timecode, Tool};
 use klipp_engine::PlaybackState;
@@ -487,6 +487,7 @@ fn paint_audio_curve_band(
     is_multi_selected: bool,
     hovered_kf_idx: Option<usize>,
     selected_kf_idx: Option<usize>,
+    marked_kf: &[usize],
 ) {
     let (param_min, param_range, unity_value) = audio_param_range(param);
     let palette = audio_curve_palette(param);
@@ -593,7 +594,7 @@ fn paint_audio_curve_band(
         let cx = time_to_x(kf.time_secs);
         let cy = value_to_y(kf.value);
         let is_hovered = hovered_kf_idx == Some(ki);
-        let is_kf_selected = selected_kf_idx == Some(ki);
+        let is_kf_selected = selected_kf_idx == Some(ki) || marked_kf.contains(&ki);
         let d = if is_hovered || is_kf_selected { 9.0_f32 } else { 8.0_f32 };
 
         // Dark outline diamond behind for contrast.
@@ -1209,6 +1210,7 @@ impl TimelinePanel {
         let mut cmds = Vec::new();
         // Reset per-frame scratch cache — these fields are rebuilt below.
         self.frame_cache = TimelineFrameCache::default();
+        state.key_selection.clicked_now = false;
         let available = ui.available_size();
 
         // Reset per-frame state
@@ -1642,6 +1644,15 @@ impl TimelinePanel {
 
         // ── Video keyframe rubber band drag update ─────────────────────
         self.handle_video_keyframe_drag(ui, state, &mut cmds, pointer_released, pointer_down);
+
+        // ── Several selected keys dragged on a lane (#1958) ────────────
+        // Started by whichever lane was pressed; followed here so a
+        // pointer that leaves the lane still moves the keys and its
+        // release still closes the one history step.
+        if let Some(clip_id) = state.multi_key_drag.as_ref().filter(|d| d.anchor_x.is_some()).map(|d| d.clip_id) {
+            let x = ui.input(|i| i.pointer.interact_pos()).map(|p| p.x);
+            cmds.extend(crate::key_selection::lane_drag_frame(state, clip_id, x, pointer_down));
+        }
 
         // ── Flat rubber band drag release ────────────────────────────────
         self.handle_rubber_band_release(ui, state, &mut cmds);
@@ -2153,28 +2164,34 @@ impl TimelinePanel {
                                 } else {
                                     [("Linear", klipp_core::Interpolation::Linear), ("Bezier", klipp_core::Interpolation::Bezier), ("Hold", klipp_core::Interpolation::Step)]
                                 };
+                                // Several keys selected, this one among them:
+                                // each choice goes to every one (#1958).
+                                let targets = crate::key_selection::menu_targets(state, ctx_menu);
                                 for (label, interpolation) in choices {
                                     if crate::widgets::menu::menu_choice(ui, label, "", key.interpolation == interpolation).clicked() {
-                                        cmds.push(AppCommand::SetMaskKeyframeInterpolation {
+                                        // Several keys' edit is one step (#1958).
+                                        let batch = targets.len() > 1;
+                                        if batch { cmds.push(AppCommand::BeginHistoryBatch); }
+                                        for m in &targets {
+                                            cmds.extend(key_interpolation_commands(state, m, interpolation));
+                                        }
+                                        if batch { cmds.push(AppCommand::EndHistoryBatch); }
+                                        close_menu = true;
+                                    }
+                                }
+                                ui.separator();
+                                let several = targets.len() > 1;
+                                if crate::widgets::menu::menu_item(ui, if several { "Delete Keyframes" } else { "Delete Keyframe" }, "Del").clicked() {
+                                    match crate::key_selection::delete_all(state).filter(|_| several) {
+                                        Some(all) => cmds.extend(all),
+                                        None => cmds.push(AppCommand::RemoveMaskKeyframe {
                                             clip_id: ctx_menu.clip_id,
                                             node_id: track.node,
                                             mask_index: track.mask,
                                             param: track.param.clone(),
                                             time_secs: key.time_secs,
-                                            interpolation,
-                                        });
-                                        close_menu = true;
+                                        }),
                                     }
-                                }
-                                ui.separator();
-                                if crate::widgets::menu::menu_item(ui, "Delete Keyframe", "Del").clicked() {
-                                    cmds.push(AppCommand::RemoveMaskKeyframe {
-                                        clip_id: ctx_menu.clip_id,
-                                        node_id: track.node,
-                                        mask_index: track.mask,
-                                        param: track.param.clone(),
-                                        time_secs: key.time_secs,
-                                    });
                                     close_menu = true;
                                 }
                                 return;
@@ -2378,62 +2395,26 @@ impl TimelinePanel {
                                 });
 
                             // A node's key is set by its time (M3 step 3).
-                            let node_key_time = match &ctx_menu.param_kind {
-                                crate::state::KeyframeParamKind::Node { path, key } => state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == ctx_menu.clip_id).and_then(|c| c.node_key_state(path, key)).and_then(|s| s.keys.get(ctx_menu.keyframe_index).map(|k| k.time_secs)),
+                            let node_time = |m: &KeyframeContextMenu| match &m.param_kind {
+                                crate::state::KeyframeParamKind::Node { path, key } => state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == m.clip_id).and_then(|c| c.node_key_state(path, key)).and_then(|s| s.keys.get(m.keyframe_index).map(|k| k.time_secs)),
                                 _ => None,
                             };
+                            // Several keys selected, this one among them:
+                            // each choice goes to every one (#1958).
+                            let targets = crate::key_selection::menu_targets(state, ctx_menu);
                             // Helper closure: emit interpolation command
-                            let emit_interp = |cmds: &mut Vec<AppCommand>, interp: klipp_core::Interpolation| {
-                                match &ctx_menu.param_kind {
-                                    crate::state::KeyframeParamKind::Mask(_) => {},
-                                    crate::state::KeyframeParamKind::Audio(param) => {
-                                        cmds.push(AppCommand::SetAudioKeyframeInterpolation {
-                                            clip_id: ctx_menu.clip_id,
-                                            param: *param,
-                                            keyframe_index: ctx_menu.keyframe_index,
-                                            interpolation: interp,
-                                        });
-                                    }
-                                    crate::state::KeyframeParamKind::Video(param) => {
-                                        cmds.push(AppCommand::SetVideoKeyframeInterpolation {
-                                            clip_id: ctx_menu.clip_id,
-                                            param: *param,
-                                            keyframe_index: ctx_menu.keyframe_index,
-                                            interpolation: interp,
-                                        });
-                                    }
-                                    crate::state::KeyframeParamKind::Title { object_id, param } => { cmds.push(param.interpolation(ctx_menu.clip_id, *object_id, ctx_menu.keyframe_index, interp)); }
-                                    crate::state::KeyframeParamKind::Node { path, key } => {
-                                        if let Some(time_secs) = node_key_time {
-                                            let set = AppCommand::SetInterpKeyAt { addr: path.clone(), key: key.clone(), time_secs, interpolation: interp };
-                                            // A placed kind's key (a Temporal Denoise's)
-                                            // through the clip's effect list (#1419).
-                                            match state.sequence().all_clips().find(|c| c.id == ctx_menu.clip_id) {
-                                                Some(clip) => cmds.extend(crate::inspector::stack_view::route_placed(clip, vec![set])),
-                                                None => cmds.push(set),
-                                            }
-                                        }
-                                    }
-                                    crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
-                                        cmds.push(AppCommand::SetAudioEffectKeyframeInterpolation {
-                                            clip_id: ctx_menu.clip_id,
-                                            effect_index: *effect_index,
-                                            param_name: param_name.clone(),
-                                            keyframe_index: ctx_menu.keyframe_index,
-                                            interpolation: interp,
-                                        });
-                                    }
-                                }
+                            let emit_interp = |cmds: &mut Vec<AppCommand>, m: &KeyframeContextMenu, interp: klipp_core::Interpolation| {
+                                cmds.extend(key_interpolation_commands(state, m, interp));
                             };
 
                             // Helper: emit tangent commands for ease presets
-                            let emit_ease = |cmds: &mut Vec<AppCommand>, preset: crate::widgets::scrubby_param::EasePreset| {
+                            let emit_ease = |cmds: &mut Vec<AppCommand>, m: &KeyframeContextMenu, preset: crate::widgets::scrubby_param::EasePreset| {
                                 let (out_ratio, in_ratio) = preset.tangent_ratios();
                                 let kfs: Option<Vec<klipp_core::Keyframe>> = state.sequence().tracks.iter()
                                     .flat_map(|t| t.clips.iter())
-                                    .find(|c| c.id == ctx_menu.clip_id)
+                                    .find(|c| c.id == m.clip_id)
                                     .map(|clip| {
-                                        match &ctx_menu.param_kind {
+                                        match &m.param_kind {
                                             crate::state::KeyframeParamKind::Mask(track) => crate::mask_tracks::keys(clip, track),
                                             crate::state::KeyframeParamKind::Audio(p) => match p {
                                                 klipp_core::AudioParam::Volume => clip.volume_keyframes.clone(),
@@ -2453,7 +2434,7 @@ impl TimelinePanel {
                                         }
                                     });
                                 if let Some(kfs) = kfs {
-                                    let ki = ctx_menu.keyframe_index;
+                                    let ki = m.keyframe_index;
                                     let len = kfs.len();
                                     for idx in [ki.saturating_sub(1), ki] {
                                         if idx >= len { continue; }
@@ -2463,11 +2444,11 @@ impl TimelinePanel {
                                         let span_in = (kfs[idx].time_secs - prev_t).abs();
                                         let t_out = Some((span_out * out_ratio, 0.0f32));
                                         let t_in = Some((-span_in * in_ratio, 0.0f32));
-                                        match &ctx_menu.param_kind {
+                                        match &m.param_kind {
                                             crate::state::KeyframeParamKind::Mask(_) => {},
                                             crate::state::KeyframeParamKind::Audio(param) => {
                                                 cmds.push(AppCommand::SetAudioKeyframeTangent {
-                                                    clip_id: ctx_menu.clip_id,
+                                                    clip_id: m.clip_id,
                                                     param: *param,
                                                     keyframe_index: idx,
                                                     tangent_in: t_in,
@@ -2476,18 +2457,18 @@ impl TimelinePanel {
                                             }
                                             crate::state::KeyframeParamKind::Video(param) => {
                                                 cmds.push(AppCommand::SetVideoKeyframeTangent {
-                                                    clip_id: ctx_menu.clip_id,
+                                                    clip_id: m.clip_id,
                                                     param: *param,
                                                     keyframe_index: idx,
                                                     tangent_in: t_in,
                                                     tangent_out: t_out,
                                                 });
                                             }
-                                            crate::state::KeyframeParamKind::Title { object_id, param } => { cmds.push(param.tangent(ctx_menu.clip_id, *object_id, idx, t_in, t_out)); }
+                                            crate::state::KeyframeParamKind::Title { object_id, param } => { cmds.push(param.tangent(m.clip_id, *object_id, idx, t_in, t_out)); }
                                             crate::state::KeyframeParamKind::Node { .. } => {}
                                             crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
                                                 cmds.push(AppCommand::SetAudioEffectKeyframeTangent {
-                                                    clip_id: ctx_menu.clip_id,
+                                                    clip_id: m.clip_id,
                                                     effect_index: *effect_index,
                                                     param_name: param_name.clone(),
                                                     keyframe_index: idx,
@@ -2509,7 +2490,13 @@ impl TimelinePanel {
                                     egui::RichText::new("  Linear")
                                 };
                                 if ui.add(egui::Button::new(text).frame(false)).clicked() {
-                                    emit_interp(cmds, klipp_core::Interpolation::Linear);
+                                    // Several keys' edit is one step (#1958).
+                                    let batch = targets.len() > 1;
+                                    if batch { cmds.push(AppCommand::BeginHistoryBatch); }
+                                    for m in &targets {
+                                        emit_interp(cmds, m, klipp_core::Interpolation::Linear);
+                                    }
+                                    if batch { cmds.push(AppCommand::EndHistoryBatch); }
                                     close_menu = true;
                                 }
                             }
@@ -2523,7 +2510,13 @@ impl TimelinePanel {
                                     egui::RichText::new("  Bezier (Custom)")
                                 };
                                 if ui.add(egui::Button::new(text).frame(false)).clicked() {
-                                    emit_interp(cmds, klipp_core::Interpolation::Bezier);
+                                    // Several keys' edit is one step (#1958).
+                                    let batch = targets.len() > 1;
+                                    if batch { cmds.push(AppCommand::BeginHistoryBatch); }
+                                    for m in &targets {
+                                        emit_interp(cmds, m, klipp_core::Interpolation::Bezier);
+                                    }
+                                    if batch { cmds.push(AppCommand::EndHistoryBatch); }
                                     close_menu = true;
                                 }
                             }
@@ -2536,22 +2529,31 @@ impl TimelinePanel {
                             ] {
                                 let text = egui::RichText::new(format!("  {label}"));
                                 if ui.add(egui::Button::new(text).frame(false)).clicked() {
-                                    match (&ctx_menu.param_kind, node_key_time) {
-                                        // A node's key eases by path, the
-                                        // side the item names, one step (#891).
-                                        (crate::state::KeyframeParamKind::Node { path, key }, Some(time_secs)) => {
-                                            let ease = AppCommand::EaseKeyAt { addr: path.clone(), key: key.clone(), time_secs, ease: preset.key_ease() };
-                                            match state.sequence().all_clips().find(|c| c.id == ctx_menu.clip_id) {
-                                                Some(clip) => cmds.extend(crate::inspector::stack_view::route_placed(clip, vec![ease])),
-                                                None => cmds.push(ease),
+                                    // Several keys' edit is one step (#1958).
+                                    let batch = targets.len() > 1;
+                                    if batch { cmds.push(AppCommand::BeginHistoryBatch); }
+                                    for m in &targets {
+                                        match (&m.param_kind, node_time(m)) {
+                                            // A node's key eases by path, the
+                                            // side the item names, one step (#891).
+                                            (crate::state::KeyframeParamKind::Node { path, key }, Some(time_secs)) => {
+                                                let ease = AppCommand::EaseKeyAt { addr: path.clone(), key: key.clone(), time_secs, ease: preset.key_ease() };
+                                                match state.sequence().all_clips().find(|c| c.id == m.clip_id) {
+                                                    Some(clip) => cmds.extend(crate::inspector::stack_view::route_placed(clip, vec![ease])),
+                                                    None => cmds.push(ease),
+                                                }
+                                            }
+                                            (crate::state::KeyframeParamKind::Node { .. }, None) => {}
+                                            // A mask's key has no handles to
+                                            // shape: an ease is passed over.
+                                            (crate::state::KeyframeParamKind::Mask(_), _) => {}
+                                            _ => {
+                                                emit_interp(cmds, m, klipp_core::Interpolation::Bezier);
+                                                emit_ease(cmds, m, preset);
                                             }
                                         }
-                                        (crate::state::KeyframeParamKind::Node { .. }, None) => {}
-                                        _ => {
-                                            emit_interp(cmds, klipp_core::Interpolation::Bezier);
-                                            emit_ease(cmds, preset);
-                                        }
                                     }
+                                    if batch { cmds.push(AppCommand::EndHistoryBatch); }
                                     close_menu = true;
                                 }
                             }
@@ -2565,7 +2567,13 @@ impl TimelinePanel {
                                     egui::RichText::new("  Step (Hold)")
                                 };
                                 if ui.add(egui::Button::new(text).frame(false)).clicked() {
-                                    emit_interp(cmds, klipp_core::Interpolation::Step);
+                                    // Several keys' edit is one step (#1958).
+                                    let batch = targets.len() > 1;
+                                    if batch { cmds.push(AppCommand::BeginHistoryBatch); }
+                                    for m in &targets {
+                                        emit_interp(cmds, m, klipp_core::Interpolation::Step);
+                                    }
+                                    if batch { cmds.push(AppCommand::EndHistoryBatch); }
                                     close_menu = true;
                                 }
                             }
@@ -8207,7 +8215,10 @@ impl TimelinePanel {
                         state.toast.show("Range: clip selected");
                     } else {
                         let modifiers = ui.input(|i| i.modifiers);
-                        if modifiers.shift || modifiers.ctrl || modifiers.command {
+                        if state.key_selection.clicked_now {
+                            // The click was a key's, drawn over the clip:
+                            // the key's selection took it (#1958).
+                        } else if modifiers.shift || modifiers.ctrl || modifiers.command {
                             // Multi-select: standard NLE semantics.
                             //   - Seed the existing primary into the multi-set so a
                             //     plain click followed by a shift-click ends up with
@@ -12541,7 +12552,12 @@ impl TimelinePanel {
                                 egui::pos2(cx, cy + d),
                                 egui::pos2(cx - d, cy),
                             ];
-                            let stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220));
+                            // A key of several selected is ringed (#1958).
+                            let stroke = if crate::key_selection::marked(state, vrb_clip_id, &crate::state::KeyframeParamKind::Video(vrb_param), kf.time_secs) {
+                                egui::Stroke::new(2.0_f32, egui::Color32::WHITE)
+                            } else {
+                                egui::Stroke::new(1.0_f32, egui::Color32::from_rgba_unmultiplied(20, 20, 20, 220))
+                            };
                             vrb_clip_painter.add(egui::Shape::convex_polygon(diamond, fill, stroke));
 
                             // Show value tooltip on hover
@@ -12665,14 +12681,12 @@ impl TimelinePanel {
                                     }
                                 }
 
-                                // Click diamond to select
+                                // Click diamond to select; Shift adds it to the
+                                // keys selected, or takes it out (#1958)
                                 if let Some(ki) = vrb_hovered_kf_idx {
-                                    if ui.input(|i| i.pointer.primary_clicked()) && state.dragging_video_keyframe.is_none() {
-                                        state.selected_keyframe = Some(crate::state::SelectedKeyframe {
-                                            clip_id: vrb_clip_id,
-                                            param_kind: crate::state::KeyframeParamKind::Video(vrb_param),
-                                            keyframe_index: ki,
-                                        });
+                                    if ui.input(|i| i.pointer.primary_clicked()) && state.dragging_video_keyframe.is_none() && state.multi_key_drag.is_none() {
+                                        let shift = ui.input(|i| i.modifiers.shift);
+                                        crate::key_selection::lane_click(state, vrb_clip_id, crate::state::KeyframeParamKind::Video(vrb_param), ki, shift);
                                     }
                                 }
 
@@ -12697,9 +12711,9 @@ impl TimelinePanel {
                                 }
 
                                 // Click empty area to deselect
-                                if ui.input(|i| i.pointer.primary_clicked()) && vrb_hovered_kf_idx.is_none() && vrb_nearest_bezier_handle.is_none()
+                                if ui.input(|i| i.pointer.primary_clicked() && !i.modifiers.shift) && vrb_hovered_kf_idx.is_none() && vrb_nearest_bezier_handle.is_none()
                                     && state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == vrb_clip_id) {
-                                        state.selected_keyframe = None;
+                                        crate::key_selection::clear(state);
                                     }
 
                                 // ── Start video bezier tangent handle drag ──
@@ -12727,8 +12741,15 @@ impl TimelinePanel {
                                     && state.dragging_video_bezier_handle.is_none()
                                     && state.dragging_fade_handle.is_none()
                                     && !vrb_alt_held
+                                    && state.multi_key_drag.is_none()
                                     && ui.input(|i| i.pointer.is_decidedly_dragging()) {
-                                        if let Some(ki) = vrb_hovered_kf_idx {
+                                        let press_x = ui.input(|i| i.pointer.press_origin()).map_or(pos.x, |p| p.x);
+                                        let pps = clip_rect.width() / vrb_clip_dur_secs.max(1e-6) as f32;
+                                        // A key of several selected: every one
+                                        // moves with it, in time, one step (#1958).
+                                        if let Some(begin) = vrb_hovered_kf_idx.and_then(|ki| crate::key_selection::lane_drag_begin(state, vrb_clip_id, &crate::state::KeyframeParamKind::Video(vrb_param), ki, press_x, pps)) {
+                                            cmds.extend(begin);
+                                        } else if let Some(ki) = vrb_hovered_kf_idx {
                                             let drag_key = format!("kf:video:{}:{:?}:{}", vrb_clip_id.0, vrb_param, ki);
                                             cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: vrb_clip_id });
                                             state.dragging_video_keyframe = Some(crate::state::DraggingVideoKeyframe {
@@ -13163,6 +13184,7 @@ impl TimelinePanel {
                 c.is_multi_selected,
                 hovered_kf_idx,
                 selected_kf_idx,
+                &crate::key_selection::marked_indices(state, c.clip_id, &crate::state::KeyframeParamKind::Audio(param), &c.kfs),
             );
 
             // ── Cursor + interactions (only for the clip the pointer is on) ──
@@ -13218,20 +13240,21 @@ impl TimelinePanel {
                     && state.dragging_audio_keyframe.is_none()
                     && nearest_bezier_handle.is_none()
                 {
+                    let shift = ui.input(|i| i.modifiers.shift);
                     if let Some(ki) = hovered_kf_idx {
-                        state.selected_keyframe = Some(crate::state::SelectedKeyframe {
-                            clip_id: c.clip_id,
-                            param_kind: crate::state::KeyframeParamKind::Audio(param),
-                            keyframe_index: ki,
-                        });
-                    } else if state
+                        // Shift adds it to the keys selected, or takes
+                        // it out (#1958).
+                        if state.multi_key_drag.is_none() {
+                            crate::key_selection::lane_click(state, c.clip_id, crate::state::KeyframeParamKind::Audio(param), ki, shift);
+                        }
+                    } else if !shift && state
                         .selected_keyframe
                         .as_ref()
                         .is_some_and(|sk| sk.clip_id == c.clip_id)
                     {
                         // Click on empty lane area deselects the kf on
                         // this clip — matches the inline behaviour.
-                        state.selected_keyframe = None;
+                        crate::key_selection::clear(state);
                     }
                 }
 
@@ -13381,8 +13404,19 @@ impl TimelinePanel {
                     // that hits a tangent within 8 px AND a diamond
                     // within 12 px (close-clustered tangent + kf)
                     // would init both drags.
-                    if pointer_down && !other_drags && !alt_held && decided
-                        && nearest_bezier_handle.is_none()
+                    let press_x = ui.input(|i| i.pointer.press_origin().map(|p| p.x));
+                    let pps = full_clip_rect.width() / (c.time_range_secs as f32).max(1e-6);
+                    // A key of several selected: every one moves with
+                    // it, in time, one step (#1958).
+                    let multi = if pointer_down && !other_drags && !alt_held && decided
+                        && nearest_bezier_handle.is_none() && state.multi_key_drag.is_none()
+                    {
+                        press_x.and_then(|px| crate::key_selection::lane_drag_begin(state, c.clip_id, &crate::state::KeyframeParamKind::Audio(param), ki, px, pps))
+                    } else { None };
+                    if let Some(begin) = multi {
+                        cmds.extend(begin);
+                    } else if pointer_down && !other_drags && !alt_held && decided
+                        && nearest_bezier_handle.is_none() && state.multi_key_drag.is_none()
                     {
                         let drag_key = format!(
                             "kf:audio:{}:{:?}:{}",
@@ -13766,6 +13800,7 @@ impl TimelinePanel {
                 is_multi_selected,
                 hovered_kf_idx_paint,
                 selected_kf_idx_paint,
+                &crate::key_selection::marked_indices(state, kf_clip_id, &crate::state::KeyframeParamKind::Audio(rb_param), kf_keyframes),
             );
 
             // ── Rubber band interaction ──────────────────────────────────
@@ -13872,12 +13907,9 @@ impl TimelinePanel {
 
                         // ── Click keyframe diamond to SELECT it ──
                         if let Some(ki) = nearest_kf_idx {
-                            if ui.input(|i| i.pointer.primary_clicked()) && state.dragging_audio_keyframe.is_none() {
-                                state.selected_keyframe = Some(crate::state::SelectedKeyframe {
-                                    clip_id: kf_clip_id,
-                                    param_kind: crate::state::KeyframeParamKind::Audio(rb_param),
-                                    keyframe_index: ki,
-                                });
+                            if ui.input(|i| i.pointer.primary_clicked()) && state.dragging_audio_keyframe.is_none() && state.multi_key_drag.is_none() {
+                                let shift = ui.input(|i| i.modifiers.shift);
+                                crate::key_selection::lane_click(state, kf_clip_id, crate::state::KeyframeParamKind::Audio(rb_param), ki, shift);
                             }
                         }
 
@@ -13903,9 +13935,9 @@ impl TimelinePanel {
                         }
 
                         // ── Click empty area to deselect keyframe ──
-                        if ui.input(|i| i.pointer.primary_clicked()) && nearest_kf_idx.is_none() && nearest_bezier_handle.is_none()
+                        if ui.input(|i| i.pointer.primary_clicked() && !i.modifiers.shift) && nearest_kf_idx.is_none() && nearest_bezier_handle.is_none()
                             && state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == kf_clip_id) {
-                                state.selected_keyframe = None;
+                                crate::key_selection::clear(state);
                             }
 
                         // ── Start bezier tangent handle drag ──
@@ -13931,12 +13963,22 @@ impl TimelinePanel {
                         if nearest_kf_idx.is_some() && nearest_bezier_handle.is_none()
                             && pointer_down && state.dragging_audio_keyframe.is_none()
                             && state.dragging_bezier_handle.is_none() && state.dragging_fade_handle.is_none()
+                            && state.multi_key_drag.is_none()
                             && !alt_held
                         {
                             let dragged_far_enough = ui.input(|i| {
                                 i.pointer.is_decidedly_dragging()
                             });
-                            if dragged_far_enough {
+                            let press_x = ui.input(|i| i.pointer.press_origin().map(|p| p.x));
+                            let pps = clip_rect.width() / (clip_dur_secs as f32).max(1e-6);
+                            // A key of several selected: every one moves
+                            // with it, in time, one step (#1958).
+                            let multi = if dragged_far_enough {
+                                nearest_kf_idx.zip(press_x).and_then(|(ki, px)| crate::key_selection::lane_drag_begin(state, kf_clip_id, &crate::state::KeyframeParamKind::Audio(rb_param), ki, px, pps))
+                            } else { None };
+                            if let Some(begin) = multi {
+                                cmds.extend(begin);
+                            } else if dragged_far_enough {
                                 if let Some(ki) = nearest_kf_idx {
                                     let drag_key = format!("kf:audio:{}:{:?}:{}", kf_clip_id.0, rb_param, ki);
                                     cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key, clip_id: kf_clip_id });
@@ -19652,4 +19694,61 @@ mod track_height_cap_tests {
         assert_eq!(resized_track_height(100.0, -500.0, &prefs(250.0)), MIN_TRACK_HEIGHT);
         assert_eq!(track_height_cap(&crate::prefs::TimelinePrefs::default()), MAX_TRACK_HEIGHT, "the default is the old fixed cap");
     }
+}
+
+/// The commands setting how `m`'s key leaves it to `interp`, by its kind
+/// (#1958: a menu's choice goes to every selected key). A mask's key by
+/// its own command; a node's by its time.
+pub(crate) fn key_interpolation_commands(state: &AppState, m: &KeyframeContextMenu, interp: klipp_core::Interpolation) -> Vec<AppCommand> {
+    let mut cmds = Vec::new();
+    let node_key_time = match &m.param_kind {
+        crate::state::KeyframeParamKind::Node { path, key } => state.sequences[state.active_sequence_idx].all_clips().find(|c| c.id == m.clip_id).and_then(|c| c.node_key_state(path, key)).and_then(|s| s.keys.get(m.keyframe_index).map(|k| k.time_secs)),
+        _ => None,
+    };
+    match &m.param_kind {
+        crate::state::KeyframeParamKind::Mask(track) => {
+            let time = state.sequence().all_clips().find(|c| c.id == m.clip_id).and_then(|c| crate::mask_tracks::keys(c, track).get(m.keyframe_index).map(|k| k.time_secs));
+            if let Some(time_secs) = time {
+                cmds.push(AppCommand::SetMaskKeyframeInterpolation { clip_id: m.clip_id, node_id: track.node, mask_index: track.mask, param: track.param.clone(), time_secs, interpolation: interp });
+            }
+        }
+        crate::state::KeyframeParamKind::Audio(param) => {
+            cmds.push(AppCommand::SetAudioKeyframeInterpolation {
+                clip_id: m.clip_id,
+                param: *param,
+                keyframe_index: m.keyframe_index,
+                interpolation: interp,
+            });
+        }
+        crate::state::KeyframeParamKind::Video(param) => {
+            cmds.push(AppCommand::SetVideoKeyframeInterpolation {
+                clip_id: m.clip_id,
+                param: *param,
+                keyframe_index: m.keyframe_index,
+                interpolation: interp,
+            });
+        }
+        crate::state::KeyframeParamKind::Title { object_id, param } => { cmds.push(param.interpolation(m.clip_id, *object_id, m.keyframe_index, interp)); }
+        crate::state::KeyframeParamKind::Node { path, key } => {
+            if let Some(time_secs) = node_key_time {
+                let set = AppCommand::SetInterpKeyAt { addr: path.clone(), key: key.clone(), time_secs, interpolation: interp };
+                // A placed kind's key (a Temporal Denoise's)
+                // through the clip's effect list (#1419).
+                match state.sequence().all_clips().find(|c| c.id == m.clip_id) {
+                    Some(clip) => cmds.extend(crate::inspector::stack_view::route_placed(clip, vec![set])),
+                    None => cmds.push(set),
+                }
+            }
+        }
+        crate::state::KeyframeParamKind::AudioEffect { effect_index, param_name } => {
+            cmds.push(AppCommand::SetAudioEffectKeyframeInterpolation {
+                clip_id: m.clip_id,
+                effect_index: *effect_index,
+                param_name: param_name.clone(),
+                keyframe_index: m.keyframe_index,
+                interpolation: interp,
+            });
+        }
+    }
+    cmds
 }
