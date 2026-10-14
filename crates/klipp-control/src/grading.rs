@@ -329,7 +329,8 @@ pub(crate) fn source_reading(ctx: &ControlContext, clip: klipp_core::ClipId, sec
     let (rgba, w, h) = decode_frame_rgba_sized(&path, at.max(0.0), size.0, size.1).ok()?;
     let mut m = klipp_color::measure::measure_frame(&rgba, w, h, &[]);
     m.log_prior = prior;
-    (!klipp_color::measure::looks_like_log(&m)).then(|| klipp_color::measure::SourceReading { range_stated: stated_range(&path), ..klipp_color::measure::SourceReading::of(&m) })
+    let (range_stated, range_contradicted) = range_reading(&path, at.max(0.0));
+    (!klipp_color::measure::looks_like_log(&m)).then(|| klipp_color::measure::SourceReading { range_stated, range_contradicted, ..klipp_color::measure::SourceReading::of(&m) })
 }
 
 /// Whether `item` is display-referred SDR as it is decoded: not HDR, not
@@ -362,16 +363,41 @@ pub(crate) fn picture_clip_at(ctx: &ControlContext, secs: f64) -> Option<klipp_c
         .map(|c| c.id)
 }
 
-/// Whether the file's video stream says its range, limited ("tv") or
-/// full ("pc"), as ffprobe reads it (#1906 review).
-fn stated_range(path: &std::path::Path) -> bool {
-    std::process::Command::new("ffprobe")
+/// Whether the file's video stream states its range, limited ("tv") or
+/// full ("pc"), as ffprobe reads it (#1906 review), and whether its frame
+/// at `secs` agrees (#1975): its luma read as stored, with no range
+/// conversion, against [`klipp_color::measure::range_tag_holds`]. A tag
+/// the codes contradict is not taken: (stated, contradicted).
+fn range_reading(path: &std::path::Path, secs: f64) -> (bool, bool) {
+    let tag = std::process::Command::new("ffprobe")
         .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_range", "-of", "csv=p=0"])
         .arg(path)
         .stderr(std::process::Stdio::null())
         .output()
         .ok()
-        .is_some_and(|o| matches!(String::from_utf8_lossy(&o.stdout).trim(), "tv" | "pc"))
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if tag != "tv" && tag != "pc" {
+        return (false, false);
+    }
+    // Full to full: the scale leaves the codes as they are stored.
+    let codes = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-nostats", "-ss", &format!("{secs}"), "-i"])
+        .arg(path)
+        .args(["-frames:v", "1", "-vf", "scale=320:180:in_range=pc:out_range=pc", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .map(|o| o.stdout)
+        .unwrap_or_default();
+    if codes.len() < 320 * 180 {
+        return (false, false);
+    }
+    match klipp_color::measure::range_tag_holds(&tag, &codes) {
+        true => (true, false),
+        false => (false, true),
+    }
 }
 
 /// Whether one of `found`, judged against `look`, waits on the file's

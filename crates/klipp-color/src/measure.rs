@@ -332,12 +332,39 @@ pub struct SourceReading {
     /// taken as the picture's own (#1906 review).
     #[serde(default)]
     pub range_stated: bool,
+    /// Whether the file states a range its own code values contradict:
+    /// tagged limited with full-range values in it, or tagged full with
+    /// its black piled at limited's 16 (#1975). Such a tag is not taken.
+    #[serde(default)]
+    pub range_contradicted: bool,
+}
+
+/// Whether a frame's luma code values, as stored (no range conversion),
+/// agree with the range its file states (#1975). A limited (`tv`) file
+/// holds nothing under 16 or over 235: more than a hundredth of samples
+/// there is a full-range picture tagged limited. A full (`pc`) file whose
+/// black piles at 16-17 with nothing under it and nothing over 235 reads
+/// as a limited picture tagged full. Any other tag says nothing to check.
+pub fn range_tag_holds(tag: &str, codes: &[u8]) -> bool {
+    if codes.is_empty() {
+        return false;
+    }
+    let n = codes.len() as f32;
+    let share = |f: &dyn Fn(u8) -> bool| codes.iter().filter(|c| f(**c)).count() as f32 / n;
+    match tag {
+        "tv" => share(&|c| !(16..=235).contains(&c)) <= 0.01,
+        "pc" => {
+            let limited_black = share(&|c| c == 16 || c == 17) >= 0.01 && share(&|c| c < 16) == 0.0 && share(&|c| c > 235) == 0.0;
+            !limited_black
+        }
+        _ => false,
+    }
 }
 
 impl SourceReading {
     /// The reading of an ungraded measurement of the file.
     pub fn of(m: &FrameMeasure) -> SourceReading {
-        SourceReading { l_p1: m.l_p1, clip_lo_pct: m.clip_lo_pct, clip_hi_pct: m.clip_hi_pct, banding_pct: m.banding_pct, range_stated: false }
+        SourceReading { l_p1: m.l_p1, clip_lo_pct: m.clip_lo_pct, clip_hi_pct: m.clip_hi_pct, banding_pct: m.banding_pct, range_stated: false, range_contradicted: false }
     }
 }
 
@@ -1728,6 +1755,7 @@ pub fn judge(m: &FrameMeasure, t: &LookTarget) -> Vec<Finding> {
     // Clipping is a fault in every look, but a screen recording's pure
     // whites and blacks are its own: a higher bar there.
     let (hi_warn, hi_fail) = if t.screencast { (30.0, 60.0) } else { (0.5, 2.0) };
+    let contradicted = t.screencast && m.source.is_some_and(|s| s.range_contradicted);
     let rail = |rule: &'static str, share: f32, file: Option<f32>, at: &str, fix: &'static str| {
         let verdict = if share > hi_fail { Verdict::Fail } else if share > hi_warn { Verdict::Warn } else { Verdict::Pass };
         // A screen recording's black panels and white pages are what the
@@ -1735,7 +1763,12 @@ pub fn judge(m: &FrameMeasure, t: &LookTarget) -> Vec<Finding> {
         // holds is the UI's own, not the grade's (#1906).
         match file.filter(|f| t.screencast && verdict != Verdict::Pass && share <= f + SOURCE_RAIL_SLACK) {
             Some(f) => Finding { rule, verdict: Verdict::Pass, reading: share, target: 0.0, tolerance: hi_warn, what: format!("{share:.1}% of the frame is at {at}, as in the recording itself ({f:.1}%): the app's own"), fix },
-            None => Finding { rule, verdict, reading: share, target: 0.0, tolerance: hi_warn, what: format!("{share:.1}% of the frame is at {at}"), fix },
+            None => {
+                // Said, when the file's own share was not taken because its
+                // range tag disagrees with its levels (#1975).
+                let doubt = if contradicted && verdict != Verdict::Pass { ", and the recording's range tag disagrees with its levels, so its own share is not taken as the app's" } else { "" };
+                Finding { rule, verdict, reading: share, target: 0.0, tolerance: hi_warn, what: format!("{share:.1}% of the frame is at {at}{doubt}"), fix }
+            }
         }
     };
     let stated = m.source.filter(|s| s.range_stated);
@@ -2881,6 +2914,11 @@ mod taste_tests {
         // decode: a file that does not say its range is not taken at its word.
         let unstated = FrameMeasure { source: Some(SourceReading { range_stated: false, ..file }), ..ui.clone() };
         assert_eq!(rule(&unstated, &screen, "crushed_black").unwrap().verdict, Verdict::Warn);
+        // A tag its own levels contradict is not taken either, and said.
+        let wrong = FrameMeasure { source: Some(SourceReading { range_stated: false, range_contradicted: true, ..file }), ..ui.clone() };
+        let f = rule(&wrong, &screen, "crushed_black").unwrap();
+        assert_eq!(f.verdict, Verdict::Warn);
+        assert!(f.what.contains("range tag disagrees"), "{}", f.what);
         // A smooth gradient in the recording that the grade or the encode
         // bands is still flagged.
         let banded = FrameMeasure { source: Some(SourceReading { banding_pct: 1.0, ..file }), ..ui.clone() };
@@ -2890,5 +2928,24 @@ mod taste_tests {
         assert_eq!(rule(&as_recorded, &camera, "banding").map(|f| f.verdict), Some(Verdict::Warn));
         assert!(rule(&as_recorded, &camera, "noise").is_some());
         assert_eq!(rule(&as_recorded, &camera, "crushed_black").unwrap().verdict, Verdict::Fail);
+    }
+}
+
+#[cfg(test)]
+mod range_tests {
+    use super::range_tag_holds;
+
+    /// #1975: a range tag is taken only where the codes agree with it.
+    #[test]
+    fn a_range_tag_is_held_to_the_codes() {
+        // A dark full-range UI: a third of it at code 0.
+        let full_ui: Vec<u8> = (0..900).map(|i| if i % 3 == 0 { 0 } else { 40 + (i % 200) as u8 }).collect();
+        // The same UI as a limited capture: black at 16, white at 235.
+        let limited_ui: Vec<u8> = full_ui.iter().map(|c| 16 + (*c as u16 * 219 / 255) as u8).collect();
+        assert!(!range_tag_holds("tv", &full_ui), "full-range values tagged limited");
+        assert!(range_tag_holds("tv", &limited_ui));
+        assert!(!range_tag_holds("pc", &limited_ui), "a limited picture tagged full");
+        assert!(range_tag_holds("pc", &full_ui));
+        assert!(!range_tag_holds("unknown", &full_ui) && !range_tag_holds("tv", &[]));
     }
 }
