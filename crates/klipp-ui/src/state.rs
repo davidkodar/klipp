@@ -1,5 +1,16 @@
 use klipp_timeline::GradeAccess;
 use crate::history::{CommandHistory, EditCommand, HistoryEntry};
+
+/// Of a sequence's stamp and the project's, the history whose step moved
+/// later (#1986).
+fn later(sequence: Option<u64>, project: Option<u64>) -> Option<crate::history::Scope> {
+    match (sequence, project) {
+        (None, None) => None,
+        (Some(_), None) => Some(crate::history::Scope::Sequence),
+        (None, Some(_)) => Some(crate::history::Scope::Project),
+        (Some(s), Some(p)) => Some(if p > s { crate::history::Scope::Project } else { crate::history::Scope::Sequence }),
+    }
+}
 use klipp_core::{AudioParam, ClipId, Fps, MediaId, SequenceId, Timecode, Tool, TrackId, TransitionId, VideoParam, ViewerMode};
 use klipp_engine::PlaybackState;
 use klipp_media::{MediaPool, ThumbnailCache};
@@ -1296,6 +1307,15 @@ pub struct AppState {
     /// `active_history_mut` / `push_history` to access the current
     /// sequence's stack.
     pub command_histories: std::collections::HashMap<SequenceId, CommandHistory>,
+    /// The project's own undo history (#1986): the steps that belong to
+    /// the whole project — its colour set-up, a file's camera encoding,
+    /// the media pool's records — reachable by ctrl+z from any sequence.
+    /// Use `push_history`, `take_undo` and `take_redo`, which choose
+    /// between it and the active sequence's by when each step moved.
+    pub project_history: CommandHistory,
+    /// The clock every history stamps its steps from, so the project's
+    /// and a sequence's compare.
+    pub history_clock: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Project-level autosave counter — incremented on every history
     /// push regardless of which sequence owned it. Cleared by the
     /// project-save path. Lives on AppState (not on CommandHistory)
@@ -4298,6 +4318,8 @@ impl Default for AppState {
             created_at: None,
             dirty: false,
             command_histories: std::collections::HashMap::new(),
+            project_history: CommandHistory::new(),
+            history_clock: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             history_ops_since_save: 0,
             tracks_undo_gesture: None,
             control_shared: std::sync::Arc::new(klipp_core::ControlShared::default()),
@@ -5091,7 +5113,141 @@ impl AppState {
         if !h.has_revision_shared() {
             h.set_revision_shared(shared);
         }
+        if !h.has_clock() {
+            h.set_clock(std::sync::Arc::clone(&self.history_clock));
+        }
         h
+    }
+
+    /// The project's history, set up as the sequences' are: their size,
+    /// the document revision and the shared clock (#1986).
+    pub fn project_history_mut(&mut self) -> &mut CommandHistory {
+        let h = &mut self.project_history;
+        h.set_max_size(self.history_max_size);
+        if !h.has_revision_shared() {
+            h.set_revision_shared(std::sync::Arc::clone(&self.control_shared));
+        }
+        if !h.has_clock() {
+            h.set_clock(std::sync::Arc::clone(&self.history_clock));
+        }
+        h
+    }
+
+    /// Which history ctrl+z takes the next step back from (#1986): the
+    /// project's or the active sequence's, whichever top step moved last.
+    pub fn next_undo(&self) -> Option<crate::history::Scope> {
+        later(self.active_history().undo_stamp(), self.project_history.undo_stamp())
+    }
+
+    /// Which history redo puts the next step back from: the step taken
+    /// back last, unless an edit made since has made it stale, as an edit
+    /// in its own history would. A sequence's step goes stale with a newer
+    /// project step; a project step with a newer edit in any sequence,
+    /// since putting it back would put back the grades it converted over
+    /// that edit.
+    pub fn next_redo(&self) -> Option<crate::history::Scope> {
+        let (seq, project) = (self.redo_fresh_sequence(), self.redo_fresh_project());
+        later(seq.then(|| self.active_history().redo_stamp()).flatten(), project.then(|| self.project_history.redo_stamp()).flatten())
+    }
+
+    /// Whether the active sequence's redo is newer than every project edit.
+    fn redo_fresh_sequence(&self) -> bool {
+        self.active_history().redo_stamp().is_some_and(|s| s > self.project_history.last_edit_stamp())
+    }
+
+    /// Whether the project's redo is newer than every sequence's edits.
+    fn redo_fresh_project(&self) -> bool {
+        let last = self.command_histories.values().map(|h| h.last_edit_stamp()).max().unwrap_or(0);
+        self.project_history.redo_stamp().is_some_and(|s| s > last)
+    }
+
+    /// Which history the next undo and redo come from, for the control
+    /// socket (#1986): "project" or "sequence".
+    pub fn undo_scopes(&self) -> (Option<&'static str>, Option<&'static str>) {
+        let name = |s: crate::history::Scope| match s {
+            crate::history::Scope::Project => "project",
+            crate::history::Scope::Sequence => "sequence",
+        };
+        (self.next_undo().map(name), self.next_redo().map(name))
+    }
+
+    /// What ctrl+z would take back, as the Edit menu and the control
+    /// socket name it: a project step says it is the project's.
+    pub fn undo_label(&self) -> Option<String> {
+        match self.next_undo()? {
+            crate::history::Scope::Project => self.project_history.undo_label().map(|l| format!("{l} (project)")),
+            crate::history::Scope::Sequence => self.active_history().undo_label().map(str::to_owned),
+        }
+    }
+
+    /// What redo would put back, named as `undo_label` names it.
+    pub fn redo_label(&self) -> Option<String> {
+        match self.next_redo()? {
+            crate::history::Scope::Project => self.project_history.redo_label().map(|l| format!("{l} (project)")),
+            crate::history::Scope::Sequence => self.active_history().redo_label().map(str::to_owned),
+        }
+    }
+
+    /// How many steps ctrl+z can take back from here: the active
+    /// sequence's and the project's.
+    pub fn undo_depth(&self) -> usize {
+        self.active_history().undo_count() + self.project_history.undo_count()
+    }
+
+    /// How many steps redo can put back from here.
+    pub fn redo_depth(&self) -> usize {
+        let last_sequence_edit = self.command_histories.values().map(|h| h.last_edit_stamp()).max().unwrap_or(0);
+        let project_edit = self.project_history.last_edit_stamp();
+        self.active_history().redo_stamped().filter(|(s, _)| *s > project_edit).count()
+            + self.project_history.redo_stamped().filter(|(s, _)| *s > last_sequence_edit).count()
+    }
+
+    /// Drop redo steps an edit has made stale (#1986): they would never be
+    /// offered again, and a project step can hold a whole colour change.
+    /// A stack's steps go stale from the top down, so a stale top means
+    /// all of it.
+    fn prune_stale_redo(&mut self) {
+        if self.project_history.redo_stamp().is_some() && !self.redo_fresh_project() {
+            self.project_history.clear_redo();
+        }
+        if self.active_history().redo_stamp().is_some() && !self.redo_fresh_sequence() {
+            self.active_history_mut().clear_redo();
+        }
+    }
+
+    /// The steps in reach, as the History panel lists them (#1986): the
+    /// active sequence's and the project's in the order they moved, each
+    /// with its label, the next to undo last; and those redo can put
+    /// back, the next to redo last. A project step's label says so.
+    pub fn history_view(&self) -> (Vec<String>, Vec<String>) {
+        let (seq, project) = (self.active_history(), &self.project_history);
+        let label = |e: &HistoryEntry, is_project: bool| if is_project { format!("{} (project)", e.label()) } else { e.label().to_owned() };
+        let mut undo: Vec<(u64, String)> = seq.undo_stamped().map(|(s, e)| (s, label(e, false))).chain(project.undo_stamped().map(|(s, e)| (s, label(e, true)))).collect();
+        undo.sort_by_key(|(s, _)| *s);
+        let last_sequence_edit = self.command_histories.values().map(|h| h.last_edit_stamp()).max().unwrap_or(0);
+        let mut redo: Vec<(u64, String)> = seq.redo_stamped().filter(|(s, _)| *s > project.last_edit_stamp()).map(|(s, e)| (s, label(e, false)))
+            .chain(project.redo_stamped().filter(|(s, _)| *s > last_sequence_edit).map(|(s, e)| (s, label(e, true))))
+            .collect();
+        redo.sort_by_key(|(s, _)| *s);
+        (undo.into_iter().map(|(_, l)| l).collect(), redo.into_iter().map(|(_, l)| l).collect())
+    }
+
+    /// Take the next step back, from whichever history holds it.
+    pub fn take_undo(&mut self) -> Option<HistoryEntry> {
+        self.prune_stale_redo();
+        match self.next_undo()? {
+            crate::history::Scope::Project => self.project_history_mut().undo(),
+            crate::history::Scope::Sequence => self.active_history_mut().undo(),
+        }
+    }
+
+    /// Put the next step back, from whichever history holds it.
+    pub fn take_redo(&mut self) -> Option<HistoryEntry> {
+        self.prune_stale_redo();
+        match self.next_redo()? {
+            crate::history::Scope::Project => self.project_history_mut().redo(),
+            crate::history::Scope::Sequence => self.active_history_mut().redo(),
+        }
     }
     /// A clip's input colour space set to `log_format`, as the grade's
     /// Input Colour Space menu sets it (`SetClipLogFormat`), recorded as
@@ -5231,7 +5387,22 @@ impl AppState {
     /// `state.active_history_mut().push(HistoryEntry { sequence_idx, command })`
     /// idiom — callers no longer pass a sequence index.
     pub fn push_history(&mut self, command: EditCommand) {
-        self.active_history_mut().push(HistoryEntry { command });
+        // The project's steps go to its own history, reachable from any
+        // sequence (#1986); inside a batch already open they are one more
+        // edit of it, and the batch stays where it is.
+        let project = command.scope() == crate::history::Scope::Project && !self.active_history().is_batching();
+        if project {
+            // A gesture of the sequence's under way ends here: typing,
+            // a dragged value, a title colour being picked go on as new
+            // steps, not folded into one from before this (#1986).
+            self.active_history_mut().end_burst();
+            self.tracks_undo_gesture = None;
+            self.title_colour_edit = None;
+            self.project_history_mut().push(HistoryEntry { command });
+        } else {
+            self.active_history_mut().push(HistoryEntry { command });
+        }
+        self.prune_stale_redo();
         self.history_ops_since_save = self.history_ops_since_save.saturating_add(1);
     }
     /// `edits`, already applied, recorded as one undo step named `label`,
@@ -5261,11 +5432,12 @@ impl AppState {
         for h in self.command_histories.values_mut() {
             h.set_max_size(max);
         }
+        self.project_history.set_max_size(max);
     }
     /// Are *any* of the per-sequence histories mid-drag? Used by the
     /// autosave timer to skip while the user is gesturing.
     pub fn any_drag_in_progress(&self) -> bool {
-        self.command_histories.values().any(|h| h.is_any_drag_in_progress())
+        self.command_histories.values().any(|h| h.is_any_drag_in_progress()) || self.project_history.is_any_drag_in_progress()
     }
 
     /// Resolve `selected_clip` to its (track_idx, &Clip) location in
@@ -6026,6 +6198,142 @@ mod per_sequence_history_tests {
         assert_eq!(state.history_ops_since_save, 0);
     }
 
+    /// A step of the whole project's: tagging a file (#1986).
+    fn project_command(tag: &str) -> EditCommand {
+        EditCommand::SetMediaTags { media_id: klipp_core::MediaId::new(), old_tags: Vec::new(), new_tags: vec![tag.into()] }
+    }
+
+    fn seq_command(name: &'static str) -> EditCommand {
+        EditCommand::Named { label: name.into(), edit: Box::new(dummy_command()) }
+    }
+
+    fn undo_label_of(state: &mut AppState) -> Option<String> {
+        let label = state.undo_label();
+        state.take_undo().map(|_| label.unwrap_or_default())
+    }
+
+    fn redo_label_of(state: &mut AppState) -> Option<String> {
+        let label = state.redo_label();
+        state.take_redo().map(|_| label.unwrap_or_default())
+    }
+
+    /// #1986: the project's steps and a sequence's interleave by when
+    /// they were made: undo takes back the latest wherever it lives, and
+    /// redo puts them back in the order they were taken.
+    #[test]
+    fn project_and_sequence_steps_undo_in_the_order_made() {
+        let mut state = AppState::default();
+        state.push_history(seq_command("A"));
+        state.push_history(project_command("P"));
+        state.push_history(seq_command("B"));
+        assert!(state.project_history.can_undo() && state.active_history().undo_count() == 2, "the project's step is kept apart");
+        let undone: Vec<String> = std::iter::from_fn(|| undo_label_of(&mut state)).collect();
+        assert_eq!(undone, ["B", "Set Tags (project)", "A"]);
+        let redone: Vec<String> = std::iter::from_fn(|| redo_label_of(&mut state)).collect();
+        assert_eq!(redone, ["A", "Set Tags (project)", "B"]);
+    }
+
+    /// A project step made in one sequence is taken back, and put back,
+    /// from another, past that one's older steps.
+    #[test]
+    fn a_project_step_is_reached_from_any_sequence() {
+        let mut state = AppState::default();
+        add_seq(&mut state, "B");
+        state.active_sequence_idx = 1;
+        state.push_history(seq_command("older in B"));
+        state.active_sequence_idx = 0;
+        state.push_history(project_command("P"));
+        state.active_sequence_idx = 1;
+        assert_eq!(state.undo_scopes().0, Some("project"));
+        assert_eq!(state.undo_label().as_deref(), Some("Set Tags (project)"));
+        assert_eq!(state.undo_depth(), 2);
+        assert_eq!(undo_label_of(&mut state).as_deref(), Some("Set Tags (project)"));
+        assert_eq!(state.undo_label().as_deref(), Some("older in B"), "B's own step is left");
+        // Undone from B, redone from A.
+        state.active_sequence_idx = 0;
+        assert_eq!(redo_label_of(&mut state).as_deref(), Some("Set Tags (project)"));
+    }
+
+    /// Redo stays linear across both: a newer edit anywhere makes a
+    /// project step stale, and a newer project step makes a sequence's
+    /// stale — however the edit was recorded, a drag's end included.
+    #[test]
+    fn a_newer_edit_anywhere_ends_redo() {
+        let mut state = AppState::default();
+        add_seq(&mut state, "B");
+        state.push_history(project_command("P"));
+        state.take_undo();
+        state.active_sequence_idx = 1;
+        state.push_history(seq_command("in B"));
+        state.active_sequence_idx = 0;
+        assert_eq!(state.next_redo(), None, "an edit in B after P was undone: P is stale everywhere");
+        assert_eq!(state.redo_depth(), 0);
+        assert!(!state.project_history.can_redo(), "the push dropped the stale project step");
+        // A drag's end, recorded past push_history, does the same.
+        state.push_history(project_command("Q"));
+        state.take_undo();
+        let text = |t: &str| klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: t.into(), ..Default::default() });
+        let title = |a: &str, b: &str| HistoryEntry { command: EditCommand::EditTitle { clip_id: klipp_core::ClipId::nil(), description: "Title Size", old_data: text(a), new_data: text(b) } };
+        state.active_history_mut().begin_drag("size".into(), title("a", "a"));
+        state.active_history_mut().end_drag(title("a", "b"));
+        assert_eq!(state.next_redo(), None, "a drag ended after Q was undone");
+        // And the other way: a sequence step undone, then a project step.
+        state.push_history(seq_command("S"));
+        state.take_undo();
+        assert_eq!(state.next_redo(), Some(crate::history::Scope::Sequence));
+        state.push_history(project_command("R"));
+        assert_eq!(state.next_redo(), None, "the project step is newer than S's undoing");
+    }
+
+    /// A project step inside an open batch is one more edit of the batch:
+    /// the batch stays one step, in the sequence's history.
+    #[test]
+    fn a_project_step_in_an_open_batch_stays_with_it() {
+        let mut state = AppState::default();
+        // An older project step, taken back: closing the batch ends it.
+        state.push_history(project_command("older"));
+        state.take_undo();
+        assert_eq!(state.next_redo(), Some(crate::history::Scope::Project));
+        state.active_history_mut().begin_batch();
+        state.push_history(seq_command("A"));
+        state.push_history(project_command("P"));
+        state.active_history_mut().end_batch();
+        assert!(!state.project_history.can_undo());
+        assert_eq!(state.active_history().undo_count(), 1);
+        assert!(state.active_history().last_edit_stamp() > state.project_history.last_edit_stamp(), "the batch, project edit and all, is the sequence's last edit");
+        assert_eq!(state.next_redo(), None, "closing the batch ended the older project redo");
+        assert_eq!(state.redo_depth(), 0);
+        state.push_history(seq_command("next"));
+        assert!(!state.project_history.can_redo(), "and the stale step is dropped, not kept");
+    }
+
+    /// Typing on either side of a project step is two steps, not one
+    /// folded across it.
+    #[test]
+    fn a_project_step_ends_a_typing_burst() {
+        let mut state = AppState::default();
+        let clip = klipp_core::ClipId::new();
+        let text = |t: &str| klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: t.into(), ..Default::default() });
+        state.push_history(EditCommand::EditTitle { clip_id: clip, description: "Edit Title Text", old_data: text("a"), new_data: text("ab") });
+        state.active_history_mut().note_title_text_edit(clip);
+        state.push_history(project_command("P"));
+        assert!(!state.active_history_mut().try_coalesce_title_text(clip, &text("ab"), &text("abc")), "the burst ended at the project step");
+    }
+
+    /// With the stacks full, the oldest steps go and the order holds.
+    #[test]
+    fn evicted_steps_leave_the_order_whole() {
+        let mut state = AppState::default();
+        state.set_history_max_size(2);
+        for n in ["A", "B", "C"] {
+            state.push_history(seq_command(n));
+        }
+        state.push_history(project_command("P"));
+        state.push_history(seq_command("D"));
+        let undone: Vec<String> = std::iter::from_fn(|| undo_label_of(&mut state)).collect();
+        assert_eq!(undone, ["D", "Set Tags (project)", "C"], "B and A went with the size");
+    }
+
     #[test]
     fn set_history_max_size_propagates_to_all_existing() {
         let mut state = AppState::default();
@@ -6531,14 +6839,14 @@ mod log_format_undo_tests {
         assert_eq!(state.set_clip_log_format(a_id, klipp_core::LogFormat::SLog3), Some(media));
         assert_eq!(format(&state), (klipp_core::LogFormat::SLog3, true));
         assert_ne!(picture(&state, b_id), before.1, "the other sequence's clip of the file too");
-        assert_eq!(state.active_history().undo_count(), 1, "one step");
+        assert_eq!((state.undo_depth(), state.undo_scopes().0), (1, Some("project")), "one step, the project's (#1986)");
         let after = (picture(&state, a_id), picture(&state, b_id), format(&state));
-        let entry = state.active_history_mut().undo().unwrap();
+        let entry = state.take_undo().unwrap();
         let active = state.active_sequence_idx;
         let mut doc = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps };
         doc.apply_inverse(&entry.command);
         assert_eq!((picture(&state, a_id), picture(&state, b_id), format(&state)), before, "undo takes it all back");
-        let entry = state.active_history_mut().redo().unwrap();
+        let entry = state.take_redo().unwrap();
         let mut doc = klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps };
         doc.apply_forward(&entry.command);
         assert_eq!((picture(&state, a_id), picture(&state, b_id), format(&state)), after, "redo puts it back");
@@ -6570,10 +6878,10 @@ mod log_format_undo_tests {
             state.thumbnail_cache.set_filmstrip(media, vec![klipp_media::FilmstripFrame { time_secs: 0.0, rgba: vec![0; 4], width: 1, height: 1 }]);
             state.filmstrip_in_progress.insert(media);
             let effects = if undo {
-                let entry = state.active_history_mut().undo().unwrap();
+                let entry = state.take_undo().unwrap();
                 klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_inverse(&entry.command)
             } else {
-                let entry = state.active_history_mut().redo().unwrap();
+                let entry = state.take_redo().unwrap();
                 klipp_document::apply::DocumentView { sequences: &mut state.sequences, active, media_pool: &mut state.media_pool, fps: &mut state.fps }.apply_forward(&entry.command)
             };
             let remake = state.pictures_to_remake(&effects);

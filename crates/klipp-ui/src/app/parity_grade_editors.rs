@@ -60,8 +60,10 @@ fn edit_case(start: &Grade, drive: impl FnOnce(&mut Grade) -> Result<(), String>
     if after == before {
         return Err("the edit changed nothing".into());
     }
-    if g.state.active_history().undo_count() != 1 {
-        return Err(format!("{} undo steps, not one", g.state.active_history().undo_count()));
+    // The sequence's steps and the project's: a camera encoding is the
+    // file's, a project step (#1986).
+    if g.state.undo_depth() != 1 {
+        return Err(format!("{} undo steps, not one", g.state.undo_depth()));
     }
     g.step(false)?;
     if g.picture() != before {

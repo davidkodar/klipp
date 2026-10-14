@@ -956,12 +956,12 @@ impl KlippApp {
                         let new_rating = (*rating).min(5);
                         if old_rating != new_rating {
                             item.rating = new_rating;
-                            self.state.active_history_mut().push(crate::history::HistoryEntry {
-                                command: crate::history::EditCommand::SetMediaRating {
-                                    media_id: *media_id,
-                                    old_rating,
-                                    new_rating,
-                                },
+                            // The pool's own record: a project step, reachable from any
+                            // sequence (#1986).
+                            self.state.push_history(crate::history::EditCommand::SetMediaRating {
+                                media_id: *media_id,
+                                old_rating,
+                                new_rating,
                             });
                             self.state.dirty = true;
                         }
@@ -973,12 +973,12 @@ impl KlippApp {
                         let old_tags = item.tags.clone();
                         if old_tags != *tags {
                             item.tags = tags.clone();
-                            self.state.active_history_mut().push(crate::history::HistoryEntry {
-                                command: crate::history::EditCommand::SetMediaTags {
-                                    media_id: *media_id,
-                                    old_tags,
-                                    new_tags: tags.clone(),
-                                },
+                            // The pool's own record: a project step, reachable from any
+                            // sequence (#1986).
+                            self.state.push_history(crate::history::EditCommand::SetMediaTags {
+                                media_id: *media_id,
+                                old_tags,
+                                new_tags: tags.clone(),
                             });
                             self.state.dirty = true;
                         }
@@ -990,12 +990,12 @@ impl KlippApp {
                         let old_label = item.color_label.to_u8();
                         if old_label != *label {
                             item.color_label = klipp_media::ColorLabel::from_u8(*label);
-                            self.state.active_history_mut().push(crate::history::HistoryEntry {
-                                command: crate::history::EditCommand::SetMediaColorLabel {
-                                    media_id: *media_id,
-                                    old_label,
-                                    new_label: *label,
-                                },
+                            // The pool's own record: a project step, reachable from any
+                            // sequence (#1986).
+                            self.state.push_history(crate::history::EditCommand::SetMediaColorLabel {
+                                media_id: *media_id,
+                                old_label,
+                                new_label: *label,
                             });
                             self.state.dirty = true;
                         }
@@ -1200,14 +1200,14 @@ impl KlippApp {
                         if from_bin != *bin {
                             item.bin = bin.clone();
                             item.bin_id = new_bin_id;
-                            self.state.active_history_mut().push(crate::history::HistoryEntry {
-                                command: crate::history::EditCommand::MoveMediaToBin {
-                                    media_id: *media_id,
-                                    from_bin,
-                                    to_bin: bin.clone(),
-                                    from_bin_id,
-                                    to_bin_id: new_bin_id,
-                                },
+                            // The pool's own record: a project step, reachable from any
+                            // sequence (#1986).
+                            self.state.push_history(crate::history::EditCommand::MoveMediaToBin {
+                                media_id: *media_id,
+                                from_bin,
+                                to_bin: bin.clone(),
+                                from_bin_id,
+                                to_bin_id: new_bin_id,
                             });
                             self.state.dirty = true;
                         }

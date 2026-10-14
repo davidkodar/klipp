@@ -1445,13 +1445,14 @@ impl KlippApp {
                 .resizable(true)
                 .default_size([220.0, 400.0])
                 .show(ctx, |ui| {
-                    ui.label(format!("{} undo / {} redo", self.state.active_history().undo_count(), self.state.active_history().redo_count()));
+                    // This sequence's steps and the project's, in the
+                    // order ctrl+z and redo take them (#1986).
+                    let (undo, redo) = self.state.history_view();
+                    ui.label(format!("{} undo / {} redo", undo.len(), redo.len()));
                     ui.separator();
                     egui::ScrollArea::vertical().max_height(350.0).show(ui, |ui| {
                         // Redo stack (future states, shown dimmed at top)
-                        let redo = self.state.active_history().redo_entries();
-                        for (i, entry) in redo.iter().enumerate().rev() {
-                            let label = entry.label();
+                        for (i, label) in redo.iter().enumerate().rev() {
                             let resp = ui.selectable_label(false,
                                 egui::RichText::new(format!("  {label}"))
                                     .size(11.0)
@@ -1468,9 +1469,7 @@ impl KlippApp {
                         ui.colored_label(self.theme.accent,
                             egui::RichText::new("\u{25B6} Current State").size(11.0));
                         // Undo stack (past states, most recent first)
-                        let undo = self.state.active_history().undo_entries();
-                        for (i, entry) in undo.iter().enumerate().rev() {
-                            let label = entry.label();
+                        for (i, label) in undo.iter().enumerate().rev() {
                             let resp = ui.selectable_label(false,
                                 egui::RichText::new(format!("  {label}")).size(11.0));
                             if resp.clicked() {

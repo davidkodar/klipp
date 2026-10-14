@@ -134,8 +134,8 @@ impl Stack {
         // The undo or redo passes the dispatch boundary first, as the app's
         // does, which closes any drag still open.
         self.state.before_dispatch(&if forward { AppCommand::Redo } else { AppCommand::Undo });
-        let history = self.state.active_history_mut();
-        let entry = if forward { history.redo() } else { history.undo() }.ok_or("no step to take")?;
+        // The step the app takes: the sequence's or the project's (#1986).
+        let entry = if forward { self.state.take_redo() } else { self.state.take_undo() }.ok_or("no step to take")?;
         let mut doc = klipp_document::apply::DocumentView { sequences: &mut self.state.sequences, active: self.state.active_sequence_idx, media_pool: &mut self.state.media_pool, fps: &mut self.state.fps };
         if forward { doc.apply_forward(&entry.command); } else { doc.apply_inverse(&entry.command); }
         Ok(())
@@ -965,8 +965,8 @@ impl Grade {
         // The undo or redo passes the dispatch boundary first, as the app's
         // does, which closes any drag still open.
         self.state.before_dispatch(&if forward { AppCommand::Redo } else { AppCommand::Undo });
-        let history = self.state.active_history_mut();
-        let entry = if forward { history.redo() } else { history.undo() }.ok_or("no step to take")?;
+        // The step the app takes: the sequence's or the project's (#1986).
+        let entry = if forward { self.state.take_redo() } else { self.state.take_undo() }.ok_or("no step to take")?;
         let mut doc = klipp_document::apply::DocumentView { sequences: &mut self.state.sequences, active: self.state.active_sequence_idx, media_pool: &mut self.state.media_pool, fps: &mut self.state.fps };
         if forward { doc.apply_forward(&entry.command); } else { doc.apply_inverse(&entry.command); }
         Ok(())

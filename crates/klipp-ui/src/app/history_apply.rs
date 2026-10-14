@@ -25,10 +25,9 @@ impl KlippApp {
     }
 
     pub(super) fn apply_undo(&mut self) {
-        // History is per-sequence — ctrl+z can never reach into another
-        // sequence's stack, so there's no cross-sequence navigation to
-        // toast about.
-        if let Some(entry) = self.state.active_history_mut().undo() {
+        // The active sequence's step or the project's, whichever is the
+        // latest (#1986); another sequence's stack is never reached.
+        if let Some(entry) = self.state.take_undo() {
             self.apply_edit_inverse(&entry.command);
             // And redraw the frame: paused, a sync alone shows the
             // change only when the engine happens to see it (a multicam
@@ -40,7 +39,7 @@ impl KlippApp {
     }
 
     pub(super) fn apply_redo(&mut self) {
-        if let Some(entry) = self.state.active_history_mut().redo() {
+        if let Some(entry) = self.state.take_redo() {
             self.apply_edit_forward(&entry.command);
             // And redraw the frame: paused, a sync alone shows the
             // change only when the engine happens to see it (a multicam

@@ -264,7 +264,7 @@ mod tests {
     fn each_edit_records_only_what_it_changed() {
         let mut state = state_with_a_clip();
         let v1 = state.sequences[0].tracks.iter().position(|t| !t.clips.is_empty()).unwrap();
-        let top = |state: &mut AppState| state.active_history_mut().undo_entries().back().map(|e| e.command.clone());
+        let top = |state: &mut AppState| state.active_history_mut().undo_entries().last().map(|e| e.command.clone());
 
         // A clip changed: that track's clips, so undoing it leaves the
         // track's mute, height or lock, changed since, alone.

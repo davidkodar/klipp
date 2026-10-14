@@ -116,10 +116,12 @@ impl KlippApp {
                 if let Ok(mut project) = self.state.control_shared.project.lock() {
                     project.path = self.state.project_path.clone();
                     project.dirty = self.state.dirty;
-                    project.undo = self.state.active_history().undo_label().map(str::to_owned);
-                    project.redo = self.state.active_history().redo_label().map(str::to_owned);
-                    project.undo_depth = self.state.active_history().undo_count();
-                    project.redo_depth = self.state.active_history().redo_count();
+                    project.undo = self.state.undo_label();
+                    project.redo = self.state.redo_label();
+                    project.undo_depth = self.state.undo_depth();
+                    project.redo_depth = self.state.redo_depth();
+                    let (undo_scope, redo_scope) = self.state.undo_scopes();
+                    (project.undo_scope, project.redo_scope) = (undo_scope.map(str::to_owned), redo_scope.map(str::to_owned));
                     (project.sequences, project.active_sequence) = self.state.sequence_summaries();
                     if self.state.dirty && !was_dirty && refused.is_none() {
                         project.changed_by = Some("edits".into());
@@ -268,6 +270,7 @@ impl KlippApp {
         for h in self.state.command_histories.values_mut() {
             h.set_revision_shared(std::sync::Arc::clone(&shared));
         }
+        self.state.project_history.set_revision_shared(std::sync::Arc::clone(&shared));
     }
 
     /// Analysis that finished since the last frame, put on its media
