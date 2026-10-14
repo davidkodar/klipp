@@ -169,10 +169,32 @@ mod socket_claim_tests {
     use super::claim_socket;
     use std::os::unix::net::UnixStream;
 
+    /// A directory of the test's own (#2006). Named by the process and a
+    /// count, never by the clock: two tests starting together read the
+    /// same nanoseconds under load, shared one directory, and the stale
+    /// test found the live one's socket in it. A leftover of an earlier
+    /// run with the same pid is cleared first.
     fn dir() -> std::path::PathBuf {
-        let d = std::path::Path::new("/tmp").join(format!("klipp-claim-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let d = std::env::temp_dir().join(format!("klipp-claim-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// #2006: each call is a directory of its own, however close
+    /// together: called back to back, as two tests starting at once do.
+    #[test]
+    fn each_test_has_a_directory_of_its_own() {
+        let dirs: Vec<_> = (0..64).map(|_| dir()).collect();
+        let mut unique = dirs.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), dirs.len(), "{dirs:?}");
+        for d in dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 
     /// #400: a second instance leaves a live Klipp's socket alone and
@@ -197,7 +219,8 @@ mod socket_claim_tests {
         let d = dir();
         let path = d.join("klipp-control.sock");
         drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
-        assert!(path.exists() && UnixStream::connect(&path).is_err(), "a dead socket file");
+        let (exists, connect) = (path.exists(), UnixStream::connect(&path));
+        assert!(exists && connect.is_err(), "a dead socket file: exists {exists}, connect {connect:?}");
         let (_l, p) = claim_socket(&path, 300).unwrap();
         assert_eq!(p, path);
         assert!(UnixStream::connect(&path).is_ok());
