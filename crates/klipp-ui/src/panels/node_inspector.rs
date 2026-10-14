@@ -3148,6 +3148,13 @@ impl NodeInspectorPanel {
             cmds.extend(crate::subject_track::card_ui(ui, crate::subject_track::card(dir).as_ref(), clip_id, theme));
             ui.add_space(4.0);
         }
+        // Bound by the clip's media and a model (#1881).
+        let subject = params.matte_subject;
+        if let Some(model) = subject {
+            cmds.extend(crate::subject_track::card_ui(ui, crate::subject_track::subject_card(clip_id, model.index() as u32).as_ref(), clip_id, theme));
+            ui.add_space(4.0);
+        }
+        let tracked = tracked.or_else(|| subject.map(|_| std::path::PathBuf::new()));
         // File picker.
         if tracked.is_none() { ui.horizontal(|ui| {
             ui.add_space(8.0);
@@ -3168,10 +3175,11 @@ impl NodeInspectorPanel {
                     move |path| vec![AppCommand::SetExternalMattePath { clip_id, node_id, path: Some(path) }],
                 );
             }
-            if params.matte_image_path.is_some()
+            if (params.matte_image_path.is_some() || params.matte_subject.is_some())
                 && ui.button("Clear").clicked()
             {
                 params.matte_image_path = None;
+                params.matte_subject = None;
                 cmds.push(AppCommand::SetExternalMattePath {
                     clip_id, node_id, path: None,
                 });

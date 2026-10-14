@@ -288,6 +288,16 @@ pub struct GraphExecutor {
     /// The manifests of the matte sequences (#239) external mattes read,
     /// by folder: read once, not every frame.
     matte_sequences: HashMap<PathBuf, (crate::matte_sequence::Manifest, Vec<i64>)>,
+    /// The current clip's tracked subject mattes' folders, by model
+    /// (`SubjectMatte::index`), found from its media as linked now
+    /// (#1881); cleared by every `prepare_clip`, so a run never reads
+    /// another clip's.
+    clip_subject_mattes: [Option<PathBuf>; 2],
+    /// The time of the current clip's media's last frame, when known: a
+    /// matte sequence is read there past the media's end, as the decoder
+    /// shows the picture (and at its first frame before its start).
+    /// Cleared by every `prepare_clip`.
+    clip_media_last: Option<f64>,
     /// The same plate already resized to the frame, keyed by path and
     /// target size. `matte_image_cache` above saves the *decode*; this
     /// saves the resize, which is a full-frame write — 33 MB at 4K — and
@@ -848,6 +858,8 @@ impl GraphExecutor {
             matte_image_cache: HashMap::new(),
             unreadable_images: HashSet::new(),
             matte_sequences: HashMap::new(),
+            clip_subject_mattes: [None, None],
+            clip_media_last: None,
             plate_resize_cache: HashMap::new(),
             matte_cache: HashMap::new(),
             gpu_chain_preseeded: false,
@@ -936,6 +948,8 @@ impl GraphExecutor {
             matte_image_cache: HashMap::new(),
             unreadable_images: HashSet::new(),
             matte_sequences: HashMap::new(),
+            clip_subject_mattes: [None, None],
+            clip_media_last: None,
             plate_resize_cache: HashMap::new(),
             matte_cache: HashMap::new(),
             gpu_chain_preseeded: false,
@@ -997,6 +1011,19 @@ impl GraphExecutor {
     /// where there is no clip context — the override pass becomes a
     /// no-op and masks render their persistent centres exactly as
     /// before. Cheap call: just clones the slice.
+    /// The current clip's tracked subject mattes' folders, by model (0
+    /// the subject, 1 the foreground), for its External Mattes bound to
+    /// a subject (#1881). Set after `prepare_clip`, which clears them.
+    pub fn set_current_clip_subject_mattes(&mut self, dirs: [Option<PathBuf>; 2]) {
+        self.clip_subject_mattes = dirs;
+    }
+
+    /// The current clip's media's last frame, seconds, for its matte
+    /// sequences read past the media's end. Set after `prepare_clip`.
+    pub fn set_current_clip_media_last(&mut self, last: Option<f64>) {
+        self.clip_media_last = last;
+    }
+
     pub fn set_current_clip_track_points(&mut self, points: &[klipp_core::TrackPoint]) {
         self.current_clip_track_points.clear();
         self.current_clip_track_points.extend_from_slice(points);
@@ -1677,6 +1704,9 @@ impl GraphExecutor {
     /// Called from begin_clip() to avoid rebuilding every frame.
     pub fn prepare_clip(&mut self, graph: &NodeGraph) {
         self.curve_lut_cache.clear();
+        // The last clip's subject mattes are its own (#1881).
+        self.clip_subject_mattes = [None, None];
+        self.clip_media_last = None;
         for node in &graph.nodes {
             if node.kind == NodeKind::RGBCurves {
                 if let Some(curves) = &node.params.curves {
@@ -5737,10 +5767,26 @@ impl GraphExecutor {
                 // has no input ports. Decoded image is cached by path;
                 // the per-frame cost is just a resize + channel pick.
                 let pixel_count = (width as usize) * (height as usize);
-                let Some(path) = params.matte_image_path.as_ref() else {
-                    // No image chosen: it selects everything, as every
-                    // matte producer does with nothing chosen (#1039).
-                    return full_matte(pixel_count);
+                // A tracked subject's matte, by the clip's media as linked
+                // now (#1881); none found is said, never another's.
+                let subject_dir;
+                let path = match params.matte_subject {
+                    Some(model) => match self.clip_subject_mattes[model.index()].clone() {
+                        Some(dir) => {
+                            subject_dir = dir;
+                            &subject_dir
+                        }
+                        None => {
+                            self.decline(node_id, NodeKind::ExternalMatte, crate::DeclineOutcome::FileMissing, "Subject matte".into(), "no subject matte for this clip's media; track its subject", format!("no {} matte folder for the clip's media", model.name()));
+                            return full_matte(pixel_count);
+                        }
+                    },
+                    None => match params.matte_image_path.as_ref() {
+                        Some(path) => path,
+                        // No image chosen: it selects everything, as every
+                        // matte producer does with nothing chosen (#1039).
+                        None => return full_matte(pixel_count),
+                    },
                 };
                 let channel = params.matte_channel.unwrap_or_default();
                 let invert = params.matte_invert.unwrap_or(false);
@@ -5750,7 +5796,10 @@ impl GraphExecutor {
                 // the matte; invert applies.
                 if path.is_dir() {
                     use crate::matte_sequence as seq;
-                    let secs = ctx.as_ref().map_or(clip_time_secs, |c| c.source_secs);
+                    // Held to the media's frames: its first before its
+                    // start, its last past its end, as the picture is.
+                    let secs = ctx.as_ref().map_or(clip_time_secs, |c| c.source_secs).max(0.0);
+                    let secs = self.clip_media_last.map_or(secs, |last| secs.min(last));
                     // Read once: the manifest and the frames there. A time
                     // with no frame of its own looks again, in case the
                     // pass has made it since.
@@ -9368,6 +9417,36 @@ mod unreadable_image_tests {
         ex.execute(&frame, &g, w, h, 0.0, 0, None, None).unwrap();
         assert!(ex.unreadable_images.is_empty(), "found again, it may warn again if it goes");
         let _ = std::fs::remove_file(&missing);
+    }
+
+    /// #1881: a subject-bound matte reads the folder its clip was given,
+    /// and only for that clip: the next `prepare_clip` takes it away, so a
+    /// run never reads another clip's subject; with none, it declines.
+    #[test]
+    fn a_subject_matte_is_the_current_clips_alone() {
+        use crate::matte_sequence as seq;
+        let (w, h) = (8u32, 4u32);
+        let dir = std::env::temp_dir().join(format!("klipp-subject-exec-{}-{}", std::process::id(), NodeId::new_v4()));
+        let m = seq::Manifest { format: seq::FORMAT, fps: 25.0, width: 4, height: 2, rotation: 0, model: "t".into(), model_bytes: 0, provider: "cpu".into(), algorithm: 1, steadied: true };
+        seq::create(&dir, &m).unwrap();
+        seq::put(&dir, &m, 0, &[255; 8]).unwrap();
+        let mut g = NodeGraph::default();
+        let corr = g.ensure_corrector();
+        let matte = NodeId::new_v4();
+        let params = NodeParams { matte_subject: Some(crate::SubjectMatte::Subject), ..Default::default() };
+        g.nodes.push(Node { id: matte, kind: NodeKind::ExternalMatte, label: "Subject".into(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+        g.edges.push(Edge { from_node: matte, from_port: 0, to_node: corr, to_port: 1 });
+        let frame = vec![128u8; (w * h * 4) as usize];
+        let mut ex = GraphExecutor::new_cpu_only();
+        let missing = |ex: &GraphExecutor| ex.last_run_declines().iter().any(|d| d.outcome == crate::DeclineOutcome::FileMissing);
+        ex.prepare_clip(&g);
+        ex.set_current_clip_subject_mattes([Some(dir.clone()), None]);
+        ex.execute(&frame, &g, w, h, 0.0, 0, None, None).unwrap();
+        assert!(!missing(&ex), "{:?}", ex.last_run_declines());
+        ex.prepare_clip(&g);
+        ex.execute(&frame, &g, w, h, 0.0, 0, None, None).unwrap();
+        assert!(missing(&ex), "the last clip's folder is not this one's");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 

@@ -61,6 +61,22 @@ pub fn set_card(dir: &Path, card: TrackCard) {
 }
 
 thread_local! {
+    static SUBJECT_CARDS: std::cell::RefCell<std::collections::HashMap<(klipp_core::ClipId, u32), TrackCard>> = Default::default();
+}
+
+/// The card for a clip's subject matte bound by model (#1881).
+pub fn subject_card(clip: klipp_core::ClipId, model: u32) -> Option<TrackCard> {
+    SUBJECT_CARDS.with(|c| c.borrow().get(&(clip, model)).cloned())
+}
+
+/// Set what the card for a clip's subject bound by model shows.
+pub fn set_subject_card(clip: klipp_core::ClipId, model: u32, card: TrackCard) {
+    SUBJECT_CARDS.with(|c| {
+        c.borrow_mut().insert((clip, model), card);
+    });
+}
+
+thread_local! {
     static TRANSITION_CARDS: std::cell::RefCell<std::collections::HashMap<klipp_core::TransitionId, TrackCard>> = Default::default();
 }
 

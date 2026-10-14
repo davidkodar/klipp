@@ -578,7 +578,11 @@ pub(super) fn matte_gap_lines(
         let (track, place) = match gap.transition {
             Some((transition_id, _)) => (AppCommand::TrackTransitionSubject { transition_id }, " (transition)"),
             None => {
-                let model = klipp_nodes::matte_sequence::read_manifest(&gap.folder).map_or("subject", |m| crate::subject_track::model_name(&m.model));
+                // Bound by its model (#1881), or by the folder's.
+                let model = match gap.subject {
+                    Some(m) => if m == 1 { "foreground" } else { "subject" },
+                    None => klipp_nodes::matte_sequence::read_manifest(&gap.folder).map_or("subject", |m| crate::subject_track::model_name(&m.model)),
+                };
                 (AppCommand::TrackSubject { clip_id: gap.clip, model: model.to_string() }, "")
             }
         };
@@ -2664,7 +2668,7 @@ mod export_rule_tests {
         let mut seq = klipp_timeline::Sequence::new_default();
         seq.tracks[0].clips = vec![klipp_timeline::Clip::media(a, tc(0.0), tc(2.0), tc(0.0), tc(2.0)), klipp_timeline::Clip::media(b, tc(2.0), tc(4.0), tc(0.0), tc(2.0))];
         let (ca, cb) = (seq.tracks[0].clips[0].id, seq.tracks[0].clips[1].id);
-        let gap = |clip, folder: &str| klipp_compose::subject_matte::Uncovered { clip, transition: None, folder: PathBuf::from(folder), covered: 20, needed: 50, from_secs: 0.0, to_secs: 2.0 };
+        let gap = |clip, folder: &str| klipp_compose::subject_matte::Uncovered { clip, transition: None, subject: None, folder: PathBuf::from(folder), covered: 20, needed: 50, from_secs: 0.0, to_secs: 2.0 };
         // Two folders on the first clip: one line for it; a transition
         // cutting round its subject (#985 phase 3), another.
         let tid = klipp_core::TransitionId::new();
