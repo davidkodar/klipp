@@ -810,6 +810,52 @@ pub fn gap_hand_overs() -> (u64, u64) {
     (GAP_HAND_OVERS_WARM.load(std::sync::atomic::Ordering::Relaxed), GAP_HAND_OVERS_COLD.load(std::sync::atomic::Ordering::Relaxed))
 }
 
+/// Whether `clip`'s grade reads a matte sequence: an External Matte bound
+/// to a tracked subject, or to a sequence's folder by path. The renderer
+/// finds the first's folder from the clip's media and holds both to the
+/// media's frames at its ends; the lean graded present can do neither, so
+/// such a clip goes to the stack (#1881).
+fn reads_matte_sequence(clip: &klipp_timeline::Clip) -> bool {
+    clip.grade().nodes.iter().any(|n| {
+        n.kind == klipp_nodes::NodeKind::ExternalMatte
+            && n.enabled
+            && (n.params.matte_subject.is_some() || n.params.matte_image_path.as_deref().is_some_and(klipp_nodes::matte_sequence::is_sequence))
+    })
+}
+
+#[cfg(test)]
+mod matte_sequence_route_tests {
+    use super::reads_matte_sequence;
+    use klipp_timeline::GradeAccess;
+
+    /// #1881: a grade reading a matte sequence, bound to a subject or to
+    /// its folder by path, keeps off the lean graded present; one reading
+    /// a still image file, or none, doesn't.
+    #[test]
+    fn a_matte_sequence_keeps_a_clip_off_the_lean_present() {
+        use klipp_nodes::{graph::{Edge, Node, NodeId}, matte_sequence, NodeKind, NodeParams};
+        let dir = std::env::temp_dir().join(format!("klipp-route-seq-{}-{}", std::process::id(), NodeId::new_v4()));
+        let m = matte_sequence::Manifest { format: matte_sequence::FORMAT, fps: 25.0, width: 2, height: 2, rotation: 0, model: "t".into(), model_bytes: 0, provider: "cpu".into(), algorithm: 1, steadied: true };
+        matte_sequence::create(&dir, &m).unwrap();
+        let still = dir.with_extension("png");
+        let with = |params: NodeParams| {
+            let mut c = klipp_timeline::Clip::media(klipp_core::MediaId::new(), klipp_core::RationalTime::from_frames(0, 24), klipp_core::RationalTime::from_frames(24, 24), klipp_core::RationalTime::from_frames(0, 24), klipp_core::RationalTime::from_frames(24, 24));
+            c.edit_grade(|g| {
+                let corr = g.ensure_corrector();
+                let matte = NodeId::new_v4();
+                g.nodes.push(Node { id: matte, kind: NodeKind::ExternalMatte, label: "Matte".into(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+                g.edges.push(Edge { from_node: matte, from_port: 0, to_node: corr, to_port: 1 });
+            });
+            c
+        };
+        assert!(reads_matte_sequence(&with(NodeParams { matte_image_path: Some(dir.clone()), ..Default::default() })), "a sequence by path");
+        assert!(reads_matte_sequence(&with(NodeParams { matte_subject: Some(klipp_nodes::SubjectMatte::Subject), ..Default::default() })), "a subject");
+        assert!(!reads_matte_sequence(&with(NodeParams { matte_image_path: Some(still), ..Default::default() })), "a still image");
+        assert!(!reads_matte_sequence(&with(NodeParams::default())), "nothing chosen");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 #[cfg(test)]
 mod frame_cache_tests {
     use super::{FrameCache, Pregrade, PregradePixels};
@@ -7892,7 +7938,7 @@ impl PlaybackEngine {
                     | "render keyframes on clip"
                     | "timeline grade active"
                     // The stack places it through the renderer (#1881).
-                    | "subject matte on clip"
+                    | "matte sequence on clip"
             ) || (*b == "builtin effects on clip" && builtin_on_gpu)
         })
     }
@@ -8233,10 +8279,11 @@ impl PlaybackEngine {
         if !clip.grade_is_identity() {
             blockers.push("grade graph is not an identity");
         }
-        // A tracked subject's matte is found from the clip's media by the
-        // renderer (#1881); the lean graded present has no frame source.
-        if clip.grade().nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::ExternalMatte && n.params.matte_subject.is_some()) {
-            blockers.push("subject matte on clip");
+        // A tracked subject's matte is found from the clip's media, and a
+        // matte sequence is read at the media's ends, by the renderer
+        // (#1881); the lean graded present has neither.
+        if reads_matte_sequence(clip) {
+            blockers.push("matte sequence on clip");
         }
         if clip.has_enabled_plugins() {
             blockers.push("plugin effects on clip");
