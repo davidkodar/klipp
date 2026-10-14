@@ -862,22 +862,20 @@ fn graph_batch_refusals_precede_document_preflight() {
     assert_eq!(h.shared.revision(),0);
 }
 
+/// A matte spliced into the grade's chain is refused, changing nothing.
+/// (An effect's label, refused here before, is kept since #1912:
+/// `graph_an_effect_s_label_is_kept_with_its_entry`.)
 #[test]
-fn graph_add_refuses_effect_labels_and_matte_splices_without_partial_edits() {
+fn graph_add_refuses_matte_splices_without_partial_edits() {
     let mut h = harness();
     let root = json!({"clip":h.ids.clip_a});
     let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
     let nodes = graph["nodes"].as_array().unwrap();
     let group = nodes.iter().find(|n| n["type"] == "klipp.group").unwrap()["id"].clone();
-    let display = nodes.iter().find(|n| n["type"] == "klipp.colour.scene_to_display").unwrap()["id"].clone();
-    for op in [
-        json!({"op":"add","after":{"root":root,"nodes":[display]},"type":"klipp.fx.gaussian_blur","label":"not retained"}),
-        json!({"op":"add","after":{"root":root,"nodes":[group,h.ids.corrector_a]},"type":"klipp.grade.mask"}),
-    ] {
-        let refused = h.call(json!({"method":"graph_ops","ops":[op]}));
-        assert_eq!(refused["ok"], false, "{refused}");
-        assert_eq!(refused["op_index"], 0);
-    }
+    let op = json!({"op":"add","after":{"root":root,"nodes":[group,h.ids.corrector_a]},"type":"klipp.grade.mask"});
+    let refused = h.call(json!({"method":"graph_ops","ops":[op]}));
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert_eq!(refused["op_index"], 0);
     assert!(h.edits_seen.lock().unwrap().is_empty());
     assert_eq!(h.shared.revision(), graph["revision"].as_u64().unwrap());
 }
@@ -3367,4 +3365,54 @@ fn set_node_param_keys_a_grade_value_at_a_time() {
     // Without `at`: the value, as before.
     h.ok(json!({ "method": "set_node_param", "clip_id": clip, "node_id": node, "param": "exposure", "value": 0.25 }));
     assert!(matches!(drain(&mut h).as_slice(), [C::SetNodeParam { value, .. }] if (*value - 0.25).abs() < 1e-6));
+}
+
+/// #1912: an effect added with a label keeps it, through the stored
+/// picture and undo, and is an effect the list holds: its entry is there,
+/// and a later edit of it through the list keeps the label.
+#[test]
+fn graph_an_effect_s_label_is_kept_with_its_entry() {
+    let mut h = harness();
+    let root = json!({"clip":h.ids.clip_a});
+    let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let display = graph["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.colour.scene_to_display").unwrap()["id"].clone();
+    let after = json!({"root":root,"nodes":[display]});
+    graph_test_edit_roundtrip(&mut h, json!([{"op":"add","after":after,"type":"klipp.fx.gaussian_blur","label":"Soft focus","params":{"radius":4.0}}]));
+    let read = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let blur = read["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.fx.gaussian_blur").expect("the effect").clone();
+    assert_eq!(blur["label"], "Soft focus", "{blur}");
+    // An entry in the clip's list, as an unnamed add makes one: its keys,
+    // its row in the inspector.
+    let clip = h.sequence.read().unwrap().tracks[0].clips[0].clone();
+    assert!(klipp_timeline::test_clip::effects(&clip).iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::GaussianBlur { .. })), "the effect has its entry");
+    // A later edit of it, which goes through the list, keeps the name.
+    let path = json!({"root":root,"nodes":[blur["id"]]});
+    graph_test_edit_roundtrip(&mut h, json!([{"op":"set","path":path,"key":"radius","value":7.0}]));
+    let read = h.ok(json!({"method":"graph_read","path":path}));
+    assert_eq!(read["nodes"][0]["label"], "Soft focus", "{read}");
+    assert_eq!(read["nodes"][0]["params"]["radius"], 7.0);
+}
+
+/// #1912: a track's grade still has no place for a correction's mix: the
+/// write is refused, saying so, and changes nothing.
+#[test]
+fn graph_a_track_grade_mix_is_refused() {
+    use klipp_graph_format::path::{Root, TrackPart};
+    let mut h = harness();
+    let track = {
+        let mut seq = h.sequence.write().unwrap();
+        let tid = seq.tracks[0].id.0;
+        // As the track-root write test seeds a track's grade.
+        seq.tracks[0].effects = serde_json::from_value(json!({ "video": [{ "type": "gaussian_blur", "radius": 3.0 }], "video_enabled": [true] })).unwrap();
+        seq.set_root_grade(Root::Track { track: tid, part: TrackPart::Grade }, Some(klipp_nodes::NodeGraph::default())).unwrap();
+        tid
+    };
+    let root = json!({"track":track,"part":"grade"});
+    let graph = h.ok(json!({"method":"graph_read","path":{"root":root,"nodes":[]}}));
+    let node = graph["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.grade.corrector").unwrap()["id"].clone();
+    let count = h.edits_seen.lock().unwrap().len();
+    let refused = h.call(json!({"method":"graph_ops","ops":[{"op":"mix","path":{"root":root,"nodes":[node]},"mix":0.5}]}));
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(refused.to_string().contains("doesn't keep a correction's mix"), "{refused}");
+    assert_eq!(h.edits_seen.lock().unwrap().len(), count, "nothing changed");
 }

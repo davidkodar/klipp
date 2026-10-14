@@ -26,17 +26,25 @@ pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepa
             if path.nodes.is_empty() { return Err("an operation must name a node".into()); }
             let mut initial_params = None;
             let mut created = None;
+            let mut then_label = None;
             let op = match item {
                 GraphWireOp::Add { r#type, params, label, .. } | GraphWireOp::AddBeside { r#type, params, label, .. } => {
                     if params.len() > 64 { return Err("an add takes at most 64 initial parameters".into()); }
                     let id = uuid::Uuid::new_v4();
-                    let node = graph_model::new_node(r#type, id, label.as_deref())?;
+                    let mut node = graph_model::new_node(r#type, id, label.as_deref())?;
                     let beside = matches!(item, GraphWireOp::AddBeside { .. });
-                    if node.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT && label.as_ref().is_some_and(|s| !s.is_empty()) {
-                        return Err("effect labels are not preserved by the current clip model".into());
-                    }
                     let mut target = path.clone();
                     *target.nodes.last_mut().unwrap() = id;
+                    // An effect is added as the list adds one, unnamed, so it
+                    // has its entry (its keys, its inspector row), then named
+                    // in the same batch by relabelling's own route, which the
+                    // picture keeps (#1912): an effect's entry holds no name.
+                    if node.type_id.as_str() == klipp_graph_format::types::LEGACY_EFFECT {
+                        if let Some(name) = label.as_ref().filter(|s| !s.is_empty()) {
+                            node.label = String::new();
+                            then_label = Some((target.clone(), name.clone()));
+                        }
+                    }
                     initial_params = Some((target.clone(), params));
                     created = Some(target);
                     if beside { GraphOp::AddNodeBeside { at: path, node: Box::new(node) } }
@@ -76,6 +84,12 @@ pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepa
                     result.ops.push(op);
                     result.source_indices.push(index);
                 }
+            }
+            if let Some((target, name)) = then_label {
+                let op = GraphOp::SetNodeMeta { path: target, label: Some(name), position: None };
+                apply_in_batch(&mut docs, &op, &RegistryCatalog, &pending)?;
+                result.ops.push(op);
+                result.source_indices.push(index);
             }
             if let Some(path) = created { result.created.insert(index, path); }
             Ok(())

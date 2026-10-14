@@ -79,9 +79,12 @@ keyframes, so key operations there are refused. A track's effects are named by
 their place in its list: after an add, remove or move, use the `created` paths
 and read the track again before naming its other effects. Placed kinds are
 owned by the clip's placement model and cannot be edited as ordinary nodes.
-Effect-node mix, mask connections/channel and custom labels are refused because
-the current clip model cannot preserve them. Publishing group ports is also
-unavailable until those interfaces survive saving and reopening. Do not replace
+On a clip, an effect node's mix, its mask connection and channel, and a custom
+label are kept: they read back, survive saving and reopening, and undo as one
+step. The timeline grade and a grade group's stages keep a correction's mix and
+mask channel; a track's grade has no place for them and refuses them.
+Publishing group ports is unavailable until those interfaces survive saving and
+reopening. Do not replace
 a refused operation with an approximation and report success.
 
 A refused batch changes nothing. `op_index` is the zero-based index in your
@@ -99,4 +102,4 @@ successful write do not by themselves prove the rendered picture is correct.
 
 ## The rules of klipp_graph, in short
 
-Edit one clip graph atomically as one undo step; send alone. Read graph_read and node_types first. Paths contain a root and node IDs; {new:k} refers to the node made by earlier op k. Values follow catalog kinds; choices use labels. Created nodes return full paths. Current clip persistence refuses placed kinds, effect mix/masks/labels, and publication; unsupported parameter shapes are refused with the failing op_index. Revision and project identity guard commit. add_beside inserts unwired; connect required inputs in the same batch. Mask shapes use the masks JSON described by node_types.
+Edit one clip graph atomically as one undo step; send alone. Read graph_read and node_types first. Paths contain a root and node IDs; {new:k} refers to the node made by earlier op k. Values follow catalog kinds; choices use labels. Created nodes return full paths. A clip's graph keeps an effect's mix, its mask (channel and connection) and its label; the timeline grade and a grade group's stages keep a correction's mix and mask channel, and a track's grade refuses them. Placed kinds and publication are refused; unsupported parameter shapes are refused with the failing op_index. Revision and project identity guard commit. add_beside inserts unwired; connect required inputs in the same batch. Mask shapes use the masks JSON described by node_types.
