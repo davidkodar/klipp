@@ -25,11 +25,20 @@ fn ffmpeg_ok() -> bool {
 /// Nyquist and the clicks square, which no sample-peak limiter can hold
 /// to a true-peak ceiling; otherwise the snare is a snare (low-passed at
 /// 14 kHz) and a click a sharp decaying 5 kHz burst.
+///
+/// Tests run side by side and two of them ask for `snare.wav`: written
+/// once, by one writer, to a name of its own and renamed into place, so a
+/// test never reads it half written (#2024). ffmpeg makes its output file
+/// before it writes it; reading it then, a test exported silence ("mix:
+/// -inf LUFS") and its ceiling check had nothing to measure.
 fn transients(name: &str, full_band: bool) -> PathBuf {
+    static WRITING: Mutex<()> = Mutex::new(());
+    let _one_writer = WRITING.lock().unwrap_or_else(|e| e.into_inner());
     let out = klipp_testing::scratch::scratch_file("klipp-codec-peak", name);
     if out.exists() {
         return out;
     }
+    let part = out.with_extension("part.wav");
     // Commas escaped: in a filter graph they separate filters.
     // Bright enough that an AAC encode of the limited mix runs half a
     // decibel over a -3 dBTP ceiling the mix met, as the bug report found.
@@ -46,10 +55,11 @@ fn transients(name: &str, full_band: bool) -> PathBuf {
         .args(["-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i"])
         .arg(format!("aevalsrc={wave}|{wave}:s=48000:d=6{shape}"))
         .args(["-c:a", "pcm_f32le"])
-        .arg(&out)
+        .arg(&part)
         .status()
         .is_ok_and(|s| s.success());
     assert!(ok, "the transients");
+    std::fs::rename(&part, &out).unwrap();
     out
 }
 
