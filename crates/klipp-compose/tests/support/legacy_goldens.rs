@@ -14,6 +14,12 @@
 //! recording half below is what wrote them (`KLIPP_RECORD_LEGACY_GOLDENS`),
 //! and now refuses.
 //!
+//! One test's frames can be recorded again from today's route instead,
+//! when a reviewed change moves what that route draws on purpose (#2017):
+//! `KLIPP_RECORD_CURRENT_GOLDEN` names the test and
+//! `KLIPP_RECORD_CURRENT_REASON` says why. Its file is marked as drawn by
+//! the plan route, and only its checksum moves in the manifest.
+//!
 //! The frames are a GPU's floats, and once the legacy route is deleted
 //! they can't be recorded again. So each `legacy-<name>.json` names the
 //! adapter and driver that drew them, and a test compares bit for bit
@@ -64,6 +70,9 @@ pub struct LegacyGoldens {
     name: String,
     stored: BTreeMap<String, Vec<u8>>,
     recording: Option<(String, Vec<(String, Vec<u8>)>)>,
+    /// Whether the recording is today's route's (one named test), not the
+    /// deleted legacy route's.
+    current: bool,
     /// Whether this run's adapter and driver drew the stored frames.
     exact: bool,
 }
@@ -88,10 +97,15 @@ impl LegacyGoldens {
     /// instead when `KLIPP_RECORD_LEGACY_GOLDENS` gives a reason.
     pub fn open(name: &str) -> Self {
         let name = name.to_owned();
+        if std::env::var("KLIPP_RECORD_CURRENT_GOLDEN").is_ok_and(|n| n == name) {
+            let reason = std::env::var("KLIPP_RECORD_CURRENT_REASON").unwrap_or_default();
+            assert!(!reason.trim().is_empty(), "say why {name}'s frames are recorded again from today's route");
+            return Self { name, stored: BTreeMap::new(), recording: Some((reason, Vec::new())), exact: true, current: true };
+        }
         if let Ok(reason) = std::env::var("KLIPP_RECORD_LEGACY_GOLDENS") {
             assert!(!ROUTE_GONE, "the legacy route is gone (M2 step 11d): its stored frames can't be recorded again");
             assert!(!reason.trim().is_empty(), "say why the legacy frames are recorded again");
-            return Self { name, stored: BTreeMap::new(), recording: Some((reason, Vec::new())), exact: true };
+            return Self { name, stored: BTreeMap::new(), recording: Some((reason, Vec::new())), exact: true, current: false };
         }
         let m = manifest();
         assert_eq!(
@@ -123,7 +137,7 @@ impl LegacyGoldens {
                 describe(running.as_ref())
             );
         }
-        Self { name, stored, recording: None, exact }
+        Self { name, stored, recording: None, exact, current: false }
     }
 
     /// Whether this run records rather than checks.
@@ -147,6 +161,7 @@ impl LegacyGoldens {
 
     /// Write what was recorded, and print the checksum to pin.
     pub fn finish(self) {
+        let current = self.current;
         let Some((reason, frames)) = self.recording else { return };
         let mut data = Vec::new();
         let mut index = Vec::new();
@@ -164,8 +179,9 @@ impl LegacyGoldens {
         let commit = std::process::Command::new("git").args(["rev-parse", "--short=8", "HEAD"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
         let lines: Vec<String> = index.iter().map(|f| format!("    {f}")).collect();
         let text = format!(
-            "{{\n  \"recorded_on\": {},\n  \"route\": \"legacy (set_legacy_effects)\",\n  \"adapter\": {},\n  \"reason\": {},\n  \"frames\": [\n{}\n  ]\n}}\n",
+            "{{\n  \"recorded_on\": {},\n  \"route\": {},\n  \"adapter\": {},\n  \"reason\": {},\n  \"frames\": [\n{}\n  ]\n}}\n",
             serde_json::json!(commit),
+            serde_json::json!(if current { "plans (today's route)" } else { "legacy (set_legacy_effects)" }),
             running_adapter().unwrap_or(serde_json::Value::Null),
             serde_json::json!(reason),
             lines.join(",\n")
@@ -177,10 +193,18 @@ impl LegacyGoldens {
         // what the others wrote.
         let _guard = MANIFEST.lock().unwrap_or_else(|e| e.into_inner());
         let mut m = manifest();
-        m["version"] = serde_json::json!(VERSION + 1);
+        // Today's route moves one test's file only: its checksum, read in
+        // review, not every stored frame's version.
+        if !current {
+            m["version"] = serde_json::json!(VERSION + 1);
+        }
         m["files"][&self.name] = serde_json::json!(format!("{:#018x}", fnv1a(&png)));
         std::fs::write(format!("{DIR}/legacy-manifest.json"), serde_json::to_string_pretty(&m).unwrap() + "\n").unwrap();
-        eprintln!("recorded {} legacy frames for {}: bump legacy_goldens::VERSION to {}", frames.len(), self.name, VERSION + 1);
+        if current {
+            eprintln!("recorded {} frames for {} from today's route", frames.len(), self.name);
+        } else {
+            eprintln!("recorded {} legacy frames for {}: bump legacy_goldens::VERSION to {}", frames.len(), self.name, VERSION + 1);
+        }
     }
 }
 

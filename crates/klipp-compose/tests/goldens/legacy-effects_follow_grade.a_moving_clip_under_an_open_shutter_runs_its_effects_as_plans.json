@@ -1,8 +1,8 @@
 {
-  "recorded_on": "73e18f94",
-  "route": "legacy (set_legacy_effects)",
+  "recorded_on": "aebee945",
+  "route": "plans (today's route)",
   "adapter": {"backend":"Vulkan","driver":"NVIDIA","driver_info":"610.57.04","name":"NVIDIA GeForce RTX 4080"},
-  "reason": "phase 2b M2 step 11d-2: the legacy effects route's frames, recorded before 11d-3 deletes it",
+  "reason": "#2017: shutter samples are averaged premultiplied, so the smear at the picture's moving edges changes on purpose; recorded from the plan route, the legacy route being gone",
   "frames": [
     {"key":"0","len":82944,"offset":0}
   ]
