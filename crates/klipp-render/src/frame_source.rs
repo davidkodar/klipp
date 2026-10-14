@@ -164,7 +164,27 @@ pub struct ExportFrameSource<'a> {
     opened: std::cell::Cell<usize>,
     /// Media sources' readers (#1746), kept across frames.
     media_readers: klipp_media::frame_reader::MediaReaders,
+    /// The linear neighbour readers temporal nodes read (#1980), one per
+    /// file, log format and working space, kept for the whole export: a
+    /// reader opened per frame decoded both neighbours again from a seek,
+    /// where a kept one has the frame before in its cache and reads the
+    /// frame after straight on.
+    neighbours: Vec<(NeighbourSource, Arc<std::sync::Mutex<NeighbourReader>>)>,
+    /// Whether [`Self::neighbours`] are kept; off, a reader is opened per
+    /// frame, as before #1980 (`set_neighbour_readers_kept`).
+    keep_neighbours: bool,
 }
+
+/// What a kept neighbour reader reads: a file, decoded through a log
+/// format into a working space.
+#[derive(PartialEq)]
+struct NeighbourSource {
+    path: std::path::PathBuf,
+    log_format: Option<klipp_core::LogFormat>,
+    working: WorkingColorspace,
+}
+
+type NeighbourReader = klipp_media::frame_reader::SeekableFrameReader<Vec<f32>>;
 
 impl<'a> ExportFrameSource<'a> {
     pub fn new(media: &'a HashMap<MediaId, MediaFile>, fps: f64, working: WorkingColorspace) -> Self {
@@ -180,7 +200,16 @@ impl<'a> ExportFrameSource<'a> {
             t_decode: std::time::Duration::ZERO,
             t_convert: std::time::Duration::ZERO,
             opened: std::cell::Cell::new(0),
+            neighbours: Vec::new(),
+            keep_neighbours: true,
         }
+    }
+
+    /// Whether temporal nodes' neighbour readers are kept across frames
+    /// (#1980), on unless turned off; off, each frame opens its own, as
+    /// before: what a test compares the kept readers against.
+    pub fn set_neighbour_readers_kept(&mut self, on: bool) {
+        self.keep_neighbours = on;
     }
 
     /// Readers this source has opened on media, all told.
@@ -414,10 +443,30 @@ impl FrameSource for ExportFrameSource<'_> {
         let file = self.media.get(media_id)?;
         let (path, log_format) = (file.path.clone(), file.log_format);
         let source_in = clip.source_in.to_secs_f64();
-        self.opened.set(self.opened.get() + 1);
-        let mut reader =
-            klipp_media::frame_reader::SeekableFrameReader::open_linear(&path, log_format, working)?;
-        Some(Box::new(move |t: f64| reader.decode_at((source_in + t).max(0.0)).map(|(px, w, h)| (Arc::new(px), w, h))))
+        if !self.keep_neighbours {
+            self.opened.set(self.opened.get() + 1);
+            let mut reader = NeighbourReader::open_linear(&path, log_format, working)?;
+            return Some(Box::new(move |t: f64| reader.decode_at((source_in + t).max(0.0)).map(|(px, w, h)| (Arc::new(px), w, h))));
+        }
+        // The file's kept reader (#1980). An export runs forward, so frame
+        // n's neighbour before is in the reader's cache from frame n - 2,
+        // and the one after is read straight on; a time behind the reader
+        // (a reversed clip, a ramp, another clip of the file) seeks, as a
+        // fresh reader would.
+        let source = NeighbourSource { path, log_format, working };
+        let reader = match self.neighbours.iter().find(|(s, _)| *s == source) {
+            Some((_, r)) => Arc::clone(r),
+            None => {
+                self.opened.set(self.opened.get() + 1);
+                let r = Arc::new(std::sync::Mutex::new(NeighbourReader::open_linear(&source.path, source.log_format, source.working)?));
+                self.neighbours.push((source, Arc::clone(&r)));
+                r
+            }
+        };
+        Some(Box::new(move |t: f64| {
+            let mut reader = reader.lock().unwrap_or_else(|e| e.into_inner());
+            reader.decode_at((source_in + t).max(0.0)).map(|(px, w, h)| (Arc::new(px), w, h))
+        }))
     }
 }
 

@@ -64,3 +64,7 @@ mod pan_inside_a_card;
 mod scene_layers;
 #[path = "../place_by_sync.rs"]
 mod place_by_sync;
+#[path = "../tnr_export_cost.rs"]
+mod tnr_export_cost;
+#[path = "../tnr_neighbours_kept.rs"]
+mod tnr_neighbours_kept;
