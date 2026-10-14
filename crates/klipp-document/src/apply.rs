@@ -35,6 +35,9 @@ pub struct Effects {
     /// Files whose decode settings changed (a camera encoding), so their
     /// thumbnail and filmstrip are made again for the new ones.
     pub refresh_media_pictures: Vec<MediaId>,
+    /// The project's colour set-up as a command left it (#1875), for the
+    /// host to take on and hand to the engine.
+    pub project_colour: Option<Box<klipp_core::ProjectColour>>,
 }
 
 impl Effects {
@@ -45,6 +48,24 @@ impl Effects {
         self.set_playhead |= other.set_playhead;
         self.rerender_titles.extend(other.rerender_titles);
         self.refresh_media_pictures.extend(other.refresh_media_pictures);
+        if other.project_colour.is_some() {
+            self.project_colour = other.project_colour;
+        }
+    }
+}
+
+/// A converted clip's picture put back (#1875), in whichever sequence
+/// holds it. One no longer there (its sequence or the clip gone) is said,
+/// never passed over quietly.
+fn put_picture(sequences: &mut [Sequence], grade: &crate::history::ConvertedGrade, before: bool) {
+    let clip = sequences
+        .iter_mut()
+        .filter(|s| s.id == grade.sequence)
+        .flat_map(|s| s.tracks.iter_mut())
+        .find_map(|t| t.find_clip_mut(grade.clip));
+    match clip {
+        Some(clip) => clip.restore_picture(if before { &grade.edit.before } else { &grade.edit.after }),
+        None => tracing::warn!(clip = ?grade.clip, "a converted clip is no longer in its sequence; its grade was not put back"),
     }
 }
 
@@ -169,6 +190,13 @@ impl DocumentView<'_> {
     pub fn apply_inverse(&mut self, cmd: &EditCommand) -> Effects {
         let mut effects = Effects::default();
         match cmd {
+            EditCommand::SetProjectColour { old, grades, .. } => {
+                for g in grades.iter().rev() {
+                    put_picture(self.sequences, g, true);
+                }
+                effects.project_colour = Some(old.clone());
+                effects.sync_sequence = true;
+            }
             EditCommand::Batch(commands) => {
                 for c in commands.iter().rev() {
                     effects.merge(self.apply_inverse(c));
@@ -865,6 +893,13 @@ impl DocumentView<'_> {
     pub fn apply_forward(&mut self, cmd: &EditCommand) -> Effects {
         let mut effects = Effects::default();
         match cmd {
+            EditCommand::SetProjectColour { new, grades, .. } => {
+                for g in grades {
+                    put_picture(self.sequences, g, false);
+                }
+                effects.project_colour = Some(new.clone());
+                effects.sync_sequence = true;
+            }
             EditCommand::Batch(commands) => {
                 for c in commands {
                     effects.merge(self.apply_forward(c));

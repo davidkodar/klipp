@@ -229,7 +229,7 @@ fn format_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod working_space_tests {
-    use crate::panels::colour_management::switch_working_space;
+    use crate::panels::colour_management::{apply_colour_change, project_colour};
     use crate::state::AppState;
     use klipp_core::WorkingColorspace;
     use klipp_timeline::GradeAccess;
@@ -254,13 +254,15 @@ mod working_space_tests {
     fn converting_wraps_the_grades_and_a_plain_switch_leaves_them() {
         let mut converted = graded();
         let before = grade(&converted).nodes.len();
-        switch_working_space(&mut converted, WorkingColorspace::AcesCG, true);
+        let to = klipp_core::ProjectColour { working_colorspace: WorkingColorspace::AcesCG, ..project_colour(&converted) };
+        apply_colour_change(&mut converted, to, true);
         assert_eq!(converted.project_working_colorspace, WorkingColorspace::AcesCG);
         assert!(grade(&converted).nodes.len() > before, "the grade is wrapped in conversions");
 
         let mut plain = graded();
         let untouched = grade(&plain).nodes.len();
-        switch_working_space(&mut plain, WorkingColorspace::AcesCG, false);
+        let to = klipp_core::ProjectColour { working_colorspace: WorkingColorspace::AcesCG, ..project_colour(&plain) };
+        apply_colour_change(&mut plain, to, false);
         assert_eq!(plain.project_working_colorspace, WorkingColorspace::AcesCG);
         assert_eq!(grade(&plain).nodes.len(), untouched, "a plain switch leaves the grade as it is");
     }

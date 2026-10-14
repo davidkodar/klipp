@@ -517,6 +517,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetGlobalLutEnabled(..)
         | AppCommand::SetProjectInputLut { .. }
         | AppCommand::SetProjectViewingLut { .. }
+        | AppCommand::SetProjectColour { .. }
         | AppCommand::AddEffect { .. }
         | AppCommand::RemoveEffect { .. }
         | AppCommand::SetEffectEnabled { .. }

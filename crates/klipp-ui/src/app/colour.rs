@@ -2093,7 +2093,23 @@ impl KlippApp {
 
     /// Tell the control socket which global LUT the project names, for
     /// `check`.
-    fn publish_global_lut(&self) {
+    /// The project's colour set-up changed to `colour` as one undo step
+    /// named for what changed (#1875); with `convert`, a new working space
+    /// converts every clip's grade so it keeps its look, and a toast says
+    /// how many. Nothing happens when nothing changes.
+    pub(super) fn set_project_colour(&mut self, colour: klipp_core::ProjectColour, convert: bool) {
+        let Some((edit, label, migrated)) = crate::panels::colour_management::colour_edit(&self.state, colour, convert) else { return };
+        let to = crate::panels::colour_management::working_colorspace_label(match &edit {
+            EditCommand::SetProjectColour { new, .. } => new.working_colorspace,
+            _ => self.state.project_working_colorspace,
+        });
+        self.apply_edits_as_one(std::slice::from_ref(&edit), &label);
+        if convert && migrated > 0 {
+            self.state.toast.show(format!("Migrated {migrated} clip{} to {to}", if migrated == 1 { "" } else { "s" }));
+        }
+    }
+
+    pub(super) fn publish_global_lut(&self) {
         if let Ok(mut project) = self.state.control_shared.project.lock() {
             project.global_lut = self.state.global_lut_path.clone();
         }
@@ -2102,19 +2118,28 @@ impl KlippApp {
     fn handle_color_lut_versions(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         match cmd {
             // Global LUT — update UI state and forward to engine
-            AppCommand::LoadGlobalLut { .. } => {
-                if let AppCommand::LoadGlobalLut { ref path } = cmd {
-                    self.state.global_lut_path = Some(path.clone());
-                    self.state.global_lut_enabled = true;
+            // The output LUT is part of the project's colour set-up, so a
+            // change of it is an undo step (#1875).
+            AppCommand::LoadGlobalLut { path } => {
+                if self.state.global_lut_path.as_ref() == Some(path) && self.state.global_lut_enabled {
+                    // The same file again: read afresh, nothing to undo.
+                    let _ = self.cmd_tx.send(cmd.clone());
+                } else {
+                    let mut colour = crate::panels::colour_management::project_colour(&self.state);
+                    colour.output_lut = Some(path.clone());
+                    colour.output_lut_enabled = true;
+                    self.set_project_colour(colour, false);
                 }
-                self.publish_global_lut();
-                let _ = self.cmd_tx.send(cmd.clone());
                 true
             }
             AppCommand::ClearGlobalLut => {
-                self.state.global_lut_path = None;
-                self.publish_global_lut();
-                let _ = self.cmd_tx.send(cmd.clone());
+                let mut colour = crate::panels::colour_management::project_colour(&self.state);
+                colour.output_lut = None;
+                self.set_project_colour(colour, false);
+                true
+            }
+            AppCommand::SetProjectColour { colour, convert_grades } => {
+                self.set_project_colour((**colour).clone(), *convert_grades);
                 true
             }
             AppCommand::SetGlobalLutOpacity(opacity) => {
@@ -2123,8 +2148,9 @@ impl KlippApp {
                 true
             }
             AppCommand::SetGlobalLutEnabled(enabled) => {
-                self.state.global_lut_enabled = *enabled;
-                let _ = self.cmd_tx.send(cmd.clone());
+                let mut colour = crate::panels::colour_management::project_colour(&self.state);
+                colour.output_lut_enabled = *enabled;
+                self.set_project_colour(colour, false);
                 true
             }
 
