@@ -306,6 +306,44 @@ pub struct FrameMeasure {
     /// before it turns them (#742).
     #[serde(default)]
     pub memory: MemoryColours,
+    /// The same instant of the clip's own file, read as the file holds
+    /// it with no grade on it, set by whoever can decode the file. A
+    /// rule reads it to tell what the grade did from what the scene is
+    /// (#1896). `None` for a picture not from a file, or not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceReading>,
+}
+
+/// What a frame's file holds before the grade: its floor and its share
+/// at each rail, for the rules that would otherwise blame the grade for
+/// the scene (#1896).
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct SourceReading {
+    pub l_p1: f32,
+    pub clip_lo_pct: f32,
+    pub clip_hi_pct: f32,
+}
+
+impl SourceReading {
+    /// The reading of an ungraded measurement of the file.
+    pub fn of(m: &FrameMeasure) -> SourceReading {
+        SourceReading { l_p1: m.l_p1, clip_lo_pct: m.clip_lo_pct, clip_hi_pct: m.clip_hi_pct }
+    }
+}
+
+/// How far over the file's own floor a graded floor may sit and still be
+/// the file's: under the 3 L* a viewer starts to see across a hard cut
+/// (see [`match_distance`]), and the source is read off a small decode
+/// whose darkest specks are averaged away, which raises its floor too.
+pub const SOURCE_FLOOR_SLACK: f32 = 3.0;
+
+/// Whether a black point above `target` is the scene's and not the
+/// grade's (#1896): the file's own darkest is already above the
+/// target's warn band — sunlit water, snow, a sky — and the grade has
+/// not lifted it more than [`SOURCE_FLOOR_SLACK`]. Forcing such a frame
+/// to the target would crush a picture that holds nothing black.
+pub fn floor_is_the_scene(m: &FrameMeasure, target: f32) -> bool {
+    m.source.is_some_and(|s| s.l_p1 > target + 4.0 && m.l_p1 <= s.l_p1 + SOURCE_FLOOR_SLACK)
 }
 
 /// Sky and foliage: how much of the frame each is, and its median hue
@@ -735,6 +773,7 @@ fn measure_picture(rgba: &[u8], width: u32, height: u32, faces: &[[f32; 4]]) -> 
             foliage_pct: leaf_c.len() as f32 / nn * 100.0,
             foliage_chroma: median(&mut leaf_c),
         },
+        source: None,
     }
 }
 
@@ -1652,7 +1691,20 @@ pub fn judge(m: &FrameMeasure, t: &LookTarget) -> Vec<Finding> {
     out.push(Finding { rule: "crushed_black", verdict: if m.clip_lo_pct > hi_fail { Verdict::Fail } else if m.clip_lo_pct > hi_warn { Verdict::Warn } else { Verdict::Pass }, reading: m.clip_lo_pct, target: 0.0, tolerance: hi_warn, what: format!("{:.1}% of the frame is at black", m.clip_lo_pct), fix: "shadows or lift up until the blacks hold detail" });
     if !t.screencast {
         if let Some(b) = t.black_l {
-            out.push(graded("black_point", m.l_p1, b, 4.0, 9.0, format!("black point L* {:.0} (target {b:.0})", m.l_p1), "lift"));
+            let mut f = graded("black_point", m.l_p1, b, 4.0, 9.0, format!("black point L* {:.0} (target {b:.0})", m.l_p1), "lift");
+            // The grade did not lift it: the file's own floor is as high.
+            // That says who lifted the black, not whether anything in
+            // the scene should be dark — sunlit water holds nothing
+            // black, but a flat profile or haze reads the same — so it
+            // stays a warning, said both ways, and never a fault the
+            // grade is blamed for (#1896 review).
+            if f.verdict != Verdict::Pass && floor_is_the_scene(m, b) {
+                let file = m.source.map_or(0.0, |s| s.l_p1);
+                f.verdict = Verdict::Warn;
+                f.what = format!("black point L* {:.0} (target {b:.0}), as in the file itself (its darkest is L* {file:.0}; the grade has not lifted it): the scene may hold nothing dark, or the source is flat", m.l_p1);
+                f.fix = "leave it if nothing in the scene is dark; if the source is flat or hazy, lift down until the darkest part reads as black";
+            }
+            out.push(f);
         }
         if let Some(wv) = t.white_l {
             out.push(graded("white_point", m.l_p99, wv, 4.0, 9.0, format!("white point L* {:.0} (target {wv:.0})", m.l_p99), "gain"));
@@ -1831,8 +1883,9 @@ pub fn primaries_toward(m: &FrameMeasure, t: &LookTarget) -> PrimaryStep {
     // is gamut, not white, but brightening pushes it further all the same.
     let clipping = m.clip_hi_pct > 1.0 || m.gamut_clip_pct > GAMUT_WARN;
     if !t.screencast {
-        if let Some(b) = t.black_l {
-            // L* at the bottom: about 0.012 lift per L*.
+        // L* at the bottom: about 0.012 lift per L*. Not toward a target
+        // the scene has nothing dark enough to reach (#1896).
+        if let Some(b) = t.black_l.filter(|b| !floor_is_the_scene(m, *b)) {
             s.lift = ((b - m.l_p1) * 0.012 * DAMP).clamp(-0.3, 0.3);
         }
         if let Some(wv) = t.white_l {
@@ -2694,5 +2747,36 @@ mod taste_tests {
         // A frame gone to black is no look's taste.
         let black = FrameMeasure { l_p1: 0.0, l_p50: 2.0, l_p99: 4.0, contrast_range: 3.0, ..FrameMeasure::default() };
         assert_eq!(judge(&black, &t).iter().find(|f| f.rule == "mid_grey").map(|f| f.verdict), Some(Verdict::Fail));
+    }
+
+    /// #1896: sunlit sea water read black point L* 36 against a target of
+    /// 4 and failed. The file's own darkest was as high, so the grade had
+    /// lifted nothing: a warning that says so, not an error, and no lift
+    /// is proposed. A grade that
+    /// lifts the same scene further, or a frame read with no source, is
+    /// still judged on its floor; clipping is judged either way.
+    #[test]
+    fn a_bright_scene_s_own_floor_is_not_blamed_on_the_grade() {
+        let t = LookTarget::unbriefed();
+        let water = FrameMeasure { l_p1: 36.0, l_p50: 70.0, l_p99: 96.0, contrast_range: 40.0, chroma_mean: 20.0, clip_hi_pct: 3.0, ..FrameMeasure::default() };
+        let black_point = |m: &FrameMeasure| judge(m, &t).into_iter().find(|f| f.rule == "black_point").expect("a black point");
+        let as_shot = FrameMeasure { source: Some(SourceReading { l_p1: 35.0, ..Default::default() }), ..water.clone() };
+        let f = black_point(&as_shot);
+        assert_eq!(f.verdict, Verdict::Warn, "said, not failed: {f:?}");
+        assert!(f.what.contains("as in the file itself") && f.what.contains("L* 35") && f.what.contains("or the source is flat"), "{}", f.what);
+        // A flat profile whose blacks sit high with no lift in the grade
+        // reads the same from its floor: it stays flagged, not passed.
+        let flat = FrameMeasure { l_p1: 30.0, l_p50: 50.0, l_p99: 75.0, contrast_range: 35.0, chroma_mean: 9.0, source: Some(SourceReading { l_p1: 30.0, ..Default::default() }), ..FrameMeasure::default() };
+        assert_ne!(black_point(&flat).verdict, Verdict::Pass, "a flat source stays visible");
+        assert_eq!(primaries_toward(&as_shot, &t).lift, 0.0, "no lift toward a black the scene does not hold");
+        assert_eq!(judge(&as_shot, &t).iter().find(|f| f.rule == "clipped_white").map(|f| f.verdict), Some(Verdict::Fail), "clipping is its own rule");
+        // The grade lifted a floor the file holds at L* 12.
+        let lifted = FrameMeasure { source: Some(SourceReading { l_p1: 12.0, ..Default::default() }), ..water.clone() };
+        assert_eq!(black_point(&lifted).verdict, Verdict::Fail);
+        assert!(primaries_toward(&lifted, &t).lift < 0.0);
+        // A bright file lifted further still by the grade.
+        let further = FrameMeasure { source: Some(SourceReading { l_p1: 28.0, ..Default::default() }), ..water.clone() };
+        assert_eq!(black_point(&further).verdict, Verdict::Fail);
+        assert_eq!(black_point(&water).verdict, Verdict::Fail, "with no source the floor is judged as before");
     }
 }

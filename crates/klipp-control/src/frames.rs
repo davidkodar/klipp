@@ -225,7 +225,12 @@ pub(crate) fn offline_picture_at(seq: &klipp_timeline::Sequence, pool: &klipp_me
 /// timeline). Scaled small: the scope stats read colour and luma, which a
 /// downscale preserves.
 pub(crate) fn decode_frame_rgba(path: &std::path::Path, secs: f64) -> Result<(Vec<u8>, u32, u32), String> {
-    let (w, h) = (320u32, 180u32);
+    decode_frame_rgba_sized(path, secs, 320, 180)
+}
+
+/// [`decode_frame_rgba`] at `w`x`h`: a file's own frame read at the size
+/// it is shown, so a reading of it compares with the timeline's.
+pub(crate) fn decode_frame_rgba_sized(path: &std::path::Path, secs: f64, w: u32, h: u32) -> Result<(Vec<u8>, u32, u32), String> {
     let out = std::process::Command::new("ffmpeg")
         .args(["-hide_banner", "-nostats", "-ss", &format!("{secs}"), "-i"])
         .arg(path)

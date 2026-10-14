@@ -80,3 +80,21 @@ fn isolated_measurement_uses_its_own_media_metadata() {
         "isolated footage must not inherit the overlay's unknown format"
     );
 }
+
+/// #1896 review: only a display-referred SDR file's own frame is read
+/// against the graded one; an HDR, BT.2020 or log file is on another
+/// scale.
+#[test]
+fn only_an_sdr_file_is_read_as_its_own_floor() {
+    let item = |f: &dyn Fn(&mut klipp_media::MediaItem)| {
+        let mut i = klipp_media::MediaItem::synthetic_for_test("/tmp/klipp-1896/a.mov".into(), None);
+        f(&mut i);
+        display_sdr(&i)
+    };
+    assert!(item(&|_| {}));
+    assert!(item(&|i| i.color_transfer = Some("bt709".into())));
+    assert!(!item(&|i| i.color_transfer = Some("smpte2084".into())));
+    assert!(!item(&|i| i.color_primaries = Some("bt2020".into())));
+    assert!(!item(&|i| i.colour_space = klipp_media::ColourSpace::Hlg));
+    assert!(!item(&|i| { i.log_format = klipp_core::LogFormat::SLog3; i.log_format_user_set = true; }));
+}

@@ -674,6 +674,11 @@ pub(crate) fn respond(
                     per_shot.push(json!({ "clip_id": id, "secs": mid, "skipped": "looks like camera log with no input transform", "lab": m }));
                     continue;
                 }
+                // The file's own floor, when a floor finding hangs on it:
+                // a bright scene is not graded down to a black it does not
+                // hold (#1896). The file does not change between rounds.
+                let source = if needs_source(&klipp_color::measure::judge(&m, &look)) { clip_of(id).and_then(|c| source_reading(ctx, c, *mid)) } else { None };
+                m.source = source;
                 let before = colour_report(&m, &look, *mid);
                 let mut step = klipp_color::measure::primaries_toward(&m, &look);
                 let mut done_rounds = 0u32;
@@ -725,6 +730,7 @@ pub(crate) fn respond(
                     done_rounds += 1;
                     let m_before_round = m.clone();
                     m = measure_at(ctx, *mid, clip_of(id), Some(6000))?;
+                    m.source = source;
                     // A round that leaves the shot worse off is not a
                     // step toward anything. The commonest case is a
                     // cast the primaries cannot reach — a tungsten shot
