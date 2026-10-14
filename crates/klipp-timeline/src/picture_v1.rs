@@ -115,6 +115,10 @@ pub struct EffectJson {
     /// A Transition's amount; 0 is left out.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub transition_amount: f64,
+    /// The entry's own id (#1500); an entry without one is written as
+    /// before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
 fn is_filter(c: &klipp_plugin::OfxCategory) -> bool {
@@ -232,6 +236,7 @@ impl EffectJson {
                 .collect(),
             context: effect.context,
             transition_amount: effect.transition_amount,
+            id: effect.id.clone(),
         }
     }
 
@@ -264,6 +269,7 @@ impl EffectJson {
                 .collect(),
             context: self.context,
             transition_amount: self.transition_amount,
+            id: self.id.clone(),
             ..Default::default()
         }
     }
