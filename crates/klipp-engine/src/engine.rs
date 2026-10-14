@@ -7891,6 +7891,8 @@ impl PlaybackEngine {
                     | "BT.1886 viewer transfer"
                     | "render keyframes on clip"
                     | "timeline grade active"
+                    // The stack places it through the renderer (#1881).
+                    | "subject matte on clip"
             ) || (*b == "builtin effects on clip" && builtin_on_gpu)
         })
     }
@@ -8230,6 +8232,11 @@ impl PlaybackEngine {
         }
         if !clip.grade_is_identity() {
             blockers.push("grade graph is not an identity");
+        }
+        // A tracked subject's matte is found from the clip's media by the
+        // renderer (#1881); the lean graded present has no frame source.
+        if clip.grade().nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::ExternalMatte && n.params.matte_subject.is_some()) {
+            blockers.push("subject matte on clip");
         }
         if clip.has_enabled_plugins() {
             blockers.push("plugin effects on clip");

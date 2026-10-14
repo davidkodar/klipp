@@ -3170,6 +3170,7 @@ pub(super) fn reset_node_params(params: &mut klipp_nodes::NodeParams) {
         ofx: params.ofx.take(),
         lut_path: params.lut_path.take(),
         matte_image_path: params.matte_image_path.take(),
+        matte_subject: params.matte_subject.take(),
         compound_subgraph: params.compound_subgraph.take(),
         ..Default::default()
     };
@@ -3281,6 +3282,8 @@ pub(super) fn write_node_settings(graph: &mut klipp_nodes::NodeGraph, cmd: &AppC
         AppCommand::SetExternalMattePath { node_id, path, .. } => {
             if let Some(node) = graph.nodes.iter_mut().find(|n| n.id == *node_id) {
                 node.params.matte_image_path = path.clone();
+                // A file chosen, or cleared, ends a subject binding (#1881).
+                node.params.matte_subject = None;
             }
             return true;
         }

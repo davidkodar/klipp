@@ -285,6 +285,12 @@ pub struct NodeParams {
     /// (#1039), so a correction it gates grades as if there were no key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matte_image_path: Option<PathBuf>,
+    /// A tracked subject's matte (#1881): bound by the clip's media and
+    /// this model, its folder found at render from the media as linked
+    /// now (so a relink follows the file), not by a path. `None` reads
+    /// `matte_image_path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte_subject: Option<SubjectMatte>,
     /// Which channel of the image becomes the matte signal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matte_channel: Option<MatteChannel>,
@@ -373,6 +379,37 @@ impl MatteCombineOp {
 }
 
 /// Which source channel of an ExternalMatte image becomes the matte.
+/// The model a tracked subject's matte is made by (#1881).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubjectMatte {
+    /// One detected subject, followed.
+    #[default]
+    Subject,
+    /// Everything in front.
+    Foreground,
+}
+
+impl SubjectMatte {
+    /// Its place in the folders a run is given
+    /// (`GraphExecutor::set_current_clip_subject_mattes`): 0 the subject,
+    /// 1 the foreground, as the frame sources number them.
+    pub fn index(self) -> usize {
+        match self {
+            SubjectMatte::Subject => 0,
+            SubjectMatte::Foreground => 1,
+        }
+    }
+
+    /// Its name, as `TrackSubject` takes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            SubjectMatte::Subject => "subject",
+            SubjectMatte::Foreground => "foreground",
+        }
+    }
+}
+
 /// Alpha is the natural choice for images painted with transparency;
 /// Luminance is the practical fallback for opaque grayscale masks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -503,6 +540,7 @@ impl NodeParams {
             && z(&self.mix)
             && self.layer_mixer.as_ref().is_none_or(|m| m.is_identity())
             && self.matte_image_path.is_none()
+            && self.matte_subject.is_none()
             && self.compound_subgraph.is_none()
     }
 

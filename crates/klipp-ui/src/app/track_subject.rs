@@ -74,12 +74,14 @@ impl KlippApp {
             return;
         }
         let fps = item.fps.as_f64().max(1.0);
-        // The matte on the grade, once: gating the first correction.
-        let bound = clip.grade().nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::ExternalMatte && n.params.matte_image_path.as_deref() == Some(dir.as_path()));
+        // The matte on the grade, once, by model: gating the first
+        // correction. Bound by the clip's media and the model, it follows a
+        // relink (#1881).
+        let subject = if model == MatteModel::Foreground { klipp_nodes::SubjectMatte::Foreground } else { klipp_nodes::SubjectMatte::Subject };
+        let bound = clip.grade().nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::ExternalMatte && n.params.matte_subject == Some(subject));
         if !bound {
-            let folder = dir.clone();
             let chosen = self.state.selected_node_id;
-            let edited = super::colour::edit_clip_graph(&mut self.state, clip_id, &[], true, move |graph| bind_subject(graph, folder, chosen));
+            let edited = super::colour::edit_clip_graph(&mut self.state, clip_id, &[], true, move |graph| bind_subject(graph, subject, chosen));
             if matches!(edited, Some(Ok(()))) {
                 *needs_refresh = true;
             }
@@ -251,27 +253,50 @@ impl KlippApp {
         let Some(clip_id) = self.state.selected_clip else { return };
         let seq = self.state.sequence();
         let Some(clip) = seq.all_clips().find(|c| c.id == clip_id) else { return };
-        let folders = klipp_compose::subject_matte::sequences_of(clip);
+        // Bound by path, and by the clip's media and a model (#1881): the
+        // latter found from the media as linked now.
+        let mut folders: Vec<(std::path::PathBuf, Option<u32>)> = klipp_compose::subject_matte::sequences_of(clip).into_iter().map(|d| (d, None)).collect();
+        let item = clip.media_id().and_then(|m| self.state.media_pool.get(&m));
+        for model in klipp_compose::subject_matte::subject_models_of(clip) {
+            let dir = item.and_then(|i| klipp_compose::subject_matte::media_dir(&i.path, klipp_compose::subject_matte::decode_rotation(clip, i.source_rotation), model)).unwrap_or_default();
+            folders.push((dir, Some(model)));
+        }
         if folders.is_empty() {
             return;
         }
         let times = klipp_compose::subject_matte::source_times(seq, clip);
         let running = self.state.tracking_subjects.get(&clip_id).and_then(|t| klipp_analysis::service::subject_matte_status(t.media)).filter(|s| matches!(s.state, klipp_analysis::service::State::Running | klipp_analysis::service::State::Queued));
-        for dir in folders {
-            let Some((covered, needed)) = klipp_compose::subject_matte::coverage(&dir, &times) else { continue };
+        for (dir, subject) in folders {
+            let (covered, needed) = match (klipp_compose::subject_matte::coverage(&dir, &times), subject) {
+                (Some(c), _) => c,
+                // Not made for the media as linked now: none of it.
+                (None, Some(_)) => (0, times.len()),
+                (None, None) => continue,
+            };
             let manifest = klipp_nodes::matte_sequence::read_manifest(&dir);
-            let lost = lost_frames(&dir);
+            let lost = if covered > 0 { lost_frames(&dir) } else { 0 };
             // Which correction it gates, by its name.
             let graph = clip.grade();
-            let gates = graph.nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::ExternalMatte && n.params.matte_image_path.as_deref() == Some(dir.as_path())).and_then(|m| graph.edges.iter().find(|e| e.from_node == m.id)).and_then(|e| graph.nodes.iter().find(|n| n.id == e.to_node)).map(|n| if n.label.is_empty() { format!("{:?}", n.kind) } else { n.label.clone() });
-            crate::subject_track::set_card(&dir, crate::subject_track::TrackCard {
+            let is_it = |n: &&klipp_nodes::graph::Node| n.kind == klipp_nodes::NodeKind::ExternalMatte && match subject {
+                Some(m) => n.params.matte_subject.is_some_and(|s| s.index() as u32 == m),
+                None => n.params.matte_image_path.as_deref() == Some(dir.as_path()),
+            };
+            let gates = graph.nodes.iter().find(is_it).and_then(|m| graph.edges.iter().find(|e| e.from_node == m.id)).and_then(|e| graph.nodes.iter().find(|n| n.id == e.to_node)).map(|n| if n.label.is_empty() { format!("{:?}", n.kind) } else { n.label.clone() });
+            let card = crate::subject_track::TrackCard {
                 gates,
                 running: running.as_ref().filter(|s| s.artifact.as_deref().is_none_or(|a| std::path::Path::new(a) == dir)).map(|s| s.progress.unwrap_or(0.0)),
                 covered,
                 needed,
                 lost,
-                model: manifest.as_ref().map_or("subject", |m| crate::subject_track::model_name(&m.model)),
-            });
+                model: match subject {
+                    Some(m) => if m == 1 { "foreground" } else { "subject" },
+                    None => manifest.as_ref().map_or("subject", |m| crate::subject_track::model_name(&m.model)),
+                },
+            };
+            match subject {
+                Some(m) => crate::subject_track::set_subject_card(clip_id, m, card),
+                None => crate::subject_track::set_card(&dir, card),
+            }
         }
     }
 }
@@ -318,7 +343,7 @@ fn lost_frames(dir: &std::path::Path) -> usize {
 /// sequence in `folder`, gating the correction `chosen` (the one picked in
 /// the grade view), else the first, made in the same step if it has none;
 /// a matte that gated it is replaced.
-pub(super) fn bind_subject(graph: &mut klipp_nodes::NodeGraph, folder: std::path::PathBuf, chosen: Option<klipp_nodes::NodeId>) {
+pub(super) fn bind_subject(graph: &mut klipp_nodes::NodeGraph, model: klipp_nodes::SubjectMatte, chosen: Option<klipp_nodes::NodeId>) {
     let is_correction = |n: &&klipp_nodes::graph::Node| n.kind == klipp_nodes::NodeKind::Corrector;
     let corrector = chosen
         .and_then(|id| graph.nodes.iter().filter(is_correction).find(|n| n.id == id))
@@ -326,7 +351,9 @@ pub(super) fn bind_subject(graph: &mut klipp_nodes::NodeGraph, folder: std::path
         .map(|n| n.id)
         .unwrap_or_else(|| graph.ensure_corrector());
     let matte = klipp_nodes::NodeId::new_v4();
-    let params = klipp_nodes::NodeParams { matte_image_path: Some(folder), ..Default::default() };
+    // Bound by the clip's media and the model, its folder found at render
+    // from the media as linked now (#1881).
+    let params = klipp_nodes::NodeParams { matte_subject: Some(model), ..Default::default() };
     graph.nodes.push(klipp_nodes::graph::Node {
         id: matte,
         kind: klipp_nodes::NodeKind::ExternalMatte,
@@ -365,9 +392,11 @@ mod tests {
         let corr = g.ensure_corrector();
         let old = klipp_nodes::NodeId::new_v4();
         g.edges.push(klipp_nodes::graph::Edge { from_node: old, from_port: 0, to_node: corr, to_port: 1 });
-        bind_subject(&mut g, std::path::PathBuf::from("/tmp/x"), None);
+        bind_subject(&mut g, klipp_nodes::SubjectMatte::Subject, None);
         let matte = g.nodes.iter().find(|n| n.label == "Subject").unwrap();
         assert_eq!(matte.kind, klipp_nodes::NodeKind::ExternalMatte);
+        // Bound by the model, not a folder's path (#1881).
+        assert_eq!((matte.params.matte_subject, matte.params.matte_image_path.as_ref()), (Some(klipp_nodes::SubjectMatte::Subject), None));
         let into: Vec<_> = g.edges.iter().filter(|e| e.to_node == corr && e.to_port == 1).collect();
         assert_eq!(into.len(), 1);
         assert_eq!(into[0].from_node, matte.id);
@@ -377,11 +406,11 @@ mod tests {
         let first = g.ensure_corrector();
         let second = klipp_nodes::NodeId::new_v4();
         g.nodes.push(klipp_nodes::graph::Node { id: second, kind: klipp_nodes::NodeKind::Corrector, label: "Corrector 2".into(), enabled: true, params: Default::default(), keyframes: Default::default(), output_link: None, input_links: Vec::new() });
-        bind_subject(&mut g, std::path::PathBuf::from("/tmp/y"), Some(second));
+        bind_subject(&mut g, klipp_nodes::SubjectMatte::Foreground, Some(second));
         assert!(g.edges.iter().any(|e| e.to_node == second && e.to_port == 1) && !g.edges.iter().any(|e| e.to_node == first && e.to_port == 1));
         let mut bare = klipp_nodes::NodeGraph::default();
         bare.nodes.retain(|n| n.kind != klipp_nodes::NodeKind::Corrector);
-        bind_subject(&mut bare, std::path::PathBuf::from("/tmp/z"), None);
+        bind_subject(&mut bare, klipp_nodes::SubjectMatte::Subject, None);
         assert!(bare.nodes.iter().any(|n| n.kind == klipp_nodes::NodeKind::Corrector), "a correction made for it");
     }
 

@@ -1818,3 +1818,79 @@ fn a_handle_past_the_media_end_reads_its_last_matte() {
     assert!(found.declines.iter().any(|d| d.fails()), "{:?}", found.declines);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// #1881: a grade's tracked subject is bound by the clip's media and its
+/// model, its folder found at render from the frame source (the media as
+/// linked now), not a path kept in the grade: the same grade reads one
+/// folder, then another once the media is relinked, on both routes, and
+/// declines when there is none, so the viewer says it and an export
+/// refuses.
+#[test]
+fn a_subject_bound_grade_follows_its_media() {
+    use klipp_nodes::{graph::{Edge, Node, NodeGraph, NodeId}, kinds::NodeKind, matte_sequence, params::NodeParams};
+    let (mw, mh) = (32u32, 18u32);
+    let manifest = matte_sequence::Manifest { format: matte_sequence::FORMAT, fps: 25.0, width: mw, height: mh, rotation: 0, model: "test".into(), model_bytes: 0, provider: "cpu".into(), algorithm: 1, steadied: true };
+    // Two files' mattes: all subject, and none.
+    let folder = |value: u8| {
+        let dir = std::env::temp_dir().join(format!("klipp-subject-bound-{}-{}", std::process::id(), ClipId::new().0));
+        matte_sequence::create(&dir, &manifest).unwrap();
+        for f in 0..=100i64 {
+            matte_sequence::put(&dir, &manifest, f * 40_000, &vec![value; (mw * mh) as usize]).unwrap();
+        }
+        dir
+    };
+    let (all, none) = (folder(255), folder(0));
+    let mut g = NodeGraph::default();
+    let corr = g.ensure_corrector();
+    g.nodes.iter_mut().find(|n| n.id == corr).unwrap().params.saturation = Some(0.0);
+    let matte = NodeId::new_v4();
+    let params = NodeParams { matte_subject: Some(klipp_nodes::SubjectMatte::Subject), ..Default::default() };
+    g.nodes.push(Node { id: matte, kind: NodeKind::ExternalMatte, label: "Subject".into(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: Vec::new() });
+    g.edges.push(Edge { from_node: matte, from_port: 0, to_node: corr, to_port: 1 });
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: W, height: H };
+    let mut v = Track::new("V1", TrackKind::Video);
+    let mut a = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 4.0);
+    a.set_grade(g);
+    let mut frames = HashMap::new();
+    frames.insert(a.id, (W, H, picture(0.2)));
+    v.clips = vec![a];
+    seq.tracks = vec![v];
+    let grey = |f: &[u8]| f.chunks_exact(4).all(|p| (p[0] as i32 - p[1] as i32).abs() <= 2 && (p[1] as i32 - p[2] as i32).abs() <= 2);
+    let original = display(&picture(0.2));
+    for (dir, desaturated) in [(&all, true), (&none, false)] {
+        let mut src = Shaped { frames: frames.clone(), dir: dir.clone(), length: None };
+        let mut r = renderer();
+        let (cpu, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
+        let cpu = display(&cpu);
+        assert!(found.declines.iter().all(|d| !d.fails()), "{:?}", found.declines);
+        assert_eq!(grey(&cpu), desaturated, "{}: the grade reads the folder its media has", dir.display());
+        if !desaturated {
+            assert!(worst(&cpu, &original) <= 1, "no subject: the picture as it was");
+        }
+        match r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) {
+            Some((gpu, _)) => assert!(worst(&cpu, &gpu) <= 1, "the stack reads the same folder"),
+            None => assert!(klipp_effects::gpu::GpuEffectsPipeline::new().is_none(), "the GPU stack declined: {:?}", r.last_decline()),
+        }
+    }
+    // No folder for the media (relinked, not tracked yet): said.
+    struct NoMatte(Shaped);
+    impl FrameSource for NoMatte {
+        fn frame(&mut self, clip: &Clip, s: f64, w: u32, h: u32) -> Option<SourceFrame> {
+            self.0.frame(clip, s, w, h)
+        }
+    }
+    let mut src = NoMatte(Shaped { frames, dir: all.clone(), length: None });
+    let mut r = renderer();
+    let (_, found) = r.render_inspected(&seq, tc(1.0), W, H, &mut src, RenderOptions::default(), klipp_compose::Inspect::default());
+    let missing: Vec<_> = found.declines.iter().filter(|d| d.outcome == klipp_nodes::DeclineOutcome::FileMissing).collect();
+    assert_eq!(missing.len(), 1, "{:?}", found.declines);
+    assert!(missing[0].fails() && missing[0].reason.contains("track its subject"), "{}", missing[0].reason);
+    // The export's check counts it the same way: by the folder found.
+    let short = klipp_compose::subject_matte::uncovered_with(&seq, |_, _| None, |_| None);
+    assert_eq!(short.len(), 1);
+    assert_eq!((short[0].subject, short[0].covered), (Some(0), 0));
+    assert!(klipp_compose::subject_matte::uncovered_with(&seq, |_, m| (m == 0).then(|| all.clone()), |_| None).is_empty());
+    let _ = std::fs::remove_dir_all(all);
+    let _ = std::fs::remove_dir_all(none);
+}

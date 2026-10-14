@@ -57,7 +57,7 @@ pub use auto_layout::auto_layout;
 pub use decline::{Decline, DeclineOutcome};
 pub use kinds::{GradeStage, NodeKind, PortRole};
 pub use params::{
-    LayerMixerParams, MatteChannel, MatteCombineOp, NodeKeyframeTrack, NodeKeyframeTracks, NodeParams,
+    LayerMixerParams, MatteChannel, MatteCombineOp, NodeKeyframeTrack, NodeKeyframeTracks, NodeParams, SubjectMatte,
 };
 // Re-exported from klipp_core; surfaced here so callers writing to
 // node params don't need to reach across crates.

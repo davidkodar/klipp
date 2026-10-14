@@ -879,6 +879,10 @@ pub struct Renderer {
     /// The subject matte sequences piece transitions read (#985 phase 3):
     /// each folder's manifest and frames, as last looked.
     subject_mattes: HashMap<std::path::PathBuf, (klipp_nodes::matte_sequence::Manifest, Vec<i64>)>,
+    /// Each clip's tracked subject mattes' folders by model, as its frame
+    /// source found them from its media as linked now (#1881), for its
+    /// grade's External Mattes bound to a subject.
+    clip_subject_dirs: HashMap<ClipId, [Option<std::path::PathBuf>; 2]>,
     /// Effect runs that couldn't be applied as a plan of their own and
     /// took the CPU kernels instead (`effects_by`), for the stats' counts.
     plan_misses: u64,
@@ -1042,6 +1046,7 @@ impl Renderer {
             grade_source_scene: false,
             still_generators: HashMap::new(),
             subject_mattes: HashMap::new(),
+            clip_subject_dirs: HashMap::new(),
             assets: Box::new(klipp_analysis::assets::CacheStore::default()),
             derived: HashMap::new(),
             clip_analysis: None,
@@ -1522,6 +1527,8 @@ impl Renderer {
         if clip.consumed_as_matte || clip.matte_source.is_some() || clip.matte_stencil.is_some() {
             return Single::ForTheStack;
         }
+        // Its tracked subjects' mattes, for its grade (#1881).
+        self.note_subject_mattes(clip, src);
         // OFX plugins run on the CPU frame, and a temporal one wants
         // neighbouring frames too.
         if clip.has_enabled_plugins() {
@@ -2180,6 +2187,7 @@ impl Renderer {
         stats: &mut RenderStats,
     ) -> Result<Option<Placed>, &'static str> {
         self.note_switched_off(c);
+        self.note_subject_mattes(c, src);
         let (mut fx, opacity) = clip_effects(c, time, fps, transforms.get(&c.id).copied(), self.pins.get(&c.id).copied());
         self.authored_colours(&mut fx);
         self.at_render_scale(&mut fx);
@@ -2826,6 +2834,7 @@ impl Renderer {
         transforms: &HashMap<ClipId, ResolvedTransform>,
     ) -> Option<(Vec<f32>, f32)> {
         self.note_switched_off(clip);
+        self.note_subject_mattes(clip, src);
         let clip_time = eval_clip_time(clip, time);
         // The rendered frame's presentation time, for its frame blend.
         let mut source_pts = None;
@@ -3311,8 +3320,10 @@ impl Renderer {
         g.edges.retain(|e| !(e.to_node == out && e.to_port == 0));
         g.edges.push(klipp_nodes::Edge { from_node: from, from_port: port, to_node: out, to_port: 0 });
         let (encoding, working, scale, tetrahedral) = (self.grade_encoding, self.working, self.px_scale, self.lut_tetrahedral);
+        let subject_dirs = self.clip_subject_dirs.get(&clip.id).cloned().unwrap_or_default();
         self.on_cpu_executor(|r| {
             r.executor.prepare_clip(clip.grade());
+            r.executor.set_current_clip_subject_mattes(subject_dirs);
             r.executor.set_grade_encoding(encoding);
             r.executor.set_working_colorspace(working);
             r.executor.set_render_scale(scale);
@@ -3785,6 +3796,23 @@ impl Renderer {
         Some(placed.chunks_exact(4).map(|p| (p[0] * p[3].clamp(0.0, 1.0)).clamp(0.0, 1.0)).collect())
     }
 
+    /// Where `clip`'s grade finds its tracked subjects' mattes (#1881):
+    /// asked of `src` by the clip's media as linked now, for each model
+    /// its External Mattes are bound to; nothing asked when none are.
+    fn note_subject_mattes(&mut self, clip: &Clip, src: &mut dyn FrameSource) {
+        let mut dirs: [Option<std::path::PathBuf>; 2] = [None, None];
+        for model in clip.grade().nodes.iter().filter(|n| n.kind == klipp_nodes::NodeKind::ExternalMatte).filter_map(|n| n.params.matte_subject) {
+            if dirs[model.index()].is_none() {
+                dirs[model.index()] = src.subject_matte_dir(clip, model.index() as u32);
+            }
+        }
+        if dirs.iter().any(Option::is_some) {
+            self.clip_subject_dirs.insert(clip.id, dirs);
+        } else {
+            self.clip_subject_dirs.remove(&clip.id);
+        }
+    }
+
     fn authored_colour(&self, c: [f32; 4]) -> [f32; 4] {
         let Some(m) = klipp_color::primaries::working_space_conversion_matrix(WorkingColorspace::Rec709Linear, self.working) else {
             return c;
@@ -4070,6 +4098,7 @@ impl Renderer {
         }
         let t = Instant::now();
         self.executor.prepare_clip(clip.grade());
+        self.executor.set_current_clip_subject_mattes(self.clip_subject_dirs.get(&clip.id).cloned().unwrap_or_default());
         self.executor.set_grade_encoding(self.grade_encoding);
         self.executor.set_working_colorspace(self.working);
         self.executor.set_render_scale(self.px_scale);

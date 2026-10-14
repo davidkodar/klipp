@@ -143,8 +143,24 @@ pub fn source_times(seq: &Sequence, clip: &Clip) -> Vec<f64> {
     out
 }
 
-/// The matte sequence folders `clip`'s grade reads: its External Mattes
-/// whose file is a matte sequence.
+/// The models `clip`'s grade binds tracked subjects by (#1881): its
+/// enabled External Mattes bound to a subject, each model once, by its
+/// index (0 the subject, 1 the foreground).
+pub fn subject_models_of(clip: &Clip) -> Vec<u32> {
+    let mut out: Vec<u32> = clip
+        .grade()
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::ExternalMatte && n.enabled)
+        .filter_map(|n| n.params.matte_subject.map(|m| m.index() as u32))
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// The matte sequence folders `clip`'s grade reads by path: its External
+/// Mattes whose file is a matte sequence.
 pub fn sequences_of(clip: &Clip) -> Vec<PathBuf> {
     clip.grade()
         .nodes
@@ -180,6 +196,9 @@ pub struct Uncovered {
     /// The piece transition that reads it, and its model (#985 phase 3);
     /// `None` for a matte on the clip's grade.
     pub transition: Option<(klipp_core::TransitionId, u32)>,
+    /// The model of a subject the clip's grade is bound to (#1881); `None`
+    /// for a folder bound by path, or a transition's.
+    pub subject: Option<u32>,
     pub folder: PathBuf,
     pub covered: usize,
     pub needed: usize,
@@ -195,13 +214,30 @@ pub struct Uncovered {
 /// ([`transition_subjects_with`]).
 pub fn uncovered_with(seq: &Sequence, dir_of: impl Fn(&Clip, u32) -> Option<PathBuf>, last_of: impl Fn(&Clip) -> Option<f64>) -> Vec<Uncovered> {
     let mut out = uncovered(seq);
+    // Grades bound to a tracked subject (#1881): its folder by the media
+    // as linked now; none found is none covered.
+    for clip in seq.tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| c.enabled) {
+        let models = subject_models_of(clip);
+        if models.is_empty() {
+            continue;
+        }
+        let times = source_times(seq, clip);
+        let (from_secs, to_secs) = times.iter().fold((f64::MAX, f64::MIN), |(a, b), t| (a.min(*t), b.max(*t)));
+        for model in models {
+            let folder = dir_of(clip, model).unwrap_or_default();
+            let (covered, needed) = coverage(&folder, &times).unwrap_or((0, times.len()));
+            if covered < needed {
+                out.push(Uncovered { clip: clip.id, transition: None, subject: Some(model), folder, covered, needed, from_secs, to_secs });
+            }
+        }
+    }
     for ts in transition_subjects_with(seq, last_of) {
         let Some(clip) = seq.tracks.iter().find_map(|t| t.find_clip(ts.clip)) else { continue };
         let folder = dir_of(clip, ts.model).unwrap_or_default();
         let (covered, needed) = coverage(&folder, &ts.times).unwrap_or((0, ts.times.len()));
         if covered < needed {
             let (from_secs, to_secs) = ts.times.iter().fold((f64::MAX, f64::MIN), |(a, b), t| (a.min(*t), b.max(*t)));
-            out.push(Uncovered { clip: ts.clip, transition: Some((ts.transition, ts.model)), folder, covered, needed, from_secs, to_secs });
+            out.push(Uncovered { clip: ts.clip, transition: Some((ts.transition, ts.model)), subject: None, folder, covered, needed, from_secs, to_secs });
         }
     }
     out
@@ -223,7 +259,7 @@ pub fn uncovered(seq: &Sequence) -> Vec<Uncovered> {
             for folder in folders {
                 if let Some((covered, needed)) = coverage(&folder, &times) {
                     if covered < needed {
-                        out.push(Uncovered { clip: clip.id, transition: None, folder, covered, needed, from_secs, to_secs });
+                        out.push(Uncovered { clip: clip.id, transition: None, subject: None, folder, covered, needed, from_secs, to_secs });
                     }
                 }
             }
