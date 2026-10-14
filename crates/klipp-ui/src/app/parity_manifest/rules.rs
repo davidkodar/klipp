@@ -441,6 +441,8 @@ pub(super) fn interactions(
                 Widget::ColourRgba => required.extend([ColourEdit, AlphaEdit, UndoRedo, Pixels]),
                 Widget::WheelPart(_) => {
                     let axis = match entry.parameter.rsplit('_').next() {
+                        // An HDR zone's wheel: its Y is the zone's exposure (#240).
+                        Some("exposure") if entry.type_id == "klipp.grade.hdr_zones" => WheelAxis::Master,
                         Some("x") => WheelAxis::X,
                         Some("y") => WheelAxis::Y,
                         Some("master") => WheelAxis::Master,

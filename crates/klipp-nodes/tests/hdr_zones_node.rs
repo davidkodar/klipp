@@ -50,8 +50,8 @@ fn graph(z: HdrZonesSettings) -> NodeGraph {
 fn moved(i: usize) -> HdrZonesSettings {
     let mut z = HdrZonesSettings::default();
     z.exposure[i] = 0.75;
-    z.colour_r[i] = 0.3;
-    z.colour_g[i] = -0.1;
+    z.colour_x[i] = 0.5;
+    z.colour_y[i] = -0.3;
     z.saturation[i] = 1.4;
     z
 }
@@ -69,7 +69,7 @@ fn cases() -> Vec<(String, HdrZonesSettings)> {
 }
 
 fn terms(z: &HdrZonesSettings, ws: WorkingColorspace) -> Terms {
-    let colour = std::array::from_fn(|i| [z.colour_r[i], z.colour_g[i], z.colour_b[i]]);
+    let colour = std::array::from_fn(|i| klipp_nodes::executor::hdr_zone_colour(z.colour_x[i], z.colour_y[i]));
     Terms::new(z.exposure, colour, z.saturation, z.boundary, z.falloff, klipp_color::primaries::luminance_weights(ws))
 }
 

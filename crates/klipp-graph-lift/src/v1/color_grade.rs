@@ -226,9 +226,8 @@ impl Default for DifferenceKeySettings {
 #[serde(default)]
 pub struct HdrZonesSettings {
     pub exposure: [f32; 7],
-    pub colour_r: [f32; 7],
-    pub colour_g: [f32; 7],
-    pub colour_b: [f32; 7],
+    pub colour_x: [f32; 7],
+    pub colour_y: [f32; 7],
     pub saturation: [f32; 7],
     pub boundary: [f32; 7],
     pub falloff: [f32; 7],
@@ -238,9 +237,8 @@ impl Default for HdrZonesSettings {
     fn default() -> Self {
         Self {
             exposure: [0.0; 7],
-            colour_r: [0.0; 7],
-            colour_g: [0.0; 7],
-            colour_b: [0.0; 7],
+            colour_x: [0.0; 7],
+            colour_y: [0.0; 7],
             saturation: [1.0; 7],
             boundary: [0.0, -4.5, -2.5, -1.0, 1.0, 2.5, 4.5],
             falloff: [1.0; 7],

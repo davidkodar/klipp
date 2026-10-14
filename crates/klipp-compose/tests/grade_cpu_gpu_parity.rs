@@ -202,7 +202,7 @@ fn cases() -> Vec<(&'static str, NodeKind, NodeParams)> {
 fn zone(i: usize) -> klipp_core::HdrZonesSettings {
     let mut z = klipp_core::HdrZonesSettings::default();
     z.exposure[i] = 0.6;
-    z.colour_b[i] = 0.3;
+    z.colour_y[i] = 0.4;
     z.saturation[i] = 1.4;
     z
 }

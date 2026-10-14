@@ -518,10 +518,18 @@ const MAX_PLANS: usize = 256;
 /// The grade shaders' white balance for no temperature or tint.
 const NO_WHITE_BALANCE: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
+/// A zone's colour wheel puck (#240) as its balance in stops per channel:
+/// the wheel's own mapping (a Lift or Gain wheel's), so the wheel's
+/// readout is the zone's stops, its master (the exposure) added.
+pub fn hdr_zone_colour(x: f32, y: f32) -> [f32; 3] {
+    let (r, g, b) = klipp_color::wheels::wheel_offset_to_rgb(x, y, 0.0);
+    [r, g, b]
+}
+
 /// The HDR zones' settings (#240) as a pixel uses them, in working space
 /// `ws`: its luminance places each pixel in stops.
 pub(crate) fn hdr_zone_terms(z: &klipp_core::HdrZonesSettings, ws: klipp_core::WorkingColorspace) -> klipp_color::grade_model::hdr_zones::Terms {
-    let colour = std::array::from_fn(|i| [z.colour_r[i], z.colour_g[i], z.colour_b[i]]);
+    let colour = std::array::from_fn(|i| hdr_zone_colour(z.colour_x[i], z.colour_y[i]));
     klipp_color::grade_model::hdr_zones::Terms::new(z.exposure, colour, z.saturation, z.boundary, z.falloff, klipp_color::primaries::luminance_weights(ws))
 }
 

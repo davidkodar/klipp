@@ -410,11 +410,12 @@ impl Default for SoftClipSettings {
 pub struct HdrZonesSettings {
     /// Each zone's exposure, in stops.
     pub exposure: [f32; 7],
-    /// Each zone's colour, as a balance in stops for red, green and blue;
-    /// its luma-weighted mean is taken out, so it never changes brightness.
-    pub colour_r: [f32; 7],
-    pub colour_g: [f32; 7],
-    pub colour_b: [f32; 7],
+    /// Each zone's colour, as its wheel's puck (x, y): its angle the hue,
+    /// its distance how far apart the channels move, as a Lift or Gain
+    /// wheel's (`klipp_color::wheels::wheel_offset_to_rgb`), in stops. The
+    /// balance never changes brightness.
+    pub colour_x: [f32; 7],
+    pub colour_y: [f32; 7],
     /// Each zone's saturation, about the pixel's luminance (1: none).
     pub saturation: [f32; 7],
     /// Each zone's boundary, in stops from mid grey.
@@ -432,7 +433,7 @@ impl HdrZonesSettings {
     /// Whether the zones change no pixel: every exposure and colour 0,
     /// every saturation 1. The boundaries place nothing then.
     pub fn is_neutral(&self) -> bool {
-        [&self.exposure, &self.colour_r, &self.colour_g, &self.colour_b].iter().all(|a| a.iter().all(|v| *v == 0.0)) && self.saturation.iter().all(|v| *v == 1.0)
+        [&self.exposure, &self.colour_x, &self.colour_y].iter().all(|a| a.iter().all(|v| *v == 0.0)) && self.saturation.iter().all(|v| *v == 1.0)
     }
 }
 
@@ -440,9 +441,8 @@ impl Default for HdrZonesSettings {
     fn default() -> Self {
         Self {
             exposure: [0.0; 7],
-            colour_r: [0.0; 7],
-            colour_g: [0.0; 7],
-            colour_b: [0.0; 7],
+            colour_x: [0.0; 7],
+            colour_y: [0.0; 7],
             saturation: [1.0; 7],
             boundary: Self::DEFAULT_BOUNDARY,
             falloff: [Self::DEFAULT_FALLOFF; 7],

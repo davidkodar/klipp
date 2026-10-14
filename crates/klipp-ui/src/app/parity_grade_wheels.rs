@@ -28,6 +28,9 @@ const TYPES: &[(NodeKind, &[Surface])] = &[
     (NodeKind::ColorWheels, &[Surface::GradeTabbedRight, Surface::GradeBottomTools]),
     (NodeKind::WheelSatBri, &[Surface::GradeBottomTools]),
     (NodeKind::ColorWarper, &[Surface::GradePerNode, Surface::GradeTabbedRight, Surface::GradeBottomTools]),
+    // The picked zone's wheel (#240): its puck the colour, its Y the
+    // exposure.
+    (NodeKind::HdrZones, &[Surface::GradePerNode]),
 ];
 
 /// The variant of a fixture whose Corrector is off: the Colour page's
@@ -56,6 +59,19 @@ fn control(ty: &NodeType, desc: &ParamDesc) -> Option<Control> {
     }
     if matches!(desc.key, "log_low_range" | "log_high_range") {
         return Some(Control::Range);
+    }
+    // An HDR zone's wheel, titled "Colour" whichever zone is picked.
+    if ty.kind == NodeKind::HdrZones {
+        let axis = if desc.key.ends_with("_colour_x") {
+            WheelAxis::X
+        } else if desc.key.ends_with("_colour_y") {
+            WheelAxis::Y
+        } else if desc.key.ends_with("_exposure") {
+            WheelAxis::Master
+        } else {
+            return None;
+        };
+        return Some(Control::Wheel { label: "Colour", axis });
     }
     // A Wheel Sat/Bri node's cells are presented as sliders, and drawn as
     // the cells under the bottom tools' wide wheels (`NARROW_WHEEL_EXCLUSION`).
@@ -152,7 +168,7 @@ fn fixture(kind: NodeKind, desc: &ParamDesc, surface: Surface, sector: bool) -> 
         Surface::GradeTabbedRight => Page::Tabbed(tab),
         _ => Page::Bottom(tab),
     };
-    Ok(Grade::new(state, clip, node).on(page))
+    Ok(Grade::new(state, clip, node).on(page).picking(desc.key))
 }
 
 /// The wheel labelled `label`: its disc's centre, a point on its master's
@@ -529,4 +545,57 @@ fn grade_wheels_and_warper_store_what_each_drag_must_on_the_sequences_grades() {
     super::parity_controls::on_roots(&mut report, run);
     report.family_result().unwrap();
     super::parity_controls::assert_on_every_root(&report);
+}
+
+/// An HDR Zones page (#240): Highlight picked from its zone menu, its
+/// wheel's Y dragged, stores that zone's exposure and no other zone's, one
+/// step; and the grade then moves only what Highlight reaches, bit for bit
+/// elsewhere. Control: before the pick, the same drag is Global's.
+#[test]
+fn a_zone_picked_from_the_menu_and_its_exposure_dragged_moves_only_that_zone() {
+    use klipp_color::grade_model::hdr_zones::{stops, weight};
+    let (state, clip, node) = placed(NodeKind::HdrZones).expect("a grade takes one");
+    let zones = |g: &Grade| g.grade().nodes.iter().find(|n| n.id == g.node).and_then(|n| n.params.hdr_zones.clone()).unwrap_or_default();
+    let fresh = Grade::new(state, clip, node);
+
+    // Control: unpicked, the page is Global's.
+    let mut global = fresh.twin();
+    let w = wheel(&mut global, "Colour").unwrap();
+    drag_from(&mut global, w.master, egui::vec2(PUCK_DRAG, 0.0), false).unwrap();
+    let z = zones(&global);
+    assert!(z.exposure[0] > 0.0 && z.exposure[1..].iter().all(|e| *e == 0.0), "Global's: {:?}", z.exposure);
+
+    let mut g = fresh.twin();
+    let drawn = g.drawn();
+    let at = drawn.iter().find(|(t, _)| t == "Highlight").map(|(_, p)| *p).expect("the zone menu's Highlight");
+    g.click_at(at);
+    let w = wheel(&mut g, "Colour").unwrap();
+    drag_from(&mut g, w.master, egui::vec2(PUCK_DRAG, 0.0), false).unwrap();
+    assert!(g.unapplied.is_empty(), "{:?}", g.unapplied);
+    let z = zones(&g);
+    assert!(z.exposure[5] > 0.0, "Highlight's exposure stored: {:?}", z.exposure);
+    assert!(z.exposure.iter().enumerate().all(|(i, e)| i == 5 || *e == 0.0), "no other zone's: {:?}", z.exposure);
+    assert_eq!(g.state.active_history().undo_count(), 1, "one step");
+
+    // The grade moves only what Highlight reaches.
+    let luma = klipp_color::primaries::luminance_weights(klipp_core::WorkingColorspace::Rec709Linear);
+    let input: Vec<f32> = (0..64).flat_map(|i| {
+        let v = 0.18 * (-8.0 + 16.0 * i as f32 / 63.0).exp2();
+        [v * 1.1, v, v * 0.9, 1.0]
+    }).collect();
+    let node = g.grade().nodes.iter().find(|n| n.id == g.node).unwrap().clone();
+    let mut graph = klipp_nodes::NodeGraph::default();
+    graph.splice_after_source(node);
+    let out = klipp_nodes::GraphExecutor::new_cpu_only().execute_linear(&input, &graph, 64, 1, 0.0, 0, None, None).unwrap().0;
+    let (mut moved, mut kept) = (0, 0);
+    for (a, b) in out.chunks_exact(4).zip(input.chunks_exact(4)) {
+        let s = stops(luma[0] * b[0] + luma[1] * b[1] + luma[2] * b[2]);
+        if weight(5, s, z.boundary[5], z.falloff[5]) > 0.0 {
+            moved += usize::from(a != b);
+        } else {
+            assert_eq!(a, b, "a pixel at {s} stops Highlight doesn't reach");
+            kept += 1;
+        }
+    }
+    assert!(moved > 0 && kept > 0, "moved {moved}, kept {kept}");
 }

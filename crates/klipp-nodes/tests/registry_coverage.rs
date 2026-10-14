@@ -135,7 +135,7 @@ fn override_names() -> BTreeSet<String> {
         names.insert(name);
     }
     for (i, zone) in klipp_nodes::params::HDR_ZONE_KEYS.iter().enumerate() {
-        for control in ["exposure", "colour_r", "colour_g", "colour_b", "saturation"] {
+        for control in ["exposure", "colour_x", "colour_y", "saturation"] {
             names.insert(format!("hdr_{zone}_{control}"));
         }
         if i > 0 {

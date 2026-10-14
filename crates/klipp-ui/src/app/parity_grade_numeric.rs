@@ -455,7 +455,7 @@ pub(super) fn run(report: &mut Report) {
         };
         let base = Grade::new(state, clip, node);
         for desc in rows {
-            match meet_conditions(&base, ty, desc) {
+            match meet_conditions(&base.twin().picking(desc.key), ty, desc) {
                 Ok((shown, variant)) => row_cases(report, ty, desc, &shown, Surface::GradePerNode, variant),
                 Err(e) => report.case(&format!("{} {}", ty.desc.id, desc.key), [], || Err(e)),
             }

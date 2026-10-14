@@ -722,17 +722,16 @@ impl NodeParams {
 
 /// The setting `key` names in the HDR zones (#240): `hdr_<zone>_<control>`,
 /// the zone one of Global, Black, Dark, Shadow, Light, Highlight,
-/// Specular in lower case, the control `exposure`, `colour_r`, `colour_g`,
-/// `colour_b` or `saturation`, or for every zone but Global `boundary` or
+/// Specular in lower case, the control `exposure`, `colour_x`, `colour_y`
+/// (the colour wheel's puck) or `saturation`, or for every zone but Global `boundary` or
 /// `falloff`.
 pub fn hdr_zone_slot<'a>(z: &'a mut HdrZonesSettings, key: &str) -> Option<&'a mut f32> {
     let rest = key.strip_prefix("hdr_")?;
     let (zone, control) = HDR_ZONE_KEYS.iter().enumerate().find_map(|(i, name)| rest.strip_prefix(name)?.strip_prefix('_').map(|c| (i, c)))?;
     Some(match control {
         "exposure" => &mut z.exposure[zone],
-        "colour_r" => &mut z.colour_r[zone],
-        "colour_g" => &mut z.colour_g[zone],
-        "colour_b" => &mut z.colour_b[zone],
+        "colour_x" => &mut z.colour_x[zone],
+        "colour_y" => &mut z.colour_y[zone],
         "saturation" => &mut z.saturation[zone],
         "boundary" if zone > 0 => &mut z.boundary[zone],
         "falloff" if zone > 0 => &mut z.falloff[zone],
@@ -903,10 +902,10 @@ mod tests {
     fn hdr_zones_are_settable_by_name() {
         let mut p = NodeParams::default();
         assert!(p.apply_override("hdr_highlight_exposure", 1.5));
-        assert!(p.apply_override("hdr_black_colour_b", 0.2));
+        assert!(p.apply_override("hdr_black_colour_y", 0.2));
         assert!(p.apply_override("hdr_shadow_boundary", -1.5));
         let z = p.hdr_zones.as_ref().expect("made on first touch");
-        assert_eq!((z.exposure[5], z.colour_b[1], z.boundary[3]), (1.5, 0.2, -1.5));
+        assert_eq!((z.exposure[5], z.colour_y[1], z.boundary[3]), (1.5, 0.2, -1.5));
         assert!(!p.is_default());
         for bad in ["hdr_global_boundary", "hdr_midtone_exposure", "hdr_light_gain", "hdr_lightexposure"] {
             let mut q = NodeParams::default();

@@ -24,6 +24,12 @@ use klipp_graph_format::Node;
 use klipp_nodes::NodeId;
 use klipp_timeline::{Clip, GradeAccess};
 
+/// Whether an HDR Zones page (#240) showing zone `zone` draws the
+/// parameter `key`: one of that zone's (`hdr_<zone>_...`).
+pub(crate) fn hdr_zone_shows(key: &str, zone: usize) -> bool {
+    key.strip_prefix("hdr_").and_then(|r| r.strip_prefix(klipp_nodes::params::HDR_ZONE_KEYS[zone])).is_some_and(|r| r.starts_with('_'))
+}
+
 /// Where a clip's grade node is in its picture: its path, and the node.
 pub fn grade_node(clip: &Clip, node: NodeId) -> Option<(NodePath, Node)> {
     let picture = &clip.picture_v2().ok()?.picture;
@@ -309,7 +315,15 @@ impl GradeSnapshot {
             }
         }
         let entry = entry_of(lifted);
-        let presentation = |p: &ParamDesc| ty.presentation(p);
+        // An HDR Zones node shows its picked zone's controls alone (#240).
+        let picked_zone = (v1.kind == klipp_nodes::NodeKind::HdrZones).then(|| panel.as_deref().map_or(0, |p| p.hdr_zone_picked(node)));
+        let presentation = |p: &ParamDesc| {
+            let mut shown = ty.presentation(p);
+            if picked_zone.is_some_and(|zone| !hdr_zone_shows(p.key, zone)) {
+                shown.widget = klipp_effects::registry::presentation::Widget::Hidden;
+            }
+            shown
+        };
         let stored = |p: &ParamDesc| grade_value(&entry, p);
         let keys = |p: &ParamDesc| {
             let base = row::number(&grade_value(&entry, p)).unwrap_or(p.default);
@@ -347,6 +361,10 @@ impl GradeSnapshot {
             custom: Some(&mut hook),
         };
         let drawn = ui.indent(("grade_node", node), |ui| node_rows(ui, &mut ctx, &rows)).inner;
+        if let Some(zone) = picked_zone {
+            ui.add_space(8.0);
+            crate::panels::node_inspector::hdr_zone_map(ui, &params.hdr_zones.clone().unwrap_or_default(), zone, theme);
+        }
         if drawn.is_empty() {
             ui.label(egui::RichText::new("No parameters").color(theme.text_dim));
         }

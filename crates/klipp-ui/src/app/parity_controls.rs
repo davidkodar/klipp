@@ -670,7 +670,21 @@ impl Grade {
         state.sequences[0].id = self.state.sequences[0].id;
         state.sequences[0].timeline_grade_slot().set(self.state.sequences[0].timeline_grade().cloned());
         state.sequences[0].grade_groups = self.state.sequences[0].grade_groups.clone();
-        Grade { page: self.page, root: self.root, group: self.group, clip: self.clip, ..Grade::plain(state, self.home, self.node) }
+        let mut twin = Grade { page: self.page, root: self.root, group: self.group, clip: self.clip, ..Grade::plain(state, self.home, self.node) };
+        // The zone an HDR Zones page shows, as picked on this one (#240).
+        twin.panel.hdr_zone_pick = self.panel.hdr_zone_pick.clone();
+        twin
+    }
+
+    /// The same, an HDR Zones page (#240) showing the zone `key` names
+    /// (`hdr_<zone>_...`), as if picked from its zone menu. Any other key
+    /// leaves it as it is.
+    pub(super) fn picking(mut self, key: &str) -> Self {
+        let zone = key.strip_prefix("hdr_").and_then(|rest| klipp_nodes::params::HDR_ZONE_KEYS.iter().position(|z| rest.strip_prefix(z).is_some_and(|r| r.starts_with('_'))));
+        if let Some(zone) = zone {
+            self.panel.hdr_zone_pick.insert(self.node, zone);
+        }
+        self
     }
 
     /// The same, on `page`.
@@ -985,6 +999,24 @@ fn nothing_else_changed(before: &klipp_nodes::NodeGraph, after: &klipp_nodes::No
                     }
                     for shifts in ["hue_shifts", "sat_shifts"] {
                         if let Some(slot) = n["params"]["warper_params"][shifts].get_mut(i) {
+                            *slot = serde_json::Value::Null;
+                        }
+                    }
+                    continue;
+                }
+                // An HDR zone's value (#240), kept in the zones' arrays: that
+                // zone's element set aside, every other compared. A wheel's
+                // edit writes its puck and Y together: those of the zone too.
+                let zone = key.strip_prefix("hdr_").and_then(|rest| {
+                    klipp_nodes::params::HDR_ZONE_KEYS.iter().enumerate().find_map(|(i, z)| rest.strip_prefix(z)?.strip_prefix('_').map(|c| (i, c)))
+                });
+                if let Some((i, control)) = zone {
+                    if n["params"]["hdr_zones"].is_null() {
+                        n["params"]["hdr_zones"] = serde_json::to_value(klipp_core::HdrZonesSettings::default()).unwrap();
+                    }
+                    let wheel = matches!(control, "colour_x" | "colour_y" | "exposure");
+                    for array in ["exposure", "colour_x", "colour_y", "saturation", "boundary", "falloff"].into_iter().filter(|a| *a == control || (wheel && matches!(*a, "colour_x" | "colour_y" | "exposure"))) {
+                        if let Some(slot) = n["params"]["hdr_zones"][array].get_mut(i) {
                             *slot = serde_json::Value::Null;
                         }
                     }
