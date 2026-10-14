@@ -168,7 +168,7 @@ exist until the plan runs.
 
 ## Ops
 
-- `place {media_id, track, at, source_in?, source_out?, insert?, with_audio?}`:
+- `place {media_id, track, at, source_in?, source_out?, insert?, with_audio?, sync_source_secs?}`:
   a media item onto a track (`"video"`, `"audio"`, `"text"` for the
   first of that kind, or a track index from the timeline view) at an
   anchor. Its sound comes along, linked, on the first audio track,
@@ -176,7 +176,10 @@ exist until the plan runs.
   and mutes the clip, which is what B-roll over a voice wants. An empty sequence takes the
   first picture's size and rate. With `insert`, every unlocked track is
   rippled later to make room and a clip straddling the anchor is split
-  there.
+  there. `sync_source_secs` is the moment of the file (seconds from its
+  start, as `search_sfx` reports `heard.peak_secs`) that lands on `at`:
+  the clip starts that much earlier, to the sample on an audio track,
+  and the step says where the moment lands.
 - `add_track {kind, name?}`: a video or text track on top, which
   becomes track 0 and moves every other index down by one; an audio or
   subtitle track at the bottom.

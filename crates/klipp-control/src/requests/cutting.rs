@@ -135,7 +135,7 @@ pub(crate) fn respond(
                 }
                 v
             }).collect();
-            Ok(json!({ "text": text, "results": results, "next": "Hear candidates with listen (a count, or [track_id, …]): a sound's length and when it peaks say where it goes, the peak on the cut. Add one with add_music (it takes a sound effect just the same: pass title, artist, preview_url, license, license_url, page_url); it brings Freesound's 128 kbps preview MP3, not the original file. The credit is kept; honour the licence." }))
+            Ok(json!({ "text": text, "results": results, "next": "Hear candidates with listen (a count, or [track_id, …]): a sound's length and when it peaks say where it goes, the peak on the cut: place it with sync_source_secs set to its heard.peak_secs and at on the cut. Add one with add_music (it takes a sound effect just the same: pass title, artist, preview_url, license, license_url, page_url); it brings Freesound's 128 kbps preview MP3, not the original file. The credit is kept; honour the licence." }))
         }
 
         ControlCommand::AddMusic { title, artist, track_id, download_url, preview_url, license, license_url, page_url, tracks } => {
@@ -358,7 +358,7 @@ fn music_shape(v: &mut serde_json::Value, path: &std::path::Path, id: klipp_core
             .segments
             .iter()
             .map(|&(a, b)| {
-                let op = klipp_document::ops::Op::Place { media_id: id, track: track_ref.clone(), at: klipp_document::ops::Anchor::Secs(place_at), source_in: Some(a), source_out: Some(b), insert: false, with_audio: true };
+                let op = klipp_document::ops::Op::Place { media_id: id, track: track_ref.clone(), at: klipp_document::ops::Anchor::Secs(place_at), source_in: Some(a), source_out: Some(b), insert: false, with_audio: true, sync_source_secs: None };
                 place_at += b - a;
                 serde_json::to_value(op).unwrap_or_default()
             })
