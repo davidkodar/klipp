@@ -953,6 +953,12 @@ pub enum ControlCommand {
         /// and DNxHD have rates of their own.
         #[serde(default)]
         bitrate_kbps: Option<u32>,
+        /// How long the encoder takes over each frame: fast, medium, slow
+        /// or veryslow (#1899). Slower is smaller at the same quality.
+        /// Apart from `preset`, which is a delivery; given with one, it
+        /// overrides the preset's.
+        #[serde(default)]
+        encoder_speed: Option<String>,
     },
     /// Every render job the app knows: status, progress, result.
     ExportStatus {

@@ -570,6 +570,7 @@ macro_rules! sender {
 }
 
 mod requests;
+pub use requests::output::{export_presets, ENCODER_SPEEDS};
 
 // A read inside a batch would answer before the writes it follows
 // are applied, which is a lie; refuse it.
