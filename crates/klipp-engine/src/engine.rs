@@ -8926,8 +8926,14 @@ impl PlaybackEngine {
         self.node_sample = Some(NodeSample { clip: clip_id, node: node_id, tap, nx, ny });
         self.regrade_cached_frame();
         // Answered by the render (`show_inspection`), unless it drew
-        // without that grade: nothing there to read.
-        if self.node_sample.take().is_some() {
+        // without that grade: nothing there to read. A pick that came
+        // before the parked frame did (a seek still decoding) waits for
+        // it: the paused refresh that paints the frame renders it with
+        // the tap and answers. Refused there, a pick sent right after a
+        // seek on a loaded machine failed for want of the frame.
+        let frame_owed = self.parked_pregrade().is_none() && self.v1_decoder.is_some();
+        if self.node_sample.is_some() && !frame_owed {
+            self.node_sample = None;
             answer(self, why("the node's picture could not be read on this frame"));
         }
     }
