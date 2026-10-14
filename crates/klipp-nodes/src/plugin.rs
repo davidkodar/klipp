@@ -183,9 +183,9 @@ pub fn run_ofx_noting(node: NodeId, entry: &OfxNodeParams, input: &[f32], width:
             }
         })
         .collect();
-    let mut authored = input.to_vec();
-    convert(&mut authored, klipp_color::primaries::working_space_conversion_matrix(working, WorkingColorspace::Rec709Linear));
-    let bytes = klipp_effects::linear_f32_rgba_to_srgb_u8(&authored);
+    // The form a plug-in takes a frame in, as its neighbours are given
+    // it (#2013).
+    let bytes = klipp_color::ofx::encode(input, working);
     let out = instance.render(&entry.values, &bytes, width, height, time, render_scale, &frames)?;
     let mut linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&out);
     convert(&mut linear, klipp_color::primaries::working_space_conversion_matrix(WorkingColorspace::Rec709Linear, working));

@@ -423,7 +423,19 @@ impl klipp_nodes::frame_context::SourceProvider for ClipSources<'_> {
         }
         let t = self.reader_time(source_secs);
         match self.encoded.as_ref().and_then(|r| r.as_ref()).and_then(|read| read(t)) {
-            Some((rgba8, width, height)) => Neighbour::Frame(EncodedFrame { rgba8, width, height, source_secs }),
+            // Fitted to the render size, as the frame beside it was: a
+            // viewer drawing below the media's size (or from a proxy)
+            // otherwise gave a plug-in no neighbours at all (#2013).
+            Some((rgba8, width, height)) => match self.current {
+                Some((_, _, w, h)) if (w, h) != (width, height) => {
+                    let linear = klipp_effects::srgb_u8_to_linear_f32_rgba(&rgba8);
+                    match fit_linear(linear, width, height, w, h) {
+                        Some(fitted) => Neighbour::Frame(EncodedFrame { rgba8: klipp_color::ofx::encode(&fitted, WorkingColorspace::Rec709Linear), width: w, height: h, source_secs }),
+                        None => Neighbour::Missing(Missing::Unavailable),
+                    }
+                }
+                _ => Neighbour::Frame(EncodedFrame { rgba8, width, height, source_secs }),
+            },
             None => Neighbour::Missing(Missing::Unavailable),
         }
     }
@@ -6440,6 +6452,46 @@ mod active_effect_gate_tests {
 mod clip_sources_tests {
     use super::*;
     use klipp_nodes::frame_context::{Neighbour, SourceProvider};
+
+    /// A gradient's frames at 64 × 36, encoded as a plug-in takes them.
+    struct Large(Vec<f32>);
+
+    impl FrameSource for Large {
+        fn frame(&mut self, _: &Clip, _: f64, _: u32, _: u32) -> Option<SourceFrame> {
+            None
+        }
+        fn temporal_frames(&mut self, _: &Clip) -> Option<klipp_plugin::FrameProviderFn> {
+            let bytes = klipp_color::ofx::encode(&self.0, WorkingColorspace::Rec709Linear);
+            Some(Box::new(move |_| Some((bytes.clone(), 64, 36))))
+        }
+    }
+
+    /// #2013: a neighbour read at another size than the frame drawn (the
+    /// viewer below full size, a proxy) is fitted to the frame's size, as
+    /// the linear ones are, so a plug-in still gets it. The neighbour is
+    /// resized after its 8-bit encoding and the frame beside it in linear
+    /// light, so the two differ by that much: 1 level measured on a
+    /// gradient, and held there. Control: the frame unfitted is a size
+    /// the plug-in's frame isn't.
+    #[test]
+    fn a_neighbour_of_another_size_is_fitted_to_the_frame() {
+        let full: Vec<f32> = (0..64 * 36).flat_map(|i| {
+            let (x, y) = ((i % 64) as f32 / 63.0, (i / 64) as f32 / 35.0);
+            [0.02 + 0.8 * x, 0.05 + 0.6 * y, 0.3 * (1.0 - x), 1.0]
+        }).collect();
+        let clip = Clip::media(klipp_core::MediaId::new(), Timecode::from_frames(0, 24), Timecode::from_frames(24, 24), Timecode::from_frames(0, 24), Timecode::from_frames(24, 24));
+        let mut src = Large(full.clone());
+        let mut sources = ClipSources::new(&mut src, &clip, WorkingColorspace::Rec709Linear).with_current(0.0, None, 32, 18);
+        let Neighbour::Frame(f) = sources.encoded(0.0) else { panic!("a neighbour") };
+        assert_eq!((f.width, f.height), (32, 18));
+        let beside = klipp_color::ofx::encode(&fit_linear(full, 64, 36, 32, 18).unwrap(), WorkingColorspace::Rec709Linear);
+        let off = f.rgba8.iter().zip(&beside).enumerate().filter(|(i, _)| i % 4 != 3).map(|(_, (a, b))| a.abs_diff(*b)).max().unwrap();
+        eprintln!("a fitted neighbour is {off} levels off the fitted frame");
+        assert!(off <= 1, "{off} levels");
+        let mut unfitted = ClipSources::new(&mut src, &clip, WorkingColorspace::Rec709Linear);
+        let Neighbour::Frame(f) = unfitted.encoded(0.0) else { panic!("a neighbour") };
+        assert_eq!((f.width, f.height), (64, 36), "the control: with no frame to fit to, its own size");
+    }
 
     /// A frame source whose encoded reader fills with 200 and linear one
     /// with 0.25, each answering the reader time it was asked; it counts

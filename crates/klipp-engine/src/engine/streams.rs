@@ -343,11 +343,39 @@ pub(crate) struct ClipStreams {
     cap: usize,
     /// Media sources' readers (#1746), kept across frames.
     pub(crate) media: klipp_media::frame_reader::MediaReaders,
+    /// OFX plug-ins' neighbour readers (#2013), by file and log format,
+    /// kept across frames: the one read longest ago closed first.
+    neighbours: Vec<(PathBuf, Option<klipp_core::LogFormat>, std::sync::Arc<std::sync::Mutex<klipp_media::frame_reader::SeekableFrameReader>>)>,
 }
 
 impl ClipStreams {
     pub fn new(cap: usize) -> Self {
-        Self { streams: HashMap::new(), reversed: HashMap::new(), cap, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS) }
+        Self { streams: HashMap::new(), reversed: HashMap::new(), cap, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS), neighbours: Vec::new() }
+    }
+
+    /// The reader of `path`'s frames at any time for an OFX plug-in's
+    /// neighbours (#2013), colour-managed as export's is, opened on first
+    /// use and kept: a plug-in reading the frames either side on every
+    /// frame used to open the file on every frame.
+    pub(crate) fn neighbour_reader(&mut self, path: &std::path::Path, log_format: Option<klipp_core::LogFormat>) -> Option<std::sync::Arc<std::sync::Mutex<klipp_media::frame_reader::SeekableFrameReader>>> {
+        const KEPT: usize = 4;
+        if let Some(i) = self.neighbours.iter().position(|(p, l, _)| p == path && *l == log_format) {
+            let held = self.neighbours.remove(i);
+            self.neighbours.push(held);
+        } else {
+            let reader = klipp_media::frame_reader::SeekableFrameReader::open_colour_managed(path, log_format)?;
+            if self.neighbours.len() >= KEPT {
+                self.neighbours.remove(0);
+            }
+            self.neighbours.push((path.to_path_buf(), log_format, std::sync::Arc::new(std::sync::Mutex::new(reader))));
+        }
+        self.neighbours.last().map(|(_, _, r)| std::sync::Arc::clone(r))
+    }
+
+    /// How many neighbour readers are open.
+    #[cfg(test)]
+    pub(crate) fn neighbour_readers(&self) -> usize {
+        self.neighbours.len()
     }
 
     /// Follow `wants`: open streams for new clips, close those no longer

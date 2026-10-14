@@ -865,32 +865,144 @@ mod temporal_frames_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Export's provider is colour-managed now, so the display-
-    /// referred fallback has to be exactly the old swscale path — a
-    /// colour-managed reader that quietly changed ordinary footage
-    /// would be a regression dressed as a fix.
-    ///
-    /// The scene-referred half (PQ, HLG, camera log) is not covered
-    /// here: it needs footage with those tags, and `testsrc` has none.
+    /// A clip of `vf` (after a lavfi `src`) written as `pix_fmt` FFV1,
+    /// tagged `tags` (ffmpeg output options); `None` without ffmpeg.
+    fn made(dir: &std::path::Path, name: &str, src: &str, vf: &str, tags: &[&str]) -> Option<std::path::PathBuf> {
+        let out = dir.join(format!("{name}.mkv"));
+        let ok = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i", src, "-vf", vf])
+            .args(tags)
+            .args(["-c:v", "ffv1"])
+            .arg(&out)
+            .status()
+            .ok()?;
+        ok.success().then_some(out)
+    }
+
+    /// The frame an OFX plug-in at the head of the clip's chain is given
+    /// at clip time `t` (#2013): export's own frame, in the working space,
+    /// encoded as `run_ofx` encodes it.
+    fn plug_ins_frame(src: &mut ExportFrameSource, clip: &Clip, t: f64, w: u32, h: u32, working: klipp_core::WorkingColorspace) -> Vec<u8> {
+        let f = src.frame(clip, clip.source_in.to_secs_f64() + t, w, h).expect("a frame");
+        let linear = match f.pixels {
+            klipp_compose::SourcePixels::Linear(p) => klipp_compose::render::fit_linear((*p).clone(), f.width, f.height, w, h).unwrap(),
+            // Decoded on the GPU: read back, as the plug-in node reads it.
+            klipp_compose::SourcePixels::Gpu(g) => klipp_compose::render::fit_linear((*g.read()).clone(), f.width, f.height, w, h).unwrap(),
+            klipp_compose::SourcePixels::SceneReferred { .. } => panic!("a display-referred frame, not a scene-referred one"),
+        };
+        klipp_color::ofx::encode(&linear, working)
+    }
+
+    fn worst(a: &[u8], b: &[u8]) -> u8 {
+        a.iter().zip(b).enumerate().filter(|(i, _)| i % 4 != 3).map(|(_, (x, y))| x.abs_diff(*y)).max().unwrap_or(0)
+    }
+
+    /// A plug-in's neighbour is the frame it would be given at that time,
+    /// in an ACEScg project, to a level (#2013): a flat colour inside
+    /// BT.709 written BT.709 4:4:4, so both routes clip alike, with the
+    /// plug-in at the head of the chain (neighbours are ungraded source
+    /// frames). Control: plain swscale, the route the reader fell back to,
+    /// takes BT.601 and is many levels off.
     #[test]
-    fn colour_management_leaves_display_referred_footage_alone() {
-        let dir = std::env::temp_dir().join(format!("klipp-tf-cm-{}", std::process::id()));
+    fn a_plug_ins_neighbour_is_its_frame_in_an_acescg_project() {
+        let dir = std::env::temp_dir().join(format!("klipp-ofx-acescg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let Some(path) = test_clip_file(&dir) else {
+        let Some(path) = made(&dir, "flat", "color=c=0xC83C3C:s=64x36:r=24:d=1",
+            "format=rgb24,scale=out_color_matrix=bt709:out_range=limited,format=yuv444p,setparams=color_primaries=bt709:color_trc=bt709",
+            &["-colorspace", "bt709", "-color_range", "tv"]) else {
             eprintln!("skipping: ffmpeg unavailable");
             return;
         };
-        let mut plain =
-            klipp_media::frame_reader::SeekableFrameReader::open_rgba(&path).expect("plain");
-        let mut managed =
-            klipp_media::frame_reader::SeekableFrameReader::open_colour_managed(&path, None)
-                .expect("managed");
-        for t in [0.0f64, 0.5, 1.25] {
-            let a = plain.decode_at(t).expect("plain frame");
-            let b = managed.decode_at(t).expect("managed frame");
-            assert_eq!(a.1, b.1, "width differs at t={t}");
-            assert_eq!(a.2, b.2, "height differs at t={t}");
-            assert_eq!(a.0, b.0, "pixels differ at t={t}");
+        let (media, clip) = source_and_clip(path.clone(), 0);
+        let working = klipp_core::WorkingColorspace::AcesCG;
+        let mut src = ExportFrameSource::new(&media, 24.0, working);
+        let given = plug_ins_frame(&mut src, &clip, 0.5, 64, 36, working);
+        let (neighbour, w, h) = src.temporal_frames(&clip).expect("a reader")(0.5).expect("a frame");
+        assert_eq!((w, h), (64, 36));
+        let off = worst(&given, &neighbour);
+        eprintln!("ACEScg project: the neighbour is {off} levels off the plug-in's frame");
+        assert!(off <= 1, "{off} levels");
+        let (plain, ..) = klipp_media::frame_reader::SeekableFrameReader::open_rgba(&path).unwrap().decode_at(0.5).unwrap();
+        assert!(worst(&given, &plain) > 5, "the control: swscale is {} off", worst(&given, &plain));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The same on 4:2:0 BT.709 (#2013): in flat areas the neighbour is the
+    /// frame within 2 levels. At a sharp chroma edge export's software
+    /// route rebuilds chroma by repeating samples and the reader at the
+    /// decode shaders' siting, so the two differ there (#1988); the worst
+    /// edge is reported, not held.
+    #[test]
+    fn a_plug_ins_neighbour_on_4_2_0_matches_in_flat_areas() {
+        let dir = std::env::temp_dir().join(format!("klipp-ofx-420-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let Some(path) = made(&dir, "bars", "testsrc2=s=320x180:r=24:d=1",
+            "format=rgb24,scale=out_color_matrix=bt709:out_range=limited,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709",
+            &["-colorspace", "bt709", "-color_range", "tv"]) else {
+            eprintln!("skipping: ffmpeg unavailable");
+            return;
+        };
+        let (media, clip) = source_and_clip(path, 0);
+        let working = klipp_core::WorkingColorspace::Rec709Linear;
+        let mut src = ExportFrameSource::new(&media, 24.0, working);
+        let given = plug_ins_frame(&mut src, &clip, 0.25, 320, 180, working);
+        let (neighbour, ..) = src.temporal_frames(&clip).expect("a reader")(0.25).expect("a frame");
+        // A pixel is in a flat area when its 5×5 neighbourhood of the given
+        // frame holds one colour.
+        let at = |x: usize, y: usize| &given[(y * 320 + x) * 4..(y * 320 + x) * 4 + 3];
+        let (mut flat_worst, mut edge_worst) = (0u8, 0u8);
+        for y in 2..178 {
+            for x in 2..318 {
+                let flat = (y - 2..=y + 2).all(|yy| (x - 2..=x + 2).all(|xx| at(xx, yy) == at(x, y)));
+                let i = (y * 320 + x) * 4;
+                let d = worst(&given[i..i + 4], &neighbour[i..i + 4]);
+                if flat { flat_worst = flat_worst.max(d) } else { edge_worst = edge_worst.max(d) }
+            }
+        }
+        eprintln!("4:2:0 BT.709: flat areas {flat_worst} levels, worst edge {edge_worst} levels (#1988)");
+        assert!(flat_worst <= 2, "{flat_worst} levels in a flat area");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An HLG or camera-log clip's neighbours keep their own route, which
+    /// this doesn't change (#2013): decoded and display-mapped as the
+    /// viewer shows the clip ungraded, so they are the frame a plug-in
+    /// after the clip's display step is given, to a level (0 measured, for
+    /// HLG and S-Log3).
+    #[test]
+    fn a_scene_referred_neighbour_is_the_frame_after_its_display_step() {
+        let dir = std::env::temp_dir().join(format!("klipp-ofx-hlg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let Some(hlg) = made(&dir, "hlg", "color=c=0x8A6A50:s=64x36:r=24:d=1",
+            "format=rgb48le,scale=out_color_matrix=bt2020nc:out_range=limited,format=yuv444p10le,setparams=color_primaries=bt2020:color_trc=arib-std-b67",
+            &["-colorspace", "bt2020nc", "-color_range", "tv", "-color_primaries", "bt2020", "-color_trc", "arib-std-b67"]) else {
+            eprintln!("skipping: ffmpeg unavailable");
+            return;
+        };
+        // A flat grey-brown read as S-Log3, as a file the pool says is log.
+        let log = made(&dir, "slog3", "color=c=0x7A6A5A:s=64x36:r=24:d=1",
+            "format=rgb48le,scale=out_color_matrix=bt709:out_range=limited,format=yuv444p10le",
+            &["-colorspace", "bt709", "-color_range", "tv"]).expect("ffmpeg wrote the first");
+        let working = klipp_core::WorkingColorspace::Rec709Linear;
+        for (name, path, log_format, transfer) in [
+            ("HLG", hlg, None, klipp_color::hdr::HdrTransfer::Hlg),
+            ("S-Log3", log, Some(klipp_core::LogFormat::SLog3), klipp_color::hdr::HdrTransfer::Log(klipp_core::ColorTransfer::SLog3)),
+        ] {
+            let (mut media, clip) = source_and_clip(path, 0);
+            for f in media.values_mut() {
+                f.log_format = log_format;
+            }
+            let mut src = ExportFrameSource::new(&media, 24.0, working);
+            let f = src.frame(&clip, 0.5, 64, 36).expect("a frame");
+            let klipp_compose::SourcePixels::SceneReferred { codes, transfer: got, source_to_working } = f.pixels else { panic!("{name}: decodes scene-referred") };
+            assert_eq!(got, transfer, "{name}");
+            let mut linear = codes.to_scene_linear_rgba(transfer, source_to_working);
+            klipp_color::hdr::SceneToDisplay { transfer, peak_nits: None, luma: klipp_color::primaries::luminance_weights(working) }.apply(&mut linear);
+            let given = klipp_color::ofx::encode(&linear, working);
+            let (neighbour, ..) = src.temporal_frames(&clip).expect("a reader")(0.5).expect("a frame");
+            let off = worst(&given, &neighbour);
+            eprintln!("{name}: the neighbour is {off} levels off the plug-in's frame after the display step");
+            assert!(off <= 1, "{name}: {off} levels");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
