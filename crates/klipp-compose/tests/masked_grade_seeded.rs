@@ -66,6 +66,12 @@ fn tc(s: f64) -> RationalTime {
 /// One clip graded by a Corrector (exposure +1) masked by a centred
 /// rectangle window: the grade Codex's batch built in #1234.
 fn sequence() -> Sequence {
+    sequence_with(false, 0.0)
+}
+
+/// [`sequence`] with the window's `feather`, and, when `rerouted`, its
+/// wire to the Corrector's mask routed through a reroute (#1877).
+fn sequence_with(rerouted: bool, feather: f32) -> Sequence {
     use klipp_core::{Mask, MaskShape, MaskStack};
     let node = |kind: NodeKind, params: NodeParams| Node {
         id: NodeId::new_v4(), kind, label: String::new(), enabled: true, params,
@@ -74,11 +80,19 @@ fn sequence() -> Sequence {
     let s = node(NodeKind::Source, NodeParams::default());
     let c = node(NodeKind::Corrector, NodeParams { exposure: Some(1.0), ..Default::default() });
     let shape = MaskShape::Rectangle { center_x: 0.5, center_y: 0.5, width: 0.4, height: 0.4, rotation: 0.0 };
-    let m = node(NodeKind::Mask, NodeParams { masks: Some(MaskStack { masks: vec![Mask { shape, feather: 0.0, ..Mask::default() }] }), ..Default::default() });
+    let m = node(NodeKind::Mask, NodeParams { masks: Some(MaskStack { masks: vec![Mask { shape, feather, ..Mask::default() }] }), ..Default::default() });
     let o = node(NodeKind::Output, NodeParams::default());
     let link = |a: &Node, b: &Node, port: u8| Edge { from_node: a.id, from_port: 0, to_node: b.id, to_port: port };
-    let edges = vec![link(&s, &c, 0), link(&c, &o, 0), link(&m, &c, 1)];
-    let graph = NodeGraph { output_node_id: o.id, nodes: vec![s, c, m, o], edges, node_positions: Default::default(), working_space_override: None, frames: vec![], sticky_notes: vec![] };
+    let mut edges = vec![link(&s, &c, 0), link(&c, &o, 0)];
+    let mut nodes = vec![s, c.clone(), m.clone(), o.clone()];
+    if rerouted {
+        let r = node(NodeKind::Reroute, NodeParams::default());
+        edges.extend([link(&m, &r, 0), link(&r, &c, 1)]);
+        nodes.push(r);
+    } else {
+        edges.push(link(&m, &c, 1));
+    }
+    let graph = NodeGraph { output_node_id: o.id, nodes, edges, node_positions: Default::default(), working_space_override: None, frames: vec![], sticky_notes: vec![] };
     let mut clip = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
     clip.set_grade(graph);
     let mut seq = Sequence::new_default();
@@ -112,4 +126,34 @@ fn a_masked_corrector_draws_its_window_from_a_gpu_source() {
     eprintln!("cpu vs gpu source: worst {worst}; inside {} / {}, outside {} / {}", px(&cpu, W / 2, H / 2), px(&gpu, W / 2, H / 2), px(&cpu, 2, 2), px(&gpu, 2, 2));
     assert!(px(&cpu, W / 2, H / 2) > px(&cpu, 2, 2) * 2.0, "the CPU source draws the window");
     assert!(worst < 3e-3, "the GPU source draws what the CPU source draws (worst {worst})");
+}
+
+/// #1877: a soft window routed through a reroute to the Corrector's mask
+/// draws what the window wired straight there does, from a CPU frame and
+/// a GPU one, with the GPU on and off: the reroute passes the matte on,
+/// its soft edge included.
+#[test]
+fn a_window_through_a_reroute_gates_as_it_does_wired_straight() {
+    let ok = klipp_nodes::GraphExecutor::new().gpu_pipeline_or_init().is_some();
+    assert!(ok || std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none_or(|v| v != "1"), "required, but there is no GPU");
+    let draw = |rerouted: bool, gpu: bool, on_gpu: bool| {
+        let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+        r.set_gpu_enabled(gpu);
+        r.render(&sequence_with(rerouted, 0.1), tc(1.0), W, H, &mut Source { on_gpu }, RenderOptions::default())
+    };
+    let straight = draw(false, false, false);
+    assert!(px(&straight, W / 2, H / 2) > px(&straight, 2, 2) * 2.0, "the window is drawn");
+    let mut routes = vec![(false, false)];
+    if ok {
+        routes.extend([(true, false), (true, true)]);
+    } else {
+        eprintln!("UNVERIFIED on the GPU: no GPU");
+    }
+    for (gpu, on_gpu) in routes {
+        for rerouted in [false, true] {
+            let got = draw(rerouted, gpu, on_gpu);
+            let worst = straight.iter().zip(&got).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(worst < 3e-3, "gpu {gpu}, gpu source {on_gpu}, rerouted {rerouted}: worst {worst}");
+        }
+    }
 }

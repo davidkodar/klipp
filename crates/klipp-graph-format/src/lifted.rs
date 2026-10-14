@@ -381,6 +381,10 @@ pub enum LiftedError {
     InterfaceEndpoint { group: NodeId, key: String },
     InterfaceType { group: NodeId, key: String },
     PortTypeMismatch { node: NodeId, port: String },
+    /// A wire of the wrong type reaches `node`'s `port` through the
+    /// reroute `reroute`, named as the canvas names it (#1877): where the
+    /// wire to find is.
+    ThroughReroute { node: NodeId, port: String, reroute: NodeId, name: String, carries: PortType },
     /// An origin on a graph that isn't a render copy.
     Origin(NodeId),
     /// The graph feeds back into itself (wireless links count, as they do
@@ -390,7 +394,25 @@ pub enum LiftedError {
 
 impl std::fmt::Display for LiftedError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
+        match self {
+            LiftedError::ThroughReroute { node, port, reroute, name, carries } => {
+                let (carries, wants) = match carries { PortType::Matte => ("a matte", "a picture"), PortType::Image => ("a picture", "a matte") };
+                write!(f, "{carries} goes through {name} ({reroute}) to {node}'s {port}, which takes {wants}: rewire it there")
+            }
+            _ => write!(f, "{self:?}"),
+        }
+    }
+}
+
+/// The wrong-typed wire into `node`'s `port`, said through the reroute
+/// it last passed when it came through one (#1877).
+fn mismatch(g: &Graph, node: NodeId, port: &str, last: NodeId, carries: PortType) -> LiftedError {
+    match g.nodes.iter().find(|n| n.id == last && is_reroute(n)) {
+        Some(r) => {
+            let name = if r.label.is_empty() { "Reroute".to_owned() } else { r.label.clone() };
+            LiftedError::ThroughReroute { node, port: port.to_owned(), reroute: r.id, name, carries }
+        }
+        None => LiftedError::PortTypeMismatch { node, port: port.to_owned() },
     }
 }
 
@@ -449,6 +471,38 @@ fn check_mask(g: &Graph, node: NodeId) -> Result<(), LiftedError> {
         return Err(LiftedError::MaskWithoutGate(node));
     }
     Ok(())
+}
+
+/// Whether `n` is a reroute: a point a wire passes through, of either
+/// type (#1877).
+fn is_reroute(n: &crate::Node) -> bool {
+    kind(n) == "Reroute"
+}
+
+/// What reaches `node`'s `port` through any reroutes (#1877): the node and
+/// output a wire from `from`'s `from_port` really comes from. `None` when
+/// it comes through a reroute that reads nothing, whose type is then any.
+fn through_reroutes<'g>(g: &'g Graph, from: NodeId, from_port: &'g crate::PortKey) -> Option<(&'g crate::Node, &'g crate::PortKey)> {
+    let (mut id, mut port) = (from, from_port);
+    for _ in 0..=g.nodes.len() {
+        let n = g.nodes.iter().find(|n| n.id == id)?;
+        if !is_reroute(n) {
+            return Some((n, port));
+        }
+        let e = g.edges.iter().find(|e| e.to.0 == id)?;
+        (id, port) = (e.from.0, &e.from.1);
+    }
+    None
+}
+
+/// The type the reroute `id` in `g` carries (#1877): the type of what
+/// reaches it, through any reroutes before it. `None` when it reads
+/// nothing yet (it then takes either), or isn't a reroute.
+pub fn reroute_type(g: &Graph, id: NodeId, catalog: &dyn PortCatalog) -> Option<PortType> {
+    let n = g.nodes.iter().find(|n| n.id == id).filter(|n| is_reroute(n))?;
+    let out: crate::PortKey = "out".into();
+    let (real, port) = through_reroutes(g, n.id, &out)?;
+    port_spec(real, port, false, Some(catalog)).map(|p| p.ty)
 }
 
 fn check_level(g: &Graph, level: &str, body: bool, render_copy: bool, catalog: Option<&dyn PortCatalog>) -> Result<(), LiftedError> {
@@ -608,13 +662,20 @@ fn check_level_running(g: &Graph, level: &str, body: bool, render_copy: bool, ru
                 return Err(LiftedError::UnknownPort { node: id, port: port.to_string() });
             }
         }
-        let from = g.nodes.iter().find(|n| n.id == e.from.0).and_then(|n| port_spec(n, &e.from.1, false, catalog));
+        // A reroute takes the type of what reaches it (#1877): a wire into
+        // one is judged where it lands, past any reroutes, so the order the
+        // wires were made in doesn't matter, and a reroute fanned out to a
+        // picture and a mask is refused at whichever it can't feed.
+        if g.nodes.iter().any(|n| n.id == e.to.0 && is_reroute(n)) {
+            continue;
+        }
+        let from = through_reroutes(g, e.from.0, &e.from.1).and_then(|(n, port)| port_spec(n, port, false, catalog));
         let to = g.nodes.iter().find(|n| n.id == e.to.0).and_then(|n| port_spec(n, &e.to.1, true, catalog));
         if let (Some(from), Some(to)) = (from, to) {
             // Image masks deliberately extract coverage; other ports are exact typed connections.
             let extracts_mask = e.to.1.as_str() == "mask" && g.nodes.iter().any(|n| n.id == e.to.0 && n.type_id.as_str() != types::GROUP);
             if from.ty != to.ty && !extracts_mask {
-                return Err(LiftedError::PortTypeMismatch { node: e.to.0, port: e.to.1.to_string() });
+                return Err(mismatch(g, e.to.0, e.to.1.as_str(), e.from.0, from.ty));
             }
         }
     }
@@ -634,8 +695,10 @@ fn check_level_running(g: &Graph, level: &str, body: bool, render_copy: bool, ru
                 let Some(target) = port_spec(n, port, true, catalog) else {
                     return Err(LiftedError::UnknownPort { node: n.id, port: port.to_string() });
                 };
-                if port_spec(source, &"out".into(), false, catalog).is_some_and(|s| s.ty != target.ty) && (port.as_str() != "mask" || n.type_id.as_str() == types::GROUP) {
-                    return Err(LiftedError::PortTypeMismatch { node: n.id, port: port.to_string() });
+                let out: crate::PortKey = "out".into();
+                let real = through_reroutes(g, source.id, &out).and_then(|(n, p)| port_spec(n, p, false, catalog));
+                if let Some(real) = real.filter(|s| s.ty != target.ty && (port.as_str() != "mask" || n.type_id.as_str() == types::GROUP)) {
+                    return Err(mismatch(g, n.id, port.as_str(), source.id, real.ty));
                 }
             }
         }

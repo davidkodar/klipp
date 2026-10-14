@@ -531,10 +531,14 @@ pub(crate) fn respond(
 pub fn node_types(category: Option<&str>) -> serde_json::Value {
     use klipp_effects::registry::effect_types;
     let wanted = |c: &str| category.is_none_or(|w| w.eq_ignore_ascii_case(c));
-    let ports = |ps: &[klipp_effects::registry::PortDesc]| -> Vec<serde_json::Value> {
+    let ports = |ps: &[klipp_effects::registry::PortDesc], reroute: bool| -> Vec<serde_json::Value> {
         ps.iter()
             .map(|p| {
                 let mut port = json!({ "key": p.key, "type": format!("{:?}", p.ty), "optional": p.optional });
+                // A reroute carries whatever reaches it (#1877).
+                if reroute {
+                    port["type"] = json!("Image or Matte: what reaches it");
+                }
                 if let Some(channel) = p.params.iter().find(|q| q.key == "channel") {
                     port["channels"] = json!(channel.options);
                     port["default_channel"] = json!(channel.default);
@@ -601,8 +605,8 @@ pub fn node_types(category: Option<&str>) -> serde_json::Value {
                 "name": desc.name,
                 "category": format!("{:?}", desc.category),
                 "mixable": desc.mixable,
-                "inputs": ports(desc.inputs),
-                "outputs": ports(desc.outputs),
+                "inputs": ports(desc.inputs, desc.id == "klipp.grade.reroute"),
+                "outputs": ports(desc.outputs, desc.id == "klipp.grade.reroute"),
                 "params": params,
             });
             if grade {
@@ -633,6 +637,16 @@ pub fn node_types(category: Option<&str>) -> serde_json::Value {
 #[cfg(test)]
 mod node_types_tests {
     use super::node_types;
+
+    /// #1877: a reroute's ports are said to carry what reaches them.
+    #[test]
+    fn a_reroutes_ports_carry_either_type() {
+        let all = node_types(Some("grade"));
+        let reroute = all["types"].as_array().unwrap().iter().find(|t| t["tag"] == "Reroute").expect("the reroute is listed");
+        for side in ["inputs", "outputs"] {
+            assert_eq!(reroute[side][0]["type"], "Image or Matte: what reaches it", "{side}");
+        }
+    }
 
     /// Every registered effect type is listed, with its parameters, but a
     /// grade compound's marker (#1746), and a category narrows the list to

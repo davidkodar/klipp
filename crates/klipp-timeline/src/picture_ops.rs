@@ -143,19 +143,6 @@ fn through_reroutes(p: &ClipPicture, mut id: NodeId) -> Option<&Node> {
     None
 }
 
-/// Why `op` can't route a matte through a reroute, if it would: a
-/// reroute's ports are a picture's, so a window's or a key's wire can't go
-/// through one yet (#1877). Said by name here, before the graph's port
-/// check refuses it as a type mismatch.
-fn matte_into_reroute(p: &ClipPicture, op: &GraphOp) -> Option<String> {
-    use klipp_graph_format::PortCatalog;
-    let GraphOp::Connect { from, from_port, to, .. } = op else { return None };
-    let target = to.nodes.last().and_then(|id| node(p, *id)).filter(|n| is_reroute(n))?;
-    let source = from.nodes.last().and_then(|id| node(p, *id))?;
-    let matte = RegistryCatalog.node_spec(source).is_some_and(|s| s.outputs.iter().any(|o| o.key == from_port.as_str() && o.ty == klipp_graph_format::PortType::Matte));
-    matte.then(|| format!("the reroute {} takes a picture, not a matte: a matte can't be routed through a reroute yet (#1877); wire {} straight to what it masks", target.id, if source.label.is_empty() { source.id.to_string() } else { source.label.clone() }))
-}
-
 /// A grade compound on the chain before the display step, and why it
 /// can't stand there (#1746): it is run after the display step only, so
 /// there it would never be drawn. The clip's own grade is the one before.
@@ -729,7 +716,7 @@ impl Clip {
             let before = docs.clips[&self.id.0].clone();
             // An op the fields can't hold goes to the picture alone, and
             // the clip is picture-truth from here on.
-            if let Some(why) = side_wiring_refusal(&before, op).or_else(|| matte_into_reroute(&before, op)) {
+            if let Some(why) = side_wiring_refusal(&before, op) {
                 return Err((Some(index), why));
             }
             let t = if picture_only(&before, op) {

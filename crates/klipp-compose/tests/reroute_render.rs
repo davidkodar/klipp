@@ -1,8 +1,9 @@
 //! A reroute in a clip's picture (#1746) is a point a wire is routed
 //! through: on the chain, or beside it in a merge's picture's way, it
 //! passes on what it reads, so a picture with one draws, to the bit, what
-//! the same picture without it does. Its ports are a picture's, as a
-//! grade's reroute's are: a matte isn't routed through one.
+//! the same picture without it does. Its ports take the type of what
+//! reaches them, so a window's matte is routed through one as a picture
+//! is (#1877).
 
 use std::sync::Arc;
 
@@ -62,8 +63,8 @@ fn reroute() -> klipp_graph_format::Node {
 }
 
 /// The chart clip with a blur masked by a circle window and a merge of a
-/// gradient after it; `rerouted` routes the chain, and the merge's
-/// picture, each through a reroute.
+/// gradient after it; `rerouted` routes the chain, the merge's picture,
+/// and the window's matte to the blur's mask, each through a reroute.
 fn clip(rerouted: bool) -> Clip {
     let mut c = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
     let picture = c.picture_v2().unwrap().picture.clone();
@@ -82,19 +83,25 @@ fn clip(rerouted: bool) -> Clip {
         GraphOp::AddNodeBeside { at: at(source), node: Box::new(gradient.clone()) },
         GraphOp::Connect { from: at(source), from_port: "out".into(), to: at(gradient.id), to_port: "in".into() },
     ];
-    let to_fg = if rerouted {
-        let (on_chain, picture) = (reroute(), reroute());
+    let (to_fg, to_mask) = if rerouted {
+        let (on_chain, picture, matte) = (reroute(), reroute(), reroute());
         ops.extend([
             GraphOp::AddNode { after: at(blur.id), node: Box::new(on_chain) },
             GraphOp::AddNodeBeside { at: at(source), node: Box::new(picture.clone()) },
             GraphOp::Connect { from: at(gradient.id), from_port: "out".into(), to: at(picture.id), to_port: "in".into() },
+            // The matte's reroute: wired to the mask before it is fed, as
+            // the other order is (#1877).
+            GraphOp::AddNodeBeside { at: at(source), node: Box::new(matte.clone()) },
         ]);
-        picture.id
+        (picture.id, matte.id)
     } else {
-        gradient.id
+        (gradient.id, window.id)
     };
+    ops.push(GraphOp::Connect { from: at(to_mask), from_port: "out".into(), to: at(blur.id), to_port: "mask".into() });
+    if to_mask != window.id {
+        ops.push(GraphOp::Connect { from: at(window.id), from_port: "out".into(), to: at(to_mask), to_port: "in".into() });
+    }
     ops.extend([
-        GraphOp::Connect { from: at(window.id), from_port: "out".into(), to: at(blur.id), to_port: "mask".into() },
         GraphOp::Connect { from: at(to_fg), from_port: "out".into(), to: at(merge.id), to_port: "fg".into() },
     ]);
     c.apply_picture_ops(&ops).unwrap_or_else(|e| panic!("{e}"));
@@ -118,7 +125,7 @@ fn a_picture_with_reroutes_draws_what_it_does_without_them() {
     assert!(gpu || std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none_or(|v| v != "1"), "required, but there is no GPU");
     let (plain_clip, rerouted_clip) = (clip(false), clip(true));
     let reroutes = rerouted_clip.picture_v2().unwrap().picture.graph.nodes.iter().filter(|n| klipp_graph_lift::structure::kind_of(n) == "Reroute").count();
-    assert_eq!(reroutes, 2, "one on the chain, one in the merge's picture's way");
+    assert_eq!(reroutes, 3, "one on the chain, one in the merge's picture's way, one in the window's");
     for on_gpu in [false, true].into_iter().filter(|g| !g || gpu) {
         let (plain, found) = render(on_gpu, &plain_clip);
         assert!(found.declines.is_empty(), "gpu {on_gpu}: {:?}", found.declines);
@@ -128,33 +135,57 @@ fn a_picture_with_reroutes_draws_what_it_does_without_them() {
     }
 }
 
-/// A matte wired into a reroute is refused by name, pointing at #1877,
-/// rather than as a port-type mismatch: a reroute's ports are a
-/// picture's. The picture is left as it was.
+/// #1877: a reroute fed a window's matte may feed a mask, but not a
+/// picture's input: wired to both, it is refused at the picture, whichever
+/// wire is made last, and the picture is left as it was.
 #[test]
-fn a_matte_into_a_reroute_is_refused_by_name() {
+fn a_reroute_carrying_a_matte_feeds_no_picture() {
     let mut c = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
     let picture = c.picture_v2().unwrap().picture.clone();
     let clip_id = c.id.0;
     let at = |id| NodePath::new(Root::Clip { clip: clip_id }, [id]);
     let source = picture.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::SOURCE).unwrap().id;
-    let mut window = grade_node("Mask", serde_json::json!({ "masks": { "masks": [{ "shape": { "Circle": { "center_x": 0.5, "center_y": 0.5, "radius": 0.3 } }, "feather": 0.05 }] } }));
-    window.label = "Window".into();
+    let display = picture.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::SCENE_TO_DISPLAY).unwrap().id;
+    let blur = effect_node(&E::GaussianBlur { radius: 6.0 });
+    let merge = effect_node(&E::Merge { blend_mode: BlendMode::Screen, opacity: 0.6 });
+    let window = grade_node("Mask", serde_json::json!({ "masks": { "masks": [{ "shape": { "Circle": { "center_x": 0.5, "center_y": 0.5, "radius": 0.3 } }, "feather": 0.05 }] } }));
     let route = reroute();
     c.apply_picture_ops(&[
+        GraphOp::AddNode { after: at(display), node: Box::new(blur.clone()) },
+        GraphOp::AddNode { after: at(blur.id), node: Box::new(merge.clone()) },
         GraphOp::AddNodeBeside { at: at(source), node: Box::new(window.clone()) },
         GraphOp::Connect { from: at(source), from_port: "out".into(), to: at(window.id), to_port: "in".into() },
+        GraphOp::AddNodeBeside { at: at(source), node: Box::new(route.clone()) },
+        GraphOp::Connect { from: at(window.id), from_port: "out".into(), to: at(route.id), to_port: "in".into() },
+        GraphOp::Connect { from: at(route.id), from_port: "out".into(), to: at(blur.id), to_port: "mask".into() },
     ])
-    .unwrap();
+    .unwrap_or_else(|e| panic!("{e}"));
     let before = c.picture_v2().unwrap();
-    let why = c
+    // The picture input last.
+    let why = c.apply_picture_ops(&[GraphOp::Connect { from: at(route.id), from_port: "out".into(), to: at(merge.id), to_port: "fg".into() }]).unwrap_err();
+    // Said through the reroute, by name, so the wire can be found.
+    assert!(why.contains("through Reroute") && why.contains(&route.id.to_string()) && why.contains("fg"), "{why}");
+    assert_eq!(c.picture_v2().unwrap(), before, "the picture is as it was");
+    // The matte last: the reroute fed after it feeds the picture.
+    let mut d = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, ..Clip::gap(tc(0.0), tc(2.0)) };
+    let picture = d.picture_v2().unwrap().picture.clone();
+    let clip_id = d.id.0;
+    let at = |id| NodePath::new(Root::Clip { clip: clip_id }, [id]);
+    let source = picture.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::SOURCE).unwrap().id;
+    let display = picture.graph.nodes.iter().find(|n| n.type_id.as_str() == lt::SCENE_TO_DISPLAY).unwrap().id;
+    let why = d
         .apply_picture_ops(&[
+            GraphOp::AddNode { after: at(display), node: Box::new(blur.clone()) },
+            GraphOp::AddNode { after: at(blur.id), node: Box::new(merge.clone()) },
+            GraphOp::AddNodeBeside { at: at(source), node: Box::new(window.clone()) },
+            GraphOp::Connect { from: at(source), from_port: "out".into(), to: at(window.id), to_port: "in".into() },
             GraphOp::AddNodeBeside { at: at(source), node: Box::new(route.clone()) },
+            GraphOp::Connect { from: at(route.id), from_port: "out".into(), to: at(merge.id), to_port: "fg".into() },
+            GraphOp::Connect { from: at(route.id), from_port: "out".into(), to: at(blur.id), to_port: "mask".into() },
             GraphOp::Connect { from: at(window.id), from_port: "out".into(), to: at(route.id), to_port: "in".into() },
         ])
         .unwrap_err();
-    assert!(why.contains("#1877") && why.contains(&route.id.to_string()) && why.contains("Window"), "{why}");
-    assert_eq!(c.picture_v2().unwrap(), before, "the picture is as it was");
+    assert!(why.contains("through Reroute") && why.contains(&merge.id.to_string()) && why.contains("fg"), "refused at the picture input, through the reroute: {why}");
 }
 
 /// A key beside the chain reading the clip's source through a reroute: the
