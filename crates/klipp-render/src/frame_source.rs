@@ -748,6 +748,89 @@ mod temporal_frames_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A temporal effect's neighbour is the frame the export decodes
+    /// at that time: the reader converts with the file's matrix and
+    /// range at its own depth, as the viewer does. It used to convert
+    /// through 8-bit swscale with BT.601, and a BT.709 neighbour came
+    /// back up to 59 levels off the export's own frame (#1995) — more
+    /// than the change from one frame to the next.
+    ///
+    /// 4:4:4 is held to a level everywhere. Subsampled chroma is held
+    /// to two wherever the picture is flat (to a level) for two pixels
+    /// around: at an
+    /// edge the two decoders rebuild chroma differently (the export's
+    /// software route repeats each chroma sample, the viewer and the
+    /// export's hardware route interpolate them), which is a difference
+    /// between those routes and not the reader's to settle.
+    #[test]
+    fn a_neighbour_is_the_frame_export_decodes_at_that_time() {
+        let dir = std::env::temp_dir().join(format!("klipp-tf-nb-{}", ClipId::new().0));
+        std::fs::create_dir_all(&dir).unwrap();
+        let encode = |name: &str, pix_fmt: &str, matrix: &str| {
+            let out = dir.join(format!("{name}.mkv"));
+            let vf = format!(
+                "format=rgb24,scale=out_color_matrix={matrix}:out_range=limited,format={pix_fmt},\
+                 setparams=color_primaries=bt709:color_trc=bt709"
+            );
+            std::process::Command::new("ffmpeg")
+                .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24:duration=0.5", "-vf", &vf])
+                .args(["-colorspace", matrix, "-color_range", "tv", "-c:v", "ffv1"])
+                .arg(&out)
+                .status()
+                .is_ok_and(|s| s.success())
+                .then_some(out)
+        };
+        let srgb8 = |v: f32| (klipp_color::transfer::linear_to_srgb(v.clamp(0.0, 1.0)) * 255.0).round() as i32;
+        let (w, h) = (320usize, 180usize);
+        for (name, pix_fmt, matrix, everywhere) in [
+            ("709-444", "yuv444p", "bt709", true),
+            ("709-444-10", "yuv444p10le", "bt709", true),
+            ("601-444", "yuv444p", "bt470bg", true),
+            ("709-420", "yuv420p", "bt709", false),
+            ("709-420-10", "yuv420p10le", "bt709", false),
+            ("601-422", "yuv422p", "bt470bg", false),
+        ] {
+            let Some(path) = encode(name, pix_fmt, matrix) else {
+                eprintln!("skipping {name}: ffmpeg could not write the clip");
+                continue;
+            };
+            let mut stream = crate::clip_decoder::RenderDecoder::open(&path, 0.0, f64::INFINITY, 320, 180, 24.0, 0).expect("opens");
+            let mut reader = klipp_media::frame_reader::SeekableFrameReader::open_linear(&path, None, WorkingColorspace::Rec709Linear).expect("opens");
+            let mut frames = 0;
+            while let Some((pts, pixels)) = stream.next_frame_with_pts(&mut crate::clip_decoder::GpuConverters::default()).unwrap() {
+                let crate::clip_decoder::DecodedPixels::Rgba64(rgba) = pixels else { unreachable!("no converter offered") };
+                let shown: Vec<i32> = rgba64_to_linear(&rgba, None).iter().map(|&v| srgb8(v)).collect();
+                let (read, rw, rh) = reader.decode_at(pts).expect("the reader has the frame");
+                assert_eq!((rw as usize, rh as usize), (w, h));
+                let read: Vec<i32> = read.iter().map(|&v| srgb8(v)).collect();
+                let flat = |x: usize, y: usize| {
+                    let at = |x: usize, y: usize, c: usize| shown[(y * w + x) * 4 + c];
+                    (y.saturating_sub(2)..(y + 3).min(h)).all(|ny| {
+                        (x.saturating_sub(2)..(x + 3).min(w)).all(|nx| (0..3).all(|c| (at(nx, ny, c) - at(x, y, c)).abs() <= 1))
+                    })
+                };
+                let (mut worst, mut held) = (0, 0usize);
+                for y in 0..h {
+                    for x in 0..w {
+                        if !everywhere && !flat(x, y) {
+                            continue;
+                        }
+                        held += 1;
+                        let i = (y * w + x) * 4;
+                        worst = worst.max((0..3).map(|c| (shown[i + c] - read[i + c]).abs()).max().unwrap());
+                    }
+                }
+                assert!(held * 4 >= w * h, "{name}: only {held} pixels compared");
+                // Flat to a level on either side leaves two between them.
+                let bar = if everywhere { 1 } else { 2 };
+                assert!(worst <= bar, "{name} at {pts:.3}s: the neighbour is {worst} levels off the export's frame");
+                frames += 1;
+            }
+            assert_eq!(frames, 12, "{name}: every frame compared");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Export used to take the trait's `None` here, so an OFX plugin
     /// that reads other frames got only the current one and wrote
     /// something different from what the viewer showed.
@@ -809,55 +892,6 @@ mod temporal_frames_tests {
             assert_eq!(a.2, b.2, "height differs at t={t}");
             assert_eq!(a.0, b.0, "pixels differ at t={t}");
         }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The linear provider has to render a frame the way the main
-    /// path renders the one beside it, or anything averaging the two
-    /// is comparing pictures rather than samples. That is the whole
-    /// reason it exists separately from the OFX one.
-    ///
-    /// For a display-referred source in a Rec.709 working space the
-    /// two are the same conversion, so this holds `open_linear`
-    /// against decoding the 8-bit frame itself. A scene-referred
-    /// source takes a different branch, which `testsrc` cannot
-    /// produce and this does not claim to cover.
-    #[test]
-    fn the_linear_provider_decodes_what_the_srgb_one_encodes() {
-        let dir = std::env::temp_dir().join(format!("klipp-tf-lin-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let Some(path) = test_clip_file(&dir) else {
-            eprintln!("skipping: ffmpeg unavailable");
-            return;
-        };
-        let mut bytes =
-            klipp_media::frame_reader::SeekableFrameReader::open_rgba(&path).expect("u8 reader");
-        let mut linear = klipp_media::frame_reader::SeekableFrameReader::open_linear(
-            &path,
-            None,
-            WorkingColorspace::Rec709Linear,
-        )
-        .expect("linear reader");
-
-        for t in [0.0f64, 0.75, 1.5] {
-            let (u8s, w, h) = bytes.decode_at(t).expect("u8 frame");
-            let (lin, lw, lh) = linear.decode_at(t).expect("linear frame");
-            assert_eq!((w, h), (lw, lh), "size differs at t={t}");
-            assert_eq!(lin.len(), u8s.len(), "channel count differs at t={t}");
-            let want = klipp_effects::srgb_u8_to_linear_f32_rgba(&u8s);
-            let worst = lin
-                .iter()
-                .zip(want.iter())
-                .map(|(a, b)| (a - b).abs())
-                .fold(0.0f32, f32::max);
-            assert!(worst < 1e-5, "t={t}: linear and decoded sRGB differ by {worst}");
-        }
-
-        // And it is a real picture, not zeroes agreeing with zeroes.
-        let (lin, _, _) = linear.decode_at(0.75).expect("linear frame");
-        let bright = lin.chunks_exact(4).filter(|p| p[0] + p[1] + p[2] > 0.05).count();
-        assert!(bright > 100, "the linear frame is essentially empty");
-
         let _ = std::fs::remove_dir_all(&dir);
     }
 

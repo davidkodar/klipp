@@ -504,6 +504,17 @@ impl MediaReaders {
 
 /// The conversion [`SeekableFrameReader::open_linear`] and
 /// [`BackwardFrameReader::open_linear`] decode through.
+///
+/// A display-referred Y'CbCr frame converts exactly as the viewer's
+/// software decode converts it (`video_decoder::convert_sw_frame`): its
+/// samples read at native depth, the frame's own matrix, range,
+/// transfer and primaries (its tags over the stream's), chroma at the
+/// decode shaders' siting. A temporal effect compares the frames this
+/// reads with the one it is given, so a neighbour has to be the same
+/// rendering as that frame, not merely the same picture: this used to
+/// go through 8-bit swscale with swscale's default matrix, BT.601, and
+/// a BT.709 neighbour came back up to 59 levels off its own frame
+/// (#1995) — more than the change from one frame to the next.
 fn linear_convert(
     format_ctx: &ffmpeg_next::format::context::Input,
     stream_index: usize,
@@ -523,6 +534,10 @@ fn linear_convert(
         {
             return Ok(linear);
         }
+        if let Some(linear) = display_referred_linear(&colour, frame, w, h, working) {
+            return Ok(linear);
+        }
+        // What is left has no Y'CbCr to read: RGB, palette, greyscale.
         let rgba = swscale_rgba(frame, w, h)?;
         let mut out: Vec<f32> = rgba
             .iter()
@@ -542,6 +557,40 @@ fn linear_convert(
         }
         Ok(out)
     })
+}
+
+/// A display-referred Y'CbCr frame in linear light, `working` primaries,
+/// as the viewer's software decode gives it: the 10-bit 4:2:0 converter
+/// for `YUV420P10LE`, the general one for every other Y'CbCr layout.
+/// `None` for a frame with no Y'CbCr samples to read.
+fn display_referred_linear(
+    colour: &SourceColour,
+    frame: &ffmpeg_next::frame::Video,
+    w: u32,
+    h: u32,
+    working: klipp_core::WorkingColorspace,
+) -> Option<Vec<f32>> {
+    // SAFETY: a decoded frame's own AVFrame.
+    let cs = unsafe { colour.colourspace_of(frame.as_ptr()) };
+    if frame.format() == ffmpeg_next::format::Pixel::YUV420P10LE {
+        return Some(klipp_color::camera_log::yuv420p10le_to_linear(
+            frame.data(0),
+            frame.data(1),
+            frame.data(2),
+            frame.stride(0),
+            frame.stride(1),
+            frame.stride(2),
+            frame.width(),
+            frame.height(),
+            w,
+            h,
+            cs,
+            working,
+        ));
+    }
+    // SAFETY: as above.
+    let yuv = unsafe { crate::yuv_samples::read_yuv_samples(frame.as_ptr()) }?;
+    Some(klipp_color::camera_log::yuv_to_linear_display(&yuv.samples(), w, h, 0, cs, working))
 }
 
 /// A picture of `sw`×`sh` fitted into a `fw`×`fh` frame, aspect kept:
@@ -1163,6 +1212,81 @@ mod forward_tests {
             let mut r = SeekableFrameReader::open_rgba(&path).expect("opens");
             for k in [5, 10, 9, 8, 12, 11, 20, 18, 19, 30, 29, 31, 28] {
                 assert_eq!(grey(&mut r, k), Some(greys[k as usize]), "{name}: frame {k} out of order");
+            }
+            std::fs::remove_file(&path).ok();
+        }
+    }
+}
+
+#[cfg(test)]
+mod matrix_tests {
+    use super::*;
+
+    /// One flat sRGB colour, written as `pix_fmt` Y'CbCr with `matrix`
+    /// and `range` and tagged so: `None` without ffmpeg.
+    fn flat(name: &str, rgb: [u8; 3], pix_fmt: &str, matrix: &str, range: &str) -> Option<std::path::PathBuf> {
+        let path = std::env::temp_dir().join(format!("klipp-matrix-{name}-{}.mkv", std::process::id()));
+        let colour = format!("color=c=0x{:02X}{:02X}{:02X}:s=32x32:r=24:d=0.25", rgb[0], rgb[1], rgb[2]);
+        let full = if range == "pc" { "full" } else { "limited" };
+        let vf = format!(
+            "format=rgb24,scale=out_color_matrix={matrix}:out_range={full},format={pix_fmt},\
+             setparams=color_primaries=bt709:color_trc=bt709"
+        );
+        std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", &colour, "-vf", &vf])
+            .args(["-colorspace", matrix, "-color_range", range, "-c:v", "ffv1"])
+            .arg(&path)
+            .status()
+            .is_ok_and(|s| s.success())
+            .then_some(path)
+    }
+
+    /// The centre pixel of `path`'s first frame as ffmpeg decodes it,
+    /// told the matrix and range, to 16-bit RGB (its 10-bit to 8-bit
+    /// route rounds a further two levels off) and rounded to 8 bits.
+    fn ffmpeg_rgb(path: &Path, matrix: &str, range: &str) -> [u8; 3] {
+        let out = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-i"])
+            .arg(path)
+            .args(["-frames:v", "1", "-vf", &format!("scale=in_color_matrix={matrix}:in_range={range},format=rgb48le"), "-f", "rawvideo", "-"])
+            .output()
+            .expect("ffmpeg ran a moment ago");
+        let mid = (16 * 32 + 16) * 6;
+        std::array::from_fn(|c| {
+            let v = u16::from_le_bytes([out.stdout[mid + c * 2], out.stdout[mid + c * 2 + 1]]);
+            (v as f32 / 257.0).round() as u8
+        })
+    }
+
+    /// A neighbour frame is decoded with the file's own matrix and range,
+    /// at its own depth: it comes back the colour ffmpeg decodes, told
+    /// the file's matrix and range, for BT.709, BT.601 full range and
+    /// BT.2020, at 8, 10 and 12 bits. Through 8-bit swscale with its
+    /// default BT.601 matrix a BT.709 red came back 13 levels off
+    /// (#1995).
+    #[test]
+    fn a_neighbour_decodes_with_the_files_matrix_and_range() {
+        let red = [200u8, 40, 40];
+        for (name, pix_fmt, matrix, range) in [
+            ("709-tv-444", "yuv444p", "bt709", "tv"),
+            ("709-tv-420-10", "yuv420p10le", "bt709", "tv"),
+            ("601-pc-444", "yuv444p", "bt470bg", "pc"),
+            ("2020-tv-444-12", "yuv444p12le", "bt2020nc", "tv"),
+        ] {
+            let Some(path) = flat(name, red, pix_fmt, matrix, range) else {
+                eprintln!("skipped {name}: ffmpeg could not write the test clip");
+                continue;
+            };
+            let want = ffmpeg_rgb(&path, matrix, range);
+            let mut r = SeekableFrameReader::open_linear(&path, None, klipp_core::WorkingColorspace::Rec709Linear).expect("opens");
+            let (px, w, h) = r.decode_at(0.0).expect("a frame");
+            let mid = ((h / 2 * w + w / 2) * 4) as usize;
+            let got: Vec<u8> = px[mid..mid + 3]
+                .iter()
+                .map(|&v| (klipp_color::transfer::linear_to_srgb(v.clamp(0.0, 1.0)) * 255.0).round() as u8)
+                .collect();
+            for (c, (g, want)) in got.iter().zip(want).enumerate() {
+                assert!(g.abs_diff(want) <= 1, "{name}: channel {c} is {g}, ffmpeg decodes {want} ({got:?})");
             }
             std::fs::remove_file(&path).ok();
         }
