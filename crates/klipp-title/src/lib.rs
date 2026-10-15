@@ -43,6 +43,8 @@ pub mod text3d_render;
 pub use text_on_path::PathUnits;
 mod ruby;
 mod vertical;
+mod gpu_styles;
+pub use gpu_styles::StyleSource;
 mod tracking;
 pub mod variable;
 mod vector_path;
@@ -499,6 +501,8 @@ pub struct TitleRenderer {
     /// title clips are visited (e.g. scrubbing across a long credits
     /// sequence).
     render_cache: Vec<CachedRender>,
+    /// One unfinished face; bounded separately, invalidated with raster caches.
+    style_source_cache: Option<gpu_styles::SourceCache>,
     /// The rows with coverage in the last render, `y0..y1`.
     last_rows: (u32, u32),
     /// The blur the last `Placed` frame asked for, so a caller that
@@ -577,6 +581,7 @@ impl TitleRenderer {
             font_registry: registry,
             texture_fill_cache: None,
             render_cache: Vec::with_capacity(RENDER_CACHE_CAP),
+            style_source_cache: None,
             last_rows: (0, 0),
             last_blur: 0.0,
             last_focus_blur: None,
@@ -3058,6 +3063,13 @@ impl TitleRenderer {
     /// motion posing its solid, a path standing each solid on it, and
     /// the post effects on the drawn layer.
     fn render_text3d(&mut self, title: &TitleData, width: u32, height: u32, time_secs: Option<f32>, gpu: &mut Option<&mut dyn AlphaMaskProcessor>) -> Option<Vec<u8>> {
+        let (solid, drawn) = self.render_text3d_solid(title, width, height, time_secs)?;
+        let mut buf = Self::dress_3d(solid, drawn, title, width, height, time_secs, gpu);
+        post_effects(&mut buf, title, width, height, time_secs);
+        Some(buf)
+    }
+
+    fn render_text3d_solid(&mut self, title: &TitleData, width: u32, height: u32, time_secs: Option<f32>) -> Option<(Vec<u8>, Option<[usize; 4]>)> {
         let tb = title.primary_text()?;
         let settings = tb.three_d.as_ref().filter(|t| t.enabled)?.clone();
         let layout = self.render_layout_at_time(title, width, height, time_secs);
@@ -3163,10 +3175,7 @@ impl TitleRenderer {
             poses: &poses,
             texture: texture.as_ref().map(|rgba| text3d_render::FaceTexture { rgba, width: width as usize, height: height as usize }),
         };
-        let (solid, drawn) = text3d_render::render_boxed(&scene, width, height, 2);
-        let mut buf = Self::dress_3d(solid, drawn, title, width, height, time_secs, gpu);
-        post_effects(&mut buf, title, width, height, time_secs);
-        Some(buf)
+        Some(text3d_render::render_boxed(&scene, width, height, 2))
     }
 
     /// The face of a 3D text whose face is not one colour, as its flat
@@ -3418,6 +3427,7 @@ impl TitleRenderer {
     /// 32 MB) is small enough to live indefinitely.
     pub fn invalidate_cache(&mut self) {
         self.render_cache.clear();
+        self.style_source_cache = None;
     }
 
     /// Compute character positions for the given title text, using the same layout

@@ -3096,6 +3096,7 @@ dependencies = [
  "klipp-grade-model",
  "klipp-load-lock",
  "klipp-testing",
+ "klipp-timeline",
  "klipp-title",
  "naga",
  "pollster 0.4.0",

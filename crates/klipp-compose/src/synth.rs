@@ -165,6 +165,26 @@ impl klipp_title::AlphaMaskProcessor for GpuAlphaMaskAdapter<'_> {
 
 
 
+/// The title renderer's stack order, evaluated before recording GPU passes.
+pub(crate) fn title_style_passes(fx: &klipp_timeline::LayerFx, scale: f32, time: f64) -> Vec<klipp_effects::gpu::TitleStyle> {
+    use klipp_effects::gpu::TitleStyle;
+    let mut passes=Vec::new();
+    let mut glows:Vec<_>=fx.glows.iter().enumerate().filter(|(i,g)|g.enabled&&(*i==0||fx.glow_stack_enabled)).map(|(_,g)|(g.evaluated_radius(time),g)).collect();
+    glows.sort_by(|a,b|b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    for (radius,g) in glows {passes.push(TitleStyle::Glow{radius:radius*scale,color:g.color,intensity:g.evaluated_intensity(time)});}
+    for (i,s) in fx.shadows.iter().enumerate().rev() {
+        if s.enabled&&(i==0||fx.shadow_stack_enabled){passes.push(TitleStyle::Shadow{offset:[(s.evaluated_offset_x(time)*scale).round() as i32,(s.evaluated_offset_y(time)*scale).round() as i32],radius:s.evaluated_blur(time)*scale,color:s.color});}
+    }
+    let mut outlines:Vec<_>=fx.outlines.iter().enumerate().filter(|(i,o)|o.enabled&&(*i==0||fx.outline_stack_enabled)).map(|(_,o)|(o.evaluated_width(time),o)).collect();
+    outlines.sort_by(|a,b|b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    for (radius,o) in outlines {passes.push(TitleStyle::Outline{radius:radius*scale,color:o.color});}
+    passes.push(TitleStyle::Face);
+    for (i,s) in fx.inner_shadows.iter().enumerate().rev() {
+        if s.enabled&&(i==0||fx.inner_shadow_stack_enabled){passes.push(TitleStyle::InnerShadow{offset:[(s.evaluated_offset_x(time)*scale).round() as i32,(s.evaluated_offset_y(time)*scale).round() as i32],radius:s.evaluated_blur(time)*scale,color:s.color});}
+    }
+    passes
+}
+
 #[cfg(test)]
 mod tests {
     /// A slate in half floats is its byte frame's picture within a code

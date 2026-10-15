@@ -23,7 +23,7 @@ analysis are separate concerns.
 The inventory uses exhaustive matches for built-in effects, native generators,
 transitions, title motions and loops. Tests account for fields of the title
 text, style, transform, shape and image structures. Additions must be classified
-explicitly. Nonresident and conditional paths name their reason and tracking
+explicitly. Nonresident and conditional paths name their reason and any open follow-up
 issue; these exceptions are not claims that the CPU work has been fixed.
 
 ## What the probes establish
@@ -59,9 +59,13 @@ for full-project playback profiling.
 - Static title rasters can cache. Animated 3D, keyed typography and several
   motion/style combinations can rerasterize on CPU (#2061, #2069). Eligible
   animated tracking reuses cached glyph coverage with GPU placement (#2062).
-- Title masks above 250,000 pixels use blur/dilate callbacks that upload coverage, execute GPU work,
-  and download for CPU composition (#2063). Smaller masks process on CPU. Clip glow/blur kernels have a
-  different, resident path.
+- Eligible animated single-text and 3D title styles compose on GPU (#2063).
+  A bounded face cache avoids repeated raster/upload when only styles animate;
+  rotating 3D still generates its face on CPU (#2061). Unsupported combinations
+  retain the CPU composition path (#2069), with GPU blur/dilate callbacks and
+  downloads above 250,000 mask pixels. Static finished title sprites still cache.
+  CPU and GPU title masks use the same box-blur and fractional outline-radius
+  rules. Clip glow/blur kernels remain a separate path.
 - Title glitch changes pixels on CPU each frame (#2069). Static title chromatic
   treatment can cache; the similarly named clip effect has a GPU kernel.
 - Unsupported composition or an unavailable/lost GPU can invoke CPU fallback.

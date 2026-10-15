@@ -48,6 +48,7 @@ klipp-color = { workspace = true }
 klipp-core = { workspace = true }
 klipp-testing = { workspace = true }
 klipp-title = { path = "../klipp-title" }
+klipp-timeline = { path = "../klipp-timeline" }
 serde_json = { workspace = true }
 # naga is a transitive dep of wgpu (same version pin); using it
 # directly in tests parses our WGSL strings without needing a GPU.
