@@ -649,6 +649,13 @@ fn run_script(s: &str, i: usize) -> Result<klipp_timeline::Script, Refusal> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
+    /// An empty native graphics container for editable vector layers.
+    Graphics {
+        at: Anchor,
+        secs: f64,
+        #[serde(default)]
+        track: Option<TrackRef>,
+    },
     /// Add or replace an editable path layer on an existing title clip:
     /// a `path` of its own, or a ready-made `shape` (#67) painted `color`
     /// with `stroke_width`, its box at `x`,`y` (centre) and `w`,`h`
@@ -1830,7 +1837,7 @@ fn one_piece() -> u32 {
 /// Serialized operation tags accepted by `Op`. Keep this in sync with the
 /// variants; the test below catches additions and renames.
 pub const OP_NAMES: &[&str] = &[
-    "vector_path", "connector", "place", "add_track", "remove_track", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
+    "graphics", "vector_path", "connector", "place", "add_track", "remove_track", "trim", "j_cut", "l_cut", "split", "join", "remove", "move", "cut",
     "captions", "audio", "volume", "duck", "lower_third", "set_text", "grade", "effect", "redact",
     "slip", "slide", "pin", "role", "matte", "format", "stabilize", "reframe", "zoom", "pan", "follow", "highlight",
     "ramp", "grade_group", "remove_grade_group", "look", "qualify", "zones", "retime", "replace", "track_audio", "clean_audio",
@@ -3130,6 +3137,15 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             let keys = follow_keys(&spots, secs(clip.timeline_out) - secs(clip.timeline_in), *scale, *hold_secs);
             pan(seq, pool, i, ti, clip, &keys, "follow")
         }
+        Op::Graphics { at, secs: held, track } => {
+            let at = resolve_anchor(seq, fps, at, i)?;
+            if !held.is_finite() || *held < 0.2 || *held > 86400.0 {
+                return Err(refuse(i, "graphics duration is out of range", "give secs from 0.2 to 86400"));
+            }
+            let mut td = klipp_timeline::TitleData::default();
+            td.objects.clear();
+            place_title_inner(seq, fps, i, at, *held, track.as_ref(), td, "graphics", "", true)
+        }
         Op::VectorPath { clip_id, object_id, path, shape, color, stroke_width, x, y, w, h } => {
             let path = match (path, shape) {
                 (Some(path), None) => path.clone(),
@@ -3163,7 +3179,7 @@ fn resolve_one(seq: &Sequence, pool: &MediaPool, fps: Fps, op: &Op, i: usize, tr
             path.validate().map_err(|e|refuse(i,e,"use matching normalized cubic contours and sorted morph keys"))?;
             let (ti,_,clip)=resolve_clip(seq,fps,clip_id,i)?;
             if seq.tracks[ti].locked { return Err(refuse(i,"track is locked","unlock the title track")); }
-            let old=clip.title_data().ok_or_else(||refuse(i,"vector_path needs a title clip","create a title first"))?;
+            let old=clip.title_data().ok_or_else(||refuse(i,"vector_path needs a graphics or title clip","create graphics first, or use an existing title"))?;
             let mut new=old.clone();
             let content=klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape {kind:klipp_timeline::ShapeKind::Path(path),fill:None,gradient:None,stroke:None,fit:None});
             // A shape's box: where it was asked for; a new ready-made shape
@@ -5758,7 +5774,13 @@ fn key_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip
 }
 
 fn picture_effect(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, kind: &str, amount: Option<f32>) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
-    require_picture(seq, pool, i, ti, clip, "add the effect to")?;
+    if clip.generator_data().is_some() {
+        if seq.tracks[ti].locked {
+            return Err(refuse(i, format!("track {ti} is locked"), "unlock it first"));
+        }
+    } else {
+        require_picture(seq, pool, i, ti, clip, "add the effect to")?;
+    }
     let (fx, a) = named_picture_effect(kind, amount).map_err(|(why, fix)| refuse(i, why, fix))?;
     use klipp_effects::BuiltinEffect as E;
     // The same kind of effect replaces the one that is there.
@@ -5996,7 +6018,7 @@ fn effect_on_many(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id:
     if clip_id.is_some() {
         return Err(refuse(i, "both a clip and on given", "give clip_id for one clip, or on for many"));
     }
-    let is_picture = |t: &klipp_timeline::Track, c: &Clip| takes_picture(pool, t, c);
+    let is_picture = |t: &klipp_timeline::Track, c: &Clip| takes_picture(pool, t, c) || (t.kind == TrackKind::Video && c.generator_data().is_some());
     let (whose, members): (String, Vec<(usize, &Clip)>) = match on {
         GradeOn::Named(n) if n.eq_ignore_ascii_case("timeline") => (
             "the timeline".into(),
@@ -6028,7 +6050,7 @@ fn effect_on_many(seq: &Sequence, pool: &MediaPool, fps: Fps, i: usize, clip_id:
         }
         GradeOn::Track { track, from, to, .. } => {
             let on = TrackSpan::resolve(seq, fps, i, track, from.as_ref(), to.as_ref())?;
-            let (members, skipped) = on.members(seq, |t, c| takes_picture(pool, t, c));
+            let (members, skipped) = on.members(seq, is_picture);
             return on_each(i, &on, "pictures", members, skipped, |ti, clip| picture_effect(seq, pool, i, ti, clip, kind, amount));
         }
         GradeOn::Group { group, .. } => {
@@ -9698,9 +9720,14 @@ fn connector(seq: &Sequence, fps: Fps, i: usize, at: Timecode, held: f64, ends: 
 /// place a title the one way.
 #[allow(clippy::too_many_arguments)]
 fn place_title(seq: &Sequence, fps: Fps, i: usize, at: Timecode, secs_held: f64, track: Option<&TrackRef>, td: klipp_timeline::TitleData, what: &str, note: &str) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
+    place_title_inner(seq, fps, i, at, secs_held, track, td, what, note, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn place_title_inner(seq: &Sequence, fps: Fps, i: usize, at: Timecode, secs_held: f64, track: Option<&TrackRef>, td: klipp_timeline::TitleData, what: &str, note: &str, extend: bool) -> Result<(String, EditCommand, Vec<ClipId>), Refusal> {
     let tl_in = at;
     let tl_out = tl_in + snap(secs_held, fps);
-    if tl_out > seq.total_duration() {
+    if !extend && tl_out > seq.total_duration() {
         return Err(refuse(i, format!("it would run to {:.2} s, past the end of the timeline at {:.2} s", secs(tl_out), secs(seq.total_duration())), "start it earlier or hold it shorter"));
     }
     let fits = |ti: usize| overlapping(seq, ti, tl_in, tl_out, None).is_none() && !seq.tracks[ti].locked;
@@ -10276,6 +10303,53 @@ fn clip_name_plain(c: &Clip) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_graphics_and_generator_effects_are_undoable_and_persist() {
+        let seq = Sequence::new_default();
+        let pool = MediaPool::new();
+        let ops: Vec<Op> = serde_json::from_value(serde_json::json!([
+            {"op":"graphics","at":{"secs":0},"secs":3},
+            {"op":"vector_path","clip_id":"@0","shape":"ellipse","color":"#4488ff"},
+            {"op":"generator","data":{"SolidColor":{"color":[20,40,60,255]}},"at":{"secs":0},"secs":3},
+            {"op":"effect","clip_id":"@2","kind":"corners","amount":0.35},
+            {"op":"effect","clip_id":"@2","kind":"outer_glow","amount":0.3},
+            {"op":"effect","clip_id":"@2","kind":"shadow","amount":0.3}
+        ])).unwrap();
+        let plan = resolve(&seq, &pool, &ops).unwrap();
+        let graphics_id = plan.steps[0].after[0].clip_id;
+        let generator_id = plan.steps[2].after[0].clip_id;
+        let mut seqs = vec![seq.clone()];
+        for step in &plan.steps { applied(&mut seqs, &pool, &step.edit, false); }
+        let graphics = clip_in(&seqs[0], graphics_id);
+        let objects = &graphics.title_data().unwrap().objects;
+        assert_eq!(objects.len(), 1);
+        assert!(matches!(objects[0].content, klipp_timeline::TitleObjectContent::Shape(_)));
+        assert_eq!(seqs[0].total_duration().to_secs_f64(), 3.0);
+        let ti = seqs[0].tracks.iter().position(|t| t.clips.iter().any(|c| c.id == generator_id)).unwrap();
+        let batch: Vec<Op> = serde_json::from_value(serde_json::json!([
+            {"op":"effect","on":{"track":ti},"kind":"vignette","amount":0.2}
+        ])).unwrap();
+        let batch = resolve(&seqs[0], &pool, &batch).unwrap();
+        assert!(!batch.steps.is_empty());
+        for step in &batch.steps { applied(&mut seqs, &pool, &step.edit, false); }
+        let serialized = serde_json::to_value(&seqs[0]).unwrap();
+        let loaded: Sequence = serde_json::from_value(serialized.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&loaded).unwrap(), serialized);
+        let generated = clip_in(&loaded, generator_id);
+        assert!(generated.generator_data().is_some());
+        let effects = klipp_timeline::test_clip::effects(&generated);
+        assert!(effects.iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::RoundedCorners { .. })));
+        assert!(effects.iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::OuterGlow { .. })));
+        assert!(effects.iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::DropShadow { .. })));
+        assert!(effects.iter().any(|e| matches!(e, klipp_effects::BuiltinEffect::Vignette { .. })));
+        for step in batch.steps.iter().rev().chain(plan.steps.iter().rev()) { applied(&mut seqs, &pool, &step.edit, true); }
+        assert_eq!(serde_json::to_value(&seqs[0]).unwrap(), serde_json::to_value(&seq).unwrap());
+        let empty_title: Vec<Op> = serde_json::from_value(serde_json::json!([
+            {"op":"title","text":"","at":{"secs":0},"secs":3}
+        ])).unwrap();
+        assert!(resolve(&seq, &pool, &empty_title).is_err());
+    }
+
     #[test]
     fn exported_op_names_cover_every_serialized_variant() {
         let source = include_str!("ops.rs");

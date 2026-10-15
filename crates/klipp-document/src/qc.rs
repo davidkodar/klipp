@@ -653,7 +653,21 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
     }
 
     // Titles: across a cut, too short to read, sharing the bottom of the frame with captions.
-    let cuts: Vec<f64> = pictures.iter().flat_map(|(_, c)| [secs(c.timeline_in), secs(c.timeline_out)]).collect();
+    let cuts: Vec<f64> = pictures.iter().flat_map(|(ti, c)| {
+        [secs(c.timeline_in), secs(c.timeline_out)].into_iter().filter(|edge| {
+            // A small generated card entering over an uninterrupted shot
+            // is an overlay, not a new shot. Keep full-frame generators
+            // and cuts in the underlying picture in the cut list.
+            if c.generator_data().is_none() { return true; }
+            let sample = edge.clamp(secs(c.timeline_in), (secs(c.timeline_out) - frame).max(secs(c.timeline_in)));
+            let rect = placed_box(seq, transcripts, c, [seq.resolution.width, seq.resolution.height], [0.0, 0.0, 1.0, 1.0], sample);
+            let inset = rect[2] < 0.95 && rect[3] < 0.95;
+            let continuous_below = pictures.iter().any(|(below, shot)| below > ti
+                && secs(shot.timeline_in) < *edge - frame
+                && secs(shot.timeline_out) > *edge + frame);
+            !(inset && continuous_below)
+        })
+    }).collect();
     let titles: Vec<&Clip> = seq.tracks.iter().filter(|t| t.kind == TrackKind::Text && t.visible).flat_map(|t| t.clips.iter()).filter(|c| c.enabled && matches!(c.kind, ClipKind::Title(_))).collect();
     let captions: Vec<&Clip> = seq.tracks.iter().filter(|t| t.kind == TrackKind::Subtitle && t.visible).flat_map(|t| t.clips.iter()).filter(|c| c.enabled).collect();
     // The music's beats on the timeline, when the analysis is sure of
@@ -1157,6 +1171,32 @@ mod tests {
     }
 
     /// One screen recording cut into shots, no sound.
+    #[test]
+    fn inset_generator_edges_are_not_shot_cuts_but_underlying_edits_are() {
+        struct Inset(bool);
+        impl Transcripts for Inset {
+            fn words(&self, _: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> { None }
+            fn placement(&self, c: &Clip, _: f64, _: f64) -> Option<klipp_timeline::surface::Placement> {
+                (self.0 && c.generator_data().is_some()).then_some((0.0, 0.0, 0.4, 0.4, 0.0, 0.5, 0.5))
+            }
+        }
+        let (mut seq, pool, _) = screencast(&[(0.0, 8.0, 0.0)]);
+        let mut overlay = Track::new("Card", TrackKind::Video);
+        overlay.clips.push(Clip { kind: ClipKind::Generator(klipp_core::GeneratorData::SolidColor { color: [30, 60, 90, 255] }), ..Clip::gap(tc(2.0), tc(6.0)) });
+        seq.tracks.insert(0, overlay);
+        let mut title = Track::new("Heading", TrackKind::Text);
+        title.clips.push(Clip { kind: ClipKind::Title(klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Keep your flow".into(), ..Default::default() })), ..Clip::gap(tc(1.0), tc(7.0)) });
+        seq.tracks.insert(0, title);
+        assert!(!rules(&check(&seq, &pool, &Inset(true))).contains(&"title_across_cut"));
+        assert!(rules(&check(&seq, &pool, &Inset(false))).contains(&"title_across_cut"));
+        let mut second = seq.tracks[2].clips[0].clone();
+        second.id = klipp_core::ClipId::new();
+        second.timeline_in = tc(4.0);
+        seq.tracks[2].clips[0].timeline_out = tc(4.0);
+        seq.tracks[2].clips.push(second);
+        assert!(rules(&check(&seq, &pool, &Inset(true))).contains(&"title_across_cut"));
+    }
+
     fn screencast(shots: &[(f64, f64, f64)]) -> (Sequence, MediaPool, klipp_core::MediaId) {
         let mut pool = MediaPool::new();
         let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/screen.mp4".into(), None);
