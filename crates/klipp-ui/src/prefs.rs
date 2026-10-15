@@ -6,7 +6,7 @@ fn default_true() -> bool { true }
 fn default_fade_ms() -> u32 { 500 }
 
 /// The preferences file's revision. A file below it has the one-time
-/// migrations of [`Preferences::migrate_to_revision`] run on load; a file
+/// migrations of `Preferences::migrate_to_revision` run on load; a file
 /// at it is read as written, so a value chosen after the migration stays.
 pub const PREFS_REVISION: u32 = 2;
 
