@@ -56,12 +56,12 @@ for full-project playback profiling.
   cache CPU pixels; grain and timers rasterize with time (#2067). StillFrame rereads its
   file and is not a cached still-generator path (#2068). The Generator effect node has
   its own GPU kernel and must not be confused with native generators.
-- Static title rasters can cache. Animated 3D, keyed typography and several
-  motion/style combinations can rerasterize on CPU (#2061, #2069). Eligible
+- Static title rasters can cache. Keyed typography and unsupported
+  motion/style combinations can rerasterize on CPU (#2069). Eligible
   animated tracking reuses cached glyph coverage with GPU placement (#2062).
 - Eligible animated single-text and 3D title styles compose on GPU (#2063).
   A bounded face cache avoids repeated raster/upload when only styles animate;
-  rotating 3D still generates its face on CPU (#2061). Unsupported combinations
+  eligible rotating 3D uses cached GPU geometry (#2061). Unsupported combinations
   retain the CPU composition path (#2069), with GPU blur/dilate callbacks and
   downloads above 250,000 mask pixels. Static finished title sprites still cache.
   CPU and GPU title masks use the same box-blur and fractional outline-radius
@@ -71,3 +71,12 @@ for full-project playback profiling.
 - Unsupported composition or an unavailable/lost GPU can invoke CPU fallback.
   CPU twins remain necessary for fallback and parity; their existence alone is
   not evidence that normal GPU playback uses them.
+
+Eligible plain animated 3D text uses a four-entry, 64 MiB geometry cache on
+each of CPU and GPU. Camera, lighting and glyph poses update frame parameters;
+text, layout, size, depth and bevel edits rebuild geometry. GPU rasterization
+uses a 2×2 sample grid and bounded frame-sized colour/depth targets. It performs
+no intermediate downloads. Hardware subpixel coverage can differ from the CPU
+scan converter at triangle seams; tests bound those differences separately from
+interior shading and verify viewer/export consistency. Bitmap glyphs, rich
+fills, text paths, mixed objects and unsupported transforms retain CPU fallback.

@@ -145,7 +145,7 @@ pub fn generator(data: &GeneratorData) -> Capability {
 pub const COMPOSITION_LIMITS: &[Capability] = &[
     cap(Residency::Conditional, "Unavailable/lost GPU or rejected GPU stack falls back to CPU; kernel coverage alone does not establish graph residency", Some(1465)),
     cap(Residency::Conditional, "Eligible animated text/3D styles keep masks and composition on GPU; unsupported title combinations retain CPU composition and large-mask callback downloads", Some(2069)),
-    cap(Residency::CpuPerFrame, "Animated 3D title geometry is rasterized on CPU before GPU upload", Some(2061)),
+    cap(Residency::Conditional, "Eligible animated plain 3D text caches meshes and rasterizes camera/light/glyph poses on GPU; rich authoring combinations retain CPU fallback", Some(2069)),
     cap(Residency::Conditional, "Eligible tracking uses cached glyph coverage and GPU placement; unsupported keyed typography still rasterizes per frame", Some(2069)),
     cap(Residency::CpuPerFrame, "Title glitch uses per-frame CPU post_effects; static chromatic treatment can cache, and similarly named clip effects have GPU kernels", Some(2069)),
 ];
@@ -248,7 +248,7 @@ pub const TITLE_FAMILIES: &[TitleFamily] = &[
     TitleFamily { owner: "TextBox", fields: &["text", "font_size", "font_name", "font_style", "color", "alignment", "tracking", "line_spacing", "underline", "strikethrough", "case_transform", "baseline_shift", "drop_cap_scale", "columns", "vertical_layout", "vertical_columns_ltr", "text_direction", "last_line", "vertical_align", "fit", "paragraph", "features", "font_weight", "font_axes", "style_runs"], capability: cap(Residency::CpuCached, "CPU shaping/raster cached while inputs stay unchanged; keyed paragraph or changed layout rerasterizes", Some(2069)) },
     TitleFamily { owner: "TextBox", fields: &["font_size_keyframes", "line_spacing_keyframes", "color_keyframes"], capability: cap(Residency::CpuPerFrame, "Size, spacing and colour keys rerasterize for their time", Some(2069)) },
     TitleFamily { owner: "TextBox", fields: &["gradient", "pattern_fill", "pattern_fill_enabled", "texture_fill", "write_on", "outline_write_on", "extrusion"], capability: cap(Residency::CpuCached, "CPU fill/style in cached raster; time-varying inputs require rerasterization", Some(2069)) },
-    TitleFamily { owner: "TextBox", fields: &["three_d"], capability: cap(Residency::CpuPerFrame, "Static solids can cache a raster; animated 3D rasterization is CPU work", Some(2061)) },
+    TitleFamily { owner: "TextBox", fields: &["three_d"], capability: cap(Residency::Conditional, "Static solids cache rasters; eligible animated plain solids cache geometry and rasterize on GPU; unsupported combinations retain CPU fallback", Some(2069)) },
     TitleFamily { owner: "TextBox", fields: &["text_path", "char_animation"], capability: cap(Residency::Conditional, "Eligible path travel poses cached glyphs; unsupported path/motion combinations rerasterize", Some(2069)) },
     TitleFamily { owner: "TextBox", fields: &["chromatic_aberration_px"], capability: cap(Residency::CpuCached, "CPU title post_effects cached for static inputs; unlike the GPU clip effect", Some(2069)) },
     TitleFamily { owner: "TextBox", fields: &["glitch_intensity"], capability: cap(Residency::CpuPerFrame, "Deterministic time-varying CPU title post_effects", Some(2069)) },

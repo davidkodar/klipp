@@ -39,6 +39,8 @@ mod fallback;
 mod shaping;
 mod text_on_path;
 pub mod text3d_mesh;
+pub mod text3d_triangles;
+pub mod prepared_3d;
 pub mod text3d_render;
 pub use text_on_path::PathUnits;
 mod ruby;
@@ -523,6 +525,7 @@ pub struct TitleRenderer {
     last_glyphs3d: std::sync::Mutex<crate::text3d_render::Placed3d>,
     /// The next `CachedRender::id`.
     next_cache_id: u64,
+    geometry3d_cache: std::collections::VecDeque<prepared_3d::GeometryCache>,
     /// The clip's length while rendering with `render_with_window`,
     /// which exit motion counts back from. `None` outside a clip.
     motion_window: Option<f32>,
@@ -589,6 +592,7 @@ impl TitleRenderer {
             last_units: None,
             last_glyphs3d: std::sync::Mutex::new(Default::default()),
             next_cache_id: 1,
+            geometry3d_cache: Default::default(),
             motion_window: None,
             loop_wave: None,
             loop_waves: HashMap::new(),
@@ -3426,6 +3430,7 @@ impl TitleRenderer {
     /// invoked anywhere — the LRU bound (4 entries × 1920×1080×4 ≈
     /// 32 MB) is small enough to live indefinitely.
     pub fn invalidate_cache(&mut self) {
+        self.geometry3d_cache.clear();
         self.render_cache.clear();
         self.style_source_cache = None;
     }
