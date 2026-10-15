@@ -47,7 +47,7 @@ pub(super) fn ops_schema() -> Value {
         variant(
             "place",
             &["media_id", "track", "at"],
-            json!({"media_id":{"type":"string","minLength":1},"track":{"$ref":"#/properties/ops/$defs/track_ref"},"at":{"$ref":"#/properties/ops/$defs/anchor"},"source_in":{"type":"number","minimum":0},"source_out":{"type":"number","minimum":0},"insert":{"type":"boolean"},"with_audio":{"type":"boolean"}}),
+            json!({"media_id":{"type":"string","minLength":1},"track":{"$ref":"#/properties/ops/$defs/track_ref"},"at":{"$ref":"#/properties/ops/$defs/anchor"},"source_in":{"type":"number","minimum":0},"source_out":{"type":"number","minimum":0},"insert":{"type":"boolean"},"with_audio":{"type":"boolean"},"sync_source_secs":{"type":"number","minimum":0}}),
         ),
         variant(
             "move",
@@ -113,6 +113,7 @@ pub(super) fn validate_ops(args: &Value) -> Result<(), String> {
                     "source_out",
                     "insert",
                     "with_audio",
+                    "sync_source_secs",
                 ],
             ),
             "move" => (&["clip_id", "to"], &["op", "clip_id", "to"]),
@@ -157,7 +158,7 @@ pub(super) fn validate_ops(args: &Value) -> Result<(), String> {
                 return Err(format!("ops[{index}].{key} must be boolean"));
             }
         }
-        for key in ["source_in", "source_out"] {
+        for key in ["source_in", "source_out", "sync_source_secs"] {
             if op.get(key).is_some_and(|v| !nonnegative_number(v)) {
                 return Err(format!("ops[{index}].{key} must be nonnegative seconds"));
             }

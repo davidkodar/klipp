@@ -1498,7 +1498,7 @@ fn project_changed_under(name: &str, seen: u64, now: u64) -> bool {
 }
 
 fn has_structured_output(name: &str) -> bool {
-    matches!(name, "klipp_status" | "klipp_orient" | "klipp_timeline" | "klipp_plan" | "klipp_apply" | "klipp_prepare_cut" | "klipp_grade_to_target")
+    matches!(name, "klipp_status" | "klipp_orient" | "klipp_timeline" | "klipp_plan" | "klipp_apply" | "klipp_prepare_cut" | "klipp_grade_to_target" | "klipp_check" | "klipp_review")
 }
 
 fn output_schema(name: &str) -> Value {
@@ -1618,6 +1618,20 @@ fn content_for(name: &str, result: &Value) -> Result<Vec<Value>, String> {
     if name == "klipp_generator" || name == "klipp_timeline" || name == "klipp_media_analysis" || name == "klipp_plan" || name == "klipp_check" || name == "klipp_brief" || name == "klipp_edit_plan" || name == "klipp_build_edit_plan" || name == "klipp_screen_text" || name == "klipp_auto_redact" || name == "klipp_auto_sfx" || name == "klipp_review" || name == "klipp_grade_to_target" || name == "klipp_measure_region" || name == "klipp_colour_selfcheck" || name == "klipp_grade_chain" || name == "klipp_match_scenes" || name == "klipp_adopt_look" || name == "klipp_audio_spectrum" || name == "klipp_skin_balance" || name == "klipp_transcript" || name == "klipp_cut_points" || name == "klipp_selects" || name == "klipp_style_profile" || name == "klipp_looks" || name == "klipp_frame_stats" {
         if let Some(text) = result.get("text").and_then(|v| v.as_str()) {
             let mut text = text.to_string();
+            // Text-only clients need the same review handles as structured
+            // clients; otherwise the next suggested action is impossible.
+            if matches!(name, "klipp_check" | "klipp_review") {
+                let check = if name == "klipp_review" { &result["check"] } else { &result };
+                for key in ["findings", "color_findings", "sound_findings"] {
+                    if let Some(findings) = check[key].as_array() {
+                        for finding in findings {
+                            if let Some(id) = finding["id"].as_str() {
+                                text.push_str(&format!("\nFinding {id}: {}", finding["what"].as_str().unwrap_or("")));
+                            }
+                        }
+                    }
+                }
+            }
             // A grade pass writes many times: the next edit needs the
             // revision it ended at, not the one before it (#1571).
             if name == "klipp_grade_to_target" {
@@ -2940,3 +2954,41 @@ mod project_change_notice_tests {
         assert_eq!(tool_to_command("klipp_export_subtitles", &json!({ "path": "/a/b.vtt", "format": "vtt" })).unwrap(), json!({ "method": "export_subtitles", "path": "/a/b.vtt", "format": "vtt" }));
         assert_eq!(tool_to_command("klipp_export_subtitles", &json!({ "path": "/a/b.srt" })).unwrap(), json!({ "method": "export_subtitles", "path": "/a/b.srt" }));
     }
+
+#[cfg(test)]
+mod review_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn source_sync_survives_plan_and_apply_validation() {
+        for name in ["klipp_plan", "klipp_apply"] {
+            let args = json!({"ops":[{"op":"place","media_id":"sound","track":"audio","at":{"secs":2},"source_in":0.1,"source_out":1,"sync_source_secs":0.35}]});
+            let command = tool_to_command(name, &args).unwrap();
+            assert_eq!(command["ops"][0]["sync_source_secs"], 0.35);
+            for bad in [json!(-1), json!("0.35"), Value::Null] {
+                let mut invalid = args.clone();
+                invalid["ops"][0]["sync_source_secs"] = bad;
+                assert!(tool_to_command(name, &invalid).is_err());
+            }
+        }
+        let schema = edit_schema::ops_schema();
+        let place = schema["items"]["oneOf"].as_array().unwrap().iter().find(|v| v["properties"]["op"]["const"] == "place").unwrap();
+        assert_eq!(place["properties"]["sync_source_secs"]["minimum"], 0);
+    }
+
+    #[test]
+    fn check_and_review_expose_actionable_ids_to_both_clients() {
+        let check = json!({"text":"one warning", "findings":[{"id":"check-title-1","what":"short title"}], "color_findings":[{"id":"color-1","what":"clipping"}], "sound_findings":[{"id":"sound-1","what":"hum"}]});
+        for name in ["klipp_check", "klipp_review"] {
+            assert!(has_structured_output(name));
+            let result = if name == "klipp_review" { json!({"text":"review", "check":check}) } else { check.clone() };
+            let content = content_for(name, &result).unwrap();
+            let text = content[0]["text"].as_str().unwrap();
+            for id in ["check-title-1", "color-1", "sound-1"] {
+                assert!(text.contains(id), "{name}: {text}");
+                let review = tool_to_command("klipp_review_finding", &json!({"finding_id":id,"decision":"accepted","rationale":"intentional"})).unwrap();
+                assert_eq!(review["finding_id"], id);
+            }
+        }
+    }
+}
