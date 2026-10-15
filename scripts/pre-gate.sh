@@ -231,9 +231,14 @@ if [ -n "$_test_args" ]; then
     if printf ' %s ' "$_touched" | grep -qE ' (klipp-effects|klipp-nodes|klipp-graph-format|klipp-graph-lift|klipp-compose|klipp-timeline|klipp-engine|klipp-ui) '; then
         for _scan in klipp-graph-lift:effect_entry_readers klipp-compose:legacy_route_gone; do
             _crate=${_scan%%:*}
-            printf ' %s ' "$_touched" | grep -q " $_crate " && continue
+            # The complete crate suite above already includes its scans.
+            case " $_gate_tests " in *" --workspace "*|*" -p $_crate "*) continue ;; esac
             [ -f "crates/$_crate/tests/${_scan#*:}.rs" ] || continue
-            step "the ${_scan#*:} scan" cargo test -p "$_crate" --test "${_scan#*:}"
+            case $_scan in
+                klipp-compose:legacy_route_gone)
+                    step "the legacy_route_gone scan" cargo test -p klipp-compose --test all legacy_route_gone:: ;;
+                *) step "the ${_scan#*:} scan" cargo test -p "$_crate" --test "${_scan#*:}" ;;
+            esac
         done
     fi
     # A downstream test reads what other crates produce: a change in one
