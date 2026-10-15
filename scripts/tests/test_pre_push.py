@@ -930,8 +930,39 @@ class PreGateTests(RealGitGate):
             (self.root / "crates" / name / "src").mkdir(parents=True)
             (self.root / "crates" / name / "Cargo.toml").write_text(f'[package]\nname = "{name}"\n')
         self.change("crates/klipp-effects/src/lib.rs")
+        # Include the new crate in metadata so the scope stays narrow.
+        cargo = self.bin / "cargo"
+        package = '{"name":"klipp-effects","manifest_path":"' + str(self.root / "crates/klipp-effects/Cargo.toml") + '","dependencies":[]},'
+        cargo.write_text(cargo.read_text().replace('"packages":[', '"packages":[' + package))
         self.assertEqual(self.pre_gate().returncode, 0)
         self.assertIn("test -p klipp-graph-lift --test effect_entry_readers", self.calls())
+
+    def test_a_bundled_scan_uses_its_registered_target(self):
+        (self.root / "crates/klipp-compose/tests").mkdir(parents=True)
+        (self.root / "crates/klipp-compose/tests/legacy_route_gone.rs").write_text("\n")
+        self.commit(self.root, "baseline bundled scan")
+        self.git(self.root, "push", "-q", "origin", "HEAD:main")
+        (self.root / "crates/klipp-effects/src").mkdir(parents=True)
+        (self.root / "crates/klipp-effects/Cargo.toml").write_text('[package]\nname = "klipp-effects"\n')
+        self.change("crates/klipp-effects/src/lib.rs")
+        # Include the new crate in metadata so the scope stays narrow.
+        cargo = self.bin / "cargo"
+        package = '{"name":"klipp-effects","manifest_path":"' + str(self.root / "crates/klipp-effects/Cargo.toml") + '","dependencies":[]},'
+        cargo.write_text(cargo.read_text().replace('"packages":[', '"packages":[' + package))
+        result = self.pre_gate()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("test -p klipp-compose --test all legacy_route_gone::", self.calls())
+        self.assertNotIn("test -p klipp-compose --test legacy_route_gone", self.calls())
+
+    def test_workspace_suite_does_not_repeat_source_scans(self):
+        (self.root / "crates/klipp-effects/src").mkdir(parents=True)
+        (self.root / "crates/klipp-effects/Cargo.toml").write_text('[package]\nname = "klipp-effects"\n')
+        self.change("crates/klipp-effects/src/lib.rs")
+        self.change("Cargo.toml", "# shared workspace change\n")
+        result = self.pre_gate()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("test --no-fail-fast --workspace", self.calls())
+        self.assertFalse(any("effect_entry_readers" in c for c in self.calls()))
 
     def test_a_pixel_crate_change_checks_the_render_references(self):
         # golden_corpus lives in klipp-compose, downstream of the effect

@@ -62,6 +62,24 @@ Save the project: to an absolute path (a folder ending in .klipp, made if needed
 
 Whether Klipp is there and what is open, read live without changing anything: first a plain summary to tell a person who asks whether Klipp is connected (version, project and whether it is saved, timeline, playhead, media), then the details: the build (commit, dirty, when it was built, and whether a newer build is on disk so a restart is due), transport state, timeline summary, viewer resolution and the latest performance sample. Start here.
 
+### App and MCP build diagnostics
+
+`status` and `orient` report the app's `build` and the serving MCP process
+under `mcp`: build commit, executable identity, catalog fingerprint and tool
+count. Different commits warn that capabilities may differ; this is not a
+claim of proven protocol incompatibility. A replaced MCP executable also
+warns. Reconnect the Klipp MCP connection in the client and refresh its tool
+list; restarting the app alone does not replace an existing MCP process.
+
+`initialize` and `tools/list` return the same identity in `_meta`. To check
+that a cached catalog still matches, pass its `catalog_fingerprint` to
+`status` as `expected_catalog_fingerprint`. A mismatch is reported without
+changing the project. The fingerprint covers the base tool definitions;
+protocol-specific output schemas are excluded. It is a change identifier,
+not a security checksum. Old servers predating these diagnostics cannot
+report their identity retroactively and need one reconnect first.
+
+
 ## klipp_window_screenshot
 
 The whole Klipp window as the person sees it, panels and dialogs included, as a PNG (1600 wide by default): for checking a layout, a panel or a dialog. The viewer in it is drawn through its monitor LUT and overlays, so measure colour with klipp_screenshot or klipp_frame_stats, never from this.

@@ -832,7 +832,7 @@ const DENOISE_LEVELS: usize = 1024;
 /// sharp as it was — unlike a blur, which softens the edge with the
 /// noise, or shrink then grow, which rounds the matte's corners.
 ///
-/// The median is found among [`DENOISE_LEVELS`] levels, a running
+/// The median is found among `DENOISE_LEVELS` levels, a running
 /// histogram per row (Huang's method), so the cost grows with the radius,
 /// not its square. Where a pixel's own value is on the median's level it
 /// is kept as it was, so a smooth soft edge comes through unquantised.

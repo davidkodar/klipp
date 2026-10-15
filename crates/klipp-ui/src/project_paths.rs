@@ -146,8 +146,8 @@ pub fn projects_in(dir: &Path) -> Vec<RecentProject> {
     found.into_iter().map(|(_, rp)| rp).collect()
 }
 
-/// Copy the project folder `path` beside it as "<name> copy" (or
-/// "<name> copy 2", and on), and return the copy's path. The lock is not
+/// Copy the project folder `path` beside it as `<name> copy` (or
+/// `<name> copy 2`, and on), and return the copy's path. The lock is not
 /// copied: the copy is nobody's open project.
 pub fn duplicate_project(path: &Path) -> std::io::Result<PathBuf> {
     let parent = path.parent().ok_or_else(|| std::io::Error::other("the project has no folder"))?;

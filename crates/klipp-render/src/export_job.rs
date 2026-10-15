@@ -246,9 +246,13 @@ impl ExportJob {
                     }
                 }
             }
+            let mut fit_note = None;
             let (gain_db, margin_db) = if limit {
                 match fit_limited(rate, target_lufs, ceiling_dbtp, analysis.applied_gain_db, id, trial_run)? {
-                    Some(fit) => fit,
+                    Some(fit) => {
+                        fit_note = fit.note;
+                        (fit.gain_db, fit.margin_db)
+                    },
                     None => {
                         // No trial measured a loudness (a silent mix): the
                         // arithmetic, said as not checked.
@@ -260,6 +264,7 @@ impl ExportJob {
                 (analysis.applied_gain_db, LIMITER_CEILING_MARGIN_DB)
             };
             let mut chain = DeliveryChain::limited_by(self.snapshot.sample_rate, target_lufs, gain_db, limit, ceiling_dbtp, margin_db);
+            chain.fit_note = fit_note;
             if let Some(why) = unverified.into_inner() {
                 warn!("ExportJob {id}: the ceiling was not verified through the {} encoder: {why}", codec.label());
                 chain.unverified = Some(format!("the ceiling was not checked through the {} encoder ({why})", codec.label()));
@@ -798,6 +803,14 @@ const LIMITER_OVERSHOOT_PAD_DB: f32 = 0.05;
 /// of it (#1930).
 const CODEC_OVERSHOOT_PAD_DB: f32 = 0.25;
 
+/// A measured fit and any limit that prevented convergence.
+#[derive(Debug, PartialEq)]
+struct LimitedFit {
+    gain_db: f32,
+    margin_db: f32,
+    note: Option<String>,
+}
+
 /// The gain and the limiter margin that bring a limited delivery to
 /// `target_lufs` with its true peak under `ceiling_dbtp`, starting from
 /// the arithmetic gain. A limiter takes loudness with the peaks it
@@ -813,7 +826,7 @@ fn fit_limited(
     arithmetic_gain_db: f32,
     id: impl std::fmt::Display,
     mut run: impl FnMut(&mut DeliveryChain, Option<usize>) -> Result<Option<f32>, RenderError>,
-) -> Result<Option<(f32, f32)>, RenderError> {
+) -> Result<Option<LimitedFit>, RenderError> {
     /// One measured trial: its gain and margin, how far over the ceiling
     /// its file was, and its loudness.
     struct Tried {
@@ -880,7 +893,13 @@ fn fit_limited(
         .filter(|t| t.over <= 0.0)
         .min_by(|a, b| (a.lufs - target_lufs).abs().total_cmp(&(b.lufs - target_lufs).abs()))
         .or_else(|| tried.iter().min_by(|a, b| a.over.total_cmp(&b.over)));
-    Ok(best.map(|t| (t.gain_db, t.margin_db)))
+    Ok(best.map(|t| LimitedFit {
+        gain_db: t.gain_db,
+        margin_db: t.margin_db,
+        note: (tried.len() == LIMITED_GAIN_PASSES
+            && ((t.lufs - target_lufs).abs() >= 0.1 || t.over > 0.0))
+            .then(|| format!("fitting stopped at the {LIMITED_GAIN_PASSES}-trial limit; using the best measured trial, prioritising the peak ceiling")),
+    }))
 }
 
 /// Where the trial encodes of a delivery's sound go (#1930): beside the
@@ -974,8 +993,7 @@ fn delivery_status(delivery: &DeliveryChain, written: Option<klipp_core::normali
     };
     let (lufs, peak) = (delivery.measured_lufs()?, delivery.measured_true_peak_dbtp()?);
     let ceiling = delivery.ceiling_dbtp;
-    let limited = if delivery.limiter.is_some() { "; the peaks were limited to reach it" } else { "" };
-    let target = delivery.target_lufs.map_or(String::new(), |t| format!(" (requested {t:.1}{limited})"));
+    let target = delivery.target_report(file.integrated_lufs as f32);
     let unverified = delivery.unverified.as_ref().map_or(String::new(), |why| format!("; {why}"));
     let base = format!(
         "Loudness — mix: {lufs:.1} LUFS, true peak {peak:.1} dBTP · written file: {:.1} LUFS, true peak {:.1} dBTP{target}{unverified}",
@@ -984,8 +1002,10 @@ fn delivery_status(delivery: &DeliveryChain, written: Option<klipp_core::normali
     let over = file.true_peak_dbtp as f32 - ceiling;
     Some(if over > 0.05 {
         format!("{base} \u{2014} the written file is {over:.1} dB over the {ceiling:.1} dBTP ceiling")
+    } else if file.true_peak_dbtp.is_finite() {
+        format!("{base} — the written file meets the {ceiling:.1} dBTP ceiling")
     } else {
-        base
+        format!("{base} — the written file's peak ceiling could not be verified")
     })
 }
 
@@ -1006,6 +1026,8 @@ struct DeliveryChain {
     /// Why the ceiling wasn't checked through the delivery's encoder, when
     /// a trial of it failed (#1930): the status says so.
     unverified: Option<String>,
+    /// Why fitting stopped before meeting both targets, if known.
+    fit_note: Option<String>,
 }
 
 impl DeliveryChain {
@@ -1020,6 +1042,7 @@ impl DeliveryChain {
             ceiling_dbtp: DEFAULT_PEAK_CEILING_DBTP,
             limiter_input_peak: 0.0,
             unverified: None,
+            fit_note: None,
         }
     }
 
@@ -1056,6 +1079,7 @@ impl DeliveryChain {
             ceiling_dbtp,
             limiter_input_peak: 0.0,
             unverified: None,
+            fit_note: None,
         }
     }
 
@@ -1091,18 +1115,31 @@ impl DeliveryChain {
         self.meter.as_ref().map(|m| m.readings().true_peak_dbfs)
     }
 
+    /// Describe the target against the measured signal, never infer success
+    /// from the presence of a limiter. The final report uses decoded audio.
+    fn target_report(&self, measured: f32) -> String {
+        let Some(target) = self.target_lufs else { return String::new() };
+        let delta = measured - target;
+        let outcome = if !measured.is_finite() {
+            "loudness target could not be verified".to_string()
+        } else if delta.abs() < 0.1 {
+            "loudness target met within 0.1 LU".to_string()
+        } else if delta < 0.0 {
+            format!("{:.1} LU below target", -delta)
+        } else {
+            format!("{delta:.1} LU above target")
+        };
+        let limited = if self.limiter.is_some() { "; peak limiting applied" } else { "" };
+        let why = self.fit_note.as_ref().map_or(String::new(), |why| format!("; {why}"));
+        format!(" (requested {target:.1} LUFS; {outcome}{limited}{why})")
+    }
+
     /// What was written, measured. `None` without normalisation.
     fn report(&self) -> Option<String> {
         let r = self.meter.as_ref()?.readings();
-        let target = self.target_lufs?;
-        let base = if self.limiter.is_some() {
-            format!(
-                "Loudness: {:.1} LUFS, true peak {:.1} dBTP (requested {target:.1}; the peaks were limited to reach it)",
-                r.integrated, r.true_peak_dbfs
-            )
-        } else {
-            format!("Loudness: {:.1} LUFS, true peak {:.1} dBTP", r.integrated, r.true_peak_dbfs)
-        };
+        self.target_lufs?;
+        let base = format!("Loudness: {:.1} LUFS, true peak {:.1} dBTP{}",
+            r.integrated, r.true_peak_dbfs, self.target_report(r.integrated));
         // Held against the ceiling the delivery asked for, so a file that
         // would fail its spec's peak check says so here first.
         Some(if r.true_peak_dbfs > self.ceiling_dbtp + 0.05 {
@@ -1401,7 +1438,7 @@ mod tests {
         assert!(peak <= db_to_linear(-1.0 - LIMITER_CEILING_MARGIN_DB) + 1e-4, "peak {peak}");
         assert!(peak > 0.5, "the tone is still there: {peak}");
         let report = chain.report().unwrap();
-        assert!(report.contains("true peak") && report.contains("limited"), "{report}");
+        assert!(report.contains("true peak") && report.contains("peak limiting applied"), "{report}");
 
         // Gain that fits needs no limiter and passes the samples as they are.
         let mut plain = DeliveryChain::normalising(sr, -14.0, 0.0, false, -1.0);
@@ -1438,7 +1475,7 @@ mod tests {
         feed(&mut fixed);
         assert!(fixed.report().unwrap().contains("over the -1.0 dBTP ceiling"), "the case needs the fit: {}", fixed.report().unwrap());
 
-        let (gain_db, margin_db) = fit_limited(sr, -14.0, -1.0, 0.0, "test", |trial, _| {
+        let LimitedFit { gain_db, margin_db, .. } = fit_limited(sr, -14.0, -1.0, 0.0, "test", |trial, _| {
             feed(trial);
             Ok(None)
         })
@@ -1511,6 +1548,38 @@ mod tests {
         let status = delivery_status(&chain, Some(file)).unwrap();
         assert!(status.contains("written file") && status.contains("not checked through the AAC encoder"), "{status}");
         assert!(delivery_status(&chain, None).unwrap().contains("not checked through the AAC encoder"));
+    }
+
+    #[test]
+    fn written_loudness_shortfall_is_not_reported_as_target_success() {
+        let mut chain = DeliveryChain::normalising(48000, -16.0, 0.0, true, -3.0);
+        let mut tone = vec![0.1; 48000 * 2];
+        chain.process(&mut tone);
+        chain.fit_note = Some("fitting stopped at the 5-trial limit".into());
+        let status = delivery_status(&chain, Some(klipp_core::normalize::Level {
+            integrated_lufs: -16.7, sample_peak_dbfs: -3.4, true_peak_dbtp: -3.2,
+        })).unwrap();
+        assert!(status.contains("0.7 LU below target"), "{status}");
+        assert!(status.contains("meets the -3.0 dBTP ceiling"), "{status}");
+        assert!(status.contains("5-trial limit"), "{status}");
+        assert!(!status.contains("to reach it") && !status.contains("target met"), "{status}");
+        assert!(chain.target_report(-15.5).contains("0.5 LU above target"));
+        assert!(chain.target_report(-16.04).contains("target met within 0.1 LU"));
+        assert!(chain.target_report(f32::NEG_INFINITY).contains("could not be verified"));
+        assert!(delivery_status(&chain, None).unwrap().contains("written file could not be measured"));
+    }
+
+    #[test]
+    fn a_fit_that_exhausts_its_trials_reports_the_limit() {
+        let mut passes = 0;
+        let fit = fit_limited(48000, -16.0, -3.0, 0.0, "test", |trial, _| {
+            // A fixed metered signal cannot converge as gain changes.
+            trial.meter.as_mut().unwrap().process(&vec![0.01; 48000 * 2]);
+            passes += 1;
+            Ok(Some(-6.0))
+        }).unwrap().unwrap();
+        assert_eq!(passes, LIMITED_GAIN_PASSES);
+        assert!(fit.note.unwrap().contains("5-trial limit"));
     }
 
     #[test]

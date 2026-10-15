@@ -109,7 +109,7 @@ pub struct TruePeakDetector {
     /// The filter; `None` at 192 kHz and above, where the true peak is
     /// the sample peak.
     table: Option<Arc<Table>>,
-    /// The last [`TAPS`] frames per channel, twice over so they read as
+    /// The last `TAPS` frames per channel, twice over so they read as
     /// one slice, oldest first, from `pos + 1`.
     hist: [[f32; 2 * TAPS]; 2],
     /// Where the newest frame is.
@@ -178,7 +178,7 @@ impl TruePeakDetector {
 
     /// End the stream: the outputs still owed for its last frames, made
     /// with silence after them as FFmpeg's resampler flushes, and the
-    /// largest of them. A peak in the last [`TAPS`] / 2 frames (a click
+    /// largest of them. A peak in the last `TAPS` / 2 frames (a click
     /// the stream ends on) is only read here.
     pub fn flush(&mut self) -> f32 {
         let mut peak = 0.0f32;

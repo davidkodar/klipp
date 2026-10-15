@@ -4620,9 +4620,9 @@ impl Renderer {
 
     /// Whether `c` really moves while the sequence camera's shutter is
     /// open at `time` (#1922): what decides that it is blurred, and so that
-    /// the CPU stack draws it. [`may_blur`] first, so a clip nothing
+    /// the CPU stack draws it. `may_blur` first, so a clip nothing
     /// animates is never sampled; then its samples, as
-    /// [`Self::samples_if_moving`] compares them. A clip with a title
+    /// `Self::samples_if_moving` compares them. A clip with a title
     /// blur of its own is blurred by that, not by the camera's shutter.
     pub fn moves_in_shutter(&mut self, seq: &Sequence, c: &Clip, time: Timecode, width: u32, height: u32) -> bool {
         if !may_blur(seq, c) || title_motion_blur(c).is_some() {

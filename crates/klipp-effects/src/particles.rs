@@ -14,7 +14,7 @@
 //!
 //! [`params`] works out the numbers both renderers use, trigonometry and
 //! colour included, so the GPU only multiplies and adds what the CPU
-//! does; `SHADER_PARTICLES` in `gpu.rs` and [`apply`] here are the same
+//! does; `SHADER_PARTICLES` in `gpu.rs` and `apply` here are the same
 //! per-pixel code.
 
 use crate::BuiltinEffect;

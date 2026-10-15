@@ -965,7 +965,7 @@ pub enum BuiltinEffect {
     /// Another media item's picture, at the clip's time plus `offset`
     /// seconds (#1746): beside a picture's chain, the foreground a Merge
     /// lays over it. `media` is the pool item's id. The executor reads the
-    /// frame through its frame context ([`reads_media`]); these kernels
+    /// frame through its frame context; these kernels
     /// pass the picture they are given.
     MediaSource {
         media: String,
