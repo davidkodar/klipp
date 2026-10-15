@@ -80,3 +80,6 @@ mod wgsl_camera_log_parity;
 mod wgsl_yuv_levels;
 #[path = "../window_mix.rs"]
 mod window_mix;
+
+#[path = "../readback_diagnostics.rs"]
+mod readback_diagnostics;

@@ -593,7 +593,12 @@ pub(crate) fn respond(
                     "cpu_total_us": klipp_compose::CPU_GENERATOR_US.load(std::sync::atomic::Ordering::Relaxed),
                     "scope": "cumulative process totals; CPU cache hits excluded",
                 },
+                "effects_readbacks": {
+                    "totals": klipp_effects::gpu::readback_stats(),
+                    "scope": "cumulative process totals: blocking effects/title-mask downloads; excludes engine conversions, async export staging and other GPU subsystems; elapsed includes queue wait and CPU copy-out, overlaps render time",
+                },
                 "readbacks": {
+                    "scope": "cumulative process totals: engine GPU-frame conversions only; not all GPU transfers",
                     "count": klipp_engine::CPU_READBACK_COUNT
                         .load(std::sync::atomic::Ordering::Relaxed),
                     "total_us": klipp_engine::CPU_READBACK_US

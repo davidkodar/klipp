@@ -19,6 +19,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
+mod readbacks;
+pub use readbacks::{readback_stats, ReadbackStats};
 mod params;
 mod slots;
 pub use slots::{OverBudget, SlotId, SlotKey, SlotPool, SlotUsage};
@@ -176,6 +178,7 @@ use crate::cpu::EQUALIZE_CDF_LEN;
 use crate::cpu_grade::HUESAT_LUT_LEN;
 
 pub struct GpuEffectsPipeline {
+    readbacks: readbacks::Counters,
     // Arc-wrapped so the effects pipeline can share its device with
     // klipp-effects' NV12/P010 converters (and any future GPU-using
     // type) through `GpuContext`. Internal call sites deref
@@ -1596,6 +1599,7 @@ impl GpuEffectsPipeline {
         info!("GPU effects pipeline initialized");
 
         Some(Self {
+            readbacks: readbacks::Counters::default(),
             layer_gpu,
             mask_mix_gpu,
             device,
@@ -2348,6 +2352,7 @@ impl GpuEffectsPipeline {
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups(workgroups, 1, 1);
         }
+        let mut readback = self.readbacks.begin(out_bytes);
         encoder.copy_buffer_to_buffer(out_buf, 0, staging, 0, out_bytes);
         self.submit(encoder);
 
@@ -2367,6 +2372,7 @@ impl GpuEffectsPipeline {
                 let result = data.to_vec();
                 drop(data);
                 staging.unmap();
+                readback.succeeded = true;
                 Some(result)
             }
             other => {
@@ -3607,6 +3613,7 @@ impl GpuEffectsPipeline {
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups(width.div_ceil(16), height.div_ceil(16), 1);
         }
+        let mut readback = want_bytes.then(|| self.readbacks.begin(out_bytes));
         if want_bytes {
             encoder.copy_buffer_to_buffer(out, 0, staging, 0, out_bytes);
         }
@@ -3625,6 +3632,7 @@ impl GpuEffectsPipeline {
             Ok(Ok(())) => {
                 let bytes = slice.get_mapped_range().to_vec();
                 staging.unmap();
+                if let Some(attempt) = &mut readback { attempt.succeeded = true; }
                 Some(Some(bytes))
             }
             other => {
@@ -4369,6 +4377,9 @@ impl GpuEffectsPipeline {
             self.device.poll(wgpu::Maintain::Poll);
         }
     }
+
+    /// Blocking downloads by this pipeline; see [`readback_stats`] for scope.
+    pub fn readback_stats(&self) -> ReadbackStats { self.readbacks.snapshot() }
 
     /// Count of `queue.submit` calls since pipeline creation. Used by
     /// `chain_single_submit_per_segment` (klipp-nodes tests) to verify
@@ -5307,6 +5318,7 @@ impl GpuEffectsPipeline {
         let mut encoder = self.chain_encoder.take().unwrap_or_else(|| {
             self.encoder(Some("flush_chain_dl"))
         });
+        let mut readback = self.readbacks.begin(byte_size);
         encoder.copy_buffer_to_buffer(source_buf, 0, staging, 0, byte_size);
         self.submit(encoder);
 
@@ -5330,6 +5342,7 @@ impl GpuEffectsPipeline {
                 );
                 drop(data);
                 staging.unmap();
+                readback.succeeded = true;
                 result
             }
             other => {
@@ -6931,6 +6944,7 @@ impl GpuEffectsPipeline {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut readback = self.readbacks.begin(byte_size);
         encoder.copy_buffer_to_buffer(source, 0, staging, 0, byte_size);
         self.submit(encoder);
 
@@ -6948,6 +6962,7 @@ impl GpuEffectsPipeline {
                 let result = read(&data);
                 drop(data);
                 staging.unmap();
+                readback.succeeded = true;
                 Some(result)
             }
             other => {
