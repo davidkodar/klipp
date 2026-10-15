@@ -616,9 +616,20 @@ pub static GPU_STACK_DECLINES: std::sync::atomic::AtomicU64 = std::sync::atomic:
 /// (`RenderStats::effects_mask_unavailable`), in this process.
 pub static EFFECT_MASKS_UNAVAILABLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Native living-gradient draws completed on the GPU, process-wide.
+pub static GPU_GENERATOR_DRAWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Time spent rasterizing CPU generator pixels, process-wide microseconds.
+pub static CPU_GENERATOR_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Generator rasterizations (cache hits excluded), process-wide.
+pub static CPU_GENERATOR_DRAWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Where a render's time went, in milliseconds.
 #[derive(Default, Clone, Copy, Debug)]
 pub struct RenderStats {
+    /// Native generators drawn without a CPU pixel buffer this frame.
+    pub gpu_generators: u32,
+    /// CPU generator rasterization (including cache lookup), before upload.
+    pub cpu_generator_ms: f64,
     pub grade_ms: f64,
     pub ofx_ms: f64,
     pub effects_ms: f64,
@@ -2454,8 +2465,17 @@ impl Renderer {
                 // Half floats, sRGB-encoded, decoded on the way into
                 // the layer: the precision eight bits could not hold,
                 // without moving sRGB's power curve onto the CPU.
-                let px = self.generator_layer(c.id, g, width, height, clip_time, total);
-                self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_f16(slot, &px))
+                if let klipp_core::GeneratorData::LivingGradient { a, b, angle_deg, drift_deg_per_sec, glow } = g {
+                    stats.gpu_generators += 1;
+                    let drawn = self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_living_gradient(slot, *a, *b, *angle_deg, *drift_deg_per_sec, *glow, clip_time));
+                    if drawn { GPU_GENERATOR_DRAWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
+                    drawn
+                } else {
+                    let t = Instant::now();
+                    let px = self.generator_layer(c.id, g, width, height, clip_time, total);
+                    stats.cpu_generator_ms += ms_since(t);
+                    self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_f16(slot, &px))
+                }
             }
             _ => {
                 // Anything the stack has no seed for, or a CPU-only
@@ -2508,19 +2528,27 @@ impl Renderer {
         Ok(Some(Placed { opacity, rows }))
     }
 
+    fn raster_generator(&mut self, g: &klipp_core::GeneratorData, width: u32, height: u32, clip_time: f64, total: f64) -> Vec<u32> {
+        let start = Instant::now();
+        let pixels = crate::synth::render_generator_with_slate_f16(&mut self.titles, g, width, height, clip_time, total);
+        CPU_GENERATOR_DRAWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        CPU_GENERATOR_US.fetch_add(start.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+        pixels
+    }
+
     /// `g`'s picture for the GPU stack, in half floats: a still one from
     /// [`Self::still_generators`] when it is the same at this size, else
     /// rasterised (and kept, when still).
     fn generator_layer(&mut self, clip: ClipId, g: &klipp_core::GeneratorData, width: u32, height: u32, clip_time: f64, total: f64) -> Arc<Vec<u32>> {
         if !is_still_generator(g) {
-            return Arc::new(crate::synth::render_generator_with_slate_f16(&mut self.titles, g, width, height, clip_time, total));
+            return Arc::new(self.raster_generator(g, width, height, clip_time, total));
         }
         if let Some((data, w, h, px)) = self.still_generators.get(&clip) {
             if data == g && (*w, *h) == (width, height) {
                 return Arc::clone(px);
             }
         }
-        let px = Arc::new(crate::synth::render_generator_with_slate_f16(&mut self.titles, g, width, height, clip_time, total));
+        let px = Arc::new(self.raster_generator(g, width, height, clip_time, total));
         // A handful on screen at once; a long timeline's worth is not kept.
         if self.still_generators.len() >= 16 {
             self.still_generators.clear();
@@ -2972,7 +3000,9 @@ impl Renderer {
             ClipKind::Generator(g) => {
                 let total = (clip.timeline_out - clip.timeline_in).to_secs_f64();
                 let clip_time = drawn_time(clip, time);
-                let packed = crate::synth::render_generator_with_slate_f16(&mut self.titles, g, width, height, clip_time, total);
+                let generation_started = Instant::now();
+                let packed = self.raster_generator(g, width, height, clip_time, total);
+                self.found.stats.cpu_generator_ms += ms_since(generation_started);
                 let mut linear = klipp_core::generator::srgb_f16_to_linear_f32(&packed);
                 self.authored_to_working(&mut linear);
                 (GradeInput::Cpu(Arc::new(linear)), None)

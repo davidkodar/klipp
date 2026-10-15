@@ -279,7 +279,7 @@ exist until the plan runs.
   highlights; `reset` takes the clip to neutral first. Match shots to
   each other before making any of them look better.
 - `effect {clip_id, kind, amount?}`: a finishing effect on a picture
-  clip. `amount` is 0 to 1; a second of the same kind replaces the first.
+  clip or native generator. `amount` is 0 to 1; a second of the same kind replaces the first.
   With `on: "timeline"` or `on: {"group": name}` instead of `clip_id` it
   goes on every picture clip there in one step (a vignette and grain over
   the whole film); `on: {"track": n or "video", "from"?, "to"?}` does the
@@ -704,6 +704,12 @@ exist until the plan runs.
   title with no words: drawn on from `from` over `reveal_secs` (at once
   when left out), held `secs`, `color` `#rrggbb` (white), `stroke_width`
   in pixels of a 1080 frame (6). An edit plan's scene layers make these.
+- `graphics {at, secs, track?}`: create an empty native graphics clip, then
+  add shapes with `vector_path {clip_id: "@0", shape: "ellipse", …}` in
+  the same apply. No placeholder text or connector is added. It can start
+  an empty sequence or extend it, lasts 0.2 to 86400 seconds, and uses a
+  text track with room unless `track` is given. Vector geometry and its
+  animation remain editable; undo takes the batch back together.
 - `vector_path {clip_id, object_id?, path | shape, color?, stroke_width?, x?, y?, w?, h?}`:
   add or replace a title's editable path layer. `shape` is a ready-made
   one instead of a `path`: `"ellipse"`, `"triangle"`, `"arrow"` (pointing
@@ -721,6 +727,10 @@ exist until the plan runs.
   over a second: `trim:{keyframes:[{time_secs:0, range:{start:0, end:0,
   offset:0}, easing:linear}, {time_secs:1, range:{start:0, end:1,
   offset:0}, easing:linear}]}`.
+  Path `fill` and `stroke` RGBA channels are normalized floats from 0 to 1,
+  unlike generator colours, which are bytes from 0 to 255. For example,
+  `fill:[0.1,0.2,0.3,1]`, `stroke:[1,1,1,1]`, `stroke_width:2`
+  gives an opaque dark fill with a white stroke.
   Coordinates are normalized to the title box; keyed contours must
   keep their topology. Open paths clip, closed paths wrap trim offset,
   and the glow follows only the revealed stroke. Trim leaves the fill

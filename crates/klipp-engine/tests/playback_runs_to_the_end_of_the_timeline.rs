@@ -302,3 +302,43 @@ fn an_end_card_after_a_shot_played_to_its_files_end_is_reached() {
     assert!(stopped, "playback did not stop at the end card's end");
     }
 }
+
+/// A synthetic clip starting later on the timeline must not add its
+/// start twice to the clock (#2056), even with a trimmed source.
+#[test]
+fn consecutive_synthetic_clips_play_their_full_duration() {
+    let fps = Fps::new(25, 1);
+    for (generator, track_kind) in [(false, TrackKind::Text), (false, TrackKind::Video), (true, TrackKind::Video)] {
+        let kind = || if generator {
+            ClipKind::Generator(GeneratorData::SolidColor { color: [40, 60, 90, 255] })
+        } else { ClipKind::Title(TitleData::default()) };
+        let mut a = shot(MediaId::new(), 0, 20, fps);
+        a.kind = kind();
+        let mut b = shot(MediaId::new(), 20, 50, fps);
+        b.kind = kind();
+        b.source_in = common::frame_tc(10, fps);
+        b.speed = if generator { 2.0 } else { 1.0 };
+        b.source_out = common::frame_tc(if generator { 70 } else { 40 }, fps);
+        let mut seq = sequence(vec![track("Synthetic", track_kind, vec![a, b])], fps);
+        seq.in_point = Some(common::frame_tc(25, fps));
+        let e = Engine::start(seq, MediaPool::new());
+        for start in [0.0, 1.0] {
+            // Stop forces handle_play rather than the paused decoder's
+            // resume path; this is how the reported cold-play bug arose.
+            e.cmd.send(AppCommand::Stop).unwrap();
+            let before = Instant::now();
+            let (moves, stopped) = e.play_from(start, fps, Duration::from_secs(30));
+            assert!(stopped && furthest(&moves) >= 1.96, "synthetic playback did not reach its end: {:?}", moves);
+            let end = moves.iter().find(|(_, p)| *p >= 1.96).unwrap().0;
+            assert!(end.duration_since(before).as_secs_f64() >= 2.0 - start - 0.15, "synthetic timeline skipped time: {moves:?}");
+        }
+        // A loop starting inside the second clip used a separate title
+        // clock path; it must play a full second on every wrap too.
+        e.cmd.send(AppCommand::SetLoopPlayback(true)).unwrap();
+        let wraps = |m: &[(Instant, f64)]| m.windows(2).filter(|w| w[0].1 > 1.8 && w[1].1 < 1.2).count();
+        let before = Instant::now();
+        let (moves, stopped) = e.play_until(1.0, fps, Duration::from_secs(30), &|m, stopped| stopped || wraps(m) >= 2);
+        assert!(!stopped && wraps(&moves) >= 2, "synthetic loop stopped or failed to wrap: {moves:?}");
+        assert!(before.elapsed().as_secs_f64() >= 1.85, "synthetic loop skipped time: {moves:?}");
+    }
+}

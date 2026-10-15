@@ -587,6 +587,12 @@ pub(crate) fn respond(
                     // (#1850); 0 for a phase a frame didn't take.
                     "phases": phases(&avg.phases),
                 },
+                "generators": {
+                    "gpu_draws": klipp_compose::GPU_GENERATOR_DRAWS.load(std::sync::atomic::Ordering::Relaxed),
+                    "cpu_draws": klipp_compose::CPU_GENERATOR_DRAWS.load(std::sync::atomic::Ordering::Relaxed),
+                    "cpu_total_us": klipp_compose::CPU_GENERATOR_US.load(std::sync::atomic::Ordering::Relaxed),
+                    "scope": "cumulative process totals; CPU cache hits excluded",
+                },
                 "readbacks": {
                     "count": klipp_engine::CPU_READBACK_COUNT
                         .load(std::sync::atomic::Ordering::Relaxed),

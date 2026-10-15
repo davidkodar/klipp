@@ -202,6 +202,7 @@ pub struct GpuEffectsPipeline {
     vignette_pipeline: wgpu::ComputePipeline,
     /// The generator effect's pass (#1746).
     generator_pipeline: wgpu::ComputePipeline,
+    living_gradient_pipeline: wgpu::ComputePipeline,
     film_grain_pipeline: wgpu::ComputePipeline,
     tilt_shift_blend_pipeline: wgpu::ComputePipeline,
     focus_blur_blend_pipeline: wgpu::ComputePipeline,
@@ -1003,6 +1004,7 @@ impl GpuEffectsPipeline {
         let glow_blend_pipeline = create_pipeline(&device, &transition_pl, "glow_blend", SHADER_GLOW_BLEND);
         let light_rays_pipeline = create_pipeline(&device, &pipeline_layout, "light_rays", SHADER_LIGHT_RAYS);
         let vignette_pipeline = create_pipeline(&device, &pipeline_layout, "vignette", SHADER_VIGNETTE);
+        let living_gradient_pipeline = create_pipeline(&device, &pipeline_layout, "living_gradient", SHADER_LIVING_GRADIENT);
         let generator_pipeline = create_pipeline(&device, &pipeline_layout, "generator", SHADER_GENERATOR);
         let film_grain_pipeline = create_pipeline(&device, &pipeline_layout, "film_grain", SHADER_FILM_GRAIN);
         let tilt_shift_blend_pipeline = create_pipeline(&device, &transition_pl, "tilt_shift_blend", SHADER_TILT_SHIFT_BLEND);
@@ -1613,6 +1615,7 @@ impl GpuEffectsPipeline {
             light_rays_pipeline,
             vignette_pipeline,
             generator_pipeline,
+            living_gradient_pipeline,
             film_grain_pipeline,
             tilt_shift_blend_pipeline,
             focus_blur_blend_pipeline,
@@ -5590,6 +5593,25 @@ impl GpuEffectsPipeline {
         true
     }
 
+    /// Draw the native living gradient directly in a stack layer. Only
+    /// parameters cross from the CPU; pixels remain on the GPU.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stack_layer_living_gradient(&mut self, i: usize, a: [u8; 4], b: [u8; 4], angle_deg: f32, drift: f32, glow: f32, secs: f64) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() { return false; }
+        let (width, height) = self.stack_dims;
+        let t = secs as f32;
+        let theta = (angle_deg + drift * t).to_radians();
+        self.write_params(&LivingGradientParams {
+            width, height, glow, _pad: 0,
+            a: a.map(f32::from), b: b.map(f32::from),
+            dir: [theta.sin(), theta.cos()],
+            centre: [width as f32 * (0.5 + 0.28 * (t * 0.33).cos()), height as f32 * (0.5 + 0.22 * (t * 0.21).sin())],
+            to_working: self.authored_to_working,
+        });
+        self.stack_pass(&self.living_gradient_pipeline, self.stack_acc.as_ref().unwrap(), &self.stack_layers[i], (width * height).div_ceil(WORKGROUP_SIZE), "stack_living_gradient");
+        true
+    }
+
     /// Layer `i` takes an sRGB RGBA8 straight-alpha sprite from the CPU
     /// (a title, a generator): decoded to linear on the GPU, alpha kept.
     /// Layer `i` from sRGB-encoded half floats, decoded on the way in.
@@ -8051,6 +8073,20 @@ struct LightRaysParams {
     luma_yg: f32,
     luma_yb: f32,
     _pad_luma: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct LivingGradientParams {
+    width: u32,
+    height: u32,
+    glow: f32,
+    _pad: u32,
+    a: [f32; 4],
+    b: [f32; 4],
+    dir: [f32; 2],
+    centre: [f32; 2],
+    to_working: [[f32; 4]; 3],
 }
 
 #[repr(C)]
@@ -15299,6 +15335,47 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // means "half the photons reach the edge" rather than "half the
 // sRGB byte value" (which the u8 version did — visibly darker).
 // The generator effect (#1746), as `generator::Gen::at` computes it.
+// The native living gradient's CPU half-float path, including its two
+// half-float roundings, followed by sRGB decode and working-space conversion.
+const SHADER_LIVING_GRADIENT: &str = concat!(shader_pixel_storage_wgsl!(), "
+struct Params {
+    width: u32, height: u32, glow: f32, _pad: u32,
+    a: vec4<f32>, b: vec4<f32>, dir: vec2<f32>, centre: vec2<f32>,
+    m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>,
+}
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+fn rounded(c: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(unpack2x16float(pack2x16float(c.xy)), unpack2x16float(pack2x16float(c.zw)));
+}
+fn linear(c: f32) -> f32 {
+    if c <= 0.04045 { return c / 12.92; }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if i >= params.width * params.height { return; }
+    let wh = vec2<f32>(f32(params.width), f32(params.height));
+    let xy = vec2<f32>(f32(i % params.width), f32(i / params.width));
+    let span = max(wh - vec2<f32>(1.0), vec2<f32>(0.0));
+    let half_extent = dot(abs(params.dir), span * 0.5);
+    let t = clamp((dot(xy - span * 0.5, params.dir) + half_extent) / max(2.0 * half_extent, 1.0), 0.0, 1.0);
+    var c = rounded((params.a + (params.b - params.a) * t) / 255.0);
+    if params.glow > 0.0 {
+        let d = xy - params.centre;
+        let radius = max(wh.x, wh.y) * 0.45;
+        let f = exp(-dot(d, d) / (2.0 * radius * radius)) * params.glow;
+        if f >= 0.002 {
+            c = rounded(vec4<f32>(min(c.rgb + (vec3<f32>(1.0) - c.rgb) * f * 0.6, vec3<f32>(1.0)), c.a));
+        }
+    }
+    let rgb = vec3<f32>(linear(c.r), linear(c.g), linear(c.b));
+    output[i] = pack(vec4<f32>(dot(params.m0.xyz, rgb), dot(params.m1.xyz, rgb), dot(params.m2.xyz, rgb), c.a));
+}
+");
+
 const SHADER_GENERATOR: &str = concat!(
     "
 struct Params {
@@ -18367,6 +18444,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_POSTERIZE", SHADER_POSTERIZE),
         ("SHADER_CST", SHADER_CST),
         ("SHADER_GENERATOR", SHADER_GENERATOR),
+        ("SHADER_LIVING_GRADIENT", SHADER_LIVING_GRADIENT),
         ("SHADER_MOSAIC", SHADER_MOSAIC),
         ("SHADER_EDGE_DETECT", SHADER_EDGE_DETECT),
         ("SHADER_CHANNEL_MIXER", SHADER_CHANNEL_MIXER),
