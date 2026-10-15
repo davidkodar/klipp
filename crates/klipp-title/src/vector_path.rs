@@ -2,6 +2,35 @@
 //! fill; open contours are stroke-only. Strokes have round caps and joins.
 use klipp_core::fill_gradient::{GradientKind, GradientRamp};
 use klipp_timeline::{ObjectTransform, PathPose, TrimRange};
+/// Resolve path keys once before selecting the cached or animated title route.
+/// The derived value has no path keys, so re-entry terminates. A fully revealed
+/// closed contour is independent of trim offset; open or mixed contours are not.
+pub(crate) fn evaluated_title(title: &klipp_timeline::TitleData, time: f64) -> Option<klipp_timeline::TitleData> {
+    use klipp_timeline::{TitleObjectContent, ShapeKind};
+    let keyed = |p: &klipp_timeline::VectorPath| !p.keyframes.is_empty()
+        || p.trim.as_ref().is_some_and(|t| !t.keyframes.is_empty());
+    if !title.objects.iter().any(|o| matches!(&o.content,
+        TitleObjectContent::Shape(s) if matches!(&s.kind, ShapeKind::Path(p) if keyed(p)))) {
+        return None;
+    }
+    let mut evaluated = title.clone();
+    for obj in &mut evaluated.objects {
+        let TitleObjectContent::Shape(s) = &mut obj.content else { continue };
+        let ShapeKind::Path(p) = &mut s.kind else { continue };
+        p.pose = p.at(time);
+        p.keyframes.clear();
+        if let Some(trim) = &mut p.trim {
+            trim.range = trim.at(time);
+            trim.keyframes.clear();
+            if trim.range.end - trim.range.start >= 1.0
+                && p.pose.contours.iter().all(|c| c.closed) {
+                trim.range = TrimRange::default();
+            }
+        }
+    }
+    Some(evaluated)
+}
+
 fn midpoint(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
     [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
 }
@@ -174,7 +203,7 @@ pub(crate) fn paint_filled<C: super::Channel>(
     let mut stroke = vec![0u8; count];
     // Two-by-two coverage, scan-converted in output space. Fill work is
     // proportional to painted area + scanlines × edges, not pixels × edges.
-    for sy in 0..height * 2 {
+    for sy in 0..if fill_alpha > 0.0 { height * 2 } else { 0 } {
         let y = (sy as f32 + 0.5) * 0.5;
         let mut crossings = Vec::new();
         for (_, points) in contours.iter().filter(|(closed, _)| *closed) {
@@ -208,70 +237,63 @@ pub(crate) fn paint_filled<C: super::Channel>(
             .collect();
         stroke = stroke_coverage(&revealed, width, height, half);
     }
-    if half > 0.0
+    let halo = if half > 0.0
         && pose.stroke[3] > 0.0
         && glow_radius >= 1.0
         && glow_strength > 0.0
         && stroke.iter().any(|bits| *bits != 0)
     {
-        let mask: Vec<u8> = stroke
-            .iter()
+        let mask: Vec<u8> = stroke.iter()
             .map(|bits| (bits.count_ones() as f32 * 0.25 * pose.stroke[3] * 255.0).round() as u8)
             .collect();
-        let halo = match gpu {
-            // GPU blur accepts sigma; this sigma yields three boxes of
-            // radius r, matching the shared CPU helper exactly.
-            Some(g) => g.blur(
-                &mask,
-                width,
-                height,
-                (glow_radius * (glow_radius + 1.0)).sqrt(),
-            ),
+        Some(match gpu {
+            // GPU blur accepts sigma; the three box radii match the CPU.
+            Some(g) => g.blur(&mask, width, height, (glow_radius * (glow_radius + 1.0)).sqrt()),
             None => super::blur_alpha(&mask, width as usize, height as usize, glow_radius),
-        };
-        for (i, alpha) in halo.into_iter().enumerate().filter(|(_, a)| *a > 0) {
-            let src = [
-                (pose.stroke[0] * 255.0).round() as u8,
-                (pose.stroke[1] * 255.0).round() as u8,
-                (pose.stroke[2] * 255.0).round() as u8,
-                (alpha as f32 * glow_strength).round() as u8,
-            ];
-            let target = ((y0 as usize + i / width as usize) * frame_width as usize
-                + x0 as usize
-                + i % width as usize)
-                * 4;
-            super::over_blend_chunk(&mut buf[target..target + 4], &src);
-        }
-    }
-    for (i, (f, s)) in fill.into_iter().zip(stroke).enumerate() {
-        let fill_colour = match gradient {
-            Some((ramp, kind)) if f != 0 => {
-                let (u, v) = unmap(
-                    (x0 + i as u32 % width) as f32 + 0.5,
-                    (y0 + i as u32 / width) as f32 + 0.5,
-                );
-                ramp.at(kind.position_at(u, v, box_size[0], box_size[1])).map(|c| c as f32 / 255.0)
+        })
+    } else { None };
+    // Rows are independent. Composite the halo then the stroke/fill at each
+    // pixel, retaining the exact rounding and layer order of the serial path.
+    // Empty interiors of outlined paths need neither colour math nor blending.
+    use rayon::prelude::*;
+    buf.par_chunks_exact_mut(frame_width as usize * 4)
+        .skip(y0 as usize).take(height as usize).enumerate()
+        .for_each(|(y, row)| {
+            for (x, dst) in row[x0 as usize * 4..x1 as usize * 4].chunks_exact_mut(4).enumerate() {
+                let i = y * width as usize + x;
+                if let Some(alpha) = halo.as_ref().map(|h| h[i]).filter(|&a| a > 0) {
+                    let src = [
+                        (pose.stroke[0] * 255.0).round() as u8,
+                        (pose.stroke[1] * 255.0).round() as u8,
+                        (pose.stroke[2] * 255.0).round() as u8,
+                        (alpha as f32 * glow_strength).round() as u8,
+                    ];
+                    super::over_blend_chunk(dst, &src);
+                }
+                let (f, s) = (fill[i], stroke[i]);
+                if f == 0 && s == 0 { continue; }
+                let fill_colour = match gradient {
+                    Some((ramp, kind)) if f != 0 => {
+                        let (u, v) = unmap((x0 as usize + x) as f32 + 0.5, (y0 as usize + y) as f32 + 0.5);
+                        ramp.at(kind.position_at(u, v, box_size[0], box_size[1])).map(|c| c as f32 / 255.0)
+                    }
+                    _ => pose.fill,
+                };
+                let fa = f.count_ones() as f32 * 0.25 * fill_colour[3];
+                let sa = s.count_ones() as f32 * 0.25 * pose.stroke[3];
+                let overlap = (f & s).count_ones() as f32 * 0.25 * fill_colour[3] * pose.stroke[3];
+                let alpha = fa + sa - overlap;
+                if alpha > 0.0 {
+                    let mut src = [0; 4];
+                    for c in 0..3 {
+                        src[c] = ((fill_colour[c] * (fa - overlap) + pose.stroke[c] * sa) / alpha * 255.0).round() as u8;
+                    }
+                    src[3] = (alpha * 255.0).round() as u8;
+                    super::over_blend_chunk(dst, &src);
+                }
             }
-            _ => pose.fill,
-        };
-        let fa = f.count_ones() as f32 * 0.25 * fill_colour[3];
-        let sa = s.count_ones() as f32 * 0.25 * pose.stroke[3];
-        let overlap = (f & s).count_ones() as f32 * 0.25 * fill_colour[3] * pose.stroke[3];
-        let alpha = fa + sa - overlap;
-        if alpha > 0.0 {
-            let mut src = [0; 4];
-            for c in 0..3 {
-                src[c] = ((fill_colour[c] * (fa - overlap) + pose.stroke[c] * sa) / alpha * 255.0)
-                    .round() as u8;
-            }
-            src[3] = (alpha * 255.0).round() as u8;
-            let target = ((y0 as usize + i / width as usize) * frame_width as usize
-                + x0 as usize
-                + i % width as usize)
-                * 4;
-            super::over_blend_chunk(&mut buf[target..target + 4], &src);
-        }
-    }
+        });
+
 }
 
 /// Scan-convert the union of round-capped segments. Each scanline merges

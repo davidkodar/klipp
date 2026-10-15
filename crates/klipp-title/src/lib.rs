@@ -2514,6 +2514,12 @@ impl TitleRenderer {
                 return frame;
             }
         }
+        // Key the existing bounded sprite cache by the evaluated geometry,
+        // not by the presence of animation keys. Other time-dependent title
+        // features still go through their normal evaluation below.
+        if let Some(evaluated) = vector_path::evaluated_title(title, time_secs as f64) {
+            return self.frame_at(&evaluated, width, height, gpu, time_secs);
+        }
         if !any_render_time_override {
             // A full-frame card: the words are the sprite and the fill
             // goes under them at placement, so the fill stays put while
@@ -6891,33 +6897,53 @@ fn blur_alpha(mask: &[u8], w: usize, h: usize, radius: f32) -> Vec<u8> {
     if r == 0 || w == 0 || h == 0 {
         return mask.to_vec();
     }
+    use rayon::prelude::*;
     let mut src = mask.to_vec();
     let mut temp = vec![0u8; w * h];
-    let mut prefix = vec![0u64; w.max(h) + 1];
-    // Same three box passes, edge normalization and integer rounding as
-    // before, using prefix sums so the work no longer scales with radius.
-    for _ in 0..3 {
-        for y in 0..h {
-            prefix[0] = 0;
-            for x in 0..w {
-                prefix[x + 1] = prefix[x] + src[y * w + x] as u64;
+    // Sliding windows preserve the three box passes and truncation exactly.
+    // Traverse vertical windows by row bands, with independent halo reads:
+    // no strided column walks, and no division for empty windows.
+    let horizontal = |input: &[u8], output: &mut [u8]| {
+        let mut sum: u64 = input[..r.saturating_add(1).min(w)].iter().map(|&v| v as u64).sum();
+        for (x, out) in output.iter_mut().enumerate() {
+            let lo = x.saturating_sub(r);
+            let hi = x.saturating_add(r).saturating_add(1).min(w);
+            *out = if sum == 0 { 0 } else { (sum / (hi - lo) as u64) as u8 };
+            if x >= r { sum -= input[x - r] as u64; }
+            if let Some(&v) = input.get(x.saturating_add(r).saturating_add(1)) { sum += v as u64; }
+        }
+    };
+    let vertical = |input: &[u8], output: &mut [u8], y0: usize| {
+        let mut sums = vec![0u64; w];
+        let lo = y0.saturating_sub(r);
+        let hi = y0.saturating_add(r).saturating_add(1).min(h);
+        for row in input[lo*w..hi*w].chunks_exact(w) {
+            for (sum, &v) in sums.iter_mut().zip(row) { *sum += v as u64; }
+        }
+        for (row, output) in output.chunks_exact_mut(w).enumerate() {
+            let y = y0 + row;
+            let lo = y.saturating_sub(r);
+            let hi = y.saturating_add(r).saturating_add(1).min(h);
+            let count = (hi - lo) as u64;
+            for (out, &sum) in output.iter_mut().zip(&sums) {
+                *out = if sum == 0 { 0 } else { (sum / count) as u8 };
             }
-            for x in 0..w {
-                let lo = x.saturating_sub(r);
-                let hi = (x + r + 1).min(w);
-                temp[y * w + x] = ((prefix[hi] - prefix[lo]) / (hi - lo) as u64) as u8;
+            if y >= r {
+                for (sum, &v) in sums.iter_mut().zip(&input[(y - r) * w..][..w]) { *sum -= v as u64; }
+            }
+            if let Some(next) = y.checked_add(r).and_then(|v| v.checked_add(1)).filter(|&v| v < h) {
+                for (sum, &v) in sums.iter_mut().zip(&input[next * w..][..w]) { *sum += v as u64; }
             }
         }
-        for x in 0..w {
-            prefix[0] = 0;
-            for y in 0..h {
-                prefix[y + 1] = prefix[y] + temp[y * w + x] as u64;
-            }
-            for y in 0..h {
-                let lo = y.saturating_sub(r);
-                let hi = (y + r + 1).min(h);
-                src[y * w + x] = ((prefix[hi] - prefix[lo]) / (hi - lo) as u64) as u8;
-            }
+    };
+    for _ in 0..3 {
+        if w * h >= 65536 {
+            src.par_chunks_exact(w).zip(temp.par_chunks_exact_mut(w)).for_each(|(input, output)| horizontal(input, output));
+            // At least 64 rows of work per task; the full input is read-only.
+            src.par_chunks_mut(w * 64).enumerate().for_each(|(band, output)| vertical(&temp, output, band * 64));
+        } else {
+            for (input, output) in src.chunks_exact(w).zip(temp.chunks_exact_mut(w)) { horizontal(input, output); }
+            vertical(&temp, &mut src, 0);
         }
     }
     src
@@ -12001,3 +12027,6 @@ mod wide_blur_tests {
         assert!((a / b - 1.0).abs() < 0.02, "the same ink: {a} vs {b}");
     }
 }
+
+#[cfg(test)]
+mod vector_cache_tests;
