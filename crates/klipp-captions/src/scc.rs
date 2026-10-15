@@ -372,7 +372,7 @@ fn cc1_words(subs: &[SubtitleEntry]) -> std::collections::BTreeMap<u64, [u8; 2]>
     slots
 }
 
-/// `subs` as a Scenarist SCC file, pop-on on CC1 ([`cc1_words`]).
+/// `subs` as a Scenarist SCC file, pop-on on CC1 (`cc1_words`).
 pub fn generate_scc(subs: &[SubtitleEntry]) -> String {
     let slots = cc1_words(subs);
     let mut out = String::from("Scenarist_SCC V1.0\n");
