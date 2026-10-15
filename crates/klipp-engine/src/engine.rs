@@ -3643,7 +3643,7 @@ impl PlaybackEngine {
                         track.clip_at_timecode(self.playhead).and_then(|(idx, clip)| {
                             if !clip.enabled { return None; }
                             if let Some(td) = clip.title_data() {
-                                return Some((ti, idx, td.clone(), clip.timeline_in, clip.source_in.to_secs_f64()));
+                                return Some((ti, idx, td.clone(), clip.timeline_in, clip.source_in.to_secs_f64(), clip.speed));
                             }
                             None
                         })
@@ -3659,7 +3659,7 @@ impl PlaybackEngine {
                         track.clip_at_timecode(self.playhead).and_then(|(idx, clip)| {
                             if !clip.enabled { return None; }
                             let gd = clip.generator_data()?.clone();
-                            Some((ti, idx, gd, clip.timeline_in, clip.timeline_out))
+                            Some((ti, idx, gd, clip.timeline_in, clip.source_in.to_secs_f64(), clip.speed))
                         })
                     })
             } else {
@@ -3667,7 +3667,7 @@ impl PlaybackEngine {
             };
             drop(seq);
 
-            if let Some((ti, idx, _title_data, timeline_in, clip_source_in)) = title_info {
+            if let Some((ti, idx, _title_data, timeline_in, clip_source_in, speed)) = title_info {
                 info!("handle_play: title clip {idx} on track {ti} at playhead");
                 self.v1_decoder = None;
                 self.current_clip_index = idx;
@@ -3675,6 +3675,9 @@ impl PlaybackEngine {
                 self.current_file = None;
                 self.clip_source_start = clip_source_in;
                 self.clip_timeline_start = timeline_in;
+                self.clip_speed = speed;
+                self.master_clock.set_speed(speed);
+                self.refresh_speed_keyframes();
 
                 // Start audio for all tracks
                 self.start_all_audio(self.playhead);
@@ -3682,8 +3685,8 @@ impl PlaybackEngine {
                     aout.0.pause();
                 }
 
-                // Set clock to playhead position (title clips use timeline time as source)
-                let source_secs = self.playhead.to_secs_f64();
+                // The clock counts source seconds, matching the synthetic tick.
+                let source_secs = self.clip_source_start + (self.playhead - timeline_in).to_secs_f64() * speed;
                 let source_us = (source_secs * 1_000_000.0) as u64;
                 self.master_clock.seek(source_us);
 
@@ -3710,20 +3713,23 @@ impl PlaybackEngine {
             }
 
             // Standalone generator clip at playhead — render and display
-            if let Some((ti, idx, _gen_data, timeline_in, _timeline_out)) = generator_info {
+            if let Some((ti, idx, _gen_data, timeline_in, clip_source_in, speed)) = generator_info {
                 info!("handle_play: generator clip {idx} on track {ti} at playhead");
                 self.v1_decoder = None;
                 self.current_clip_index = idx;
                 self.current_track_index = ti;
                 self.current_file = None;
-                self.clip_source_start = 0.0;
+                self.clip_source_start = clip_source_in;
                 self.clip_timeline_start = timeline_in;
+                self.clip_speed = speed;
+                self.master_clock.set_speed(speed);
+                self.refresh_speed_keyframes();
 
                 self.present_frame(None);
 
                 // Start audio + clock for playback
                 self.start_all_audio(self.playhead);
-                let source_secs = self.playhead.to_secs_f64();
+                let source_secs = self.clip_source_start + (self.playhead - timeline_in).to_secs_f64() * speed;
                 let source_us = (source_secs * 1_000_000.0) as u64;
                 self.master_clock.seek(source_us);
                 self.master_clock.resume();
@@ -5651,14 +5657,15 @@ impl PlaybackEngine {
             self.retire_v1_decoder(old_clip);
             self.current_file = None;
             self.last_synth_frame_rendered = None;
-            self.clip_source_start = 0.0;
+            self.clip_source_start = source_in_secs;
             self.clip_timeline_start = timeline_in;
             self.clip_speed = next_clip_speed;
+            self.master_clock.set_speed(next_clip_speed);
             self.refresh_speed_keyframes();
             self.last_frame_time = std::time::Instant::now();
 
-            // Seek clock to timeline position so update_playback's synthetic path picks up
-            let source_secs = self.playhead.to_secs_f64();
+            // Synthetic playback uses the same source-to-timeline mapping as media.
+            let source_secs = source_in_secs;
             let source_us = (source_secs * 1_000_000.0) as u64;
             self.master_clock.seek(source_us);
             self.master_clock.resume();
@@ -6556,52 +6563,7 @@ impl PlaybackEngine {
                     Some((idx, media_id, source_secs, clip.timeline_in, clip_source_in, clip.speed, clip.source_rotation))
                 })
             });
-        // Also check for title clip
-        let title_info = if clip_info.is_none() {
-            seq.tracks.iter()
-                .filter(|t| t.kind == klipp_timeline::TrackKind::Video)
-                .find_map(|track| {
-                    track.clip_at_timecode(target).and_then(|(idx, clip)| {
-                        let td = clip.title_data()?.clone();
-                        Some((idx, td, clip.timeline_in, clip.source_in.to_secs_f64()))
-                    })
-                })
-        } else {
-            None
-        };
         drop(seq);
-
-        // Handle title clip at loop target
-        if let Some((idx, _title_data, timeline_in, clip_source_in)) = title_info {
-            self.v1_decoder = None;
-            self.current_clip_index = idx;
-            self.current_file = None;
-            self.clip_source_start = clip_source_in;
-            self.clip_timeline_start = timeline_in;
-            self.playhead = target;
-            self.present_frame(None);
-
-            // Reopen audio at target
-            self.master_clock.pause();
-            if let Some(aout) = &self.audio_output { aout.0.pause(); }
-            self.start_all_audio(target);
-            self.seek_all_audio_to_timecode(target);
-            let target_us = (target.to_secs_f64() * 1_000_000.0) as u64;
-            self.master_clock.seek(target_us);
-
-            if was_playing {
-                for active in &self.audio_sources { active.source.resume(); }
-                self.wait_for_audio_prefill();
-                if let Some(aout) = &self.audio_output { aout.0.resume(); }
-                self.master_clock.resume();
-            }
-
-            self.playhead = target;
-            let _ = self.event_tx.send(AppEvent::LoopedBack);
-            self.report_jump(target);
-            (self.repaint_cb)();
-            return;
-        }
 
         // Handle media clip at loop target
         if let Some((idx, media_id, source_secs, timeline_in, clip_source_in, spd, rot)) = clip_info {
@@ -6677,8 +6639,8 @@ impl PlaybackEngine {
             self.report_jump(target);
             (self.repaint_cb)();
         } else {
-            // No video clip at target — audio-only loop, or reversed
-            // clips drawn on the clock (#617).
+            // No forward media at target: synthetic clips, audio-only
+            // stretches and reversed pictures all start on the clock.
             self.enter_clock_only(target);
 
             self.master_clock.pause();
@@ -6752,10 +6714,10 @@ impl PlaybackEngine {
                         track.clip_at_timecode(tc).and_then(|(idx, clip)| {
                             let source_start = match &clip.kind {
                                 klipp_timeline::ClipKind::Title(_) => clip.source_in.to_secs_f64(),
-                                klipp_timeline::ClipKind::Generator(_) => 0.0,
+                                klipp_timeline::ClipKind::Generator(_) => clip.source_in.to_secs_f64(),
                                 _ => return None,
                             };
-                            Some((ti, idx, clip.timeline_in, source_start))
+                            Some((ti, idx, clip.timeline_in, source_start, clip.speed))
                         })
                     })
             } else {
@@ -6763,13 +6725,19 @@ impl PlaybackEngine {
             };
             drop(seq);
 
-            if let Some((ti, idx, timeline_in, source_start)) = synth {
+            if let Some((ti, idx, timeline_in, source_start, speed)) = synth {
                 self.v1_decoder = None;
                 self.current_track_index = ti;
                 self.current_clip_index = idx;
                 self.current_file = None;
                 self.clip_source_start = source_start;
                 self.clip_timeline_start = timeline_in;
+                self.clip_speed = speed;
+                self.master_clock.set_speed(speed);
+                self.refresh_speed_keyframes();
+                let source_secs = source_start + (tc - timeline_in).to_secs_f64() * speed;
+                self.reposition_audio_or_defer(tc, source_secs);
+                self.master_clock.seek((source_secs.max(0.0) * 1_000_000.0) as u64);
                 self.playhead = tc;
                 self.present_frame(None);
                 self.report_jump(tc);
