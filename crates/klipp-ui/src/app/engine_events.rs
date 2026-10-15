@@ -263,20 +263,10 @@ impl KlippApp {
                         self.apply_brief_to_transcription();
                         klipp_analysis::service::request(&media_item);
                     }
-                    self.state.media_pool.add(media_item);
+                    self.state.complete_pool_import(media_item, previous.is_none());
                     self.refresh_spans_beside(&span_path);
                     // A recorded take lands where it was punched in (#114).
                     self.place_take(media_id);
-                    // Imports stay off the timeline-edit undo stack (FCP /
-                    // Premiere convention). Mixing them in caused two
-                    // surprises: every drop-from-FILES tab took two ctrl+z
-                    // to fully reverse, and a failed timeline-add (race
-                    // when the AppendClipToTrack ran before the async load
-                    // finished) left only the import in history — so
-                    // ctrl+z removed the imported file instead of the
-                    // expected timeline clip. The bin's "Remove from
-                    // project" affordance is the supported way to take
-                    // an item out.
                     if !saves_alike {
                         self.state.dirty = true;
                     }
@@ -358,6 +348,7 @@ impl KlippApp {
                     }
                 }
                 AppEvent::MediaLoadFailed { media_id, path, error } => {
+                    self.state.pending_undo_imports.remove(&media_id);
                     self.state.pending_skip_analysis.remove(&media_id);
                     self.state.pending_media_path = None;
                     tracing::error!("Failed to load media: {error}");

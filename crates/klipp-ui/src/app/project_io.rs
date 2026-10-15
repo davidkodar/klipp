@@ -340,10 +340,12 @@ impl KlippApp {
         let ids: Vec<klipp_core::MediaId> = self.state.media_pool.all().map(|m| m.id)
             .chain(self.state.pending_media_drop.keys().copied())
             .chain(self.state.pending_skip_analysis.iter().copied())
+            .chain(self.state.pending_undo_imports.iter().copied())
             .collect();
         self.state.retired_media_ids.extend(ids);
         self.state.pending_media_drop.clear();
         self.state.pending_skip_analysis.clear();
+        self.state.pending_undo_imports.clear();
         self.state.pending_media_path = None;
     }
 
