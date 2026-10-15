@@ -19,6 +19,7 @@
 
 mod analysis;
 pub mod budget;
+pub mod residency;
 pub mod families;
 pub mod fixtures;
 pub mod format;
