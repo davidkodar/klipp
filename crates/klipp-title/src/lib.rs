@@ -43,6 +43,7 @@ pub mod text3d_render;
 pub use text_on_path::PathUnits;
 mod ruby;
 mod vertical;
+mod tracking;
 pub mod variable;
 mod vector_path;
 use fontdue::layout::{HorizontalAlign, LayoutSettings, VerticalAlign, WrapStyle};
@@ -127,6 +128,8 @@ pub struct TitleLayout {
     /// For a text on a drawn path, each glyph's place along the text and
     /// on the path at rest (#1697): what poses it as the path moves.
     pub path_units: Option<PathUnits>,
+    /// Untracked X and frame-space Y before pixel rounding, for spacing animation.
+    pub tracking_origins: Vec<[f32; 2]>,
 }
 
 /// No glyph: the value of `glyph_index` where nothing was painted.
@@ -148,6 +151,8 @@ pub struct UnitMap {
     pub pad: i32,
     /// The text's places along a drawn path, when it is on one (#1697).
     pub path: Option<PathUnits>,
+    /// Untracked X and frame-space Y before pixel rounding.
+    pub tracking_origins: Vec<[f32; 2]>,
 }
 
 impl UnitMap {
@@ -188,7 +193,7 @@ impl UnitMap {
                 index[i] = best.1;
             }
         }
-        Self { x0, y0, w, h, index, boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: layout.pad, path: layout.path_units.clone() }
+        Self { x0, y0, w, h, index, boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: layout.pad, path: layout.path_units.clone(), tracking_origins: layout.tracking_origins.clone() }
     }
 
     /// The glyph at frame pixel `(x, y)`, if any.
@@ -1135,6 +1140,7 @@ impl TitleRenderer {
                 pad: 0,
                 colour_glyphs: Vec::new(),
                 path_units: None,
+                tracking_origins: Vec::new(),
             };
         }
 
@@ -1166,6 +1172,7 @@ impl TitleRenderer {
             }
         }
 
+        let tracking_origins = if tracking::eligible(title) { glyphs_owned.iter().map(|g| [g.x, g.y]).collect::<Vec<_>>() } else { Vec::new() };
         // Apply tracking (extra pixel spacing per character)
         if tb.tracking != 0.0 && !vertical_active {
             let tracking_px = tb.tracking * scale;
@@ -1326,6 +1333,7 @@ impl TitleRenderer {
                 pad: max_pad,
                 colour_glyphs: Vec::new(),
                 path_units: None,
+                tracking_origins: Vec::new(),
             };
         }
         // A staggered motion poses each glyph on its own from the
@@ -1333,7 +1341,7 @@ impl TitleRenderer {
         let staggers = |m: Option<klipp_timeline::Motion>| m.is_some_and(|m| m.stagger != klipp_timeline::StaggerUnit::None);
         let fx = title.primary_fx();
         let animates = fx.animators.iter().any(|a| a.enabled);
-        let tag_glyphs = time_secs.is_none() && (staggers(fx.motion.enter) || staggers(fx.motion.exit) || animates);
+        let tag_glyphs = time_secs.is_none() && (staggers(fx.motion.enter) || staggers(fx.motion.exit) || animates || tracking::eligible(title));
         let mut glyph_index = if tag_glyphs { vec![GLYPH_NONE; mask_w * mask_h] } else { Vec::new() };
 
         // Rasterize glyphs into alpha mask. When the textbox has a
@@ -1516,6 +1524,7 @@ impl TitleRenderer {
             pad: max_pad,
             colour_glyphs,
             path_units: None,
+            tracking_origins: tracking_origins.into_iter().map(|p| [p[0], p[1] + offset_y]).collect(),
         }
     }
 
@@ -1707,6 +1716,7 @@ impl TitleRenderer {
                 pad: 0,
                 colour_glyphs: Vec::new(),
                 path_units: None,
+                tracking_origins: Vec::new(),
             };
         }
 
@@ -1743,6 +1753,7 @@ impl TitleRenderer {
             pad: max_pad,
             colour_glyphs: Vec::new(),
             path_units: Some(text_on_path::PathUnits { laid, length, resting: placed }),
+            tracking_origins: Vec::new(),
         }
     }
 
@@ -2503,6 +2514,11 @@ impl TitleRenderer {
             || (staggered.is_some_and(|o| !o.fx().edge_fade.is_none()) || staggered.is_some() && poses.iter().any(|(_, p)| p.focus.is_some()));
 
         let mut gpu = gpu;
+        if tracking::eligible(title) {
+            if let Some(frame) = self.tracking_frame(title, width, height, time_secs) {
+                return frame;
+            }
+        }
         // A text whose only motion is its drawn path's (it travels, the
         // path morphs or moves) poses its resting glyphs along the path
         // as the sprite path does a stagger (#1697).
@@ -3119,7 +3135,7 @@ impl TitleRenderer {
         let fx = title.primary_fx();
         let poses: Vec<text3d_render::Pose> = match time_secs {
             Some(t) if fx.motion.is_active() || fx.animators.iter().any(|a| a.enabled) => {
-                let units = UnitMap { x0: 0, y0: 0, w: 0, h: 0, index: Vec::new(), boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: 0, path: None };
+                let units = UnitMap { x0: 0, y0: 0, w: 0, h: 0, index: Vec::new(), boxes: layout.glyph_boxes.clone(), parents: layout.glyph_parents.clone(), pad: 0, path: None, tracking_origins: Vec::new() };
                 let glyph = glyph_poses(&units, &fx.motion, &fx.animators, t, self.motion_window, em, (0.0, 0.0, 1.0), false);
                 solids
                     .iter()
