@@ -218,7 +218,10 @@ mod socket_claim_tests {
     fn a_stale_socket_is_replaced() {
         let d = dir();
         let path = d.join("klipp-control.sock");
-        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        // A concurrent spawn can inherit a listening stream until exec,
+        // keeping connect() successful after our drop (#2075). A datagram
+        // leaves the same stale socket file but never accepts a stream.
+        drop(std::os::unix::net::UnixDatagram::bind(&path).unwrap());
         let (exists, connect) = (path.exists(), UnixStream::connect(&path));
         assert!(exists && connect.is_err(), "a dead socket file: exists {exists}, connect {connect:?}");
         let (_l, p) = claim_socket(&path, 300).unwrap();

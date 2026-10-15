@@ -15,7 +15,11 @@ const H: u32 = 180;
 const FRAMES: i64 = 30;
 
 fn tmp(name: &str) -> PathBuf {
-    klipp_testing::scratch::scratch_file("klipp-tnr-neighbours-kept", name)
+    // The scratch directory is per process, while these tests run in
+    // parallel. Each invocation owns both its source and probe (#2076).
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    klipp_testing::scratch::scratch_file("klipp-tnr-neighbours-kept", &format!("{id}-{name}"))
 }
 
 /// Two seconds of a moving pattern: every frame differs, so a neighbour
