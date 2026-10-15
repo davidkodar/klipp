@@ -3463,3 +3463,19 @@ fn graph_a_track_grade_mix_is_refused() {
     assert!(refused.to_string().contains("doesn't keep a correction's mix"), "{refused}");
     assert_eq!(h.edits_seen.lock().unwrap().len(), count, "nothing changed");
 }
+
+#[test]
+fn perf_distinguishes_engine_from_effects_readbacks() {
+    let mut h = harness();
+    let reply = h.ok(json!({ "method": "perf" }));
+    for key in ["count", "total_us"] {
+        assert!(reply["readbacks"][key].is_u64(), "{reply}");
+    }
+    let effects = &reply["effects_readbacks"];
+    for key in ["count", "bytes", "total_us", "failures"] {
+        assert!(effects["totals"][key].is_u64(), "{reply}");
+    }
+    assert!(reply["readbacks"]["scope"].as_str().unwrap().contains("engine GPU-frame conversions only"));
+    assert!(effects["scope"].as_str().unwrap().contains("title-mask"));
+    assert!(effects["scope"].as_str().unwrap().contains("overlaps render time"));
+}

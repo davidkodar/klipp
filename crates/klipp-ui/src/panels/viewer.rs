@@ -3291,9 +3291,15 @@ impl ViewerPanel {
                 avg.decode_ms,
             ),
             format!(
-                "  readback    {:.2} ms",
+                "  engine readback {:.2} ms",
                 state.perf_readback_ms,
             ),
+            {
+                let r = klipp_effects::gpu::readback_stats();
+                format!("  effects downloads: {} / {:.1} MiB / {:.1} ms total ({} failed)",
+                    r.count, r.bytes as f64 / 1_048_576.0, r.total_us as f64 / 1000.0, r.failures)
+            },
+            "    process totals; blocking title/effects only; overlaps render time".to_string(),
             format!(
                 "  seq read    {:.2} ms",
                 avg.seq_read_ms,

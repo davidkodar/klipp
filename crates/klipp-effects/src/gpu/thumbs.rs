@@ -203,6 +203,7 @@ impl GpuEffectsPipeline {
         let each = thumbs.bytes_each();
         let size = (each * thumbs.taken) as u64;
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("chain_thumbs_read") });
+        let mut readback = self.readbacks.begin(size);
         enc.copy_buffer_to_buffer(&thumbs.out, 0, &thumbs.staging, 0, size);
         self.queue.submit(std::iter::once(enc.finish()));
         self.submit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -221,6 +222,7 @@ impl GpuEffectsPipeline {
             _ => None,
         };
         thumbs.staging.unmap();
+        readback.succeeded = read.is_some();
         read
     }
 }
