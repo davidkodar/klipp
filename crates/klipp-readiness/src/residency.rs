@@ -136,7 +136,7 @@ pub fn generator(data: &GeneratorData) -> Capability {
         | Star { .. } => cap(
             CpuCached,
             "Still-generator cache; invalidated by authored data or frame size",
-            Some(2065),
+            None,
         ),
     }
 }
@@ -144,8 +144,8 @@ pub fn generator(data: &GeneratorData) -> Capability {
 /// Common composition limitations apply regardless of a kernel's residency.
 pub const COMPOSITION_LIMITS: &[Capability] = &[
     cap(Residency::Conditional, "Unavailable/lost GPU or rejected GPU stack falls back to CPU; kernel coverage alone does not establish graph residency", Some(1465)),
-    cap(Residency::RoundTrip, "Title masks above 250,000 pixels use GPU blur/dilate callbacks then download for CPU style composition; smaller masks stay on CPU", Some(2063)),
-    cap(Residency::CpuPerFrame, "Animated 3D title geometry is rasterized on CPU before GPU upload", Some(2061)),
+    cap(Residency::Conditional, "Eligible animated text/3D styles keep masks and composition on GPU; unsupported title combinations retain CPU composition and large-mask callback downloads", Some(2069)),
+    cap(Residency::Conditional, "Eligible animated plain 3D text caches meshes and rasterizes camera/light/glyph poses on GPU; rich authoring combinations retain CPU fallback", Some(2069)),
     cap(Residency::Conditional, "Eligible tracking uses cached glyph coverage and GPU placement; unsupported keyed typography still rasterizes per frame", Some(2069)),
     cap(Residency::CpuPerFrame, "Title glitch uses per-frame CPU post_effects; static chromatic treatment can cache, and similarly named clip effects have GPU kernels", Some(2069)),
 ];
@@ -242,33 +242,33 @@ pub struct TitleFamily {
 /// A new field cannot silently inherit a claim that its pixels stay on GPU.
 pub const TITLE_FAMILIES: &[TitleFamily] = &[
     TitleFamily { owner: "TextBox", fields: &["tracking_keyframes"], capability: cap(Residency::Conditional, "Plain opaque nonoverlapping tracking glyphs use cached coverage and GPU placement; unsupported layouts or styling rasterize per frame", Some(2069)) },
-    TitleFamily { owner: "Shape", fields: &["kind", "fill", "gradient", "stroke", "fit"], capability: cap(Residency::Conditional, "Simple shapes have GPU placement; vector geometry/glow raster is cached by evaluated geometry, changing geometry can rasterize", Some(2063)) },
-    TitleFamily { owner: "ImageLayer", fields: &["path", "fit"], capability: cap(Residency::CpuCached, "Decoded image and static title raster cached; animated object composition can rerasterize", Some(2065)) },
+    TitleFamily { owner: "Shape", fields: &["kind", "fill", "gradient", "stroke", "fit"], capability: cap(Residency::Conditional, "Simple shapes have GPU placement; vector geometry/glow raster is cached by evaluated geometry, changing geometry can rasterize", Some(2069)) },
+    TitleFamily { owner: "ImageLayer", fields: &["path", "fit"], capability: cap(Residency::CpuCached, "Decoded image and static title raster cached; animated object composition can rerasterize", Some(2069)) },
 
-    TitleFamily { owner: "TextBox", fields: &["text", "font_size", "font_name", "font_style", "color", "alignment", "tracking", "line_spacing", "underline", "strikethrough", "case_transform", "baseline_shift", "drop_cap_scale", "columns", "vertical_layout", "vertical_columns_ltr", "text_direction", "last_line", "vertical_align", "fit", "paragraph", "features", "font_weight", "font_axes", "style_runs"], capability: cap(Residency::CpuCached, "CPU shaping/raster cached while inputs stay unchanged; keyed paragraph or changed layout rerasterizes", Some(2065)) },
+    TitleFamily { owner: "TextBox", fields: &["text", "font_size", "font_name", "font_style", "color", "alignment", "tracking", "line_spacing", "underline", "strikethrough", "case_transform", "baseline_shift", "drop_cap_scale", "columns", "vertical_layout", "vertical_columns_ltr", "text_direction", "last_line", "vertical_align", "fit", "paragraph", "features", "font_weight", "font_axes", "style_runs"], capability: cap(Residency::CpuCached, "CPU shaping/raster cached while inputs stay unchanged; keyed paragraph or changed layout rerasterizes", Some(2069)) },
     TitleFamily { owner: "TextBox", fields: &["font_size_keyframes", "line_spacing_keyframes", "color_keyframes"], capability: cap(Residency::CpuPerFrame, "Size, spacing and colour keys rerasterize for their time", Some(2069)) },
-    TitleFamily { owner: "TextBox", fields: &["gradient", "pattern_fill", "pattern_fill_enabled", "texture_fill", "write_on", "outline_write_on", "extrusion"], capability: cap(Residency::CpuCached, "CPU fill/style in cached raster; time-varying inputs require rerasterization", Some(2063)) },
-    TitleFamily { owner: "TextBox", fields: &["three_d"], capability: cap(Residency::CpuPerFrame, "Static solids can cache a raster; animated 3D rasterization is CPU work", Some(2061)) },
-    TitleFamily { owner: "TextBox", fields: &["text_path", "char_animation"], capability: cap(Residency::Conditional, "Eligible path travel poses cached glyphs; unsupported path/motion combinations rerasterize", Some(2065)) },
+    TitleFamily { owner: "TextBox", fields: &["gradient", "pattern_fill", "pattern_fill_enabled", "texture_fill", "write_on", "outline_write_on", "extrusion"], capability: cap(Residency::CpuCached, "CPU fill/style in cached raster; time-varying inputs require rerasterization", Some(2069)) },
+    TitleFamily { owner: "TextBox", fields: &["three_d"], capability: cap(Residency::Conditional, "Static solids cache rasters; eligible animated plain solids cache geometry and rasterize on GPU; unsupported combinations retain CPU fallback", Some(2069)) },
+    TitleFamily { owner: "TextBox", fields: &["text_path", "char_animation"], capability: cap(Residency::Conditional, "Eligible path travel poses cached glyphs; unsupported path/motion combinations rerasterize", Some(2069)) },
     TitleFamily { owner: "TextBox", fields: &["chromatic_aberration_px"], capability: cap(Residency::CpuCached, "CPU title post_effects cached for static inputs; unlike the GPU clip effect", Some(2069)) },
     TitleFamily { owner: "TextBox", fields: &["glitch_intensity"], capability: cap(Residency::CpuPerFrame, "Deterministic time-varying CPU title post_effects", Some(2069)) },
     TitleFamily { owner: "TextBox", fields: &["legacy_fx", "ass_style_name"], capability: cap(Residency::Conditional, "Migration/round-trip metadata; not a picture-processing kernel", Some(1465)) },
-    TitleFamily { owner: "LayerFx", fields: &["motion", "loops", "animators"], capability: cap(Residency::Conditional, "Eligible translation/scale/fade/stagger poses cached coverage; blur/colour/type changes and unsupported combinations rerasterize", Some(2065)) },
-    TitleFamily { owner: "LayerFx", fields: &["glows", "glow_stack_enabled", "shadows", "shadow_stack_enabled", "outlines", "outline_stack_enabled", "inner_shadows", "inner_shadow_stack_enabled", "motion_blur"], capability: cap(Residency::RoundTrip, "Static styled raster can cache; masks above 250,000 pixels use GPU callbacks returning to CPU, smaller masks process on CPU", Some(2063)) },
-    TitleFamily { owner: "LayerFx", fields: &["edge_fade"], capability: cap(Residency::Conditional, "GPU placement supports eligible edge fades; glyph/motion combinations may rasterize", Some(2065)) },
+    TitleFamily { owner: "LayerFx", fields: &["motion", "loops", "animators"], capability: cap(Residency::Conditional, "Eligible translation/scale/fade/stagger poses cached coverage; blur/colour/type changes and unsupported combinations rerasterize", Some(2069)) },
+    TitleFamily { owner: "LayerFx", fields: &["glows", "glow_stack_enabled", "shadows", "shadow_stack_enabled", "outlines", "outline_stack_enabled", "inner_shadows", "inner_shadow_stack_enabled", "motion_blur"], capability: cap(Residency::Conditional, "Eligible animated single-text/3D glow, shadow, outline and inner shadow compose on GPU; static titles cache; unsupported styling/motion combinations use CPU or callback downloads", Some(2069)) },
+    TitleFamily { owner: "LayerFx", fields: &["edge_fade"], capability: cap(Residency::Conditional, "GPU placement supports eligible edge fades; glyph/motion combinations may rasterize", Some(2069)) },
     TitleFamily { owner: "TitleObject", fields: &["id", "name", "visible", "locked"], capability: cap(Residency::Conditional, "Authoring identity and visibility, no picture kernel of their own", Some(1465)) },
-    TitleFamily { owner: "TitleObject", fields: &["transform", "opacity", "opacity_keyframes", "content", "fx", "blend", "mask"], capability: cap(Residency::Conditional, "Per-object composition and animation may require CPU raster; a GPU final stack does not imply resident source generation", Some(2065)) },
-    TitleFamily { owner: "ObjectTransform", fields: &["center", "size", "rotation", "anchor_norm"], capability: cap(Residency::Conditional, "Static text layout/rotation participates in the raster cache; eligible simple shapes use GPU placement", Some(2065)) },
-    TitleFamily { owner: "ObjectTransform", fields: &["center_x_keyframes", "center_y_keyframes", "size_x_keyframes", "size_y_keyframes", "rotation_keyframes", "anchor_x_keyframes", "anchor_y_keyframes"], capability: cap(Residency::Conditional, "Keyed object transforms ordinarily rerasterize; drawn-path glyph route is an explicit exception", Some(2065)) },
+    TitleFamily { owner: "TitleObject", fields: &["transform", "opacity", "opacity_keyframes", "content", "fx", "blend", "mask"], capability: cap(Residency::Conditional, "Per-object composition and animation may require CPU raster; a GPU final stack does not imply resident source generation", Some(2069)) },
+    TitleFamily { owner: "ObjectTransform", fields: &["center", "size", "rotation", "anchor_norm"], capability: cap(Residency::Conditional, "Static text layout/rotation participates in the raster cache; eligible simple shapes use GPU placement", Some(2069)) },
+    TitleFamily { owner: "ObjectTransform", fields: &["center_x_keyframes", "center_y_keyframes", "size_x_keyframes", "size_y_keyframes", "rotation_keyframes", "anchor_x_keyframes", "anchor_y_keyframes"], capability: cap(Residency::Conditional, "Keyed object transforms ordinarily rerasterize; drawn-path glyph route is an explicit exception", Some(2069)) },
 ];
 
 /// Motion kinds must explicitly account for stagger-dependent CPU fallbacks.
 pub fn motion(kind: klipp_core::title_motion::MotionKind) -> Capability {
     use klipp_core::title_motion::MotionKind::*;
     match kind {
-        Blur | FocusIn | SoftRise => cap(Residency::Conditional, "Whole-layer blur can use GPU placement; staggered blur rerasterizes glyphs on CPU", Some(2065)),
+        Blur | FocusIn | SoftRise => cap(Residency::Conditional, "Whole-layer blur can use GPU placement; staggered blur rerasterizes glyphs on CPU", Some(2069)),
         Fade | Rise | Drop | SlideLeft | SlideRight | ScaleUp | ScaleDown | MaskRise | MaskDrop | Typewriter | Pop | Slam | FlyLeft | FlyRight | FlyTop | FlyBottom | Bounce | Flicker | Larger | Smaller =>
-            cap(Residency::Conditional, "Cached sprite/glyph pose when eligible; 3D, styling, mixed layers or other keyed properties can require CPU raster", Some(2065)),
+            cap(Residency::Conditional, "Cached sprite/glyph pose when eligible; 3D, styling, mixed layers or other keyed properties can require CPU raster", Some(2069)),
     }
 }
 
@@ -279,6 +279,6 @@ pub fn title_loop(value: &klipp_core::title_motion::TitleLoop) -> Capability {
         Wave { .. } | ColorCycle { .. } | ColorBlend { .. } | Counter { .. } =>
             cap(Residency::CpuPerFrame, "Changes glyph coverage, colour or text; rasterized for its time", Some(2069)),
         Blink { .. } | Pulse { .. } | Shake { .. } | Scroll { .. } | Crawl { .. } | Float { .. } | Sway { .. } | Drift { .. } | Flicker { .. } =>
-            cap(Residency::Conditional, "Single eligible layer poses cached sprite; combined/raster-dependent loops can fall back", Some(2065)),
+            cap(Residency::Conditional, "Single eligible layer poses cached sprite; combined/raster-dependent loops can fall back", Some(2069)),
     }
 }

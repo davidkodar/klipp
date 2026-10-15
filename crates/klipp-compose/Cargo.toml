@@ -69,3 +69,7 @@ path = "tests/native_effect_order.rs"
 [[test]]
 name = "plan_lifts_once"
 path = "tests/plan_lifts_once.rs"
+
+[[test]]
+name = "title_styles_gpu"
+path = "tests/title_styles_gpu.rs"

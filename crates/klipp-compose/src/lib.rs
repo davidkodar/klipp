@@ -12,6 +12,7 @@ pub mod fault;
 pub mod inspect;
 mod ofx_node;
 pub mod synth;
+mod title3d_gpu;
 pub mod render;
 pub mod resolve;
 pub mod selfcheck;

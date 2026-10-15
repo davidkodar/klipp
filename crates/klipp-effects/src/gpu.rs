@@ -20,6 +20,9 @@ use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 mod readbacks;
+mod alpha_masks;
+mod title_styles;
+pub use title_styles::TitleStyle;
 pub use readbacks::{readback_stats, ReadbackStats};
 mod params;
 mod slots;
@@ -349,6 +352,8 @@ pub struct GpuEffectsPipeline {
     alpha_blur_h_pipeline: wgpu::ComputePipeline,
     alpha_blur_v_pipeline: wgpu::ComputePipeline,
     alpha_dilate_pipeline: wgpu::ComputePipeline,
+    title_style_pipeline: wgpu::ComputePipeline,
+    title_style_scratch: Option<title_styles::StyleScratch>,
     // Compute pipelines — transitions (3-buffer: from, to, output, params)
     transition_pipeline: wgpu::ComputePipeline,
     /// Posed piece transitions (#985): `SHADER_PIECES`.
@@ -1283,6 +1288,7 @@ impl GpuEffectsPipeline {
         let alpha_blur_h_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_blur_h", SHADER_ALPHA_BLUR_H);
         let alpha_blur_v_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_blur_v", SHADER_ALPHA_BLUR_V);
         let alpha_dilate_pipeline = create_pipeline(&device, &pipeline_layout, "alpha_dilate", SHADER_ALPHA_DILATE);
+        let title_style_pipeline = create_pipeline(&device, &pipeline_layout, "title_styles", include_str!("gpu/title_styles.wgsl"));
 
         // LUT buffer, sized from the same constant the uploads are.
         //
@@ -1702,6 +1708,8 @@ impl GpuEffectsPipeline {
             alpha_blur_h_pipeline,
             alpha_blur_v_pipeline,
             alpha_dilate_pipeline,
+            title_style_pipeline,
+            title_style_scratch: None,
             transition_pipeline,
             pieces_pipeline,
             shutter_pipeline,
@@ -5423,6 +5431,7 @@ impl GpuEffectsPipeline {
         // of them, effects run in them, the finish copies into them.
         self.ensure_buffers(byte_size);
         if self.stack_dims != (width, height) {
+            self.title_style_scratch = None;
             self.stack_sprites.clear();
         }
         self.stack_dims = (width, height);
@@ -6761,7 +6770,7 @@ impl GpuEffectsPipeline {
     }
 
     /// Blur an alpha mask on the GPU. Input/output are single-channel u8 buffers.
-    /// Uses 3-pass box blur to approximate Gaussian, same as the RGBA blur.
+    /// Uses three separable box passes at round(radius), matching title CPU masks.
     pub fn blur_alpha_gpu(&mut self, mask: &[u8], w: u32, h: u32, radius: f32) -> Vec<u8> {
         let pixel_count = (w * h) as u64;
         // Each alpha value stored as one u32
@@ -6779,7 +6788,7 @@ impl GpuEffectsPipeline {
         let workgroups = (w * h).div_ceil(WORKGROUP_SIZE);
 
         // 3-pass box blur for gaussian approximation
-        let boxes = boxes_for_gaussian(radius);
+        let boxes = [radius.max(0.0).round() as usize; 3];
         let mut current_in_a = true;
 
         for &box_r in &boxes {
@@ -6823,7 +6832,7 @@ impl GpuEffectsPipeline {
 
         let workgroups = (w * h).div_ceil(WORKGROUP_SIZE);
 
-        self.write_params(&AlphaDilateParams { width: w, height: h, radius: r, _pad: 0 });
+        self.write_params(&AlphaDilateParams { width: w, height: h, radius: r, radius_sq: (radius.max(0.0) * radius.max(0.0)) as u32 });
         self.dispatch(&self.alpha_dilate_pipeline, buf_a, buf_b, workgroups);
 
         let result_bytes = self.download(buf_b, byte_size);
@@ -8731,7 +8740,7 @@ struct AlphaDilateParams {
     width: u32,
     height: u32,
     radius: u32,
-    _pad: u32,
+    radius_sq: u32,
 }
 
 #[repr(C)]
@@ -9055,27 +9064,6 @@ pub(crate) struct BinocularVignetteParams {
 // 8 fields x 4 bytes = 32 bytes
 
 // ─── Box blur Gaussian approximation (same as CPU version) ───────────────────
-
-fn boxes_for_gaussian(sigma: f32) -> [usize; 3] {
-    let w_ideal = ((12.0 * sigma * sigma / 3.0) + 1.0).sqrt();
-    let mut wl = w_ideal.floor() as usize;
-    if wl.is_multiple_of(2) {
-        wl = wl.saturating_sub(1).max(1);
-    }
-    let wu = wl + 2;
-    let m_ideal = (12.0 * sigma * sigma
-        - 3.0 * (wl * wl) as f32
-        - 12.0 * wl as f32
-        - 9.0)
-        / (-4.0 * wl as f32 - 4.0);
-    let m = m_ideal.round() as usize;
-    let r = |size: usize| (size - 1) / 2;
-    [
-        r(if 0 < m { wl } else { wu }),
-        r(if 1 < m { wl } else { wu }),
-        r(if 2 < m { wl } else { wu }),
-    ]
-}
 
 // ─── WGSL Compute Shaders ────────────────────────────────────────────────────
 
@@ -15168,7 +15156,7 @@ struct Params {
     width: u32,
     height: u32,
     radius: u32,
-    _pad: u32,
+    radius_sq: u32,
 }
 
 @group(0) @binding(0) var<storage, read> input: array<u32>;
@@ -15183,7 +15171,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = idx % params.width;
     var max_val: u32 = 0u;
     let r = i32(params.radius);
-    let r_sq = f32(r * r);
+    let r_sq = f32(params.radius_sq);
     for (var dy = -r; dy <= r; dy++) {
         let ny = i32(y) + dy;
         if ny < 0 || ny >= i32(params.height) { continue; }
@@ -18448,6 +18436,7 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_ALPHA_BLUR_H", SHADER_ALPHA_BLUR_H),
         ("SHADER_ALPHA_BLUR_V", SHADER_ALPHA_BLUR_V),
         ("SHADER_ALPHA_DILATE", SHADER_ALPHA_DILATE),
+        ("TITLE_STYLES", include_str!("gpu/title_styles.wgsl")),
         ("SHADER_BLOOM_THRESHOLD", SHADER_BLOOM_THRESHOLD),
         ("SHADER_BLOOM_BLEND", SHADER_BLOOM_BLEND),
         ("SHADER_GLOW_BLEND", SHADER_GLOW_BLEND),

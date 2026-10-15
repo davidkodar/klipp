@@ -83,3 +83,9 @@ mod window_mix;
 
 #[path = "../readback_diagnostics.rs"]
 mod readback_diagnostics;
+
+#[path = "../resident_alpha_masks.rs"]
+mod resident_alpha_masks;
+
+#[path = "../resident_title_styles.rs"]
+mod resident_title_styles;
