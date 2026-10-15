@@ -56,4 +56,19 @@ fn masks_and_chain_downloads_are_counted_but_resident_work_is_not() {
     assert!(gpu.linear_rgba_to_u8_gpu(&px, w, h).is_some());
     let s = gpu.readback_stats();
     assert_eq!((s.count, s.bytes, s.failures), (5, n as u64 * 32, 0));
+    let to_2020 = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+    ];
+    assert!(gpu.nit_map_of_chain(true, w, h, 2, to_2020).is_some());
+    let s = gpu.readback_stats();
+    assert_eq!((s.count, s.bytes, s.failures), (6, n as u64 * 33, 0));
+
+    let mut thumbs = klipp_effects::gpu::ChainThumbs::new(&gpu, 8, 4);
+    assert_eq!(gpu.take_chain_thumb(&mut thumbs, true, w, h), Some(0));
+    assert_eq!(gpu.readback_stats().count, 6);
+    assert_eq!(gpu.read_chain_thumbs(&thumbs).unwrap()[0].len(), 128);
+    let s = gpu.readback_stats();
+    assert_eq!((s.count, s.bytes, s.failures), (7, n as u64 * 33 + 128, 0));
 }

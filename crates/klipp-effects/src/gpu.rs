@@ -3007,6 +3007,7 @@ impl GpuEffectsPipeline {
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups((mw * mh).div_ceil(WORKGROUP_SIZE), 1, 1);
         }
+        let mut readback = self.readbacks.begin(bytes);
         enc.copy_buffer_to_buffer(out, 0, staging, 0, bytes);
         self.submit(enc);
 
@@ -3018,6 +3019,7 @@ impl GpuEffectsPipeline {
         let map: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
         drop(data);
         staging.unmap();
+        readback.succeeded = true;
         Some((map, mw, mh))
     }
 
