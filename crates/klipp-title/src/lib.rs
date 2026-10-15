@@ -2272,12 +2272,6 @@ impl TitleRenderer {
         gpu: Option<&mut dyn AlphaMaskProcessor>,
         time_secs: f32,
     ) -> TitleFrame {
-        // Key the existing bounded sprite cache by the evaluated geometry,
-        // not by the presence of animation keys. Other time-dependent title
-        // features still go through their normal evaluation below.
-        if let Some(evaluated) = vector_path::evaluated_title(title, time_secs as f64) {
-            return self.frame_at(&evaluated, width, height, gpu, time_secs);
-        }
         // A focus blur is the placed frame's alone: every other way out
         // of here asks for none (#598 review).
         self.last_focus_blur = None;
@@ -2519,6 +2513,12 @@ impl TitleRenderer {
             if let Some(frame) = path_traveller(title).and_then(|text| self.path_glyph_frame(title, text, width, height, gpu.take(), time_secs)) {
                 return frame;
             }
+        }
+        // Key the existing bounded sprite cache by the evaluated geometry,
+        // not by the presence of animation keys. Other time-dependent title
+        // features still go through their normal evaluation below.
+        if let Some(evaluated) = vector_path::evaluated_title(title, time_secs as f64) {
+            return self.frame_at(&evaluated, width, height, gpu, time_secs);
         }
         if !any_render_time_override {
             // A full-frame card: the words are the sprite and the fill

@@ -63,6 +63,7 @@ fn vector_sequence(w:u32,h:u32) -> klipp_timeline::Sequence {
     use klipp_timeline::{Clip,ClipKind,Track,TrackKind};
     let mut seq=klipp_timeline::Sequence::new_default();
     seq.resolution=klipp_core::Resolution{width:w,height:h};
+    seq.fps=klipp_core::Fps::new(30,1);
     let tc=|s|klipp_core::RationalTime::from_secs_f64(s,seq.fps.rate());
     let mut title=Track::new("Vector",TrackKind::Text);
     title.clips.push(Clip{kind:ClipKind::Title(vector_case::ring()),source_in:tc(0.0),source_out:tc(7.0),..Clip::gap(tc(0.0),tc(7.0))});
@@ -83,10 +84,10 @@ fn renderer(gpu:bool)->klipp_compose::Renderer{
 #[test]
 fn animated_and_completed_vector_reveals_match_export_after_reload(){
     let seq=vector_sequence(320,180);
-    let seq=serde_json::from_str(&serde_json::to_string(&seq).unwrap()).unwrap();
+    let seq:klipp_timeline::Sequence=serde_json::from_str(&serde_json::to_string(&seq).unwrap()).unwrap();
     let mut gpu=renderer(true);let mut cpu=renderer(false);
     for t in [0.3,1.2,2.0,4.0,6.0,0.3]{
-        let at=klipp_core::RationalTime::from_secs_f64(t,24);
+        let at=klipp_core::RationalTime::from_secs_f64(t,seq.fps.rate());
         let (linear,_)=cpu.render_inspected(&seq,at,320,180,&mut NoMedia,Default::default(),Default::default());
         let expected=klipp_effects::linear_f32_rgba_to_srgb_u8(&linear);
         let Some((actual,_))=gpu.render_display_u8_on_gpu(&seq,at,320,180,&mut NoMedia,Default::default()) else {
