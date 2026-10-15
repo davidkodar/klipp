@@ -23,6 +23,7 @@ use std::sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc, Mutex};
 
 use serde_json::{json, Value};
 
+mod diagnostics;
 mod edit_schema;
 mod graph_schema;
 mod socket_connect;
@@ -77,6 +78,7 @@ const RETRYABLE_TOOLS: &[&str] = &[
 ];
 
 fn main() {
+    diagnostics::build();
     // `klipp-mcp --check`: is Klipp there for an assistant? The same
     // read-only status an assistant asks for first, from the same binary
     // it runs, said in words; exit 0 when it answered (#625). What
@@ -84,7 +86,8 @@ fn main() {
     // it in a terminal.
     if std::env::args().nth(1).as_deref() == Some("--check") {
         match control_call(json!({ "method": "status" })) {
-            Ok(v) => {
+            Ok(mut v) => {
+                diagnostics::attach(&mut v, None);
                 println!("{}", v.get("text").and_then(|t| t.as_str()).unwrap_or("Klipp answered."));
                 std::process::exit(0);
             }
@@ -99,7 +102,7 @@ fn main() {
         std::process::exit(follow_main(&rest));
     }
     if std::env::args().nth(1).as_deref() == Some("--version") {
-        println!("klipp-mcp {}", env!("CARGO_PKG_VERSION"));
+        println!("klipp-mcp {}", diagnostics::label());
         return;
     }
     let structured = Arc::new(AtomicBool::new(false));
@@ -187,7 +190,8 @@ fn response_for(req: &Value, stdout: &Mutex<std::io::Stdout>, structured: &Atomi
                 "result": {
                     "protocolVersion": version,
                     "capabilities": { "tools": {} },
-                    "serverInfo": { "name": "klipp", "version": env!("CARGO_PKG_VERSION") },
+                    "serverInfo": { "name": "klipp", "version": diagnostics::label() },
+                    "_meta": diagnostics::metadata(),
                     "instructions": INSTRUCTIONS,
                 }
             })},
@@ -195,7 +199,7 @@ fn response_for(req: &Value, stdout: &Mutex<std::io::Stdout>, structured: &Atomi
             "tools/list" => json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "result": { "tools": tool_definitions_for(structured.load(Ordering::Acquire)) },
+                "result": { "tools": tool_definitions_for(structured.load(Ordering::Acquire)), "_meta": diagnostics::metadata() },
             }),
             "tools/call" => {
                 let params = req.get("params").cloned().unwrap_or(json!({}));
@@ -1450,13 +1454,19 @@ fn call_tool(name: &str, args: &Value) -> Result<(Vec<Value>, Option<Value>), St
         let text = guide_topic(topic)?;
         return Ok((vec![json!({ "type": "text", "text": text })], None));
     }
+    if !diagnostics::tool_names().iter().any(|known| known == name) {
+        return Err(format!("This MCP server ({}) does not advertise {name}. Reconnect the Klipp MCP connection in your client and refresh its tool list; restarting the Klipp app alone does not refresh this server.", diagnostics::label()));
+    }
     let mut cmd = tool_to_command(name, args)?;
     if (WRITE_TOOLS.contains(&name) || RETRYABLE_TOOLS.contains(&name))
         && cmd.get("idempotency_key").is_none()
     {
         cmd["idempotency_key"] = json!(uuid::Uuid::new_v4().to_string());
     }
-    let result = control_call(cmd)?;
+    let mut result = control_call(cmd)?;
+    if matches!(name, "klipp_status" | "klipp_orient") {
+        diagnostics::attach(&mut result, args.get("expected_catalog_fingerprint").and_then(Value::as_str));
+    }
     // The project changed under this session — made new, opened or saved
     // as — since its last call: said, so what it knew about the timeline
     // and the pool is not trusted a moment longer.
@@ -1488,7 +1498,7 @@ fn project_changed_under(name: &str, seen: u64, now: u64) -> bool {
 }
 
 fn has_structured_output(name: &str) -> bool {
-    matches!(name, "klipp_status" | "klipp_timeline" | "klipp_plan" | "klipp_apply" | "klipp_prepare_cut" | "klipp_grade_to_target")
+    matches!(name, "klipp_status" | "klipp_orient" | "klipp_timeline" | "klipp_plan" | "klipp_apply" | "klipp_prepare_cut" | "klipp_grade_to_target")
 }
 
 fn output_schema(name: &str) -> Value {
@@ -1754,8 +1764,8 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              json!({ "topic": { "type": "string", "description": "guide (default), graph (read before graph edits), craft, recipes, abilities (what a person can do here, for answering them when they ask), ops (every edit op), all, an area (session-tools, timeline-tools, analysis-tools, colour-tools, sound-tools), or a tool's name (find_shots) for its details" } }),
              vec![]),
         tool("klipp_status",
-             "Whether Klipp is there and what is open, read live without changing anything: a plain summary for a person who asks, then the build, transport, timeline, viewer and performance details. Start here. Details: klipp_guide topic status.",
-             json!({}), vec![]),
+             "App status, MCP build and catalog mismatch warnings. Read-only. Details: klipp_guide topic status.",
+             json!({ "expected_catalog_fingerprint": { "type": "string", "description": "Fingerprint from tools/list _meta; warns on mismatch." } }), vec![]),
         tool("klipp_operation_status",
              "The outcome of a queued write by its operation_id: waiting, applied or refused, with the final revision and the reason. Details: klipp_guide topic operation_status.",
              json!({ "operation_id": { "type": "string" } }), vec!["operation_id"]),
