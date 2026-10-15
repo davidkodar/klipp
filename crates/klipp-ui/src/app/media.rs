@@ -21,6 +21,7 @@ impl KlippApp {
             }
             if let Some(existing) = self.state.media_pool.find_by_path(path) {
                 let existing_id = existing.id;
+                self.state.pending_undo_imports.remove(media_id);
                 self.state.toast.show(format!(
                     "'{}' is already in the media pool",
                     path.file_name()
@@ -36,6 +37,7 @@ impl KlippApp {
             if let Some(fp) = compute_media_fingerprint(path) {
                 if let Some(existing) = self.state.media_pool.find_by_fingerprint(fp) {
                     let existing_id = existing.id;
+                    self.state.pending_undo_imports.remove(media_id);
                     let existing_name = existing.filename.clone();
                     self.state.toast.show(format!(
                         "'{}' appears to be the same file as '{}'",
@@ -74,6 +76,7 @@ impl KlippApp {
                 AppCommand::ImportMedia { ref path } | AppCommand::ImportMediaWithAnalysis { ref path, .. } => {
                     // Import media: load file to get metadata, then add to pool
                     let media_id = klipp_core::MediaId::new();
+                    self.state.pending_undo_imports.insert(media_id);
                     if matches!(cmd, AppCommand::ImportMediaWithAnalysis { analyze: false, .. }) {
                         self.state.pending_skip_analysis.insert(media_id);
                     }
@@ -88,6 +91,9 @@ impl KlippApp {
                     // Import, and remember where to drop it once it loads.
                     let media_id = klipp_core::MediaId::new();
                     self.state.pending_media_path = None;
+                    if *drop == klipp_core::events::ClipDrop::PoolOnly {
+                        self.state.pending_undo_imports.insert(media_id);
+                    }
                     if *drop != klipp_core::events::ClipDrop::PoolOnly {
                         self.state.pending_media_drop.insert(media_id, *drop);
                     }
@@ -142,6 +148,7 @@ impl KlippApp {
                                         continue;
                                     }
                                     let media_id = klipp_core::MediaId::new();
+                                    self.state.pending_undo_imports.insert(media_id);
                                     let _ = self.cmd_tx.send(AppCommand::LoadMediaFile {
                                         path: entry.path().to_path_buf(),
                                         media_id,

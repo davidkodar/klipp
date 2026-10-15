@@ -1399,6 +1399,8 @@ pub struct AppState {
     pub show_unsaved_dialog: bool,
     pub unsaved_dialog_action: UnsavedAction,
     pub pending_media_path: Option<PathBuf>,
+    /// Explicit pool imports awaiting their probe; history is recorded only on success.
+    pub pending_undo_imports: std::collections::HashSet<klipp_core::MediaId>,
     /// Per-import opt-outs, consumed when the async load succeeds or fails.
     pub pending_skip_analysis: std::collections::HashSet<klipp_core::MediaId>,
     /// Media imported with a timeline destination (e.g. from the Audio
@@ -4351,6 +4353,7 @@ impl Default for AppState {
             show_unsaved_dialog: false,
             unsaved_dialog_action: UnsavedAction::None,
             pending_media_path: None,
+            pending_undo_imports: std::collections::HashSet::new(),
             pending_skip_analysis: std::collections::HashSet::new(),
             pending_media_drop: std::collections::HashMap::new(),
             retired_media_ids: std::collections::HashSet::new(),
@@ -5380,6 +5383,16 @@ impl AppState {
     pub fn grade_track_in_colour(&mut self, id: klipp_core::TrackId) {
         self.active_workspace = Workspace::Color;
         self.pick_track_grade(id);
+    }
+
+    /// Finish a probe, recording explicit pool imports only when they first
+    /// enter the project. Re-probes and timeline drops keep their existing history.
+    pub(crate) fn complete_pool_import(&mut self, item: klipp_media::MediaItem, is_new: bool) {
+        let requested = self.pending_undo_imports.remove(&item.id);
+        if requested && is_new {
+            self.push_history(EditCommand::AddMediaToPool { item: item.clone() });
+        }
+        self.media_pool.add(item);
     }
 
     /// Push a single edit onto the active sequence's undo stack and
@@ -7019,4 +7032,78 @@ pub struct Tracking {
     pub started: std::time::Instant,
     /// The media's file name, for the status bar and the toast.
     pub name: String,
+}
+
+#[cfg(test)]
+mod pool_import_undo_tests {
+    use super::*;
+
+    fn replay(state: &mut AppState, redo: bool) {
+        let entry = if redo { state.take_redo() } else { state.take_undo() }.expect("history step");
+        let mut doc = klipp_document::apply::DocumentView {
+            sequences: &mut state.sequences, active: state.active_sequence_idx,
+            media_pool: &mut state.media_pool, fps: &mut state.fps,
+        };
+        let effects = if redo { doc.apply_forward(&entry.command) } else { doc.apply_inverse(&entry.command) };
+        assert!(effects.sync_media_pool);
+    }
+
+    #[test]
+    fn completed_pool_import_undo_redo_preserves_file_and_metadata() {
+        let path = std::env::temp_dir().join(format!("klipp-import-undo-{}.wav", klipp_core::MediaId::new()));
+        std::fs::write(&path, b"source bytes").unwrap();
+        let mut item = klipp_media::MediaItem::synthetic_for_test(path.clone(), None);
+        item.tags = vec!["original".into()];
+        let id = item.id;
+        let mut state = AppState::default();
+        let revision = std::sync::Arc::new(klipp_core::ControlShared::default());
+        state.active_history_mut().set_revision_shared(revision.clone());
+        state.pending_undo_imports.insert(id);
+        assert_eq!(state.undo_depth(), 0, "queuing a probe is not a completed edit");
+        state.complete_pool_import(item, true);
+        assert_eq!(state.undo_depth(), 1);
+        assert!(revision.revision.load(std::sync::atomic::Ordering::Relaxed) > 0);
+        assert!(!state.pending_undo_imports.contains(&id));
+        replay(&mut state, false);
+        assert!(state.media_pool.get(&id).is_none());
+        assert_eq!(std::fs::read(&path).unwrap(), b"source bytes", "undo never deletes or changes source media");
+        replay(&mut state, true);
+        assert_eq!(state.media_pool.get(&id).unwrap().tags, ["original"]);
+        assert_eq!(state.media_pool.get(&id).unwrap().path, path);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn asynchronous_batch_imports_complete_as_individual_steps() {
+        let mut state = AppState::default();
+        let a = klipp_media::MediaItem::synthetic_for_test("first.wav".into(), None);
+        let b = klipp_media::MediaItem::synthetic_for_test("second.wav".into(), None);
+        let (a_id, b_id) = (a.id, b.id);
+        state.pending_undo_imports.extend([a_id, b_id]);
+        // The engine may complete a later request first.
+        state.complete_pool_import(b, true);
+        state.complete_pool_import(a, true);
+        assert_eq!(state.undo_depth(), 2);
+        replay(&mut state, false);
+        assert!(state.media_pool.get(&a_id).is_none());
+        assert!(state.media_pool.get(&b_id).is_some());
+        replay(&mut state, false);
+        assert!(state.media_pool.get(&b_id).is_none());
+        replay(&mut state, true);
+        replay(&mut state, true);
+        assert!(state.media_pool.get(&a_id).is_some() && state.media_pool.get(&b_id).is_some());
+    }
+
+    #[test]
+    fn reprobes_and_timeline_drops_do_not_gain_import_steps() {
+        let mut state = AppState::default();
+        let item = klipp_media::MediaItem::synthetic_for_test("drop.wav".into(), None);
+        let id = item.id;
+        state.complete_pool_import(item.clone(), true);
+        assert_eq!(state.undo_depth(), 0, "timeline placement owns its history");
+        state.pending_undo_imports.insert(id);
+        state.complete_pool_import(item, false);
+        assert_eq!(state.undo_depth(), 0, "a re-probe must not undo an existing item");
+        assert!(state.pending_undo_imports.is_empty());
+    }
 }
