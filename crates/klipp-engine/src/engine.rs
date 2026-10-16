@@ -140,6 +140,24 @@ fn map_u8_rgb(rgba: &[u8], lut: &[u8; 256]) -> Vec<u8> {
     out
 }
 
+/// A rendered (graded, composited, generated) frame as the render cache
+/// stores it: sRGB-encoded as it stands, rounded with the viewer's dither
+/// (#2072). A cache hit in a Rec.709 project with no tone map shows these
+/// bytes through an identity table, so they have to be the bytes the
+/// viewer's encode gave the frame when it was drawn — dithered the same
+/// way — or the hit would show the frame's gradients banded where the
+/// render showed them smooth. The decoder's frames go through
+/// [`linear_rgba_to_u8`] instead: they were 8-bit to begin with, and the
+/// dither leaves a value already on a code alone.
+fn rendered_frame_to_cache_u8(linear: &[f32]) -> Vec<u8> {
+    klipp_color::display::display_transform_ws_dithered_to(
+        linear,
+        klipp_color::display::ToneMapOp::None,
+        klipp_core::WorkingColorspace::Rec709Linear,
+        klipp_core::SdrTransfer::Srgb,
+    )
+}
+
 fn linear_rgba_to_u8(linear: &[f32]) -> Vec<u8> {
     use rayon::prelude::*;
     let lut = linear_to_srgb_u8_lut();
@@ -7784,7 +7802,9 @@ impl PlaybackEngine {
     /// keeps every site at a single-line `self.display_encode(&linear)`
     /// invocation.
     fn display_encode(&self, linear: &[f32]) -> Vec<u8> {
-        klipp_color::display::display_transform_ws_to(
+        // Dithered as the GPU's display encode is (#2072): one picture
+        // whichever route drew it.
+        klipp_color::display::display_transform_ws_dithered_to(
             linear,
             self.tone_map_op,
             crate::video_decoder::working_colorspace(),
@@ -8439,9 +8459,9 @@ impl PlaybackEngine {
         // GPU branch makes.
         let display = move |linear: &[f32]| {
             if preview {
-                klipp_color::hdr_view::preview_frame(linear, tone_map, working)
+                klipp_color::hdr_view::preview_frame_dithered(linear, tone_map, working)
             } else {
-                klipp_color::display::display_transform_ws_to(linear, tone_map, working, transfer)
+                klipp_color::display::display_transform_ws_dithered_to(linear, tone_map, working, transfer)
             }
         };
         mark_stage(EngineStage::PostProcessInnerGradeExecute);
@@ -8563,9 +8583,9 @@ impl PlaybackEngine {
         // GPU branch makes.
         let display = move |linear: &[f32]| {
             if preview {
-                klipp_color::hdr_view::preview_frame(linear, tone_map, working)
+                klipp_color::hdr_view::preview_frame_dithered(linear, tone_map, working)
             } else {
-                klipp_color::display::display_transform_ws_to(linear, tone_map, working, transfer)
+                klipp_color::display::display_transform_ws_dithered_to(linear, tone_map, working, transfer)
             }
         };
         mark_stage(EngineStage::PostProcessInnerGradeExecute);
@@ -12840,6 +12860,34 @@ mod audio_fingerprint_kf_tests {
 #[cfg(test)]
 mod cached_frame_display_tests {
     use super::*;
+
+    /// A rendered frame shown from the render cache is the frame the
+    /// viewer showed when it drew it (#2072): the cache stores it rounded
+    /// with the viewer's dither, and in a Rec.709 project with no tone map
+    /// the hit's table is the identity. A slow gradient, which the dither
+    /// is for, is where an undithered cache would show bands instead.
+    #[test]
+    fn a_cache_hit_shows_the_rendered_frames_bytes() {
+        let (w, h) = (960usize, 4usize);
+        let mut linear = Vec::with_capacity(w * h * 4);
+        for _ in 0..h {
+            for x in 0..w {
+                let v = klipp_color::transfer::srgb_to_linear((40.0 + 12.0 * x as f32 / (w - 1) as f32) / 255.0);
+                linear.extend_from_slice(&[v, v * 0.97, v * 1.02, 1.0]);
+            }
+        }
+        let ws = klipp_core::WorkingColorspace::Rec709Linear;
+        let lut = klipp_color::display::display_transform_u8_lut(klipp_color::display::ToneMapOp::None, ws).expect("a table");
+        let hit = map_u8_rgb(&rendered_frame_to_cache_u8(&linear), &lut);
+        let drawn = klipp_color::display::display_transform_ws_dithered_to(
+            &linear,
+            klipp_color::display::ToneMapOp::None,
+            ws,
+            klipp_core::SdrTransfer::Srgb,
+        );
+        let differ = hit.iter().zip(&drawn).filter(|(a, b)| a != b).count();
+        assert_eq!(differ, 0, "a cache hit differs from the drawn frame at {differ} samples");
+    }
 
     /// The table path a render-cache hit takes has to land on the bytes the
     /// float path would have produced. `klipp-color` pins the table against

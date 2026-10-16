@@ -130,7 +130,8 @@ fn a_placed_cut_out_clip_is_cut_where_it_lands_on_the_stack() {
     src.0.insert(below.id, 0.6);
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
-    let cpu = klipp_color::display::display_transform_ws_to(
+    // The viewer's CPU encode, dithered as the stack's is (#2072).
+    let cpu = klipp_color::display::display_transform_ws_dithered_to(
         &r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()),
         klipp_color::display::ToneMapOp::None,
         klipp_core::WorkingColorspace::Rec709Linear,
@@ -148,8 +149,12 @@ fn a_placed_cut_out_clip_is_cut_where_it_lands_on_the_stack() {
     // The circle shrinks with the picture: 0.25 of the width at 0.6 is
     // under 5 px, so 6 px right of the centre is cut on both routes. Taken
     // after the placement it would stay 8 px across and show the clip.
+    // Both points show the same flat grey of the track below, so they can
+    // differ only by the display dither at their two positions (#2072):
+    // a level at most, where the clip would be dozens darker.
     for (route, img) in [("CPU", &cpu), ("stack", &stack)] {
-        assert_eq!(at(img, W / 2 + 6, H / 2), at(img, 1, 1), "{route}: cut where the shrunk circle ends");
+        let (cut, below) = (at(img, W / 2 + 6, H / 2), at(img, 1, 1));
+        assert!(cut.abs_diff(below) <= 1, "{route}: cut where the shrunk circle ends: {cut} vs {below}");
     }
     let worst = cpu.iter().zip(&stack).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
     assert!(worst <= 2, "the stack cut the placed clip elsewhere than the CPU route: {worst} levels apart");

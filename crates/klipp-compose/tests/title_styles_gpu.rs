@@ -108,7 +108,14 @@ fn animated_styles_match_cpu_when_scrubbing_flat_and_3d_titles() {
                 RenderOptions::default(),
                 Default::default(),
             );
-            let expected = klipp_effects::linear_f32_rgba_to_srgb_u8(&expected);
+            // The viewer's CPU encode, dithered as the GPU stack's
+            // display encode is (#2072): like with like.
+            let expected = klipp_color::display::display_transform_ws_dithered_to(
+                &expected,
+                klipp_color::display::ToneMapOp::None,
+                klipp_core::WorkingColorspace::Rec709Linear,
+                klipp_core::SdrTransfer::Srgb,
+            );
             let before = klipp_effects::gpu::readback_stats();
             let (actual, _) = gpu
                 .render_display_u8_on_gpu(&seq, at, w, h, &mut NoMedia, RenderOptions::default())
@@ -148,7 +155,25 @@ fn animated_styles_match_cpu_when_scrubbing_flat_and_3d_titles() {
                 // Fixed-point hardware coverage can choose a different edge
                 // sample. The solid-level test bounds this to triangle seams;
                 // here also bound its effect after glow/outline composition.
-                assert!(changed <= 8 && worst <= 75 && mean < 0.002);
+                //
+                // Both routes dither before they round (#2072), and a
+                // value the CPU composes exactly onto a code (left
+                // undithered) can come out of the GPU's blend a hair off
+                // it and take the dither: a single level, at a fraction of
+                // a percent of the samples (a mean of 0.003 to 0.005 here,
+                // against 0.0004 to 0.001 with neither dithered). So the seam bound is on
+                // what lies beyond a level, as strict as it was, and the
+                // single levels are bounded on their own.
+                let beyond_a_level = actual
+                    .iter()
+                    .zip(&expected)
+                    .map(|(a, b)| f64::from(a.abs_diff(*b).saturating_sub(1)))
+                    .sum::<f64>()
+                    / actual.len() as f64;
+                let single = actual.iter().zip(&expected).filter(|(a, b)| a.abs_diff(**b) == 1).count() as f64
+                    / actual.len() as f64;
+                assert!(changed <= 8 && worst <= 75 && beyond_a_level < 0.002, "seams: changed={changed}, worst={worst}, beyond a level {beyond_a_level}");
+                assert!(single < 0.01, "{:.3}% of samples a level apart", single * 100.0);
                 assert_eq!(
                     gpu.title_3d_geometry_uploads(),
                     1,
@@ -188,7 +213,13 @@ fn animated_styles_match_cpu_when_scrubbing_flat_and_3d_titles() {
                                 + 0.0722 * f32::from(p[2]))
                             / 255.0)
                         .round() as u8;
-                    assert!(y.abs_diff(want) <= 1, "export and viewer luma differ");
+                    // The viewer's bytes are dithered before they round
+                    // (#2072) and the export's 4:2:0 kernel rounds without
+                    // it. The dither moves each channel by at most a code,
+                    // all three the same way, so the luma made from them by
+                    // at most 219/255 of a code: one level more than the
+                    // routes' own bar, and nothing else between them.
+                    assert!(y.abs_diff(want) <= 2, "export and viewer luma differ");
                 }
             } else {
                 assert!(worst <= 2);
