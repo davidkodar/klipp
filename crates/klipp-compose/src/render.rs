@@ -2272,16 +2272,15 @@ impl Renderer {
         self.title_light(c, &mut fx);
         // A clip the camera's shutter blurs this frame (one that really
         // moves while it is open, #1922): its effects before the move run
-        // on its picture as any layer's do, and the picture is placed at
-        // each sample and averaged on the stack (#1923), as `shuttered`
-        // does on the CPU. Effects after the move, cast once from the
-        // average, are the CPU stack's for now.
+        // on its picture as any layer's do, the picture is placed at each
+        // sample and averaged on the stack (#1923), and the effects after
+        // the move run once on the average (#2090), as `shuttered` does on
+        // the CPU.
+        let mut after_move: Vec<BuiltinEffect> = Vec::new();
         let shutter: Option<Vec<BuiltinEffect>> = match self.shutter.get(&c.id) {
             Some(samples) => {
                 let cut = shutter_cut(&fx);
-                if fx[cut..].iter().any(|e| !matches!(e, BuiltinEffect::Transform { .. })) {
-                    return Err("motion blur with effects after the move");
-                }
+                after_move = fx[cut..].iter().filter(|e| !matches!(e, BuiltinEffect::Transform { .. })).cloned().collect();
                 let placements = samples.iter().map(|&(xf, t)| transform_effect(xf, tilt(c, &fx, t))).collect();
                 fx.truncate(cut);
                 Some(placements)
@@ -2289,7 +2288,7 @@ impl Renderer {
             None => None,
         };
         // Its picture's plan, read below, stops there too.
-        let at_move = shutter.is_some();
+        let at_move = if shutter.is_some() { PlanPart::BeforeMove } else { PlanPart::Whole };
         let temporal = fx.iter().any(|e| matches!(e, BuiltinEffect::RollingShutterCorrection { .. } | BuiltinEffect::VideoStabilization { .. }));
         // No frei0r test here: the stack declines a frame with a frei0r
         // plug-in before a layer is placed (M4 step 5), so none reaches it.
@@ -2626,6 +2625,15 @@ impl Renderer {
             stats.composite_ms += ms_since(t);
             // Smeared along its path: anywhere in the frame.
             rows = (0, height);
+            // What comes after the move, cast once from the average: a
+            // rounded corner, a glow, a shadow (#2090).
+            if has_active_effects(&after_move) {
+                let t = Instant::now();
+                if !self.effects_on_layer(c, &after_move, &[], slot, time, fps, width, height, transforms, PlanPart::AfterMove, stats) {
+                    return Err("a moving layer's effects after the move could not run as a plan");
+                }
+                stats.effects_ms += ms_since(t);
+            }
         }
         Ok(Some(Placed { opacity, rows }))
     }
@@ -2716,7 +2724,7 @@ impl Renderer {
                 Some(Arc::new(AccSeed { buffer, device: g.device(), queue: g.queue(), width, height }))
             });
             let Some(seed) = seed else { return Err("the accumulator could not seed the chain") };
-            effects_done = self.splice_effects(c, &fx, time, fps, transforms, false, stats);
+            effects_done = self.splice_effects(c, &fx, time, fps, transforms, PlanPart::Whole, stats);
             self.executor.request_output_on_gpu();
             let pixels = self.grade(c, GradeInput::Gpu(seed), clip_time, fps, width, height, None);
             stats.grade_ms += ms_since(t);
@@ -3183,7 +3191,7 @@ impl Renderer {
         let mut apart_blends = Vec::new();
         if on_gpu || truth || inspected {
             let mut stats = std::mem::take(&mut self.found.stats);
-            let planned = self.plan_effects(clip, time, fps, transforms, &fx, false, &mut stats);
+            let planned = self.plan_effects(clip, time, fps, transforms, &fx, PlanPart::Whole, &mut stats);
             self.found.stats = stats;
             let blends = std::mem::take(&mut self.planned_blends);
             blended = blends.iter().any(Option::is_some);
@@ -3370,7 +3378,7 @@ impl Renderer {
         width: u32,
         height: u32,
         transforms: &HashMap<ClipId, ResolvedTransform>,
-        at_move: bool,
+        at_move: PlanPart,
         stats: &mut RenderStats,
     ) -> bool {
         if !self.effects_follow_grade_on_gpu(clip, fx) {
@@ -3653,7 +3661,7 @@ impl Renderer {
     /// [`Self::finish_spliced`] ends it after the grade.
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
-    fn splice_effects(&mut self, clip: &Clip, fx: &[BuiltinEffect], time: Timecode, fps: f64, transforms: &HashMap<ClipId, ResolvedTransform>, at_move: bool, stats: &mut RenderStats) -> bool {
+    fn splice_effects(&mut self, clip: &Clip, fx: &[BuiltinEffect], time: Timecode, fps: f64, transforms: &HashMap<ClipId, ResolvedTransform>, at_move: PlanPart, stats: &mut RenderStats) -> bool {
         let on = self.effects_follow_grade_on_gpu(clip, fx);
         if on {
             self.run_effects = self.plan_effects(clip, time, fps, transforms, fx, at_move, stats);
@@ -3668,13 +3676,14 @@ impl Renderer {
     /// `fallback`, is what the picture gives (10c-1's parity); it stands
     /// in when the picture can't be read, which is said.
     ///
-    /// `at_move`: the clip is smeared across the shutter on the stack
-    /// (#1923), so its plan stops where its picture is placed: at its
-    /// placement's own node, found by its id, the stack placing it at each
-    /// sample. With no placement in the list, the whole list comes before
-    /// the move.
+    /// `at_move`: for a clip smeared across the shutter on the stack
+    /// (#1923), the part of its plan before where its picture is placed
+    /// (its placement's own node, found by its id, the stack placing it at
+    /// each sample), or the part after it, less any transform, which runs
+    /// once on the average (#2090). With no placement in the list, the
+    /// whole list comes before the move and nothing after it.
     #[allow(clippy::too_many_arguments)]
-    fn plan_effects(&mut self, clip: &Clip, time: Timecode, fps: f64, transforms: &HashMap<ClipId, ResolvedTransform>, fallback: &[BuiltinEffect], at_move: bool, stats: &mut RenderStats) -> Vec<BuiltinEffect> {
+    fn plan_effects(&mut self, clip: &Clip, time: Timecode, fps: f64, transforms: &HashMap<ClipId, ResolvedTransform>, fallback: &[BuiltinEffect], at_move: PlanPart, stats: &mut RenderStats) -> Vec<BuiltinEffect> {
         self.planned_blends.clear();
         self.planned_nodes.remove(&clip.id);
         self.identity_feeds.remove(&clip.id);
@@ -3709,12 +3718,23 @@ impl Renderer {
                     blends.insert(0, None);
                     nodes.insert(0, None);
                 }
-                if at_move {
+                if at_move != PlanPart::Whole {
                     let placement = clip.picture_v2().ok().and_then(|p| crate::resolve::placement_node_of(&p.picture));
-                    if let Some(cut) = placement.and_then(|id| nodes.iter().position(|n| *n == Some(id))) {
-                        fx.truncate(cut);
-                        blends.truncate(cut);
-                        nodes.truncate(cut);
+                    let cut = placement.and_then(|id| nodes.iter().position(|n| *n == Some(id)));
+                    match (at_move, cut) {
+                        (PlanPart::BeforeMove, Some(cut)) => {
+                            fx.truncate(cut);
+                            blends.truncate(cut);
+                            nodes.truncate(cut);
+                        }
+                        (PlanPart::AfterMove, Some(cut)) => {
+                            let keep: Vec<usize> = (cut + 1..fx.len()).filter(|&i| !matches!(fx[i], BuiltinEffect::Transform { .. })).collect();
+                            fx = keep.iter().map(|&i| fx[i].clone()).collect();
+                            blends = keep.iter().map(|&i| blends[i].clone()).collect();
+                            nodes = keep.iter().map(|&i| nodes[i]).collect();
+                        }
+                        (PlanPart::AfterMove, None) => (fx, blends, nodes) = (Vec::new(), Vec::new(), Vec::new()),
+                        _ => {}
                     }
                 }
                 self.planned_nodes.insert(clip.id, nodes);
@@ -5086,7 +5106,7 @@ impl Renderer {
         let truth = clip.is_picture_truth() && has_active_effects(&fx);
         let (fx, blends) = if plan || truth {
             let mut stats = std::mem::take(&mut self.found.stats);
-            let planned = self.plan_effects(clip, time, fps, transforms, &fx, false, &mut stats);
+            let planned = self.plan_effects(clip, time, fps, transforms, &fx, PlanPart::Whole, &mut stats);
             self.found.stats = stats;
             (planned, std::mem::take(&mut self.planned_blends))
         } else {
@@ -6358,6 +6378,16 @@ pub fn temporal_denoise_of(clip: &Clip, time: Timecode, fps: f64) -> Option<(f32
 /// A still generator's raster as drawn: its data, size and file stamp
 /// (a still frame's), and the pixels.
 type StillGenerator = (klipp_core::GeneratorData, u32, u32, Option<(std::time::SystemTime, u64)>, Arc<Vec<u32>>);
+
+/// Which part of a clip's plan a run takes (#1923, #2090): all of it, or
+/// for a clip smeared across the shutter, the part before its move or
+/// the part after.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlanPart {
+    Whole,
+    BeforeMove,
+    AfterMove,
+}
 
 /// Whether generator `g` draws the same picture whatever the time: from
 /// its data alone, or a still frame from its file, kept until the file

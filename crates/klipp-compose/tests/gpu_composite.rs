@@ -2126,26 +2126,104 @@ fn a_moving_clip_is_smeared_on_the_stack_as_the_cpu_smears_it() {
     }
 }
 
-/// #1923: a moving clip with an effect after its move (a drop shadow,
-/// cast once from the smeared picture) is still the CPU stack's, and the
-/// stack says so.
+/// #2090: a moving clip with effects after its move (rounded corners, an
+/// outer glow and a drop shadow, cast once from the smeared picture) stays
+/// on the stack, the effects run on the average there, and matches the
+/// CPU within a level at a 180 degree shutter of 8 samples. The control:
+/// the same card without them is another picture, so they ran.
 #[test]
-fn a_moving_clip_with_an_effect_after_its_move_is_left_to_the_cpu() {
-    let mut seq = Sequence::new_default();
-    seq.resolution = klipp_core::Resolution { width: W, height: H };
-    let card = TestClip::of(clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 2.0))
-        .lane("scale", 0.0, 0.3).lane("pos_x", 0.0, -150.0).lane("pos_x", 2.0, 150.0)
-        .effect(klipp_effects::BuiltinEffect::DropShadow { offset_x: 0.02, offset_y: 0.02, blur: 0.01, color: [0, 0, 0], opacity: 0.6 })
-        .build();
-    let mut src = Flat::default();
-    src.0.insert(card.id, picture(0.3));
-    let mut v = Track::new("V1", TrackKind::Video);
-    v.clips = vec![card];
-    seq.tracks = vec![v];
-    seq.camera.shutter_deg = 180.0;
+fn a_moving_clip_with_effects_after_its_move_stays_on_the_stack() {
+    use klipp_effects::BuiltinEffect as E;
+    let scene = |after: bool| {
+        let mut seq = Sequence::new_default();
+        seq.resolution = klipp_core::Resolution { width: W, height: H };
+        let mut card = TestClip::of(clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 2.0))
+            .lane("scale", 0.0, 0.3).lane("pos_x", 0.0, -150.0).lane("pos_x", 2.0, 150.0);
+        if after {
+            card = card
+                .effect(E::RoundedCorners { radius: 0.25, feather: 0.002 })
+                .effect(E::OuterGlow { radius: 0.02, intensity: 0.3, color: [140, 150, 255] })
+                .effect(E::DropShadow { offset_x: 0.02, offset_y: 0.02, blur: 0.01, color: [0, 0, 0], opacity: 0.6 });
+        }
+        let card = card.build();
+        let base = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 2.0);
+        let mut src = Flat::default();
+        src.0.insert(card.id, picture(0.6));
+        src.0.insert(base.id, picture(0.25));
+        let (mut v2, mut v1) = (Track::new("V2", TrackKind::Video), Track::new("V1", TrackKind::Video));
+        v2.clips = vec![card];
+        v1.clips = vec![base];
+        seq.tracks = vec![v2, v1];
+        seq.camera.shutter_deg = 180.0;
+        seq.camera.shutter_samples = 8;
+        (seq, src)
+    };
+    let (seq, mut src) = scene(true);
     let mut r = renderer();
-    assert!(r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()).is_none());
-    assert_eq!(r.last_decline(), Some("motion blur with effects after the move"));
+    let Some((gpu, stats)) = r.render_display_u8_on_gpu(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()) else {
+        let why = r.last_decline();
+        assert_ne!(why, Some("motion blur with effects after the move"), "the stack takes it now");
+        assert_ne!(std::env::var("KLIPP_TEST_REQUIRE_GPU").as_deref(), Ok("1"), "GPU required: {why:?}");
+        eprintln!("UNVERIFIED: the GPU stack declined ({why:?})");
+        return;
+    };
+    assert_eq!(stats.cpu_layers, 0, "no layer rendered on the CPU");
+    let cpu = display(&r.render(&seq, tc(1.0), W, H, &mut src, RenderOptions::default()));
+    let d = worst(&cpu, &gpu);
+    assert!(d <= 1, "the stack's smear with its effects differs from the CPU's by {d} levels");
+    let (plain, mut plain_src) = scene(false);
+    let without = display(&r.render(&plain, tc(1.0), W, H, &mut plain_src, RenderOptions::default()));
+    assert!(worst(&without, &gpu) > 8, "the control: without the effects it is another picture");
+}
+
+/// #2090's case at 4K, a frame of each route: before, the stack declined
+/// it and the frame was the CPU's; now the stack's. Run with
+/// `--ignored --nocapture`.
+#[test]
+#[ignore = "4K performance measurement"]
+fn measure_4k_moving_clip_with_effects_after_its_move() {
+    use klipp_effects::BuiltinEffect as E;
+    struct Even(HashMap<(u32, u32, u32), Arc<Vec<f32>>>, HashMap<ClipId, f32>);
+    impl FrameSource for Even {
+        fn frame(&mut self, clip: &Clip, _: f64, width: u32, height: u32) -> Option<SourceFrame> {
+            let v = *self.1.get(&clip.id)?;
+            let px = self.0.entry((width, height, v.to_bits())).or_insert_with(|| Arc::new([v, v * 0.8, v * 0.6, 1.0].repeat((width * height) as usize)));
+            Some(SourceFrame { pixels: SourcePixels::Linear(Arc::clone(px)), width, height, pts: None })
+        }
+    }
+    let (w, h) = (3840u32, 2160u32);
+    let mut seq = Sequence::new_default();
+    seq.resolution = klipp_core::Resolution { width: w, height: h };
+    let card = TestClip::of(clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 4.0))
+        .lane("scale", 0.0, 0.4).lane("pos_x", 0.0, -1200.0).lane("pos_x", 4.0, 1200.0)
+        .effect(E::RoundedCorners { radius: 0.25, feather: 0.002 })
+        .effect(E::OuterGlow { radius: 0.02, intensity: 0.3, color: [140, 150, 255] })
+        .effect(E::DropShadow { offset_x: 0.02, offset_y: 0.02, blur: 0.01, color: [0, 0, 0], opacity: 0.6 })
+        .build();
+    let base = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 4.0);
+    let mut src = Even(HashMap::new(), HashMap::from([(card.id, 0.6), (base.id, 0.2)]));
+    let (mut v2, mut v1) = (Track::new("V2", TrackKind::Video), Track::new("V1", TrackKind::Video));
+    v2.clips = vec![card];
+    v1.clips = vec![base];
+    seq.tracks = vec![v2, v1];
+    seq.camera.shutter_deg = 180.0;
+    seq.camera.shutter_samples = 8;
+    let mut r = renderer();
+    let median = |v: &mut Vec<f64>| { v.sort_by(f64::total_cmp); v[v.len() / 2] };
+    let (mut gpu, mut cpu) = (Vec::new(), Vec::new());
+    for n in 0..13 {
+        let at = tc(1.0 + n as f64 / 24.0);
+        let t = std::time::Instant::now();
+        assert!(r.render_display_u8_on_gpu(&seq, at, w, h, &mut src, RenderOptions::default()).is_some(), "{:?}", r.last_decline());
+        if n >= 3 { gpu.push(t.elapsed().as_secs_f64() * 1000.0); }
+    }
+    for n in 0..5 {
+        let at = tc(1.0 + n as f64 / 24.0);
+        let t = std::time::Instant::now();
+        std::hint::black_box(r.render(&seq, at, w, h, &mut src, RenderOptions::default()));
+        if n >= 1 { cpu.push(t.elapsed().as_secs_f64() * 1000.0); }
+    }
+    eprintln!("MEASURE 4K moving card with corners, glow and shadow, 180/8: GPU stack {:.1} ms; CPU frame (the old route) {:.1} ms", median(&mut gpu), median(&mut cpu));
 }
 
 /// #73: a tracked subject's matte wired into the grade's Output alpha

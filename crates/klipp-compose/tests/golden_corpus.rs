@@ -1006,10 +1006,9 @@ fn camera_cases() -> Vec<Case> {
     seq.camera.x_keyframes = vec![key(0.0, 0.45), key(2.0, 0.55)];
     seq.camera.shutter_deg = 180.0;
     seq.camera.shutter_samples = 8;
-    let mut case = Case::new("camera/shutter over a moving camera, effects around the transform", seq, f);
-    // The GPU stack leaves the camera's shutter to the CPU.
-    case.declines = Some(vec![Path::Stack, Path::Export]);
-    vec![case]
+    // The stack smears it (#1923) and casts the shadow after the move from
+    // the average (#2090).
+    vec![Case::new("camera/shutter over a moving camera, effects around the transform", seq, f)]
 }
 
 /// A moving card that is a shape title with its own motion blur (#1025,
