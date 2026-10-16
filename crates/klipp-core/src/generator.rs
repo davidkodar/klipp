@@ -804,6 +804,34 @@ fn render_color_bars_at_intensity(width: u32, height: u32, intensity: u8) -> Vec
     buf
 }
 
+/// A frame of flat rectangles over a background (#2067): a countdown's or
+/// a timer's seven-segment digits, laid out once so the CPU and the GPU
+/// fill the same pixels. Each rect is `[x0, y0, x1, y1)`, already clipped
+/// to the frame the way the CPU drawing always clipped it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Segments {
+    pub background: [u8; 4],
+    pub color: [u8; 4],
+    pub rects: Vec<[u32; 4]>,
+}
+
+impl Segments {
+    /// The frame as straight-alpha sRGB bytes.
+    pub fn draw(&self, width: u32, height: u32) -> Vec<u8> {
+        let mut buf: Vec<u8> = self.background.repeat((width as usize) * (height as usize));
+        for &[x0, y0, x1, y1] in &self.rects {
+            for y in y0..y1 {
+                let row = (y as usize) * (width as usize) * 4;
+                for x in x0..x1 {
+                    let i = row + (x as usize) * 4;
+                    buf[i..i + 4].copy_from_slice(&self.color);
+                }
+            }
+        }
+        buf
+    }
+}
+
 /// Render a countdown frame: white number on black background.
 /// Shows seconds remaining, counting down from total_secs.
 pub fn render_countdown(
@@ -812,11 +840,15 @@ pub fn render_countdown(
     elapsed_secs: f64,
     total_secs: f64,
 ) -> Vec<u8> {
+    countdown_segments(width, height, elapsed_secs, total_secs).draw(width, height)
+}
+
+/// A countdown frame's digits: the seconds remaining in white seven-
+/// segment digits over transparent black.
+pub fn countdown_segments(width: u32, height: u32, elapsed_secs: f64, total_secs: f64) -> Segments {
     let seconds_remaining = ((total_secs - elapsed_secs).ceil() as i64).max(1);
     let digit = format!("{}", seconds_remaining);
-
-    // Start with black background
-    let mut buf = vec![0u8; (width as usize) * (height as usize) * 4];
+    let mut rects = Vec::new();
 
     // Render digit as a simple bitmap font — each digit is drawn as filled rectangles.
     // This avoids requiring a font library for a single generator variant.
@@ -828,10 +860,9 @@ pub fn render_countdown(
 
     for (char_idx, ch) in digit.chars().enumerate() {
         let cx = start_x + char_idx as u32 * (digit_w + digit_w / 4);
-        let segments = digit_segments(ch);
-        draw_seven_segment(&mut buf, width, cx, start_y, digit_w, digit_h, segments);
+        seven_segment_rects(&mut rects, width, height, cx, start_y, digit_w, digit_h, digit_segments(ch));
     }
-    buf
+    Segments { background: [0; 4], color: [255; 4], rects }
 }
 
 /// Seven-segment display encoding: [top, top-right, bottom-right, bottom, bottom-left, top-left, middle]
@@ -851,31 +882,19 @@ fn digit_segments(ch: char) -> [bool; 7] {
     }
 }
 
-/// Draw a seven-segment digit into an RGBA buffer in solid white.
-/// Thin wrapper kept for back-compat with `render_countdown`.
-fn draw_seven_segment(
-    buf: &mut [u8],
+/// A seven-segment digit's lit segments as rects, clipped as the drawing
+/// always clipped them: columns to the frame, rows to the frame and to
+/// `buf_width / 4 * 4` (a bound the digits never reach in practice).
+#[allow(clippy::too_many_arguments)]
+fn seven_segment_rects(
+    out: &mut Vec<[u32; 4]>,
     buf_width: u32,
+    buf_height: u32,
     x: u32,
     y: u32,
     w: u32,
     h: u32,
     segments: [bool; 7],
-) {
-    draw_seven_segment_color(buf, buf_width, x, y, w, h, segments, [255, 255, 255, 255]);
-}
-
-/// Draw a seven-segment digit in `color`. Used by `render_timer` to
-/// honour the user's text colour.
-fn draw_seven_segment_color(
-    buf: &mut [u8],
-    buf_width: u32,
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
-    segments: [bool; 7],
-    color: [u8; 4],
 ) {
     let thickness = (h / 8).max(2);
     let half_h = h / 2;
@@ -892,21 +911,16 @@ fn draw_seven_segment_color(
     ];
 
     for (i, &(rx, ry, rw, rh)) in rects.iter().enumerate() {
-        if !segments[i] {
-            continue;
+        if segments[i] {
+            push_rect(out, rx, ry, (rx + rw).min(buf_width), (ry + rh).min(buf_width / 4 * 4).min(buf_height));
         }
-        for py in ry..(ry + rh).min(buf_width / 4 * 4) {
-            // Guard against out-of-bounds
-            let row_start = (py as usize) * (buf_width as usize) * 4;
-            for px in rx..(rx + rw) {
-                if px < buf_width {
-                    let offset = row_start + (px as usize) * 4;
-                    if offset + 3 < buf.len() {
-                        buf[offset..offset + 4].copy_from_slice(&color);
-                    }
-                }
-            }
-        }
+    }
+}
+
+/// `[x0, y0, x1, y1)` when it covers anything.
+fn push_rect(out: &mut Vec<[u32; 4]>, x0: u32, y0: u32, x1: u32, y1: u32) {
+    if x0 < x1 && y0 < y1 {
+        out.push([x0, y0, x1, y1]);
     }
 }
 
@@ -931,9 +945,7 @@ pub(crate) fn format_timer_value(value: f64, format: TimerFormat) -> String {
 }
 
 /// Render a timer frame: 7-segment digit string with colon separators
-/// over a coloured background. Reuses `digit_segments` +
-/// `draw_seven_segment_color` from the countdown renderer; adds
-/// stacked-dot colon and decimal-dot glyphs for separators.
+/// over a coloured background.
 #[allow(clippy::too_many_arguments)]
 pub fn render_timer(
     width: u32,
@@ -945,18 +957,29 @@ pub fn render_timer(
     text_color: [u8; 4],
     background_color: [u8; 4],
 ) -> Vec<u8> {
+    timer_segments(width, height, elapsed_secs, mode, initial_seconds, format, text_color, background_color).draw(width, height)
+}
+
+/// A timer frame's digits: the value in seven-segment digits, with
+/// stacked-dot colons and a decimal dot, in `text_color` over
+/// `background_color`.
+#[allow(clippy::too_many_arguments)]
+pub fn timer_segments(
+    width: u32,
+    height: u32,
+    elapsed_secs: f64,
+    mode: TimerMode,
+    initial_seconds: f32,
+    format: TimerFormat,
+    text_color: [u8; 4],
+    background_color: [u8; 4],
+) -> Segments {
     let value = match mode {
         TimerMode::CountUp => initial_seconds as f64 + elapsed_secs,
         TimerMode::CountDown => (initial_seconds as f64 - elapsed_secs).max(0.0),
     };
     let text = format_timer_value(value, format);
-
-    // Background fill.
-    let pixel_count = (width as usize) * (height as usize);
-    let mut buf = Vec::with_capacity(pixel_count * 4);
-    for _ in 0..pixel_count {
-        buf.extend_from_slice(&background_color);
-    }
+    let mut rects = Vec::new();
 
     // Layout: digit 7-segment glyphs + colon dots + decimal dot.
     let digit_h = (height / 3).max(10);
@@ -964,7 +987,7 @@ pub fn render_timer(
     let separator_w = (digit_w / 4).max(2); // colon and dot share a width
     let spacing = (digit_w / 4).max(1);
 
-    // Two-pass: measure total width, then render.
+    // Two-pass: measure total width, then lay out.
     let total_w: u32 = text
         .chars()
         .map(|c| match c {
@@ -977,26 +1000,23 @@ pub fn render_timer(
     let start_y = height.saturating_sub(digit_h) / 2;
 
     let dot_size = separator_w;
+    let dot = |out: &mut Vec<[u32; 4]>, x: u32, y: u32| push_rect(out, x, y, (x + dot_size).min(width), (y + dot_size).min(height));
     let mut cx = start_x;
     for ch in text.chars() {
         match ch {
             ':' => {
                 // Two square dots, vertically stacked at 1/3 and 2/3 of digit_h.
-                let dot_y_top = start_y + digit_h / 3 - dot_size / 2;
-                let dot_y_bot = start_y + (digit_h * 2) / 3 - dot_size / 2;
-                draw_solid_rect(&mut buf, width, cx, dot_y_top, dot_size, dot_size, text_color);
-                draw_solid_rect(&mut buf, width, cx, dot_y_bot, dot_size, dot_size, text_color);
+                dot(&mut rects, cx, start_y + digit_h / 3 - dot_size / 2);
+                dot(&mut rects, cx, start_y + (digit_h * 2) / 3 - dot_size / 2);
                 cx += separator_w + spacing;
             }
             '.' => {
                 // Single bottom-aligned square dot for decimal separator.
-                let dot_y = start_y + digit_h - dot_size;
-                draw_solid_rect(&mut buf, width, cx, dot_y, dot_size, dot_size, text_color);
+                dot(&mut rects, cx, start_y + digit_h - dot_size);
                 cx += separator_w + spacing;
             }
             d if d.is_ascii_digit() => {
-                let segments = digit_segments(d);
-                draw_seven_segment_color(&mut buf, width, cx, start_y, digit_w, digit_h, segments, text_color);
+                seven_segment_rects(&mut rects, width, height, cx, start_y, digit_w, digit_h, digit_segments(d));
                 cx += digit_w + spacing;
             }
             _ => {
@@ -1005,32 +1025,9 @@ pub fn render_timer(
             }
         }
     }
-    buf
+    Segments { background: background_color, color: text_color, rects }
 }
 
-/// Fill an axis-aligned rectangle in `color`. Bounds-checked per row
-/// and per pixel — same defensive shape as `draw_seven_segment_color`.
-fn draw_solid_rect(
-    buf: &mut [u8],
-    buf_width: u32,
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
-    color: [u8; 4],
-) {
-    for py in y..(y + h) {
-        let row_start = (py as usize) * (buf_width as usize) * 4;
-        for px in x..(x + w) {
-            if px < buf_width {
-                let offset = row_start + (px as usize) * 4;
-                if offset + 3 < buf.len() {
-                    buf[offset..offset + 4].copy_from_slice(&color);
-                }
-            }
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

@@ -929,7 +929,7 @@ pub struct Renderer {
     /// solid colour, a gradient, bars, a slate or a placeholder is the same
     /// every frame at one size; rasterising and packing a 720p one cost
     /// 2.6 ms a frame (#1850).
-    still_generators: HashMap<ClipId, (klipp_core::GeneratorData, u32, u32, Arc<Vec<u32>>)>,
+    still_generators: HashMap<ClipId, StillGenerator>,
     /// The subject matte sequences piece transitions read (#985 phase 3):
     /// each folder's manifest and frames, as last looked.
     subject_mattes: HashMap<std::path::PathBuf, (klipp_nodes::matte_sequence::Manifest, Vec<i64>)>,
@@ -2544,9 +2544,31 @@ impl Renderer {
                 // Half floats, sRGB-encoded, decoded on the way into
                 // the layer: the precision eight bits could not hold,
                 // without moving sRGB's power curve onto the CPU.
-                if let klipp_core::GeneratorData::LivingGradient { a, b, angle_deg, drift_deg_per_sec, glow, grain } = g {
+                // The animated generators drawn on the GPU from their
+                // settings alone (#2058, #2067); the CPU's drawing of
+                // each is their reference.
+                let on_gpu: Option<Box<dyn FnOnce(&mut klipp_effects::gpu::GpuEffectsPipeline) -> bool>> = match g {
+                    klipp_core::GeneratorData::LivingGradient { a, b, angle_deg, drift_deg_per_sec, glow, grain } => {
+                        let (a, b, angle, drift, glow, grain) = (*a, *b, *angle_deg, *drift_deg_per_sec, *glow, *grain);
+                        Some(Box::new(move |p| p.stack_layer_living_gradient(slot, a, b, angle, drift, glow, grain, clip_time)))
+                    }
+                    klipp_core::GeneratorData::Grain { color, amount, size_px, speed } => {
+                        let (color, amount, size, speed) = (*color, *amount, *size_px, *speed);
+                        Some(Box::new(move |p| p.stack_layer_grain(slot, color, amount, size, speed, clip_time)))
+                    }
+                    klipp_core::GeneratorData::Countdown => {
+                        let seg = klipp_core::generator::countdown_segments(width, height, clip_time, total);
+                        Some(Box::new(move |p| p.stack_layer_segments(slot, seg.background, seg.color, &seg.rects)))
+                    }
+                    klipp_core::GeneratorData::Timer { mode, initial_seconds, format, text_color, background_color } => {
+                        let seg = klipp_core::generator::timer_segments(width, height, clip_time, *mode, *initial_seconds, *format, *text_color, *background_color);
+                        Some(Box::new(move |p| p.stack_layer_segments(slot, seg.background, seg.color, &seg.rects)))
+                    }
+                    _ => None,
+                };
+                if let Some(draw) = on_gpu {
                     stats.gpu_generators += 1;
-                    let drawn = self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_living_gradient(slot, *a, *b, *angle_deg, *drift_deg_per_sec, *glow, *grain, clip_time));
+                    let drawn = self.executor.gpu_pipeline_or_init().is_some_and(draw);
                     if drawn { GPU_GENERATOR_DRAWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
                     drawn
                 } else {
@@ -2625,8 +2647,11 @@ impl Renderer {
             residency::record(generator_feature(g), "Time-dependent CPU generator raster/upload", Work::Fallback);
             return Arc::new(self.raster_generator(g, width, height, clip_time, total));
         }
-        if let Some((data, w, h, px)) = self.still_generators.get(&clip) {
-            if data == g && (*w, *h) == (width, height) {
+        // A still frame's file as it is now: replaced, rewritten, gone or
+        // back, it is read again (#2068).
+        let stamp = file_stamp(g);
+        if let Some((data, w, h, was, px)) = self.still_generators.get(&clip) {
+            if data == g && (*w, *h) == (width, height) && *was == stamp {
                 return Arc::clone(px);
             }
         }
@@ -2636,7 +2661,7 @@ impl Renderer {
         if self.still_generators.len() >= 16 {
             self.still_generators.clear();
         }
-        self.still_generators.insert(clip, (g.clone(), width, height, Arc::clone(&px)));
+        self.still_generators.insert(clip, (g.clone(), width, height, stamp, Arc::clone(&px)));
         px
     }
 
@@ -6330,16 +6355,29 @@ pub fn temporal_denoise_of(clip: &Clip, time: Timecode, fps: f64) -> Option<(f32
     }
 }
 
-/// Whether generator `g` draws the same picture whatever the time, from
-/// its data alone: not a living gradient, grain, a countdown or a timer,
-/// nor a still frame, read from its file.
+/// A still generator's raster as drawn: its data, size and file stamp
+/// (a still frame's), and the pixels.
+type StillGenerator = (klipp_core::GeneratorData, u32, u32, Option<(std::time::SystemTime, u64)>, Arc<Vec<u32>>);
+
+/// Whether generator `g` draws the same picture whatever the time: from
+/// its data alone, or a still frame from its file, kept until the file
+/// changes ([`file_stamp`], #2068). Not a living gradient, grain, a
+/// countdown or a timer.
 fn is_still_generator(g: &klipp_core::GeneratorData) -> bool {
     use klipp_core::GeneratorData as G;
     match g {
-        G::SolidColor { .. } | G::Placeholder { .. } | G::Gradient { .. } | G::ColorBars | G::ColorBars100 | G::Slate { .. } | G::Polygon { .. } | G::Star { .. } => true,
-        // A still frame is read from its file, which can change under it.
-        G::StillFrame { .. } | G::LivingGradient { .. } | G::Grain { .. } | G::Countdown | G::Timer { .. } => false,
+        G::SolidColor { .. } | G::Placeholder { .. } | G::Gradient { .. } | G::ColorBars | G::ColorBars100 | G::Slate { .. } | G::Polygon { .. } | G::Star { .. } | G::StillFrame { .. } => true,
+        G::LivingGradient { .. } | G::Grain { .. } | G::Countdown | G::Timer { .. } => false,
     }
+}
+
+/// A still frame's file as it stands: its modified time and size, `None`
+/// for a file that isn't there (drawn magenta until it is). Any other
+/// generator has no file, and `None`.
+fn file_stamp(g: &klipp_core::GeneratorData) -> Option<(std::time::SystemTime, u64)> {
+    let klipp_core::GeneratorData::StillFrame { png_path, .. } = g else { return None };
+    let meta = std::fs::metadata(png_path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
 }
 
 /// Whether `clip` frame-blends at `time`: a `SpeedRamp` in blend mode 1,

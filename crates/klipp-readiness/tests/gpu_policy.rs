@@ -400,13 +400,9 @@ fn playback_corpus_exposes_declared_cpu_sources_and_guards_gpu_routes() {
     }
     for g in generators() {
         let label = format!("generator.{}", variant(&g));
-        let allowed = match &g {
-            G::Grain { .. } => vec!["generator.grain"],
-            G::Countdown => vec!["generator.countdown"],
-            G::Timer { .. } => vec!["generator.timer"],
-            G::StillFrame { .. } => vec!["generator.still_frame"],
-            _ => vec![],
-        };
+        // Every native generator is drawn on the GPU or cached (#2067,
+        // #2068): none is a CPU source a frame.
+        let allowed: Vec<&str> = vec![];
         let s = sequence(ClipKind::Generator(g));
         verify(&mut r, &s, &label, &allowed);
         if !allowed.is_empty() {

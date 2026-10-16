@@ -1,32 +1,4 @@
 {
-  "generator.Countdown": {
-    "features": [
-      "generator.countdown"
-    ],
-    "issue": 2067,
-    "max_readbacks": 0
-  },
-  "generator.Grain": {
-    "features": [
-      "generator.grain"
-    ],
-    "issue": 2067,
-    "max_readbacks": 0
-  },
-  "generator.StillFrame": {
-    "features": [
-      "generator.still_frame"
-    ],
-    "issue": 2068,
-    "max_readbacks": 0
-  },
-  "generator.Timer": {
-    "features": [
-      "generator.timer"
-    ],
-    "issue": 2067,
-    "max_readbacks": 0
-  },
   "klipp.fx.equalize": {
     "features": [
       "klipp.fx.equalize"
