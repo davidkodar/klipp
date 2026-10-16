@@ -2355,6 +2355,12 @@ impl Renderer {
                         }
                     }
                     SourcePixels::Linear(p) => {
+                        // An unavailable CPU source can be empty during a seek.
+                        // It is not the executor's resident-output sentinel: an
+                        // early failed run leaves the previous chain slot intact.
+                        if p.is_empty() {
+                            return Err("CPU source has no pixels");
+                        }
                         let t = Instant::now();
                         let run_on_gpu = !c.grade_is_identity() || has_active_effects(&fx);
                         let pixels = if !run_on_gpu {

@@ -488,6 +488,35 @@ fn playback_corpus_exposes_declared_cpu_sources_and_guards_gpu_routes() {
         "retaining CPU-decoded media on GPU changed pixels or alpha"
     );
 
+    // A pending seek can supply no CPU pixels after a valid GPU frame.
+    // Never interpret that missing input as resident output from the old run.
+    struct MissingSource;
+    impl FrameSource for MissingSource {
+        fn frame(&mut self, _: &Clip, _: f64, width: u32, height: u32) -> Option<SourceFrame> {
+            Some(SourceFrame {
+                width,
+                height,
+                pts: None,
+                pixels: klipp_compose::SourcePixels::Linear(std::sync::Arc::new(Vec::new())),
+            })
+        }
+    }
+    assert!(
+        r.render_display_u8_on_gpu(
+            &media,
+            tc(0.6),
+            192,
+            108,
+            &mut MissingSource,
+            RenderOptions::default(),
+        )
+        .is_none(),
+        "a missing CPU frame reused the previous GPU output"
+    );
+    assert!(diag::last_frame().events.iter().any(|e| {
+        e.feature == "composition.gpu_stack" && e.reason == "CPU source has no pixels"
+    }));
+
     for spec in klipp_core::transition_registry::TRANSITION_SPECS {
         let mut s = sequence(ClipKind::Generator(G::SolidColor {
             color: [20, 60, 90, 255],
