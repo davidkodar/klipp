@@ -163,6 +163,8 @@ impl LogFormat {
 // reverse dep would close a cycle. Re-exporting here keeps the
 // existing `klipp_core::BlendMode` import paths working unchanged.
 pub use klipp_effects::BlendMode;
+/// The grain a gradient generator carries unless told otherwise (#2073).
+pub use klipp_effects::generator_grain::DEFAULT_GENERATOR_GRAIN;
 
 // `FocalRef` follows the same pattern: lives in klipp-effects so the
 // `BuiltinEffect::Transform.focal_ref` payload owns its definition;
@@ -482,8 +484,18 @@ pub enum GeneratorData {
     /// Solid color fill.
     SolidColor { color: [u8; 4] },
     /// A background that lives: the gradient's angle turns slowly and
-    /// a soft light drifts across it.
-    LivingGradient { a: [u8; 4], b: [u8; 4], angle_deg: f32, drift_deg_per_sec: f32, glow: f32 },
+    /// a soft light drifts across it. `grain` is the fine grain it
+    /// carries so it stays smooth through an 8-bit encode, light
+    /// included (#2073): code values of standard deviation, 0 for none.
+    LivingGradient {
+        a: [u8; 4],
+        b: [u8; 4],
+        angle_deg: f32,
+        drift_deg_per_sec: f32,
+        glow: f32,
+        #[serde(default = "default_generator_grain")]
+        grain: f32,
+    },
     /// Film grain on a colour: a texture plate for behind titles.
     /// `amount` 0..1, `size_px` the grain size at 1080p, `speed` in
     /// new grain frames per second.
@@ -497,7 +509,9 @@ pub enum GeneratorData {
     /// (the historical default), 90 = left→right, 180 = bottom→top,
     /// 270 = right→left. The two `#[serde(default)]` fields keep older
     /// projects loadable — they deserialize to angle 0 / `None` and
-    /// render exactly as before.
+    /// render exactly as before. `grain` is the fine grain the gradient
+    /// carries so it stays smooth through an 8-bit encode (#2073), as
+    /// [`GeneratorData::LivingGradient`]'s.
     Gradient {
         top: [u8; 4],
         bottom: [u8; 4],
@@ -505,6 +519,8 @@ pub enum GeneratorData {
         angle_deg: f32,
         #[serde(default)]
         four_point: Option<FourPointGradient>,
+        #[serde(default = "default_generator_grain")]
+        grain: f32,
     },
     /// SMPTE 75 % color bars (broadcast test pattern). The historical
     /// default — kept as a unit variant for byte-identical back-compat
@@ -614,6 +630,10 @@ impl GeneratorData {
 }
 
 fn default_fill() -> bool { true }
+
+/// A gradient without a `grain` of its own takes the default, so every
+/// one carries it unless it is turned off (#2073).
+fn default_generator_grain() -> f32 { klipp_effects::generator_grain::DEFAULT_GENERATOR_GRAIN }
 
 impl Default for GeneratorData {
     fn default() -> Self {

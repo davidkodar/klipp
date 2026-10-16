@@ -491,7 +491,7 @@ mod look_tests {
 
         /// A gradient generator, mid to light grey, in `blend` at `opacity`.
         fn gradient(blend: klipp_core::BlendMode, opacity: f32) -> Clip {
-            let kind = ClipKind::Generator(GeneratorData::Gradient { top: [120, 120, 120, 255], bottom: [200, 200, 200, 255], angle_deg: 0.0, four_point: None });
+            let kind = ClipKind::Generator(GeneratorData::Gradient { top: [120, 120, 120, 255], bottom: [200, 200, 200, 255], angle_deg: 0.0, four_point: None, grain: klipp_core::DEFAULT_GENERATOR_GRAIN });
             let mut c = Clip { kind, ..Clip::gap(tc(0.0), tc(2.0)) };
             c.blend_mode = blend;
             if opacity < 1.0 {

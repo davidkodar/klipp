@@ -376,6 +376,36 @@ fn a_plain_single_clip_agrees_with_the_renderer() {
     }
 }
 
+/// A dark living gradient with its grain (#2073) exports, on the GPU, the
+/// frame the renderer draws, grain included, so the file and the viewer
+/// (held to the same render in `living_gradient_gpu`) agree. The control:
+/// the grain is in the export's frame, a picture other than the one
+/// without it.
+#[test]
+fn a_grained_gradient_exports_its_grain_as_the_renderer_draws_it() {
+    let make = |grain: f32| {
+        let c = clip(ClipKind::Generator(GeneratorData::LivingGradient { a: [12, 23, 32, 255], b: [29, 60, 65, 255], angle_deg: 25.0, drift_deg_per_sec: 1.5, glow: 0.18, grain }), 0.0, 4.0);
+        sequence(vec![vec![c]])
+    };
+    let mut planes_at = Vec::new();
+    for grain in [0.0, klipp_core::DEFAULT_GENERATOR_GRAIN] {
+        let seq = make(grain);
+        let mut src = Flat::default();
+        let Some(planes) = gpu_planes(&seq, 1.2, &mut src) else {
+            assert_ne!(std::env::var("KLIPP_TEST_REQUIRE_GPU").as_deref(), Ok("1"), "the GPU path refused a lone generator");
+            eprintln!("skipping: the GPU path refused (no usable GPU)");
+            return;
+        };
+        let want = cpu_luma(&seq, 1.2, &mut src);
+        let got = &planes[..want.len()];
+        let worst = got.iter().zip(&want).map(|(g, w)| (*g as i32 - *w as i32).abs()).max().unwrap_or(0);
+        assert!(worst <= 1, "grain {grain}: the export's luma is {worst} levels from the renderer's");
+        planes_at.push(got.to_vec());
+    }
+    let apart = planes_at[0].iter().zip(&planes_at[1]).filter(|(a, b)| a.abs_diff(**b) > 1).count();
+    assert!(apart > planes_at[0].len() / 10, "the control: the grain is in only {apart} of the export's luma samples");
+}
+
 /// A grade keyed over the shot (#891) exports the frame it is at: its
 /// exposure keyed from 0 to 2 stops, the GPU path's luma at two times is
 /// the renderer's own at each, and the two times differ, so the export

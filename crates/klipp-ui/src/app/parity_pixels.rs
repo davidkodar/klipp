@@ -398,7 +398,10 @@ fn same_sequence_edit_at(size: (u32, u32), before: &Sequence, old: &Sequence, ne
 /// The CPU frame as a display shows it: the bytes pixel_check compares,
 /// through the renderer's working space (`WorkingColorspace::default`).
 fn cpu_display(linear: &[f32]) -> Vec<u8> {
-    klipp_color::display::display_transform_ws_to(linear, klipp_color::display::ToneMapOp::None, klipp_core::WorkingColorspace::default(), klipp_core::SdrTransfer::Srgb)
+    // The viewer's CPU encode, dithered as the GPU's display encode is
+    // since #2072: against an undithered encode the dither alone spends the
+    // level the routes are held to.
+    klipp_color::display::display_transform_ws_dithered_to(linear, klipp_color::display::ToneMapOp::None, klipp_core::WorkingColorspace::default(), klipp_core::SdrTransfer::Srgb)
 }
 
 thread_local! {

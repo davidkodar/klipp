@@ -11053,7 +11053,7 @@ mod tests {
     /// still refused (the reshape test).
     #[test]
     fn a_dissolve_between_drawn_clips_needs_no_handles() {
-        let gradient = |a: [u8; 4]| ClipKind::Generator(klipp_core::GeneratorData::LivingGradient { a, b: [20, 20, 60, 255], angle_deg: 30.0, drift_deg_per_sec: 12.0, glow: 0.2 });
+        let gradient = |a: [u8; 4]| ClipKind::Generator(klipp_core::GeneratorData::LivingGradient { a, b: [20, 20, 60, 255], angle_deg: 30.0, drift_deg_per_sec: 12.0, glow: 0.2, grain: klipp_core::DEFAULT_GENERATOR_GRAIN });
         let title = || ClipKind::Title(klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Over".into(), ..Default::default() }));
         let pairs = [("generators", gradient([200, 80, 40, 255]), gradient([40, 160, 90, 255])), ("into a title", gradient([200, 80, 40, 255]), title()), ("out of a title", title(), gradient([40, 160, 90, 255]))];
         for (name, first_kind, second_kind) in pairs {
@@ -15223,7 +15223,7 @@ mod generator_tests {
     fn a_generator_uses_native_parameters_and_undo_removes_its_new_track() {
         let seq = Sequence::new_default();
         let mut pool = MediaPool::new();
-        let data = klipp_core::GeneratorData::Gradient { top: [16, 32, 48, 255], bottom: [64, 80, 96, 255], angle_deg: 45.0, four_point: None };
+        let data = klipp_core::GeneratorData::Gradient { top: [16, 32, 48, 255], bottom: [64, 80, 96, 255], angle_deg: 45.0, four_point: None, grain: klipp_core::DEFAULT_GENERATOR_GRAIN };
         let op = Op::Generator { data: data.clone(), at: Anchor::Secs(1.0), secs: Some(2.0), end: None, track: None };
         let plan = resolve(&seq, &pool, &[op]).unwrap();
         let before = serde_json::to_value(&seq).unwrap();

@@ -1464,7 +1464,7 @@ fn a_still_generator_is_kept_and_a_changed_one_redrawn() {
     let small = at(&red, &mut r, 2.0, W / 2, H / 2).unwrap();
     assert_eq!(small.len(), (W / 2 * H / 2 * 4) as usize);
     // A living gradient drifts: two times, two pictures.
-    let living = one(klipp_core::GeneratorData::LivingGradient { a: [20, 40, 220, 255], b: [250, 200, 120, 255], angle_deg: 0.0, drift_deg_per_sec: 45.0, glow: 0.0 });
+    let living = one(klipp_core::GeneratorData::LivingGradient { a: [20, 40, 220, 255], b: [250, 200, 120, 255], angle_deg: 0.0, drift_deg_per_sec: 45.0, glow: 0.0, grain: klipp_core::DEFAULT_GENERATOR_GRAIN });
     let (a, b) = (at(&living, &mut r, 1.0, W, H).unwrap(), at(&living, &mut r, 2.0, W, H).unwrap());
     assert!(worst(&a, &b) > 10, "a moving generator is drawn anew");
 }

@@ -28,6 +28,7 @@ fn a_fractional_frame_draws_its_time_on_every_checkpoint_route() {
             angle_deg: 30.0,
             drift_deg_per_sec: 90.0,
             glow: 0.4,
+            grain: klipp_core::DEFAULT_GENERATOR_GRAIN,
         }),
         source_in: time(0),
         source_out: time(61),

@@ -17,7 +17,7 @@ pub const DITHER_SECOND_DRAW: u32 = 0x9e37_79b9;
 
 /// The pixel hash both draws use.
 #[inline]
-fn hash(mut x: u32) -> u32 {
+pub(crate) fn hash(mut x: u32) -> u32 {
     x ^= x >> 16;
     x = x.wrapping_mul(DITHER_HASH_MUL_A);
     x ^= x >> 15;

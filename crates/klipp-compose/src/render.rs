@@ -2544,9 +2544,9 @@ impl Renderer {
                 // Half floats, sRGB-encoded, decoded on the way into
                 // the layer: the precision eight bits could not hold,
                 // without moving sRGB's power curve onto the CPU.
-                if let klipp_core::GeneratorData::LivingGradient { a, b, angle_deg, drift_deg_per_sec, glow } = g {
+                if let klipp_core::GeneratorData::LivingGradient { a, b, angle_deg, drift_deg_per_sec, glow, grain } = g {
                     stats.gpu_generators += 1;
-                    let drawn = self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_living_gradient(slot, *a, *b, *angle_deg, *drift_deg_per_sec, *glow, clip_time));
+                    let drawn = self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_living_gradient(slot, *a, *b, *angle_deg, *drift_deg_per_sec, *glow, *grain, clip_time));
                     if drawn { GPU_GENERATOR_DRAWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed); }
                     drawn
                 } else {
@@ -6563,7 +6563,7 @@ mod generator_time_tests {
     /// than its first. Past its end it runs on too (#1918).
     #[test]
     fn a_generator_runs_on_before_its_start_and_past_its_end() {
-        let drifting = klipp_core::GeneratorData::LivingGradient { a: [200, 40, 40, 255], b: [40, 40, 200, 255], angle_deg: 0.0, drift_deg_per_sec: 90.0, glow: 0.0 };
+        let drifting = klipp_core::GeneratorData::LivingGradient { a: [200, 40, 40, 255], b: [40, 40, 200, 255], angle_deg: 0.0, drift_deg_per_sec: 90.0, glow: 0.0, grain: klipp_core::DEFAULT_GENERATOR_GRAIN };
         let c = clip(ClipKind::Generator(drifting.clone()));
         let at = drawn_time(&c, t(1.6));
         assert!((at + 0.4).abs() < 1e-9, "{at}");
