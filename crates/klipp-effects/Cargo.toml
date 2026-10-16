@@ -70,6 +70,10 @@ name = "generator_pass_cost"
 path = "tests/generator_pass_cost.rs"
 
 [[test]]
+name = "directional_blur_cost"
+path = "tests/directional_blur_cost.rs"
+
+[[test]]
 name = "effect_chain_cost"
 path = "tests/effect_chain_cost.rs"
 

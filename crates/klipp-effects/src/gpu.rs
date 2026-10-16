@@ -16114,7 +16114,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 );
 
 // Directional blur — averages along a `(dx, dy)` line. Linear-light
-// averaging so midtones don't darken through the trail.
+// averaging so midtones don't darken through the trail, and premultiplied
+// so a picture over transparency smears at its coverage (#2021): the
+// colour is the alpha-weighted mean, back to straight by the summed alpha
+// (`UNPREMULTIPLY_MIN_ALPHA`, as the shutter's mean, #2017). Every tap
+// opaque, the plain mean as before, to the bit.
 const SHADER_DIRECTIONAL_BLUR: &str = concat!(
     "
 struct Params {
@@ -16141,16 +16145,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = f32(idx % params.width);
     let y = f32(idx / params.width);
     var sum = vec4<f32>(0.0);
+    var pre = vec3<f32>(0.0);
     let w = i32(params.width);
     let h = i32(params.height);
     for (var i = 0u; i < params.samples; i = i + 1u) {
         let sx = clamp(i32(round(x + params.dx * f32(i))), 0, w - 1);
         let sy = clamp(i32(round(y + params.dy * f32(i))), 0, h - 1);
         let si = u32(sy) * params.width + u32(sx);
-        sum += unpack(input[si]);
+        let q = unpack(input[si]);
+        sum += q;
+        pre += q.xyz * q.w;
     }
     let inv = 1.0 / f32(params.samples);
-    output[idx] = pack(sum * inv);
+    if sum.w == f32(params.samples) {
+        output[idx] = pack(sum * inv);
+        return;
+    }
+    var colour = vec3<f32>(0.0);
+    if sum.w > ", unpremultiply_min_alpha_wgsl!(), " { colour = pre / sum.w; }
+    output[idx] = pack(vec4<f32>(colour, sum.w * inv));
 }
 "
 );
