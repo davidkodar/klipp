@@ -46,7 +46,7 @@ pub use text_on_path::PathUnits;
 mod ruby;
 mod vertical;
 mod gpu_styles;
-pub use gpu_styles::StyleSource;
+pub use gpu_styles::{StyleFaceWork, StyleSource};
 mod tracking;
 pub mod variable;
 mod vector_path;

@@ -128,6 +128,7 @@ fn linear_to_srgb_u8_lut() -> &'static [u8; 4096] {
 /// render-cache hit's display transform once the chain has been collapsed
 /// into a table.
 fn map_u8_rgb(rgba: &[u8], lut: &[u8; 256]) -> Vec<u8> {
+    klipp_effects::residency::record("display.cached_lut", "Cached display pixels transformed on CPU", klipp_effects::residency::Work::Fallback);
     use rayon::prelude::*;
     let mut out = vec![0u8; rgba.len() / 4 * 4];
     out.par_chunks_exact_mut(4).zip(rgba.par_chunks_exact(4)).for_each(|(o, c)| {

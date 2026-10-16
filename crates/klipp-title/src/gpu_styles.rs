@@ -1,8 +1,16 @@
 //! Unfinished title faces for a compositor that can keep styling on the GPU.
 use super::*;
 
+/// CPU face work performed by this call, separate from resident GPU styling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StyleFaceWork {
+    Reused,
+    Prepared,
+    AnimatedRaster,
+}
 #[derive(Clone)]
 pub struct StyleSource {
+    pub face_work: StyleFaceWork,
     pub id: u64,
     pub pixels: std::sync::Arc<BoxRaster>,
     /// Exact padded coverage box, needed by inverted inner shadows.
@@ -140,7 +148,10 @@ impl TitleRenderer {
                     cached.source.roi[1],
                     cached.source.roi[1] + cached.source.roi[3],
                 );
-                return Some(cached.source.clone());
+                return Some(StyleSource {
+                    face_work: StyleFaceWork::Reused,
+                    ..cached.source.clone()
+                });
             }
         }
         let cache_key = evaluated.clone();
@@ -191,6 +202,14 @@ impl TitleRenderer {
         let id = self.next_cache_id;
         self.next_cache_id = self.next_cache_id.wrapping_add(1);
         let source = StyleSource {
+            face_work: if tb.has_keyframes()
+                || fx.motion.is_active()
+                || pixels.byte_size() > (64 << 20)
+            {
+                StyleFaceWork::AnimatedRaster
+            } else {
+                StyleFaceWork::Prepared
+            },
             id,
             pixels: std::sync::Arc::new(pixels),
             roi,

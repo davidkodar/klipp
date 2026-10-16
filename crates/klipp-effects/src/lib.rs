@@ -32,6 +32,7 @@
 //! and export. Analyse went from 10–15 min to ~18 s on 4K through the
 //! decoder optimisation.
 
+pub mod residency;
 pub mod animate;
 pub mod blur;
 mod cpu;
@@ -1139,6 +1140,9 @@ fn apply_chain(
     luma: [f32; 3],
     motion: &MotionData,
 ) -> Vec<f32> {
+    for fx in effects.iter().filter(|fx| !is_identity_effect(fx)) {
+        residency::record(residency::effect_id(fx), "CPU effect kernel", residency::Work::Fallback);
+    }
     let mut frame = linear_rgba;
     let mut i = 0;
     while i < effects.len() {

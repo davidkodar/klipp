@@ -620,3 +620,15 @@ lookup (`cargo doc --open`, navigate to the crate).
 Beyond that: open an issue. A question that took you an hour to answer
 from the source is a documentation bug, and saying so is a
 contribution.
+
+## GPU-first picture processing
+
+New picture effects, transitions, generators and title animations must prefer a
+usable GPU. Include GPU/CPU image-parity tests, residency classification and an
+active playback fixture. CPU twins remain for fallback and reference rendering;
+bounded cache preparation, decode, audio and offline analysis are distinct.
+
+Report CPU picture work through the shared residency diagnostics even when the
+final composite stays on GPU. Nonresident routes require a named tracking issue
+and an explicitly reviewed exception; the gate pins route identities as well as
+classifications. See [the residency policy and tests](docs/rendering-residency.md#gpu-first-enforcement-2077).

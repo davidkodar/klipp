@@ -6363,6 +6363,9 @@ impl GpuEffectsPipeline {
                 Recorded::Done => out.in_a = !out.in_a,
                 Recorded::Identity => {}
                 Recorded::NotRecordable | Recorded::OutOfSlots => {
+                    for fx in part {
+                        crate::residency::record(crate::residency::effect_id(fx), "GPU recorder declined; chain break", crate::residency::Work::Fallback);
+                    }
                     out.breaks += 1;
                     self.submit_chain();
                     out.in_a = self.run_break_pass(part, out.in_a, width, height);
