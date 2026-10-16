@@ -324,12 +324,23 @@ pub(crate) fn respond(
             }
             // The colour pass grabs frames, so it takes the sequence read
             // lock for a moment only; work out the times first, then let go.
-            let (mut report, color_times, audio_media, to_read) = {
+            let (mut report, color_times, audio_media, to_read, banding_snapshot) = {
                 let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
                 let pool = ctx.media_pool.read().map_err(|_| "media pool lock poisoned")?;
                 let mut report = klipp_document::qc::check(&seq, &pool, &AnalysedTranscripts);
                 let lut = ctx.shared.project.lock().ok().and_then(|p| p.global_lut.clone());
                 klipp_document::qc::note_missing_global_lut(&mut report, lut.as_deref());
+                // What an 8-bit export renders, frozen here and sampled
+                // once the locks are let go (#2074).
+                let banding_snapshot = klipp_render::SequenceSnapshot::from_sequence(
+                    &seq,
+                    &pool,
+                    &klipp_core::ExportSettings::default(),
+                    lut.clone(),
+                    false,
+                    klipp_engine::video_decoder::working_colorspace(),
+                )
+                .ok();
                 if loudness {
                     note_loudness_drops(&mut report, &seq, &pool);
                 } else {
@@ -403,8 +414,30 @@ pub(crate) fn respond(
                         }
                     }
                 }
-                (report, times, audio_media, to_read)
+                (report, times, audio_media, to_read, banding_snapshot)
             };
+            // Smooth gradients that an 8-bit file will show in steps: a few
+            // frames rendered small, as the export would draw them (#2074).
+            // Not while a render runs, which it would slow: said, never
+            // taken for a clean read.
+            let rendering = ctx.shared.exports.lock().is_ok_and(|e| e.iter().any(|j| j.status == "rendering"));
+            if rendering && banding_snapshot.is_some() {
+                report.findings.push(klipp_document::qc::Finding {
+                    severity: klipp_document::qc::Severity::Note,
+                    rule: "banding_unchecked",
+                    at_secs: None,
+                    what: "8-bit banding was not checked: a render is running".into(),
+                    hint: "check again once the render is done".into(),
+                });
+            } else if let Some(found) = banding_snapshot.as_ref().and_then(klipp_render::banding::sample) {
+                report.findings.push(klipp_document::qc::Finding {
+                    severity: klipp_document::qc::Severity::Note,
+                    rule: "banding_8bit",
+                    at_secs: Some(found.secs),
+                    what: format!("smooth gradients span {} code values over half the frame: an 8-bit file will show them in steps", found.levels),
+                    hint: klipp_render::banding::SUGGESTION.into(),
+                });
+            }
             // Each title's words against the picture under it, that clip
             // rendered alone at the title's middle (#1581). A picture that
             // can't be read is said, never taken for a clean one.

@@ -14,6 +14,8 @@ mod audio_only_export;
 mod captions_608_export;
 #[path = "../clip_sources_reads_the_media.rs"]
 mod clip_sources_reads_the_media;
+#[path = "../banding_hint.rs"]
+mod banding_hint;
 #[path = "../codec_true_peak.rs"]
 mod codec_true_peak;
 #[path = "../export_status_timings.rs"]

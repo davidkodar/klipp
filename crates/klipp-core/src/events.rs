@@ -760,6 +760,18 @@ impl ExportVideoCodec {
         }
     }
 
+    /// Whether this codec at `bit_depth` writes 8-bit video that a smooth
+    /// gradient can band in (#2074): H.264, H.265 and AV1 unless 10-bit
+    /// is chosen, VP9 and DNxHD always. ProRes is 10-bit; a GIF dithers
+    /// to its own palette, so the question does not arise there.
+    pub fn writes_8bit(&self, bit_depth: u8) -> bool {
+        match self {
+            Self::H264 | Self::H265 | Self::Av1 => bit_depth != 10,
+            Self::Vp9 | Self::DNxHD115 | Self::DNxHD145 => true,
+            Self::ProRes422 | Self::ProRes422HQ | Self::ProRes4444 | Self::Gif => false,
+        }
+    }
+
     /// [`hint`](Self::hint) for the depth actually chosen.
     ///
     /// H.264's hint is a promise it cannot keep at ten bits: "GPU
@@ -5235,6 +5247,15 @@ pub struct ExportStatus {
     /// ends (#1924).
     #[serde(default)]
     pub timings: Option<ExportTimings>,
+    /// The 8-bit banding check of an 8-bit job (#2074): "pending" until
+    /// it has run (only while no render runs, so often after the job),
+    /// then "bands" or "smooth". None for a 10-bit target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub banding: Option<String>,
+    /// Advice on the file, never a failure: an 8-bit target of a sequence
+    /// whose smooth gradients will show steps (#2074).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// Where an export's time goes (#1924): the loudness fit before the

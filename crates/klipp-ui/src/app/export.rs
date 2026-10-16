@@ -119,6 +119,8 @@ pub(super) struct ExportDialogState {
     /// Encoder bit depth. 0 = codec default (8-bit), 10 = 10-bit encode.
     /// Only meaningful for H.264, H.265 and AV1. (#65, #560)
     pub(super) bit_depth: u8,
+    /// Whether an 8-bit file of the sequence will band (#2074).
+    pub(super) banding: super::export_banding::BandingProbe,
     /// HDR transfer. Only surfaced in UI when bit_depth == 10 on H.264, H.265 or AV1. (#65)
     pub(super) hdr_mode: klipp_core::HdrMode,
     /// Display-boundary tone-map operator picked by the user.
@@ -171,6 +173,7 @@ impl Default for ExportDialogState {
             loudness_preset: 0,
             custom_lufs: -14.0,
             bit_depth: 0,
+            banding: Default::default(),
             hdr_mode: klipp_core::HdrMode::Sdr,
             tone_map_op: klipp_core::ToneMapOp::Hable,
             odt: klipp_core::OdtChoice::MatchViewer,
@@ -470,6 +473,14 @@ pub(super) fn build_export_settings(
     }
 }
 
+/// A preset as the list names it: a user's marked ⚙, a 10-bit one
+/// marked so (#2074).
+pub(super) fn preset_label(preset: &ExportPreset) -> String {
+    let mark = if preset.built_in { "" } else { "⚙ " };
+    let depth = if preset.settings.is_10bit() { " · 10-bit" } else { "" };
+    format!("{mark}{}{depth}", preset.name)
+}
+
 pub(super) fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &ExportPresetSettings) {
     dialog.format = settings.format;
     // A preset saved before the container rules may hold a pair FFmpeg
@@ -480,6 +491,11 @@ pub(super) fn apply_preset_to_dialog(dialog: &mut ExportDialogState, settings: &
     dialog.audio_bitrate = settings.audio_bitrate_kbps.unwrap_or(192);
     dialog.rate_control = settings.rate_control;
     dialog.video_bitrate_kbps = settings.video_bitrate_kbps.unwrap_or(10000);
+    // The preset's depth (#2074), except that HDR stays at the ten bits it
+    // needs.
+    if dialog.hdr_mode == klipp_core::HdrMode::Sdr {
+        dialog.bit_depth = settings.bit_depth;
+    }
     // Map resolution preset to override enum
     dialog.resolution_override = match settings.resolution {
         Some(klipp_core::Resolution { width: 1280, height: 720 }) => 1,
@@ -968,11 +984,23 @@ impl KlippApp {
         let label = settings.output_path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Render".into());
         match snapshot {
             Ok(snap) => {
-                self.state.render_queue.add_job(settings.output_path.clone(), settings.clone(), label, snap);
+                self.queue_job(settings.output_path.clone(), settings.clone(), label, snap);
             }
             Err(e) => tracing::error!("Failed to create render snapshot: {e}"),
         }
         self.state.show_render_queue = true;
+    }
+
+    /// Puts a render on the queue, and keeps what it renders for the 8-bit
+    /// banding check unless that ran for this edit (#2074): checked once
+    /// no render runs, never beside one.
+    fn queue_job(&mut self, path: PathBuf, settings: klipp_core::ExportSettings, label: String, snap: klipp_export::RenderSnapshot) {
+        let key = self.banding_key();
+        if settings.video_codec.writes_8bit(settings.bit_depth) {
+            self.export_dialog.banding.defer(key, snap.sequence_snapshot.clone());
+        }
+        let id = self.state.render_queue.add_job(path, settings, label, snap);
+        self.export_dialog.banding.queued(id, key);
     }
 
     /// Marker multi-export: enqueue one render job per segment between
@@ -1038,9 +1066,7 @@ impl KlippApp {
             snap.sequence_snapshot.export_range = Some((*start_frame, *end_frame));
             snap.sequence_snapshot.video.global_lut_opacity = self.state.global_lut_opacity;
 
-            self.state
-                .render_queue
-                .add_job(output_path, job_settings, display_label, snap);
+            self.queue_job(output_path, job_settings, display_label, snap);
             job_count += 1;
         }
 
@@ -1086,8 +1112,8 @@ impl KlippApp {
                     ui.label("Preset:");
                     let selected_label = self.export_dialog.selected_preset_id.as_ref()
                         .and_then(|id| all_presets.iter().find(|p| &p.id == id))
-                        .map(|p| p.name.as_str())
-                        .unwrap_or("Custom");
+                        .map(preset_label)
+                        .unwrap_or_else(|| "Custom".to_string());
                     egui::ComboBox::from_id_salt("export_preset")
                         .selected_text(selected_label)
                         .width(0.0)
@@ -1098,11 +1124,7 @@ impl KlippApp {
                             }
                             ui.separator();
                             for preset in all_presets {
-                                let label = if preset.built_in {
-                                    preset.name.clone()
-                                } else {
-                                    format!("⚙ {}", preset.name)
-                                };
+                                let label = preset_label(preset);
                                 let is_selected = self.export_dialog.selected_preset_id.as_ref() == Some(&preset.id);
                                 if ui.selectable_label(is_selected, &label).clicked() {
                                     self.export_dialog.selected_preset_id = Some(preset.id.clone());
@@ -1221,6 +1243,15 @@ impl KlippApp {
                             self.export_dialog.video_codec.hint_at_depth(self.export_dialog.bit_depth),
                         );
                         ui.end_row();
+
+                        // Where an 8-bit file of this sequence will show
+                        // steps in its smooth gradients (#2074): advice,
+                        // never a setting changed.
+                        if let Some(hint) = self.export_dialog.banding.hint_for(self.banding_key(), self.export_dialog.video_codec, self.export_dialog.bit_depth) {
+                            ui.label("");
+                            ui.label(egui::RichText::new(format!("\u{26A0} {hint}")).small().color(ui.visuals().warn_fg_color));
+                            ui.end_row();
+                        }
 
                         // A codec the container cannot hold moves the export
                         // to the codec's own container (ProRes and DNxHD to
@@ -2018,7 +2049,7 @@ impl KlippApp {
                     .unwrap_or_else(|| "Render".into());
                 match snapshot {
                     Ok(snap) => {
-                        self.state.render_queue.add_job(path, settings, label, snap);
+                        self.queue_job(path, settings, label, snap);
                     }
                     Err(e) => {
                         tracing::error!("Failed to create render snapshot: {e}");
@@ -2094,6 +2125,12 @@ impl KlippApp {
         let in_export_ws = self.state.active_workspace == crate::state::Workspace::Export;
         if !self.state.show_export_dialog && !in_export_ws {
             return cmds;
+        }
+        // What an 8-bit file of the sequence would show, checked once per
+        // edit while the settings are open (#2074).
+        let settings = build_export_settings(&self.export_dialog, self.prefs.audio.pan_law);
+        if settings.video_codec.writes_8bit(settings.bit_depth) {
+            self.want_banding_check(&settings);
         }
 
         // Outside the Export workspace the settings are a dialog; the
@@ -2179,6 +2216,7 @@ impl KlippApp {
                                     rate_control: self.export_dialog.rate_control,
                                     target_lufs: dialog_target_lufs(&self.export_dialog),
                                     true_peak_dbtp: dialog_true_peak(&self.export_dialog),
+                                    bit_depth: self.export_dialog.bit_depth,
                                 },
                             };
                             self.prefs.export.custom_presets.push(preset);
@@ -2700,6 +2738,23 @@ mod export_rule_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// #2074: the list marks each 10-bit preset, and picking one sets the
+    /// dialog's depth to the preset's: ten for the Main10 master, back to
+    /// eight for an 8-bit preset after it.
+    #[test]
+    fn ten_bit_presets_are_labelled_and_carry_their_depth() {
+        let presets = klipp_core::builtin_presets();
+        let named = |n: &str| presets.iter().find(|p| p.name == n).unwrap();
+        assert_eq!(super::preset_label(named("HEVC Main10 master")), "HEVC Main10 master · 10-bit");
+        assert_eq!(super::preset_label(named("ProRes 422")), "ProRes 422 · 10-bit");
+        assert_eq!(super::preset_label(named("YouTube 1080p")), "YouTube 1080p");
+        let mut dialog = super::ExportDialogState::default();
+        super::apply_preset_to_dialog(&mut dialog, &named("HEVC Main10 master").settings);
+        assert_eq!((dialog.video_codec, dialog.bit_depth), (klipp_core::ExportVideoCodec::H265, 10));
+        super::apply_preset_to_dialog(&mut dialog, &named("YouTube 1080p").settings);
+        assert_eq!(dialog.bit_depth, 0);
+    }
+
     #[test]
     fn auto_rename_takes_the_first_free_number() {
         let taken = [PathBuf::from("/out/film_1.mp4"), PathBuf::from("/out/film_2.mp4")];
@@ -2732,6 +2787,8 @@ impl KlippApp {
         self.state.render_queue.max_parallel =
             self.prefs.export.parallel_render_jobs.max(1);
         let events = self.state.render_queue.poll();
+        let idle = self.renders_idle();
+        self.export_dialog.banding.poll(idle);
         // The project as the control socket sees it.
         if let Ok(mut project) = self.state.control_shared.project.lock() {
             project.path = self.state.project_path.clone();
@@ -2782,6 +2839,8 @@ impl KlippApp {
                 audio_encoder: j.timings.as_ref().and_then(|t| t.audio_encoder.clone()),
                 compositing: j.timings.as_ref().and_then(|t| t.compositing()),
                 timings: j.timings.clone(),
+                banding: self.export_dialog.banding.state_for(j.id, &j.settings).map(str::to_string),
+                note: self.export_dialog.banding.note_for(j.id, &j.settings),
             }));
         }
         for event in events {

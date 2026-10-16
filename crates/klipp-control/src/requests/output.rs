@@ -724,6 +724,7 @@ fn apply_export_preset(settings: &mut klipp_core::ExportSettings, name: &str) ->
     settings.rate_control = s.rate_control;
     settings.target_lufs = s.target_lufs;
     settings.true_peak_dbtp = s.true_peak_dbtp;
+    settings.bit_depth = s.bit_depth;
     Ok(p.name.clone())
 }
 
