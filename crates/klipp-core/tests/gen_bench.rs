@@ -16,6 +16,6 @@ fn what_a_generator_costs() {
         t.elapsed().as_secs_f64() * 100.0
     };
     let u8_ms = time(Box::new(move |s| { let _ = render_living_gradient(a, b, 25.0, 1.2, 0.12, w, h, s); }));
-    let f16_ms = time(Box::new(move |s| { let _ = render_living_gradient_f16(a, b, 25.0, 1.2, 0.12, w, h, s); }));
+    let f16_ms = time(Box::new(move |s| { let _ = render_living_gradient_f16(a, b, 25.0, 1.2, 0.12, klipp_core::DEFAULT_GENERATOR_GRAIN, w, h, s); }));
     println!("1080p living gradient: u8 {u8_ms:.1} ms/frame, sRGB f16 {f16_ms:.1} ms/frame");
 }

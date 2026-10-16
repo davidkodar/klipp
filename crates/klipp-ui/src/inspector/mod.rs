@@ -568,6 +568,9 @@ fn font_style_to_u8(style: klipp_timeline::FontStyle) -> u8 {
 /// choices survive restarts.
 pub const TITLE_EXPANDED_GROUPS_KEY: &str = "klipp_title_expanded_groups";
 
+/// What a gradient's Grain slider does (#2073).
+const GENERATOR_GRAIN_HINT: &str = "Fine grain, in code values, that keeps a dark gradient smooth after an 8-bit export. 0 turns it off.";
+
 /// Title-inspector preset registry — display name + numeric id sent
 /// in `AppCommand::ApplyTitlePreset`. Id `0` is the inert "None"
 /// sentinel so reopening the dropdown shows a stable label without
@@ -7823,7 +7826,7 @@ fn show_generator_editor(
             });
         }
 
-        klipp_core::GeneratorData::Gradient { top, bottom, angle_deg, four_point } => {
+        klipp_core::GeneratorData::Gradient { top, bottom, angle_deg, four_point, grain } => {
             ui.label(egui::RichText::new("Gradient").size(11.0).color(theme.text_secondary));
             ui.add_space(4.0);
 
@@ -7844,6 +7847,7 @@ fn show_generator_editor(
                             bottom,
                             angle_deg,
                             four_point: None,
+                            grain,
                         },
                     });
                 }
@@ -7870,6 +7874,7 @@ fn show_generator_editor(
                                 bottom_left: bottom,
                                 bottom_right: bottom,
                             }),
+                            grain,
                         },
                     });
                 }
@@ -7896,6 +7901,7 @@ fn show_generator_editor(
                             data: klipp_core::GeneratorData::Gradient {
                                 top, bottom, angle_deg,
                                 four_point: Some(new_corners),
+                                grain,
                             },
                         });
                     }
@@ -7909,6 +7915,7 @@ fn show_generator_editor(
                             data: klipp_core::GeneratorData::Gradient {
                                 top, bottom, angle_deg,
                                 four_point: Some(new_corners),
+                                grain,
                             },
                         });
                     }
@@ -7932,6 +7939,7 @@ fn show_generator_editor(
                             data: klipp_core::GeneratorData::Gradient {
                                 top, bottom, angle_deg,
                                 four_point: Some(new_corners),
+                                grain,
                             },
                         });
                     }
@@ -7945,6 +7953,7 @@ fn show_generator_editor(
                             data: klipp_core::GeneratorData::Gradient {
                                 top, bottom, angle_deg,
                                 four_point: Some(new_corners),
+                                grain,
                             },
                         });
                     }
@@ -7964,6 +7973,7 @@ fn show_generator_editor(
                                 bottom,
                                 angle_deg,
                                 four_point: None,
+                                grain,
                             },
                         });
                     }
@@ -7982,6 +7992,7 @@ fn show_generator_editor(
                                 bottom: [c.r(), c.g(), c.b(), c.a()],
                                 angle_deg,
                                 four_point: None,
+                                grain,
                             },
                         });
                     }
@@ -8006,6 +8017,7 @@ fn show_generator_editor(
                                 top, bottom,
                                 angle_deg: angle,
                                 four_point: None,
+                                grain,
                             },
                         });
                     }
@@ -8020,6 +8032,7 @@ fn show_generator_editor(
                                 top, bottom,
                                 angle_deg: a,
                                 four_point: None,
+                                grain,
                             },
                         });
                     };
@@ -8029,6 +8042,18 @@ fn show_generator_editor(
                     if ui.small_button("\u{2190}").on_hover_text("Right → Left").clicked() { emit(270.0); }
                     if ui.small_button("\u{2198}").on_hover_text("TL → BR (45°)").clicked() { emit(135.0); }
                     if ui.small_button("\u{2197}").on_hover_text("BL → TR (45°)").clicked() { emit(45.0); }
+                });
+            }
+            ui.add_space(6.0);
+            let mut grain2 = grain;
+            if ui
+                .add(egui::Slider::new(&mut grain2, 0.0..=klipp_effects::generator_grain::MAX_GENERATOR_GRAIN).text("Grain"))
+                .on_hover_text(GENERATOR_GRAIN_HINT)
+                .changed()
+            {
+                cmds.push(AppCommand::UpdateGeneratorData {
+                    clip_id,
+                    data: klipp_core::GeneratorData::Gradient { top, bottom, angle_deg, four_point, grain: grain2 },
                 });
             }
         }
@@ -8224,10 +8249,10 @@ fn show_generator_editor(
             );
         }
 
-        klipp_core::GeneratorData::LivingGradient { a, b, angle_deg, drift_deg_per_sec, glow } => {
+        klipp_core::GeneratorData::LivingGradient { a, b, angle_deg, drift_deg_per_sec, glow, grain } => {
             ui.label(egui::RichText::new("Living Gradient").size(11.0).color(theme.text_secondary));
             ui.add_space(4.0);
-            let (mut a2, mut b2, mut angle, mut drift, mut glow2) = (a, b, angle_deg, drift_deg_per_sec, glow);
+            let (mut a2, mut b2, mut angle, mut drift, mut glow2, mut grain2) = (a, b, angle_deg, drift_deg_per_sec, glow, grain);
             let mut changed = false;
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Colours").strong().size(11.0));
@@ -8239,10 +8264,11 @@ fn show_generator_editor(
             if ui.add(egui::Slider::new(&mut angle, 0.0..=360.0).text("Angle").suffix("\u{00b0}")).changed() { changed = true; }
             if ui.add(egui::Slider::new(&mut drift, -30.0..=30.0).text("Drift").suffix("\u{00b0}/s")).changed() { changed = true; }
             if ui.add(egui::Slider::new(&mut glow2, 0.0..=1.0).text("Light")).changed() { changed = true; }
+            if ui.add(egui::Slider::new(&mut grain2, 0.0..=klipp_effects::generator_grain::MAX_GENERATOR_GRAIN).text("Grain")).on_hover_text(GENERATOR_GRAIN_HINT).changed() { changed = true; }
             if changed {
                 cmds.push(AppCommand::UpdateGeneratorData {
                     clip_id,
-                    data: klipp_core::GeneratorData::LivingGradient { a: a2, b: b2, angle_deg: angle, drift_deg_per_sec: drift, glow: glow2 },
+                    data: klipp_core::GeneratorData::LivingGradient { a: a2, b: b2, angle_deg: angle, drift_deg_per_sec: drift, glow: glow2, grain: grain2 },
                 });
             }
         }

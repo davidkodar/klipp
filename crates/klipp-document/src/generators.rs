@@ -49,6 +49,7 @@ pub fn background_data(
             bottom: color(1, [8, 10, 18, 255])?,
             angle_deg: 0.0,
             four_point: None,
+            grain: klipp_core::DEFAULT_GENERATOR_GRAIN,
         },
         "living_gradient" => GeneratorData::LivingGradient {
             a: color(0, [22, 34, 78, 255])?,
@@ -56,6 +57,7 @@ pub fn background_data(
             angle_deg: 20.0,
             drift_deg_per_sec: 4.0,
             glow: 0.35,
+            grain: klipp_core::DEFAULT_GENERATOR_GRAIN,
         },
         "grain" => GeneratorData::Grain {
             color: color(0, [26, 26, 30, 255])?,
@@ -84,6 +86,7 @@ pub fn background_data(
 /// Refuse non-finite or nonsensical native parameters before adding a clip.
 pub fn validate(data: &GeneratorData) -> Result<(), String> {
     let nonnegative = |v: f32| v.is_finite() && v >= 0.0;
+    let grain_ok = |v: f32| (0.0..=klipp_effects::generator_grain::MAX_GENERATOR_GRAIN).contains(&v);
     let valid = match data {
         GeneratorData::SolidColor { .. }
         | GeneratorData::Placeholder { .. }
@@ -91,13 +94,14 @@ pub fn validate(data: &GeneratorData) -> Result<(), String> {
         | GeneratorData::ColorBars100
         | GeneratorData::Countdown
         | GeneratorData::Slate { .. } => true,
-        GeneratorData::Gradient { angle_deg, .. } => angle_deg.is_finite(),
+        GeneratorData::Gradient { angle_deg, grain, .. } => angle_deg.is_finite() && grain_ok(*grain),
         GeneratorData::LivingGradient {
             angle_deg,
             drift_deg_per_sec,
             glow,
+            grain,
             ..
-        } => angle_deg.is_finite() && drift_deg_per_sec.is_finite() && (0.0..=1.0).contains(glow),
+        } => angle_deg.is_finite() && drift_deg_per_sec.is_finite() && (0.0..=1.0).contains(glow) && grain_ok(*grain),
         GeneratorData::Grain {
             amount,
             size_px,
@@ -137,7 +141,7 @@ pub fn validate(data: &GeneratorData) -> Result<(), String> {
     if valid {
         Ok(())
     } else {
-        Err("invalid generator parameters: numbers must be finite; glow/amount are 0..1, grain size positive, speed/outline/timer nonnegative, shapes need valid sides/radii, and stills need an existing absolute path and positive dimensions".into())
+        Err("invalid generator parameters: numbers must be finite; glow/amount are 0..1, a gradient's grain 0..8, grain size positive, speed/outline/timer nonnegative, shapes need valid sides/radii, and stills need an existing absolute path and positive dimensions".into())
     }
 }
 

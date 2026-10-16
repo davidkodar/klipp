@@ -25,12 +25,12 @@ pub fn render_generator_f16(
     total_secs: f64,
 ) -> Vec<u32> {
     match data {
-        GeneratorData::Gradient { top, bottom, angle_deg, four_point: None } => {
-            render_gradient_f16(*top, *bottom, *angle_deg, width, height)
+        GeneratorData::Gradient { top, bottom, angle_deg, four_point: None, grain } => {
+            render_gradient_f16(*top, *bottom, *angle_deg, *grain, width, height)
         }
-        GeneratorData::Gradient { four_point: Some(corners), .. } => render_four_point_gradient_f16(*corners, width, height),
-        GeneratorData::LivingGradient { a, b, angle_deg, drift_deg_per_sec, glow } => {
-            render_living_gradient_f16(*a, *b, *angle_deg, *drift_deg_per_sec, *glow, width, height, elapsed_secs)
+        GeneratorData::Gradient { four_point: Some(corners), grain, .. } => render_four_point_gradient_f16(*corners, *grain, width, height),
+        GeneratorData::LivingGradient { a, b, angle_deg, drift_deg_per_sec, glow, grain } => {
+            render_living_gradient_f16(*a, *b, *angle_deg, *drift_deg_per_sec, *glow, *grain, width, height, elapsed_secs)
         }
         _ => srgb_u8_to_f16(&render_generator(data, width, height, elapsed_secs, total_secs)),
     }
@@ -45,14 +45,14 @@ pub fn render_generator(
 ) -> Vec<u8> {
     match data {
         GeneratorData::SolidColor { color } => render_solid_color(*color, width, height),
-        GeneratorData::LivingGradient { a, b, angle_deg, drift_deg_per_sec, glow } => {
+        GeneratorData::LivingGradient { a, b, angle_deg, drift_deg_per_sec, glow, .. } => {
             render_living_gradient(*a, *b, *angle_deg, *drift_deg_per_sec, *glow, width, height, elapsed_secs)
         }
         GeneratorData::Grain { color, amount, size_px, speed } => {
             render_grain(*color, *amount, *size_px, *speed, width, height, elapsed_secs)
         }
         GeneratorData::Placeholder { color, .. } => render_placeholder_backdrop(*color, width, height),
-        GeneratorData::Gradient { top, bottom, angle_deg, four_point } => {
+        GeneratorData::Gradient { top, bottom, angle_deg, four_point, .. } => {
             if let Some(corners) = four_point {
                 render_four_point_gradient(*corners, width, height)
             } else {
@@ -340,6 +340,36 @@ fn pack_f16(px: [f32; 4]) -> [u32; 2] {
     [h(px[0]) | (h(px[1]) << 16), h(px[2]) | (h(px[3]) << 16)]
 }
 
+/// [`pack_f16`]'s inverse.
+#[inline]
+fn unpack_f16(p: [u32; 2]) -> [f32; 4] {
+    let un = |bits: u32| half::f16::from_bits(bits as u16).to_f32();
+    [un(p[0] & 0xFFFF), un(p[0] >> 16), un(p[1] & 0xFFFF), un(p[1] >> 16)]
+}
+
+/// `px` packed, with the generator grain (#2073) of `grain` code values
+/// at pixel `index` (`y * width + x`) when there is any: rounded to half
+/// floats first, grained, and rounded again, as the GPU's living
+/// gradient pass does. At 0 it is [`pack_f16`] and nothing else, so a
+/// gradient with its grain off is the one drawn before there was any.
+#[inline]
+fn pack_grained(px: [f32; 4], index: u32, grain: f32) -> [u32; 2] {
+    let packed = pack_f16(px);
+    if grain <= 0.0 {
+        return packed;
+    }
+    grained(packed, index, grain)
+}
+
+/// Packed half floats with the generator grain added and rounded again.
+#[inline]
+fn grained(packed: [u32; 2], index: u32, grain: f32) -> [u32; 2] {
+    use klipp_effects::generator_grain::{grain_channel, grain_noise};
+    let c = unpack_f16(packed);
+    let n = grain_noise(index);
+    pack_f16([grain_channel(c[0], n, grain), grain_channel(c[1], n, grain), grain_channel(c[2], n, grain), c[3]])
+}
+
 /// A two-point gradient, sRGB-encoded, in half floats.
 ///
 /// Encoded rather than linear, and packed rather than whole, because of
@@ -353,10 +383,13 @@ fn pack_f16(px: [f32; 4]) -> [u32; 2] {
 /// The ramp itself is the one the byte path draws — this is a change of
 /// precision, not of look. Interpolating in linear light would be a
 /// different, brighter gradient, and that is a thing to choose.
+///
+/// `grain` is the generator grain, in code values (#2073; 0 for none).
 pub fn render_gradient_f16(
     top: [u8; 4],
     bottom: [u8; 4],
     angle_deg: f32,
+    grain: f32,
     width: u32,
     height: u32,
 ) -> Vec<u32> {
@@ -378,8 +411,9 @@ pub fn render_gradient_f16(
             for c in 0..4 {
                 px[c] = (top[c] as f32 + (bottom[c] as f32 - top[c] as f32) * t) / 255.0;
             }
-            let i = ((y as usize) * (width as usize) + (x as usize)) * 2;
-            let packed = pack_f16(px);
+            let index = y * width + x;
+            let i = index as usize * 2;
+            let packed = pack_grained(px, index, grain);
             buf[i] = packed[0];
             buf[i + 1] = packed[1];
         }
@@ -390,19 +424,22 @@ pub fn render_gradient_f16(
 /// [`render_living_gradient`] as sRGB-encoded half floats. The drifting
 /// angle and the light that crosses it are the same; the glow lifts in
 /// the encoded space it has always lifted in, so it keeps its shape.
+/// The grain goes on last, over the light too (#2073).
+#[allow(clippy::too_many_arguments)]
 pub fn render_living_gradient_f16(
     a: [u8; 4],
     b: [u8; 4],
     angle_deg: f32,
     drift_deg_per_sec: f32,
     glow: f32,
+    grain: f32,
     width: u32,
     height: u32,
     elapsed_secs: f64,
 ) -> Vec<u32> {
     let t = elapsed_secs as f32;
-    let mut buf = render_gradient_f16(a, b, angle_deg + drift_deg_per_sec * t, width, height);
-    if glow <= 0.0 {
+    let mut buf = render_gradient_f16(a, b, angle_deg + drift_deg_per_sec * t, 0.0, width, height);
+    if glow <= 0.0 && grain <= 0.0 {
         return buf;
     }
     let (w, h) = (width as f32, height as f32);
@@ -414,19 +451,24 @@ pub fn render_living_gradient_f16(
         for x in 0..width {
             let dx = x as f32 - cx;
             let dy = y as f32 - cy;
-            let f = (-(dx * dx + dy * dy) * inv).exp() * glow;
-            if f < 0.002 {
+            let f = if glow > 0.0 { (-(dx * dx + dy * dy) * inv).exp() * glow } else { 0.0 };
+            let lit = f >= 0.002;
+            if !lit && grain <= 0.0 {
                 continue;
             }
-            let i = ((y * width + x) * 2) as usize;
-            let rg = buf[i];
-            let ba = buf[i + 1];
-            let un = |bits: u32| half::f16::from_bits(bits as u16).to_f32();
-            let mut px = [un(rg & 0xFFFF), un(rg >> 16), un(ba & 0xFFFF), un(ba >> 16)];
-            for v in px.iter_mut().take(3) {
-                *v = (*v + (1.0 - *v) * f * 0.6).min(1.0);
+            let index = y * width + x;
+            let i = index as usize * 2;
+            let mut packed = [buf[i], buf[i + 1]];
+            if lit {
+                let mut px = unpack_f16(packed);
+                for v in px.iter_mut().take(3) {
+                    *v = (*v + (1.0 - *v) * f * 0.6).min(1.0);
+                }
+                packed = pack_f16(px);
             }
-            let packed = pack_f16(px);
+            if grain > 0.0 {
+                packed = grained(packed, index, grain);
+            }
             buf[i] = packed[0];
             buf[i + 1] = packed[1];
         }
@@ -656,8 +698,9 @@ pub fn render_four_point_gradient(
 /// [`render_four_point_gradient`] as sRGB-encoded half floats (#190):
 /// the same bilinear wash, interpolated in the encoded space it always
 /// was, without rounding the top and bottom rows to whole codes before
-/// blending between them.
-pub fn render_four_point_gradient_f16(corners: FourPointGradient, width: u32, height: u32) -> Vec<u32> {
+/// blending between them. `grain` is the generator grain, in code values
+/// (#2073; 0 for none).
+pub fn render_four_point_gradient_f16(corners: FourPointGradient, grain: f32, width: u32, height: u32) -> Vec<u32> {
     let mut buf = vec![0u32; (width as usize) * (height as usize) * 2];
     let w_div = (width.saturating_sub(1)).max(1) as f32;
     let h_div = (height.saturating_sub(1)).max(1) as f32;
@@ -672,8 +715,9 @@ pub fn render_four_point_gradient_f16(corners: FourPointGradient, width: u32, he
                 let bottom = lerp(corners.bottom_left[c], corners.bottom_right[c], tx);
                 px[c] = (top + (bottom - top) * ty) / 255.0;
             }
-            let i = ((y as usize) * (width as usize) + (x as usize)) * 2;
-            let packed = pack_f16(px);
+            let index = y * width + x;
+            let i = index as usize * 2;
+            let packed = pack_grained(px, index, grain);
             buf[i] = packed[0];
             buf[i + 1] = packed[1];
         }
@@ -1004,7 +1048,7 @@ mod tests {
         let bottom = [18u8, 12, 48, 255];
         for angle in [0.0f32, 25.0, 90.0, 200.0] {
             let bytes = render_gradient(top, bottom, angle, w, h);
-            let halves = render_gradient_f16(top, bottom, angle, w, h);
+            let halves = render_gradient_f16(top, bottom, angle, 0.0, w, h);
             let un = |bits: u32| half::f16::from_bits(bits as u16).to_f32();
             let mut worst = 0.0f32;
             for (i, b) in bytes.chunks_exact(4).enumerate() {
@@ -1028,7 +1072,7 @@ mod tests {
         let (w, h) = (64u32, 48u32);
         let corners = crate::FourPointGradient { top_left: [4, 3, 12, 255], top_right: [60, 20, 8, 255], bottom_left: [10, 40, 90, 255], bottom_right: [200, 180, 30, 200] };
         let bytes = super::render_four_point_gradient(corners, w, h);
-        let half = super::render_four_point_gradient_f16(corners, w, h);
+        let half = super::render_four_point_gradient_f16(corners, 0.0, w, h);
         let un = |bits: u32| half::f16::from_bits(bits as u16).to_f32() * 255.0;
         let mut worst = 0.0f32;
         for (b, p) in bytes.chunks_exact(4).zip(half.chunks_exact(2)) {
@@ -1038,7 +1082,7 @@ mod tests {
             }
         }
         assert!(worst <= 1.0, "{worst} code values from the byte wash");
-        let data = crate::GeneratorData::Gradient { top: [0; 4], bottom: [0; 4], angle_deg: 0.0, four_point: Some(corners) };
+        let data = crate::GeneratorData::Gradient { top: [0; 4], bottom: [0; 4], angle_deg: 0.0, four_point: Some(corners), grain: 0.0 };
         assert_eq!(super::render_generator_f16(&data, w, h, 0.0, 1.0), half, "the router draws it in float");
     }
 
@@ -1050,16 +1094,86 @@ mod tests {
         let (w, h) = (512u32, 8u32);
         let corners = crate::FourPointGradient { top_left: [10, 10, 10, 255], top_right: [18, 18, 18, 255], bottom_left: [10, 10, 10, 255], bottom_right: [18, 18, 18, 255] };
         let bytes = super::render_four_point_gradient(corners, w, h);
-        let half = super::render_four_point_gradient_f16(corners, w, h);
+        let half = super::render_four_point_gradient_f16(corners, 0.0, w, h);
         let row_bytes: std::collections::BTreeSet<u8> = bytes.chunks_exact(4).take(w as usize).map(|p| p[0]).collect();
         let row_half: std::collections::BTreeSet<u32> = half.chunks_exact(2).take(w as usize).map(|p| p[0] & 0xFFFF).collect();
         assert!(row_half.len() > row_bytes.len() * 4, "{} half-float levels against {} byte ones", row_half.len(), row_bytes.len());
     }
 
+    /// The generator grain (#2073), in sRGB code values: what grained
+    /// minus ungrained is at each pixel, the green channel of each.
+    fn grain_codes(grained: &[u32], plain: &[u32]) -> Vec<f32> {
+        let un = |bits: u32| half::f16::from_bits(bits as u16).to_f32() * 255.0;
+        grained.chunks_exact(2).zip(plain.chunks_exact(2)).map(|(g, p)| un(g[0] >> 16) - un(p[0] >> 16)).collect()
+    }
+
+    /// With its grain at 0 every smooth generator draws the picture it drew
+    /// before there was any (#2073), to the bit: these hashes were taken
+    /// from the same calls before the grain existed. The control: with
+    /// grain the picture is another.
+    #[test]
+    fn without_grain_the_gradients_are_drawn_as_before() {
+        let fnv = |v: &[u32]| v.iter().flat_map(|x| x.to_le_bytes()).fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+        let (w, h) = (96u32, 54u32);
+        let corners = crate::FourPointGradient { top_left: [4, 3, 12, 255], top_right: [60, 20, 8, 255], bottom_left: [10, 40, 90, 255], bottom_right: [200, 180, 30, 200] };
+        let draw = |grain: f32| [
+            render_gradient_f16([40, 70, 90, 255], [120, 140, 160, 255], 30.0, grain, w, h),
+            render_four_point_gradient_f16(corners, grain, w, h),
+            render_living_gradient_f16([12, 23, 32, 255], [29, 60, 65, 255], 25.0, 1.5, 0.18, grain, w, h, 1.25),
+        ];
+        let before = [0xaaa7_0b54_13f3_fe42u64, 0xaa82_a195_1015_ed51, 0xdac1_35ea_c4c9_1802];
+        for ((what, drawn), want) in ["gradient", "four-point", "living gradient"].into_iter().zip(draw(0.0)).zip(before) {
+            assert_eq!(fnv(&drawn), want, "{what}: grain 0 is not the picture drawn before");
+        }
+        for ((what, drawn), want) in ["gradient", "four-point", "living gradient"].into_iter().zip(draw(crate::DEFAULT_GENERATOR_GRAIN)).zip(before) {
+            assert_ne!(fnv(&drawn), want, "the control: {what} with grain is another picture");
+        }
+    }
+
+    /// The grain is as deep as asked, a bell about the ramp, on every
+    /// smooth generator (#2073).
+    #[test]
+    fn the_grain_is_as_deep_as_asked() {
+        let (w, h) = (256u32, 128u32);
+        let (a, b) = ([100u8, 100, 100, 255], [140, 140, 140, 255]);
+        for depth in [crate::DEFAULT_GENERATOR_GRAIN, 4.0] {
+            let corners = crate::FourPointGradient { top_left: a, top_right: b, bottom_left: b, bottom_right: a };
+            for (what, grained, plain) in [
+                ("gradient", render_gradient_f16(a, b, 0.0, depth, w, h), render_gradient_f16(a, b, 0.0, 0.0, w, h)),
+                ("four-point", render_four_point_gradient_f16(corners, depth, w, h), render_four_point_gradient_f16(corners, 0.0, w, h)),
+                ("living gradient", render_living_gradient_f16(a, b, 0.0, 3.0, 0.3, depth, w, h, 1.5), render_living_gradient_f16(a, b, 0.0, 3.0, 0.3, 0.0, w, h, 1.5)),
+            ] {
+                let d = grain_codes(&grained, &plain);
+                let mean = d.iter().sum::<f32>() / d.len() as f32;
+                let std = (d.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / d.len() as f32).sqrt();
+                assert!(mean.abs() < 0.05, "{what} at {depth}: the grain is centred, mean {mean}");
+                assert!((std - depth).abs() < 0.1 * depth, "{what} at {depth}: {std} code values of grain");
+            }
+        }
+    }
+
+    /// The grain is fixed in place (#2073): a still gradient grains alike
+    /// at every time, and a living one's grain at a pixel is the same on
+    /// every frame, so a still frame doesn't flicker and the viewer and an
+    /// export agree. The control: the living gradient itself moves.
+    #[test]
+    fn the_grain_holds_still() {
+        let (w, h) = (64u32, 36u32);
+        let (a, b) = ([30u8, 60, 90, 255], [90, 120, 160, 255]);
+        let still = crate::GeneratorData::Gradient { top: a, bottom: b, angle_deg: 10.0, four_point: None, grain: crate::DEFAULT_GENERATOR_GRAIN };
+        assert_eq!(render_generator_f16(&still, w, h, 0.0, 4.0), render_generator_f16(&still, w, h, 2.5, 4.0), "a still gradient: one picture");
+        let grain_at = |t: f64| grain_codes(&render_living_gradient_f16(a, b, 0.0, 0.0, 0.0, 3.0, w, h, t), &render_living_gradient_f16(a, b, 0.0, 0.0, 0.0, 0.0, w, h, t));
+        let (g0, g1) = (grain_at(0.0), grain_at(1.7));
+        let worst = g0.iter().zip(&g1).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+        assert!(worst < 0.2, "the living gradient's grain moved by {worst} code values");
+        assert_eq!(render_living_gradient_f16(a, b, 0.0, 30.0, 0.2, 3.0, w, h, 0.5), render_living_gradient_f16(a, b, 0.0, 30.0, 0.2, 3.0, w, h, 0.5), "one time, one picture");
+        assert_ne!(render_living_gradient_f16(a, b, 0.0, 30.0, 0.2, 3.0, w, h, 0.0), render_living_gradient_f16(a, b, 0.0, 30.0, 0.2, 3.0, w, h, 1.0), "the control: it moves");
+    }
+
     #[test]
     fn the_f16_gradient_has_no_steps() {
         let (w, h) = (16u32, 512u32);
-        let halves = render_gradient_f16([4, 3, 12, 255], [18, 12, 48, 255], 0.0, w, h);
+        let halves = render_gradient_f16([4, 3, 12, 255], [18, 12, 48, 255], 0.0, 0.0, w, h);
         let mut seen = std::collections::BTreeSet::new();
         for y in 0..h as usize {
             let ba = halves[(y * w as usize) * 2 + 1];

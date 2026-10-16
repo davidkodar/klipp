@@ -27,7 +27,7 @@ fn ffmpeg_ok() -> bool {
 /// the GPU converts to the encoder's planes when the encoder takes them.
 fn snapshot() -> SequenceSnapshot {
     let tc = |f| RationalTime::from_frames(f, 25);
-    let gradient = GeneratorData::LivingGradient { a: [200, 40, 30, 255], b: [20, 60, 220, 255], angle_deg: 30.0, drift_deg_per_sec: 90.0, glow: 0.4 };
+    let gradient = GeneratorData::LivingGradient { a: [200, 40, 30, 255], b: [20, 60, 220, 255], angle_deg: 30.0, drift_deg_per_sec: 90.0, glow: 0.4, grain: klipp_core::DEFAULT_GENERATOR_GRAIN };
     let mut clip = klipp_timeline::Clip {
         kind: klipp_timeline::ClipKind::Generator(gradient),
         source_in: tc(0),

@@ -8,13 +8,16 @@ impl FrameSource for NoMedia {
     fn frame(&mut self, _: &Clip, _: f64, _: u32, _: u32) -> Option<SourceFrame> { None }
 }
 fn sequence(w: u32, h: u32, glow: f32) -> Sequence {
+    sequence_grained(w, h, glow, klipp_core::DEFAULT_GENERATOR_GRAIN)
+}
+fn sequence_grained(w: u32, h: u32, glow: f32, grain: f32) -> Sequence {
     let mut seq = Sequence::new_default();
     seq.resolution = Resolution { width: w, height: h };
     let tc = |s| RationalTime::from_secs_f64(s, seq.fps.rate());
     let mut track = Track::new("Gradient", TrackKind::Video);
     track.clips.push(Clip {
         kind: ClipKind::Generator(GeneratorData::LivingGradient {
-            a: [12, 23, 32, 180], b: [29, 60, 65, 255], angle_deg: 25.0, drift_deg_per_sec: 1.5, glow,
+            a: [12, 23, 32, 180], b: [29, 60, 65, 255], angle_deg: 25.0, drift_deg_per_sec: 1.5, glow, grain,
         }),
         source_in: tc(0.0), source_out: tc(10.0), ..Clip::gap(tc(0.0), tc(10.0))
     });
@@ -30,20 +33,26 @@ fn renderer(gpu: bool) -> Renderer {
 fn gpu_living_gradient_matches_cpu_at_several_times() {
     let mut cpu = renderer(false);
     let mut gpu = renderer(true);
-    for (glow, ws) in [(0.0, klipp_core::WorkingColorspace::Rec709Linear), (0.18, klipp_core::WorkingColorspace::Bt2020Linear), (1.0, klipp_core::WorkingColorspace::Bt2020Linear)] {
+    let grained = klipp_core::DEFAULT_GENERATOR_GRAIN;
+    for (glow, ws, grain) in [
+        (0.0, klipp_core::WorkingColorspace::Rec709Linear, 0.0),
+        (0.18, klipp_core::WorkingColorspace::Bt2020Linear, 0.0),
+        (1.0, klipp_core::WorkingColorspace::Bt2020Linear, 0.0),
+        (0.0, klipp_core::WorkingColorspace::Rec709Linear, grained),
+        (0.18, klipp_core::WorkingColorspace::Bt2020Linear, grained),
+        (1.0, klipp_core::WorkingColorspace::Bt2020Linear, grained),
+        (0.18, klipp_core::WorkingColorspace::Rec709Linear, 4.0),
+    ] {
         cpu.set_working_colorspace(ws);
         gpu.set_working_colorspace(ws);
-        let seq = sequence(128, 72, glow);
+        let seq = sequence_grained(128, 72, glow, grain);
         for secs in [0.0, 1.2, 7.5] {
             let at = RationalTime::from_secs_f64(secs, seq.fps.rate());
-            let (mut linear, _) = cpu.render_inspected(&seq, at, 128, 72, &mut NoMedia, RenderOptions::default(), Inspect::default());
-            if let Some(matrix) = klipp_color::primaries::working_space_conversion_matrix(ws, klipp_core::WorkingColorspace::Rec709Linear) {
-                for px in linear.chunks_exact_mut(4) {
-                    let rgb = klipp_color::primaries::matrix3_mul_vec(matrix, [px[0], px[1], px[2]]);
-                    px[..3].copy_from_slice(&rgb);
-                }
-            }
-            let expected = klipp_effects::linear_f32_rgba_to_srgb_u8(&linear);
+            let (linear, _) = cpu.render_inspected(&seq, at, 128, 72, &mut NoMedia, RenderOptions::default(), Inspect::default());
+            // The viewer's CPU encode, dithered as the GPU's display encode
+            // is since #2072: compared with an undithered encode, the
+            // dither alone spends the level this allows.
+            let expected = klipp_color::display::display_transform_ws_dithered_to(&linear, klipp_core::ToneMapOp::None, ws, klipp_core::SdrTransfer::Srgb);
             let Some((actual, stats)) = gpu.render_display_u8_on_gpu(&seq, at, 128, 72, &mut NoMedia, RenderOptions::default()) else {
                 assert_ne!(std::env::var("KLIPP_TEST_REQUIRE_GPU").as_deref(), Ok("1"), "GPU required");
                 eprintln!("unverified: no GPU stack"); return;
@@ -51,7 +60,7 @@ fn gpu_living_gradient_matches_cpu_at_several_times() {
             assert_eq!(stats.gpu_generators, 1);
             assert_eq!(stats.cpu_generator_ms, 0.0);
             let worst = actual.iter().zip(&expected).map(|(a,b)| (*a as i32 - *b as i32).abs()).max().unwrap();
-            assert!(worst <= 1, "glow={glow} time={secs}: {worst} display levels");
+            assert!(worst <= 1, "glow={glow} grain={grain} time={secs}: {worst} display levels");
         }
     }
 }
@@ -74,7 +83,7 @@ fn measure_4k_living_gradient() {
     eprintln!("4K gradient GPU stack, display readback included: median {:.2}ms p95 {:.2}ms", samples[15], samples[28]);
     let start = std::time::Instant::now();
     for n in 0..10 {
-        std::hint::black_box(klipp_core::generator::render_living_gradient_f16([12,23,32,180], [29,60,65,255], 25.0, 1.5, 0.18, 3840, 2160, n as f64 / 30.0));
+        std::hint::black_box(klipp_core::generator::render_living_gradient_f16([12,23,32,180], [29,60,65,255], 25.0, 1.5, 0.18, klipp_core::DEFAULT_GENERATOR_GRAIN, 3840, 2160, n as f64 / 30.0));
     }
     eprintln!("4K CPU generator alone: {:.2}ms mean", start.elapsed().as_secs_f64() * 100.0);
 }

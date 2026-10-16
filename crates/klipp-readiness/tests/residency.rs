@@ -283,6 +283,7 @@ fn native_generators_distinguish_gpu_cached_cpu_and_per_frame_cpu() {
                 angle_deg: 20.0,
                 drift_deg_per_sec: 1.0,
                 glow: 0.1,
+                grain: klipp_core::DEFAULT_GENERATOR_GRAIN,
             },
             Residency::Gpu,
         ),

@@ -26,7 +26,7 @@ struct GeneratorTemplate {
 
 fn solid() -> GeneratorData { GeneratorData::SolidColor { color: [0, 0, 0, 255] } }
 fn gradient() -> GeneratorData {
-    GeneratorData::Gradient { top: [36, 52, 92, 255], bottom: [8, 10, 18, 255], angle_deg: 0.0, four_point: None }
+    GeneratorData::Gradient { top: [36, 52, 92, 255], bottom: [8, 10, 18, 255], angle_deg: 0.0, four_point: None, grain: klipp_core::DEFAULT_GENERATOR_GRAIN }
 }
 fn four_corner() -> GeneratorData {
     GeneratorData::Gradient {
@@ -39,10 +39,11 @@ fn four_corner() -> GeneratorData {
             bottom_left: [60, 80, 200, 255],
             bottom_right: [20, 30, 90, 255],
         }),
+        grain: klipp_core::DEFAULT_GENERATOR_GRAIN,
     }
 }
 fn living_gradient() -> GeneratorData {
-    GeneratorData::LivingGradient { a: [22, 34, 78, 255], b: [64, 24, 82, 255], angle_deg: 20.0, drift_deg_per_sec: 4.0, glow: 0.35 }
+    GeneratorData::LivingGradient { a: [22, 34, 78, 255], b: [64, 24, 82, 255], angle_deg: 20.0, drift_deg_per_sec: 4.0, glow: 0.35, grain: klipp_core::DEFAULT_GENERATOR_GRAIN }
 }
 fn grain() -> GeneratorData {
     GeneratorData::Grain { color: [26, 26, 30, 255], amount: 0.35, size_px: 2.0, speed: 24.0 }

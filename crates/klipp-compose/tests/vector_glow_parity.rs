@@ -70,6 +70,7 @@ fn vector_sequence(w:u32,h:u32) -> klipp_timeline::Sequence {
     let mut bg=Track::new("Background",TrackKind::Video);
     bg.clips.push(Clip{kind:ClipKind::Generator(klipp_core::GeneratorData::LivingGradient{
         a:[12,23,32,255],b:[29,60,65,255],angle_deg:25.0,drift_deg_per_sec:1.5,glow:0.18,
+        grain: klipp_core::DEFAULT_GENERATOR_GRAIN,
     }),source_in:tc(0.0),source_out:tc(7.0),..Clip::gap(tc(0.0),tc(7.0))});
     seq.tracks=vec![title,bg];seq
 }
@@ -89,7 +90,9 @@ fn animated_and_completed_vector_reveals_match_export_after_reload(){
     for t in [0.3,1.2,2.0,4.0,6.0,0.3]{
         let at=klipp_core::RationalTime::from_secs_f64(t,seq.fps.rate());
         let (linear,_)=cpu.render_inspected(&seq,at,320,180,&mut NoMedia,Default::default(),Default::default());
-        let expected=klipp_effects::linear_f32_rgba_to_srgb_u8(&linear);
+        // The viewer's CPU encode, dithered as the GPU's display encode is
+        // since #2072, so the dither doesn't spend the level allowed.
+        let expected=klipp_color::display::display_transform_ws_dithered_to(&linear,klipp_core::ToneMapOp::None,klipp_core::WorkingColorspace::Rec709Linear,klipp_core::SdrTransfer::Srgb);
         let Some((actual,_))=gpu.render_display_u8_on_gpu(&seq,at,320,180,&mut NoMedia,Default::default()) else {
             assert_ne!(std::env::var("KLIPP_TEST_REQUIRE_GPU").as_deref(),Ok("1"),"GPU required");return;
         };

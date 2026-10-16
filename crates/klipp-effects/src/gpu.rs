@@ -5620,13 +5620,13 @@ impl GpuEffectsPipeline {
     /// Draw the native living gradient directly in a stack layer. Only
     /// parameters cross from the CPU; pixels remain on the GPU.
     #[allow(clippy::too_many_arguments)]
-    pub fn stack_layer_living_gradient(&mut self, i: usize, a: [u8; 4], b: [u8; 4], angle_deg: f32, drift: f32, glow: f32, secs: f64) -> bool {
+    pub fn stack_layer_living_gradient(&mut self, i: usize, a: [u8; 4], b: [u8; 4], angle_deg: f32, drift: f32, glow: f32, grain: f32, secs: f64) -> bool {
         if self.is_device_lost() || i >= self.stack_layers.len() { return false; }
         let (width, height) = self.stack_dims;
         let t = secs as f32;
         let theta = (angle_deg + drift * t).to_radians();
         self.write_params(&LivingGradientParams {
-            width, height, glow, _pad: 0,
+            width, height, glow, grain,
             a: a.map(f32::from), b: b.map(f32::from),
             dir: [theta.sin(), theta.cos()],
             centre: [width as f32 * (0.5 + 0.28 * (t * 0.33).cos()), height as f32 * (0.5 + 0.22 * (t * 0.21).sin())],
@@ -8110,7 +8110,7 @@ struct LivingGradientParams {
     width: u32,
     height: u32,
     glow: f32,
-    _pad: u32,
+    grain: f32,
     a: [f32; 4],
     b: [f32; 4],
     dir: [f32; 2],
@@ -9148,6 +9148,42 @@ fn quantise_u8(v: f32, d: f32) -> u32 {
     var n = d;
     if (c <= 0.0 || c >= 1.0 || abs(x - round(x)) < 1e-3) { n = 0.0; }
     return u32(clamp(x + 0.5 + n, 0.0, 255.0));
+}
+"
+    };
+}
+
+/// [`crate::generator_grain`] as WGSL: the smooth generators' grain
+/// (#2073), the CPU's to the bit. The literals are `DITHER_HASH_MUL_A`,
+/// `DITHER_HASH_MUL_B` (the hash both share), `GRAIN_SALTS` and
+/// `GRAIN_TAPER_CODES` (`63.75` is `255 / 4`), which
+/// `generator_grain_wgsl_carries_the_rust_constants` holds equal.
+/// Computed in the generator's own pass from the pixel's index alone.
+macro_rules! shader_generator_grain_wgsl {
+    () => {
+        "
+fn grain_hash(v: u32) -> u32 {
+    var x = v;
+    x = x ^ (x >> 16u);
+    x = x * 0x7feb352du;
+    x = x ^ (x >> 15u);
+    x = x * 0x846ca68bu;
+    x = x ^ (x >> 16u);
+    return x;
+}
+
+/// `klipp_effects::generator_grain::grain_noise`.
+fn grain_noise(index: u32) -> f32 {
+    let a = f32(grain_hash(index ^ 0x85ebca6bu) >> 8u) / 16777216.0;
+    let b = f32(grain_hash(index ^ 0xc2b2ae35u) >> 8u) / 16777216.0;
+    let c = f32(grain_hash(index ^ 0x27d4eb2fu) >> 8u) / 16777216.0;
+    return (a + b + c - 1.5) * 2.0;
+}
+
+/// `klipp_effects::generator_grain::grain_channel`.
+fn grain_channel(v: f32, n: f32, s: f32) -> f32 {
+    let taper = clamp(min(v, 1.0 - v) * 63.75, 0.0, 1.0);
+    return clamp(v + n * s * taper / 255.0, 0.0, 1.0);
 }
 "
     };
@@ -15393,11 +15429,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // means "half the photons reach the edge" rather than "half the
 // sRGB byte value" (which the u8 version did — visibly darker).
 // The generator effect (#1746), as `generator::Gen::at` computes it.
-// The native living gradient's CPU half-float path, including its two
-// half-float roundings, followed by sRGB decode and working-space conversion.
-const SHADER_LIVING_GRADIENT: &str = concat!(shader_pixel_storage_wgsl!(), "
+// The native living gradient's CPU half-float path, including its
+// half-float roundings and its grain (#2073), followed by sRGB decode and
+// working-space conversion.
+const SHADER_LIVING_GRADIENT: &str = concat!(shader_pixel_storage_wgsl!(), shader_generator_grain_wgsl!(), "
 struct Params {
-    width: u32, height: u32, glow: f32, _pad: u32,
+    width: u32, height: u32, glow: f32, grain: f32,
     a: vec4<f32>, b: vec4<f32>, dir: vec2<f32>, centre: vec2<f32>,
     m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>,
 }
@@ -15428,6 +15465,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if f >= 0.002 {
             c = rounded(vec4<f32>(min(c.rgb + (vec3<f32>(1.0) - c.rgb) * f * 0.6, vec3<f32>(1.0)), c.a));
         }
+    }
+    if params.grain > 0.0 {
+        let n = grain_noise(i);
+        c = rounded(vec4<f32>(grain_channel(c.r, n, params.grain), grain_channel(c.g, n, params.grain), grain_channel(c.b, n, params.grain), c.a));
     }
     let rgb = vec3<f32>(linear(c.r), linear(c.g), linear(c.b));
     output[i] = pack(vec4<f32>(dot(params.m0.xyz, rgb), dot(params.m1.xyz, rgb), dot(params.m2.xyz, rgb), c.a));
@@ -18343,6 +18384,30 @@ mod display_dither_rule_tests {
             assert!(shader.contains(wgsl), "{name} lacks the dither");
             assert!(shader.contains("let d = dither_at(idx);"), "{name} does not dither its pixels");
         }
+    }
+}
+
+#[cfg(test)]
+mod generator_grain_rule_tests {
+    use crate::dither::{DITHER_HASH_MUL_A, DITHER_HASH_MUL_B};
+    use crate::generator_grain::{GRAIN_SALTS, GRAIN_TAPER_CODES};
+
+    /// The living gradient's pass carries the CPU's grain (#2073): the
+    /// literals the WGSL is written with are the Rust constants.
+    #[test]
+    fn generator_grain_wgsl_carries_the_rust_constants() {
+        let wgsl = shader_generator_grain_wgsl!();
+        for (name, k) in [("A", DITHER_HASH_MUL_A), ("B", DITHER_HASH_MUL_B)] {
+            assert!(wgsl.contains(&format!("x * 0x{k:08x}u")), "hash multiplier {name} is not the Rust constant");
+        }
+        for (n, salt) in GRAIN_SALTS.iter().enumerate() {
+            assert!(wgsl.contains(&format!("grain_hash(index ^ 0x{salt:08x}u) >> 8u) / 16777216.0")), "salt {n} is not the Rust constant, or its draw isn't the CPU's 24 bits");
+        }
+        assert_eq!(255.0 / GRAIN_TAPER_CODES, 63.75, "the WGSL's taper is the CPU's");
+        assert!(wgsl.contains("min(v, 1.0 - v) * 63.75"), "the WGSL tapers as the CPU does");
+        assert!(wgsl.contains("(a + b + c - 1.5) * 2.0"), "the WGSL scales as the CPU does");
+        assert!(super::SHADER_LIVING_GRADIENT.contains(wgsl), "the living gradient lacks the grain");
+        assert!(super::SHADER_LIVING_GRADIENT.contains("let n = grain_noise(i);"), "the living gradient does not grain its pixels");
     }
 }
 

@@ -66,6 +66,10 @@ name = "display_encode_cost"
 path = "tests/display_encode_cost.rs"
 
 [[test]]
+name = "generator_pass_cost"
+path = "tests/generator_pass_cost.rs"
+
+[[test]]
 name = "effect_chain_cost"
 path = "tests/effect_chain_cost.rs"
 

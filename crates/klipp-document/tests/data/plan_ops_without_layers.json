@@ -316,7 +316,8 @@
           255
         ],
         "angle_deg": 0.0,
-        "four_point": null
+        "four_point": null,
+        "grain": 2.5
       }
     },
     "at": {

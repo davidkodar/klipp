@@ -53,6 +53,7 @@ fn generators() -> Vec<G> {
             angle_deg: 25.,
             drift_deg_per_sec: 8.,
             glow: 0.3,
+            grain: klipp_core::DEFAULT_GENERATOR_GRAIN,
         },
         G::Grain {
             color: [30, 50, 80, 255],
@@ -69,6 +70,7 @@ fn generators() -> Vec<G> {
             bottom: [80, 90, 120, 255],
             angle_deg: 25.,
             four_point: None,
+            grain: klipp_core::DEFAULT_GENERATOR_GRAIN,
         },
         G::ColorBars,
         G::ColorBars100,

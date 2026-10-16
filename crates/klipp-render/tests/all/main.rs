@@ -34,6 +34,8 @@ mod frame_blend_reads_the_stream;
 mod frame_colour_tags;
 #[path = "../gif_export.rs"]
 mod gif_export;
+#[path = "../gradient_grain_export.rs"]
+mod gradient_grain_export;
 #[path = "../graded_still.rs"]
 mod graded_still;
 #[path = "../hdr10plus_export.rs"]
