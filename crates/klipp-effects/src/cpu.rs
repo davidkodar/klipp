@@ -610,12 +610,23 @@ pub(crate) fn apply(
             let (sin_a, cos_a) = angle.to_radians().sin_cos();
             let (dx, dy) = (cos_a * distance / n as f32, sin_a * distance / n as f32);
             each_pixel(&p, w, h, |x, y, f| {
-                let mut s = [0.0f32; 4];
+                // Straight and premultiplied sums together: a tap's colour
+                // counts by how much of it is there, so a picture over
+                // transparency smears at its coverage instead of darkening
+                // toward the clear pixels' colour (#2021), as the shutter's
+                // samples are averaged (#2017).
+                let (mut s, mut pre) = ([0.0f32; 4], [0.0f32; 3]);
                 for i in 0..n {
                     let q = f.clamped(round(x as f32 + dx * i as f32), round(y as f32 + dy * i as f32));
                     (0..4).for_each(|c| s[c] += q[c]);
+                    (0..3).for_each(|c| pre[c] += q[c] * q[3]);
                 }
-                s.map(|v| v / n as f32)
+                // Every tap opaque: the plain mean, to the bit as before.
+                if s[3] == n as f32 {
+                    return s.map(|v| v / n as f32);
+                }
+                let colour = |c: usize| if s[3] > crate::UNPREMULTIPLY_MIN_ALPHA { pre[c] / s[3] } else { 0.0 };
+                [colour(0), colour(1), colour(2), s[3] / n as f32]
             })
         }
         Emboss { angle, strength, mix: m } => {
