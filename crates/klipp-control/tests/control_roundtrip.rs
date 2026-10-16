@@ -1558,6 +1558,8 @@ fn export_is_refused_where_it_would_go_wrong_and_status_reads_the_queue() {
             audio_encoder: Some("aac".into()),
             compositing: Some("GPU".into()),
             timings: Some(klipp_core::ExportTimings { frames: 50, render_ms: 33.2, decode_ms: 7.5, encode_ms: 3.5, audio_ms: 0.6, gpu_composited: 50, ..Default::default() }),
+            banding: Some("bands".into()),
+            note: Some(klipp_render::banding::SUGGESTION.into()),
         });
     });
     let r = h.ok(json!({ "method": "export", "path": "/tmp/klipp-control-test-out.mp4", "target_lufs": -14.0, "crf": 20 }));
@@ -1573,6 +1575,9 @@ fn export_is_refused_where_it_would_go_wrong_and_status_reads_the_queue() {
     assert_eq!(st["jobs"][0]["audio_encoder"], json!("aac"));
     assert_eq!(st["jobs"][0]["compositing"], json!("GPU"));
     assert_eq!(st["jobs"][0]["timings"]["render_ms"], json!(33.2));
+    // The 8-bit banding suggestion rides on the job (#2074).
+    assert_eq!(st["jobs"][0]["note"], json!(klipp_render::banding::SUGGESTION));
+    assert_eq!(st["jobs"][0]["banding"], json!("bands"));
     assert_eq!(st["jobs"][0]["timings"]["gpu_composited"], json!(50));
     let unified = h.ok(json!({ "method": "job_status", "job_id": "j1" }));
     assert_eq!(unified["jobs"][0]["kind"], "render");
@@ -1637,7 +1642,7 @@ fn a_render_cancellation_names_the_job_it_stops() {
             job_id:id.clone(), path:"/tmp/render.mp4".into(), status:"rendering".into(),
             progress:0.4, frames_done:40, total_frames:100, stage:"Encoding".into(),
             error:None, loudness:None, hardware:String::new(), fps:None, eta_secs:None, projected_bytes:None,
-            encoder:None, audio_encoder:None, compositing:None, timings:None,
+            encoder:None, audio_encoder:None, compositing:None, timings:None, banding:None, note:None,
         });
     }
     let reply = h.ok(json!({"method":"cancel_job","job_id":requested}));
@@ -2159,6 +2164,42 @@ fn a_brief_is_set_and_the_piece_is_checked_against_it() {
     assert!(r["text"].as_str().unwrap().starts_with("Checked "), "{r}");
     assert!(r["next"].is_string(), "check points at the next step: {r}");
     assert!(r["findings"].as_array().unwrap().iter().any(|f| f["rule"] == "no_brief"), "{r}");
+}
+
+/// #2074: check notes a dark gradient an 8-bit file will show in steps,
+/// with the 10-bit or grain suggestion; with the gradient's default grain
+/// on, which keeps it smooth there, it notes nothing.
+#[test]
+fn check_notes_a_gradient_that_will_band_at_eight_bits() {
+    let mut h = harness();
+    let banding = |h: &mut Harness, grain: f32| {
+        let tc = |s: f64| klipp_core::RationalTime::from_secs_f64(s, 30);
+        let clip = klipp_timeline::Clip {
+            kind: klipp_timeline::ClipKind::Generator(klipp_core::GeneratorData::LivingGradient { a: [12, 23, 32, 255], b: [29, 60, 65, 255], angle_deg: 25.0, drift_deg_per_sec: 1.5, glow: 0.18, grain }),
+            source_in: tc(0.0),
+            source_out: tc(2.0),
+            ..klipp_timeline::Clip::gap(tc(0.0), tc(2.0))
+        };
+        let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        track.clips = vec![clip];
+        h.sequence.write().unwrap().tracks = vec![track];
+        let r = h.ok(json!({ "method": "check" }));
+        r["findings"].as_array().unwrap().iter().find(|f| f["rule"] == "banding_8bit").cloned()
+    };
+    let found = banding(&mut h, 0.0).expect("a gradient without grain bands");
+    assert_eq!(found["severity"], "note", "advice, not a fault: {found}");
+    assert_eq!(found["hint"], json!(klipp_render::banding::SUGGESTION));
+    assert_eq!(banding(&mut h, klipp_core::DEFAULT_GENERATOR_GRAIN), None, "its default grain keeps it smooth");
+    // While a render runs the check leaves the machine to it, and says so.
+    h.shared.exports.lock().unwrap().push(klipp_core::ExportStatus {
+        job_id: "busy".into(), path: "/tmp/render.mp4".into(), status: "rendering".into(),
+        progress: 0.1, frames_done: 1, total_frames: 10, stage: "Encoding".into(),
+        error: None, loudness: None, hardware: String::new(), fps: None, eta_secs: None, projected_bytes: None,
+        encoder: None, audio_encoder: None, compositing: None, timings: None, banding: None, note: None,
+    });
+    assert_eq!(banding(&mut h, 0.0), None, "not sampled beside a render");
+    let r = h.ok(json!({ "method": "check" }));
+    assert!(r["findings"].as_array().unwrap().iter().any(|f| f["rule"] == "banding_unchecked"), "{r}");
 }
 
 /// #1932: every finding of check carries an id; review_finding saves a

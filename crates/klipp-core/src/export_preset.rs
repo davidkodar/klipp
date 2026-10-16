@@ -38,6 +38,19 @@ pub struct ExportPresetSettings {
     /// `ExportSettings::true_peak_dbtp`.
     #[serde(default)]
     pub true_peak_dbtp: Option<f32>,
+    /// 10 for a 10-bit encode where the codec has a choice (H.264,
+    /// H.265, AV1), else 0: `ExportSettings::bit_depth`. ProRes is 10-bit
+    /// whatever this says.
+    #[serde(default)]
+    pub bit_depth: u8,
+}
+
+impl ExportPresetSettings {
+    /// Whether the preset writes 10-bit video (#2074): ProRes, or a codec
+    /// with the choice at 10. Its label in the list says so.
+    pub fn is_10bit(&self) -> bool {
+        self.video_codec != ExportVideoCodec::Gif && !self.video_codec.writes_8bit(self.bit_depth)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,6 +108,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 rate_control: RateControl::Crf,
                 target_lufs: Some(WEB_LOUDNESS_LUFS),
                 true_peak_dbtp: None,
+                bit_depth: 0,
             },
         },
         ExportPreset {
@@ -114,6 +128,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 rate_control: RateControl::Crf,
                 target_lufs: Some(WEB_LOUDNESS_LUFS),
                 true_peak_dbtp: None,
+                bit_depth: 0,
             },
         },
         ExportPreset {
@@ -133,6 +148,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 rate_control: RateControl::Crf,
                 target_lufs: Some(WEB_LOUDNESS_LUFS),
                 true_peak_dbtp: None,
+                bit_depth: 0,
             },
         },
         ExportPreset {
@@ -152,6 +168,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 rate_control: RateControl::Crf,
                 target_lufs: Some(WEB_LOUDNESS_LUFS),
                 true_peak_dbtp: None,
+                bit_depth: 0,
             },
         },
         ExportPreset {
@@ -171,6 +188,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 rate_control: RateControl::Crf,
                 target_lufs: Some(WEB_LOUDNESS_LUFS),
                 true_peak_dbtp: None,
+                bit_depth: 0,
             },
         },
         ExportPreset {
@@ -190,6 +208,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 rate_control: RateControl::Crf,
                 target_lufs: Some(WEB_LOUDNESS_LUFS),
                 true_peak_dbtp: None,
+                bit_depth: 0,
             },
         },
         ExportPreset {
@@ -214,6 +233,30 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 rate_control: RateControl::Crf,
                 target_lufs: None,
                 true_peak_dbtp: None,
+                bit_depth: 0,
+            },
+        },
+        // A 10-bit master for delivery to a platform or a grade (#2074):
+        // HEVC Main 10 keeps a dark, soft gradient from stepping, where
+        // an 8-bit file needs the gradient's grain to hide it.
+        ExportPreset {
+            id: "00000000-0000-4000-a000-00000000000f".into(),
+            name: "HEVC Main10 master".into(),
+            built_in: true,
+            settings: ExportPresetSettings {
+                format: ExportFormat::Mp4,
+                video_codec: ExportVideoCodec::H265,
+                resolution: None,
+                fps: None,
+                crf: 16,
+                preset: EncoderPreset::Slow,
+                audio_codec: ExportAudioCodec::Aac,
+                audio_bitrate_kbps: Some(320),
+                video_bitrate_kbps: None,
+                rate_control: RateControl::Crf,
+                target_lufs: None,
+                true_peak_dbtp: None,
+                bit_depth: 10,
             },
         },
         ExportPreset {
@@ -235,6 +278,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 rate_control: RateControl::Crf,
                 target_lufs: None,
                 true_peak_dbtp: None,
+                bit_depth: 0,
             },
         },
         ExportPreset {
@@ -254,6 +298,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 rate_control: RateControl::Crf,
                 target_lufs: None,
                 true_peak_dbtp: None,
+                bit_depth: 0,
             },
         },
         ExportPreset {
@@ -273,6 +318,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 rate_control: RateControl::Crf,
                 target_lufs: None,
                 true_peak_dbtp: None,
+                bit_depth: 0,
             },
         },
         ExportPreset {
@@ -294,6 +340,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 rate_control: RateControl::Crf,
                 target_lufs: None,
                 true_peak_dbtp: None,
+                bit_depth: 0,
             },
         },
         // Animated GIF — two-pass palette workflow. 480p / 15fps is
@@ -335,6 +382,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 // measures, and the one it rejects a file over.
                 target_lufs: Some(-23.0),
                 true_peak_dbtp: None,
+                bit_depth: 0,
             },
         },
         ExportPreset {
@@ -357,6 +405,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 // rather than turning it down on the way in.
                 target_lufs: Some(-14.0),
                 true_peak_dbtp: None,
+                bit_depth: 0,
             },
         },
         ExportPreset {
@@ -376,6 +425,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 rate_control: RateControl::Crf,
                 target_lufs: None,
                 true_peak_dbtp: None,
+                bit_depth: 0,
             },
         },
     ]
@@ -461,6 +511,23 @@ mod tests {
         let r128 = presets.iter().find(|p| p.name.contains("R128")).expect("an R128 preset");
         assert_eq!(r128.settings.target_lufs, Some(-23.0));
         assert_eq!(r128.settings.audio_codec, ExportAudioCodec::Pcm24, "a master wants PCM");
+    }
+
+    /// #2074: the built-in list offers 10-bit masters, and says which they
+    /// are: ProRes (the 422 master and the broadcast one) and HEVC Main10.
+    /// The delivery presets for the web are 8-bit.
+    #[test]
+    fn ten_bit_masters_are_offered_and_known() {
+        let presets = builtin_presets();
+        let ten: Vec<&str> = presets.iter().filter(|p| p.settings.is_10bit()).map(|p| p.name.as_str()).collect();
+        assert_eq!(ten, ["ProRes 422", "HEVC Main10 master", "Broadcast master (EBU R128)"]);
+        let main10 = presets.iter().find(|p| p.name == "HEVC Main10 master").unwrap();
+        assert_eq!((main10.settings.video_codec, main10.settings.bit_depth), (ExportVideoCodec::H265, 10));
+        assert!(!presets.iter().find(|p| p.name == "YouTube 1080p").unwrap().settings.is_10bit());
+        // A preset saved before the field reads as 8-bit.
+        let old = r#"{"format":"Mp4","video_codec":"H265","resolution":null,"fps":null,"crf":20,"audio_codec":"Aac","audio_bitrate_kbps":192}"#;
+        let s: ExportPresetSettings = serde_json::from_str(old).unwrap();
+        assert_eq!(s.bit_depth, 0);
     }
 
     #[test]

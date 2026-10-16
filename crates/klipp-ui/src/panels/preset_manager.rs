@@ -328,6 +328,7 @@ mod tests {
             rate_control: RateControl::Crf,
             target_lufs: None,
             true_peak_dbtp: None,
+            bit_depth: 0,
         }
     }
 
