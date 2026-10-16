@@ -122,6 +122,8 @@ const EFFECTS: &[(&str, Cover)] = &[
 
 const SHADERS: &[(&str, Cover)] = &[
     ("SHADER_LIVING_GRADIENT", Test("klipp-compose/tests/living_gradient_gpu.rs", "gpu_living_gradient_matches_cpu_at_several_times")),
+    ("SHADER_GRAIN_GENERATOR", Test("klipp-compose/tests/animated_generators_gpu.rs", "gpu_animated_generators_match_the_cpu")),
+    ("SHADER_SEGMENTS", Test("klipp-compose/tests/animated_generators_gpu.rs", "gpu_animated_generators_match_the_cpu")),
     ("SHADER_MASK_MIX", Test("klipp-effects/tests/mask_mix.rs", "gpu_mask_mix_matches_the_independent_oracle")),
     ("SHADER_MASK_MIX_WINDOW", Test("klipp-effects/tests/window_mix.rs", "a_window_inside_the_mix_is_the_window_drawn_into_a_matte")),
     ("LAYER_ROWS", Test(LAYER, "rounded_and_grouped_spills_match_cpu_on_gpu")),

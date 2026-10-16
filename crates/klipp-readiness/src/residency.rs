@@ -111,22 +111,13 @@ pub fn generator(data: &GeneratorData) -> Capability {
     use GeneratorData::*;
     use Residency::*;
     match data {
-        LivingGradient { .. } => cap(
+        LivingGradient { .. } | Grain { .. } | Countdown | Timer { .. } => cap(
             Gpu,
             "Native stack fast path; CPU fallback when GPU composition is unavailable",
             None,
         ),
-        Grain { .. } | Countdown | Timer { .. } => cap(
-            CpuPerFrame,
-            "Time-dependent raster followed by stack upload",
-            Some(2067),
-        ),
-        StillFrame { .. } => cap(
-            Residency::CpuPerFrame,
-            "Still-file reread and raster conversion on each frame",
-            Some(2068),
-        ),
         SolidColor { .. }
+        | StillFrame { .. }
         | Placeholder { .. }
         | Gradient { .. }
         | ColorBars
@@ -135,7 +126,7 @@ pub fn generator(data: &GeneratorData) -> Capability {
         | Polygon { .. }
         | Star { .. } => cap(
             CpuCached,
-            "Still-generator cache; invalidated by authored data or frame size",
+            "Still-generator cache; invalidated by authored data, frame size or (a still frame's) file change",
             None,
         ),
     }

@@ -293,6 +293,8 @@ fn native_generators_distinguish_gpu_cached_cpu_and_per_frame_cpu() {
             },
             Residency::CpuCached,
         ),
+        // Grain, a countdown and a timer draw on the GPU too (#2067): no
+        // CPU draw over three frames, where Grain made three.
         (
             G::Grain {
                 color: [20, 80, 100, 255],
@@ -300,7 +302,18 @@ fn native_generators_distinguish_gpu_cached_cpu_and_per_frame_cpu() {
                 size_px: 1.0,
                 speed: 24.0,
             },
-            Residency::CpuPerFrame,
+            Residency::Gpu,
+        ),
+        (G::Countdown, Residency::Gpu),
+        (
+            G::Timer {
+                mode: Default::default(),
+                initial_seconds: 10.0,
+                format: Default::default(),
+                text_color: [255; 4],
+                background_color: [0, 0, 0, 255],
+            },
+            Residency::Gpu,
         ),
     ] {
         assert_eq!(residency::generator(&data).residency, expected);

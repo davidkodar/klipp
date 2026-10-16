@@ -209,6 +209,10 @@ pub struct GpuEffectsPipeline {
     /// The generator effect's pass (#1746).
     generator_pipeline: wgpu::ComputePipeline,
     living_gradient_pipeline: wgpu::ComputePipeline,
+    /// The native Grain, Countdown and Timer generators in the stack
+    /// (#2067).
+    grain_generator_pipeline: wgpu::ComputePipeline,
+    segments_pipeline: wgpu::ComputePipeline,
     film_grain_pipeline: wgpu::ComputePipeline,
     tilt_shift_blend_pipeline: wgpu::ComputePipeline,
     focus_blur_blend_pipeline: wgpu::ComputePipeline,
@@ -437,6 +441,8 @@ pub struct GpuEffectsPipeline {
     stack_acc: Option<std::sync::Arc<wgpu::Buffer>>,
     stack_sprite_u8: Option<wgpu::Buffer>,
     stack_sprite_f16: Option<wgpu::Buffer>,
+    /// A countdown's or a timer's rects, `[x0, y0, x1, y1)` each (#2067).
+    stack_rects: Option<wgpu::Buffer>,
     /// Title sprites kept on the GPU by the id their renderer gave
     /// them, so a title that only moves or fades from frame to frame is
     /// uploaded once and placed by a pass. Frame-sized RGBA8; dropped
@@ -1013,6 +1019,8 @@ impl GpuEffectsPipeline {
         let light_rays_pipeline = create_pipeline(&device, &pipeline_layout, "light_rays", SHADER_LIGHT_RAYS);
         let vignette_pipeline = create_pipeline(&device, &pipeline_layout, "vignette", SHADER_VIGNETTE);
         let living_gradient_pipeline = create_pipeline(&device, &pipeline_layout, "living_gradient", SHADER_LIVING_GRADIENT);
+        let grain_generator_pipeline = create_pipeline(&device, &pipeline_layout, "grain_generator", SHADER_GRAIN_GENERATOR);
+        let segments_pipeline = create_pipeline(&device, &pipeline_layout, "segments", SHADER_SEGMENTS);
         let generator_pipeline = create_pipeline(&device, &pipeline_layout, "generator", SHADER_GENERATOR);
         let film_grain_pipeline = create_pipeline(&device, &pipeline_layout, "film_grain", SHADER_FILM_GRAIN);
         let tilt_shift_blend_pipeline = create_pipeline(&device, &transition_pl, "tilt_shift_blend", SHADER_TILT_SHIFT_BLEND);
@@ -1626,6 +1634,8 @@ impl GpuEffectsPipeline {
             vignette_pipeline,
             generator_pipeline,
             living_gradient_pipeline,
+            grain_generator_pipeline,
+            segments_pipeline,
             film_grain_pipeline,
             tilt_shift_blend_pipeline,
             focus_blur_blend_pipeline,
@@ -1739,6 +1749,7 @@ impl GpuEffectsPipeline {
             stack_acc: None,
             stack_sprite_u8: None,
             stack_sprite_f16: None,
+            stack_rects: None,
             stack_sprites: Vec::new(),
             stack_sprite_tick: 0,
             sprite_place_pipeline,
@@ -5636,6 +5647,57 @@ impl GpuEffectsPipeline {
         true
     }
 
+    /// Layer `i` as the native Grain generator draws it (#2067): `color`
+    /// with monochrome noise `amount` deep in cells `size_px` wide at
+    /// 1080p, a new grain `speed` times a second. The CPU's
+    /// `render_grain` is its reference: the same hash, cell and depth.
+    pub fn stack_layer_grain(&mut self, i: usize, color: [u8; 4], amount: f32, size_px: f32, speed: f32, secs: f64) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() { return false; }
+        let (width, height) = self.stack_dims;
+        let scale = (height as f32 / 1080.0).max(0.1);
+        self.write_params(&GrainGeneratorParams {
+            width, height,
+            frame: (secs as f32 * speed.max(0.0)).floor() as i64 as u32,
+            _pad: 0,
+            color: color.map(f32::from),
+            cell: (size_px * scale).max(1.0),
+            depth: amount.clamp(0.0, 1.0) * 110.0,
+            _p: [0.0; 2],
+            to_working: self.authored_to_working,
+        });
+        self.stack_pass(&self.grain_generator_pipeline, self.stack_acc.as_ref().unwrap(), &self.stack_layers[i], (width * height).div_ceil(WORKGROUP_SIZE), "stack_grain_generator");
+        true
+    }
+
+    /// Layer `i` as flat rects over a background (#2067): a countdown's or
+    /// a timer's digits, laid out by `klipp_core::Segments` for the CPU and
+    /// here alike. `rects` are `[x0, y0, x1, y1)` in the layer's pixels.
+    pub fn stack_layer_segments(&mut self, i: usize, background: [u8; 4], color: [u8; 4], rects: &[[u32; 4]]) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() { return false; }
+        let (width, height) = self.stack_dims;
+        let bytes = (rects.len().max(1) * 16) as u64;
+        if self.stack_rects.as_ref().is_none_or(|b| b.size() < bytes) {
+            self.stack_rects = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("stack_rects"),
+                size: bytes.max(256),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let buf = self.stack_rects.as_ref().unwrap();
+        if !rects.is_empty() {
+            self.upload(buf, 0, bytemuck::cast_slice(rects));
+        }
+        self.write_params(&SegmentsParams {
+            width, height, count: rects.len() as u32, _pad: 0,
+            background: background.map(f32::from),
+            color: color.map(f32::from),
+            to_working: self.authored_to_working,
+        });
+        self.stack_pass(&self.segments_pipeline, buf, &self.stack_layers[i], (width * height).div_ceil(WORKGROUP_SIZE), "stack_segments");
+        true
+    }
+
     /// Layer `i` takes an sRGB RGBA8 straight-alpha sprite from the CPU
     /// (a title, a generator): decoded to linear on the GPU, alpha kept.
     /// Layer `i` from sRGB-encoded half floats, decoded on the way in.
@@ -8115,6 +8177,32 @@ struct LivingGradientParams {
     b: [f32; 4],
     dir: [f32; 2],
     centre: [f32; 2],
+    to_working: [[f32; 4]; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GrainGeneratorParams {
+    width: u32,
+    height: u32,
+    frame: u32,
+    _pad: u32,
+    color: [f32; 4],
+    cell: f32,
+    depth: f32,
+    _p: [f32; 2],
+    to_working: [[f32; 4]; 3],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct SegmentsParams {
+    width: u32,
+    height: u32,
+    count: u32,
+    _pad: u32,
+    background: [f32; 4],
+    color: [f32; 4],
     to_working: [[f32; 4]; 3],
 }
 
@@ -15475,6 +15563,86 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 ");
 
+// The native Grain generator (#2067), as `klipp_core::render_grain`
+// draws it: a colour, and each cell's hash, `depth` deep, added and
+// truncated to a byte. Then the eight-bit path's decode: the byte as a
+// half float, sRGB to linear, into the working space.
+const SHADER_GRAIN_GENERATOR: &str = concat!(shader_pixel_storage_wgsl!(), "
+struct Params {
+    width: u32, height: u32, frame: u32, _pad: u32,
+    color: vec4<f32>,
+    cell: f32, depth: f32, _p0: f32, _p1: f32,
+    m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>,
+}
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+fn rounded(c: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(unpack2x16float(pack2x16float(c.xy)), unpack2x16float(pack2x16float(c.zw)));
+}
+fn linear(c: f32) -> f32 {
+    if c <= 0.04045 { return c / 12.92; }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+fn grain_at(x: u32, y: u32, frame: u32) -> f32 {
+    var h = (x * 0x8da6b343u) ^ (y * 0xd8163841u) ^ (frame * 0xcb1ab31fu);
+    h ^= h >> 15u;
+    h = h * 0x2c1b3c6du;
+    h ^= h >> 12u;
+    h = h * 0x297a2d39u;
+    h ^= h >> 15u;
+    // `u32::MAX as f32`, as the CPU divides by.
+    return (f32(h) / 4294967296.0) * 2.0 - 1.0;
+}
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if i >= params.width * params.height { return; }
+    let gx = u32(f32(i % params.width) / params.cell);
+    let gy = u32(f32(i / params.width) / params.cell);
+    let n = grain_at(gx, gy, params.frame) * params.depth;
+    let byte = floor(clamp(params.color.rgb + vec3<f32>(n), vec3<f32>(0.0), vec3<f32>(255.0)));
+    let c = rounded(vec4<f32>(byte, params.color.a) / 255.0);
+    let rgb = vec3<f32>(linear(c.r), linear(c.g), linear(c.b));
+    output[i] = pack(vec4<f32>(dot(params.m0.xyz, rgb), dot(params.m1.xyz, rgb), dot(params.m2.xyz, rgb), c.a));
+}
+");
+
+// Flat rects over a background (#2067): a countdown's or a timer's
+// seven-segment digits, laid out on the CPU by `klipp_core::Segments`.
+const SHADER_SEGMENTS: &str = concat!(shader_pixel_storage_wgsl!(), "
+struct Params {
+    width: u32, height: u32, count: u32, _pad: u32,
+    background: vec4<f32>, color: vec4<f32>,
+    m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>,
+}
+@group(0) @binding(0) var<storage, read> rects: array<vec4<u32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+fn rounded(c: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(unpack2x16float(pack2x16float(c.xy)), unpack2x16float(pack2x16float(c.zw)));
+}
+fn linear(c: f32) -> f32 {
+    if c <= 0.04045 { return c / 12.92; }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if i >= params.width * params.height { return; }
+    let x = i % params.width;
+    let y = i / params.width;
+    var c = params.background;
+    for (var k = 0u; k < params.count; k++) {
+        let r = rects[k];
+        if x >= r.x && x < r.z && y >= r.y && y < r.w { c = params.color; break; }
+    }
+    let s = rounded(c / 255.0);
+    let rgb = vec3<f32>(linear(s.r), linear(s.g), linear(s.b));
+    output[i] = pack(vec4<f32>(dot(params.m0.xyz, rgb), dot(params.m1.xyz, rgb), dot(params.m2.xyz, rgb), s.a));
+}
+");
+
 const SHADER_GENERATOR: &str = concat!(
     "
 struct Params {
@@ -18609,6 +18777,8 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_CST", SHADER_CST),
         ("SHADER_GENERATOR", SHADER_GENERATOR),
         ("SHADER_LIVING_GRADIENT", SHADER_LIVING_GRADIENT),
+        ("SHADER_GRAIN_GENERATOR", SHADER_GRAIN_GENERATOR),
+        ("SHADER_SEGMENTS", SHADER_SEGMENTS),
         ("SHADER_MOSAIC", SHADER_MOSAIC),
         ("SHADER_EDGE_DETECT", SHADER_EDGE_DETECT),
         ("SHADER_CHANNEL_MIXER", SHADER_CHANNEL_MIXER),
