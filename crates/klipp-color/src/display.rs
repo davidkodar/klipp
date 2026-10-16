@@ -271,15 +271,19 @@ fn display_transform_from_pre(
     to_709: Option<ToBt709>,
     pre: impl Fn(f32) -> f32 + Sync + Send,
 ) -> Vec<u8> {
-    display_transform_from_pre_to(linear_rgba, tone_map_op, to_709, pre, klipp_core::SdrTransfer::Srgb)
+    display_transform_from_pre_to(linear_rgba, tone_map_op, to_709, pre, klipp_core::SdrTransfer::Srgb, false)
 }
 
+/// `dither` adds [`dither_at`] before the rounding: the viewer's encode
+/// ([`display_transform_ws_dithered_to`]) does, the plain transform does
+/// not.
 fn display_transform_from_pre_to(
     linear_rgba: &[f32],
     tone_map_op: ToneMapOp,
     to_709: Option<ToBt709>,
     pre: impl Fn(f32) -> f32 + Sync + Send,
     transfer: klipp_core::SdrTransfer,
+    dither: bool,
 ) -> Vec<u8> {
     use rayon::prelude::*;
     assert!(
@@ -291,7 +295,8 @@ fn display_transform_from_pre_to(
     let mut out = vec![0u8; linear_rgba.len()];
     out.par_chunks_exact_mut(4)
         .zip(linear_rgba.par_chunks_exact(4))
-        .for_each(|(dst, chunk)| {
+        .enumerate()
+        .for_each(|(i, (dst, chunk))| {
             // Clamp negatives before the tone-map: ACES' matrix path can
             // turn small negative channels into wildly over-bright
             // positives (the 1.60475 coefficient in the output matrix
@@ -306,9 +311,10 @@ fn display_transform_from_pre_to(
                 [rgb[0].max(0.0), rgb[1].max(0.0), rgb[2].max(0.0)],
                 tone_map_op,
             );
-            dst[0] = quantise(encode_sdr(mapped[0], transfer), 0.0, 255.0) as u8;
-            dst[1] = quantise(encode_sdr(mapped[1], transfer), 0.0, 255.0) as u8;
-            dst[2] = quantise(encode_sdr(mapped[2], transfer), 0.0, 255.0) as u8;
+            let n = if dither { dither_at(i) } else { 0.0 };
+            dst[0] = quantise(encode_sdr(mapped[0], transfer), n, 255.0) as u8;
+            dst[1] = quantise(encode_sdr(mapped[1], transfer), n, 255.0) as u8;
+            dst[2] = quantise(encode_sdr(mapped[2], transfer), n, 255.0) as u8;
             dst[3] = quantise(chunk[3], 0.0, 255.0) as u8;
         });
     out
@@ -388,6 +394,44 @@ pub fn display_transform_ws_pre_to(
     pre: impl Fn(f32) -> f32 + Sync + Send + Copy,
     transfer: klipp_core::SdrTransfer,
 ) -> Vec<u8> {
+    display_transform_ws_quantised(linear_rgba, tone_map_op, working_space, pre, transfer, false)
+}
+
+/// The viewer's encode: [`display_transform_ws_to`] with the export's
+/// dither added before the rounding (#2072), as the GPU's display encodes
+/// add it. A smooth gradient that crosses few code values then breaks up
+/// instead of showing bands, and the viewer's CPU route draws the GPU
+/// route's bytes. Values already on a code value — an 8-bit picture
+/// shown as it is — are not dithered ([`quantise`]).
+pub fn display_transform_ws_dithered_to(
+    linear_rgba: &[f32],
+    tone_map_op: ToneMapOp,
+    working_space: klipp_core::WorkingColorspace,
+    transfer: klipp_core::SdrTransfer,
+) -> Vec<u8> {
+    display_transform_ws_quantised(linear_rgba, tone_map_op, working_space, |v| v, transfer, true)
+}
+
+/// [`display_transform_ws_dithered_to`] with a per-channel function on the
+/// linear light first, as [`display_transform_ws_pre`] takes one: HDR
+/// monitoring's preview, dithered as the GPU's preview encode is.
+pub fn display_transform_ws_pre_dithered(
+    linear_rgba: &[f32],
+    tone_map_op: ToneMapOp,
+    working_space: klipp_core::WorkingColorspace,
+    pre: impl Fn(f32) -> f32 + Sync + Send + Copy,
+) -> Vec<u8> {
+    display_transform_ws_quantised(linear_rgba, tone_map_op, working_space, pre, klipp_core::SdrTransfer::Srgb, true)
+}
+
+fn display_transform_ws_quantised(
+    linear_rgba: &[f32],
+    tone_map_op: ToneMapOp,
+    working_space: klipp_core::WorkingColorspace,
+    pre: impl Fn(f32) -> f32 + Sync + Send + Copy,
+    transfer: klipp_core::SdrTransfer,
+    dither: bool,
+) -> Vec<u8> {
     use klipp_core::WorkingColorspace;
     use rayon::prelude::*;
     assert!(
@@ -401,22 +445,25 @@ pub fn display_transform_ws_pre_to(
             ToBt709::for_working_space(working_space),
             pre,
             transfer,
+            dither,
         );
     }
     // AcesCG: ACES Output Device Transform path.
     let mut out = vec![0u8; linear_rgba.len()];
     out.par_chunks_exact_mut(4)
         .zip(linear_rgba.par_chunks_exact(4))
-        .for_each(|(dst, chunk)| {
+        .enumerate()
+        .for_each(|(i, (dst, chunk))| {
             // `acescg_to_rec709_sdr` chains AP1→AP0, RRT, Rec.709 ODT,
             // and BT.1886 inverse — output is `[0, 1]` display-encoded
             // Rec.709. Quantise to u8 here at the same precision as
             // the legacy path.
             let acescg = [pre(chunk[0]), pre(chunk[1]), pre(chunk[2])];
             let encoded = crate::aces::acescg_to_rec709_sdr(acescg);
-            dst[0] = quantise(encoded[0], 0.0, 255.0) as u8;
-            dst[1] = quantise(encoded[1], 0.0, 255.0) as u8;
-            dst[2] = quantise(encoded[2], 0.0, 255.0) as u8;
+            let n = if dither { dither_at(i) } else { 0.0 };
+            dst[0] = quantise(encoded[0], n, 255.0) as u8;
+            dst[1] = quantise(encoded[1], n, 255.0) as u8;
+            dst[2] = quantise(encoded[2], n, 255.0) as u8;
             dst[3] = quantise(chunk[3], 0.0, 255.0) as u8;
         });
     let _ = tone_map_op; // Intentionally unused in the ACES path.
@@ -838,56 +885,10 @@ fn export_pixels<T: Copy + Default + Send + Sync>(
     ExportDisplay::new(tone_map_op, working_space, odt).frame(linear_rgba, q)
 }
 
-/// A triangular dither for one pixel, in output code values, in
-/// `[-1, 1]`.
-///
-/// This is the seam where a frame of real numbers becomes integers, and
-/// rounding alone is not enough. A gradient that crosses few code values
-/// across the frame — a dark backdrop, a soft vignette, a slow fade —
-/// rounds to flat plateaus with hard steps between them, and the eye
-/// reads the steps as bands. Nudging each pixel by a fraction of a code
-/// value before the rounding turns the step into a scatter, which the
-/// eye averages back to the value that was asked for.
-///
-/// Triangular rather than uniform because uniform noise leaves the
-/// quantisation error correlated with the signal — the point of dither
-/// is to decorrelate it. One offset for all three channels rather than
-/// three: monochrome noise is far less visible than coloured noise at
-/// the same amplitude, and alpha is not dithered at all, since nothing
-/// looks at it and compositing wants it exact.
-///
-/// Deterministic in the pixel's index, so an export is reproducible and
-/// tests can predict it.
-#[inline]
-pub fn dither_at(index: usize) -> f32 {
-    #[inline]
-    fn hash(mut x: u32) -> u32 {
-        x ^= x >> 16;
-        x = x.wrapping_mul(0x7feb_352d);
-        x ^= x >> 15;
-        x = x.wrapping_mul(0x846c_a68b);
-        x ^= x >> 16;
-        x
-    }
-    let a = hash(index as u32) as f32 / u32::MAX as f32;
-    let b = hash((index as u32) ^ 0x9e37_79b9) as f32 / u32::MAX as f32;
-    a + b - 1.0
-}
-
-/// One channel, dithered and quantised to a scale of `scale` code
-/// values, as a float ready to be cast.
-///
-/// Values that already sit on a code value are left alone. Pure black,
-/// pure white and a saturated primary are exact, and dither can only
-/// make them wrong — white nudged down comes back 254, which is a
-/// dulled highlight and, on a run of them, a visible lift in the
-/// blacks at the other end.
-#[inline]
-pub fn quantise(v: f32, dither: f32, scale: f32) -> f32 {
-    let v = v.clamp(0.0, 1.0);
-    let d = if v <= 0.0 || v >= 1.0 { 0.0 } else { dither };
-    (v * scale + 0.5 + d).clamp(0.0, scale)
-}
+/// The export's dither and its rounding: [`klipp_effects::dither`], where
+/// the GPU's display encodes take the same pattern from, so the viewer and
+/// the export round a picture the same way (#2072).
+pub use klipp_effects::dither::{dither_at, quantise};
 
 impl ExportDisplay {
     /// The transform over an RGBA frame, each channel quantised by `q`.

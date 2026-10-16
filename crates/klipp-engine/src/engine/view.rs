@@ -1060,7 +1060,7 @@ impl PlaybackEngine {
         let cached = cache_key
             .filter(|_| self.state != PlaybackState::Playing)
             .filter(|_| !found.declines.iter().any(|d| d.fails()))
-            .map(|key| (key, super::linear_rgba_to_u8(&linear)));
+            .map(|key| (key, super::rendered_frame_to_cache_u8(&linear)));
 
         self.show_split_views(&seq, primary_ref, w, h, inspected, found.ungraded.as_deref());
         self.show_inspection(&found, w, h, progress);
@@ -1255,7 +1255,8 @@ impl PlaybackEngine {
             // (`linear.to_vec()`), roll the copy off in place and encode
             // that; at 4K the copy alone measured 30 ms — more than the
             // encode it fed — so the roll-off is a hook on the transform.
-            _ => klipp_color::hdr_view::preview_frame(
+            // Dithered as the GPU's preview encode is (#2072).
+            _ => klipp_color::hdr_view::preview_frame_dithered(
                 linear,
                 self.tone_map_op,
                 crate::video_decoder::working_colorspace(),
@@ -1444,7 +1445,7 @@ impl PlaybackEngine {
             self.thumb_capture_suspended = true;
             let (linear, _) = self.render_timeline(&seq, primary.map(|id| (id, pixels)), w, h, Inspect::default());
             self.thumb_capture_suspended = false;
-            let bytes = super::linear_rgba_to_u8(&linear);
+            let bytes = super::rendered_frame_to_cache_u8(&linear);
             self.render_cache_hot.insert(key.clone(), bytes.clone(), w, h);
             self.render_cache_disk.put(&key, &bytes, w, h);
             rendered = true;

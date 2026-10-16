@@ -2138,7 +2138,8 @@ fn a_blur_entrance_is_the_same_on_cpu_and_gpu_under_an_effect() {
     };
     let mut c = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     c.set_gpu_enabled(false);
-    let cpu = klipp_color::display::display_transform_ws_to(
+    // The viewer's CPU encode, dithered as the GPU stack's is (#2072).
+    let cpu = klipp_color::display::display_transform_ws_dithered_to(
         &c.render(&seq, tc(0.4), 480, 270, &mut White, RenderOptions::default()),
         klipp_color::display::ToneMapOp::None,
         klipp_core::WorkingColorspace::Rec709Linear,

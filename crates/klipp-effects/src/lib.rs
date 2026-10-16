@@ -39,6 +39,7 @@ mod cpu;
 pub mod layer;
 pub mod cpu_grade;
 pub mod deflicker;
+pub mod dither;
 pub mod flicker;
 pub mod node_analysis;
 mod cpu_transition;

@@ -9111,6 +9111,48 @@ fn pack(v: vec4<f32>) -> vec4<f32> { return v; }
     };
 }
 
+/// [`crate::dither`] as WGSL: the display encodes' dither and rounding,
+/// the export's own pattern (#2072). The literals are
+/// `DITHER_HASH_MUL_A`, `DITHER_HASH_MUL_B`, `DITHER_SECOND_DRAW` and
+/// `ON_CODE_TOLERANCE`, which `display_dither_wgsl_carries_the_rust_constants`
+/// holds equal,
+/// and `4294967296.0` is `u32::MAX as f32`. Computed in the encode's own
+/// pass from the pixel's index alone: no buffer, no extra pass, and the
+/// same pixels every time a frame is drawn.
+macro_rules! shader_display_dither_wgsl {
+    () => {
+        "
+fn dither_hash(v: u32) -> u32 {
+    var x = v;
+    x = x ^ (x >> 16u);
+    x = x * 0x7feb352du;
+    x = x ^ (x >> 15u);
+    x = x * 0x846ca68bu;
+    x = x ^ (x >> 16u);
+    return x;
+}
+
+/// `klipp_effects::dither::dither_at`: triangular, in code values, in
+/// [-1, 1], from the pixel's index `y * width + x`.
+fn dither_at(index: u32) -> f32 {
+    let a = f32(dither_hash(index)) / 4294967296.0;
+    let b = f32(dither_hash(index ^ 0x9e3779b9u)) / 4294967296.0;
+    return a + b - 1.0;
+}
+
+/// `klipp_effects::dither::quantise` at 8 bits: a value on 0 or 1, or
+/// already on a code value (within `ON_CODE_TOLERANCE`), is not dithered.
+fn quantise_u8(v: f32, d: f32) -> u32 {
+    let c = clamp(v, 0.0, 1.0);
+    let x = c * 255.0;
+    var n = d;
+    if (c <= 0.0 || c >= 1.0 || abs(x - round(x)) < 1e-3) { n = 0.0; }
+    return u32(clamp(x + 0.5 + n, 0.0, 255.0));
+}
+"
+    };
+}
+
 /// [`crate::UNPREMULTIPLY_MIN_ALPHA`] as WGSL: the same literal, which a
 /// test holds equal to the constant.
 macro_rules! unpremultiply_min_alpha_wgsl {
@@ -10483,6 +10525,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 const SHADER_LINEAR_TO_DISPLAY_U8: &str = concat!(
     shader_pixel_storage_wgsl!(),
     shader_hdr_display_light_wgsl!(),
+    shader_display_dither_wgsl!(),
     "
 // `view_op` 1 is HDR monitoring's preview: the frame is display light
 // (1.0 = 203 cd/m²) rather than SDR linear, and the light above reference
@@ -10551,9 +10594,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             hdr_to_sdr_preview(rgb.z),
         );
     }
-    let r = u32(clamp(linear_to_srgb_c(rgb.x) * 255.0 + 0.5, 0.0, 255.0));
-    let g = u32(clamp(linear_to_srgb_c(rgb.y) * 255.0 + 0.5, 0.0, 255.0));
-    let b = u32(clamp(linear_to_srgb_c(rgb.z) * 255.0 + 0.5, 0.0, 255.0));
+    // Dithered as the export rounds (#2072); alpha exact.
+    let d = dither_at(idx);
+    let r = quantise_u8(linear_to_srgb_c(rgb.x), d);
+    let g = quantise_u8(linear_to_srgb_c(rgb.y), d);
+    let b = quantise_u8(linear_to_srgb_c(rgb.z), d);
     let a = u32(clamp(px.w * 255.0 + 0.5, 0.0, 255.0));
     output[idx] = r | (g << 8u) | (b << 16u) | (a << 24u);
 }
@@ -11956,6 +12001,7 @@ fn acescg_to_rec709_sdr(acescg: vec3<f32>) -> vec3<f32> {
 const SHADER_BT2020_DISPLAY_U8: &str = concat!(
     shader_linear_helpers_wgsl!(),
     shader_bt2020_gamut_wgsl!(),
+    shader_display_dither_wgsl!(),
     "
 struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32 }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -11976,9 +12022,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         linear_to_srgb_component(mapped.y),
         linear_to_srgb_component(mapped.z),
     );
-    let q = clamp(e, vec3<f32>(0.0), vec3<f32>(1.0)) * 255.0 + vec3<f32>(0.5);
+    // Dithered as the export rounds (#2072); alpha exact.
+    let d = dither_at(idx);
     let a = u32(clamp(px.w, 0.0, 1.0) * 255.0 + 0.5);
-    output[idx] = u32(q.x) | (u32(q.y) << 8u) | (u32(q.z) << 16u) | (a << 24u);
+    output[idx] = quantise_u8(e.x, d) | (quantise_u8(e.y, d) << 8u) | (quantise_u8(e.z, d) << 16u) | (a << 24u);
 }
 "
 );
@@ -11986,6 +12033,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 const SHADER_ACES_REC709_U8: &str = concat!(
     shader_pixel_storage_wgsl!(),
+    shader_display_dither_wgsl!(),
     "
 struct Params { width: u32, height: u32, _pad0: u32, _pad1: u32 }
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
@@ -12001,9 +12049,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.width * params.height { return; }
     let px = unpack(input[idx]);
     let e = acescg_to_rec709_sdr(px.xyz);
-    let r = u32(clamp(e.x * 255.0 + 0.5, 0.0, 255.0));
-    let g = u32(clamp(e.y * 255.0 + 0.5, 0.0, 255.0));
-    let b = u32(clamp(e.z * 255.0 + 0.5, 0.0, 255.0));
+    // Dithered as the export rounds (#2072); alpha exact.
+    let d = dither_at(idx);
+    let r = quantise_u8(e.x, d);
+    let g = quantise_u8(e.y, d);
+    let b = quantise_u8(e.z, d);
     let a = u32(clamp(px.w * 255.0 + 0.5, 0.0, 255.0));
     output[idx] = r | (g << 8u) | (b << 16u) | (a << 24u);
 }
@@ -18265,6 +18315,33 @@ mod unpremultiply_rule_tests {
         assert_eq!(unpremultiply_min_alpha_wgsl!().parse::<f32>().unwrap(), crate::UNPREMULTIPLY_MIN_ALPHA);
         for shader in [super::SHADER_SHUTTER, super::SHADER_ALPHA_FORM] {
             assert!(shader.contains(concat!("> ", unpremultiply_min_alpha_wgsl!(), " {")), "the rule is in the shader");
+        }
+    }
+}
+
+#[cfg(test)]
+mod display_dither_rule_tests {
+    use crate::dither::{DITHER_HASH_MUL_A, DITHER_HASH_MUL_B, DITHER_SECOND_DRAW};
+
+    /// The display encodes dither with the export's pattern (#2072): the
+    /// literals the WGSL is written with are the Rust constants, and every
+    /// 8-bit display encode takes it.
+    #[test]
+    fn display_dither_wgsl_carries_the_rust_constants() {
+        let wgsl = shader_display_dither_wgsl!();
+        for (name, k) in [("A", DITHER_HASH_MUL_A), ("B", DITHER_HASH_MUL_B), ("second draw", DITHER_SECOND_DRAW)] {
+            assert!(wgsl.contains(&format!("0x{k:08x}u")), "{name} is not the Rust constant");
+        }
+        assert_eq!(4294967296.0f32, u32::MAX as f32, "the WGSL's divisor is the CPU's");
+        assert_eq!(crate::dither::ON_CODE_TOLERANCE, 1e-3, "the WGSL's on-code tolerance is the CPU's");
+        assert!(wgsl.contains("abs(x - round(x)) < 1e-3"), "the WGSL leaves on-code values undithered");
+        for (name, shader) in [
+            ("SHADER_LINEAR_TO_DISPLAY_U8", super::SHADER_LINEAR_TO_DISPLAY_U8),
+            ("SHADER_ACES_REC709_U8", super::SHADER_ACES_REC709_U8),
+            ("SHADER_BT2020_DISPLAY_U8", super::SHADER_BT2020_DISPLAY_U8),
+        ] {
+            assert!(shader.contains(wgsl), "{name} lacks the dither");
+            assert!(shader.contains("let d = dither_at(idx);"), "{name} does not dither its pixels");
         }
     }
 }

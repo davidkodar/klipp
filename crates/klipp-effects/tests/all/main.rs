@@ -20,6 +20,8 @@ mod cpu_gpu_effect_parity;
 mod cpu_gpu_transition_parity;
 #[path = "../crop_feather.rs"]
 mod crop_feather;
+#[path = "../display_dither.rs"]
+mod display_dither;
 #[path = "../display_to_texture.rs"]
 mod display_to_texture;
 #[path = "../effect_definitions.rs"]

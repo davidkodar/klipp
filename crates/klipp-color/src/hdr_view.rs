@@ -73,6 +73,22 @@ pub fn preview_frame(
     )
 }
 
+/// [`preview_frame`] as the viewer shows it: dithered before the rounding,
+/// as the GPU's preview encode is (#2072), so either route draws the same
+/// bytes.
+pub fn preview_frame_dithered(
+    display_light: &[f32],
+    tone_map_op: klipp_core::ToneMapOp,
+    working_space: klipp_core::WorkingColorspace,
+) -> Vec<u8> {
+    crate::display::display_transform_ws_pre_dithered(
+        display_light,
+        tone_map_op,
+        working_space,
+        hdr_to_sdr_preview,
+    )
+}
+
 /// The levels HDR is judged against (ITU-R BT.2408) — 26 cd/m² for an 18%
 /// grey card, 203 for diffuse white — get a band *around* them, not a
 /// boundary *at* them: a face lit to grey or a white shirt authored at

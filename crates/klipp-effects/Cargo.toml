@@ -62,6 +62,10 @@ name = "all"
 path = "tests/all/main.rs"
 
 [[test]]
+name = "display_encode_cost"
+path = "tests/display_encode_cost.rs"
+
+[[test]]
 name = "effect_chain_cost"
 path = "tests/effect_chain_cost.rs"
 

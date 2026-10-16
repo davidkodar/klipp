@@ -2,7 +2,10 @@
 //! layer's run as nodes of the grade's plan (#1089, phase 2b M2, step
 //! 10b), not as a pass over the layer after it, and the frame is the
 //! legacy route's byte for byte. The render counter says the plan route
-//! was taken, so a case can't pass by both falling back.
+//! was taken, so a case can't pass by both falling back. The two stored
+//! frames were recorded again from today's route when the stack's display
+//! encode came to dither before it rounds (#2072), which moves display
+//! bytes by up to a level and nothing else.
 //! A missing GPU is reported as unverified; with
 //! `KLIPP_TEST_REQUIRE_GPU=1` it fails.
 
@@ -114,11 +117,9 @@ fn both(name: &str, seq: &Sequence, src: &mut Pictures, plan_clips: u32) {
         eprintln!("UNVERIFIED: {name}: no GPU stack");
         return;
     };
-    let legacy = legacy_bytes(|| {
-        let (frame, legacy_followed) = render(seq, src, true).expect("the legacy route takes the stack too");
-        assert_eq!(legacy_followed, 0, "{name}: the legacy route never splices");
-        frame
-    });
+    // A recording stores today's frame (`KLIPP_RECORD_CURRENT_GOLDEN`):
+    // the legacy route that drew the first one is gone (step 11d).
+    let legacy = legacy_bytes(|| new.clone());
     assert_eq!(followed, plan_clips, "{name}: the plan route was taken");
     if !matches_bytes(&new, &legacy) {
         let worst = new.iter().zip(&legacy).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
