@@ -51,6 +51,7 @@
 //!   current picture with the previously *shown* one, in 8-bit, weighted
 //!   by a number that was noise at 59.94 fps; export did not blend.)
 
+use klipp_effects::residency::{self, Work};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -1287,6 +1288,8 @@ impl Renderer {
         opts: RenderOptions,
         inspect: Inspect,
     ) -> (Vec<f32>, Inspection) {
+        let _residency = residency::frame("composition", time.to_secs_f64());
+        residency::record("composition.cpu", "CPU composition/reference/inspection route requested", Work::Fallback);
         let t0 = Instant::now();
         self.found = Inspection::default();
         self.resolved = crate::inspect::resolve(seq, &inspect, &mut self.found.unavailable);
@@ -1442,11 +1445,13 @@ impl Renderer {
         opts: RenderOptions,
         target: klipp_effects::gpu::Yuv420Target,
     ) -> Option<(Vec<u8>, Option<klipp_effects::gpu::GpuFrameLight>)> {
+        let _residency = residency::frame("export", time.to_secs_f64());
         self.gpu_export_declined_after_work = false;
         self.frame_decline = None;
         let planes = match self.render_yuv420_single(seq, time, width, height, src, opts, target) {
             Single::Planes(planes) => Some(planes),
             Single::Refused(why) => {
+                residency::record("composition.export", why, Work::Fallback);
                 self.frame_decline = Some(why);
                 None
             }
@@ -1820,6 +1825,7 @@ impl Renderer {
         opts: RenderOptions,
         out: DisplayDelivery<'_>,
     ) -> Option<(Option<Vec<u8>>, RenderStats)> {
+        let _residency = residency::frame("display", time.to_secs_f64());
         self.frame_decline = None;
         // This frame's declines, the stack's own as the timeline's (M4
         // step 10): read after it with `frame_declines`.
@@ -1827,6 +1833,7 @@ impl Renderer {
         let result = self.render_display_on_gpu_inner(seq, time, width, height, src, opts, out);
         if result.is_none() && self.frame_decline.is_none() {
             self.frame_decline = Some("the GPU pipeline was unavailable");
+            residency::record("composition.gpu_stack", "GPU pipeline unavailable", Work::Fallback);
             GPU_STACK_DECLINES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         // A frame's passes record into one encoder from `stack_begin`;
@@ -1975,6 +1982,7 @@ impl Renderer {
         for (_, track, item) in &stack {
             match item {
                 TrackItem::Clip(c) => {
+                    let _clip_residency = residency::clip(c.id.0);
                     if let Some(why) = blocker(c) {
                         return self.gpu_stack_declines(why);
                     }
@@ -2255,6 +2263,7 @@ impl Renderer {
         transforms: &HashMap<ClipId, ResolvedTransform>,
         stats: &mut RenderStats,
     ) -> Result<Option<Placed>, &'static str> {
+        let _clip_residency = residency::clip(c.id.0);
         self.note_switched_off(c);
         self.note_subject_mattes(c, src);
         let (mut fx, opacity) = clip_effects(c, time, fps, transforms.get(&c.id).copied(), self.pins.get(&c.id).copied());
@@ -2341,15 +2350,27 @@ impl Renderer {
                             let slot_a = self.executor.last_chain_final_slot().unwrap_or(true);
                             self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_chain(slot, slot_a))
                         } else {
+                            residency::record("composition.grade_output", "GPU grade/effect result returned CPU pixels", Work::Fallback);
                             self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(slot, &pixels))
                         }
                     }
                     SourcePixels::Linear(p) => {
+                        // An unavailable CPU source can be empty during a seek.
+                        // It is not the executor's resident-output sentinel: an
+                        // early failed run leaves the previous chain slot intact.
+                        if p.is_empty() {
+                            return Err("CPU source has no pixels");
+                        }
                         let t = Instant::now();
-                        let pixels = if c.grade_is_identity() && !has_active_effects(&fx) {
+                        let run_on_gpu = !c.grade_is_identity() || has_active_effects(&fx);
+                        let pixels = if !run_on_gpu {
                             unshare(p)
                         } else {
                             effects_done = self.splice_effects(c, &fx, time, fps, transforms, at_move, stats);
+                            // A CPU-decoded source still runs its grade/effects on
+                            // GPU: retain that result rather than downloading it
+                            // only to upload it into the stack again (#2077).
+                            self.executor.request_output_on_gpu();
                             let pixels = self.grade_on_stack(c, GradeInput::Cpu(p), time, clip_time, fps, width, height, src);
                             if effects_done && !self.finish_spliced() {
                                 return Err("an effect could not be recorded");
@@ -2359,7 +2380,17 @@ impl Renderer {
                             pixels
                         };
                         stats.grade_ms += ms_since(t);
-                        self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(slot, &pixels))
+                        if pixels.is_empty() && run_on_gpu {
+                            let Some(slot_a) = self.executor.last_chain_final_slot() else {
+                                return Err("GPU grade/effects returned no resident output");
+                            };
+                            self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_chain(slot, slot_a))
+                        } else {
+                            if run_on_gpu {
+                                residency::record("composition.grade_output", "GPU grade/effect result returned CPU pixels", Work::Fallback);
+                            }
+                            self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(slot, &pixels))
+                        }
                     }
                     // A log, HLG or PQ source: its codes decoded to the
                     // working space as the grade's chain starts, on the GPU
@@ -2403,6 +2434,7 @@ impl Renderer {
                             let slot_a = self.executor.last_chain_final_slot().unwrap_or(true);
                             self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_chain(slot, slot_a))
                         } else {
+                            residency::record("composition.grade_output", "GPU grade/effect result returned CPU pixels", Work::Fallback);
                             self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(slot, &pixels))
                         }
                     }
@@ -2437,6 +2469,11 @@ impl Renderer {
                         true
                     }
                 } else if let Some(source) = self.titles.style_source(td, width, height, clip_time as f32, Some(total)) {
+                    match source.face_work {
+                        klipp_title::StyleFaceWork::Reused => {},
+                        klipp_title::StyleFaceWork::Prepared => residency::record("title.style_face", "Bounded style-face cache miss", Work::Preparation),
+                        klipp_title::StyleFaceWork::AnimatedRaster => residency::record("title.style_face", "Animated or uncached face rasterized before GPU styling", Work::Fallback),
+                    }
                     rows = (source.roi[1], source.roi[1] + source.roi[3]);
                     let passes = crate::synth::title_style_passes(&source.fx, klipp_title::frame_scale(width, height), clip_time);
                     self.executor.gpu_pipeline_or_init().is_some_and(|p| {
@@ -2493,6 +2530,7 @@ impl Renderer {
                             }
                         }
                         klipp_title::TitleFrame::Rendered { pixels, rows: r } => {
+                            residency::record("title.raster", "Title animation requires CPU raster/composition", Work::Fallback);
                             rows = r;
                             // Only the box the title covers goes up (#190).
                             self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_f16_box(slot, &pixels.texels, sprite_box(&pixels)))
@@ -2537,6 +2575,7 @@ impl Renderer {
                         c.grade_is_identity(),
                     );
                 }
+                residency::record(match &c.kind { ClipKind::Title(_) => "title.layer", ClipKind::Generator(_) => "generator.layer", _ => "composition.layer" }, "Source/grade/effect combination has no GPU stack seed", Work::Fallback);
                 let Some((pixels, _)) = self.render_clip(c, time, fps, width, height, src, transforms) else { return Ok(None) };
                 effects_done = true;
                 stats.cpu_layers += 1;
@@ -2581,7 +2620,9 @@ impl Renderer {
     /// [`Self::still_generators`] when it is the same at this size, else
     /// rasterised (and kept, when still).
     fn generator_layer(&mut self, clip: ClipId, g: &klipp_core::GeneratorData, width: u32, height: u32, clip_time: f64, total: f64) -> Arc<Vec<u32>> {
+        let _clip_residency = residency::clip(clip.0);
         if !is_still_generator(g) {
+            residency::record(generator_feature(g), "Time-dependent CPU generator raster/upload", Work::Fallback);
             return Arc::new(self.raster_generator(g, width, height, clip_time, total));
         }
         if let Some((data, w, h, px)) = self.still_generators.get(&clip) {
@@ -2589,6 +2630,7 @@ impl Renderer {
                 return Arc::clone(px);
             }
         }
+        residency::record(generator_feature(g), "Bounded still-generator cache miss", Work::Preparation);
         let px = Arc::new(self.raster_generator(g, width, height, clip_time, total));
         // A handful on screen at once; a long timeline's worth is not kept.
         if self.still_generators.len() >= 16 {
@@ -2691,6 +2733,7 @@ impl Renderer {
     fn gpu_stack_declines<T>(&mut self, why: &'static str) -> Option<T> {
         self.gpu_export_declined_after_work = self.stack_work_started;
         self.frame_decline = Some(why);
+        residency::record("composition.gpu_stack", why, Work::Fallback);
         GPU_STACK_DECLINES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if self.last_gpu_stack_decline != Some(why) {
             tracing::debug!("GPU stack declines the frame: {why}");
@@ -2984,6 +3027,7 @@ impl Renderer {
         src: &mut dyn FrameSource,
         transforms: &HashMap<ClipId, ResolvedTransform>,
     ) -> Option<(Vec<f32>, f32)> {
+        let _clip_residency = residency::clip(clip.id.0);
         self.note_switched_off(clip);
         self.note_subject_mattes(clip, src);
         let clip_time = eval_clip_time(clip, time);
@@ -3039,6 +3083,7 @@ impl Renderer {
             }
             ClipKind::Title(td) => (GradeInput::Cpu(Arc::new(self.title_linear_at(clip, td, drawn_time(clip, time), width, height))), None),
             ClipKind::Generator(g) => {
+                residency::record(generator_feature(g), "CPU composition regenerates source pixels", Work::Fallback);
                 let total = (clip.timeline_out - clip.timeline_in).to_secs_f64();
                 let clip_time = drawn_time(clip, time);
                 let generation_started = Instant::now();
@@ -3421,6 +3466,7 @@ impl Renderer {
                 match klipp_effects::mask_mix::MaskMix::new(b.blend.mix, b.blend.channel, luma) {
                     Ok(mix) => {
                         self.found.stats.effects_blended_on_cpu += 1;
+                        residency::record("effect.mask_blend", "Mask and graded effect blended on CPU", Work::Fallback);
                         EFFECTS_BLENDED_ON_CPU.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         head.chunks_exact(4).zip(drawn.chunks_exact(4)).zip(matte.chunks_exact(4)).flat_map(|((p, e), m)| {
                             mix.pixel([p[0], p[1], p[2], p[3]], [e[0], e[1], e[2], e[3]], Some([m[0], m[1], m[2], m[3]]))
@@ -3717,6 +3763,7 @@ impl Renderer {
     /// `render_clip` and each shutter sample in `title_pixels_at` both
     /// start here, so the title-specific steps exist once.
     fn title_linear_at(&mut self, clip: &Clip, td: &klipp_timeline::TitleData, t: f64, width: u32, height: u32) -> Vec<f32> {
+        residency::record("title.cpu_composition", "Title raster/placement and linear conversion on CPU", Work::Fallback);
         let total = (clip.timeline_out - clip.timeline_in).to_secs_f64() as f32;
         // Unrounded (#190): the title's layers as stacked and posed, in
         // byte units, decoded once here.
@@ -4887,6 +4934,8 @@ impl Renderer {
         transforms: &HashMap<ClipId, ResolvedTransform>,
         mattes: Option<&HashMap<ClipId, Vec<f32>>>,
     ) -> Option<Vec<f32>> {
+        let _clip_residency = residency::clip(a.id.0);
+        residency::record(klipp_core::spec_for_kind(kind).string_key, "Transition uses CPU composite inputs/outputs", Work::Fallback);
         let n = (width as usize) * (height as usize) * 4;
         let side = |this: &mut Self, c: &Clip, src: &mut dyn FrameSource| {
             this.render_clip(c, time, fps, width, height, src, transforms)
@@ -7088,5 +7137,13 @@ mod single_path_side_pictures {
             let single = r.render_yuv420_single(&seq, klipp_core::RationalTime::from_secs_f64(1.0, 24), 64, 36, &mut NoFrames, RenderOptions::default(), target);
             assert!(matches!(single, Single::ForTheStack), "{side:?}");
         }
+    }
+}
+
+fn generator_feature(g: &klipp_core::GeneratorData) -> &'static str {
+    use klipp_core::GeneratorData::*;
+    match g {
+        Grain { .. } => "generator.grain", Countdown => "generator.countdown", Timer { .. } => "generator.timer", StillFrame { .. } => "generator.still_frame",
+        LivingGradient { .. } => "generator.living_gradient", SolidColor { .. } => "generator.solid", Placeholder { .. } => "generator.placeholder", Gradient { .. } => "generator.gradient", ColorBars => "generator.color_bars", ColorBars100 => "generator.color_bars_100", Slate { .. } => "generator.slate", Polygon { .. } => "generator.polygon", Star { .. } => "generator.star",
     }
 }

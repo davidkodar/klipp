@@ -80,3 +80,49 @@ no intermediate downloads. Hardware subpixel coverage can differ from the CPU
 scan converter at triangle seams; tests bound those differences separately from
 interior shading and verify viewer/export consistency. Bitmap glyphs, rich
 fills, text paths, mixed objects and unsupported transforms retain CPU fallback.
+
+## GPU-first enforcement (#2077)
+
+Picture features must use their GPU implementation whenever a usable device and
+supported composition route are available. CPU implementations remain the parity
+reference and device-loss fallback. Decode, audio DSP and offline analysis are
+outside this policy. Bounded font shaping, geometry creation and static-source
+cache preparation are not per-frame CPU picture processing.
+
+New picture features require a GPU implementation, CPU/GPU parity coverage and
+an entry in the residency inventory. Any unavoidable nonresident route must name
+its specific exception and tracking issue in review. Do not substitute a new CPU
+route for a removed exception while leaving the exception count unchanged.
+
+`klipp_effects::residency::record` is the diagnostic boundary for CPU picture
+fallbacks. Source rasterization must report here even if the final GPU composite
+succeeds. A frame scope aggregates nested render attempts; clip scopes identify
+where the work originated. The viewer scope includes failed GPU attempts and
+subsequent CPU composition. Events have feature, reason, clip and count; bounded
+storage reports overflow explicitly rather than silently dropping evidence.
+Debug builds warn on the first fallback per feature in the process. MCP perf
+returns `picture_fallbacks`: cumulative counts per feature and the latest
+completed viewer frame. The overlay shows that frame's fallbacks. Export/test
+scopes cannot replace the latest viewer sample. Paused viewers retain their last
+completed sample, with its timeline time; totals are not FPS measurements.
+
+The `gpu_policy` readiness test pins exception identities and classifications,
+and exercises the production renderer at multiple times (including scrubbing).
+The catalogue kernel probes and M4 source/plugin families supplement this corpus:
+source-dependent graph operations and external plugin ABIs need their own input
+fixtures. All are run by the normal GPU-required push gate. A final delivery
+readback is different from an intermediate picture download. Cache preparation
+must be bounded and reused; it must not hide time-dependent CPU rasterization.
+
+Run `KLIPP_TEST_REQUIRE_GPU=1 cargo test -p klipp-readiness --test gpu_policy`.
+Changes to exception pins are part of the reviewed implementation, never an
+automatic test-update step. Remove a pin when its CPU route is eliminated; add
+one only with an explicitly reviewed issue and a measured reproducer.
+
+CPU-decoded media requests GPU output for its grade/effect plan before entering
+the GPU stack. The corpus checks that this handoff does not download/re-upload
+its result and preserves pixels and alpha against the CPU reference. Source
+combinations that still decline (including generator inputs to analysis-driven
+corrections) are named separately in the runtime exception ledger, with their
+readback bounds. Keyed CPU style faces are reported even when their subsequent
+styles compose on GPU; reusable face preparation is reported separately.

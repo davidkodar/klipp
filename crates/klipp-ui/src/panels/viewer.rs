@@ -3300,6 +3300,14 @@ impl ViewerPanel {
                     r.count, r.bytes as f64 / 1_048_576.0, r.total_us as f64 / 1000.0, r.failures)
             },
             "    process totals; blocking title/effects only; overlaps render time".to_string(),
+            {
+                let s = klipp_effects::residency::snapshot();
+                match s.latest_viewer_frame {
+                    Some(f) => format!("  CPU picture fallbacks: {} this frame ({:.2}s): {}", f.fallback_count(), f.seconds,
+                        f.events.iter().filter(|e| e.work == klipp_effects::residency::Work::Fallback).take(3).map(|e|format!("{}: {}", e.feature,e.reason)).collect::<Vec<_>>().join("; ")),
+                    None => "  CPU picture fallbacks: no viewer sample".to_string(),
+                }
+            },
             format!(
                 "  seq read    {:.2} ms",
                 avg.seq_read_ms,

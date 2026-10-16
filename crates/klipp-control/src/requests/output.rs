@@ -587,6 +587,7 @@ pub(crate) fn respond(
                     // (#1850); 0 for a phase a frame didn't take.
                     "phases": phases(&avg.phases),
                 },
+                "picture_fallbacks": klipp_effects::residency::snapshot(),
                 "generators": {
                     "gpu_draws": klipp_compose::GPU_GENERATOR_DRAWS.load(std::sync::atomic::Ordering::Relaxed),
                     "cpu_draws": klipp_compose::CPU_GENERATOR_DRAWS.load(std::sync::atomic::Ordering::Relaxed),

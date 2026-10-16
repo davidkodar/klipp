@@ -44,6 +44,14 @@ Read the latest known outcome of a queued write by its operation_id. Reports wai
 
 Frame timings: decode, grade, composite, total, drops, plus GPU->CPU readback counters, and presented_fps, the pictures shown per second over the last 2 s: it falls to null within 2 s of a pause, and stepping or scrubbing reads as a small rate. Use it to tell whether a change actually made playback faster.
 
+`picture_fallbacks` reports cumulative counts by feature and the latest viewer
+frame's timeline time, clip IDs, reasons and per-feature event counts. It catches
+CPU source work even when final composition succeeds on GPU. `preparation` events
+are bounded cache misses, not per-frame fallbacks. Nonzero `overflow` means the
+bounded report could not retain every detail. Paused viewers retain their last
+sample; export activity cannot replace it. Use the readback counters alongside
+these events: no readbacks alone does not prove GPU-resident picture processing.
+
 ## klipp_record
 
 Record the screen for secs with the recorder on the machine (gpu-screen-recorder, else wf-recorder): target "focused" (the focused window, the default), "screen", a monitor's name, or a region "WxH+X+Y"; fps 60. Imported into the pool unless import is false, so the footage of the product can be made from here: ask the user to bring the window up, record, analyze, cut.

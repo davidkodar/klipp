@@ -3385,7 +3385,9 @@ name = "klipp-readiness"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "image",
  "klipp-analysis",
+ "klipp-color",
  "klipp-compose",
  "klipp-convert",
  "klipp-core",

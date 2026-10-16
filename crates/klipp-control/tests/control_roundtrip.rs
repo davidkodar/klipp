@@ -3479,3 +3479,17 @@ fn perf_distinguishes_engine_from_effects_readbacks() {
     assert!(effects["scope"].as_str().unwrap().contains("title-mask"));
     assert!(effects["scope"].as_str().unwrap().contains("overlaps render time"));
 }
+
+#[test]
+fn perf_exposes_picture_fallback_identity_reason_and_counts() {
+    {
+        let _frame = klipp_effects::residency::frame("control-test", 1.25);
+        klipp_effects::residency::record("control.test-fallback", "injected diagnostic control", klipp_effects::residency::Work::Fallback);
+    }
+    let mut h = harness();
+    let reply = h.ok(json!({"method":"perf"}));
+    let fallbacks = &reply["picture_fallbacks"];
+    assert!(fallbacks["by_feature"]["control.test-fallback"].as_u64().unwrap() >= 1);
+    assert!(fallbacks["overflow"].is_u64());
+    assert!(fallbacks.get("latest_viewer_frame").is_some());
+}

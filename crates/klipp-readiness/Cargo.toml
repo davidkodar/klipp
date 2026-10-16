@@ -37,3 +37,8 @@ serde_json = { workspace = true }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+klipp-timeline = { path = "../klipp-timeline", features = ["test-clip"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+klipp-color = { workspace = true }

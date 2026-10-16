@@ -847,6 +847,7 @@ impl PlaybackEngine {
     /// paths could show, because the stack presents it without the
     /// readback and the UI upload they pay.
     pub(super) fn present_frame_with(&mut self, primary: Option<HeldFrame>, stack_only: bool) -> bool {
+        let _residency = klipp_effects::residency::frame("viewer", self.playhead.to_secs_f64());
         let t_frame = Instant::now();
         // Each phase's time, for the frame's perf sample (#1850).
         let ms = |t: Instant| (t.elapsed().as_secs_f64() * 1000.0) as f32;

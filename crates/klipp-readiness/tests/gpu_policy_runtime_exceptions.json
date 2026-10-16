@@ -1,0 +1,95 @@
+{
+  "generator.Countdown": {
+    "features": [
+      "generator.countdown"
+    ],
+    "issue": 2067,
+    "max_readbacks": 0
+  },
+  "generator.Grain": {
+    "features": [
+      "generator.grain"
+    ],
+    "issue": 2067,
+    "max_readbacks": 0
+  },
+  "generator.StillFrame": {
+    "features": [
+      "generator.still_frame"
+    ],
+    "issue": 2068,
+    "max_readbacks": 0
+  },
+  "generator.Timer": {
+    "features": [
+      "generator.timer"
+    ],
+    "issue": 2067,
+    "max_readbacks": 0
+  },
+  "klipp.fx.equalize": {
+    "features": [
+      "klipp.fx.equalize"
+    ],
+    "issue": 1215,
+    "max_readbacks": 1
+  },
+  "klipp.fx.rolling_shutter_correction": {
+    "features": [
+      "generator.layer",
+      "generator.solid"
+    ],
+    "issue": 1465,
+    "max_readbacks": 1
+  },
+  "klipp.fx.video_stabilization": {
+    "features": [
+      "generator.layer",
+      "generator.solid"
+    ],
+    "issue": 1465,
+    "max_readbacks": 1
+  },
+  "title.glitch": {
+    "features": [
+      "title.raster"
+    ],
+    "issue": 2069,
+    "max_readbacks": 0
+  },
+  "title.keyed-size-styles": {
+    "features": [
+      "title.style_face"
+    ],
+    "issue": 2069,
+    "max_readbacks": 0
+  },
+  "title.loop.ColorBlend": {
+    "features": [
+      "title.raster"
+    ],
+    "issue": 2069,
+    "max_readbacks": 0
+  },
+  "title.loop.ColorCycle": {
+    "features": [
+      "title.raster"
+    ],
+    "issue": 2069,
+    "max_readbacks": 0
+  },
+  "title.loop.Counter": {
+    "features": [
+      "title.raster"
+    ],
+    "issue": 2069,
+    "max_readbacks": 0
+  },
+  "title.loop.Wave": {
+    "features": [
+      "title.raster"
+    ],
+    "issue": 2069,
+    "max_readbacks": 0
+  }
+}
