@@ -194,6 +194,7 @@ impl HeldFrame {
 }
 
 /// One media clip a frame needs, and where in its media.
+#[derive(Clone)]
 pub(crate) struct Want {
     pub clip: ClipId,
     pub media: MediaId,
@@ -349,6 +350,12 @@ impl Drop for ClipStream {
 /// The viewer's decoders for everything but the primary track's clip.
 pub(crate) struct ClipStreams {
     streams: HashMap<ClipId, ClipStream>,
+    /// Streams being opened on a thread of their own (#2108): opening a
+    /// decoder (probing the file, opening the codec, the first seek) took
+    /// 20–100 ms each on the engine's thread, four of them a frame's stall
+    /// of 150 ms where four layers come up together. Each lands in
+    /// `streams` once open; until then it is wanted and not ready.
+    opening: HashMap<ClipId, std::sync::mpsc::Receiver<Option<ClipStream>>>,
     /// Reversed clips' readers (#617).
     reversed: HashMap<ClipId, Reversed>,
     /// At most this many decoders at once.
@@ -362,7 +369,7 @@ pub(crate) struct ClipStreams {
 
 impl ClipStreams {
     pub fn new(cap: usize) -> Self {
-        Self { streams: HashMap::new(), reversed: HashMap::new(), cap, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS), neighbours: Vec::new() }
+        Self { streams: HashMap::new(), opening: HashMap::new(), reversed: HashMap::new(), cap, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS), neighbours: Vec::new() }
     }
 
     /// The reader of `path`'s frames at any time for an OFX plug-in's
@@ -397,6 +404,10 @@ impl ClipStreams {
     /// when a stream opens.
     pub fn sync(&mut self, wants: &[Want], frame_secs: f64, resolve: &dyn Fn(&Want) -> Option<(PathBuf, i32)>) {
         self.streams.retain(|id, _| wants.iter().any(|w| w.clip == *id && !w.reversed));
+        // One no longer wanted is let go: opened, it is dropped on its own
+        // thread, its decoder stopped there.
+        self.opening.retain(|id, _| wants.iter().any(|w| w.clip == *id && !w.reversed));
+        self.land_opened();
         self.reversed.retain(|id, _| wants.iter().any(|w| w.clip == *id && w.reversed));
         for w in wants.iter().filter(|w| w.reversed) {
             let r = match self.reversed.entry(w.clip) {
@@ -417,7 +428,10 @@ impl ClipStreams {
         }
         for w in wants.iter().filter(|w| !w.reversed) {
             let target = w.source_secs.max(0.0);
-            let full = self.streams.len() >= self.cap;
+            if self.opening.contains_key(&w.clip) {
+                continue;
+            }
+            let full = self.streams.len() + self.opening.len() >= self.cap;
             match self.streams.get_mut(&w.clip) {
                 Some(s) => {
                     // A step back or a jump ahead: seek. Playback moves a
@@ -441,8 +455,16 @@ impl ClipStreams {
                     debug!("clip streams: {} decoders open, not opening one for {:?}", self.cap, w.clip);
                 }
                 None => {
-                    if let Some(s) = resolve(w).and_then(|(path, rot)| ClipStream::open(w, &path, rot)) {
-                        self.streams.insert(w.clip, s);
+                    // Opened off this thread; it lands on a later sync.
+                    if let Some((path, rot)) = resolve(w) {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        let want = w.clone();
+                        let spawned = std::thread::Builder::new().name("clip stream open".into()).spawn(move || {
+                            let _ = tx.send(ClipStream::open(&want, &path, rot));
+                        });
+                        if spawned.is_ok() {
+                            self.opening.insert(w.clip, rx);
+                        }
                     }
                 }
             }
@@ -453,8 +475,28 @@ impl ClipStreams {
         }
     }
 
+    /// Streams whose opening finished, put with the others; one that could
+    /// not be opened is forgotten, and asked for again by the next sync.
+    fn land_opened(&mut self) {
+        let mut done = Vec::new();
+        for (id, rx) in &self.opening {
+            match rx.try_recv() {
+                Ok(opened) => done.push((*id, opened)),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => done.push((*id, None)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        for (id, opened) in done {
+            self.opening.remove(&id);
+            if let Some(s) = opened {
+                self.streams.insert(id, s);
+            }
+        }
+    }
+
     /// Take whatever frames arrived, without changing any target.
     pub fn pump(&mut self, frame_secs: f64) {
+        self.land_opened();
         for s in self.streams.values_mut() {
             let half = s.dec().half_source_frame(1.0 / frame_secs.max(1e-6));
             s.pump(half);
@@ -462,7 +504,7 @@ impl ClipStreams {
     }
 
     pub fn has(&self, clip: ClipId) -> bool {
-        self.streams.contains_key(&clip) || self.reversed.contains_key(&clip)
+        self.streams.contains_key(&clip) || self.opening.contains_key(&clip) || self.reversed.contains_key(&clip)
     }
 
     /// A reversed clip's frame at `source_secs`, fitted into `width` ×
@@ -487,7 +529,7 @@ impl ClipStreams {
 
     /// Every stream holds its frame for its current time.
     pub fn ready(&self, frame_secs: f64) -> bool {
-        self.streams.values().all(|s| s.ready(s.dec().half_source_frame(1.0 / frame_secs.max(1e-6))))
+        self.opening.is_empty() && self.streams.values().all(|s| s.ready(s.dec().half_source_frame(1.0 / frame_secs.max(1e-6))))
     }
 
     /// Take over the primary decoder at a cut, when the clip it was
@@ -517,6 +559,7 @@ impl ClipStreams {
 
     pub fn clear(&mut self) {
         self.streams.clear();
+        self.opening.clear();
         self.reversed.clear();
     }
 
@@ -549,6 +592,39 @@ mod tests {
         ok.then_some(out)
     }
 
+    /// #2108: a stream is opened off the caller's thread: wanted, it is
+    /// there at once as opening, and not ready until it has opened and
+    /// holds its frame; the sync that asked for it does not wait.
+    #[test]
+    fn a_stream_opens_off_the_callers_thread() {
+        let Some(path) = source() else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let frame = 1.0 / 25.0;
+        let w = Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 1.0, reversed: false };
+        let mut streams = ClipStreams::new(4);
+        let t = std::time::Instant::now();
+        streams.sync(std::slice::from_ref(&w), frame, &|_: &Want| Some((path.clone(), 0)));
+        let asked = t.elapsed();
+        assert!(streams.has(w.clip), "wanted: counted while it opens");
+        assert!(streams.opening.contains_key(&w.clip) && !streams.streams.contains_key(&w.clip), "still opening when the sync returns");
+        assert!(!streams.ready(frame), "not ready while opening");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !streams.ready(frame) {
+            assert!(std::time::Instant::now() < deadline, "the stream never held its frame");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            streams.pump(frame);
+        }
+        assert!(streams.opening.is_empty() && streams.streams.contains_key(&w.clip));
+        eprintln!("sync returned in {asked:?}");
+        // A stream no longer wanted while it opens is let go.
+        let other = Want { clip: ClipId::new(), ..w.clone() };
+        streams.sync(std::slice::from_ref(&other), frame, &|_: &Want| Some((path.clone(), 0)));
+        streams.sync(&[], frame, &|_: &Want| Some((path.clone(), 0)));
+        assert!(!streams.has(other.clip) && !streams.has(w.clip), "nothing wanted, nothing kept");
+    }
+
     /// #2108: a stream still seeking is taken over all the same, its
     /// decoder with no frame (a frame from before the seek is not the one
     /// for here), and its first frame comes from that same decoder: the
@@ -563,6 +639,13 @@ mod tests {
         let w = Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 1.0, reversed: false };
         let mut streams = ClipStreams::new(4);
         streams.sync(std::slice::from_ref(&w), frame, &|_: &Want| Some((path.clone(), 0)));
+        // Opened off this thread: it lands on a pump.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !streams.streams.contains_key(&w.clip) {
+            assert!(std::time::Instant::now() < deadline, "the stream never opened");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            streams.pump(frame);
+        }
         let s = streams.streams.get_mut(&w.clip).unwrap();
         // As a seek in flight leaves it: still seeking, holding an older frame.
         s.seeking = Some(1.0);

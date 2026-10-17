@@ -64,6 +64,16 @@ fn play_sequence(seq: Sequence, pool: MediaPool, from: f64, secs: f64) -> Option
         Arc::new(Mutex::new(None)), Arc::clone(&ring),
     );
     let thread = std::thread::spawn(move || engine.run());
+    // `KLIPP_WARM`: play it once first, so what is measured is a second
+    // Play in a process that has drawn the section before.
+    if std::env::var_os("KLIPP_WARM").is_some() {
+        cmd.send(AppCommand::SetPlayhead(RationalTime::from_secs_f64(from, fps.rate()))).unwrap();
+        common::settle(&fb);
+        cmd.send(AppCommand::Play).unwrap();
+        std::thread::sleep(Duration::from_secs_f64(secs));
+        cmd.send(AppCommand::Pause).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+    }
     cmd.send(AppCommand::SetPlayhead(RationalTime::from_secs_f64(from, fps.rate()))).unwrap();
     common::settle(&fb);
     cmd.send(AppCommand::Play).unwrap();
