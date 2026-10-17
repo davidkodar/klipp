@@ -2490,6 +2490,14 @@ impl PlaybackEngine {
         }
     }
 
+    /// Start building the viewer's GPU pipeline now, on a thread of its
+    /// own (#2108), so the first frame the GPU stack draws does not spend
+    /// 0.8 s compiling every effect's shader on the engine's thread while a
+    /// Play waits behind it. The app calls it as it starts the engine.
+    pub fn prewarm_gpu(&mut self) {
+        self.renderer.executor().prewarm_gpu();
+    }
+
     pub fn run(self) {
         // `run_inner` consumes `self`, so by the time it returns every
         // resource the engine owned — including its GPU pipelines — has

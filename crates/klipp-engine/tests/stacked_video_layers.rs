@@ -67,11 +67,15 @@ fn play_sequence(seq: Sequence, pool: MediaPool, from: f64, secs: f64) -> Option
     });
     let fb = Arc::new(Mutex::new(FrameBuffer::new(w, h)));
     let ring = Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default()));
-    let engine = PlaybackEngine::new(
+    let mut engine = PlaybackEngine::new(
         cmd_rx, ev_tx, Arc::clone(&fb), Arc::new(Mutex::new(FrameBuffer::new(w, h))),
         Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)), Box::new(|| {}),
         Arc::new(Mutex::new(None)), Arc::clone(&ring),
     );
+    // As the app starts it (#2108), the shared device decided as the UI
+    // decides it by installing its own.
+    let _ = klipp_effects::gpu_context::GpuContext::shared();
+    engine.prewarm_gpu();
     let thread = std::thread::spawn(move || engine.run());
     // `KLIPP_WARM`: play it once first, so what is measured is a second
     // Play in a process that has drawn the section before.
@@ -122,6 +126,12 @@ fn play_sequence(seq: Sequence, pool: MediaPool, from: f64, secs: f64) -> Option
             _ => "none".into(),
         };
         eprintln!("PLAYHEAD first move after {first:.2} s, distinct frames per second {per:?}, {span}");
+        if std::env::var_os("KLIPP_TRACE").is_some() {
+            let early: Vec<String> = moves.iter().filter(|(t, _)| t.duration_since(since).as_secs_f64() < 1.0 && *t > since).map(|(t, v)| format!("+{:.3}:{:.3}", t.duration_since(since).as_secs_f64(), *v as f64 / f64::from(fps.rate()))).collect();
+            eprintln!("PLAYHEAD early moves (start {:?}): {}", start.map(|v| v as f64 / f64::from(fps.rate())), early.join(" "));
+            let early_shown: Vec<String> = shown.iter().filter(|t| t.duration_since(since).as_secs_f64() < 1.0).map(|t| format!("+{:.3}", t.duration_since(since).as_secs_f64())).collect();
+            eprintln!("SHOWN early: {}", early_shown.join(" "));
+        }
     }
     let first_gap = shown.first().map_or(secs, |t| t.duration_since(since).as_secs_f64());
     let worst_gap = shown.windows(2).map(|w| w[1].duration_since(w[0]).as_secs_f64()).fold(first_gap, f64::max);
