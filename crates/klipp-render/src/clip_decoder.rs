@@ -131,6 +131,8 @@ pub struct RenderDecoder {
     last_scene: Option<SceneReferredFrame>,
     /// Active hardware acceleration mode.
     hw_accel: HwAccel,
+    /// Counted in [`hardware_decoders_open`] while it decodes on the GPU.
+    _on_gpu: Option<OnGpu>,
     /// Target output dimensions.
     target_width: u32,
     target_height: u32,
@@ -331,6 +333,7 @@ impl RenderDecoder {
             working: klipp_core::WorkingColorspace::Rec709Linear,
             last_scene: None,
             hw_accel,
+            _on_gpu: (hw_accel != HwAccel::Software).then(OnGpu::new),
             target_width,
             target_height,
             time_base_secs,
@@ -815,6 +818,33 @@ impl RenderDecoder {
             HwAccel::Vaapi => "VAAPI",
             HwAccel::Software => "Software",
         }
+    }
+}
+
+/// Render decoders open on the GPU's decoder now.
+static ON_GPU: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How many render decoders (export, background renders) decode on the
+/// GPU now. The viewer's decode budget measures what the GPU's decoder
+/// gives from its own decoders' frames; while these share it, that
+/// measure is only the viewer's part, and is not taken (#2116).
+pub fn hardware_decoders_open() -> usize {
+    ON_GPU.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// One render decoder's place in [`hardware_decoders_open`].
+struct OnGpu;
+
+impl OnGpu {
+    fn new() -> Self {
+        ON_GPU.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for OnGpu {
+    fn drop(&mut self) {
+        ON_GPU.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

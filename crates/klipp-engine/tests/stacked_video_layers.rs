@@ -147,6 +147,9 @@ fn play_sequence(seq: Sequence, pool: MediaPool, from: f64, secs: f64) -> Option
             med(all.iter().map(|s| s.phases.sync_ms).collect()), med(all.iter().map(|s| s.decode_ms).collect()),
             med(all.iter().map(|s| s.phases.present_ms).collect()), med(all.iter().map(|s| s.update_playback_ms).collect()),
             all.iter().filter(|s| s.dropped).count());
+        // Decoders moved off a full GPU decoder (#2116).
+        eprintln!("DECODERS most on the GPU {}, most in software {}",
+            all.iter().map(|s| s.streams_gpu).max().unwrap_or(0), all.iter().map(|s| s.streams_software).max().unwrap_or(0));
         if std::env::var_os("KLIPP_TRACE").is_some() {
             let mut prev = since;
             for x in &all {

@@ -156,7 +156,8 @@ impl PlaybackEngine {
             };
             let resolved = self.path_for_media(want.media).map(|path| {
                 let rotation = self.effective_decode_rotation(want.media, &path, want.rotation);
-                (path, rotation)
+                let rate = self.media_pixel_rate(want.media, &path);
+                (path, rotation, rate)
             });
             let frame_secs = self.fps.frame_duration_secs();
             job.streams.sync(std::slice::from_ref(&want), frame_secs, &|_| resolved.clone());

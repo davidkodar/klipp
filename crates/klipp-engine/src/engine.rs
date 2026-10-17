@@ -6225,8 +6225,11 @@ impl PlaybackEngine {
                 // Opened on a worker thread, not this one: the open and
                 // the seek cost the engine's tick 35–43 ms (#572).
                 let (tx, rx) = std::sync::mpsc::channel();
+                // Opened ahead, it is among the first to decode in
+                // software when the GPU's decoder is full (#2116).
+                let lease = crate::decode_budget::admit(self.media_pixel_rate(media_id, &path), crate::decode_budget::Priority::Overflow);
                 std::thread::spawn(move || crate::thread_guard::catch_panic("klipp-preroll", move || {
-                    match VideoDecoder::open(&path, effective_preroll_rot) {
+                    match VideoDecoder::open_with(&path, effective_preroll_rot, lease) {
                         Ok(dec) => {
                             if source_in_secs > 0.01 {
                                 dec.seek(source_in_secs);
@@ -8711,6 +8714,8 @@ impl PlaybackEngine {
                 phases: Default::default(),
                 stills_kept: 0,
                 stills_uploaded: 0,
+                streams_gpu: 0,
+                streams_software: 0,
             });
         }
         let _ = self.event_tx.send(AppEvent::FrameReady);
@@ -8894,6 +8899,8 @@ impl PlaybackEngine {
                 phases: Default::default(),
                 stills_kept: 0,
                 stills_uploaded: 0,
+                streams_gpu: 0,
+                streams_software: 0,
             });
         }
 
@@ -9696,6 +9703,18 @@ impl PlaybackEngine {
             .ok()
             .and_then(|pool| pool.get(&media_id).map(|item| item.effective_rotation_for(decode_path)))
             .unwrap_or(fallback)
+    }
+
+    /// The pixels a second decoding `media_id` from `path` asks for, as a
+    /// stream opening is counted against the GPU's decoder (#2116): its
+    /// size times its rate. A proxy is counted as 1080p, as it is made no
+    /// larger; the decoder corrects it once it reads the file's size.
+    fn media_pixel_rate(&self, media_id: MediaId, path: &std::path::Path) -> f64 {
+        let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+        let Some(item) = pool.get(&media_id) else { return 0.0 };
+        let fps = item.fps.as_f64().max(1.0);
+        let (w, h) = if item.path == path { (item.resolution.width, item.resolution.height) } else { (1920, 1080) };
+        w as f64 * h as f64 * fps
     }
 
     fn path_for_media(&self, media_id: MediaId) -> Option<PathBuf> {
