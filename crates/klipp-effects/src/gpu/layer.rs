@@ -8,11 +8,17 @@ pub(super) struct LayerGpu {
     bounds: wgpu::ComputePipeline,
     corners: wgpu::ComputePipeline,
     cast: wgpu::ComputePipeline,
-    cast_alpha: wgpu::ComputePipeline,
-    alpha_blur_h: wgpu::ComputePipeline,
-    alpha_blur_v: wgpu::ComputePipeline,
-    expand_cast: wgpu::ComputePipeline,
     over: wgpu::ComputePipeline,
+    /// The recorded spills' passes (#2107): their bindings, the region
+    /// they work in, and a pipeline a pass.
+    spill_layout: wgpu::BindGroupLayout,
+    spill_region: wgpu::Buffer,
+    /// The region's indirect dispatch, apart from the region: a buffer a
+    /// pass dispatches by is not one it may write.
+    spill_args: wgpu::Buffer,
+    /// Bound for the dispatch in the passes that don't write it.
+    spill_unused: wgpu::Buffer,
+    spill: [wgpu::ComputePipeline; SPILL_PASSES],
     fill_small: wgpu::ComputePipeline,
     fill_over: wgpu::ComputePipeline,
     scratch: Vec<wgpu::Buffer>,
@@ -39,18 +45,61 @@ impl LayerGpu {
                 cache: None,
             })
         };
+        let storage = |binding: u32, read_only: bool| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only }, has_dynamic_offset: false, min_binding_size: None },
+            count: None,
+        };
+        let spill_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("spill_layout"),
+            entries: &[
+                storage(0, true),
+                storage(1, true),
+                storage(2, false),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                storage(4, false),
+                storage(5, false),
+            ],
+        });
+        let spill_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("spill_pl"),
+            bind_group_layouts: &[&spill_layout],
+            push_constant_ranges: &[],
+        });
         Self {
             rows: build(single, ROWS, "rows"),
             bounds: build(single, BOUNDS, "bounds"),
             cast: build(single, CAST, "make_cast"),
-            cast_alpha: build(single, CAST_ALPHA, "make_cast_alpha"),
-            alpha_blur_h: build(single, SPILL_BLUR_H, "spill_blur_h"),
-            alpha_blur_v: build(single, SPILL_BLUR_V, "spill_blur_v"),
-            expand_cast: build(single, EXPAND_CAST, "expand_cast"),
             corners: build(pair, CORNERS, "corners"),
             over: build(pair, OVER, "over"),
             fill_small: build(pair, FILL_SMALL, "fill_small"),
             fill_over: build(pair, FILL_OVER, "fill_over"),
+            spill: SPILL.map(|(_, source, entry)| build(&spill_pl, source, entry)),
+            spill_layout,
+            spill_region: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("spill_region"),
+                size: 16,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            }),
+            spill_args: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("spill_args"),
+                size: 16,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
+                mapped_at_creation: false,
+            }),
+            spill_unused: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("spill_unused"),
+                size: 16,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            }),
             scratch: Vec::new(),
             size: 0,
         }
@@ -103,6 +152,36 @@ impl Params {
         }
     }
 }
+
+/// The spills' parameters, as [`SPILL_HEAD`] reads them.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct SpillParams {
+    width: u32,
+    height: u32,
+    radius: i32,
+    /// [`SPILL_LAY`]: 0 for the first cast laid, which nothing is under.
+    mode: u32,
+    offset_x: i32,
+    offset_y: i32,
+    opacity: f32,
+    pad: u32,
+    /// How far the run's casts reach past the layer's bounds, left,
+    /// right, up and down.
+    reach: [i32; 4],
+    color: [f32; 4],
+}
+
+/// The recorded spills' passes, in [`LayerGpu::spill`]'s order.
+const SPILL_PASSES: usize = 8;
+const RESET: usize = 0;
+const BOUNDS_PASS: usize = 1;
+const REGION: usize = 2;
+const CAST_PASS: usize = 3;
+const BLUR_H: usize = 4;
+const BLUR_V: usize = 5;
+const LAY: usize = 6;
+const FINAL: usize = 7;
 
 /// [`crate::layer::fill_bars`]'s parameters, as its two shaders read them.
 #[repr(C)]
@@ -303,10 +382,15 @@ impl GpuEffectsPipeline {
     /// writes `dst`.
     ///
     /// A cast's colour is the same everywhere; only its alpha varies. So
-    /// the alpha alone is cast and blurred, one float a pixel, a quarter
-    /// of the pixels' traffic, and then laid out in the colour (#2102).
-    /// Its sums run in the same order as the four-channel blur's did, so
-    /// the alpha is the same.
+    /// the alpha alone is cast and blurred, one float a pixel, and then
+    /// laid in the colour (#2102). And only where it can show (#2107):
+    /// the layer's bounds, found on the GPU, moved by the casts' offsets
+    /// and grown by their blurs' reach. A layer placed small in the frame
+    /// had its casts worked over the whole frame. Outside that region
+    /// every cast is nothing and the layer transparent, so the last pass
+    /// lays what the whole-frame passes laid there. The sums run in the
+    /// same order as before, the region's outside read as the nothing it
+    /// is, so the alpha is the same.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_spills(
         &self,
@@ -318,40 +402,91 @@ impl GpuEffectsPipeline {
         height: u32,
         run: &[crate::layer::Spill],
     ) -> bool {
+        // Laid nearest-last, as the CPU lays them.
+        let laid: Vec<(Params, Vec<usize>)> = run
+            .iter()
+            .rev()
+            .filter_map(|s| Self::spill_params(s, width, height))
+            .map(|(params, sigma)| {
+                let boxes = if sigma >= 0.5 { crate::blur::boxes_for_gaussian(sigma).into_iter().filter(|r| *r != 0).collect() } else { Vec::new() };
+                (params, boxes)
+            })
+            .collect();
+        let Some((bottom, _)) = laid.first() else { return false };
         let q = &self.queue;
-        let wg = (width * height).div_ceil(WORKGROUP_SIZE);
+        let whole = (width * height).div_ceil(WORKGROUP_SIZE);
+        let base = SpillParams { width, height, radius: 0, mode: 0, offset_x: 0, offset_y: 0, opacity: 0.0, pad: 0, reach: [0; 4], color: [0.0; 4] };
+        let mut reach = [0i32; 4];
+        for (params, boxes) in &laid {
+            let r = boxes.iter().sum::<usize>() as i32;
+            reach[0] = reach[0].max(r - params.offset_x);
+            reach[1] = reach[1].max(r + params.offset_x);
+            reach[2] = reach[2].max(r - params.offset_y);
+            reach[3] = reach[3].max(r + params.offset_y);
+        }
+        let run_slot = rec.slots.claim(q, &SpillParams { reach, color: bottom.color, ..base }).expect("slots checked");
+        // The region: the layer's bounds, then what the casts reach.
+        self.record_spill_pass(rec, RESET, src, src, cast, run_slot, None);
+        self.record_spill_pass(rec, BOUNDS_PASS, src, src, cast, run_slot, Some(whole));
+        self.record_spill_pass(rec, REGION, src, src, cast, run_slot, Some(1));
         let mut under = &self.layer_gpu.scratch[0];
         let mut next = &self.layer_gpu.scratch[1];
-        let mut drawn = false;
-        for spill in run.iter().rev() {
-            let Some((params, sigma)) = Self::spill_params(spill, width, height) else { continue };
-            let slot = rec.slots.claim(q, &params).expect("slots checked");
-            self.record_pass_n(rec, &self.layer_gpu.cast_alpha, src, cast, slot, wg);
-            if sigma >= 0.5 {
-                for radius in crate::blur::boxes_for_gaussian(sigma) {
-                    if radius == 0 {
-                        continue;
-                    }
-                    let blur = rec.slots.claim(q, &BlurParams { width, height, radius: radius as i32, _pad: 0 }).expect("slots checked");
-                    self.record_pass_n(rec, &self.layer_gpu.alpha_blur_h, cast, dst, blur, wg);
-                    self.record_pass_n(rec, &self.layer_gpu.alpha_blur_v, dst, cast, blur, wg);
-                }
+        for (i, (params, boxes)) in laid.iter().enumerate() {
+            let own = SpillParams { mode: u32::from(i > 0), offset_x: params.offset_x, offset_y: params.offset_y, opacity: params.opacity, color: params.color, ..base };
+            let slot = rec.slots.claim(q, &own).expect("slots checked");
+            self.record_spill_pass(rec, CAST_PASS, src, src, cast, slot, None);
+            for &radius in boxes {
+                let blur = rec.slots.claim(q, &SpillParams { radius: radius as i32, ..base }).expect("slots checked");
+                self.record_spill_pass(rec, BLUR_H, cast, src, dst, blur, None);
+                self.record_spill_pass(rec, BLUR_V, dst, src, cast, blur, None);
             }
-            // The cast in its colour, in `dst` until it is laid.
-            self.record_pass_n(rec, &self.layer_gpu.expand_cast, cast, dst, slot, wg);
-            if drawn {
-                self.record_pair_n(rec, &self.layer_gpu.over, dst, under, next, slot, wg);
-                std::mem::swap(&mut under, &mut next);
+            // The first cast is laid alone; nothing is under it yet.
+            if i == 0 {
+                self.record_spill_pass(rec, LAY, cast, src, under, slot, None);
             } else {
-                rec.encoder.copy_buffer_to_buffer(dst, 0, under, 0, u64::from(width) * u64::from(height) * 16);
-                drawn = true;
+                self.record_spill_pass(rec, LAY, cast, under, next, slot, None);
+                std::mem::swap(&mut under, &mut next);
             }
         }
-        if drawn {
-            let slot = rec.slots.claim(q, &Params::new(width, height)).expect("slots checked");
-            self.record_pair_n(rec, &self.layer_gpu.over, src, under, dst, slot, wg);
+        self.record_spill_pass(rec, FINAL, src, under, dst, run_slot, Some(whole));
+        true
+    }
+
+    /// One of the spills' passes: over `workgroups`, or over the region
+    /// [`SPILL_REGION`] sized.
+    #[allow(clippy::too_many_arguments)]
+    fn record_spill_pass(
+        &self,
+        rec: &mut EffectRecording<'_>,
+        pass: usize,
+        input: &wgpu::Buffer,
+        second: &wgpu::Buffer,
+        output: &wgpu::Buffer,
+        slot: usize,
+        workgroups: Option<u32>,
+    ) {
+        let lg = &self.layer_gpu;
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("spill_pass"),
+            layout: &lg.spill_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: second.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: rec.slots.buffer(slot).as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: lg.spill_region.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: if pass == REGION { &lg.spill_args } else { &lg.spill_unused }.as_entire_binding() },
+            ],
+        });
+        let mut cpass = rec.encoder.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some(SPILL[pass].0), timestamp_writes: None });
+        cpass.set_pipeline(&lg.spill[pass]);
+        cpass.set_bind_group(0, &bind_group, &[]);
+        match workgroups {
+            Some(n) => cpass.dispatch_workgroups(n, 1, 1),
+            // The reset is one thread; the region's passes are sized by it.
+            None if pass == RESET => cpass.dispatch_workgroups(1, 1, 1),
+            None => cpass.dispatch_workgroups_indirect(&lg.spill_args, 0),
         }
-        drawn
     }
 }
 
@@ -433,99 +568,239 @@ fn make_cast(@builtin(global_invocation_id) gid: vec3<u32>) {
 "#
 );
 
-/// [`CAST`]'s alpha alone, one float a pixel in the first `width *
-/// height` floats of `output`: the colour is laid by [`EXPAND_CAST`].
-pub(super) const CAST_ALPHA: &str = concat!(
-    shader_pixel_storage_wgsl!(),
-    r#"
+/// What every spill pass declares: its parameters ([`SpillParams`]) and
+/// the region (`x0, y0, x1, y1`).
+macro_rules! spill_head {
+    () => {
+        r#"
 struct Params {
-    width: u32, height: u32, radius: f32, feather: f32,
+    width: u32, height: u32, radius: i32, mode: u32,
     offset_x: i32, offset_y: i32, opacity: f32, pad: u32,
+    reach: vec4<i32>,
     color: vec4<f32>,
 }
+struct Region { x0: atomic<i32>, y0: atomic<i32>, x1: atomic<i32>, y1: atomic<i32> }
+@group(0) @binding(3) var<uniform> params: Params;
+@group(0) @binding(4) var<storage, read_write> region: Region; // not-pixels: the region spills work in
+fn rect() -> vec4<i32> {
+    return vec4<i32>(atomicLoad(&region.x0), atomicLoad(&region.y0), atomicLoad(&region.x1), atomicLoad(&region.y1));
+}
+// The region `r`'s `i`th pixel, or (-1, -1) past its end. The region is
+// read once a pass's invocation, into `r`: atomics are not cached.
+fn region_pixel(r: vec4<i32>, i: u32) -> vec2<i32> {
+    let w = r.z - r.x;
+    if w <= 0 || i32(i) >= w * (r.w - r.y) { return vec2<i32>(-1, -1); }
+    return vec2<i32>(r.x + i32(i) % w, r.y + i32(i) / w);
+}
+fn inside(r: vec4<i32>, x: i32, y: i32) -> bool {
+    return x >= r.x && x < r.z && y >= r.y && y < r.w;
+}
+"#
+    };
+}
+
+/// Empty bounds, before [`SPILL_BOUNDS`] grows them.
+const SPILL_RESET: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
+@compute @workgroup_size(1)
+fn spill_reset() {
+    atomicStore(&region.x0, i32(params.width));
+    atomicStore(&region.y0, i32(params.height));
+    atomicStore(&region.x1, 0);
+    atomicStore(&region.y1, 0);
+}
+"#);
+
+/// The bounds of the layer's pixels that are not wholly transparent.
+const SPILL_BOUNDS: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
 @group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
-@group(0) @binding(1) var<storage, read_write> output: array<f32>; // not-pixels: a cast's alpha
-@group(0) @binding(2) var<uniform> params: Params;
+var<workgroup> wx0: atomic<i32>;
+var<workgroup> wy0: atomic<i32>;
+var<workgroup> wx1: atomic<i32>;
+var<workgroup> wy1: atomic<i32>;
 @compute @workgroup_size(256)
-fn make_cast_alpha(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn spill_bounds(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+    if li == 0u {
+        atomicStore(&wx0, i32(params.width));
+        atomicStore(&wy0, i32(params.height));
+        atomicStore(&wx1, 0);
+        atomicStore(&wy1, 0);
+    }
+    workgroupBarrier();
     let idx = gid.x;
-    if idx >= params.width * params.height { return; }
-    let x = i32(idx % params.width) - params.offset_x;
-    let y = i32(idx / params.width) - params.offset_y;
+    if idx < params.width * params.height && unpack(input[idx]).a > 0.0 {
+        let x = i32(idx % params.width);
+        let y = i32(idx / params.width);
+        atomicMin(&wx0, x);
+        atomicMin(&wy0, y);
+        atomicMax(&wx1, x + 1);
+        atomicMax(&wy1, y + 1);
+    }
+    workgroupBarrier();
+    if li == 0u && atomicLoad(&wx1) > atomicLoad(&wx0) {
+        atomicMin(&region.x0, atomicLoad(&wx0));
+        atomicMin(&region.y0, atomicLoad(&wy0));
+        atomicMax(&region.x1, atomicLoad(&wx1));
+        atomicMax(&region.y1, atomicLoad(&wy1));
+    }
+}
+"#);
+
+/// The bounds grown by the casts' reach and kept in the frame, and the
+/// dispatch that covers them: nothing when the layer is all transparent.
+const SPILL_REGION: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
+@group(0) @binding(5) var<storage, read_write> args: array<u32, 4>; // not-pixels: the region's indirect dispatch
+@compute @workgroup_size(1)
+fn spill_region() {
+    let b = rect();
+    var r = vec4<i32>(0);
+    if b.z > b.x && b.w > b.y {
+        r = vec4<i32>(
+            max(b.x - max(params.reach.x, 0), 0),
+            max(b.y - max(params.reach.z, 0), 0),
+            min(b.z + max(params.reach.y, 0), i32(params.width)),
+            min(b.w + max(params.reach.w, 0), i32(params.height)),
+        );
+    }
+    atomicStore(&region.x0, r.x);
+    atomicStore(&region.y0, r.y);
+    atomicStore(&region.x1, r.z);
+    atomicStore(&region.y1, r.w);
+    let n = u32((r.z - r.x) * (r.w - r.y));
+    args[0] = (n + 255u) / 256u;
+    args[1] = 1u;
+    args[2] = 1u;
+}
+"#);
+
+/// [`CAST`]'s alpha alone over the region, one float a pixel at its
+/// place in the frame: the colour is laid by [`SPILL_LAY`].
+const SPILL_CAST: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>; // not-pixels: a cast's alpha
+@compute @workgroup_size(256)
+fn spill_cast(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let r = rect();
+    let p = region_pixel(r, gid.x);
+    if p.x < 0 { return; }
+    let x = p.x - params.offset_x;
+    let y = p.y - params.offset_y;
     var a = 0.0;
     if x >= 0 && y >= 0 && x < i32(params.width) && y < i32(params.height) {
         a = unpack(input[u32(y) * params.width + u32(x)]).a * params.opacity;
     }
-    output[idx] = a;
+    output[u32(p.y) * params.width + u32(p.x)] = a;
 }
-"#
-);
+"#);
 
-/// The box blur's horizontal pass over a cast's alpha: the window clamped
-/// at the edge and summed left to right, as the four-channel pass sums.
-pub(super) const SPILL_BLUR_H: &str = r#"
-struct Params { width: u32, height: u32, radius: i32, pad: u32 }
+/// The box blur's horizontal pass over a cast's alpha in the region: the
+/// window clamped at the frame's edge and summed left to right, as the
+/// four-channel pass sums, the region's outside read as nothing.
+const SPILL_BLUR_H: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
 @group(0) @binding(0) var<storage, read> input: array<f32>; // not-pixels: a cast's alpha
-@group(0) @binding(1) var<storage, read_write> output: array<f32>; // not-pixels: a cast's alpha
-@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>; // not-pixels: a cast's alpha
 @compute @workgroup_size(256)
 fn spill_blur_h(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let idx = gid.x;
-    let y = idx / params.width;
-    let x = idx % params.width;
-    if y >= params.height { return; }
+    let r = rect();
+    let p = region_pixel(r, gid.x);
+    if p.x < 0 { return; }
     var sum = 0.0;
     let inv = 1.0 / f32(2 * params.radius + 1);
     let last = i32(params.width) - 1;
     for (var dx = -params.radius; dx <= params.radius; dx++) {
-        sum += input[y * params.width + u32(clamp(i32(x) + dx, 0, last))];
+        let x = clamp(p.x + dx, 0, last);
+        if inside(r, x, p.y) {
+            sum += input[u32(p.y) * params.width + u32(x)];
+        }
     }
-    output[idx] = sum * inv;
+    output[u32(p.y) * params.width + u32(p.x)] = sum * inv;
 }
-"#;
+"#);
 
 /// [`SPILL_BLUR_H`]'s vertical pass, top to bottom.
-pub(super) const SPILL_BLUR_V: &str = r#"
-struct Params { width: u32, height: u32, radius: i32, pad: u32 }
+const SPILL_BLUR_V: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
 @group(0) @binding(0) var<storage, read> input: array<f32>; // not-pixels: a cast's alpha
-@group(0) @binding(1) var<storage, read_write> output: array<f32>; // not-pixels: a cast's alpha
-@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(2) var<storage, read_write> output: array<f32>; // not-pixels: a cast's alpha
 @compute @workgroup_size(256)
 fn spill_blur_v(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let idx = gid.x;
-    let y = idx / params.width;
-    let x = idx % params.width;
-    if y >= params.height { return; }
+    let r = rect();
+    let p = region_pixel(r, gid.x);
+    if p.x < 0 { return; }
     var sum = 0.0;
     let inv = 1.0 / f32(2 * params.radius + 1);
     let last = i32(params.height) - 1;
     for (var dy = -params.radius; dy <= params.radius; dy++) {
-        sum += input[u32(clamp(i32(y) + dy, 0, last)) * params.width + x];
+        let y = clamp(p.y + dy, 0, last);
+        if inside(r, p.x, y) {
+            sum += input[u32(y) * params.width + u32(p.x)];
+        }
     }
-    output[idx] = sum * inv;
+    output[u32(p.y) * params.width + u32(p.x)] = sum * inv;
 }
-"#;
+"#);
 
-/// A cast's alpha laid out in its colour, as [`CAST`] lays it.
-pub(super) const EXPAND_CAST: &str = concat!(
-    shader_pixel_storage_wgsl!(),
-    r#"
-struct Params {
-    width: u32, height: u32, radius: f32, feather: f32,
-    offset_x: i32, offset_y: i32, opacity: f32, pad: u32,
-    color: vec4<f32>,
-}
+/// A cast laid in its colour over the region: alone (`mode` 0), or over
+/// the casts laid before it, by [`OVER`]'s rule.
+const SPILL_LAY: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
 @group(0) @binding(0) var<storage, read> input: array<f32>; // not-pixels: a cast's alpha
-@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
-@group(0) @binding(2) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> second: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
 @compute @workgroup_size(256)
-fn expand_cast(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn spill_lay(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let r = rect();
+    let p = region_pixel(r, gid.x);
+    if p.x < 0 { return; }
+    let idx = u32(p.y) * params.width + u32(p.x);
+    let top = vec4<f32>(params.color.rgb, input[idx]);
+    if params.mode == 0u {
+        output[idx] = pack(top);
+        return;
+    }
+    let bottom = unpack(second[idx]);
+    let a = top.a + bottom.a * (1.0 - top.a);
+    var pixel = bottom;
+    if a > 0.0 {
+        pixel = vec4<f32>((top.rgb * top.a + bottom.rgb * bottom.a * (1.0 - top.a)) / a, a);
+    }
+    output[idx] = pack(pixel);
+}
+"#);
+
+/// The layer over its casts, over the whole frame by [`OVER`]'s rule:
+/// outside the region the casts are nothing, the first laid's colour at
+/// no alpha, as the whole-frame passes left them.
+const SPILL_FINAL: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read> second: array<vec4<f32>>;
+@group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
+@compute @workgroup_size(256)
+fn spill_final(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if idx >= params.width * params.height { return; }
-    output[idx] = pack(vec4<f32>(params.color.rgb, input[idx]));
+    let top = unpack(input[idx]);
+    var bottom = vec4<f32>(params.color.rgb, 0.0);
+    if inside(rect(), i32(idx % params.width), i32(idx / params.width)) {
+        bottom = unpack(second[idx]);
+    }
+    let a = top.a + bottom.a * (1.0 - top.a);
+    var pixel = bottom;
+    if a > 0.0 {
+        pixel = vec4<f32>((top.rgb * top.a + bottom.rgb * bottom.a * (1.0 - top.a)) / a, a);
+    }
+    output[idx] = pack(pixel);
 }
-"#
-);
+"#);
+
+/// The spills' passes: name, source, entry point.
+pub(super) const SPILL: [(&str, &str, &str); SPILL_PASSES] = [
+    ("LAYER_SPILL_RESET", SPILL_RESET, "spill_reset"),
+    ("LAYER_SPILL_BOUNDS", SPILL_BOUNDS, "spill_bounds"),
+    ("LAYER_SPILL_REGION", SPILL_REGION, "spill_region"),
+    ("LAYER_SPILL_CAST", SPILL_CAST, "spill_cast"),
+    ("LAYER_SPILL_BLUR_H", SPILL_BLUR_H, "spill_blur_h"),
+    ("LAYER_SPILL_BLUR_V", SPILL_BLUR_V, "spill_blur_v"),
+    ("LAYER_SPILL_LAY", SPILL_LAY, "spill_lay"),
+    ("LAYER_SPILL_FINAL", SPILL_FINAL, "spill_final"),
+];
 
 pub(super) const CORNERS: &str = concat!(
     shader_pixel_storage_wgsl!(),

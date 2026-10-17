@@ -115,6 +115,27 @@ fn rounded_and_grouped_spills_match_cpu_on_gpu() {
             feather: 0.0,
         }],
     );
+    // The casts are worked only near the layer (#2107): a small card in
+    // a large frame, one by the frame's edge (its glow's reach cut by the
+    // edge, its shadow thrown out of the frame), and a layer with nothing
+    // in it, where the spills lay nothing but their colour at no alpha.
+    let (bw, bh) = (161, 97);
+    for (x0, y0) in [(70, 40), (0, 3), (bw - 12, bh - 9)] {
+        let mut small = vec![0.0; (bw * bh * 4) as usize];
+        for y in y0..(y0 + 9).min(bh) {
+            for x in x0..(x0 + 12).min(bw) {
+                let i = ((y * bw + x) * 4) as usize;
+                small[i..i + 4].copy_from_slice(&[0.3, 0.8, 0.5, if (x + y) % 3 == 0 { 0.5 } else { 1.0 }]);
+            }
+        }
+        let glow = E::OuterGlow { radius: 4.0 / bw as f32, intensity: 0.7, color: [250, 150, 50] };
+        let shadow = E::DropShadow { offset_x: 9.0 / bw as f32, offset_y: 6.0 / bw as f32, blur: 2.5 / bw as f32, color: [20, 30, 50], opacity: 0.8 };
+        compare(&mut gpu, &small, bw, bh, std::slice::from_ref(&glow));
+        compare(&mut gpu, &small, bw, bh, &[shadow.clone(), glow.clone()]);
+        compare(&mut gpu, &small, bw, bh, &[E::RoundedCorners { radius: 0.3, feather: 0.0 }, glow, shadow]);
+    }
+    let nothing = vec![0.0; (bw * bh * 4) as usize];
+    compare(&mut gpu, &nothing, bw, bh, &[E::OuterGlow { radius: 4.0 / bw as f32, intensity: 0.7, color: [250, 150, 50] }]);
     // Border-clamped blur, offset clipping and opaque full-frame bounds.
     let full = vec![1.0; p.len()];
     compare(&mut gpu, &full, w, h, &[shadow.clone(), glow.clone()]);
