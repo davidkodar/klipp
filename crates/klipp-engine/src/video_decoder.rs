@@ -2474,12 +2474,7 @@ fn decode_thread_main(
         crate::decode_budget::opened_in_software(lease_id);
     }
     // What this thread decodes and waits is the GPU's measure (#2116).
-    let on_gpu = hw_accel != HwAccel::Software;
-    let gpu_idle = |d: Duration| {
-        if on_gpu {
-            crate::decode_budget::note_gpu_idle(d);
-        }
-    };
+    let mut meter = crate::decode_budget::Meter::new(hw_accel != HwAccel::Software, sw_threads);
 
     // Capture the source's colourspace from the AVCodecParameters
     // before the decoder starts producing frames. NVDEC's
@@ -2669,13 +2664,13 @@ fn decode_thread_main(
 
         if paused {
             std::thread::sleep(Duration::from_millis(5));
-            gpu_idle(Duration::from_millis(5));
+            meter.idle(Duration::from_millis(5));
             continue;
         }
 
         if eof_sent {
             std::thread::sleep(Duration::from_millis(5));
-            gpu_idle(Duration::from_millis(5));
+            meter.idle(Duration::from_millis(5));
             continue;
         }
 
@@ -2693,7 +2688,7 @@ fn decode_thread_main(
             // retry receive_frame once a slot opens.
             if frame_queue.lock().unwrap_or_else(|e| e.into_inner()).is_full() {
                 std::thread::sleep(Duration::from_millis(1));
-                gpu_idle(Duration::from_millis(1));
+                meter.idle(Duration::from_millis(1));
                 // Re-check commands (seek/stop) while waiting.
                 // Drain the whole queue and coalesce SeekTo to the
                 // latest, same reasoning as the top-of-loop drain.
@@ -2755,9 +2750,7 @@ fn decode_thread_main(
                 // No more buffered frames — need to feed more packets
                 break;
             }
-            if on_gpu {
-                crate::decode_budget::note_gpu_frame(received_frame.width() as u64 * received_frame.height() as u64);
-            }
+            meter.frame(received_frame.width() as u64 * received_frame.height() as u64);
 
             let pts_secs = received_frame
                 .pts()
