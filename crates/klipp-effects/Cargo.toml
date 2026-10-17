@@ -82,6 +82,10 @@ name = "gpu_scopes_look"
 path = "tests/gpu_scopes_look.rs"
 
 [[test]]
+name = "card_chain_cost"
+path = "tests/card_chain_cost.rs"
+
+[[test]]
 name = "layer_gpu_parity"
 path = "tests/layer_gpu_parity.rs"
 

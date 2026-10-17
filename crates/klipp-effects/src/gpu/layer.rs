@@ -90,7 +90,7 @@ impl LayerGpu {
             }),
             spill_args: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("spill_args"),
-                size: 16,
+                size: 48,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::INDIRECT,
                 mapped_at_creation: false,
             }),
@@ -485,6 +485,9 @@ impl GpuEffectsPipeline {
             Some(n) => cpass.dispatch_workgroups(n, 1, 1),
             // The reset is one thread; the region's passes are sized by it.
             None if pass == RESET => cpass.dispatch_workgroups(1, 1, 1),
+            // A thread a row, a thread a column, else a thread a pixel.
+            None if pass == BLUR_H => cpass.dispatch_workgroups_indirect(&lg.spill_args, 12),
+            None if pass == BLUR_V => cpass.dispatch_workgroups_indirect(&lg.spill_args, 24),
             None => cpass.dispatch_workgroups_indirect(&lg.spill_args, 0),
         }
     }
@@ -595,6 +598,12 @@ fn region_pixel(r: vec4<i32>, i: u32) -> vec2<i32> {
 fn inside(r: vec4<i32>, x: i32, y: i32) -> bool {
     return x >= r.x && x < r.z && y >= r.y && y < r.w;
 }
+// The fixed-point step of a box blur's window: as fine as a window of
+// `2 * radius + 1` alphas of at most 1 can hold in a u32 without overflow,
+// with room for the float step's own rounding (2^24 to spare).
+fn fixed_scale() -> f32 {
+    return f32(0xFF000000u / u32(2 * params.radius + 1));
+}
 "#
     };
 }
@@ -648,7 +657,7 @@ fn spill_bounds(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_in
 /// The bounds grown by the casts' reach and kept in the frame, and the
 /// dispatch that covers them: nothing when the layer is all transparent.
 const SPILL_REGION: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
-@group(0) @binding(5) var<storage, read_write> args: array<u32, 4>; // not-pixels: the region's indirect dispatch
+@group(0) @binding(5) var<storage, read_write> args: array<u32, 12>; // not-pixels: the region's indirect dispatches
 @compute @workgroup_size(1)
 fn spill_region() {
     let b = rect();
@@ -666,9 +675,19 @@ fn spill_region() {
     atomicStore(&region.x1, r.z);
     atomicStore(&region.y1, r.w);
     let n = u32((r.z - r.x) * (r.w - r.y));
+    // A thread a pixel; a thread a row; a thread a column.
     args[0] = (n + 255u) / 256u;
     args[1] = 1u;
     args[2] = 1u;
+    // A thread a 32-pixel stretch of a row, or of a column.
+    let rw = u32(r.z - r.x);
+    let rh = u32(r.w - r.y);
+    args[3] = (rh * ((rw + 31u) / 32u) + 63u) / 64u;
+    args[4] = 1u;
+    args[5] = 1u;
+    args[6] = (rw * ((rh + 31u) / 32u) + 63u) / 64u;
+    args[7] = 1u;
+    args[8] = 1u;
 }
 "#);
 
@@ -692,49 +711,76 @@ fn spill_cast(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#);
 
-/// The box blur's horizontal pass over a cast's alpha in the region: the
-/// window clamped at the frame's edge and summed left to right, as the
-/// four-channel pass sums, the region's outside read as nothing.
+/// The box blur's horizontal pass over a cast's alpha in the region, a
+/// thread a 32-pixel stretch of a row: the window clamped at the frame's
+/// edge, the region's outside read as nothing, summed once at the
+/// stretch's start and slid along it, the pixel coming in
+/// added and the one going out taken away (#2107). Summed afresh at each
+/// pixel it read the window's every pixel, 140 at a 4K glow's reach, and
+/// was most of a card's cost. Slid in floats, what came in and went out
+/// left a residue where the window holds nothing, and a cast's nothing
+/// was not nothing; so the window is summed in fixed point, exactly, each
+/// alpha (0..1, as a cast's is) in the finest steps a window of its size
+/// can hold, and nothing stays nothing.
 const SPILL_BLUR_H: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
 @group(0) @binding(0) var<storage, read> input: array<f32>; // not-pixels: a cast's alpha
 @group(0) @binding(2) var<storage, read_write> output: array<f32>; // not-pixels: a cast's alpha
-@compute @workgroup_size(256)
+fn at_x(r: vec4<i32>, x: i32, y: i32) -> u32 {
+    let cx = clamp(x, 0, i32(params.width) - 1);
+    if cx < r.x || cx >= r.z { return 0u; }
+    return u32(round(clamp(input[u32(y) * params.width + u32(cx)], 0.0, 1.0) * fixed_scale()));
+}
+@compute @workgroup_size(64)
 fn spill_blur_h(@builtin(global_invocation_id) gid: vec3<u32>) {
     let r = rect();
-    let p = region_pixel(r, gid.x);
-    if p.x < 0 { return; }
-    var sum = 0.0;
-    let inv = 1.0 / f32(2 * params.radius + 1);
-    let last = i32(params.width) - 1;
+    let stretches = (r.z - r.x + 31) / 32;
+    if stretches <= 0 { return; }
+    let y = r.y + i32(gid.x) / stretches;
+    if y >= r.w { return; }
+    let x0 = r.x + (i32(gid.x) % stretches) * 32;
+    let x1 = min(x0 + 32, r.z);
+    let inv = 1.0 / (f32(2 * params.radius + 1) * fixed_scale());
+    var sum = 0u;
     for (var dx = -params.radius; dx <= params.radius; dx++) {
-        let x = clamp(p.x + dx, 0, last);
-        if inside(r, x, p.y) {
-            sum += input[u32(p.y) * params.width + u32(x)];
-        }
+        sum += at_x(r, x0 + dx, y);
     }
-    output[u32(p.y) * params.width + u32(p.x)] = sum * inv;
+    for (var x = x0; x < x1; x++) {
+        output[u32(y) * params.width + u32(x)] = f32(sum) * inv;
+        sum = sum + at_x(r, x + params.radius + 1, y) - at_x(r, x - params.radius, y);
+    }
 }
 "#);
 
-/// [`SPILL_BLUR_H`]'s vertical pass, top to bottom.
+/// [`SPILL_BLUR_H`]'s vertical pass, a thread a 32-pixel stretch of a
+/// column, top to bottom.
 const SPILL_BLUR_V: &str = concat!(shader_pixel_storage_wgsl!(), spill_head!(), r#"
 @group(0) @binding(0) var<storage, read> input: array<f32>; // not-pixels: a cast's alpha
 @group(0) @binding(2) var<storage, read_write> output: array<f32>; // not-pixels: a cast's alpha
-@compute @workgroup_size(256)
+fn at_y(r: vec4<i32>, x: i32, y: i32) -> u32 {
+    let cy = clamp(y, 0, i32(params.height) - 1);
+    if cy < r.y || cy >= r.w { return 0u; }
+    return u32(round(clamp(input[u32(cy) * params.width + u32(x)], 0.0, 1.0) * fixed_scale()));
+}
+@compute @workgroup_size(64)
 fn spill_blur_v(@builtin(global_invocation_id) gid: vec3<u32>) {
     let r = rect();
-    let p = region_pixel(r, gid.x);
-    if p.x < 0 { return; }
-    var sum = 0.0;
-    let inv = 1.0 / f32(2 * params.radius + 1);
-    let last = i32(params.height) - 1;
+    let cols = r.z - r.x;
+    if cols <= 0 { return; }
+    // Neighbouring threads take neighbouring columns, so they read
+    // neighbouring pixels.
+    let x = r.x + i32(gid.x) % cols;
+    let y0 = r.y + (i32(gid.x) / cols) * 32;
+    if y0 >= r.w { return; }
+    let y1 = min(y0 + 32, r.w);
+    let inv = 1.0 / (f32(2 * params.radius + 1) * fixed_scale());
+    var sum = 0u;
     for (var dy = -params.radius; dy <= params.radius; dy++) {
-        let y = clamp(p.y + dy, 0, last);
-        if inside(r, p.x, y) {
-            sum += input[u32(y) * params.width + u32(p.x)];
-        }
+        sum += at_y(r, x, y0 + dy);
     }
-    output[u32(p.y) * params.width + u32(p.x)] = sum * inv;
+    for (var y = y0; y < y1; y++) {
+        output[u32(y) * params.width + u32(x)] = f32(sum) * inv;
+        sum = sum + at_y(r, x, y + params.radius + 1) - at_y(r, x, y - params.radius);
+    }
 }
 "#);
 

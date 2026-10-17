@@ -1,8 +1,8 @@
 {
-  "recorded_on": "adb761ae",
+  "recorded_on": "36289387",
   "route": "plans (today's route)",
   "adapter": {"backend":"Vulkan","driver":"NVIDIA","driver_info":"610.57.04","name":"NVIDIA GeForce RTX 4080"},
-  "reason": "The GPU stack's display encode dithers before it rounds to 8 bits, as the export does (#2072): display bytes move by up to one level",
+  "reason": "#2107: a spill's box blur sums its window in fixed point, sliding, over the layer's region; a few pixels move by one display level",
   "frames": [
     {"key":"0","len":57600,"offset":0}
   ]
