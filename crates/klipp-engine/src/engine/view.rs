@@ -557,13 +557,13 @@ impl PlaybackEngine {
             }
         }
         // Files are resolved here, for new streams only: resolution logs.
-        let paths: HashMap<ClipId, (std::path::PathBuf, i32)> = wants
+        let paths: HashMap<ClipId, (std::path::PathBuf, i32, f64)> = wants
             .iter()
             .filter(|w| !self.streams.has(w.clip))
             .filter_map(|w| {
                 let path = self.path_for_media(w.media)?;
                 let rot = self.effective_decode_rotation(w.media, &path, w.rotation);
-                Some((w.clip, (path, rot)))
+                { let rate = self.media_pixel_rate(w.media, &path); Some((w.clip, (path, rot, rate))) }
             })
             .collect();
         let frame_secs = self.fps.frame_duration_secs();
@@ -1420,6 +1420,7 @@ impl PlaybackEngine {
             Some(fps) if fps > 0.0 => (total_ms as f32).max(decode_ms) > 1000.0 / fps,
             _ => false,
         };
+        let (streams_gpu, streams_software) = crate::decode_budget::counts();
         if let Ok(mut ring) = self.perf_ring.lock() {
             ring.push(crate::perf::PerfSample {
                 timestamp: Instant::now(),
@@ -1443,12 +1444,14 @@ impl PlaybackEngine {
                 phases,
                 stills_kept: s.stills_kept,
                 stills_uploaded: s.stills_uploaded,
+                streams_gpu: streams_gpu as u32,
+                streams_software: streams_software as u32,
             });
         }
         if total_ms > 16.0 || self.in_node_param_edit {
             tracing::debug!(
                 "PERF view_frame: {total_ms:.1}ms {w}x{h} | render={:.1} (grade={:.1} ofx={:.1} fx={:.1} lut={:.1} composite={:.1}) \
-                 encode={encode_ms:.1} scope={scope_ms:.1} streams={} cached={} stills kept={} uploaded={} \
+                 encode={encode_ms:.1} scope={scope_ms:.1} streams={} cached={} stills kept={} uploaded={} decoders gpu={streams_gpu} software={streams_software} \
                  grade[splice={:.1} analyses={:.1} prepare={:.1} seed={:.1} graph={:.1}]",
                 s.total_ms, s.grade_ms, s.ofx_ms, s.effects_ms, s.lut_ms, s.composite_ms,
                 self.streams.len(), stats.is_none(), s.stills_kept, s.stills_uploaded,

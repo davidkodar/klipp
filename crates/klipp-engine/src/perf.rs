@@ -137,6 +137,10 @@ pub struct PerfSample {
     /// every one should be kept.
     pub stills_kept: u32,
     pub stills_uploaded: u32,
+    /// Open decoders decoding on the GPU and in software (#2116): the
+    /// later ones moved off a full GPU decoder.
+    pub streams_gpu: u32,
+    pub streams_software: u32,
 }
 
 /// Plain-data carrier for `PerfRing::update_wrap_stages`. Stages
@@ -475,6 +479,8 @@ mod tests {
             phases: FramePhases::default(),
             stills_kept: 0,
             stills_uploaded: 0,
+            streams_gpu: 0,
+            streams_software: 0,
         }
     }
 

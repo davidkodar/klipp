@@ -239,8 +239,8 @@ struct ClipStream {
 }
 
 impl ClipStream {
-    fn open(want: &Want, path: &std::path::Path, rotation: i32) -> Option<Self> {
-        let decoder = VideoDecoder::open(path, rotation)
+    fn open(want: &Want, path: &std::path::Path, rotation: i32, lease: crate::decode_budget::Lease) -> Option<Self> {
+        let decoder = VideoDecoder::open_with(path, rotation, lease)
             .map_err(|e| warn!("clip stream: cannot open {path:?}: {e}"))
             .ok()?;
         let target = want.source_secs.max(0.0);
@@ -405,9 +405,15 @@ impl ClipStreams {
     /// Follow `wants`: open streams for new clips, close those no longer
     /// wanted, seek any whose time jumped, then take the frames that are
     /// due. `frame_secs` is the timeline's frame duration; `resolve` gives
-    /// the file and rotation to decode a clip's media from, asked only
-    /// when a stream opens.
-    pub fn sync(&mut self, wants: &[Want], frame_secs: f64, resolve: &dyn Fn(&Want) -> Option<(PathBuf, i32)>) {
+    /// the file and rotation to decode a clip's media from, and the pixels
+    /// a second it decodes, asked only when a stream opens.
+    ///
+    /// Streams open in `wants`' order, and each is counted against the
+    /// GPU's decoder as it does (#2116): when it is full, the later ones
+    /// decode in software. Layers come bottom first and those opened ahead
+    /// last, so those go to software first, then the top-most layers.
+    pub fn sync(&mut self, wants: &[Want], frame_secs: f64, resolve: &dyn Fn(&Want) -> Option<(PathBuf, i32, f64)>) {
+        crate::decode_budget::sample();
         self.streams.retain(|id, _| wants.iter().any(|w| w.clip == *id && !w.reversed));
         // One no longer wanted is let go: opened, it is dropped on its own
         // thread, its decoder stopped there.
@@ -418,7 +424,7 @@ impl ClipStreams {
             let r = match self.reversed.entry(w.clip) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => {
-                    let Some((path, rotation)) = resolve(w) else { continue };
+                    let Some((path, rotation, _)) = resolve(w) else { continue };
                     let log_format = crate::video_decoder::log_format_for_path(&path);
                     let Some(reader) = BackwardFrameReader::open_linear(&path, log_format, crate::video_decoder::working_colorspace()) else {
                         warn!("clip streams: cannot open {path:?} to read it backward");
@@ -463,11 +469,13 @@ impl ClipStreams {
                 }
                 None => {
                     // Opened off this thread; it lands on a later sync.
-                    if let Some((path, rot)) = resolve(w) {
+                    if let Some((path, rot, rate)) = resolve(w) {
                         let (tx, rx) = std::sync::mpsc::channel();
                         let want = w.clone();
+                        // Admitted here, in order, not on the thread.
+                        let lease = crate::decode_budget::admit(rate, crate::decode_budget::Priority::Overflow);
                         let spawned = std::thread::Builder::new().name("clip stream open".into()).spawn(move || {
-                            let _ = tx.send(ClipStream::open(&want, &path, rot));
+                            let _ = tx.send(ClipStream::open(&want, &path, rot, lease));
                         });
                         if spawned.is_ok() {
                             self.opening.insert(w.clip, (rx, w.ahead));
@@ -622,7 +630,7 @@ mod tests {
             return;
         };
         let frame = 1.0 / 25.0;
-        let resolve = |_: &Want| Some((path.clone(), 0));
+        let resolve = |_: &Want| Some((path.clone(), 0, 0.0));
         let ahead = Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 1.0, reversed: false, ahead: true };
         let mut streams = ClipStreams::new(2);
         streams.sync(std::slice::from_ref(&ahead), frame, &resolve);
@@ -640,6 +648,33 @@ mod tests {
         assert!(!streams.ready(frame), "the one on screen, opening, is waited for");
     }
 
+    /// #2116: a stream asking more than the GPU's decoder has left opens
+    /// in software, and gives its frame at its time as any other.
+    #[test]
+    fn a_stream_past_the_gpu_budget_decodes_in_software() {
+        let Some(path) = source() else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let frame = 1.0 / 25.0;
+        let w = Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 1.0, reversed: false, ahead: false };
+        crate::decode_budget::set_enabled(true);
+        let mut streams = ClipStreams::new(2);
+        // More pixels a second than any GPU decodes.
+        let resolve = |_: &Want| Some((path.clone(), 0, 1e15));
+        streams.sync(std::slice::from_ref(&w), frame, &resolve);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !streams.ready(frame) || !streams.streams.contains_key(&w.clip) {
+            assert!(std::time::Instant::now() < deadline, "the stream never gave its frame");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            streams.sync(std::slice::from_ref(&w), frame, &resolve);
+        }
+        let decoding = streams.streams[&w.clip].dec().decoding();
+        assert!(matches!(decoding, crate::decode_budget::Decoding::Software { threads } if threads >= 2), "{decoding:?}");
+        let pts = streams.frame(w.clip).and_then(|h| h.pts).expect("a frame");
+        assert!((pts - 1.0).abs() < frame, "the frame at {pts}, not 1 s");
+    }
+
     /// #2108: a stream is opened off the caller's thread: wanted, it is
     /// there at once as opening, and not ready until it has opened and
     /// holds its frame; the sync that asked for it does not wait.
@@ -653,7 +688,7 @@ mod tests {
         let w = Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 1.0, reversed: false, ahead: false };
         let mut streams = ClipStreams::new(4);
         let t = std::time::Instant::now();
-        streams.sync(std::slice::from_ref(&w), frame, &|_: &Want| Some((path.clone(), 0)));
+        streams.sync(std::slice::from_ref(&w), frame, &|_: &Want| Some((path.clone(), 0, 0.0)));
         let asked = t.elapsed();
         assert!(streams.has(w.clip), "wanted: counted while it opens");
         assert!(streams.opening.contains_key(&w.clip) && !streams.streams.contains_key(&w.clip), "still opening when the sync returns");
@@ -668,14 +703,14 @@ mod tests {
         eprintln!("sync returned in {asked:?}");
         // A stream still opening is taken over once it lands.
         let late = Want { clip: ClipId::new(), ..w.clone() };
-        streams.sync(std::slice::from_ref(&late), frame, &|_: &Want| Some((path.clone(), 0)));
+        streams.sync(std::slice::from_ref(&late), frame, &|_: &Want| Some((path.clone(), 0, 0.0)));
         assert!(streams.opening.contains_key(&late.clip));
         assert!(streams.take(late.clip).is_some(), "taken over while it opened");
         assert!(!streams.has(late.clip));
         // A stream no longer wanted while it opens is let go.
         let other = Want { clip: ClipId::new(), ..w.clone() };
-        streams.sync(std::slice::from_ref(&other), frame, &|_: &Want| Some((path.clone(), 0)));
-        streams.sync(&[], frame, &|_: &Want| Some((path.clone(), 0)));
+        streams.sync(std::slice::from_ref(&other), frame, &|_: &Want| Some((path.clone(), 0, 0.0)));
+        streams.sync(&[], frame, &|_: &Want| Some((path.clone(), 0, 0.0)));
         assert!(!streams.has(other.clip) && !streams.has(w.clip), "nothing wanted, nothing kept");
     }
 
@@ -692,7 +727,7 @@ mod tests {
         let frame = 1.0 / 25.0;
         let w = Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 1.0, reversed: false, ahead: false };
         let mut streams = ClipStreams::new(4);
-        streams.sync(std::slice::from_ref(&w), frame, &|_: &Want| Some((path.clone(), 0)));
+        streams.sync(std::slice::from_ref(&w), frame, &|_: &Want| Some((path.clone(), 0, 0.0)));
         // Opened off this thread: it lands on a pump.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !streams.streams.contains_key(&w.clip) {
@@ -730,7 +765,7 @@ mod tests {
         let want = |secs: f64| Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: secs, reversed: false, ahead: false };
         let w = want(1.0);
         let mut streams = ClipStreams::new(4);
-        let resolve = |_: &Want| Some((path.clone(), 0));
+        let resolve = |_: &Want| Some((path.clone(), 0, 0.0));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         streams.sync(std::slice::from_ref(&w), frame, &resolve);
         while !streams.ready(frame) {
@@ -799,7 +834,7 @@ mod tests {
             let mut streams = ClipStreams::new(4);
             streams.adopt(clip, dec, target, hand_on.then(|| HeldFrame::from_frame(cut)));
             let w = Want { clip, media: MediaId::new(), rotation: 0, source_secs: target, reversed: false, ahead: false };
-            let resolve = |_: &Want| Some((path.clone(), 0));
+            let resolve = |_: &Want| Some((path.clone(), 0, 0.0));
             if hand_on {
                 streams.sync(std::slice::from_ref(&w), frame, &resolve);
                 assert!(streams.ready(frame), "handed its frame at the cut, it holds it");

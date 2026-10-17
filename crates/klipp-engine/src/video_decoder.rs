@@ -508,6 +508,8 @@ pub struct VideoDecoder {
     last_decoded_pts: Arc<std::sync::atomic::AtomicU64>,
     /// The stream's declared average frame rate, when it declares one.
     source_fps: Option<f64>,
+    /// Its place in the GPU decoder's count (#2116), and how it decodes.
+    lease: crate::decode_budget::Lease,
 }
 
 /// [`VideoDecoder::last_decoded_pts`] when there is no frame.
@@ -532,7 +534,23 @@ fn read_pts(slot: &std::sync::atomic::AtomicU64) -> Option<f64> {
 impl VideoDecoder {
     /// Open a video file for decoding with optional VAAPI hardware acceleration.
     /// `source_rotation` is the media rotation in degrees (0, 90, 180, 270) from metadata.
+    /// It asks the GPU, always, and is counted as asking (#2116).
     pub fn open(path: &Path, source_rotation: i32) -> Result<Self, DecoderError> {
+        Self::open_inner(path, source_rotation, None)
+    }
+
+    /// Open as [`Self::open`], decoding as `lease` was admitted: in
+    /// software when the GPU's decoder was full (#2116).
+    pub fn open_with(path: &Path, source_rotation: i32, lease: crate::decode_budget::Lease) -> Result<Self, DecoderError> {
+        Self::open_inner(path, source_rotation, Some(lease))
+    }
+
+    /// How this decoder was asked to decode.
+    pub fn decoding(&self) -> crate::decode_budget::Decoding {
+        self.lease.decoding
+    }
+
+    fn open_inner(path: &Path, source_rotation: i32, lease: Option<crate::decode_budget::Lease>) -> Result<Self, DecoderError> {
         // Validate file can be opened before spawning the thread, and read
         // the stream's own frame rate: which of its frames a time shows
         // is decided at half of *its* frame, as export's decoder does (#696).
@@ -546,6 +564,9 @@ impl VideoDecoder {
             let r = stream.avg_frame_rate();
             (r.numerator() > 0 && r.denominator() > 0).then(|| r.numerator() as f64 / r.denominator() as f64)
         };
+        // Its rate is set by the decode thread, which reads the size.
+        let lease = lease.unwrap_or_else(|| crate::decode_budget::admit(0.0, crate::decode_budget::Priority::Fixed));
+        let (lease_id, decoding) = (lease.id(), lease.decoding);
 
         let queue_cap = FRAME_QUEUE_SIZE_PREF.load(std::sync::atomic::Ordering::Relaxed) as usize;
         let frame_queue: SharedFrameQueue = Arc::new(Mutex::new(FrameQueue::new(queue_cap)));
@@ -570,7 +591,7 @@ impl VideoDecoder {
                 // is still inside ffmpeg's teardown.
                 let _alive = alive;
                 crate::thread_guard::catch_panic("klipp-vdec", || {
-                    decode_thread_main(path_owned, queue_clone, cmd_rx, hw_flag, stop_flag_clone, source_rotation, last_decode_us_clone, last_decoded_pts_clone);
+                    decode_thread_main(path_owned, queue_clone, cmd_rx, hw_flag, stop_flag_clone, source_rotation, last_decode_us_clone, last_decoded_pts_clone, lease_id, decoding, source_fps.unwrap_or(30.0));
                 });
             })
             .map_err(|e| DecoderError::Open(format!("spawn thread: {e}")))?;
@@ -586,6 +607,7 @@ impl VideoDecoder {
             last_decode_us,
             last_decoded_pts,
             source_fps,
+            lease,
         })
     }
 
@@ -1356,14 +1378,18 @@ pub(crate) struct OpenedDecoder {
 /// pins them to a single thread (NVDEC parallelises on the GPU; CPU
 /// worker threads can confuse hwaccel negotiation — see the
 /// commentary on `KLIPP_HW_SINGLE_THREAD`).
+/// `sw_threads` caps a software decoder moved off a full GPU (#2116).
 unsafe fn apply_thread_count(
     ctx_ptr: *mut ffmpeg_next::ffi::AVCodecContext,
     hw_accel: HwAccel,
+    sw_threads: Option<usize>,
 ) {
     let hw_single_thread = hw_accel != HwAccel::Software
         && std::env::var("KLIPP_HW_SINGLE_THREAD").as_deref() == Ok("1");
     let tc = if hw_single_thread {
         1
+    } else if let Some(n) = sw_threads.filter(|_| hw_accel == HwAccel::Software) {
+        n as i32
     } else {
         DECODE_THREADS_PREF.load(std::sync::atomic::Ordering::Relaxed) as i32
     };
@@ -1391,12 +1417,13 @@ pub(crate) fn open_video_decoder(
     stream: &ffmpeg_next::format::stream::Stream,
     hw_enabled: bool,
     try_cuvid: bool,
+    sw_threads: Option<usize>,
 ) -> Result<OpenedDecoder, ffmpeg_next::Error> {
     // Tier 1: cuvid (standalone NVDEC). Only attempted when the
     // pref AND the env-var gate both authorise it.
     if try_cuvid {
         if let Some((mut ctx, bsf)) = try_open_cuvid_decoder(stream) {
-            unsafe { apply_thread_count(ctx.as_mut_ptr(), HwAccel::Cuda) };
+            unsafe { apply_thread_count(ctx.as_mut_ptr(), HwAccel::Cuda, None) };
             match ctx.decoder().video() {
                 Ok(decoder) => {
                     return Ok(OpenedDecoder {
@@ -1439,7 +1466,7 @@ pub(crate) fn open_video_decoder(
             HwAccel::Software
         }
     };
-    unsafe { apply_thread_count(ctx.as_mut_ptr(), hw_accel) };
+    unsafe { apply_thread_count(ctx.as_mut_ptr(), hw_accel, sw_threads) };
     let decoder = ctx.decoder().video()?;
     Ok(OpenedDecoder {
         decoder,
@@ -1605,6 +1632,11 @@ pub fn should_use_skim_for_playback(
 /// Set whether hardware decode (NVDEC / VAAPI) is enabled from preferences.
 pub fn set_hardware_decode(enabled: bool) {
     HARDWARE_DECODE_PREF.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether hardware decode is enabled in preferences.
+pub fn hardware_decode_enabled() -> bool {
+    HARDWARE_DECODE_PREF.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Set decode thread count from preferences (0 = auto/all cores).
@@ -2344,6 +2376,9 @@ fn decode_thread_main(
     source_rotation: i32,
     last_decode_us: Arc<std::sync::atomic::AtomicU32>,
     last_decoded_pts: Arc<std::sync::atomic::AtomicU64>,
+    lease_id: u64,
+    decoding: crate::decode_budget::Decoding,
+    source_fps: f64,
 ) {
     DECODE_PATH.with(|p| *p.borrow_mut() = Some(path.clone()));
     let mut format_ctx = match ffmpeg_next::format::input(&path) {
@@ -2412,10 +2447,16 @@ fn decode_thread_main(
     // alongside the codec context for the lifetime of this decode
     // thread; the decode loop pipes every packet through the BSF
     // before sending it to the decoder.
-    let hw_enabled = HARDWARE_DECODE_PREF.load(std::sync::atomic::Ordering::Relaxed);
+    // A stream moved off a full GPU decodes in software on the threads
+    // it was given (#2116).
+    let sw_threads = match decoding {
+        crate::decode_budget::Decoding::Software { threads } => Some(threads),
+        crate::decode_budget::Decoding::Gpu => None,
+    };
+    let hw_enabled = sw_threads.is_none() && HARDWARE_DECODE_PREF.load(std::sync::atomic::Ordering::Relaxed);
     let try_cuvid = hw_enabled && std::env::var("KLIPP_USE_CUVID").as_deref() != Ok("0");
 
-    let opened = match open_video_decoder(&video_stream, hw_enabled, try_cuvid) {
+    let opened = match open_video_decoder(&video_stream, hw_enabled, try_cuvid, sw_threads) {
         Ok(o) => o,
         Err(e) => {
             warn!("decode_thread: video decoder error: {e}");
@@ -2429,7 +2470,16 @@ fn decode_thread_main(
 
     if hw_accel != HwAccel::Software {
         hw_active_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+    } else if sw_threads.is_none() {
+        crate::decode_budget::opened_in_software(lease_id);
     }
+    // What this thread decodes and waits is the GPU's measure (#2116).
+    let on_gpu = hw_accel != HwAccel::Software;
+    let gpu_idle = |d: Duration| {
+        if on_gpu {
+            crate::decode_budget::note_gpu_idle(d);
+        }
+    };
 
     // Capture the source's colourspace from the AVCodecParameters
     // before the decoder starts producing frames. NVDEC's
@@ -2439,7 +2489,7 @@ fn decode_thread_main(
     // authoritative baseline for everything downstream. Each frame
     // overrides individual fields where its own AVFrame tags are
     // actually specified.
-    let cs_baseline_from_codecpar: klipp_core::SourceColorspace = unsafe {
+    let (cs_baseline_from_codecpar, source_pixels): (klipp_core::SourceColorspace, u64) = unsafe {
         let par_raw: *mut ffmpeg_next::ffi::AVCodecParameters = (*video_stream.as_ptr()).codecpar;
         let (range_r, space_r, pri_r, trc_r, w, h) = if par_raw.is_null() {
             (0, 0, 0, 0, 1920u32, 1080u32)
@@ -2453,8 +2503,9 @@ fn decode_thread_main(
                 (*par_raw).height.max(1) as u32,
             )
         };
-        klipp_core::SourceColorspace::resolve(range_r, space_r, pri_r, trc_r, w, h)
+        (klipp_core::SourceColorspace::resolve(range_r, space_r, pri_r, trc_r, w, h), w as u64 * h as u64)
     };
+    crate::decode_budget::set_rate(lease_id, source_pixels as f64 * source_fps);
 
     // KLIPP_FORCE_LOG_FORMAT is the test/dev override before the
     // per-clip UI exists. Setting it to one of the recognised tokens
@@ -2618,11 +2669,13 @@ fn decode_thread_main(
 
         if paused {
             std::thread::sleep(Duration::from_millis(5));
+            gpu_idle(Duration::from_millis(5));
             continue;
         }
 
         if eof_sent {
             std::thread::sleep(Duration::from_millis(5));
+            gpu_idle(Duration::from_millis(5));
             continue;
         }
 
@@ -2640,6 +2693,7 @@ fn decode_thread_main(
             // retry receive_frame once a slot opens.
             if frame_queue.lock().unwrap_or_else(|e| e.into_inner()).is_full() {
                 std::thread::sleep(Duration::from_millis(1));
+                gpu_idle(Duration::from_millis(1));
                 // Re-check commands (seek/stop) while waiting.
                 // Drain the whole queue and coalesce SeekTo to the
                 // latest, same reasoning as the top-of-loop drain.
@@ -2700,6 +2754,9 @@ fn decode_thread_main(
             if !got_frame {
                 // No more buffered frames — need to feed more packets
                 break;
+            }
+            if on_gpu {
+                crate::decode_budget::note_gpu_frame(received_frame.width() as u64 * received_frame.height() as u64);
             }
 
             let pts_secs = received_frame
