@@ -652,6 +652,9 @@ pub struct RenderStats {
     pub layers_uploaded: u32,
     /// Still images whose layer was put back from the GPU instead (#2092).
     pub stills_kept: u32,
+    /// Still images read, fitted and sent up this frame: a miss of the
+    /// kept layers, which after a still's first frame is a fault (#2102).
+    pub stills_uploaded: u32,
     /// Clips whose effects ran as nodes of the grade's plan, on the GPU
     /// with the grade (#1089, M2 step 10).
     pub effects_followed_grade: u32,
@@ -2365,6 +2368,7 @@ impl Renderer {
                                 let Some(buffer) = g.kept_linear(&p) else { return Err("a still could not be sent up") };
                                 let seed = Arc::new(AccSeed { buffer: Arc::clone(&buffer), device: g.device(), queue: g.queue(), width, height });
                                 stats.layers_uploaded += 1;
+                                stats.stills_uploaded += 1;
                                 residency::record("media.still", "Still image read, fitted and uploaded once, then kept on the GPU", Work::Preparation);
                                 if self.still_layers.len() >= STILL_LAYERS_KEPT && !self.still_layers.contains_key(&c.id) {
                                     self.still_layers.clear();

@@ -8688,6 +8688,8 @@ impl PlaybackEngine {
                 update_playback_ms: 0.0,
                 in_param_edit: self.in_node_param_edit,
                 phases: Default::default(),
+                stills_kept: 0,
+                stills_uploaded: 0,
             });
         }
         let _ = self.event_tx.send(AppEvent::FrameReady);
@@ -8869,6 +8871,8 @@ impl PlaybackEngine {
                 update_playback_ms: total_ms as f32,
                 in_param_edit: self.in_node_param_edit,
                 phases: Default::default(),
+                stills_kept: 0,
+                stills_uploaded: 0,
             });
         }
 

@@ -132,6 +132,11 @@ pub struct PerfSample {
     /// The viewer frame's phases (#1850); all 0 for a sample that isn't
     /// one.
     pub phases: FramePhases,
+    /// Still images drawn from their picture kept on the GPU, and ones
+    /// read and sent up instead (#2102): after a still's first frame,
+    /// every one should be kept.
+    pub stills_kept: u32,
+    pub stills_uploaded: u32,
 }
 
 /// Plain-data carrier for `PerfRing::update_wrap_stages`. Stages
@@ -468,6 +473,8 @@ mod tests {
             update_playback_ms: 0.0,
             in_param_edit: false,
             phases: FramePhases::default(),
+            stills_kept: 0,
+            stills_uploaded: 0,
         }
     }
 
