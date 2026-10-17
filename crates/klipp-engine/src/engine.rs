@@ -5085,6 +5085,14 @@ impl PlaybackEngine {
             self.speed_ramp_enabled = false;
         }
         drop(seq);
+        // The clock runs at the clip's speed (#2108): a seek that parked on
+        // a clip at 50% set the speed here and left the clock at the last
+        // clip's, so Play resumed it at 1x and the playhead, reading the
+        // clip's source time back at its speed, ran at twice the timeline's
+        // rate. A ramp sets its own speed every tick.
+        if !self.speed_ramp_enabled {
+            self.master_clock.set_speed(self.clip_speed);
+        }
         self.reset_ramp_anchor();
     }
 

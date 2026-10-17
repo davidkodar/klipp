@@ -181,3 +181,7 @@ path = "tests/viewer_matches_export.rs"
 [[test]]
 name = "stacked_video_layers"
 path = "tests/stacked_video_layers.rs"
+
+[[test]]
+name = "a_retimed_clip_plays_at_timeline_speed"
+path = "tests/a_retimed_clip_plays_at_timeline_speed.rs"

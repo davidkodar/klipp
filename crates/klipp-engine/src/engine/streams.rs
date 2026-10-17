@@ -545,8 +545,20 @@ impl ClipStreams {
     /// `clip`'s decoder, open and seeked where its stream is, and the frame
     /// it holds, for the primary decoder to take over rather than open the
     /// file again (#2097). Its seek may still be in flight: then it holds
-    /// no frame for here yet, and the primary waits for the first.
+    /// no frame for here yet, and the primary waits for the first. One
+    /// still opening is waited for up to 300 ms.
     pub fn take(&mut self, clip: ClipId) -> Option<(VideoDecoder, Option<HeldFrame>)> {
+        // Still opening (#2112): waited for, a moment. The open is a probe
+        // and a codec, tens of milliseconds, its seek already asked for;
+        // opening the file again cold would start that seek over.
+        if let Some(rx) = self.opening.remove(&clip) {
+            match rx.recv_timeout(std::time::Duration::from_millis(300)) {
+                Ok(Some(s)) => {
+                    self.streams.insert(clip, s);
+                }
+                _ => return None,
+            }
+        }
         // Still seeking: taken over all the same, its seek going on in the
         // primary's hands (#2108). Refused, the shot was opened again cold
         // and its seek, from a keyframe seconds back in a long-GOP 4K file,
@@ -618,6 +630,12 @@ mod tests {
         }
         assert!(streams.opening.is_empty() && streams.streams.contains_key(&w.clip));
         eprintln!("sync returned in {asked:?}");
+        // A stream still opening is taken over once it lands.
+        let late = Want { clip: ClipId::new(), ..w.clone() };
+        streams.sync(std::slice::from_ref(&late), frame, &|_: &Want| Some((path.clone(), 0)));
+        assert!(streams.opening.contains_key(&late.clip));
+        assert!(streams.take(late.clip).is_some(), "taken over while it opened");
+        assert!(!streams.has(late.clip));
         // A stream no longer wanted while it opens is let go.
         let other = Want { clip: ClipId::new(), ..w.clone() };
         streams.sync(std::slice::from_ref(&other), frame, &|_: &Want| Some((path.clone(), 0)));
