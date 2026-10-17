@@ -265,11 +265,15 @@ fn source_frame(f: &HeldFrame) -> SourceFrame {
     SourceFrame { pixels: f.source_pixels(), width: f.width, height: f.height, pts: f.pts }
 }
 
-/// Reversed clips that start within a second of `time` while playing,
-/// at their first frame: their readers open and start decoding before the
-/// playhead reaches them, so the cut into one does not wait for a seek
-/// and a window's decode (#617).
-fn upcoming_reversed(seq: &Sequence, time: klipp_core::Timecode, playing: bool) -> Vec<Want> {
+/// Media clips that start within a second of `time` while playing, at
+/// their first frame: their streams open and start decoding before the
+/// playhead reaches them, so the cut into one does not wait for a file to
+/// open and seek. A reversed clip's reader too, which also decodes a
+/// window (#617). Not on `primary_track`, whose next shot the primary
+/// decoder prerolls; a shot on another track coming up as the primary's
+/// track runs out, behind a held still, was opened cold at the cut, the
+/// picture freezing half a second (#2097).
+fn upcoming(seq: &Sequence, time: klipp_core::Timecode, playing: bool, primary_track: Option<usize>) -> Vec<Want> {
     if !playing {
         return Vec::new();
     }
@@ -277,10 +281,11 @@ fn upcoming_reversed(seq: &Sequence, time: klipp_core::Timecode, playing: bool) 
     let fps = seq.fps.as_f64();
     seq.tracks
         .iter()
-        .filter(|t| t.kind == klipp_timeline::TrackKind::Video && t.visible)
-        .flat_map(|t| t.clips.iter())
-        .filter(|c| c.enabled && c.is_reversed() && c.timeline_in.to_secs_f64() > from && c.timeline_in.to_secs_f64() <= to)
-        .filter_map(|c| Some(Want { clip: c.id, media: c.media_id()?, rotation: c.source_rotation, source_secs: c.source_secs_at(0.0, fps), reversed: true }))
+        .enumerate()
+        .filter(|(i, t)| t.kind == klipp_timeline::TrackKind::Video && t.visible && Some(*i) != primary_track)
+        .flat_map(|(_, t)| t.clips.iter())
+        .filter(|c| c.enabled && c.timeline_in.to_secs_f64() > from && c.timeline_in.to_secs_f64() <= to)
+        .filter_map(|c| Some(Want { clip: c.id, media: c.media_id()?, rotation: c.source_rotation, source_secs: c.source_secs_at(0.0, fps), reversed: c.is_reversed() }))
         .collect()
 }
 
@@ -507,12 +512,12 @@ impl PlaybackEngine {
     pub(super) fn sync_streams(&mut self) {
         let time = self.playhead;
         let playing = self.state == PlaybackState::Playing;
-        let wants: Vec<Want> = {
+        let (mut wants, ahead): (Vec<Want>, Vec<Want>) = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             let primary = if self.v1_decoder.is_some() { self.v1_clip_id(&seq) } else { None };
             // A layer's clips are read at the layer's own time and rate:
             // inside a precomposition those are the scene's, not ours.
-            klipp_compose::active_layers(&seq, time)
+            let on_screen = klipp_compose::active_layers(&seq, time)
                 .iter()
                 .flat_map(|l| l.clips.iter().map(move |c| (c, l.at, l.fps)))
                 .filter(|(c, _, _)| Some(c.id) != primary)
@@ -525,9 +530,13 @@ impl PlaybackEngine {
                         reversed: c.is_reversed(),
                     })
                 })
-                .chain(upcoming_reversed(&seq, time, playing))
-                .collect()
+                .collect();
+            let primary_track = self.v1_decoder.is_some().then_some(self.current_track_index);
+            (on_screen, upcoming(&seq, time, playing, primary_track))
         };
+        // Clips on screen with no stream yet: opened late, if playing.
+        let late: Vec<ClipId> = if playing { wants.iter().filter(|w| !self.streams.has(w.clip)).map(|w| w.clip).collect() } else { Vec::new() };
+        wants.extend(ahead);
         // Files are resolved here, for new streams only: resolution logs.
         let paths: HashMap<ClipId, (std::path::PathBuf, i32)> = wants
             .iter()
@@ -540,6 +549,8 @@ impl PlaybackEngine {
             .collect();
         let frame_secs = self.fps.frame_duration_secs();
         self.streams.sync(&wants, frame_secs, &|w: &Want| paths.get(&w.clip).cloned());
+        let opened_late = late.iter().filter(|c| self.streams.has(**c)).count() as u64;
+        super::STREAMS_OPENED_ON_SCREEN.fetch_add(opened_late, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Wait, up to `timeout`, for every clip stream to hold its frame for
@@ -878,6 +889,12 @@ impl PlaybackEngine {
         let (snapshot, revision) = self.sequence.snapshot_with_revision();
         self.frame_phases.snapshot_ms = ms(t);
         let primary_clip = primary.as_ref().and(self.v1_clip_id(&snapshot));
+        // A still's one frame, shown wherever it is first (a parked seek
+        // takes it before playback does), is kept to show again while its
+        // clip plays on (#2097).
+        if let Some((id, p)) = primary_clip.zip(primary.as_ref()).filter(|_| self.primary_is_still()) {
+            self.held_tail = Some((id, p.clone(), self.playhead.value));
+        }
         let t = Instant::now();
         let seq = klipp_compose::frame_snapshot(&snapshot, self.playhead);
         self.frame_phases.frame_snapshot_ms = ms(t);
