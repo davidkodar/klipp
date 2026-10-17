@@ -1,26 +1,38 @@
-//! A still image's layer is sent up to the GPU stack once and put back
-//! from the GPU on later frames (#2092), while its decoded picture and
-//! the sizes stand: five full-frame 4K RGBA cards no longer upload 130 MB
-//! each, every frame.
-use klipp_compose::{FrameSource, RenderOptions, Renderer, SourceFrame, SourcePixels};
+//! A still image's picture is read and sent up to the GPU stack once, and
+//! seeded from the GPU on later frames (#2092), while its file and the
+//! sizes stand: five full-frame 4K RGBA cards no longer upload 130 MB
+//! each, every frame. As in the viewer, each frame's decode is a new
+//! picture; the file is what says it is the same.
+use klipp_compose::{FrameSource, HeldFile, RenderOptions, Renderer, SourceFrame, SourcePixels};
 use klipp_core::{RationalTime, Resolution};
 use klipp_timeline::{Clip, ClipKind, Sequence, Track, TrackKind};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Stills by clip: each its decoded picture, the same `Arc` every frame
-/// until it is replaced, as the viewer holds a still's decode.
+/// Stills by clip: each its picture and its file's stamp, decoded afresh
+/// (a new `Arc`) every frame it is read, as the viewer's streams do; the
+/// reads counted.
 struct Stills {
-    pictures: HashMap<klipp_core::ClipId, (Arc<Vec<f32>>, u32, u32)>,
+    pictures: HashMap<klipp_core::ClipId, (Arc<Vec<f32>>, u32, u32, u64)>,
     still: bool,
+    reads: usize,
 }
 impl FrameSource for Stills {
     fn frame(&mut self, clip: &Clip, _: f64, _: u32, _: u32) -> Option<SourceFrame> {
-        let (p, w, h) = self.pictures.get(&clip.id)?;
-        Some(SourceFrame { pixels: SourcePixels::Linear(Arc::clone(p)), width: *w, height: *h, pts: None })
+        let (p, w, h, _) = self.pictures.get(&clip.id)?;
+        self.reads += 1;
+        Some(SourceFrame { pixels: SourcePixels::Linear(Arc::new(p.to_vec())), width: *w, height: *h, pts: None })
     }
-    fn is_still(&mut self, _: &Clip) -> bool {
-        self.still
+    fn still_file(&mut self, clip: &Clip) -> Option<HeldFile> {
+        let (.., len) = self.pictures.get(&clip.id)?;
+        self.still.then(|| HeldFile {
+            media: clip.media_id().expect("a media clip"),
+            path: format!("/cards/{}.png", clip.id.0).into(),
+            len: *len,
+            modified: std::time::UNIX_EPOCH,
+            log_format: None,
+            proxy: None,
+        })
     }
 }
 
@@ -45,13 +57,13 @@ fn scene(w: u32, h: u32, still: bool) -> (Sequence, Stills) {
     let mut tracks = Vec::new();
     for k in 0..5 {
         let c = Clip { kind: ClipKind::Media { media_id: klipp_core::MediaId::new() }, source_in: tc(0.0), source_out: tc(10.0), ..Clip::gap(tc(0.0), tc(10.0)) };
-        pictures.insert(c.id, (card(k, w, h), w, h));
+        pictures.insert(c.id, (card(k, w, h), w, h, 1000));
         let mut t = Track::new(&format!("V{}", 5 - k), TrackKind::Video);
         t.clips = vec![c];
         tracks.push(t);
     }
     seq.tracks = tracks;
-    (seq, Stills { pictures, still })
+    (seq, Stills { pictures, still, reads: 0 })
 }
 
 fn renderer() -> Renderer {
@@ -83,17 +95,18 @@ fn five_stacked_stills_are_uploaded_once() {
         eprintln!("unverified: no GPU stack");
         return;
     };
-    assert_eq!((stats.layers_uploaded, stats.stills_kept), (5, 0), "the first frame uploads each");
+    assert_eq!((stats.layers_uploaded, stats.stills_kept, src.reads), (5, 0, 5), "the first frame reads and uploads each");
     let (second, stats) = r.render_display_u8_on_gpu(&seq, at(1.5), w, h, &mut src, RenderOptions::default()).unwrap();
-    assert_eq!((stats.layers_uploaded, stats.stills_kept), (0, 5), "the second uploads nothing");
+    assert_eq!((stats.layers_uploaded, stats.stills_kept, src.reads), (0, 5, 5), "the second reads and uploads nothing");
     assert_eq!(first, second, "and draws the same frame");
     let cpu = display(&r.render(&seq, at(1.5), w, h, &mut src, RenderOptions::default()));
     let d = worst(&cpu, &second);
     assert!(d <= 1, "the stack differs from the CPU's composite by {d} levels");
 
-    // One file changed: its new decode goes up, the other four stay.
+    // One file changed (its stamp): read and sent up again, the other four
+    // stay.
     let changed = seq.tracks[2].clips[0].id;
-    src.pictures.insert(changed, (card(4, w, h), w, h));
+    src.pictures.insert(changed, (card(4, w, h), w, h, 2000));
     let (third, stats) = r.render_display_u8_on_gpu(&seq, at(2.0), w, h, &mut src, RenderOptions::default()).unwrap();
     assert_eq!((stats.layers_uploaded, stats.stills_kept), (1, 4), "a new decode is uploaded again");
     assert_ne!(third, second, "and drawn");
@@ -142,4 +155,25 @@ fn measure_4k_five_stills() {
         samples.sort_by(f64::total_cmp);
         eprintln!("MEASURE 4K five stills, kept {still}: median {:.1} ms a frame (display readback included)", samples[10]);
     }
+}
+
+/// Cards placed by their own transform (moved, scaled: their effects run
+/// as a plan): kept too, seeded from the GPU into their plan, and drawn
+/// as the CPU draws them.
+#[test]
+fn placed_stills_are_kept_too() {
+    use klipp_timeline::test_clip::TestClip;
+    let (w, h) = (320, 180);
+    let (mut seq, mut src) = scene(w, h, true);
+    for (k, t) in seq.tracks.iter_mut().enumerate() {
+        t.clips[0] = TestClip::of(t.clips[0].clone()).lane("scale", 0.0, 0.6).lane("pos_x", 0.0, -40.0 + 20.0 * k as f32).lane("pos_x", 10.0, 40.0).build();
+    }
+    let mut r = renderer();
+    let at = |s: f64| RationalTime::from_secs_f64(s, seq.fps.rate());
+    let Some((_, stats)) = r.render_display_u8_on_gpu(&seq, at(1.0), w, h, &mut src, RenderOptions::default()) else { return };
+    assert_eq!((stats.layers_uploaded, src.reads), (5, 5));
+    let (gpu, stats) = r.render_display_u8_on_gpu(&seq, at(2.0), w, h, &mut src, RenderOptions::default()).unwrap();
+    assert_eq!((stats.layers_uploaded, stats.stills_kept, src.reads), (0, 5, 5), "moving cards: kept, not read");
+    let cpu = display(&r.render(&seq, at(2.0), w, h, &mut src, RenderOptions::default()));
+    assert!(worst(&cpu, &gpu) <= 1, "{} levels", worst(&cpu, &gpu));
 }

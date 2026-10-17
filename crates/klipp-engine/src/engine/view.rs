@@ -316,11 +316,18 @@ impl FrameSource for ViewerSource<'_> {
         held_file_of(&self.media_pool.read().unwrap_or_else(|e| e.into_inner()), clip, self.use_proxies)
     }
 
-    /// A still image's clip, not reversed (#2092): its held frame is the
-    /// same decode every frame while its file stands, a new one when the
-    /// file changes.
-    fn is_still(&mut self, clip: &Clip) -> bool {
-        !clip.is_reversed() && clip.media_id().is_some_and(|m| self.media_pool.read().unwrap_or_else(|e| e.into_inner()).get(&m).is_some_and(|item| item.is_still))
+    /// A still image's file, stamped now, unless the clip plays reversed
+    /// (#2092): the stack keeps its picture while this stands.
+    fn still_file(&mut self, clip: &Clip) -> Option<klipp_compose::HeldFile> {
+        if clip.is_reversed() {
+            return None;
+        }
+        let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+        let item = pool.get(&clip.media_id()?)?;
+        if !item.is_still {
+            return None;
+        }
+        held_file_of(&pool, clip, self.use_proxies)
     }
 
     fn media_range(&mut self, clip: &Clip) -> Option<(f64, f64)> {
