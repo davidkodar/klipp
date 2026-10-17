@@ -18746,10 +18746,6 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("LAYER_ROWS", layer::ROWS),
         ("LAYER_BOUNDS", layer::BOUNDS),
         ("LAYER_CAST", layer::CAST),
-        ("LAYER_CAST_ALPHA", layer::CAST_ALPHA),
-        ("LAYER_SPILL_BLUR_H", layer::SPILL_BLUR_H),
-        ("LAYER_SPILL_BLUR_V", layer::SPILL_BLUR_V),
-        ("LAYER_EXPAND_CAST", layer::EXPAND_CAST),
         ("LAYER_CORNERS", layer::CORNERS),
         ("LAYER_OVER", layer::OVER),
         ("LAYER_FILL_SMALL", layer::FILL_SMALL),
@@ -18872,6 +18868,9 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_NV12", crate::nv12_gpu::nv12_shader()),
         ("SHADER_P010", crate::p010_gpu::p010_shader()),
     ]
+    .into_iter()
+    .chain(layer::SPILL.iter().map(|(name, source, _)| (*name, *source)))
+    .collect()
 }
 
 #[cfg(test)]

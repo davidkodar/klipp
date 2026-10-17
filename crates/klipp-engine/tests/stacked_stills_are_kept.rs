@@ -168,13 +168,15 @@ fn three_stacked_stills_are_uploaded_once() {
     assert_eq!(kept_after, 3 * after.len() as u32, "not every still was drawn from the GPU");
 }
 
-/// Each part of a card's chain, timed at 4K playing: the frame's cost
+/// Each part of a card's chain, timed at 4K playing at Full quality: the frame's cost
 /// with one and with three cards, for the chain as a whole, without each
 /// part, and with a drop shadow added (#2101, #2102).
 /// `cargo test -p klipp-engine --test stacked_stills_are_kept measure -- --ignored --nocapture`
 #[test]
 #[ignore = "4K performance measurement"]
 fn measure_the_card_chain() {
+    // Full size while playing, as the viewer plays at Full quality.
+    klipp_engine::video_decoder::set_playback_quality_divisor(1);
     let none = Chain { corners: false, glow: false, shadow: false, moves: false, fade: false };
     let variants: [(&str, Chain); 8] = [
         ("plain", none),
