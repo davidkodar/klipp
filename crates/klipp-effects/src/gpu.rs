@@ -5857,6 +5857,44 @@ impl GpuEffectsPipeline {
         y0: u32,
         y1: u32,
     ) -> bool {
+        self.place_sprite(i, id, texels, bx, dx, dy, opacity, scale, anchor, under, shape, y0, y1, false)
+    }
+
+    /// Layer `i` takes the resident sprite `id`, as it rests, with its
+    /// alpha scaled by `opacity`, laid over what the layer already holds
+    /// as the title renderer lays one text layer over another (#2069):
+    /// straight alpha, in sRGB-encoded units. A title's text layers each
+    /// fading are placed so, one after another, the first with
+    /// [`Self::stack_layer_place_sprite_posed`]. Only rows `y0..y1` are
+    /// touched. `false` (nothing done) outside a Rec.709 project, where
+    /// the layer is not the authored picture as it is.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stack_layer_place_sprite_over(&mut self, i: usize, id: u64, texels: &[u32], bx: SpriteBox, opacity: f32, y0: u32, y1: u32) -> bool {
+        let identity = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]];
+        if self.authored_to_working != identity {
+            return false;
+        }
+        self.place_sprite(i, id, texels, bx, 0, 0, opacity, 1.0, (0.0, 0.0), None, None, y0, y1, true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn place_sprite(
+        &mut self,
+        i: usize,
+        id: u64,
+        texels: &[u32],
+        bx: SpriteBox,
+        dx: i32,
+        dy: i32,
+        opacity: f32,
+        scale: f32,
+        anchor: (f32, f32),
+        under: Option<[u8; 4]>,
+        shape: Option<SpriteShape>,
+        y0: u32,
+        y1: u32,
+        over: bool,
+    ) -> bool {
         if self.is_device_lost() || i >= self.stack_layers.len() {
             return false;
         }
@@ -5868,9 +5906,11 @@ impl GpuEffectsPipeline {
         let y0 = y0.min(height);
         let y1 = y1.min(height);
         let layer = std::sync::Arc::clone(&self.stack_layers[i]);
-        let mut enc = self.encoder(Some("stack_sprite_clear"));
-        enc.clear_buffer(&layer, 0, Some(pixel_count * 16));
-        self.submit(enc);
+        if !over {
+            let mut enc = self.encoder(Some("stack_sprite_clear"));
+            enc.clear_buffer(&layer, 0, Some(pixel_count * 16));
+            self.submit(enc);
+        }
         if y1 <= y0 || (opacity <= 0.001 && under.is_none()) {
             return true;
         }
@@ -5910,7 +5950,7 @@ impl GpuEffectsPipeline {
             by0: bx.y0,
             bw: bx.w,
             bh: bx.h,
-            _pad0: 0,
+            over: u32::from(over),
             _pad1: 0,
             _pad2: 0,
             to_working: self.authored_to_working,
@@ -7617,7 +7657,9 @@ struct SpritePlaceParams {
     by0: u32,
     bw: u32,
     bh: u32,
-    _pad0: u32,
+    /// 1: laid over what the layer holds, as the title renderer lays one
+    /// text layer over another (#2069); 0: the layer is the sprite.
+    over: u32,
     _pad1: u32,
     _pad2: u32,
     /// BT.709 → working space, rows padded to four (#1279).
@@ -10991,7 +11033,7 @@ struct Params {
     under_b: f32, under_a: f32, focus_axis: u32, band: f32,
     edge_opacity: f32, fade_top: f32, fade_bottom: f32, fade_left: f32,
     fade_right: f32, bx0: u32, by0: u32, bw: u32,
-    bh: u32, _pad0: u32, _pad1: u32, _pad2: u32,
+    bh: u32, over: u32, _pad1: u32, _pad2: u32,
     m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>,
 }
 @group(0) @binding(0) var<storage, read> sprite: array<u32>;
@@ -11006,6 +11048,11 @@ fn to_ws(c: vec3<f32>) -> vec3<f32> {
 fn srgb_to_linear_c(c: f32) -> f32 {
     if (c <= 0.04045) { return c / 12.92; }
     return pow((c + 0.055) / 1.055, 2.4);
+}
+
+fn linear_to_srgb_c(c: f32) -> f32 {
+    if (c <= 0.0031308) { return c * 12.92; }
+    return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
 }
 
 // The layer's fade by where it is on the frame (#592):
@@ -11089,6 +11136,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     a8 = clamp(a8 * params.opacity * shape_alpha(x, y), 0.0, 255.0);
     if params.scale != 1.0 && a8 < 0.5 {
         rgb = vec3<f32>(0.0);
+    }
+    if params.over == 1u {
+        // Over what the layer holds, as the title renderer lays its
+        // layers (`over_blend`): straight alpha, in sRGB-encoded units.
+        // Only in a Rec.709 project, where the layer is the authored
+        // picture as it is (`stack_layer_place_sprite_over`).
+        let sa = a8 / 255.0;
+        if sa <= 0.0 { return; }
+        let d = unpack(output[idx]);
+        let da = clamp(d.w, 0.0, 1.0);
+        let out_a = sa + da * (1.0 - sa);
+        let dc = vec3<f32>(linear_to_srgb_c(max(d.x, 0.0)), linear_to_srgb_c(max(d.y, 0.0)), linear_to_srgb_c(max(d.z, 0.0))) * 255.0;
+        let c = (rgb * sa + dc * da * (1.0 - sa)) / out_a;
+        let lc = vec3<f32>(srgb_to_linear_c(c.x / 255.0), srgb_to_linear_c(c.y / 255.0), srgb_to_linear_c(c.z / 255.0));
+        output[idx] = pack(vec4<f32>(lc, out_a));
+        return;
     }
     let lin = vec3<f32>(srgb_to_linear_c(rgb.x / 255.0), srgb_to_linear_c(rgb.y / 255.0), srgb_to_linear_c(rgb.z / 255.0));
     if params.under_a <= 0.0 {
