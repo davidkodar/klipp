@@ -614,10 +614,12 @@ fn direct_present_enabled() -> bool {
     *GATE.get_or_init(|| std::env::var("KLIPP_DIRECT_PRESENT").ok().as_deref() != Some("0"))
 }
 
-/// Decoders the viewer opens besides the primary track's: overlays, a
-/// transition's other side, multicam angles. Caps decoder spawning on
-/// projects with many video tracks; clips beyond it still export.
-const MAX_CLIP_STREAMS: usize = 6;
+/// At most this many decoders the viewer opens besides the primary
+/// track's (overlays, a transition's other side, multicam angles), however
+/// small: each holds a queue of up to 16 decoded frames of up to 1080p,
+/// about 128 MB. What limits them below that is the decode rate they ask
+/// for, not their number (#2128): see `ClipStreams::make_room`.
+const MAX_CLIP_STREAMS: usize = 16;
 
 /// How long before a shot's end the next shot on its track is opened and
 /// seeked, so the cut finds its first frame decoded.

@@ -362,6 +362,18 @@ pub fn calibrated(budget: f64, measured: bool, rate: f64, busy: bool) -> Option<
     Some(next.max(MIN_BUDGET))
 }
 
+/// The pixels a second the viewer's streams may ask for together (#2128):
+/// what the GPU's decoder gives, and what software decoding takes on when
+/// it is full. Hardware decode off, software alone, on every thread.
+pub fn stream_capacity() -> f64 {
+    let r = registry().lock().unwrap_or_else(|e| e.into_inner());
+    if !crate::video_decoder::hardware_decode_enabled() {
+        return 2.0 * software_thread_cap().max(1) as f64 * r.software_per_thread;
+    }
+    let software = if enabled() { software_thread_cap() as f64 * r.software_per_thread } else { 0.0 };
+    r.budget + software
+}
+
 /// How many open decoders decode on the GPU and in software, for the
 /// perf overlay.
 pub fn counts() -> (usize, usize) {
