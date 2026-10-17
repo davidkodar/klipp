@@ -55,7 +55,16 @@ fn play_sequence(seq: Sequence, pool: MediaPool, from: f64, secs: f64) -> Option
     let (w, h) = (seq.resolution.width, seq.resolution.height);
     let (cmd, cmd_rx) = crossbeam_channel::unbounded();
     let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<AppEvent>();
-    std::thread::spawn(move || while ev_rx.recv().is_ok() {});
+    // Every playhead the engine reports, and when: what a viewer sees move.
+    let moves: Arc<Mutex<Vec<(Instant, i64)>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&moves);
+    std::thread::spawn(move || {
+        while let Ok(ev) = ev_rx.recv() {
+            if let AppEvent::PlayheadMoved(tc) = ev {
+                seen.lock().unwrap().push((Instant::now(), tc.value));
+            }
+        }
+    });
     let fb = Arc::new(Mutex::new(FrameBuffer::new(w, h)));
     let ring = Arc::new(Mutex::new(klipp_engine::perf::PerfRing::default()));
     let engine = PlaybackEngine::new(
@@ -76,6 +85,11 @@ fn play_sequence(seq: Sequence, pool: MediaPool, from: f64, secs: f64) -> Option
     }
     cmd.send(AppCommand::SetPlayhead(RationalTime::from_secs_f64(from, fps.rate()))).unwrap();
     common::settle(&fb);
+    // `KLIPP_PARKED`: seconds to stay parked before Play, as a person
+    // looks at the frame before pressing it.
+    if let Some(p) = std::env::var("KLIPP_PARKED").ok().and_then(|v| v.parse::<f64>().ok()) {
+        std::thread::sleep(Duration::from_secs_f64(p));
+    }
     cmd.send(AppCommand::Play).unwrap();
     let since = Instant::now();
     // Every frame presented, and when: frames a second and the longest
@@ -91,6 +105,24 @@ fn play_sequence(seq: Sequence, pool: MediaPool, from: f64, secs: f64) -> Option
         std::thread::sleep(Duration::from_micros(500));
     }
     let _ = cmd.send(AppCommand::Pause);
+    {
+        // The playhead's distinct frames each second, and its first move.
+        let moves = moves.lock().unwrap();
+        let start = moves.iter().rev().find(|(t, _)| *t <= since).map(|m| m.1);
+        let mut distinct: Vec<(Instant, i64)> = Vec::new();
+        for &(t, v) in moves.iter().filter(|(t, _)| *t > since) {
+            if distinct.last().map_or(start != Some(v), |l| l.1 != v) {
+                distinct.push((t, v));
+            }
+        }
+        let first = distinct.first().map_or(secs, |m| m.0.duration_since(since).as_secs_f64());
+        let per: Vec<usize> = (0..secs.ceil() as usize).map(|k| distinct.iter().filter(|(t, _)| t.duration_since(since).as_secs_f64() as usize == k).count()).collect();
+        let span = match (distinct.first(), distinct.last()) {
+            (Some(a), Some(b)) => format!("{:.3} → {:.3} s on the timeline in {:.2} s", a.1 as f64 / f64::from(fps.rate()), b.1 as f64 / f64::from(fps.rate()), b.0.duration_since(a.0).as_secs_f64()),
+            _ => "none".into(),
+        };
+        eprintln!("PLAYHEAD first move after {first:.2} s, distinct frames per second {per:?}, {span}");
+    }
     let first_gap = shown.first().map_or(secs, |t| t.duration_since(since).as_secs_f64());
     let worst_gap = shown.windows(2).map(|w| w[1].duration_since(w[0]).as_secs_f64()).fold(first_gap, f64::max);
     let per_sec: Vec<usize> = (0..secs.ceil() as usize).map(|k| shown.iter().filter(|t| t.duration_since(since).as_secs_f64() as usize == k).count()).collect();
