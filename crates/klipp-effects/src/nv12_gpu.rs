@@ -37,6 +37,71 @@ pub struct GpuNv12Converter {
     cached_y_size: u64,
     cached_uv_size: u64,
     cached_output_size: u64,
+    /// The GPU-resident outputs handed to callers, kept to be handed out
+    /// again once no caller holds them (#2107).
+    resident_rgba: ResidentPool,
+    resident_codes: ResidentPool,
+}
+
+/// Buffers of one size handed out as `Arc`s and taken back when nothing
+/// else holds them (#2107). A 4K frame's output was a fresh 33 MB buffer
+/// for every frame of every stream, made and freed again a moment later.
+/// One handed out again is written by a pass submitted on the same queue
+/// after the passes of whoever read it last, so it is never written
+/// under them; and only once it has been free for a few frames, so a
+/// reader that let go of it before submitting its read has submitted it.
+struct ResidentPool {
+    label: &'static str,
+    size: u64,
+    /// Each buffer and the last take at which something else held it.
+    buffers: Vec<(std::sync::Arc<wgpu::Buffer>, u64)>,
+    takes: u64,
+}
+
+impl ResidentPool {
+    /// A queue's frames, the frames held while they are shown and a few
+    /// in flight. Past it a buffer is made fresh, as before, and not kept.
+    const CAP: usize = 24;
+    /// Takes a buffer must stay free for before it is handed out again.
+    const QUIET_TAKES: u64 = 4;
+
+    fn new(label: &'static str) -> Self {
+        Self { label, size: 0, buffers: Vec::new(), takes: 0 }
+    }
+
+    /// A `size`-byte buffer nothing else holds: one kept, or one made.
+    fn take(&mut self, device: &wgpu::Device, size: u64) -> std::sync::Arc<wgpu::Buffer> {
+        if size != self.size {
+            self.buffers.clear();
+            self.size = size;
+        }
+        self.takes += 1;
+        let now = self.takes;
+        for (buffer, held_at) in &mut self.buffers {
+            if std::sync::Arc::strong_count(buffer) > 1 {
+                *held_at = now;
+            }
+        }
+        if let Some((free, held_at)) = self.buffers.iter_mut().find(|(_, held_at)| now - *held_at >= Self::QUIET_TAKES) {
+            *held_at = now;
+            return std::sync::Arc::clone(free);
+        }
+        let made = std::sync::Arc::new(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(self.label),
+            size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        }));
+        if self.buffers.len() < Self::CAP {
+            self.buffers.push((std::sync::Arc::clone(&made), now));
+        }
+        made
+    }
+
+    /// How many buffers it keeps. For tests.
+    fn kept(&self) -> usize {
+        self.buffers.len()
+    }
 }
 
 /// What the GPU-resident NV12 conversion produced — the same shape as the
@@ -418,6 +483,13 @@ pub(crate) fn nv12_shader() -> &'static str {
 }
 
 impl GpuNv12Converter {
+    /// How many GPU-resident output buffers the converter keeps to hand
+    /// out again (#2107). For tests.
+    #[doc(hidden)]
+    pub fn resident_buffers_kept(&self) -> usize {
+        self.resident_rgba.kept()
+    }
+
     /// Create a new GPU NV12 converter. Shares the process-wide
     /// `GpuContext` with every other GPU-using type in the engine
     /// (the effects pipeline and the P010 converter), so buffers it
@@ -579,6 +651,8 @@ impl GpuNv12Converter {
             cached_y_size: 0,
             cached_uv_size: 0,
             cached_output_size: 0,
+            resident_rgba: ResidentPool::new("nv12_out_gpu_resident"),
+            resident_codes: ResidentPool::new("nv12_hdr_codes_gpu_resident"),
         })
     }
 
@@ -883,29 +957,15 @@ impl GpuNv12Converter {
 
         self.ensure_y_buf(y_size);
         self.ensure_uv_buf(uv_size);
-        let hdr_codes = crate::p010_gpu::is_hdr_transfer(color_ids[2]).then(|| {
-            std::sync::Arc::new(self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("nv12_hdr_codes_gpu_resident"),
-                size: output_size,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            }))
-        });
+        let hdr_codes = crate::p010_gpu::is_hdr_transfer(color_ids[2]).then(|| self.resident_codes.take(&self.device, output_size));
         let hdr_binding: &wgpu::Buffer = match hdr_codes.as_ref() {
             Some(b) => b,
             None => &self.hdr_dummy_buf,
         };
 
-        // Fresh output buffer per call — we're handing ownership to
-        // the caller, so we can't reuse the internal cache.
-        let output_buf = std::sync::Arc::new(self.device.create_buffer(
-            &wgpu::BufferDescriptor {
-                label: Some("nv12_out_gpu_resident"),
-                size: output_size,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            },
-        ));
+        // The caller's to hold: a buffer nothing else holds now, from the
+        // pool, not the internal cache the readback paths share.
+        let output_buf = self.resident_rgba.take(&self.device, output_size);
 
         let y_buf = self.y_buf.as_ref().unwrap();
         let uv_buf = self.uv_buf.as_ref().unwrap();

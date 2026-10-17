@@ -10,6 +10,8 @@
 
 #[path = "../burn_and_whip_look.rs"]
 mod burn_and_whip_look;
+#[path = "../nv12_resident_pool.rs"]
+mod nv12_resident_pool;
 #[path = "../contrast_pivot_parity.rs"]
 mod contrast_pivot_parity;
 #[path = "../corner_pin.rs"]
