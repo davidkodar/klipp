@@ -363,3 +363,110 @@ fn a_custom_curve_shapes_a_slide_the_same_placed_or_rendered() {
         assert!((dx as f32 - travel * left).abs() <= 1.5, "offset {dx} vs {} left of {travel}: {offsets:?}", travel * left);
     }
 }
+
+/// A title whose layer waves (each glyph bobbing), sliding in and with a
+/// glow, as the stress project's has it (#2069).
+fn waving(enter: MotionKind) -> TitleData {
+    use klipp_timeline::TitleLoop;
+    let mut td = TitleData::single_text_fx(
+        TextBox { text: "Wave".into(), font_size: 120.0, ..Default::default() },
+        klipp_timeline::LayerFx {
+            motion: TitleMotion::enter(Motion::new(enter).duration(0.6)),
+            loops: vec![TitleLoop::Wave { amplitude: 0.12, rate_hz: 1.0 }],
+            ..Default::default()
+        },
+    );
+    td.objects[0].fx_mut().glows.push(klipp_timeline::TextGlow { enabled: true, color: [120, 200, 255, 255], radius: 12.0, radius_keyframes: vec![], intensity: 0.8, intensity_keyframes: vec![] });
+    td
+}
+
+/// The same title rastered at its time: a key on its opacity makes every
+/// frame its time's, the rasteriser's.
+fn rastered(mut td: TitleData) -> TitleData {
+    td.objects[0].opacity_keyframes = vec![klipp_core::Keyframe {
+        time_secs: 0.0,
+        value: 1.0,
+        interpolation: klipp_core::Interpolation::Linear,
+        tangent_out: (0.0, 0.0),
+        tangent_in: (0.0, 0.0),
+    }];
+    td
+}
+
+/// A wave alone is posed glyph by glyph from the resting render, on the
+/// GPU, and draws what the rasteriser draws: each glyph at the height
+/// the wave puts it, through the slide and after it. Rastered, it cost
+/// 60 ms a frame at 4K (#2069).
+#[test]
+fn a_waving_title_is_posed_glyph_by_glyph_as_it_is_rastered() {
+    let (w, h) = (640usize, 360usize);
+    let td = waving(MotionKind::SlideLeft);
+    let mut r = TitleRenderer::new();
+    for t in [0.3f32, 0.9, 1.4, 2.2] {
+        let frame = r.frame_with_window(&td, w as u32, h as u32, None, t, Some(4.0));
+        assert!(matches!(frame, klipp_title::TitleFrame::Glyphs { .. }), "at t={t} a wave is posed glyph by glyph");
+        let posed = r.render_with_window(&td, w as u32, h as u32, None, t, Some(4.0));
+        let want = r.render_with_window(&rastered(td.clone()), w as u32, h as u32, None, t, Some(4.0));
+        let total = |px: &[u8]| px.chunks_exact(4).map(|p| p[3] as f64).sum::<f64>();
+        let (a, b) = (total(&posed), total(&want));
+        assert!(b > 0.0 && (a - b).abs() / b < 0.03, "at t={t} coverage {a} posed, {b} rastered");
+        // Each band of columns' alpha-weighted height: where the wave put
+        // the glyphs there.
+        for band in 0..8 {
+            let (x0, x1) = (band * w / 8, (band + 1) * w / 8);
+            let centre = |px: &[u8]| {
+                let (mut sum, mut n) = (0.0f64, 0.0f64);
+                for y in 0..h {
+                    for x in x0..x1 {
+                        let a = px[(y * w + x) * 4 + 3] as f64;
+                        sum += a * y as f64;
+                        n += a;
+                    }
+                }
+                (n > 500.0).then(|| sum / n)
+            };
+            if let (Some(p), Some(q)) = (centre(&posed), centre(&want)) {
+                assert!((p - q).abs() < 1.0, "at t={t}, columns {x0}..{x1}: posed at {p:.2}, rastered at {q:.2}");
+            }
+        }
+    }
+}
+
+/// A wave on a layer scaling in is rastered: posed glyph by glyph, each
+/// would scale round itself and not round the layer.
+#[test]
+fn a_waving_title_scaling_in_is_rastered() {
+    let td = waving(MotionKind::ScaleUp);
+    let mut r = TitleRenderer::new();
+    let frame = r.frame_with_window(&td, 640, 360, None, 0.3, Some(4.0));
+    assert!(matches!(frame, klipp_title::TitleFrame::Rendered { .. }), "scaling in, the wave is rastered");
+    // Once it is in, it is posed.
+    let frame = r.frame_with_window(&td, 640, 360, None, 1.5, Some(4.0));
+    assert!(matches!(frame, klipp_title::TitleFrame::Glyphs { .. }), "scaled in, the wave is posed");
+}
+
+/// A colour loop at the layer's own colour (a blend of white with white
+/// on white text) changes nothing: the layer is placed whole, as with no
+/// loop, not rastered every frame (#2069).
+#[test]
+fn a_colour_loop_at_the_layer_colour_is_not_rastered() {
+    use klipp_timeline::TitleLoop;
+    let td = TitleData::single_text_fx(
+        TextBox { text: "Glow".into(), font_size: 120.0, color: [255, 255, 255, 255], ..Default::default() },
+        klipp_timeline::LayerFx {
+            motion: TitleMotion::enter(Motion::new(MotionKind::ScaleUp).duration(0.6)),
+            loops: vec![TitleLoop::ColorBlend { color_a: [255, 255, 255, 255], color_b: [255, 255, 255, 255], rate_hz: 1.5 }],
+            ..Default::default()
+        },
+    );
+    let mut r = TitleRenderer::new();
+    for t in [0.3f32, 1.5] {
+        let frame = r.frame_with_window(&td, 640, 360, None, t, Some(4.0));
+        assert!(matches!(frame, klipp_title::TitleFrame::Placed { .. }), "at t={t} the layer is placed whole");
+    }
+    // A colour that does change is still rastered.
+    let mut changing = td.clone();
+    changing.objects[0].fx_mut().loops = vec![TitleLoop::ColorBlend { color_a: [255, 255, 255, 255], color_b: [255, 200, 0, 255], rate_hz: 1.5 }];
+    let frame = r.frame_with_window(&changing, 640, 360, None, 1.5, Some(4.0));
+    assert!(matches!(frame, klipp_title::TitleFrame::Rendered { .. }), "a changing colour is rastered");
+}

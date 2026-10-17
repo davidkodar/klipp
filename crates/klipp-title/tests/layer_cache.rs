@@ -6,7 +6,7 @@
 //! layer, to the byte while the line draws on and within a level while
 //! the dot fades.
 
-use klipp_timeline::TitleData;
+use klipp_timeline::{TitleData, TitleMotion};
 
 const W: u32 = 640;
 const H: u32 = 360;
@@ -75,4 +75,57 @@ fn a_kept_layer_is_never_another_layers() {
     }
     let (r, b) = (frame(&mut warm, &red, 5), frame(&mut warm, &blue, 5));
     assert!(worst(&r, &b) > 10, "the control: the two dots draw alike");
+}
+
+/// A lower third of two text layers with shadows, each fading in (the
+/// second a beat later) and out, as the stress project's (#2069).
+fn lower_third() -> TitleData {
+    use klipp_timeline::{LayerFx, Motion, MotionKind, TextBox, TitleMotion, TitleObjectId, TitleShadow};
+    let layer = |text: &str, y: f32, delay: f32, id: u32| {
+        let fx = LayerFx {
+            motion: TitleMotion::both(Motion::new(MotionKind::Fade).duration(0.4).delay(delay), Motion::new(MotionKind::Fade).duration(0.4)),
+            shadows: vec![TitleShadow { enabled: true, color: [0, 0, 0, 200], offset_x: 3.0, offset_x_keyframes: vec![], offset_y: 3.0, offset_y_keyframes: vec![], blur: 6.0, blur_keyframes: vec![] }],
+            ..Default::default()
+        };
+        let mut td = TitleData::single_text_fx(TextBox { text: text.into(), font_size: 48.0, ..Default::default() }, fx);
+        let mut o = td.objects.remove(0);
+        o.id = TitleObjectId(id);
+        o.transform.center.y = y;
+        o
+    };
+    let mut td = TitleData::single_text_fx(TextBox::default(), LayerFx::default());
+    td.objects = vec![layer("Stress Test", 0.75, 0.0, 0), layer("Titles section", 0.85, 0.1, 1)];
+    td
+}
+
+/// Two layers fading, played into rather than parked on: each layer's
+/// resting render is drawn once and every frame of the fades is those
+/// renders with their fades as their opacities, the layers faded whole,
+/// shadow and all, as a one-layer title's placed render fades. Rastered
+/// afresh, each frame of the fades cost 75–105 ms at 4K (#2069).
+#[test]
+fn layers_fading_are_drawn_once_and_faded_whole() {
+    const LONG: f32 = 4.0;
+    let td = lower_third();
+    let mut r = klipp_title::TitleRenderer::new();
+    for f in (0..18).chain(105..120) {
+        let t = f as f32 / 30.0;
+        let got = r.render_with_window(&td, W, H, None, t, Some(LONG));
+        // The reference: the resting layers, each at its fade's alpha as
+        // its opacity, nothing moving.
+        let mut want_td = td.clone();
+        for o in &mut want_td.objects {
+            let fx = o.fx().clone();
+            let (pe, px) = fx.motion.progress(t, Some(LONG), 0);
+            o.opacity = fx.motion.enter.map_or(1.0, |m| m.pose(pe, 0.0).0) * fx.motion.exit.map_or(1.0, |m| m.pose(px, 0.0).0);
+            o.fx_mut().motion = TitleMotion::default();
+        }
+        let want = klipp_title::TitleRenderer::new().render_with_window(&want_td, W, H, None, t, Some(LONG));
+        // As it shows: premultiplied. A pixel all but transparent keeps
+        // whatever colour it is stored with.
+        let shown = |px: &[u8]| px.chunks_exact(4).flat_map(|p| [p[0] as u32 * p[3] as u32 / 255, p[1] as u32 * p[3] as u32 / 255, p[2] as u32 * p[3] as u32 / 255, p[3] as u32]).collect::<Vec<u32>>();
+        let d = shown(&got).iter().zip(shown(&want)).map(|(a, b)| a.abs_diff(b)).max().unwrap_or(0);
+        assert!(d <= 1, "frame {f}: {d} levels from the resting layers at their fades");
+    }
+    assert_eq!(r.text_layers_rendered(), 2, "each layer drawn once at rest, not each frame: {}", r.text_layers_rendered());
 }
