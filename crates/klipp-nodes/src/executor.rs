@@ -427,6 +427,10 @@ pub struct GraphExecutor {
     start_kept: Option<klipp_effects::gpu::KeptPicture>,
     /// The same, kept for the gates whose picture the chain's input is.
     start_kept_for_gates: Option<klipp_effects::gpu::KeptPicture>,
+    /// The last chain start's parts, in ms, for the `PERF graph_exec`
+    /// line (#2107): whether its input was seeded on the GPU or uploaded,
+    /// and the time each part took.
+    chain_start_split: Vec<(&'static str, f64)>,
     /// Keys drawn on the chain in the run so far (`ChainStats::extends`).
     run_key_draws: u32,
     /// The matte the next mixed effect node's mask reads, handed from the
@@ -923,6 +927,7 @@ impl GraphExecutor {
             run_mix_refused: 0,
             start_kept: None,
             start_kept_for_gates: None,
+            chain_start_split: Vec::new(),
             run_key_draws: 0,
             effect_mask: None,
             effect_window: None,
@@ -1057,6 +1062,7 @@ impl GraphExecutor {
             run_mix_refused: 0,
             start_kept: None,
             start_kept_for_gates: None,
+            chain_start_split: Vec::new(),
             run_key_draws: 0,
             effect_mask: None,
             effect_window: None,
@@ -3122,7 +3128,16 @@ impl GraphExecutor {
                         }
                     }
                     chain_start_count += 1;
-                    per_node_ms.push((format!("{node_kind_name}#chain_start"), t_node.elapsed().as_secs_f64() * 1000.0));
+                    let total = t_node.elapsed().as_secs_f64() * 1000.0;
+                    per_node_ms.push((format!("{node_kind_name}#chain_start"), total));
+                    // Its parts (#2107): `seeded` or `uploaded` says where
+                    // its input came from, with the upload's time; `rest`
+                    // is the node's time outside `start_chain`.
+                    let parts = std::mem::take(&mut self.chain_start_split);
+                    let rest = total - parts.iter().map(|(_, ms)| ms).sum::<f64>();
+                    for (part, part_ms) in parts.into_iter().chain([("rest", rest)]) {
+                        per_node_ms.push((format!("{node_kind_name}#chain_start/{part}"), part_ms));
+                    }
                     continue;
                 }
             }
@@ -3485,7 +3500,7 @@ impl GraphExecutor {
             let mut entries: Vec<(String, f64)> = by_kind.into_iter().collect();
             entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             let breakdown = entries.iter()
-                .filter(|(_, ms)| *ms >= 0.1)
+                .filter(|(k, ms)| *ms >= 0.1 || k.ends_with("/seeded"))
                 .map(|(k, ms)| format!("{k}={ms:.1}"))
                 .collect::<Vec<_>>()
                 .join(" ");
@@ -3861,12 +3876,16 @@ impl GraphExecutor {
         keep_input_for_gates: bool,
         keys_of_input: &mut dyn FnMut(&mut Self),
     ) -> Option<u32> {
+        let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1000.0;
+        self.chain_start_split.clear();
         let gpu = self.gpu.as_mut()?;
         if gpu.is_device_lost() {
             return None;
         }
         let byte_size = (width as u64) * (height as u64) * 16;
+        let t = std::time::Instant::now();
         gpu.ensure_chain_buffers(byte_size);
+        self.chain_start_split.push(("buffers", ms(t)));
         // Phase 4d: when `buf_a` was pre-seeded on-GPU (via
         // `prime_chain_from_gpu_u8_buffer`), skip the CPU upload —
         // it's a no-op at best, a stale overwrite at worst. The flag
@@ -3877,8 +3896,10 @@ impl GraphExecutor {
         // so a full-res seed consumed by a half-res chain would be read
         // at the wrong stride rather than failing outright.
         let seed_usable = self.run_seed_dims == Some((width, height));
+        let t = std::time::Instant::now();
         if seed_usable {
             self.run_seed_dims = None;
+            self.chain_start_split.push(("seeded", 0.0));
         } else {
             if primary_input.is_empty() {
                 // No usable seed and no CPU pixels: uploading an empty
@@ -3891,13 +3912,17 @@ impl GraphExecutor {
                 return None;
             }
             gpu.upload_chain_input_linear(primary_input);
+            self.chain_start_split.push(("uploaded", ms(t)));
         }
         // Open the single-submit chain encoder. Every `*_chain` dispatch
         // records into this; `flush_chain` calls `submit_chain` to batch
         // the whole segment into one `queue.submit`. Per-node submits
         // cost ~2-5 ms on NVIDIA Vulkan and dominated `grade_ms` during
         // scrubbing before this.
+        let t = std::time::Instant::now();
         gpu.begin_chain();
+        self.chain_start_split.push(("begin", ms(t)));
+        let t = std::time::Instant::now();
         // The picture just uploaded is some composite's port-1 input,
         // and the dispatch below is about to overwrite the slot holding
         // it. Park it first — this is the case a Blend against the
@@ -3908,8 +3933,12 @@ impl GraphExecutor {
         if keep_input_for_gates {
             self.start_kept_for_gates = gpu.keep_picture(/* in_is_a = */ true, width, height);
         }
+        self.chain_start_split.push(("keep", ms(t)));
         // Keys of the input, for effects' masks (#1266), read it here.
+        let t = std::time::Instant::now();
         keys_of_input(self);
+        self.chain_start_split.push(("keys", ms(t)));
+        let t = std::time::Instant::now();
         // Dispatch this node with in = buf_a, out = buf_b. The first
         // node in a chain is always one of the whitelisted single-sub-
         // effect kinds (start_chain is only called via can_start_chain,
@@ -3918,6 +3947,7 @@ impl GraphExecutor {
         // are active — mirror the net slot parity in the caller via
         // chain_slot_a at the call site in execute_linear.
         let dispatches = self.dispatch_chain_node_slots(node_id, kind, params, width, height, frame_number, /* in_is_a */ true);
+        self.chain_start_split.push(("dispatch", ms(t)));
         let n = dispatches.unwrap_or(0);
         if n == 0 {
             // Dispatch declined (device-lost or unexpected param). Close
