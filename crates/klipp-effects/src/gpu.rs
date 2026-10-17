@@ -5616,6 +5616,31 @@ impl GpuEffectsPipeline {
         self.stack_copy(src, &self.stack_layers[i], "stack_layer_from_chain")
     }
 
+    /// A copy of layer `i` kept on the GPU (#2092): a still image's layer,
+    /// put back on later frames with [`Self::stack_layer_from_kept`]
+    /// instead of uploaded again.
+    pub fn stack_layer_keep(&mut self, i: usize) -> Option<wgpu::Buffer> {
+        if self.is_device_lost() || i >= self.stack_layers.len() {
+            return None;
+        }
+        let kept = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("kept_still_layer"),
+            size: self.stack_pixel_count() * 16,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.stack_copy(&self.stack_layers[i], &kept, "stack_layer_keep").then_some(kept)
+    }
+
+    /// Layer `i` from a layer [`Self::stack_layer_keep`] kept, on the GPU:
+    /// false when it was kept at another size.
+    pub fn stack_layer_from_kept(&mut self, i: usize, kept: &wgpu::Buffer) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() || kept.size() != self.stack_pixel_count() * 16 {
+            return false;
+        }
+        self.stack_copy(kept, &self.stack_layers[i], "stack_layer_from_kept")
+    }
+
     /// Layer `i` takes a linear working-space frame from the CPU.
     pub fn stack_layer_from_linear(&mut self, i: usize, linear_rgba: &[f32]) -> bool {
         if self.is_device_lost() || i >= self.stack_layers.len() {

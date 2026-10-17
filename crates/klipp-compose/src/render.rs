@@ -185,6 +185,14 @@ pub trait FrameSource {
         None
     }
 
+    /// Whether `clip`'s media is a still image, whose frame is the same
+    /// picture every frame while its file stands (#2092): the GPU stack
+    /// keeps its layer instead of uploading it again. `false` (the
+    /// default) uploads every frame.
+    fn is_still(&mut self, _clip: &Clip) -> bool {
+        false
+    }
+
     /// Frames of `clip`'s media for OFX plugins that read other times than
     /// the current one (retime, slit-scan, frame blend): a function from
     /// clip time to an sRGB RGBA8 frame. `None` (the default) runs those
@@ -640,6 +648,10 @@ pub struct RenderStats {
     /// Layers the GPU stack had no seed for, rendered on the CPU and
     /// uploaded: the slow way in.
     pub cpu_layers: u32,
+    /// Media layers sent up to the GPU stack from CPU pixels this frame.
+    pub layers_uploaded: u32,
+    /// Still images whose layer was put back from the GPU instead (#2092).
+    pub stills_kept: u32,
     /// Clips whose effects ran as nodes of the grade's plan, on the GPU
     /// with the grade (#1089, M2 step 10).
     pub effects_followed_grade: u32,
@@ -930,6 +942,12 @@ pub struct Renderer {
     /// every frame at one size; rasterising and packing a 720p one cost
     /// 2.6 ms a frame (#1850).
     still_generators: HashMap<ClipId, StillGenerator>,
+    /// Each still image's layer as the GPU stack placed it (#2092), by
+    /// clip: kept on the GPU and copied into its slot on later frames
+    /// while its decoded picture (the source's own `Arc`, held here so it
+    /// can't be another's) and the sizes are the same. A new decode (a
+    /// changed file, another colour handling) is another picture.
+    still_layers: HashMap<ClipId, StillLayer>,
     /// The subject matte sequences piece transitions read (#985 phase 3):
     /// each folder's manifest and frames, as last looked.
     subject_mattes: HashMap<std::path::PathBuf, (klipp_nodes::matte_sequence::Manifest, Vec<i64>)>,
@@ -1104,6 +1122,7 @@ impl Renderer {
             source_decoded: None,
             grade_source_scene: false,
             still_generators: HashMap::new(),
+            still_layers: HashMap::new(),
             subject_mattes: HashMap::new(),
             clip_subject_dirs: HashMap::new(),
             clip_media_last: HashMap::new(),
@@ -1937,6 +1956,11 @@ impl Renderer {
         }
         let t0 = Instant::now();
         let fps = seq.fps.as_f64();
+        // Kept still layers of clips this sequence no longer has (another
+        // project, a deleted clip) let go of their GPU memory (#2092).
+        if !self.still_layers.is_empty() {
+            self.still_layers.retain(|id, _| seq.tracks.iter().any(|t| t.clips.iter().any(|c| c.id == *id)));
+        }
         let stack = stack(seq, time);
         if stack.is_empty() {
             return self.gpu_stack_declines("nothing on screen");
@@ -2302,9 +2326,23 @@ impl Renderer {
         // are the title's own, not in its picture's list.
         let mut lead: Vec<BuiltinEffect> = Vec::new();
         let placed = match &c.kind {
-            ClipKind::Media { .. } if fx_on_gpu => {
+            ClipKind::Media { .. } if fx_on_gpu => 'media: {
                 let at = source_secs(c, time, fps);
                 let Some(f) = src.frame(c, at, width, height) else { return Ok(None) };
+                // A still image, ungraded and without effects: its layer as
+                // placed the last frame, still on the GPU (#2092).
+                let still = match &f.pixels {
+                    SourcePixels::Linear(p) if c.grade_is_identity() && !has_active_effects(&fx) && src.is_still(c) => Some(Arc::clone(p)),
+                    _ => None,
+                };
+                if let Some(from) = &still {
+                    if let Some(kept) = self.still_layers.get(&c.id).filter(|k| Arc::ptr_eq(&k.from, from) && k.source == (f.width, f.height) && k.size == (width, height)) {
+                        if self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_kept(slot, &kept.layer)) {
+                            stats.stills_kept += 1;
+                            break 'media true;
+                        }
+                    }
+                }
                 // A source of another size is fitted into the frame, as on
                 // the CPU: on the GPU when the source can seed at another
                 // size, else fitted here and sent up. It used to be
@@ -2388,7 +2426,19 @@ impl Renderer {
                             if run_on_gpu {
                                 residency::record("composition.grade_output", "GPU grade/effect result returned CPU pixels", Work::Fallback);
                             }
-                            self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(slot, &pixels))
+                            stats.layers_uploaded += 1;
+                            let placed = self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(slot, &pixels));
+                            // A still's layer, kept to put back next frame.
+                            if let (true, Some(from)) = (placed, still) {
+                                residency::record("media.still", "Still image decoded and uploaded once, then kept on the GPU", Work::Preparation);
+                                if let Some(layer) = self.executor.gpu_pipeline_or_init().and_then(|p| p.stack_layer_keep(slot)) {
+                                    if self.still_layers.len() >= STILL_LAYERS_KEPT && !self.still_layers.contains_key(&c.id) {
+                                        self.still_layers.clear();
+                                    }
+                                    self.still_layers.insert(c.id, StillLayer { from, source: (f.width, f.height), size: (width, height), layer });
+                                }
+                            }
+                            placed
                         }
                     }
                     // A log, HLG or PQ source: its codes decoded to the
@@ -6374,6 +6424,18 @@ pub fn temporal_denoise_of(clip: &Clip, time: Timecode, fps: f64) -> Option<(f32
         _ => None,
     }
 }
+
+/// A still image's layer kept on the GPU (#2092): the decoded picture it
+/// was made from, its size, the size it was placed at, and the layer.
+struct StillLayer {
+    from: Arc<Vec<f32>>,
+    source: (u32, u32),
+    size: (u32, u32),
+    layer: wgpu::Buffer,
+}
+
+/// The most still layers kept: five 4K layers are 660 MB of GPU memory.
+const STILL_LAYERS_KEPT: usize = 8;
 
 /// A still generator's raster as drawn: its data, size and file stamp
 /// (a still frame's), and the pixels.
