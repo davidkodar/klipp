@@ -75,3 +75,7 @@ path = "tests/secondary_cost.rs"
 [[test]]
 name = "secondary_gpu_parity"
 path = "tests/secondary_gpu_parity.rs"
+
+[[test]]
+name = "prewarm_uses_the_installed_device"
+path = "tests/prewarm_uses_the_installed_device.rs"

@@ -270,6 +270,11 @@ pub struct GraphExecutor {
     /// (success or failure). Prevents retrying a failed init on
     /// every frame.
     gpu_init_attempted: bool,
+    /// The GPU pipeline being built on a thread of its own
+    /// ([`Self::prewarm_gpu`]): taken by the first frame that needs it,
+    /// which then waits for the rest of the build rather than starting
+    /// another.
+    gpu_prewarm: Option<(std::sync::mpsc::Receiver<Option<GpuEffectsPipeline>>, std::thread::JoinHandle<()>)>,
     /// Cache of loaded LUT data keyed by file path.
     lut_cache: HashMap<PathBuf, Arc<LutData>>,
     /// Cache of pre-built curve LUTs keyed by node ID.
@@ -878,6 +883,7 @@ impl GraphExecutor {
         Self {
             gpu: None,
             gpu_init_attempted: false,
+            gpu_prewarm: None,
             lut_cache: HashMap::new(),
             curve_lut_cache: HashMap::new(),
             matte_image_cache: HashMap::new(),
@@ -949,12 +955,46 @@ impl GraphExecutor {
     /// shared `GpuContext` is populated (either by the UI host or by
     /// the first lazy init here), every subsequent call re-uses it.
     /// Caches init failure so we don't retry on every frame.
+    /// Build the GPU pipeline on a thread of its own now, so the first
+    /// frame that needs it does not (#2108): building it compiles every
+    /// effect's shader, 0.8 s that the first stacked frame of a session
+    /// spent on the engine's thread, a Play pressed then waiting behind
+    /// it. Does nothing once the pipeline is built or being built.
+    pub fn prewarm_gpu(&mut self) {
+        if self.gpu.is_some() || self.gpu_init_attempted || self.gpu_prewarm.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        if let Ok(handle) = std::thread::Builder::new().name("gpu pipeline build".into()).spawn(move || {
+            // On the device the UI installs, never one of its own made
+            // first: waited for while the UI starts. Undecided after
+            // that (a run with no UI), the build makes it as a frame's
+            // would.
+            klipp_effects::gpu_context::GpuContext::wait_for_shared(PREWARM_WAITS_FOR_DEVICE);
+            let _ = tx.send(GpuEffectsPipeline::new());
+        }) {
+            self.gpu_prewarm = Some((rx, handle));
+        }
+    }
+
     fn ensure_gpu(&mut self) {
         if self.gpu.is_some() || self.gpu_init_attempted {
             return;
         }
         self.gpu_init_attempted = true;
-        self.gpu = GpuEffectsPipeline::new();
+        // The one being built ahead, waited for; else built here.
+        self.gpu = match self.gpu_prewarm.take() {
+            Some((rx, handle)) => {
+                // A frame needs it now: the device is decided here, as it
+                // was before the build went ahead, and the build waiting
+                // for that goes on.
+                let _ = klipp_effects::gpu_context::GpuContext::shared();
+                let built = rx.recv().ok().flatten();
+                let _ = handle.join();
+                built
+            }
+            None => GpuEffectsPipeline::new(),
+        };
         if let Some(gpu) = self.gpu.as_mut() {
             // Replay the active working colorspace's luma vector
             // into the freshly-built pipeline. `set_working_colorspace`
@@ -977,6 +1017,7 @@ impl GraphExecutor {
             // Mark "attempted" so `ensure_gpu()` is a no-op —
             // `new_cpu_only` explicitly wants CPU-only.
             gpu_init_attempted: true,
+            gpu_prewarm: None,
             lut_cache: HashMap::new(),
             curve_lut_cache: HashMap::new(),
             matte_image_cache: HashMap::new(),
@@ -7202,6 +7243,25 @@ fn burn_channel(base: f32, top: f32) -> f32 {
     else { 1.0 - ((1.0 - base) / top).min(1.0) }
 }
 
+/// How long a pipeline built ahead waits for the UI to install its device
+/// before it makes one (#2108).
+const PREWARM_WAITS_FOR_DEVICE: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// A pipeline still being built ahead is waited for and dropped here,
+/// with the executor: left running, its thread could still be creating
+/// GPU objects as the process exits and the driver is torn down (#2108).
+impl Drop for GraphExecutor {
+    fn drop(&mut self) {
+        if let Some((rx, handle)) = self.gpu_prewarm.take() {
+            // Decided now if nothing has, so the build is not left waiting
+            // for a device no UI will install.
+            let _ = klipp_effects::gpu_context::GpuContext::shared();
+            drop(rx.recv());
+            let _ = handle.join();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9202,6 +9262,24 @@ mod tests {
         executor.set_working_colorspace(klipp_core::WorkingColorspace::Rec709Linear);
         let coefs = executor.gpu.as_ref().unwrap().luma_coefs();
         assert!((coefs[0] - 0.2126).abs() < 1e-6);
+    }
+
+    /// #2108: a pipeline built ahead is the one the first frame takes,
+    /// waited for rather than built again; asked twice, one build.
+    #[test]
+    fn a_prewarmed_pipeline_is_the_one_a_frame_gets() {
+        let mut executor = GraphExecutor::new();
+        executor.prewarm_gpu();
+        assert!(executor.gpu_prewarm.is_some() || executor.gpu.is_some(), "a build started");
+        executor.prewarm_gpu();
+        // The first frame takes it, waiting for the build, not starting one.
+        let got = executor.gpu_pipeline_or_init().is_some();
+        assert!(executor.gpu_prewarm.is_none(), "taken");
+        assert_eq!(got, executor.gpu.is_some());
+        // A CPU-only executor builds nothing ahead.
+        let mut cpu = GraphExecutor::new_cpu_only();
+        cpu.prewarm_gpu();
+        assert!(cpu.gpu_prewarm.is_none() && cpu.gpu_pipeline_or_init().is_none());
     }
 
     /// Setter called BEFORE the GPU pipeline is built (the lazy

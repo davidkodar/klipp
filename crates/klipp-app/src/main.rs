@@ -344,6 +344,8 @@ fn main() -> Result<()> {
         )
     };
     engine.set_foreground_activity(Arc::clone(&foreground_activity));
+    // The viewer's GPU pipeline, built while nothing waits for it (#2108).
+    engine.prewarm_gpu();
     // Cloned again here so the move-into-closure for eframe below
     // gets its own handle.
     let foreground_for_ui = Arc::clone(&foreground_activity);

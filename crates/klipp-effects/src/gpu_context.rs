@@ -181,6 +181,21 @@ impl GpuContext {
         Ok(())
     }
 
+    /// Wait, up to `limit`, for the shared device to be decided: the UI's
+    /// installed, or another caller's first [`Self::shared`] (#2108). A
+    /// pipeline built ahead waits here, so it never makes the device
+    /// itself and leaves the UI's install to fail. Whether it was decided.
+    pub fn wait_for_shared(limit: std::time::Duration) -> bool {
+        let until = std::time::Instant::now() + limit;
+        while SHARED.get().is_none() {
+            if std::time::Instant::now() >= until {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        true
+    }
+
     /// Whether [`Self::shared`] is the UI's own device, installed by
     /// [`Self::install_shared`]. Only then can a texture the engine
     /// writes be sampled by the UI's renderer: wgpu tracks resources
