@@ -5490,6 +5490,27 @@ impl GpuEffectsPipeline {
         self.submit_count.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Wait until the GPU has done all the work handed to it so far, at
+    /// most two seconds, by polling (a UI-shared device's `Wait` never
+    /// returns): how long that took, in ms. A diagnostic for where a
+    /// chain start's time goes (#2107), never on a normal frame's path.
+    #[doc(hidden)]
+    pub fn wait_for_submitted_work(&self) -> f64 {
+        let t = std::time::Instant::now();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.queue.on_submitted_work_done(move || {
+            let _ = tx.send(());
+        });
+        while t.elapsed() < std::time::Duration::from_secs(2) {
+            self.device.poll(wgpu::Maintain::Poll);
+            if rx.try_recv().is_ok() {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        t.elapsed().as_secs_f64() * 1000.0
+    }
+
     /// Hand the queue what a stack frame has recorded so far. Before
     /// anything that must see those passes done or ordered: an upload
     /// into a buffer they read, a readback, a chain segment, a buffer
