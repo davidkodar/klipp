@@ -513,6 +513,8 @@ pub struct TitleRenderer {
     /// How many text layers of several-layer titles were rendered rather
     /// than taken from `text_layer_cache`: what a test reads.
     text_layers_rendered: u64,
+    /// Resting renders made rather than taken from `render_cache`.
+    resting_renders: u64,
     /// One unfinished face; bounded separately, invalidated with raster caches.
     style_source_cache: Option<gpu_styles::SourceCache>,
     /// The rows with coverage in the last render, `y0..y1`.
@@ -570,7 +572,12 @@ pub struct TitleRenderer {
     fallback_keys: HashMap<(String, char, bool), Option<String>>,
 }
 
-const RENDER_CACHE_CAP: usize = 4;
+/// Resting renders kept: one for each title of a busy stretch, as the
+/// text layers are, the bytes bounded by `RENDER_CACHE_BYTES`. Four,
+/// with eight titles on screen, put each one out of the cache before it
+/// came round again, and every title was rendered afresh on the CPU
+/// every frame: 60 ms at 4K (#2069).
+const RENDER_CACHE_CAP: usize = 16;
 
 /// How many text layers [`TitleRenderer`] keeps at rest (#2095): one for
 /// each title of a busy stretch, a dozen at most.
@@ -652,6 +659,7 @@ impl TitleRenderer {
             render_cache: Vec::with_capacity(RENDER_CACHE_CAP),
             text_layer_cache: Vec::new(),
             text_layers_rendered: 0,
+            resting_renders: 0,
             style_source_cache: None,
             last_rows: (0, 0),
             last_blur: 0.0,
@@ -3559,6 +3567,7 @@ impl TitleRenderer {
         match self.cache_lookup(title, width, height) {
             Some(hit) => hit,
             None => {
+                self.resting_renders += 1;
                 self.defer_layer_fades = title.objects.iter().filter(|o| o.visible).count() == 1 && !title.mixes_layers();
                 let raster = self.raster_at(title, width, height, gpu, None);
                 self.defer_layer_fades = false;
@@ -3572,6 +3581,13 @@ impl TitleRenderer {
     #[doc(hidden)]
     pub fn text_layers_rendered(&self) -> u64 {
         self.text_layers_rendered
+    }
+
+    /// How many resting renders this renderer made rather than took from
+    /// its cache (#2069). For tests.
+    #[doc(hidden)]
+    pub fn resting_renders(&self) -> u64 {
+        self.resting_renders
     }
 
     /// The text layer `single` renders to at rest, when kept

@@ -129,3 +129,24 @@ fn layers_fading_are_drawn_once_and_faded_whole() {
     }
     assert_eq!(r.text_layers_rendered(), 2, "each layer drawn once at rest, not each frame: {}", r.text_layers_rendered());
 }
+
+/// Eight titles on screen at once, each drawn in turn every frame by the
+/// one renderer, as the compositor draws them: each is rendered at rest
+/// once and taken from the cache on every frame after. Four kept, each
+/// was put out before it came round again, and all eight were rendered
+/// afresh every frame (#2069). The control: a renderer whose titles all
+/// differ every frame renders each one.
+#[test]
+fn a_busy_stretch_of_titles_is_rendered_once_each() {
+    use klipp_timeline::TextBox;
+    let titles: Vec<TitleData> = (0..8)
+        .map(|i| TitleData::single_text(TextBox { text: format!("Title {i}"), font_size: 40.0, ..Default::default() }))
+        .collect();
+    let mut r = klipp_title::TitleRenderer::new();
+    for f in 0..5 {
+        for td in &titles {
+            let _ = r.render_with_window(td, W, H, None, f as f32 / 30.0, Some(WINDOW));
+        }
+    }
+    assert_eq!(r.resting_renders(), 8, "eight titles over five frames were rendered {} times", r.resting_renders());
+}
