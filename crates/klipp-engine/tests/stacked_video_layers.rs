@@ -186,6 +186,11 @@ fn measure_project_window() {
         }
     }
     let (from, secs) = (num("KLIPP_FROM", 48.0), num("KLIPP_SECS", 3.0));
+    // `KLIPP_HW_DECODE=0`: every stream decodes in software, as with the
+    // preference off.
+    if std::env::var("KLIPP_HW_DECODE").as_deref() == Ok("0") {
+        klipp_engine::video_decoder::set_hardware_decode(false);
+    }
     match play_sequence(seq, pool, from, secs) {
         Some((render, total, frames)) => eprintln!("MEASURE project {from}+{secs}s: render {render:.1} ms, frame {total:.1} ms, median of {frames}"),
         None => eprintln!("MEASURE project: no frames"),

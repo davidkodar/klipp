@@ -1785,6 +1785,144 @@ pub(crate) fn playback_dimensions(src_w: u32, src_h: u32, rotation: i32) -> (u32
     (out_w.max(2), out_h.max(2))
 }
 
+/// A semi-planar YUV 4:2:0 frame in memory: NV12 (8-bit) or P010 (10 bits
+/// in the top of 16), its luma plane and its interleaved chroma plane.
+pub(crate) struct SemiPlanar<'a> {
+    pub y: &'a [u8],
+    pub uv: &'a [u8],
+    pub width: u32,
+    pub height: u32,
+    pub y_stride: u32,
+    pub uv_stride: u32,
+}
+
+/// The GPU's YUV converters, NV12 and P010, as one: a frame downloaded
+/// from the hardware decoder and one decoded in software take the same
+/// route to the GPU (#2116).
+pub(crate) trait SemiPlanarGpu {
+    fn on_gpu(&mut self, f: &SemiPlanar, out: (u32, u32), rotation: u32, ids: [u32; 4], pm: [[f32; 4]; 3]) -> klipp_effects::p010_gpu::P010GpuOutput;
+    fn hdr_codes(&mut self, f: &SemiPlanar, out: (u32, u32), rotation: u32, ids: [u32; 4], pm: [[f32; 4]; 3]) -> Option<Vec<u32>>;
+    fn to_rgba(&mut self, f: &SemiPlanar, out: (u32, u32), rotation: u32, ids: [u32; 4], pm: [[f32; 4]; 3]) -> Vec<u8>;
+    fn device(&self) -> Arc<wgpu::Device>;
+    fn queue(&self) -> Arc<wgpu::Queue>;
+}
+
+impl SemiPlanarGpu for klipp_effects::p010_gpu::GpuP010Converter {
+    fn on_gpu(&mut self, f: &SemiPlanar, out: (u32, u32), rotation: u32, ids: [u32; 4], pm: [[f32; 4]; 3]) -> klipp_effects::p010_gpu::P010GpuOutput {
+        self.convert_p010_on_gpu(f.y, f.uv, f.width, f.height, f.y_stride, f.uv_stride, out.0, out.1, rotation, ids, pm)
+    }
+    fn hdr_codes(&mut self, f: &SemiPlanar, out: (u32, u32), rotation: u32, ids: [u32; 4], pm: [[f32; 4]; 3]) -> Option<Vec<u32>> {
+        self.convert_p010_hdr_codes(f.y, f.uv, f.width, f.height, f.y_stride, f.uv_stride, out.0, out.1, rotation, ids, pm)
+    }
+    fn to_rgba(&mut self, f: &SemiPlanar, out: (u32, u32), rotation: u32, ids: [u32; 4], pm: [[f32; 4]; 3]) -> Vec<u8> {
+        self.convert_p010_to_rgba(f.y, f.uv, f.width, f.height, f.y_stride, f.uv_stride, out.0, out.1, rotation, ids, pm)
+    }
+    fn device(&self) -> Arc<wgpu::Device> {
+        klipp_effects::p010_gpu::GpuP010Converter::device(self)
+    }
+    fn queue(&self) -> Arc<wgpu::Queue> {
+        klipp_effects::p010_gpu::GpuP010Converter::queue(self)
+    }
+}
+
+impl SemiPlanarGpu for klipp_effects::nv12_gpu::GpuNv12Converter {
+    fn on_gpu(&mut self, f: &SemiPlanar, out: (u32, u32), rotation: u32, ids: [u32; 4], pm: [[f32; 4]; 3]) -> klipp_effects::p010_gpu::P010GpuOutput {
+        self.convert_nv12_on_gpu(f.y, f.uv, f.width, f.height, f.y_stride, f.uv_stride, out.0, out.1, rotation, ids, pm)
+    }
+    fn hdr_codes(&mut self, f: &SemiPlanar, out: (u32, u32), rotation: u32, ids: [u32; 4], pm: [[f32; 4]; 3]) -> Option<Vec<u32>> {
+        self.convert_nv12_hdr_codes(f.y, f.uv, f.width, f.height, f.y_stride, f.uv_stride, out.0, out.1, rotation, ids, pm)
+    }
+    fn to_rgba(&mut self, f: &SemiPlanar, out: (u32, u32), rotation: u32, ids: [u32; 4], pm: [[f32; 4]; 3]) -> Vec<u8> {
+        self.convert_nv12_to_rgba(f.y, f.uv, f.width, f.height, f.y_stride, f.uv_stride, out.0, out.1, rotation, ids, pm)
+    }
+    fn device(&self) -> Arc<wgpu::Device> {
+        klipp_effects::nv12_gpu::GpuNv12Converter::device(self)
+    }
+    fn queue(&self) -> Arc<wgpu::Queue> {
+        klipp_effects::nv12_gpu::GpuNv12Converter::queue(self)
+    }
+}
+
+/// Convert `f` on the GPU to `out`'s size, turned by `rotation`, coloured
+/// as `source_cs` says: the frame's CPU pixels, its GPU picture and its
+/// HDR codes. The shader picks PQ/HLG vs BT.709 transfer, BT.2020 vs
+/// BT.709 matrix/primaries, and limited vs full range from the source's
+/// IDs — no ad-hoc HDR sniffing in the host code. PQ/HLG and camera-log
+/// sources also get packed 10-bit code values, which become the grade's
+/// input (see `crate::types::HdrInput`); `data` stays display-referred
+/// for every other consumer.
+pub(crate) fn semi_planar_frame(
+    converter: &mut dyn SemiPlanarGpu,
+    f: &SemiPlanar,
+    out: (u32, u32),
+    rotation: i32,
+    source_cs: klipp_core::SourceColorspace,
+    linear_us: &std::sync::atomic::AtomicU64,
+) -> (Vec<f32>, Option<Arc<GpuFrame>>, Option<crate::types::HdrInput>) {
+    use std::sync::atomic::Ordering;
+    let (out_w, out_h) = out;
+    let rotation = rotation as u32;
+    let color_ids = klipp_core::color_ids::ids(source_cs);
+    let hdr_transfer = klipp_color::hdr::HdrTransfer::from_transfer_id(color_ids[2]);
+    let (source_to_working, pm) = primaries_matrix_for_source(source_cs);
+    if should_attach_gpu_source() {
+        // GPU-resident handoff. The shader runs; the buffers stay on the
+        // GPU and CPU `data` stays empty — consumers that need it call
+        // `LinearFrame::ensure_cpu_data`, which reads the u8 output (for
+        // HDR, the tone-mapped preview).
+        let gpu = converter.on_gpu(f, out, rotation, color_ids, pm);
+        let device = converter.device();
+        let queue = converter.queue();
+        let hdr = match (hdr_transfer, gpu.hdr_codes) {
+            (Some(transfer), Some(buffer)) => Some(crate::types::HdrInput {
+                codes: crate::types::HdrCodes::Gpu { buffer, device: Arc::clone(&device), queue: Arc::clone(&queue) },
+                transfer,
+                source_to_working,
+                width: out_w,
+                height: out_h,
+            }),
+            _ => None,
+        };
+        let attach = Arc::new(GpuFrame::new(device, queue, gpu.rgba, out_w, out_h));
+        (Vec::new(), Some(attach), hdr)
+    } else if let Some(transfer) = hdr_transfer {
+        // HDR on the readback path: read back the codes — the same 4
+        // bytes a pixel the u8 frame cost — and derive the
+        // display-referred `data` from them on the CPU. The grade
+        // re-derives scene-linear from the same codes, so the two cannot
+        // drift.
+        match converter.hdr_codes(f, out, rotation, color_ids, pm) {
+            Some(codes) => {
+                let t_linear = std::time::Instant::now();
+                let mut display = klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(&codes, transfer, source_to_working);
+                klipp_color::hdr::apply_hdr_display_tonemap(&mut display, transfer);
+                linear_us.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
+                let hdr = crate::types::HdrInput {
+                    codes: crate::types::HdrCodes::Cpu(Arc::new(klipp_color::hdr::SceneCodes::Packed10(codes))),
+                    transfer,
+                    source_to_working,
+                    width: out_w,
+                    height: out_h,
+                };
+                (display, None, Some(hdr))
+            }
+            None => {
+                // Readback failed: fall back to the preview, graded as
+                // display-referred. Wrong for grading, but a picture
+                // rather than a hole.
+                let bytes = converter.to_rgba(f, out, rotation, color_ids, pm);
+                (rgba_u8_to_linear(&bytes), None, None)
+            }
+        }
+    } else {
+        let bytes = converter.to_rgba(f, out, rotation, color_ids, pm);
+        let t_linear = std::time::Instant::now();
+        let lin = rgba_u8_to_linear(&bytes);
+        linear_us.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
+        (lin, None, None)
+    }
+}
+
 /// Download a hardware surface frame (CUDA or VAAPI) to CPU, then convert+downscale to RGBA.
 /// Uses raw FFI to avoid format enum mismatches between ffmpeg-next and system ffmpeg.
 ///
@@ -1901,90 +2039,7 @@ unsafe fn download_hw_frame(
             let uv_data = std::slice::from_raw_parts((*sw_frame).data[1], uv_data_len);
 
             let t_p010 = std::time::Instant::now();
-            // The shader picks PQ/HLG vs BT.709 transfer, BT.2020 vs
-            // BT.709 matrix/primaries, and limited vs full range from
-            // these IDs — no ad-hoc HDR sniffing in the host code.
-            let color_ids = klipp_core::color_ids::ids(source_cs);
-            // PQ/HLG sources: the shader also emits packed 10-bit code
-            // values, which become the grade's input (see
-            // `crate::types::HdrInput`). `data` stays display-referred for
-            // every other consumer.
-            let hdr_transfer = klipp_color::hdr::HdrTransfer::from_transfer_id(color_ids[2]);
-            let (source_to_working, pm) = primaries_matrix_for_source(source_cs);
-            let (linear, gpu_source, hdr) = if should_attach_gpu_source() {
-                // GPU-resident handoff. The shader runs; the buffers stay
-                // on the GPU and CPU `data` stays empty — consumers that
-                // need it call `LinearFrame::ensure_cpu_data`, which reads
-                // the u8 output (for HDR, the tone-mapped preview).
-                let out = converter.convert_p010_on_gpu(
-                    y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                    out_w, out_h, source_rotation as u32, color_ids, pm,
-                );
-                let device = converter.device();
-                let queue = converter.queue();
-                let hdr = match (hdr_transfer, out.hdr_codes) {
-                    (Some(transfer), Some(buffer)) => Some(crate::types::HdrInput {
-                        codes: crate::types::HdrCodes::Gpu {
-                            buffer,
-                            device: Arc::clone(&device),
-                            queue: Arc::clone(&queue),
-                        },
-                        transfer,
-                        source_to_working,
-                        width: out_w,
-                        height: out_h,
-                    }),
-                    _ => None,
-                };
-                let attach = Arc::new(GpuFrame::new(device, queue, out.rgba, out_w, out_h));
-                (Vec::new(), Some(attach), hdr)
-            } else if let Some(transfer) = hdr_transfer {
-                // HDR on the readback path: read back the codes — the same
-                // 4 bytes a pixel the u8 frame cost — and derive the
-                // display-referred `data` from them on the CPU. The grade
-                // re-derives scene-linear from the same codes, so the two
-                // cannot drift.
-                match converter.convert_p010_hdr_codes(
-                    y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                    out_w, out_h, source_rotation as u32, color_ids, pm,
-                ) {
-                    Some(codes) => {
-                        let t_linear = std::time::Instant::now();
-                        let mut display = klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(
-                            &codes, transfer, source_to_working,
-                        );
-                        klipp_color::hdr::apply_hdr_display_tonemap(&mut display, transfer);
-                        PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
-                        let hdr = crate::types::HdrInput {
-                            codes: crate::types::HdrCodes::Cpu(Arc::new(klipp_color::hdr::SceneCodes::Packed10(codes))),
-                            transfer,
-                            source_to_working,
-                            width: out_w,
-                            height: out_h,
-                        };
-                        (display, None, Some(hdr))
-                    }
-                    None => {
-                        // Readback failed: fall back to the preview, graded
-                        // as display-referred. Wrong for grading, but a
-                        // picture rather than a hole.
-                        let bytes = converter.convert_p010_to_rgba(
-                            y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                            out_w, out_h, source_rotation as u32, color_ids, pm,
-                        );
-                        (rgba_u8_to_linear(&bytes), None, None)
-                    }
-                }
-            } else {
-                let bytes = converter.convert_p010_to_rgba(
-                    y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                    out_w, out_h, source_rotation as u32, color_ids, pm,
-                );
-                let t_linear = std::time::Instant::now();
-                let lin = rgba_u8_to_linear(&bytes);
-                PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
-                (lin, None, None)
-            };
+            let (linear, gpu_source, hdr) = semi_planar_frame(converter, &SemiPlanar { y: y_data, uv: uv_data, width: src_w, height: src_h, y_stride, uv_stride }, (out_w, out_h), source_rotation, source_cs, &PERF_LINEAR_ENCODE_US);
             // Reuse the NV12 perf bucket — the meaning is identical
             // (GPU YUV→RGBA encode time per frame).
             PERF_NV12_CONV_US.fetch_add(t_p010.elapsed().as_micros() as u64, Ordering::Relaxed);
@@ -2031,79 +2086,7 @@ unsafe fn download_hw_frame(
             let uv_data = std::slice::from_raw_parts((*sw_frame).data[1], uv_data_len);
 
             let t_nv12 = std::time::Instant::now();
-            let color_ids = klipp_core::color_ids::ids(source_cs);
-            // Scene-referred 8-bit sources (camera log recorded 8-bit, the
-            // odd 8-bit PQ/HLG) take the same route as P010: the shader
-            // emits 10-bit code values for the grade, `data` stays the
-            // tone-mapped preview.
-            let hdr_transfer = klipp_color::hdr::HdrTransfer::from_transfer_id(color_ids[2]);
-            let (source_to_working, pm) = primaries_matrix_for_source(source_cs);
-            let (linear, gpu_source, hdr) = if should_attach_gpu_source() {
-                // Phase 4d.1: see P010 path above. NV12 follows the
-                // same GPU-resident handoff — no readback, no
-                // linearise; the engine consumes the wgpu::Buffer
-                // directly when it primes the chain.
-                let out = converter.convert_nv12_on_gpu(
-                    y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                    out_w, out_h, source_rotation as u32, color_ids, pm,
-                );
-                let device = converter.device();
-                let queue = converter.queue();
-                let hdr = match (hdr_transfer, out.hdr_codes) {
-                    (Some(transfer), Some(buffer)) => Some(crate::types::HdrInput {
-                        codes: crate::types::HdrCodes::Gpu {
-                            buffer,
-                            device: Arc::clone(&device),
-                            queue: Arc::clone(&queue),
-                        },
-                        transfer,
-                        source_to_working,
-                        width: out_w,
-                        height: out_h,
-                    }),
-                    _ => None,
-                };
-                let attach = Arc::new(GpuFrame::new(device, queue, out.rgba, out_w, out_h));
-                (Vec::new(), Some(attach), hdr)
-            } else if let Some(transfer) = hdr_transfer {
-                match converter.convert_nv12_hdr_codes(
-                    y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                    out_w, out_h, source_rotation as u32, color_ids, pm,
-                ) {
-                    Some(codes) => {
-                        let t_linear = std::time::Instant::now();
-                        let mut display = klipp_color::hdr::hdr10_codes_to_scene_linear_rgba(
-                            &codes, transfer, source_to_working,
-                        );
-                        klipp_color::hdr::apply_hdr_display_tonemap(&mut display, transfer);
-                        PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
-                        let hdr = crate::types::HdrInput {
-                            codes: crate::types::HdrCodes::Cpu(Arc::new(klipp_color::hdr::SceneCodes::Packed10(codes))),
-                            transfer,
-                            source_to_working,
-                            width: out_w,
-                            height: out_h,
-                        };
-                        (display, None, Some(hdr))
-                    }
-                    None => {
-                        let bytes = converter.convert_nv12_to_rgba(
-                            y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                            out_w, out_h, source_rotation as u32, color_ids, pm,
-                        );
-                        (rgba_u8_to_linear(&bytes), None, None)
-                    }
-                }
-            } else {
-                let bytes = converter.convert_nv12_to_rgba(
-                    y_data, uv_data, src_w, src_h, y_stride, uv_stride,
-                    out_w, out_h, source_rotation as u32, color_ids, pm,
-                );
-                let t_linear = std::time::Instant::now();
-                let lin = rgba_u8_to_linear(&bytes);
-                PERF_LINEAR_ENCODE_US.fetch_add(t_linear.elapsed().as_micros() as u64, Ordering::Relaxed);
-                (lin, None, None)
-            };
+            let (linear, gpu_source, hdr) = semi_planar_frame(converter, &SemiPlanar { y: y_data, uv: uv_data, width: src_w, height: src_h, y_stride, uv_stride }, (out_w, out_h), source_rotation, source_cs, &PERF_LINEAR_ENCODE_US);
             PERF_NV12_CONV_US.fetch_add(t_nv12.elapsed().as_micros() as u64, Ordering::Relaxed);
 
             av_frame_free(&mut (sw_frame as *mut _));
@@ -2492,6 +2475,8 @@ fn decode_thread_main(
 
     // Software scaler — created lazily on first SW frame
     let mut sw_scaler: Option<ffmpeg_next::software::scaling::Context> = None;
+    // Software frames repacked for the GPU's YUV converters (#2116).
+    let mut sw_repack: Option<SwRepack> = None;
     // Scaler for HW downloaded frames (raw sws context, created lazily)
     let mut hw_scaler: Option<*mut ffmpeg_next::ffi::SwsContext> = None;
 
@@ -2764,7 +2749,8 @@ fn decode_thread_main(
                 hw_active_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 unsafe { download_hw_frame(&received_frame, &mut hw_scaler, gpu_nv12.as_mut(), &mut gpu_p010, source_rotation, cs_baseline) }
             } else {
-                convert_sw_frame(&received_frame, &mut sw_scaler, &mut perf_copy_us, source_rotation, cs_baseline)
+                sw_frame_on_gpu(&received_frame, &mut sw_repack, &mut gpu_nv12, &mut gpu_p010, source_rotation, cs_baseline)
+                    .or_else(|| convert_sw_frame(&received_frame, &mut sw_scaler, &mut perf_copy_us, source_rotation, cs_baseline))
             };
 
             let mut linear_frame = match frame_result {
@@ -2908,6 +2894,102 @@ fn still_seek(still: bool, secs: f64, decode_on: bool, still_at: &mut Option<f64
     }
 }
 
+/// A software frame's planes repacked as the GPU's converters read them:
+/// 4:2:0 planar to semi-planar, at the source's size, by swscale's
+/// unscaled copy, which changes no sample.
+struct SwRepack {
+    scaler: ffmpeg_next::software::scaling::Context,
+    out: ffmpeg_next::frame::Video,
+    key: (ffmpeg_next::format::Pixel, u32, u32),
+}
+
+/// Whether software frames go to the GPU (#2116); `KLIPP_SW_FRAMES_ON_GPU=0`
+/// keeps them on the CPU path, to compare.
+fn sw_frames_on_gpu() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("KLIPP_SW_FRAMES_ON_GPU").as_deref() != Ok("0"))
+}
+
+/// A software-decoded 4:2:0 frame (8-bit or 10-bit) converted on the GPU,
+/// as a frame downloaded from the hardware decoder is (#2116): its planes
+/// go up at the source's size and the shader scales, turns and colours
+/// them, and the picture stays on the GPU. On the CPU path, the frame was
+/// scaled and made linear f32 on the decoder's thread, 16 ms a 4K frame,
+/// then sent up as 33 MB of floats a layer a frame: four layers decoded in
+/// software played at a third of the rate the GPU's decoder gave them.
+/// `None` for any other format, or with no GPU: the CPU path takes it.
+fn sw_frame_on_gpu(
+    frame: &ffmpeg_next::frame::Video,
+    repack: &mut Option<SwRepack>,
+    gpu_nv12: &mut Option<klipp_effects::nv12_gpu::GpuNv12Converter>,
+    gpu_p010: &mut Option<klipp_effects::p010_gpu::GpuP010Converter>,
+    source_rotation: i32,
+    cs_baseline: klipp_core::SourceColorspace,
+) -> Option<LinearFrame> {
+    use ffmpeg_next::format::Pixel;
+    static LINEAR_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if !sw_frames_on_gpu() {
+        return None;
+    }
+    let (fmt, (w, h)) = (frame.format(), (frame.width(), frame.height()));
+    let packed = match fmt {
+        Pixel::YUV420P => Pixel::NV12,
+        Pixel::YUV420P10LE => Pixel::P010LE,
+        _ => return None,
+    };
+    let converter: &mut dyn SemiPlanarGpu = if packed == Pixel::NV12 {
+        if gpu_nv12.is_none() {
+            *gpu_nv12 = klipp_effects::nv12_gpu::GpuNv12Converter::new();
+        }
+        gpu_nv12.as_mut()?
+    } else {
+        if gpu_p010.is_none() {
+            *gpu_p010 = klipp_effects::p010_gpu::GpuP010Converter::new();
+        }
+        gpu_p010.as_mut()?
+    };
+    if repack.as_ref().is_none_or(|r| r.key != (fmt, w, h)) {
+        let scaler = ffmpeg_next::software::scaling::Context::get(fmt, w, h, packed, w, h, ffmpeg_next::software::scaling::Flags::POINT)
+            .map_err(|e| warn!("sw_frame_on_gpu: no repack from {fmt:?}: {e}"))
+            .ok()?;
+        *repack = Some(SwRepack { scaler, out: ffmpeg_next::frame::Video::empty(), key: (fmt, w, h) });
+    }
+    let r = repack.as_mut()?;
+    r.scaler.run(frame, &mut r.out).map_err(|e| warn!("sw_frame_on_gpu: repack failed: {e}")).ok()?;
+    let source_cs = frame_colorspace(frame, cs_baseline);
+    let out = playback_dimensions(w, h, source_rotation);
+    let planes = SemiPlanar { y: r.out.data(0), uv: r.out.data(1), width: w, height: h, y_stride: r.out.stride(0) as u32, uv_stride: r.out.stride(1) as u32 };
+    let (data, gpu_source, hdr) = semi_planar_frame(converter, &planes, out, source_rotation, source_cs, &LINEAR_US);
+    log_first_resident_delivery(gpu_source.is_some(), if packed == Pixel::NV12 { "nv12_software" } else { "p010_software" });
+    Some(LinearFrame {
+        pts: RationalTime::zero(),
+        width: out.0,
+        height: out.1,
+        data,
+        is_eof: false,
+        gpu_source,
+        colorspace: source_cs,
+        hdr,
+        seek_epoch: 0,
+    })
+}
+
+/// A software frame's colourspace: its own tags where it has them, else
+/// the stream's (`cs_baseline`, read once at decoder init), the same
+/// merge as the hardware path's, read from the frame's raw fields.
+fn frame_colorspace(frame: &ffmpeg_next::frame::Video, cs_baseline: klipp_core::SourceColorspace) -> klipp_core::SourceColorspace {
+    unsafe {
+        let avf = frame.as_ptr();
+        apply_log_override(klipp_core::SourceColorspace::resolve_with_baseline(
+            (*avf).color_range as i32,
+            (*avf).colorspace as i32,
+            (*avf).color_primaries as i32,
+            (*avf).color_trc as i32,
+            cs_baseline,
+        ))
+    }
+}
+
 /// Convert a software-decoded frame to RGBA, with optional downscaling and rotation.
 fn convert_sw_frame(
     received_frame: &ffmpeg_next::frame::Video,
@@ -2938,16 +3020,7 @@ fn convert_sw_frame(
     // This is where ProRes log lands, and where every format NVDEC cannot
     // decode lands. Display-referred sources keep the paths below.
     {
-        let source_cs = unsafe {
-            let avf = received_frame.as_ptr();
-            apply_log_override(klipp_core::SourceColorspace::resolve_with_baseline(
-                (*avf).color_range as i32,
-                (*avf).colorspace as i32,
-                (*avf).color_primaries as i32,
-                (*avf).color_trc as i32,
-                cs_baseline,
-            ))
-        };
+        let source_cs = frame_colorspace(received_frame, cs_baseline);
         if let Some(frame) = unsafe {
             scene_referred_linear_frame(received_frame.as_ptr(), source_cs, source_rotation)
         } {
@@ -2970,16 +3043,7 @@ fn convert_sw_frame(
         // wants the merged value, but the conversion math itself
         // only needs `cs_baseline` (per-frame tags are usually
         // unspecified; baseline carries the codec / override).
-        let source_cs = unsafe {
-            let avf = received_frame.as_ptr();
-            apply_log_override(klipp_core::SourceColorspace::resolve_with_baseline(
-                (*avf).color_range as i32,
-                (*avf).colorspace as i32,
-                (*avf).color_primaries as i32,
-                (*avf).color_trc as i32,
-                cs_baseline,
-            ))
-        };
+        let source_cs = frame_colorspace(received_frame, cs_baseline);
         let src_w = received_frame.width();
         let src_h = received_frame.height();
         let (dst_w, dst_h) = playback_dimensions(src_w, src_h, 0);
@@ -3035,16 +3099,7 @@ fn convert_sw_frame(
     // last one could carry subsampled chroma, and nothing Klipp decodes
     // in practice hits it.
     {
-        let source_cs = unsafe {
-            let avf = received_frame.as_ptr();
-            apply_log_override(klipp_core::SourceColorspace::resolve_with_baseline(
-                (*avf).color_range as i32,
-                (*avf).colorspace as i32,
-                (*avf).color_primaries as i32,
-                (*avf).color_trc as i32,
-                cs_baseline,
-            ))
-        };
+        let source_cs = frame_colorspace(received_frame, cs_baseline);
         if let Some(yuv) = unsafe { klipp_media::yuv_samples::read_yuv_samples(received_frame.as_ptr()) } {
             let rot = source_rotation.rem_euclid(360) as u32;
             let (dst_w, dst_h) = playback_dimensions(
@@ -3248,16 +3303,7 @@ fn convert_sw_frame(
     // path so `LinearFrame.colorspace` stays consistent. Computed
     // before linear-decode because the chosen EOTF + primaries
     // matrix depend on it.
-    let source_cs = unsafe {
-        let avf = received_frame.as_ptr();
-        apply_log_override(klipp_core::SourceColorspace::resolve_with_baseline(
-            (*avf).color_range as i32,
-            (*avf).colorspace as i32,
-            (*avf).color_primaries as i32,
-            (*avf).color_trc as i32,
-            cs_baseline,
-        ))
-    };
+    let source_cs = frame_colorspace(received_frame, cs_baseline);
 
     // Rotation still operates on sRGB u8 via rotate_rgba. For hi-bit-
     // depth sources we'd lose precision rotating the u16 buffer
@@ -3686,5 +3732,76 @@ mod seek_shortcut_tests {
         // queue is gone by, however close.
         assert!(!seek_is_just_ahead(Some(4.92), Some(4.32), 4.28), "the frame just played is gone by");
         assert!(seek_is_just_ahead(Some(4.92), Some(4.32), 4.32 - 1e-4), "the queued frame itself, to timestamp rounding");
+    }
+}
+
+#[cfg(test)]
+mod sw_frames_on_gpu_tests {
+    use super::*;
+
+    /// The first frame of a 320×180 colour test pattern in `pix_fmt`,
+    /// decoded in software (FFV1). `None` without ffmpeg.
+    fn first_frame(pix_fmt: &str) -> Option<ffmpeg_next::frame::Video> {
+        let out = std::env::temp_dir().join(format!("klipp-sw-on-gpu-{pix_fmt}.mkv"));
+        if !out.exists() {
+            let partial = out.with_extension(format!("{}.partial.mkv", std::process::id()));
+            let ok = std::process::Command::new("ffmpeg")
+                .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x180:d=1", "-pix_fmt", pix_fmt, "-c:v", "ffv1"])
+                .arg(&partial)
+                .status()
+                .ok()?
+                .success();
+            if !ok {
+                return None;
+            }
+            std::fs::rename(&partial, &out).ok()?;
+        }
+        ffmpeg_next::init().ok()?;
+        let mut input = ffmpeg_next::format::input(&out).ok()?;
+        let stream = input.streams().best(ffmpeg_next::media::Type::Video)?;
+        let index = stream.index();
+        let mut decoder = ffmpeg_next::codec::context::Context::from_parameters(stream.parameters()).ok()?.decoder().video().ok()?;
+        let mut frame = ffmpeg_next::frame::Video::empty();
+        for (s, packet) in input.packets() {
+            if s.index() != index {
+                continue;
+            }
+            decoder.send_packet(&packet).ok()?;
+            if decoder.receive_frame(&mut frame).is_ok() {
+                return Some(frame);
+            }
+        }
+        decoder.send_eof().ok()?;
+        decoder.receive_frame(&mut frame).ok().map(|_| frame)
+    }
+
+    /// #2116: a software frame converted on the GPU, as a hardware frame
+    /// is, shows what the CPU path showed: same size, same picture.
+    #[test]
+    fn a_software_frame_on_the_gpu_matches_the_cpu_path() {
+        for pix_fmt in ["yuv420p", "yuv420p10le"] {
+            let Some(frame) = first_frame(pix_fmt) else {
+                eprintln!("skipping: no ffmpeg");
+                return;
+            };
+            // Untagged, as the decoder's baseline is for these files: range,
+            // matrix, primaries and transfer all ffmpeg's "unspecified".
+            let baseline = klipp_core::SourceColorspace::resolve(0, 2, 2, 2, frame.width(), frame.height());
+            let (mut repack, mut nv12, mut p010) = (None, None, None);
+            let Some(mut gpu) = sw_frame_on_gpu(&frame, &mut repack, &mut nv12, &mut p010, 0, baseline) else {
+                eprintln!("skipping: no GPU");
+                return;
+            };
+            assert_eq!((nv12.is_some(), p010.is_some()), (pix_fmt == "yuv420p", pix_fmt == "yuv420p10le"), "{pix_fmt}: the converter for its depth");
+            gpu.ensure_cpu_data();
+            let cpu = convert_sw_frame(&frame, &mut None, &mut 0, 0, baseline).expect("the CPU path converts it");
+            assert_eq!((gpu.width, gpu.height), (cpu.width, cpu.height), "{pix_fmt}");
+            assert_eq!(gpu.data.len(), cpu.data.len(), "{pix_fmt}");
+            let diffs: Vec<f32> = gpu.data.iter().zip(&cpu.data).map(|(a, b)| (a - b).abs()).collect();
+            let mean = diffs.iter().sum::<f32>() / diffs.len() as f32;
+            let worst = diffs.iter().copied().fold(0.0, f32::max);
+            eprintln!("{pix_fmt}: mean {mean:.5}, worst {worst:.5}");
+            assert!(mean < 0.003 && worst < 0.02, "{pix_fmt}: the GPU's picture differs from the CPU's: mean {mean}, worst {worst}");
+        }
     }
 }
