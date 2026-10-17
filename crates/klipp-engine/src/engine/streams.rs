@@ -363,8 +363,14 @@ pub(crate) struct ClipStreams {
     opening: HashMap<ClipId, (std::sync::mpsc::Receiver<Option<ClipStream>>, bool)>,
     /// Reversed clips' readers (#617).
     reversed: HashMap<ClipId, Reversed>,
-    /// At most this many decoders at once.
-    cap: usize,
+    /// The pixels a second each stream asks for, open or opening (#2128).
+    rates: HashMap<ClipId, f64>,
+    /// At most this many decoders at once, however small: each holds up to
+    /// a queue of decoded frames.
+    max_streams: usize,
+    /// The pixels a second all streams together may ask for:
+    /// [`crate::decode_budget::stream_capacity`], or a test's.
+    capacity: fn() -> f64,
     /// Media sources' readers (#1746), kept across frames.
     pub(crate) media: klipp_media::frame_reader::MediaReaders,
     /// OFX plug-ins' neighbour readers (#2013), by file and log format,
@@ -373,8 +379,8 @@ pub(crate) struct ClipStreams {
 }
 
 impl ClipStreams {
-    pub fn new(cap: usize) -> Self {
-        Self { streams: HashMap::new(), opening: HashMap::new(), reversed: HashMap::new(), cap, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS), neighbours: Vec::new() }
+    pub fn new(max_streams: usize) -> Self {
+        Self { streams: HashMap::new(), opening: HashMap::new(), reversed: HashMap::new(), rates: HashMap::new(), max_streams, capacity: crate::decode_budget::stream_capacity, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS), neighbours: Vec::new() }
     }
 
     /// The reader of `path`'s frames at any time for an OFX plug-in's
@@ -419,6 +425,7 @@ impl ClipStreams {
         // thread, its decoder stopped there.
         self.opening.retain(|id, _| wants.iter().any(|w| w.clip == *id && !w.reversed));
         self.land_opened();
+        self.forget_rates();
         self.reversed.retain(|id, _| wants.iter().any(|w| w.clip == *id && w.reversed));
         for w in wants.iter().filter(|w| w.reversed) {
             let r = match self.reversed.entry(w.clip) {
@@ -443,7 +450,6 @@ impl ClipStreams {
                 *ahead = w.ahead;
                 continue;
             }
-            let full = self.streams.len() + self.opening.len() >= self.cap;
             match self.streams.get_mut(&w.clip) {
                 Some(s) => {
                     s.ahead = w.ahead;
@@ -464,12 +470,16 @@ impl ClipStreams {
                     }
                     s.target = target;
                 }
-                None if full => {
-                    debug!("clip streams: {} decoders open, not opening one for {:?}", self.cap, w.clip);
-                }
                 None => {
                     // Opened off this thread; it lands on a later sync.
                     if let Some((path, rot, rate)) = resolve(w) {
+                        if !self.make_room(rate, w.ahead) {
+                            debug!(
+                                "clip streams: decode rate full ({:.0} of {:.0} Mpx/s, {} streams), not opening one ahead for {:?}",
+                                self.rates.values().sum::<f64>() / 1e6, (self.capacity)() / 1e6, self.streams.len() + self.opening.len(), w.clip,
+                            );
+                            continue;
+                        }
                         let (tx, rx) = std::sync::mpsc::channel();
                         let want = w.clone();
                         // Admitted here, in order, not on the thread.
@@ -479,6 +489,7 @@ impl ClipStreams {
                         });
                         if spawned.is_ok() {
                             self.opening.insert(w.clip, (rx, w.ahead));
+                            self.rates.insert(w.clip, rate);
                         }
                     }
                 }
@@ -488,6 +499,45 @@ impl ClipStreams {
             let half = s.dec().half_source_frame(1.0 / frame_secs.max(1e-6));
             s.pump(half);
         }
+        self.forget_rates();
+    }
+
+    /// Room for a stream asking `rate` pixels a second (#2128). The limit
+    /// is what the decoders give, not a count: six decoders were the limit,
+    /// and a 3×3 grid of 1080p clips, a fraction of a 4K layer each, played
+    /// with two tiles black. A stream opened ahead fits or waits. One on
+    /// screen is never left black: streams opened ahead are closed to make
+    /// room, the biggest first, and past that it opens all the same, only
+    /// [`Self::max_streams`] refusing it.
+    fn make_room(&mut self, rate: f64, ahead: bool) -> bool {
+        let capacity = (self.capacity)();
+        let fits = |s: &Self| s.streams.len() + s.opening.len() < s.max_streams && s.rates.values().sum::<f64>() + rate <= capacity;
+        if fits(self) {
+            return true;
+        }
+        if ahead {
+            return false;
+        }
+        while !fits(self) {
+            let opened_ahead = self.streams.iter().filter(|(_, s)| s.ahead).map(|(id, _)| *id);
+            let opening_ahead = self.opening.iter().filter(|(_, (_, a))| *a).map(|(id, _)| *id);
+            let Some(biggest) = opened_ahead.chain(opening_ahead).max_by(|a, b| self.rate(*a).total_cmp(&self.rate(*b))) else { break };
+            debug!("clip streams: closing {biggest:?}, opened ahead, for a layer on screen");
+            self.streams.remove(&biggest);
+            self.opening.remove(&biggest);
+            self.rates.remove(&biggest);
+        }
+        self.streams.len() + self.opening.len() < self.max_streams
+    }
+
+    fn rate(&self, clip: ClipId) -> f64 {
+        self.rates.get(&clip).copied().unwrap_or(0.0)
+    }
+
+    /// The rates of streams no longer open or opening.
+    fn forget_rates(&mut self) {
+        let (streams, opening) = (&self.streams, &self.opening);
+        self.rates.retain(|id, _| streams.contains_key(id) || opening.contains_key(id));
     }
 
     /// Streams whose opening finished, put with the others; one that could
@@ -589,6 +639,7 @@ impl ClipStreams {
     pub fn clear(&mut self) {
         self.streams.clear();
         self.opening.clear();
+        self.rates.clear();
         self.reversed.clear();
     }
 
@@ -648,6 +699,44 @@ mod tests {
         assert!(!streams.ready(frame), "the one on screen, opening, is waited for");
     }
 
+    /// Tests that open streams the decode budget counts, one at a time: its
+    /// count is the process's, and one's streams change another's choice.
+    static BUDGETED: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// #2128: room is decode rate, not a count. Nine tiles on screen open
+    /// though they ask more than the capacity, closing the stream opened
+    /// ahead to make room; one more ahead then waits for room.
+    #[test]
+    fn layers_on_screen_open_past_the_rate_and_close_one_opened_ahead() {
+        let Some(path) = source() else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let _one = BUDGETED.lock().unwrap_or_else(|e| e.into_inner());
+        let frame = 1.0 / 25.0;
+        let mut streams = ClipStreams::new(16);
+        // Room for four streams of 100.
+        streams.capacity = || 400.0;
+        let resolve = |_: &Want| Some((path.clone(), 0, 100.0));
+        let want = |ahead: bool| Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 0.0, reversed: false, ahead };
+        let early = want(true);
+        streams.sync(std::slice::from_ref(&early), frame, &resolve);
+        assert!(streams.has(early.clip), "room for one ahead");
+        let tiles: Vec<Want> = (0..9).map(|_| want(false)).collect();
+        let mut all = tiles.clone();
+        all.push(early.clone());
+        streams.sync(&all, frame, &resolve);
+        assert!(tiles.iter().all(|t| streams.has(t.clip)), "every tile on screen has a stream");
+        assert!(!streams.has(early.clip), "the one ahead was closed for them");
+        let later = want(true);
+        all.push(later.clone());
+        streams.sync(&all, frame, &resolve);
+        assert!(!streams.has(later.clip), "one ahead waits for room");
+        // The tiles gone, there is room again.
+        streams.sync(std::slice::from_ref(&later), frame, &resolve);
+        assert!(streams.has(later.clip));
+    }
+
     /// #2116: a stream asking more than the GPU's decoder has left opens
     /// in software, and gives its frame at its time as any other.
     #[test]
@@ -658,6 +747,7 @@ mod tests {
         };
         let frame = 1.0 / 25.0;
         let w = Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 1.0, reversed: false, ahead: false };
+        let _one = BUDGETED.lock().unwrap_or_else(|e| e.into_inner());
         crate::decode_budget::set_enabled(true);
         // The GPU asked for more than any gives, by a decoder that is never
         // moved; then a small stream, which software keeps up with.
