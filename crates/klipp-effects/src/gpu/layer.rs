@@ -8,6 +8,10 @@ pub(super) struct LayerGpu {
     bounds: wgpu::ComputePipeline,
     corners: wgpu::ComputePipeline,
     cast: wgpu::ComputePipeline,
+    cast_alpha: wgpu::ComputePipeline,
+    alpha_blur_h: wgpu::ComputePipeline,
+    alpha_blur_v: wgpu::ComputePipeline,
+    expand_cast: wgpu::ComputePipeline,
     over: wgpu::ComputePipeline,
     fill_small: wgpu::ComputePipeline,
     fill_over: wgpu::ComputePipeline,
@@ -39,6 +43,10 @@ impl LayerGpu {
             rows: build(single, ROWS, "rows"),
             bounds: build(single, BOUNDS, "bounds"),
             cast: build(single, CAST, "make_cast"),
+            cast_alpha: build(single, CAST_ALPHA, "make_cast_alpha"),
+            alpha_blur_h: build(single, SPILL_BLUR_H, "spill_blur_h"),
+            alpha_blur_v: build(single, SPILL_BLUR_V, "spill_blur_v"),
+            expand_cast: build(single, EXPAND_CAST, "expand_cast"),
             corners: build(pair, CORNERS, "corners"),
             over: build(pair, OVER, "over"),
             fill_small: build(pair, FILL_SMALL, "fill_small"),
@@ -291,8 +299,14 @@ impl GpuEffectsPipeline {
 
     /// [`Self::layer_spills`], recorded: whether anything was laid (if
     /// not, nothing was recorded and the picture is `src`). The caller's
-    /// `scratch` is the cast; `dst` serves as the blur's spare until the
-    /// last pass writes it.
+    /// `cast` and `dst` are the blur's two buffers until the last pass
+    /// writes `dst`.
+    ///
+    /// A cast's colour is the same everywhere; only its alpha varies. So
+    /// the alpha alone is cast and blurred, one float a pixel, a quarter
+    /// of the pixels' traffic, and then laid out in the colour (#2102).
+    /// Its sums run in the same order as the four-channel blur's did, so
+    /// the alpha is the same.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_spills(
         &self,
@@ -312,22 +326,24 @@ impl GpuEffectsPipeline {
         for spill in run.iter().rev() {
             let Some((params, sigma)) = Self::spill_params(spill, width, height) else { continue };
             let slot = rec.slots.claim(q, &params).expect("slots checked");
-            self.record_pass_n(rec, &self.layer_gpu.cast, src, cast, slot, wg);
+            self.record_pass_n(rec, &self.layer_gpu.cast_alpha, src, cast, slot, wg);
             if sigma >= 0.5 {
                 for radius in crate::blur::boxes_for_gaussian(sigma) {
                     if radius == 0 {
                         continue;
                     }
                     let blur = rec.slots.claim(q, &BlurParams { width, height, radius: radius as i32, _pad: 0 }).expect("slots checked");
-                    self.record_pass_n(rec, &self.blur_h_pipeline, cast, dst, blur, wg);
-                    self.record_pass_n(rec, &self.blur_v_pipeline, dst, cast, blur, wg);
+                    self.record_pass_n(rec, &self.layer_gpu.alpha_blur_h, cast, dst, blur, wg);
+                    self.record_pass_n(rec, &self.layer_gpu.alpha_blur_v, dst, cast, blur, wg);
                 }
             }
+            // The cast in its colour, in `dst` until it is laid.
+            self.record_pass_n(rec, &self.layer_gpu.expand_cast, cast, dst, slot, wg);
             if drawn {
-                self.record_pair_n(rec, &self.layer_gpu.over, cast, under, next, slot, wg);
+                self.record_pair_n(rec, &self.layer_gpu.over, dst, under, next, slot, wg);
                 std::mem::swap(&mut under, &mut next);
             } else {
-                rec.encoder.copy_buffer_to_buffer(cast, 0, under, 0, u64::from(width) * u64::from(height) * 16);
+                rec.encoder.copy_buffer_to_buffer(dst, 0, under, 0, u64::from(width) * u64::from(height) * 16);
                 drawn = true;
             }
         }
@@ -413,6 +429,100 @@ fn make_cast(@builtin(global_invocation_id) gid: vec3<u32>) {
         a = unpack(input[u32(y) * params.width + u32(x)]).a * params.opacity;
     }
     output[idx] = pack(vec4<f32>(params.color.rgb, a));
+}
+"#
+);
+
+/// [`CAST`]'s alpha alone, one float a pixel in the first `width *
+/// height` floats of `output`: the colour is laid by [`EXPAND_CAST`].
+pub(super) const CAST_ALPHA: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    r#"
+struct Params {
+    width: u32, height: u32, radius: f32, feather: f32,
+    offset_x: i32, offset_y: i32, opacity: f32, pad: u32,
+    color: vec4<f32>,
+}
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> output: array<f32>; // not-pixels: a cast's alpha
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn make_cast_alpha(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    let x = i32(idx % params.width) - params.offset_x;
+    let y = i32(idx / params.width) - params.offset_y;
+    var a = 0.0;
+    if x >= 0 && y >= 0 && x < i32(params.width) && y < i32(params.height) {
+        a = unpack(input[u32(y) * params.width + u32(x)]).a * params.opacity;
+    }
+    output[idx] = a;
+}
+"#
+);
+
+/// The box blur's horizontal pass over a cast's alpha: the window clamped
+/// at the edge and summed left to right, as the four-channel pass sums.
+pub(super) const SPILL_BLUR_H: &str = r#"
+struct Params { width: u32, height: u32, radius: i32, pad: u32 }
+@group(0) @binding(0) var<storage, read> input: array<f32>; // not-pixels: a cast's alpha
+@group(0) @binding(1) var<storage, read_write> output: array<f32>; // not-pixels: a cast's alpha
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn spill_blur_h(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    let y = idx / params.width;
+    let x = idx % params.width;
+    if y >= params.height { return; }
+    var sum = 0.0;
+    let inv = 1.0 / f32(2 * params.radius + 1);
+    let last = i32(params.width) - 1;
+    for (var dx = -params.radius; dx <= params.radius; dx++) {
+        sum += input[y * params.width + u32(clamp(i32(x) + dx, 0, last))];
+    }
+    output[idx] = sum * inv;
+}
+"#;
+
+/// [`SPILL_BLUR_H`]'s vertical pass, top to bottom.
+pub(super) const SPILL_BLUR_V: &str = r#"
+struct Params { width: u32, height: u32, radius: i32, pad: u32 }
+@group(0) @binding(0) var<storage, read> input: array<f32>; // not-pixels: a cast's alpha
+@group(0) @binding(1) var<storage, read_write> output: array<f32>; // not-pixels: a cast's alpha
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn spill_blur_v(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    let y = idx / params.width;
+    let x = idx % params.width;
+    if y >= params.height { return; }
+    var sum = 0.0;
+    let inv = 1.0 / f32(2 * params.radius + 1);
+    let last = i32(params.height) - 1;
+    for (var dy = -params.radius; dy <= params.radius; dy++) {
+        sum += input[u32(clamp(i32(y) + dy, 0, last)) * params.width + x];
+    }
+    output[idx] = sum * inv;
+}
+"#;
+
+/// A cast's alpha laid out in its colour, as [`CAST`] lays it.
+pub(super) const EXPAND_CAST: &str = concat!(
+    shader_pixel_storage_wgsl!(),
+    r#"
+struct Params {
+    width: u32, height: u32, radius: f32, feather: f32,
+    offset_x: i32, offset_y: i32, opacity: f32, pad: u32,
+    color: vec4<f32>,
+}
+@group(0) @binding(0) var<storage, read> input: array<f32>; // not-pixels: a cast's alpha
+@group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+@compute @workgroup_size(256)
+fn expand_cast(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if idx >= params.width * params.height { return; }
+    output[idx] = pack(vec4<f32>(params.color.rgb, input[idx]));
 }
 "#
 );
