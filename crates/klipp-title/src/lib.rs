@@ -1418,7 +1418,9 @@ impl TitleRenderer {
         let staggers = |m: Option<klipp_timeline::Motion>| m.is_some_and(|m| m.stagger != klipp_timeline::StaggerUnit::None);
         let fx = title.primary_fx();
         let animates = fx.animators.iter().any(|a| a.enabled);
-        let tag_glyphs = time_secs.is_none() && (staggers(fx.motion.enter) || staggers(fx.motion.exit) || animates || tracking::eligible(title));
+        // A wave bobs each glyph on its own too (#2069).
+        let waves = fx.loops.iter().any(|l| matches!(l, klipp_timeline::TitleLoop::Wave { .. }));
+        let tag_glyphs = time_secs.is_none() && (staggers(fx.motion.enter) || staggers(fx.motion.exit) || animates || waves || tracking::eligible(title));
         let mut glyph_index = if tag_glyphs { vec![GLYPH_NONE; mask_w * mask_h] } else { Vec::new() };
 
         // Rasterize glyphs into alpha mask. When the textbox has a
@@ -2428,10 +2430,24 @@ impl TitleRenderer {
                 let font_px = tb.font_size * scale;
                 let (text_w, text_h) = tb.loop_extent(font_px);
                 let geo = klipp_timeline::LoopGeometry { frame_w: width as f32, frame_h: height as f32, text_w, text_h, font_px };
-                Some((i, klipp_core::title_motion::eval_loops(&fx.loops, time_secs, window, geo, tb.color)))
+                let mut pose = klipp_core::title_motion::eval_loops(&fx.loops, time_secs, window, geo, tb.color);
+                // A colour loop at the layer's own colour (a blend of it
+                // with itself) changes nothing to raster for (#2069).
+                if pose.color == Some(tb.color) {
+                    pose.color = None;
+                }
+                Some((i, pose))
             })
             .collect();
-        let loops_need_raster = poses.iter().any(|(_, p)| p.wave.is_some() || p.color.is_some() || p.text.is_some());
+        // A wave alone bobs each glyph: posed one by one on the GPU, as a
+        // staggered motion is (#2069), on one visible layer that is not
+        // scaling as a whole, which would scale it round the layer and not
+        // round each glyph.
+        let wave = match poses.as_slice() {
+            [(i, p)] if p.color.is_none() && p.text.is_none() => p.wave.map(|w| (*i, w)),
+            _ => None,
+        };
+        let loops_need_raster = poses.iter().any(|(_, p)| p.color.is_some() || p.text.is_some()) || (poses.iter().any(|(_, p)| p.wave.is_some()) && wave.is_none());
         let any_motion_live = title.objects.iter().any(|o| o.visible && motion_live(o));
         // A layer's animators pose its glyphs one by one, from the
         // resting render where they only move, turn, scale or fade it;
@@ -2446,6 +2462,16 @@ impl TitleRenderer {
         // pose on its render would move the mixed picture, matte and
         // all, and not the one layer (#1513). It is rastered instead.
         let single = visible == 1 && !title.mixes_layers();
+        let whole_scale = |o: &TitleObject| {
+            let TitleObjectContent::TextBox(tb) = &o.content else { return 1.0 };
+            let fx = o.fx();
+            let font_px = tb.font_size * scale;
+            let (pe, px) = fx.motion.progress(time_secs, window, 0);
+            let rest = (1.0, 0.0, 0.0, 1.0, 0.0, false);
+            fx.motion.enter.map(|m| m.pose(pe, font_px)).unwrap_or(rest).3 * fx.motion.exit.map(|m| m.pose(px, font_px)).unwrap_or(rest).3
+        };
+        let wave = wave.filter(|(i, _)| single && title.objects.get(*i).is_some_and(|o| o.visible && (whole_scale(o) - 1.0).abs() < 1e-6));
+        let loops_need_raster = loops_need_raster || (poses.iter().any(|(_, p)| p.wave.is_some()) && wave.is_none());
         let translate_only = match poses.as_slice() {
             [(_, p)] => (!loops_need_raster && single).then(|| p.clone()),
             _ => None,
@@ -2457,7 +2483,7 @@ impl TitleRenderer {
         // frame at 4K for the whole of a half-second rise.
         // (opacity, dx, dy, scale, blur sigma, clip to the resting box)
         let mut motion_anchor = None;
-        let motion_pose: Option<(f32, f32, f32, f32, f32, bool)> = if any_motion_live && !any_animating && single && !loops_need_raster {
+        let motion_pose: Option<(f32, f32, f32, f32, f32, bool)> = if any_motion_live && !any_animating && single && !loops_need_raster && wave.is_none() {
             title.objects.iter().find(|o| o.visible).and_then(|o| {
                 let TitleObjectContent::TextBox(tb) = &o.content else { return None };
                 let fx = o.fx();
@@ -2482,7 +2508,7 @@ impl TitleRenderer {
         // posed per glyph and is rastered; nor can a 3D text's glyphs,
         // whose solids turn and scale in depth and are posed as they are
         // drawn (#1735).
-        let staggered: Option<&TitleObject> = if (any_motion_live || any_animating) && motion_pose.is_none() && single && !loops_need_raster {
+        let staggered: Option<&TitleObject> = if (any_motion_live || any_animating || wave.is_some()) && motion_pose.is_none() && single && !loops_need_raster {
             title.objects.iter().find(|o| o.visible).and_then(|o| match &o.content {
                 TitleObjectContent::TextBox(tb)
                     if tb.three_d.as_ref().is_none_or(|t| !t.enabled)
@@ -2628,7 +2654,23 @@ impl TitleRenderer {
                 if let Some(units) = sprite.units.clone().filter(|u| u.boxes.len() <= MAX_POSED_GLYPHS) {
                     let font_px = match &o.content { TitleObjectContent::TextBox(tb) => tb.font_size, _ => 72.0 } * scale;
                     let loop_pose = translate_only.as_ref().map(|p| (p.dx, p.dy, p.opacity)).unwrap_or((0.0, 0.0, 1.0));
-                    let poses = glyph_poses(&units, &o.fx().motion, &o.fx().animators, time_secs, window, font_px, loop_pose, under.is_some());
+                    let mut poses = glyph_poses(&units, &o.fx().motion, &o.fx().animators, time_secs, window, font_px, loop_pose, under.is_some());
+                    // The wave's bob of each glyph, as the rasteriser
+                    // bobs it (`rasterize_to_mask_motion`).
+                    if let Some((_, (amp, rate))) = wave {
+                        for (g, p) in poses.iter_mut().enumerate() {
+                            let bob = (time_secs * rate * std::f32::consts::TAU + g as f32 * 0.5).sin() * amp;
+                            p.dy += bob;
+                            if p.moved[3] > p.moved[1] {
+                                p.moved[1] += bob.floor() as i32;
+                                p.moved[3] += bob.ceil() as i32;
+                                if let Some((y0, y1)) = p.clip {
+                                    p.moved[1] = p.moved[1].max(y0);
+                                    p.moved[3] = p.moved[3].min(y1);
+                                }
+                            }
+                        }
+                    }
                     let rows = if under.is_some() {
                         (0, height)
                     } else {
@@ -2757,7 +2799,9 @@ impl TitleRenderer {
         // radius/intensity) sample inside `compose`.
         // The one decision, made once above: a frame that depends on
         // its time is rastered at its time.
-        let time_arg = any_render_time_override.then_some(time_secs);
+        // A staggered or waving layer with too many glyphs to pose falls
+        // through to here, and is rastered at its time too.
+        let time_arg = (any_render_time_override || staggered.is_some()).then_some(time_secs);
         let out = self.raster_at(&derived, width, height, gpu, time_arg);
         self.loop_waves.clear();
         self.loop_focus.clear();
@@ -2862,10 +2906,12 @@ impl TitleRenderer {
             match &obj.content {
                 TitleObjectContent::TextBox(tb) => {
                     // A layer whose only change over time is a whole-layer
-                    // fade (its entrance or exit), and nothing it draws grows
-                    // from the glyphs' coverage: its frame is the layer at
+                    // fade (its entrance or exit): its frame is the layer at
                     // rest with its alpha scaled, as a layer's opacity is
-                    // (#2095). The fade's alpha, when so.
+                    // (#2095). Its shadow, glow or outline fades with it, as
+                    // one: the layer faded whole, as the placed resting
+                    // render of a one-layer title fades (#2069). The fade's
+                    // alpha, when so.
                     let fade_alpha = time_secs.and_then(|t| {
                         let fx = obj.fx();
                         let plain_fade = |m: &Option<klipp_timeline::Motion>| m.as_ref().is_none_or(|m| m.kind == klipp_core::title_motion::MotionKind::Fade && m.stagger == klipp_timeline::StaggerUnit::None);
@@ -2878,10 +2924,10 @@ impl TitleRenderer {
                             && obj.transform.anchor_y_keyframes.is_empty()
                             && obj.opacity_keyframes.is_empty()
                             && !tb.has_keyframes();
-                        let bare = fx.glows.iter().all(|g| !g.enabled)
-                            && fx.shadows.iter().all(|s| !s.enabled)
-                            && fx.inner_shadows.iter().all(|s| !s.enabled)
-                            && fx.outlines.iter().all(|o| !o.enabled || (o.width == 0.0 && o.width_keyframes.is_empty()))
+                        let bare = fx.glows.iter().all(|g| g.radius_keyframes.is_empty() && g.intensity_keyframes.is_empty())
+                            && fx.shadows.iter().all(|s| s.offset_x_keyframes.is_empty() && s.offset_y_keyframes.is_empty() && s.blur_keyframes.is_empty())
+                            && fx.inner_shadows.iter().all(|s| s.offset_x_keyframes.is_empty() && s.offset_y_keyframes.is_empty() && s.blur_keyframes.is_empty())
+                            && fx.outlines.iter().all(|o| o.width_keyframes.is_empty())
                             && fx.loops.is_empty()
                             && fx.animators.iter().all(|a| !a.enabled)
                             && fx.motion_blur.is_none()
@@ -2921,7 +2967,17 @@ impl TitleRenderer {
                     let gpu = gpu_for_first_text.take();
                     let still = time_secs.is_none() && self.loop_wave.is_none() && !on_layer;
                     let faded = fade_alpha.filter(|_| self.loop_wave.is_none() && !on_layer);
-                    let kept = if still || faded.is_some() { self.text_layer_lookup(&single, width, height) } else { None };
+                    let mut gpu = gpu;
+                    let mut kept = if still || faded.is_some() { self.text_layer_lookup(&single, width, height) } else { None };
+                    // Fading in with no resting layer kept (played into, not
+                    // parked on): the resting layer drawn once and kept, for
+                    // the fade's frames after.
+                    if kept.is_none() && faded.is_some() {
+                        self.text_layers_rendered += 1;
+                        let resting = self.render_text_layer(&single, width, height, gpu.take(), None);
+                        self.text_layer_store(&single, width, height, &resting);
+                        kept = self.text_layer_lookup(&single, width, height);
+                    }
                     // Kept, and going in as it is (the first layer, whole,
                     // upright, with no fade of its own): its box straight
                     // into the stack, the rest of the frame untouched. A
@@ -2936,7 +2992,10 @@ impl TitleRenderer {
                         kept.write_into_stack(&mut buf, width, faded.unwrap_or(1.0));
                         continue;
                     }
-                    let mut layer = match kept.filter(|_| faded.is_none()) {
+                    // A fade below the first layer: the kept layer, its fade
+                    // on its opacity.
+                    let opacity = opacity * faded.filter(|_| kept.is_some()).unwrap_or(1.0);
+                    let mut layer = match kept {
                         Some(kept) => kept.layer(width, height),
                         None => {
                             self.text_layers_rendered += 1;
