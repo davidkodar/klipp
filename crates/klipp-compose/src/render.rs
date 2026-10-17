@@ -633,6 +633,19 @@ pub static CPU_GENERATOR_US: std::sync::atomic::AtomicU64 = std::sync::atomic::A
 pub static CPU_GENERATOR_DRAWS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Where a render's time went, in milliseconds.
+/// Where the GPU stack's grade time went, summed over the frame's layers
+/// (#2107): the effects spliced into each clip's plan, its analyses
+/// looked up, the executor set up for the clip, its picture seeded on the
+/// GPU, and its graph run. In ms.
+#[derive(Default, Clone, Copy, Debug)]
+pub struct GradeSplit {
+    pub splice_ms: f64,
+    pub analyses_ms: f64,
+    pub prepare_ms: f64,
+    pub seed_ms: f64,
+    pub graph_ms: f64,
+}
+
 #[derive(Default, Clone, Copy, Debug)]
 pub struct RenderStats {
     /// Native generators drawn without a CPU pixel buffer this frame.
@@ -655,6 +668,8 @@ pub struct RenderStats {
     /// Still images read, fitted and sent up this frame: a miss of the
     /// kept layers, which after a still's first frame is a fault (#2102).
     pub stills_uploaded: u32,
+    /// The GPU stack's grade time, by part (#2107).
+    pub grade_split: GradeSplit,
     /// Clips whose effects ran as nodes of the grade's plan, on the GPU
     /// with the grade (#1089, M2 step 10).
     pub effects_followed_grade: u32,
@@ -950,6 +965,8 @@ pub struct Renderer {
     /// the frame size and the working space are the same. A changed file
     /// is read again.
     still_layers: HashMap<ClipId, StillLayer>,
+    /// This stack frame's grade time by part, as its layers run (#2107).
+    grade_split: GradeSplit,
     /// The subject matte sequences piece transitions read (#985 phase 3):
     /// each folder's manifest and frames, as last looked.
     subject_mattes: HashMap<std::path::PathBuf, (klipp_nodes::matte_sequence::Manifest, Vec<i64>)>,
@@ -1125,6 +1142,7 @@ impl Renderer {
             grade_source_scene: false,
             still_generators: HashMap::new(),
             still_layers: HashMap::new(),
+            grade_split: GradeSplit::default(),
             subject_mattes: HashMap::new(),
             clip_subject_dirs: HashMap::new(),
             clip_media_last: HashMap::new(),
@@ -2086,6 +2104,7 @@ impl Renderer {
         self.stack_work_started = true;
 
         let mut stats = RenderStats::default();
+        self.grade_split = GradeSplit::default();
         // ── 1. Every layer in its buffer, effects run on it there ──
         let mut placed: HashMap<usize, Placed> = HashMap::new();
         let mut slot_of_clip: HashMap<ClipId, usize> = HashMap::new();
@@ -2267,6 +2286,7 @@ impl Renderer {
         }
         stats.composite_ms += ms_since(t);
         stats.total_ms = ms_since(t0);
+        stats.grade_split = std::mem::take(&mut self.grade_split);
         self.last_gpu_stack_decline = None;
         self.stack_work_started = false;
         Some(stats)
@@ -2399,6 +2419,7 @@ impl Renderer {
                         // The effects as nodes of the grade's plan (step 10b),
                         // on the GPU with it, instead of a pass over the layer.
                         effects_done = self.splice_effects(c, &fx, time, fps, transforms, at_move, stats);
+                        self.grade_split.splice_ms += ms_since(t);
                         self.executor.request_output_on_gpu();
                         let pixels = self.grade_on_stack(c, GradeInput::Gpu(g), time, clip_time, fps, width, height, src);
                         stats.grade_ms += ms_since(t);
@@ -4214,7 +4235,9 @@ impl Renderer {
     /// source is lent for its range alone.
     #[allow(clippy::too_many_arguments)]
     fn grade_on_stack(&mut self, clip: &Clip, input: GradeInput, time: Timecode, clip_time: f64, fps: f64, width: u32, height: u32, src: &mut dyn FrameSource) -> Vec<f32> {
+        let t = Instant::now();
         let analyses = self.analyses_of(clip, src);
+        self.grade_split.analyses_ms += ms_since(t);
         self.clip_analysis = Some((clip.id, analyses));
         let at = source_secs(clip, time, fps);
         // The clip's source, for its range: a node with no analysis for a
@@ -4438,6 +4461,7 @@ impl Renderer {
             };
         }
         let t = Instant::now();
+        let t_prepare = Instant::now();
         self.executor.prepare_clip(clip.grade());
         self.executor.set_current_clip_subject_mattes(self.clip_subject_dirs.get(&clip.id).cloned().unwrap_or_default());
         self.executor.set_current_clip_media_last(self.clip_media_last.get(&clip.id).copied());
@@ -4452,9 +4476,14 @@ impl Renderer {
         let scene = matches!(input, GradeInput::Scene { .. }) || self.run_display.is_some() || self.grade_source_scene;
         self.executor.set_source_domain(if scene { klipp_nodes::domains::PictureDomain::Scene } else { klipp_nodes::domains::PictureDomain::Display });
         let frame = grade_frame(clip_time, fps);
+        self.grade_split.prepare_ms += ms_since(t_prepare);
+        let t_seed = Instant::now();
+        let seeded = matches!(&input, GradeInput::Gpu(g) if g.seed(&mut self.executor, width, height));
+        self.grade_split.seed_ms += ms_since(t_seed);
+        let t_graph = Instant::now();
         let out = match &input {
             GradeInput::Cpu(p) => self.run_graph(clip, p, width, height, clip_time, frame, inspecting, matte_view, ctx.as_deref_mut()),
-            GradeInput::Gpu(g) if g.seed(&mut self.executor, width, height) => {
+            GradeInput::Gpu(g) if seeded => {
                 match self.run_graph(clip, &[], width, height, clip_time, frame, inspecting, matte_view, ctx.as_deref_mut()) {
                     Err(klipp_nodes::executor::ExecutorError::CpuSourceRequired) => {
                         self.run_graph(clip, &g.read(), width, height, clip_time, frame, inspecting, matte_view, ctx.as_deref_mut())
@@ -4487,6 +4516,7 @@ impl Renderer {
                 self.run_graph(clip, &input.pixels(), width, height, clip_time, frame, inspecting, matte_view, ctx)
             }
         };
+        self.grade_split.graph_ms += ms_since(t_graph);
         self.executor.set_source_domain(klipp_nodes::domains::PictureDomain::Display);
         self.found.stats.grade_ms += ms_since(t);
         // A test's fault (`fault`, #1276): the run, made as any run is,
