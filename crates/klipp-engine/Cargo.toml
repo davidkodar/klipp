@@ -44,6 +44,8 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 klipp-timeline = { workspace = true, features = ["test-clip"] }
+klipp-project = { workspace = true }
+tracing-subscriber = { workspace = true }
 klipp-graph-lift = { workspace = true }
 klipp-testing = { workspace = true }
 pollster = "0.3"
@@ -175,3 +177,7 @@ path = "tests/the_shot_after_a_gap_is_taken_over_warm.rs"
 [[test]]
 name = "viewer_matches_export"
 path = "tests/viewer_matches_export.rs"
+
+[[test]]
+name = "stacked_video_layers"
+path = "tests/stacked_video_layers.rs"

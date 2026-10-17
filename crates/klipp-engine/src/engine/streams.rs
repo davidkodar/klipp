@@ -502,13 +502,16 @@ impl ClipStreams {
 
     /// `clip`'s decoder, open and seeked where its stream is, and the frame
     /// it holds, for the primary decoder to take over rather than open the
-    /// file again (#2097). Not while its seek is in flight.
+    /// file again (#2097). Its seek may still be in flight: then it holds
+    /// no frame for here yet, and the primary waits for the first.
     pub fn take(&mut self, clip: ClipId) -> Option<(VideoDecoder, Option<HeldFrame>)> {
-        if self.streams.get(&clip)?.seeking.is_some() {
-            return None;
-        }
+        // Still seeking: taken over all the same, its seek going on in the
+        // primary's hands (#2108). Refused, the shot was opened again cold
+        // and its seek, from a keyframe seconds back in a long-GOP 4K file,
+        // was done twice while the picture froze.
         let mut s = self.streams.remove(&clip)?;
-        let held = s.held.take();
+        // A frame held from before its seek is not the one for here.
+        let held = if s.seeking.is_some() { None } else { s.held.take() };
         s.decoder.take().map(|d| (d, held))
     }
 
@@ -544,6 +547,38 @@ mod tests {
             .ok()?
             .success();
         ok.then_some(out)
+    }
+
+    /// #2108: a stream still seeking is taken over all the same, its
+    /// decoder with no frame (a frame from before the seek is not the one
+    /// for here), and its first frame comes from that same decoder: the
+    /// seek is not thrown away and done again.
+    #[test]
+    fn a_stream_still_seeking_is_taken_over() {
+        let Some(path) = source() else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        let frame = 1.0 / 25.0;
+        let w = Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 1.0, reversed: false };
+        let mut streams = ClipStreams::new(4);
+        streams.sync(std::slice::from_ref(&w), frame, &|_: &Want| Some((path.clone(), 0)));
+        let s = streams.streams.get_mut(&w.clip).unwrap();
+        // As a seek in flight leaves it: still seeking, holding an older frame.
+        s.seeking = Some(1.0);
+        s.held = Some(HeldFrame::new(Held::Linear(Arc::new(vec![0.0; 4])), 1, 1, Some(0.2)));
+        let (dec, held) = streams.take(w.clip).expect("taken while seeking");
+        assert!(held.is_none(), "the frame from before the seek is not handed over");
+        assert!(!streams.has(w.clip), "the stream is the primary's now");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let first = loop {
+            if let Some(f) = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner()).front().map(|f| f.pts_secs()) {
+                break f;
+            }
+            assert!(std::time::Instant::now() < deadline, "the taken decoder never gave a frame");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert!((first - 1.0).abs() < 0.05, "its first frame is the seek's: {first}");
     }
 
     /// #411 review: a stream holding a frame past its new time is sought

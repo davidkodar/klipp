@@ -265,28 +265,32 @@ fn source_frame(f: &HeldFrame) -> SourceFrame {
     SourceFrame { pixels: f.source_pixels(), width: f.width, height: f.height, pts: f.pts }
 }
 
-/// Media clips that start within a second of `time` while playing, at
-/// their first frame: their streams open and start decoding before the
-/// playhead reaches them, so the cut into one does not wait for a file to
-/// open and seek. A reversed clip's reader too, which also decodes a
-/// window (#617). Not on `primary_track`, whose next shot the primary
-/// decoder prerolls; a shot on another track coming up as the primary's
-/// track runs out, behind a held still, was opened cold at the cut, the
-/// picture freezing half a second (#2097).
-fn upcoming(seq: &Sequence, time: klipp_core::Timecode, playing: bool, primary_track: Option<usize>) -> Vec<Want> {
+/// Media clips that start within [`seek_lead::MAX_LEAD_SECS`] of `time`
+/// while playing, at their first frame, each with when it starts: their
+/// streams open and start decoding before the playhead reaches them, each
+/// as early as its own seek needs (`sync_streams`), so the cut into one
+/// does not wait for a file to open and seek. A reversed clip's reader
+/// too, which also decodes a window (#617). Not on `primary_track`, whose
+/// next shot the primary decoder prerolls; a shot on another track coming
+/// up as the primary's track runs out, behind a held still, was opened
+/// cold at the cut, the picture freezing half a second (#2097).
+fn upcoming(seq: &Sequence, time: klipp_core::Timecode, playing: bool, primary_track: Option<usize>) -> Vec<(Want, f64)> {
     if !playing {
         return Vec::new();
     }
-    let (from, to) = (time.to_secs_f64(), time.to_secs_f64() + 1.0);
+    let (from, to) = (time.to_secs_f64(), time.to_secs_f64() + super::seek_lead::MAX_LEAD_SECS);
     let fps = seq.fps.as_f64();
-    seq.tracks
+    let mut out: Vec<(Want, f64)> = seq.tracks
         .iter()
         .enumerate()
         .filter(|(i, t)| t.kind == klipp_timeline::TrackKind::Video && t.visible && Some(*i) != primary_track)
         .flat_map(|(_, t)| t.clips.iter())
         .filter(|c| c.enabled && c.timeline_in.to_secs_f64() > from && c.timeline_in.to_secs_f64() <= to)
-        .filter_map(|c| Some(Want { clip: c.id, media: c.media_id()?, rotation: c.source_rotation, source_secs: c.source_secs_at(0.0, fps), reversed: c.is_reversed() }))
-        .collect()
+        .filter_map(|c| Some((Want { clip: c.id, media: c.media_id()?, rotation: c.source_rotation, source_secs: c.source_secs_at(0.0, fps), reversed: c.is_reversed() }, c.timeline_in.to_secs_f64() - from)))
+        .collect();
+    // The soonest first: with the decoders all open, the one due next.
+    out.sort_by(|a, b| a.1.total_cmp(&b.1));
+    out
 }
 
 /// The source times the viewer can read `clip`'s media at: from its start
@@ -512,7 +516,7 @@ impl PlaybackEngine {
     pub(super) fn sync_streams(&mut self) {
         let time = self.playhead;
         let playing = self.state == PlaybackState::Playing;
-        let (mut wants, ahead): (Vec<Want>, Vec<Want>) = {
+        let (mut wants, ahead): (Vec<Want>, Vec<(Want, f64)>) = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             let primary = if self.v1_decoder.is_some() { self.v1_clip_id(&seq) } else { None };
             // A layer's clips are read at the layer's own time and rate:
@@ -536,7 +540,21 @@ impl PlaybackEngine {
         };
         // Clips on screen with no stream yet: opened late, if playing.
         let late: Vec<ClipId> = if playing { wants.iter().filter(|w| !self.streams.has(w.clip)).map(|w| w.clip).collect() } else { Vec::new() };
-        wants.extend(ahead);
+        // Each coming clip as early as its own seek needs (#2108): one
+        // already open is kept; one due within its lead is opened.
+        for (w, due_in) in ahead {
+            let open = self.streams.has(w.clip);
+            let lead = match (open, self.path_for_media(w.media)) {
+                (true, _) | (false, None) => super::seek_lead::MAX_LEAD_SECS,
+                (false, Some(path)) => {
+                    let fps = self.media_pool.read().unwrap_or_else(|e| e.into_inner()).get(&w.media).map_or(30.0, |m| m.fps.as_f64());
+                    self.seek_leads.lead(&path, w.source_secs, fps)
+                }
+            };
+            if due_in <= lead {
+                wants.push(w);
+            }
+        }
         // Files are resolved here, for new streams only: resolution logs.
         let paths: HashMap<ClipId, (std::path::PathBuf, i32)> = wants
             .iter()

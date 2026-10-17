@@ -13,6 +13,7 @@ use klipp_compose::eval::{resolve_clip_transform, ResolvedTransform};
 
 mod delivery;
 mod render_job;
+mod seek_lead;
 mod streams;
 mod view;
 
@@ -1252,6 +1253,9 @@ pub struct PlaybackEngine {
     /// Decoders for every other media clip a frame needs: overlays, a
     /// transition's other side, multicam angles. See `engine::streams`.
     streams: streams::ClipStreams,
+    /// How far ahead each upcoming clip's stream is opened, from its
+    /// file's keyframes (#2108).
+    seek_leads: seek_lead::SeekLeads,
     /// Neighbour frames a temporal node read beside the parked frame
     /// (#1863), kept between its renders.
     neighbour_hold: std::sync::Arc<std::sync::Mutex<view::NeighbourHold>>,
@@ -2226,6 +2230,7 @@ impl PlaybackEngine {
             dropped_frames: 0,
             v1_decoder: None,
             streams: streams::ClipStreams::new(MAX_CLIP_STREAMS),
+            seek_leads: seek_lead::SeekLeads::default(),
             neighbour_hold: Default::default(),
             held_scope: None,
             hold_neighbours: true,
