@@ -50,7 +50,7 @@ pub struct GpuNv12Converter {
 /// after the passes of whoever read it last, so it is never written
 /// under them; and only once it has been free for a few frames, so a
 /// reader that let go of it before submitting its read has submitted it.
-struct ResidentPool {
+pub(crate) struct ResidentPool {
     label: &'static str,
     size: u64,
     /// Each buffer and the last take at which something else held it.
@@ -65,12 +65,12 @@ impl ResidentPool {
     /// Takes a buffer must stay free for before it is handed out again.
     const QUIET_TAKES: u64 = 4;
 
-    fn new(label: &'static str) -> Self {
+    pub(crate) fn new(label: &'static str) -> Self {
         Self { label, size: 0, buffers: Vec::new(), takes: 0 }
     }
 
     /// A `size`-byte buffer nothing else holds: one kept, or one made.
-    fn take(&mut self, device: &wgpu::Device, size: u64) -> std::sync::Arc<wgpu::Buffer> {
+    pub(crate) fn take(&mut self, device: &wgpu::Device, size: u64) -> std::sync::Arc<wgpu::Buffer> {
         if size != self.size {
             self.buffers.clear();
             self.size = size;
@@ -99,7 +99,7 @@ impl ResidentPool {
     }
 
     /// How many buffers it keeps. For tests.
-    fn kept(&self) -> usize {
+    pub(crate) fn kept(&self) -> usize {
         self.buffers.len()
     }
 }
