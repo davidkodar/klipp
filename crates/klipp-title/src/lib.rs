@@ -503,6 +503,16 @@ pub struct TitleRenderer {
     /// title clips are visited (e.g. scrubbing across a long credits
     /// sequence).
     render_cache: Vec<CachedRender>,
+    /// The text layers of several-layer titles, as rendered at rest
+    /// (#2095): a title whose other layer animates (a line drawing itself
+    /// on, its trim keyed) is rendered afresh each frame, and its text,
+    /// unchanged, was rasterised with it every time, 50 ms at 4K. Kept as
+    /// the box the layer covers, by the one-text title it was rendered
+    /// from and the frame size.
+    text_layer_cache: Vec<CachedTextLayer>,
+    /// How many text layers of several-layer titles were rendered rather
+    /// than taken from `text_layer_cache`: what a test reads.
+    text_layers_rendered: u64,
     /// One unfinished face; bounded separately, invalidated with raster caches.
     style_source_cache: Option<gpu_styles::SourceCache>,
     /// The rows with coverage in the last render, `y0..y1`.
@@ -561,6 +571,62 @@ pub struct TitleRenderer {
 }
 
 const RENDER_CACHE_CAP: usize = 4;
+
+/// How many text layers [`TitleRenderer`] keeps at rest (#2095): one for
+/// each title of a busy stretch, a dozen at most.
+const TEXT_LAYER_CACHE_CAP: usize = 12;
+
+/// A text layer rendered at rest, cropped to the box it covers (#2095).
+struct CachedTextLayer {
+    /// The one-text title it was rendered from.
+    title: TitleData,
+    width: u32,
+    height: u32,
+    /// The box: `x0, y0, w, h`, and its RGBA rows.
+    kept: std::sync::Arc<KeptLayer>,
+    /// The glyph map the render left (`last_units`).
+    units: Option<std::sync::Arc<UnitMap>>,
+}
+
+/// A text layer's box (`x0, y0, w, h`) and its RGBA rows, at rest.
+struct KeptLayer {
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+    crop: Vec<u8>,
+}
+
+impl KeptLayer {
+    /// The frame-sized layer it was cut from.
+    fn layer(&self, width: u32, height: u32) -> Vec<u8> {
+        let mut layer = vec![0u8; (width as usize) * (height as usize) * 4];
+        let row = self.w * 4;
+        for y in 0..self.h {
+            let at = ((self.y0 + y) * width as usize + self.x0) * 4;
+            layer[at..at + row].copy_from_slice(&self.crop[y * row..(y + 1) * row]);
+        }
+        layer
+    }
+
+    /// Written into `stack`, a frame of zeros in the stack's units, as the
+    /// first layer is: its box alone, the rest of the frame left as it is,
+    /// its alpha scaled by `alpha` (a fade) as `scale_layer_alpha` scales
+    /// a layer's.
+    fn write_into_stack(&self, stack: &mut [f32], width: u32, alpha: f32) {
+        let f = alpha.clamp(0.0, 1.0);
+        let row = self.w * 4;
+        for y in 0..self.h {
+            let at = ((self.y0 + y) * width as usize + self.x0) * 4;
+            for (d, s) in stack[at..at + row].chunks_exact_mut(4).zip(self.crop[y * row..(y + 1) * row].chunks_exact(4)) {
+                d[0] = s[0] as f32;
+                d[1] = s[1] as f32;
+                d[2] = s[2] as f32;
+                d[3] = if f >= 0.9999 { s[3] as f32 } else { ((s[3] as f32) * f).round().clamp(0.0, 255.0) };
+            }
+        }
+    }
+}
 /// The most the cache's rasters take together (#190): a guard, since a
 /// title's box is usually far smaller than its frame. Three full-frame
 /// 4K cards in half floats fit; the newest render is always kept.
@@ -584,6 +650,8 @@ impl TitleRenderer {
             font_registry: registry,
             texture_fill_cache: None,
             render_cache: Vec::with_capacity(RENDER_CACHE_CAP),
+            text_layer_cache: Vec::new(),
+            text_layers_rendered: 0,
             style_source_cache: None,
             last_rows: (0, 0),
             last_blur: 0.0,
@@ -2793,6 +2861,40 @@ impl TitleRenderer {
                 .unwrap_or_else(|| obj.transform.clone());
             match &obj.content {
                 TitleObjectContent::TextBox(tb) => {
+                    // A layer whose only change over time is a whole-layer
+                    // fade (its entrance or exit), and nothing it draws grows
+                    // from the glyphs' coverage: its frame is the layer at
+                    // rest with its alpha scaled, as a layer's opacity is
+                    // (#2095). The fade's alpha, when so.
+                    let fade_alpha = time_secs.and_then(|t| {
+                        let fx = obj.fx();
+                        let plain_fade = |m: &Option<klipp_timeline::Motion>| m.as_ref().is_none_or(|m| m.kind == klipp_core::title_motion::MotionKind::Fade && m.stagger == klipp_timeline::StaggerUnit::None);
+                        let unkeyed = obj.transform.center_x_keyframes.is_empty()
+                            && obj.transform.center_y_keyframes.is_empty()
+                            && obj.transform.size_x_keyframes.is_empty()
+                            && obj.transform.size_y_keyframes.is_empty()
+                            && obj.transform.rotation_keyframes.is_empty()
+                            && obj.transform.anchor_x_keyframes.is_empty()
+                            && obj.transform.anchor_y_keyframes.is_empty()
+                            && obj.opacity_keyframes.is_empty()
+                            && !tb.has_keyframes();
+                        let bare = fx.glows.iter().all(|g| !g.enabled)
+                            && fx.shadows.iter().all(|s| !s.enabled)
+                            && fx.inner_shadows.iter().all(|s| !s.enabled)
+                            && fx.outlines.iter().all(|o| !o.enabled || (o.width == 0.0 && o.width_keyframes.is_empty()))
+                            && fx.loops.is_empty()
+                            && fx.animators.iter().all(|a| !a.enabled)
+                            && fx.motion_blur.is_none()
+                            && tb.char_animation.as_ref().is_none_or(|c| !c.enabled)
+                            && tb.glitch_intensity == 0.0
+                            && tb.extrusion.is_none()
+                            && tb.three_d.as_ref().is_none_or(|d| !d.enabled)
+                            && tb.texture_fill.is_none();
+                        (unkeyed && bare && plain_fade(&fx.motion.enter) && plain_fade(&fx.motion.exit)).then(|| {
+                            let (pe, px) = fx.motion.progress(t, window, 0);
+                            fx.motion.enter.map_or(1.0, |m| m.pose(pe, 0.0).0) * fx.motion.exit.map_or(1.0, |m| m.pose(px, 0.0).0)
+                        })
+                    });
                     // Synthesise a one-object TitleData carrying just
                     // this TextBox, its stack and its transform centre,
                     // then route through the existing single-text raster
@@ -2813,13 +2915,38 @@ impl TitleRenderer {
                     // its own box (#1508).
                     let on_layer = matches!(single.text_path(), Some(TextPath::Layer { .. }));
                     self.bound_path = if on_layer { self.bound_path_line(title, &single, time_secs, width, height) } else { None };
-                    let mut layer = self.render_text_layer(
-                        &single,
-                        width,
-                        height,
-                        gpu_for_first_text.take(),
-                        time_secs,
-                    );
+                    // At rest, the layer is the one-text title's alone: kept,
+                    // and drawn again only when it changes (#2095). The GPU
+                    // goes with the first text layer either way.
+                    let gpu = gpu_for_first_text.take();
+                    let still = time_secs.is_none() && self.loop_wave.is_none() && !on_layer;
+                    let faded = fade_alpha.filter(|_| self.loop_wave.is_none() && !on_layer);
+                    let kept = if still || faded.is_some() { self.text_layer_lookup(&single, width, height) } else { None };
+                    // Kept, and going in as it is (the first layer, whole,
+                    // upright, with no fade of its own): its box straight
+                    // into the stack, the rest of the frame untouched. A
+                    // whole frame converted for a dot was most of the
+                    // 35 ms a frame such a title still cost.
+                    let fades = !self.defer_layer_fades && (self.loop_focus.contains_key(&obj.id.0) || ScreenFade::new(obj.fx().edge_fade, None).is_some());
+                    let as_is = first_layer && (opacity - 1.0).abs() < 0.001 && effective_transform.rotation.abs() <= 0.001 && !fades;
+                    if let Some(kept) = kept.as_ref().filter(|_| as_is) {
+                        self.bound_path = None;
+                        self.loop_wave = None;
+                        buf = vec![0.0f32; pixel_count * 4];
+                        kept.write_into_stack(&mut buf, width, faded.unwrap_or(1.0));
+                        continue;
+                    }
+                    let mut layer = match kept.filter(|_| faded.is_none()) {
+                        Some(kept) => kept.layer(width, height),
+                        None => {
+                            self.text_layers_rendered += 1;
+                            let layer = self.render_text_layer(&single, width, height, gpu, time_secs);
+                            if still {
+                                self.text_layer_store(&single, width, height, &layer);
+                            }
+                            layer
+                        }
+                    };
                     // Text layers use the same object transform as their
                     // editor.  Layout still happens in the authored box,
                     // then the rendered glyph layer is rotated around the
@@ -3381,6 +3508,52 @@ impl TitleRenderer {
         }
     }
 
+    /// How many text layers of several-layer titles this renderer drew
+    /// rather than took from its kept ones (#2095). For tests.
+    #[doc(hidden)]
+    pub fn text_layers_rendered(&self) -> u64 {
+        self.text_layers_rendered
+    }
+
+    /// The text layer `single` renders to at rest, when kept
+    /// ([`CachedTextLayer`]): its box, and its glyph map as the render
+    /// leaves it.
+    fn text_layer_lookup(&mut self, single: &TitleData, width: u32, height: u32) -> Option<std::sync::Arc<KeptLayer>> {
+        let pos = self.text_layer_cache.iter().position(|c| c.width == width && c.height == height && &c.title == single)?;
+        let entry = self.text_layer_cache.remove(pos);
+        let kept = std::sync::Arc::clone(&entry.kept);
+        self.last_units = entry.units.clone();
+        self.text_layer_cache.insert(0, entry);
+        Some(kept)
+    }
+
+    /// Keep `layer`, the text layer `single` rendered to at rest, as the
+    /// box it covers.
+    fn text_layer_store(&mut self, single: &TitleData, width: u32, height: u32, layer: &[u8]) {
+        let (w, h) = (width as usize, height as usize);
+        let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
+        for y in 0..h {
+            for x in 0..w {
+                if layer[(y * w + x) * 4 + 3] != 0 {
+                    x0 = x0.min(x);
+                    x1 = x1.max(x + 1);
+                    y0 = y0.min(y);
+                    y1 = y1.max(y + 1);
+                }
+            }
+        }
+        let (bw, bh) = if x1 > x0 { (x1 - x0, y1 - y0) } else { (0, 0) };
+        let mut crop = Vec::with_capacity(bw * bh * 4);
+        for y in y0..y0 + bh {
+            crop.extend_from_slice(&layer[(y * w + x0) * 4..(y * w + x0 + bw) * 4]);
+        }
+        if self.text_layer_cache.len() >= TEXT_LAYER_CACHE_CAP {
+            self.text_layer_cache.pop();
+        }
+        let kept = std::sync::Arc::new(KeptLayer { x0, y0, w: bw, h: bh, crop });
+        self.text_layer_cache.insert(0, CachedTextLayer { title: single.clone(), width, height, kept, units: self.last_units.clone() });
+    }
+
     fn cache_lookup(&mut self, title: &TitleData, width: u32, height: u32) -> Option<RestingSprite> {
         let pos = self.render_cache.iter().position(|c| {
             c.width == width && c.height == height && &c.title == title
@@ -3432,6 +3605,7 @@ impl TitleRenderer {
     pub fn invalidate_cache(&mut self) {
         self.geometry3d_cache.clear();
         self.render_cache.clear();
+        self.text_layer_cache.clear();
         self.style_source_cache = None;
     }
 
