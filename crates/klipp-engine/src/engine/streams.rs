@@ -659,9 +659,11 @@ mod tests {
         let frame = 1.0 / 25.0;
         let w = Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 1.0, reversed: false, ahead: false };
         crate::decode_budget::set_enabled(true);
+        // The GPU asked for more than any gives, by a decoder that is never
+        // moved; then a small stream, which software keeps up with.
+        let _full = crate::decode_budget::admit(1e15, crate::decode_budget::Priority::Fixed);
         let mut streams = ClipStreams::new(2);
-        // More pixels a second than any GPU decodes.
-        let resolve = |_: &Want| Some((path.clone(), 0, 1e15));
+        let resolve = |_: &Want| Some((path.clone(), 0, 64.0 * 36.0 * 25.0));
         streams.sync(std::slice::from_ref(&w), frame, &resolve);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !streams.ready(frame) || !streams.streams.contains_key(&w.clip) {

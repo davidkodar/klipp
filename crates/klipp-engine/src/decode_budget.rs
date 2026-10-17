@@ -53,6 +53,17 @@ const WINDOW: Duration = Duration::from_millis(500);
 /// decoders waited less than this share of it.
 const BUSY_IDLE_SHARE: f64 = 0.1;
 
+/// What one software decoding thread is taken to decode, in pixels a
+/// second, until a software stream is measured. On 4 threads ffmpeg decoded
+/// a 97 Mb/s 10-bit HEVC 4K file at about 85 per thread, seeks included,
+/// and 8-bit H.264 4K at 240 and more: the slow end, so a 4K 24 stream
+/// fits on four threads and a 4096×2160 59.94 one does not.
+pub const DEFAULT_SOFTWARE_PER_THREAD: f64 = 80e6;
+
+/// A stream goes to software only if its threads decode this much more
+/// than it asks: a decoder just keeping up falls behind at every seek.
+const SOFTWARE_HEADROOM: f64 = 1.25;
+
 /// How far each busy window after the first moves the budget toward what
 /// it measured.
 const EMA_WEIGHT: f64 = 0.3;
@@ -94,13 +105,17 @@ struct Registry {
     budget: f64,
     /// A busy window has set `budget`.
     measured: bool,
+    /// What a software decoding thread decodes, pixels a second, and
+    /// whether a software stream has measured it.
+    software_per_thread: f64,
+    software_measured: bool,
     /// Where the current window started, and the counters there.
     window: Option<(Instant, u64, u64)>,
 }
 
 fn registry() -> &'static Mutex<Registry> {
     static R: OnceLock<Mutex<Registry>> = OnceLock::new();
-    R.get_or_init(|| Mutex::new(Registry { next: 1, entries: Vec::new(), budget: DEFAULT_BUDGET, measured: false, window: None }))
+    R.get_or_init(|| Mutex::new(Registry { next: 1, entries: Vec::new(), budget: DEFAULT_BUDGET, measured: false, software_per_thread: DEFAULT_SOFTWARE_PER_THREAD, software_measured: false, window: None }))
 }
 
 /// Pixels the hardware decoders decoded, every frame counted, those a seek
@@ -139,10 +154,17 @@ pub fn threads_per_stream(cap: usize) -> usize {
 
 /// The choice for a stream asking for `rate` pixels a second (counted at
 /// `OPENING_WEIGHT` times that as it opens) while `gpu_demand` is already
-/// asked of the GPU and `threads_used` software threads are taken.
-pub fn choose(rate: f64, gpu_demand: f64, budget: f64, threads_used: usize, thread_cap: usize) -> Decoding {
+/// asked of the GPU and `threads_used` software threads are taken, with a
+/// software thread decoding `per_thread` pixels a second.
+///
+/// A stream its threads cannot keep up with stays on the GPU, full or not:
+/// a 4096×2160 59.94 file moved to four threads played the section around
+/// it at 18–23 frames a second instead of 25–30. So the streams that move
+/// are the smaller and slower ones.
+pub fn choose(rate: f64, gpu_demand: f64, budget: f64, threads_used: usize, thread_cap: usize, per_thread: f64) -> Decoding {
     let threads = threads_per_stream(thread_cap);
-    if gpu_demand + rate * OPENING_WEIGHT <= budget || threads_used + threads > thread_cap {
+    let fits = rate * SOFTWARE_HEADROOM <= threads as f64 * per_thread;
+    if gpu_demand + rate * OPENING_WEIGHT <= budget || threads_used + threads > thread_cap || !fits {
         Decoding::Gpu
     } else {
         Decoding::Software { threads }
@@ -181,7 +203,7 @@ pub fn admit(rate: f64, priority: Priority) -> Lease {
     let decoding = if priority == Priority::Overflow && enabled() && crate::video_decoder::hardware_decode_enabled() {
         let gpu_demand: f64 = r.entries.iter().filter(|e| e.on_gpu).map(|e| e.rate).sum();
         let used: usize = r.entries.iter().map(|e| e.threads).sum();
-        choose(rate, gpu_demand, r.budget, used, software_thread_cap())
+        choose(rate, gpu_demand, r.budget, used, software_thread_cap(), r.software_per_thread)
     } else {
         Decoding::Gpu
     };
@@ -213,6 +235,59 @@ pub fn set_rate(id: u64, rate: f64) {
     let mut r = registry().lock().unwrap_or_else(|e| e.into_inner());
     if let Some(e) = r.entries.iter_mut().find(|e| e.id == id) {
         e.rate = rate;
+    }
+}
+
+/// A software decoder moved off the GPU, decoding flat out, decoded
+/// `per_thread` pixels a second on each of its threads. The first such
+/// measure replaces the default; later ones move it by moving average.
+pub fn note_software_rate(per_thread: f64) {
+    let mut r = registry().lock().unwrap_or_else(|e| e.into_inner());
+    let was = r.software_per_thread;
+    r.software_per_thread = if r.software_measured { was * (1.0 - EMA_WEIGHT) + per_thread * EMA_WEIGHT } else { per_thread };
+    r.software_measured = true;
+    tracing::debug!("decode overflow: a software thread measured {:.0} Mpx/s; {:.0} → {:.0}", per_thread / 1e6, was / 1e6, r.software_per_thread / 1e6);
+}
+
+/// One decode thread's measure of what it decodes and waits (#2116): a
+/// hardware decoder's frames and waits are the GPU's measure, and a
+/// software decoder decoding flat out measures what its threads give.
+pub struct Meter {
+    on_gpu: bool,
+    /// The threads of a software decoder moved off the GPU.
+    threads: Option<usize>,
+    start: Instant,
+    pixels: u64,
+    idle: Duration,
+}
+
+impl Meter {
+    pub fn new(on_gpu: bool, threads: Option<usize>) -> Self {
+        Self { on_gpu, threads, start: Instant::now(), pixels: 0, idle: Duration::ZERO }
+    }
+
+    /// The thread waited `d`: a full queue, paused, at the end.
+    pub fn idle(&mut self, d: Duration) {
+        if self.on_gpu {
+            note_gpu_idle(d);
+        }
+        self.idle += d;
+    }
+
+    /// The thread decoded a frame of `pixels`, those a seek skips too.
+    pub fn frame(&mut self, pixels: u64) {
+        if self.on_gpu {
+            note_gpu_frame(pixels);
+        }
+        self.pixels += pixels;
+        let span = self.start.elapsed();
+        if span < WINDOW {
+            return;
+        }
+        if let Some(threads) = self.threads.filter(|_| self.idle.as_secs_f64() < BUSY_IDLE_SHARE * span.as_secs_f64()) {
+            note_software_rate(self.pixels as f64 / span.as_secs_f64() / threads as f64);
+        }
+        *self = Self::new(self.on_gpu, self.threads);
     }
 }
 
@@ -249,27 +324,42 @@ pub fn sample() {
     }
     let on_gpu = r.entries.iter().filter(|e| e.on_gpu).count();
     let rate = pixels.saturating_sub(p0) as f64 / span.as_secs_f64();
-    if let Some(budget) = calibrated(r.measured.then_some(r.budget), rate, idle.saturating_sub(i0) as f64 / 1e6, span.as_secs_f64(), on_gpu) {
-        tracing::debug!("decode overflow: GPU measured {:.0} Mpx/s busy; budget {:.0} → {:.0} Mpx/s", rate / 1e6, r.budget / 1e6, budget / 1e6);
+    let busy = is_busy(idle.saturating_sub(i0) as f64 / 1e6, span.as_secs_f64(), on_gpu);
+    if let Some(budget) = calibrated(r.budget, r.measured, rate, busy) {
+        tracing::debug!("decode overflow: GPU measured {:.0} Mpx/s{}; budget {:.0} → {:.0} Mpx/s", rate / 1e6, if busy { " busy" } else { "" }, r.budget / 1e6, budget / 1e6);
         r.budget = budget;
-        r.measured = true;
+        r.measured |= busy;
     }
 }
 
-/// The budget after a window of `span` seconds in which `decoders` hardware
-/// decoders decoded `rate` pixels a second and waited `idle` seconds
-/// together, from the `measured` one (`None` before the first, which the
-/// window then sets outright); `None` when the window says nothing about
-/// the GPU's limit (fewer than two decoders, or any of them waiting).
-pub fn calibrated(measured: Option<f64>, rate: f64, idle: f64, span: f64, decoders: usize) -> Option<f64> {
-    if decoders < 2 || idle > BUSY_IDLE_SHARE * span * decoders as f64 || rate <= 0.0 {
+/// Whether a window of `span` seconds in which `decoders` hardware
+/// decoders waited `idle` seconds together had them all decoding flat
+/// out: then what they decoded is the GPU's limit. One decoder alone is
+/// bound by itself, not the GPU's decoder.
+pub fn is_busy(idle: f64, span: f64, decoders: usize) -> bool {
+    decoders >= 2 && idle <= BUSY_IDLE_SHARE * span * decoders as f64
+}
+
+/// The budget after a window in which the hardware decoders decoded `rate`
+/// pixels a second, from `budget` (`measured` once a busy window set it);
+/// `None` to keep it.
+///
+/// What the GPU decoded is never more than it gives, so any window
+/// decoding more than the budget raises it there: live, decoders mostly
+/// wait on full queues, and a busy window alone never came, which left
+/// the starting guess in place for a whole session. Only a busy window,
+/// the GPU's limit itself, sets the budget (the first) or moves it down.
+pub fn calibrated(budget: f64, measured: bool, rate: f64, busy: bool) -> Option<f64> {
+    if rate <= 0.0 {
         return None;
     }
-    let budget = match measured {
-        Some(b) => b * (1.0 - EMA_WEIGHT) + rate * EMA_WEIGHT,
-        None => rate,
+    let next = match (busy, measured) {
+        (true, false) => rate,
+        (true, true) => (budget * (1.0 - EMA_WEIGHT) + rate * EMA_WEIGHT).max(rate.min(budget)),
+        (false, _) if rate > budget => rate,
+        (false, _) => return None,
     };
-    Some(budget.max(MIN_BUDGET))
+    Some(next.max(MIN_BUDGET))
 }
 
 /// How many open decoders decode on the GPU and in software, for the
@@ -293,50 +383,70 @@ mod tests {
 
     #[test]
     fn a_stream_the_gpu_has_room_for_stays_on_it() {
-        assert_eq!(choose(30.0 * K4, 60.0 * K4, 200.0 * K4, 0, 16), Decoding::Gpu);
+        assert_eq!(choose(30.0 * K4, 60.0 * K4, 200.0 * K4, 0, 16, 100e6), Decoding::Gpu);
     }
 
     #[test]
     fn a_stream_past_the_budget_goes_to_software() {
         // Four 4K layers at 30 asked, a fifth opening.
-        assert_eq!(choose(30.0 * K4, 150.0 * K4, 200.0 * K4, 0, 16), Decoding::Software { threads: 4 });
+        assert_eq!(choose(30.0 * K4, 150.0 * K4, 200.0 * K4, 0, 16, 100e6), Decoding::Software { threads: 4 });
+    }
+
+    #[test]
+    fn a_stream_its_threads_cannot_keep_up_with_stays_on_the_gpu() {
+        // 4096×2160 at 59.94, 530 Mpx/s, on four threads of 60 Mpx/s.
+        let big = 4096.0 * 2160.0 * 59.94;
+        assert_eq!(choose(big, 600.0 * K4, 200.0 * K4, 0, 16, DEFAULT_SOFTWARE_PER_THREAD), Decoding::Gpu);
+        // A 1080p 24 one, 50 Mpx/s, fits.
+        let small = 1920.0 * 1080.0 * 24.0;
+        assert_eq!(choose(small, 600.0 * K4, 200.0 * K4, 0, 16, DEFAULT_SOFTWARE_PER_THREAD), Decoding::Software { threads: 4 });
+        // Measured faster, the big one fits too.
+        assert_eq!(choose(big, 600.0 * K4, 200.0 * K4, 0, 16, 200e6), Decoding::Software { threads: 4 });
     }
 
     #[test]
     fn software_threads_stop_at_the_cap() {
-        assert_eq!(choose(30.0 * K4, 300.0 * K4, 200.0 * K4, 12, 16), Decoding::Software { threads: 4 });
+        assert_eq!(choose(30.0 * K4, 300.0 * K4, 200.0 * K4, 12, 16, 100e6), Decoding::Software { threads: 4 });
         // Half the machine taken: the GPU it is, full or not.
-        assert_eq!(choose(30.0 * K4, 300.0 * K4, 200.0 * K4, 16, 16), Decoding::Gpu);
+        assert_eq!(choose(30.0 * K4, 300.0 * K4, 200.0 * K4, 16, 16, 100e6), Decoding::Gpu);
         // A small machine still gets one, with two threads.
-        assert_eq!(choose(30.0 * K4, 300.0 * K4, 200.0 * K4, 0, 2), Decoding::Software { threads: 2 });
-        assert_eq!(choose(30.0 * K4, 300.0 * K4, 200.0 * K4, 2, 2), Decoding::Gpu);
+        assert_eq!(choose(30.0 * K4, 300.0 * K4, 200.0 * K4, 0, 2, 200e6), Decoding::Software { threads: 2 });
+        assert_eq!(choose(30.0 * K4, 300.0 * K4, 200.0 * K4, 2, 2, 200e6), Decoding::Gpu);
     }
 
     #[test]
     fn the_first_busy_window_sets_the_budget() {
-        assert_eq!(calibrated(None, 200.0 * K4, 0.01, 0.5, 4), Some(200.0 * K4));
-        assert_eq!(calibrated(None, 60.0 * K4, 0.0, 0.5, 2), Some(60.0 * K4));
+        assert_eq!(calibrated(DEFAULT_BUDGET, false, 200.0 * K4, true), Some(200.0 * K4));
+        assert_eq!(calibrated(DEFAULT_BUDGET, false, 60.0 * K4, true), Some(60.0 * K4));
     }
 
     #[test]
     fn later_busy_windows_move_it_toward_theirs() {
-        let up = calibrated(Some(150.0 * K4), 200.0 * K4, 0.01, 0.5, 4).expect("busy");
+        let up = calibrated(150.0 * K4, true, 200.0 * K4, true).expect("busy");
         assert!(up > 150.0 * K4 && up < 200.0 * K4, "{up}");
-        let down = calibrated(Some(150.0 * K4), 60.0 * K4, 0.0, 0.5, 2).expect("busy");
+        let down = calibrated(150.0 * K4, true, 60.0 * K4, true).expect("busy");
         assert!(down < 150.0 * K4 && down > 60.0 * K4, "{down}");
     }
 
     #[test]
-    fn an_idle_or_lone_window_says_nothing() {
-        // Waiting on full queues: the GPU kept up, its limit is unknown.
-        assert_eq!(calibrated(Some(DEFAULT_BUDGET), 50.0 * K4, 0.5, 0.5, 4), None);
-        // One decoder alone is bound by itself, not the GPU's decoder.
-        assert_eq!(calibrated(None, 50.0 * K4, 0.0, 0.5, 1), None);
+    fn any_window_decoding_more_than_the_budget_raises_it() {
+        // Waiting on full queues, yet decoding more than the budget: the
+        // GPU gives at least that.
+        assert_eq!(calibrated(DEFAULT_BUDGET, false, 1.5 * DEFAULT_BUDGET, false), Some(1.5 * DEFAULT_BUDGET));
+        assert_eq!(calibrated(DEFAULT_BUDGET, true, 1.5 * DEFAULT_BUDGET, false), Some(1.5 * DEFAULT_BUDGET));
+    }
+
+    #[test]
+    fn an_idle_window_under_the_budget_says_nothing() {
+        assert_eq!(calibrated(DEFAULT_BUDGET, false, 50.0 * K4, false), None);
+        assert!(!is_busy(0.5, 0.5, 4), "waiting on full queues");
+        assert!(!is_busy(0.0, 0.5, 1), "one decoder alone");
+        assert!(is_busy(0.05, 0.5, 2));
     }
 
     #[test]
     fn the_budget_has_a_floor() {
-        assert_eq!(calibrated(None, 1.0, 0.0, 0.5, 2), Some(MIN_BUDGET));
+        assert_eq!(calibrated(DEFAULT_BUDGET, false, 1.0, true), Some(MIN_BUDGET));
     }
 
     fn on_gpu(id: u64) -> Option<bool> {
