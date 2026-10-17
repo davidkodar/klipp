@@ -57,6 +57,10 @@ name = "all"
 path = "tests/all/main.rs"
 
 [[test]]
+name = "stacked_stills_are_kept"
+path = "tests/stacked_stills_are_kept.rs"
+
+[[test]]
 name = "held_gpu_drag"
 path = "tests/held_gpu_drag.rs"
 

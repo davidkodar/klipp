@@ -1422,14 +1422,16 @@ impl PlaybackEngine {
                 update_playback_ms: 0.0,
                 in_param_edit: self.in_node_param_edit,
                 phases,
+                stills_kept: s.stills_kept,
+                stills_uploaded: s.stills_uploaded,
             });
         }
         if total_ms > 16.0 || self.in_node_param_edit {
             tracing::debug!(
                 "PERF view_frame: {total_ms:.1}ms {w}x{h} | render={:.1} (grade={:.1} ofx={:.1} fx={:.1} lut={:.1} composite={:.1}) \
-                 encode={encode_ms:.1} scope={scope_ms:.1} streams={} cached={}",
+                 encode={encode_ms:.1} scope={scope_ms:.1} streams={} cached={} stills kept={} uploaded={}",
                 s.total_ms, s.grade_ms, s.ofx_ms, s.effects_ms, s.lut_ms, s.composite_ms,
-                self.streams.len(), stats.is_none(),
+                self.streams.len(), stats.is_none(), s.stills_kept, s.stills_uploaded,
             );
         }
 
