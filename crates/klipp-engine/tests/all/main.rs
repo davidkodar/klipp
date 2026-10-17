@@ -12,6 +12,8 @@
 mod a_live_drag_reaches;
 #[path = "../a_parked_step_keeps_its_neighbours.rs"]
 mod a_parked_step_keeps_its_neighbours;
+#[path = "../a_still_plays_under_moving_layers.rs"]
+mod a_still_plays_under_moving_layers;
 #[path = "../cache_bytes_are_display_bytes.rs"]
 mod cache_bytes_are_display_bytes;
 #[path = "../chroma_reconstruction.rs"]

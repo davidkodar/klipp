@@ -1288,6 +1288,13 @@ pub struct PlaybackEngine {
     /// Last sequence-frame number rendered by the synthetic playback path.
     /// Avoids re-rendering the same generator/title frame ~1000x per second.
     last_synth_frame_rendered: Option<i64>,
+    /// The primary clip's last frame while its file has ended and the clip
+    /// runs on (#978) — a still image's one frame, a short file's last —
+    /// and the sequence frame it was last shown at. Everything else on
+    /// screen keeps moving over it: it is presented again each new
+    /// sequence frame, where it used to be shown once and the picture held
+    /// until the clip's end (#2097).
+    held_tail: Option<(klipp_core::ClipId, streams::HeldFrame, i64)>,
     /// No picture clip is under the playhead but the timeline goes on
     /// (titles on a text track, music, a gap before the next shot): the
     /// playhead follows the master clock, in timeline seconds, and the
@@ -2219,6 +2226,7 @@ impl PlaybackEngine {
             ramp_last_clock_speed: 1.0,
             current_source_rotation: 0,
             last_synth_frame_rendered: None,
+            held_tail: None,
             clock_only: false,
             gap_hand_over: None,
             report_floor: std::cell::Cell::new(None),
@@ -5208,6 +5216,11 @@ impl PlaybackEngine {
         // Taken at once, it cut the clip off at the file's end, and a
         // still played from inside it snapped back and stalled.
         let clip_runs_on = self.clip_runs_on(current_source_secs);
+        // The file has ended and the clip runs on: its end of stream waits
+        // at the front of the queue.
+        let mut held_at_end = false;
+        // The frame taken is the file's last.
+        let mut last_of_file = false;
         if let Some(dec) = &self.v1_decoder {
             let mut queue = dec.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
             q_len = queue.len();
@@ -5217,6 +5230,7 @@ impl PlaybackEngine {
                     None => break,
                     Some(f) if f.is_eof => {
                         if clip_runs_on {
+                            held_at_end = true;
                             break;
                         }
                         let frame = queue.pop().unwrap();
@@ -5251,6 +5265,7 @@ impl PlaybackEngine {
                                     continue; // skip to the more recent frame
                                 }
                             }
+                            last_of_file = queue.front().is_some_and(|n| n.is_eof);
                             display_frame = Some(frame);
                             break;
                         } else {
@@ -5259,6 +5274,20 @@ impl PlaybackEngine {
                         }
                     }
                 }
+            }
+        }
+
+        // Kept to show again once the file has ended: a still's one frame
+        // comes before its end of stream does, so it is known by the file.
+        // A frame on the GPU is shared now, and one that may take a fast
+        // path copied; one only on the CPU is taken over where it is
+        // presented, not copied.
+        let mut keep_tail = None;
+        if let Some(f) = display_frame.as_ref().filter(|f| !f.is_eof) {
+            if last_of_file || self.primary_is_still() {
+                keep_tail = self.sequence.read().ok().and_then(|s| self.v1_clip_id(&s));
+                let shared = streams::HeldFrame::from_gpu_frame(f).or_else(|| f.gpu_source.is_some().then(|| streams::HeldFrame::copy_of(f)));
+                self.held_tail = keep_tail.zip(shared).map(|(id, held)| (id, held, self.playhead.value));
             }
         }
 
@@ -5304,6 +5333,9 @@ impl PlaybackEngine {
                 };
                 let elapsed_tc = RationalTime::from_secs_f64(elapsed_timeline_secs.max(0.0), self.fps.rate());
                 self.playhead = self.clip_timeline_start + elapsed_tc;
+                if held_at_end {
+                    self.present_held_tail();
+                }
                 self.report_playhead();
                 (self.repaint_cb)();
                 return;
@@ -5491,7 +5523,11 @@ impl PlaybackEngine {
 
         // Everything else: the shared renderer, as export renders it. The
         // frame's pixels are read back only if the render uses them.
-        self.present_frame(Some(streams::HeldFrame::from_frame(frame)));
+        let held = streams::HeldFrame::from_frame(frame);
+        if let Some(id) = keep_tail.filter(|_| self.held_tail.is_none()) {
+            self.held_tail = Some((id, held.clone(), self.playhead.value));
+        }
+        self.present_frame(Some(held));
         stage_mid_us = t_stage.elapsed().as_micros();
 
         self.frames_consumed += 1;
@@ -5522,6 +5558,32 @@ impl PlaybackEngine {
         }
 
         self.report_playhead();
+    }
+
+    /// Whether the primary decoder's clip shows a still image.
+    fn primary_is_still(&self) -> bool {
+        let media = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            seq.tracks.get(self.current_track_index).and_then(|t| t.clips.get(self.current_clip_index)).and_then(|c| c.media_id())
+        };
+        let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
+        media.and_then(|id| pool.get(&id)).is_some_and(|m| m.is_still)
+    }
+
+    /// Show the primary clip's held last frame at the playhead, once per
+    /// sequence frame, with everything over and under it as it is there
+    /// (#2097).
+    fn present_held_tail(&mut self) {
+        let clip = self.sequence.read().ok().and_then(|s| self.v1_clip_id(&s));
+        let at = self.playhead.value;
+        let Some((id, frame, shown)) = self.held_tail.as_mut() else { return };
+        if Some(*id) != clip || *shown == at {
+            return;
+        }
+        *shown = at;
+        let frame = frame.clone();
+        self.present_frame(Some(frame));
+        self.frames_consumed += 1;
     }
 
     /// Whether the current clip still runs at `current_source_secs` on
@@ -5948,6 +6010,7 @@ impl PlaybackEngine {
     fn retire_v1_decoder(&mut self, old_clip: Option<klipp_core::ClipId>) {
         // Only this cut's: a frame left by an earlier one is gone either way.
         let boundary = self.boundary_frame.take();
+        self.held_tail = None;
         let Some(mut dec) = self.v1_decoder.take() else { return };
         if let Some(id) = old_clip.filter(|id| !self.streams.has(*id)) {
             let time = self.playhead;
