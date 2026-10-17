@@ -4,7 +4,8 @@
 //! never ran and the next shot's file was opened at the cut, the picture
 //! freezing while it opened and then jumping (#2097). On the still's own
 //! track the next shot comes from its preroll; on another track, from a
-//! stream opened before it came up.
+//! stream opened before it came up, which then becomes the primary
+//! decoder rather than the file being opened a second time.
 //!
 //! Its own binary: the counters it reads are the process's.
 
@@ -131,8 +132,14 @@ fn the_shot_after_a_still_is_opened_before_the_cut() {
     assert_eq!((warm2 - warm, cold2 - cold), (1, 0), "the cut from the still opened the next shot at the cut, not from its preroll");
 
     // The still on V2, the shot on V1 after it: the still's track runs
-    // out, and the shot is drawn from a stream opened before it came up.
+    // out, and the shot's stream, opened before it came up, becomes the
+    // primary decoder. Its file is opened once: not again by a seek at the
+    // cut.
     let late = klipp_engine::engine::streams_opened_on_screen();
+    let taken = klipp_engine::engine::stream_take_overs();
+    let (_, sought) = klipp_engine::engine::gap_hand_overs();
     play(vec![track("V2", vec![clip(still, 0, 75, fps)]), track("V1", vec![clip(shot, 75, 100, fps)])], pool(), fps);
     assert_eq!(klipp_engine::engine::streams_opened_on_screen() - late, 0, "the shot under the still opened its stream at the cut, not before");
+    assert_eq!(klipp_engine::engine::stream_take_overs() - taken, 1, "the shot's stream was not taken over as the primary");
+    assert_eq!(klipp_engine::engine::gap_hand_overs().1 - sought, 0, "the shot's file was opened again by a seek at the cut");
 }

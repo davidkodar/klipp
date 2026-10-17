@@ -214,7 +214,9 @@ struct Reversed {
 
 /// A decoder following one clip's source time.
 struct ClipStream {
-    decoder: VideoDecoder,
+    /// Taken only as the stream ends, by the primary decoder taking it
+    /// over ([`ClipStreams::take`]).
+    decoder: Option<VideoDecoder>,
     /// The latest frame at or before `target`.
     held: Option<HeldFrame>,
     /// The source time last asked for.
@@ -241,20 +243,26 @@ impl ClipStream {
         }
         decoder.resume();
         debug!("clip stream opened for {:?} at {target:.3}s", want.clip);
-        Some(Self { decoder, held: None, target, seeking: Some(target), ended: false, held_from_seek: false })
+        Some(Self { decoder: Some(decoder), held: None, target, seeking: Some(target), ended: false, held_from_seek: false })
+    }
+
+    fn dec(&self) -> &VideoDecoder {
+        self.decoder.as_ref().expect("a stream's decoder is taken only as it ends")
     }
 
     fn seek(&mut self, secs: f64) {
-        self.decoder.seek(secs);
-        self.decoder.resume();
+        self.dec().seek(secs);
+        self.dec().resume();
         self.seeking = Some(secs);
         self.ended = false;
     }
 
     /// Take the frames that are due, keeping the latest.
     fn pump(&mut self, half_frame: f64) {
-        let epoch = self.decoder.requested_seek();
-        let mut q = self.decoder.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+        // The field, not `dec`: the fields below change under the lock.
+        let Some(decoder) = self.decoder.as_ref() else { return };
+        let epoch = decoder.requested_seek();
+        let mut q = decoder.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
         while let Some(f) = q.front() {
             // Decoded before the seek we are waiting on — the decode thread
             // clears its queue when it takes a seek, but a frame converted
@@ -300,8 +308,8 @@ impl ClipStream {
         if self.held.is_some() || self.seeking.is_some() || self.ended {
             return false;
         }
-        let epoch = self.decoder.requested_seek();
-        let q = self.decoder.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+        let epoch = self.dec().requested_seek();
+        let q = self.dec().frame_queue().lock().unwrap_or_else(|e| e.into_inner());
         q.front().is_some_and(|f| f.seek_epoch >= epoch && !f.is_eof && f.pts_secs() > target + half_frame)
     }
 
@@ -325,14 +333,16 @@ impl ClipStream {
         }
         // Behind the target, but the next frame is past it: a source with
         // fewer frames than the timeline, and `held` is right.
-        let q = self.decoder.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+        let q = self.dec().frame_queue().lock().unwrap_or_else(|e| e.into_inner());
         q.front().is_some_and(|f| f.is_eof || f.pts_secs() > self.target + half_frame)
     }
 }
 
 impl Drop for ClipStream {
     fn drop(&mut self) {
-        self.decoder.stop_detached();
+        if let Some(d) = &mut self.decoder {
+            d.stop_detached();
+        }
     }
 }
 
@@ -420,7 +430,7 @@ impl ClipStreams {
                     // sync would restart a slow seek for ever.
                     // Half of one of the file's frames, as export decides
                     // which frame a time shows (#696).
-                    let half = s.decoder.half_source_frame(1.0 / frame_secs.max(1e-6));
+                    let half = s.dec().half_source_frame(1.0 / frame_secs.max(1e-6));
                     let held_ahead = s.seeking.is_none() && !s.held_from_seek && s.held.as_ref().and_then(|h| h.pts).is_some_and(|p| p > target + half);
                     if target + half < s.target || target > s.target + 1.0 || held_ahead || s.starved(target, half) {
                         s.seek(target);
@@ -438,7 +448,7 @@ impl ClipStreams {
             }
         }
         for s in self.streams.values_mut() {
-            let half = s.decoder.half_source_frame(1.0 / frame_secs.max(1e-6));
+            let half = s.dec().half_source_frame(1.0 / frame_secs.max(1e-6));
             s.pump(half);
         }
     }
@@ -446,7 +456,7 @@ impl ClipStreams {
     /// Take whatever frames arrived, without changing any target.
     pub fn pump(&mut self, frame_secs: f64) {
         for s in self.streams.values_mut() {
-            let half = s.decoder.half_source_frame(1.0 / frame_secs.max(1e-6));
+            let half = s.dec().half_source_frame(1.0 / frame_secs.max(1e-6));
             s.pump(half);
         }
     }
@@ -471,13 +481,13 @@ impl ClipStreams {
     /// A copy of the frame after `clip`'s held one, if it is decoded.
     pub fn next_frame(&self, clip: ClipId) -> Option<HeldFrame> {
         let s = self.streams.get(&clip)?;
-        let q = s.decoder.frame_queue().lock().unwrap_or_else(|e| e.into_inner());
+        let q = s.dec().frame_queue().lock().unwrap_or_else(|e| e.into_inner());
         q.front().filter(|f| !f.is_eof).map(HeldFrame::copy_of)
     }
 
     /// Every stream holds its frame for its current time.
     pub fn ready(&self, frame_secs: f64) -> bool {
-        self.streams.values().all(|s| s.ready(s.decoder.half_source_frame(1.0 / frame_secs.max(1e-6))))
+        self.streams.values().all(|s| s.ready(s.dec().half_source_frame(1.0 / frame_secs.max(1e-6))))
     }
 
     /// Take over the primary decoder at a cut, when the clip it was
@@ -487,7 +497,19 @@ impl ClipStreams {
     /// `held` is the frame the decoder gave at the cut, when the caller
     /// took it from the queue (#1494).
     pub fn adopt(&mut self, clip: ClipId, decoder: VideoDecoder, source_secs: f64, held: Option<HeldFrame>) {
-        self.streams.insert(clip, ClipStream { decoder, held, target: source_secs.max(0.0), seeking: None, ended: false, held_from_seek: false });
+        self.streams.insert(clip, ClipStream { decoder: Some(decoder), held, target: source_secs.max(0.0), seeking: None, ended: false, held_from_seek: false });
+    }
+
+    /// `clip`'s decoder, open and seeked where its stream is, and the frame
+    /// it holds, for the primary decoder to take over rather than open the
+    /// file again (#2097). Not while its seek is in flight.
+    pub fn take(&mut self, clip: ClipId) -> Option<(VideoDecoder, Option<HeldFrame>)> {
+        if self.streams.get(&clip)?.seeking.is_some() {
+            return None;
+        }
+        let mut s = self.streams.remove(&clip)?;
+        let held = s.held.take();
+        s.decoder.take().map(|d| (d, held))
     }
 
     pub fn clear(&mut self) {
@@ -501,7 +523,7 @@ impl ClipStreams {
 
     /// The queues of the open decoders, for telemetry.
     pub fn queues(&self) -> impl Iterator<Item = &SharedFrameQueue> {
-        self.streams.values().map(|s| s.decoder.frame_queue())
+        self.streams.values().map(|s| s.dec().frame_queue())
     }
 }
 
@@ -550,11 +572,11 @@ mod tests {
         s.target = 0.88;
         s.held_from_seek = false;
         let back = Want { source_secs: 0.88, ..w };
-        let before = s.decoder.requested_seek();
+        let before = s.dec().requested_seek();
         streams.sync(std::slice::from_ref(&back), frame, &resolve);
         let s = &streams.streams[&back.clip];
-        assert_eq!(s.decoder.requested_seek(), before + 1, "a stream held ahead was not sought");
-        let once = s.decoder.requested_seek();
+        assert_eq!(s.dec().requested_seek(), before + 1, "a stream held ahead was not sought");
+        let once = s.dec().requested_seek();
         // The seek is still in flight, or has just landed; either way a
         // second sync at the same time must not seek again.
         // Put it back in flight whatever has landed: the seek pending, the
@@ -566,7 +588,7 @@ mod tests {
             h.pts = Some(1.0);
         }
         streams.sync(std::slice::from_ref(&back), frame, &resolve);
-        assert_eq!(streams.streams[&back.clip].decoder.requested_seek(), once, "sought again while the seek was in flight");
+        assert_eq!(streams.streams[&back.clip].dec().requested_seek(), once, "sought again while the seek was in flight");
     }
 
     /// #1494: a decoder taken over with its frame for the target already

@@ -839,12 +839,19 @@ pub fn gap_hand_overs() -> (u64, u64) {
 /// tests and the perf log.
 static CUTS_FROM_PREROLL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static CUTS_OPENED_COLD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static STREAM_TAKE_OVERS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub(crate) static STREAMS_OPENED_ON_SCREEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// (from the preroll, opened cold) cuts to the next shot on the primary
 /// track since the process began.
 pub fn cut_openings() -> (u64, u64) {
     (CUTS_FROM_PREROLL.load(std::sync::atomic::Ordering::Relaxed), CUTS_OPENED_COLD.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Shots the primary decoder took over from their clip streams, rather
+/// than opening their files again, since the process began.
+pub fn stream_take_overs() -> u64 {
+    STREAM_TAKE_OVERS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Clip streams opened while playing for a clip already on screen, since
@@ -6338,6 +6345,9 @@ impl PlaybackEngine {
                     return;
                 }
             }
+            if self.take_over_stream_at(tc) {
+                return;
+            }
             GAP_HAND_OVERS_COLD.fetch_add(1, Ordering::Relaxed);
             self.seek_in_sequence(tc);
             // A title or generator takes over on the synthetic path, which
@@ -6357,6 +6367,58 @@ impl PlaybackEngine {
         }
         self.report_playhead();
         (self.repaint_cb)();
+    }
+
+    /// Take the shot at `tc` over as the primary from its clip stream, which
+    /// opened and seeked it before it came up, rather than open its file
+    /// again with a seek (#2097): the shot that comes up on another track
+    /// as the primary's runs out. The same shot a seek makes the primary,
+    /// the bottom track's. `false` when it has no stream ready.
+    fn take_over_stream_at(&mut self, tc: Timecode) -> bool {
+        let found = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            seq.tracks.iter().enumerate().rev()
+                .filter(|(_, t)| t.kind == klipp_timeline::TrackKind::Video)
+                .find_map(|(ti, track)| {
+                    track.clip_at_timecode(tc).filter(|(_, c)| !c.is_reversed() && c.media_id().is_some()).map(|(idx, c)| (ti, idx, c.clone()))
+                })
+        };
+        let Some((ti, idx, clip)) = found else { return false };
+        let Some(media_id) = clip.media_id() else { return false };
+        let Some(path) = self.path_for_media(media_id) else { return false };
+        let Some((dec, held)) = self.streams.take(clip.id) else { return false };
+        STREAM_TAKE_OVERS.fetch_add(1, Ordering::Relaxed);
+        debug!("CUT-DIAG primary took {:?} over from its clip stream", clip.id);
+        self.current_track_index = ti;
+        self.current_clip_index = idx;
+        self.v1_decoder = Some(dec);
+        self.current_source_rotation = self.effective_decode_rotation(media_id, &path, clip.source_rotation);
+        self.current_file = Some(path);
+        self.clock_only = false;
+        self.last_synth_frame_rendered = None;
+        // The clock reads the shot's source seconds from here on, as after
+        // a cut, where clock-only read the timeline's.
+        let source_secs = klipp_compose::render::source_secs(&clip, tc, self.fps.as_f64());
+        self.clip_source_start = clip.source_in.to_secs_f64();
+        self.clip_timeline_start = clip.timeline_in;
+        self.clip_speed = clip.speed;
+        self.master_clock.set_speed(clip.speed);
+        self.refresh_speed_keyframes();
+        self.master_clock.seek((source_secs.max(0.0) * 1_000_000.0) as u64);
+        self.master_clock.resume();
+        self.playhead = tc;
+        self.swap_changed_audio_at_cut();
+        self.refresh_audio_fades(tc);
+        self.last_frame_time = std::time::Instant::now();
+        // The frame the stream holds is the one for here: shown now, the
+        // queue goes on from the frame after it.
+        if let Some(held) = held {
+            self.present_frame(Some(held));
+            self.frames_consumed += 1;
+        }
+        self.report_playhead();
+        (self.repaint_cb)();
+        true
     }
 
     /// Tell the UI where the playhead is, never past the timeline's end:
