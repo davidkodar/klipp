@@ -618,6 +618,10 @@ fn direct_present_enabled() -> bool {
 /// projects with many video tracks; clips beyond it still export.
 const MAX_CLIP_STREAMS: usize = 6;
 
+/// How long before a shot's end the next shot on its track is opened and
+/// seeked, so the cut finds its first frame decoded.
+const PREROLL_LEAD_SECS: f64 = 1.5;
+
 /// Common write of a freshly-rendered scope texture into the shared
 /// Display bytes for the scopes: the codes on screen, and the luminance
 /// weights of the primaries they are in, for their Y′.
@@ -827,6 +831,26 @@ static GAP_HAND_OVERS_COLD: std::sync::atomic::AtomicU64 = std::sync::atomic::At
 /// (warm, cold) hand-overs at the end of a gap since the process began.
 pub fn gap_hand_overs() -> (u64, u64) {
     (GAP_HAND_OVERS_WARM.load(std::sync::atomic::Ordering::Relaxed), GAP_HAND_OVERS_COLD.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Cuts to a shot on the primary track taken from its preroll, and ones
+/// that opened its file at the cut; clip streams opened while playing for
+/// a clip already on screen rather than before it came up (#2097). For
+/// tests and the perf log.
+static CUTS_FROM_PREROLL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static CUTS_OPENED_COLD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static STREAMS_OPENED_ON_SCREEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// (from the preroll, opened cold) cuts to the next shot on the primary
+/// track since the process began.
+pub fn cut_openings() -> (u64, u64) {
+    (CUTS_FROM_PREROLL.load(std::sync::atomic::Ordering::Relaxed), CUTS_OPENED_COLD.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Clip streams opened while playing for a clip already on screen, since
+/// the process began.
+pub fn streams_opened_on_screen() -> u64 {
+    STREAMS_OPENED_ON_SCREEN.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Whether `clip`'s grade reads a matte sequence: an External Matte bound
@@ -5335,6 +5359,9 @@ impl PlaybackEngine {
                 self.playhead = self.clip_timeline_start + elapsed_tc;
                 if held_at_end {
                     self.present_held_tail();
+                    // The look-ahead below runs as frames are taken, and
+                    // none are now: the next shot opens as it would.
+                    self.preroll_before_out();
                 }
                 self.report_playhead();
                 (self.repaint_cb)();
@@ -5418,7 +5445,7 @@ impl PlaybackEngine {
             // Look-ahead: pre-decode next clip when within 1.5s of source_out
             let dist_to_out = clip.source_out.to_secs_f64() - frame.pts_secs();
             self.take_ready_preroll(None);
-            if dist_to_out < 1.5 && dist_to_out > 0.0 && self.preroll_decoder.is_none() && self.preroll_pending.is_none() {
+            if dist_to_out < PREROLL_LEAD_SECS && dist_to_out > 0.0 && self.preroll_decoder.is_none() && self.preroll_pending.is_none() {
                 self.start_preroll_for_next_clip();
             }
 
@@ -5561,13 +5588,29 @@ impl PlaybackEngine {
     }
 
     /// Whether the primary decoder's clip shows a still image.
-    fn primary_is_still(&self) -> bool {
+    pub(super) fn primary_is_still(&self) -> bool {
         let media = {
             let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
             seq.tracks.get(self.current_track_index).and_then(|t| t.clips.get(self.current_clip_index)).and_then(|c| c.media_id())
         };
         let pool = self.media_pool.read().unwrap_or_else(|e| e.into_inner());
         media.and_then(|id| pool.get(&id)).is_some_and(|m| m.is_still)
+    }
+
+    /// The look-ahead for a clip whose file has ended and runs on (#978):
+    /// the next shot on its track opens and seeks while the held frame
+    /// plays out, as it does before a playing shot's end (#2097).
+    fn preroll_before_out(&mut self) {
+        let out = {
+            let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+            seq.tracks.get(self.current_track_index).and_then(|t| t.clips.get(self.current_clip_index)).map(|c| c.timeline_out)
+        };
+        let Some(out) = out else { return };
+        let dist_to_out = out.to_secs_f64() - self.playhead.to_secs_f64();
+        self.take_ready_preroll(None);
+        if dist_to_out < PREROLL_LEAD_SECS && dist_to_out > 0.0 && self.preroll_decoder.is_none() && self.preroll_pending.is_none() {
+            self.start_preroll_for_next_clip();
+        }
     }
 
     /// Show the primary clip's held last frame at the playhead, once per
@@ -5855,6 +5898,7 @@ impl PlaybackEngine {
         if self.preroll_clip_index == Some(actual_idx) {
             if let Some(preroll_dec) = self.preroll_decoder.take() {
                 info!("CUT-DIAG PREROLL HIT: swapping in pre-decoded clip idx={} source_in={:.4}s", actual_idx, source_in_secs);
+                CUTS_FROM_PREROLL.fetch_add(1, Ordering::Relaxed);
                 self.retire_v1_decoder(old_clip);
                 self.v1_decoder = Some(preroll_dec);
                 self.preroll_clip_index = None;
@@ -5945,6 +5989,7 @@ impl PlaybackEngine {
             }
 
             info!("Advancing to clip {} ({:?})", actual_idx, path);
+            CUTS_OPENED_COLD.fetch_add(1, Ordering::Relaxed);
 
             // Settle the audio BEFORE touching the video decoder. The audio
             // pipeline runs on its own threads, so it plays straight through
