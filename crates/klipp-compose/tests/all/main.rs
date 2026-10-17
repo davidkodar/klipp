@@ -100,6 +100,8 @@ mod temporal_denoise_gpu;
 mod temporal_reader_size;
 #[path = "../title_blend_mask_stack.rs"]
 mod title_blend_mask_stack;
+#[path = "../title_layers_kept.rs"]
+mod title_layers_kept;
 #[path = "../title_routes_f16.rs"]
 mod title_routes_f16;
 #[path = "../truth_lanes_render.rs"]
