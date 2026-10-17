@@ -24,7 +24,8 @@ use klipp_media::frame_reader::BackwardFrameReader;
 
 /// A decoded frame the viewer keeps and may render from many times (a
 /// paused frame is regraded on every slider tick). Conversions happen on
-/// first use and are kept.
+/// first use and are kept. A clone shares the pixels and the conversions.
+#[derive(Clone)]
 pub(crate) struct HeldFrame {
     pub width: u32,
     pub height: u32,
@@ -39,6 +40,7 @@ pub(crate) struct HeldFrame {
     pregrade: Option<super::Pregrade>,
 }
 
+#[derive(Clone)]
 enum Held {
     Linear(Arc<Vec<f32>>),
     Srgb8(Arc<Vec<u8>>),
