@@ -144,6 +144,7 @@ impl PlaybackEngine {
                         rotation: c.source_rotation,
                         source_secs: klipp_compose::render::source_secs(c, at, seq.fps.as_f64()),
                         reversed: false,
+                        ahead: false,
                     })
                 })
             };
