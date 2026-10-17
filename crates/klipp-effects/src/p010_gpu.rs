@@ -54,6 +54,10 @@ pub struct GpuP010Converter {
     cached_uv_size: u64,
     cached_output_size: u64,
     cached_hdr_size: u64,
+    /// The GPU-resident outputs handed to callers, kept to be handed out
+    /// again once no caller holds them, as the NV12 converter's are (#2107).
+    resident_rgba: crate::nv12_gpu::ResidentPool,
+    resident_codes: crate::nv12_gpu::ResidentPool,
 }
 
 /// What the GPU-resident conversion produced.
@@ -419,6 +423,13 @@ pub(crate) fn p010_shader() -> &'static str {
 }
 
 impl GpuP010Converter {
+    /// How many GPU-resident output buffers the converter keeps to hand
+    /// out again (#2107). For tests.
+    #[doc(hidden)]
+    pub fn resident_buffers_kept(&self) -> usize {
+        self.resident_rgba.kept()
+    }
+
     /// Create a new GPU P010 converter. Shares the process-wide
     /// `GpuContext` — see `GpuNv12Converter::new` for the rationale.
     pub fn new() -> Option<Self> {
@@ -536,6 +547,8 @@ impl GpuP010Converter {
             hdr_buf: None, hdr_staging_buf: None, hdr_dummy_buf, linear_dummy_buf,
             params_buf,
             cached_y_size: 0, cached_uv_size: 0, cached_output_size: 0, cached_hdr_size: 0,
+            resident_rgba: crate::nv12_gpu::ResidentPool::new("p010_out_gpu_resident"),
+            resident_codes: crate::nv12_gpu::ResidentPool::new("p010_hdr_codes_gpu_resident"),
         })
     }
 
@@ -783,26 +796,11 @@ impl GpuP010Converter {
             &self.device,
         );
 
-        // Fresh output buffer per call — we're handing ownership to
-        // the caller, so the internal `output_buf` cache isn't safe
-        // to reuse here.
-        let output_buf = std::sync::Arc::new(self.device.create_buffer(
-            &wgpu::BufferDescriptor {
-                label: Some("p010_out_gpu_resident"),
-                size: output_size,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            },
-        ));
+        // The caller's to hold: a buffer nothing else holds now, from the
+        // pool, not the internal `output_buf` the readback paths share.
+        let output_buf = self.resident_rgba.take(&self.device, output_size);
 
-        let hdr_codes = is_hdr_transfer(color_ids[2]).then(|| {
-            std::sync::Arc::new(self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("p010_hdr_codes_gpu_resident"),
-                size: (dst_width as u64) * (dst_height as u64) * 4,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            }))
-        });
+        let hdr_codes = is_hdr_transfer(color_ids[2]).then(|| self.resident_codes.take(&self.device, (dst_width as u64) * (dst_height as u64) * 4));
         let hdr_binding: &wgpu::Buffer = match hdr_codes.as_ref() {
             Some(b) => b,
             None => &self.hdr_dummy_buf,
