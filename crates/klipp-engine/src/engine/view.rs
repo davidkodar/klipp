@@ -286,7 +286,7 @@ fn upcoming(seq: &Sequence, time: klipp_core::Timecode, playing: bool, primary_t
         .filter(|(i, t)| t.kind == klipp_timeline::TrackKind::Video && t.visible && Some(*i) != primary_track)
         .flat_map(|(_, t)| t.clips.iter())
         .filter(|c| c.enabled && c.timeline_in.to_secs_f64() > from && c.timeline_in.to_secs_f64() <= to)
-        .filter_map(|c| Some((Want { clip: c.id, media: c.media_id()?, rotation: c.source_rotation, source_secs: c.source_secs_at(0.0, fps), reversed: c.is_reversed() }, c.timeline_in.to_secs_f64() - from)))
+        .filter_map(|c| Some((Want { clip: c.id, media: c.media_id()?, rotation: c.source_rotation, source_secs: c.source_secs_at(0.0, fps), reversed: c.is_reversed(), ahead: true }, c.timeline_in.to_secs_f64() - from)))
         .collect();
     // The soonest first: with the decoders all open, the one due next.
     out.sort_by(|a, b| a.1.total_cmp(&b.1));
@@ -532,6 +532,7 @@ impl PlaybackEngine {
                         rotation: c.source_rotation,
                         source_secs: klipp_compose::render::source_secs(c, at, fps),
                         reversed: c.is_reversed(),
+                        ahead: false,
                     })
                 })
                 .collect();
