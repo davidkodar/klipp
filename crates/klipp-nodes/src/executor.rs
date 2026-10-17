@@ -3919,6 +3919,18 @@ impl GraphExecutor {
         // the whole segment into one `queue.submit`. Per-node submits
         // cost ~2-5 ms on NVIDIA Vulkan and dominated `grade_ms` during
         // scrubbing before this.
+        // Opening the chain hands the queue the stack frame's passes so
+        // far (`flush`), then makes the encoder: timed apart (#2107). With
+        // `KLIPP_CHAIN_START_GPU_WAIT=1`, the GPU's work handed to it so
+        // far is waited out first, a diagnostic: what that wait takes is
+        // how far the GPU was behind.
+        if gpu_wait_diagnostic() {
+            let waited = gpu.wait_for_submitted_work();
+            self.chain_start_split.push(("gpu_backlog", waited));
+        }
+        let t = std::time::Instant::now();
+        gpu.flush();
+        self.chain_start_split.push(("flush", ms(t)));
         let t = std::time::Instant::now();
         gpu.begin_chain();
         self.chain_start_split.push(("begin", ms(t)));
@@ -3964,6 +3976,13 @@ impl GraphExecutor {
         dispatches
     }
 
+}
+
+/// Whether chain starts wait out the GPU's backlog to time it
+/// (`KLIPP_CHAIN_START_GPU_WAIT=1`), read once: a diagnostic (#2107).
+fn gpu_wait_diagnostic() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("KLIPP_CHAIN_START_GPU_WAIT").as_deref() == Ok("1"))
 }
 
 /// A temporal-denoise node's neighbours, read for this run (#1988).
