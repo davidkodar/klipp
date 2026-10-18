@@ -385,6 +385,12 @@ pub enum TitleFrame {
     Glyphs { sprite: RestingSprite, poses: Vec<GlyphPose>, rows: (u32, u32) },
     /// Rendered for this time alone.
     Rendered { pixels: BoxRaster, rows: (u32, u32) },
+    /// Text layers whose only change is each one's whole-layer fade, a
+    /// lower third's lines fading in one after another: each layer's
+    /// resting render with its alpha, laid in order, each over the ones
+    /// before it (#2069). The frame's bytes are those [`compose_layers`]
+    /// makes; the GPU stack places the sprites where it composites.
+    Layers { layers: Vec<(RestingSprite, f32)>, rows: (u32, u32) },
 }
 
 /// The title whose resting render is the sprite: a full-frame card's
@@ -2357,6 +2363,7 @@ impl TitleRenderer {
                 None => vec![0.0; (width as usize) * (height as usize) * 4],
             },
             TitleFrame::Rendered { pixels, .. } => pixels.to_stack(),
+            TitleFrame::Layers { layers, rows } => compose_layers(&layers, width, height, rows),
         }
     }
 
@@ -2625,6 +2632,12 @@ impl TitleRenderer {
             || (staggered.is_some_and(|o| !o.fx().edge_fade.is_none()) || staggered.is_some() && poses.iter().any(|(_, p)| p.focus.is_some()));
 
         let mut gpu = gpu;
+        // Keep the same layer sprites through the fades and their resting
+        // interval, rather than rastering a combined title between fades.
+        if let Some(frame) = self.fading_layers(title, width, height, &mut gpu, time_secs) {
+            self.last_blur = 0.0;
+            return frame;
+        }
         if tracking::eligible(title) {
             if let Some(frame) = self.tracking_frame(title, width, height, time_secs) {
                 return frame;
@@ -2818,6 +2831,52 @@ impl TitleRenderer {
     }
 
 
+    /// [`TitleFrame::Layers`] for `title` at `time_secs`, when it is two or
+    /// more visible text layers, each changing only by a whole-layer fade
+    /// ([`whole_layer_fade`]), with no backing, no mixing, no edge fade
+    /// and no text on a path: each layer's resting render, as the one-text
+    /// title it renders as in [`Self::render_stack`], kept as any resting
+    /// render is. `None` for anything else.
+    fn fading_layers(&mut self, title: &TitleData, width: u32, height: u32, gpu: &mut Option<&mut dyn AlphaMaskProcessor>, time_secs: f32) -> Option<TitleFrame> {
+        if title.background != TitleBackground::None || title.mixes_layers() {
+            return None;
+        }
+        let visible: Vec<&TitleObject> = title.objects.iter().filter(|o| o.visible).collect();
+        if visible.len() < 2 || !visible.iter().any(|o| o.fx().motion.is_active()) {
+            return None;
+        }
+        let window = self.motion_window;
+        let mut plan = Vec::with_capacity(visible.len());
+        for o in &visible {
+            let TitleObjectContent::TextBox(tb) = &o.content else { return None };
+            if tb.text_path.is_some() || ScreenFade::new(o.fx().edge_fade, None).is_some() {
+                return None;
+            }
+            let alpha = whole_layer_fade(o, tb, time_secs, window)? * o.opacity.clamp(0.0, 1.0);
+            let mut single = TitleData::single_text_fx(tb.clone(), o.fx().clone());
+            if let Some(first) = single.objects.first_mut() {
+                first.transform = o.transform.clone();
+            }
+            plan.push((single, alpha));
+        }
+        let (mut y0, mut y1) = (height, 0);
+        let mut layers = Vec::with_capacity(plan.len());
+        for (single, alpha) in plan {
+            let sprite = match gpu {
+                Some(gpu) => self.resting_sprite(&single, width, height, Some(&mut **gpu)),
+                None => self.resting_sprite(&single, width, height, None),
+            };
+            if alpha > 0.001 && sprite.rows.1 > sprite.rows.0 {
+                y0 = y0.min(sprite.rows.0);
+                y1 = y1.max(sprite.rows.1);
+            }
+            layers.push((sprite, alpha));
+        }
+        let rows = if y1 > y0 { (y0, y1) } else { (0, 0) };
+        self.last_rows = rows;
+        Some(TitleFrame::Layers { layers, rows })
+    }
+
     /// [`Self::render_stack`] kept as the box it covers (#190).
     fn raster_at(&mut self, title: &TitleData, width: u32, height: u32, gpu: Option<&mut dyn AlphaMaskProcessor>, time_secs: Option<f32>) -> BoxRaster {
         let stack = self.render_stack(title, width, height, gpu, time_secs);
@@ -2920,35 +2979,7 @@ impl TitleRenderer {
                     // one: the layer faded whole, as the placed resting
                     // render of a one-layer title fades (#2069). The fade's
                     // alpha, when so.
-                    let fade_alpha = time_secs.and_then(|t| {
-                        let fx = obj.fx();
-                        let plain_fade = |m: &Option<klipp_timeline::Motion>| m.as_ref().is_none_or(|m| m.kind == klipp_core::title_motion::MotionKind::Fade && m.stagger == klipp_timeline::StaggerUnit::None);
-                        let unkeyed = obj.transform.center_x_keyframes.is_empty()
-                            && obj.transform.center_y_keyframes.is_empty()
-                            && obj.transform.size_x_keyframes.is_empty()
-                            && obj.transform.size_y_keyframes.is_empty()
-                            && obj.transform.rotation_keyframes.is_empty()
-                            && obj.transform.anchor_x_keyframes.is_empty()
-                            && obj.transform.anchor_y_keyframes.is_empty()
-                            && obj.opacity_keyframes.is_empty()
-                            && !tb.has_keyframes();
-                        let bare = fx.glows.iter().all(|g| g.radius_keyframes.is_empty() && g.intensity_keyframes.is_empty())
-                            && fx.shadows.iter().all(|s| s.offset_x_keyframes.is_empty() && s.offset_y_keyframes.is_empty() && s.blur_keyframes.is_empty())
-                            && fx.inner_shadows.iter().all(|s| s.offset_x_keyframes.is_empty() && s.offset_y_keyframes.is_empty() && s.blur_keyframes.is_empty())
-                            && fx.outlines.iter().all(|o| o.width_keyframes.is_empty())
-                            && fx.loops.is_empty()
-                            && fx.animators.iter().all(|a| !a.enabled)
-                            && fx.motion_blur.is_none()
-                            && tb.char_animation.as_ref().is_none_or(|c| !c.enabled)
-                            && tb.glitch_intensity == 0.0
-                            && tb.extrusion.is_none()
-                            && tb.three_d.as_ref().is_none_or(|d| !d.enabled)
-                            && tb.texture_fill.is_none();
-                        (unkeyed && bare && plain_fade(&fx.motion.enter) && plain_fade(&fx.motion.exit)).then(|| {
-                            let (pe, px) = fx.motion.progress(t, window, 0);
-                            fx.motion.enter.map_or(1.0, |m| m.pose(pe, 0.0).0) * fx.motion.exit.map_or(1.0, |m| m.pose(px, 0.0).0)
-                        })
-                    });
+                    let fade_alpha = time_secs.and_then(|t| whole_layer_fade(obj, tb, t, window));
                     // Synthesise a one-object TitleData carrying just
                     // this TextBox, its stack and its transform centre,
                     // then route through the existing single-text raster
@@ -4874,6 +4905,70 @@ fn scale_layer_alpha(layer: &mut [u8], factor: f32) {
             px[3] = ((px[3] as f32) * f).round().clamp(0.0, 255.0) as u8;
         }
     });
+}
+
+/// A text layer's alpha at `t` when its only change over time is a
+/// whole-layer fade (its entrance or exit, unstaggered), with nothing
+/// keyed and nothing that moves on its own: its frame is the layer at
+/// rest with that alpha, its shadow, glow and outline fading with it
+/// (#2095, #2069). `None` when anything else changes.
+fn whole_layer_fade(obj: &TitleObject, tb: &klipp_timeline::TextBox, t: f32, window: Option<f32>) -> Option<f32> {
+    let fx = obj.fx();
+    let plain_fade = |m: &Option<klipp_timeline::Motion>| m.as_ref().is_none_or(|m| m.kind == klipp_core::title_motion::MotionKind::Fade && m.stagger == klipp_timeline::StaggerUnit::None);
+    let unkeyed = obj.transform.center_x_keyframes.is_empty()
+        && obj.transform.center_y_keyframes.is_empty()
+        && obj.transform.size_x_keyframes.is_empty()
+        && obj.transform.size_y_keyframes.is_empty()
+        && obj.transform.rotation_keyframes.is_empty()
+        && obj.transform.anchor_x_keyframes.is_empty()
+        && obj.transform.anchor_y_keyframes.is_empty()
+        && obj.opacity_keyframes.is_empty()
+        && !tb.has_keyframes();
+    let bare = fx.glows.iter().all(|g| g.radius_keyframes.is_empty() && g.intensity_keyframes.is_empty())
+        && fx.shadows.iter().all(|s| s.offset_x_keyframes.is_empty() && s.offset_y_keyframes.is_empty() && s.blur_keyframes.is_empty())
+        && fx.inner_shadows.iter().all(|s| s.offset_x_keyframes.is_empty() && s.offset_y_keyframes.is_empty() && s.blur_keyframes.is_empty())
+        && fx.outlines.iter().all(|o| o.width_keyframes.is_empty())
+        && fx.loops.is_empty()
+        && fx.animators.iter().all(|a| !a.enabled)
+        && fx.motion_blur.is_none()
+        && tb.char_animation.as_ref().is_none_or(|c| !c.enabled)
+        && tb.glitch_intensity == 0.0
+        && tb.extrusion.is_none()
+        && tb.three_d.as_ref().is_none_or(|d| !d.enabled)
+        && tb.texture_fill.is_none();
+    (unkeyed && bare && plain_fade(&fx.motion.enter) && plain_fade(&fx.motion.exit)).then(|| {
+        let (pe, px) = fx.motion.progress(t, window, 0);
+        fx.motion.enter.map_or(1.0, |m| m.pose(pe, 0.0).0) * fx.motion.exit.map_or(1.0, |m| m.pose(px, 0.0).0)
+    })
+}
+
+/// [`TitleFrame::Layers`] composed on the CPU, as the title renderer
+/// lays its layers: each resting render at its alpha, each over the
+/// ones before it (`over_blend`), in byte units. What the GPU stack's
+/// sprite passes make of it (`stack_layer_place_sprite_posed`, then
+/// `stack_layer_place_sprite_over`), to a level.
+pub fn compose_layers(layers: &[(RestingSprite, f32)], width: u32, height: u32, rows: (u32, u32)) -> Vec<f32> {
+    let mut out = vec![0.0f32; (width as usize) * (height as usize) * 4];
+    for (k, (sprite, alpha)) in layers.iter().enumerate() {
+        let layer = pose_sprite(&sprite.pixels, width, height, 0, 0, *alpha, 1.0, sprite.anchor(), None, None, rows);
+        if k == 0 {
+            out = layer;
+            continue;
+        }
+        for (d, s) in out.chunks_exact_mut(4).zip(layer.chunks_exact(4)) {
+            let sa = s[3] / 255.0;
+            if sa <= 0.0 {
+                continue;
+            }
+            let da = d[3] / 255.0;
+            let out_a = sa + da * (1.0 - sa);
+            for i in 0..3 {
+                d[i] = (s[i] * sa + d[i] * da * (1.0 - sa)) / out_a;
+            }
+            d[3] = out_a * 255.0;
+        }
+    }
+    out
 }
 
 /// Glyphs a staggered motion poses one by one at most; beyond it the
@@ -12310,3 +12405,37 @@ mod wide_blur_tests {
 
 #[cfg(test)]
 mod vector_cache_tests;
+
+#[cfg(test)]
+mod fading_layers_tests {
+    use super::*;
+
+    #[test]
+    fn fading_layers_preserve_the_original_raster_composition() {
+        use klipp_timeline::{LayerFx, Motion, MotionKind, TextBox, TitleMotion};
+        let mut title = TitleData::single_text_fx(
+            TextBox { text: "Over".into(), font_size: 120.0, color: [240, 40, 80, 255], ..Default::default() },
+            LayerFx { motion: TitleMotion::both(Motion::new(MotionKind::Fade).duration(1.0), Motion::exit(MotionKind::Fade).duration(1.0)), ..Default::default() },
+        );
+        let mut second = title.objects[0].clone();
+        second.id = klipp_timeline::TitleObjectId(1);
+        second.opacity = 0.6;
+        second.transform.center.x += 0.015;
+        if let TitleObjectContent::TextBox(tb) = &mut second.content { tb.color = [30, 180, 240, 255]; }
+        title.objects.push(second);
+        let mut cached = TitleRenderer::new();
+        for t in [0.1, 0.5, 2.0, 3.6, 4.0, 0.3] {
+            let mut reference = TitleRenderer::new();
+            reference.motion_window = Some(4.0);
+            // Call the established raster compositor directly, avoiding
+            // frame_at so the reference cannot use the new Layers route.
+            let expected = reference.render_stack(&title, 640, 360, None, Some(t));
+            let actual = cached.render_with_window_stack(&title, 640, 360, None, t, Some(4.0));
+            let worst = expected.chunks_exact(4).zip(actual.chunks_exact(4)).map(|(a, b)| {
+                let colour = (0..3).map(|i| (a[i] * a[3] - b[i] * b[3]).abs() / 255.0).fold(0.0, f32::max);
+                colour.max((a[3] - b[3]).abs())
+            }).fold(0.0, f32::max);
+            assert!(worst <= 1.5, "at {t}: cached layers differ from raster by {worst} levels");
+        }
+    }
+}

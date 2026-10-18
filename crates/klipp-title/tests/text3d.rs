@@ -471,7 +471,7 @@ fn a_dressed_3d_word_draws_all_of_its_look() {
         let export = r.render_with_window(&td, W, H, None, t, Some(4.0));
         let viewer = match r.frame_with_window(&td, W, H, None, t, Some(4.0)) {
             TitleFrame::Rendered { pixels, .. } => pixels.to_bytes(),
-            TitleFrame::Placed { .. } | TitleFrame::Glyphs { .. } => r.render_with_window(&td, W, H, None, t, Some(4.0)),
+            TitleFrame::Placed { .. } | TitleFrame::Glyphs { .. } | TitleFrame::Layers { .. } => r.render_with_window(&td, W, H, None, t, Some(4.0)),
         };
         assert_eq!(viewer, export, "at t={t} the viewer's frame is the export's");
     }
