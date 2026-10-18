@@ -332,6 +332,37 @@ pub fn hyperzoom_scratch_id(clip_id: ClipId) -> egui::Id {
     egui::Id::new(("video:hyperzoom_state", clip_id))
 }
 
+/// The egui pass a clip's HYPERZOOM section was last drawn open and on
+/// screen in, kept per clip.
+fn section_shown_id(clip_id: ClipId) -> egui::Id {
+    egui::Id::new(("video:hyperzoom_section_shown", clip_id))
+}
+
+/// The HYPERZOOM section of `clip_id` is drawn open and on screen in this
+/// pass: the viewer's focal handle shows and takes presses for the clip
+/// while it is (#2032).
+pub fn mark_section_shown(ctx: &egui::Context, clip_id: ClipId) {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| d.insert_temp(section_shown_id(clip_id), pass));
+}
+
+/// Whether `clip_id`'s HYPERZOOM section was drawn open and on screen in
+/// this pass or the one before: the inspector may draw before or after
+/// the viewer. Only then is the viewer's focal handle there, so a press
+/// on a selected clip's middle reaches the clip, not a focus point no one
+/// is tuning (#2032).
+pub fn section_shown(ctx: &egui::Context, clip_id: ClipId) -> bool {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| d.get_temp::<u64>(section_shown_id(clip_id))).is_some_and(|at| at.saturating_add(1) >= pass)
+}
+
+/// [`mark_section_shown`] for as long as the test runs: the inspector
+/// is not drawn in the viewer harness.
+#[cfg(test)]
+pub fn keep_section_shown(ctx: &egui::Context, clip_id: ClipId) {
+    ctx.data_mut(|d| d.insert_temp(section_shown_id(clip_id), u64::MAX - 1));
+}
+
 /// Read this clip's scratch from egui memory. Returns the default
 /// (centre focal point, 0.5 s, 50×, auto target) when no value is
 /// stored — that's the same starting point the inspector spinboxes

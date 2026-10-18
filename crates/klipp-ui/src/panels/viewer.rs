@@ -4634,6 +4634,9 @@ impl ViewerPanel {
     ///   the same kinds the inspector's HYPERZOOM section refuses
     ///   to render for.
     /// * The image rect is degenerate (zero width or height).
+    /// * The clip's HYPERZOOM section isn't open on screen in the
+    ///   inspector (#2032): the handle otherwise sat on the middle of
+    ///   every selected clip and took the press that should move it.
     fn draw_hyperzoom_focal_handle(
         &self,
         ui: &mut egui::Ui,
@@ -4642,6 +4645,9 @@ impl ViewerPanel {
     ) {
         let Some(clip_id) = state.selected_clip else { return; };
         if image_rect.width() < 1.0 || image_rect.height() < 1.0 {
+            return;
+        }
+        if !crate::hyperzoom::section_shown(ui.ctx(), clip_id) {
             return;
         }
         // Source-of-truth check: the clip must still be in the active

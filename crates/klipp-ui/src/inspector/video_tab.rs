@@ -2345,6 +2345,10 @@ fn show_hyperzoom_section(
     );
 
     section_card(ui, "HYPERZOOM", theme, |ui| {
+        // Open and on screen: the viewer's focal handle is there (#2032).
+        if ui.is_rect_visible(ui.available_rect_before_wrap()) {
+            crate::hyperzoom::mark_section_shown(ui.ctx(), clip_id);
+        }
         ui.add_space(6.0);
         egui::Frame::default()
             .inner_margin(egui::Margin { left: pad, right: pad, top: 0.0, bottom: 0.0 })
