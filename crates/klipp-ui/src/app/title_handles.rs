@@ -244,8 +244,42 @@ mod tests {
         c[0].lerp(c[2], 0.5) + (c[1] - c[0]) * 0.25
     }
 
+    /// #2032: a title in the middle of the frame, selected, is moved by a
+    /// drag from its middle, where the hyperzoom focal handle sits: the
+    /// handle is there only while the clip's HYPERZOOM section is open
+    /// in the inspector. The control: with it open, the same drag moves
+    /// the focal point and not the title.
+    #[test]
+    fn a_drag_from_a_selected_titles_middle_moves_the_title() {
+        let (mut v, id) = viewer(&[("Hello", (0.5, 0.5), 0.0)]);
+        // The clip selected, none of its layers: the middle is its body,
+        // not a layer's anchor.
+        v.state.selected_title_object = None;
+        v.frame(Vec::new());
+        let w = v.image_rect().width();
+        let at = v.image_rect().center();
+        v.modifiers = egui::Modifiers::ALT;
+        v.drag(at, at + egui::vec2(40.0, 0.0));
+        let c = layer(&v, id, 0).transform.center;
+        assert!(close(c.x, 0.5 + 40.0 / w) && close(c.y, 0.5), "the title moved: {c:?}");
+        assert!(close(crate::hyperzoom::read_hyperzoom_scratch(&v.ctx, id).focal_x, 0.5), "and the focal point did not");
+
+        let (mut v, id) = viewer(&[("Hello", (0.5, 0.5), 0.0)]);
+        v.state.selected_title_object = None;
+        crate::hyperzoom::keep_section_shown(&v.ctx, id);
+        v.frame(Vec::new());
+        let w = v.image_rect().width();
+        let at = v.image_rect().center();
+        v.modifiers = egui::Modifiers::ALT;
+        v.drag(at, at + egui::vec2(40.0, 0.0));
+        assert!(close(layer(&v, id, 0).transform.center.x, 0.5), "the title stayed");
+        let fx = crate::hyperzoom::read_hyperzoom_scratch(&v.ctx, id).focal_x;
+        assert!((fx - (0.5 + 40.0 / w)).abs() < 0.01, "the focal point moved with the pointer: {fx}");
+    }
+
     // The layers below stand off the frame's centre, where a selected
-    // clip's hyperzoom focal handle would take the press.
+    // clip's hyperzoom focal handle would take the press while its
+    // section is open.
 
     /// #2014: a title composed to the right is edited where it is drawn:
     /// its layer is grabbed there and moved as far as the pointer goes,
