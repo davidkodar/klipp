@@ -775,6 +775,7 @@ fn handle(
             | ControlCommand::ExportStatus { .. }
             | ControlCommand::ExportSubtitles { .. }
             | ControlCommand::ImportSubtitles { .. }
+            | ControlCommand::ImportTimeline { .. }
             | ControlCommand::SaveProject { .. }
             | ControlCommand::OpenProject { .. }
             | ControlCommand::FrameStats { .. }

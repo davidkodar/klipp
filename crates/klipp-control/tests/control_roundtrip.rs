@@ -208,6 +208,16 @@ fn harness() -> Harness {
                             media_pool.write().unwrap_or_else(|e| e.into_inner()).add(item);
                         }
 
+                        if let klipp_core::AppCommand::ImportTimeline { path, request_id } = &c {
+                            let pool = media_pool.read().unwrap();
+                            let result = klipp_project::import_report::load(path, klipp_core::Fps::film_24(), &pool);
+                            let outcome = match result {
+                                Ok(result) => serde_json::json!({"request_id":request_id,"report":klipp_project::import_report::ImportReport::from_import(path, &result)}),
+                                Err(error) => serde_json::json!({"request_id":request_id,"error":error}),
+                            };
+                            *shared.import_outcome.lock().unwrap() = Some(outcome);
+                        }
+
                         // A save or an open reports back as the UI does: the
                         // path, no unsaved changes, the generation moved. A
                         // path with "broken" in it fails, to see that said.
@@ -3573,4 +3583,26 @@ fn perf_exposes_picture_fallback_identity_reason_and_counts() {
     assert!(fallbacks["by_feature"]["control.test-fallback"].as_u64().unwrap() >= 1);
     assert!(fallbacks["overflow"].is_u64());
     assert!(fallbacks.get("latest_viewer_frame").is_some());
+}
+
+#[test]
+fn timeline_import_returns_the_same_report_and_reports_failures() {
+    let mut h = harness();
+    let path = std::env::temp_dir().join(format!("klipp-socket-report-{}.otio", uuid::Uuid::new_v4()));
+    std::fs::write(&path, include_str!("../../klipp-project/tests/fixtures/import_report.otio")).unwrap();
+    let parsed = klipp_project::import_report::load(&path, klipp_core::Fps::film_24(), &klipp_media::MediaPool::new()).unwrap();
+    let expected = klipp_project::import_report::ImportReport::from_import(&path, &parsed);
+    let result = h.ok(json!({"method":"import_timeline","path":path}));
+    // Media IDs are generated per parse; compare the content and categories.
+    assert_eq!(result["report"]["imported"], serde_json::to_value(expected.imported).unwrap());
+    assert_eq!(result["report"]["warnings"], serde_json::to_value(expected.warnings).unwrap());
+    assert_eq!(result["report"]["missing_media"][0]["name"], expected.missing_media[0].name);
+    let read = h.ok(json!({"method":"import_timeline"}));
+    assert_eq!(read["report"], result["report"]);
+    assert_eq!(read["request_id"], result["request_id"]);
+    std::fs::write(&path, "not json").unwrap();
+    let failed = h.call(json!({"method":"import_timeline","path":path}));
+    assert_eq!(failed["ok"], false, "{failed}");
+    assert!(!failed["error"].as_str().unwrap().is_empty());
+    std::fs::remove_file(path).unwrap();
 }

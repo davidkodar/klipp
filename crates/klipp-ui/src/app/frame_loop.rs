@@ -803,6 +803,7 @@ impl KlippApp {
                 let media_pool = self.state.media_pool.clone();
                 let created_at = self.state.created_at.clone();
                 let notes = self.state.project_notes.clone();
+                let import_report = self.state.last_import_report.clone();
                 let title_assets = self.state.title_assets.clone();
                 let looks = self.state.looks.clone();
                 let backup_count = self.prefs.editing.backup_count;
@@ -830,6 +831,7 @@ impl KlippApp {
                             &title_assets,
                         )
                         .and_then(|()| {
+                            klipp_project::import_report::save(&autosave_path, import_report.as_ref())?;
                             klipp_project::save_looks(&autosave_path, &looks)
                                 .map_err(|e| format!("failed to persist Looks: {e}"))
                         })

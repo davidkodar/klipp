@@ -52,7 +52,7 @@ static PENDING_WRITE_GENERATION: std::sync::atomic::AtomicU64 =
 /// Tools that change what the viewer should show. Any of them arms the
 /// next screenshot to wait for a fresh frame.
 const WRITE_TOOLS: &[&str] = &[
-    "klipp_graph",
+    "klipp_graph", "klipp_import_timeline",
     "klipp_play", "klipp_pause", "klipp_stop", "klipp_seek",
     "klipp_append_clip", "klipp_remove_clip", "klipp_attach_audio", "klipp_normalize", "klipp_set_append_audio", "klipp_select_clip",
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
@@ -1106,6 +1106,7 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             serde_json::from_value::<klipp_control::protocol::ControlCommand>(v.clone()).map_err(|e| format!("invalid graph request: {e}"))?;
             v
         }
+        "klipp_import_timeline" => json!({"method":"import_timeline","path":args.get("path")}),
         "klipp_node_types" => {
             let mut v = json!({ "method": "node_types" });
             if let Some(c) = args.get("category").and_then(|v| v.as_str()) { v["category"] = json!(c); }
@@ -1330,6 +1331,7 @@ fn guide_topic(topic: &str) -> Result<String, String> {
     Ok(match topic {
         "guide" => GUIDE.to_string(),
         "graph" => GRAPH_GUIDE.to_string(),
+        "import_timeline" | "klipp_import_timeline" => include_str!("../../../assets/craft/import_timeline.md").to_string(),
         "craft" => CRAFT.to_string(),
         "recipes" => RECIPES.to_string(),
         "abilities" => ABILITIES.to_string(),
@@ -1464,7 +1466,7 @@ fn call_tool(name: &str, args: &Value) -> Result<(Vec<Value>, Option<Value>), St
         cmd["idempotency_key"] = json!(uuid::Uuid::new_v4().to_string());
     }
     let mut result = control_call(cmd)?;
-    if matches!(name, "klipp_status" | "klipp_orient") {
+    if matches!(name, "klipp_import_timeline" | "klipp_status" | "klipp_orient") {
         diagnostics::attach(&mut result, args.get("expected_catalog_fingerprint").and_then(Value::as_str));
     }
     // The project changed under this session — made new, opened or saved
@@ -1498,10 +1500,13 @@ fn project_changed_under(name: &str, seen: u64, now: u64) -> bool {
 }
 
 fn has_structured_output(name: &str) -> bool {
-    matches!(name, "klipp_status" | "klipp_orient" | "klipp_timeline" | "klipp_plan" | "klipp_apply" | "klipp_prepare_cut" | "klipp_grade_to_target" | "klipp_check" | "klipp_review")
+    matches!(name, "klipp_import_timeline" | "klipp_status" | "klipp_orient" | "klipp_timeline" | "klipp_plan" | "klipp_apply" | "klipp_prepare_cut" | "klipp_grade_to_target" | "klipp_check" | "klipp_review")
 }
 
 fn output_schema(name: &str) -> Value {
+    if name == "klipp_import_timeline" {
+        return json!({"type":"object","properties":{"report":{"type":["object","null"]},"request_id":{"type":"string"},"error":{"type":"string"}},"additionalProperties":true});
+    }
     let mut properties = json!({
         "text": {"type":"string"},
         "revision": {"type":"integer","minimum":0},
@@ -2185,14 +2190,14 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "The font families a title can name. Details: klipp_guide topic fonts.",
              json!({}), vec![]),
         tool("klipp_graph",
-             "Edit one clip graph atomically as one undo step; send alone, after graph_read and node_types. Details: klipp_guide topic graph.",
+             "Atomic graph edit, one undo step; read graph_read/node_types first. Guide: klipp_guide topic graph.",
              json!({"ops":graph_schema::ops_schema(),"label":{"type":"string"},"expected_revision":{"type":"integer","minimum":0},"expected_project_identity":{"type":"integer","minimum":0}}), vec!["ops"]),
         tool("klipp_graph_read",
              "Read graph at path; empty nodes reads root. Depth controls nested bodies. Omissions are flagged; \
               narrow path for details. mask_channel_set marks an explicitly stored channel.",
              json!({"path":graph_schema::path_schema(true),"depth":{"type":"integer","minimum":0,"maximum":4,"default":1}}), vec!["path"]),
         tool("klipp_node_types",
-             "The node types in Klipp's registry: each effect's ports and parameters, with keys, units, defaults and ranges; narrow by category. Details: klipp_guide topic node_types.",
+             "Node ports and parameters, optionally by category. Guide: klipp_guide topic node_types.",
              json!({ "category": { "type": "string", "description": "a category to list, e.g. Colour" } }), vec![]),
         tool("klipp_looks",
              "The bundled looks (3D LUTs) by category: the names klipp_look takes. Details: klipp_guide topic looks.",
@@ -2327,16 +2332,19 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
                  "remove": { "type": "array", "items": { "type": "string" } }
              }), vec!["media_id"]),
         tool("klipp_window_screenshot",
-             "The whole Klipp window as the person sees it, as a PNG, for checking a layout or a dialog; never for measuring colour. Details: klipp_guide topic window_screenshot.",
+             "Window PNG for UI checks, not colour measurement. Guide: klipp_guide topic window_screenshot.",
              json!({ "path": { "type": "string" }, "max_width": { "type": "integer" } }), vec![]),
+        tool("klipp_import_timeline",
+             "Import OTIO/FCPXML/Kdenlive/EDL; omit path for last outcome. Guide: klipp_guide topic import_timeline.",
+             json!({"path":{"type":"string"}}), vec![]),
         tool("klipp_open_project",
-             "Open the project at an absolute path; refused over unsaved changes unless discard_changes. Details: klipp_guide topic open_project.",
+             "Open project; refuses unsaved changes unless discard_changes. Guide: klipp_guide topic open_project.",
              json!({ "path": { "type": "string" }, "discard_changes": { "type": "boolean" } }), vec!["path"]),
         tool("klipp_frame_stats",
-             "The scope numbers of the frame at a time (luma points, balance, saturation, clipping, CIELAB lightness, cast and faces), judged against the brief's look. Details: klipp_guide topic frame_stats.",
+             "Frame scope measurements against the brief. Guide: klipp_guide topic frame_stats.",
              json!({ "secs": { "type": "number" }, "timeout_ms": { "type": "integer" } }), vec!["secs"]),
         tool("klipp_timeline_sheet",
-             "A contact sheet of the timeline as one image: a tile per shot, or evenly spaced frames, over a range. Details: klipp_guide topic timeline_sheet.",
+             "Timeline contact sheet by shot or evenly spaced frames. Guide: klipp_guide topic timeline_sheet.",
              json!({
                  "from_secs": { "type": "number" },
                  "to_secs": { "type": "number" },
@@ -2431,6 +2439,19 @@ mod listen_arg_tests {
 #[cfg(test)]
 mod interface_tests {
     use super::*;
+
+    #[test]
+    fn timeline_import_routes_reads_and_writes_and_has_a_guide() {
+        assert_eq!(tool_to_command("klipp_import_timeline", &json!({"path":"/tmp/test.otio"})).unwrap(), json!({"method":"import_timeline","path":"/tmp/test.otio"}));
+        assert_eq!(tool_to_command("klipp_import_timeline", &json!({})).unwrap(), json!({"method":"import_timeline","path":null}));
+        assert!(guide_topic("import_timeline").unwrap().contains("warning counts") || guide_topic("import_timeline").unwrap().contains("Warning counts"));
+        assert!(has_structured_output("klipp_import_timeline"));
+        let reply = json!({"report":{"imported":{"clips":1}},"request_id":"request"});
+        let content = content_for("klipp_import_timeline", &reply).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(content[0]["text"].as_str().unwrap()).unwrap(), reply);
+        let size = serde_json::to_vec(&tool_definitions_for(false)).unwrap().len();
+        assert!(size < 60_000, "catalogue is {size} bytes");
+    }
 
     #[test]
     fn graph_calls_preserve_paths_references_and_guards() {

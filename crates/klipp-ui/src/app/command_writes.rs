@@ -393,6 +393,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ImportSubtitles { .. }
         | AppCommand::ImportKdenlive { .. }
         | AppCommand::ImportOtio { .. }
+        | AppCommand::ImportTimeline { .. }
         | AppCommand::ImportEdl { .. }
         | AppCommand::ImportFcpxml { .. }
         | AppCommand::ConsolidateProject { .. }
