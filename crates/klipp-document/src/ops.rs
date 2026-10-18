@@ -6095,7 +6095,7 @@ fn reframe(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, s
     }).unwrap_or((1.0, 0.0, 0.0));
     let (scale, x, y) = (scale.unwrap_or(now_scale), x.unwrap_or(now_x), y.unwrap_or(now_y));
     if !scale.is_finite() || !(1.0..=4.0).contains(&scale) {
-        return Err(refuse(i, format!("a scale of {scale}"), "give scale between 1 and 4"));
+        return Err(refuse(i, format!("a scale of {scale}"), "give scale between 1 and 4; to shrink or place a picture-in-picture inset, use compose with equal width and height between 0.01 and 4"));
     }
     for (name, v) in [("x", x), ("y", y)] {
         if !v.is_finite() || !(-1.0..=1.0).contains(&v) {
@@ -6588,7 +6588,7 @@ fn pan(seq: &Sequence, pool: &MediaPool, i: usize, ti: usize, clip: &Clip, keys:
             return Err(refuse(i, format!("a key at {:.2} s is outside the clip", k.secs), format!("keys are seconds into the clip, 0 to {dur:.2}")));
         }
         if !k.scale.is_finite() || !(1.0..=4.0).contains(&k.scale) {
-            return Err(refuse(i, format!("scale {} is out of range", k.scale), "give scale between 1 and 4"));
+            return Err(refuse(i, format!("scale {} is out of range", k.scale), "give scale between 1 and 4; to shrink or place a picture-in-picture inset, use compose with equal width and height between 0.01 and 4"));
         }
         if !k.x.is_finite() || !k.y.is_finite() || !(0.0..=1.0).contains(&k.x) || !(0.0..=1.0).contains(&k.y) {
             return Err(refuse(i, format!("point {:.2},{:.2} is outside the frame", k.x, k.y), "x and y are fractions of the frame, 0 to 1"));

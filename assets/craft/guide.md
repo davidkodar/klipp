@@ -658,18 +658,28 @@ exist until the plan runs.
 - `ramp {clip_id, from, to, secs?}`: ramp speed from `from` times to
   `to` times over timeline seconds, then hold the new speed; the clip's
   length follows. The ramp's sound is silent.
-- `compose {clip_id, poses:[{secs? | from_end_secs?, x?, y?, width?, height?, rotation_deg?, opacity?, ease?}]}`:
-  place a picture inside the frame. One pose holds; more animate.
+- `compose {clip_id, poses:[{secs? | from_end_secs?, x?, y?, width?, height?, rotation_deg?, tilt_x_deg?, tilt_y_deg?, opacity?, ease?}]}`:
+  set the clip transform for picture-in-picture, split screens or grids.
+  One pose holds; more animate. Unlike `reframe`, `pan` and `zoom`,
+  `compose` can shrink a picture below full size.
   A pose with no `x`, `y`, `width` or `height` keeps the clip where it
   is, as reframed or composed before: poses of `opacity` alone fade a
   shot, or a colour card (a generator), in or out without moving it.
   `secs` is relative to the clip; `x,y` place its centre as frame
   fractions (-1 to 2, default 0.5). `width` and `height` must be equal
   (0.01 to 4, default 1); rotation is -360 to 360 degrees and opacity
-  0 to 1. Example: `{op: compose, clip_id: ID, poses:[{x:0.7,
+  0 to 1. `tilt_x_deg` and `tilt_y_deg` tilt in perspective, -80 to 80
+  degrees (default 0); these can animate between poses too.
+  Example: `{op: compose, clip_id: ID, poses:[{x:0.7,
   y:0.7, width:0.4, height:0.4}]}`. On a clip panned inside its card
   it moves the card and keeps the pan, the card in one place (poses may
   still fade it).
+  For a corner inset, use `{x:0.8, y:0.8, width:0.3, height:0.3}`.
+  For a 2x2 grid of equal-aspect clips on separate video tracks, apply
+  one `compose` per clip with width and height 0.5 and centres
+  `(0.25,0.25)`, `(0.75,0.25)`, `(0.25,0.75)` and `(0.75,0.75)`.
+  Put these operations in one `plan`/`apply` batch; no project-file
+  editing or separate layout operation is needed.
   A clip's ends sit on frames, so it can be up to a frame shorter
   than the length asked for: at 30 fps, placed from 28.15 s to 37.70 s,
   it starts on 28.167 s and is 9.533 s long (the step's `after` gives
