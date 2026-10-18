@@ -185,3 +185,7 @@ path = "tests/stacked_video_layers.rs"
 [[test]]
 name = "a_retimed_clip_plays_at_timeline_speed"
 path = "tests/a_retimed_clip_plays_at_timeline_speed.rs"
+
+[[test]]
+name = "a_layer_shows_only_its_own_clip"
+path = "tests/a_layer_shows_only_its_own_clip.rs"

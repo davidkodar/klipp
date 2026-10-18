@@ -1723,6 +1723,11 @@ pub struct PlaybackEngine {
     /// until the preroll is cleared: the cut opens the clip itself.
     preroll_failed: Option<usize>,
     preroll_clip_index: Option<usize>,
+    /// The track and media the preroll was opened for, with its index
+    /// (#2138): an index alone is a clip of whichever track is the picture
+    /// track at the cut, and a shot prerolled on one track was swapped in
+    /// for the clip of the same index on another, its frame shown there.
+    preroll_for: Option<(usize, MediaId)>,
     preroll_source_in: f64,
 }
 
@@ -2392,6 +2397,7 @@ impl PlaybackEngine {
             preroll_pending: None,
             preroll_failed: None,
             preroll_clip_index: None,
+            preroll_for: None,
             preroll_source_in: 0.0,
         }
     }
@@ -5922,16 +5928,17 @@ impl PlaybackEngine {
         // Preroll hit: if we pre-decoded this clip, swap in the ready decoder — zero stall.
         // One still opening started well over a second ago and is all but
         // there: waiting for it is shorter than opening the file again.
-        if self.preroll_clip_index == Some(actual_idx) {
+        if self.preroll_is(actual_idx, media_id) {
             self.take_ready_preroll(Some(Duration::from_millis(250)));
         }
-        if self.preroll_clip_index == Some(actual_idx) {
+        if self.preroll_is(actual_idx, media_id) {
             if let Some(preroll_dec) = self.preroll_decoder.take() {
                 info!("CUT-DIAG PREROLL HIT: swapping in pre-decoded clip idx={} source_in={:.4}s", actual_idx, source_in_secs);
                 CUTS_FROM_PREROLL.fetch_add(1, Ordering::Relaxed);
                 self.retire_v1_decoder(old_clip);
                 self.v1_decoder = Some(preroll_dec);
                 self.preroll_clip_index = None;
+                self.preroll_for = None;
 
                 if let Some(path) = self.path_for_media(media_id) {
                     self.current_file = Some(path);
@@ -6181,7 +6188,14 @@ impl PlaybackEngine {
         }
         self.preroll_pending = None;
         self.preroll_clip_index = None;
+        self.preroll_for = None;
         self.preroll_failed = None;
+    }
+
+    /// Whether the preroll is clip `idx` of the picture track, of
+    /// `media_id`: its index, and the track and media it was opened for.
+    fn preroll_is(&self, idx: usize, media_id: MediaId) -> bool {
+        self.preroll_clip_index == Some(idx) && self.preroll_for == Some((self.current_track_index, media_id))
     }
 
     /// Start pre-decoding the next clip so frames are ready when the cut arrives.
@@ -6217,7 +6231,8 @@ impl PlaybackEngine {
     /// it, or of the gap before it.
     fn start_preroll_for(&mut self, idx: usize, media_id: MediaId, source_in_secs: f64, preroll_rotation: i32, cut_at: Timecode) {
         {
-            if self.preroll_clip_index == Some(idx) || self.preroll_failed == Some(idx) {
+            let same = self.preroll_for == Some((self.current_track_index, media_id));
+            if same && (self.preroll_clip_index == Some(idx) || self.preroll_failed == Some(idx)) {
                 return; // Already pre-rolling this clip, or it will not open
             }
             if let Some(path) = self.path_for_media(media_id) {
@@ -6251,6 +6266,7 @@ impl PlaybackEngine {
                 }));
                 self.preroll_pending = Some(rx);
                 self.preroll_clip_index = Some(idx);
+                self.preroll_for = Some((self.current_track_index, media_id));
                 self.preroll_source_in = source_in_secs;
                 self.warm_sound_at(cut_at);
             }
@@ -6358,13 +6374,13 @@ impl PlaybackEngine {
             // cut, from its preroll. Anything else there — a picture on
             // another track in the gap — is found by a seek, as before.
             if let Some((from, next)) = self.gap_hand_over.take() {
-                let only_it = {
+                let (only_it, media) = {
                     let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
-                    let on_track = seq.tracks.get(self.current_track_index).and_then(|t| t.clip_at_timecode(tc)).map(|(i, _)| i);
+                    let on_track = seq.tracks.get(self.current_track_index).and_then(|t| t.clip_at_timecode(tc));
                     let layers = klipp_compose::active_layers(&seq, tc);
-                    on_track == Some(next) && layers.len() == 1
+                    (on_track.as_ref().map(|(i, _)| *i) == Some(next) && layers.len() == 1, on_track.and_then(|(_, c)| c.media_id()))
                 };
-                if only_it && self.preroll_clip_index == Some(next) {
+                if only_it && media.is_some_and(|m| self.preroll_is(next, m)) {
                     GAP_HAND_OVERS_WARM.fetch_add(1, Ordering::Relaxed);
                     self.current_clip_index = from;
                     self.advance_to_next_clip();
