@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::audio_decoder::{AudioConsumer, AudioProducer};
 
@@ -293,15 +293,13 @@ impl PcmAudioFeeder {
         audio_effects: Vec<AudioEffectInstance>,
         audio_effect_keyframes: std::collections::HashMap<String, Vec<klipp_core::Keyframe>>,
     ) -> Result<(Self, AudioConsumer), PcmFeederError> {
-        let pcm_data = load_pcm(pcm_path)?;
-        let total_floats = pcm_data.len();
-        let total_mono_samples = total_floats / CHANNELS;
-        let duration_secs = total_mono_samples as f64 / SAMPLE_RATE as f64;
-
-        info!(
-            "PcmAudioFeeder: opened {:?}, {:.1}s, {} samples",
-            pcm_path, duration_secs, total_mono_samples,
-        );
+        // The samples are read on the feeder's own thread, not here (#2136):
+        // the engine opens a clip's sound ahead of its cut, on its own
+        // thread, and a 35-minute film's cache read whole took 0.85 s, the
+        // picture frozen and Pause unheard. Until they are in, the mix
+        // hears silence: a few milliseconds at a cut, not a stall.
+        std::fs::metadata(pcm_path).map_err(|e| PcmFeederError::Open(format!("read {pcm_path:?}: {e}")))?;
+        let pcm_path = pcm_path.to_path_buf();
 
         // Ring buffer: ~2s of stereo f32 at output_rate
         let buf_size = (output_rate as usize) * 2 * 2;
@@ -345,6 +343,19 @@ impl PcmAudioFeeder {
             .name("klipp-pcm-feed".into())
             .spawn(move || {
                 crate::thread_guard::catch_panic("klipp-pcm-feed", || {
+                    let pcm_data = match load_pcm(&pcm_path) {
+                        Ok(data) => data,
+                        Err(e) => {
+                            warn!("PcmAudioFeeder: cannot read {pcm_path:?}: {e}");
+                            return;
+                        }
+                    };
+                    info!(
+                        "PcmAudioFeeder: opened {:?}, {:.1}s, {} samples",
+                        pcm_path,
+                        (pcm_data.len() / CHANNELS) as f64 / SAMPLE_RATE as f64,
+                        pcm_data.len() / CHANNELS,
+                    );
                     pcm_feed_thread(
                         pcm_data,
                         output_rate,
@@ -906,6 +917,43 @@ mod tests {
         drop(cache);
         assert_eq!(&third[..], &[0.5; 12]);
         assert!(!Arc::ptr_eq(&third, &load_pcm(&path).unwrap()), "read again after the release");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// #2136: opening a long source's feeder does not wait for its
+    /// samples. The engine opens a clip's sound ahead of its cut on its
+    /// own thread; a 35-minute film's cache read whole there took 0.85 s.
+    /// Opened, the feeder plays from a seek ten minutes in once the file
+    /// is read, on its own thread.
+    #[test]
+    fn a_long_source_opens_without_waiting_for_its_samples() {
+        use ringbuf::traits::Consumer;
+        let path = std::env::temp_dir().join(format!("klipp-pcm-long-{}.pcm", std::process::id()));
+        // Twelve minutes, 276 MB: reading it takes far longer than a frame.
+        let frames = SAMPLE_RATE as usize * 60 * 12;
+        let mut samples = vec![0.25f32; frames * CHANNELS];
+        let at = SAMPLE_RATE as usize * 600;
+        samples[at * CHANNELS..(at + SAMPLE_RATE as usize) * CHANNELS].fill(0.75);
+        write_pcm(&path, &samples);
+        drop(samples);
+        release_all();
+        let t = std::time::Instant::now();
+        let (feeder, mut consumer) = PcmAudioFeeder::open(&path, SAMPLE_RATE, vec![], Default::default()).unwrap();
+        let opened = t.elapsed();
+        feeder.set_fade(0.0, f64::MAX, 0.0, 0.0, 0, 0, 1.0);
+        feeder.anti_click.store(false, Ordering::Relaxed);
+        feeder.seek(600.0);
+        feeder.resume();
+        assert!(opened < Duration::from_millis(15), "open waited {opened:?} for the file");
+        let mut first = None;
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let mut buf = vec![0.0f32; 4096];
+        while first.is_none() && std::time::Instant::now() < deadline {
+            let n = consumer.pop_slice(&mut buf);
+            first = buf[..n].first().copied();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(first, Some(0.75), "plays from ten minutes in");
         let _ = std::fs::remove_file(&path);
     }
 
