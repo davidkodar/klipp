@@ -36,7 +36,7 @@ fn main() {
         for (name, td) in &cases {
             let mut r = TitleRenderer::new();
             let mut times = Vec::new();
-            let mut kinds = [0usize; 3];
+            let mut kinds = [0usize; 4];
             let frames = std::env::var("FRAMES").ok().and_then(|f| f.parse().ok()).unwrap_or((SECS * FPS) as usize);
             for f in 0..frames {
                 let t = f as f32 * SECS / frames as f32;
@@ -47,13 +47,14 @@ fn main() {
                     TitleFrame::Placed { .. } => 0,
                     TitleFrame::Glyphs { .. } => 1,
                     TitleFrame::Rendered { .. } => 2,
+                    TitleFrame::Layers { .. } => 3,
                 }] += 1;
             }
             times.sort_by(f64::total_cmp);
             let (median, p95, max) = (times[times.len() / 2], times[times.len() * 95 / 100], times[times.len() - 1]);
             println!(
-                "{w}x{h}  {name:30}  median {median:7.1} ms  p95 {p95:7.1} ms  max {max:7.1} ms  {} placed / {} glyphs / {} rendered  {}",
-                kinds[0], kinds[1], kinds[2], if p95 <= budget_ms { "within budget" } else { "OVER budget" }
+                "{w}x{h}  {name:30}  median {median:7.1} ms  p95 {p95:7.1} ms  max {max:7.1} ms  {} placed / {} glyphs / {} rendered / {} layers  {}",
+                kinds[0], kinds[1], kinds[2], kinds[3], if p95 <= budget_ms { "within budget" } else { "OVER budget" }
             );
         }
     }

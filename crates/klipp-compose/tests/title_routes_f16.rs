@@ -87,6 +87,7 @@ fn each_route_lands_within_a_level_of_the_byte_frame() {
                 let got = read(&mut gpu, |g| g.stack_layer_from_srgb_f16_box(0, &pixels.texels, sprite_box(&pixels)));
                 ("rendered", got)
             }
+            TitleFrame::Layers { .. } => panic!("{name}: a single text has no layer stack"),
         };
         let worst = worst_code(&want, &got);
         assert!(worst <= 1.0, "{name} by the {route} route: {worst:.3} sRGB levels from the byte frame");
@@ -194,4 +195,74 @@ fn tracking_4k_cached_and_raster_composition_timing() {
         samples.sort_by(f64::total_cmp);
         println!("4K tracking cached={cached}: median {:.3} ms, p95 {:.3} ms", samples[30], samples[57]);
     }
+}
+
+fn fading_lines() -> TitleData {
+    let mut title = TitleData::single_text_fx(
+        TextBox { text: "Overlap".into(), font_size: 90.0, color: [240, 40, 80, 255], ..Default::default() },
+        LayerFx { motion: TitleMotion::both(Motion::new(MotionKind::Fade).duration(1.0), Motion::exit(MotionKind::Fade).duration(1.0)), ..Default::default() },
+    );
+    let mut second = title.objects[0].clone();
+    second.id = klipp_timeline::TitleObjectId(1);
+    second.opacity = 0.7;
+    second.transform.center.x += 0.02;
+    second.fx_mut().motion.enter = Some(Motion::new(MotionKind::Fade).duration(1.0).delay(0.2));
+    if let klipp_timeline::TitleObjectContent::TextBox(text) = &mut second.content {
+        text.color = [30, 180, 240, 255];
+    }
+    title.objects.push(second);
+    title
+}
+
+#[test]
+fn fading_layers_match_cpu_in_order_and_reuse_their_gpu_sources() {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
+    let title = fading_lines();
+    let mut renderer = TitleRenderer::new();
+    let mut ids = None;
+    // Revisit earlier times and the fully transparent exit: seeking must
+    // neither change the layer order nor leave pixels from the last frame.
+    for t in [0.3, 0.7, 2.0, 3.7, 4.0, 0.5] {
+        let reference = TitleRenderer::new().render_with_window(&title, W, H, None, t, Some(4.0));
+        let want = read(&mut gpu, |p| p.stack_layer_from_srgb_u8(0, &reference));
+        let TitleFrame::Layers { layers, rows } = renderer.frame_with_window(&title, W, H, None, t, Some(4.0)) else {
+            panic!("fading text layers must use cached sprites at {t}");
+        };
+        let current: Vec<_> = layers.iter().map(|(sprite, _)| sprite.id).collect();
+        if let Some(ids) = &ids { assert_eq!(&current, ids); } else { ids = Some(current); }
+        let before_reads = gpu.readback_stats();
+        let before_uploads = gpu.frame_upload_count();
+        let got = read(&mut gpu, |p| {
+            let placed = layers.iter().enumerate().all(|(i, (sprite, alpha))| {
+                if i == 0 {
+                    p.stack_layer_place_sprite_posed(0, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), 0, 0, *alpha, 1.0, sprite.anchor(), None, None, rows.0, rows.1)
+                } else {
+                    p.stack_layer_place_sprite_over(0, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), *alpha, rows.0, rows.1)
+                }
+            });
+            assert_eq!(p.readback_stats(), before_reads, "placing layers must not read back");
+            if t != 0.3 { assert_eq!(p.frame_upload_count(), before_uploads, "warm layers must not upload again"); }
+            placed
+        });
+        let worst = worst_code(&want, &got);
+        assert!(worst <= 1.5, "at {t}: GPU layers differ by {worst} levels");
+        assert_eq!(renderer.resting_renders(), 2, "only two initial rasterizations");
+    }
+    gpu.set_authored_to_working([[0.8, 0.1, 0.1], [0.1, 0.8, 0.1], [0.1, 0.1, 0.8]]);
+    let TitleFrame::Layers { layers, rows } = renderer.frame_with_window(&title, W, H, None, 0.5, Some(4.0)) else { unreachable!() };
+    let (sprite, alpha) = &layers[1];
+    assert!(!gpu.stack_layer_place_sprite_over(0, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), *alpha, rows.0, rows.1), "non-Rec.709 must use the declared composition fallback");
+}
+
+#[test]
+fn fading_layers_at_4k_only_rasterize_the_resting_pictures() {
+    let title = fading_lines();
+    let mut renderer = TitleRenderer::new();
+    for t in [0.1, 0.5, 2.0, 3.6, 0.2] {
+        assert!(matches!(renderer.frame_with_window(&title, 3840, 2160, None, t, Some(4.0)), TitleFrame::Layers { .. }));
+        assert_eq!(renderer.resting_renders(), 2);
+    }
+    let mut keyed = title.clone();
+    keyed.objects[0].opacity_keyframes = vec![Keyframe { time_secs: 0.0, value: 0.0, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }];
+    assert!(matches!(renderer.frame_with_window(&keyed, W, H, None, 0.5, Some(4.0)), TitleFrame::Rendered { .. }));
 }

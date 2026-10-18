@@ -2612,6 +2612,25 @@ impl Renderer {
                                 None => false,
                             }
                         }
+                        klipp_title::TitleFrame::Layers { layers, rows: r } => {
+                            rows = r;
+                            if self.working != WorkingColorspace::Rec709Linear {
+                                residency::record("title.layers", "Fading title layers require authored-space composition outside Rec.709", Work::Fallback);
+                                let stack = klipp_title::compose_layers(&layers, width, height, r);
+                                let pixels = klipp_title::BoxRaster::from_stack(&stack, (width, height), r, (0, width));
+                                self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_f16_box(slot, &pixels.texels, sprite_box(&pixels)))
+                            } else {
+                                self.executor.gpu_pipeline_or_init().is_some_and(|p| {
+                                    layers.iter().enumerate().all(|(index, (sprite, opacity))| {
+                                        if index == 0 {
+                                            p.stack_layer_place_sprite_posed(slot, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), 0, 0, *opacity, 1.0, sprite.anchor(), None, None, r.0, r.1)
+                                        } else {
+                                            p.stack_layer_place_sprite_over(slot, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), *opacity, r.0, r.1)
+                                        }
+                                    })
+                                })
+                            }
+                        }
                         klipp_title::TitleFrame::Rendered { pixels, rows: r } => {
                             residency::record("title.raster", "Title animation requires CPU raster/composition", Work::Fallback);
                             rows = r;
