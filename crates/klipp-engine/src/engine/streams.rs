@@ -371,6 +371,9 @@ pub(crate) struct ClipStreams {
     /// The pixels a second all streams together may ask for:
     /// [`crate::decode_budget::stream_capacity`], or a test's.
     capacity: fn() -> f64,
+    /// What the GPU's decoder has left: [`crate::decode_budget::gpu_headroom`],
+    /// or a test's.
+    gpu_headroom: fn() -> f64,
     /// Media sources' readers (#1746), kept across frames.
     pub(crate) media: klipp_media::frame_reader::MediaReaders,
     /// OFX plug-ins' neighbour readers (#2013), by file and log format,
@@ -380,7 +383,7 @@ pub(crate) struct ClipStreams {
 
 impl ClipStreams {
     pub fn new(max_streams: usize) -> Self {
-        Self { streams: HashMap::new(), opening: HashMap::new(), reversed: HashMap::new(), rates: HashMap::new(), max_streams, capacity: crate::decode_budget::stream_capacity, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS), neighbours: Vec::new() }
+        Self { streams: HashMap::new(), opening: HashMap::new(), reversed: HashMap::new(), rates: HashMap::new(), max_streams, capacity: crate::decode_budget::stream_capacity, gpu_headroom: crate::decode_budget::gpu_headroom, media: klipp_media::frame_reader::MediaReaders::new(klipp_compose::MEDIA_READERS), neighbours: Vec::new() }
     }
 
     /// The reader of `path`'s frames at any time for an OFX plug-in's
@@ -512,11 +515,16 @@ impl ClipStreams {
     fn make_room(&mut self, rate: f64, ahead: bool) -> bool {
         let capacity = (self.capacity)();
         let fits = |s: &Self| s.streams.len() + s.opening.len() < s.max_streams && s.rates.values().sum::<f64>() + rate <= capacity;
+        if ahead {
+            // A stream opened ahead also waits for the GPU's decoder to
+            // have room for it: with no count to stop them, every clip
+            // coming up within its lead was opened, eleven at a time, all
+            // seeking on the GPU's decoder while the section on screen
+            // needed it, and the codec section played at 15–22 frames.
+            return fits(self) && rate <= (self.gpu_headroom)();
+        }
         if fits(self) {
             return true;
-        }
-        if ahead {
-            return false;
         }
         while !fits(self) {
             let opened_ahead = self.streams.iter().filter(|(_, s)| s.ahead).map(|(id, _)| *id);
@@ -684,6 +692,8 @@ mod tests {
         let resolve = |_: &Want| Some((path.clone(), 0, 0.0));
         let ahead = Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 1.0, reversed: false, ahead: true };
         let mut streams = ClipStreams::new(2);
+        // Whatever other tests ask of the process's GPU budget.
+        streams.gpu_headroom = || f64::INFINITY;
         streams.sync(std::slice::from_ref(&ahead), frame, &resolve);
         assert!(streams.has(ahead.clip) && streams.ready(frame), "opening ahead: nothing waits for it");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -717,6 +727,7 @@ mod tests {
         let mut streams = ClipStreams::new(16);
         // Room for four streams of 100.
         streams.capacity = || 400.0;
+        streams.gpu_headroom = || f64::INFINITY;
         let resolve = |_: &Want| Some((path.clone(), 0, 100.0));
         let want = |ahead: bool| Want { clip: ClipId::new(), media: MediaId::new(), rotation: 0, source_secs: 0.0, reversed: false, ahead };
         let early = want(true);
@@ -735,6 +746,13 @@ mod tests {
         // The tiles gone, there is room again.
         streams.sync(std::slice::from_ref(&later), frame, &resolve);
         assert!(streams.has(later.clip));
+        // Room for it, but the GPU's decoder is spent: one ahead waits, one
+        // on screen opens.
+        streams.gpu_headroom = || 0.0;
+        let (waits, opens) = (want(true), want(false));
+        streams.sync(&[later.clone(), waits.clone(), opens.clone()], frame, &resolve);
+        assert!(!streams.has(waits.clip), "ahead waits for the GPU's decoder");
+        assert!(streams.has(opens.clip), "on screen opens");
     }
 
     /// #2116: a stream asking more than the GPU's decoder has left opens
