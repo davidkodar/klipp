@@ -631,7 +631,15 @@ pub fn node_types(category: Option<&str>) -> serde_json::Value {
         types.len(),
         category.map(|c| format!(" in {c}")).unwrap_or_default()
     );
-    json!({ "text": text, "types": types, "publication": {"available":false,"why":"Publishing group ports waits for the app model to preserve interfaces through save and reopen."} })
+    json!({ "text": text, "types": types, "publication": {
+        "available":true,
+        "scope":"Clip groups; other roots remain subject to their persistence restrictions.",
+        "publish":{"op":"publish","path":"group path","from":"direct child path (supports {new:k})","from_port":"child output key","key":"new group output key","label":"optional display name"},
+        "unpublish":{"op":"unpublish","path":"group path","key":"published output key"},
+        "type":"Inferred from the child's output; cannot be overridden.",
+        "read":"graph_read lists group ports with key, direction, ty and child binding; connect from the group path using key.",
+        "atomic":"Publish and connect in one graph_ops batch; disconnect readers before unpublishing in the same batch."
+    } })
 }
 
 #[cfg(test)]
@@ -706,7 +714,7 @@ mod node_types_tests {
         let invert = find("invert");
         assert_eq!(blur["mix"], serde_json::json!({"kind":"Float","range":[0,1],"default":1,"operation":"mix"}));
         assert!(invert.get("mix").is_none());
-        assert_eq!(all["publication"]["available"], false);
+        assert_eq!(all["publication"]["available"], true);
         assert_eq!(invert["mixable"], false);
         assert_eq!(invert["inputs"], serde_json::json!([{ "key": "in", "type": "Image", "optional": false }]));
         // 37 effects (the 3D LUT and the colour-space transform among

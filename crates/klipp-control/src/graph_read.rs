@@ -23,7 +23,11 @@ pub(crate) fn read(docs: &Documents, path: &NodePath, depth: usize) -> Result<Va
     } else {
         let n = resolve(docs, path).map_err(|e| e.to_string())?;
         match &n.group {
-            Some(group) => &group.graph,
+            Some(group) => {
+                let mut value = graph_value(&group.graph, depth);
+                value["ports"] = json!(group.interface);
+                return Ok(bounded(value));
+            },
             None => return Ok(bounded(json!({"nodes":[node(n, depth)],"edges":[]}))),
         }
     };
@@ -96,6 +100,11 @@ fn bounded(mut value: Value) -> Value {
 }
 
 fn trim(value: &mut Value) -> usize {
+    if value.get("ports").is_some_and(|v| v.to_string().len() > 256) {
+        value["ports"] = Value::Null;
+        value["omitted_details"] = json!(true);
+        return 1;
+    }
     if let Some(nodes) = value.get_mut("nodes").and_then(Value::as_array_mut) {
         for n in nodes.iter_mut().rev() {
             if let Some(body) = n.get_mut("body") {

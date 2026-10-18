@@ -2443,8 +2443,13 @@ mod interface_tests {
         let definitions = tool_definitions_for(false);
         let graph = definitions.iter().find(|t| t["name"] == "klipp_graph").unwrap();
         let ops = graph["inputSchema"]["properties"]["ops"]["items"]["properties"]["op"]["enum"].as_array().unwrap();
-        assert_eq!(ops.len(), 10);
-        assert!(!ops.iter().any(|op| matches!(op.as_str(), Some("publish" | "unpublish"))));
+        assert_eq!(ops.len(), 12);
+        for op in [json!({"op":"publish","path":path,"from":path,"from_port":"out","key":"matte"}),
+                   json!({"op":"unpublish","path":path,"key":"matte"})] {
+            assert!(ops.contains(&op["op"]));
+            let args = json!({"ops":[op]});
+            assert_eq!(tool_to_command("klipp_graph", &args).unwrap()["ops"], args["ops"]);
+        }
         let beside = json!({"ops":[{"op":"add_beside","at":path,"type":"klipp.grade.mask"}]});
         let command = tool_to_command("klipp_graph", &beside).unwrap();
         assert_eq!(command["ops"], beside["ops"]);

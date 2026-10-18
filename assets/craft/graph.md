@@ -58,6 +58,27 @@ Add `expected_revision` and `expected_project_identity` from the latest read to
 guard the call. Send it alone, not alongside another write. One successful batch
 is one undo step, including its initial parameters and connections.
 
+## Publish a group output
+
+Expose a direct child's output on its enclosing clip group, then connect from
+that group to a sibling effect. The output type is inferred from the child;
+read the resulting `ports` entries (`key`, `direction`, `ty`, `binding`) on the
+group in `klipp_graph_read`, or read the group path itself. `klipp_node_types`
+also describes these operations under `publication`.
+
+```json
+{"ops":[
+  {"op":"publish","path":{"root":{"clip":"CLIP_ID"},"nodes":["GROUP_ID"]},"from":{"root":{"clip":"CLIP_ID"},"nodes":["GROUP_ID","MASK_ID"]},"from_port":"out","key":"window_mask","label":"Window"},
+  {"op":"connect","from":{"root":{"clip":"CLIP_ID"},"nodes":["GROUP_ID"]},"from_port":"window_mask","to":{"root":{"clip":"CLIP_ID"},"nodes":["BLUR_ID"]},"to_port":"mask"}
+]}
+```
+
+`from` can use `{new:k}` for a direct child added earlier in the same batch.
+To remove an output, disconnect its readers and then send
+`{"op":"unpublish","path":GROUP_PATH,"key":"window_mask"}` in the same batch.
+Missing children/outputs, duplicate keys and invalid connections refuse the
+whole batch without changing the graph. The child node remains after unpublish.
+
 ## Shape values
 
 For an existing Mask, use `set` with its path, `key:"masks"` and the stack above
@@ -83,9 +104,8 @@ On a clip, an effect node's mix, its mask connection and channel, and a custom
 label are kept: they read back, survive saving and reopening, and undo as one
 step. The timeline grade and a grade group's stages keep a correction's mix and
 mask channel; a track's grade has no place for them and refuses them.
-Publishing group ports is unavailable until those interfaces survive saving and
-reopening. Do not replace
-a refused operation with an approximation and report success.
+Clip groups keep published outputs through save/reopen. Other roots still
+refuse interfaces they cannot preserve. Do not replace a refused operation with an approximation and report success.
 
 A refused batch changes nothing. `op_index` is the zero-based index in your
 original `ops`, including when an add's initial parameter failed. Read the
@@ -102,4 +122,4 @@ successful write do not by themselves prove the rendered picture is correct.
 
 ## The rules of klipp_graph, in short
 
-Edit one clip graph atomically as one undo step; send alone. Read graph_read and node_types first. Paths contain a root and node IDs; {new:k} refers to the node made by earlier op k. Values follow catalog kinds; choices use labels. Created nodes return full paths. A clip's graph keeps an effect's mix, its mask (channel and connection) and its label; the timeline grade and a grade group's stages keep a correction's mix and mask channel, and a track's grade refuses them. Placed kinds and publication are refused; unsupported parameter shapes are refused with the failing op_index. Revision and project identity guard commit. add_beside inserts unwired; connect required inputs in the same batch. Mask shapes use the masks JSON described by node_types.
+Edit one clip graph atomically as one undo step; send alone. Read graph_read and node_types first. Paths contain a root and node IDs; {new:k} refers to the node made by earlier op k. Values follow catalog kinds; choices use labels. Created nodes return full paths. A clip's graph keeps an effect's mix, its mask (channel and connection) and its label; the timeline grade and a grade group's stages keep a correction's mix and mask channel, and a track's grade refuses them. Placed kinds are refused; clip groups support publish/unpublish; unsupported parameter shapes are refused with the failing op_index. Revision and project identity guard commit. add_beside inserts unwired; connect required inputs in the same batch. Mask shapes use the masks JSON described by node_types.
