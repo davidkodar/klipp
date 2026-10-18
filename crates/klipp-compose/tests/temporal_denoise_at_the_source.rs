@@ -81,7 +81,7 @@ fn the_source_node_denoises_against_its_neighbours_once_a_frame() {
     let seq = sequence(Some((1.0, 0.1)));
     let mut src = Known { asked: Arc::clone(&asked), fps: None };
     let out = r.render_inspected(&seq, tc(0.5), W, H, &mut src, RenderOptions::default(), Inspect::default()).0;
-    let want = klipp_effects::temporal_denoise::denoise_frame(&flat(0.5), &[&flat(0.48), &flat(0.52)], 0.1, 1.0);
+    let want = klipp_effects::temporal_denoise::denoise_frame(&flat(0.5), &[&flat(0.48), &flat(0.52)], 0.1, 1.0, klipp_color::linear::luma_coefs(klipp_core::WorkingColorspace::Rec709Linear));
     let apart = out.iter().zip(&want).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
     assert!(apart < 1e-5, "{apart} from the expected denoise");
     assert_eq!(r.source_node_runs(), 1, "once for the frame");

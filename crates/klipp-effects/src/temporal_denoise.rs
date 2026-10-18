@@ -33,11 +33,6 @@ use rayon::prelude::*;
 /// which is a frame blend rather than a denoise.
 pub const MIN_THRESHOLD: f32 = 1e-4;
 
-/// The weights the guard's brightness is taken with, BT.709, in every
-/// working space (#2019). One copy: the CPU passes below and the GPU
-/// kernel (`gpu::GpuContext::apply_temporal_denoise_chain`) both read it.
-pub const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
-
 /// The gaussian's denominator for a `threshold`: `2 · t²`, the threshold
 /// floored at [`MIN_THRESHOLD`] first. Shared with the GPU kernel.
 pub fn denominator(threshold: f32) -> f32 {
@@ -45,15 +40,18 @@ pub fn denominator(threshold: f32) -> f32 {
     2.0 * t * t
 }
 
-/// The luma of a linear RGB pixel, BT.709.
+/// The luma of a linear RGB pixel, with the working space's weights
+/// (`klipp_color::linear::luma_coefs`), as the GPU kernel takes them
+/// (#2019): BT.709's in every space weighed an ACEScg or Rec.2020
+/// picture's brightness by the wrong primaries.
 ///
 /// The guard compares brightness rather than each channel: chroma noise
 /// moves the channels apart without moving the brightness much, and
 /// gating on that would refuse to clean exactly the noise this is best
 /// at removing.
 #[inline]
-fn luma(p: &[f32]) -> f32 {
-    LUMA[0] * p[0] + LUMA[1] * p[1] + LUMA[2] * p[2]
+fn luma(p: &[f32], w: [f32; 3]) -> f32 {
+    w[0] * p[0] + w[1] * p[1] + w[2] * p[2]
 }
 
 /// One pixel's temporal average, given its neighbours' values.
@@ -61,13 +59,13 @@ fn luma(p: &[f32]) -> f32 {
 /// Separated out because it is the whole algorithm, and a shader and a
 /// parallel loop should not each carry their own copy of it.
 #[inline]
-pub fn blend_pixel(cur: [f32; 3], neighbours: &[[f32; 3]], threshold: f32, strength: f32) -> [f32; 3] {
-    let cur_luma = luma(&cur);
+pub fn blend_pixel(cur: [f32; 3], neighbours: &[[f32; 3]], threshold: f32, strength: f32, luma_weights: [f32; 3]) -> [f32; 3] {
+    let cur_luma = luma(&cur, luma_weights);
     let denom = 2.0 * threshold * threshold;
     let mut sum = cur;
     let mut weight = 1.0f32;
     for n in neighbours {
-        let n_luma = luma(n);
+        let n_luma = luma(n, luma_weights);
         let d = cur_luma - n_luma;
         // A gaussian on the brightness difference: identical pixels
         // weigh 1, and the weight falls away as the pixel changes, so
@@ -100,12 +98,14 @@ pub const NEIGHBOURS: usize = 2;
 ///
 /// `threshold` is how much a pixel may change and still be treated as
 /// the same pixel — in linear light, so it is a fraction of the light
-/// rather than of a code. `strength` mixes the result back.
+/// rather than of a code. `strength` mixes the result back. `luma_weights`
+/// are the working space's, `klipp_color::linear::luma_coefs`.
 pub fn denoise_frame(
     current: &[f32],
     neighbours: &[&[f32]],
     threshold: f32,
     strength: f32,
+    luma_weights: [f32; 3],
 ) -> Vec<f32> {
     let strength = strength.clamp(0.0, 1.0);
     if strength <= 0.0 || neighbours.is_empty() {
@@ -120,12 +120,12 @@ pub fn denoise_frame(
     let mut out = current.to_vec();
     out.par_chunks_exact_mut(4).enumerate().for_each(|(i, px)| {
         let base = i * 4;
-        let cur_luma = luma(px);
+        let cur_luma = luma(px, luma_weights);
         let mut sum = [px[0], px[1], px[2]];
         let mut weight = 1.0f32;
         for n in &usable {
             let np = &n[base..base + 3];
-            let n_luma = luma(np);
+            let n_luma = luma(np, luma_weights);
             let d = cur_luma - n_luma;
             let w = (-(d * d) / denom).exp();
             for c in 0..3 {
@@ -146,6 +146,9 @@ pub fn denoise_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// BT.709's weights, the Rec.709 working space's.
+    const R709: [f32; 3] = [0.2126, 0.7152, 0.0722];
 
     const W: usize = 64;
     const H: usize = 48;
@@ -177,7 +180,7 @@ mod tests {
 
     /// Standard deviation of the luma, which is what "how noisy" means.
     fn sigma(frame: &[f32]) -> f32 {
-        let l: Vec<f32> = frame.chunks_exact(4).map(luma).collect();
+        let l: Vec<f32> = frame.chunks_exact(4).map(|p| luma(p, R709)).collect();
         let mean = l.iter().sum::<f32>() / l.len() as f32;
         (l.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / l.len() as f32).sqrt()
     }
@@ -197,7 +200,7 @@ mod tests {
 
         let before = sigma(&cur);
         // A threshold well above the noise, so the guard lets it work.
-        let out = denoise_frame(&cur, &[&prev, &next], 0.1, 1.0);
+        let out = denoise_frame(&cur, &[&prev, &next], 0.1, 1.0, R709);
         let after = sigma(&out);
         eprintln!("noise sigma: {before:.5} -> {after:.5} ({:.2}x)", after / before);
         assert!(after < before * 0.7, "noise barely fell: {before} -> {after}");
@@ -233,7 +236,7 @@ mod tests {
         }
 
         // A threshold sized for grain, not for a 0.85 jump.
-        let out = denoise_frame(&cur, &[&other, &other], 0.02, 1.0);
+        let out = denoise_frame(&cur, &[&other, &other], 0.02, 1.0, R709);
 
         // The patch where it actually is stays bright.
         let on = (20 * W + 10) * 4;
@@ -253,7 +256,7 @@ mod tests {
     fn a_wide_guard_is_just_an_average() {
         let cur = [0.0f32, 0.0, 0.0, 1.0].repeat(N);
         let other = [1.0f32, 1.0, 1.0, 1.0].repeat(N);
-        let out = denoise_frame(&cur, &[&other], 1e6, 1.0);
+        let out = denoise_frame(&cur, &[&other], 1e6, 1.0, R709);
         assert!((out[0] - 0.5).abs() < 1e-3, "expected the midpoint, got {}", out[0]);
         // Alpha is not part of the average.
         assert_eq!(out[3], 1.0);
@@ -263,12 +266,12 @@ mod tests {
     fn strength_and_absent_neighbours_are_no_ops() {
         let cur = frame_with(0.18, &noise(7, 0.02));
         let other = frame_with(0.18, &noise(8, 0.02));
-        assert_eq!(denoise_frame(&cur, &[&other], 0.1, 0.0), cur, "strength 0");
-        assert_eq!(denoise_frame(&cur, &[], 0.1, 1.0), cur, "no neighbours");
+        assert_eq!(denoise_frame(&cur, &[&other], 0.1, 0.0, R709), cur, "strength 0");
+        assert_eq!(denoise_frame(&cur, &[], 0.1, 1.0, R709), cur, "no neighbours");
         // A clip's first frame has no `prev`; a wrong-sized neighbour
         // is ignored rather than refused.
         let short = [0.0f32; 8];
-        assert_eq!(denoise_frame(&cur, &[&short[..]], 0.1, 1.0), cur, "wrong size");
+        assert_eq!(denoise_frame(&cur, &[&short[..]], 0.1, 1.0, R709), cur, "wrong size");
     }
 
     /// Half strength is half the way to the averaged value.
@@ -276,8 +279,8 @@ mod tests {
     fn strength_mixes_the_result_back() {
         let cur = [0.0f32, 0.0, 0.0, 1.0].repeat(N);
         let other = [1.0f32, 1.0, 1.0, 1.0].repeat(N);
-        let full = denoise_frame(&cur, &[&other], 1e6, 1.0);
-        let half = denoise_frame(&cur, &[&other], 1e6, 0.5);
+        let full = denoise_frame(&cur, &[&other], 1e6, 1.0, R709);
+        let half = denoise_frame(&cur, &[&other], 1e6, 0.5, R709);
         assert!((half[0] - full[0] * 0.5).abs() < 1e-4, "got {}", half[0]);
     }
 
@@ -288,7 +291,7 @@ mod tests {
         let cur = frame_with(0.18, &noise(11, 0.03));
         let a = frame_with(0.18, &noise(12, 0.03));
         let b = frame_with(0.18, &noise(13, 0.03));
-        let out = denoise_frame(&cur, &[&a, &b], 0.05, 0.8);
+        let out = denoise_frame(&cur, &[&a, &b], 0.05, 0.8, R709);
         for i in (0..N).step_by(37) {
             let p = i * 4;
             let want = blend_pixel(
@@ -296,6 +299,7 @@ mod tests {
                 &[[a[p], a[p + 1], a[p + 2]], [b[p], b[p + 1], b[p + 2]]],
                 0.05,
                 0.8,
+                R709,
             );
             for c in 0..3 {
                 assert!(
@@ -306,5 +310,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// #2019: the guard weighs brightness by the working space's
+    /// primaries. Two pixels BT.709 calls the same brightness differ in
+    /// ACEScg's, so a neighbour that averages fully in Rec.709 is held
+    /// back in ACEScg.
+    #[test]
+    fn a_wide_space_weighs_brightness_by_its_own_primaries() {
+        let aces = klipp_color::linear::luma_coefs(klipp_core::WorkingColorspace::AcesCG);
+        // Equal luma in BT.709: more red, less green and blue.
+        let cur = [0.5f32, 0.5, 0.5];
+        let dr = 0.2;
+        let n = [0.5 + dr, 0.5 - dr * R709[0] / (R709[1] + R709[2]), 0.5 - dr * R709[0] / (R709[1] + R709[2])];
+        assert!((luma(&cur, R709) - luma(&n, R709)).abs() < 1e-6, "the same brightness in BT.709");
+        let rec709 = blend_pixel(cur, &[n], 0.01, 1.0, R709);
+        let acescg = blend_pixel(cur, &[n], 0.01, 1.0, aces);
+        // BT.709: the neighbour averages fully, half of it.
+        assert!((rec709[0] - (cur[0] + n[0]) / 2.0).abs() < 1e-4, "{rec709:?}");
+        // ACEScg sees it brighter, and keeps the pixel nearer its own.
+        assert!((acescg[0] - cur[0]).abs() < (rec709[0] - cur[0]).abs() - 0.01, "ACEScg {acescg:?} vs Rec.709 {rec709:?}");
     }
 }

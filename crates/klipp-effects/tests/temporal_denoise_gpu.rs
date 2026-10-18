@@ -1,7 +1,8 @@
 //! Temporal noise reduction on the GPU chain (#1988) draws what the CPU
 //! pass draws: `temporal_denoise::denoise_frame`, within a level of 8-bit
 //! sRGB, over noisy frames with no, one and two neighbours and several
-//! thresholds and strengths, and the alpha untouched.
+//! thresholds and strengths, in each working space's luma (#2019), and
+//! the alpha untouched.
 
 use klipp_effects::gpu::GpuEffectsPipeline;
 use klipp_effects::temporal_denoise::denoise_frame;
@@ -51,15 +52,18 @@ fn on_gpu(g: &mut GpuEffectsPipeline, cur: &[f32], neighbours: &[&[f32]], thresh
     g.flush_chain_and_download_linear(false, (W * H) as usize)
 }
 
-/// The luma weights each case runs with: the CPU's, one row per working
-/// space it takes them in.
-const LUMAS: &[[f32; 3]] = &[klipp_effects::temporal_denoise::LUMA];
+/// The working spaces each case runs in, by their luma weights.
+const SPACES: [klipp_core::WorkingColorspace; 3] = [
+    klipp_core::WorkingColorspace::Rec709Linear,
+    klipp_core::WorkingColorspace::AcesCG,
+    klipp_core::WorkingColorspace::Bt2020Linear,
+];
 
 #[test]
 fn the_gpu_draws_what_the_cpu_draws() {
     let Some(mut g) = pipeline() else { return };
-    for &luma in LUMAS {
-        draws_what_the_cpu_draws(&mut g, luma);
+    for ws in SPACES {
+        draws_what_the_cpu_draws(&mut g, klipp_color::linear::luma_coefs(ws));
     }
 }
 
@@ -71,7 +75,7 @@ fn draws_what_the_cpu_draws(g: &mut GpuEffectsPipeline, luma: [f32; 3]) {
         let neighbours = &all[..count];
         for threshold in [0.0, 0.02, 0.15, 1.0] {
             for strength in [0.3, 1.0] {
-                let want = denoise_frame(&cur, neighbours, threshold, strength);
+                let want = denoise_frame(&cur, neighbours, threshold, strength, luma);
                 let got = on_gpu(g, &cur, neighbours, threshold, strength, luma);
                 assert_eq!(got.len(), want.len());
                 for (i, (a, b)) in got.chunks_exact(4).zip(want.chunks_exact(4)).enumerate() {
@@ -100,7 +104,7 @@ fn a_neighbour_it_cannot_bind_is_refused() {
     let full = g.upload_neighbour(&cur).unwrap();
     let small = g.upload_neighbour(&cur[..cur.len() / 2]).unwrap();
     g.begin_chain();
-    assert!(!g.apply_temporal_denoise_chain(true, W, H, &[&full, &full, &full], 0.1, 1.0, klipp_effects::temporal_denoise::LUMA), "three neighbours");
-    assert!(!g.apply_temporal_denoise_chain(true, W, H, &[&small], 0.1, 1.0, klipp_effects::temporal_denoise::LUMA), "a neighbour of the wrong size");
+    assert!(!g.apply_temporal_denoise_chain(true, W, H, &[&full, &full, &full], 0.1, 1.0, klipp_color::linear::luma_coefs(klipp_core::WorkingColorspace::Rec709Linear)), "three neighbours");
+    assert!(!g.apply_temporal_denoise_chain(true, W, H, &[&small], 0.1, 1.0, klipp_color::linear::luma_coefs(klipp_core::WorkingColorspace::Rec709Linear)), "a neighbour of the wrong size");
     g.submit_chain();
 }

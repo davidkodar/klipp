@@ -110,7 +110,8 @@ fn expected(clip: &Clip, source: &Ramp, frame: i64, strength: f32, sequence_fps:
         .map(|f| f.linear)
         .collect();
     let refs: Vec<&[f32]> = neighbours.iter().map(Vec::as_slice).collect();
-    klipp_effects::temporal_denoise::denoise_frame(&flat(grey(at)), &refs, THRESHOLD, strength)
+    // The Rec.709 working space it renders in: BT.709's weights.
+    klipp_effects::temporal_denoise::denoise_frame(&flat(grey(at)), &refs, THRESHOLD, strength, [0.2126, 0.7152, 0.0722])
 }
 
 /// `frames` of the scene on `route`, the GPU `gpu`, each held to its
