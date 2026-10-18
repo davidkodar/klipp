@@ -923,11 +923,7 @@ impl KlippApp {
                     true
                 }
                 AppCommand::AddMediaMarker { media_id, marker } => {
-                    if let Some(item) = self.state.media_pool.get_mut(media_id) {
-                        item.markers.push(marker.clone());
-                        item.markers.sort_by(|a, b| a.secs.total_cmp(&b.secs));
-                        self.state.dirty = true;
-                    }
+                    self.state.add_media_marker(*media_id, marker.clone());
                     true
                 }
                 AppCommand::RemoveMediaMarker { media_id, index } => {
@@ -2173,5 +2169,16 @@ mod retarget_drop_tests {
     fn a_duplicate_with_no_destination_places_nothing() {
         let mut pending = std::collections::HashMap::new();
         assert!(retarget_pending_drop(&mut pending, MediaId::new(), MediaId::new()).is_none());
+    }
+}
+
+impl crate::state::AppState {
+    /// The editor's marker on media item `id`, in time order: an edit.
+    pub(crate) fn add_media_marker(&mut self, id: klipp_core::MediaId, marker: klipp_core::MediaMarker) {
+        if let Some(item) = self.media_pool.get_mut(&id) {
+            item.markers.push(marker);
+            item.markers.sort_by(|a, b| a.secs.total_cmp(&b.secs));
+            self.dirty = true;
+        }
     }
 }

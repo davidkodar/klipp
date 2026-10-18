@@ -275,8 +275,6 @@ impl KlippApp {
 
     /// Analysis that finished since the last frame, put on its media
     /// items as markers: a cut between shots, a stretch of silence.
-    /// The item's analysis markers are replaced whole, and the editor's
-    /// own are not touched.
     pub(super) fn apply_analysis_markers(&mut self) {
         let done = klipp_analysis::service::take_completed();
         if done.is_empty() {
@@ -284,47 +282,11 @@ impl KlippApp {
         }
         let mut changed = false;
         for id in done {
-            let Some(item) = self.state.media_pool.get_mut(&id) else { continue };
-            let report = klipp_analysis::report::MediaAnalysis::load(&item.path);
-            if report.is_empty() {
-                continue;
-            }
-            let before = item.markers.clone();
-            item.markers.retain(|m| m.kind != klipp_core::MediaMarkerKind::Analysis);
-            if let Some(shots) = &report.shots {
-                for b in &shots.boundaries {
-                    item.markers.push(klipp_core::MediaMarker { secs: *b, duration_secs: 0.0, name: "cut".into(), kind: klipp_core::MediaMarkerKind::Analysis });
-                }
-            }
-            if let Some(audio) = &report.audio {
-                for sp in audio.silences.iter().filter(|s| s.end_secs - s.start_secs >= 0.8) {
-                    let mut m = klipp_core::MediaMarker::range(klipp_core::MediaMarkerKind::Analysis, sp.start_secs, sp.end_secs);
-                    m.name = "silence".into();
-                    item.markers.push(m);
-                }
-            }
-            item.markers.sort_by(|a, b| a.secs.total_cmp(&b.secs));
-            // The same markers again are no change: a project opened with
-            // its analysis already cached came up with unsaved changes,
-            // and asked to be saved before it could be closed.
-            changed |= item.markers != before;
-            // What the screen showed, each line once, for the pool's
-            // search, its Screen text column and smart-bin rules.
-            let digest = report.screentext.as_ref().map(screen_text_digest).unwrap_or_default();
-            if item.screen_text != digest {
-                item.screen_text = digest;
-                changed = true;
-            }
-            self.state.analysis_generation += 1;
+            let Some(path) = self.state.media_pool.get(&id).map(|i| i.path.clone()) else { continue };
+            let report = klipp_analysis::report::MediaAnalysis::load(&path);
+            changed |= self.state.apply_analysis(id, &report);
         }
         if changed {
-            self.state.dirty = true;
-            // Said to the socket: a project saved a moment ago reads as
-            // unsaved with no edit made, and an agent wondered what it did.
-            if let Ok(mut project) = self.state.control_shared.project.lock() {
-                project.dirty = true;
-                project.changed_by = Some("analysis markers arriving on media items".into());
-            }
             self.sync_media_pool_to_engine();
         }
     }
@@ -436,6 +398,48 @@ pub(super) fn last_seek(cmds: &[AppCommand]) -> Option<klipp_core::Timecode> {
     })
 }
 
+impl crate::state::AppState {
+    /// `report`'s results put on media item `id` (#2104): its analysis
+    /// markers replaced whole (the editor's own are not touched) and its
+    /// screen text. Whether anything shown changed.
+    ///
+    /// Not an edit: the project is left as saved. These are made from the
+    /// analysis cache, again on every open; marking the project unsaved
+    /// for them had a project opened and only played ask to be saved
+    /// before it could be closed.
+    pub(crate) fn apply_analysis(&mut self, id: klipp_core::MediaId, report: &klipp_analysis::report::MediaAnalysis) -> bool {
+        let Some(item) = self.media_pool.get_mut(&id) else { return false };
+        if report.is_empty() {
+            return false;
+        }
+        let before = item.markers.clone();
+        item.markers.retain(|m| m.kind != klipp_core::MediaMarkerKind::Analysis);
+        if let Some(shots) = &report.shots {
+            for b in &shots.boundaries {
+                item.markers.push(klipp_core::MediaMarker { secs: *b, duration_secs: 0.0, name: "cut".into(), kind: klipp_core::MediaMarkerKind::Analysis });
+            }
+        }
+        if let Some(audio) = &report.audio {
+            for sp in audio.silences.iter().filter(|s| s.end_secs - s.start_secs >= 0.8) {
+                let mut m = klipp_core::MediaMarker::range(klipp_core::MediaMarkerKind::Analysis, sp.start_secs, sp.end_secs);
+                m.name = "silence".into();
+                item.markers.push(m);
+            }
+        }
+        item.markers.sort_by(|a, b| a.secs.total_cmp(&b.secs));
+        let mut changed = item.markers != before;
+        // What the screen showed, each line once, for the pool's search,
+        // its Screen text column and smart-bin rules.
+        let digest = report.screentext.as_ref().map(screen_text_digest).unwrap_or_default();
+        if item.screen_text != digest {
+            item.screen_text = digest;
+            changed = true;
+        }
+        self.analysis_generation += 1;
+        changed
+    }
+}
+
 /// The lines a screen recording showed, each once in the order first
 /// seen, joined for a field; cut at a few thousand characters so a
 /// long recording's chrome does not swamp the pool.
@@ -536,6 +540,32 @@ mod last_seek_tests {
         let cmds = [AppCommand::Pause, AppCommand::SeekTo(a), AppCommand::Play, AppCommand::SeekTo(b)];
         assert_eq!(last_seek(&cmds), Some(b));
         assert_eq!(last_seek(&[AppCommand::Play]), None);
+    }
+}
+
+#[cfg(test)]
+mod analysis_is_not_an_edit_tests {
+    use klipp_analysis::report::MediaAnalysis;
+    use klipp_analysis::shots::Shots;
+
+    /// #2104: a project opened and only played came up unsaved: the
+    /// analysis cache's markers arriving on its media marked it changed.
+    /// They arrive and show, and the project stays as saved; the editor's
+    /// own marker, the control, is an edit.
+    #[test]
+    fn analysis_arriving_leaves_the_project_saved_and_a_marker_does_not() {
+        let mut state = crate::state::AppState::default();
+        let id = klipp_core::MediaId::new();
+        let fps = klipp_core::Fps::new(30, 1);
+        state.media_pool.add(klipp_media::MediaItem::new_synthetic_title(id, "shot.mp4".into(), klipp_core::Timecode::from_frames(300, 30), fps));
+        let report = MediaAnalysis { shots: Some(Shots::from_boundaries(10.0, vec![2.0, 6.5])), ..Default::default() };
+        assert!(state.apply_analysis(id, &report), "the markers are new: shown");
+        let cuts = state.media_pool.get(&id).unwrap().markers.iter().filter(|m| m.kind == klipp_core::MediaMarkerKind::Analysis).count();
+        assert_eq!(cuts, 2);
+        assert!(!state.dirty, "analysis arriving is no edit");
+        assert!(!state.apply_analysis(id, &report), "the same again changes nothing");
+        state.add_media_marker(id, klipp_core::MediaMarker::note(4.0));
+        assert!(state.dirty, "the editor's own marker is an edit");
     }
 }
 
