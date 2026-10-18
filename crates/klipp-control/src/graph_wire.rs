@@ -106,6 +106,8 @@ pub enum GraphWireOp {
     Remove { path: GraphPath },
     Connect { from: GraphPath, from_port: String, to: GraphPath, to_port: String },
     Disconnect { to: GraphPath, port: String },
+    Publish { path: GraphPath, from: GraphPath, from_port: String, key: String, label: Option<String> },
+    Unpublish { path: GraphPath, key: String },
     Set { path: GraphPath, key: String, value: Value },
     Enable { path: GraphPath, enabled: bool },
     Mix { path: GraphPath, #[serde(deserialize_with = "nullable")] mix: Option<f32> },
@@ -118,7 +120,7 @@ impl GraphWireOp {
         match self {
             Self::Add { after, .. } => after,
             Self::AddBeside { at, .. } => at,
-            Self::Remove { path } | Self::Set { path, .. } | Self::Enable { path, .. }
+            Self::Publish { path, .. } | Self::Unpublish { path, .. } | Self::Remove { path } | Self::Set { path, .. } | Self::Enable { path, .. }
             | Self::Mix { path, .. } | Self::MaskChannel { path, .. } | Self::MoveAfter { path, .. } => path,
             Self::Connect { to, .. } | Self::Disconnect { to, .. } => to,
         }
@@ -143,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn publication_and_ambiguous_roots_are_not_wire_operations() {
+    fn incomplete_publications_and_ambiguous_roots_are_refused() {
         assert!(serde_json::from_value::<GraphWireOp>(json!({"op":"publish"})).is_err());
         assert!(serde_json::from_value::<GraphWireOp>(json!({"op":"unpublish"})).is_err());
         assert!(serde_json::from_value::<GraphRoot>(json!({"clip":Uuid::nil(),"track":Uuid::nil(),"part":"grade"})).is_err());

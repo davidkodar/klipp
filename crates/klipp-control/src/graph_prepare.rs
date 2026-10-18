@@ -55,6 +55,19 @@ pub(crate) fn prepare(wire: &[GraphWireOp], mut docs: Documents) -> Result<Prepa
                     from: from.resolve(&result.created)?, from_port: from_port.as_str().into(), to: path, to_port: to_port.as_str().into(),
                 },
                 GraphWireOp::Disconnect { port, .. } => GraphOp::Disconnect { to: path, port: port.as_str().into() },
+                GraphWireOp::Publish { from, from_port, key, label, .. } => {
+                    let source = from.resolve(&result.created)?;
+                    let (child, parent) = source.nodes.split_last().ok_or("publish needs a child node")?;
+                    if source.root != path.root || parent != path.nodes {
+                        return Err("publish source must be a direct child of the target group".into());
+                    }
+                    GraphOp::PublishOutput {
+                        group: path,
+                        endpoint: klipp_graph_format::PortBinding { node: *child, port: from_port.as_str().into() },
+                        key: key.as_str().into(), label: label.clone().unwrap_or_default(),
+                    }
+                }
+                GraphWireOp::Unpublish { key, .. } => GraphOp::Unpublish { group: path, key: key.as_str().into() },
                 GraphWireOp::Set { key, value, .. } => {
                     let node = resolve(&docs, &path).map_err(|e| e.to_string())?;
                     graph_model::parameter_op(node, path, key, value)?

@@ -666,27 +666,18 @@ fn graph_effect_published_mask_connection_applies_reads_back_and_roundtrips() {
         {"op":"add_beside","at":at,"type":mask["id"],"params":{"masks":window}}
     ]}));
     let maskpath = added["created"][0]["path"].clone();
-    // Publishing is fixture setup through the production adapter: the socket
-    // has no publish operation yet. Connect/Disconnect below cross the socket.
     let key = "window_mask";
-    {
-        let mut seq = h.sequence.write().unwrap();
-        let clip = &mut seq.tracks[0].clips[0];
-        let group_id = serde_json::from_value(group.clone()).unwrap();
-        clip.apply_picture_ops(&[klipp_graph_lift::ops::GraphOp::PublishOutput {
-            group: klipp_graph_format::path::NodePath::new(
-                klipp_graph_format::path::Root::Clip { clip: clip.id.0 }, [group_id]),
-            endpoint: klipp_graph_format::PortBinding {
-                node: serde_json::from_value(maskpath["nodes"][1].clone()).unwrap(),
-                port: from_port.as_str().unwrap().into(),
-            },
-            key: key.into(), label: "Window".into(),
-        }]).unwrap();
-    }
     let group_path = json!({"root":effect["root"],"nodes":[group]});
     graph_test_edit_roundtrip(&mut h, json!([
+        {"op":"publish","path":group_path,"from":maskpath,"from_port":from_port,"key":key,"label":"Window"},
         {"op":"connect","from":group_path,"from_port":key,"to":effect,"to_port":to_port}
     ]));
+    let group_read = h.ok(json!({"method":"graph_read","path":group_path}));
+    let published = group_read["ports"].as_array().unwrap().iter().find(|p| p["key"] == key).unwrap();
+    assert_eq!(published["direction"], "output");
+    assert_eq!(published["ty"], "matte");
+    assert_eq!(published["binding"]["node"], maskpath["nodes"][1]);
+    assert_eq!(published["binding"]["port"], from_port);
     let read = h.ok(json!({"method":"graph_read","path":root}));
     let made = h.ok(json!({"method":"graph_read","path":maskpath}));
     assert_eq!(serde_json::from_value::<klipp_core::MaskStack>(made["nodes"][0]["params"]["masks"].clone()).unwrap(),
@@ -699,6 +690,55 @@ fn graph_effect_published_mask_connection_applies_reads_back_and_roundtrips() {
     assert!(!disconnected["edges"].as_array().unwrap().iter().any(|e|
         e["to"] == effect["nodes"][0] && e["to_port"] == to_port));
     assert_eq!(disconnected["nodes"], read["nodes"], "disconnect retains both nodes");
+    let group_node = read["nodes"].as_array().unwrap().iter().find(|n| n["id"] == group).unwrap();
+    assert_eq!(group_node["ports"], group_read["ports"]);
+    graph_test_edit_roundtrip(&mut h, json!([{"op":"unpublish","path":group_path,"key":key}]));
+    let restored = h.ok(json!({"method":"graph_read","path":group_path}));
+    assert!(!restored["ports"].as_array().unwrap().iter().any(|p| p["key"] == key));
+    assert!(restored["nodes"].as_array().unwrap().iter().any(|n| n["id"] == maskpath["nodes"][1]));
+}
+
+#[test]
+fn graph_publication_refusals_are_atomic_and_new_children_are_supported() {
+    let mut h = harness();
+    let effect = graph_test_blur(&mut h);
+    let root = json!({"root":effect["root"],"nodes":[]});
+    let graph = h.ok(json!({"method":"graph_read","path":root}));
+    let group = graph["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "klipp.group").unwrap()["id"].clone();
+    let group_path = json!({"root":effect["root"],"nodes":[group]});
+    let at = json!({"root":effect["root"],"nodes":[group,h.ids.corrector_a]});
+    let new = json!({"root":effect["root"],"nodes":[group,{"new":0}]});
+    let missing = json!({"root":effect["root"],"nodes":[group,uuid::Uuid::new_v4()]});
+    let types = h.ok(json!({"method":"node_types"}));
+    assert_eq!(types["publication"]["available"], true);
+    assert_eq!(types["publication"]["publish"]["op"], "publish");
+    let before = h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture.clone();
+    let revision = h.shared.revision();
+    let edits = h.edits_seen.lock().unwrap().len();
+    for (from, port) in [(missing, "out"), (new.clone(), "missing"), (effect.clone(), "out")] {
+        let refused = h.call(json!({"method":"graph_ops","ops":[
+            {"op":"add_beside","at":at,"type":"klipp.grade.mask"},
+            {"op":"publish","path":group_path,"from":from,"from_port":port,"key":"window_mask"}
+        ]}));
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert_eq!(refused["op_index"], 1, "{refused}");
+        assert_eq!(h.shared.revision(), revision);
+        assert_eq!(h.edits_seen.lock().unwrap().len(), edits);
+        assert_eq!(h.sequence.read().unwrap().tracks[0].clips[0].picture_v2().unwrap().picture, before);
+    }
+    graph_test_edit_roundtrip(&mut h, json!([
+        {"op":"add_beside","at":at,"type":"klipp.grade.mask"},
+        {"op":"publish","path":group_path,"from":new,"from_port":"out","key":"window_mask"},
+        {"op":"connect","from":group_path,"from_port":"window_mask","to":effect,"to_port":"mask"}
+    ]));
+    // Removing a still-connected port must not leave a dangling reader.
+    let refused = h.call(json!({"method":"graph_ops","ops":[{"op":"unpublish","path":group_path,"key":"window_mask"}]}));
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert_eq!(h.shared.revision(), revision + 1);
+    graph_test_edit_roundtrip(&mut h, json!([
+        {"op":"disconnect","to":effect,"port":"mask"},
+        {"op":"unpublish","path":group_path,"key":"window_mask"}
+    ]));
 }
 
 #[test]
