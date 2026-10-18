@@ -9,6 +9,11 @@ pub(super) struct MaskMixGpu {
     /// effect, shape records, output, params, bezier points.
     window_layout: wgpu::BindGroupLayout,
     window_pipeline: wgpu::ComputePipeline,
+    /// The two mixed over the picture where it is (#1254), on the same
+    /// layouts, with `stand_in` bound for the input they don't read.
+    in_place_pipeline: wgpu::ComputePipeline,
+    window_in_place_pipeline: wgpu::ComputePipeline,
+    stand_in: wgpu::Buffer,
 }
 
 /// A compute pipeline and its layout: a storage buffer at every binding
@@ -48,7 +53,27 @@ impl MaskMixGpu {
     pub(super) fn new(device: &wgpu::Device) -> Self {
         let (layout, pipeline) = make_pipeline(device, "mask_mix", SHADER_MASK_MIX, 5, 4, 3);
         let (window_layout, window_pipeline) = make_pipeline(device, "mask_mix_window", SHADER_MASK_MIX_WINDOW, 6, 4, 3);
-        Self { layout, pipeline, window_layout, window_pipeline }
+        let on = |layout: &wgpu::BindGroupLayout, label: &str, source: &str| {
+            let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(label), bind_group_layouts: &[layout], push_constant_ranges: &[] });
+            let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(source.into()) });
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pl),
+                module: &module,
+                entry_point: "main",
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        };
+        let in_place_pipeline = on(&layout, "mask_mix_in_place", SHADER_MASK_MIX_IN_PLACE);
+        let window_in_place_pipeline = on(&window_layout, "mask_mix_window_in_place", SHADER_MASK_MIX_WINDOW_IN_PLACE);
+        let stand_in = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("mask_mix_stand_in"),
+            size: 16,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        Self { layout, pipeline, window_layout, window_pipeline, in_place_pipeline, window_in_place_pipeline, stand_in }
     }
 }
 
@@ -92,7 +117,7 @@ impl GpuEffectsPipeline {
         let Some(slot) = self.claim_mask_mix(width, height, settings, mask.is_some(), legacy_alpha_one)? else {
             return Ok(());
         };
-        self.record_mask_mix_in(encoder, input, effect, mask, output, width, height, slot)
+        self.record_mask_mix_in(encoder, Some(input), effect, mask, output, width, height, slot)
     }
 
     /// The uniform slot a mix at `width` x `height` reads, its parameters
@@ -136,7 +161,7 @@ impl GpuEffectsPipeline {
     pub(crate) fn record_mask_mix_in(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        input: &wgpu::Buffer,
+        input: Option<&wgpu::Buffer>,
         effect: &wgpu::Buffer,
         mask: Option<&wgpu::Buffer>,
         output: &wgpu::Buffer,
@@ -146,10 +171,13 @@ impl GpuEffectsPipeline {
     ) -> Result<(), MaskMixError> {
         let pixels = width.checked_mul(height).ok_or(MaskMixError::SizeMismatch)?;
         let bytes = u64::from(pixels) * 16;
-        if [input, effect, output].iter().any(|b| b.size() < bytes) || mask.is_some_and(|b| b.size() < bytes) {
+        if [input.unwrap_or(output), effect, output].iter().any(|b| b.size() < bytes) || mask.is_some_and(|b| b.size() < bytes) {
             return Err(MaskMixError::SizeMismatch);
         }
-        let buffers = [input, effect, mask.unwrap_or(input), output, self.chain_params.buffer(slot)];
+        // In place (no `input`): the picture is `output`, read where it is.
+        let gpu = &self.mask_mix_gpu;
+        let read = input.unwrap_or(&gpu.stand_in);
+        let buffers = [read, effect, mask.unwrap_or(read), output, self.chain_params.buffer(slot)];
         let entries: Vec<_> = buffers
             .iter()
             .enumerate()
@@ -160,7 +188,8 @@ impl GpuEffectsPipeline {
             layout: &self.mask_mix_gpu.layout,
             entries: &entries,
         });
-        Self::record_compute_dispatch(encoder, &self.mask_mix_gpu.pipeline, &group, pixels.div_ceil(WORKGROUP_SIZE));
+        let pipeline = if input.is_some() { &gpu.pipeline } else { &gpu.in_place_pipeline };
+        Self::record_compute_dispatch(encoder, pipeline, &group, pixels.div_ceil(WORKGROUP_SIZE));
         Ok(())
     }
 
@@ -174,7 +203,7 @@ impl GpuEffectsPipeline {
     pub(crate) fn record_mask_mix_window_in(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        input: &wgpu::Buffer,
+        input: Option<&wgpu::Buffer>,
         effect: &wgpu::Buffer,
         records: &wgpu::Buffer,
         points: &wgpu::Buffer,
@@ -185,10 +214,13 @@ impl GpuEffectsPipeline {
     ) -> Result<(), MaskMixError> {
         let pixels = width.checked_mul(height).ok_or(MaskMixError::SizeMismatch)?;
         let bytes = u64::from(pixels) * 16;
-        if [input, effect, output].iter().any(|b| b.size() < bytes) {
+        if [input.unwrap_or(output), effect, output].iter().any(|b| b.size() < bytes) {
             return Err(MaskMixError::SizeMismatch);
         }
-        let buffers = [input, effect, records, output, self.chain_params.buffer(slot), points];
+        // In place (no `input`): the picture is `output`, read where it is.
+        let gpu = &self.mask_mix_gpu;
+        let read = input.unwrap_or(&gpu.stand_in);
+        let buffers = [read, effect, records, output, self.chain_params.buffer(slot), points];
         let entries: Vec<_> = buffers
             .iter()
             .enumerate()
@@ -199,14 +231,17 @@ impl GpuEffectsPipeline {
             layout: &self.mask_mix_gpu.window_layout,
             entries: &entries,
         });
-        Self::record_compute_dispatch(encoder, &self.mask_mix_gpu.window_pipeline, &group, pixels.div_ceil(WORKGROUP_SIZE));
+        let pipeline = if input.is_some() { &gpu.window_pipeline } else { &gpu.window_in_place_pipeline };
+        Self::record_compute_dispatch(encoder, pipeline, &group, pixels.div_ceil(WORKGROUP_SIZE));
         Ok(())
     }
 }
 
-pub(super) const SHADER_MASK_MIX: &str = concat!(
-    shader_linear_helpers_wgsl!(),
-    r#"
+/// The bindings and parameters of [`SHADER_MASK_MIX`] and its in-place
+/// twin.
+macro_rules! mask_mix_head {
+    () => {
+        r#"
 struct Params {
     width: u32, height: u32, mix: f32, channel: u32,
     has_mask: u32, alpha_one: u32, mask_count: u32, pad1: u32,
@@ -217,6 +252,15 @@ struct Params {
 @group(0) @binding(2) var<storage, read> mask: array<vec4<f32>>;
 @group(0) @binding(3) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(4) var<uniform> params: Params;
+"#
+    };
+}
+
+/// The mix itself, reading the picture under the effect with `src(idx)`,
+/// through the storage hook.
+macro_rules! mask_mix_body {
+    () => {
+        r#"
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let idx = id.x;
@@ -233,30 +277,47 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let w = clamp(params.mix, 0.0, 1.0) * coverage;
     // Copy stored pixels at exact endpoints, preserving their bit patterns.
     if params.alpha_one == 0u && w == 0.0 {
-        output[idx] = input[idx];
+        output[idx] = pack(src(idx));
         return;
     }
     if params.alpha_one == 0u && w == 1.0 {
         output[idx] = effect[idx];
         return;
     }
-    var value = unpack(input[idx]);
+    var value = src(idx);
     if w == 1.0 { value = unpack(effect[idx]); }
     else if w != 0.0 { value = value + (unpack(effect[idx]) - value) * w; }
     if params.alpha_one != 0u { value.a = 1.0; }
     output[idx] = pack(value);
 }
 "#
+    };
+}
+
+pub(super) const SHADER_MASK_MIX: &str = concat!(
+    shader_linear_helpers_wgsl!(),
+    mask_mix_head!(),
+    "fn src(i: u32) -> vec4<f32> { return unpack(input[i]); }",
+    mask_mix_body!(),
 );
 
-/// [`SHADER_MASK_MIX`] with the mask a window's shapes, worked out per pixel
-/// as `SHADER_MASK_V2` draws them into a matte (`mask_sdf_wgsl`, one copy):
-/// the matte `(m, m, m, 1)` that shader would write is never stored, and the
-/// coverage read from it is the same arithmetic on the same values.
-pub(super) const SHADER_MASK_MIX_WINDOW: &str = concat!(
+/// [`SHADER_MASK_MIX`] mixing over the picture where it is (#1254): the
+/// picture under the effect is read from `output`, which it is, and
+/// written over by the mix, pixel by pixel, the same pixel each. For an
+/// effect that leaves its input where it was, no copy of it is kept.
+/// `input` is bound to a stand-in and not read.
+pub(super) const SHADER_MASK_MIX_IN_PLACE: &str = concat!(
     shader_linear_helpers_wgsl!(),
-    mask_sdf_wgsl!(),
-    r#"
+    mask_mix_head!(),
+    "fn src(i: u32) -> vec4<f32> { return unpack(output[i]); }",
+    mask_mix_body!(),
+);
+
+/// The bindings and parameters of [`SHADER_MASK_MIX_WINDOW`] and its
+/// in-place twin.
+macro_rules! mask_mix_window_head {
+    () => {
+        r#"
 struct Params {
     width: u32, height: u32, mix: f32, channel: u32,
     has_mask: u32, alpha_one: u32, mask_count: u32, pad1: u32,
@@ -268,6 +329,15 @@ struct Params {
 @group(0) @binding(3) var<storage, read_write> output: array<vec4<f32>>;
 @group(0) @binding(4) var<uniform> params: Params;
 @group(0) @binding(5) var<storage, read> points: array<vec2<f32>>;
+"#
+    };
+}
+
+/// The window mix itself, reading the picture under the effect with
+/// `src(idx)`.
+macro_rules! mask_mix_window_body {
+    () => {
+        r#"
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let idx = id.x;
@@ -288,18 +358,41 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     coverage = clamp(coverage, 0.0, 1.0);
     let w = clamp(params.mix, 0.0, 1.0) * coverage;
     if params.alpha_one == 0u && w == 0.0 {
-        output[idx] = input[idx];
+        output[idx] = pack(src(idx));
         return;
     }
     if params.alpha_one == 0u && w == 1.0 {
         output[idx] = effect[idx];
         return;
     }
-    var value = unpack(input[idx]);
+    var value = src(idx);
     if w == 1.0 { value = unpack(effect[idx]); }
     else if w != 0.0 { value = value + (unpack(effect[idx]) - value) * w; }
     if params.alpha_one != 0u { value.a = 1.0; }
     output[idx] = pack(value);
 }
 "#
+    };
+}
+
+/// [`SHADER_MASK_MIX`] with the mask a window's shapes, worked out per pixel
+/// as `SHADER_MASK_V2` draws them into a matte (`mask_sdf_wgsl`, one copy):
+/// the matte `(m, m, m, 1)` that shader would write is never stored, and the
+/// coverage read from it is the same arithmetic on the same values.
+pub(super) const SHADER_MASK_MIX_WINDOW: &str = concat!(
+    shader_linear_helpers_wgsl!(),
+    mask_sdf_wgsl!(),
+    mask_mix_window_head!(),
+    "fn src(i: u32) -> vec4<f32> { return unpack(input[i]); }",
+    mask_mix_window_body!(),
+);
+
+/// [`SHADER_MASK_MIX_WINDOW`] mixing over the picture where it is, as
+/// [`SHADER_MASK_MIX_IN_PLACE`] does (#1254).
+pub(super) const SHADER_MASK_MIX_WINDOW_IN_PLACE: &str = concat!(
+    shader_linear_helpers_wgsl!(),
+    mask_sdf_wgsl!(),
+    mask_mix_window_head!(),
+    "fn src(i: u32) -> vec4<f32> { return unpack(output[i]); }",
+    mask_mix_window_body!(),
 );

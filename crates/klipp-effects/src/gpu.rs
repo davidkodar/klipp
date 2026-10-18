@@ -6744,8 +6744,13 @@ impl GpuEffectsPipeline {
                 mapped_at_creation: false,
             })
         };
+        // One effect recorded as a single dispatch writes the other chain
+        // buffer and leaves its input where it is: the mix reads it there
+        // and writes over it (#1254). Several effects, or one of several
+        // passes, may write over the input, and a copy of it is kept.
+        let in_place = matches!(effects, [one] if Self::single_dispatch(one));
         let device = &self.device;
-        let kept = self.slot_pool.lease(image, |k| make(device, k)).ok()?;
+        let kept = if in_place { None } else { Some(self.slot_pool.lease(image, |k| make(device, k)).ok()?) };
         let keyed = matches!(mask, Some(EffectMatte::Keyed(_)));
         // A window is drawn inside the mix itself: its shapes, no matte.
         let window = match mask {
@@ -6771,19 +6776,31 @@ impl GpuEffectsPipeline {
                         Some(id)
                     }
                     Err(_) => {
-                        self.slot_pool.release(kept);
+                        if let Some(kept) = kept {
+                            self.slot_pool.release(kept);
+                        }
                         return None;
                     }
                 }
             }
         };
         // The input, kept before the effects can write over it.
-        {
+        if let Some(kept) = kept {
             let src = if in_is_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() };
             let enc = self.chain_encoder.as_mut().expect(Self::CHAIN_ENCODER_EXPECT);
             enc.copy_buffer_to_buffer(src.expect("chain buffers"), 0, self.slot_pool.buffer(kept), 0, bytes);
         }
         let mut run = self.chain_run_effects(effects, in_is_a, width, height);
+        // A break runs the effect in passes of its own, which this didn't
+        // keep its input from: the run is said incomplete, and the caller
+        // takes another route, as for a mix that wasn't recorded.
+        if in_place && run.breaks > 0 {
+            run.complete = false;
+            if let Some(m) = matte.filter(|_| !keyed) {
+                self.slot_pool.release(m);
+            }
+            return Some(run);
+        }
         // The mix's uniforms are claimed once the effects are recorded: an
         // effect that breaks the chain resets the ring. A full ring is
         // submitted and the chain goes on in a new one.
@@ -6802,9 +6819,17 @@ impl GpuEffectsPipeline {
                 let mut encoder = self.chain_encoder.take().expect(Self::CHAIN_ENCODER_EXPECT);
                 let (a, b) = (self.buf_a.as_ref().expect("chain buffers"), self.buf_b.as_ref().expect("chain buffers"));
                 let (effect, out) = if run.in_a { (a, b) } else { (b, a) };
+                // The picture under the effect: its kept copy; in place, the
+                // buffer the effect read, which the mix writes (`out`); or,
+                // when the effect wrote nothing, the effect's buffer itself.
+                let input = match kept {
+                    Some(kept) => Some(self.slot_pool.buffer(kept)),
+                    None if run.in_a == in_is_a => Some(effect),
+                    None => None,
+                };
                 let r = match &window {
-                    Some(((records, points), _)) => self.record_mask_mix_window_in(&mut encoder, self.slot_pool.buffer(kept), effect, records, points, out, width, height, slot),
-                    None => self.record_mask_mix_in(&mut encoder, self.slot_pool.buffer(kept), effect, matte.map(|m| self.slot_pool.buffer(m)), out, width, height, slot),
+                    Some(((records, points), _)) => self.record_mask_mix_window_in(&mut encoder, input, effect, records, points, out, width, height, slot),
+                    None => self.record_mask_mix_in(&mut encoder, input, effect, matte.map(|m| self.slot_pool.buffer(m)), out, width, height, slot),
                 };
                 self.chain_encoder = Some(encoder);
                 r
@@ -6814,7 +6839,9 @@ impl GpuEffectsPipeline {
         };
         // Their readers are recorded: returned (a CPU-written matte is held
         // until the encoder is submitted).
-        self.slot_pool.release(kept);
+        if let Some(kept) = kept {
+            self.slot_pool.release(kept);
+        }
         // A keyed matte is its key's, for its other readers.
         if let Some(m) = matte.filter(|_| !keyed) {
             self.slot_pool.release(m);
@@ -6829,6 +6856,14 @@ impl GpuEffectsPipeline {
             }
         }
         Some(run)
+    }
+
+    /// Whether `effect` is recorded as one dispatch from its input into
+    /// the other chain buffer, leaving its input as it was (#1254): the
+    /// one-slot effects, but for those that run passes of their own
+    /// (a denoise's iterations, a card's rounded corners).
+    fn single_dispatch(effect: &BuiltinEffect) -> bool {
+        slots_needed(effect) == Some(1) && !matches!(effect, BuiltinEffect::Denoise { .. } | BuiltinEffect::RoundedCorners { .. })
     }
 
     /// The run is over: every pool slot is free again, and a size no run
@@ -18764,6 +18799,8 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
     vec![
         ("SHADER_MASK_MIX", mask_mix::SHADER_MASK_MIX),
         ("SHADER_MASK_MIX_WINDOW", mask_mix::SHADER_MASK_MIX_WINDOW),
+        ("SHADER_MASK_MIX_IN_PLACE", mask_mix::SHADER_MASK_MIX_IN_PLACE),
+        ("SHADER_MASK_MIX_WINDOW_IN_PLACE", mask_mix::SHADER_MASK_MIX_WINDOW_IN_PLACE),
         ("LAYER_ROWS", layer::ROWS),
         ("LAYER_BOUNDS", layer::BOUNDS),
         ("LAYER_CAST", layer::CAST),

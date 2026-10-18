@@ -126,6 +126,8 @@ const SHADERS: &[(&str, Cover)] = &[
     ("SHADER_SEGMENTS", Test("klipp-compose/tests/animated_generators_gpu.rs", "gpu_animated_generators_match_the_cpu")),
     ("SHADER_MASK_MIX", Test("klipp-effects/tests/mask_mix.rs", "gpu_mask_mix_matches_the_independent_oracle")),
     ("SHADER_MASK_MIX_WINDOW", Test("klipp-effects/tests/window_mix.rs", "a_window_inside_the_mix_is_the_window_drawn_into_a_matte")),
+    ("SHADER_MASK_MIX_IN_PLACE", Test("klipp-nodes/tests/masked_effect_cost.rs", "a_mixed_effect_is_its_input_and_result_mixed_in_place_or_not")),
+    ("SHADER_MASK_MIX_WINDOW_IN_PLACE", Test("klipp-nodes/tests/masked_effect_cost.rs", "a_masked_effect_costs_one_slot_and_nothing_on_the_cpu")),
     ("LAYER_ROWS", Test(LAYER, "rounded_and_grouped_spills_match_cpu_on_gpu")),
     ("LAYER_BOUNDS", Test(LAYER, "rounded_and_grouped_spills_match_cpu_on_gpu")),
     ("LAYER_CAST", Test(LAYER, "rounded_and_grouped_spills_match_cpu_on_gpu")),
