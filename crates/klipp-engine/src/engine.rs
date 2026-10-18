@@ -1605,6 +1605,10 @@ pub struct PlaybackEngine {
     /// seek it is a frame of somewhere else, and regrading it would show
     /// the old picture under the new position's grade.
     cached_pregrade_at: Option<Timecode>,
+    /// Only the latest decoded primary picture, kept in its original
+    /// storage (including GPU buffers). The time and source layout guard
+    /// reuse across pause and grade edits; seeks discard it.
+    retained_primary: Option<(Timecode, u64, streams::HeldFrame)>,
     /// A frame short of the playhead is being presented — a slow seek's
     /// progress — and must not be cached as the playhead's frame.
     presenting_progress: bool,
@@ -2352,6 +2356,7 @@ impl PlaybackEngine {
             matte_preview_node: None,
             cached_pregrade_frame: None,
             cached_pregrade_at: None,
+            retained_primary: None,
             presenting_progress: false,
             last_composite_path: None,
             layout_fingerprint: 0,
@@ -2981,24 +2986,15 @@ impl PlaybackEngine {
                     }
                     self.state = PlaybackState::Paused;
                     let _ = self.event_tx.send(AppEvent::PlaybackPaused);
-                    // During playback the pregrade encode is skipped
-                    // (see `pregrade_needed` in `post_process_rgba`)
-                    // so `cached_pregrade_frame` may still hold the
-                    // frame we paused ON last — but more importantly,
-                    // `regrade_cached_frame()` is a silent no-op when
-                    // that snapshot is None. Without a fresh pregrade
-                    // in place, every user edit while paused (slider
-                    // drag, AddNode, Connect, ToggleBypass …) feeds
-                    // into a `regrade_cached_frame` that does
-                    // nothing, and the viewer stays stale until the
-                    // user unpauses and re-pauses. Force one
-                    // `seek_in_sequence` on the Pause transition so
-                    // the decoder hands us a known-good frame,
-                    // `post_process_rgba` writes the pregrade
-                    // snapshot, and every subsequent paused edit has
-                    // something to re-grade.
-                    let playhead = self.playhead;
-                    self.seek_in_sequence(playhead);
+                    // The last presented primary is already the pause
+                    // frame. Keep its GPU source instead of seeking and
+                    // rebuilding it from the CPU pre-grade cache.
+                    if let Some(primary) = self.retained_primary_at_playhead() {
+                        self.present_frame(Some(primary));
+                    } else {
+                        let playhead = self.playhead;
+                        self.seek_in_sequence(playhead);
+                    }
                     (self.repaint_cb)();
                 }
             }
@@ -3208,6 +3204,7 @@ impl PlaybackEngine {
             AppCommand::MediaDecodeChanged => {
                 info!("Engine: media decode settings changed; re-decoding at the playhead");
                 self.cached_pregrade_frame = None;
+                self.retained_primary = None;
                 // Pre-grades decoded the old way.
                 self.frame_cache.clear();
                 // Rendered from pixels decoded the old way. (The disk
@@ -4342,6 +4339,7 @@ impl PlaybackEngine {
 
         // Clear caches (frame, render hot, pre-grade, grade hash)
         self.cached_pregrade_frame = None;
+        self.retained_primary = None;
         self.frame_cache.clear();
         self.render_cache_hot.clear();
         self.last_synth_frame_rendered = None;
@@ -5510,6 +5508,11 @@ impl PlaybackEngine {
         stage_overlay_open_us = t_stage.elapsed().as_micros();
         t_stage = std::time::Instant::now();
 
+        // Keep one decoded primary for an immediate pause, including
+        // the fast paths which return before present_frame.
+        if let Some(held) = streams::HeldFrame::from_gpu_frame(&frame) {
+            self.retain_primary(&held);
+        }
         let (final_w, final_h) = (frame.width, frame.height);
         let gpu_source = frame.gpu_source.clone();
 
@@ -6913,6 +6916,7 @@ impl PlaybackEngine {
     }
 
     fn seek_in_sequence_with_timeout(&mut self, tc: Timecode, grab_timeout: Duration) {
+        self.retained_primary = None;
         // A preroll made for where the playhead was, or remembered as
         // failing there, is not for where it lands.
         self.clear_preroll();
@@ -9022,6 +9026,23 @@ impl PlaybackEngine {
         Some(klipp_compose::render::held_source_of(clip, clip_time, at, pts, (width, height), file, media_fps))
     }
 
+    fn retain_primary(&mut self, primary: &streams::HeldFrame) {
+        if self.presenting_progress {
+            return;
+        }
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        self.retained_primary = Some((self.playhead, under_playhead_fingerprint(&seq, self.playhead), primary.clone()));
+    }
+
+    fn retained_primary_at_playhead(&self) -> Option<streams::HeldFrame> {
+        let (at, layout, frame) = self.retained_primary.as_ref()?;
+        if *at != self.playhead || self.pending_paused_refresh {
+            return None;
+        }
+        let seq = self.sequence.read().unwrap_or_else(|e| e.into_inner());
+        (*layout == under_playhead_fingerprint(&seq, self.playhead)).then(|| frame.clone())
+    }
+
     fn parked_pregrade(&self) -> Option<&(Pregrade, u32, u32)> {
         if self.cached_pregrade_at == Some(self.playhead) {
             self.cached_pregrade_frame.as_ref()
@@ -9068,6 +9089,7 @@ impl PlaybackEngine {
         }
         self.cached_pregrade_frame = None;
         self.cached_pregrade_at = None;
+        self.retained_primary = None;
         true
     }
 
@@ -9270,9 +9292,9 @@ impl PlaybackEngine {
             self.seek_in_sequence(ph);
             return;
         }
-        let primary = self
+        let primary = self.retained_primary_at_playhead().or_else(|| self
             .parked_pregrade()
-            .map(|(pixels, w, h)| streams::HeldFrame::from_pregrade(pixels, *w, *h));
+            .map(|(pixels, w, h)| streams::HeldFrame::from_pregrade(pixels, *w, *h)));
         // A primary decoder whose first frame has not arrived yet: nothing
         // to show until it does (the paused refresh paints it).
         if primary.is_none() && self.v1_decoder.is_some() {
@@ -13686,12 +13708,13 @@ mod preroll_retry_tests {
 #[cfg(test)]
 mod paused_refresh_tests {
     use super::*;
+    use std::time::Instant;
     use klipp_timeline::Sequence;
     use std::sync::Mutex;
 
     /// A two-second 64×48 test pattern at 30 fps. `None` without ffmpeg.
     fn source() -> Option<PathBuf> {
-        let out = std::env::temp_dir().join(format!("klipp-paused-refresh-{}.mp4", std::process::id()));
+        let out = std::env::temp_dir().join(format!("klipp-paused-refresh-{}-{}.mp4", std::process::id(), klipp_core::ClipId::new()));
         let ok = std::process::Command::new("ffmpeg")
             .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=64x48:r=30:d=2", "-pix_fmt", "yuv420p"])
             .arg(&out)
@@ -13699,6 +13722,139 @@ mod paused_refresh_tests {
             .ok()?
             .success();
         ok.then_some(out)
+    }
+
+    /// #2136: stopping midway through a keyed move publishes that exact
+    /// frame and wakes the reactive UI, without seeking the decoder or
+    /// replacing its GPU source with the CPU pre-grade cache.
+    #[test]
+    fn pause_keeps_the_gpu_source_and_wakes_the_viewer_within_100ms() {
+        let Some(ctx) = klipp_effects::gpu_context::GpuContext::shared() else { return };
+        let Some(path) = source() else { return };
+        let tc = |f| RationalTime::from_frames(f, 30);
+        let mut item = klipp_media::MediaItem::synthetic_for_test(path.clone(), None);
+        item.fps = klipp_core::Fps::new(30, 1);
+        item.duration = tc(60);
+        item.resolution = klipp_core::Resolution { width: 64, height: 48 };
+        item.has_audio = false;
+        let id = item.id;
+        let mut pool = klipp_media::MediaPool::new();
+        pool.add(item);
+        let clip = klipp_timeline::test_clip::TestClip::of(
+            klipp_timeline::Clip::media(id, tc(0), tc(60), tc(0), tc(60)))
+            .lane("scale", 0.0, 0.5).lane("scale", 2.0, 0.9).build();
+        let mut seq = Sequence::new_default();
+        seq.fps = klipp_core::Fps::new(30, 1);
+        seq.resolution = klipp_core::Resolution { width: 64, height: 48 };
+        let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+        track.clips = vec![clip];
+        let overlay = klipp_timeline::Clip {
+            kind: klipp_timeline::ClipKind::Generator(klipp_core::GeneratorData::SolidColor { color: [20, 200, 40, 255] }),
+            ..klipp_timeline::Clip::gap(tc(0), tc(60))
+        };
+        let overlay = klipp_timeline::test_clip::TestClip::of(overlay)
+            .lane("scale", 0.0, 0.1).lane("pos_x", 0.0, -20.0).build();
+        let mut upper = klipp_timeline::Track::new("overlay", klipp_timeline::TrackKind::Video);
+        upper.clips = vec![overlay];
+        seq.tracks = vec![upper, track];
+        let (_cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (ev_tx, ev_rx) = crossbeam_channel::unbounded();
+        let shown = Arc::new(Mutex::new(crate::texture::FrameBuffer::new(64, 48)));
+        let wakes = Arc::new(AtomicU64::new(0));
+        let wake_count = Arc::clone(&wakes);
+        let mut engine = PlaybackEngine::new(
+            cmd_rx, ev_tx, Arc::clone(&shown), Arc::new(Mutex::new(crate::texture::FrameBuffer::new(16, 16))),
+            Arc::new(klipp_timeline::SharedSequence::new(seq)), Arc::new(RwLock::new(pool)),
+            Box::new(move || { wake_count.fetch_add(1, Ordering::Relaxed); }),
+            Arc::new(Mutex::new(None)), Arc::new(Mutex::new(crate::perf::PerfRing::default())),
+        );
+        engine.state = PlaybackState::Paused;
+        engine.seek_in_sequence_with_timeout(tc(30), Duration::from_secs(5));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while engine.pending_paused_refresh && Instant::now() < deadline {
+            engine.tick_paused_refresh();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!engine.pending_paused_refresh);
+        // A known decoded GPU picture, deliberately unlike the parked
+        // CPU cache, so selecting the old cache cannot pass by accident.
+        let bytes: Vec<u8> = [180, 40, 80, 255].repeat(64 * 48);
+        let buffer = Arc::new(ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pause regression source"), size: bytes.len() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        ctx.queue.write_buffer(&buffer, 0, &bytes);
+        let mut frame = crate::types::LinearFrame::eof();
+        frame.is_eof = false;
+        frame.pts = tc(30);
+        frame.width = 64;
+        frame.height = 48;
+        frame.gpu_source = Some(Arc::new(crate::frame::GpuFrame {
+            device: Arc::clone(&ctx.device), queue: Arc::clone(&ctx.queue),
+            rgba_buffer: buffer, width: 64, height: 48,
+        }));
+        let held = streams::HeldFrame::from_frame(frame);
+        engine.state = PlaybackState::Playing;
+        engine.present_frame(Some(held));
+        // Warm the paused render's pipelines too; the deadline measures
+        // pause delivery, not driver compilation on this test machine.
+        engine.state = PlaybackState::Paused;
+        engine.regrade_cached_frame();
+        engine.state = PlaybackState::Playing;
+        let epoch = engine.v1_decoder.as_ref().unwrap().requested_seek();
+        let before = wakes.load(Ordering::Relaxed);
+        let generation = shown.lock().unwrap().latest_generation();
+        ev_rx.try_iter().for_each(drop);
+        let start = Instant::now();
+        engine.handle_command(AppCommand::Pause);
+        assert!(start.elapsed() < Duration::from_millis(100), "pause took {:?}", start.elapsed());
+        assert_eq!(engine.state, PlaybackState::Paused);
+        let residency = klipp_effects::residency::last_frame();
+        assert_eq!(residency.fallback_count(), 0, "paused GPU composition fell back: {residency:?}");
+        assert_eq!(engine.renderer.executor().last_run_chain_stats().cpu_nodes, 0);
+        assert_eq!(engine.v1_decoder.as_ref().unwrap().requested_seek(), epoch, "pause sought again");
+        assert!(wakes.load(Ordering::Relaxed) > before);
+        assert!(ev_rx.try_iter().any(|e| matches!(e, AppEvent::FrameReady)));
+        let mut fb = shown.lock().unwrap();
+        assert!(fb.latest_generation() > generation);
+        assert_eq!(fb.shown_presented(), Some(tc(30)));
+        assert!(fb.latest_complete());
+        fb.swap_pending();
+        let center = (24 * 64 + 32) * 4;
+        assert!(fb.data[center] > 150 && fb.data[center + 1] < 70, "wrong paused picture");
+        drop(fb);
+        assert!(matches!(engine.retained_primary_at_playhead().unwrap().source_pixels(), klipp_compose::SourcePixels::Gpu(_)));
+        engine.regrade_cached_frame();
+        assert!(matches!(engine.retained_primary_at_playhead().unwrap().source_pixels(), klipp_compose::SourcePixels::Gpu(_)));
+        let retained = engine.retained_primary.clone();
+        let pregrade = engine.cached_pregrade_frame.clone();
+        assert!(retained.is_some() && pregrade.is_some());
+        engine.playhead = tc(31);
+        assert!(engine.retained_primary_at_playhead().is_none(), "another time reused the frame");
+        engine.playhead = tc(30);
+        engine.sequence.write().unwrap().tracks[1].clips[0].source_in = tc(1);
+        assert!(engine.retained_primary_at_playhead().is_none(), "a source edit reused the frame");
+        assert!(engine.note_layout_change(true));
+        assert!(engine.cached_pregrade_frame.is_none());
+        assert!(engine.retained_primary.is_none(), "a layout change kept the old source");
+
+        engine.retained_primary = retained.clone();
+        engine.cached_pregrade_frame = pregrade.clone();
+        engine.reset_to_idle();
+        assert!(engine.cached_pregrade_frame.is_none());
+        assert!(engine.retained_primary.is_none(), "reset kept the old source");
+
+        // Stopped playback does not seek on this command, so this pins
+        // the command's own invalidation instead of the seek's clearing.
+        engine.state = PlaybackState::Stopped;
+        engine.retained_primary = retained;
+        engine.cached_pregrade_frame = pregrade;
+        engine.handle_command(AppCommand::MediaDecodeChanged);
+        assert!(engine.cached_pregrade_frame.is_none());
+        assert!(engine.retained_primary.is_none(), "decode settings kept the old source");
+        drop(engine);
+        let _ = std::fs::remove_file(path);
     }
 
     /// A pick on a node's input that comes while the parked frame is still
