@@ -56,12 +56,5 @@
     ],
     "issue": 2069,
     "max_readbacks": 0
-  },
-  "title.loop.Wave": {
-    "features": [
-      "title.raster"
-    ],
-    "issue": 2069,
-    "max_readbacks": 0
   }
 }

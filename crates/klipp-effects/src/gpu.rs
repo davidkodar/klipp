@@ -5043,8 +5043,8 @@ impl GpuEffectsPipeline {
     /// `temporal_denoise::denoise_frame` draws it. `false`, nothing
     /// recorded, without a chain, with more than two neighbours or one of
     /// the wrong size; the caller takes the CPU route then. `luma` is the
-    /// guard's brightness weights, `temporal_denoise::LUMA` as the CPU
-    /// takes them.
+    /// guard's brightness weights, the working space's
+    /// (`klipp_color::linear::luma_coefs`), as the CPU takes them (#2019).
     #[allow(clippy::too_many_arguments)]
     pub fn apply_temporal_denoise_chain(&mut self, in_is_a: bool, width: u32, height: u32, neighbours: &[&wgpu::Buffer], threshold: f32, strength: f32, luma: [f32; 3]) -> bool {
         let bytes = u64::from(width) * u64::from(height) * 16;

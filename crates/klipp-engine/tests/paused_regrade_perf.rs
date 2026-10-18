@@ -161,7 +161,7 @@ fn split_temporal_nr(src: &std::path::Path) {
         fetch.push(ms(t1));
         let current = reader.decode_at(t).expect("the parked frame").0;
         let t2 = std::time::Instant::now();
-        let out = klipp_effects::temporal_denoise::denoise_frame(&current, &[&before, &after], 0.05, 0.8);
+        let out = klipp_effects::temporal_denoise::denoise_frame(&current, &[&before, &after], 0.05, 0.8, klipp_color::linear::luma_coefs(klipp_core::WorkingColorspace::Rec709Linear));
         compute.push(ms(t2));
         assert_eq!(out.len(), current.len());
     }

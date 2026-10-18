@@ -4555,6 +4555,7 @@ impl GraphExecutor {
             });
         }
         let bufs: Vec<&wgpu::Buffer> = held.iter().map(HeldNeighbour::buffer).collect();
+        let luma_weights = klipp_color::linear::luma_coefs(self.working_colorspace);
         let gpu = self.gpu.as_mut()?;
         let mut flips = 0u32;
         let mut slot_a = in_is_a;
@@ -4565,7 +4566,7 @@ impl GraphExecutor {
             if strength <= 0.0 || bufs.is_empty() {
                 continue;
             }
-            if !gpu.apply_temporal_denoise_chain(slot_a, width, height, &bufs, threshold, strength, klipp_effects::temporal_denoise::LUMA) {
+            if !gpu.apply_temporal_denoise_chain(slot_a, width, height, &bufs, threshold, strength, luma_weights) {
                 // Nothing recorded for this one; any before it are, so
                 // the chain can't hand over to the CPU mid-node: the run
                 // says its picture lacks an effect.
@@ -5361,7 +5362,7 @@ impl GraphExecutor {
             };
             let neighbours: Vec<Arc<Vec<f32>>> = neighbours.iter().map(NeighbourPixels::cpu).collect();
             let refs: Vec<&[f32]> = neighbours.iter().map(|n| n.as_slice()).collect();
-            out = klipp_effects::temporal_denoise::denoise_frame(&out, &refs, threshold, strength);
+            out = klipp_effects::temporal_denoise::denoise_frame(&out, &refs, threshold, strength, klipp_color::linear::luma_coefs(self.working_colorspace));
         }
         out
     }
