@@ -79,16 +79,20 @@ impl ImportReport {
 pub fn load(path: &Path, fps: klipp_core::Fps, pool: &klipp_media::MediaPool) -> Result<ImportResult, String> {
     match path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
         "otio" => crate::otio_import::load_otio(path).map_err(|e| e.to_string()),
-        "fcpxml" => crate::fcpxml_import::load_fcpxml(path).map_err(|e| e.to_string()),
+        "fcpxml" | "xml" => crate::fcpxml_import::load_fcpxml(path).map_err(|e| e.to_string()),
         "kdenlive" | "mlt" => crate::mlt_import::load_kdenlive(path).map_err(|e| e.to_string()),
         "edl" => {
             let bytes = crate::path_util::read_capped(path, crate::path_util::MAX_INPUT_FILE_BYTES).map_err(|e| e.to_string())?;
             let edl = crate::edl_import::parse(&String::from_utf8_lossy(&bytes), fps);
             let name = edl.title.clone().unwrap_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().into_owned());
             let (sequence, warnings) = crate::edl_import::build(&edl, &name, fps, |e| crate::edl_import::match_in_pool(pool, e, fps));
-            Ok(ImportResult { sequence, warnings, media_pool: klipp_media::MediaPool::new() })
+            let mut media_pool = klipp_media::MediaPool::new();
+            for id in sequence.tracks.iter().flat_map(|t| &t.clips).filter_map(|c| c.media_id()) {
+                if let Some(item) = pool.get(&id) { media_pool.add(item.clone()); }
+            }
+            Ok(ImportResult { sequence, warnings, media_pool })
         }
-        _ => Err("Import a .otio, .fcpxml, .kdenlive, .mlt or .edl timeline".into()),
+        _ => Err("Import a .otio, .fcpxml/.xml, .kdenlive, .mlt or .edl timeline".into()),
     }
 }
 
@@ -112,6 +116,31 @@ pub fn read(dir: &Path) -> Result<Option<ImportReport>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn xml_extension_and_edl_existing_offline_media_are_preserved() {
+        let dir = std::env::temp_dir().join(format!("klipp-report-formats-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let xml = dir.join("timeline.xml");
+        std::fs::write(&xml, r#"<fcpxml version="1.9"><resources><format id="r0" frameDuration="1/24s" width="1920" height="1080"/></resources><library><event><project name="XML"><sequence format="r0" duration="1s"><spine><gap offset="0s" duration="1s"/></spine></sequence></project></event></library></fcpxml>"#).unwrap();
+        let mut pool = klipp_media::MediaPool::new();
+        assert!(load(&xml, klipp_core::Fps::film_24(), &pool).is_ok());
+        let mut used = klipp_media::MediaItem::synthetic_for_test(dir.join("used.mov"), None);
+        used.offline = true;
+        let id = used.id;
+        pool.add(used);
+        let mut unused = klipp_media::MediaItem::synthetic_for_test(dir.join("unused.mov"), None);
+        unused.offline = true;
+        pool.add(unused);
+        let edl = dir.join("timeline.edl");
+        std::fs::write(&edl, "TITLE: EDL\n001 used V C 00:00:00:00 00:00:01:00 00:00:00:00 00:00:01:00\n* FROM CLIP NAME: used.mov\n").unwrap();
+        let imported = load(&edl, klipp_core::Fps::film_24(), &pool).unwrap();
+        let report = ImportReport::from_import(&edl, &imported);
+        assert_eq!(report.imported.clips, 1);
+        assert_eq!(report.missing_media.len(), 1);
+        assert_eq!(report.missing_media[0].id, id);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn dropped_effects_missing_media_and_saved_report_match_the_import() {
         let dir = std::env::temp_dir().join(format!("klipp-report-{}", uuid::Uuid::new_v4()));

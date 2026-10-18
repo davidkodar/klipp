@@ -292,7 +292,7 @@ pub(crate) fn respond(
             let path = std::path::PathBuf::from(path);
             if !path.is_absolute() || !path.is_file() { return Err("import path must name an existing absolute file".into()); }
             let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
-            if !matches!(ext.as_str(), "otio" | "fcpxml" | "kdenlive" | "mlt" | "edl") { return Err("Import a .otio, .fcpxml, .kdenlive, .mlt or .edl timeline".into()); }
+            if !matches!(ext.as_str(), "otio" | "fcpxml" | "xml" | "kdenlive" | "mlt" | "edl") { return Err("Import a .otio, .fcpxml/.xml, .kdenlive, .mlt or .edl timeline".into()); }
             let request_id = uuid::Uuid::new_v4();
             let mut result = send(AppCommand::ImportTimeline { path, request_id })?;
             result["request_id"] = json!(request_id);

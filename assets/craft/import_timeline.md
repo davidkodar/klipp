@@ -1,6 +1,6 @@
 # Import a timeline and inspect its report
 
-Call `klipp_import_timeline` with an absolute `path` ending in `.otio`, `.fcpxml`,
+Call `klipp_import_timeline` with an absolute `path` ending in `.otio`, `.fcpxml` (also `.xml`),
 `.kdenlive`, `.mlt` or `.edl`. It appends a sequence to the current project and
 switches to it. It does not replace or save the current project. Other formats
 and converter installation are not supported by this operation.

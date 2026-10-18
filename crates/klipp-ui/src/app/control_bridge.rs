@@ -98,9 +98,19 @@ impl KlippApp {
                 sought = last_seek(&env.commands);
                 self.suppress_fps_prompt = true;
                 let touches_params = env.commands.iter().any(|c| matches!(c, AppCommand::SetNodeParam { .. } | AppCommand::AddKeyframe { .. } | AppCommand::RemoveKeyframe { .. }));
+                let import_request = env.commands.iter().find_map(|c| match c {
+                    AppCommand::ImportTimeline { request_id, .. } => Some(*request_id), _ => None,
+                });
                 let cmds = expand_control_commands(env.commands, env.batch);
                 self.send_commands(cmds);
                 self.suppress_fps_prompt = false;
+                if let Some(request_id) = import_request {
+                    let outcome = self.state.control_shared.import_outcome.lock().unwrap_or_else(|e| e.into_inner());
+                    match outcome.as_ref().filter(|o| o["request_id"] == serde_json::json!(request_id)) {
+                        Some(o) => { refused = o["error"].as_str().map(str::to_owned); }
+                        None => { refused = Some("The import was not applied; check whether the project is read-only.".into()); }
+                    }
+                }
                 // A parameter write reaches the engine through a queue it
                 // drains on its next frame; the socket's reads look at the
                 // engine's sequence. Push the mirror now, so what the client
