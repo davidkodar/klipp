@@ -374,6 +374,13 @@ pub fn stream_capacity() -> f64 {
     r.budget + software
 }
 
+/// What the GPU's decoder has left, pixels a second: the budget less
+/// what the decoders on it ask.
+pub fn gpu_headroom() -> f64 {
+    let r = registry().lock().unwrap_or_else(|e| e.into_inner());
+    r.budget - r.entries.iter().filter(|e| e.on_gpu).map(|e| e.rate).sum::<f64>()
+}
+
 /// How many open decoders decode on the GPU and in software, for the
 /// perf overlay.
 pub fn counts() -> (usize, usize) {
