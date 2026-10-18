@@ -1466,7 +1466,7 @@ fn call_tool(name: &str, args: &Value) -> Result<(Vec<Value>, Option<Value>), St
         cmd["idempotency_key"] = json!(uuid::Uuid::new_v4().to_string());
     }
     let mut result = control_call(cmd)?;
-    if matches!(name, "klipp_status" | "klipp_orient") {
+    if matches!(name, "klipp_import_timeline" | "klipp_status" | "klipp_orient") {
         diagnostics::attach(&mut result, args.get("expected_catalog_fingerprint").and_then(Value::as_str));
     }
     // The project changed under this session — made new, opened or saved
@@ -1500,10 +1500,13 @@ fn project_changed_under(name: &str, seen: u64, now: u64) -> bool {
 }
 
 fn has_structured_output(name: &str) -> bool {
-    matches!(name, "klipp_status" | "klipp_orient" | "klipp_timeline" | "klipp_plan" | "klipp_apply" | "klipp_prepare_cut" | "klipp_grade_to_target" | "klipp_check" | "klipp_review")
+    matches!(name, "klipp_import_timeline" | "klipp_status" | "klipp_orient" | "klipp_timeline" | "klipp_plan" | "klipp_apply" | "klipp_prepare_cut" | "klipp_grade_to_target" | "klipp_check" | "klipp_review")
 }
 
 fn output_schema(name: &str) -> Value {
+    if name == "klipp_import_timeline" {
+        return json!({"type":"object","properties":{"report":{"type":["object","null"]},"request_id":{"type":"string"},"error":{"type":"string"}},"additionalProperties":true});
+    }
     let mut properties = json!({
         "text": {"type":"string"},
         "revision": {"type":"integer","minimum":0},
@@ -2442,6 +2445,10 @@ mod interface_tests {
         assert_eq!(tool_to_command("klipp_import_timeline", &json!({"path":"/tmp/test.otio"})).unwrap(), json!({"method":"import_timeline","path":"/tmp/test.otio"}));
         assert_eq!(tool_to_command("klipp_import_timeline", &json!({})).unwrap(), json!({"method":"import_timeline","path":null}));
         assert!(guide_topic("import_timeline").unwrap().contains("warning counts") || guide_topic("import_timeline").unwrap().contains("Warning counts"));
+        assert!(has_structured_output("klipp_import_timeline"));
+        let reply = json!({"report":{"imported":{"clips":1}},"request_id":"request"});
+        let content = content_for("klipp_import_timeline", &reply).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(content[0]["text"].as_str().unwrap()).unwrap(), reply);
         let size = serde_json::to_vec(&tool_definitions_for(false)).unwrap().len();
         assert!(size < 60_000, "catalogue is {size} bytes");
     }
