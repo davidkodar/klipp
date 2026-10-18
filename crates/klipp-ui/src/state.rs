@@ -1275,6 +1275,8 @@ pub struct AppState {
     /// the editor wants to keep alongside the project. Persisted to
     /// project.json and edited via the Project Notes window.
     pub project_notes: String,
+    pub last_import_report: Option<klipp_project::import_report::ImportReport>,
+    pub show_import_report: bool,
     /// Whether the Project Notes window is open.
     pub show_project_notes: bool,
     /// Whether the Edit Plan window is open.
@@ -4747,6 +4749,8 @@ impl Default for AppState {
             edit_plan_note: None,
             tp_oversample: true,
             project_notes: String::new(),
+            last_import_report: None,
+            show_import_report: false,
             subtitle_editor: SubtitleEditorState::default(),
             consolidate_progress: None,
             consolidate_dest_path: String::new(),

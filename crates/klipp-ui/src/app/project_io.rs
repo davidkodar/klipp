@@ -268,6 +268,9 @@ impl KlippApp {
         self.state.source_media_id = None;
         self.state.project_path = None;
         self.state.project_notes = String::new();
+        self.state.last_import_report = None;
+        self.state.show_import_report = false;
+        *self.state.control_shared.import_outcome.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.state.dirty = false;
 
         // 3. Clear undo/redo history — entries reference clip IDs that no
@@ -622,6 +625,9 @@ impl KlippApp {
         let active_seq_id = self.state.sequences[self.state.active_sequence_idx].id.to_string();
         match klipp_project::save_project_full(path, &self.state.sequences, &self.state.media_pool, &color, Some(&active_seq_id), self.state.created_at.as_deref(), &self.state.project_notes, self.prefs.editing.backup_count, Some(self.state.timeline_zoom), Some(self.state.timeline_scroll_x), Some(self.state.timeline_track_scale), &self.state.title_assets) {
             Ok(()) => {
+                if let Err(e) = klipp_project::import_report::save(path, self.state.last_import_report.as_ref()) {
+                    self.state.toast.show(format!("Project saved, but the import report could not be saved: {e}"));
+                }
                 if let Err(e) = klipp_project::save_looks(path, &self.state.looks) {
                     // Said, not only logged: a Look that isn't saved is
                     // lost on close (#1135).
@@ -818,6 +824,9 @@ impl KlippApp {
                 self.state.active_sequence_idx = active_idx;
                 self.state.created_at = created_at;
                 self.state.project_notes = notes;
+                self.state.last_import_report = klipp_project::import_report::read(path).unwrap_or_else(|e| { tracing::warn!("Could not read last import report: {e}"); None });
+                self.state.show_import_report = false;
+                *self.state.control_shared.import_outcome.lock().unwrap_or_else(|e| e.into_inner()) = self.state.last_import_report.as_ref().map(|r| serde_json::json!({"report":r}));
                 self.state.project_epoch += 1;
                 self.retire_project_media();
                 self.state.media_pool = media_pool;

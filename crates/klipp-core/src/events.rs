@@ -1612,20 +1612,21 @@ pub enum AppCommand {
     ImportSubtitles { path: PathBuf },
     /// Import a Kdenlive MLT XML project as a new sequence.
     /// Unsupported features (filters, non-cross-dissolve transitions, keyframes)
-    /// are logged to a `<name>.import_warnings.txt` file alongside the source.
+    /// are shown in the last import report.
     ImportKdenlive { path: PathBuf },
     /// Parse an OpenTimelineIO `.otio` JSON file and import its timeline as
     /// a new Sequence. Unsupported features (transitions, effects, nested
-    /// stacks) are logged to a `<name>.import_warnings.txt` file alongside
-    /// the source.
+    /// stacks) are shown in the last import report.
     ImportOtio { path: PathBuf },
+    /// Import an existing supported interchange format and publish its report.
+    ImportTimeline { path: PathBuf, request_id: uuid::Uuid },
     /// Import a CMX 3600 EDL as a new sequence, its events matched to the
     /// media in the pool (#925).
     ImportEdl { path: PathBuf },
     /// Parse a Final Cut Pro XML (`.fcpxml`) file and import its timeline as
     /// a new Sequence. Unsupported features (effects, transitions, compound
-    /// clips, multicam, roles, connected clips) are logged to a
-    /// `<name>.import_warnings.txt` file alongside the source.
+    /// clips, multicam, roles, connected clips) are shown in the
+    /// last import report.
     ImportFcpxml { path: PathBuf },
     /// Copy the current project and all referenced media into a new
     /// self-contained directory at `dest_dir`. Source project is untouched.
@@ -5049,6 +5050,8 @@ mod codec_hint_tests {
 /// them.
 #[derive(Default)]
 pub struct ControlShared {
+    /// Last interchange import outcome, with its request id and report/error.
+    pub import_outcome: std::sync::Mutex<Option<serde_json::Value>>,
     pub revision: std::sync::atomic::AtomicU64,
     pub exports: std::sync::Mutex<Vec<ExportStatus>>,
     /// The open project as the UI last saw it.

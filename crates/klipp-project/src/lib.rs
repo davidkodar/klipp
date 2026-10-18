@@ -49,6 +49,7 @@ pub mod made_media;
 mod load;
 pub mod mlt_export;
 pub mod mlt_import;
+pub mod import_report;
 pub mod otio_export;
 pub mod otio_import;
 pub mod path_util;

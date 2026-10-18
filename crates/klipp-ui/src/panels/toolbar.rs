@@ -435,6 +435,7 @@ impl ToolbarPanel {
                 cmds.push(AppCommand::OpenSequenceSettings { sequence_idx: state.active_sequence_idx });
                 ui.close_menu();
             }
+            if ui.add_enabled(state.last_import_report.is_some(), egui::Button::new("Last Import Report…")).clicked() { state.show_import_report = true; ui.close_menu(); }
             let has_offline = !state.offline_media_ids.is_empty();
             if ui.add_enabled(has_offline, egui::Button::new("Relink Media...")).clicked() { cmds.push(AppCommand::ShowRelinkDialog); ui.close_menu(); }
             // Consolidate Project: copy the project + all media into a new

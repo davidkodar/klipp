@@ -3312,190 +3312,13 @@ impl KlippApp {
                 self.sync_sequence_to_engine();
                 true
             }
-            AppCommand::ImportKdenlive { path } => {
-                let path = path.clone();
-                match klipp_project::mlt_import::load_kdenlive(&path) {
-                    Ok(result) => {
-                        // Write warnings file if any features were dropped.
-                        if !result.warnings.is_empty() {
-                            let warnings_path = path.with_extension("import_warnings.txt");
-                            let body = result.warnings.join("\n");
-                            match std::fs::write(&warnings_path, &body) {
-                                Ok(_) => {
-                                    self.state.toast.show(format!(
-                                        "Kdenlive project imported with {} warning(s). See {}",
-                                        result.warnings.len(),
-                                        warnings_path.display(),
-                                    ));
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Could not write import warnings: {e}");
-                                    self.state.toast.show(format!(
-                                        "Imported with {} warning(s); could not write log: {e}",
-                                        result.warnings.len(),
-                                    ));
-                                }
-                            }
-                        } else {
-                            self.state.toast.show(
-                                "Kdenlive project imported successfully.".to_string(),
-                            );
-                        }
-
-                        // Merge the imported media pool into our state's pool.
-                        // We cloning the items then calling add() which preserves
-                        // the MediaId so clips that reference these items continue
-                        // to resolve correctly.
-                        let items: Vec<_> = result.media_pool.all().cloned().collect();
-                        for item in items {
-                            self.state.media_pool.add(item);
-                        }
-
-                        // Append the new sequence and switch to it.
-                        self.state.sequences.push(result.sequence);
-                        self.state.active_sequence_idx = self.state.sequences.len() - 1;
-                        self.state.dirty = true;
-                        self.sync_media_pool_to_engine();
-                        self.sync_sequence_to_engine();
-                    }
-                    Err(e) => {
-                        tracing::error!("Kdenlive import failed: {e:?}");
-                        self.state.toast.show(format!(
-                            "Failed to import Kdenlive project: {e}",
-                        ));
-                    }
-                }
+            AppCommand::ImportKdenlive { path } | AppCommand::ImportFcpxml { path }
+            | AppCommand::ImportOtio { path } | AppCommand::ImportEdl { path } => {
+                self.import_timeline_report(path, uuid::Uuid::new_v4());
                 true
             }
-            AppCommand::ImportFcpxml { path } => {
-                let path = path.clone();
-                match klipp_project::fcpxml_import::load_fcpxml(&path) {
-                    Ok(result) => {
-                        // Write warnings file if any features were dropped.
-                        if !result.warnings.is_empty() {
-                            let warnings_path = path.with_extension("import_warnings.txt");
-                            let body = result.warnings.join("\n");
-                            match std::fs::write(&warnings_path, &body) {
-                                Ok(_) => {
-                                    self.state.toast.show(format!(
-                                        "FCPXML project imported with {} warning(s). See {}",
-                                        result.warnings.len(),
-                                        warnings_path.display(),
-                                    ));
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Could not write import warnings: {e}");
-                                    self.state.toast.show(format!(
-                                        "Imported with {} warning(s); could not write log: {e}",
-                                        result.warnings.len(),
-                                    ));
-                                }
-                            }
-                        } else {
-                            self.state.toast.show(
-                                "FCPXML project imported successfully.".to_string(),
-                            );
-                        }
-
-                        // Merge the imported media pool, preserving MediaIds so
-                        // imported clips resolve correctly. Same pattern as
-                        // Kdenlive / OTIO.
-                        let items: Vec<_> = result.media_pool.all().cloned().collect();
-                        for item in items {
-                            self.state.media_pool.add(item);
-                        }
-
-                        self.state.sequences.push(result.sequence);
-                        self.state.active_sequence_idx = self.state.sequences.len() - 1;
-                        self.state.dirty = true;
-                        self.sync_media_pool_to_engine();
-                        self.sync_sequence_to_engine();
-                    }
-                    Err(e) => {
-                        tracing::error!("FCPXML import failed: {e:?}");
-                        self.state.toast.show(format!(
-                            "Failed to import FCPXML project: {e}",
-                        ));
-                    }
-                }
-                true
-            }
-            AppCommand::ImportEdl { path } => {
-                let fps = self.state.sequence().fps;
-                match klipp_project::path_util::read_capped(path, klipp_project::path_util::MAX_INPUT_FILE_BYTES) {
-                    Ok(bytes) => {
-                        let edl = klipp_project::edl_import::parse(&String::from_utf8_lossy(&bytes), fps);
-                        let name = edl.title.clone().unwrap_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().into_owned());
-                        let pool = &self.state.media_pool;
-                        let (seq, warnings) = klipp_project::edl_import::build(&edl, &name, fps, |e| klipp_project::edl_import::match_in_pool(pool, e, fps));
-                        let clips = seq.tracks.iter().map(|t| t.clips.len()).sum::<usize>();
-                        self.state.sequences.push(seq);
-                        self.state.active_sequence_idx = self.state.sequences.len() - 1;
-                        self.state.dirty = true;
-                        self.sync_sequence_to_engine();
-                        if warnings.is_empty() {
-                            self.state.toast.show(format!("EDL imported: {clips} clip(s) in \u{201C}{name}\u{201D}"));
-                        } else {
-                            for w in &warnings {
-                                tracing::warn!("EDL import: {w}");
-                            }
-                            self.state.toast.show(format!("EDL imported: {clips} clip(s), {} warning(s), first: {}", warnings.len(), warnings[0]));
-                        }
-                    }
-                    Err(e) => self.state.toast.show(format!("Could not read the EDL: {e}")),
-                }
-                true
-            }
-            AppCommand::ImportOtio { path } => {
-                let path = path.clone();
-                match klipp_project::otio_import::load_otio(&path) {
-                    Ok(result) => {
-                        // Write warnings file if any features were dropped.
-                        if !result.warnings.is_empty() {
-                            let warnings_path = path.with_extension("import_warnings.txt");
-                            let body = result.warnings.join("\n");
-                            match std::fs::write(&warnings_path, &body) {
-                                Ok(_) => {
-                                    self.state.toast.show(format!(
-                                        "OTIO project imported with {} warning(s). See {}",
-                                        result.warnings.len(),
-                                        warnings_path.display(),
-                                    ));
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Could not write import warnings: {e}");
-                                    self.state.toast.show(format!(
-                                        "Imported with {} warning(s); could not write log: {e}",
-                                        result.warnings.len(),
-                                    ));
-                                }
-                            }
-                        } else {
-                            self.state.toast.show(
-                                "OTIO project imported successfully.".to_string(),
-                            );
-                        }
-
-                        // Merge the imported media pool, preserving MediaIds so
-                        // imported clips resolve correctly. Same pattern as Kdenlive.
-                        let items: Vec<_> = result.media_pool.all().cloned().collect();
-                        for item in items {
-                            self.state.media_pool.add(item);
-                        }
-
-                        self.state.sequences.push(result.sequence);
-                        self.state.active_sequence_idx = self.state.sequences.len() - 1;
-                        self.state.dirty = true;
-                        self.sync_media_pool_to_engine();
-                        self.sync_sequence_to_engine();
-                    }
-                    Err(e) => {
-                        tracing::error!("OTIO import failed: {e:?}");
-                        self.state.toast.show(format!(
-                            "Failed to import OTIO project: {e}",
-                        ));
-                    }
-                }
+            AppCommand::ImportTimeline { path, request_id } => {
+                self.import_timeline_report(path, *request_id);
                 true
             }
             AppCommand::ConsolidateProject {
@@ -3904,5 +3727,31 @@ mod export_prefs_tests {
         for mode in [OverwriteMode::Ask, OverwriteMode::Never] {
             assert_eq!(apply_overwrite_mode(mode, &new).0, new, "{mode:?}: no file, no change");
         }
+    }
+}
+
+impl super::KlippApp {
+    pub(super) fn import_timeline_report(&mut self, path: &std::path::Path, request_id: uuid::Uuid) {
+        let result = klipp_project::import_report::load(path, self.state.sequence().fps, &self.state.media_pool);
+        let outcome = match result {
+            Ok(result) => {
+                let report = klipp_project::import_report::ImportReport::from_import(path, &result);
+                for item in result.media_pool.all().cloned() { self.state.media_pool.add(item); }
+                self.state.sequences.push(result.sequence);
+                self.state.active_sequence_idx = self.state.sequences.len() - 1;
+                self.state.dirty = true;
+                self.state.show_import_report = true;
+                self.state.last_import_report = Some(report.clone());
+                self.state.offline_media_ids = self.state.media_pool.all().filter(|m| m.offline).map(|m| m.id).collect();
+                self.sync_media_pool_to_engine();
+                self.sync_sequence_to_engine();
+                serde_json::json!({"request_id":request_id,"report":report})
+            }
+            Err(error) => {
+                self.state.toast.show(format!("Import failed: {error}"));
+                serde_json::json!({"request_id":request_id,"error":error})
+            }
+        };
+        *self.state.control_shared.import_outcome.lock().unwrap_or_else(|e| e.into_inner()) = Some(outcome);
     }
 }

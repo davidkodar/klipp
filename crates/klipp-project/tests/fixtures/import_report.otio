@@ -1,0 +1,12 @@
+{
+  "OTIO_SCHEMA": "Timeline.1", "name": "Import report fixture",
+  "global_start_time": {"OTIO_SCHEMA":"RationalTime.1","value":0,"rate":24},
+  "tracks": {"OTIO_SCHEMA":"Stack.1","children":[
+    {"OTIO_SCHEMA":"Track.1","kind":"Video","name":"Picture","children":[
+      {"OTIO_SCHEMA":"Clip.1","name":"Missing shot",
+       "source_range":{"OTIO_SCHEMA":"TimeRange.1","start_time":{"OTIO_SCHEMA":"RationalTime.1","value":0,"rate":24},"duration":{"OTIO_SCHEMA":"RationalTime.1","value":24,"rate":24}},
+       "media_reference":{"OTIO_SCHEMA":"MissingReference.1"},
+       "effects":[{"OTIO_SCHEMA":"Effect.1","name":"Unsupported grade"}]}
+    ]}
+  ]}
+}

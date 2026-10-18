@@ -1015,6 +1015,8 @@ pub enum ControlCommand {
     /// file onto a new subtitle track of the active sequence, as the app's
     /// Import Subtitles does (#1516).
     ImportSubtitles { path: String },
+    /// Append a supported interchange timeline; omit path to read the last outcome.
+    ImportTimeline { path: Option<String> },
     /// What is said in a media file between two times, with when: the
     /// segments, and with `words` every word and its start and end, in
     /// the file's seconds. For setting a cut on the edge of a word.
