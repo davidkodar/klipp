@@ -48,6 +48,19 @@ ignore = [
   # overflow is in the NNEF parser. Klipp loads ONNX models, fetched by
   # hash from its model manifest, never NNEF. The fix needs tract 0.21+.
   { id = "RUSTSEC-2026-0217", reason = "only hash-verified ONNX models are loaded, never NNEF; fix needs tract 0.21+" },
+  # ZIP extraction advisories (#2140): klipp-project copies enclosed
+  # entries into fresh regular files, without applying archive modes or
+  # creating links; consolidation only writes ZIPs. Candle 0.8 reads ZIP
+  # members into tensor/pickle readers, never filesystem extraction.
+  { id = "RUSTSEC-2026-0367", reason = "klipp-project and Candle do not use ZIP filesystem extraction or apply archive permissions; reassess if extraction usage changes, remove once both zip dependencies reach 9+ (#2140)" },
+  { id = "RUSTSEC-2026-0368", reason = "klipp-project and Candle do not use ZIP filesystem extraction or create archive symlinks; reassess if extraction usage changes, remove once both zip dependencies reach 9+ (#2140)" },
+  { id = "RUSTSEC-2026-0369", reason = "klipp-project and Candle do not use ZIP filesystem extraction or chmod through archive symlinks; reassess if extraction usage changes, remove once both zip dependencies reach 9+ (#2140)" },
+  # These standalone D-Bus crates moved into zbus 6; no patched release
+  # exists under their old names. eframe 0.29's AccessKit/AT-SPI stack
+  # still needs zbus 4.
+  { id = "RUSTSEC-2026-0370", reason = "zvariant is transitive through eframe/AccessKit/AT-SPI; remove when that stack migrates to zbus 6 and its wire module (#2140)" },
+  { id = "RUSTSEC-2026-0371", reason = "zbus_names is transitive through eframe/AccessKit/AT-SPI; remove when that stack migrates to zbus 6 and its names module (#2140)" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is transitive through eframe/AccessKit/AT-SPI; remove when that stack migrates to zbus 6 and its macros (#2140)" },
   # Unmaintained, with no maintained release to move to yet.
   { id = "RUSTSEC-2026-0319", reason = "anymap2, unmaintained, via egui; no replacement upstream yet" },
   { id = "RUSTSEC-2024-0384", reason = "instant, unmaintained, transitive; no fix" },

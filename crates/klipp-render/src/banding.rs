@@ -30,7 +30,7 @@ pub struct Banding {
 /// `w`×`h`) shows, when at least a quarter of its rows band: a run longer
 /// than half the width where each pixel is within one code of the last in
 /// every channel, not flat (three values or more), whose widest channel
-/// changes by fewer than [`FEW_LEVELS`] values over half the frame's
+/// changes by fewer than 20 values over half the frame's
 /// width. Texture (footage, grain) breaks the runs; a flat colour has no
 /// steps to see.
 pub fn bands(rgba: &[u8], w: usize, h: usize) -> Option<u32> {
