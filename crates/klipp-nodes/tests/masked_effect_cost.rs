@@ -46,11 +46,17 @@ fn graph(masked: bool) -> NodeGraph {
 /// too: a mix with no window reads an unwired mask, white, which prices
 /// the mix's own passes apart from the window's.
 fn graph_of(mixed: bool, masked: bool) -> NodeGraph {
+    graph_with(vec![BuiltinEffect::GaussianBlur { radius: 6.0 }], mixed, masked)
+}
+
+/// [`graph_of`] with `effects` in the effect node: a blur, of several
+/// passes, or a one-pass effect (#1254).
+fn graph_with(effects: Vec<BuiltinEffect>, mixed: bool, masked: bool) -> NodeGraph {
     use klipp_core::{Mask, MaskShape, MaskStack};
     let s = node(NodeKind::Source, NodeParams::default());
     let e = node(NodeKind::Exposure, NodeParams { exposure: Some(0.2), ..Default::default() });
     let blend = mixed.then_some(EffectBlend { mix: 0.75, channel: MaskChannel::Luminance });
-    let fx = node(NodeKind::Effect, NodeParams { effects: vec![BuiltinEffect::GaussianBlur { radius: 6.0 }], effect_blend: blend, ..Default::default() });
+    let fx = node(NodeKind::Effect, NodeParams { effects, effect_blend: blend, ..Default::default() });
     let o = node(NodeKind::Output, NodeParams::default());
     let mut nodes = vec![s.clone(), e.clone(), fx.clone()];
     let mut edges = vec![link(s.id, e.id, 0), link(e.id, fx.id, 0), link(fx.id, o.id, 0)];
@@ -96,6 +102,32 @@ fn a_masked_effect_costs_one_slot_and_nothing_on_the_cpu() {
     assert_eq!(masked.cpu_nodes, plain.cpu_nodes, "the window, drawn on the GPU: {plain:?} -> {masked:?}");
     assert_eq!((masked.effect_breaks, masked.effect_mixes_refused), (0, 0), "{masked:?}");
     assert_eq!((plain.peak_slots, masked.peak_slots), (0, 1), "the blur's input kept for the lerp, and no matte for the window");
+    // A one-pass effect leaves its input where it is, and the lerp reads
+    // it there (#1254): no slot kept for it.
+    let gamma = stats(&mut ex, &graph_with(vec![GAMMA], true, true), 96, 54);
+    assert_eq!((gamma.peak_slots, gamma.effect_breaks, gamma.effect_mixes_refused), (0, 0, 0), "a one-pass effect's input read in place: {gamma:?}");
+}
+
+const GAMMA: BuiltinEffect = BuiltinEffect::Gamma { gamma: 1.6 };
+
+/// A mixed effect's frame is its input and its plain result mixed by the
+/// mix, `input + (effect - input) * 0.75` (an unwired mask is white), for
+/// a one-pass effect mixed over its input in place and for a blur mixed
+/// over its kept copy alike (#1254). The input and the plain result are
+/// the same graph without the effect and without the mix.
+#[test]
+fn a_mixed_effect_is_its_input_and_result_mixed_in_place_or_not() {
+    let Some(mut ex) = gpu() else { return };
+    let (w, h) = (96, 54);
+    let f = frame(w, h);
+    let run = |ex: &mut GraphExecutor, g: &NodeGraph| ex.execute_linear(&f, g, w, h, 0.5, 12, None, None).unwrap().0;
+    let input = run(&mut ex, &graph_with(Vec::new(), false, false));
+    for (name, effect) in [("gamma, one pass", GAMMA), ("blur, several passes", BuiltinEffect::GaussianBlur { radius: 6.0 })] {
+        let plain = run(&mut ex, &graph_with(vec![effect.clone()], false, false));
+        let mixed = run(&mut ex, &graph_with(vec![effect], true, false));
+        let worst = input.iter().zip(&plain).zip(&mixed).map(|((i, p), m)| (i + (p - i) * 0.75 - m).abs()).fold(0.0f32, f32::max);
+        assert!(worst < 1e-5, "{name}: the mixed frame is {worst} from its input and result mixed");
+    }
 }
 
 /// The milliseconds behind L3 and L7 at 4K, for the quiet window. L3:
@@ -143,7 +175,16 @@ fn masked_effect_gpu_time_at_4k() {
     into_out.from_node = extra.id;
     one_more.edges.push(link(last, extra.id, 0));
     one_more.nodes.push(extra);
-    let cases = [("plain", graph_of(false, false)), ("one Exposure more", one_more), ("mixed, no window", graph_of(true, false)), ("masked", graph_of(true, true))];
+    // A one-pass effect, plain and mixed (#1254): mixed over its input in
+    // place, it costs one pass over the plain one, the lerp.
+    let cases = [
+        ("plain", graph_of(false, false)),
+        ("one Exposure more", one_more),
+        ("mixed, no window", graph_of(true, false)),
+        ("masked", graph_of(true, true)),
+        ("gamma, plain", graph_with(vec![GAMMA], false, false)),
+        ("gamma, mixed, no window", graph_with(vec![GAMMA], true, false)),
+    ];
     for (name, g) in cases {
         let mut ms = Vec::new();
         for i in 0..23 {
