@@ -100,11 +100,6 @@ fn bounded(mut value: Value) -> Value {
 }
 
 fn trim(value: &mut Value) -> usize {
-    if value.get("ports").is_some_and(|v| v.to_string().len() > 256) {
-        value["ports"] = Value::Null;
-        value["omitted_details"] = json!(true);
-        return 1;
-    }
     if let Some(nodes) = value.get_mut("nodes").and_then(Value::as_array_mut) {
         for n in nodes.iter_mut().rev() {
             if let Some(body) = n.get_mut("body") {
@@ -140,6 +135,13 @@ fn trim(value: &mut Value) -> usize {
         }
         return count;
     }
+    // A direct group read is also the way to recover its interface from a
+    // partial parent read. Preserve those ports while trimming child details.
+    if value.get("ports").is_some_and(|v| v.to_string().len() > 256) {
+        value["ports"] = Value::Null;
+        value["omitted_details"] = json!(true);
+        return 1;
+    }
     0
 }
 
@@ -153,6 +155,20 @@ mod tests {
         let read = bounded(graph);
         assert!(read.to_string().len() <= BUDGET);
         assert!(read["omitted_items"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn a_group_read_preserves_its_interface_before_child_details() {
+        let ports = json!((0..8).map(|i| json!({"key":format!("matte_{i}"),"direction":"output","ty":"matte", "binding":{"node":i,"port":"out"}})).collect::<Vec<_>>());
+        assert!(ports.to_string().len() > 256);
+        let read = bounded(json!({"ports":ports,"nodes":(0..60).map(|i| json!({"id":i,"label":"x".repeat(100),"params":{}})).collect::<Vec<_>>(),"edges":[]}));
+        assert!(read.to_string().len() <= BUDGET);
+        assert_eq!(read["ports"], ports);
+        assert!(read["omitted_items"].as_u64().unwrap() > 0);
+        let oversized = bounded(json!({"ports":[{"label":"x".repeat(BUDGET * 2)}],"nodes":[],"edges":[]}));
+        assert!(oversized.to_string().len() <= BUDGET);
+        assert_eq!(oversized["omitted_details"], true);
+        assert!(oversized["ports"].is_null());
     }
 
     #[test]
