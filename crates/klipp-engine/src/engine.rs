@@ -3204,6 +3204,7 @@ impl PlaybackEngine {
             AppCommand::MediaDecodeChanged => {
                 info!("Engine: media decode settings changed; re-decoding at the playhead");
                 self.cached_pregrade_frame = None;
+                self.retained_primary = None;
                 // Pre-grades decoded the old way.
                 self.frame_cache.clear();
                 // Rendered from pixels decoded the old way. (The disk
@@ -4338,6 +4339,7 @@ impl PlaybackEngine {
 
         // Clear caches (frame, render hot, pre-grade, grade hash)
         self.cached_pregrade_frame = None;
+        self.retained_primary = None;
         self.frame_cache.clear();
         self.render_cache_hot.clear();
         self.last_synth_frame_rendered = None;
@@ -9087,6 +9089,7 @@ impl PlaybackEngine {
         }
         self.cached_pregrade_frame = None;
         self.cached_pregrade_at = None;
+        self.retained_primary = None;
         true
     }
 
@@ -13824,11 +13827,32 @@ mod paused_refresh_tests {
         assert!(matches!(engine.retained_primary_at_playhead().unwrap().source_pixels(), klipp_compose::SourcePixels::Gpu(_)));
         engine.regrade_cached_frame();
         assert!(matches!(engine.retained_primary_at_playhead().unwrap().source_pixels(), klipp_compose::SourcePixels::Gpu(_)));
+        let retained = engine.retained_primary.clone();
+        let pregrade = engine.cached_pregrade_frame.clone();
+        assert!(retained.is_some() && pregrade.is_some());
         engine.playhead = tc(31);
         assert!(engine.retained_primary_at_playhead().is_none(), "another time reused the frame");
         engine.playhead = tc(30);
         engine.sequence.write().unwrap().tracks[1].clips[0].source_in = tc(1);
         assert!(engine.retained_primary_at_playhead().is_none(), "a source edit reused the frame");
+        assert!(engine.note_layout_change(true));
+        assert!(engine.cached_pregrade_frame.is_none());
+        assert!(engine.retained_primary.is_none(), "a layout change kept the old source");
+
+        engine.retained_primary = retained.clone();
+        engine.cached_pregrade_frame = pregrade.clone();
+        engine.reset_to_idle();
+        assert!(engine.cached_pregrade_frame.is_none());
+        assert!(engine.retained_primary.is_none(), "reset kept the old source");
+
+        // Stopped playback does not seek on this command, so this pins
+        // the command's own invalidation instead of the seek's clearing.
+        engine.state = PlaybackState::Stopped;
+        engine.retained_primary = retained;
+        engine.cached_pregrade_frame = pregrade;
+        engine.handle_command(AppCommand::MediaDecodeChanged);
+        assert!(engine.cached_pregrade_frame.is_none());
+        assert!(engine.retained_primary.is_none(), "decode settings kept the old source");
         drop(engine);
         let _ = std::fs::remove_file(path);
     }
