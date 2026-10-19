@@ -313,22 +313,29 @@ impl TitleRenderer {
         time: f32,
         window: Option<f32>,
     ) -> Option<GlyphSource> {
+        self.glyph_source_in_scene(title, width, height, time, window, None)
+    }
+
+    /// Preserve a linked path's authoring scene while rendering one text layer.
+    pub fn glyph_source_in_scene(
+        &mut self, title: &TitleData, width: u32, height: u32,
+        time: f32, window: Option<f32>, scene: Option<&TitleData>,
+    ) -> Option<GlyphSource> {
         let [o] = title.objects.as_slice() else {
             return None;
         };
         let TitleObjectContent::TextBox(tb) = &o.content else {
             return None;
         };
+        let linked = matches!(tb.text_path, Some(klipp_timeline::TextPath::Layer { .. }));
         let fx = o.fx();
         if !o.visible
             || o.opacity != 1.0
             || !o.opacity_keyframes.is_empty()
             || title.mixes_layers()
             || matches!(title.background, TitleBackground::FullFrame { .. })
-            || o.transform.rotation != 0.0
-            || !o.transform.rotation_keyframes.is_empty()
+            || (!linked && (o.transform.rotation != 0.0 || !o.transform.rotation_keyframes.is_empty()))
             || tb.three_d.as_ref().is_some_and(|d| d.enabled)
-            || matches!(tb.text_path, Some(klipp_timeline::TextPath::Layer { .. }))
             // Path motion poses the already turned coverage, unlike flat glyph poses.
             || (tb.text_path.is_some() && (fx.motion.is_active() || fx.animators.iter().any(|a| a.enabled)))
             || tb.extrusion.is_some()
@@ -340,7 +347,7 @@ impl TitleRenderer {
         {
             return None;
         }
-        let changes = tb.gradient.as_ref().is_some_and(|g| g.has_keyframes())
+        let changes = linked || tb.gradient.as_ref().is_some_and(|g| g.has_keyframes())
             || !o.transform.size_x_keyframes.is_empty()
             || !o.transform.size_y_keyframes.is_empty()
             || !tb.font_size_keyframes.is_empty()
@@ -387,6 +394,8 @@ impl TitleRenderer {
         }
         evaluated.objects[0].fx_mut().loops.clear();
         evaluated.objects[0].transform = o.transform.evaluated_at(time as f64);
+        let bound_path = if linked { Some(self.bound_path_line(scene?, &evaluated, Some(time), width, height)?) } else { None };
+        self.bound_path = bound_path;
         self.gpu_layout_only = true;
         self.gpu_motion = (fx.motion.is_active() || fx.animators.iter().any(|a| a.enabled))
             .then_some((time, window));
@@ -403,6 +412,7 @@ impl TitleRenderer {
                 .any(|l| matches!(l, klipp_timeline::TitleLoop::Counter { .. }));
         *self.gpu_layout_capture.borrow_mut() = None;
         let layout = self.render_layout_at_time(&evaluated, width, height, tb.text_path.as_ref().map(|_| time));
+        self.bound_path = None;
         self.gpu_layout_only = false;
         self.gpu_wave = None;
         self.gpu_motion = None;
