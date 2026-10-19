@@ -347,7 +347,9 @@ impl TitleRenderer {
         {
             return None;
         }
-        let changes = linked || tb.gradient.as_ref().is_some_and(|g| g.has_keyframes())
+        let raster_animator = fx.animators.iter().any(|a| a.enabled && (a.props.blur != 0.0 || a.props.colour.is_some()));
+        let stagger_blur = fx.motion.enter.iter().chain(fx.motion.exit.iter()).any(|m|m.kind.blurs() && m.stagger!=klipp_timeline::StaggerUnit::None);
+        let changes = linked || raster_animator || stagger_blur || tb.gradient.as_ref().is_some_and(|g| g.has_keyframes())
             || !o.transform.size_x_keyframes.is_empty()
             || !o.transform.size_y_keyframes.is_empty()
             || !tb.font_size_keyframes.is_empty()

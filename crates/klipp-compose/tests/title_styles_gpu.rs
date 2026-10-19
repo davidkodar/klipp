@@ -395,7 +395,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
     use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams};
     use klipp_timeline::GradeAccess;
     let (w, h) = (320, 180);
-    const VARIANTS:usize=55;
+    const VARIANTS:usize=58;
     // Isolate a failing case locally without weakening the default regression.
     let selected=std::env::var("KLIPP_TEST_TITLE_VARIANT").ok().map(|v| {let n=v.parse::<usize>().expect("title variant number");assert!(n<VARIANTS,"unknown title variant");n});
     for ws in [WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG] {
@@ -543,6 +543,14 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
             }
             if variant==41 {
                 title.objects[0].fx_mut().animators=vec![klipp_timeline::Animator{props:klipp_timeline::AnimatorProps{opacity:0.0,colour:Some([30,180,240,140]),..Default::default()},..Default::default()}];
+            }
+            if variant>=55 {
+                title=TitleData::single_text_fx(TextBox{text:"Soft text".into(),font_size:180.0,color:[190,120,60,180],..Default::default()},LayerFx::default());
+                if variant==57 {
+                    title.objects[0].fx_mut().motion=klipp_timeline::TitleMotion::enter(klipp_timeline::Motion::new(klipp_timeline::MotionKind::Blur).duration(0.8).stagger(klipp_timeline::StaggerUnit::Char,0.05));
+                } else {
+                    title.objects[0].fx_mut().animators=vec![klipp_timeline::Animator{props:klipp_timeline::AnimatorProps{blur:if variant==55 {0.5}else{0.0},rotation:25.0,colour:if variant==56 {Some([30,180,240,140])}else{None},..Default::default()},..Default::default()}];
+                }
             }
             if variant==11 {let text=title.primary_text_mut().unwrap();text.font_name="Variable Test".into();text.font_axes=vec![("wght".into(),650.0)];}
             let mut clip = Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) };
