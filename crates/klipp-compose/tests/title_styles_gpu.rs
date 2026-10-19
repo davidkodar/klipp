@@ -397,7 +397,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
     let (w, h) = (320, 180);
     for ws in [WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG] {
         for graded in [false, true] {
-          for variant in 0..9 {
+          for variant in 0..11 {
             let mut title = TitleData::single_text_fx(TextBox {
                 text: "Glitch".into(), font_size: 180.0, color: [190, 120, 60, 255],
                 glitch_intensity: 0.6, chromatic_aberration_px: 12.0, ..Default::default()
@@ -406,7 +406,8 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                 ..Default::default()
             });
             if variant==6 { title.objects[0].fx_mut().edge_fade=klipp_core::title_motion::EdgeFade { left:0.45,right:0.4,top:0.4,bottom:0.4 }; }
-            if variant>0 && variant!=6 {
+            if variant>=9 { let text=title.primary_text_mut().unwrap(); text.glitch_intensity=0.0; text.chromatic_aberration_px=0.0; text.font_size_keyframes=vec![key(0.0,120.0),key(1.0,220.0)]; text.vertical_layout=variant==10; }
+            if variant>0 && variant!=6 && variant<9 {
                 let text=title.primary_text_mut().unwrap();
                 text.glitch_intensity=0.0; text.chromatic_aberration_px=0.0;
                 if variant==3 { text.text="First\nSecond".into(); text.line_spacing_keyframes=vec![key(0.0,0.8),key(1.0,1.4)]; }
@@ -465,4 +466,32 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
         }
     }
     }
+}
+
+#[test]
+fn animated_size_reuses_outlines_at_4k() {
+    let (w,h)=(3840,2160);
+    let title=TitleData::single_text_fx(TextBox {
+        text:"Outline".into(),font_size:180.0,
+        font_size_keyframes:vec![key(0.0,120.0),key(1.0,220.0)],
+        ..Default::default()
+    },LayerFx::default());
+    let clip=Clip {kind:ClipKind::Title(title),..Clip::gap(RationalTime::from_secs_f64(0.0,30),RationalTime::from_secs_f64(3.0,30))};
+    let mut seq=Sequence::new_default();seq.resolution=Resolution {width:w,height:h};
+    let mut track=Track::new("title",TrackKind::Video);track.clips.push(clip);seq.tracks=vec![track];
+    let mut gpu=renderer();gpu.set_gpu_enabled(true);
+    assert!(gpu.executor().gpu_pipeline_or_init().is_some(),"GPU required");
+    for (sample,time) in [0.2,0.7,0.2].into_iter().enumerate() {
+        let at=RationalTime::from_secs_f64(time,30);
+        let scope=klipp_effects::residency::frame("outline timing",time);
+        let started=std::time::Instant::now();
+        let (pixels,_)=gpu.render_display_u8_on_gpu(&seq,at,w,h,&mut NoMedia,RenderOptions::default()).expect("resident outline");
+        let elapsed=started.elapsed();drop(scope);
+        assert_eq!(pixels.len(),(w*h*4) as usize);
+        let events=klipp_effects::residency::last_frame().events;
+        assert!(!events.iter().any(|e|e.work==klipp_effects::residency::Work::Fallback),"{events:?}");
+        if sample>0 {assert!(!events.iter().any(|e|e.work==klipp_effects::residency::Work::Preparation),"retained geometry at a new size: {events:?}");}
+        eprintln!("4K title size sample {sample}: {elapsed:?} including final verification download");
+    }
+    assert_eq!(gpu.title_renderer().resting_renders(),0);
 }

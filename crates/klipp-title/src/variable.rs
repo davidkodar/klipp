@@ -146,6 +146,12 @@ impl Instance {
         Some(face)
     }
 
+    /// Layout needs bounds and advances, never a coverage bitmap. Keep
+    /// animated-size layout independent of the CPU glyph raster cache.
+    pub(crate) fn metrics(&self, data:&[u8], gid:u16, px:f32)->Metrics {
+        self.face(data).map(|face| metrics_and_lines(&face,gid,px).0).unwrap_or_default()
+    }
+
     /// Glyph `gid` of the face in `data` at the instance, at `px`
     /// pixels per em: its metrics as fontdue gives a glyph's, the
     /// advance the instance's, and its coverage. A glyph without an
@@ -168,6 +174,12 @@ impl Instance {
 /// (y up), its box the outline's whole pixels out from the outline as
 /// fontdue's metrics give it, and its coverage rows top down.
 fn draw(face: &ttf_parser::Face, gid: u16, px: f32) -> (Metrics, Vec<u8>) {
+    let (metrics,lines)=metrics_and_lines(face,gid,px);
+    let coverage=fill(&lines,metrics.width,metrics.height);
+    (metrics,coverage)
+}
+
+fn metrics_and_lines(face: &ttf_parser::Face, gid: u16, px: f32) -> (Metrics, Vec<((f32,f32),(f32,f32))>) {
     let scale = px / face.units_per_em().max(1) as f32;
     let advance_width = face.glyph_hor_advance(GlyphId(gid)).unwrap_or(0) as f32 * scale;
     let mut outline = Outline { scale, lines: Vec::new(), start: (0.0, 0.0), pen: (0.0, 0.0) };
@@ -201,7 +213,7 @@ fn draw(face: &ttf_parser::Face, gid: u16, px: f32) -> (Metrics, Vec<u8>) {
         advance_height: 0.0,
         bounds: OutlineBounds { xmin: x0, ymin: y0, width: x1 - x0, height: y1 - y0 },
     };
-    (metrics, fill(&lines, width, height))
+    (metrics, lines)
 }
 
 /// An outline flattened to lines, in pixels.

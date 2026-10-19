@@ -87,12 +87,54 @@ fn blend3(mode: u32, d: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
     }
 }
 
+// Integral of clamp(1-x,0,1): an edge's signed pixel area.
+fn coverage_integral(x:f32)->f32 {
+    if x<=0.0 {return x;}
+    if x>=1.0 {return 0.5;}
+    return x-0.5*x*x;
+}
+fn edge_coverage(edge:vec4<f32>,pixel:vec2<f32>)->f32 {
+    var a=edge.xy*p.row0.x+p.row0.yz;
+    var b=edge.zw*p.row0.x+p.row0.yz;
+    var direction=1.0;
+    if a.y>b.y {let temp=a; a=b; b=temp; direction=-1.0;}
+    let lo=max(a.y,pixel.y); let hi=min(b.y,pixel.y+1.0);
+    if hi<=lo || b.y-a.y<0.000001 {return 0.0;}
+    let slope=(b.x-a.x)/(b.y-a.y);
+    let xa=a.x+(lo-a.y)*slope-pixel.x;
+    let xb=a.x+(hi-a.y)*slope-pixel.x;
+    var mean=clamp(1.0-(xa+xb)*0.5,0.0,1.0);
+    if abs(xb-xa)>0.00001 {mean=(coverage_integral(xb)-coverage_integral(xa))/(xb-xa);}
+    return direction*(hi-lo)*mean;
+}
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i=gid.x;
     if i>=p.width*p.height { return; }
     let x=i%p.width; let y=i/p.width;
-    if p.op==13u {
+    if p.op==14u {
+        let px=i32(x)+p.offset_x; let py=i32(y)+p.offset_y;
+        if px<0 || py<0 || px>=i32(p.frame_width) || py>=i32(p.y0) {return;}
+        var coverage=0.0;
+        var pixel=vec2<f32>(f32(x),f32(y));
+        if p.row0.w>0.5 {pixel=vec2<f32>(f32(y),f32(p.width)-1.0-f32(x));}
+        let bins=load_rgba(0u);
+        let low=(pixel.y-p.row0.z)/p.row0.x;
+        let high=(pixel.y+1.0-p.row0.z)/p.row0.x;
+        let first=u32(clamp(floor((low-bins.x)/bins.y*bins.z),0.0,bins.z-1.0));
+        let last=u32(clamp(floor((high-bins.x)/bins.y*bins.z),0.0,bins.z-1.0));
+        for(var bin=first;bin<=last;bin+=1u) {
+            let range=load_rgba(1u+bin);
+            for(var j=0u;j<u32(range.y);j+=1u) {
+                let edge=load_rgba(u32(range.x)+j);
+                let edge_first=u32(clamp(floor((max(low,min(edge.y,edge.w))-bins.x)/bins.y*bins.z),0.0,bins.z-1.0));
+                if bin==edge_first {coverage+=edge_coverage(edge,pixel);}
+            }
+        }
+        let alpha=floor(clamp(abs(coverage)*255.9,0.0,255.0))/255.0;
+        let dst=u32(py)*p.frame_width+u32(px);
+        store_rgba(dst,vec4<f32>(p.color.rgb,max(alpha,load_dst(dst).a)));
+    } else if p.op==13u {
         let matte=load_rgba(i); let object=load_dst(i);
         var value=matte.a;
         if p.offset_x!=0 { value*=dot(matrix(matte.rgb),vec3<f32>(0.2126,0.7152,0.0722)); }

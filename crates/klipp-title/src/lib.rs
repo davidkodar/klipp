@@ -47,6 +47,7 @@ mod ruby;
 mod vertical;
 mod gpu_styles;
 mod gpu_glyphs;
+mod outline_2d;
 pub use gpu_glyphs::{GlyphDraw, GlyphSource};
 pub use gpu_styles::{StyleFaceWork, StyleSource};
 mod tracking;
@@ -526,6 +527,7 @@ pub struct TitleRenderer {
     /// Recently used unfinished faces; bounded separately and invalidated with raster caches.
     style_source_cache: Vec<gpu_styles::SourceCache>,
     gpu_layout_only: bool,
+    gpu_outline_only: bool,
     gpu_layout_capture: std::cell::RefCell<Option<GlyphSource>>,
     gpu_glyph_cache: std::cell::RefCell<gpu_glyphs::GlyphCache>,
     /// The rows with coverage in the last render, `y0..y1`.
@@ -673,6 +675,7 @@ impl TitleRenderer {
             resting_renders: 0,
             style_source_cache: Vec::new(),
             gpu_layout_only: false,
+            gpu_outline_only: false,
             gpu_layout_capture: Default::default(),
             gpu_glyph_cache: Default::default(),
             last_rows: (0, 0),
@@ -1438,7 +1441,7 @@ impl TitleRenderer {
         if self.gpu_layout_only {
             *self.gpu_layout_capture.borrow_mut() = self.gpu_glyph_cache.borrow_mut().layout(
                 &fonts, glyphs, [offset_x, offset_y],
-                [mask_x0 as u32, mask_y0 as u32, mask_w as u32, mask_h as u32], tb.color, title.primary_fx(),
+                [mask_x0 as u32, mask_y0 as u32, mask_w as u32, mask_h as u32], tb.color, title.primary_fx(), self.gpu_outline_only,
             );
             if let Some(source) = self.gpu_layout_capture.borrow_mut().as_mut() {
                 let progress = tb.outline_write_on.clamp(0.0,1.0);

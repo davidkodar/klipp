@@ -87,6 +87,116 @@ pub(super) fn inverse(m: [[f32; 4]; 3]) -> Option<[[f32; 4]; 3]> {
     Some(std::array::from_fn(|i| [x[i] / d, y[i] / d, z[i] / d, 0.0]))
 }
 impl GpuEffectsPipeline {
+    /// Rasterize retained outline edges at the evaluated glyph size. Only
+    /// placement parameters change with size; no CPU glyph bitmap is produced.
+    pub fn stack_title_outline(
+        &mut self,
+        slot: usize,
+        id: u64,
+        edges: &[[f32; 4]],
+        origin: [i32; 2],
+        size: [u32; 2],
+        placement: [f32; 4],
+        color: [u8; 4],
+    ) -> bool {
+        let [w, h] = size;
+        let count = u64::from(w) * u64::from(h);
+        if self.is_device_lost()
+            || slot >= self.stack_layers.len()
+            || count == 0
+            || edges.len() < 65
+            || edges.len() > 65536
+            || placement[0] <= 0.0
+            || placement.iter().any(|x| !x.is_finite())
+            || count.div_ceil(u64::from(WORKGROUP_SIZE))
+                > u64::from(self.device.limits().max_compute_workgroups_per_dimension)
+        {
+            return false;
+        }
+        if edges.iter().flatten().any(|v| !v.is_finite())
+            || edges[0][1] <= 0.0
+            || edges[0][2] != 64.0
+        {
+            return false;
+        }
+        let mut max_bin = 0u64;
+        for bin in &edges[1..65] {
+            if bin[0] < 65.0
+                || bin[1] < 0.0
+                || bin[0].fract() != 0.0
+                || bin[1].fract() != 0.0
+                || bin[0] + bin[1] > edges.len() as f32
+            {
+                return false;
+            }
+            max_bin = max_bin.max(bin[1] as u64);
+        }
+        // Bounds even a pathological outline with many full-height edges.
+        let bins_per_pixel = ((64.0 / (edges[0][1] * placement[0])).ceil() as u64)
+            .saturating_add(1)
+            .min(64);
+        if count.saturating_mul(max_bin).saturating_mul(bins_per_pixel) > 64 * 1024 * 1024 {
+            return false;
+        }
+        let source = if let Some(i) = self.title_outlines.iter().position(|(key, _)| *key == id) {
+            self.title_outlines.remove(i)
+        } else {
+            let bytes = bytemuck::cast_slice(edges);
+            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("title glyph outline"),
+                size: bytes.len() as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.upload(&buffer, 0, bytes);
+            (id, buffer)
+        };
+        let linear = |x: u8| {
+            let x = x as f32 / 255.0;
+            if x <= 0.04045 {
+                x / 12.92
+            } else {
+                ((x + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let rgb = [linear(color[0]), linear(color[1]), linear(color[2])];
+        let working = self
+            .authored_to_working
+            .map(|row| row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2]);
+        self.write_params(&StyleParams {
+            width: w,
+            height: h,
+            frame_width: self.stack_dims.0,
+            op: 14,
+            x0: edges.len() as u32,
+            y0: self.stack_dims.1,
+            offset_x: origin[0],
+            offset_y: origin[1],
+            color: [working[0], working[1], working[2], 1.0],
+            matrix: [placement, [0.0; 4], [0.0; 4]],
+        });
+        self.stack_pass(
+            &self.title_style_pipeline,
+            &source.1,
+            &self.stack_layers[slot],
+            (count as u32).div_ceil(WORKGROUP_SIZE),
+            "title outline coverage",
+        );
+        while self.title_outlines.len() >= 512
+            || self
+                .title_outlines
+                .iter()
+                .map(|(_, b)| b.size())
+                .sum::<u64>()
+                + source.1.size()
+                > 32 << 20
+        {
+            self.title_outlines.remove(0);
+        }
+        self.title_outlines.push(source);
+        true
+    }
+
     /// Authored title chromatic split followed by deterministic stripe glitch.
     /// This is the title algorithm, not the similarly named clip effects.
     /// The decorated layer stays on the device through both operations.

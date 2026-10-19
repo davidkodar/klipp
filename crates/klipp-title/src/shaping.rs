@@ -94,6 +94,14 @@ impl LoadedFont {
         crate::text3d_mesh::glyph_contours(&face, ttf_parser::GlyphId(gid), scale, origin, tolerance)
     }
 
+    pub(crate) fn coverage_outline(&self,gid:u16)->Option<Vec<[f32;4]>> {
+        // Non-default variable instances use a different CPU curve subdivision;
+        // keep their size animation on that reference until its GPU twin lands.
+        if self.instance.is_some() {return None;}
+        let face=ttf_parser::Face::parse(&self.data,0).ok()?;
+        crate::outline_2d::edges(&face,gid)
+    }
+
     /// The hash glyph keys carry for this font: fontdue's hash of its
     /// file, and for an instance its coordinates' too (#1504).
     pub(crate) fn hash(&self) -> usize {
@@ -113,7 +121,7 @@ impl LoadedFont {
     /// box its bitmap's (#1503): fontdue sees no outline there.
     pub(crate) fn metrics_indexed(&self, gid: u16, px: f32) -> Metrics {
         if let Some((i, _)) = &self.instance {
-            return i.glyph(&self.data, gid, px).0;
+            return i.metrics(&self.data, gid, px);
         }
         let mut m = self.font.metrics_indexed(gid, px);
         if let Some(c) = self.colour_glyph(gid, px) {

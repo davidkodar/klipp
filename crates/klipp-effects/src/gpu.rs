@@ -359,6 +359,7 @@ pub struct GpuEffectsPipeline {
     title_style_pipeline: wgpu::ComputePipeline,
     title_style_scratch: Option<title_styles::StyleScratch>,
     title_post_scratch: Option<wgpu::Buffer>,
+    title_outlines: Vec<(u64,wgpu::Buffer)>,
     // Compute pipelines — transitions (3-buffer: from, to, output, params)
     transition_pipeline: wgpu::ComputePipeline,
     /// Posed piece transitions (#985): `SHADER_PIECES`.
@@ -1723,6 +1724,7 @@ impl GpuEffectsPipeline {
             title_style_pipeline,
             title_style_scratch: None,
             title_post_scratch: None,
+            title_outlines: Vec::new(),
             transition_pipeline,
             pieces_pipeline,
             shutter_pipeline,
