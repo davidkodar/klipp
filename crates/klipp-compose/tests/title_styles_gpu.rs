@@ -395,7 +395,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
     use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams};
     use klipp_timeline::GradeAccess;
     let (w, h) = (320, 180);
-    const VARIANTS:usize=62;
+    const VARIANTS:usize=66;
     // Isolate a failing case locally without weakening the default regression.
     let selected=std::env::var("KLIPP_TEST_TITLE_VARIANT").ok().map(|v| {let n=v.parse::<usize>().expect("title variant number");assert!(n<VARIANTS,"unknown title variant");n});
     for ws in [WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG] {
@@ -573,9 +573,25 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                     rotation_keyframes:vec![key(0.0,-15.0),key(1.0,25.0)],
                     anchor_norm:klipp_timeline::TitlePosition{x:0.3,y:0.7},
                     ..klipp_timeline::default_text_transform()});
-                if variant==59 {title.objects.remove(0);title.objects[0].opacity_keyframes=vec![key(0.0,0.3),key(1.0,0.7)];}
-                if variant==60 {title.objects[1].blend=klipp_core::BlendMode::Screen;title.objects[1].opacity_keyframes=vec![key(0.0,0.3),key(1.0,0.7)];}
-                if variant==61 {title.objects[0].mask=Some(klipp_timeline::LayerMask{source:title.objects[1].id,kind:klipp_core::layer_mask::LayerMaskKind::Luma});title.objects[1].visible=false;}
+                if variant==59 || variant==62 {title.objects.remove(0);title.objects[0].opacity_keyframes=vec![key(0.0,0.3),key(1.0,0.7)];}
+                if variant==60 || variant==63 {title.objects[1].blend=klipp_core::BlendMode::Screen;title.objects[1].opacity_keyframes=vec![key(0.0,0.3),key(1.0,0.7)];}
+                if variant==61 || variant==64 {title.objects[0].mask=Some(klipp_timeline::LayerMask{source:title.objects[1].id,kind:klipp_core::layer_mask::LayerMaskKind::Luma});title.objects[1].visible=false;}
+            }
+            if variant>=62 {
+                for object in &mut title.objects {
+                    if let klipp_timeline::TitleObjectContent::Shape(shape)=&mut object.content {
+                        shape.gradient=Some(klipp_timeline::TextGradient{enabled:true,top_color:[230,30,50,180],bottom_color:[20,180,220,80],stop_keyframes:vec![],stops:vec![],kind:if variant==63 {klipp_timeline::GradientKind::Radial{centre:[0.3,0.6],radius:0.7}}else{klipp_timeline::GradientKind::Linear{angle_deg:35.0}}});
+                    }
+                }
+            }
+            if variant==65 {
+                title.primary_text_mut().unwrap().font_size_keyframes=vec![key(0.0,140.0),key(1.0,220.0)];
+                let target=title.objects[0].id;
+                if let klipp_timeline::TitleObjectContent::Shape(shape)=&mut title.objects[1].content {
+                    shape.fit=Some(klipp_timeline::ShapeFit{target,padding:klipp_timeline::TitlePosition{x:12.0,y:8.0}});
+                    shape.gradient.as_mut().unwrap().stops=(0..16).map(|i|klipp_timeline::GradientStop{position:i as f32/15.0,color:[(20+i*12) as u8,100,180,(60+i*10) as u8]}).collect();
+                }
+                title.objects.swap(0,1);
             }
             if variant==11 {let text=title.primary_text_mut().unwrap();text.font_name="Variable Test".into();text.font_axes=vec![("wght".into(),650.0)];}
             let mut clip = Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) };
@@ -613,7 +629,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                 let worst = got.iter().zip(&want).map(|(a,b)| a.abs_diff(*b)).max().unwrap();
                 if worst>3 {let i=got.iter().zip(&want).position(|(a,b)|a.abs_diff(*b)==worst).unwrap()/4; eprintln!("worst pixel {},{} got {:?} want {:?}",i%w as usize,i/w as usize,&got[i*4..i*4+4],&want[i*4..i*4+4]);}
                 assert!(worst<=3,"{ws:?} graded={graded} variant={variant} at{t}: {worst}");
-                assert_eq!(gpu.title_renderer().resting_renders(),u64::from(variant==0 || variant==6 || variant==58 || variant==60 || variant==61),"cached sources, not full per-frame rasters");
+                assert_eq!(gpu.title_renderer().resting_renders(),u64::from(variant==0 || variant==6 || variant==58 || variant==60 || variant==61 || variant==63 || variant==64),"cached sources, not full per-frame rasters");
                 if sample==2 { assert!(events.iter().all(|e| e.work!=klipp_effects::residency::Work::Preparation),"warm backward seek: {events:?}"); }
             }
         }

@@ -163,9 +163,12 @@ fn fill_color(pos:vec2<f32>)->vec4<f32> {
     var t=0.0;
     if p.row1.w>0.5 {t=length((uv-p.row1.xy)/p.row1.z);}
     else {let span=dot(abs(p.row1.xy),extent);if span>0.0 {t=dot((uv-vec2<f32>(0.5))*extent,p.row1.xy)/span+0.5;}}
+    return gradient_colour(t,u32(p.color.x));
+}
+fn gradient_colour(position:f32,count:u32)->vec4<f32> {
+    var t=position;
     // The reference ramp uses 4097 quantized positions.
     t=floor(clamp(t,0.0,1.0)*4096.0+0.5)/4096.0;
-    let count=u32(p.color.x);
     if t<=stop_position(0u) {return stop_color(0u);}
     if t>=stop_position(count-1u) {return stop_color(count-1u);}
     var next=count-1u;
@@ -208,13 +211,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let src=load_rgba(i);let dst=load_dst(i);let sc=matrix(src.rgb);let dc=matrix(dst.rgb);
         let s=vec3<f32>(encoded(sc.x),encoded(sc.y),encoded(sc.z));let d=vec3<f32>(encoded(dc.x),encoded(dc.y),encoded(dc.z));
         store_rgba(i,vec4<f32>(s+d*(1.0-src.a),src.a+dst.a*(1.0-src.a)));
-    } else if p.op==34u {
+    } else if p.op==34u || p.op==37u {
         let d=vec2<f32>(f32(x)+0.5,f32(y)+0.5)-p.row1.xy;
         let q=p.row1.xy+vec2<f32>(p.row1.z*d.x+p.row1.w*d.y,-p.row1.w*d.x+p.row1.z*d.y);
         let lo=p.row0.xy-p.row0.zw;let hi=p.row0.xy+p.row0.zw;var colour=vec4<f32>(0.0);
         if rounded_rect(q,lo,hi,p.row2.x) {
-            colour=p.color;
-            if p.row2.y>0.0 && !rounded_rect(q,lo+vec2<f32>(p.row2.y),hi-vec2<f32>(p.row2.y),max(p.row2.x-p.row2.y,0.0)) {colour=bitcast<vec4<f32>>(p.stops[0]);}
+            let stroke=p.row2.y>0.0 && !rounded_rect(q,lo+vec2<f32>(p.row2.y),hi-vec2<f32>(p.row2.y),max(p.row2.x-p.row2.y,0.0));
+            if p.op==34u {
+                colour=p.color;
+                if stroke {colour=bitcast<vec4<f32>>(p.stops[0]);}
+            } else {
+                let extent=max(hi-lo,vec2<f32>(1.0));let uv=(q-lo)/extent;
+                var t=0.0;
+                if p.color.w>0.5 {t=length((uv-p.color.xy)/p.color.z);}
+                else {let span=dot(abs(p.color.xy),extent);if span>0.0 {t=dot((uv-vec2<f32>(0.5))*extent,p.color.xy)/span+0.5;}}
+                colour=gradient_colour(t,u32(p.offset_x));
+                if stroke {let c=p.frame_width;colour=vec4<f32>(f32(c&255u),f32((c>>8u)&255u),f32((c>>16u)&255u),f32(c>>24u))/255.0;}
+                if p.offset_y==0 {colour=vec4<f32>(colour.rgb*colour.a,colour.a);}
+            }
         }
         store_rgba(i,colour);
     } else if p.op==31u {

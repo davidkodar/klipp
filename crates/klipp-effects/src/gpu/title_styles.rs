@@ -980,7 +980,7 @@ impl GpuEffectsPipeline {
     }
 
     /// Analytic fitted rectangle coverage, using the authored title painter's pixel tests.
-    pub fn stack_title_rectangle(&mut self, slot: usize, bounds: [f32;4], pivot: [f32;2], radians: f32, radius: f32, fill: [u8;4], stroke: Option<([u8;4],f32)>, straight: bool) -> bool {
+    pub fn stack_title_rectangle(&mut self, slot: usize, bounds: [f32;4], pivot: [f32;2], radians: f32, radius: f32, fill: [u8;4], stroke: Option<([u8;4],f32)>, straight: bool, gradient: Option<&TitleFill>) -> bool {
         if !bounds.iter().chain(pivot.iter()).chain([radians,radius].iter()).all(|v|v.is_finite()) || !self.stack_title_alpha(slot,[0.0;4],1.0) {return false;}
         let colour=|c:[u8;4]| {
             let rgb:[f32;3]=std::array::from_fn(|i| {
@@ -992,11 +992,24 @@ impl GpuEffectsPipeline {
         };
         let mut stops=[[0u32;4];8];stops[0]=colour(stroke.map_or([0;4],|s|s.0)).map(f32::to_bits);
         let (w,h)=self.stack_dims;
-        let params=StyleParams{width:w,height:h,frame_width:w,op:34,x0:0,y0:0,offset_x:0,offset_y:0,color:colour(fill),
+        let mut params=StyleParams{width:w,height:h,frame_width:w,op:34,x0:0,y0:0,offset_x:0,offset_y:0,color:colour(fill),
             matrix:[bounds,[pivot[0],pivot[1],radians.cos(),radians.sin()],[radius,stroke.map_or(0.0,|s|s.1),0.0,0.0]]};
+        if let Some(gradient)=gradient {
+            let TitleFill::Gradient{geometry,stops:gradient_stops}=gradient else {return false;};
+            if geometry.iter().any(|v|!v.is_finite()) || gradient_stops.is_empty() || gradient_stops.len()>16 || gradient_stops.iter().any(|s|!s.0.is_finite()) {return false;}
+            params.op=37;params.color=*geometry;params.offset_x=gradient_stops.len() as i32;params.offset_y=i32::from(straight);
+            params.frame_width=u32::from_le_bytes(stroke.map_or([0;4],|s|s.0));
+            stops=[[0;4];8];let mut sorted=gradient_stops.clone();sorted.sort_by(|a,b|a.0.total_cmp(&b.0));
+            for (i,stop) in sorted.iter().enumerate() {stops[i/2][i%2*2]=stop.0.to_bits();stops[i/2][i%2*2+1]=u32::from_le_bytes(stop.1);}
+        }
         self.write_params(&FillParams{base:params,stops});
         let layer=&self.stack_layers[slot];let scratch=self.title_post_scratch.as_ref().unwrap();
         self.stack_pass(&self.title_style_pipeline,layer,scratch,(w*h).div_ceil(WORKGROUP_SIZE),"fitted title rectangle");
+        if gradient.is_some() {
+            self.write_params(&StyleParams{op:11,width:w,height:h,frame_width:w,matrix:self.authored_to_working,..params});
+            self.stack_pass(&self.title_style_pipeline,scratch,layer,(w*h).div_ceil(WORKGROUP_SIZE),"rectangle gradient working space");
+            return true;
+        }
         let mut enc=self.encoder(Some("title rectangle copy"));enc.copy_buffer_to_buffer(scratch,0,layer,0,u64::from(w)*u64::from(h)*16);self.submit(enc);true
     }
 
