@@ -177,7 +177,38 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i=gid.x;
     if i>=p.width*p.height { return; }
     let x=i%p.width; let y=i/p.width;
-    if p.op==22u {
+    if p.op==24u {
+        store_rgba(i,load_rgba((y+p.y0)*p.frame_width+x+p.x0));
+    } else if p.op==23u {
+        let pos=vec2<u32>(x+p.x0,y+p.y0);
+        let uvp=bitcast<vec4<f32>>(p.stops[3]);let extra=bitcast<vec4<f32>>(p.stops[4]);
+        let frame=p.width*p.height;
+        let coverage=input[frame*4u+i];if coverage==0u {return;}
+        let extent=max(p.color.zw-p.color.xy,vec2<f32>(1.0));
+        var uv=(vec2<f32>(pos)-p.color.xy)/extent;
+        let aspect=extent.x/extent.y;let texaspect=f32(p.offset_x)/f32(p.offset_y);let mode=u32(extra.z);
+        if mode==2u {
+            if aspect>texaspect {uv.x=(uv.x-0.5)/(texaspect/aspect)+0.5;}
+            else if aspect<texaspect {uv.y=(uv.y-0.5)/(aspect/texaspect)+0.5;}
+            if any(uv<vec2<f32>(0.0)) || any(uv>vec2<f32>(1.0)) {return;}
+        } else if mode==3u {
+            if aspect>texaspect {uv.y=(uv.y-0.5)*(aspect/texaspect)+0.5;}
+            else if aspect<texaspect {uv.x=(uv.x-0.5)*(texaspect/aspect)+0.5;}
+        }
+        let c=uv-vec2<f32>(0.5);
+        uv=vec2<f32>(0.5)+vec2<f32>(c.x*uvp.y-c.y*uvp.z,c.x*uvp.z+c.y*uvp.y);
+        uv=(uv-extra.xy)*uvp.x;
+        if mode==1u {uv=uv-floor(uv);} else if any(uv<vec2<f32>(0.0)) || any(uv>vec2<f32>(1.0)) {return;}
+        let sample=vec2<u32>(floor(uv*vec2<f32>(f32(p.offset_x-1),f32(p.offset_y-1))+vec2<f32>(0.5)));
+        let ti=frame*4u+p.width*p.height+2u*(sample.y*u32(p.offset_x)+sample.x);
+        let texture=vec4<f32>(unpack2x16float(input[ti]),unpack2x16float(input[ti+1u]));
+        let original=load_rgba(i);
+        let authored=vec3<f32>(dot(bitcast<vec4<f32>>(p.stops[0]).xyz,original.rgb),dot(bitcast<vec4<f32>>(p.stops[1]).xyz,original.rgb),dot(bitcast<vec4<f32>>(p.stops[2]).xyz,original.rgb));
+        let old=floor(clamp(vec3<f32>(encoded(authored.r),encoded(authored.g),encoded(authored.b)),vec3<f32>(0.0),vec3<f32>(1.0))*255.0+0.5);
+        let tex=floor(texture.rgb*255.0+0.5)*bitcast<vec4<f32>>(p.stops[5]).rgb;
+        let rgb=floor(clamp(old*(1.0-uvp.w)+tex*(f32(coverage)/255.0)*uvp.w,vec3<f32>(0.0),vec3<f32>(255.0)))/255.0;
+        store_rgba(pos.y*p.frame_width+pos.x,vec4<f32>(matrix(vec3<f32>(linear(rgb.r),linear(rgb.g),linear(rgb.b))),f32(coverage)/255.0));
+    } else if p.op==22u {
         let pos=vec2<u32>(x+p.x0,y+p.y0);
         if i32(pos.x)>=p.offset_x {return;}
         let coverage=round(clamp(load_rgba(pos.y*p.frame_width+pos.x).a,0.0,1.0)*255.0);

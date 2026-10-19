@@ -507,6 +507,7 @@ pub struct TitleRenderer {
     font_registry: font_discovery::FontRegistry,
     /// Cached texture fill image: (path, rgba_data, width, height)
     texture_fill_cache: Option<(String, Vec<u8>, u32, u32)>,
+    gpu_textures:std::collections::VecDeque<(klipp_timeline::TextureSource,u64,std::sync::Arc<BoxRaster>)>,
     /// Small LRU of recently-rasterized titles. Capped at
     /// `RENDER_CACHE_CAP` so memory stays bounded even when many
     /// title clips are visited (e.g. scrubbing across a long credits
@@ -676,6 +677,7 @@ impl TitleRenderer {
             font_cache: HashMap::new(),
             font_registry: registry,
             texture_fill_cache: None,
+            gpu_textures:Default::default(),
             render_cache: Vec::with_capacity(RENDER_CACHE_CAP),
             text_layer_cache: Vec::new(),
             text_layers_rendered: 0,
@@ -3786,6 +3788,8 @@ impl TitleRenderer {
         self.text_layer_cache.clear();
         self.style_source_cache.clear();
         self.gpu_glyph_cache.borrow_mut().clear();
+        self.gpu_textures.clear();
+        self.texture_fill_cache=None;
     }
 
     /// Compute character positions for the given title text, using the same layout

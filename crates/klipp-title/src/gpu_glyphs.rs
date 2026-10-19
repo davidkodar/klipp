@@ -15,6 +15,11 @@ pub struct OutlineDraw {
     /// Scale from the cached 2048px-em outline, then translate to bitmap space.
     pub placement: [f32; 4],
 }
+pub struct TextureDraw {
+    pub id: u64,
+    pub pixels: Arc<BoxRaster>,
+    pub fill: klipp_timeline::TextureFill,
+}
 pub struct GlyphSource {
     pub glyphs: Vec<GlyphDraw>,
     pub outlines: Vec<OutlineDraw>,
@@ -24,6 +29,7 @@ pub struct GlyphSource {
     pub gradient: Option<klipp_timeline::TextGradient>,
     pub pattern: Option<klipp_timeline::TextPattern>,
     pub bounds: [f32; 4],
+    pub texture: Option<TextureDraw>,
     pub prepared: usize,
     pub rerasterized: bool,
     pub outline_cutoff: i32,
@@ -170,6 +176,7 @@ impl GlyphCache {
             gradient: None,
             pattern: None,
             bounds: [0.0; 4],
+            texture: None,
         })
     }
 }
@@ -265,6 +272,7 @@ impl GlyphCache {
             gradient: None,
             pattern: None,
             bounds: [0.0; 4],
+            texture: None,
         })
     }
 }
@@ -297,7 +305,6 @@ impl TitleRenderer {
             || tb.three_d.as_ref().is_some_and(|d| d.enabled)
             || tb.text_path.is_some()
             || !tb.style_runs.is_empty()
-            || tb.texture_fill.is_some()
             || tb.extrusion.is_some()
             || tb.glitch_intensity > 0.0
             || tb.chromatic_aberration_px > 0.0
@@ -372,7 +379,7 @@ impl TitleRenderer {
         self.gpu_layout_only = false;
         self.gpu_wave = None;
         self.gpu_outline_only = false;
-        self.gpu_layout_capture.borrow_mut().take().or_else(|| {
+        let mut source = self.gpu_layout_capture.borrow_mut().take().or_else(|| {
             (layout.glyph_count == 0 || layout.mask_w == 0 || layout.mask_h == 0).then(|| {
                 GlyphSource {
                     glyphs: Vec::new(),
@@ -389,8 +396,63 @@ impl TitleRenderer {
                     gradient: None,
                     pattern: None,
                     bounds: [0.0; 4],
+                    texture: None,
                 }
             })
-        })
+        })?;
+        if let Some(fill) = tb.texture_fill.as_ref().filter(|f| f.enabled) {
+            let hit = self
+                .gpu_textures
+                .iter()
+                .position(|(key, _, _)| key == &fill.source);
+            if let Some(index) = hit {
+                let entry = self.gpu_textures.remove(index)?;
+                source.texture = Some(TextureDraw {
+                    id: entry.1,
+                    pixels: Arc::clone(&entry.2),
+                    fill: fill.clone(),
+                });
+                self.gpu_textures.push_back(entry);
+            } else {
+                let data = match &fill.source {
+                    klipp_timeline::TextureSource::File(path) if !path.is_empty() => self
+                        .load_texture_fill(path)
+                        .map(|(p, w, h)| (p.to_vec(), w, h)),
+                    klipp_timeline::TextureSource::Preset(p) => {
+                        Some(generate_preset_texture(*p, 256, 256))
+                    }
+                    _ => None,
+                };
+                if let Some((data, w, h)) = data {
+                    let bytes = u64::from(w) * u64::from(h) * 8;
+                    if bytes > 64 * 1024 * 1024 {
+                        return None;
+                    }
+                    let pixels = Arc::new(BoxRaster::from_bytes(&data, (w, h), (0, h), (0, w)));
+                    while self.gpu_textures.len() >= 16
+                        || self
+                            .gpu_textures
+                            .iter()
+                            .map(|(_, _, p)| p.byte_size())
+                            .sum::<usize>()
+                            + pixels.byte_size()
+                            > 64 * 1024 * 1024
+                    {
+                        self.gpu_textures.pop_front();
+                    }
+                    let id = self.next_cache_id;
+                    self.next_cache_id += 1;
+                    self.gpu_textures
+                        .push_back((fill.source.clone(), id, Arc::clone(&pixels)));
+                    source.texture = Some(TextureDraw {
+                        id,
+                        pixels,
+                        fill: fill.clone(),
+                    });
+                    source.prepared += 1;
+                }
+            }
+        }
+        Some(source)
     }
 }
