@@ -2666,7 +2666,7 @@ impl Renderer {
 
     fn place_title_source(&mut self, td: &klipp_timeline::TitleData, slot: usize, width: u32, height: u32, clip_time: f64, total: f32) -> Option<((u32,u32),Vec<BuiltinEffect>)> {
         if let [object] = td.objects.as_slice() {
-            if object.opacity!=1.0 || !object.opacity_keyframes.is_empty() {
+            if !matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..}) && (object.opacity!=1.0 || !object.opacity_keyframes.is_empty()) {
                 let mut source=td.clone();
                 source.objects[0].opacity=1.0;
                 source.objects[0].opacity_keyframes.clear();
@@ -2675,7 +2675,7 @@ impl Renderer {
                 return self.executor.gpu_pipeline_or_init()?.stack_title_alpha(slot,[0.0;4],object.evaluated_opacity(clip_time)).then_some((rows,Vec::new()));
             }
             let edges=object.fx().edge_fade;
-            if !edges.is_none() && !object.fx().motion.is_active() && object.fx().loops.is_empty() {
+            if !matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..}) && !edges.is_none() && !object.fx().motion.is_active() && title_source_loops(&object.fx().loops) {
                 let mut source=td.clone();
                 source.objects[0].fx_mut().edge_fade=Default::default();
                 let (rows,soft)=self.place_title_source(&source,slot,width,height,clip_time,total)?;
@@ -2685,18 +2685,24 @@ impl Renderer {
         }
         // Render objects independently so each keeps its own source cache,
         // GPU styles and time evaluation before authored-space composition.
-        if (td.objects.len() > 1 || td.mixes_layers()) && td.background == klipp_timeline::TitleBackground::None
+        if (td.objects.len() > 1 || td.mixes_layers() || matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..}))
             && td.objects.iter().all(|o| match &o.content {
                 klipp_timeline::TitleObjectContent::TextBox(tb) => !matches!(tb.text_path,Some(klipp_timeline::TextPath::Layer {..})),
                 klipp_timeline::TitleObjectContent::Shape(shape) => shape.fit.is_none(),
                 _ => true,
             }) {
             let object_slot = self.executor.gpu_pipeline_or_init()?.stack_title_object_slot(0)?;
-            if !self.executor.gpu_pipeline_or_init()?.stack_layer_clear(slot) { return None; }
+            let initialized=match td.background {
+                klipp_timeline::TitleBackground::FullFrame{color}=>self.executor.gpu_pipeline_or_init()?.stack_layer_segments(slot,color,[0;4],&[]),
+                _=>self.executor.gpu_pipeline_or_init()?.stack_layer_clear(slot),
+            };
+            if !initialized {return None;}
+            let mut backing=matches!(td.background,klipp_timeline::TitleBackground::Color{..}).then(||td.background.clone());
             for object in td.objects.iter().filter(|o| o.visible && !td.is_matte(o.id)) {
                 let opacity = object.evaluated_opacity(clip_time).clamp(0.0,1.0);
                 let mut single = td.clone();
                 single.objects = vec![object.clone()];
+                single.background=if matches!(object.content,klipp_timeline::TitleObjectContent::TextBox(_)) {backing.take().unwrap_or_default()} else {klipp_timeline::TitleBackground::None};
                 single.objects[0].opacity = 1.0;
                 single.objects[0].opacity_keyframes.clear();
                 single.objects[0].blend=klipp_core::BlendMode::Normal;
@@ -2709,6 +2715,7 @@ impl Renderer {
                     let matte_slot=self.executor.gpu_pipeline_or_init()?.stack_title_object_slot(1)?;
                     let mut mask_title=td.clone();
                     mask_title.objects=vec![matte.clone()];
+                    mask_title.background=klipp_timeline::TitleBackground::None;
                     mask_title.objects[0].visible=true;
                     mask_title.objects[0].mask=None;
                     mask_title.objects[0].blend=klipp_core::BlendMode::Normal;
@@ -2756,12 +2763,13 @@ impl Renderer {
                     if source.prepared>0 {
                         residency::record("title.glyph", if source.rerasterized { "Glyph working set exceeded the retained cache" } else { "Bounded glyph source cache miss" }, if source.rerasterized { Work::Fallback } else { Work::Preparation });
                     }
-                    rows=(source.roi[1],source.roi[1]+source.roi[3]);
+                    rows = source.backing.map_or((source.roi[1], source.roi[1] + source.roi[3]), |(rect, _)| (source.roi[1].min(rect[1]), (source.roi[1] + source.roi[3]).max(rect[1] + rect[3])));
                     let passes=crate::synth::title_style_passes(&source.fx,klipp_title::frame_scale(width,height),clip_time);
                     self.executor.gpu_pipeline_or_init().is_some_and(|p| {
                         p.stack_layer_clear(slot) && source.glyphs.iter().all(|g| p.stack_title_glyph(slot,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],g.origin,source.color))
                             && source.outlines.iter().all(|g|p.stack_title_outline(slot,g.id,&g.edges,g.origin,g.size,g.placement,source.color))
-                            && (source.roi[2]==0 || source.roi[3]==0 || p.stack_title_styles_with_fill(slot,source.roi,&passes,source.color[3] as f32/255.0,source.outline_cutoff))
+                            && source.stripes.iter().all(|&rect|p.stack_title_stripe(slot,rect,source.color))
+                            && (source.roi[2]==0 || source.roi[3]==0 || p.stack_title_styles_with_face(slot,source.roi,&passes,klipp_effects::gpu::TitleFace {alpha:source.color[3] as f32/255.0,outline_cutoff:source.outline_cutoff,write_cutoff:source.write_cutoff,backing:source.backing}))
                     })
                 } else if let Some(source) = self.titles.style_source(td, width, height, clip_time as f32, Some(total)) {
                     match source.face_work {
@@ -6285,6 +6293,12 @@ fn follows_something_moving(seq: &Sequence, c: &Clip, depth: u32) -> bool {
     camera_moves_it(seq, target) || moves_itself(target) || follows_something_moving(seq, target, depth + 1)
 }
 
+// These loops alter glyph content/placement before title post-processing.
+// Focus and whole-layer opacity loops need their own later ordering stages.
+fn title_source_loops(loops:&[klipp_timeline::TitleLoop])->bool {
+    loops.iter().all(|l|matches!(l,klipp_timeline::TitleLoop::ColorCycle{..}|klipp_timeline::TitleLoop::ColorBlend{..}|klipp_timeline::TitleLoop::Counter{..}|klipp_timeline::TitleLoop::Wave{..}))
+}
+
 // Separate post effects from the decorated source. Object rotation is later
 // than post-processing in the CPU renderer and needs the scene transform path.
 fn title_post_source(td: &klipp_timeline::TitleData) -> Option<(klipp_timeline::TitleData, f32, f32)> {
@@ -6292,9 +6306,9 @@ fn title_post_source(td: &klipp_timeline::TitleData) -> Option<(klipp_timeline::
     let klipp_timeline::TitleObjectContent::TextBox(tb) = &obj.content else { return None };
     if !obj.visible || obj.opacity != 1.0 || !obj.opacity_keyframes.is_empty()
         || obj.transform.rotation != 0.0 || !obj.transform.rotation_keyframes.is_empty()
-        || td.mixes_layers() || td.background != klipp_timeline::TitleBackground::None
+        || td.mixes_layers() || matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..})
         || !obj.fx().edge_fade.is_none() || obj.fx().motion.is_active()
-        || !obj.fx().loops.is_empty() || obj.fx().motion_blur.is_some()
+        || !title_source_loops(&obj.fx().loops) || obj.fx().motion_blur.is_some()
         || (tb.chromatic_aberration_px <= 0.0 && tb.glitch_intensity <= 0.0)
     { return None; }
     let mut source = td.clone();

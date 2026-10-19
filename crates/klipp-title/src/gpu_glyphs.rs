@@ -24,6 +24,9 @@ pub struct GlyphSource {
     pub prepared: usize,
     pub rerasterized: bool,
     pub outline_cutoff: i32,
+    pub write_cutoff: i32,
+    pub stripes: Vec<[u32; 4]>,
+    pub backing: Option<([u32; 4], [u8; 4])>,
 }
 struct CachedGlyph {
     key: fontdue::layout::GlyphRasterConfig,
@@ -158,6 +161,9 @@ impl GlyphCache {
             prepared,
             rerasterized,
             outline_cutoff: i32::MAX,
+            write_cutoff: i32::MAX,
+            stripes: Vec::new(),
+            backing: None,
         })
     }
 }
@@ -197,7 +203,7 @@ impl GlyphCache {
             {
                 self.outlines.remove(i)?
             } else {
-                let edges = crate::outline_2d::row_bins(font.coverage_outline(g.key.glyph_index)?)?;
+                let edges = font.coverage_outline(g.key.glyph_index)?;
                 let id = self.next_id;
                 self.next_id = self.next_id.wrapping_add(1);
                 prepared += 1;
@@ -247,6 +253,9 @@ impl GlyphCache {
             prepared,
             rerasterized: false,
             outline_cutoff: i32::MAX,
+            write_cutoff: i32::MAX,
+            stripes: Vec::new(),
+            backing: None,
         })
     }
 }
@@ -273,15 +282,12 @@ impl TitleRenderer {
             || o.opacity != 1.0
             || !o.opacity_keyframes.is_empty()
             || title.mixes_layers()
-            || title.background != TitleBackground::None
+            || matches!(title.background, TitleBackground::FullFrame { .. })
             || o.transform.rotation != 0.0
             || !o.transform.rotation_keyframes.is_empty()
             || tb.three_d.as_ref().is_some_and(|d| d.enabled)
             || tb.text_path.is_some()
-            || tb.underline
-            || tb.strikethrough
             || !tb.style_runs.is_empty()
-            || tb.write_on != 1.0
             || tb.gradient.is_some()
             || tb.pattern_fill.is_some()
             || tb.texture_fill.is_some()
@@ -331,12 +337,7 @@ impl TitleRenderer {
             },
             text.color,
         );
-        if pose.wave.is_some()
-            || pose.focus.is_some()
-            || pose.dx != 0.0
-            || pose.dy != 0.0
-            || pose.opacity != 1.0
-        {
+        if pose.focus.is_some() || pose.dx != 0.0 || pose.dy != 0.0 || pose.opacity != 1.0 {
             return None;
         }
         if let Some(c) = pose.color {
@@ -348,6 +349,7 @@ impl TitleRenderer {
         evaluated.objects[0].fx_mut().loops.clear();
         evaluated.objects[0].transform = o.transform.evaluated_at(time as f64);
         self.gpu_layout_only = true;
+        self.gpu_wave = pose.wave.map(|(amp, rate)| (time, amp, rate));
         self.gpu_outline_only = !tb.font_size_keyframes.is_empty()
             || !tb.line_spacing_keyframes.is_empty()
             || !tb.tracking_keyframes.is_empty()
@@ -360,6 +362,7 @@ impl TitleRenderer {
         *self.gpu_layout_capture.borrow_mut() = None;
         let layout = self.render_layout_at_time(&evaluated, width, height, None);
         self.gpu_layout_only = false;
+        self.gpu_wave = None;
         self.gpu_outline_only = false;
         self.gpu_layout_capture.borrow_mut().take().or_else(|| {
             (layout.glyph_count == 0 || layout.mask_w == 0 || layout.mask_h == 0).then(|| {
@@ -372,6 +375,9 @@ impl TitleRenderer {
                     prepared: 0,
                     rerasterized: false,
                     outline_cutoff: i32::MAX,
+                    write_cutoff: i32::MAX,
+                    stripes: Vec::new(),
+                    backing: None,
                 }
             })
         })

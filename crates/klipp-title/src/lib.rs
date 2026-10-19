@@ -528,6 +528,7 @@ pub struct TitleRenderer {
     style_source_cache: Vec<gpu_styles::SourceCache>,
     gpu_layout_only: bool,
     gpu_outline_only: bool,
+    gpu_wave: Option<(f32,f32,f32)>,
     gpu_layout_capture: std::cell::RefCell<Option<GlyphSource>>,
     gpu_glyph_cache: std::cell::RefCell<gpu_glyphs::GlyphCache>,
     /// The rows with coverage in the last render, `y0..y1`.
@@ -660,10 +661,16 @@ impl Default for TitleRenderer {
 
 impl TitleRenderer {
     pub fn new() -> Self {
-        let fallback_font = LoadedFont::new(std::borrow::Cow::Borrowed(EMBEDDED_FONT))
-            .expect("Failed to load embedded Noto Sans font");
         let registry = font_discovery::discover_system_fonts();
         tracing::info!("Font discovery: found {} font families", registry.len());
+        Self::with_font_registry(registry)
+    }
+
+    /// Render with an explicit font registry, sharing the same embedded fallback
+    /// and caches as the system-discovery constructor.
+    pub fn with_font_registry(registry: font_discovery::FontRegistry) -> Self {
+        let fallback_font = LoadedFont::new(std::borrow::Cow::Borrowed(EMBEDDED_FONT))
+            .expect("Failed to load embedded Noto Sans font");
         Self {
             fallback_font,
             font_cache: HashMap::new(),
@@ -676,6 +683,7 @@ impl TitleRenderer {
             style_source_cache: Vec::new(),
             gpu_layout_only: false,
             gpu_outline_only: false,
+            gpu_wave: None,
             gpu_layout_capture: Default::default(),
             gpu_glyph_cache: Default::default(),
             last_rows: (0, 0),
@@ -1439,11 +1447,40 @@ impl TitleRenderer {
             };
         }
         if self.gpu_layout_only {
+            let mut posed;
+            let glyphs=if let Some((time,amp,rate))=self.gpu_wave {
+                posed=glyphs.to_vec();
+                for (i,g) in posed.iter_mut().enumerate() {
+                    g.y+=(time*rate*std::f32::consts::TAU+i as f32*0.5).sin()*amp;
+                }
+                posed.as_slice()
+            } else {glyphs};
             *self.gpu_layout_capture.borrow_mut() = self.gpu_glyph_cache.borrow_mut().layout(
                 &fonts, glyphs, [offset_x, offset_y],
                 [mask_x0 as u32, mask_y0 as u32, mask_w as u32, mask_h as u32], tb.color, title.primary_fx(), self.gpu_outline_only,
             );
             if let Some(source) = self.gpu_layout_capture.borrow_mut().as_mut() {
+                if let TitleBackground::Color{color,padding}=title.background {
+                    let pad=padding*scale;
+                    let x0=((text_min_x+offset_x-pad) as i32).max(0) as u32;
+                    let y0=((text_min_y+offset_y-pad) as i32).max(0) as u32;
+                    let x1=((text_max_x+offset_x+pad) as i32).min(width as i32).max(0) as u32;
+                    let y1=((text_max_y+offset_y+pad) as i32).min(height as i32).max(0) as u32;
+                    if x1>x0 && y1>y0 {source.backing=Some(([x0,y0,x1-x0,y1-y0],color));}
+                }
+                source.write_cutoff=if tb.write_on<1.0 {((text_min_x+offset_x)+text_w*tb.write_on.clamp(0.0,1.0)) as i32} else {i32::MAX};
+                if tb.underline || tb.strikethrough {
+                    let thickness=(font_px*0.06).max(1.0).round() as i32;
+                    let x0=((text_min_x+offset_x).floor() as i32).max(mask_x0 as i32);
+                    let x1=((text_max_x+offset_x).ceil() as i32).min((mask_x0+mask_w) as i32);
+                    for (on,at) in [(tb.strikethrough,0.40),(tb.underline,1.05)] {
+                        if on && x1>x0 {
+                            let y0=((text_min_y+offset_y+text_h*at).round() as i32-thickness/2).max(mask_y0 as i32);
+                            let y1=(y0+thickness).min((mask_y0+mask_h) as i32);
+                            if y1>y0 {source.stripes.push([x0 as u32,y0 as u32,(x1-x0) as u32,(y1-y0) as u32]);}
+                        }
+                    }
+                }
                 let progress = tb.outline_write_on.clamp(0.0,1.0);
                 source.outline_cutoff = if progress >= 1.0 { i32::MAX } else {
                     (text_min_x + offset_x + (text_max_x-text_min_x)*progress).floor() as i32

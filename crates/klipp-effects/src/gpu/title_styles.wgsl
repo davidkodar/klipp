@@ -107,12 +107,43 @@ fn edge_coverage(edge:vec4<f32>,pixel:vec2<f32>)->f32 {
     if abs(xb-xa)>0.00001 {mean=(coverage_integral(xb)-coverage_integral(xa))/(xb-xa);}
     return direction*(hi-lo)*mean;
 }
+fn curve_point(a:vec2<f32>,b:vec2<f32>,c:vec2<f32>,d:vec2<f32>,degree:u32,t:f32)->vec2<f32> {
+    let u=1.0-t;
+    if degree==1u {return a*u+b*t;}
+    if degree==2u {return a*(u*u)+b*(2.0*u*t)+c*(t*t);}
+    return a*(u*u*u)+b*(3.0*u*u*t)+c*(3.0*u*t*t)+d*(t*t*t);
+}
+fn curve_coverage(at:u32,pixel:vec2<f32>)->f32 {
+    let ab=load_rgba(at);let cd=load_rgba(at+1u);let degree=u32(load_rgba(at+2u).x);
+    var n=1u;
+    if degree>1u {
+        var dev=length(ab.xy-2.0*ab.zw+cd.xy)*p.row0.x;
+        if degree==3u {dev=1.5*max(dev,length(ab.zw-2.0*cd.xy+cd.zw)*p.row0.x);}
+        n=1u+u32(min(sqrt(sqrt(3.0*dev*dev)),64.0));
+    }
+    var a=ab.xy;var coverage=0.0;
+    for(var k=1u;k<=n;k+=1u) {
+        let b=curve_point(ab.xy,ab.zw,cd.xy,cd.zw,degree,f32(k)/f32(n));
+        coverage+=edge_coverage(vec4<f32>(a,b),pixel);a=b;
+    }
+    return coverage;
+}
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i=gid.x;
     if i>=p.width*p.height { return; }
     let x=i%p.width; let y=i/p.width;
-    if p.op==14u {
+    if p.op==17u {
+        let pos=vec2<f32>(f32(x+p.x0),f32(y+p.y0));
+        let inside=all(pos>=p.row0.xy)&&all(pos<p.row0.xy+p.row0.zw);
+        store_rgba(i,select(vec4<f32>(0.0),p.color,inside));
+    } else if p.op==18u {
+        let inside=x>=p.x0 && y>=p.y0 && x-p.x0<u32(p.offset_x) && y-p.y0<u32(p.offset_y);
+        let rgb=matrix(vec3<f32>(linear(p.color.x),linear(p.color.y),linear(p.color.z)));
+        store_rgba(i,select(vec4<f32>(0.0),vec4<f32>(rgb,p.color.a),inside));
+    } else if p.op==15u {
+        store_rgba((y+p.y0)*p.frame_width+x+p.x0,p.color);
+    } else if p.op==14u {
         let px=i32(x)+p.offset_x; let py=i32(y)+p.offset_y;
         if px<0 || py<0 || px>=i32(p.frame_width) || py>=i32(p.y0) {return;}
         var coverage=0.0;
@@ -126,12 +157,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         for(var bin=first;bin<=last;bin+=1u) {
             let range=load_rgba(1u+bin);
             for(var j=0u;j<u32(range.y);j+=1u) {
-                let edge=load_rgba(u32(range.x)+j);
-                let edge_first=u32(clamp(floor((max(low,min(edge.y,edge.w))-bins.x)/bins.y*bins.z),0.0,bins.z-1.0));
-                if bin==edge_first {coverage+=edge_coverage(edge,pixel);}
+                if bins.w>0.5 {
+                    let at=u32(range.x)+3u*j;
+                    let ab=load_rgba(at);let cd=load_rgba(at+1u);let degree=u32(load_rgba(at+2u).x);
+                    var lo=min(ab.y,ab.w);
+                    if degree>=2u {lo=min(lo,cd.y);}
+                    if degree>=3u {lo=min(lo,cd.w);}
+                    let edge_first=u32(clamp(floor((max(low,lo)-bins.x)/bins.y*bins.z),0.0,bins.z-1.0));
+                    if bin==edge_first {coverage+=curve_coverage(at,pixel);}
+                } else {
+                    let edge=load_rgba(u32(range.x)+j);
+                    let edge_first=u32(clamp(floor((max(low,min(edge.y,edge.w))-bins.x)/bins.y*bins.z),0.0,bins.z-1.0));
+                    if bin==edge_first {coverage+=edge_coverage(edge,pixel);}
+                }
             }
         }
-        let alpha=floor(clamp(abs(coverage)*255.9,0.0,255.0))/255.0;
+        var alpha=floor(clamp(abs(coverage)*255.9,0.0,255.0))/255.0;
+        if bins.w>0.5 {alpha=floor(clamp(abs(coverage),0.0,1.0)*255.0+0.5)/255.0;}
         let dst=u32(py)*p.frame_width+u32(px);
         store_rgba(dst,vec4<f32>(p.color.rgb,max(alpha,load_dst(dst).a)));
     } else if p.op==13u {
@@ -186,7 +228,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let b=authored_at(sx+p.offset_x,y);
         store_rgba(i,vec4<f32>(r.r,g.g,b.b,max(r.a,max(g.a,b.a))));
     } else if p.op==1u { // Extract coverage directly from the unchanged stack face.
-        output[i]=u32(round(clamp(load_rgba((y+p.y0)*p.frame_width+x+p.x0).a,0.0,1.0)*255.0));
+        output[i]=select(u32(round(clamp(load_rgba((y+p.y0)*p.frame_width+x+p.x0).a,0.0,1.0)*255.0)),0u,i32(x+p.x0)>=p.offset_x);
     } else if p.op==2u || p.op==8u { // Offset (optionally inverted) coverage.
         let sx=i32(x)-p.offset_x; let sy=i32(y)-p.offset_y;
         var v=0u;
@@ -206,7 +248,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let v=load_rgba((y+p.y0)*p.frame_width+x+p.x0);
         let rgb=matrix(v.rgb);
         let a=floor(round(clamp(v.a,0.0,1.0)*255.0)*floor(clamp(p.color.a,0.0,1.0)*255.0+0.5)/255.0)/255.0;
-        let face=vec4<f32>(encoded(rgb.x),encoded(rgb.y),encoded(rgb.z),a);
+        let face=vec4<f32>(encoded(rgb.x),encoded(rgb.y),encoded(rgb.z),select(a,0.0,i32(x+p.x0)>=p.offset_x));
         store_rgba(i,over(face,load_dst(i)));
     } else if p.op==7u { // Final title quantization and working-space conversion.
         let v=floor(clamp(load_rgba(i),vec4<f32>(0.0),vec4<f32>(1.0))*255.0+0.5)/255.0;

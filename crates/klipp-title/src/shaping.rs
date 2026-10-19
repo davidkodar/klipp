@@ -95,11 +95,11 @@ impl LoadedFont {
     }
 
     pub(crate) fn coverage_outline(&self,gid:u16)->Option<Vec<[f32;4]>> {
-        // Non-default variable instances use a different CPU curve subdivision;
-        // keep their size animation on that reference until its GPU twin lands.
-        if self.instance.is_some() {return None;}
+        if let Some((instance,_))=&self.instance {
+            return crate::outline_2d::curve_bins(&instance.face(&self.data)?,gid);
+        }
         let face=ttf_parser::Face::parse(&self.data,0).ok()?;
-        crate::outline_2d::edges(&face,gid)
+        crate::outline_2d::row_bins(crate::outline_2d::edges(&face,gid)?)
     }
 
     /// The hash glyph keys carry for this font: fontdue's hash of its

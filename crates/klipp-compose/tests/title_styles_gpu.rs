@@ -397,7 +397,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
     let (w, h) = (320, 180);
     for ws in [WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG] {
         for graded in [false, true] {
-          for variant in 0..11 {
+          for variant in 0..18 {
             let mut title = TitleData::single_text_fx(TextBox {
                 text: "Glitch".into(), font_size: 180.0, color: [190, 120, 60, 255],
                 glitch_intensity: 0.6, chromatic_aberration_px: 12.0, ..Default::default()
@@ -406,7 +406,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                 ..Default::default()
             });
             if variant==6 { title.objects[0].fx_mut().edge_fade=klipp_core::title_motion::EdgeFade { left:0.45,right:0.4,top:0.4,bottom:0.4 }; }
-            if variant>=9 { let text=title.primary_text_mut().unwrap(); text.glitch_intensity=0.0; text.chromatic_aberration_px=0.0; text.font_size_keyframes=vec![key(0.0,120.0),key(1.0,220.0)]; text.vertical_layout=variant==10; }
+            if variant>=9 && variant<12 { let text=title.primary_text_mut().unwrap(); text.glitch_intensity=0.0; text.chromatic_aberration_px=0.0; text.font_size_keyframes=vec![key(0.0,120.0),key(1.0,220.0)]; text.vertical_layout=variant==10; }
             if variant>0 && variant!=6 && variant<9 {
                 let text=title.primary_text_mut().unwrap();
                 text.glitch_intensity=0.0; text.chromatic_aberration_px=0.0;
@@ -434,6 +434,29 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                     }
                 }
             }
+            if variant>=12 {
+                let text=title.primary_text_mut().unwrap();text.glitch_intensity=0.0;text.chromatic_aberration_px=0.0;
+                title.objects[0].fx_mut().loops=vec![klipp_timeline::TitleLoop::ColorCycle{rate_hz:0.5},klipp_timeline::TitleLoop::Wave{amplitude:0.1,rate_hz:1.0}];
+                if variant==13 {
+                    let text=title.primary_text_mut().unwrap();text.glitch_intensity=0.6;text.chromatic_aberration_px=12.0;
+                    title.objects[0].fx_mut().edge_fade=klipp_core::title_motion::EdgeFade {left:0.45,right:0.4,top:0.4,bottom:0.4};
+                }
+            }
+            if variant==14 {
+                let text=title.primary_text_mut().unwrap();text.underline=true;text.strikethrough=true;text.write_on=0.6;
+                text.font_size_keyframes=vec![key(0.0,120.0),key(1.0,220.0)];
+            }
+            if variant==15 {
+                title.background=klipp_timeline::TitleBackground::FullFrame{color:[60,80,110,150]};
+                title.objects[0].blend=klipp_core::BlendMode::Screen;
+                title.objects[0].opacity=0.6;
+            }
+            if variant>=16 {
+                title.background=klipp_timeline::TitleBackground::Color{color:[40,90,120,120],padding:24.0};
+                title.objects[0].opacity=0.6;
+                if variant==17 {let mut other=title.objects[0].clone();other.id=klipp_timeline::TitleObjectId(2);other.transform.center.y+=0.25;title.objects.push(other);}
+            }
+            if variant==11 {let text=title.primary_text_mut().unwrap();text.font_name="Variable Test".into();text.font_axes=vec![("wght".into(),650.0)];}
             let mut clip = Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) };
             if graded {
                 let node = |kind, params| Node { id: NodeId::new_v4(), kind, label: String::new(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![] };
@@ -444,9 +467,17 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
             let mut seq = Sequence::new_default();
             seq.resolution = Resolution { width: w, height: h };
             let mut track = Track::new("title", TrackKind::Video); track.clips.push(clip); seq.tracks = vec![track];
-            let mut gpu = renderer(); gpu.set_gpu_enabled(true); gpu.set_working_colorspace(ws);
+            let make_renderer=|| {
+                if variant!=11 {return renderer();}
+                let path=std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"),"/../klipp-title/tests/fonts/InterVariable-subset.ttf"));
+                let traits=klipp_title::variable::face_traits(&std::fs::read(&path).unwrap()).unwrap();
+                let info=klipp_title::font_discovery::FontInfo {family:"Variable Test".into(),style:"Regular".into(),path,weight:traits.weight,italic:traits.italic,axes:traits.axes};
+                let registry=std::sync::Arc::new([("Variable Test".into(),vec![info])].into_iter().collect());
+                Renderer::new(klipp_plugin::OfxHost::new(),klipp_title::TitleRenderer::with_font_registry(registry))
+            };
+            let mut gpu = make_renderer(); gpu.set_gpu_enabled(true); gpu.set_working_colorspace(ws);
             assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
-            let mut cpu = renderer(); cpu.set_gpu_enabled(false); cpu.set_working_colorspace(ws);
+            let mut cpu = make_renderer(); cpu.set_gpu_enabled(false); cpu.set_working_colorspace(ws);
             for (sample,t) in [0.2, 0.7, 0.2].into_iter().enumerate() {
                 let at = RationalTime::from_secs_f64(t,30);
                 let (want, _) = cpu.render_inspected(&seq, at, w, h, &mut NoMedia, RenderOptions::default(), Default::default());
