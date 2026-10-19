@@ -1862,10 +1862,10 @@ impl TitleRenderer {
         // Use the full frame as the mask (path text can go anywhere)
         let mask_w = w;
         let mask_h = h;
-        let mut alpha_mask = vec![0u8; mask_w * mask_h];
+        let mut alpha_mask = if self.gpu_layout_only {Vec::new()}else{vec![0u8; mask_w * mask_h]};
         // Which glyph each pixel is, and each glyph's turned box: the
         // map a moving path poses the glyphs by (#1697).
-        let mut owner = vec![GLYPH_NONE; mask_w * mask_h];
+        let mut owner = if self.gpu_layout_only {Vec::new()}else{vec![GLYPH_NONE; mask_w * mask_h]};
         let mut glyph_boxes = vec![[0i32; 4]; glyphs.len()];
 
         let mut text_min_x = f32::MAX;
@@ -1887,7 +1887,6 @@ impl TitleRenderer {
                 continue;
             }
             let (px, py) = (at.centre[0], at.centre[1]);
-            let (_, coverage) = fonts[glyph.font_index].coverage(glyph.key);
             let gw = glyph.width;
             let gh = glyph.height;
             if three_d {
@@ -1912,12 +1911,15 @@ impl TitleRenderer {
                     turn: Some(crate::text3d_render::Turn { from, to: [px, py], angle: at.angle }),
                 });
             }
+            if !self.gpu_layout_only {
+            let (_,coverage)=fonts[glyph.font_index].coverage(glyph.key);
             blit_rotated(
                 &mut alpha_mask, mask_w, mask_h,
                 &coverage, gw, gh,
                 px, py, at.angle,
                 Some((&mut owner, i as u16)),
             );
+            }
             let (c, sn) = (at.angle.cos().abs(), at.angle.sin().abs());
             let (ex, ey) = (gw as f32 * 0.5 * c + gh as f32 * 0.5 * sn, gw as f32 * 0.5 * sn + gh as f32 * 0.5 * c);
             glyph_boxes[i] = [(px - ex).floor() as i32, (py - ey).floor() as i32, (px + ex).ceil() as i32 + 1, (py + ey).ceil() as i32 + 1];
@@ -1969,6 +1971,37 @@ impl TitleRenderer {
             };
         }
 
+        if self.gpu_layout_only {
+            let roi=[crop_x0 as u32,crop_y0 as u32,crop_w as u32,crop_h as u32];
+            let mut source=self.gpu_glyph_cache.borrow_mut().layout(fonts,glyphs,[0.0;2],roi,tb.color,title.primary_fx(),true);
+            if let Some(source)=source.as_mut() {
+                let mut visible=glyphs.iter().enumerate().filter(|(_,g)|g.width>0&&g.height>0);
+                source.outlines.retain_mut(|draw| {
+                    let Some((i,g))=visible.next() else {return false;};
+                    let Some(at)=placed[i] else {return false;};
+                    if tb.write_on<1.0 && laid[i].along>reveal {return false;}
+                    let radius=((g.width as f32*0.5).powi(2)+(g.height as f32*0.5).powi(2)).sqrt().ceil() as i32;
+                    draw.origin=[at.centre[0] as i32-radius,at.centre[1] as i32-radius];
+                    draw.size=[(2*radius+1) as u32;2];draw.radians=at.angle;draw.path=true;
+                    true
+                });
+                source.bounds=[text_min_x,text_min_y,text_max_x,text_max_y];
+                source.gradient=tb.gradient.clone().filter(|g|g.enabled);
+                source.pattern=tb.pattern_fill.clone().filter(|_|tb.pattern_fill_enabled);
+                if tb.outline_write_on<1.0 {source.outline_cutoff=(text_min_x+(text_max_x-text_min_x)*tb.outline_write_on.clamp(0.0,1.0)).floor() as i32;}
+                if let TitleBackground::Color{color,padding}=title.background {
+                    let pad=padding*scale;
+                    let x0=((text_min_x-pad) as i32).max(0) as u32;let y0=((text_min_y-pad) as i32).max(0) as u32;
+                    let x1=((text_max_x+pad) as i32).clamp(0,width as i32) as u32;let y1=((text_max_y+pad) as i32).clamp(0,height as i32) as u32;
+                    if x1>x0&&y1>y0 {source.backing=Some(([x0,y0,x1-x0,y1-y0],color));}
+                }
+            }
+            *self.gpu_layout_capture.borrow_mut()=source;
+            return TitleLayout {alpha_mask:Vec::new(),mask_w:roi[2],mask_h:roi[3],mask_x0:roi[0],mask_y0:roi[1],
+                text_top:text_min_y,text_bottom:text_max_y,text_left:text_min_x,text_right:text_max_x,glyph_count:glyphs.len(),scale,
+                glyph_colors:Vec::new(),glyph_coverages:Vec::new(),glyph_index:Vec::new(),glyph_boxes:Vec::new(),glyph_parents:Vec::new(),pad:max_pad,
+                colour_glyphs:Vec::new(),path_units:None,tracking_origins:Vec::new()};
+        }
         let mut cropped = vec![0u8; crop_w * crop_h];
         let mut glyph_index = vec![GLYPH_NONE; crop_w * crop_h];
         for cy in 0..crop_h {

@@ -20,6 +20,8 @@ pub struct OutlineDraw {
     pub source_size: [u32; 2],
     pub blur: f32,
     pub radians: f32,
+    /// Path placement uses the CPU path rasterizer's nearest sampling.
+    pub path: bool,
     pub color: Option<[u8; 4]>,
 }
 pub struct TextureDraw {
@@ -249,6 +251,7 @@ impl GlyphCache {
                 source_size: [g.width as u32, g.height as u32],
                 blur: 0.0,
                 radians: 0.0,
+                path: false,
                 color: None,
                 alpha: 1.0,
                 clip_y: [i32::MIN, i32::MAX],
@@ -325,7 +328,9 @@ impl TitleRenderer {
             || o.transform.rotation != 0.0
             || !o.transform.rotation_keyframes.is_empty()
             || tb.three_d.as_ref().is_some_and(|d| d.enabled)
-            || tb.text_path.is_some()
+            || matches!(tb.text_path, Some(klipp_timeline::TextPath::Layer { .. }))
+            // Path motion poses the already turned coverage, unlike flat glyph poses.
+            || (tb.text_path.is_some() && (fx.motion.is_active() || fx.animators.iter().any(|a| a.enabled)))
             || tb.extrusion.is_some()
             || tb.glitch_intensity > 0.0
             || tb.chromatic_aberration_px > 0.0
@@ -386,7 +391,7 @@ impl TitleRenderer {
         self.gpu_motion = (fx.motion.is_active() || fx.animators.iter().any(|a| a.enabled))
             .then_some((time, window));
         self.gpu_wave = pose.wave.map(|(amp, rate)| (time, amp, rate));
-        self.gpu_outline_only = self.gpu_motion.is_some()
+        self.gpu_outline_only = tb.text_path.is_some() || self.gpu_motion.is_some()
             || !tb.font_size_keyframes.is_empty()
             || !tb.line_spacing_keyframes.is_empty()
             || !tb.tracking_keyframes.is_empty()
@@ -397,7 +402,7 @@ impl TitleRenderer {
                 .iter()
                 .any(|l| matches!(l, klipp_timeline::TitleLoop::Counter { .. }));
         *self.gpu_layout_capture.borrow_mut() = None;
-        let layout = self.render_layout_at_time(&evaluated, width, height, None);
+        let layout = self.render_layout_at_time(&evaluated, width, height, tb.text_path.as_ref().map(|_| time));
         self.gpu_layout_only = false;
         self.gpu_wave = None;
         self.gpu_motion = None;

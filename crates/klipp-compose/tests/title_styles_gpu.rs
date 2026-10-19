@@ -397,7 +397,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
     let (w, h) = (320, 180);
     for ws in [WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG] {
         for graded in [false, true] {
-          for variant in 0..42 {
+          for variant in 0..45 {
             let mut title = TitleData::single_text_fx(TextBox {
                 text: "Glitch".into(), font_size: 180.0, color: [190, 120, 60, 255],
                 glitch_intensity: 0.6, chromatic_aberration_px: 12.0, ..Default::default()
@@ -506,6 +506,10 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                 title.objects[0].fx_mut().animators.clear();title.objects[0].fx_mut().motion=Default::default();
                 let text=title.primary_text_mut().unwrap();text.text="Rich text".into();
                 text.style_runs=vec![klipp_timeline::StyleRun{start:0,end:4,color:Some([220,40,100,130]),font_size:Some(160.0),underline:if variant==41 {Some(true)}else{None},..klipp_timeline::StyleRun::default_for_range(0,4)}];
+            }
+            if variant>=42 {
+                let text=title.primary_text_mut().unwrap();text.text="Path text".into();text.style_runs.clear();
+                text.text_path=Some(match variant {42=>klipp_timeline::TextPath::Arc{radius:55.0,start_angle:200.0,sweep:160.0},43=>klipp_timeline::TextPath::Circle{radius:45.0},_=>klipp_timeline::TextPath::Wave{amplitude:20.0,frequency:1.5,phase:30.0}});
             }
             if variant==41 {
                 title.objects[0].fx_mut().animators=vec![klipp_timeline::Animator{props:klipp_timeline::AnimatorProps{opacity:0.0,colour:Some([30,180,240,140]),..Default::default()},..Default::default()}];
