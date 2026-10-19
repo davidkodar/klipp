@@ -1508,7 +1508,7 @@ impl TitleRenderer {
             if let Some(source) = self.gpu_layout_capture.borrow_mut().as_mut() {
                 for (draw,(origin,alpha,clip,size,blur,radians,colour)) in source.outlines.iter_mut().zip(&draw_poses) {draw.origin=*origin;draw.alpha=*alpha;draw.clip_y=*clip;draw.source_size=*size;draw.blur=*blur;draw.radians=*radians;draw.color=*colour;}
                 for (draw,(origin,_,_,_,_,_,_)) in source.glyphs.iter_mut().zip(&draw_poses) {draw.origin=*origin;}
-                if coloured {
+                if coloured && draw_poses.iter().any(|pose| pose.1 > 0.0) {
                     source.face_draws=source.outlines.clone();
                 } else if !tb.style_runs.is_empty() {
                     if let Some(rest)=self.gpu_glyph_cache.borrow_mut().layout(&fonts,rest_glyphs,[offset_x,offset_y],source.roi,tb.color,title.primary_fx(),true) {
