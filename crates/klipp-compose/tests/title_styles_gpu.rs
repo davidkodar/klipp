@@ -573,7 +573,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                     rotation_keyframes:vec![key(0.0,-15.0),key(1.0,25.0)],
                     anchor_norm:klipp_timeline::TitlePosition{x:0.3,y:0.7},
                     ..klipp_timeline::default_text_transform()});
-                if variant==59 {title.objects.remove(0);}
+                if variant==59 {title.objects.remove(0);title.objects[0].opacity_keyframes=vec![key(0.0,0.3),key(1.0,0.7)];}
                 if variant==60 {title.objects[1].blend=klipp_core::BlendMode::Screen;title.objects[1].opacity_keyframes=vec![key(0.0,0.3),key(1.0,0.7)];}
                 if variant==61 {title.objects[0].mask=Some(klipp_timeline::LayerMask{source:title.objects[1].id,kind:klipp_core::layer_mask::LayerMaskKind::Luma});title.objects[1].visible=false;}
             }

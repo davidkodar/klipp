@@ -2743,7 +2743,7 @@ impl Renderer {
             }
         }
         if let [object] = td.objects.as_slice() {
-            if !matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..}) && (object.opacity!=1.0 || !object.opacity_keyframes.is_empty()) {
+            if !matches!(object.content,klipp_timeline::TitleObjectContent::Shape(_)) && !matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..}) && (object.opacity!=1.0 || !object.opacity_keyframes.is_empty()) {
                 let mut source=td.clone();
                 source.objects[0].opacity=1.0;
                 source.objects[0].opacity_keyframes.clear();
