@@ -373,6 +373,79 @@ impl GpuEffectsPipeline {
         true
     }
 
+    /// Rotate the decorated layer with the authored nearest-pixel sampler.
+    /// Bounds are reduced on-device to preserve the CPU renderer's crop.
+    pub fn stack_title_rotate(&mut self, slot: usize, pivot: [f32; 2], radians: f32) -> bool {
+        let (w, h) = self.stack_dims;
+        let count = u64::from(w) * u64::from(h);
+        let bytes = (count + u64::from(h) + 1) * 16;
+        if self.is_device_lost()
+            || slot >= self.stack_layers.len()
+            || count == 0
+            || !radians.is_finite()
+            || pivot.iter().any(|v| !v.is_finite())
+            || bytes > u64::from(self.device.limits().max_storage_buffer_binding_size)
+            || count.div_ceil(u64::from(WORKGROUP_SIZE))
+                > u64::from(self.device.limits().max_compute_workgroups_per_dimension)
+        {
+            return false;
+        }
+        if self
+            .title_post_scratch
+            .as_ref()
+            .is_none_or(|b| b.size() < bytes)
+        {
+            self.title_post_scratch = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("title rotation scratch"),
+                size: bytes,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let layer = &self.stack_layers[slot];
+        let scratch = self.title_post_scratch.as_ref().unwrap();
+        let (sin, cos) = radians.sin_cos();
+        let params = StyleParams {
+            width: w,
+            height: h,
+            frame_width: w,
+            op: 19,
+            x0: 0,
+            y0: 0,
+            offset_x: 0,
+            offset_y: 0,
+            color: [pivot[0], pivot[1], sin, cos],
+            matrix: [[0.0; 4]; 3],
+        };
+        self.write_params(&params);
+        self.stack_pass(
+            &self.title_style_pipeline,
+            layer,
+            scratch,
+            h.div_ceil(WORKGROUP_SIZE),
+            "title rotation row bounds",
+        );
+        self.write_params(&StyleParams { op: 20, ..params });
+        self.stack_pass(
+            &self.title_style_pipeline,
+            layer,
+            scratch,
+            1,
+            "title rotation bounds",
+        );
+        self.write_params(&StyleParams { op: 21, ..params });
+        self.stack_pass(
+            &self.title_style_pipeline,
+            scratch,
+            layer,
+            (count as u32).div_ceil(WORKGROUP_SIZE),
+            "title rotation",
+        );
+        true
+    }
+
     /// Fade the fully decorated title object after its post-processing.
     pub fn stack_title_alpha(&mut self, slot: usize, edges: [f32; 4], opacity: f32) -> bool {
         let (w, h) = self.stack_dims;

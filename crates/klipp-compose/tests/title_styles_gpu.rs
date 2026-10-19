@@ -397,7 +397,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
     let (w, h) = (320, 180);
     for ws in [WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG] {
         for graded in [false, true] {
-          for variant in 0..18 {
+          for variant in 0..22 {
             let mut title = TitleData::single_text_fx(TextBox {
                 text: "Glitch".into(), font_size: 180.0, color: [190, 120, 60, 255],
                 glitch_intensity: 0.6, chromatic_aberration_px: 12.0, ..Default::default()
@@ -456,6 +456,17 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                 title.objects[0].opacity=0.6;
                 if variant==17 {let mut other=title.objects[0].clone();other.id=klipp_timeline::TitleObjectId(2);other.transform.center.y+=0.25;title.objects.push(other);}
             }
+            if variant>=18 {
+                title.objects[0].transform.rotation_keyframes=vec![key(0.0,-25.0),key(1.0,40.0)];
+                title.objects[0].transform.anchor_norm.x=0.35;
+                if variant==19 {
+                    title.primary_text_mut().unwrap().glitch_intensity=0.6;
+                    title.primary_text_mut().unwrap().chromatic_aberration_px=12.0;
+                    title.objects[0].fx_mut().edge_fade=klipp_core::title_motion::EdgeFade {left:0.45,right:0.4,top:0.4,bottom:0.4};
+                }
+            }
+            if variant==20 { title.objects[0].fx_mut().loops.push(klipp_timeline::TitleLoop::Pulse{rate_hz:0.7,min_opacity:0.2}); }
+            if variant==21 { title.objects[0].fx_mut().loops.push(klipp_timeline::TitleLoop::Sway{rate_hz:0.7,amplitude:0.2}); }
             if variant==11 {let text=title.primary_text_mut().unwrap();text.font_name="Variable Test".into();text.font_axes=vec![("wght".into(),650.0)];}
             let mut clip = Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) };
             if graded {

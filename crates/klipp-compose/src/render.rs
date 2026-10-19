@@ -2665,6 +2665,31 @@ impl Renderer {
     }
 
     fn place_title_source(&mut self, td: &klipp_timeline::TitleData, slot: usize, width: u32, height: u32, clip_time: f64, total: f32) -> Option<((u32,u32),Vec<BuiltinEffect>)> {
+        // Whole-object loops are folded into the authored object before layout,
+        // just as in the CPU scene. Keep content/wave loops for the glyph source.
+        if let [object] = td.objects.as_slice() {
+            if let klipp_timeline::TitleObjectContent::TextBox(tb) = &object.content {
+                let loops: Vec<_> = object.fx().loops.iter().filter(|l| !title_source_loops(std::slice::from_ref(*l))).cloned().collect();
+                if !loops.is_empty() && !matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..}) {
+                    let text=tb.at(clip_time);
+                    let font_px=text.font_size*klipp_title::frame_scale(width,height);
+                    let (text_w,text_h)=text.loop_extent(font_px);
+                    let pose=klipp_core::title_motion::eval_loops(&loops,clip_time as f32,Some(total),klipp_timeline::LoopGeometry {frame_w:width as f32,frame_h:height as f32,text_w,text_h,font_px},text.color);
+                    if pose.focus.is_none() {
+                        let mut source=td.clone();
+                        let target=&mut source.objects[0];
+                        target.fx_mut().loops.retain(|l|title_source_loops(std::slice::from_ref(l)));
+                        target.opacity*=pose.opacity;
+                        target.transform.center.x+=pose.dx/width as f32;
+                        target.transform.center.y+=pose.dy/height as f32;
+                        if target.opacity<=0.001 {
+                            return self.executor.gpu_pipeline_or_init()?.stack_layer_clear(slot).then_some(((0,0),Vec::new()));
+                        }
+                        return self.place_title_source(&source,slot,width,height,clip_time,total);
+                    }
+                }
+            }
+        }
         if let [object] = td.objects.as_slice() {
             if !matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..}) && (object.opacity!=1.0 || !object.opacity_keyframes.is_empty()) {
                 let mut source=td.clone();
@@ -2681,6 +2706,25 @@ impl Renderer {
                 let (rows,soft)=self.place_title_source(&source,slot,width,height,clip_time,total)?;
                 if !soft.is_empty() { return None; }
                 return self.executor.gpu_pipeline_or_init()?.stack_title_alpha(slot,[edges.top,edges.bottom,edges.left,edges.right],1.0).then_some((rows,soft));
+            }
+        }
+        // Rotation follows source post-processing, before edge fades and opacity.
+        if let [object] = td.objects.as_slice() {
+            if let klipp_timeline::TitleObjectContent::TextBox(tb) = &object.content {
+                let transform=object.transform.evaluated_at(clip_time);
+                if !matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..})
+                    && !matches!(tb.text_path,Some(klipp_timeline::TextPath::Layer{..}))
+                    && (object.transform.rotation!=0.0 || !object.transform.rotation_keyframes.is_empty()) {
+                    let mut source=td.clone();
+                    source.objects[0].transform.rotation=0.0;
+                    source.objects[0].transform.rotation_keyframes.clear();
+                    let (rows,soft)=self.place_title_source(&source,slot,width,height,clip_time,total)?;
+                    if !soft.is_empty() {return None;}
+                    if transform.rotation.abs()<=0.001 {return Some((rows,soft));}
+                    let pivot=[(transform.center.x+(transform.anchor_norm.x-0.5)*transform.size.x)*width as f32,
+                        (transform.center.y+(transform.anchor_norm.y-0.5)*transform.size.y)*height as f32];
+                    return self.executor.gpu_pipeline_or_init()?.stack_title_rotate(slot,pivot,transform.rotation.to_radians()).then_some(((0,height),soft));
+                }
             }
         }
         // Render objects independently so each keeps its own source cache,
