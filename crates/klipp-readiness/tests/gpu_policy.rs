@@ -380,8 +380,12 @@ fn verify(r: &mut Renderer, s: &Sequence, label: &str, allowed: &[&str]) {
         .expect("corpus delivery");
     assert_eq!(bytes.len(), 192 * 108 * 4);
 }
+// Both GPU corpora assert process-wide readback counters.
+static GPU_CORPUS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn playback_corpus_exposes_declared_cpu_sources_and_guards_gpu_routes() {
+    let _guard = GPU_CORPUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _still = StillFixture;
     image::RgbaImage::from_pixel(4, 4, image::Rgba([30, 80, 120, 255]))
         .save(still_path())
@@ -577,6 +581,7 @@ fn playback_corpus_exposes_declared_cpu_sources_and_guards_gpu_routes() {
 
 #[test]
 fn title_corpus_guards_resident_sources_and_declared_fallbacks() {
+    let _guard = GPU_CORPUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
     r.set_gpu_enabled(true);
     if r.executor().gpu_pipeline_or_init().is_none() {
