@@ -521,7 +521,7 @@ pub struct TitleRenderer {
     text_layers_rendered: u64,
     /// Resting renders made rather than taken from `render_cache`.
     resting_renders: u64,
-    /// One unfinished face; bounded separately, invalidated with raster caches.
+    /// Recently used unfinished faces; bounded separately and invalidated with raster caches.
     style_source_cache: Vec<gpu_styles::SourceCache>,
     /// The rows with coverage in the last render, `y0..y1`.
     last_rows: (u32, u32),
