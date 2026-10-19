@@ -44,6 +44,14 @@ pub enum TitleFill {
     },
 }
 
+/// A glyph's pixel-space pose after source scaling.
+pub struct TitleGlyphPose {
+    pub alpha: f32,
+    pub clip_y: [i32; 2],
+    pub source_size: [u32; 2],
+    pub blur: f32,
+    pub radians: f32,
+}
 /// Cached texture and its authored UV transform, applied after title styles.
 pub struct TitleTexture<'a> {
     pub id: u64,
@@ -168,15 +176,24 @@ impl GpuEffectsPipeline {
         size: [u32; 2],
         placement: [f32; 4],
         color: [u8; 4],
-        alpha: f32,
-        clip_y: [i32; 2],
+        pose: TitleGlyphPose,
     ) -> bool {
+        let TitleGlyphPose {
+            alpha,
+            clip_y,
+            source_size,
+            blur,
+            radians,
+        } = pose;
         let [w, h] = size;
         let count = u64::from(w) * u64::from(h);
         if self.is_device_lost()
             || slot >= self.stack_layers.len()
             || count == 0
             || !alpha.is_finite()
+            || !blur.is_finite()
+            || !radians.is_finite()
+            || source_size.contains(&0)
             || edges.len() < 65
             || edges.len() > 65536
             || placement[0] <= 0.0
@@ -222,6 +239,7 @@ impl GpuEffectsPipeline {
             .saturating_add(1)
             .min(64);
         if count
+            .max(u64::from(source_size[0]) * u64::from(source_size[1]))
             .saturating_mul(max_bin)
             .saturating_mul(bins_per_pixel)
             .saturating_mul(segments)
@@ -254,34 +272,53 @@ impl GpuEffectsPipeline {
         let working = self
             .authored_to_working
             .map(|row| row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2]);
-        self.write_params(&StyleParams {
-            width: w,
-            height: h,
-            frame_width: self.stack_dims.0,
-            op: 14,
-            x0: edges.len() as u32,
-            y0: self.stack_dims.1,
-            offset_x: origin[0],
-            offset_y: origin[1],
-            color: [working[0], working[1], working[2], 1.0],
-            matrix: [
+        if blur >= 0.5 || radians != 0.0 {
+            if !self.pose_outline_coverage(
+                slot,
+                &source.1,
+                origin,
+                size,
+                source_size,
                 placement,
-                [
-                    clip_y[0] as f32,
-                    clip_y[1] as f32,
-                    alpha.clamp(0.0, 1.0),
-                    0.0,
+                [working[0], working[1], working[2], 1.0],
+                alpha,
+                clip_y,
+                blur,
+                radians,
+            ) {
+                return false;
+            }
+        } else {
+            let params = StyleParams {
+                width: w,
+                height: h,
+                frame_width: self.stack_dims.0,
+                op: 14,
+                x0: edges.len() as u32,
+                y0: self.stack_dims.1,
+                offset_x: origin[0],
+                offset_y: origin[1],
+                color: [working[0], working[1], working[2], 1.0],
+                matrix: [
+                    placement,
+                    [
+                        clip_y[0] as f32,
+                        clip_y[1] as f32,
+                        alpha.clamp(0.0, 1.0),
+                        0.0,
+                    ],
+                    [0.0; 4],
                 ],
-                [0.0; 4],
-            ],
-        });
-        self.stack_pass(
-            &self.title_style_pipeline,
-            &source.1,
-            &self.stack_layers[slot],
-            (count as u32).div_ceil(WORKGROUP_SIZE),
-            "title outline coverage",
-        );
+            };
+            self.write_params(&params);
+            self.stack_pass(
+                &self.title_style_pipeline,
+                &source.1,
+                &self.stack_layers[slot],
+                (count as u32).div_ceil(WORKGROUP_SIZE),
+                "title outline coverage",
+            );
+        }
         while self.title_outlines.len() >= 512
             || self
                 .title_outlines
@@ -294,6 +331,181 @@ impl GpuEffectsPipeline {
             self.title_outlines.remove(0);
         }
         self.title_outlines.push(source);
+        true
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn pose_outline_coverage(
+        &mut self,
+        slot: usize,
+        outline: &wgpu::Buffer,
+        origin: [i32; 2],
+        size: [u32; 2],
+        raw: [u32; 2],
+        placement: [f32; 4],
+        color: [f32; 4],
+        alpha: f32,
+        clip: [i32; 2],
+        sigma: f32,
+        radians: f32,
+    ) -> bool {
+        let pad = if sigma >= 0.5 {
+            (sigma * 2.5).ceil().max(1.0) as u32
+        } else {
+            0
+        };
+        let Some(w) = raw[0].checked_add(pad.saturating_mul(2)) else {
+            return false;
+        };
+        let Some(h) = raw[1].checked_add(pad.saturating_mul(2)) else {
+            return false;
+        };
+        let count = u64::from(w) * u64::from(h);
+        if count * 16 > u64::from(self.device.limits().max_storage_buffer_binding_size)
+            || count.div_ceil(u64::from(WORKGROUP_SIZE))
+                > u64::from(self.device.limits().max_compute_workgroups_per_dimension)
+        {
+            return false;
+        }
+        if self
+            .title_style_scratch
+            .as_ref()
+            .is_none_or(|s| s.count < count)
+        {
+            self.title_style_scratch = Some(StyleScratch::new(&self.device, count));
+        }
+        let s = self.title_style_scratch.as_ref().unwrap();
+        let base = StyleParams {
+            width: raw[0],
+            height: raw[1],
+            frame_width: self.stack_dims.0,
+            op: 25,
+            x0: 0,
+            y0: self.stack_dims.1,
+            offset_x: origin[0],
+            offset_y: origin[1],
+            color,
+            matrix: [
+                placement,
+                [clip[0] as f32, clip[1] as f32, alpha, 0.0],
+                [0.0; 4],
+            ],
+        };
+        self.write_params(&base);
+        self.stack_pass(
+            &self.title_style_pipeline,
+            outline,
+            &s.mask,
+            (raw[0] * raw[1]).div_ceil(WORKGROUP_SIZE),
+            "title glyph coverage",
+        );
+        self.write_params(&StyleParams {
+            width: w,
+            height: h,
+            op: 26,
+            x0: pad,
+            matrix: [[raw[0] as f32, raw[1] as f32, 0.0, 0.0], [0.0; 4], [0.0; 4]],
+            ..base
+        });
+        self.stack_pass(
+            &self.title_style_pipeline,
+            &s.mask,
+            &s.work,
+            (count as u32).div_ceil(WORKGROUP_SIZE),
+            "title glyph padding",
+        );
+        let mut current = &s.work;
+        let mut next = &s.blur;
+        if sigma >= 0.5 && sigma <= 8.0 {
+            let inv = 1.0 / (2.0 * sigma * sigma);
+            let weights: Vec<_> = (0..=2 * pad)
+                .map(|i| {
+                    let x = i as f32 - pad as f32;
+                    (-x * x * inv).exp()
+                })
+                .collect();
+            let sum: f32 = weights.iter().sum();
+            let mut kernel = [[0u32; 4]; 8];
+            for i in 0..=pad as usize {
+                kernel[i / 4][i % 4] = (weights[pad as usize + i] / sum).to_bits();
+            }
+            for axis in 0..2 {
+                self.write_params(&FillParams {
+                    base: StyleParams {
+                        width: w,
+                        height: h,
+                        op: 27,
+                        offset_x: pad as i32,
+                        offset_y: axis,
+                        ..base
+                    },
+                    stops: kernel,
+                });
+                self.stack_pass(
+                    &self.title_style_pipeline,
+                    current,
+                    next,
+                    (count as u32).div_ceil(WORKGROUP_SIZE),
+                    "title glyph Gaussian",
+                );
+                std::mem::swap(&mut current, &mut next);
+            }
+        } else if sigma > 8.0 {
+            let ideal = (4.0 * sigma * sigma + 1.0).sqrt();
+            let mut low = ideal.floor() as i32;
+            if low % 2 == 0 {
+                low -= 1;
+            }
+            let l = low as f32;
+            let m = ((12.0 * sigma * sigma - 3.0 * l * l - 12.0 * l - 9.0) / (-4.0 * l - 4.0))
+                .round() as i32;
+            for axis in 0..2 {
+                for j in 0..3 {
+                    let radius = ((if j < m { low } else { low + 2 }).max(1) - 1) / 2;
+                    self.write_params(&StyleParams {
+                        width: w,
+                        height: h,
+                        op: 28,
+                        offset_x: radius,
+                        offset_y: axis,
+                        x0: u32::from(axis == 1 && j == 2),
+                        ..base
+                    });
+                    self.stack_pass(
+                        &self.title_style_pipeline,
+                        current,
+                        next,
+                        (if axis == 0 { h } else { w }).div_ceil(WORKGROUP_SIZE),
+                        "title glyph box blur",
+                    );
+                    std::mem::swap(&mut current, &mut next);
+                }
+            }
+        }
+        let (sin, cos) = radians.sin_cos();
+        self.write_params(&StyleParams {
+            width: size[0],
+            height: size[1],
+            op: 29,
+            matrix: [
+                [w as f32, h as f32, cos, sin],
+                [
+                    clip[0] as f32,
+                    clip[1] as f32,
+                    alpha.clamp(0.0, 1.0),
+                    if radians != 0.0 { 1.0 } else { 0.0 },
+                ],
+                [0.0; 4],
+            ],
+            ..base
+        });
+        self.stack_pass(
+            &self.title_style_pipeline,
+            current,
+            &self.stack_layers[slot],
+            (size[0] * size[1]).div_ceil(WORKGROUP_SIZE),
+            "title posed glyph",
+        );
         true
     }
 

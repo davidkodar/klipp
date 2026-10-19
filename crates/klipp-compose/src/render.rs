@@ -2778,6 +2778,7 @@ impl Renderer {
         let mut lead = Vec::new();
                 let post = title_post_source(td);
                 let td = post.as_ref().map_or(td, |(title, _, _)| title);
+                let post_requires_glyph=post.is_some() && td.objects.iter().any(|o|o.fx().motion.is_active());
                 let to_working = klipp_color::primaries::working_space_conversion_matrix(WorkingColorspace::Rec709Linear, self.working)
                     .unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
                 let solid = self.titles.prepare_text3d(td, width, height, clip_time as f32, Some(total));
@@ -2811,7 +2812,7 @@ impl Renderer {
                     let passes=crate::synth::title_style_passes(&source.fx,klipp_title::frame_scale(width,height),clip_time);
                     self.executor.gpu_pipeline_or_init().is_some_and(|p| {
                         p.stack_layer_clear(slot) && source.glyphs.iter().all(|g| p.stack_title_glyph(slot,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],g.origin,source.color))
-                            && source.outlines.iter().all(|g|p.stack_title_outline(slot,g.id,&g.edges,g.origin,g.size,g.placement,source.color,g.alpha,g.clip_y))
+                            && source.outlines.iter().all(|g|p.stack_title_outline(slot,g.id,&g.edges,g.origin,g.size,g.placement,source.color,klipp_effects::gpu::TitleGlyphPose{alpha:g.alpha,clip_y:g.clip_y,source_size:g.source_size,blur:g.blur,radians:g.radians}))
                             && source.stripes.iter().all(|&rect|p.stack_title_stripe(slot,rect,source.color))
                             && (source.roi[2]==0 || source.roi[3]==0 || p.stack_title_styles_with_face(slot,source.roi,&passes,klipp_effects::gpu::TitleFace {alpha:source.color[3] as f32/255.0,outline_cutoff:source.outline_cutoff,write_cutoff:source.write_cutoff,backing:source.backing,fill:title_fill(&source,klipp_title::frame_scale(width,height)),bounds:source.bounds}))
                             && source.texture.as_ref().is_none_or(|t|source.roi[2]==0 || source.roi[3]==0 || p.stack_title_texture(slot,source.roi,klipp_effects::gpu::TitleTexture {
@@ -2820,6 +2821,10 @@ impl Renderer {
                                 mode:match t.fill.tile_mode {klipp_timeline::TextureTileMode::Stretch=>0,klipp_timeline::TextureTileMode::Tile=>1,klipp_timeline::TextureTileMode::Fit=>2,klipp_timeline::TextureTileMode::Cover=>3},
                             }))
                     })
+                } else if post_requires_glyph {
+                    // A fallback placed source may defer its blur. It cannot
+                    // safely feed post-processing before that blur has run.
+                    return None;
                 } else if let Some(source) = self.titles.style_source(td, width, height, clip_time as f32, Some(total)) {
                     match source.face_work {
                         klipp_title::StyleFaceWork::Reused => {},
@@ -6374,7 +6379,7 @@ fn title_post_source(td: &klipp_timeline::TitleData) -> Option<(klipp_timeline::
     if !obj.visible || obj.opacity != 1.0 || !obj.opacity_keyframes.is_empty()
         || obj.transform.rotation != 0.0 || !obj.transform.rotation_keyframes.is_empty()
         || td.mixes_layers() || matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..})
-        || !obj.fx().edge_fade.is_none() || obj.fx().motion.is_active()
+        || !obj.fx().edge_fade.is_none() || (obj.fx().motion.is_active() && tb.three_d.as_ref().is_some_and(|d|d.enabled))
         || !title_source_loops(&obj.fx().loops) || obj.fx().motion_blur.is_some()
         || (tb.chromatic_aberration_px <= 0.0 && tb.glitch_intensity <= 0.0)
     { return None; }
