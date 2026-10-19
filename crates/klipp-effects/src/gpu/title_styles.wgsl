@@ -189,7 +189,33 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i=gid.x;
     if i>=p.width*p.height { return; }
     let x=i%p.width; let y=i/p.width;
-    if p.op==30u {
+    if p.op==31u {
+        let v=authored_at(i32(x),y)*255.0;
+        store_rgba(i,vec4<f32>(v.rgb*(v.a/255.0),v.a));
+    } else if p.op==32u {
+        var lines=p.height;var len=p.width;var step=1u;var stride=p.width;
+        if p.offset_y==1 {lines=p.width;len=p.height;step=p.width;stride=1u;}
+        if i>=lines {return;}
+        let base=i*stride;let radius=u32(p.offset_x);var sum=vec4<f32>(0.0);
+        for(var j=0u;j<=min(radius,len-1u);j+=1u) {sum+=load_rgba(base+j*step);}
+        var n=f32(min(radius,len-1u)+1u);
+        for(var j=0u;j<len;j+=1u) {
+            store_rgba(base+j*step,sum/n);
+            if j+radius+1u<len {sum+=load_rgba(base+(j+radius+1u)*step);n+=1.0;}
+            if j>=radius {sum-=load_rgba(base+(j-radius)*step);n-=1.0;}
+        }
+    } else if p.op==33u {
+        let raw=load_rgba(i);let alpha=raw.a/255.0;
+        var soft=vec4<f32>(0.0,0.0,0.0,round(clamp(raw.a,0.0,255.0))/255.0);
+        if alpha>0.0 {soft=vec4<f32>(round(clamp(raw.rgb/alpha,vec3<f32>(0.0),vec3<f32>(255.0)))/255.0,soft.a);}
+        let old=load_dst(i);let rgb=matrix(old.rgb);
+        let base=round(clamp(vec4<f32>(encoded(rgb.x),encoded(rgb.y),encoded(rgb.z),old.a),vec4<f32>(0.0),vec4<f32>(1.0))*255.0)/255.0;
+        let u=select((f32(x)+0.5)/f32(p.width),(f32(y)+0.5)/f32(p.height),p.color.x>0.5);
+        let t=clamp((abs(u-0.5)*2.0-p.color.y)/max(1.0-p.color.y,0.001),0.0,1.0);let m=t*t*(3.0-2.0*t);
+        let a=mix(base.a,soft.a,m);var colour=base.rgb;
+        if m>0.0 {colour=vec3<f32>(0.0);if a>0.000001 {colour=mix(base.rgb*base.a,soft.rgb*soft.a,m)/a;}}
+        store_rgba(i,round(clamp(vec4<f32>(colour,a),vec4<f32>(0.0),vec4<f32>(1.0))*255.0)/255.0);
+    } else if p.op==30u {
         store_rgba(i,over(load_rgba((y+p.y0)*p.frame_width+x+p.x0),load_dst(i)));
     } else if p.op==26u {
         let sx=i32(x)-i32(p.x0);let sy=i32(y)-i32(p.x0);
@@ -372,6 +398,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if p.color.y>0.0 { a*=smoothstep(0.0,p.color.y,1.0-uv.y); }
         if p.color.z>0.0 { a*=smoothstep(0.0,p.color.z,uv.x); }
         if p.color.w>0.0 { a*=smoothstep(0.0,p.color.w,1.0-uv.x); }
+        if p.row1.x>0.5 {
+            let u=select(uv.x,uv.y,p.row1.x>1.5);
+            a*=1.0-smoothstep(p.row1.y,1.0,abs(u-0.5)*2.0)*(1.0-p.row1.z);
+        }
         var alpha=v.a;
         if a<1.0 { alpha=floor(round(alpha*255.0)*a+0.5)/255.0; }
         if abs(p.row0.x-1.0)>=0.001 { alpha=floor(alpha*p.row0.x*255.0+0.5)/255.0; }

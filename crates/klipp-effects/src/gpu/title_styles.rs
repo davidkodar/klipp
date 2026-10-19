@@ -889,6 +889,11 @@ impl GpuEffectsPipeline {
 
     /// Fade the fully decorated title object after its post-processing.
     pub fn stack_title_alpha(&mut self, slot: usize, edges: [f32; 4], opacity: f32) -> bool {
+        self.stack_title_fade(slot, edges, opacity, None)
+    }
+
+    /// Combined edge and focus fade, quantized once as in the authored layer.
+    pub fn stack_title_fade(&mut self, slot: usize, edges: [f32; 4], opacity: f32, focus: Option<(bool, f32, f32)>) -> bool {
         let (w, h) = self.stack_dims;
         let count = u64::from(w) * u64::from(h);
         if self.is_device_lost()
@@ -926,7 +931,7 @@ impl GpuEffectsPipeline {
             offset_x: 0,
             offset_y: 0,
             color: edges.map(|v| v.clamp(0.0, 0.5)),
-            matrix: [[opacity.clamp(0.0, 1.0), 0.0, 0.0, 0.0], [0.0; 4], [0.0; 4]],
+            matrix: [[opacity.clamp(0.0, 1.0), 0.0, 0.0, 0.0], focus.map_or([0.0;4], |(vertical,band,edge)| [if vertical {2.0}else{1.0},band.clamp(0.0,0.999),edge.clamp(0.0,1.0),0.0]), [0.0; 4]],
         });
         self.stack_pass(
             &self.title_style_pipeline,
@@ -937,6 +942,39 @@ impl GpuEffectsPipeline {
         );
         let mut enc = self.encoder(Some("title fade copy"));
         enc.copy_buffer_to_buffer(scratch, 0, layer, 0, count * 16);
+        self.submit(enc);
+        true
+    }
+
+    /// CPU title blur uses three premultiplied authored-colour box passes.
+    /// Keep the original layer for the focus mix and reuse the temporary face slot.
+    pub fn stack_title_focus_blur(&mut self, slot: usize, radius: f32, vertical: bool, band: f32) -> bool {
+        if radius <= 0.5 { return true; }
+        if !radius.is_finite() || !band.is_finite() { return false; }
+        let Some(temp) = self.stack_title_object_slot(2) else { return false; };
+        if temp == slot || !self.stack_title_alpha(slot, [0.0;4], 1.0) { return false; }
+        let Some(to_authored) = inverse(self.authored_to_working) else { return false; };
+        let (w,h) = self.stack_dims;
+        let count = w*h;
+        let source=&self.stack_layers[slot];
+        let blurred=&self.stack_layers[temp];
+        let scratch=self.title_post_scratch.as_ref().unwrap();
+        let params=StyleParams {width:w,height:h,frame_width:w,op:31,x0:0,y0:0,offset_x:0,offset_y:0,color:[0.0;4],matrix:to_authored};
+        self.write_params(&params);
+        self.stack_pass(&self.title_style_pipeline,source,blurred,count.div_ceil(WORKGROUP_SIZE),"title premultiply authored");
+        let r=(radius/1.7).round().max(1.0).min(w.max(h) as f32) as i32;
+        for _ in 0..3 {
+            self.write_params(&StyleParams {op:32,offset_x:r,offset_y:0,..params});
+            self.stack_pass(&self.title_style_pipeline,blurred,scratch,h.div_ceil(WORKGROUP_SIZE),"title focus horizontal");
+            self.write_params(&StyleParams {op:32,offset_x:r,offset_y:1,..params});
+            self.stack_pass(&self.title_style_pipeline,scratch,blurred,w.div_ceil(WORKGROUP_SIZE),"title focus vertical");
+        }
+        self.write_params(&StyleParams {op:33,color:[if vertical {1.0}else{0.0},band,0.0,0.0],..params});
+        self.stack_pass(&self.title_style_pipeline,blurred,source,count.div_ceil(WORKGROUP_SIZE),"title focus authored mix");
+        self.write_params(&StyleParams {op:11,matrix:self.authored_to_working,..params});
+        self.stack_pass(&self.title_style_pipeline,source,scratch,count.div_ceil(WORKGROUP_SIZE),"title focus working space");
+        let mut enc=self.encoder(Some("title focus copy"));
+        enc.copy_buffer_to_buffer(scratch,0,source,0,u64::from(count)*16);
         self.submit(enc);
         true
     }
