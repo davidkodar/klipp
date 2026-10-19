@@ -21,40 +21,5 @@
     ],
     "issue": 1465,
     "max_readbacks": 1
-  },
-  "title.glitch": {
-    "features": [
-      "title.raster"
-    ],
-    "issue": 2069,
-    "max_readbacks": 0
-  },
-  "title.keyed-size-styles": {
-    "features": [
-      "title.style_face"
-    ],
-    "issue": 2069,
-    "max_readbacks": 0
-  },
-  "title.loop.ColorBlend": {
-    "features": [
-      "title.raster"
-    ],
-    "issue": 2069,
-    "max_readbacks": 0
-  },
-  "title.loop.ColorCycle": {
-    "features": [
-      "title.raster"
-    ],
-    "issue": 2069,
-    "max_readbacks": 0
-  },
-  "title.loop.Counter": {
-    "features": [
-      "title.raster"
-    ],
-    "issue": 2069,
-    "max_readbacks": 0
   }
 }

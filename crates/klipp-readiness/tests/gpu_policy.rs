@@ -380,8 +380,12 @@ fn verify(r: &mut Renderer, s: &Sequence, label: &str, allowed: &[&str]) {
         .expect("corpus delivery");
     assert_eq!(bytes.len(), 192 * 108 * 4);
 }
+// Both GPU corpora assert process-wide readback counters.
+static GPU_CORPUS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn playback_corpus_exposes_declared_cpu_sources_and_guards_gpu_routes() {
+    let _guard = GPU_CORPUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _still = StillFixture;
     image::RgbaImage::from_pixel(4, 4, image::Rgba([30, 80, 120, 255]))
         .save(still_path())
@@ -573,6 +577,17 @@ fn playback_corpus_exposes_declared_cpu_sources_and_guards_gpu_routes() {
             );
         }
     }
+}
+
+#[test]
+fn title_corpus_guards_resident_sources_and_declared_fallbacks() {
+    let _guard = GPU_CORPUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(true);
+    if r.executor().gpu_pipeline_or_init().is_none() {
+        assert!(std::env::var("KLIPP_TEST_REQUIRE_GPU").as_deref() != Ok("1"), "GPU required");
+        return;
+    }
     for m in klipp_core::title_motion::MotionKind::ALL {
         let t = TitleData::single_text_fx(
             title().primary_text().unwrap().clone(),
@@ -672,7 +687,7 @@ fn playback_corpus_exposes_declared_cpu_sources_and_guards_gpu_routes() {
             fx.clone(),
         ))),
         "title.keyed-size-styles",
-        &["title.style_face"],
+        &[],
     );
     let mut tb = title().primary_text().unwrap().clone();
     tb.tracking_keyframes = vec![key(0., 0.), key(2., 8.)];
@@ -685,14 +700,7 @@ fn playback_corpus_exposes_declared_cpu_sources_and_guards_gpu_routes() {
     let mut t = title();
     t.primary_text_mut().unwrap().glitch_intensity = 0.7;
     let s = sequence(ClipKind::Title(t));
-    verify(&mut r, &s, "title.glitch", &["title.raster"]);
-    assert!(
-        diag::last_frame()
-            .events
-            .iter()
-            .any(|e| e.feature == "title.raster"),
-        "positive control: per-frame CPU raster cannot hide behind GPU composition"
-    );
+    verify(&mut r, &s, "title.glitch", &[]);
     // Cold static title mask preparation is allowed (#2069), but it must not
     // repeat at 4K: the large-mask callback threshold is resolution dependent.
     let static_fx = LayerFx {

@@ -56,24 +56,23 @@ for full-project playback profiling.
   cache CPU pixels; grain and timers rasterize with time (#2067). StillFrame rereads its
   file and is not a cached still-generator path (#2068). The Generator effect node has
   its own GPU kernel and must not be confused with native generators.
-- Static title rasters can cache. Keyed typography and unsupported
-  motion/style combinations can rerasterize on CPU (#2069). Eligible
-  animated tracking reuses cached glyph coverage with GPU placement (#2062).
-- Eligible animated single-text and 3D title styles compose on GPU (#2063).
-  A 16-entry, 64 MiB LRU face cache avoids repeated raster preparation when
-  alternating titles animate only their styles;
-  eligible rotating 3D uses cached GPU geometry (#2061). Unsupported combinations
-  retain the CPU composition path (#2069), with GPU blur/dilate callbacks and
-  downloads above 250,000 mask pixels. Static finished title sprites still cache.
-  CPU and GPU title masks use the same box-blur and fractional outline-radius
-  rules. Clip glow/blur kernels remain a separate path.
-- Text layers with keyed object opacity reuse resting sprites, including a
-  single text layer and overlapping layers with whole-layer fade entrances/exits.
-  The GPU composes their alpha in layer order. Keyed transforms, typography,
-  layer mixing, backings, text paths and unsupported animated styles retain their
-  existing raster route; this is not a general animated-layout cache (#2069).
-- Title glitch changes pixels on CPU each frame (#2069). Static title chromatic
-  treatment can cache; the similarly named clip effect has a GPU kernel.
+- Static title rasters cache. Supported keyed size, spacing and colour reuse
+  bounded glyph outlines; CPU shaping remains, while coverage, rich fills,
+  underlines, gradients, patterns and cached textures are assembled on GPU (#2069).
+  Colour/counter/wave loops and supported per-glyph movement, scale, opacity,
+  blur, rotation and colour use that same route. Fixed arc, circle and wave paths
+  reuse outlines when their typography changes.
+- Supported text sources compose styles, glitch and chromatic processing on GPU,
+  followed by object rotation, edge fades, opacity and scene blend/mask composition.
+  Colour backings and full-frame backgrounds keep their authored ordering.
+  Eligible animated 3D and tracking retain their existing GPU paths (#2061/#2062).
+- Remaining title fallbacks include bitmap colour glyphs, linked-path context,
+  path-specific glyph motion, fitted-shape context, focus-band combinations,
+  source shutter sampling and unsupported extrusion/3D authoring combinations.
+  Cache-size or device limits can also decline a source. These remain explicit
+  fallbacks; GPU final composition alone does not establish source residency.
+  CPU callback blur/dilate can download unsupported large masks. The CPU twins
+  retain their authored alpha, fill and sampling semantics for parity.
 - Unsupported composition or an unavailable/lost GPU can invoke CPU fallback.
   CPU twins remain necessary for fallback and parity; their existence alone is
   not evidence that normal GPU playback uses them.
