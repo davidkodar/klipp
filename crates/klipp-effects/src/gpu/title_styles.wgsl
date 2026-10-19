@@ -261,6 +261,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     } else if p.op==14u {
         let px=i32(x)+p.offset_x; let py=i32(y)+p.offset_y;
         if px<0 || py<0 || px>=i32(p.frame_width) || py>=i32(p.y0) {return;}
+        if f32(py)<p.row1.x || f32(py)>=p.row1.y {return;}
         var coverage=0.0;
         var pixel=vec2<f32>(f32(x),f32(y));
         if p.row0.w>0.5 {pixel=vec2<f32>(f32(y),f32(p.width)-1.0-f32(x));}
@@ -289,6 +290,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         var alpha=floor(clamp(abs(coverage)*255.9,0.0,255.0))/255.0;
         if bins.w>0.5 {alpha=floor(clamp(abs(coverage),0.0,1.0)*255.0+0.5)/255.0;}
+        alpha=floor(round(alpha*255.0)*p.row1.z+0.5)/255.0;
         let dst=u32(py)*p.frame_width+u32(px);
         store_rgba(dst,vec4<f32>(p.color.rgb,max(alpha,load_dst(dst).a)));
     } else if p.op==13u {

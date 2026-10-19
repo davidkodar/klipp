@@ -168,12 +168,15 @@ impl GpuEffectsPipeline {
         size: [u32; 2],
         placement: [f32; 4],
         color: [u8; 4],
+        alpha: f32,
+        clip_y: [i32; 2],
     ) -> bool {
         let [w, h] = size;
         let count = u64::from(w) * u64::from(h);
         if self.is_device_lost()
             || slot >= self.stack_layers.len()
             || count == 0
+            || !alpha.is_finite()
             || edges.len() < 65
             || edges.len() > 65536
             || placement[0] <= 0.0
@@ -261,7 +264,16 @@ impl GpuEffectsPipeline {
             offset_x: origin[0],
             offset_y: origin[1],
             color: [working[0], working[1], working[2], 1.0],
-            matrix: [placement, [0.0; 4], [0.0; 4]],
+            matrix: [
+                placement,
+                [
+                    clip_y[0] as f32,
+                    clip_y[1] as f32,
+                    alpha.clamp(0.0, 1.0),
+                    0.0,
+                ],
+                [0.0; 4],
+            ],
         });
         self.stack_pass(
             &self.title_style_pipeline,

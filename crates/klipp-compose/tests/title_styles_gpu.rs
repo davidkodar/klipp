@@ -397,7 +397,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
     let (w, h) = (320, 180);
     for ws in [WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG] {
         for graded in [false, true] {
-          for variant in 0..30 {
+          for variant in 0..33 {
             let mut title = TitleData::single_text_fx(TextBox {
                 text: "Glitch".into(), font_size: 180.0, color: [190, 120, 60, 255],
                 glitch_intensity: 0.6, chromatic_aberration_px: 12.0, ..Default::default()
@@ -487,6 +487,10 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                     tile_mode:match variant {26=>klipp_timeline::TextureTileMode::Stretch,27=>klipp_timeline::TextureTileMode::Tile,28=>klipp_timeline::TextureTileMode::Fit,_=>klipp_timeline::TextureTileMode::Cover},
                     opacity:0.7,scale:0.8,rotation:20.0,offset_x:-12.0,offset_y:9.0,tint:[160,255,200,255],..Default::default()
                 });
+            }
+            if variant>=30 {
+                title.objects[0].fx_mut().motion=klipp_timeline::TitleMotion::enter(klipp_timeline::Motion::new(if variant==30 {klipp_timeline::MotionKind::Fade} else {klipp_timeline::MotionKind::ScaleUp}).duration(0.8).stagger(klipp_timeline::StaggerUnit::Char,0.05));
+                if variant==32 {title.objects[0].fx_mut().animators=vec![klipp_timeline::Animator{props:klipp_timeline::AnimatorProps{dx:0.1,dy:0.1,scale:0.8,opacity:0.7,..Default::default()},..Default::default()}];}
             }
             if variant==11 {let text=title.primary_text_mut().unwrap();text.font_name="Variable Test".into();text.font_axes=vec![("wght".into(),650.0)];}
             let mut clip = Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) };
