@@ -126,3 +126,107 @@ pub(crate) fn row_bins(edges: Vec<[f32; 4]>) -> Option<Vec<[f32; 4]>> {
     }
     (out.len() <= 65536).then_some(out)
 }
+
+/// Variable instances use size-dependent subdivision in their CPU reference.
+/// Retain control points so the GPU can make those same segments at any size.
+pub(crate) fn curve_bins(face: &ttf_parser::Face, glyph: u16) -> Option<Vec<[f32; 4]>> {
+    struct Curves {
+        at: [f32; 2],
+        start: [f32; 2],
+        items: Vec<[[f32; 4]; 3]>,
+    }
+    impl Curves {
+        fn push(&mut self, b: [f32; 2], c: [f32; 2], d: [f32; 2], degree: f32) {
+            self.items.push([
+                [self.at[0], self.at[1], b[0], b[1]],
+                [c[0], c[1], d[0], d[1]],
+                [degree, 0.0, 0.0, 0.0],
+            ]);
+            self.at = match degree as u32 {
+                1 => b,
+                2 => c,
+                _ => d,
+            };
+        }
+    }
+    impl OutlineBuilder for Curves {
+        fn move_to(&mut self, x: f32, y: f32) {
+            self.close();
+            self.at = [x, y];
+            self.start = self.at;
+        }
+        fn line_to(&mut self, x: f32, y: f32) {
+            self.push([x, y], [0.0; 2], [0.0; 2], 1.0);
+        }
+        fn quad_to(&mut self, x: f32, y: f32, ex: f32, ey: f32) {
+            self.push([x, y], [ex, ey], [0.0; 2], 2.0);
+        }
+        fn curve_to(&mut self, x: f32, y: f32, x2: f32, y2: f32, ex: f32, ey: f32) {
+            self.push([x, y], [x2, y2], [ex, ey], 3.0);
+        }
+        fn close(&mut self) {
+            if self.at != self.start {
+                self.line_to(self.start[0], self.start[1]);
+            }
+        }
+    }
+    let mut builder = Curves {
+        at: [0.0; 2],
+        start: [0.0; 2],
+        items: Vec::new(),
+    };
+    face.outline_glyph(ttf_parser::GlyphId(glyph), &mut builder)?;
+    if builder.items.is_empty() || builder.items.len() > 8192 {
+        return None;
+    }
+    let scale = 2048.0 / face.units_per_em().max(1) as f32;
+    let bounds = |p: &[[f32; 4]; 3]| {
+        let mut ys = vec![p[0][1], p[0][3]];
+        if p[2][0] >= 2.0 {
+            ys.push(p[1][1]);
+        }
+        if p[2][0] >= 3.0 {
+            ys.push(p[1][3]);
+        }
+        (
+            ys.iter().copied().fold(f32::INFINITY, f32::min),
+            ys.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+        )
+    };
+    for p in &mut builder.items {
+        for row in &mut p[..2] {
+            row[0] *= scale;
+            row[1] *= -scale;
+            row[2] *= scale;
+            row[3] *= -scale;
+        }
+    }
+    let min = builder
+        .items
+        .iter()
+        .map(|p| bounds(p).0)
+        .fold(f32::INFINITY, f32::min);
+    let max = builder
+        .items
+        .iter()
+        .map(|p| bounds(p).1)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let span = (max - min).max(0.000001);
+    let bin = |y: f32| (((y - min) / span * 64.0).floor() as usize).min(63);
+    let mut buckets: Vec<Vec<[[f32; 4]; 3]>> = vec![Vec::new(); 64];
+    for p in builder.items {
+        let (lo, hi) = bounds(&p);
+        for bucket in &mut buckets[bin(lo)..=bin(hi)] {
+            bucket.push(p);
+        }
+    }
+    let mut out = vec![[0.0; 4]; 65];
+    out[0] = [min, span, 64.0, 1.0];
+    for (i, bucket) in buckets.into_iter().enumerate() {
+        out[i + 1] = [out.len() as f32, bucket.len() as f32, 0.0, 0.0];
+        for p in bucket {
+            out.extend(p);
+        }
+    }
+    (out.len() <= 65536).then_some(out)
+}

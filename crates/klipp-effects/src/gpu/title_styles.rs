@@ -26,6 +26,25 @@ pub enum TitleStyle {
     },
 }
 
+/// Face inputs independent of the coverage used by its style stack.
+#[derive(Clone, Copy, Debug)]
+pub struct TitleFace {
+    pub alpha: f32,
+    pub outline_cutoff: i32,
+    pub write_cutoff: i32,
+    pub backing: Option<([u32; 4], [u8; 4])>,
+}
+impl Default for TitleFace {
+    fn default() -> Self {
+        Self {
+            alpha: 1.0,
+            outline_cutoff: i32::MAX,
+            write_cutoff: i32::MAX,
+            backing: None,
+        }
+    }
+}
+
 pub(super) struct StyleScratch {
     count: u64,
     mask: wgpu::Buffer,
@@ -119,15 +138,28 @@ impl GpuEffectsPipeline {
         {
             return false;
         }
+        if edges[0][3] != 0.0 && edges[0][3] != 1.0 {
+            return false;
+        }
+        let stride = if edges[0][3] == 1.0 { 3.0 } else { 1.0 };
+        let segments = if edges[0][3] == 1.0 { 65 } else { 1 };
         let mut max_bin = 0u64;
         for bin in &edges[1..65] {
             if bin[0] < 65.0
                 || bin[1] < 0.0
                 || bin[0].fract() != 0.0
                 || bin[1].fract() != 0.0
-                || bin[0] + bin[1] > edges.len() as f32
+                || bin[0] + stride * bin[1] > edges.len() as f32
             {
                 return false;
+            }
+            if stride == 3.0 {
+                for i in 0..bin[1] as usize {
+                    let degree = edges[bin[0] as usize + 3 * i + 2][0];
+                    if degree != 1.0 && degree != 2.0 && degree != 3.0 {
+                        return false;
+                    }
+                }
             }
             max_bin = max_bin.max(bin[1] as u64);
         }
@@ -135,7 +167,12 @@ impl GpuEffectsPipeline {
         let bins_per_pixel = ((64.0 / (edges[0][1] * placement[0])).ceil() as u64)
             .saturating_add(1)
             .min(64);
-        if count.saturating_mul(max_bin).saturating_mul(bins_per_pixel) > 64 * 1024 * 1024 {
+        if count
+            .saturating_mul(max_bin)
+            .saturating_mul(bins_per_pixel)
+            .saturating_mul(segments)
+            > 64 * 1024 * 1024
+        {
             return false;
         }
         let source = if let Some(i) = self.title_outlines.iter().position(|(key, _)| *key == id) {
@@ -194,6 +231,55 @@ impl GpuEffectsPipeline {
             self.title_outlines.remove(0);
         }
         self.title_outlines.push(source);
+        true
+    }
+
+    /// Solid coverage for underline/strikethrough geometry.
+    pub fn stack_title_stripe(&mut self, slot: usize, rect: [u32; 4], color: [u8; 4]) -> bool {
+        let [x, y, w, h] = rect;
+        if self.is_device_lost()
+            || slot >= self.stack_layers.len()
+            || w == 0
+            || h == 0
+            || x.checked_add(w).is_none_or(|v| v > self.stack_dims.0)
+            || y.checked_add(h).is_none_or(|v| v > self.stack_dims.1)
+        {
+            return false;
+        }
+        let Some(input) = self.buf_a.as_ref() else {
+            return false;
+        };
+        let linear = |v: u8| {
+            let v = v as f32 / 255.0;
+            if v <= 0.04045 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let rgb = [linear(color[0]), linear(color[1]), linear(color[2])];
+        let rgb = self
+            .authored_to_working
+            .map(|m| m[0] * rgb[0] + m[1] * rgb[1] + m[2] * rgb[2]);
+        self.write_params(&StyleParams {
+            width: w,
+            height: h,
+            frame_width: self.stack_dims.0,
+            op: 15,
+            x0: x,
+            y0: y,
+            offset_x: 0,
+            offset_y: 0,
+            color: [rgb[0], rgb[1], rgb[2], 1.0],
+            matrix: [[0.0; 4]; 3],
+        });
+        self.stack_pass(
+            &self.title_style_pipeline,
+            input,
+            &self.stack_layers[slot],
+            (w * h).div_ceil(WORKGROUP_SIZE),
+            "title underline coverage",
+        );
         true
     }
 
@@ -471,19 +557,24 @@ impl GpuEffectsPipeline {
         roi: [u32; 4],
         styles: &[TitleStyle],
     ) -> bool {
-        self.stack_title_styles_with_fill(slot, roi, styles, 1.0, i32::MAX)
+        self.stack_title_styles_with_face(slot, roi, styles, TitleFace::default())
     }
 
     /// As `stack_title_styles`, with face opacity separate from its coverage:
     /// translucent text fill must not weaken its shadow or outline mask.
-    pub fn stack_title_styles_with_fill(
+    pub fn stack_title_styles_with_face(
         &mut self,
         slot: usize,
         roi: [u32; 4],
         styles: &[TitleStyle],
-        fill_alpha: f32,
-        outline_cutoff: i32,
+        face: TitleFace,
     ) -> bool {
+        let TitleFace {
+            alpha: fill_alpha,
+            outline_cutoff,
+            write_cutoff,
+            backing,
+        } = face;
         if !fill_alpha.is_finite() {
             return false;
         }
@@ -582,10 +673,20 @@ impl GpuEffectsPipeline {
                 "title style",
             );
         };
-        pass(1, layer, &s.mask, [0, 0], [0.0; 4], to_authored);
+        pass(1, layer, &s.mask, [write_cutoff, 0], [0.0; 4], to_authored);
         let mut enc = self.encoder(Some("clear title style accumulation"));
         enc.clear_buffer(&s.composite, 0, None);
         self.submit(enc);
+        if let Some((rect, color)) = backing {
+            pass(
+                17,
+                layer,
+                &s.composite,
+                [0, 0],
+                color.map(|v| v as f32 / 255.0),
+                [rect.map(|v| v as f32), [0.0; 4], [0.0; 4]],
+            );
+        }
         for style in styles {
             let (color, intensity) = match *style {
                 TitleStyle::Face => {
@@ -593,7 +694,7 @@ impl GpuEffectsPipeline {
                         6,
                         layer,
                         &s.composite,
-                        [0, 0],
+                        [write_cutoff, 0],
                         [0.0, 0.0, 0.0, fill_alpha],
                         to_authored,
                     );
@@ -654,6 +755,33 @@ impl GpuEffectsPipeline {
             let mut c = color.map(|x| f32::from(x) / 255.0);
             c[3] *= intensity;
             pass(5, &s.work, &s.composite, [0, 0], c, to_authored);
+        }
+        // A posed glyph may extend outside the authored mask box. The CPU
+        // clips coverage to that box before styles; remove raw seed pixels
+        // outside it after the face has been consumed by the style passes.
+        let mut enc = self.encoder(Some("clear title coverage seed"));
+        enc.clear_buffer(layer, 0, None);
+        self.submit(enc);
+        if let Some((rect, color)) = backing {
+            self.write_params(&StyleParams {
+                width: fw,
+                height: fh,
+                frame_width: fw,
+                op: 18,
+                x0: rect[0],
+                y0: rect[1],
+                offset_x: rect[2] as i32,
+                offset_y: rect[3] as i32,
+                color: color.map(|v| v as f32 / 255.0),
+                matrix: self.authored_to_working,
+            });
+            self.stack_pass(
+                &self.title_style_pipeline,
+                &s.composite,
+                layer,
+                (fw * fh).div_ceil(WORKGROUP_SIZE),
+                "title backing outside mask",
+            );
         }
         pass(
             7,
