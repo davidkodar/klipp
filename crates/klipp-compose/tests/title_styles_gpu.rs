@@ -397,7 +397,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
     let (w, h) = (320, 180);
     for ws in [WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG] {
         for graded in [false, true] {
-          for variant in 0..48 {
+          for variant in 0..50 {
             let mut title = TitleData::single_text_fx(TextBox {
                 text: "Glitch".into(), font_size: 180.0, color: [190, 120, 60, 255],
                 glitch_intensity: 0.6, chromatic_aberration_px: 12.0, ..Default::default()
@@ -511,10 +511,23 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                 let text=title.primary_text_mut().unwrap();text.text="Path text".into();text.style_runs.clear();
                 text.text_path=Some(match variant {42=>klipp_timeline::TextPath::Arc{radius:55.0,start_angle:200.0,sweep:160.0},43=>klipp_timeline::TextPath::Circle{radius:45.0},_=>klipp_timeline::TextPath::Wave{amplitude:20.0,frequency:1.5,phase:30.0}});
             }
-            if variant>=45 {
+            if (45..48).contains(&variant) {
                 let shape=klipp_core::title_motion::RollShape{focus:Some(klipp_core::title_motion::FocusBand{band:0.2,edge_opacity:0.1,blur:if variant==45 {0.0}else{30.0}})};
                 title.objects[0].fx_mut().loops.push(if variant==47 {klipp_timeline::TitleLoop::Crawl{direction:klipp_core::title_motion::CrawlDirection::Left,speed_px_per_sec:300.0,repeat:true,shape}}else{klipp_timeline::TitleLoop::Scroll{direction:klipp_core::title_motion::ScrollDirection::Up,speed_px_per_sec:300.0,shape}});
                 title.objects[0].fx_mut().edge_fade=klipp_core::title_motion::EdgeFade{left:0.3,right:0.4,top:0.25,bottom:0.35};
+            }
+            if variant>=48 {
+                use klipp_core::vector_path::{PathContour,PathPose,PathVertex};
+                let contour=|y:f32|PathPose {stroke_glow:None,contours:vec![PathContour{closed:false,vertices:vec![
+                    PathVertex{point:[0.05,y],incoming:[0.05,y],outgoing:[0.3,y-0.3]},
+                    PathVertex{point:[0.95,y],incoming:[0.7,y+0.3],outgoing:[0.95,y]},
+                ]}],fill:[0.0;4],stroke:[0.0;4],stroke_width:0.0};
+                let mut path=klipp_timeline::VectorPath{trim:None,pose:contour(0.5),keyframes:vec![]};
+                if variant==49 {path.key(0.0,contour(0.3)).unwrap();path.key(1.0,contour(0.7)).unwrap();}
+                let layer=title.add_object(klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape{kind:klipp_timeline::ShapeKind::Path(path),fill:None,gradient:None,stroke:None,fit:None}),klipp_timeline::ObjectTransform{size:klipp_timeline::TitlePosition{x:1.0,y:1.0},..klipp_timeline::default_text_transform()});
+                title.objects.last_mut().unwrap().visible=false;
+                let text=title.primary_text_mut().unwrap();text.text="Linked path".into();text.style_runs.clear();
+                text.text_path=Some(klipp_timeline::TextPath::Layer{layer,contour:0,offset:0.1,offset_keyframes:vec![key(0.0,0.0),key(1.0,0.2)],align:klipp_timeline::PathTextAlign::Start,flip:false});
             }
             if variant==41 {
                 title.objects[0].fx_mut().animators=vec![klipp_timeline::Animator{props:klipp_timeline::AnimatorProps{opacity:0.0,colour:Some([30,180,240,140]),..Default::default()},..Default::default()}];

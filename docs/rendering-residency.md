@@ -61,14 +61,14 @@ for full-project playback profiling.
   underlines, gradients, patterns and cached textures are assembled on GPU (#2069).
   Colour/counter/wave loops and supported per-glyph movement, scale, opacity,
   blur, rotation and colour use that same route. Fixed arc, circle and wave paths
-  reuse outlines when their typography changes.
+  reuse outlines when their typography changes. Linked text paths retain the
+  parent scene while placing glyphs, including path morphs and offset keys.
 - Supported text sources compose styles, glitch and chromatic processing on GPU,
   followed by object rotation, edge/focus fades, authored-colour focus blur, opacity
   and scene blend/mask composition.
   Colour backings and full-frame backgrounds keep their authored ordering.
   Eligible animated 3D and tracking retain their existing GPU paths (#2061/#2062).
-- Remaining title fallbacks include bitmap colour glyphs, linked-path context,
-  path-specific glyph motion, fitted-shape context, unsupported focus-band sources,
+- Remaining title fallbacks include bitmap colour glyphs, path-specific glyph motion, fitted-shape context, unsupported focus-band sources,
   source shutter sampling and unsupported extrusion/3D authoring combinations.
   Cache-size or device limits can also decline a source. These remain explicit
   fallbacks; GPU final composition alone does not establish source residency.

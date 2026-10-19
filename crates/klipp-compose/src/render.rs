@@ -2665,6 +2665,10 @@ impl Renderer {
     }
 
     fn place_title_source(&mut self, td: &klipp_timeline::TitleData, slot: usize, width: u32, height: u32, clip_time: f64, total: f32) -> Option<((u32,u32),Vec<BuiltinEffect>)> {
+        self.place_title_source_in_scene(td, slot, width, height, clip_time, total, td)
+    }
+
+    fn place_title_source_in_scene(&mut self, td: &klipp_timeline::TitleData, slot: usize, width: u32, height: u32, clip_time: f64, total: f32, scene: &klipp_timeline::TitleData) -> Option<((u32,u32),Vec<BuiltinEffect>)> {
         // Whole-object loops are folded into the authored object before layout,
         // just as in the CPU scene. Keep content/wave loops for the glyph source.
         if let [object] = td.objects.as_slice() {
@@ -2687,7 +2691,7 @@ impl Renderer {
                         target.opacity=1.0;target.opacity_keyframes.clear();
                         target.transform.center.x+=pose.dx/width as f32;
                         target.transform.center.y+=pose.dy/height as f32;
-                        let (_,soft)=self.place_title_source(&source,slot,width,height,clip_time,total)?;
+                        let (_,soft)=self.place_title_source_in_scene(&source,slot,width,height,clip_time,total,scene)?;
                         let gpu=self.executor.gpu_pipeline_or_init()?;
                         let vertical=axis==klipp_core::title_motion::RampAxis::Vertical;
                         if !gpu.stack_title_source_effects(slot,&soft)
@@ -2706,7 +2710,7 @@ impl Renderer {
                         if target.opacity<=0.001 {
                             return self.executor.gpu_pipeline_or_init()?.stack_layer_clear(slot).then_some(((0,0),Vec::new()));
                         }
-                        return self.place_title_source(&source,slot,width,height,clip_time,total);
+                        return self.place_title_source_in_scene(&source,slot,width,height,clip_time,total,scene);
                     }
                 }
             }
@@ -2716,7 +2720,7 @@ impl Renderer {
                 let mut source=td.clone();
                 source.objects[0].opacity=1.0;
                 source.objects[0].opacity_keyframes.clear();
-                let (rows,soft)=self.place_title_source(&source,slot,width,height,clip_time,total)?;
+                let (rows,soft)=self.place_title_source_in_scene(&source,slot,width,height,clip_time,total,scene)?;
                 if !self.executor.gpu_pipeline_or_init()?.stack_title_source_effects(slot,&soft) { return None; }
                 return self.executor.gpu_pipeline_or_init()?.stack_title_alpha(slot,[0.0;4],object.evaluated_opacity(clip_time)).then_some((rows,Vec::new()));
             }
@@ -2724,7 +2728,7 @@ impl Renderer {
             if !matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..}) && !edges.is_none() && title_source_loops(&object.fx().loops) {
                 let mut source=td.clone();
                 source.objects[0].fx_mut().edge_fade=Default::default();
-                let (rows,soft)=self.place_title_source(&source,slot,width,height,clip_time,total)?;
+                let (rows,soft)=self.place_title_source_in_scene(&source,slot,width,height,clip_time,total,scene)?;
                 if !soft.is_empty() { return None; }
                 return self.executor.gpu_pipeline_or_init()?.stack_title_alpha(slot,[edges.top,edges.bottom,edges.left,edges.right],1.0).then_some((rows,soft));
             }
@@ -2739,7 +2743,7 @@ impl Renderer {
                     let mut source=td.clone();
                     source.objects[0].transform.rotation=0.0;
                     source.objects[0].transform.rotation_keyframes.clear();
-                    let (rows,soft)=self.place_title_source(&source,slot,width,height,clip_time,total)?;
+                    let (rows,soft)=self.place_title_source_in_scene(&source,slot,width,height,clip_time,total,scene)?;
                     if !soft.is_empty() {return None;}
                     if transform.rotation.abs()<=0.001 {return Some((rows,soft));}
                     let pivot=[(transform.center.x+(transform.anchor_norm.x-0.5)*transform.size.x)*width as f32,
@@ -2752,7 +2756,6 @@ impl Renderer {
         // GPU styles and time evaluation before authored-space composition.
         if (td.objects.len() > 1 || td.mixes_layers() || matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..}))
             && td.objects.iter().all(|o| match &o.content {
-                klipp_timeline::TitleObjectContent::TextBox(tb) => !matches!(tb.text_path,Some(klipp_timeline::TextPath::Layer {..})),
                 klipp_timeline::TitleObjectContent::Shape(shape) => shape.fit.is_none(),
                 _ => true,
             }) {
@@ -2772,7 +2775,7 @@ impl Renderer {
                 single.objects[0].opacity_keyframes.clear();
                 single.objects[0].blend=klipp_core::BlendMode::Normal;
                 single.objects[0].mask=None;
-                let (_,soft) = self.place_title_source(&single,object_slot,width,height,clip_time,total)?;
+                let (_,soft) = self.place_title_source_in_scene(&single,object_slot,width,height,clip_time,total,scene)?;
                 if !self.executor.gpu_pipeline_or_init()?.stack_title_source_effects(object_slot,&soft) { return None; }
                 // Apply opacity before the mask, exactly as the authored stack.
                 if !self.executor.gpu_pipeline_or_init()?.stack_title_alpha(object_slot,[0.0;4],opacity) { return None; }
@@ -2784,7 +2787,7 @@ impl Renderer {
                     mask_title.objects[0].visible=true;
                     mask_title.objects[0].mask=None;
                     mask_title.objects[0].blend=klipp_core::BlendMode::Normal;
-                    let (_,soft)=self.place_title_source(&mask_title,matte_slot,width,height,clip_time,total)?;
+                    let (_,soft)=self.place_title_source_in_scene(&mask_title,matte_slot,width,height,clip_time,total,scene)?;
                     if !self.executor.gpu_pipeline_or_init()?.stack_title_source_effects(matte_slot,&soft) { return None; }
                     use klipp_core::layer_mask::LayerMaskKind;
                     let luma=matches!(kind,LayerMaskKind::Luma|LayerMaskKind::InvertedLuma);
@@ -2825,7 +2828,7 @@ impl Renderer {
                         rows = (roi[1], roi[1] + roi[3]);
                         true
                     }
-                } else if let Some(source) = self.titles.glyph_source(td, width, height, clip_time as f32, Some(total)) {
+                } else if let Some(source) = self.titles.glyph_source_in_scene(td, width, height, clip_time as f32, Some(total), Some(scene)) {
                     if source.prepared>0 {
                         residency::record("title.glyph", if source.rerasterized { "Glyph working set exceeded the retained cache" } else { "Bounded glyph source cache miss" }, if source.rerasterized { Work::Fallback } else { Work::Preparation });
                     }
@@ -2846,7 +2849,7 @@ impl Renderer {
                                 mode:match t.fill.tile_mode {klipp_timeline::TextureTileMode::Stretch=>0,klipp_timeline::TextureTileMode::Tile=>1,klipp_timeline::TextureTileMode::Fit=>2,klipp_timeline::TextureTileMode::Cover=>3},
                             }))
                     })
-                } else if post_requires_glyph {
+                } else if post_requires_glyph || matches!(td.text_path(), Some(klipp_timeline::TextPath::Layer { .. })) {
                     // A fallback placed source may defer its blur. It cannot
                     // safely feed post-processing before that blur has run.
                     return None;
