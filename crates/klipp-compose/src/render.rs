@@ -2680,6 +2680,9 @@ impl Renderer {
                         target.fx_mut().loops.retain(|l|title_source_loops(std::slice::from_ref(l)));
                         let edges=target.fx().edge_fade;target.fx_mut().edge_fade=Default::default();
                         target.opacity*=pose.opacity;
+                        if target.opacity<=0.001 {
+                            return self.executor.gpu_pipeline_or_init()?.stack_layer_clear(slot).then_some(((0,0),Vec::new()));
+                        }
                         let opacity=target.evaluated_opacity(clip_time);
                         target.opacity=1.0;target.opacity_keyframes.clear();
                         target.transform.center.x+=pose.dx/width as f32;
