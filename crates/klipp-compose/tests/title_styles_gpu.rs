@@ -538,7 +538,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                 title.add_object(klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape{kind:klipp_timeline::ShapeKind::Rectangle{corner_radius:18.0},fill:Some([40,80,200,130]),gradient:None,stroke:Some(klipp_timeline::ShapeStroke{color:[180,40,90,200],width:4.0}),fit:Some(klipp_timeline::ShapeFit{target,padding:klipp_timeline::TitlePosition{x:12.0,y:8.0}})}),klipp_timeline::default_text_transform());
                 if variant==51 {title.objects[0].visible=false;}
                 if variant==53 {title.objects[1].blend=klipp_core::BlendMode::Screen;title.objects[1].opacity_keyframes=vec![key(0.0,0.3),key(1.0,0.7)];}
-                if variant==54 {title.objects[0].mask=Some(klipp_timeline::LayerMask{source:title.objects[1].id,kind:klipp_core::layer_mask::LayerMaskKind::Luma});title.objects[1].visible=false;title.objects[1].blend=klipp_core::BlendMode::Screen;}
+                if variant==54 {title.objects[0].mask=Some(klipp_timeline::LayerMask{source:title.objects[1].id,kind:klipp_core::layer_mask::LayerMaskKind::Luma});title.objects[1].visible=false;title.objects[1].blend=klipp_core::BlendMode::Screen;title.objects[1].opacity_keyframes=vec![key(0.0,0.3),key(1.0,0.7)];}
                 if variant!=52 {title.objects.swap(0,1);}
             }
             if variant==41 {

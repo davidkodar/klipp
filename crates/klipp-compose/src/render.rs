@@ -2681,8 +2681,12 @@ impl Renderer {
                     let gpu=self.executor.gpu_pipeline_or_init()?;
                     let (cx,cy)=(transform.center.x*width as f32,transform.center.y*height as f32);
                     let (hw,hh)=((transform.size.x*width as f32*0.5).max(0.0),(transform.size.y*height as f32*0.5).max(0.0));
-                    return gpu.stack_title_rectangle(slot,[cx,cy,hw,hh],[cx+(transform.anchor_norm.x-0.5)*hw*2.0,cy+(transform.anchor_norm.y-0.5)*hh*2.0],transform.rotation.to_radians(),corner_radius.max(0.0)*scale,
-                        shape.fill.unwrap_or([0;4]),shape.stroke.map(|s|(s.color,s.width.max(0.0)*scale)),shape_straight).then_some(((0,height),Vec::new()));
+                    if !gpu.stack_title_rectangle(slot,[cx,cy,hw,hh],[cx+(transform.anchor_norm.x-0.5)*hw*2.0,cy+(transform.anchor_norm.y-0.5)*hh*2.0],transform.rotation.to_radians(),corner_radius.max(0.0)*scale,
+                        shape.fill.unwrap_or([0;4]),shape.stroke.map(|s|(s.color,s.width.max(0.0)*scale)),shape_straight) {return None;}
+                    // Scene objects arrive with opacity stripped; matte sources retain it.
+                    let opacity=object.evaluated_opacity(clip_time).clamp(0.0,1.0);
+                    if (opacity-1.0).abs()>=0.001 && (!gpu.stack_title_precision(slot,true) || !gpu.stack_title_alpha(slot,[0.0;4],opacity)) {return None;}
+                    return Some(((0,height),Vec::new()));
                 }
             }
         }
