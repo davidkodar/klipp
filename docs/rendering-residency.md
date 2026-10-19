@@ -63,7 +63,7 @@ for full-project playback profiling.
   blur, rotation and colour use that same route. Fixed arc, circle and wave paths
   reuse outlines when their typography changes. Linked text paths retain the
   parent scene while placing glyphs, including path morphs and offset keys.
-  Plain rectangles and strokes use GPU coverage, including keyed transforms.
+  Plain rectangles, gradients and strokes use GPU coverage, including keyed transforms.
   Fitted rectangles use bounds-only text layout; hidden or missing targets
   suppress the panel.
 - Supported text sources compose styles, glitch and chromatic processing on GPU,

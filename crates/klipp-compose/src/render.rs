@@ -2682,13 +2682,14 @@ impl Renderer {
                         transform
                     } else {object.transform.evaluated_at(clip_time)};
                     let klipp_timeline::ShapeKind::Rectangle{corner_radius}=shape.kind else {return None;};
-                    if !object.fx().is_default() || shape.gradient.as_ref().is_some_and(|g|g.enabled) {return None;}
+                    if !object.fx().is_default() {return None;}
+                    let gradient=shape.gradient.as_ref().filter(|g|g.enabled).map(title_gradient_fill);
                     let scale=klipp_title::frame_scale(width,height);
                     let gpu=self.executor.gpu_pipeline_or_init()?;
                     let (cx,cy)=(transform.center.x*width as f32,transform.center.y*height as f32);
                     let (hw,hh)=((transform.size.x*width as f32*0.5).max(0.0),(transform.size.y*height as f32*0.5).max(0.0));
                     if !gpu.stack_title_rectangle(slot,[cx,cy,hw,hh],[cx+(transform.anchor_norm.x-0.5)*hw*2.0,cy+(transform.anchor_norm.y-0.5)*hh*2.0],transform.rotation.to_radians(),corner_radius.max(0.0)*scale,
-                        shape.fill.unwrap_or([0;4]),shape.stroke.map(|s|(s.color,s.width.max(0.0)*scale)),shape_straight) {return None;}
+                        shape.fill.unwrap_or([0;4]),shape.stroke.map(|s|(s.color,s.width.max(0.0)*scale)),shape_straight,gradient.as_ref()) {return None;}
                     // Scene objects arrive with opacity stripped; matte sources retain it.
                     let opacity=object.evaluated_opacity(clip_time).clamp(0.0,1.0);
                     if (opacity-1.0).abs()>=0.001 && (!gpu.stack_title_precision(slot,true) || !gpu.stack_title_alpha(slot,[0.0;4],opacity)) {return None;}
@@ -6416,6 +6417,13 @@ fn follows_something_moving(seq: &Sequence, c: &Clip, depth: u32) -> bool {
         return false;
     };
     camera_moves_it(seq, target) || moves_itself(target) || follows_something_moving(seq, target, depth + 1)
+}
+
+fn title_gradient_fill(g:&klipp_timeline::TextGradient)->klipp_effects::gpu::TitleFill {
+    klipp_effects::gpu::TitleFill::Gradient{geometry:match g.kind {
+        klipp_core::fill_gradient::GradientKind::Linear{angle_deg}=>{let(s,c)=angle_deg.to_radians().sin_cos();[s,c,0.0,0.0]},
+        klipp_core::fill_gradient::GradientKind::Radial{centre,radius}=>[centre[0],centre[1],radius.max(1e-6),1.0],
+    },stops:g.stops().into_iter().map(|s|(s.position,s.color)).collect()}
 }
 
 fn title_fill(source:&klipp_title::GlyphSource,scale:f32)->Option<klipp_effects::gpu::TitleFill> {
