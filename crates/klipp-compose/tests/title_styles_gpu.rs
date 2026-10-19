@@ -397,7 +397,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
     let (w, h) = (320, 180);
     for ws in [WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG] {
         for graded in [false, true] {
-          for variant in 0..26 {
+          for variant in 0..30 {
             let mut title = TitleData::single_text_fx(TextBox {
                 text: "Glitch".into(), font_size: 180.0, color: [190, 120, 60, 255],
                 glitch_intensity: 0.6, chromatic_aberration_px: 12.0, ..Default::default()
@@ -480,6 +480,13 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                         kind:if variant==23 {klipp_timeline::GradientKind::Linear{angle_deg:32.0}} else if variant==24 {klipp_timeline::GradientKind::Radial{centre:[0.3,0.6],radius:0.7}} else {Default::default()},stop_keyframes:vec![],
                     });
                 }
+            }
+            if variant>=26 {
+                title.primary_text_mut().unwrap().texture_fill=Some(klipp_timeline::TextureFill {
+                    source:klipp_timeline::TextureSource::Preset(klipp_timeline::TexturePresetId::DiagonalHatch),
+                    tile_mode:match variant {26=>klipp_timeline::TextureTileMode::Stretch,27=>klipp_timeline::TextureTileMode::Tile,28=>klipp_timeline::TextureTileMode::Fit,_=>klipp_timeline::TextureTileMode::Cover},
+                    opacity:0.7,scale:0.8,rotation:20.0,offset_x:-12.0,offset_y:9.0,tint:[160,255,200,255],..Default::default()
+                });
             }
             if variant==11 {let text=title.primary_text_mut().unwrap();text.font_name="Variable Test".into();text.font_axes=vec![("wght".into(),650.0)];}
             let mut clip = Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) };

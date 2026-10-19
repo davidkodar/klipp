@@ -22,7 +22,7 @@ use tracing::{debug, error, info, warn};
 mod readbacks;
 mod alpha_masks;
 mod title_styles;
-pub use title_styles::{TitleStyle,TitleFace,TitleFill};
+pub use title_styles::{TitleStyle,TitleFace,TitleFill,TitleTexture};
 pub use readbacks::{readback_stats, ReadbackStats};
 mod params;
 mod slots;
@@ -6125,7 +6125,7 @@ impl GpuEffectsPipeline {
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stack_resident_sprite"),
             size,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
         if !texels.is_empty() {

@@ -44,6 +44,19 @@ pub enum TitleFill {
     },
 }
 
+/// Cached texture and its authored UV transform, applied after title styles.
+pub struct TitleTexture<'a> {
+    pub id: u64,
+    pub texels: &'a [u32],
+    pub size: [u32; 2],
+    pub bounds: [f32; 4],
+    pub scale: f32,
+    pub offset: [f32; 2],
+    pub radians: f32,
+    pub opacity: f32,
+    pub tint: [u8; 4],
+    pub mode: u32,
+}
 /// Face inputs independent of the coverage used by its style stack.
 #[derive(Clone, Debug)]
 pub struct TitleFace {
@@ -115,6 +128,15 @@ struct FillParams {
     base: StyleParams,
     // Two (position bits, packed RGBA) stops per aligned uniform vector.
     stops: [[u32; 4]; 8],
+}
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct TextureParams {
+    base: StyleParams,
+    to_authored: [[f32; 4]; 3],
+    uv: [f32; 4],
+    extra: [f32; 4],
+    tint: [f32; 4],
 }
 pub(super) fn inverse(m: [[f32; 4]; 3]) -> Option<[[f32; 4]; 3]> {
     let [a, b, c] = m;
@@ -471,6 +493,149 @@ impl GpuEffectsPipeline {
             layer,
             (count as u32).div_ceil(WORKGROUP_SIZE),
             "title rotation",
+        );
+        true
+    }
+
+    /// Apply a cached texture to the quantized decorated source. The coverage
+    /// mask survives styling so texture alpha matches the authored operation.
+    pub fn stack_title_texture(
+        &mut self,
+        slot: usize,
+        roi: [u32; 4],
+        texture: TitleTexture<'_>,
+    ) -> bool {
+        let (fw, fh) = self.stack_dims;
+        let [x0, y0, w, h] = roi;
+        let count = u64::from(w) * u64::from(h);
+        let frame = count;
+        let [tw, th] = texture.size;
+        let texbytes = u64::from(tw) * u64::from(th) * 8;
+        let bytes = frame * 16 + count * 4 + texbytes;
+        if self.is_device_lost()
+            || slot >= self.stack_layers.len()
+            || count == 0
+            || tw == 0
+            || th == 0
+            || x0.checked_add(w).is_none_or(|x| x > fw)
+            || y0.checked_add(h).is_none_or(|y| y > fh)
+            || bytes > u64::from(self.device.limits().max_storage_buffer_binding_size)
+            || texture.texels.len() as u64 * 4 != texbytes
+            || texture.mode > 3
+            || texture
+                .bounds
+                .iter()
+                .chain(texture.offset.iter())
+                .any(|v| !v.is_finite())
+            || !texture.scale.is_finite()
+            || !texture.radians.is_finite()
+            || !texture.opacity.is_finite()
+            || count.div_ceil(u64::from(WORKGROUP_SIZE))
+                > u64::from(self.device.limits().max_compute_workgroups_per_dimension)
+        {
+            return false;
+        }
+        let Some(to_authored) = inverse(self.authored_to_working) else {
+            return false;
+        };
+        if self
+            .title_style_scratch
+            .as_ref()
+            .is_none_or(|s| s.count < count)
+        {
+            return false;
+        }
+        let pos = self.resident_sprite(texture.id, texture.texels);
+        if self
+            .title_post_scratch
+            .as_ref()
+            .is_none_or(|b| b.size() < bytes)
+        {
+            self.title_post_scratch = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("title texture scratch"),
+                size: bytes,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let scratch = self.title_post_scratch.as_ref().unwrap();
+        let layer = &self.stack_layers[slot];
+        self.write_params(&StyleParams {
+            width: w,
+            height: h,
+            frame_width: fw,
+            op: 24,
+            x0,
+            y0,
+            offset_x: 0,
+            offset_y: 0,
+            color: [0.0; 4],
+            matrix: [[0.0; 4]; 3],
+        });
+        self.stack_pass(
+            &self.title_style_pipeline,
+            layer,
+            scratch,
+            (count as u32).div_ceil(WORKGROUP_SIZE),
+            "title texture source ROI",
+        );
+        let mut enc = self.encoder(Some("title texture inputs"));
+        enc.copy_buffer_to_buffer(
+            &self.title_style_scratch.as_ref().unwrap().mask,
+            0,
+            scratch,
+            frame * 16,
+            count * 4,
+        );
+        enc.copy_buffer_to_buffer(
+            &self.stack_sprites[pos].buffer,
+            0,
+            scratch,
+            frame * 16 + count * 4,
+            texbytes,
+        );
+        self.submit(enc);
+        let (sin, cos) = texture.radians.sin_cos();
+        self.write_params(&TextureParams {
+            base: StyleParams {
+                width: w,
+                height: h,
+                frame_width: fw,
+                op: 23,
+                x0,
+                y0,
+                offset_x: tw as i32,
+                offset_y: th as i32,
+                color: texture.bounds,
+                matrix: self.authored_to_working,
+            },
+            to_authored,
+            uv: [
+                if texture.scale.abs() < 1e-6 {
+                    1.0
+                } else {
+                    1.0 / texture.scale
+                },
+                cos,
+                sin,
+                texture.opacity.clamp(0.0, 1.0),
+            ],
+            extra: [
+                texture.offset[0] / tw as f32,
+                texture.offset[1] / th as f32,
+                texture.mode as f32,
+                fh as f32,
+            ],
+            tint: texture.tint.map(|v| v as f32 / 255.0),
+        });
+        self.stack_pass(
+            &self.title_style_pipeline,
+            scratch,
+            layer,
+            (count as u32).div_ceil(WORKGROUP_SIZE),
+            "title texture fill",
         );
         true
     }

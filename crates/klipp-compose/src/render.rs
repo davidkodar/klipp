@@ -2814,6 +2814,11 @@ impl Renderer {
                             && source.outlines.iter().all(|g|p.stack_title_outline(slot,g.id,&g.edges,g.origin,g.size,g.placement,source.color))
                             && source.stripes.iter().all(|&rect|p.stack_title_stripe(slot,rect,source.color))
                             && (source.roi[2]==0 || source.roi[3]==0 || p.stack_title_styles_with_face(slot,source.roi,&passes,klipp_effects::gpu::TitleFace {alpha:source.color[3] as f32/255.0,outline_cutoff:source.outline_cutoff,write_cutoff:source.write_cutoff,backing:source.backing,fill:title_fill(&source,klipp_title::frame_scale(width,height)),bounds:source.bounds}))
+                            && source.texture.as_ref().is_none_or(|t|source.roi[2]==0 || source.roi[3]==0 || p.stack_title_texture(slot,source.roi,klipp_effects::gpu::TitleTexture {
+                                id:t.id,texels:&t.pixels.texels,size:[t.pixels.w,t.pixels.h],bounds:source.bounds,
+                                scale:t.fill.scale,offset:[t.fill.offset_x,t.fill.offset_y],radians:t.fill.rotation.to_radians(),opacity:t.fill.opacity,tint:t.fill.tint,
+                                mode:match t.fill.tile_mode {klipp_timeline::TextureTileMode::Stretch=>0,klipp_timeline::TextureTileMode::Tile=>1,klipp_timeline::TextureTileMode::Fit=>2,klipp_timeline::TextureTileMode::Cover=>3},
+                            }))
                     })
                 } else if let Some(source) = self.titles.style_source(td, width, height, clip_time as f32, Some(total)) {
                     match source.face_work {
