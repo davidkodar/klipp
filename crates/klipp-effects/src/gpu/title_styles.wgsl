@@ -176,12 +176,22 @@ fn glyph_at(pos:vec2<f32>)->f32 {
     if any(pos<vec2<f32>(0.0)) || any(pos>=p.row0.xy) {return 0.0;}
     return bitcast<f32>(input[u32(pos.y)*u32(p.row0.x)+u32(pos.x)]);
 }
+fn glyph_store(dst:u32,alpha:f32,px:i32,py:i32) {
+    if p.x0==1u {
+        let pos=vec2<f32>(f32(px),f32(py));
+        if any(pos<p.row2.xy) || any(pos>=p.row2.xy+p.row2.zw) {return;}
+        let a=floor(round(alpha*255.0)*round(p.color.a*255.0)/255.0)/255.0;
+        store_rgba(dst,over(vec4<f32>(p.color.rgb,a),load_dst(dst)));
+    } else {store_rgba(dst,vec4<f32>(p.color.rgb,max(alpha,load_dst(dst).a)));}
+}
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i=gid.x;
     if i>=p.width*p.height { return; }
     let x=i%p.width; let y=i/p.width;
-    if p.op==26u {
+    if p.op==30u {
+        store_rgba(i,over(load_rgba((y+p.y0)*p.frame_width+x+p.x0),load_dst(i)));
+    } else if p.op==26u {
         let sx=i32(x)-i32(p.x0);let sy=i32(y)-i32(p.x0);
         var value=0.0;if sx>=0 && sy>=0 && sx<i32(p.row0.x) && sy<i32(p.row0.y) {value=bitcast<f32>(input[u32(sy)*u32(p.row0.x)+u32(sx)]);}
         output[i]=bitcast<u32>(value);
@@ -222,7 +232,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         } else {value=bitcast<f32>(input[i]);}
         let alpha=floor(clamp(value*p.row1.z,0.0,255.0)+0.5)/255.0;
         let dst=u32(py)*p.frame_width+u32(px);
-        store_rgba(dst,vec4<f32>(p.color.rgb,max(alpha,load_dst(dst).a)));
+        glyph_store(dst,alpha,px,py);
     } else if p.op==24u {
         store_rgba(i,load_rgba((y+p.y0)*p.frame_width+x+p.x0));
     } else if p.op==23u {
@@ -303,7 +313,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let rgb=matrix(vec3<f32>(linear(p.color.x),linear(p.color.y),linear(p.color.z)));
         store_rgba(i,select(vec4<f32>(0.0),vec4<f32>(rgb,p.color.a),inside));
     } else if p.op==15u {
-        store_rgba((y+p.y0)*p.frame_width+x+p.x0,p.color);
+        let dst=(y+p.y0)*p.frame_width+x+p.x0;
+        if p.offset_x==1 {store_rgba(dst,over(p.color,load_dst(dst)));}else{store_rgba(dst,p.color);}
     } else if p.op==14u || p.op==25u {
         let px=i32(x)+p.offset_x; let py=i32(y)+p.offset_y;
         if p.op==14u {
@@ -341,7 +352,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if p.op==25u {output[i]=bitcast<u32>(round(alpha*255.0));return;}
         alpha=floor(round(alpha*255.0)*p.row1.z+0.5)/255.0;
         let dst=u32(py)*p.frame_width+u32(px);
-        store_rgba(dst,vec4<f32>(p.color.rgb,max(alpha,load_dst(dst).a)));
+        glyph_store(dst,alpha,px,py);
     } else if p.op==13u {
         let matte=load_rgba(i); let object=load_dst(i);
         var value=matte.a;

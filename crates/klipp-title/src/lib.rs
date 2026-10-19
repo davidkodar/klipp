@@ -1451,9 +1451,11 @@ impl TitleRenderer {
             };
         }
         if self.gpu_layout_only {
+            let rest_glyphs=glyphs;
+            let resolved_colors=resolve_glyph_colors(title,glyphs,&tb.style_runs);
             let mut posed=glyphs.to_vec();
             let mut draw_poses=Vec::new();
-            let mut supported=true;
+            let coloured=title.primary_fx().animators.iter().any(|a|a.enabled && a.props.colour.is_some());
             let fx=title.primary_fx();
             let enter_units=motion_units(glyphs,fx.motion.enter.map(|m|m.stagger).unwrap_or_default());
             let exit_units=motion_units(glyphs,fx.motion.exit.map(|m|m.stagger).unwrap_or_default());
@@ -1463,7 +1465,7 @@ impl TitleRenderer {
                 // Spaces still count for selector indices but have no coverage
                 // to expand, blur or rotate.
                 if rest_g.width==0 || rest_g.height==0 {continue;}
-                let mut dx=0.0;let mut dy=0.0;let mut alpha=1.0;let mut clip=[i32::MIN,i32::MAX];let mut sigma=0.0;let mut radians=0.0;
+                let mut dx=0.0;let mut dy=0.0;let mut alpha=1.0;let mut clip=[i32::MIN,i32::MAX];let mut sigma=0.0;let mut radians=0.0;let mut colour=None;
                 if let Some((time,window))=self.gpu_motion {
                     let (pe,_)=fx.motion.progress(time,window,enter_units[i]);
                     let (_,px)=fx.motion.progress(time,window,exit_units[i]);
@@ -1471,7 +1473,7 @@ impl TitleRenderer {
                     let (a1,x1,y1,s1,b1,c1)=fx.motion.enter.map(|m|m.pose(pe,font_px)).unwrap_or(rest);
                     let (a2,x2,y2,s2,b2,c2)=fx.motion.exit.map(|m|m.pose(px,font_px)).unwrap_or(rest);
                     let pose=animated.get(i).copied().unwrap_or_default();
-                    supported &= pose.colour.is_none();
+                    if coloured {colour=Some(pose.colour_of(resolved_colors.get(i).copied().unwrap_or(tb.color)));}
                     sigma=b1.max(b2).max(pose.blur);radians=pose.rotation.to_radians();
                     alpha=a1*a2*pose.alpha;
                     if alpha<=0.001 {alpha=0.0;}
@@ -1496,16 +1498,53 @@ impl TitleRenderer {
                 let origin=[(rest_g.x+offset_x+dx) as i32-(g.width as i32-rest_g.width as i32)/2,
                     (rest_g.y+offset_y+dy) as i32-(g.height as i32-rest_g.height as i32)/2];
                 g.x=origin[0] as f32-offset_x;g.y=origin[1] as f32-offset_y;
-                if g.width>0 && g.height>0 {draw_poses.push((origin,alpha,clip,source_size,sigma,radians));}
+                if g.width>0 && g.height>0 {draw_poses.push((origin,alpha,clip,source_size,sigma,radians,colour));}
             }
             let glyphs=posed.as_slice();
-            *self.gpu_layout_capture.borrow_mut() = if supported {self.gpu_glyph_cache.borrow_mut().layout(
+            *self.gpu_layout_capture.borrow_mut() = self.gpu_glyph_cache.borrow_mut().layout(
                 &fonts, glyphs, [offset_x, offset_y],
                 [mask_x0 as u32, mask_y0 as u32, mask_w as u32, mask_h as u32], tb.color, title.primary_fx(), self.gpu_outline_only,
-            )} else {None};
+            );
             if let Some(source) = self.gpu_layout_capture.borrow_mut().as_mut() {
-                for (draw,(origin,alpha,clip,size,blur,radians)) in source.outlines.iter_mut().zip(&draw_poses) {draw.origin=*origin;draw.alpha=*alpha;draw.clip_y=*clip;draw.source_size=*size;draw.blur=*blur;draw.radians=*radians;}
-                for (draw,(origin,_,_,_,_,_)) in source.glyphs.iter_mut().zip(&draw_poses) {draw.origin=*origin;}
+                for (draw,(origin,alpha,clip,size,blur,radians,colour)) in source.outlines.iter_mut().zip(&draw_poses) {draw.origin=*origin;draw.alpha=*alpha;draw.clip_y=*clip;draw.source_size=*size;draw.blur=*blur;draw.radians=*radians;draw.color=*colour;}
+                for (draw,(origin,_,_,_,_,_,_)) in source.glyphs.iter_mut().zip(&draw_poses) {draw.origin=*origin;}
+                if coloured {
+                    source.face_draws=source.outlines.clone();
+                } else if !tb.style_runs.is_empty() {
+                    if let Some(rest)=self.gpu_glyph_cache.borrow_mut().layout(&fonts,rest_glyphs,[offset_x,offset_y],source.roi,tb.color,title.primary_fx(),true) {
+                        source.prepared+=rest.prepared;
+                        source.face_draws=rest.outlines;
+                        let colors=rest_glyphs.iter().enumerate().filter(|(_,g)|g.width>0 && g.height>0).map(|(i,_)|resolved_colors.get(i).copied().unwrap_or(tb.color));
+                        for (draw,color) in source.face_draws.iter_mut().zip(colors) {draw.color=Some(color);}
+                    } else {
+                        source.face_draws.clear();
+                        // A bitmap colour glyph still needs the colour-source path.
+                        source.face_incomplete=true;
+                    }
+                }
+                if run_underlines {
+                    for (from,to) in underline_stretches(&rest_glyphs[..text_glyphs],&tb.style_runs,&line_starts,tb.underline) {
+                        let line=line_of(&line_starts,from);
+                        let lo=line_starts.get(line).copied().unwrap_or(0);let hi=line_starts.get(line+1).copied().unwrap_or(text_glyphs);
+                        let inked=|range:&[fontdue::layout::GlyphPosition]|range.iter().filter(|g|g.width>0).copied().collect::<Vec<_>>();
+                        let line_glyphs=inked(&rest_glyphs[lo..hi]);let stretch=inked(&rest_glyphs[from..to]);
+                        let top=line_glyphs.iter().map(|g|g.y).fold(f32::MAX,f32::min);
+                        let bottom=line_glyphs.iter().map(|g|g.y+g.height as f32).fold(f32::MIN,f32::max);
+                        let left=stretch.iter().map(|g|g.x).fold(f32::MAX,f32::min);
+                        let right=stretch.iter().map(|g|g.x+g.width as f32).fold(f32::MIN,f32::max);
+                        let run=tb.style_runs.iter().find(|r|r.start<=rest_glyphs[from].byte_offset&&rest_glyphs[from].byte_offset<r.end);
+                        let thick=(run.map_or(font_px,run_px)*0.06).max(1.0).round() as i32;
+                        let x0=((left+offset_x).floor() as i32).max(mask_x0 as i32);
+                        let x1=((right+offset_x).ceil() as i32).min((mask_x0+mask_w) as i32);
+                        let y0=((top+offset_y+(bottom-top)*1.05).round() as i32-thick/2).max(mask_y0 as i32);
+                        let y1=(y0+thick).min(height as i32);
+                        if x1>x0 && y1>y0 {
+                            let rect=[x0 as u32,y0 as u32,(x1-x0) as u32,(y1-y0) as u32];
+                            source.stripes.push(rect);
+                            source.face_stripes.push((rect,resolved_colors.get(from).copied().unwrap_or(tb.color)));
+                        }
+                    }
+                }
                 source.bounds=[text_min_x+offset_x,text_min_y+offset_y,text_max_x+offset_x,text_max_y+offset_y];
                 source.gradient=tb.gradient.clone().filter(|g|g.enabled);
                 source.pattern=tb.pattern_fill.clone().filter(|_|tb.pattern_fill_enabled);
@@ -1522,7 +1561,7 @@ impl TitleRenderer {
                     let thickness=(font_px*0.06).max(1.0).round() as i32;
                     let x0=((text_min_x+offset_x).floor() as i32).max(mask_x0 as i32);
                     let x1=((text_max_x+offset_x).ceil() as i32).min((mask_x0+mask_w) as i32);
-                    for (on,at) in [(tb.strikethrough,0.40),(tb.underline,1.05)] {
+                    for (on,at) in [(tb.strikethrough,0.40),(tb.underline && !run_underlines,1.05)] {
                         if on && x1>x0 {
                             let y0=((text_min_y+offset_y+text_h*at).round() as i32-thickness/2).max(mask_y0 as i32);
                             let y1=(y0+thickness).min((mask_y0+mask_h) as i32);

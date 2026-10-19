@@ -7,6 +7,7 @@ pub struct GlyphDraw {
     pub pixels: Arc<BoxRaster>,
     pub origin: [i32; 2],
 }
+#[derive(Clone)]
 pub struct OutlineDraw {
     pub id: u64,
     pub edges: Arc<Vec<[f32; 4]>>,
@@ -19,6 +20,7 @@ pub struct OutlineDraw {
     pub source_size: [u32; 2],
     pub blur: f32,
     pub radians: f32,
+    pub color: Option<[u8; 4]>,
 }
 pub struct TextureDraw {
     pub id: u64,
@@ -28,6 +30,9 @@ pub struct TextureDraw {
 pub struct GlyphSource {
     pub glyphs: Vec<GlyphDraw>,
     pub outlines: Vec<OutlineDraw>,
+    pub face_draws: Vec<OutlineDraw>,
+    pub face_stripes: Vec<([u32; 4], [u8; 4])>,
+    pub(super) face_incomplete: bool,
     pub roi: [u32; 4],
     pub color: [u8; 4],
     pub fx: LayerFx,
@@ -169,6 +174,9 @@ impl GlyphCache {
         Some(GlyphSource {
             glyphs: draws,
             outlines: Vec::new(),
+            face_draws: Vec::new(),
+            face_stripes: Vec::new(),
+            face_incomplete: false,
             roi,
             color,
             fx: fx.clone(),
@@ -241,6 +249,7 @@ impl GlyphCache {
                 source_size: [g.width as u32, g.height as u32],
                 blur: 0.0,
                 radians: 0.0,
+                color: None,
                 alpha: 1.0,
                 clip_y: [i32::MIN, i32::MAX],
                 placement: [
@@ -270,6 +279,9 @@ impl GlyphCache {
         Some(GlyphSource {
             glyphs: Vec::new(),
             outlines,
+            face_draws: Vec::new(),
+            face_stripes: Vec::new(),
+            face_incomplete: false,
             roi,
             color,
             fx: fx.clone(),
@@ -314,7 +326,6 @@ impl TitleRenderer {
             || !o.transform.rotation_keyframes.is_empty()
             || tb.three_d.as_ref().is_some_and(|d| d.enabled)
             || tb.text_path.is_some()
-            || !tb.style_runs.is_empty()
             || tb.extrusion.is_some()
             || tb.glitch_intensity > 0.0
             || tb.chromatic_aberration_px > 0.0
@@ -396,6 +407,9 @@ impl TitleRenderer {
                 GlyphSource {
                     glyphs: Vec::new(),
                     outlines: Vec::new(),
+                    face_draws: Vec::new(),
+                    face_stripes: Vec::new(),
+                    face_incomplete: false,
                     roi: [0; 4],
                     color: evaluated.color(),
                     fx: fx.clone(),
@@ -412,6 +426,9 @@ impl TitleRenderer {
                 }
             })
         })?;
+        if source.face_incomplete {
+            return None;
+        }
         if let Some(fill) = tb.texture_fill.as_ref().filter(|f| f.enabled) {
             let hit = self
                 .gpu_textures

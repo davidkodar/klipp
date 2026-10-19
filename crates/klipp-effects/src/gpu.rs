@@ -5462,7 +5462,7 @@ impl GpuEffectsPipeline {
     /// The caller reuses the returned index for every object in this title.
     pub fn stack_title_object_slot(&mut self, offset: usize) -> Option<usize> {
         if self.stack_buf_size == 0 || self.is_device_lost() { return None; }
-        if offset > 1 { return None; }
+        if offset > 2 { return None; }
         let index = self.stack_title_slot + offset;
         while self.stack_layers.len() <= index {
             self.stack_layers.push(std::sync::Arc::new(self.device.create_buffer(&wgpu::BufferDescriptor {
