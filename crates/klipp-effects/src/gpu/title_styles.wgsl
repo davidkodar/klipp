@@ -28,6 +28,14 @@ fn linear(x: f32) -> f32 {
     if x <= 0.04045 { return x/12.92; }
     return pow((x+0.055)/1.055,2.4);
 }
+fn rounded_rect(point:vec2<f32>,lo:vec2<f32>,hi:vec2<f32>,r:f32)->bool {
+    if any(point<lo) || any(point>hi) {return false;}
+    if r<=0.0 {return true;}
+    let near_lo=point<lo+vec2<f32>(r);let near_hi=point>hi-vec2<f32>(r);
+    if !(near_lo.x||near_hi.x) || !(near_lo.y||near_hi.y) {return true;}
+    let centre=select(hi-vec2<f32>(r),lo+vec2<f32>(r),near_lo);
+    return dot(point-centre,point-centre)<=r*r;
+}
 fn matrix(v: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(dot(p.row0.xyz,v),dot(p.row1.xyz,v),dot(p.row2.xyz,v));
 }
@@ -189,7 +197,27 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i=gid.x;
     if i>=p.width*p.height { return; }
     let x=i%p.width; let y=i/p.width;
-    if p.op==31u {
+    if p.op==35u {
+        if p.offset_x!=0 {store_rgba(i,authored_at(i32(x),y));}
+        else {
+            let old=load_rgba(i);let rgb=matrix(old.rgb);
+            let v=vec4<f32>(encoded(rgb.x),encoded(rgb.y),encoded(rgb.z),old.a);
+            store_rgba(i,vec4<f32>(unpack2x16float(pack2x16float(v.xy)),unpack2x16float(pack2x16float(v.zw))));
+        }
+    } else if p.op==36u {
+        let src=load_rgba(i);let dst=load_dst(i);let sc=matrix(src.rgb);let dc=matrix(dst.rgb);
+        let s=vec3<f32>(encoded(sc.x),encoded(sc.y),encoded(sc.z));let d=vec3<f32>(encoded(dc.x),encoded(dc.y),encoded(dc.z));
+        store_rgba(i,vec4<f32>(s+d*(1.0-src.a),src.a+dst.a*(1.0-src.a)));
+    } else if p.op==34u {
+        let d=vec2<f32>(f32(x)+0.5,f32(y)+0.5)-p.row1.xy;
+        let q=p.row1.xy+vec2<f32>(p.row1.z*d.x+p.row1.w*d.y,-p.row1.w*d.x+p.row1.z*d.y);
+        let lo=p.row0.xy-p.row0.zw;let hi=p.row0.xy+p.row0.zw;var colour=vec4<f32>(0.0);
+        if rounded_rect(q,lo,hi,p.row2.x) {
+            colour=p.color;
+            if p.row2.y>0.0 && !rounded_rect(q,lo+vec2<f32>(p.row2.y),hi-vec2<f32>(p.row2.y),max(p.row2.x-p.row2.y,0.0)) {colour=bitcast<vec4<f32>>(p.stops[0]);}
+        }
+        store_rgba(i,colour);
+    } else if p.op==31u {
         let v=authored_at(i32(x),y)*255.0;
         store_rgba(i,vec4<f32>(v.rgb*(v.a/255.0),v.a));
     } else if p.op==32u {

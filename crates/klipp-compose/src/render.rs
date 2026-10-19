@@ -2665,10 +2665,31 @@ impl Renderer {
     }
 
     fn place_title_source(&mut self, td: &klipp_timeline::TitleData, slot: usize, width: u32, height: u32, clip_time: f64, total: f32) -> Option<((u32,u32),Vec<BuiltinEffect>)> {
-        self.place_title_source_in_scene(td, slot, width, height, clip_time, total, td)
+        self.place_title_source_in_scene(td, slot, width, height, clip_time, total, td, false)
     }
 
-    fn place_title_source_in_scene(&mut self, td: &klipp_timeline::TitleData, slot: usize, width: u32, height: u32, clip_time: f64, total: f32, scene: &klipp_timeline::TitleData) -> Option<((u32,u32),Vec<BuiltinEffect>)> {
+    fn place_title_source_in_scene(&mut self, td: &klipp_timeline::TitleData, slot: usize, width: u32, height: u32, clip_time: f64, total: f32, scene: &klipp_timeline::TitleData, shape_straight: bool) -> Option<((u32,u32),Vec<BuiltinEffect>)> {
+        if let [object] = td.objects.as_slice() {
+            if let klipp_timeline::TitleObjectContent::Shape(shape) = &object.content {
+                if let Some(fit)=shape.fit {
+                    let Some(transform)=self.titles.resolved_shape_fit(scene,fit,width,height,Some(clip_time as f32)) else {
+                        return self.executor.gpu_pipeline_or_init()?.stack_layer_clear(slot).then_some(((0,0),Vec::new()));
+                    };
+                    let klipp_timeline::ShapeKind::Rectangle{corner_radius}=shape.kind else {return None;};
+                    if !object.fx().is_default() || shape.gradient.as_ref().is_some_and(|g|g.enabled) {return None;}
+                    let scale=klipp_title::frame_scale(width,height);
+                    let gpu=self.executor.gpu_pipeline_or_init()?;
+                    let (cx,cy)=(transform.center.x*width as f32,transform.center.y*height as f32);
+                    let (hw,hh)=((transform.size.x*width as f32*0.5).max(0.0),(transform.size.y*height as f32*0.5).max(0.0));
+                    if !gpu.stack_title_rectangle(slot,[cx,cy,hw,hh],[cx+(transform.anchor_norm.x-0.5)*hw*2.0,cy+(transform.anchor_norm.y-0.5)*hh*2.0],transform.rotation.to_radians(),corner_radius.max(0.0)*scale,
+                        shape.fill.unwrap_or([0;4]),shape.stroke.map(|s|(s.color,s.width.max(0.0)*scale)),shape_straight) {return None;}
+                    // Scene objects arrive with opacity stripped; matte sources retain it.
+                    let opacity=object.evaluated_opacity(clip_time).clamp(0.0,1.0);
+                    if (opacity-1.0).abs()>=0.001 && (!gpu.stack_title_precision(slot,true) || !gpu.stack_title_alpha(slot,[0.0;4],opacity)) {return None;}
+                    return Some(((0,height),Vec::new()));
+                }
+            }
+        }
         // Whole-object loops are folded into the authored object before layout,
         // just as in the CPU scene. Keep content/wave loops for the glyph source.
         if let [object] = td.objects.as_slice() {
@@ -2691,7 +2712,7 @@ impl Renderer {
                         target.opacity=1.0;target.opacity_keyframes.clear();
                         target.transform.center.x+=pose.dx/width as f32;
                         target.transform.center.y+=pose.dy/height as f32;
-                        let (_,soft)=self.place_title_source_in_scene(&source,slot,width,height,clip_time,total,scene)?;
+                        let (_,soft)=self.place_title_source_in_scene(&source,slot,width,height,clip_time,total,scene,shape_straight)?;
                         let gpu=self.executor.gpu_pipeline_or_init()?;
                         let vertical=axis==klipp_core::title_motion::RampAxis::Vertical;
                         if !gpu.stack_title_source_effects(slot,&soft)
@@ -2710,7 +2731,7 @@ impl Renderer {
                         if target.opacity<=0.001 {
                             return self.executor.gpu_pipeline_or_init()?.stack_layer_clear(slot).then_some(((0,0),Vec::new()));
                         }
-                        return self.place_title_source_in_scene(&source,slot,width,height,clip_time,total,scene);
+                        return self.place_title_source_in_scene(&source,slot,width,height,clip_time,total,scene,shape_straight);
                     }
                 }
             }
@@ -2720,7 +2741,7 @@ impl Renderer {
                 let mut source=td.clone();
                 source.objects[0].opacity=1.0;
                 source.objects[0].opacity_keyframes.clear();
-                let (rows,soft)=self.place_title_source_in_scene(&source,slot,width,height,clip_time,total,scene)?;
+                let (rows,soft)=self.place_title_source_in_scene(&source,slot,width,height,clip_time,total,scene,shape_straight)?;
                 if !self.executor.gpu_pipeline_or_init()?.stack_title_source_effects(slot,&soft) { return None; }
                 return self.executor.gpu_pipeline_or_init()?.stack_title_alpha(slot,[0.0;4],object.evaluated_opacity(clip_time)).then_some((rows,Vec::new()));
             }
@@ -2728,7 +2749,7 @@ impl Renderer {
             if !matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..}) && !edges.is_none() && title_source_loops(&object.fx().loops) {
                 let mut source=td.clone();
                 source.objects[0].fx_mut().edge_fade=Default::default();
-                let (rows,soft)=self.place_title_source_in_scene(&source,slot,width,height,clip_time,total,scene)?;
+                let (rows,soft)=self.place_title_source_in_scene(&source,slot,width,height,clip_time,total,scene,shape_straight)?;
                 if !soft.is_empty() { return None; }
                 return self.executor.gpu_pipeline_or_init()?.stack_title_alpha(slot,[edges.top,edges.bottom,edges.left,edges.right],1.0).then_some((rows,soft));
             }
@@ -2743,7 +2764,7 @@ impl Renderer {
                     let mut source=td.clone();
                     source.objects[0].transform.rotation=0.0;
                     source.objects[0].transform.rotation_keyframes.clear();
-                    let (rows,soft)=self.place_title_source_in_scene(&source,slot,width,height,clip_time,total,scene)?;
+                    let (rows,soft)=self.place_title_source_in_scene(&source,slot,width,height,clip_time,total,scene,shape_straight)?;
                     if !soft.is_empty() {return None;}
                     if transform.rotation.abs()<=0.001 {return Some((rows,soft));}
                     let pivot=[(transform.center.x+(transform.anchor_norm.x-0.5)*transform.size.x)*width as f32,
@@ -2754,11 +2775,8 @@ impl Renderer {
         }
         // Render objects independently so each keeps its own source cache,
         // GPU styles and time evaluation before authored-space composition.
-        if (td.objects.len() > 1 || td.mixes_layers() || matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..}))
-            && td.objects.iter().all(|o| match &o.content {
-                klipp_timeline::TitleObjectContent::Shape(shape) => shape.fit.is_none(),
-                _ => true,
-            }) {
+        if td.objects.len() > 1 || td.mixes_layers() || matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..})
+ {
             let object_slot = self.executor.gpu_pipeline_or_init()?.stack_title_object_slot(0)?;
             let initialized=match td.background {
                 klipp_timeline::TitleBackground::FullFrame{color}=>self.executor.gpu_pipeline_or_init()?.stack_layer_segments(slot,color,[0;4],&[]),
@@ -2775,8 +2793,12 @@ impl Renderer {
                 single.objects[0].opacity_keyframes.clear();
                 single.objects[0].blend=klipp_core::BlendMode::Normal;
                 single.objects[0].mask=None;
-                let (_,soft) = self.place_title_source_in_scene(&single,object_slot,width,height,clip_time,total,scene)?;
+                let (_,soft) = self.place_title_source_in_scene(&single,object_slot,width,height,clip_time,total,scene,object.blend!=klipp_core::BlendMode::Normal || td.mask_of(object).is_some())?;
                 if !self.executor.gpu_pipeline_or_init()?.stack_title_source_effects(object_slot,&soft) { return None; }
+                // Shapes with opacity are byte layers in the CPU painter; at full
+                // opacity an undressed normal shape paints fractional colour directly.
+                let plain_shape=matches!(object.content,klipp_timeline::TitleObjectContent::Shape(_)) && object.fx().is_default();
+                if plain_shape && (opacity-1.0).abs()>=0.001 && !self.executor.gpu_pipeline_or_init()?.stack_title_precision(object_slot,true) {return None;}
                 // Apply opacity before the mask, exactly as the authored stack.
                 if !self.executor.gpu_pipeline_or_init()?.stack_title_alpha(object_slot,[0.0;4],opacity) { return None; }
                 if let Some((matte,kind)) = td.mask_of(object) {
@@ -2787,16 +2809,18 @@ impl Renderer {
                     mask_title.objects[0].visible=true;
                     mask_title.objects[0].mask=None;
                     mask_title.objects[0].blend=klipp_core::BlendMode::Normal;
-                    let (_,soft)=self.place_title_source_in_scene(&mask_title,matte_slot,width,height,clip_time,total,scene)?;
+                    let (_,soft)=self.place_title_source_in_scene(&mask_title,matte_slot,width,height,clip_time,total,scene,false)?;
                     if !self.executor.gpu_pipeline_or_init()?.stack_title_source_effects(matte_slot,&soft) { return None; }
                     use klipp_core::layer_mask::LayerMaskKind;
                     let luma=matches!(kind,LayerMaskKind::Luma|LayerMaskKind::InvertedLuma);
                     let invert=matches!(kind,LayerMaskKind::InvertedAlpha|LayerMaskKind::InvertedLuma);
                     if !self.executor.gpu_pipeline_or_init()?.stack_title_mask(matte_slot,object_slot,luma,invert) { return None; }
                 }
-                if !self.executor.gpu_pipeline_or_init()?.stack_title_over(object_slot,slot,1.0,object.blend) { return None; }
+                let painted=plain_shape && (opacity-1.0).abs()<0.001 && object.blend==klipp_core::BlendMode::Normal && td.mask_of(object).is_none();
+                let gpu=self.executor.gpu_pipeline_or_init()?;
+                if !(if painted {gpu.stack_title_painted_over(object_slot,slot)} else {gpu.stack_title_over(object_slot,slot,1.0,object.blend)}) {return None;}
             }
-            return Some(((0,height),Vec::new()));
+            return self.executor.gpu_pipeline_or_init()?.stack_title_precision(slot,false).then_some(((0,height),Vec::new()));
         }
         let rows;
         let mut lead = Vec::new();
