@@ -385,7 +385,7 @@ pub enum TitleFrame {
     Glyphs { sprite: RestingSprite, poses: Vec<GlyphPose>, rows: (u32, u32) },
     /// Rendered for this time alone.
     Rendered { pixels: BoxRaster, rows: (u32, u32) },
-    /// Text layers whose only change is each one's whole-layer fade, a
+    /// Text layers whose only change is keyed opacity or a whole-layer fade, a
     /// lower third's lines fading in one after another: each layer's
     /// resting render with its alpha, laid in order, each over the ones
     /// before it (#2069). The frame's bytes are those [`compose_layers`]
@@ -521,8 +521,8 @@ pub struct TitleRenderer {
     text_layers_rendered: u64,
     /// Resting renders made rather than taken from `render_cache`.
     resting_renders: u64,
-    /// One unfinished face; bounded separately, invalidated with raster caches.
-    style_source_cache: Option<gpu_styles::SourceCache>,
+    /// Recently used unfinished faces; bounded separately and invalidated with raster caches.
+    style_source_cache: Vec<gpu_styles::SourceCache>,
     /// The rows with coverage in the last render, `y0..y1`.
     last_rows: (u32, u32),
     /// The blur the last `Placed` frame asked for, so a caller that
@@ -666,7 +666,7 @@ impl TitleRenderer {
             text_layer_cache: Vec::new(),
             text_layers_rendered: 0,
             resting_renders: 0,
-            style_source_cache: None,
+            style_source_cache: Vec::new(),
             last_rows: (0, 0),
             last_blur: 0.0,
             last_focus_blur: None,
@@ -2832,7 +2832,8 @@ impl TitleRenderer {
 
 
     /// [`TitleFrame::Layers`] for `title` at `time_secs`, when it is two or
-    /// more visible text layers, each changing only by a whole-layer fade
+    /// more visible text layers, or a single opacity-keyed text layer,
+    /// each changing only by keyed opacity or a whole-layer fade
     /// ([`whole_layer_fade`]), with no backing, no mixing, no edge fade
     /// and no text on a path: each layer's resting render, as the one-text
     /// title it renders as in [`Self::render_stack`], kept as any resting
@@ -2842,7 +2843,7 @@ impl TitleRenderer {
             return None;
         }
         let visible: Vec<&TitleObject> = title.objects.iter().filter(|o| o.visible).collect();
-        if visible.len() < 2 || !visible.iter().any(|o| o.fx().motion.is_active()) {
+        if visible.is_empty() || !visible.iter().any(|o| !o.opacity_keyframes.is_empty() || (visible.len() > 1 && o.fx().motion.is_active())) {
             return None;
         }
         let window = self.motion_window;
@@ -2852,7 +2853,7 @@ impl TitleRenderer {
             if tb.text_path.is_some() || ScreenFade::new(o.fx().edge_fade, None).is_some() {
                 return None;
             }
-            let alpha = whole_layer_fade(o, tb, time_secs, window)? * o.opacity.clamp(0.0, 1.0);
+            let alpha = whole_layer_fade(o, tb, time_secs, window)? * o.evaluated_opacity(time_secs as f64).clamp(0.0, 1.0);
             let mut single = TitleData::single_text_fx(tb.clone(), o.fx().clone());
             if let Some(first) = single.objects.first_mut() {
                 first.transform = o.transform.clone();
@@ -3712,7 +3713,7 @@ impl TitleRenderer {
         self.geometry3d_cache.clear();
         self.render_cache.clear();
         self.text_layer_cache.clear();
-        self.style_source_cache = None;
+        self.style_source_cache.clear();
     }
 
     /// Compute character positions for the given title text, using the same layout
@@ -4909,7 +4910,7 @@ fn scale_layer_alpha(layer: &mut [u8], factor: f32) {
 
 /// A text layer's alpha at `t` when its only change over time is a
 /// whole-layer fade (its entrance or exit, unstaggered), with nothing
-/// keyed and nothing that moves on its own: its frame is the layer at
+/// keyed except object opacity and nothing that moves on its own: its frame is the layer at
 /// rest with that alpha, its shadow, glow and outline fading with it
 /// (#2095, #2069). `None` when anything else changes.
 fn whole_layer_fade(obj: &TitleObject, tb: &klipp_timeline::TextBox, t: f32, window: Option<f32>) -> Option<f32> {
@@ -4922,7 +4923,6 @@ fn whole_layer_fade(obj: &TitleObject, tb: &klipp_timeline::TextBox, t: f32, win
         && obj.transform.rotation_keyframes.is_empty()
         && obj.transform.anchor_x_keyframes.is_empty()
         && obj.transform.anchor_y_keyframes.is_empty()
-        && obj.opacity_keyframes.is_empty()
         && !tb.has_keyframes();
     let bare = fx.glows.iter().all(|g| g.radius_keyframes.is_empty() && g.intensity_keyframes.is_empty())
         && fx.shadows.iter().all(|s| s.offset_x_keyframes.is_empty() && s.offset_y_keyframes.is_empty() && s.blur_keyframes.is_empty())
@@ -12409,6 +12409,46 @@ mod vector_cache_tests;
 #[cfg(test)]
 mod fading_layers_tests {
     use super::*;
+
+    #[test]
+    fn keyed_opacity_matches_raster_without_rebuilding_layers() {
+        use klipp_timeline::{LayerFx, Motion, MotionKind, TextBox, TitleMotion};
+        let mut title = TitleData::single_text_fx(
+            TextBox { text: "Opacity".into(), font_size: 120.0, ..Default::default() },
+            LayerFx { motion: TitleMotion::enter(Motion::new(MotionKind::Fade).duration(0.5)), ..Default::default() },
+        );
+        title.objects[0].opacity = 0.15; // keys replace, rather than multiply, this value
+        title.objects[0].upsert_opacity_keyframe(0.0, 0.0);
+        title.objects[0].upsert_opacity_keyframe(1.0, 1.0);
+        title.objects[0].upsert_opacity_keyframe(2.0, 0.0);
+        for count in [1, 2] {
+            if count == 2 {
+                let mut other = title.objects[0].clone();
+                other.id = klipp_timeline::TitleObjectId(1);
+                other.transform.center.x += 0.02;
+                other.upsert_opacity_keyframe(1.0, 0.4);
+                title.objects.push(other);
+            }
+            let mut cached = TitleRenderer::new();
+            for t in [0.0, 0.25, 1.0, 2.0, 0.5] {
+                let mut evaluated = title.clone();
+                for obj in &mut evaluated.objects {
+                    obj.opacity = obj.evaluated_opacity(t as f64);
+                    obj.opacity_keyframes.clear();
+                }
+                let expected = TitleRenderer::new().render_stack(&evaluated, 640, 360, None, Some(t));
+                let actual = cached.render_with_window_stack(&title, 640, 360, None, t, None);
+                let worst = expected.chunks_exact(4).zip(actual.chunks_exact(4)).map(|(a,b)| {
+                    (0..3).map(|i| (a[i]*a[3]-b[i]*b[3]).abs()/255.0)
+                        .fold((a[3]-b[3]).abs(), f32::max)
+                }).fold(0.0, f32::max);
+                assert!(worst <= 1.5, "{count} layers at {t}: {worst}");
+                assert_eq!(cached.resting_renders(), count);
+            }
+        }
+        title.objects[0].transform.center_x_keyframes = title.objects[0].opacity_keyframes.clone();
+        assert!(matches!(TitleRenderer::new().frame_with_window(&title, 640, 360, None, 0.5, None), TitleFrame::Rendered { .. }));
+    }
 
     #[test]
     fn fading_layers_preserve_the_original_raster_composition() {

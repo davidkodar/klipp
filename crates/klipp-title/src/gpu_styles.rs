@@ -1,6 +1,9 @@
 //! Unfinished title faces for a compositor that can keep styling on the GPU.
 use super::*;
 
+const STYLE_CACHE_BYTES: usize = 64 << 20;
+const STYLE_CACHE_ENTRIES: usize = 16;
+
 /// CPU face work performed by this call, separate from resident GPU styling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StyleFaceWork {
@@ -137,21 +140,19 @@ impl TitleRenderer {
         if flat && evaluated.primary_text().unwrap().color[3] != 255 {
             return None;
         }
-        if let Some(cached) = &self.style_source_cache {
-            if !fx.motion.is_active()
-                && cached.frame == (width, height)
-                && cached.title == evaluated
-            {
+        // Keep recently used faces together: alternating styled titles must
+        // not evict one another every frame. Promote hits to the LRU tail.
+        if !fx.motion.is_active() {
+            if let Some(index) = self.style_source_cache.iter().position(|cached| {
+                cached.frame == (width, height) && cached.title == evaluated
+            }) {
+                let cached = self.style_source_cache.remove(index);
                 self.last_focus_blur = None;
                 self.last_blur = 0.0;
-                self.last_rows = (
-                    cached.source.roi[1],
-                    cached.source.roi[1] + cached.source.roi[3],
-                );
-                return Some(StyleSource {
-                    face_work: StyleFaceWork::Reused,
-                    ..cached.source.clone()
-                });
+                self.last_rows = (cached.source.roi[1], cached.source.roi[1] + cached.source.roi[3]);
+                let source = StyleSource { face_work: StyleFaceWork::Reused, ..cached.source.clone() };
+                self.style_source_cache.push(cached);
+                return Some(source);
             }
         }
         let cache_key = evaluated.clone();
@@ -204,7 +205,7 @@ impl TitleRenderer {
         let source = StyleSource {
             face_work: if tb.has_keyframes()
                 || fx.motion.is_active()
-                || pixels.byte_size() > (64 << 20)
+                || pixels.byte_size() > STYLE_CACHE_BYTES
             {
                 StyleFaceWork::AnimatedRaster
             } else {
@@ -215,13 +216,19 @@ impl TitleRenderer {
             roi,
             fx: fx.clone(),
         };
-        self.style_source_cache = (!fx.motion.is_active()
-            && source.pixels.byte_size() <= (64 << 20))
-            .then(|| SourceCache {
+        if !fx.motion.is_active() && source.pixels.byte_size() <= STYLE_CACHE_BYTES {
+            let mut bytes: usize = self.style_source_cache.iter().map(|c| c.source.pixels.byte_size()).sum();
+            while self.style_source_cache.len() >= STYLE_CACHE_ENTRIES
+                || bytes + source.pixels.byte_size() > STYLE_CACHE_BYTES
+            {
+                bytes -= self.style_source_cache.remove(0).source.pixels.byte_size();
+            }
+            self.style_source_cache.push(SourceCache {
                 title: cache_key,
                 frame: (width, height),
                 source: source.clone(),
             });
+        }
         Some(source)
     }
 }

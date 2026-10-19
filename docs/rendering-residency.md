@@ -60,12 +60,18 @@ for full-project playback profiling.
   motion/style combinations can rerasterize on CPU (#2069). Eligible
   animated tracking reuses cached glyph coverage with GPU placement (#2062).
 - Eligible animated single-text and 3D title styles compose on GPU (#2063).
-  A bounded face cache avoids repeated raster/upload when only styles animate;
+  A 16-entry, 64 MiB LRU face cache avoids repeated raster preparation when
+  alternating titles animate only their styles;
   eligible rotating 3D uses cached GPU geometry (#2061). Unsupported combinations
   retain the CPU composition path (#2069), with GPU blur/dilate callbacks and
   downloads above 250,000 mask pixels. Static finished title sprites still cache.
   CPU and GPU title masks use the same box-blur and fractional outline-radius
   rules. Clip glow/blur kernels remain a separate path.
+- Text layers with keyed object opacity reuse resting sprites, including a
+  single text layer and overlapping layers with whole-layer fade entrances/exits.
+  The GPU composes their alpha in layer order. Keyed transforms, typography,
+  layer mixing, backings, text paths and unsupported animated styles retain their
+  existing raster route; this is not a general animated-layout cache (#2069).
 - Title glitch changes pixels on CPU each frame (#2069). Static title chromatic
   treatment can cache; the similarly named clip effect has a GPU kernel.
 - Unsupported composition or an unavailable/lost GPU can invoke CPU fallback.
