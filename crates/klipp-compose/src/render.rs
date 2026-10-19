@@ -6374,7 +6374,7 @@ fn title_post_source(td: &klipp_timeline::TitleData) -> Option<(klipp_timeline::
     if !obj.visible || obj.opacity != 1.0 || !obj.opacity_keyframes.is_empty()
         || obj.transform.rotation != 0.0 || !obj.transform.rotation_keyframes.is_empty()
         || td.mixes_layers() || matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..})
-        || !obj.fx().edge_fade.is_none()
+        || !obj.fx().edge_fade.is_none() || obj.fx().motion.is_active()
         || !title_source_loops(&obj.fx().loops) || obj.fx().motion_blur.is_some()
         || (tb.chromatic_aberration_px <= 0.0 && tb.glitch_intensity <= 0.0)
     { return None; }
