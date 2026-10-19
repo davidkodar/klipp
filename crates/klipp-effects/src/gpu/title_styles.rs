@@ -132,7 +132,10 @@ impl GpuEffectsPipeline {
             max_bin = max_bin.max(bin[1] as u64);
         }
         // Bounds even a pathological outline with many full-height edges.
-        if count.saturating_mul(max_bin) > 64 * 1024 * 1024 {
+        let bins_per_pixel = ((64.0 / (edges[0][1] * placement[0])).ceil() as u64)
+            .saturating_add(1)
+            .min(64);
+        if count.saturating_mul(max_bin).saturating_mul(bins_per_pixel) > 64 * 1024 * 1024 {
             return false;
         }
         let source = if let Some(i) = self.title_outlines.iter().position(|(key, _)| *key == id) {
