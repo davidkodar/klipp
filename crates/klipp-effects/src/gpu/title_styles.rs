@@ -52,6 +52,7 @@ pub struct TitleGlyphPose {
     pub blur: f32,
     pub radians: f32,
     pub face: Option<[u32; 4]>,
+    pub path: bool,
 }
 /// Cached texture and its authored UV transform, applied after title styles.
 pub struct TitleTexture<'a> {
@@ -187,7 +188,7 @@ impl GpuEffectsPipeline {
             source_size,
             blur,
             radians,
-            face,
+            face, path,
         } = pose;
         let [w, h] = size;
         let count = u64::from(w) * u64::from(h);
@@ -281,7 +282,7 @@ impl GpuEffectsPipeline {
         } else {
             [working[0], working[1], working[2], 1.0]
         };
-        if blur >= 0.5 || radians != 0.0 {
+        if blur >= 0.5 || radians != 0.0 || path {
             if !self.pose_outline_coverage(
                 slot,
                 &source.1,
@@ -294,7 +295,7 @@ impl GpuEffectsPipeline {
                 clip_y,
                 blur,
                 radians,
-                face,
+                face, path,
             ) {
                 return false;
             }
@@ -359,6 +360,7 @@ impl GpuEffectsPipeline {
         sigma: f32,
         radians: f32,
         face: Option<[u32; 4]>,
+        path: bool,
     ) -> bool {
         let pad = if sigma >= 0.5 {
             (sigma * 2.5).ceil().max(1.0) as u32
@@ -504,7 +506,7 @@ impl GpuEffectsPipeline {
                     clip[0] as f32,
                     clip[1] as f32,
                     alpha.clamp(0.0, 1.0),
-                    if radians != 0.0 { 1.0 } else { 0.0 },
+                    if path { 2.0 } else if radians != 0.0 { 1.0 } else { 0.0 },
                 ],
                 face.unwrap_or([0; 4]).map(|v| v as f32),
             ],

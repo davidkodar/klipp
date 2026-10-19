@@ -223,7 +223,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let px=i32(x)+p.offset_x;let py=i32(y)+p.offset_y;
         if px<0 || py<0 || px>=i32(p.frame_width) || py>=i32(p.y0) || f32(py)<p.row1.x || f32(py)>=p.row1.y {return;}
         var value=0.0;
-        if p.row1.w>0.5 {
+        if p.row1.w>1.5 {
+            let uv=vec2<f32>(f32(x)-f32(p.width-1u)*0.5,f32(y)-f32(p.height-1u)*0.5);
+            let src=vec2<f32>(uv.x*p.row0.z+uv.y*p.row0.w,-uv.x*p.row0.w+uv.y*p.row0.z)+p.row0.xy*0.5;
+            value=glyph_at(sign(src)*floor(abs(src)+vec2<f32>(0.5)));
+        } else if p.row1.w>0.5 {
             let uv=vec2<f32>(f32(x)+0.5-f32(p.width)*0.5,f32(y)+0.5-f32(p.height)*0.5);
             let src=vec2<f32>(uv.x*p.row0.z+uv.y*p.row0.w,uv.y*p.row0.z-uv.x*p.row0.w)+p.row0.xy*0.5-vec2<f32>(0.5);
             let lo=floor(src);let t=src-lo;
