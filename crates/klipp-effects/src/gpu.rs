@@ -358,6 +358,7 @@ pub struct GpuEffectsPipeline {
     alpha_dilate_pipeline: wgpu::ComputePipeline,
     title_style_pipeline: wgpu::ComputePipeline,
     title_style_scratch: Option<title_styles::StyleScratch>,
+    title_post_scratch: Option<wgpu::Buffer>,
     // Compute pipelines — transitions (3-buffer: from, to, output, params)
     transition_pipeline: wgpu::ComputePipeline,
     /// Posed piece transitions (#985): `SHADER_PIECES`.
@@ -438,6 +439,7 @@ pub struct GpuEffectsPipeline {
     /// accumulator (ping-pong), an RGBA8 upload buffer for sprites.
     /// Sized by `stack_begin`, never shrunk.
     stack_layers: Vec<std::sync::Arc<wgpu::Buffer>>,
+    stack_title_slot: usize,
     stack_acc: Option<std::sync::Arc<wgpu::Buffer>>,
     stack_sprite_u8: Option<wgpu::Buffer>,
     stack_sprite_f16: Option<wgpu::Buffer>,
@@ -1720,6 +1722,7 @@ impl GpuEffectsPipeline {
             alpha_dilate_pipeline,
             title_style_pipeline,
             title_style_scratch: None,
+            title_post_scratch: None,
             transition_pipeline,
             pieces_pipeline,
             shutter_pipeline,
@@ -1746,6 +1749,7 @@ impl GpuEffectsPipeline {
             hdr_nit_staging: None,
             display_u8_staging: None,
             stack_layers: Vec::new(),
+            stack_title_slot: 0,
             stack_acc: None,
             stack_sprite_u8: None,
             stack_sprite_f16: None,
@@ -5443,11 +5447,29 @@ impl GpuEffectsPipeline {
         self.ensure_buffers(byte_size);
         if self.stack_dims != (width, height) {
             self.title_style_scratch = None;
+            self.title_post_scratch = None;
             self.stack_sprites.clear();
         }
+        self.stack_title_slot = layers;
         self.stack_dims = (width, height);
         self.stack_acc_touched = false;
         true
+    }
+
+    /// Reserve a temporary title object slot after the frame's timeline slots.
+    /// The caller reuses the returned index for every object in this title.
+    pub fn stack_title_object_slot(&mut self, offset: usize) -> Option<usize> {
+        if self.stack_buf_size == 0 || self.is_device_lost() { return None; }
+        if offset > 1 { return None; }
+        let index = self.stack_title_slot + offset;
+        while self.stack_layers.len() <= index {
+            self.stack_layers.push(std::sync::Arc::new(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("title object"), size: self.stack_buf_size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            })));
+        }
+        Some(index)
     }
 
     fn stack_pixel_count(&self) -> u64 {
@@ -5635,6 +5657,29 @@ impl GpuEffectsPipeline {
         let src = if slot_a { self.buf_a.as_ref() } else { self.buf_b.as_ref() };
         let Some(src) = src else { return false };
         self.stack_copy(src, &self.stack_layers[i], "stack_layer_from_chain")
+    }
+
+    /// Source-local title effects, with no CPU break route. The caller orders
+    /// these before title post-processing and the clip grade.
+    pub fn stack_title_source_effects(&mut self, slot: usize, effects: &[BuiltinEffect]) -> bool {
+        if effects.is_empty() { return true; }
+        if self.is_device_lost() || slot >= self.stack_layers.len() { return false; }
+        let (w,h) = self.stack_dims;
+        self.ensure_recording_buffers(w,h);
+        let Some(a) = self.buf_a.as_ref() else { return false };
+        if !self.stack_copy(&self.stack_layers[slot],a,"title effect seed") { return false; }
+        self.begin_chain();
+        let mut in_a=true;
+        let mut ok=true;
+        for effect in effects {
+            match self.record_in_chain(std::slice::from_ref(effect),in_a,w,h) {
+                Recorded::Done => in_a = !in_a,
+                Recorded::Identity => {},
+                _ => { ok=false; break; }
+            }
+        }
+        self.submit_chain();
+        ok && self.stack_layer_from_chain(slot,in_a)
     }
 
     /// A linear frame sent up once and kept on the GPU (#2092): a still
@@ -5857,7 +5902,7 @@ impl GpuEffectsPipeline {
         y0: u32,
         y1: u32,
     ) -> bool {
-        self.place_sprite(i, id, texels, bx, dx, dy, opacity, scale, anchor, under, shape, y0, y1, false)
+        self.place_sprite(i, id, texels, bx, dx, dy, opacity, scale, anchor, under, shape, y0, y1, 0)
     }
 
     /// Layer `i` takes the resident sprite `id`, as it rests, with its
@@ -5866,15 +5911,20 @@ impl GpuEffectsPipeline {
     /// straight alpha, in sRGB-encoded units. A title's text layers each
     /// fading are placed so, one after another, the first with
     /// [`Self::stack_layer_place_sprite_posed`]. Only rows `y0..y1` are
-    /// touched. `false` (nothing done) outside a Rec.709 project, where
-    /// the layer is not the authored picture as it is.
+    /// touched. Existing pixels are converted back to authored light for
+    /// blending, then returned to the project working space on the GPU.
     #[allow(clippy::too_many_arguments)]
     pub fn stack_layer_place_sprite_over(&mut self, i: usize, id: u64, texels: &[u32], bx: SpriteBox, opacity: f32, y0: u32, y1: u32) -> bool {
-        let identity = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]];
-        if self.authored_to_working != identity {
-            return false;
-        }
-        self.place_sprite(i, id, texels, bx, 0, 0, opacity, 1.0, (0.0, 0.0), None, None, y0, y1, true)
+        self.place_sprite(i, id, texels, bx, 0, 0, opacity, 1.0, (0.0, 0.0), None, None, y0, y1, 1)
+    }
+
+    /// Assemble cached glyph coverage with the CPU mask's max operation.
+    /// Fill is a frame parameter; changing colour does not replace the source.
+    pub fn stack_title_glyph(&mut self, slot: usize, id: u64, texels: &[u32], size: [u32;2], origin: [i32;2], color: [u8;4]) -> bool {
+        let (_,h)=self.stack_dims;
+        let y0=origin[1].clamp(0,h as i32) as u32;
+        let y1=(i64::from(origin[1])+i64::from(size[1])).clamp(0,i64::from(h)) as u32;
+        self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],1.0,1.0,(0.0,0.0),Some(color),None,y0,y1,2)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5893,20 +5943,21 @@ impl GpuEffectsPipeline {
         shape: Option<SpriteShape>,
         y0: u32,
         y1: u32,
-        over: bool,
+        over: u32,
     ) -> bool {
         if self.is_device_lost() || i >= self.stack_layers.len() {
             return false;
         }
+        let Some(to_authored) = title_styles::inverse(self.authored_to_working) else { return false };
         let (width, height) = self.stack_dims;
         let pixel_count = self.stack_pixel_count();
-        if !bx.fits(texels, width, height) {
-            return false;
-        }
+        if (over != 2 && !bx.fits(texels,width,height))
+            || texels.len() as u64 != u64::from(bx.w)*u64::from(bx.h)*2
+        { return false; }
         let y0 = y0.min(height);
         let y1 = y1.min(height);
         let layer = std::sync::Arc::clone(&self.stack_layers[i]);
-        if !over {
+        if over == 0 {
             let mut enc = self.encoder(Some("stack_sprite_clear"));
             enc.clear_buffer(&layer, 0, Some(pixel_count * 16));
             self.submit(enc);
@@ -5950,10 +6001,11 @@ impl GpuEffectsPipeline {
             by0: bx.y0,
             bw: bx.w,
             bh: bx.h,
-            over: u32::from(over),
+            over,
             _pad1: 0,
             _pad2: 0,
             to_working: self.authored_to_working,
+            to_authored,
         });
         let rows_px = (y1 - y0) * width;
         let sprite = &self.stack_sprites[pos].buffer;
@@ -7699,6 +7751,7 @@ struct SpritePlaceParams {
     _pad2: u32,
     /// BT.709 → working space, rows padded to four (#1279).
     to_working: [[f32; 4]; 3],
+    to_authored: [[f32; 4]; 3],
 }
 
 /// How a placed sprite fades with where it is on the frame (#592), as
@@ -7746,7 +7799,7 @@ struct ResidentSprite {
 
 /// Sprites kept on the GPU at once: the box each covers, eight bytes a
 /// pixel.
-const STACK_SPRITE_CAP: usize = 4;
+const STACK_SPRITE_CAP: usize = 512;
 /// The most the resident sprites take together (#190): a guard, since a
 /// title's box is usually far smaller than its frame; the sprite being
 /// placed is always kept.
@@ -11070,6 +11123,7 @@ struct Params {
     fade_right: f32, bx0: u32, by0: u32, bw: u32,
     bh: u32, over: u32, _pad1: u32, _pad2: u32,
     m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>,
+    a0: vec4<f32>, a1: vec4<f32>, a2: vec4<f32>,
 }
 @group(0) @binding(0) var<storage, read> sprite: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<vec4<f32>>;
@@ -11172,20 +11226,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if params.scale != 1.0 && a8 < 0.5 {
         rgb = vec3<f32>(0.0);
     }
+    if params.over == 2u {
+        let old=unpack(output[idx]);
+        let alpha=max(old.a,a8/255.0);
+        output[idx]=pack(vec4<f32>(to_ws(vec3<f32>(params.under_r,params.under_g,params.under_b)),alpha));
+        return;
+    }
     if params.over == 1u {
         // Over what the layer holds, as the title renderer lays its
         // layers (`over_blend`): straight alpha, in sRGB-encoded units.
-        // Only in a Rec.709 project, where the layer is the authored
-        // picture as it is (`stack_layer_place_sprite_over`).
+        // Undo the working-space matrix before authored-space blending.
         let sa = a8 / 255.0;
         if sa <= 0.0 { return; }
         let d = unpack(output[idx]);
         let da = clamp(d.w, 0.0, 1.0);
         let out_a = sa + da * (1.0 - sa);
-        let dc = vec3<f32>(linear_to_srgb_c(max(d.x, 0.0)), linear_to_srgb_c(max(d.y, 0.0)), linear_to_srgb_c(max(d.z, 0.0))) * 255.0;
+        let authored = vec3<f32>(dot(params.a0.xyz, d.xyz), dot(params.a1.xyz, d.xyz), dot(params.a2.xyz, d.xyz));
+        let dc = vec3<f32>(linear_to_srgb_c(max(authored.x, 0.0)), linear_to_srgb_c(max(authored.y, 0.0)), linear_to_srgb_c(max(authored.z, 0.0))) * 255.0;
         let c = (rgb * sa + dc * da * (1.0 - sa)) / out_a;
         let lc = vec3<f32>(srgb_to_linear_c(c.x / 255.0), srgb_to_linear_c(c.y / 255.0), srgb_to_linear_c(c.z / 255.0));
-        output[idx] = pack(vec4<f32>(lc, out_a));
+        output[idx] = pack(vec4<f32>(to_ws(lc), out_a));
         return;
     }
     let lin = vec3<f32>(srgb_to_linear_c(rgb.x / 255.0), srgb_to_linear_c(rgb.y / 255.0), srgb_to_linear_c(rgb.z / 255.0));

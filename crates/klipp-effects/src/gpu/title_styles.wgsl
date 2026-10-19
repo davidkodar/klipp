@@ -35,12 +35,115 @@ fn over(s: vec4<f32>, d: vec4<f32>) -> vec4<f32> {
     if a<=0.0 { return vec4<f32>(0.0); }
     return vec4<f32>((s.rgb*s.a+d.rgb*d.a*(1.0-s.a))/a,a);
 }
+// Jump an LCG ahead in logarithmic work. This reproduces the CPU stripe
+// sequence without running all preceding rows for every output pixel.
+fn stripe_seed(steps: u32, initial: u32) -> u32 {
+    var n=steps; var a=1664525u; var c=1013904223u;
+    var mul=1u; var add=0u;
+    while n>0u {
+        if (n & 1u)!=0u { add=add*a+c; mul=mul*a; }
+        c=(a+1u)*c; a=a*a; n=n>>1u;
+    }
+    return mul*initial+add;
+}
+fn authored_at(x: i32, y: u32) -> vec4<f32> {
+    let v=load_rgba(y*p.width+u32(clamp(x,0,i32(p.width)-1)));
+    let rgb=matrix(v.rgb);
+    return floor(clamp(vec4<f32>(encoded(rgb.x),encoded(rgb.y),encoded(rgb.z),v.a),vec4<f32>(0.0),vec4<f32>(1.0))*255.0+0.5)/255.0;
+}
+fn overlay_ch(base: f32, blend: f32) -> f32 {
+    if base < 0.5 { return 2.0 * base * blend; }
+    return 1.0 - 2.0 * (1.0 - base) * (1.0 - blend);
+}
+fn soft_light_ch(base: f32, blend: f32) -> f32 {
+    if blend < 0.5 { return base - (1.0 - 2.0 * blend) * base * (1.0 - base); }
+    var d: f32;
+    if base < 0.25 { d = ((16.0 * base - 12.0) * base + 4.0) * base; } else { d = sqrt(base); }
+    return base + (2.0 * blend - 1.0) * (d - base);
+}
+fn dodge_ch(base: f32, blend: f32) -> f32 {
+    if blend >= 1.0 { return 1.0; }
+    return min(base / (1.0 - blend), 1.0);
+}
+fn burn_ch(base: f32, blend: f32) -> f32 {
+    if blend <= 0.0 { return 0.0; }
+    return max(1.0 - (1.0 - base) / blend, 0.0);
+}
+fn blend3(mode: u32, d: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    switch mode {
+        case 1u: { return d + s; }
+        case 2u: { return d * s; }
+        case 3u: { return vec3<f32>(1.0) - (vec3<f32>(1.0) - d) * (vec3<f32>(1.0) - s); }
+        case 4u: { return vec3<f32>(overlay_ch(d.x, s.x), overlay_ch(d.y, s.y), overlay_ch(d.z, s.z)); }
+        case 5u: { return vec3<f32>(soft_light_ch(d.x, s.x), soft_light_ch(d.y, s.y), soft_light_ch(d.z, s.z)); }
+        case 6u: { return vec3<f32>(overlay_ch(s.x, d.x), overlay_ch(s.y, d.y), overlay_ch(s.z, d.z)); }
+        case 7u: { return abs(d - s); }
+        case 8u: { return d + s - 2.0 * d * s; }
+        case 9u: { return vec3<f32>(dodge_ch(d.x, s.x), dodge_ch(d.y, s.y), dodge_ch(d.z, s.z)); }
+        case 10u: { return vec3<f32>(burn_ch(d.x, s.x), burn_ch(d.y, s.y), burn_ch(d.z, s.z)); }
+        case 11u: { return min(d, s); }
+        case 12u: { return max(d, s); }
+        default: { return s; }
+    }
+}
+
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i=gid.x;
     if i>=p.width*p.height { return; }
     let x=i%p.width; let y=i/p.width;
-    if p.op==1u { // Extract coverage directly from the unchanged stack face.
+    if p.op==13u {
+        let matte=load_rgba(i); let object=load_dst(i);
+        var value=matte.a;
+        if p.offset_x!=0 { value*=dot(matrix(matte.rgb),vec3<f32>(0.2126,0.7152,0.0722)); }
+        value=clamp(value,0.0,1.0);
+        if p.offset_y!=0 { value=1.0-value; }
+        store_rgba(i,vec4<f32>(object.rgb,object.a*value));
+    } else if p.op==12u {
+        let v=load_rgba(i);
+        let uv=(vec2<f32>(f32(x),f32(y))+vec2<f32>(0.5))/vec2<f32>(f32(p.width),f32(p.height));
+        var a=1.0;
+        if p.color.x>0.0 { a*=smoothstep(0.0,p.color.x,uv.y); }
+        if p.color.y>0.0 { a*=smoothstep(0.0,p.color.y,1.0-uv.y); }
+        if p.color.z>0.0 { a*=smoothstep(0.0,p.color.z,uv.x); }
+        if p.color.w>0.0 { a*=smoothstep(0.0,p.color.w,1.0-uv.x); }
+        var alpha=v.a;
+        if a<1.0 { alpha=floor(round(alpha*255.0)*a+0.5)/255.0; }
+        if abs(p.row0.x-1.0)>=0.001 { alpha=floor(alpha*p.row0.x*255.0+0.5)/255.0; }
+        store_rgba(i,vec4<f32>(v.rgb,alpha));
+    } else if p.op==10u {
+        let s=load_rgba(i); let d=load_dst(i);
+        let srgb=matrix(s.rgb); let drgb=matrix(d.rgb);
+        var alpha=s.a;
+        if abs(p.color.a-1.0)>=0.001 { alpha=floor(alpha*p.color.a*255.0+0.5)/255.0; }
+        if p.offset_x==0 {
+        store_rgba(i,over(vec4<f32>(encoded(srgb.x),encoded(srgb.y),encoded(srgb.z),alpha),
+            vec4<f32>(encoded(drgb.x),encoded(drgb.y),encoded(drgb.z),d.a)));
+        } else {
+            let a=alpha+d.a*(1.0-alpha);
+            var rgb=vec3<f32>(0.0);
+            if a>0.0 {
+                let mixed=(1.0-d.a)*srgb+d.a*clamp(blend3(u32(p.offset_x),drgb,srgb),vec3<f32>(0.0),vec3<f32>(1.0));
+                rgb=(mixed*alpha+drgb*d.a*(1.0-alpha))/a;
+            }
+            store_rgba(i,vec4<f32>(encoded(rgb.x),encoded(rgb.y),encoded(rgb.z),a));
+        }
+    } else if p.op==11u {
+        let v=load_rgba(i);
+        store_rgba(i,vec4<f32>(matrix(vec3<f32>(linear(v.x),linear(v.y),linear(v.z))),v.a));
+    } else if p.op==9u {
+        var sx=i32(x);
+        if p.offset_y>0 {
+            let seed=107078757u+p.x0*2654435761u;
+            let r=stripe_seed(y/8u+1u,seed);
+            let offset=i32((r>>8u)%u32(2*p.offset_y+1))-p.offset_y;
+            sx=clamp(sx-offset,0,i32(p.width)-1);
+        }
+        let r=authored_at(sx-p.offset_x,y);
+        let g=authored_at(sx,y);
+        let b=authored_at(sx+p.offset_x,y);
+        store_rgba(i,vec4<f32>(r.r,g.g,b.b,max(r.a,max(g.a,b.a))));
+    } else if p.op==1u { // Extract coverage directly from the unchanged stack face.
         output[i]=u32(round(clamp(load_rgba((y+p.y0)*p.frame_width+x+p.x0).a,0.0,1.0)*255.0));
     } else if p.op==2u || p.op==8u { // Offset (optionally inverted) coverage.
         let sx=i32(x)-p.offset_x; let sy=i32(y)-p.offset_y;
@@ -51,7 +154,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         output[i]=v;
     } else if p.op==3u { // Outline ring, saturating subtraction.
-        output[i]=output[i]-min(output[i],input[i]);
+        output[i]=select(output[i]-min(output[i],input[i]),0u,i32(x+p.x0)>=p.offset_x);
     } else if p.op==4u { // Inner shadow coverage, integer truncation.
         output[i]=(output[i]*input[i])/255u;
     } else if p.op==5u { // Authored style over the accumulated stack.
@@ -60,7 +163,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     } else if p.op==6u { // Face over behind styles.
         let v=load_rgba((y+p.y0)*p.frame_width+x+p.x0);
         let rgb=matrix(v.rgb);
-        let face=vec4<f32>(encoded(rgb.x),encoded(rgb.y),encoded(rgb.z),v.a);
+        let a=floor(round(clamp(v.a,0.0,1.0)*255.0)*floor(clamp(p.color.a,0.0,1.0)*255.0+0.5)/255.0)/255.0;
+        let face=vec4<f32>(encoded(rgb.x),encoded(rgb.y),encoded(rgb.z),a);
         store_rgba(i,over(face,load_dst(i)));
     } else if p.op==7u { // Final title quantization and working-space conversion.
         let v=floor(clamp(load_rgba(i),vec4<f32>(0.0),vec4<f32>(1.0))*255.0+0.5)/255.0;

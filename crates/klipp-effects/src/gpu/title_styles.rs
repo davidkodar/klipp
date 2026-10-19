@@ -68,7 +68,7 @@ struct StyleParams {
     color: [f32; 4],
     matrix: [[f32; 4]; 3],
 }
-fn inverse(m: [[f32; 4]; 3]) -> Option<[[f32; 4]; 3]> {
+pub(super) fn inverse(m: [[f32; 4]; 3]) -> Option<[[f32; 4]; 3]> {
     let [a, b, c] = m;
     let cross = |x: [f32; 4], y: [f32; 4]| {
         [
@@ -87,6 +87,269 @@ fn inverse(m: [[f32; 4]; 3]) -> Option<[[f32; 4]; 3]> {
     Some(std::array::from_fn(|i| [x[i] / d, y[i] / d, z[i] / d, 0.0]))
 }
 impl GpuEffectsPipeline {
+    /// Authored title chromatic split followed by deterministic stripe glitch.
+    /// This is the title algorithm, not the similarly named clip effects.
+    /// The decorated layer stays on the device through both operations.
+    pub fn stack_title_post(
+        &mut self,
+        slot: usize,
+        chromatic_px: f32,
+        glitch: f32,
+        time: f32,
+    ) -> bool {
+        let (w, h) = self.stack_dims;
+        let count = u64::from(w) * u64::from(h);
+        if self.is_device_lost()
+            || slot >= self.stack_layers.len()
+            || count == 0
+            || count * 16 > u64::from(self.device.limits().max_storage_buffer_binding_size)
+            || !chromatic_px.is_finite()
+            || !glitch.is_finite()
+        {
+            return false;
+        }
+        let Some(to_authored) = inverse(self.authored_to_working) else {
+            return false;
+        };
+        let chromatic = chromatic_px.max(0.0).round().min(w as f32) as i32;
+        if glitch > (i32::MAX / 64) as f32 {
+            return false;
+        }
+        let max_offset = if glitch > 0.001 {
+            (glitch * 30.0).round().max(1.0) as i32
+        } else {
+            0
+        };
+        if chromatic == 0 && max_offset == 0 {
+            return true;
+        }
+        if self
+            .title_post_scratch
+            .as_ref()
+            .is_none_or(|b| b.size() < count * 16)
+        {
+            self.title_post_scratch = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("title post scratch"),
+                size: count * 16,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let scratch = self.title_post_scratch.as_ref().unwrap();
+        let layer = &self.stack_layers[slot];
+        let params = StyleParams {
+            width: w,
+            height: h,
+            frame_width: w,
+            op: 9,
+            x0: (time * 12.0) as u32,
+            y0: 0,
+            offset_x: chromatic,
+            offset_y: max_offset,
+            color: [0.0; 4],
+            matrix: to_authored,
+        };
+        self.write_params(&params);
+        self.stack_pass(
+            &self.title_style_pipeline,
+            layer,
+            scratch,
+            (count as u32).div_ceil(WORKGROUP_SIZE),
+            "title post",
+        );
+        self.write_params(&StyleParams {
+            op: 7,
+            x0: 0,
+            offset_x: 0,
+            offset_y: 0,
+            matrix: self.authored_to_working,
+            ..params
+        });
+        self.stack_pass(
+            &self.title_style_pipeline,
+            scratch,
+            layer,
+            (count as u32).div_ceil(WORKGROUP_SIZE),
+            "title post working space",
+        );
+        true
+    }
+
+    /// Fade the fully decorated title object after its post-processing.
+    pub fn stack_title_alpha(&mut self, slot: usize, edges: [f32; 4], opacity: f32) -> bool {
+        let (w, h) = self.stack_dims;
+        let count = u64::from(w) * u64::from(h);
+        if self.is_device_lost()
+            || slot >= self.stack_layers.len()
+            || count == 0
+            || !opacity.is_finite()
+            || edges.iter().any(|x| !x.is_finite())
+            || count * 16 > u64::from(self.device.limits().max_storage_buffer_binding_size)
+        {
+            return false;
+        }
+        if self
+            .title_post_scratch
+            .as_ref()
+            .is_none_or(|b| b.size() < count * 16)
+        {
+            self.title_post_scratch = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("title fade scratch"),
+                size: count * 16,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let layer = &self.stack_layers[slot];
+        let scratch = self.title_post_scratch.as_ref().unwrap();
+        self.write_params(&StyleParams {
+            width: w,
+            height: h,
+            frame_width: w,
+            op: 12,
+            x0: 0,
+            y0: 0,
+            offset_x: 0,
+            offset_y: 0,
+            color: edges.map(|v| v.clamp(0.0, 0.5)),
+            matrix: [[opacity.clamp(0.0, 1.0), 0.0, 0.0, 0.0], [0.0; 4], [0.0; 4]],
+        });
+        self.stack_pass(
+            &self.title_style_pipeline,
+            layer,
+            scratch,
+            (count as u32).div_ceil(WORKGROUP_SIZE),
+            "title edge fade",
+        );
+        let mut enc = self.encoder(Some("title fade copy"));
+        enc.copy_buffer_to_buffer(scratch, 0, layer, 0, count * 16);
+        self.submit(enc);
+        true
+    }
+
+    /// Multiply an object's alpha by another object's authored mask.
+    pub fn stack_title_mask(
+        &mut self,
+        source: usize,
+        destination: usize,
+        luma: bool,
+        invert: bool,
+    ) -> bool {
+        let (w, h) = self.stack_dims;
+        if self.is_device_lost()
+            || source == destination
+            || source >= self.stack_layers.len()
+            || destination >= self.stack_layers.len()
+        {
+            return false;
+        }
+        let Some(to_authored) = inverse(self.authored_to_working) else {
+            return false;
+        };
+        self.write_params(&StyleParams {
+            width: w,
+            height: h,
+            frame_width: w,
+            op: 13,
+            x0: 0,
+            y0: 0,
+            offset_x: i32::from(luma),
+            offset_y: i32::from(invert),
+            color: [0.0; 4],
+            matrix: to_authored,
+        });
+        self.stack_pass(
+            &self.title_style_pipeline,
+            &self.stack_layers[source],
+            &self.stack_layers[destination],
+            (w * h).div_ceil(WORKGROUP_SIZE),
+            "title object mask",
+        );
+        true
+    }
+
+    /// Compose one title object in authored sRGB, preserving fractional alpha.
+    pub fn stack_title_over(
+        &mut self,
+        source: usize,
+        destination: usize,
+        opacity: f32,
+        mode: crate::BlendMode,
+    ) -> bool {
+        let (w, h) = self.stack_dims;
+        let count = u64::from(w) * u64::from(h);
+        if source == destination
+            || source >= self.stack_layers.len()
+            || destination >= self.stack_layers.len()
+            || count == 0
+            || !opacity.is_finite()
+            || self.is_device_lost()
+            || count * 16 > u64::from(self.device.limits().max_storage_buffer_binding_size)
+        {
+            return false;
+        }
+        let Some(to_authored) = inverse(self.authored_to_working) else {
+            return false;
+        };
+        if self
+            .title_post_scratch
+            .as_ref()
+            .is_none_or(|b| b.size() < count * 16)
+        {
+            self.title_post_scratch = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("title scene scratch"),
+                size: count * 16,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        let params = StyleParams {
+            width: w,
+            height: h,
+            frame_width: w,
+            op: 10,
+            x0: 0,
+            y0: 0,
+            offset_x: mode as i32,
+            offset_y: 0,
+            color: [0.0, 0.0, 0.0, opacity.clamp(0.0, 1.0)],
+            matrix: to_authored,
+        };
+        let src = &self.stack_layers[source];
+        let dst = &self.stack_layers[destination];
+        let scratch = self.title_post_scratch.as_ref().unwrap();
+        self.write_params(&params);
+        self.stack_pass(
+            &self.title_style_pipeline,
+            src,
+            dst,
+            (count as u32).div_ceil(WORKGROUP_SIZE),
+            "title object over",
+        );
+        self.write_params(&StyleParams {
+            op: 11,
+            matrix: self.authored_to_working,
+            ..params
+        });
+        self.stack_pass(
+            &self.title_style_pipeline,
+            dst,
+            scratch,
+            (count as u32).div_ceil(WORKGROUP_SIZE),
+            "title scene working space",
+        );
+        let mut enc = self.encoder(Some("title scene copy"));
+        enc.copy_buffer_to_buffer(scratch, 0, dst, 0, count * 16);
+        self.submit(enc);
+        true
+    }
+
     /// Finish a plain opaque face already seeded in a stack layer. Its alpha
     /// must be the original coverage, not opacity-modulated fill. `roi` is the
     /// original padded mask box, including zero padding needed by inner shadows.
@@ -98,6 +361,22 @@ impl GpuEffectsPipeline {
         roi: [u32; 4],
         styles: &[TitleStyle],
     ) -> bool {
+        self.stack_title_styles_with_fill(slot, roi, styles, 1.0, i32::MAX)
+    }
+
+    /// As `stack_title_styles`, with face opacity separate from its coverage:
+    /// translucent text fill must not weaken its shadow or outline mask.
+    pub fn stack_title_styles_with_fill(
+        &mut self,
+        slot: usize,
+        roi: [u32; 4],
+        styles: &[TitleStyle],
+        fill_alpha: f32,
+        outline_cutoff: i32,
+    ) -> bool {
+        if !fill_alpha.is_finite() {
+            return false;
+        }
         let [x0, y0, w, h] = roi;
         let (fw, fh) = self.stack_dims;
         let count = u64::from(w) * u64::from(h);
@@ -200,7 +479,14 @@ impl GpuEffectsPipeline {
         for style in styles {
             let (color, intensity) = match *style {
                 TitleStyle::Face => {
-                    pass(6, layer, &s.composite, [0, 0], [0.0; 4], to_authored);
+                    pass(
+                        6,
+                        layer,
+                        &s.composite,
+                        [0, 0],
+                        [0.0, 0.0, 0.0, fill_alpha],
+                        to_authored,
+                    );
                     continue;
                 }
                 TitleStyle::Glow {
@@ -217,7 +503,14 @@ impl GpuEffectsPipeline {
                     if !self.record_alpha_dilate(&s.mask, &s.work, w, h, radius) {
                         return false;
                     }
-                    pass(3, &s.mask, &s.work, [0, 0], [0.0; 4], to_authored);
+                    pass(
+                        3,
+                        &s.mask,
+                        &s.work,
+                        [outline_cutoff, 0],
+                        [0.0; 4],
+                        to_authored,
+                    );
                     (color, 1.0)
                 }
                 TitleStyle::Shadow {

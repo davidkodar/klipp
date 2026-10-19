@@ -267,9 +267,16 @@ fn check_fading_layers(title: TitleData) {
         assert_eq!(renderer.resting_renders(), count, "only initial rasterizations");
     }
     gpu.set_authored_to_working([[0.8, 0.1, 0.1], [0.1, 0.8, 0.1], [0.1, 0.1, 0.8]]);
+    let reference = TitleRenderer::new().render_with_window(&title, W, H, None, 0.5, Some(4.0));
+    let want = read(&mut gpu, |p| p.stack_layer_from_srgb_u8(0, &reference));
     let TitleFrame::Layers { layers, rows } = renderer.frame_with_window(&title, W, H, None, 0.5, Some(4.0)) else { unreachable!() };
-    let (sprite, alpha) = layers.last().unwrap();
-    assert!(!gpu.stack_layer_place_sprite_over(0, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), *alpha, rows.0, rows.1), "non-Rec.709 must use the declared composition fallback");
+    let before = gpu.readback_stats();
+    let got = read(&mut gpu, |p| layers.iter().enumerate().all(|(i,(sprite,alpha))| {
+        if i==0 { p.stack_layer_place_sprite_posed(0,sprite.id,&sprite.pixels.texels,sprite_box(&sprite.pixels),0,0,*alpha,1.0,sprite.anchor(),None,None,rows.0,rows.1) }
+        else { p.stack_layer_place_sprite_over(0,sprite.id,&sprite.pixels.texels,sprite_box(&sprite.pixels),*alpha,rows.0,rows.1) }
+    }));
+    assert_eq!(gpu.readback_stats().count-before.count,1,"only final verification download");
+    assert!(worst_code(&want,&got)<=1.5,"authored layer blend survives working-space conversion");
 }
 
 #[test]
