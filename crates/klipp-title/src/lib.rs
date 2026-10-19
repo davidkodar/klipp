@@ -530,6 +530,7 @@ pub struct TitleRenderer {
     gpu_layout_only: bool,
     gpu_outline_only: bool,
     gpu_wave: Option<(f32,f32,f32)>,
+    gpu_motion:Option<(f32,Option<f32>)>,
     gpu_layout_capture: std::cell::RefCell<Option<GlyphSource>>,
     gpu_glyph_cache: std::cell::RefCell<gpu_glyphs::GlyphCache>,
     /// The rows with coverage in the last render, `y0..y1`.
@@ -686,6 +687,7 @@ impl TitleRenderer {
             gpu_layout_only: false,
             gpu_outline_only: false,
             gpu_wave: None,
+            gpu_motion:None,
             gpu_layout_capture: Default::default(),
             gpu_glyph_cache: Default::default(),
             last_rows: (0, 0),
@@ -1449,19 +1451,49 @@ impl TitleRenderer {
             };
         }
         if self.gpu_layout_only {
-            let mut posed;
-            let glyphs=if let Some((time,amp,rate))=self.gpu_wave {
-                posed=glyphs.to_vec();
-                for (i,g) in posed.iter_mut().enumerate() {
-                    g.y+=(time*rate*std::f32::consts::TAU+i as f32*0.5).sin()*amp;
+            let mut posed=glyphs.to_vec();
+            let mut draw_poses=Vec::new();
+            let mut supported=true;
+            let fx=title.primary_fx();
+            let enter_units=motion_units(glyphs,fx.motion.enter.map(|m|m.stagger).unwrap_or_default());
+            let exit_units=motion_units(glyphs,fx.motion.exit.map(|m|m.stagger).unwrap_or_default());
+            let parents:Vec<_>=glyphs.iter().map(|g|g.parent).collect();
+            let animated=self.gpu_motion.map(|(time,_)|klipp_core::title_motion::animator_poses(&fx.animators,&parents,font_px,time as f64)).unwrap_or_default();
+            for (i,(g,rest_g)) in posed.iter_mut().zip(glyphs).enumerate() {
+                let mut dx=0.0;let mut dy=0.0;let mut alpha=1.0;let mut clip=[i32::MIN,i32::MAX];
+                if let Some((time,window))=self.gpu_motion {
+                    let (pe,_)=fx.motion.progress(time,window,enter_units[i]);
+                    let (_,px)=fx.motion.progress(time,window,exit_units[i]);
+                    let rest=(1.0,0.0,0.0,1.0,0.0,false);
+                    let (a1,x1,y1,s1,b1,c1)=fx.motion.enter.map(|m|m.pose(pe,font_px)).unwrap_or(rest);
+                    let (a2,x2,y2,s2,b2,c2)=fx.motion.exit.map(|m|m.pose(px,font_px)).unwrap_or(rest);
+                    let pose=animated.get(i).copied().unwrap_or_default();
+                    supported &= b1.max(b2).max(pose.blur)<=0.05 && pose.rotation==0.0 && pose.colour.is_none();
+                    alpha=a1*a2*pose.alpha;
+                    if alpha<=0.001 {alpha=0.0;}
+                    dx=x1+x2+pose.dx;dy=y1+y2+pose.dy;
+                    let scale=s1*s2*pose.scale;
+                    if (scale-1.0).abs()>0.001 {
+                        g.key.px=(font_px*scale).max(1.0).copysign(g.key.px);
+                        let m=fonts[g.font_index].font.metrics_indexed(g.key.glyph_index,g.key.px.abs());
+                        (g.width,g.height)=if g.key.px<0.0 {(m.height,m.width)}else{(m.width,m.height)};
+                    }
+                    if c1||c2 {let top=(rest_g.y+offset_y) as i32;clip=[top,top+rest_g.height as i32];}
                 }
-                posed.as_slice()
-            } else {glyphs};
-            *self.gpu_layout_capture.borrow_mut() = self.gpu_glyph_cache.borrow_mut().layout(
+                if let Some((time,amp,rate))=self.gpu_wave {dy+=(time*rate*std::f32::consts::TAU+i as f32*0.5).sin()*amp;}
+                let origin=[(rest_g.x+offset_x+dx) as i32-(g.width as i32-rest_g.width as i32)/2,
+                    (rest_g.y+offset_y+dy) as i32-(g.height as i32-rest_g.height as i32)/2];
+                g.x=origin[0] as f32-offset_x;g.y=origin[1] as f32-offset_y;
+                if g.width>0 && g.height>0 {draw_poses.push((origin,alpha,clip));}
+            }
+            let glyphs=posed.as_slice();
+            *self.gpu_layout_capture.borrow_mut() = if supported {self.gpu_glyph_cache.borrow_mut().layout(
                 &fonts, glyphs, [offset_x, offset_y],
                 [mask_x0 as u32, mask_y0 as u32, mask_w as u32, mask_h as u32], tb.color, title.primary_fx(), self.gpu_outline_only,
-            );
+            )} else {None};
             if let Some(source) = self.gpu_layout_capture.borrow_mut().as_mut() {
+                for (draw,(origin,alpha,clip)) in source.outlines.iter_mut().zip(&draw_poses) {draw.origin=*origin;draw.alpha=*alpha;draw.clip_y=*clip;}
+                for (draw,(origin,_,_)) in source.glyphs.iter_mut().zip(&draw_poses) {draw.origin=*origin;}
                 source.bounds=[text_min_x+offset_x,text_min_y+offset_y,text_max_x+offset_x,text_max_y+offset_y];
                 source.gradient=tb.gradient.clone().filter(|g|g.enabled);
                 source.pattern=tb.pattern_fill.clone().filter(|_|tb.pattern_fill_enabled);

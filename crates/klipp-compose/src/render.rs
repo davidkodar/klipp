@@ -2700,7 +2700,7 @@ impl Renderer {
                 return self.executor.gpu_pipeline_or_init()?.stack_title_alpha(slot,[0.0;4],object.evaluated_opacity(clip_time)).then_some((rows,Vec::new()));
             }
             let edges=object.fx().edge_fade;
-            if !matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..}) && !edges.is_none() && !object.fx().motion.is_active() && title_source_loops(&object.fx().loops) {
+            if !matches!(td.background,klipp_timeline::TitleBackground::FullFrame{..}) && !edges.is_none() && title_source_loops(&object.fx().loops) {
                 let mut source=td.clone();
                 source.objects[0].fx_mut().edge_fade=Default::default();
                 let (rows,soft)=self.place_title_source(&source,slot,width,height,clip_time,total)?;
@@ -2811,7 +2811,7 @@ impl Renderer {
                     let passes=crate::synth::title_style_passes(&source.fx,klipp_title::frame_scale(width,height),clip_time);
                     self.executor.gpu_pipeline_or_init().is_some_and(|p| {
                         p.stack_layer_clear(slot) && source.glyphs.iter().all(|g| p.stack_title_glyph(slot,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],g.origin,source.color))
-                            && source.outlines.iter().all(|g|p.stack_title_outline(slot,g.id,&g.edges,g.origin,g.size,g.placement,source.color))
+                            && source.outlines.iter().all(|g|p.stack_title_outline(slot,g.id,&g.edges,g.origin,g.size,g.placement,source.color,g.alpha,g.clip_y))
                             && source.stripes.iter().all(|&rect|p.stack_title_stripe(slot,rect,source.color))
                             && (source.roi[2]==0 || source.roi[3]==0 || p.stack_title_styles_with_face(slot,source.roi,&passes,klipp_effects::gpu::TitleFace {alpha:source.color[3] as f32/255.0,outline_cutoff:source.outline_cutoff,write_cutoff:source.write_cutoff,backing:source.backing,fill:title_fill(&source,klipp_title::frame_scale(width,height)),bounds:source.bounds}))
                             && source.texture.as_ref().is_none_or(|t|source.roi[2]==0 || source.roi[3]==0 || p.stack_title_texture(slot,source.roi,klipp_effects::gpu::TitleTexture {

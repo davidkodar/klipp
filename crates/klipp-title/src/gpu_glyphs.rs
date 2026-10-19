@@ -14,6 +14,8 @@ pub struct OutlineDraw {
     pub size: [u32; 2],
     /// Scale from the cached 2048px-em outline, then translate to bitmap space.
     pub placement: [f32; 4],
+    pub alpha: f32,
+    pub clip_y: [i32; 2],
 }
 pub struct TextureDraw {
     pub id: u64,
@@ -233,6 +235,8 @@ impl GlyphCache {
                 edges: cached.edges.clone(),
                 origin: [(g.x + offset[0]) as i32, (g.y + offset[1]) as i32],
                 size: [g.width as u32, g.height as u32],
+                alpha: 1.0,
+                clip_y: [i32::MIN, i32::MAX],
                 placement: [
                     g.key.px.abs() / 2048.0,
                     -(metrics.xmin as f32),
@@ -309,8 +313,6 @@ impl TitleRenderer {
             || tb.glitch_intensity > 0.0
             || tb.chromatic_aberration_px > 0.0
             || tb.char_animation.as_ref().is_some_and(|c| c.enabled)
-            || fx.motion.is_active()
-            || fx.animators.iter().any(|a| a.enabled)
             || !fx.edge_fade.is_none()
             || fx.motion_blur.is_some()
         {
@@ -364,8 +366,11 @@ impl TitleRenderer {
         evaluated.objects[0].fx_mut().loops.clear();
         evaluated.objects[0].transform = o.transform.evaluated_at(time as f64);
         self.gpu_layout_only = true;
+        self.gpu_motion = (fx.motion.is_active() || fx.animators.iter().any(|a| a.enabled))
+            .then_some((time, window));
         self.gpu_wave = pose.wave.map(|(amp, rate)| (time, amp, rate));
-        self.gpu_outline_only = !tb.font_size_keyframes.is_empty()
+        self.gpu_outline_only = self.gpu_motion.is_some()
+            || !tb.font_size_keyframes.is_empty()
             || !tb.line_spacing_keyframes.is_empty()
             || !tb.tracking_keyframes.is_empty()
             || !o.transform.size_x_keyframes.is_empty()
@@ -378,6 +383,7 @@ impl TitleRenderer {
         let layout = self.render_layout_at_time(&evaluated, width, height, None);
         self.gpu_layout_only = false;
         self.gpu_wave = None;
+        self.gpu_motion = None;
         self.gpu_outline_only = false;
         let mut source = self.gpu_layout_capture.borrow_mut().take().or_else(|| {
             (layout.glyph_count == 0 || layout.mask_w == 0 || layout.mask_h == 0).then(|| {
