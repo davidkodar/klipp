@@ -979,6 +979,38 @@ impl GpuEffectsPipeline {
         true
     }
 
+    /// Analytic fitted rectangle coverage, using the authored title painter's pixel tests.
+    pub fn stack_title_rectangle(&mut self, slot: usize, bounds: [f32;4], pivot: [f32;2], radians: f32, radius: f32, fill: [u8;4], stroke: Option<([u8;4],f32)>, straight: bool) -> bool {
+        if !bounds.iter().chain(pivot.iter()).chain([radians,radius].iter()).all(|v|v.is_finite()) || !self.stack_title_alpha(slot,[0.0;4],1.0) {return false;}
+        let colour=|c:[u8;4]| {
+            let rgb:[f32;3]=std::array::from_fn(|i| {
+                let v=if straight {c[i] as f32}else{c[i] as f32*c[3] as f32/255.0};
+                let x=v/255.0;if x<=0.04045 {x/12.92}else{((x+0.055)/1.055).powf(2.4)}
+            });
+            let rgb=self.authored_to_working.map(|row|row[0]*rgb[0]+row[1]*rgb[1]+row[2]*rgb[2]);
+            [rgb[0],rgb[1],rgb[2],c[3] as f32/255.0]
+        };
+        let mut stops=[[0u32;4];8];stops[0]=colour(stroke.map_or([0;4],|s|s.0)).map(f32::to_bits);
+        let (w,h)=self.stack_dims;
+        let params=StyleParams{width:w,height:h,frame_width:w,op:34,x0:0,y0:0,offset_x:0,offset_y:0,color:colour(fill),
+            matrix:[bounds,[pivot[0],pivot[1],radians.cos(),radians.sin()],[radius,stroke.map_or(0.0,|s|s.1),0.0,0.0]]};
+        self.write_params(&FillParams{base:params,stops});
+        let layer=&self.stack_layers[slot];let scratch=self.title_post_scratch.as_ref().unwrap();
+        self.stack_pass(&self.title_style_pipeline,layer,scratch,(w*h).div_ceil(WORKGROUP_SIZE),"fitted title rectangle");
+        let mut enc=self.encoder(Some("title rectangle copy"));enc.copy_buffer_to_buffer(scratch,0,layer,0,u64::from(w)*u64::from(h)*16);self.submit(enc);true
+    }
+
+    /// Match byte layers or the completed scene's packed-half source boundary.
+    pub fn stack_title_precision(&mut self,slot:usize,bytes:bool)->bool {
+        if !self.stack_title_alpha(slot,[0.0;4],1.0) {return false;}
+        let Some(to_authored)=inverse(self.authored_to_working) else {return false;};
+        let (w,h)=self.stack_dims;let count=w*h;
+        let layer=&self.stack_layers[slot];let scratch=self.title_post_scratch.as_ref().unwrap();
+        let params=StyleParams{width:w,height:h,frame_width:w,op:35,x0:0,y0:0,offset_x:i32::from(bytes),offset_y:0,color:[0.0;4],matrix:to_authored};
+        self.write_params(&params);self.stack_pass(&self.title_style_pipeline,layer,scratch,count.div_ceil(WORKGROUP_SIZE),"title scene quantization");
+        self.write_params(&StyleParams{op:11,matrix:self.authored_to_working,..params});self.stack_pass(&self.title_style_pipeline,scratch,layer,count.div_ceil(WORKGROUP_SIZE),"title scene quantized working");true
+    }
+
     /// Multiply an object's alpha by another object's authored mask.
     pub fn stack_title_mask(
         &mut self,
@@ -1028,6 +1060,15 @@ impl GpuEffectsPipeline {
         opacity: f32,
         mode: crate::BlendMode,
     ) -> bool {
+        self.title_over(source,destination,opacity,mode,false)
+    }
+
+    /// An undressed normal shape paints premultiplied encoded colour directly.
+    pub fn stack_title_painted_over(&mut self,source:usize,destination:usize)->bool {
+        self.title_over(source,destination,1.0,crate::BlendMode::Normal,true)
+    }
+
+    fn title_over(&mut self,source:usize,destination:usize,opacity:f32,mode:crate::BlendMode,painted:bool)->bool {
         let (w, h) = self.stack_dims;
         let count = u64::from(w) * u64::from(h);
         if source == destination
@@ -1061,7 +1102,7 @@ impl GpuEffectsPipeline {
             width: w,
             height: h,
             frame_width: w,
-            op: 10,
+            op: if painted {36} else {10},
             x0: 0,
             y0: 0,
             offset_x: mode as i32,

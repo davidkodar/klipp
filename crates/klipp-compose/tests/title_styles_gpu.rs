@@ -395,9 +395,13 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
     use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams};
     use klipp_timeline::GradeAccess;
     let (w, h) = (320, 180);
+    const VARIANTS:usize=55;
+    // Isolate a failing case locally without weakening the default regression.
+    let selected=std::env::var("KLIPP_TEST_TITLE_VARIANT").ok().map(|v| {let n=v.parse::<usize>().expect("title variant number");assert!(n<VARIANTS,"unknown title variant");n});
     for ws in [WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG] {
         for graded in [false, true] {
-          for variant in 0..50 {
+          for variant in 0..VARIANTS {
+            if selected.is_some_and(|n|n!=variant) {continue;}
             let mut title = TitleData::single_text_fx(TextBox {
                 text: "Glitch".into(), font_size: 180.0, color: [190, 120, 60, 255],
                 glitch_intensity: 0.6, chromatic_aberration_px: 12.0, ..Default::default()
@@ -516,7 +520,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                 title.objects[0].fx_mut().loops.push(if variant==47 {klipp_timeline::TitleLoop::Crawl{direction:klipp_core::title_motion::CrawlDirection::Left,speed_px_per_sec:300.0,repeat:true,shape}}else{klipp_timeline::TitleLoop::Scroll{direction:klipp_core::title_motion::ScrollDirection::Up,speed_px_per_sec:300.0,shape}});
                 title.objects[0].fx_mut().edge_fade=klipp_core::title_motion::EdgeFade{left:0.3,right:0.4,top:0.25,bottom:0.35};
             }
-            if variant>=48 {
+            if (48..50).contains(&variant) {
                 use klipp_core::vector_path::{PathContour,PathPose,PathVertex};
                 let contour=|y:f32|PathPose {stroke_glow:None,contours:vec![PathContour{closed:false,vertices:vec![
                     PathVertex{point:[0.05,y],incoming:[0.05,y],outgoing:[0.3,y-0.3]},
@@ -528,6 +532,14 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                 title.objects.last_mut().unwrap().visible=false;
                 let text=title.primary_text_mut().unwrap();text.text="Linked path".into();text.style_runs.clear();
                 text.text_path=Some(klipp_timeline::TextPath::Layer{layer,contour:0,offset:0.1,offset_keyframes:vec![key(0.0,0.0),key(1.0,0.2)],align:klipp_timeline::PathTextAlign::Start,flip:false});
+            }
+            if variant>=50 {
+                let target=title.objects[0].id;
+                title.add_object(klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape{kind:klipp_timeline::ShapeKind::Rectangle{corner_radius:18.0},fill:Some([40,80,200,130]),gradient:None,stroke:Some(klipp_timeline::ShapeStroke{color:[180,40,90,200],width:4.0}),fit:Some(klipp_timeline::ShapeFit{target,padding:klipp_timeline::TitlePosition{x:12.0,y:8.0}})}),klipp_timeline::default_text_transform());
+                if variant==51 {title.objects[0].visible=false;}
+                if variant==53 {title.objects[1].blend=klipp_core::BlendMode::Screen;title.objects[1].opacity_keyframes=vec![key(0.0,0.3),key(1.0,0.7)];}
+                if variant==54 {title.objects[0].mask=Some(klipp_timeline::LayerMask{source:title.objects[1].id,kind:klipp_core::layer_mask::LayerMaskKind::Luma});title.objects[1].visible=false;title.objects[1].blend=klipp_core::BlendMode::Screen;}
+                if variant!=52 {title.objects.swap(0,1);}
             }
             if variant==41 {
                 title.objects[0].fx_mut().animators=vec![klipp_timeline::Animator{props:klipp_timeline::AnimatorProps{opacity:0.0,colour:Some([30,180,240,140]),..Default::default()},..Default::default()}];
@@ -566,6 +578,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                 assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Fallback), "{events:?}");
                 assert_eq!(klipp_effects::gpu::readback_stats().count-before.count,1,"only verification download");
                 let worst = got.iter().zip(&want).map(|(a,b)| a.abs_diff(*b)).max().unwrap();
+                if worst>3 {let i=got.iter().zip(&want).position(|(a,b)|a.abs_diff(*b)==worst).unwrap()/4; eprintln!("worst pixel {},{} got {:?} want {:?}",i%w as usize,i/w as usize,&got[i*4..i*4+4],&want[i*4..i*4+4]);}
                 assert!(worst<=3,"{ws:?} graded={graded} variant={variant} at{t}: {worst}");
                 assert_eq!(gpu.title_renderer().resting_renders(),u64::from(variant==0 || variant==6),"cached sources, not full per-frame rasters");
                 if sample==2 { assert!(events.iter().all(|e| e.work!=klipp_effects::residency::Work::Preparation),"warm backward seek: {events:?}"); }

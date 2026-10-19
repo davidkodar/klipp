@@ -139,6 +139,15 @@ pub struct TitleLayout {
     pub tracking_origins: Vec<[f32; 2]>,
 }
 
+impl TitleLayout {
+    fn bounds_only(bounds: [f32; 4], glyph_count: usize, scale: f32) -> Self {
+        Self {alpha_mask:Vec::new(),mask_w:0,mask_h:0,mask_x0:0,mask_y0:0,
+            text_left:bounds[0],text_top:bounds[1],text_right:bounds[2],text_bottom:bounds[3],glyph_count,scale,
+            glyph_colors:Vec::new(),glyph_coverages:Vec::new(),glyph_index:Vec::new(),glyph_boxes:Vec::new(),glyph_parents:Vec::new(),pad:0,
+            colour_glyphs:Vec::new(),path_units:None,tracking_origins:Vec::new()}
+    }
+}
+
 /// No glyph: the value of `glyph_index` where nothing was painted.
 pub const GLYPH_NONE: u16 = u16::MAX;
 
@@ -528,6 +537,7 @@ pub struct TitleRenderer {
     /// Recently used unfinished faces; bounded separately and invalidated with raster caches.
     style_source_cache: Vec<gpu_styles::SourceCache>,
     gpu_layout_only: bool,
+    layout_bounds_only: bool,
     gpu_outline_only: bool,
     gpu_wave: Option<(f32,f32,f32)>,
     gpu_motion:Option<(f32,Option<f32>)>,
@@ -685,6 +695,7 @@ impl TitleRenderer {
             resting_renders: 0,
             style_source_cache: Vec::new(),
             gpu_layout_only: false,
+            layout_bounds_only: false,
             gpu_outline_only: false,
             gpu_wave: None,
             gpu_motion:None,
@@ -1372,6 +1383,9 @@ impl TitleRenderer {
         let baseline_shift_px = tb.baseline_shift * scale;
         let offset_y = text_offset_y(tb.vertical_align, title.position().y * height as f32, box_h, text_h, text_min_y)
             + baseline_shift_px;
+        if self.layout_bounds_only {
+            return TitleLayout::bounds_only([text_min_x+offset_x,text_min_y+offset_y,text_max_x+offset_x,text_max_y+offset_y],glyphs.len(),scale);
+        }
         // A 3D text's glyphs where they stand, for their solids (#1512):
         // each one's font, glyph, size and baseline origin on the frame.
         if tb.three_d.as_ref().is_some_and(|t| t.enabled) {
@@ -1862,10 +1876,10 @@ impl TitleRenderer {
         // Use the full frame as the mask (path text can go anywhere)
         let mask_w = w;
         let mask_h = h;
-        let mut alpha_mask = if self.gpu_layout_only {Vec::new()}else{vec![0u8; mask_w * mask_h]};
+        let mut alpha_mask = if self.gpu_layout_only || self.layout_bounds_only {Vec::new()}else{vec![0u8; mask_w * mask_h]};
         // Which glyph each pixel is, and each glyph's turned box: the
         // map a moving path poses the glyphs by (#1697).
-        let mut owner = if self.gpu_layout_only {Vec::new()}else{vec![GLYPH_NONE; mask_w * mask_h]};
+        let mut owner = if self.gpu_layout_only || self.layout_bounds_only {Vec::new()}else{vec![GLYPH_NONE; mask_w * mask_h]};
         let mut glyph_boxes = vec![[0i32; 4]; glyphs.len()];
 
         let mut text_min_x = f32::MAX;
@@ -1889,7 +1903,7 @@ impl TitleRenderer {
             let (px, py) = (at.centre[0], at.centre[1]);
             let gw = glyph.width;
             let gh = glyph.height;
-            if three_d {
+            if three_d && !self.layout_bounds_only {
                 let face = &fonts[glyph.font_index];
                 let b = face.font.metrics_indexed(glyph.key.glyph_index, glyph.key.px).bounds;
                 let from = [glyph.x + gw as f32 * 0.5, glyph.y + gh as f32 * 0.5];
@@ -1911,7 +1925,7 @@ impl TitleRenderer {
                     turn: Some(crate::text3d_render::Turn { from, to: [px, py], angle: at.angle }),
                 });
             }
-            if !self.gpu_layout_only {
+            if !self.gpu_layout_only && !self.layout_bounds_only {
             let (_,coverage)=fonts[glyph.font_index].coverage(glyph.key);
             blit_rotated(
                 &mut alpha_mask, mask_w, mask_h,
@@ -1942,6 +1956,9 @@ impl TitleRenderer {
             text_max_y = center_y;
         }
 
+        if self.layout_bounds_only {
+            return TitleLayout::bounds_only([text_min_x,text_min_y,text_max_x,text_max_y],glyphs.len(),scale);
+        }
         // Crop the mask to a tight bounding box with padding
         let crop_x0 = ((text_min_x.floor() as i32) - max_pad).max(0) as usize;
         let crop_y0 = ((text_min_y.floor() as i32) - max_pad).max(0) as usize;
@@ -3407,7 +3424,9 @@ impl TitleRenderer {
         if let Some(t) = time_secs {
             single.objects[0].transform.center = target.transform.evaluated_center(t as f64);
         }
+        let previous_bounds_only = std::mem::replace(&mut self.layout_bounds_only, true);
         let layout = self.render_layout_at_time(&single, width, height, time_secs);
+        self.layout_bounds_only = previous_bounds_only;
         if layout.glyph_count == 0 { return None; }
         let px = fit.padding.x.max(0.0) * crate::frame_scale(width, height);
         let py = fit.padding.y.max(0.0) * crate::frame_scale(width, height);
