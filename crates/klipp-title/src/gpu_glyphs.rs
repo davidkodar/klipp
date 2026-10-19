@@ -21,6 +21,9 @@ pub struct GlyphSource {
     pub roi: [u32; 4],
     pub color: [u8; 4],
     pub fx: LayerFx,
+    pub gradient: Option<klipp_timeline::TextGradient>,
+    pub pattern: Option<klipp_timeline::TextPattern>,
+    pub bounds: [f32; 4],
     pub prepared: usize,
     pub rerasterized: bool,
     pub outline_cutoff: i32,
@@ -164,6 +167,9 @@ impl GlyphCache {
             write_cutoff: i32::MAX,
             stripes: Vec::new(),
             backing: None,
+            gradient: None,
+            pattern: None,
+            bounds: [0.0; 4],
         })
     }
 }
@@ -256,6 +262,9 @@ impl GlyphCache {
             write_cutoff: i32::MAX,
             stripes: Vec::new(),
             backing: None,
+            gradient: None,
+            pattern: None,
+            bounds: [0.0; 4],
         })
     }
 }
@@ -288,8 +297,6 @@ impl TitleRenderer {
             || tb.three_d.as_ref().is_some_and(|d| d.enabled)
             || tb.text_path.is_some()
             || !tb.style_runs.is_empty()
-            || tb.gradient.is_some()
-            || tb.pattern_fill.is_some()
             || tb.texture_fill.is_some()
             || tb.extrusion.is_some()
             || tb.glitch_intensity > 0.0
@@ -302,7 +309,8 @@ impl TitleRenderer {
         {
             return None;
         }
-        let changes = !o.transform.size_x_keyframes.is_empty()
+        let changes = tb.gradient.as_ref().is_some_and(|g| g.has_keyframes())
+            || !o.transform.size_x_keyframes.is_empty()
             || !o.transform.size_y_keyframes.is_empty()
             || !tb.font_size_keyframes.is_empty()
             || !tb.color_keyframes.is_empty()
@@ -378,6 +386,9 @@ impl TitleRenderer {
                     write_cutoff: i32::MAX,
                     stripes: Vec::new(),
                     backing: None,
+                    gradient: None,
+                    pattern: None,
+                    bounds: [0.0; 4],
                 }
             })
         })

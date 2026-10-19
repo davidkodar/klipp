@@ -1460,6 +1460,9 @@ impl TitleRenderer {
                 [mask_x0 as u32, mask_y0 as u32, mask_w as u32, mask_h as u32], tb.color, title.primary_fx(), self.gpu_outline_only,
             );
             if let Some(source) = self.gpu_layout_capture.borrow_mut().as_mut() {
+                source.bounds=[text_min_x+offset_x,text_min_y+offset_y,text_max_x+offset_x,text_max_y+offset_y];
+                source.gradient=tb.gradient.clone().filter(|g|g.enabled);
+                source.pattern=tb.pattern_fill.clone().filter(|_|tb.pattern_fill_enabled);
                 if let TitleBackground::Color{color,padding}=title.background {
                     let pad=padding*scale;
                     let x0=((text_min_x+offset_x-pad) as i32).max(0) as u32;

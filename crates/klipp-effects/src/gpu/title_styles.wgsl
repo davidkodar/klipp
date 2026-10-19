@@ -5,6 +5,7 @@ struct Params {
     x0: u32, y0: u32, offset_x: i32, offset_y: i32,
     color: vec4<f32>,
     row0: vec4<f32>, row1: vec4<f32>, row2: vec4<f32>,
+    stops: array<vec4<u32>,8>,
 }
 @group(0) @binding(0) var<storage, read> input: array<u32>;
 @group(0) @binding(1) var<storage, read_write> output: array<u32>;
@@ -128,12 +129,62 @@ fn curve_coverage(at:u32,pixel:vec2<f32>)->f32 {
     }
     return coverage;
 }
+fn stop_position(i:u32)->f32 {return bitcast<f32>(p.stops[i/2u][(i%2u)*2u]);}
+fn stop_color(i:u32)->vec4<f32> {
+    let c=p.stops[i/2u][(i%2u)*2u+1u];
+    return vec4<f32>(f32(c&255u),f32((c>>8u)&255u),f32((c>>16u)&255u),f32(c>>24u))/255.0;
+}
+fn fill_color(pos:vec2<f32>)->vec4<f32> {
+    if p.offset_y==0 {
+        let top=f32(i32(p.row0.y));let bottom=f32(i32(p.row0.w));
+        let t=clamp((pos.y-top)/max(bottom-top,1.0),0.0,1.0);
+        return floor(clamp(p.color+(p.row2-p.color)*t,vec4<f32>(0.0),vec4<f32>(1.0))*255.0+0.5)/255.0;
+    }
+    if p.offset_y==2 {
+        var band=0i;let size=p.row1.y;
+        switch u32(p.row1.x) {
+            case 0u:{band=i32(pos.y/size);}
+            case 1u:{band=i32(pos.x/size);}
+            case 2u:{band=i32(pos.x/size)+i32(pos.y/size);}
+            default:{band=i32(floor((pos.x+pos.y)/size));}
+        }
+        return select(p.color,p.row2,band%2!=0);
+    }
+    let extent=max(p.row0.zw-p.row0.xy,vec2<f32>(1.0));
+    let uv=(pos+vec2<f32>(0.5)-p.row0.xy)/extent;
+    var t=0.0;
+    if p.row1.w>0.5 {t=length((uv-p.row1.xy)/p.row1.z);}
+    else {let span=dot(abs(p.row1.xy),extent);if span>0.0 {t=dot((uv-vec2<f32>(0.5))*extent,p.row1.xy)/span+0.5;}}
+    // The reference ramp uses 4097 quantized positions.
+    t=floor(clamp(t,0.0,1.0)*4096.0+0.5)/4096.0;
+    let count=u32(p.color.x);
+    if t<=stop_position(0u) {return stop_color(0u);}
+    if t>=stop_position(count-1u) {return stop_color(count-1u);}
+    var next=count-1u;
+    for(var j=1u;j<count;j+=1u) {if stop_position(j)>t {next=j;break;}}
+    let a=stop_color(next-1u);let b=stop_color(next);
+    let span=stop_position(next)-stop_position(next-1u);
+    var f=1.0;if span>0.0 {f=(t-stop_position(next-1u))/span;}
+    let alpha=a.a+(b.a-a.a)*f;
+    let x=vec3<f32>(linear(a.r),linear(a.g),linear(a.b))*a.a;
+    let y=vec3<f32>(linear(b.r),linear(b.g),linear(b.b))*b.a;
+    var rgb=vec3<f32>(0.0);
+    if alpha>0.000001 {let v=clamp((x+(y-x)*f)/alpha,vec3<f32>(0.0),vec3<f32>(1.0));rgb=vec3<f32>(encoded(v.r),encoded(v.g),encoded(v.b));}
+    return floor(clamp(vec4<f32>(rgb,alpha),vec4<f32>(0.0),vec4<f32>(1.0))*255.0+0.5)/255.0;
+}
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i=gid.x;
     if i>=p.width*p.height { return; }
     let x=i%p.width; let y=i/p.width;
-    if p.op==19u {
+    if p.op==22u {
+        let pos=vec2<u32>(x+p.x0,y+p.y0);
+        if i32(pos.x)>=p.offset_x {return;}
+        let coverage=round(clamp(load_rgba(pos.y*p.frame_width+pos.x).a,0.0,1.0)*255.0);
+        let c=fill_color(vec2<f32>(pos));
+        let alpha=floor(coverage*round(c.a*255.0)/255.0)/255.0;
+        store_rgba(i,over(vec4<f32>(c.rgb,alpha),load_dst(i)));
+    } else if p.op==19u {
         if i>=p.height {return;}
         var lo=p.width; var hi=0u;
         for(var col=0u;col<p.width;col+=1u) {

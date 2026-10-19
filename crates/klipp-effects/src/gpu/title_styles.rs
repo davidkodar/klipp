@@ -26,13 +26,33 @@ pub enum TitleStyle {
     },
 }
 
+/// Fill evaluated in authored pixel coordinates, independently of style coverage.
+#[derive(Clone, Debug)]
+pub enum TitleFill {
+    Pair {
+        top: [u8; 4],
+        bottom: [u8; 4],
+    },
+    Gradient {
+        geometry: [f32; 4],
+        stops: Vec<(f32, [u8; 4])>,
+    },
+    Pattern {
+        colors: [[u8; 4]; 2],
+        mode: u32,
+        spacing: f32,
+    },
+}
+
 /// Face inputs independent of the coverage used by its style stack.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct TitleFace {
     pub alpha: f32,
     pub outline_cutoff: i32,
     pub write_cutoff: i32,
     pub backing: Option<([u32; 4], [u8; 4])>,
+    pub fill: Option<TitleFill>,
+    pub bounds: [f32; 4],
 }
 impl Default for TitleFace {
     fn default() -> Self {
@@ -41,6 +61,8 @@ impl Default for TitleFace {
             outline_cutoff: i32::MAX,
             write_cutoff: i32::MAX,
             backing: None,
+            fill: None,
+            bounds: [0.0; 4],
         }
     }
 }
@@ -86,6 +108,13 @@ struct StyleParams {
     offset_y: i32,
     color: [f32; 4],
     matrix: [[f32; 4]; 3],
+}
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct FillParams {
+    base: StyleParams,
+    // Two (position bits, packed RGBA) stops per aligned uniform vector.
+    stops: [[u32; 4]; 8],
 }
 pub(super) fn inverse(m: [[f32; 4]; 3]) -> Option<[[f32; 4]; 3]> {
     let [a, b, c] = m;
@@ -647,8 +676,10 @@ impl GpuEffectsPipeline {
             outline_cutoff,
             write_cutoff,
             backing,
+            fill,
+            bounds,
         } = face;
-        if !fill_alpha.is_finite() {
+        if !fill_alpha.is_finite() || (fill.is_some() && bounds.iter().any(|v| !v.is_finite())) {
             return false;
         }
         let [x0, y0, w, h] = roi;
@@ -763,6 +794,65 @@ impl GpuEffectsPipeline {
         for style in styles {
             let (color, intensity) = match *style {
                 TitleStyle::Face => {
+                    if let Some(fill) = &fill {
+                        let mut params = FillParams {
+                            base: StyleParams {
+                                op: 22,
+                                offset_x: write_cutoff,
+                                matrix: [bounds, [0.0; 4], [0.0; 4]],
+                                ..base
+                            },
+                            stops: [[0; 4]; 8],
+                        };
+                        match fill {
+                            TitleFill::Pair { top, bottom } => {
+                                params.base.offset_y = 0;
+                                params.base.color = top.map(|v| v as f32 / 255.0);
+                                params.base.matrix[2] = bottom.map(|v| v as f32 / 255.0);
+                            }
+                            TitleFill::Gradient { geometry, stops } => {
+                                if geometry.iter().any(|v| !v.is_finite())
+                                    || stops.is_empty()
+                                    || stops.len() > 16
+                                    || stops.iter().any(|s| !s.0.is_finite())
+                                {
+                                    return false;
+                                }
+                                params.base.offset_y = 1;
+                                params.base.color[0] = stops.len() as f32;
+                                params.base.matrix[1] = *geometry;
+                                let mut sorted = stops.clone();
+                                sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
+                                for (i, stop) in sorted.iter().enumerate() {
+                                    params.stops[i / 2][(i % 2) * 2] = stop.0.to_bits();
+                                    params.stops[i / 2][(i % 2) * 2 + 1] =
+                                        u32::from_le_bytes(stop.1);
+                                }
+                            }
+                            TitleFill::Pattern {
+                                colors,
+                                mode,
+                                spacing,
+                            } => {
+                                if !spacing.is_finite() || *mode > 3 {
+                                    return false;
+                                }
+                                params.base.offset_y = 2;
+                                params.base.color = colors[0].map(|v| v as f32 / 255.0);
+                                params.base.matrix[1] = [*mode as f32, spacing.max(1.0), 0.0, 0.0];
+                                params.base.matrix[2] = colors[1].map(|v| v as f32 / 255.0);
+                            }
+                        }
+                        self.write_params(&params);
+                        self.stack_pass(
+                            &self.title_style_pipeline,
+                            layer,
+                            &s.composite,
+                            (count as u32).div_ceil(WORKGROUP_SIZE),
+                            "title procedural fill",
+                        );
+                        continue;
+                    }
                     pass(
                         6,
                         layer,
