@@ -216,8 +216,26 @@ fn fading_lines() -> TitleData {
 
 #[test]
 fn fading_layers_match_cpu_in_order_and_reuse_their_gpu_sources() {
-    let Some(mut gpu) = GpuEffectsPipeline::new() else { return };
-    let title = fading_lines();
+    check_fading_layers(fading_lines());
+}
+
+#[test]
+fn opacity_keyed_layers_match_cpu_and_reuse_gpu_sources() {
+    let mut title = fading_lines();
+    for o in &mut title.objects {
+        o.upsert_opacity_keyframe(0.0, 0.0);
+        o.upsert_opacity_keyframe(1.0, 0.8);
+        o.upsert_opacity_keyframe(4.0, 0.0);
+    }
+    check_fading_layers(title.clone());
+    title.objects.truncate(1);
+    title.objects[0].fx_mut().motion = Default::default();
+    check_fading_layers(title);
+}
+
+fn check_fading_layers(title: TitleData) {
+    let Some(mut gpu) = GpuEffectsPipeline::new() else { panic!("GPU required for title residency check") };
+    let count = title.objects.len() as u64;
     let mut renderer = TitleRenderer::new();
     let mut ids = None;
     // Revisit earlier times and the fully transparent exit: seeking must
@@ -246,11 +264,11 @@ fn fading_layers_match_cpu_in_order_and_reuse_their_gpu_sources() {
         });
         let worst = worst_code(&want, &got);
         assert!(worst <= 1.5, "at {t}: GPU layers differ by {worst} levels");
-        assert_eq!(renderer.resting_renders(), 2, "only two initial rasterizations");
+        assert_eq!(renderer.resting_renders(), count, "only initial rasterizations");
     }
     gpu.set_authored_to_working([[0.8, 0.1, 0.1], [0.1, 0.8, 0.1], [0.1, 0.1, 0.8]]);
     let TitleFrame::Layers { layers, rows } = renderer.frame_with_window(&title, W, H, None, 0.5, Some(4.0)) else { unreachable!() };
-    let (sprite, alpha) = &layers[1];
+    let (sprite, alpha) = layers.last().unwrap();
     assert!(!gpu.stack_layer_place_sprite_over(0, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), *alpha, rows.0, rows.1), "non-Rec.709 must use the declared composition fallback");
 }
 
@@ -264,5 +282,8 @@ fn fading_layers_at_4k_only_rasterize_the_resting_pictures() {
     }
     let mut keyed = title.clone();
     keyed.objects[0].opacity_keyframes = vec![Keyframe { time_secs: 0.0, value: 0.0, interpolation: Interpolation::Linear, tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0) }];
-    assert!(matches!(renderer.frame_with_window(&keyed, W, H, None, 0.5, Some(4.0)), TitleFrame::Rendered { .. }));
+    for t in [0.1, 0.5, 2.0, 3.6, 0.2] {
+        assert!(matches!(renderer.frame_with_window(&keyed, 3840, 2160, None, t, Some(4.0)), TitleFrame::Layers { .. }));
+        assert_eq!(renderer.resting_renders(), 2);
+    }
 }

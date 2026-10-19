@@ -344,6 +344,20 @@ fn style_source_cache_invalidates_and_unsupported_combinations_decline() {
             ..Default::default()
         },
     );
+    // Two 4K titles alternate and scrub without preparing either face again.
+    let mut other = title.clone();
+    other.primary_text_mut().unwrap().text = "Other light".into();
+    let mut ids = [0; 2];
+    for (pass, t) in [0.0, 1.0, 0.25].into_iter().enumerate() {
+        for (i, td) in [&title, &other].into_iter().enumerate() {
+            let source = r.style_source(td, 3840, 2160, t, Some(3.0)).unwrap();
+            if pass == 0 { ids[i] = source.id; }
+            else {
+                assert_eq!(source.id, ids[i], "alternating titles retain their own faces");
+                assert_eq!(source.face_work, klipp_title::StyleFaceWork::Reused);
+            }
+        }
+    }
     let first = r.style_source(&title, 640, 360, 0.0, Some(3.0)).unwrap();
     let next = r.style_source(&title, 640, 360, 1.0, Some(3.0)).unwrap();
     assert_eq!(first.id, next.id);
