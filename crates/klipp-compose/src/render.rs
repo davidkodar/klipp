@@ -2675,6 +2675,27 @@ impl Renderer {
                     let font_px=text.font_size*klipp_title::frame_scale(width,height);
                     let (text_w,text_h)=text.loop_extent(font_px);
                     let pose=klipp_core::title_motion::eval_loops(&loops,clip_time as f32,Some(total),klipp_timeline::LoopGeometry {frame_w:width as f32,frame_h:height as f32,text_w,text_h,font_px},text.color);
+                    if let Some((axis,focus))=pose.focus {
+                        let mut source=td.clone();let target=&mut source.objects[0];
+                        target.fx_mut().loops.retain(|l|title_source_loops(std::slice::from_ref(l)));
+                        let edges=target.fx().edge_fade;target.fx_mut().edge_fade=Default::default();
+                        target.opacity*=pose.opacity;
+                        if target.opacity<=0.001 {
+                            return self.executor.gpu_pipeline_or_init()?.stack_layer_clear(slot).then_some(((0,0),Vec::new()));
+                        }
+                        let opacity=target.evaluated_opacity(clip_time);
+                        target.opacity=1.0;target.opacity_keyframes.clear();
+                        target.transform.center.x+=pose.dx/width as f32;
+                        target.transform.center.y+=pose.dy/height as f32;
+                        let (_,soft)=self.place_title_source(&source,slot,width,height,clip_time,total)?;
+                        let gpu=self.executor.gpu_pipeline_or_init()?;
+                        let vertical=axis==klipp_core::title_motion::RampAxis::Vertical;
+                        if !gpu.stack_title_source_effects(slot,&soft)
+                            || !gpu.stack_title_fade(slot,[edges.top,edges.bottom,edges.left,edges.right],1.0,Some((vertical,focus.band,focus.edge_opacity)))
+                            || !gpu.stack_title_focus_blur(slot,focus.blur*klipp_title::frame_scale(width,height),vertical,focus.band)
+                            || !gpu.stack_title_alpha(slot,[0.0;4],opacity) {return None;}
+                        return Some(((0,height),Vec::new()));
+                    }
                     if pose.focus.is_none() {
                         let mut source=td.clone();
                         let target=&mut source.objects[0];

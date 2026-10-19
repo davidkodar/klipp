@@ -63,11 +63,12 @@ for full-project playback profiling.
   blur, rotation and colour use that same route. Fixed arc, circle and wave paths
   reuse outlines when their typography changes.
 - Supported text sources compose styles, glitch and chromatic processing on GPU,
-  followed by object rotation, edge fades, opacity and scene blend/mask composition.
+  followed by object rotation, edge/focus fades, authored-colour focus blur, opacity
+  and scene blend/mask composition.
   Colour backings and full-frame backgrounds keep their authored ordering.
   Eligible animated 3D and tracking retain their existing GPU paths (#2061/#2062).
 - Remaining title fallbacks include bitmap colour glyphs, linked-path context,
-  path-specific glyph motion, fitted-shape context, focus-band combinations,
+  path-specific glyph motion, fitted-shape context, unsupported focus-band sources,
   source shutter sampling and unsupported extrusion/3D authoring combinations.
   Cache-size or device limits can also decline a source. These remain explicit
   fallbacks; GPU final composition alone does not establish source residency.
