@@ -1460,6 +1460,9 @@ impl TitleRenderer {
             let parents:Vec<_>=glyphs.iter().map(|g|g.parent).collect();
             let animated=self.gpu_motion.map(|(time,_)|klipp_core::title_motion::animator_poses(&fx.animators,&parents,font_px,time as f64)).unwrap_or_default();
             for (i,(g,rest_g)) in posed.iter_mut().zip(glyphs).enumerate() {
+                // Spaces still count for selector indices but have no coverage
+                // to expand, blur or rotate.
+                if rest_g.width==0 || rest_g.height==0 {continue;}
                 let mut dx=0.0;let mut dy=0.0;let mut alpha=1.0;let mut clip=[i32::MIN,i32::MAX];let mut sigma=0.0;let mut radians=0.0;
                 if let Some((time,window))=self.gpu_motion {
                     let (pe,_)=fx.motion.progress(time,window,enter_units[i]);

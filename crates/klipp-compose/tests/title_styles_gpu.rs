@@ -494,6 +494,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
             }
             if variant>=33 {title.objects[0].fx_mut().animators[0].props.rotation=25.0;}
             if variant>=34 {title.objects[0].fx_mut().animators[0].props.blur=if variant==34 {0.1}else{0.5};}
+            if variant==35 {title.primary_text_mut().unwrap().text="Soft Title".into();}
             if variant==36 {title.objects[0].fx_mut().animators[0].props.rotation=90.0;}
             if variant==37 {let text=title.primary_text_mut().unwrap();text.glitch_intensity=0.6;text.chromatic_aberration_px=12.0;}
             if variant==11 {let text=title.primary_text_mut().unwrap();text.font_name="Variable Test".into();text.font_axes=vec![("wght".into(),650.0)];}
