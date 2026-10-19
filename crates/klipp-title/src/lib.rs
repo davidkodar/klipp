@@ -3230,7 +3230,8 @@ impl TitleRenderer {
                     // whole frame converted for a dot was most of the
                     // 35 ms a frame such a title still cost.
                     let fades = !self.defer_layer_fades && (self.loop_focus.contains_key(&obj.id.0) || ScreenFade::new(obj.fx().edge_fade, None).is_some());
-                    let as_is = first_layer && (opacity - 1.0).abs() < 0.001 && effective_transform.rotation.abs() <= 0.001 && !fades;
+                    // Mixed layers must reach the mask/blend step below, even when cached.
+                    let as_is = !mixed && first_layer && (opacity - 1.0).abs() < 0.001 && effective_transform.rotation.abs() <= 0.001 && !fades;
                     if let Some(kept) = kept.as_ref().filter(|_| as_is) {
                         self.bound_path = None;
                         self.loop_wave = None;

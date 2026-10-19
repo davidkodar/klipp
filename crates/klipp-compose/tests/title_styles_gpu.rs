@@ -395,7 +395,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
     use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams};
     use klipp_timeline::GradeAccess;
     let (w, h) = (320, 180);
-    const VARIANTS:usize=59;
+    const VARIANTS:usize=62;
     // Isolate a failing case locally without weakening the default regression.
     let selected=std::env::var("KLIPP_TEST_TITLE_VARIANT").ok().map(|v| {let n=v.parse::<usize>().expect("title variant number");assert!(n<VARIANTS,"unknown title variant");n});
     for ws in [WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG] {
@@ -564,6 +564,19 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                 title.primary_text_mut().unwrap().text_path=Some(klipp_timeline::TextPath::Layer{layer,contour:0,offset:0.1,offset_keyframes:vec![],align:klipp_timeline::PathTextAlign::Start,flip:false});
                 title.objects[0].fx_mut().motion=klipp_timeline::TitleMotion::enter(klipp_timeline::Motion::new(klipp_timeline::MotionKind::Rise).duration(0.8).stagger(klipp_timeline::StaggerUnit::Char,0.05));
             }
+            if variant>=59 {
+                title=TitleData::single_text_fx(TextBox{text:"Panel".into(),font_size:180.0,..Default::default()},LayerFx::default());
+                title.add_object(klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape{kind:klipp_timeline::ShapeKind::Rectangle{corner_radius:24.0},fill:Some([40,80,200,130]),gradient:None,stroke:Some(klipp_timeline::ShapeStroke{color:[180,40,90,200],width:4.0}),fit:None}),klipp_timeline::ObjectTransform{
+                    size:klipp_timeline::TitlePosition{x:0.7,y:0.5},
+                    center_x_keyframes:vec![key(0.0,0.35),key(1.0,0.65)],
+                    size_y_keyframes:vec![key(0.0,0.3),key(1.0,0.6)],
+                    rotation_keyframes:vec![key(0.0,-15.0),key(1.0,25.0)],
+                    anchor_norm:klipp_timeline::TitlePosition{x:0.3,y:0.7},
+                    ..klipp_timeline::default_text_transform()});
+                if variant==59 {title.objects.remove(0);title.objects[0].opacity_keyframes=vec![key(0.0,0.3),key(1.0,0.7)];}
+                if variant==60 {title.objects[1].blend=klipp_core::BlendMode::Screen;title.objects[1].opacity_keyframes=vec![key(0.0,0.3),key(1.0,0.7)];}
+                if variant==61 {title.objects[0].mask=Some(klipp_timeline::LayerMask{source:title.objects[1].id,kind:klipp_core::layer_mask::LayerMaskKind::Luma});title.objects[1].visible=false;}
+            }
             if variant==11 {let text=title.primary_text_mut().unwrap();text.font_name="Variable Test".into();text.font_axes=vec![("wght".into(),650.0)];}
             let mut clip = Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) };
             if graded {
@@ -600,7 +613,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                 let worst = got.iter().zip(&want).map(|(a,b)| a.abs_diff(*b)).max().unwrap();
                 if worst>3 {let i=got.iter().zip(&want).position(|(a,b)|a.abs_diff(*b)==worst).unwrap()/4; eprintln!("worst pixel {},{} got {:?} want {:?}",i%w as usize,i/w as usize,&got[i*4..i*4+4],&want[i*4..i*4+4]);}
                 assert!(worst<=3,"{ws:?} graded={graded} variant={variant} at{t}: {worst}");
-                assert_eq!(gpu.title_renderer().resting_renders(),u64::from(variant==0 || variant==6 || variant==58),"cached sources, not full per-frame rasters");
+                assert_eq!(gpu.title_renderer().resting_renders(),u64::from(variant==0 || variant==6 || variant==58 || variant==60 || variant==61),"cached sources, not full per-frame rasters");
                 if sample==2 { assert!(events.iter().all(|e| e.work!=klipp_effects::residency::Work::Preparation),"warm backward seek: {events:?}"); }
             }
         }
