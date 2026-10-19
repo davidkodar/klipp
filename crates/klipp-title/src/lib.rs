@@ -1460,7 +1460,7 @@ impl TitleRenderer {
             let parents:Vec<_>=glyphs.iter().map(|g|g.parent).collect();
             let animated=self.gpu_motion.map(|(time,_)|klipp_core::title_motion::animator_poses(&fx.animators,&parents,font_px,time as f64)).unwrap_or_default();
             for (i,(g,rest_g)) in posed.iter_mut().zip(glyphs).enumerate() {
-                let mut dx=0.0;let mut dy=0.0;let mut alpha=1.0;let mut clip=[i32::MIN,i32::MAX];
+                let mut dx=0.0;let mut dy=0.0;let mut alpha=1.0;let mut clip=[i32::MIN,i32::MAX];let mut sigma=0.0;let mut radians=0.0;
                 if let Some((time,window))=self.gpu_motion {
                     let (pe,_)=fx.motion.progress(time,window,enter_units[i]);
                     let (_,px)=fx.motion.progress(time,window,exit_units[i]);
@@ -1468,7 +1468,8 @@ impl TitleRenderer {
                     let (a1,x1,y1,s1,b1,c1)=fx.motion.enter.map(|m|m.pose(pe,font_px)).unwrap_or(rest);
                     let (a2,x2,y2,s2,b2,c2)=fx.motion.exit.map(|m|m.pose(px,font_px)).unwrap_or(rest);
                     let pose=animated.get(i).copied().unwrap_or_default();
-                    supported &= b1.max(b2).max(pose.blur)<=0.05 && pose.rotation==0.0 && pose.colour.is_none();
+                    supported &= pose.colour.is_none();
+                    sigma=b1.max(b2).max(pose.blur);radians=pose.rotation.to_radians();
                     alpha=a1*a2*pose.alpha;
                     if alpha<=0.001 {alpha=0.0;}
                     dx=x1+x2+pose.dx;dy=y1+y2+pose.dy;
@@ -1481,10 +1482,18 @@ impl TitleRenderer {
                     if c1||c2 {let top=(rest_g.y+offset_y) as i32;clip=[top,top+rest_g.height as i32];}
                 }
                 if let Some((time,amp,rate))=self.gpu_wave {dy+=(time*rate*std::f32::consts::TAU+i as f32*0.5).sin()*amp;}
+                let source_size=[g.width as u32,g.height as u32];
+                if sigma>=0.5 {let pad=(sigma*2.5).ceil().max(1.0) as usize;g.width+=2*pad;g.height+=2*pad;}
+                if radians!=0.0 {
+                    let(c,sn)=(radians.cos(),radians.sin());let(hx,hy)=(g.width as f32*0.5,g.height as f32*0.5);
+                    let rw=((hx*c).abs()+(hy*sn).abs()).ceil() as usize*2+2;
+                    let rh=((hx*sn).abs()+(hy*c).abs()).ceil() as usize*2+2;
+                    g.width=rw+(rw+g.width)%2;g.height=rh+(rh+g.height)%2;
+                }
                 let origin=[(rest_g.x+offset_x+dx) as i32-(g.width as i32-rest_g.width as i32)/2,
                     (rest_g.y+offset_y+dy) as i32-(g.height as i32-rest_g.height as i32)/2];
                 g.x=origin[0] as f32-offset_x;g.y=origin[1] as f32-offset_y;
-                if g.width>0 && g.height>0 {draw_poses.push((origin,alpha,clip));}
+                if g.width>0 && g.height>0 {draw_poses.push((origin,alpha,clip,source_size,sigma,radians));}
             }
             let glyphs=posed.as_slice();
             *self.gpu_layout_capture.borrow_mut() = if supported {self.gpu_glyph_cache.borrow_mut().layout(
@@ -1492,8 +1501,8 @@ impl TitleRenderer {
                 [mask_x0 as u32, mask_y0 as u32, mask_w as u32, mask_h as u32], tb.color, title.primary_fx(), self.gpu_outline_only,
             )} else {None};
             if let Some(source) = self.gpu_layout_capture.borrow_mut().as_mut() {
-                for (draw,(origin,alpha,clip)) in source.outlines.iter_mut().zip(&draw_poses) {draw.origin=*origin;draw.alpha=*alpha;draw.clip_y=*clip;}
-                for (draw,(origin,_,_)) in source.glyphs.iter_mut().zip(&draw_poses) {draw.origin=*origin;}
+                for (draw,(origin,alpha,clip,size,blur,radians)) in source.outlines.iter_mut().zip(&draw_poses) {draw.origin=*origin;draw.alpha=*alpha;draw.clip_y=*clip;draw.source_size=*size;draw.blur=*blur;draw.radians=*radians;}
+                for (draw,(origin,_,_,_,_,_)) in source.glyphs.iter_mut().zip(&draw_poses) {draw.origin=*origin;}
                 source.bounds=[text_min_x+offset_x,text_min_y+offset_y,text_max_x+offset_x,text_max_y+offset_y];
                 source.gradient=tb.gradient.clone().filter(|g|g.enabled);
                 source.pattern=tb.pattern_fill.clone().filter(|_|tb.pattern_fill_enabled);

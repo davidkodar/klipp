@@ -16,6 +16,9 @@ pub struct OutlineDraw {
     pub placement: [f32; 4],
     pub alpha: f32,
     pub clip_y: [i32; 2],
+    pub source_size: [u32; 2],
+    pub blur: f32,
+    pub radians: f32,
 }
 pub struct TextureDraw {
     pub id: u64,
@@ -235,6 +238,9 @@ impl GlyphCache {
                 edges: cached.edges.clone(),
                 origin: [(g.x + offset[0]) as i32, (g.y + offset[1]) as i32],
                 size: [g.width as u32, g.height as u32],
+                source_size: [g.width as u32, g.height as u32],
+                blur: 0.0,
+                radians: 0.0,
                 alpha: 1.0,
                 clip_y: [i32::MIN, i32::MAX],
                 placement: [

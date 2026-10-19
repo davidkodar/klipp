@@ -172,12 +172,58 @@ fn fill_color(pos:vec2<f32>)->vec4<f32> {
     if alpha>0.000001 {let v=clamp((x+(y-x)*f)/alpha,vec3<f32>(0.0),vec3<f32>(1.0));rgb=vec3<f32>(encoded(v.r),encoded(v.g),encoded(v.b));}
     return floor(clamp(vec4<f32>(rgb,alpha),vec4<f32>(0.0),vec4<f32>(1.0))*255.0+0.5)/255.0;
 }
+fn glyph_at(pos:vec2<f32>)->f32 {
+    if any(pos<vec2<f32>(0.0)) || any(pos>=p.row0.xy) {return 0.0;}
+    return bitcast<f32>(input[u32(pos.y)*u32(p.row0.x)+u32(pos.x)]);
+}
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i=gid.x;
     if i>=p.width*p.height { return; }
     let x=i%p.width; let y=i/p.width;
-    if p.op==24u {
+    if p.op==26u {
+        let sx=i32(x)-i32(p.x0);let sy=i32(y)-i32(p.x0);
+        var value=0.0;if sx>=0 && sy>=0 && sx<i32(p.row0.x) && sy<i32(p.row0.y) {value=bitcast<f32>(input[u32(sy)*u32(p.row0.x)+u32(sx)]);}
+        output[i]=bitcast<u32>(value);
+    } else if p.op==27u {
+        var value=0.0;
+        for(var d=-p.offset_x;d<=p.offset_x;d+=1) {
+            let k=u32(abs(d));let weight=bitcast<f32>(p.stops[k/4u][k%4u]);
+            var at=i;
+            if p.offset_y==0 {at=y*p.width+u32(clamp(i32(x)+d,0,i32(p.width)-1));}
+            else {at=u32(clamp(i32(y)+d,0,i32(p.height)-1))*p.width+x;}
+            value+=bitcast<f32>(input[at])*weight;
+        }
+        if p.offset_y==1 {value=floor(clamp(value,0.0,255.0)+0.5);}
+        output[i]=bitcast<u32>(value);
+    } else if p.op==28u {
+        var lines=p.height;var len=p.width;var step=1u;var stride=p.width;
+        if p.offset_y==1 {lines=p.width;len=p.height;step=p.width;stride=1u;}
+        if i>=lines {return;}
+        let base=i*stride;let radius=u32(p.offset_x);var sum=0.0;
+        for(var j=0u;j<=min(radius,len-1u);j+=1u) {sum+=bitcast<f32>(input[base+j*step]);}
+        let norm=1.0/f32(2u*radius+1u);
+        for(var j=0u;j<len;j+=1u) {
+            var value=sum*norm;if p.x0==1u {value=floor(clamp(value,0.0,255.0)+0.5);}
+            output[base+j*step]=bitcast<u32>(value);
+            if j+radius+1u<len {sum+=bitcast<f32>(input[base+(j+radius+1u)*step]);}
+            if j>=radius {sum-=bitcast<f32>(input[base+(j-radius)*step]);}
+        }
+    } else if p.op==29u {
+        let px=i32(x)+p.offset_x;let py=i32(y)+p.offset_y;
+        if px<0 || py<0 || px>=i32(p.frame_width) || py>=i32(p.y0) || f32(py)<p.row1.x || f32(py)>=p.row1.y {return;}
+        var value=0.0;
+        if p.row1.w>0.5 {
+            let uv=vec2<f32>(f32(x)+0.5-f32(p.width)*0.5,f32(y)+0.5-f32(p.height)*0.5);
+            let src=vec2<f32>(uv.x*p.row0.z+uv.y*p.row0.w,uv.y*p.row0.z-uv.x*p.row0.w)+p.row0.xy*0.5-vec2<f32>(0.5);
+            let lo=floor(src);let t=src-lo;
+            value=glyph_at(lo)*(1.0-t.x)*(1.0-t.y)+glyph_at(lo+vec2<f32>(1.0,0.0))*t.x*(1.0-t.y)+glyph_at(lo+vec2<f32>(0.0,1.0))*(1.0-t.x)*t.y+glyph_at(lo+vec2<f32>(1.0,1.0))*t.x*t.y;
+            value=floor(clamp(value,0.0,255.0)+0.5);
+        } else {value=bitcast<f32>(input[i]);}
+        let alpha=floor(clamp(value*p.row1.z,0.0,255.0)+0.5)/255.0;
+        let dst=u32(py)*p.frame_width+u32(px);
+        store_rgba(dst,vec4<f32>(p.color.rgb,max(alpha,load_dst(dst).a)));
+    } else if p.op==24u {
         store_rgba(i,load_rgba((y+p.y0)*p.frame_width+x+p.x0));
     } else if p.op==23u {
         let pos=vec2<u32>(x+p.x0,y+p.y0);
@@ -258,10 +304,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         store_rgba(i,select(vec4<f32>(0.0),vec4<f32>(rgb,p.color.a),inside));
     } else if p.op==15u {
         store_rgba((y+p.y0)*p.frame_width+x+p.x0,p.color);
-    } else if p.op==14u {
+    } else if p.op==14u || p.op==25u {
         let px=i32(x)+p.offset_x; let py=i32(y)+p.offset_y;
-        if px<0 || py<0 || px>=i32(p.frame_width) || py>=i32(p.y0) {return;}
-        if f32(py)<p.row1.x || f32(py)>=p.row1.y {return;}
+        if p.op==14u {
+            if px<0 || py<0 || px>=i32(p.frame_width) || py>=i32(p.y0) {return;}
+            if f32(py)<p.row1.x || f32(py)>=p.row1.y {return;}
+        }
         var coverage=0.0;
         var pixel=vec2<f32>(f32(x),f32(y));
         if p.row0.w>0.5 {pixel=vec2<f32>(f32(y),f32(p.width)-1.0-f32(x));}
@@ -290,6 +338,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         var alpha=floor(clamp(abs(coverage)*255.9,0.0,255.0))/255.0;
         if bins.w>0.5 {alpha=floor(clamp(abs(coverage),0.0,1.0)*255.0+0.5)/255.0;}
+        if p.op==25u {output[i]=bitcast<u32>(round(alpha*255.0));return;}
         alpha=floor(round(alpha*255.0)*p.row1.z+0.5)/255.0;
         let dst=u32(py)*p.frame_width+u32(px);
         store_rgba(dst,vec4<f32>(p.color.rgb,max(alpha,load_dst(dst).a)));
