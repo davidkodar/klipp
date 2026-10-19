@@ -51,6 +51,7 @@ pub struct TitleGlyphPose {
     pub source_size: [u32; 2],
     pub blur: f32,
     pub radians: f32,
+    pub face: Option<[u32; 4]>,
 }
 /// Cached texture and its authored UV transform, applied after title styles.
 pub struct TitleTexture<'a> {
@@ -73,6 +74,7 @@ pub struct TitleFace {
     pub write_cutoff: i32,
     pub backing: Option<([u32; 4], [u8; 4])>,
     pub fill: Option<TitleFill>,
+    pub rich_slot: Option<usize>,
     pub bounds: [f32; 4],
 }
 impl Default for TitleFace {
@@ -83,6 +85,7 @@ impl Default for TitleFace {
             write_cutoff: i32::MAX,
             backing: None,
             fill: None,
+            rich_slot: None,
             bounds: [0.0; 4],
         }
     }
@@ -184,6 +187,7 @@ impl GpuEffectsPipeline {
             source_size,
             blur,
             radians,
+            face,
         } = pose;
         let [w, h] = size;
         let count = u64::from(w) * u64::from(h);
@@ -272,6 +276,11 @@ impl GpuEffectsPipeline {
         let working = self
             .authored_to_working
             .map(|row| row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2]);
+        let ink = if face.is_some() {
+            color.map(|v| v as f32 / 255.0)
+        } else {
+            [working[0], working[1], working[2], 1.0]
+        };
         if blur >= 0.5 || radians != 0.0 {
             if !self.pose_outline_coverage(
                 slot,
@@ -280,11 +289,12 @@ impl GpuEffectsPipeline {
                 size,
                 source_size,
                 placement,
-                [working[0], working[1], working[2], 1.0],
+                ink,
                 alpha,
                 clip_y,
                 blur,
                 radians,
+                face,
             ) {
                 return false;
             }
@@ -294,11 +304,11 @@ impl GpuEffectsPipeline {
                 height: h,
                 frame_width: self.stack_dims.0,
                 op: 14,
-                x0: edges.len() as u32,
+                x0: u32::from(face.is_some()),
                 y0: self.stack_dims.1,
                 offset_x: origin[0],
                 offset_y: origin[1],
-                color: [working[0], working[1], working[2], 1.0],
+                color: ink,
                 matrix: [
                     placement,
                     [
@@ -307,7 +317,7 @@ impl GpuEffectsPipeline {
                         alpha.clamp(0.0, 1.0),
                         0.0,
                     ],
-                    [0.0; 4],
+                    face.unwrap_or([0; 4]).map(|v| v as f32),
                 ],
             };
             self.write_params(&params);
@@ -348,6 +358,7 @@ impl GpuEffectsPipeline {
         clip: [i32; 2],
         sigma: f32,
         radians: f32,
+        face: Option<[u32; 4]>,
     ) -> bool {
         let pad = if sigma >= 0.5 {
             (sigma * 2.5).ceil().max(1.0) as u32
@@ -380,7 +391,7 @@ impl GpuEffectsPipeline {
             height: raw[1],
             frame_width: self.stack_dims.0,
             op: 25,
-            x0: 0,
+            x0: u32::from(face.is_some()),
             y0: self.stack_dims.1,
             offset_x: origin[0],
             offset_y: origin[1],
@@ -388,7 +399,7 @@ impl GpuEffectsPipeline {
             matrix: [
                 placement,
                 [clip[0] as f32, clip[1] as f32, alpha, 0.0],
-                [0.0; 4],
+                face.unwrap_or([0; 4]).map(|v| v as f32),
             ],
         };
         self.write_params(&base);
@@ -495,7 +506,7 @@ impl GpuEffectsPipeline {
                     alpha.clamp(0.0, 1.0),
                     if radians != 0.0 { 1.0 } else { 0.0 },
                 ],
-                [0.0; 4],
+                face.unwrap_or([0; 4]).map(|v| v as f32),
             ],
             ..base
         });
@@ -510,7 +521,13 @@ impl GpuEffectsPipeline {
     }
 
     /// Solid coverage for underline/strikethrough geometry.
-    pub fn stack_title_stripe(&mut self, slot: usize, rect: [u32; 4], color: [u8; 4]) -> bool {
+    pub fn stack_title_stripe(
+        &mut self,
+        slot: usize,
+        rect: [u32; 4],
+        color: [u8; 4],
+        face: bool,
+    ) -> bool {
         let [x, y, w, h] = rect;
         if self.is_device_lost()
             || slot >= self.stack_layers.len()
@@ -543,9 +560,13 @@ impl GpuEffectsPipeline {
             op: 15,
             x0: x,
             y0: y,
-            offset_x: 0,
+            offset_x: i32::from(face),
             offset_y: 0,
-            color: [rgb[0], rgb[1], rgb[2], 1.0],
+            color: if face {
+                color.map(|v| v as f32 / 255.0)
+            } else {
+                [rgb[0], rgb[1], rgb[2], 1.0]
+            },
             matrix: [[0.0; 4]; 3],
         });
         self.stack_pass(
@@ -1066,8 +1087,12 @@ impl GpuEffectsPipeline {
             write_cutoff,
             backing,
             fill,
+            rich_slot,
             bounds,
         } = face;
+        if rich_slot.is_some_and(|i| i >= self.stack_layers.len() || i == slot) {
+            return false;
+        }
         if !fill_alpha.is_finite() || (fill.is_some() && bounds.iter().any(|v| !v.is_finite())) {
             return false;
         }
@@ -1239,6 +1264,17 @@ impl GpuEffectsPipeline {
                             &s.composite,
                             (count as u32).div_ceil(WORKGROUP_SIZE),
                             "title procedural fill",
+                        );
+                        continue;
+                    }
+                    if let Some(rich) = rich_slot {
+                        pass(
+                            30,
+                            &self.stack_layers[rich],
+                            &s.composite,
+                            [0, 0],
+                            [0.0; 4],
+                            to_authored,
                         );
                         continue;
                     }

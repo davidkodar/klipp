@@ -397,7 +397,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
     let (w, h) = (320, 180);
     for ws in [WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG] {
         for graded in [false, true] {
-          for variant in 0..38 {
+          for variant in 0..42 {
             let mut title = TitleData::single_text_fx(TextBox {
                 text: "Glitch".into(), font_size: 180.0, color: [190, 120, 60, 255],
                 glitch_intensity: 0.6, chromatic_aberration_px: 12.0, ..Default::default()
@@ -497,6 +497,19 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
             if variant==35 {title.primary_text_mut().unwrap().text="Soft Title".into();}
             if variant==36 {title.objects[0].fx_mut().animators[0].props.rotation=90.0;}
             if variant==37 {let text=title.primary_text_mut().unwrap();text.glitch_intensity=0.6;text.chromatic_aberration_px=12.0;}
+            if variant>=38 {
+                let text=title.primary_text_mut().unwrap();text.text="Colour Wave".into();text.gradient=None;text.pattern_fill=None;text.texture_fill=None;
+                title.objects[0].fx_mut().animators[0].props.colour=Some([30,180,240,140]);
+                if variant==39 {title.objects[0].fx_mut().animators[0].props.blur=0.0;title.objects[0].fx_mut().animators[0].props.rotation=0.0;}
+            }
+            if variant>=40 {
+                title.objects[0].fx_mut().animators.clear();title.objects[0].fx_mut().motion=Default::default();
+                let text=title.primary_text_mut().unwrap();text.text="Rich text".into();
+                text.style_runs=vec![klipp_timeline::StyleRun{start:0,end:4,color:Some([220,40,100,130]),font_size:Some(160.0),underline:if variant==41 {Some(true)}else{None},..klipp_timeline::StyleRun::default_for_range(0,4)}];
+            }
+            if variant==41 {
+                title.objects[0].fx_mut().animators=vec![klipp_timeline::Animator{props:klipp_timeline::AnimatorProps{opacity:0.0,colour:Some([30,180,240,140]),..Default::default()},..Default::default()}];
+            }
             if variant==11 {let text=title.primary_text_mut().unwrap();text.font_name="Variable Test".into();text.font_axes=vec![("wght".into(),650.0)];}
             let mut clip = Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) };
             if graded {
