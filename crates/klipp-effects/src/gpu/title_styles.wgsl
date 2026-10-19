@@ -133,7 +133,40 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i=gid.x;
     if i>=p.width*p.height { return; }
     let x=i%p.width; let y=i/p.width;
-    if p.op==17u {
+    if p.op==19u {
+        if i>=p.height {return;}
+        var lo=p.width; var hi=0u;
+        for(var col=0u;col<p.width;col+=1u) {
+            let v=load_rgba(i*p.width+col);
+            store_rgba(i*p.width+col,v);
+            if v.a>0.0 {lo=min(lo,col);hi=max(hi,col);}
+        }
+        store_rgba(p.width*p.height+i,vec4<f32>(f32(lo),f32(i),f32(hi),f32(i)));
+    } else if p.op==20u {
+        if i!=0u {return;}
+        var bounds=vec4<f32>(f32(p.width),f32(p.height),0.0,0.0);
+        for(var row=0u;row<p.height;row+=1u) {
+            let b=load_dst(p.width*p.height+row);
+            if b.x<=b.z {bounds=vec4<f32>(min(bounds.xy,b.xy),max(bounds.zw,b.zw));}
+        }
+        store_rgba(p.width*p.height+p.height,bounds);
+    } else if p.op==21u {
+        let b=load_rgba(p.width*p.height+p.height);
+        let extent=b.zw-b.xy+vec2<f32>(1.0);
+        let radius=ceil(sqrt(dot(extent,extent)));
+        let pos=vec2<f32>(f32(x),f32(y));
+        let d=pos-p.color.xy;
+        let source=p.color.xy+vec2<f32>(d.x*p.color.w+d.y*p.color.z,-d.x*p.color.z+d.y*p.color.w);
+        // Rust f32::round resolves half-way values away from zero.
+        let sample=sign(source)*floor(abs(source)+vec2<f32>(0.5));
+        var v=vec4<f32>(0.0);
+        if all(b.xy<=b.zw) && all(pos>=floor(p.color.xy)-vec2<f32>(radius)) && all(pos<=ceil(p.color.xy)+vec2<f32>(radius))
+            && all(sample>=b.xy) && all(sample<=b.zw) {
+            let s=load_rgba(u32(sample.y)*p.width+u32(sample.x));
+            if s.a>0.0 {v=s;}
+        }
+        store_rgba(i,v);
+    } else if p.op==17u {
         let pos=vec2<f32>(f32(x+p.x0),f32(y+p.y0));
         let inside=all(pos>=p.row0.xy)&&all(pos<p.row0.xy+p.row0.zw);
         store_rgba(i,select(vec4<f32>(0.0),p.color,inside));
