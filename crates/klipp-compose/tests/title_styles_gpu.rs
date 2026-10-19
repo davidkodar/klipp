@@ -397,7 +397,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
     let (w, h) = (320, 180);
     for ws in [WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG] {
         for graded in [false, true] {
-          for variant in 0..22 {
+          for variant in 0..26 {
             let mut title = TitleData::single_text_fx(TextBox {
                 text: "Glitch".into(), font_size: 180.0, color: [190, 120, 60, 255],
                 glitch_intensity: 0.6, chromatic_aberration_px: 12.0, ..Default::default()
@@ -467,6 +467,20 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
             }
             if variant==20 { title.objects[0].fx_mut().loops.push(klipp_timeline::TitleLoop::Pulse{rate_hz:0.7,min_opacity:0.2}); }
             if variant==21 { title.objects[0].fx_mut().loops.push(klipp_timeline::TitleLoop::Sway{rate_hz:0.7,amplitude:0.2}); }
+            if variant>=22 {
+                let text=title.primary_text_mut().unwrap();
+                text.font_size_keyframes=vec![key(0.0,120.0),key(1.0,220.0)];
+                if variant==25 {
+                    text.pattern_fill_enabled=true;
+                    text.pattern_fill=Some(klipp_timeline::TextPattern::Checkerboard{color_a:[200,60,20,170],color_b:[30,100,230,255],cell_size:25.0});
+                } else {
+                    text.gradient=Some(klipp_timeline::TextGradient {
+                        top_color:[200,60,20,170],bottom_color:[30,100,230,255],enabled:true,
+                        stops:if variant==22 {vec![]} else {vec![klipp_timeline::GradientStop{position:0.1,color:[200,60,20,170]},klipp_timeline::GradientStop{position:0.4,color:[10,220,100,0]},klipp_timeline::GradientStop{position:0.9,color:[30,100,230,255]}]},
+                        kind:if variant==23 {klipp_timeline::GradientKind::Linear{angle_deg:32.0}} else if variant==24 {klipp_timeline::GradientKind::Radial{centre:[0.3,0.6],radius:0.7}} else {Default::default()},stop_keyframes:vec![],
+                    });
+                }
+            }
             if variant==11 {let text=title.primary_text_mut().unwrap();text.font_name="Variable Test".into();text.font_axes=vec![("wght".into(),650.0)];}
             let mut clip = Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) };
             if graded {

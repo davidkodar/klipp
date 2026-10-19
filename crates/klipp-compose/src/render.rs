@@ -2813,7 +2813,7 @@ impl Renderer {
                         p.stack_layer_clear(slot) && source.glyphs.iter().all(|g| p.stack_title_glyph(slot,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],g.origin,source.color))
                             && source.outlines.iter().all(|g|p.stack_title_outline(slot,g.id,&g.edges,g.origin,g.size,g.placement,source.color))
                             && source.stripes.iter().all(|&rect|p.stack_title_stripe(slot,rect,source.color))
-                            && (source.roi[2]==0 || source.roi[3]==0 || p.stack_title_styles_with_face(slot,source.roi,&passes,klipp_effects::gpu::TitleFace {alpha:source.color[3] as f32/255.0,outline_cutoff:source.outline_cutoff,write_cutoff:source.write_cutoff,backing:source.backing}))
+                            && (source.roi[2]==0 || source.roi[3]==0 || p.stack_title_styles_with_face(slot,source.roi,&passes,klipp_effects::gpu::TitleFace {alpha:source.color[3] as f32/255.0,outline_cutoff:source.outline_cutoff,write_cutoff:source.write_cutoff,backing:source.backing,fill:title_fill(&source,klipp_title::frame_scale(width,height)),bounds:source.bounds}))
                     })
                 } else if let Some(source) = self.titles.style_source(td, width, height, clip_time as f32, Some(total)) {
                     match source.face_work {
@@ -6335,6 +6335,24 @@ fn follows_something_moving(seq: &Sequence, c: &Clip, depth: u32) -> bool {
         return false;
     };
     camera_moves_it(seq, target) || moves_itself(target) || follows_something_moving(seq, target, depth + 1)
+}
+
+fn title_fill(source:&klipp_title::GlyphSource,scale:f32)->Option<klipp_effects::gpu::TitleFill> {
+    use klipp_effects::gpu::TitleFill;
+    if let Some(pattern)=&source.pattern {
+        use klipp_timeline::TextPattern;
+        let (colors,mode,spacing)=match *pattern {
+            TextPattern::HorizontalStripes{color_a,color_b,stripe_width}=>([color_a,color_b],0,stripe_width),
+            TextPattern::VerticalStripes{color_a,color_b,stripe_width}=>([color_a,color_b],1,stripe_width),
+            TextPattern::Checkerboard{color_a,color_b,cell_size}=>([color_a,color_b],2,cell_size),
+            TextPattern::DiagonalStripes{color_a,color_b,stripe_width}=>([color_a,color_b],3,stripe_width),
+        };
+        return Some(TitleFill::Pattern{colors,mode,spacing:spacing*scale});
+    }
+    source.gradient.as_ref().map(|g|if g.is_pair() {TitleFill::Pair{top:g.top_color,bottom:g.bottom_color}} else {TitleFill::Gradient{geometry:match g.kind {
+        klipp_core::fill_gradient::GradientKind::Linear{angle_deg}=>{let(s,c)=angle_deg.to_radians().sin_cos();[s,c,0.0,0.0]},
+        klipp_core::fill_gradient::GradientKind::Radial{centre,radius}=>[centre[0],centre[1],radius.max(1e-6),1.0],
+    },stops:g.stops().into_iter().map(|s|(s.position,s.color)).collect()}})
 }
 
 // These loops alter glyph content/placement before title post-processing.
