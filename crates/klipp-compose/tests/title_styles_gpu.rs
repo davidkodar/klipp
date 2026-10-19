@@ -388,3 +388,81 @@ fn style_source_cache_invalidates_and_unsupported_combinations_decline() {
     title.objects[0].transform.rotation = 15.0;
     assert!(r.style_source(&title, 640, 360, 1.0, Some(3.0)).is_none());
 }
+
+#[test]
+fn title_post_and_grade_stay_resident_in_working_spaces() {
+    use klipp_core::WorkingColorspace;
+    use klipp_nodes::{Edge, Node, NodeGraph, NodeId, NodeKind, NodeParams};
+    use klipp_timeline::GradeAccess;
+    let (w, h) = (320, 180);
+    for ws in [WorkingColorspace::Rec709Linear, WorkingColorspace::AcesCG] {
+        for graded in [false, true] {
+          for variant in 0..9 {
+            let mut title = TitleData::single_text_fx(TextBox {
+                text: "Glitch".into(), font_size: 180.0, color: [190, 120, 60, 255],
+                glitch_intensity: 0.6, chromatic_aberration_px: 12.0, ..Default::default()
+            }, LayerFx {
+                outlines: vec![TextOutline { enabled: true, color: [60, 180, 230, 255], width: 3.0, width_keyframes: vec![] }],
+                ..Default::default()
+            });
+            if variant==6 { title.objects[0].fx_mut().edge_fade=klipp_core::title_motion::EdgeFade { left:0.45,right:0.4,top:0.4,bottom:0.4 }; }
+            if variant>0 && variant!=6 {
+                let text=title.primary_text_mut().unwrap();
+                text.glitch_intensity=0.0; text.chromatic_aberration_px=0.0;
+                if variant==3 { text.text="First\nSecond".into(); text.line_spacing_keyframes=vec![key(0.0,0.8),key(1.0,1.4)]; }
+                if variant==1 { title.objects[0].fx_mut().loops=vec![klipp_timeline::TitleLoop::ColorCycle{rate_hz:0.5}]; }
+                if variant==2 { title.objects[0].fx_mut().loops=vec![klipp_timeline::TitleLoop::Counter{from:10.0,to:50.0,duration_secs:2.0,decimals:1}]; }
+                if variant>=4 {
+                    title.objects[0].fx_mut().loops=vec![klipp_timeline::TitleLoop::ColorBlend{color_a:[190,120,60,80],color_b:[80,190,200,210],rate_hz:0.5}];
+                    if variant==4 { title.primary_text_mut().unwrap().outline_write_on=0.5; }
+                    if variant>=5 {
+                        title.objects[0].fx_mut().loops.clear();
+                        title.primary_text_mut().unwrap().line_spacing_keyframes=vec![key(0.0,0.8),key(1.0,1.4)];
+                        title.primary_text_mut().unwrap().text="First\nSecond".into();
+                        title.primary_text_mut().unwrap().color[3]=120;
+                        let mut other=title.objects[0].clone();
+                        other.id=klipp_timeline::TitleObjectId(2);
+                        other.opacity=0.6;
+                        other.transform.center.x += 0.15;
+                        title.objects.push(other);
+                        if variant==7 { title.objects[1].blend=klipp_core::BlendMode::Screen; }
+                        if variant==8 {
+                            title.objects[0].mask=Some(klipp_timeline::LayerMask { source:title.objects[1].id,kind:klipp_core::layer_mask::LayerMaskKind::InvertedLuma });
+                            title.objects[1].visible=false;
+                        }
+                    }
+                }
+            }
+            let mut clip = Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) };
+            if graded {
+                let node = |kind, params| Node { id: NodeId::new_v4(), kind, label: String::new(), enabled: true, params, keyframes: Default::default(), output_link: None, input_links: vec![] };
+                let nodes = vec![node(NodeKind::Source, NodeParams::default()), node(NodeKind::Exposure, NodeParams { exposure: Some(0.4), ..Default::default() }), node(NodeKind::Output, NodeParams::default())];
+                let edges = (0..2).map(|i| Edge { from_node: nodes[i].id, from_port: 0, to_node: nodes[i+1].id, to_port: 0 }).collect();
+                clip.set_grade(NodeGraph { output_node_id: nodes[2].id, nodes, edges, node_positions: Default::default(), working_space_override: None, frames: vec![], sticky_notes: vec![] });
+            }
+            let mut seq = Sequence::new_default();
+            seq.resolution = Resolution { width: w, height: h };
+            let mut track = Track::new("title", TrackKind::Video); track.clips.push(clip); seq.tracks = vec![track];
+            let mut gpu = renderer(); gpu.set_gpu_enabled(true); gpu.set_working_colorspace(ws);
+            assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
+            let mut cpu = renderer(); cpu.set_gpu_enabled(false); cpu.set_working_colorspace(ws);
+            for (sample,t) in [0.2, 0.7, 0.2].into_iter().enumerate() {
+                let at = RationalTime::from_secs_f64(t,30);
+                let (want, _) = cpu.render_inspected(&seq, at, w, h, &mut NoMedia, RenderOptions::default(), Default::default());
+                let want = klipp_color::display::display_transform_ws_dithered_to(&want, klipp_color::display::ToneMapOp::None, ws, klipp_core::SdrTransfer::Srgb);
+                let before = klipp_effects::gpu::readback_stats();
+                let scope = klipp_effects::residency::frame("test", t);
+                let (got, _) = gpu.render_display_u8_on_gpu(&seq, at, w, h, &mut NoMedia, RenderOptions::default()).expect("resident title");
+                drop(scope);
+                let events = klipp_effects::residency::last_frame().events;
+                assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Fallback), "{events:?}");
+                assert_eq!(klipp_effects::gpu::readback_stats().count-before.count,1,"only verification download");
+                let worst = got.iter().zip(&want).map(|(a,b)| a.abs_diff(*b)).max().unwrap();
+                assert!(worst<=3,"{ws:?} graded={graded} variant={variant} at{t}: {worst}");
+                assert_eq!(gpu.title_renderer().resting_renders(),u64::from(variant==0 || variant==6),"cached sources, not full per-frame rasters");
+                if sample==2 { assert!(events.iter().all(|e| e.work!=klipp_effects::residency::Work::Preparation),"warm backward seek: {events:?}"); }
+            }
+        }
+    }
+    }
+}

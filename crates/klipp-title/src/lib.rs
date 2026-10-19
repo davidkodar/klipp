@@ -46,6 +46,8 @@ pub use text_on_path::PathUnits;
 mod ruby;
 mod vertical;
 mod gpu_styles;
+mod gpu_glyphs;
+pub use gpu_glyphs::{GlyphDraw, GlyphSource};
 pub use gpu_styles::{StyleFaceWork, StyleSource};
 mod tracking;
 pub mod variable;
@@ -523,6 +525,9 @@ pub struct TitleRenderer {
     resting_renders: u64,
     /// Recently used unfinished faces; bounded separately and invalidated with raster caches.
     style_source_cache: Vec<gpu_styles::SourceCache>,
+    gpu_layout_only: bool,
+    gpu_layout_capture: std::cell::RefCell<Option<GlyphSource>>,
+    gpu_glyph_cache: std::cell::RefCell<gpu_glyphs::GlyphCache>,
     /// The rows with coverage in the last render, `y0..y1`.
     last_rows: (u32, u32),
     /// The blur the last `Placed` frame asked for, so a caller that
@@ -667,6 +672,9 @@ impl TitleRenderer {
             text_layers_rendered: 0,
             resting_renders: 0,
             style_source_cache: Vec::new(),
+            gpu_layout_only: false,
+            gpu_layout_capture: Default::default(),
+            gpu_glyph_cache: Default::default(),
             last_rows: (0, 0),
             last_blur: 0.0,
             last_focus_blur: None,
@@ -1425,6 +1433,26 @@ impl TitleRenderer {
                 colour_glyphs: Vec::new(),
                 path_units: None,
                 tracking_origins: Vec::new(),
+            };
+        }
+        if self.gpu_layout_only {
+            *self.gpu_layout_capture.borrow_mut() = self.gpu_glyph_cache.borrow_mut().layout(
+                &fonts, glyphs, [offset_x, offset_y],
+                [mask_x0 as u32, mask_y0 as u32, mask_w as u32, mask_h as u32], tb.color, title.primary_fx(),
+            );
+            if let Some(source) = self.gpu_layout_capture.borrow_mut().as_mut() {
+                let progress = tb.outline_write_on.clamp(0.0,1.0);
+                source.outline_cutoff = if progress >= 1.0 { i32::MAX } else {
+                    (text_min_x + offset_x + (text_max_x-text_min_x)*progress).floor() as i32
+                };
+            }
+            return TitleLayout {
+                alpha_mask: Vec::new(), mask_w: mask_w as u32, mask_h: mask_h as u32, mask_x0: mask_x0 as u32, mask_y0: mask_y0 as u32,
+                text_top: text_min_y+offset_y, text_bottom:text_max_y+offset_y,
+                text_left:text_min_x+offset_x, text_right:text_max_x+offset_x,
+                glyph_count:glyphs.len(), scale, glyph_colors:Vec::new(),glyph_coverages:Vec::new(),
+                glyph_index:Vec::new(),glyph_boxes:Vec::new(),glyph_parents:Vec::new(),pad:max_pad,
+                colour_glyphs:Vec::new(),path_units:None,tracking_origins:Vec::new(),
             };
         }
         // A staggered motion poses each glyph on its own from the
@@ -3714,6 +3742,7 @@ impl TitleRenderer {
         self.render_cache.clear();
         self.text_layer_cache.clear();
         self.style_source_cache.clear();
+        self.gpu_glyph_cache.borrow_mut().clear();
     }
 
     /// Compute character positions for the given title text, using the same layout

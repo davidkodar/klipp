@@ -2523,122 +2523,14 @@ impl Renderer {
                     }
                 }
             }
-            ClipKind::Title(td) if fx_on_gpu && c.grade_is_identity() => {
+            ClipKind::Title(td) if fx_on_gpu => {
                 let total = (c.timeline_out - c.timeline_in).to_secs_f64() as f32;
-                let clip_time = drawn_time(c, time);
-                let to_working = klipp_color::primaries::working_space_conversion_matrix(WorkingColorspace::Rec709Linear, self.working)
-                    .unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
-                let solid = self.titles.prepare_text3d(td, width, height, clip_time as f32, Some(total));
-                let solid_roi = solid.as_ref().and_then(|solid| {
-                    let p = self.executor.gpu_pipeline_or_init()?;
-                    if !self.gpu_text3d.as_ref().is_some_and(|g| g.same_device(p)) {
-                        self.gpu_text3d = Some(crate::title3d_gpu::GpuText3d::new(p));
-                    }
-                    self.gpu_text3d.as_mut()?.render(p, slot, solid.geometry.id, &solid.scene(), width, height, to_working)
-                });
-                if let (Some(solid), Some(mut roi)) = (solid, solid_roi) {
-                    let passes = crate::synth::title_style_passes(&solid.fx, klipp_title::frame_scale(width, height), clip_time);
-                    if passes.len() > 1 && roi[2] > 0 && roi[3] > 0 {
-                        let x1 = roi[0].saturating_add(roi[2]).saturating_add(solid.padding).min(width);
-                        let y1 = roi[1].saturating_add(roi[3]).saturating_add(solid.padding).min(height);
-                        roi[0] = roi[0].saturating_sub(solid.padding);
-                        roi[1] = roi[1].saturating_sub(solid.padding);
-                        roi[2] = x1 - roi[0];
-                        roi[3] = y1 - roi[1];
-                        rows = (roi[1], y1);
-                        self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_title_styles(slot, roi, &passes))
-                    } else {
-                        rows = (roi[1], roi[1] + roi[3]);
-                        true
-                    }
-                } else if let Some(source) = self.titles.style_source(td, width, height, clip_time as f32, Some(total)) {
-                    match source.face_work {
-                        klipp_title::StyleFaceWork::Reused => {},
-                        klipp_title::StyleFaceWork::Prepared => residency::record("title.style_face", "Bounded style-face cache miss", Work::Preparation),
-                        klipp_title::StyleFaceWork::AnimatedRaster => residency::record("title.style_face", "Animated or uncached face rasterized before GPU styling", Work::Fallback),
-                    }
-                    rows = (source.roi[1], source.roi[1] + source.roi[3]);
-                    let passes = crate::synth::title_style_passes(&source.fx, klipp_title::frame_scale(width, height), clip_time);
-                    self.executor.gpu_pipeline_or_init().is_some_and(|p| {
-                        p.stack_layer_place_sprite_posed(slot, source.id, &source.pixels.texels, sprite_box(&source.pixels), 0, 0, 1.0, 1.0, (0.0, 0.0), None, None, rows.0, rows.1)
-                            && p.stack_title_styles(slot, source.roi, &passes)
-                    })
-                } else {
-                    let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
-                    let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
-                    // A title that is its resting render moved and faded
-                    // keeps that render on the GPU: no raster, no upload, one
-                    // pass. Anything else is rendered here and goes up as rows.
-                    match self.titles.frame_with_window(td, width, height, gpu, clip_time as f32, Some(total)) {
-                        klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, blur, shape, rows: r } => {
-                            rows = r;
-                            // The blur entrance, and a roll's focus band going
-                            // soft (#592): the placed sprite blurred first, as
-                            // the CPU blurs the title it draws, and then the
-                            // clip's effects and transform (#995). Added to
-                            // the end, they ran after them, so a scaled title
-                            // was blurred at the wrong size.
-                            let mut soft = Vec::new();
-                            if blur > 0.5 {
-                                soft.push(BuiltinEffect::GaussianBlur { radius: blur });
-                            }
-                            if let Some((radius, axis, band)) = self.titles.last_focus_blur() {
-                                soft.push(BuiltinEffect::FocusBlur { radius, vertical: axis == klipp_core::title_motion::RampAxis::Vertical, band });
-                            }
-                            lead = soft.clone();
-                            fx.splice(0..0, soft);
-                            self.executor.gpu_pipeline_or_init().is_some_and(|p| {
-                                // The layer's fade by where it is, the sprite
-                                // shader's own (#592).
-                                let shape = shape.map(|s| klipp_effects::gpu::SpriteShape {
-                                    top: s.edges.top,
-                                    bottom: s.edges.bottom,
-                                    left: s.edges.left,
-                                    right: s.edges.right,
-                                    focus_vertical: s.focus.map(|(axis, _)| axis == klipp_core::title_motion::RampAxis::Vertical),
-                                    band: s.focus.map_or(0.5, |(_, f)| f.band),
-                                    edge_opacity: s.focus.map_or(1.0, |(_, f)| f.edge_opacity),
-                                });
-                                p.stack_layer_place_sprite_posed(slot, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), dx, dy, opacity, scale, anchor, under, shape, r.0, r.1)
-                            })
-                        }
-                        klipp_title::TitleFrame::Glyphs { sprite, poses, rows: r } => {
-                            rows = r;
-                            let packed: Vec<[f32; 16]> = poses.iter().map(|p| p.packed()).collect();
-                            match &sprite.units {
-                                Some(u) => self.executor.gpu_pipeline_or_init().is_some_and(|p| {
-                                    p.stack_layer_place_glyphs(slot, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), (u.x0, u.y0, u.w, u.h, &u.index), &packed, r.0, r.1)
-                                }),
-                                None => false,
-                            }
-                        }
-                        klipp_title::TitleFrame::Layers { layers, rows: r } => {
-                            rows = r;
-                            if self.working != WorkingColorspace::Rec709Linear {
-                                residency::record("title.layers", "Fading title layers require authored-space composition outside Rec.709", Work::Fallback);
-                                let stack = klipp_title::compose_layers(&layers, width, height, r);
-                                let pixels = klipp_title::BoxRaster::from_stack(&stack, (width, height), r, (0, width));
-                                self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_f16_box(slot, &pixels.texels, sprite_box(&pixels)))
-                            } else {
-                                self.executor.gpu_pipeline_or_init().is_some_and(|p| {
-                                    layers.iter().enumerate().all(|(index, (sprite, opacity))| {
-                                        if index == 0 {
-                                            p.stack_layer_place_sprite_posed(slot, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), 0, 0, *opacity, 1.0, sprite.anchor(), None, None, r.0, r.1)
-                                        } else {
-                                            p.stack_layer_place_sprite_over(slot, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), *opacity, r.0, r.1)
-                                        }
-                                    })
-                                })
-                            }
-                        }
-                        klipp_title::TitleFrame::Rendered { pixels, rows: r } => {
-                            residency::record("title.raster", "Title animation requires CPU raster/composition", Work::Fallback);
-                            rows = r;
-                            // Only the box the title covers goes up (#190).
-                            self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_f16_box(slot, &pixels.texels, sprite_box(&pixels)))
-                        }
-                    }
-                }
+                if let Some((r, soft)) = self.place_title_source(td, slot, width, height, drawn_time(c,time), total) {
+                    rows = r;
+                    lead = soft.clone();
+                    fx.splice(0..0,soft);
+                    true
+                } else { false }
             }
             ClipKind::Generator(g) if fx_on_gpu && c.grade_is_identity() => {
                 let total = (c.timeline_out - c.timeline_in).to_secs_f64();
@@ -2709,6 +2601,37 @@ impl Renderer {
         if !placed {
             return Err("a layer could not be placed on the GPU");
         }
+        if matches!(c.kind, ClipKind::Title(_)) && !c.grade_is_identity() && !effects_done {
+            // Authored title pixels already live in the working space. Seed
+            // the same grade/effect plan used for media without a CPU copy.
+            if !lead.is_empty() {
+                if !self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_title_source_effects(slot,&lead)) {
+                    return Err("title source blur before a grade");
+                }
+                fx.drain(..lead.len());
+                lead.clear();
+            }
+            let seed = self.executor.gpu_pipeline_or_init().and_then(|g| {
+                Some(Arc::new(AccSeed { buffer: g.stack_layer_buffer(slot)?, device: g.device(), queue: g.queue(), width, height }))
+            });
+            let Some(seed) = seed else { return Err("title layer could not seed its grade") };
+            effects_done = self.splice_effects(c, &fx, time, fps, transforms, at_move, stats);
+            self.executor.request_output_on_gpu();
+            let started = Instant::now();
+            let pixels = self.grade_on_stack(c, GradeInput::Gpu(seed), time, drawn_time(c, time), fps, width, height, src);
+            stats.grade_ms += ms_since(started);
+            if !self.grade_ran || !pixels.is_empty() || (effects_done && !self.finish_spliced()) {
+                self.clear_queued_run();
+                return Err("title grade/effects could not remain on GPU");
+            }
+            let slot_a = self.executor.last_chain_final_slot().unwrap_or(true);
+            if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_layer_from_chain(slot, slot_a)) {
+                return Err("title grade output could not be placed");
+            }
+            stats.effects_followed_grade += u32::from(effects_done);
+            PLAN_EFFECT_CLIPS.fetch_add(u64::from(effects_done), std::sync::atomic::Ordering::Relaxed);
+            rows = (0, height);
+        }
         if !effects_done && has_active_effects(&fx) {
             // A layer placed without a grade run (a title, a generator):
             // its effects as a plan of their own over its slot (step 11d).
@@ -2739,6 +2662,192 @@ impl Renderer {
             }
         }
         Ok(Some(Placed { opacity, rows }))
+    }
+
+    fn place_title_source(&mut self, td: &klipp_timeline::TitleData, slot: usize, width: u32, height: u32, clip_time: f64, total: f32) -> Option<((u32,u32),Vec<BuiltinEffect>)> {
+        if let [object] = td.objects.as_slice() {
+            if object.opacity!=1.0 || !object.opacity_keyframes.is_empty() {
+                let mut source=td.clone();
+                source.objects[0].opacity=1.0;
+                source.objects[0].opacity_keyframes.clear();
+                let (rows,soft)=self.place_title_source(&source,slot,width,height,clip_time,total)?;
+                if !self.executor.gpu_pipeline_or_init()?.stack_title_source_effects(slot,&soft) { return None; }
+                return self.executor.gpu_pipeline_or_init()?.stack_title_alpha(slot,[0.0;4],object.evaluated_opacity(clip_time)).then_some((rows,Vec::new()));
+            }
+            let edges=object.fx().edge_fade;
+            if !edges.is_none() && !object.fx().motion.is_active() && object.fx().loops.is_empty() {
+                let mut source=td.clone();
+                source.objects[0].fx_mut().edge_fade=Default::default();
+                let (rows,soft)=self.place_title_source(&source,slot,width,height,clip_time,total)?;
+                if !soft.is_empty() { return None; }
+                return self.executor.gpu_pipeline_or_init()?.stack_title_alpha(slot,[edges.top,edges.bottom,edges.left,edges.right],1.0).then_some((rows,soft));
+            }
+        }
+        // Render objects independently so each keeps its own source cache,
+        // GPU styles and time evaluation before authored-space composition.
+        if (td.objects.len() > 1 || td.mixes_layers()) && td.background == klipp_timeline::TitleBackground::None
+            && td.objects.iter().all(|o| match &o.content {
+                klipp_timeline::TitleObjectContent::TextBox(tb) => !matches!(tb.text_path,Some(klipp_timeline::TextPath::Layer {..})),
+                klipp_timeline::TitleObjectContent::Shape(shape) => shape.fit.is_none(),
+                _ => true,
+            }) {
+            let object_slot = self.executor.gpu_pipeline_or_init()?.stack_title_object_slot(0)?;
+            if !self.executor.gpu_pipeline_or_init()?.stack_layer_clear(slot) { return None; }
+            for object in td.objects.iter().filter(|o| o.visible && !td.is_matte(o.id)) {
+                let opacity = object.evaluated_opacity(clip_time).clamp(0.0,1.0);
+                let mut single = td.clone();
+                single.objects = vec![object.clone()];
+                single.objects[0].opacity = 1.0;
+                single.objects[0].opacity_keyframes.clear();
+                single.objects[0].blend=klipp_core::BlendMode::Normal;
+                single.objects[0].mask=None;
+                let (_,soft) = self.place_title_source(&single,object_slot,width,height,clip_time,total)?;
+                if !self.executor.gpu_pipeline_or_init()?.stack_title_source_effects(object_slot,&soft) { return None; }
+                // Apply opacity before the mask, exactly as the authored stack.
+                if !self.executor.gpu_pipeline_or_init()?.stack_title_alpha(object_slot,[0.0;4],opacity) { return None; }
+                if let Some((matte,kind)) = td.mask_of(object) {
+                    let matte_slot=self.executor.gpu_pipeline_or_init()?.stack_title_object_slot(1)?;
+                    let mut mask_title=td.clone();
+                    mask_title.objects=vec![matte.clone()];
+                    mask_title.objects[0].visible=true;
+                    mask_title.objects[0].mask=None;
+                    mask_title.objects[0].blend=klipp_core::BlendMode::Normal;
+                    let (_,soft)=self.place_title_source(&mask_title,matte_slot,width,height,clip_time,total)?;
+                    if !self.executor.gpu_pipeline_or_init()?.stack_title_source_effects(matte_slot,&soft) { return None; }
+                    use klipp_core::layer_mask::LayerMaskKind;
+                    let luma=matches!(kind,LayerMaskKind::Luma|LayerMaskKind::InvertedLuma);
+                    let invert=matches!(kind,LayerMaskKind::InvertedAlpha|LayerMaskKind::InvertedLuma);
+                    if !self.executor.gpu_pipeline_or_init()?.stack_title_mask(matte_slot,object_slot,luma,invert) { return None; }
+                }
+                if !self.executor.gpu_pipeline_or_init()?.stack_title_over(object_slot,slot,1.0,object.blend) { return None; }
+            }
+            return Some(((0,height),Vec::new()));
+        }
+        let rows;
+        let mut lead = Vec::new();
+                let post = title_post_source(td);
+                let td = post.as_ref().map_or(td, |(title, _, _)| title);
+                let to_working = klipp_color::primaries::working_space_conversion_matrix(WorkingColorspace::Rec709Linear, self.working)
+                    .unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
+                let solid = self.titles.prepare_text3d(td, width, height, clip_time as f32, Some(total));
+                let solid_roi = solid.as_ref().and_then(|solid| {
+                    let p = self.executor.gpu_pipeline_or_init()?;
+                    if !self.gpu_text3d.as_ref().is_some_and(|g| g.same_device(p)) {
+                        self.gpu_text3d = Some(crate::title3d_gpu::GpuText3d::new(p));
+                    }
+                    self.gpu_text3d.as_mut()?.render(p, slot, solid.geometry.id, &solid.scene(), width, height, to_working)
+                });
+                let placed = if let (Some(solid), Some(mut roi)) = (solid, solid_roi) {
+                    let passes = crate::synth::title_style_passes(&solid.fx, klipp_title::frame_scale(width, height), clip_time);
+                    if passes.len() > 1 && roi[2] > 0 && roi[3] > 0 {
+                        let x1 = roi[0].saturating_add(roi[2]).saturating_add(solid.padding).min(width);
+                        let y1 = roi[1].saturating_add(roi[3]).saturating_add(solid.padding).min(height);
+                        roi[0] = roi[0].saturating_sub(solid.padding);
+                        roi[1] = roi[1].saturating_sub(solid.padding);
+                        roi[2] = x1 - roi[0];
+                        roi[3] = y1 - roi[1];
+                        rows = (roi[1], y1);
+                        self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_title_styles(slot, roi, &passes))
+                    } else {
+                        rows = (roi[1], roi[1] + roi[3]);
+                        true
+                    }
+                } else if let Some(source) = self.titles.glyph_source(td, width, height, clip_time as f32, Some(total)) {
+                    if source.prepared>0 {
+                        residency::record("title.glyph", if source.rerasterized { "Glyph working set exceeded the retained cache" } else { "Bounded glyph coverage cache miss" }, if source.rerasterized { Work::Fallback } else { Work::Preparation });
+                    }
+                    rows=(source.roi[1],source.roi[1]+source.roi[3]);
+                    let passes=crate::synth::title_style_passes(&source.fx,klipp_title::frame_scale(width,height),clip_time);
+                    self.executor.gpu_pipeline_or_init().is_some_and(|p| {
+                        p.stack_layer_clear(slot) && source.glyphs.iter().all(|g| p.stack_title_glyph(slot,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],g.origin,source.color))
+                            && (source.roi[2]==0 || source.roi[3]==0 || p.stack_title_styles_with_fill(slot,source.roi,&passes,source.color[3] as f32/255.0,source.outline_cutoff))
+                    })
+                } else if let Some(source) = self.titles.style_source(td, width, height, clip_time as f32, Some(total)) {
+                    match source.face_work {
+                        klipp_title::StyleFaceWork::Reused => {},
+                        klipp_title::StyleFaceWork::Prepared => residency::record("title.style_face", "Bounded style-face cache miss", Work::Preparation),
+                        klipp_title::StyleFaceWork::AnimatedRaster => residency::record("title.style_face", "Animated or uncached face rasterized before GPU styling", Work::Fallback),
+                    }
+                    rows = (source.roi[1], source.roi[1] + source.roi[3]);
+                    let passes = crate::synth::title_style_passes(&source.fx, klipp_title::frame_scale(width, height), clip_time);
+                    self.executor.gpu_pipeline_or_init().is_some_and(|p| {
+                        p.stack_layer_place_sprite_posed(slot, source.id, &source.pixels.texels, sprite_box(&source.pixels), 0, 0, 1.0, 1.0, (0.0, 0.0), None, None, rows.0, rows.1)
+                            && p.stack_title_styles(slot, source.roi, &passes)
+                    })
+                } else {
+                    let mut adapter = self.gpu.as_mut().map(crate::synth::GpuAlphaMaskAdapter);
+                    let gpu = adapter.as_mut().map(|a| a as &mut dyn klipp_title::AlphaMaskProcessor);
+                    // A title that is its resting render moved and faded
+                    // keeps that render on the GPU: no raster, no upload, one
+                    // pass. Anything else is rendered here and goes up as rows.
+                    match self.titles.frame_with_window(td, width, height, gpu, clip_time as f32, Some(total)) {
+                        klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, blur, shape, rows: r } => {
+                            rows = r;
+                            // The blur entrance, and a roll's focus band going
+                            // soft (#592): the placed sprite blurred first, as
+                            // the CPU blurs the title it draws, and then the
+                            // clip's effects and transform (#995). Added to
+                            // the end, they ran after them, so a scaled title
+                            // was blurred at the wrong size.
+                            let mut soft = Vec::new();
+                            if blur > 0.5 {
+                                soft.push(BuiltinEffect::GaussianBlur { radius: blur });
+                            }
+                            if let Some((radius, axis, band)) = self.titles.last_focus_blur() {
+                                soft.push(BuiltinEffect::FocusBlur { radius, vertical: axis == klipp_core::title_motion::RampAxis::Vertical, band });
+                            }
+                            lead = soft.clone();
+                            self.executor.gpu_pipeline_or_init().is_some_and(|p| {
+                                // The layer's fade by where it is, the sprite
+                                // shader's own (#592).
+                                let shape = shape.map(|s| klipp_effects::gpu::SpriteShape {
+                                    top: s.edges.top,
+                                    bottom: s.edges.bottom,
+                                    left: s.edges.left,
+                                    right: s.edges.right,
+                                    focus_vertical: s.focus.map(|(axis, _)| axis == klipp_core::title_motion::RampAxis::Vertical),
+                                    band: s.focus.map_or(0.5, |(_, f)| f.band),
+                                    edge_opacity: s.focus.map_or(1.0, |(_, f)| f.edge_opacity),
+                                });
+                                p.stack_layer_place_sprite_posed(slot, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), dx, dy, opacity, scale, anchor, under, shape, r.0, r.1)
+                            })
+                        }
+                        klipp_title::TitleFrame::Glyphs { sprite, poses, rows: r } => {
+                            rows = r;
+                            let packed: Vec<[f32; 16]> = poses.iter().map(|p| p.packed()).collect();
+                            match &sprite.units {
+                                Some(u) => self.executor.gpu_pipeline_or_init().is_some_and(|p| {
+                                    p.stack_layer_place_glyphs(slot, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), (u.x0, u.y0, u.w, u.h, &u.index), &packed, r.0, r.1)
+                                }),
+                                None => false,
+                            }
+                        }
+                        klipp_title::TitleFrame::Layers { layers, rows: r } => {
+                            rows = r;
+                            self.executor.gpu_pipeline_or_init().is_some_and(|p| {
+                                layers.iter().enumerate().all(|(index, (sprite, opacity))| {
+                                    if index == 0 {
+                                        p.stack_layer_place_sprite_posed(slot, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), 0, 0, *opacity, 1.0, sprite.anchor(), None, None, r.0, r.1)
+                                    } else {
+                                        p.stack_layer_place_sprite_over(slot, sprite.id, &sprite.pixels.texels, sprite_box(&sprite.pixels), *opacity, r.0, r.1)
+                                    }
+                                })
+                            })
+                        }
+                        klipp_title::TitleFrame::Rendered { pixels, rows: r } => {
+                            residency::record("title.raster", "Title animation requires CPU raster/composition", Work::Fallback);
+                            rows = r;
+                            // Only the box the title covers goes up (#190).
+                            self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_srgb_f16_box(slot, &pixels.texels, sprite_box(&pixels)))
+                        }
+                    }
+                 };
+                let ok = placed && post.as_ref().is_none_or(|(_, chromatic, glitch)| {
+                    self.executor.gpu_pipeline_or_init().is_some_and(|p| {
+                        p.stack_title_post(slot, *chromatic * klipp_title::frame_scale(width, height), *glitch, clip_time as f32)
+                    })
+                });
+                ok.then_some((rows, lead))
     }
 
     fn raster_generator(&mut self, g: &klipp_core::GeneratorData, width: u32, height: u32, clip_time: f64, total: f64) -> Vec<u32> {
@@ -6175,14 +6284,26 @@ fn follows_something_moving(seq: &Sequence, c: &Clip, depth: u32) -> bool {
     camera_moves_it(seq, target) || moves_itself(target) || follows_something_moving(seq, target, depth + 1)
 }
 
-/// A title's motion blur, when on and not overridden by a transform
-/// link.
-///
-/// A linked title still blurs — the sequence shutter samples it now,
-/// with its target resolved at each one — but not by its own setting,
-/// which samples the title's own animation and would need the link
-/// resolved inside that path too. See #196, which is about what the
-/// title's own blur samples.
+// Separate post effects from the decorated source. Object rotation is later
+// than post-processing in the CPU renderer and needs the scene transform path.
+fn title_post_source(td: &klipp_timeline::TitleData) -> Option<(klipp_timeline::TitleData, f32, f32)> {
+    let [obj] = td.objects.as_slice() else { return None };
+    let klipp_timeline::TitleObjectContent::TextBox(tb) = &obj.content else { return None };
+    if !obj.visible || obj.opacity != 1.0 || !obj.opacity_keyframes.is_empty()
+        || obj.transform.rotation != 0.0 || !obj.transform.rotation_keyframes.is_empty()
+        || td.mixes_layers() || td.background != klipp_timeline::TitleBackground::None
+        || !obj.fx().edge_fade.is_none() || obj.fx().motion.is_active()
+        || !obj.fx().loops.is_empty() || obj.fx().motion_blur.is_some()
+        || (tb.chromatic_aberration_px <= 0.0 && tb.glitch_intensity <= 0.0)
+    { return None; }
+    let mut source = td.clone();
+    let text = source.primary_text_mut()?;
+    text.chromatic_aberration_px = 0.0;
+    text.glitch_intensity = 0.0;
+    Some((source, tb.chromatic_aberration_px, tb.glitch_intensity))
+}
+
+
 /// The title data behind a clip whose own drawing changes with time.
 ///
 /// Entrance and exit motion, per-character animation and the continuous
@@ -6195,6 +6316,7 @@ fn follows_something_moving(seq: &Sequence, c: &Clip, depth: u32) -> bool {
 /// here is "can this move", which the data answers, and not "is it
 /// moving now", which is the rasteriser's own cache-bypass decision and
 /// belongs to it.
+
 fn title_raster_moves(td: &klipp_timeline::TitleData) -> Option<&klipp_timeline::TitleData> {
     // Any layer's own motion: the stack is the object's, whatever the
     // object is, and a character animation is a text's alone.
@@ -6208,6 +6330,14 @@ fn title_raster_moves(td: &klipp_timeline::TitleData) -> Option<&klipp_timeline:
     moves.then_some(td)
 }
 
+/// A title's motion blur, when on and not overridden by a transform
+/// link.
+///
+/// A linked title still blurs — the sequence shutter samples it now,
+/// with its target resolved at each one — but not by its own setting,
+/// which samples the title's own animation and would need the link
+/// resolved inside that path too. See #196, which is about what the
+/// title's own blur samples.
 fn title_motion_blur(clip: &Clip) -> Option<klipp_timeline::MotionBlur> {
     let td = clip.title_data()?;
     if clip.transform_link.is_some() {
