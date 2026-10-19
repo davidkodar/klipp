@@ -7,8 +7,17 @@ pub struct GlyphDraw {
     pub pixels: Arc<BoxRaster>,
     pub origin: [i32; 2],
 }
+pub struct OutlineDraw {
+    pub id: u64,
+    pub edges: Arc<Vec<[f32; 4]>>,
+    pub origin: [i32; 2],
+    pub size: [u32; 2],
+    /// Scale from the cached 2048px-em outline, then translate to bitmap space.
+    pub placement: [f32; 4],
+}
 pub struct GlyphSource {
     pub glyphs: Vec<GlyphDraw>,
+    pub outlines: Vec<OutlineDraw>,
     pub roi: [u32; 4],
     pub color: [u8; 4],
     pub fx: LayerFx,
@@ -21,8 +30,15 @@ struct CachedGlyph {
     id: u64,
     pixels: Arc<BoxRaster>,
 }
+struct CachedOutline {
+    font: usize,
+    glyph: u16,
+    id: u64,
+    edges: Arc<Vec<[f32; 4]>>,
+}
 pub(super) struct GlyphCache {
     entries: VecDeque<CachedGlyph>,
+    outlines: VecDeque<CachedOutline>,
     next_id: u64,
     recent: VecDeque<fontdue::layout::GlyphRasterConfig>,
 }
@@ -30,6 +46,7 @@ impl Default for GlyphCache {
     fn default() -> Self {
         Self {
             entries: VecDeque::new(),
+            outlines: VecDeque::new(),
             next_id: 1 << 63,
             recent: VecDeque::new(),
         }
@@ -38,6 +55,7 @@ impl Default for GlyphCache {
 impl GlyphCache {
     pub(super) fn clear(&mut self) {
         self.entries.clear();
+        self.outlines.clear();
         self.recent.clear();
     }
     pub(super) fn layout(
@@ -48,9 +66,13 @@ impl GlyphCache {
         roi: [u32; 4],
         color: [u8; 4],
         fx: &LayerFx,
+        geometry: bool,
     ) -> Option<GlyphSource> {
         if glyphs.len() > 4096 {
             return None;
+        }
+        if geometry {
+            return self.outline_layout(fonts, glyphs, offset, roi, color, fx);
         }
         // Admit the entire unique working set before rasterizing anything.
         // Pin it for this layout so an LRU hit cannot evict a later glyph.
@@ -129,6 +151,7 @@ impl GlyphCache {
         }
         Some(GlyphSource {
             glyphs: draws,
+            outlines: Vec::new(),
             roi,
             color,
             fx: fx.clone(),
@@ -138,6 +161,96 @@ impl GlyphCache {
         })
     }
 }
+impl GlyphCache {
+    fn outline_layout(
+        &mut self,
+        fonts: &[Face],
+        glyphs: &[fontdue::layout::GlyphPosition],
+        offset: [f32; 2],
+        roi: [u32; 4],
+        color: [u8; 4],
+        fx: &LayerFx,
+    ) -> Option<GlyphSource> {
+        let keys: std::collections::HashSet<_> = glyphs
+            .iter()
+            .filter(|g| g.width > 0 && g.height > 0)
+            .map(|g| (g.key.font_hash, g.key.glyph_index))
+            .collect();
+        if keys.len() > 512 {
+            return None;
+        }
+        let mut outlines = Vec::new();
+        let mut prepared = 0;
+        for g in glyphs.iter().filter(|g| g.width > 0 && g.height > 0) {
+            if g.key.px == 0.0
+                || fonts[g.font_index]
+                    .colour_glyph(g.key.glyph_index, g.key.px)
+                    .is_some()
+            {
+                return None;
+            }
+            let font = fonts[g.font_index].font;
+            let cached = if let Some(i) = self
+                .outlines
+                .iter()
+                .position(|c| c.font == g.key.font_hash && c.glyph == g.key.glyph_index)
+            {
+                self.outlines.remove(i)?
+            } else {
+                let edges = crate::outline_2d::row_bins(font.coverage_outline(g.key.glyph_index)?)?;
+                let id = self.next_id;
+                self.next_id = self.next_id.wrapping_add(1);
+                prepared += 1;
+                CachedOutline {
+                    font: g.key.font_hash,
+                    glyph: g.key.glyph_index,
+                    id,
+                    edges: Arc::new(edges),
+                }
+            };
+            let metrics = font.metrics_indexed(g.key.glyph_index, g.key.px.abs());
+            outlines.push(OutlineDraw {
+                id: cached.id,
+                edges: cached.edges.clone(),
+                origin: [(g.x + offset[0]) as i32, (g.y + offset[1]) as i32],
+                size: [g.width as u32, g.height as u32],
+                placement: [
+                    g.key.px.abs() / 2048.0,
+                    -(metrics.xmin as f32),
+                    metrics.height as f32 + metrics.ymin as f32,
+                    if g.key.px < 0.0 { 1.0 } else { 0.0 },
+                ],
+            });
+            while self.outlines.len() >= 512
+                || self
+                    .outlines
+                    .iter()
+                    .map(|c| c.edges.len() * 16)
+                    .sum::<usize>()
+                    + cached.edges.len() * 16
+                    > 32 << 20
+            {
+                let victim = self
+                    .outlines
+                    .iter()
+                    .position(|c| !keys.contains(&(c.font, c.glyph)))?;
+                self.outlines.remove(victim);
+            }
+            self.outlines.push_back(cached);
+        }
+        Some(GlyphSource {
+            glyphs: Vec::new(),
+            outlines,
+            roi,
+            color,
+            fx: fx.clone(),
+            prepared,
+            rerasterized: false,
+            outline_cutoff: i32::MAX,
+        })
+    }
+}
+
 impl TitleRenderer {
     /// Layout changes reuse each font glyph's coverage. Layout/shaping runs on
     /// CPU; the frame mask, fill and styles are assembled on GPU.
@@ -180,12 +293,13 @@ impl TitleRenderer {
             || fx.animators.iter().any(|a| a.enabled)
             || !fx.edge_fade.is_none()
             || fx.motion_blur.is_some()
-            || !tb.font_size_keyframes.is_empty()
-        // animated size will use outline geometry
         {
             return None;
         }
-        let changes = !tb.color_keyframes.is_empty()
+        let changes = !o.transform.size_x_keyframes.is_empty()
+            || !o.transform.size_y_keyframes.is_empty()
+            || !tb.font_size_keyframes.is_empty()
+            || !tb.color_keyframes.is_empty()
             || !tb.line_spacing_keyframes.is_empty()
             || !tb.tracking_keyframes.is_empty()
             || fx.loops.iter().any(|l| {
@@ -234,13 +348,24 @@ impl TitleRenderer {
         evaluated.objects[0].fx_mut().loops.clear();
         evaluated.objects[0].transform = o.transform.evaluated_at(time as f64);
         self.gpu_layout_only = true;
+        self.gpu_outline_only = !tb.font_size_keyframes.is_empty()
+            || !tb.line_spacing_keyframes.is_empty()
+            || !tb.tracking_keyframes.is_empty()
+            || !o.transform.size_x_keyframes.is_empty()
+            || !o.transform.size_y_keyframes.is_empty()
+            || fx
+                .loops
+                .iter()
+                .any(|l| matches!(l, klipp_timeline::TitleLoop::Counter { .. }));
         *self.gpu_layout_capture.borrow_mut() = None;
         let layout = self.render_layout_at_time(&evaluated, width, height, None);
         self.gpu_layout_only = false;
+        self.gpu_outline_only = false;
         self.gpu_layout_capture.borrow_mut().take().or_else(|| {
             (layout.glyph_count == 0 || layout.mask_w == 0 || layout.mask_h == 0).then(|| {
                 GlyphSource {
                     glyphs: Vec::new(),
+                    outlines: Vec::new(),
                     roi: [0; 4],
                     color: evaluated.color(),
                     fx: fx.clone(),

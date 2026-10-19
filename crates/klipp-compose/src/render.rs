@@ -2754,12 +2754,13 @@ impl Renderer {
                     }
                 } else if let Some(source) = self.titles.glyph_source(td, width, height, clip_time as f32, Some(total)) {
                     if source.prepared>0 {
-                        residency::record("title.glyph", if source.rerasterized { "Glyph working set exceeded the retained cache" } else { "Bounded glyph coverage cache miss" }, if source.rerasterized { Work::Fallback } else { Work::Preparation });
+                        residency::record("title.glyph", if source.rerasterized { "Glyph working set exceeded the retained cache" } else { "Bounded glyph source cache miss" }, if source.rerasterized { Work::Fallback } else { Work::Preparation });
                     }
                     rows=(source.roi[1],source.roi[1]+source.roi[3]);
                     let passes=crate::synth::title_style_passes(&source.fx,klipp_title::frame_scale(width,height),clip_time);
                     self.executor.gpu_pipeline_or_init().is_some_and(|p| {
                         p.stack_layer_clear(slot) && source.glyphs.iter().all(|g| p.stack_title_glyph(slot,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],g.origin,source.color))
+                            && source.outlines.iter().all(|g|p.stack_title_outline(slot,g.id,&g.edges,g.origin,g.size,g.placement,source.color))
                             && (source.roi[2]==0 || source.roi[3]==0 || p.stack_title_styles_with_fill(slot,source.roi,&passes,source.color[3] as f32/255.0,source.outline_cutoff))
                     })
                 } else if let Some(source) = self.titles.style_source(td, width, height, clip_time as f32, Some(total)) {
