@@ -2689,7 +2689,7 @@ impl Renderer {
                     let motion=std::mem::take(&mut source_fx.motion);
                     if !source_fx.is_default()
                         || motion.enter.iter().chain(motion.exit.iter())
-                        .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight|klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Blur|klipp_timeline::MotionKind::MaskRise|klipp_timeline::MotionKind::MaskDrop|klipp_timeline::MotionKind::Pop|klipp_timeline::MotionKind::Slam|klipp_timeline::MotionKind::Larger|klipp_timeline::MotionKind::Smaller|klipp_timeline::MotionKind::FlyLeft|klipp_timeline::MotionKind::FlyRight|klipp_timeline::MotionKind::FlyTop|klipp_timeline::MotionKind::FlyBottom)) {return None;}
+                        .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight|klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Blur|klipp_timeline::MotionKind::MaskRise|klipp_timeline::MotionKind::MaskDrop|klipp_timeline::MotionKind::Pop|klipp_timeline::MotionKind::Slam|klipp_timeline::MotionKind::Larger|klipp_timeline::MotionKind::Smaller|klipp_timeline::MotionKind::FlyLeft|klipp_timeline::MotionKind::FlyRight|klipp_timeline::MotionKind::FlyTop|klipp_timeline::MotionKind::FlyBottom|klipp_timeline::MotionKind::Bounce)) {return None;}
                     let blurs=motion.enter.iter().chain(motion.exit.iter()).any(|m|m.kind==klipp_timeline::MotionKind::Blur);
                     // Shapes pose as a whole layer: character/word stagger has
                     // no effect, and both fades use unit zero as on the CPU.
@@ -2699,7 +2699,7 @@ impl Renderer {
                     let travel=|m:Option<klipp_timeline::Motion>,progress:f32| {
                         use klipp_timeline::MotionKind;
                         m.map_or([0.0;4],|m| {
-                            let direction=match m.kind {MotionKind::MaskRise=>[0.0,1.15],MotionKind::MaskDrop=>[0.0,-1.15],MotionKind::Rise=>[0.0,1.0],MotionKind::Drop=>[0.0,-1.0],MotionKind::SlideLeft=>[1.5,0.0],MotionKind::SlideRight=>[-1.5,0.0],MotionKind::FlyLeft=>[-8.0,0.0],MotionKind::FlyRight=>[8.0,0.0],MotionKind::FlyTop=>[0.0,-6.0],MotionKind::FlyBottom=>[0.0,6.0],_=>[0.0,0.0]};
+                            let direction=match m.kind {MotionKind::MaskRise=>[0.0,1.15],MotionKind::MaskDrop=>[0.0,-1.15],MotionKind::Rise=>[0.0,1.0],MotionKind::Drop=>[0.0,-1.0],MotionKind::SlideLeft=>[1.5,0.0],MotionKind::SlideRight=>[-1.5,0.0],MotionKind::FlyLeft=>[-8.0,0.0],MotionKind::FlyRight=>[8.0,0.0],MotionKind::FlyTop=>[0.0,-6.0],MotionKind::FlyBottom=>[0.0,6.0],MotionKind::Bounce=>[0.0,-2.5],_=>[0.0,0.0]};
                             [1.0-progress,if matches!(m.kind,MotionKind::MaskRise|MotionKind::MaskDrop) {1.0}else{m.distance},direction[0],direction[1]]
                         })
                     };

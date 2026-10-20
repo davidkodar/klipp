@@ -84,11 +84,15 @@ for full-project playback profiling.
   horizontal travel of 8 times and vertical travel of 6 times the painted height,
   multiplied by motion distance. Their alpha reaches one at one third of eased
   progress, including supported motion pairs, fitted panels and mattes.
+  Rectangle Bounce uses the same path with vertical travel of -2.5 times
+  painted height and motion distance, evaluated bounce easing, and alpha
+  reaching one at one quarter of eased progress. Supported motion pairs,
+  fitted panels and mattes stay resident.
   Rectangle MaskRise/MaskDrop use opposite travel directions at 1.15 times
   the original painted height and clip destination rows to the original
   painted window without adding their own alpha fade. They stay resident
   when paired with fades, slides, scaling, blur or each other. Other unsupported
-  motion kinds such as Bounce, FocusIn and Typewriter still fall back.
+  motion kinds such as SoftRise, FocusIn and Typewriter still fall back.
   Rectangle ScaleUp/ScaleDown motions use premultiplied authored-colour
   bilinear sampling of the half-float sprite, with centre or explicit-point
   anchors, positive custom scales and combined slide motion. Scaling and

@@ -859,7 +859,7 @@ fn rectangle_motion_fades_keep_unsupported_combinations_on_cpu() {
             if matches!(object.content,TitleObjectContent::Shape(_)) {
                 // Unsupported shape motions still explicitly decline.
                 object.fx_mut().motion.enter.as_mut().unwrap().kind=match case {
-                    0=>MotionKind::Bounce,1=>MotionKind::FocusIn,_=>MotionKind::Typewriter,
+                    0=>MotionKind::SoftRise,1=>MotionKind::FocusIn,_=>MotionKind::Typewriter,
                 };
             }
         }
@@ -1488,3 +1488,37 @@ fn rectangle_fly_stays_resident_at_4k() {
         check_rectangle_motion_fades_at_4k(panel);
     }
 }
+
+fn add_rectangle_bounce(seq: &mut Sequence, mode: u8) {
+    use klipp_timeline::{MotionKind,TitleObjectContent};
+    add_rectangle_fly(seq,mode);
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    for object in &mut title.objects {
+        if matches!(object.content,TitleObjectContent::Shape(_)) {
+            let motion=&mut object.fx_mut().motion;
+            for m in motion.enter.iter_mut().chain(motion.exit.iter_mut()) {
+                if matches!(m.kind,MotionKind::FlyLeft|MotionKind::FlyRight) {
+                    m.kind=MotionKind::Bounce;
+                    // At 0.2s, linear progress reaches Bounce's alpha knee.
+                    if mode==0 {m.duration_secs=0.8;}
+                }
+            }
+            if mode!=0 {
+                let enter=motion.enter.as_mut().unwrap();enter.easing=enter.kind.default_easing();
+                let exit=motion.exit.as_mut().unwrap();exit.easing=exit.kind.default_exit_easing();
+            }
+        }
+    }
+}
+fn bouncing_rectangle_panel(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=combined_faded_panel(fitted,mode%2,w,h);add_rectangle_bounce(&mut seq,mode);seq
+}
+fn bouncing_rectangle_matte(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=faded_rectangle_matte(fitted,mode%4,w,h);add_rectangle_bounce(&mut seq,mode);seq
+}
+#[test]
+fn rectangle_bounce_matches_cpu_and_stays_resident() {check_rectangle_motion_fade_modes(bouncing_rectangle_panel,8);}
+#[test]
+fn rectangle_bounce_mattes_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(bouncing_rectangle_matte,8);}
+#[test]
+fn rectangle_bounce_stays_resident_at_4k() {check_rectangle_motion_fades_at_4k(bouncing_rectangle_panel);}
