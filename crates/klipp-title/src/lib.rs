@@ -49,6 +49,7 @@ mod gpu_styles;
 mod gpu_glyphs;
 mod outline_2d;
 pub use gpu_glyphs::{GlyphDraw, GlyphSource};
+pub use colour::colour_bitmap_rasterizations;
 pub use gpu_styles::{StyleFaceWork, StyleSource};
 mod tracking;
 pub mod variable;
@@ -539,6 +540,7 @@ pub struct TitleRenderer {
     gpu_layout_only: bool,
     layout_bounds_only: bool,
     gpu_outline_only: bool,
+    gpu_bitmap_size: bool,
     gpu_wave: Option<(f32,f32,f32)>,
     gpu_motion:Option<(f32,Option<f32>)>,
     gpu_layout_capture: std::cell::RefCell<Option<GlyphSource>>,
@@ -697,6 +699,7 @@ impl TitleRenderer {
             gpu_layout_only: false,
             layout_bounds_only: false,
             gpu_outline_only: false,
+            gpu_bitmap_size: false,
             gpu_wave: None,
             gpu_motion:None,
             gpu_layout_capture: Default::default(),
@@ -1465,8 +1468,8 @@ impl TitleRenderer {
             };
         }
         if self.gpu_layout_only {
-            let bitmap=glyphs.iter().any(|g|fonts[g.font_index].colour_glyph(g.key.glyph_index,g.key.px).is_some());
-            // This cached RGBA route handles fixed-size, unposed, plain text.
+            let bitmap=glyphs.iter().any(|g|fonts[g.font_index].font.colour_source(g.key.glyph_index,g.key.px).is_some());
+            // Cached RGBA and retained-strike resizing handle unposed plain text.
             // Other combinations need native-colour sampling/mask semantics.
             let bitmap_supported=fit==1.0 && self.gpu_motion.is_none() && self.gpu_wave.is_none()
                 && title.primary_fx().is_default() && tb.style_runs.is_empty()
@@ -1525,13 +1528,17 @@ impl TitleRenderer {
                 if g.width>0 && g.height>0 {draw_poses.push((origin,alpha,clip,source_size,sigma,radians,colour));}
             }
             let glyphs=posed.as_slice();
-            *self.gpu_layout_capture.borrow_mut() = if bitmap && !bitmap_supported {None}else{self.gpu_glyph_cache.borrow_mut().layout(
-                &fonts, glyphs, [offset_x, offset_y],
-                [mask_x0 as u32, mask_y0 as u32, mask_w as u32, mask_h as u32], tb.color, title.primary_fx(), self.gpu_outline_only && !bitmap,
+            let sized_bitmap=bitmap && self.gpu_bitmap_size;
+            *self.gpu_layout_capture.borrow_mut() = if bitmap && !bitmap_supported {None}
+            else if sized_bitmap {self.gpu_glyph_cache.borrow_mut().bitmap_size_layout(&fonts,glyphs,[offset_x,offset_y],[mask_x0 as u32,mask_y0 as u32,mask_w as u32,mask_h as u32],tb.color,title.primary_fx())}
+            else{self.gpu_glyph_cache.borrow_mut().layout(
+                &fonts,glyphs,[offset_x,offset_y],[mask_x0 as u32,mask_y0 as u32,mask_w as u32,mask_h as u32],tb.color,title.primary_fx(),self.gpu_outline_only && !bitmap,
             )};
             if let Some(source) = self.gpu_layout_capture.borrow_mut().as_mut() {
-                for (draw,(origin,alpha,clip,size,blur,radians,colour)) in source.outlines.iter_mut().zip(&draw_poses) {draw.origin=*origin;draw.alpha=*alpha;draw.clip_y=*clip;draw.source_size=*size;draw.blur=*blur;draw.radians=*radians;draw.color=*colour;}
-                for (draw,(origin,_,_,_,_,_,_)) in source.glyphs.iter_mut().zip(&draw_poses) {draw.origin=*origin;}
+                if !sized_bitmap {
+                    for (draw,(origin,alpha,clip,size,blur,radians,colour)) in source.outlines.iter_mut().zip(&draw_poses) {draw.origin=*origin;draw.alpha=*alpha;draw.clip_y=*clip;draw.source_size=*size;draw.blur=*blur;draw.radians=*radians;draw.color=*colour;}
+                    for (draw,(origin,_,_,_,_,_,_)) in source.glyphs.iter_mut().zip(&draw_poses) {draw.origin=*origin;}
+                }
                 if coloured && draw_poses.iter().any(|pose| pose.1 > 0.0) {
                     source.face_draws=source.outlines.clone();
                 } else if !tb.style_runs.is_empty() {

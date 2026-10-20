@@ -5,6 +5,8 @@ use std::{collections::VecDeque, sync::Arc};
 pub struct GlyphDraw {
     /// Preserve a CBDT glyph's own RGBA instead of tinting its coverage.
     pub native_colour: bool,
+    /// A retained premultiplied strike to resize on GPU; otherwise already sized.
+    pub target_size: Option<[u32;2]>,
     pub id: u64,
     pub pixels: Arc<BoxRaster>,
     pub origin: [i32; 2],
@@ -66,6 +68,8 @@ struct CachedOutline {
 pub(super) struct GlyphCache {
     entries: VecDeque<CachedGlyph>,
     outlines: VecDeque<CachedOutline>,
+    strikes: VecDeque<CachedGlyph>,
+    recent_strikes: VecDeque<fontdue::layout::GlyphRasterConfig>,
     next_id: u64,
     recent: VecDeque<fontdue::layout::GlyphRasterConfig>,
 }
@@ -74,6 +78,8 @@ impl Default for GlyphCache {
         Self {
             entries: VecDeque::new(),
             outlines: VecDeque::new(),
+            strikes: VecDeque::new(),
+            recent_strikes: VecDeque::new(),
             next_id: 1 << 63,
             recent: VecDeque::new(),
         }
@@ -83,6 +89,8 @@ impl GlyphCache {
     pub(super) fn clear(&mut self) {
         self.entries.clear();
         self.outlines.clear();
+        self.strikes.clear();
+        self.recent_strikes.clear();
         self.recent.clear();
     }
     pub(super) fn layout(
@@ -153,6 +161,7 @@ impl GlyphCache {
             };
             draws.push(GlyphDraw {
                 native_colour:cached.native_colour,
+                target_size:None,
                 id: cached.id,
                 pixels: cached.pixels.clone(),
                 origin: [(g.x + offset[0]) as i32, (g.y + offset[1]) as i32],
@@ -197,6 +206,102 @@ impl GlyphCache {
     }
 }
 impl GlyphCache {
+    pub(super) fn bitmap_size_layout(
+        &mut self,
+        fonts: &[Face],
+        glyphs: &[fontdue::layout::GlyphPosition],
+        offset: [f32; 2],
+        roi: [u32; 4],
+        color: [u8; 4],
+        fx: &LayerFx,
+    ) -> Option<GlyphSource> {
+        if glyphs.len() > 4096 {
+            return None;
+        }
+        let mut ordinary = Vec::new();
+        let mut native = Vec::new();
+        let mut keys = std::collections::HashSet::new();
+        let mut bytes = 0usize;
+        for g in glyphs.iter().filter(|g| g.width > 0 && g.height > 0) {
+            if let Some(source) = fonts[g.font_index]
+                .font
+                .colour_source(g.key.glyph_index, g.key.px)
+            {
+                // The strike cache uses the table index, not the requested size.
+                let mut key = g.key;
+                key.px = (source.strike.index + 1) as f32;
+                if keys.insert(key) {
+                    bytes = bytes.checked_add(
+                        source
+                            .strike
+                            .width
+                            .checked_mul(source.strike.height)?
+                            .checked_mul(8)?,
+                    )?;
+                }
+                native.push((g, key, source));
+            } else {
+                ordinary.push(*g);
+            }
+        }
+        let ordinary_keys: std::collections::HashSet<_> = ordinary
+            .iter()
+            .map(|g| (g.key.font_hash, g.key.glyph_index))
+            .collect();
+        if keys.len() + ordinary_keys.len() > 512 || bytes > 64 << 20 {
+            return None;
+        }
+        let mut source = self.outline_layout(fonts, &ordinary, offset, roi, color, fx)?;
+        for (g, key, bitmap) in native {
+            let cached = if let Some(i) = self.strikes.iter().position(|c| c.key == key) {
+                self.strikes.remove(i)?
+            } else {
+                source.rerasterized |= self.recent_strikes.contains(&key);
+                if self.recent_strikes.len() >= 4096 {
+                    self.recent_strikes.pop_front();
+                }
+                self.recent_strikes.push_back(key);
+                let strike = bitmap.strike;
+                let pixels = Arc::new(BoxRaster::from_bytes(
+                    &strike.rgba,
+                    (strike.width as u32, strike.height as u32),
+                    (0, strike.height as u32),
+                    (0, strike.width as u32),
+                ));
+                let id = self.next_id;
+                self.next_id = self.next_id.wrapping_add(1);
+                source.prepared += 1;
+                CachedGlyph {
+                    key,
+                    id,
+                    pixels,
+                    native_colour: true,
+                }
+            };
+            source.glyphs.push(GlyphDraw {
+                native_colour: true,
+                target_size: Some([g.width as u32, g.height as u32]),
+                id: cached.id,
+                pixels: Arc::clone(&cached.pixels),
+                origin: [(g.x + offset[0]) as i32, (g.y + offset[1]) as i32],
+            });
+            while self.strikes.len() >= 512
+                || self
+                    .strikes
+                    .iter()
+                    .map(|c| c.pixels.byte_size())
+                    .sum::<usize>()
+                    + cached.pixels.byte_size()
+                    > 64 << 20
+            {
+                let victim = self.strikes.iter().position(|c| !keys.contains(&c.key))?;
+                self.strikes.remove(victim);
+            }
+            self.strikes.push_back(cached);
+        }
+        Some(source)
+    }
+
     fn outline_layout(
         &mut self,
         fonts: &[Face],
@@ -398,6 +503,7 @@ impl TitleRenderer {
         let bound_path = if linked { Some(self.bound_path_line(scene?, &evaluated, Some(time), width, height)?) } else { None };
         self.bound_path = bound_path;
         self.gpu_layout_only = true;
+        self.gpu_bitmap_size = !tb.font_size_keyframes.is_empty();
         self.gpu_motion = (fx.motion.is_active() || fx.animators.iter().any(|a| a.enabled))
             .then_some((time, window));
         self.gpu_wave = pose.wave.map(|(amp, rate)| (time, amp, rate));
@@ -415,6 +521,7 @@ impl TitleRenderer {
         let layout = self.render_layout_at_time(&evaluated, width, height, tb.text_path.as_ref().map(|_| time));
         self.bound_path = None;
         self.gpu_layout_only = false;
+        self.gpu_bitmap_size = false;
         self.gpu_wave = None;
         self.gpu_motion = None;
         self.gpu_outline_only = false;
@@ -446,11 +553,10 @@ impl TitleRenderer {
             return None;
         }
         // at(time) clears keys on the evaluated layout. Check authored size
-        // animation here so continuous resizing cannot become per-frame
-        // bitmap preparation disguised as a resident fixed-size source.
+        // animation here: font-size keys have retained-strike sampling,
+        // but transform-driven fitting remains outside that route.
         if source.glyphs.iter().any(|g|g.native_colour)
-            && (!tb.font_size_keyframes.is_empty()
-                || !o.transform.size_x_keyframes.is_empty()
+            && (!o.transform.size_x_keyframes.is_empty()
                 || !o.transform.size_y_keyframes.is_empty()) {return None;}
 
         if let Some(fill) = tb.texture_fill.as_ref().filter(|f| f.enabled) {

@@ -117,6 +117,10 @@ impl LoadedFont {
         self.colour.as_ref()?.glyph(&self.data, gid, px)
     }
 
+    pub(crate) fn colour_source(&self,gid:u16,px:f32)->Option<crate::colour::ColourSource> {
+        self.colour.as_ref()?.source(&self.data,gid,px)
+    }
+
     /// fontdue's metrics for glyph `gid` at `px`, with a colour glyph's
     /// box its bitmap's (#1503): fontdue sees no outline there.
     pub(crate) fn metrics_indexed(&self, gid: u16, px: f32) -> Metrics {
@@ -124,7 +128,7 @@ impl LoadedFont {
             return i.metrics(&self.data, gid, px);
         }
         let mut m = self.font.metrics_indexed(gid, px);
-        if let Some(c) = self.colour_glyph(gid, px) {
+        if let Some(c) = self.colour_source(gid, px) {
             m.xmin = c.xmin as i32;
             m.ymin = c.ymin as i32;
             m.width = c.width;

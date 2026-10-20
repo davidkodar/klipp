@@ -5907,7 +5907,7 @@ impl GpuEffectsPipeline {
         y0: u32,
         y1: u32,
     ) -> bool {
-        self.place_sprite(i, id, texels, bx, dx, dy, opacity, scale, anchor, under, shape, y0, y1, 0)
+        self.place_sprite(i, id, texels, bx, dx, dy, opacity, scale, anchor, under, shape, y0, y1, 0, None)
     }
 
     /// Layer `i` takes the resident sprite `id`, as it rests, with its
@@ -5920,7 +5920,7 @@ impl GpuEffectsPipeline {
     /// blending, then returned to the project working space on the GPU.
     #[allow(clippy::too_many_arguments)]
     pub fn stack_layer_place_sprite_over(&mut self, i: usize, id: u64, texels: &[u32], bx: SpriteBox, opacity: f32, y0: u32, y1: u32) -> bool {
-        self.place_sprite(i, id, texels, bx, 0, 0, opacity, 1.0, (0.0, 0.0), None, None, y0, y1, 1)
+        self.place_sprite(i, id, texels, bx, 0, 0, opacity, 1.0, (0.0, 0.0), None, None, y0, y1, 1, None)
     }
 
     /// Assemble cached glyph coverage with the CPU mask's max operation.
@@ -5929,7 +5929,7 @@ impl GpuEffectsPipeline {
         let (_,h)=self.stack_dims;
         let y0=origin[1].clamp(0,h as i32) as u32;
         let y1=(i64::from(origin[1])+i64::from(size[1])).clamp(0,i64::from(h)) as u32;
-        self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],1.0,1.0,(0.0,0.0),Some(color),None,y0,y1,2)
+        self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],1.0,1.0,(0.0,0.0),Some(color),None,y0,y1,2,None)
     }
 
     /// Subtract native bitmap alpha from the shared glyph face mask, as
@@ -5938,7 +5938,7 @@ impl GpuEffectsPipeline {
         let (_,h)=self.stack_dims;
         let y0=origin[1].clamp(0,h as i32) as u32;
         let y1=(i64::from(origin[1])+i64::from(size[1])).clamp(0,i64::from(h)) as u32;
-        self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],1.0,1.0,(0.0,0.0),None,None,y0,y1,3)
+        self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],1.0,1.0,(0.0,0.0),None,None,y0,y1,3,None)
     }
 
     /// Place a cached native-colour glyph without applying the text fill.
@@ -5946,7 +5946,18 @@ impl GpuEffectsPipeline {
         let (_,h)=self.stack_dims;
         let y0=origin[1].clamp(0,h as i32) as u32;
         let y1=(i64::from(origin[1])+i64::from(size[1])).clamp(0,i64::from(h)) as u32;
-        self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],1.0,1.0,(0.0,0.0),None,None,y0,y1,1)
+        self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],1.0,1.0,(0.0,0.0),None,None,y0,y1,1,None)
+    }
+
+    /// Resize a retained byte-premultiplied font strike with the CPU triangle
+    /// filter. mode: 2=max coverage, 3=subtract coverage, 1=native RGBA over.
+    #[allow(clippy::too_many_arguments)]
+    pub fn stack_title_resized_colour_glyph(&mut self,slot:usize,id:u64,texels:&[u32],size:[u32;2],target:[u32;2],origin:[i32;2],color:[u8;4],mode:u32)->bool {
+        if target.contains(&0) || size.contains(&0) || !matches!(mode,1..=3) {return false;}
+        let (_,h)=self.stack_dims;
+        let y0=origin[1].clamp(0,h as i32) as u32;
+        let y1=(i64::from(origin[1])+i64::from(target[1])).clamp(0,i64::from(h)) as u32;
+        self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],1.0,1.0,(0.0,0.0),Some(color),None,y0,y1,mode,Some(target))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -5966,6 +5977,7 @@ impl GpuEffectsPipeline {
         y0: u32,
         y1: u32,
         over: u32,
+        native_size: Option<[u32;2]>,
     ) -> bool {
         if self.is_device_lost() || i >= self.stack_layers.len() {
             return false;
@@ -5973,7 +5985,7 @@ impl GpuEffectsPipeline {
         let Some(to_authored) = title_styles::inverse(self.authored_to_working) else { return false };
         let (width, height) = self.stack_dims;
         let pixel_count = self.stack_pixel_count();
-        if (over != 2 && !bx.fits(texels,width,height))
+        if (native_size.is_none() && over != 2 && !bx.fits(texels,width,height))
             || texels.len() as u64 != u64::from(bx.w)*u64::from(bx.h)*2
         { return false; }
         let y0 = y0.min(height);
@@ -6024,8 +6036,8 @@ impl GpuEffectsPipeline {
             bw: bx.w,
             bh: bx.h,
             over,
-            _pad1: 0,
-            _pad2: 0,
+            _pad1: native_size.map_or(0,|s|s[0]),
+            _pad2: native_size.map_or(0,|s|s[1]),
             to_working: self.authored_to_working,
             to_authored,
         });
@@ -11209,6 +11221,36 @@ fn tap(x: i32, y: i32) -> vec4<f32> {
     return vec4<f32>(t.xyz * t.w, t.w);
 }
 
+// CPU image::resize Triangle: vertical float pass, horizontal pass rounded
+// to byte premultiplied RGBA, then integer unpremultiplication.
+fn resized_colour(x:i32,y:i32)->vec4<f32> {
+    if x<0 || y<0 || x>=i32(params._pad1) || y>=i32(params._pad2) {return vec4<f32>(0.0);}
+    let ratio=vec2<f32>(f32(params.bw)/f32(params._pad1),f32(params.bh)/f32(params._pad2));
+    let support=max(ratio,vec2<f32>(1.0));
+    let centre=(vec2<f32>(f32(x),f32(y))+0.5)*ratio;
+    let left=clamp(vec2<i32>(floor(centre-support)),vec2<i32>(0),vec2<i32>(i32(params.bw)-1,i32(params.bh)-1));
+    let right=clamp(vec2<i32>(ceil(centre+support)),left+1,vec2<i32>(i32(params.bw),i32(params.bh)));
+    var wx=0.0;var wy=0.0;
+    for(var sx=left.x;sx<right.x;sx=sx+1) {wx+=max(1.0-abs((f32(sx)-(centre.x-0.5))/support.x),0.0);}
+    for(var sy=left.y;sy<right.y;sy=sy+1) {wy+=max(1.0-abs((f32(sy)-(centre.y-0.5))/support.y),0.0);}
+    var total=vec4<f32>(0.0);
+    for(var sx=left.x;sx<right.x;sx=sx+1) {
+        var vertical=vec4<f32>(0.0);
+        for(var sy=left.y;sy<right.y;sy=sy+1) {
+            let t=texel(sx,sy);
+            let bytes=round(vec4<f32>(t.rgb,t.a*255.0));
+            let weight=max(1.0-abs((f32(sy)-(centre.y-0.5))/support.y),0.0)/wy;
+            vertical+=bytes*weight;
+        }
+        let weight=max(1.0-abs((f32(sx)-(centre.x-0.5))/support.x),0.0)/wx;
+        total+=vertical*weight;
+    }
+    let pre=floor(clamp(total,vec4<f32>(0.0),vec4<f32>(255.0))+0.5);
+    var rgb=pre.rgb;
+    if pre.a>0.0 {rgb=min(floor((pre.rgb*255.0+floor(pre.a/2.0))/pre.a),vec3<f32>(255.0));}
+    return vec4<f32>(rgb,pre.a/255.0);
+}
+
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = params.y0 * params.width + gid.x;
@@ -11217,7 +11259,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let y = i32(idx / params.width);
     var rgb = vec3<f32>(0.0);
     var a8 = 0.0;
-    if params.scale == 1.0 {
+    if params._pad1>0u && params._pad2>0u {
+        let t=resized_colour(x-params.dx,y-params.dy);
+        rgb=t.rgb;a8=t.a*255.0;
+    } else if params.scale == 1.0 {
         // Unscaled: the pixel as it is.
         let t = texel(x - params.dx, y - params.dy);
         rgb = t.xyz;

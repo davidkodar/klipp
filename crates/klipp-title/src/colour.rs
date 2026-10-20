@@ -24,21 +24,40 @@ use read_fonts::{FontRef, TableProvider};
 const CACHE_CAP: usize = 512;
 
 /// A colour glyph drawn at a size: straight (not premultiplied) RGBA,
-/// `width` x `height`, and where its box sits from the pen on the
-/// baseline, `xmin` across and its bottom `ymin` up, as fontdue's
-/// outline bounds give them.
+/// `width` x `height`. Layout metrics are read from ColourSource without
+/// preparing a resized bitmap.
 pub(crate) struct ColourBitmap {
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) rgba: Arc<Vec<u8>>,
+}
+
+/// A decoded font strike in byte-premultiplied RGBA. Independent of layout size.
+pub(crate) struct ColourStrike {
+    pub(crate) index: usize,
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    bearing: [i8; 2],
+    pub(crate) rgba: Arc<Vec<u8>>,
+}
+pub(crate) struct ColourSource {
+    pub(crate) strike: Arc<ColourStrike>,
     pub(crate) width: usize,
     pub(crate) height: usize,
     pub(crate) xmin: f32,
     pub(crate) ymin: f32,
-    pub(crate) rgba: Arc<Vec<u8>>,
+}
+static RASTERIZATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Diagnostic count of CPU colour-bitmap size preparations, including cache misses.
+pub fn colour_bitmap_rasterizations() -> u64 {
+    RASTERIZATIONS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// A font's colour bitmaps (CBDT with CBLC), drawn as they are asked
 /// for and kept by glyph and size.
 pub(crate) struct ColourBitmaps {
     cache: Mutex<HashMap<(u16, u32), Option<Arc<ColourBitmap>>>>,
+    strikes: Mutex<HashMap<(u16, usize), Arc<ColourStrike>>>,
 }
 
 impl ColourBitmaps {
@@ -48,7 +67,10 @@ impl ColourBitmaps {
         let font = FontRef::from_index(data, 0).ok()?;
         font.cblc().ok()?;
         font.cbdt().ok()?;
-        Some(Self { cache: Mutex::new(HashMap::new()) })
+        Some(Self {
+            cache: Mutex::new(HashMap::new()),
+            strikes: Mutex::new(HashMap::new()),
+        })
     }
 
     /// Glyph `gid` of the font in `data` drawn at `px` pixels per em;
@@ -61,44 +83,100 @@ impl ColourBitmaps {
         if cache.len() >= CACHE_CAP {
             cache.clear();
         }
-        let drawn = draw(data, gid, px).map(Arc::new);
+        let drawn = self
+            .source(data, gid, px)
+            .map(|source| Arc::new(draw(source)));
         cache.insert((gid, px.to_bits()), drawn.clone());
         drawn
     }
 }
 
-/// Glyph `gid` from the strike with the smallest size at or above
-/// `px` (the largest when none is that large), scaled to `px`.
-fn draw(data: &[u8], gid: u16, px: f32) -> Option<ColourBitmap> {
-    let font = FontRef::from_index(data, 0).ok()?;
-    let (cblc, cbdt) = (font.cblc().ok()?, font.cbdt().ok()?);
-    let sizes = cblc.bitmap_sizes();
-    let size = sizes
-        .iter()
-        .filter(|s| s.ppem_y() as f32 >= px)
-        .min_by_key(|s| s.ppem_y())
-        .or_else(|| sizes.iter().max_by_key(|s| s.ppem_y()))?;
-    let location = size.location(cblc.offset_data(), GlyphId::new(gid as u32)).ok()?;
-    let bitmap = cbdt.data(&location).ok()?;
-    let BitmapContent::Data(BitmapDataFormat::Png, png) = bitmap.content else { return None };
-    let (bearing_x, bearing_y) = match bitmap.metrics {
-        BitmapMetrics::Small(m) => (m.bearing_x.get(), m.bearing_y.get()),
-        BitmapMetrics::Big(m) => (m.hori_bearing_x.get(), m.hori_bearing_y.get()),
-    };
-    let image = image::load_from_memory_with_format(png, image::ImageFormat::Png).ok()?.to_rgba8();
-    let scale = px / size.ppem_y().max(1) as f32;
-    let width = ((image.width() as f32 * scale).round() as u32).max(1);
-    let height = ((image.height() as f32 * scale).round() as u32).max(1);
-    // Scaled premultiplied, so a transparent pixel's colour does not
-    // bleed into the edge, then made straight again.
-    let mut pre = image;
-    for p in pre.pixels_mut() {
-        let a = p[3] as u32;
-        for c in &mut p.0[..3] {
-            *c = ((*c as u32 * a + 127) / 255) as u8;
+impl ColourBitmaps {
+    /// Select and decode a source strike once; layout needs only these metrics.
+    pub(crate) fn source(&self, data: &[u8], gid: u16, px: f32) -> Option<ColourSource> {
+        if !px.is_finite() {
+            return None;
         }
+        let font = FontRef::from_index(data, 0).ok()?;
+        let cblc = font.cblc().ok()?;
+        let sizes = cblc.bitmap_sizes();
+        let (index, size) = sizes
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.ppem_y() as f32 >= px)
+            .min_by_key(|(_, s)| s.ppem_y())
+            .or_else(|| sizes.iter().enumerate().max_by_key(|(_, s)| s.ppem_y()))?;
+        let ppem = size.ppem_y();
+        let mut strikes = self.strikes.lock().unwrap_or_else(|e| e.into_inner());
+        let strike = if let Some(s) = strikes.get(&(gid, index)) {
+            Arc::clone(s)
+        } else {
+            let cbdt = font.cbdt().ok()?;
+            let location = size
+                .location(cblc.offset_data(), GlyphId::new(gid as u32))
+                .ok()?;
+            let bitmap = cbdt.data(&location).ok()?;
+            let BitmapContent::Data(BitmapDataFormat::Png, png) = bitmap.content else {
+                return None;
+            };
+            let bearing = match bitmap.metrics {
+                BitmapMetrics::Small(m) => [m.bearing_x.get(), m.bearing_y.get()],
+                BitmapMetrics::Big(m) => [m.hori_bearing_x.get(), m.hori_bearing_y.get()],
+            };
+            let mut image = image::load_from_memory_with_format(png, image::ImageFormat::Png)
+                .ok()?
+                .to_rgba8();
+            for p in image.pixels_mut() {
+                let a = p[3] as u32;
+                for c in &mut p.0[..3] {
+                    *c = ((*c as u32 * a + 127) / 255) as u8;
+                }
+            }
+            let strike = Arc::new(ColourStrike {
+                index,
+                width: image.width() as usize,
+                height: image.height() as usize,
+                bearing,
+                rgba: Arc::new(image.into_raw()),
+            });
+            if strikes.len() >= CACHE_CAP
+                || strikes.values().map(|s| s.rgba.len()).sum::<usize>() + strike.rgba.len()
+                    > 64 << 20
+            {
+                strikes.clear();
+            }
+            if strike.rgba.len() <= 64 << 20 {
+                strikes.insert((gid, index), Arc::clone(&strike));
+            }
+            strike
+        };
+        let scale = px / ppem.max(1) as f32;
+        let width = ((strike.width as f32 * scale).round() as usize).max(1);
+        let height = ((strike.height as f32 * scale).round() as usize).max(1);
+        Some(ColourSource {
+            xmin: (strike.bearing[0] as f32 * scale).round(),
+            ymin: (strike.bearing[1] as f32 * scale).round() - height as f32,
+            width,
+            height,
+            strike,
+        })
     }
-    let mut scaled = image::imageops::resize(&pre, width, height, image::imageops::FilterType::Triangle);
+}
+
+fn draw(source: ColourSource) -> ColourBitmap {
+    RASTERIZATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let pre = image::RgbaImage::from_raw(
+        source.strike.width as u32,
+        source.strike.height as u32,
+        source.strike.rgba.as_ref().clone(),
+    )
+    .unwrap();
+    let mut scaled = image::imageops::resize(
+        &pre,
+        source.width as u32,
+        source.height as u32,
+        image::imageops::FilterType::Triangle,
+    );
     for p in scaled.pixels_mut() {
         let a = p[3] as u32;
         for c in &mut p.0[..3] {
@@ -107,12 +185,9 @@ fn draw(data: &[u8], gid: u16, px: f32) -> Option<ColourBitmap> {
             }
         }
     }
-    let top = bearing_y as f32 * scale;
-    Some(ColourBitmap {
-        width: width as usize,
-        height: height as usize,
-        xmin: (bearing_x as f32 * scale).round(),
-        ymin: top.round() - height as f32,
+    ColourBitmap {
+        width: source.width,
+        height: source.height,
         rgba: Arc::new(scaled.into_raw()),
-    })
+    }
 }
