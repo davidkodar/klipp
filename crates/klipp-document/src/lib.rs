@@ -29,6 +29,7 @@ pub mod history;
 pub mod generators;
 pub mod ops;
 pub mod qc;
+pub mod qc_geometry;
 pub mod qc_review;
 pub mod sound_design;
 pub mod title_style;

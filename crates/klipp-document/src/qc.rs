@@ -767,24 +767,25 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
                 break;
             }
         }
-        // Over a face: the first thing the eye goes to, under words.
-        if let Some(tb) = crate::ops::title_box(td, seq.resolution) {
-            let faces = crate::ops::faces_under(seq, pool, transcripts, a, b);
-            if let Some(face) = faces.iter().find(|f| crate::ops::boxes_overlap(tb, **f, 0.04)) {
-                let zone = crate::ops::clear_zone((tb[0] + tb[2] / 2.0, tb[1] + tb[3] / 2.0), (tb[2], tb[3]), &faces).and_then(|(_, z)| z);
-                add(Severity::Error, "title_over_face", Some(a), format!("{} sits over a face (at {:.0}% across, {:.0}% down) while it is up from {a:.2} to {b:.2} s", clip_label(pool, c), (face[0] + face[2] / 2.0) * 100.0, (face[1] + face[3] / 2.0) * 100.0), &match zone { Some(z) => format!("Move it to the {z}, which is clear of every face for its span (a title op with x and y, or leave x and y out and it is placed clear)"), None => "No zone is clear of a face for its whole span: hold it where the shot has no face, or make it a card".to_string() });
-            } else {
-                // Across someone, if not their face: a walker in a
-                // handheld shot moves under words placed at one frame (#510).
-                // A figure under a tenth of the frame's height is part of
-                // a wide shot, not someone the words hide (#1590).
-                let people: Vec<[f32; 4]> = crate::ops::people_under(seq, pool, transcripts, a, b).into_iter().filter(|p| p[3] >= PERSON_MIN_HEIGHT).collect();
-                if people.iter().any(|p| crate::ops::boxes_overlap(tb, *p, 0.02)) {
-                    let all: Vec<[f32; 4]> = people.iter().chain(&faces).copied().collect();
-                    let zone = crate::ops::clear_zone((tb[0] + tb[2] / 2.0, tb[1] + tb[3] / 2.0), (tb[2], tb[3]), &all).and_then(|(_, z)| z);
-                    add(Severity::Warning, "title_over_person", Some(a), format!("{} crosses a person in the shot while it is up from {a:.2} to {b:.2} s", clip_label(pool, c)), &match zone { Some(z) => format!("Move it to the {z}, which stays clear of them for its whole span"), None => "No zone stays clear of them for its whole span; a backing or a card keeps it readable".to_string() });
-                }
+        // Compare detections and title pixels at the same timeline time,
+        // after both pictures' placement and known foreground occlusion.
+        let faces = crate::qc_geometry::detections(seq, pool, transcripts, a, b, true);
+        let mut incomplete = faces.incomplete;
+        let mut overlaps = |sample| match crate::qc_geometry::title_overlap(seq, transcripts, c, sample, 0.0) {
+            Some(hit) => hit,
+            None => { incomplete = true; false }
+        };
+        if let Some(face) = faces.samples.into_iter().find(|sample| overlaps(*sample)) {
+            add(Severity::Error, "title_over_face", Some(face.at), format!("{} overlaps a visible face near {:.2} s (at {:.0}% across, {:.0}% down in the composed frame)", clip_label(pool, c), face.at, (face.rect[0]+face.rect[2]/2.0)*100.0, (face.rect[1]+face.rect[3]/2.0)*100.0), "Move it to the side of the composed face or change its timing; inspect this sampled frame before changing the title");
+        } else {
+            let people = crate::qc_geometry::detections(seq, pool, transcripts, a, b, false);
+            if let Some(person) = people.samples.into_iter().filter(|p| p.rect[3] >= PERSON_MIN_HEIGHT).find(|sample| overlaps(*sample)) {
+                add(Severity::Warning, "title_over_person", Some(person.at), format!("{} crosses a visible person near {:.2} s in the composed frame", clip_label(pool, c), person.at), "Move it to the side of the composed person or change its timing; inspect this sampled frame first");
             }
+            incomplete |= people.incomplete;
+        }
+        if incomplete {
+            add(Severity::Note, "title_overlap_unchecked", Some(a), format!("Some face/person overlap samples for {} could not be checked in composed coordinates", clip_label(pool, c)), "Inspect the composed frames: crops, masks, warps, transitions and unsupported placement need a visual check");
         }
         let low = td.objects.iter().any(|o| o.visible && o.transform.center.y > 0.72);
         if low {
@@ -1118,10 +1119,10 @@ mod tests {
         }
     }
 
-    /// A title over the face at 40-44 s of the file is an error naming a
-    /// clear zone; the same title low in the frame is not.
+    /// A title over the face at 40-44 s reports the actual sample time;
+    /// the same title low in the frame is not an overlap.
     #[test]
-    fn a_title_over_a_face_is_an_error_with_a_clear_zone() {
+    fn a_title_over_a_face_reports_the_sample_time() {
         // Timeline 0-10 s shows 40-50 s of the file, where the faces are.
         let (mut seq, pool, screen) = screencast(&[(0.0, 10.0, 40.0)]);
         let mut over = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Over".into(), font_size: 72.0, ..Default::default() });
@@ -1136,7 +1137,24 @@ mod tests {
         let f: Vec<_> = r.findings.iter().filter(|f| f.rule == "title_over_face").collect();
         assert_eq!(f.len(), 1, "{}", r.text());
         assert!(f[0].hint.contains("Move it to the"), "{}", f[0].hint);
-        assert!((f[0].at_secs.unwrap() - 1.0).abs() < 1e-6);
+        assert!((f[0].at_secs.unwrap() - 2.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn qc_unsupported_geometry_requests_a_visual_check() {
+        struct Unknown(Screen);
+        impl Transcripts for Unknown {
+            fn words(&self, _: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> { None }
+            fn faces(&self, item: &klipp_media::MediaItem) -> Vec<(f64, [f32;4])> { self.0.faces(item) }
+            fn picture_geometry(&self, _: &Sequence, _: &Clip, _: f64) -> Option<crate::qc_geometry::Geometry> { None }
+        }
+        let (mut seq, pool, media) = screencast(&[(0.0,10.0,40.0)]);
+        let mut title = Track::new("T", TrackKind::Text);
+        title.clips.push(Clip { kind: ClipKind::Title(klipp_timeline::TitleData::single_text(Default::default())), ..Clip::gap(tc(0.0),tc(4.0)) });
+        seq.tracks.insert(0,title);
+        let report = check(&seq,&pool,&Unknown(Screen(media)));
+        assert!(rules(&report).contains(&"title_overlap_unchecked"));
+        assert!(!rules(&report).contains(&"title_over_face"));
     }
 
     /// #2168: a persistent or brief graphic has no words to time, while
