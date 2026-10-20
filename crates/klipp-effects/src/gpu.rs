@@ -359,6 +359,7 @@ pub struct GpuEffectsPipeline {
     title_style_pipeline: wgpu::ComputePipeline,
     title_style_scratch: Option<title_styles::StyleScratch>,
     title_post_scratch: Option<wgpu::Buffer>,
+    title_scene_bounds: Option<wgpu::Buffer>,
     title_outlines: Vec<(u64,wgpu::Buffer)>,
     // Compute pipelines — transitions (3-buffer: from, to, output, params)
     transition_pipeline: wgpu::ComputePipeline,
@@ -1724,6 +1725,7 @@ impl GpuEffectsPipeline {
             title_style_pipeline,
             title_style_scratch: None,
             title_post_scratch: None,
+            title_scene_bounds: None,
             title_outlines: Vec::new(),
             transition_pipeline,
             pieces_pipeline,
@@ -5450,6 +5452,7 @@ impl GpuEffectsPipeline {
         if self.stack_dims != (width, height) {
             self.title_style_scratch = None;
             self.title_post_scratch = None;
+            self.title_scene_bounds = None;
             self.stack_sprites.clear();
         }
         self.stack_title_slot = layers;

@@ -1034,6 +1034,33 @@ impl GpuEffectsPipeline {
         self.write_params(&StyleParams{op:11,matrix:self.authored_to_working,..params});self.stack_pass(&self.title_style_pipeline,scratch,layer,count.div_ceil(WORKGROUP_SIZE),"title scene quantized working");true
     }
 
+    /// Match the CPU title raster's bounding box (alpha >= half a byte).
+    /// Reduction stays on GPU; sub-threshold pixels inside the box survive.
+    pub fn stack_title_crop_to_alpha_bounds(&mut self, slot: usize) -> bool {
+        // Also validates the slot/dimensions and ensures frame-sized scratch.
+        if !self.stack_title_alpha(slot, [0.0; 4], 1.0) { return false; }
+        let (w,h)=self.stack_dims;
+        let bytes=u64::from(h)*8;
+        if self.title_scene_bounds.as_ref().is_none_or(|b|b.size()<bytes) {
+            self.title_scene_bounds=Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label:Some("title scene row bounds"),size:bytes,
+                usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:false,
+            }));
+        }
+        let layer=&self.stack_layers[slot];
+        let rows=self.title_scene_bounds.as_ref().unwrap();
+        let scratch=self.title_post_scratch.as_ref().unwrap();
+        let params=StyleParams {width:w,height:h,frame_width:w,op:38,x0:0,y0:0,
+            offset_x:0,offset_y:0,color:[0.0;4],matrix:[[0.0;4];3]};
+        self.write_params(&params);
+        self.stack_pass(&self.title_style_pipeline,layer,rows,h.div_ceil(WORKGROUP_SIZE),"title scene row bounds");
+        self.write_params(&StyleParams {op:39,..params});
+        self.stack_pass(&self.title_style_pipeline,rows,scratch,1,"title scene bounds reduction");
+        self.write_params(&StyleParams {op:40,..params});
+        self.stack_pass(&self.title_style_pipeline,scratch,layer,(w*h).div_ceil(WORKGROUP_SIZE),"title scene crop");
+        true
+    }
+
     /// Multiply an object's alpha by another object's authored mask.
     pub fn stack_title_mask(
         &mut self,
