@@ -1615,3 +1615,60 @@ fn rectangle_pop_blur_overshoot_mattes_stay_resident() {
         add_rectangle_pop_blur_overshoot(&mut seq,m);seq
     },6);
 }
+
+fn path_opacity_sequence(keyed: bool, mode: u8, w:u32, h:u32) -> Sequence {
+    use klipp_timeline::{Motion,MotionKind,StaggerUnit,TextPath};
+    let variant=mode%4;
+    let mut title=TitleData::single_text_fx(TextBox {text:"Path Fade".into(),font_size:180.0,color:[190,120,60,255],
+        text_path:Some(match mode/4 {
+            0=>TextPath::Arc{radius:55.0,start_angle:200.0,sweep:160.0},
+            1=>TextPath::Circle{radius:45.0},
+            _=>TextPath::Wave{amplitude:20.0,frequency:1.5,phase:30.0},
+        }),..Default::default()},LayerFx::default());
+    if mode/4==3 {
+        use klipp_core::vector_path::{PathContour,PathPose,PathVertex};
+        let path=klipp_timeline::VectorPath{trim:None,keyframes:vec![],pose:PathPose {
+            stroke_glow:None,fill:[0.0;4],stroke:[0.0;4],stroke_width:0.0,
+            contours:vec![PathContour{closed:false,vertices:vec![
+                PathVertex{point:[0.05,0.5],incoming:[0.05,0.5],outgoing:[0.3,0.2]},
+                PathVertex{point:[0.95,0.5],incoming:[0.7,0.8],outgoing:[0.95,0.5]},
+            ]}],
+        }};
+        let layer=title.add_object(klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape{kind:klipp_timeline::ShapeKind::Path(path),fill:None,gradient:None,stroke:None,fit:None}),klipp_timeline::ObjectTransform{size:klipp_timeline::TitlePosition{x:1.0,y:1.0},..klipp_timeline::default_text_transform()});
+        title.objects.last_mut().unwrap().visible=false;
+        title.primary_text_mut().unwrap().text_path=Some(TextPath::Layer{layer,contour:0,offset:0.1,offset_keyframes:vec![key(0.0,0.0),key(3.0,0.2)],align:klipp_timeline::PathTextAlign::Start,flip:false});
+    }
+    title.primary_text_mut().unwrap().font_size_keyframes=vec![key(0.0,150.0),key(3.0,if keyed {210.0}else{150.0})];
+    let kind=match variant {1=>MotionKind::Flicker,2=>MotionKind::Typewriter,_=>MotionKind::Fade};
+    title.objects[0].fx_mut().motion=klipp_timeline::TitleMotion {
+        enter:Some(Motion::new(kind).duration(0.8).stagger(StaggerUnit::Char,0.03)),
+        exit:Some(Motion::new(MotionKind::Fade).duration(0.8).stagger(StaggerUnit::Word,0.03)),
+    };
+    if variant==3 {
+        title.objects[0].fx_mut().animators=vec![klipp_timeline::Animator {props:klipp_timeline::AnimatorProps{opacity:0.4,..Default::default()},..Default::default()}];
+    }
+    let mut seq=Sequence::new_default();seq.resolution=Resolution{width:w,height:h};
+    let mut track=Track::new("path",TrackKind::Video);
+    track.clips.push(Clip{kind:ClipKind::Title(title),..Clip::gap(RationalTime::from_secs_f64(0.0,30),RationalTime::from_secs_f64(3.0,30))});
+    seq.tracks=vec![track];seq
+}
+#[test]
+fn path_opacity_matches_cpu_and_stays_resident() {check_rectangle_motion_fade_modes(path_opacity_sequence,16);}
+#[test]
+fn path_opacity_stays_resident_at_4k() {check_rectangle_motion_fades_at_4k(path_opacity_sequence);}
+
+#[test]
+fn path_motion_restrictions_and_cpu_fade() {
+    let seq=path_opacity_sequence(true,0,320,180);
+    let ClipKind::Title(mut title)=seq.tracks[0].clips[0].kind.clone() else {unreachable!()};
+    let mut renderer=klipp_title::TitleRenderer::new();
+    let hidden=renderer.render_with_window(&title,320,180,None,0.0,Some(3.0));
+    assert!(hidden.chunks_exact(4).all(|p|p[3]==0),"keyed path entrance must start hidden");
+    let visible=renderer.render_with_window(&title,320,180,None,1.5,Some(3.0));
+    assert!(visible.chunks_exact(4).any(|p|p[3]>0),"settled path text must be visible");
+    title.objects[0].fx_mut().motion.enter.as_mut().unwrap().kind=klipp_timeline::MotionKind::Rise;
+    assert!(renderer.glyph_source(&title,320,180,0.2,Some(3.0)).is_none());
+    title.objects[0].fx_mut().motion=Default::default();
+    title.objects[0].fx_mut().animators=vec![klipp_timeline::Animator{props:klipp_timeline::AnimatorProps{rotation:20.0,..Default::default()},..Default::default()}];
+    assert!(renderer.glyph_source(&title,320,180,0.2,Some(3.0)).is_none());
+}

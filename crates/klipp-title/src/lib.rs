@@ -1872,6 +1872,24 @@ impl TitleRenderer {
             }
         }
 
+        let fx=title.primary_fx();
+        let mut path_alpha=vec![1.0f32;glyphs.len()];
+        if gpu_glyphs::path_opacity_only(fx) {
+            if let Some(time)=time_secs {
+                let window=self.gpu_motion.and_then(|(_,window)|window).or(self.motion_window);
+                let enter_units=motion_units(glyphs,fx.motion.enter.map(|m|m.stagger).unwrap_or_default());
+                let exit_units=motion_units(glyphs,fx.motion.exit.map(|m|m.stagger).unwrap_or_default());
+                let parents:Vec<_>=glyphs.iter().map(|g|g.parent).collect();
+                let poses=klipp_core::title_motion::animator_poses(&fx.animators,&parents,tb.font_size*scale,time as f64);
+                for i in 0..glyphs.len() {
+                    let (enter,_)=fx.motion.progress(time,window,enter_units[i]);
+                    let (_,exit)=fx.motion.progress(time,window,exit_units[i]);
+                    let alpha=fx.motion.enter.map_or(1.0,|m|m.pose(enter,1.0).0)
+                        *fx.motion.exit.map_or(1.0,|m|m.pose(exit,1.0).0)*poses.get(i).map_or(1.0,|p|p.alpha);
+                    path_alpha[i]=if alpha<=0.001 {0.0}else{alpha.clamp(0.0,1.0)};
+                }
+            }
+        }
         let max_pad = effect_padding(title, scale);
         // Use the full frame as the mask (path text can go anywhere)
         let mask_w = w;
@@ -1927,6 +1945,11 @@ impl TitleRenderer {
             }
             if !self.gpu_layout_only && !self.layout_bounds_only {
             let (_,coverage)=fonts[glyph.font_index].coverage(glyph.key);
+            let faded:Vec<u8>;
+            let coverage=if path_alpha[i]<1.0 {
+                faded=coverage.iter().map(|a|(*a as f32*path_alpha[i]).round() as u8).collect();
+                faded.as_slice()
+            }else{coverage.as_ref()};
             blit_rotated(
                 &mut alpha_mask, mask_w, mask_h,
                 &coverage, gw, gh,
@@ -1999,7 +2022,7 @@ impl TitleRenderer {
                     if tb.write_on<1.0 && laid[i].along>reveal {return false;}
                     let radius=((g.width as f32*0.5).powi(2)+(g.height as f32*0.5).powi(2)).sqrt().ceil() as i32;
                     draw.origin=[at.centre[0] as i32-radius,at.centre[1] as i32-radius];
-                    draw.size=[(2*radius+1) as u32;2];draw.radians=at.angle;draw.path=true;
+                    draw.size=[(2*radius+1) as u32;2];draw.radians=at.angle;draw.path=true;draw.alpha=path_alpha[i];
                     true
                 });
                 source.bounds=[text_min_x,text_min_y,text_max_x,text_max_y];
