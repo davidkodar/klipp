@@ -2375,6 +2375,26 @@ pub trait Transcripts {
     fn placement(&self, _clip: &Clip, _clip_secs: f64, _fps: f64) -> Option<klipp_timeline::surface::Placement> {
         None
     }
+    /// Flat picture geometry at timeline time. Hosts may refuse geometry
+    /// they cannot follow rather than comparing source coordinates as frame coordinates.
+    fn picture_geometry(&self, seq: &Sequence, clip: &Clip, at: f64) -> Option<crate::qc_geometry::Geometry> {
+        Some(crate::qc_geometry::Geometry { placement: self.placement(clip, at - secs(clip.timeline_in), seq.fps.as_f64()), ..Default::default() })
+    }
+    /// Visible title regions in its own frame at clip-local time. The host
+    /// can use its renderer; document-only callers use keyed layout estimates.
+    fn title_regions(&self, title: &klipp_timeline::TitleData, frame: klipp_core::Resolution, local: f64, _duration: f64) -> Vec<[f32; 4]> {
+        let mut td = title.clone();
+        for o in &mut td.objects {
+            o.visible &= o.evaluated_opacity(local) > 0.01;
+            o.transform = o.transform.evaluated_at(local);
+            if let klipp_timeline::TitleObjectContent::TextBox(tb) = &mut o.content { *tb = tb.at(local); }
+        }
+        let objects = std::mem::take(&mut td.objects);
+        objects.into_iter().filter_map(|object| {
+            td.objects = vec![object];
+            title_box(&td, frame)
+        }).collect()
+    }
     /// The beats of `item`'s music, as the beat analysis read them: how
     /// sure it is of a pulse (0 to 1) and the beats in the file's seconds.
     /// `None` when they have not been read. The check reads text cut to
@@ -2387,31 +2407,12 @@ pub trait Transcripts {
 /// The faces under a stretch of the timeline: every picture clip that
 /// overlaps `from..to`, its file's faces inside the stretch it shows.
 pub fn faces_under(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, from: f64, to: f64) -> Vec<[f32; 4]> {
-    boxes_under(seq, pool, from, to, |item| transcripts.faces(item))
+    crate::qc_geometry::detections(seq, pool, transcripts, from, to, true).samples.into_iter().map(|s| s.rect).collect()
 }
 
-/// The people under a stretch of the timeline, whole bodies, as
-/// [`faces_under`] finds faces (#510).
+/// Visible, composed body regions over a timeline interval.
 pub fn people_under(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts, from: f64, to: f64) -> Vec<[f32; 4]> {
-    boxes_under(seq, pool, from, to, |item| transcripts.people(item))
-}
-
-/// Every box `get` finds in the files of the picture clips over
-/// `from..to`, inside the stretch each shows.
-fn boxes_under(seq: &Sequence, pool: &MediaPool, from: f64, to: f64, get: impl Fn(&klipp_media::MediaItem) -> Vec<(f64, [f32; 4])>) -> Vec<[f32; 4]> {
-    let mut out = Vec::new();
-    for t in seq.tracks.iter().filter(|t| t.kind == TrackKind::Video && t.visible) {
-        for c in t.clips.iter().filter(|c| c.enabled && secs(c.timeline_in) < to && secs(c.timeline_out) > from) {
-            let Some(item) = c.media_id().and_then(|id| pool.get(&id)) else { continue };
-            let (lo, hi) = (from.max(secs(c.timeline_in)), to.min(secs(c.timeline_out)));
-            let file_at = |x: f64| c.source_secs_at(x - secs(c.timeline_in), seq.fps.as_f64());
-            // A reversed clip's file times fall as the timeline's rise.
-            let (a, b) = (file_at(lo), file_at(hi));
-            let (f_lo, f_hi) = (a.min(b) - 0.75, a.max(b) + 0.75);
-            out.extend(get(item).into_iter().filter(|(s, _)| *s >= f_lo && *s <= f_hi).map(|(_, b)| b));
-        }
-    }
-    out
+    crate::qc_geometry::detections(seq, pool, transcripts, from, to, false).samples.into_iter().map(|s| s.rect).collect()
 }
 
 /// Whether two boxes (left, top, width, height) overlap, with `margin`
