@@ -101,9 +101,20 @@ impl KlippApp {
                 let import_request = env.commands.iter().find_map(|c| match c {
                     AppCommand::ImportTimeline { request_id, .. } => Some(*request_id), _ => None,
                 });
+                let project_switch = env.commands.iter().any(|c| matches!(c, AppCommand::OpenProjectNow { .. } | AppCommand::CloseProjectNow { .. }));
+                let project_before = project_switch.then(|| self.state.control_shared.project.lock().unwrap_or_else(|e|e.into_inner()).generation);
                 let cmds = expand_control_commands(env.commands, env.batch);
                 self.send_commands(cmds);
                 self.suppress_fps_prompt = false;
+                if let Some(before) = project_before {
+                    // The handler has returned, including any save, load and
+                    // post-save work. Capture its final error in THIS ack,
+                    // before another envelope can change the shared status.
+                    let project = self.state.control_shared.project.lock().unwrap_or_else(|e|e.into_inner());
+                    refused = if project.generation == before {
+                        Some("project switch did not complete".into())
+                    } else { project.last_error.clone() };
+                }
                 if let Some(request_id) = import_request {
                     let outcome = self.state.control_shared.import_outcome.lock().unwrap_or_else(|e| e.into_inner());
                     match outcome.as_ref().filter(|o| o["request_id"] == serde_json::json!(request_id)) {
@@ -124,6 +135,7 @@ impl KlippApp {
                 // straight after it: the per-frame mirror had not run yet,
                 // and the project read as saved a moment after an edit.
                 if let Ok(mut project) = self.state.control_shared.project.lock() {
+                    project.recent_projects = self.prefs.general.recent_projects.iter().map(crate::prefs::RecentProject::control_summary).collect();
                     project.path = self.state.project_path.clone();
                     project.dirty = self.state.dirty;
                     project.undo = self.state.undo_label();

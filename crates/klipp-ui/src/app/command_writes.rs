@@ -342,6 +342,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::RollTrimClip { .. }
         | AppCommand::NewProject
         | AppCommand::CloseProject
+        | AppCommand::CloseProjectNow { .. }
         | AppCommand::SaveProject
         | AppCommand::SaveProjectAs { .. }
         | AppCommand::OpenProject { .. }

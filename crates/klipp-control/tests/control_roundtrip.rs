@@ -37,6 +37,7 @@ struct Harness {
     next_id: u64,
     ack_delay_ms: Arc<std::sync::atomic::AtomicU64>,
     commit_change: Arc<std::sync::atomic::AtomicU8>,
+    project_switch_delay_ms: Arc<std::sync::atomic::AtomicU64>,
     /// Two clips, each with its own Corrector, and a node nested inside
     /// a Compound on the first — what the id checks are checked against.
     ids: Ids,
@@ -112,6 +113,7 @@ fn harness() -> Harness {
     let edits_seen: Arc<Mutex<Vec<klipp_document::history::EditCommand>>> = Arc::new(Mutex::new(Vec::new()));
     let ack_delay_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let commit_change = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let project_switch_delay_ms = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let shared = Arc::new(klipp_core::ControlShared::default());
     let media_pool = Arc::new(RwLock::new(klipp_media::MediaPool::new()));
     let (sequence, ids) = sequence_with_two_clips();
@@ -123,6 +125,7 @@ fn harness() -> Harness {
         let delay = Arc::clone(&ack_delay_ms);
         let sequence = Arc::clone(&sequence);
         let commit_change = Arc::clone(&commit_change);
+        let project_switch_delay = Arc::clone(&project_switch_delay_ms);
         std::thread::spawn(move || {
             for env in env_rx {
                 let ms = delay.load(std::sync::atomic::Ordering::Relaxed);
@@ -218,20 +221,45 @@ fn harness() -> Harness {
                             *shared.import_outcome.lock().unwrap() = Some(outcome);
                         }
 
+                        let switching = matches!(&c, klipp_core::AppCommand::OpenProjectNow { .. } | klipp_core::AppCommand::CloseProjectNow { .. });
+                        let delay = project_switch_delay.load(std::sync::atomic::Ordering::SeqCst);
+                        if switching && delay > 0 {
+                            {
+                                let mut p = shared.project.lock().unwrap();
+                                // A successful save, followed by an unrelated
+                                // event, while the replacement is still pending.
+                                p.generation += 2;
+                                p.dirty = false;
+                                p.last_error = None;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(delay));
+                        }
+
                         // A save or an open reports back as the UI does: the
                         // path, no unsaved changes, the generation moved. A
                         // path with "broken" in it fails, to see that said.
-                        if let klipp_core::AppCommand::SaveProjectAs { path } | klipp_core::AppCommand::OpenProjectNow { path } = &c {
+                        if let klipp_core::AppCommand::SaveProjectAs { path } | klipp_core::AppCommand::OpenProjectNow { path, .. } = &c {
                             let mut p = shared.project.lock().unwrap();
                             p.generation += 1;
                             if path.to_string_lossy().contains("broken") {
-                                p.last_error = Some("could not save: the disk said no".into());
+                                p.last_error = Some(if matches!(&c, klipp_core::AppCommand::OpenProjectNow { .. }) { "could not open: late load failed" } else { "could not save: the disk said no" }.into());
                             } else {
                                 p.path = Some(path.clone());
                                 p.dirty = false;
                                 p.last_error = None;
                             }
                         }
+                        if let klipp_core::AppCommand::CloseProjectNow { save, discard_changes, expected_identity } = &c {
+                            let mut p = shared.project.lock().unwrap();
+                            let decision = p.replacement_save_path(*expected_identity,*save,*discard_changes);
+                            p.generation += 1;
+                            p.last_error = match decision {
+                                Err(e) => Some(e),
+                                Ok(Some(path)) if path.to_string_lossy().contains("broken") => Some("could not save: the disk said no".into()),
+                                Ok(_) => { p.path=None; p.dirty=false; p.identity+=1; None }
+                            };
+                        }
+                        if switching { refused = shared.project.lock().unwrap().last_error.clone(); }
                         let _ = cmd_tx.send(c);
                     }
                     for e in env.edits {
@@ -280,7 +308,7 @@ fn harness() -> Harness {
         match UnixStream::connect(&sock) {
             Ok(stream) => {
                 let reader = BufReader::new(stream.try_clone().expect("clone"));
-                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, sent, edits_seen, shared, media_pool, sequence, log, socket: sock, next_id: 0, ack_delay_ms, commit_change, ids };
+                return Harness { _serial: serial, stream, frame_buffer, reader, cmd_rx, envelopes, sent, edits_seen, shared, media_pool, sequence, log, socket: sock, next_id: 0, ack_delay_ms, commit_change, project_switch_delay_ms, ids };
             }
             Err(e) => {
                 last_err = Some(e);
@@ -2179,6 +2207,69 @@ fn a_project_is_saved_and_opened_without_a_dialog() {
     assert_eq!(r["opened"], json!(true));
     assert!(matches!(h.cmd_rx.try_iter().last(), Some(klipp_core::AppCommand::OpenProjectNow { .. })));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn project_access_recent_open_and_safe_close_over_socket() {
+    let mut h=harness();
+    let root=std::env::temp_dir().join(format!("klipp-project-access-{}",uuid::Uuid::new_v4()));
+    let path=root.join("Example.klipp");
+    std::fs::create_dir_all(&path).unwrap();
+    std::fs::write(path.join("project.json"),"{}").unwrap();
+    h.shared.project.lock().unwrap().recent_projects=vec![klipp_core::RecentProjectSummary {
+        path:path.clone(),name:"Example".into(),last_saved:None,duration_secs:Some(12.0),fps:Some("24".into()),resolution:Some("1920x1080".into()),missing_media:Some(false)
+    }];
+    assert_eq!(h.ok(json!({"method":"status"}))["recent_projects"][0]["name"],"Example");
+    assert_eq!(h.ok(json!({"method":"recent_projects"}))["projects"][0]["duration_secs"],12.0);
+    assert_eq!(h.ok(json!({"method":"open_project","name":"EXAMPLE"}))["opened"],true);
+    assert_eq!(h.ok(json!({"method":"status"}))["recent_projects"],json!([]));
+    h.shared.project.lock().unwrap().dirty=true;
+    let before=h.sent.lock().unwrap().len();
+    assert!(h.call(json!({"method":"close_project"}))["error"].as_str().unwrap().contains("unsaved"));
+    assert_eq!(h.sent.lock().unwrap().len(),before);
+    assert_eq!(h.ok(json!({"method":"close_project","save":true}))["closed"],true);
+    assert!(h.shared.project.lock().unwrap().path.is_none());
+    // A save failure must leave the project and its changes in memory.
+    { let mut p=h.shared.project.lock().unwrap(); p.path=Some(root.join("broken.klipp"));p.dirty=true; }
+    assert!(h.call(json!({"method":"close_project","save":true}))["error"].as_str().unwrap().contains("disk said no"));
+    assert!(h.shared.project.lock().unwrap().dirty);
+    assert_eq!(h.ok(json!({"method":"close_project","discard_changes":true}))["closed"],true);
+    assert_eq!(h.ok(json!({"method":"close_project"}))["closed"],true);
+    h.ok(json!({"method":"open_project","name":"Example"}));
+    assert_eq!(h.ok(json!({"method":"close_project"}))["closed"],true);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn project_access_waits_past_intermediate_save_for_its_own_ack() {
+    let mut h = harness();
+    let root = std::env::temp_dir().join(format!("klipp-switch-delay-{}",uuid::Uuid::new_v4()));
+    let original = root.join("original.klipp");
+    let other = root.join("other.klipp");
+    let broken = root.join("broken.klipp");
+    for path in [&original,&other,&broken] { std::fs::create_dir_all(path).unwrap(); }
+    // Longer than envelope::ACK_TIMEOUT (2 seconds): the first wait must
+    // yield pending, then wait on this operation, not the saved generation.
+    h.project_switch_delay_ms.store(2200,std::sync::atomic::Ordering::SeqCst);
+    for target in [&other,&original,&broken] {
+        { let mut p=h.shared.project.lock().unwrap(); p.path=Some(original.clone()); p.dirty=true; p.last_error=None; }
+        let start=std::time::Instant::now();
+        let result=h.call(json!({"method":"open_project","path":target,"save":true}));
+        assert!(start.elapsed() >= std::time::Duration::from_millis(2200), "returned on the intermediate save: {result}");
+        if target == &broken {
+            assert!(result["error"].as_str().unwrap().contains("late load failed"),"{result}");
+            assert_eq!(h.shared.project.lock().unwrap().path.as_ref(),Some(&original));
+        } else {
+            assert_eq!(result["result"]["opened"],true,"{result}");
+            assert_eq!(h.shared.project.lock().unwrap().path.as_ref(),Some(target));
+        }
+    }
+    { let mut p=h.shared.project.lock().unwrap();p.path=Some(original);p.dirty=true;p.last_error=None; }
+    let start=std::time::Instant::now();
+    assert_eq!(h.ok(json!({"method":"close_project","save":true}))["closed"],true);
+    assert!(start.elapsed() >= std::time::Duration::from_millis(2200));
+    assert!(h.shared.project.lock().unwrap().path.is_none());
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 /// The brief is set as a recorded edit and read back, a bad one is

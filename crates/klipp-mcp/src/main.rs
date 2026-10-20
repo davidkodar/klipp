@@ -58,7 +58,7 @@ const WRITE_TOOLS: &[&str] = &[
     "klipp_add_node", "klipp_remove_node", "klipp_connect_nodes",
     "klipp_set_node_param", "klipp_toggle_node", "klipp_set_log_format",
     "klipp_generator", "klipp_undo", "klipp_redo", "klipp_batch", "klipp_export", "klipp_export_subtitles", "klipp_import_subtitles", "klipp_apply",
-    "klipp_open_project", "klipp_switch_sequence", "klipp_track_subject",
+    "klipp_open_project", "klipp_close_project", "klipp_switch_sequence", "klipp_track_subject",
 ];
 
 /// Calls with side effects may be replayed after a lost socket reply. The
@@ -515,8 +515,32 @@ fn arg_str(args: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("missing required argument: {key}"))
 }
 
-/// The socket command a tool call is. Shared by a single call and by the
-/// calls inside a batch.
+/// Validate selection and save/discard choices without silently coercing them.
+fn project_switch_command(method: &str, args: &Value) -> Result<Value, String> {
+    let mut out=json!({"method":method});
+    for key in ["save","discard_changes"] {
+        let value=match args.get(key) {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(b)) => *b,
+            _ => return Err(format!("{key} must be a boolean")),
+        };
+        out[key]=json!(value);
+    }
+    if out["save"] == true && out["discard_changes"] == true { return Err("choose save or discard_changes, not both".into()); }
+    if method == "open_project" {
+        for key in ["path","name"] {
+            out[key]=match args.get(key) {
+                None | Some(Value::Null) => Value::Null,
+                Some(Value::String(s)) => json!(s),
+                _ => return Err(format!("{key} must be a string")),
+            };
+        }
+        if out["path"].is_null() == out["name"].is_null() { return Err("give exactly one of path or name".into()); }
+    }
+    Ok(out)
+}
+
+/// The socket command a tool call is, shared by single and batch calls.
 fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
     if matches!(name, "klipp_plan" | "klipp_apply") {
         edit_schema::validate_ops(args)?;
@@ -1255,11 +1279,9 @@ fn tool_to_command(name: &str, args: &Value) -> Result<Value, String> {
             "path": args.get("path").and_then(|v| v.as_str()),
             "max_width": args.get("max_width").and_then(|v| v.as_u64()),
         }),
-        "klipp_open_project" => json!({
-            "method": "open_project",
-            "path": arg_str(args, "path")?,
-            "discard_changes": args.get("discard_changes").and_then(|v| v.as_bool()).unwrap_or(false),
-        }),
+        "klipp_open_project" => project_switch_command("open_project",args)?,
+        "klipp_recent_projects" => json!({"method":"recent_projects"}),
+        "klipp_close_project" => project_switch_command("close_project",args)?,
         "klipp_frame_stats" => json!({ "method": "frame_stats", "secs": args.get("secs").and_then(|v| v.as_f64()).ok_or("missing required argument: secs")?, "timeout_ms": args.get("timeout_ms").and_then(|v| v.as_u64()) }),
         "klipp_scope" => {
             let mut v = json!({ "method": "scope", "mode": args.get("mode").and_then(|v| v.as_str()).unwrap_or("waveform") });
@@ -1496,7 +1518,7 @@ fn call_tool(name: &str, args: &Value) -> Result<(Vec<Value>, Option<Value>), St
 fn project_changed_under(name: &str, seen: u64, now: u64) -> bool {
     seen != u64::MAX
         && seen != now
-        && !matches!(name, "klipp_new_project" | "klipp_open_project" | "klipp_save_project")
+        && !matches!(name, "klipp_new_project" | "klipp_open_project" | "klipp_close_project" | "klipp_save_project")
 }
 
 fn has_structured_output(name: &str) -> bool {
@@ -1756,15 +1778,11 @@ fn tool(name: &str, description: &str, mut properties: Value, required: Vec<&str
     } else if name == "klipp_apply" {
         properties["ops"] = json!({"type":"array","minItems":1,"items":{"type":"object","required":["op"]},"description":"The ops of klipp_plan's schema; every op: klipp_guide topic ops."});
     }
-    json!({
-        "name": name,
-        "description": description,
-        "inputSchema": {
-            "type": "object",
-            "properties": properties,
-            "required": required,
-        },
-    })
+    let mut schema=json!({"type":"object","properties":properties});
+    // An omitted required list means no required arguments. Avoid paying
+    // for empty arrays on every read/optional-argument tool in the catalog.
+    if !required.is_empty() { schema["required"]=json!(required); }
+    json!({ "name":name, "description":description, "inputSchema":schema })
 }
 
 #[cfg(test)]
@@ -2338,8 +2356,10 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              "Import OTIO/FCPXML/Kdenlive/EDL; omit path for last outcome. Guide: klipp_guide topic import_timeline.",
              json!({"path":{"type":"string"}}), vec![]),
         tool("klipp_open_project",
-             "Open project; refuses unsaved changes unless discard_changes. Guide: klipp_guide topic open_project.",
-             json!({ "path": { "type": "string" }, "discard_changes": { "type": "boolean" } }), vec!["path"]),
+             "Open a project by absolute path or recent name; protect unsaved changes. Guide: klipp_guide topic open_project.",
+             json!({ "path": { "type": "string" }, "name": { "type": "string" }, "save": { "type": "boolean" }, "discard_changes": { "type": "boolean" } }), vec![]),
+        tool("klipp_recent_projects", "List existing recent projects, most recent first. Names and paths are local project data. Guide: klipp_guide topic recent_projects.", json!({}), vec![]),
+        tool("klipp_close_project", "Close to the project page; refuses unsaved changes unless save or discard_changes. Guide: klipp_guide topic close_project.", json!({"save":{"type":"boolean"},"discard_changes":{"type":"boolean"}}), vec![]),
         tool("klipp_frame_stats",
              "Frame scope measurements against the brief. Guide: klipp_guide topic frame_stats.",
              json!({ "secs": { "type": "number" }, "timeout_ms": { "type": "integer" } }), vec!["secs"]),
@@ -2807,6 +2827,26 @@ mod wait_tests {
         assert!(text.contains("expected_revision: 8") && text.contains("expected_project_identity: 3"));
         let incomplete = content_for("klipp_plan", &json!({ "text": "one cut", "revision": 8 })).unwrap();
         assert_eq!(incomplete[0]["text"], "one cut");
+    }
+
+    #[test]
+    fn project_access_tools_forward_selection_and_safety_options() {
+        let open=tool_to_command("klipp_open_project",&json!({"name":"Film","save":true})).unwrap();
+        assert_eq!(open["name"],"Film"); assert_eq!(open["save"],true); assert!(open["path"].is_null());
+        let close=tool_to_command("klipp_close_project",&json!({"discard_changes":true})).unwrap();
+        assert_eq!(close,json!({"method":"close_project","save":false,"discard_changes":true}));
+        assert_eq!(tool_to_command("klipp_recent_projects",&json!({})).unwrap(),json!({"method":"recent_projects"}));
+        assert!(!project_changed_under("klipp_close_project",1,2));
+        assert!(WRITE_TOOLS.contains(&"klipp_close_project"));
+        for bad in [json!({"save":"true"}),json!({"save":true,"discard_changes":true})] {
+            assert!(tool_to_command("klipp_close_project",&bad).is_err());
+        }
+        assert!(tool_to_command("klipp_open_project",&json!({"path":"/tmp/film.klipp","name":"Film"})).is_err());
+        assert!(tool_to_command("klipp_open_project",&json!({"path":17,"name":"Film"})).is_err());
+        for name in ["klipp_recent_projects","klipp_close_project","klipp_open_project"] {
+            assert!(tool_definitions().iter().any(|t|t["name"]==name));
+            assert!(guide_topic(&name[6..]).is_ok());
+        }
     }
 
     #[test]

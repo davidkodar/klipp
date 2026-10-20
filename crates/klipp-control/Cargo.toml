@@ -44,6 +44,7 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 png = "0.18"
+libc = "0.2"
 
 [dev-dependencies]
 klipp-document = { workspace = true }

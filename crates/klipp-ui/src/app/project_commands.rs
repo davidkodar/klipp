@@ -343,7 +343,14 @@ impl KlippApp {
                 self.do_save_project(&path);
                 true
             }
-            AppCommand::OpenProjectNow { path } => {
+            AppCommand::CloseProjectNow { save, discard_changes, expected_identity } => {
+                if self.prepare_control_project_switch(*expected_identity, *save, *discard_changes) {
+                    self.do_close_project();
+                }
+                true
+            }
+            AppCommand::OpenProjectNow { path, save, discard_changes, expected_identity } => {
+                if !self.prepare_control_project_switch(*expected_identity, *save, *discard_changes) { return true; }
                 // As OpenProject resolves it: the control socket's open
                 // names a project.json as readily as its folder (#1143).
                 self.do_open_project_inner(&crate::project_paths::project_dir_of(path));

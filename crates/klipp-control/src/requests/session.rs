@@ -67,6 +67,7 @@ pub(crate) fn respond(
             }
             let active_jobs = jobs::active(ctx);
             let project = project_status(ctx)?;
+            let recent_projects = crate::project_access::status_recents(&project);
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
             let fb = ctx.frame_buffer.lock().map_err(|_| "frame buffer lock poisoned")?;
             let perf = ctx.perf_ring.lock().ok().and_then(|r| r.latest().cloned());
@@ -83,6 +84,10 @@ pub(crate) fn respond(
                 playhead_secs: presented.unwrap_or(0.0),
                 playing,
             });
+            if !recent_projects.is_empty() {
+                text.push_str("\nRecent projects (open_project by name or path):");
+                for p in &recent_projects { text.push_str(&format!("\n{} — {}", p["name"], p["path"])); }
+            }
             if !active_jobs.is_empty() {
                 text.push_str("\nActive work:");
                 for job in active_jobs.iter().take(3) {
@@ -110,6 +115,7 @@ pub(crate) fn respond(
                 "pid": std::process::id(),
                 "revision": ctx.shared.revision(),
                 "active_jobs": active_jobs,
+                "recent_projects": recent_projects,
                 // The edit history's reach and its next steps, for a client
                 // checking that something wrote none (M3 step 18).
                 "history": {

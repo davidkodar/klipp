@@ -345,30 +345,32 @@ pub(crate) fn respond(
             Ok(json!({ "saved": true, "path": target.to_string_lossy(), "revision": ctx.shared.revision() }))
         }
 
-        ControlCommand::OpenProject { path, discard_changes } => {
-            if in_batch {
-                return Err("open_project is not part of a batch; send it on its own".into());
-            }
-            let p = std::path::PathBuf::from(&path);
-            if !p.is_absolute() {
-                return Err(format!("project path must be absolute (got {path:?})"));
-            }
-            if !p.exists() {
-                return Err(format!("no project at {path:?}"));
-            }
+        ControlCommand::RecentProjects => {
+            if in_batch { return read_in_batch("recent_projects"); }
+            Ok(json!({"projects": crate::project_access::recent(&project_status(ctx)?)}))
+        }
+
+        ControlCommand::CloseProject { save, discard_changes } => {
+            if in_batch { return Err("close_project is not part of a batch; send it on its own".into()); }
             let before = project_status(ctx)?;
-            if before.dirty && !discard_changes {
-                return Err("the open project has unsaved changes: save_project first, or pass discard_changes true to lose them".into());
-            }
-            send_envelope(ctx, vec![AppCommand::OpenProjectNow { path: p.clone() }], false)?;
-            let after = wait_for_project_event(ctx, before.generation, 60_000)?;
-            if let Some(e) = after.last_error {
-                return Err(e);
-            }
+            before.replacement_save_path(before.identity, save, discard_changes)?;
+            let result = crate::project_access::switch(ctx, AppCommand::CloseProjectNow { save, discard_changes, expected_identity: before.identity })?;
+            if result["applied"] != true { return Ok(result); }
+            Ok(json!({"closed":true,"operation_id":result["operation_id"],"revision":result["revision"]}))
+        }
+
+        ControlCommand::OpenProject { path, name, save, discard_changes } => {
+            if in_batch { return Err("open_project is not part of a batch; send it on its own".into()); }
+            let before = project_status(ctx)?;
+            let p = crate::project_access::resolve(&before, path.as_deref(), name.as_deref())?;
+            before.replacement_save_path(before.identity, save, discard_changes)?;
+            let result = crate::project_access::switch(ctx, AppCommand::OpenProjectNow { path: p.clone(), save, discard_changes, expected_identity: before.identity })?;
+            if result["applied"] != true { return Ok(result); }
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
             let clips: usize = seq.tracks.iter().map(|t| t.clips.len()).sum();
             Ok(json!({
                 "opened": true,
+                "operation_id": result["operation_id"],
                 "path": p.to_string_lossy(),
                 "sequence": seq.name,
                 "tracks": seq.tracks.len(),
