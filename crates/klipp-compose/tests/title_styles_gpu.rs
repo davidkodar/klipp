@@ -1666,9 +1666,59 @@ fn path_motion_restrictions_and_cpu_fade() {
     assert!(hidden.chunks_exact(4).all(|p|p[3]==0),"keyed path entrance must start hidden");
     let visible=renderer.render_with_window(&title,320,180,None,1.5,Some(3.0));
     assert!(visible.chunks_exact(4).any(|p|p[3]>0),"settled path text must be visible");
-    title.objects[0].fx_mut().motion.enter.as_mut().unwrap().kind=klipp_timeline::MotionKind::Rise;
+    title.objects[0].fx_mut().motion.enter.as_mut().unwrap().kind=klipp_timeline::MotionKind::ScaleUp;
     assert!(renderer.glyph_source(&title,320,180,0.2,Some(3.0)).is_none());
     title.objects[0].fx_mut().motion=Default::default();
     title.objects[0].fx_mut().animators=vec![klipp_timeline::Animator{props:klipp_timeline::AnimatorProps{rotation:20.0,..Default::default()},..Default::default()}];
     assert!(renderer.glyph_source(&title,320,180,0.2,Some(3.0)).is_none());
+}
+
+fn path_translation_sequence(keyed: bool, mode: u8, w:u32, h:u32) -> Sequence {
+    use klipp_timeline::{MotionKind,Animator,AnimatorProps};
+    let mut seq=path_opacity_sequence(keyed,(mode/10)*4,w,h);
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    let kinds=[MotionKind::Rise,MotionKind::Drop,MotionKind::SlideLeft,MotionKind::SlideRight,
+        MotionKind::FlyLeft,MotionKind::FlyRight,MotionKind::FlyTop,MotionKind::FlyBottom,MotionKind::Bounce];
+    let case=(mode%10) as usize;
+    let motion=&mut title.objects[0].fx_mut().motion;
+    if case<9 {
+        let enter=motion.enter.as_mut().unwrap();enter.kind=kinds[case];enter.easing=enter.kind.default_easing();enter.distance=0.6;
+        let exit=motion.exit.as_mut().unwrap();exit.kind=kinds[(case+1)%9];exit.easing=exit.kind.default_exit_easing();exit.distance=0.3;
+    }else{
+        title.objects[0].fx_mut().animators=vec![Animator{props:AnimatorProps{dx:0.4,dy:-0.6,opacity:0.7,..Default::default()},..Default::default()}];
+    }
+    seq
+}
+#[test]
+fn path_translation_matches_cpu_and_stays_resident() {
+    check_rectangle_motion_fade_modes(path_translation_sequence,40);
+}
+#[test]
+fn path_translation_stays_resident_at_4k() {check_rectangle_motion_fades_at_4k(path_translation_sequence);}
+#[test]
+fn path_translation_cpu_moves_glyphs() {
+    let seq=path_translation_sequence(true,9,320,180);
+    let ClipKind::Title(mut title)=seq.tracks[0].clips[0].kind.clone() else {unreachable!()};
+    title.objects[0].fx_mut().motion=Default::default();
+    let mut renderer=klipp_title::TitleRenderer::new();
+    let moved=renderer.render_with_window(&title,320,180,None,1.5,Some(3.0));
+    title.objects[0].fx_mut().animators[0].props.dx=0.0;
+    title.objects[0].fx_mut().animators[0].props.dy=0.0;
+    let rest=renderer.render_with_window(&title,320,180,None,1.5,Some(3.0));
+    let centre=|pixels:&[u8]| {
+        let mut total=0.0;let mut xy=[0.0;2];
+        for (i,p) in pixels.chunks_exact(4).enumerate() {
+            let a=f64::from(p[3]);total+=a;xy[0]+=(i%320) as f64*a;xy[1]+=(i/320) as f64*a;
+        }
+        assert!(total>0.0);[xy[0]/total,xy[1]/total]
+    };
+    let moved=centre(&moved);let rest=centre(&rest);
+    assert!(moved[0]>rest[0]+1.0 && moved[1]<rest[1]-1.0,"position animator must move the path text");
+    for (dx,dy) in [(-100.0,0.0),(100.0,0.0),(0.0,-100.0),(0.0,100.0)] {
+        let props=&mut title.objects[0].fx_mut().animators[0].props;
+        props.dx=dx;props.dy=dy;
+        let offscreen=renderer.render_with_window(&title,320,180,None,1.5,Some(3.0));
+        assert!(offscreen.chunks_exact(4).all(|p|p[3]==0),"fully offscreen text must be empty");
+    }
+
 }
