@@ -859,7 +859,7 @@ fn rectangle_motion_fades_keep_unsupported_combinations_on_cpu() {
             if matches!(object.content,TitleObjectContent::Shape(_)) {
                 // Unsupported shape motions still explicitly decline.
                 object.fx_mut().motion.enter.as_mut().unwrap().kind=match case {
-                    0=>MotionKind::Larger,1=>MotionKind::Smaller,_=>MotionKind::Typewriter,
+                    0=>MotionKind::FlyLeft,1=>MotionKind::FlyBottom,_=>MotionKind::Typewriter,
                 };
             }
         }
@@ -1383,3 +1383,57 @@ fn rectangle_slam_matches_cpu_and_stays_resident() {check_rectangle_motion_fade_
 fn rectangle_slam_mattes_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(slam_rectangle_matte,11);}
 #[test]
 fn rectangle_slam_stays_resident_at_4k() {check_rectangle_motion_fades_at_4k(slam_rectangle_panel);}
+
+// Unlike Pop/Slam, these motions preserve alpha and honour custom scale amounts.
+fn add_rectangle_opaque_scale(seq: &mut Sequence, mode: u8) {
+    use klipp_timeline::{MotionKind,TitleObjectContent};
+    let kind=if mode<11 {MotionKind::Larger}else{MotionKind::Smaller};
+    let case=mode%11;
+    add_rectangle_scale_fade(seq,case,kind);
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    for object in &mut title.objects {
+        if matches!(object.content,TitleObjectContent::Shape(_)) {
+            let motion=&mut object.fx_mut().motion;
+            if case==10 {
+                motion.enter.as_mut().unwrap().kind=MotionKind::Larger;
+                motion.exit.as_mut().unwrap().kind=MotionKind::Smaller;
+            }
+            for m in motion.enter.iter_mut().chain(motion.exit.iter_mut()) {
+                m.easing=if case<2 {klipp_core::title_motion::Easing::Linear}else{m.kind.default_easing()};
+                if matches!(m.kind,MotionKind::Larger|MotionKind::Smaller) {
+                    m.amount=match case {3=>Some(12.0),4=>Some(0.0),5=>Some(0.05),_=>None};
+                }
+            }
+            let exit=motion.exit.as_mut().unwrap();
+            exit.easing=if case<2 {klipp_core::title_motion::Easing::Linear}else{exit.kind.default_exit_easing()};
+        }
+    }
+}
+fn opaque_scale_rectangle_panel(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=combined_faded_panel(fitted,mode%2,w,h);add_rectangle_opaque_scale(&mut seq,mode);seq
+}
+fn opaque_scale_rectangle_matte(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=faded_rectangle_matte(fitted,mode%4,w,h);add_rectangle_opaque_scale(&mut seq,mode);seq
+}
+#[test]
+fn rectangle_opaque_scale_matches_cpu_and_stays_resident() {check_rectangle_motion_fade_modes(opaque_scale_rectangle_panel,22);}
+#[test]
+fn rectangle_opaque_scale_mattes_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(opaque_scale_rectangle_matte,22);}
+#[test]
+fn rectangle_opaque_scale_stays_resident_at_4k() {
+    check_rectangle_motion_fades_at_4k(opaque_scale_rectangle_panel);
+    check_rectangle_motion_fades_at_4k(|fitted,mode,w,h|opaque_scale_rectangle_panel(fitted,mode+11,w,h));
+}
+
+#[test]
+fn zero_scale_sprite_is_empty_and_preserves_background() {
+    let raster=klipp_title::BoxRaster::from_bytes(&[255,0,0,255],(1,1),(0,1),(0,1));
+    for scale in [0.0,-0.0] {
+        let pose=|under|klipp_title::pose_sprite(&raster,1,1,0,0,1.0,scale,(0.5,0.5),under,None,(0,1));
+        assert_eq!(pose(None),vec![0.0;4]);
+        let background=pose(Some([0,255,0,128]));
+        for (got,want) in background.iter().zip([0.0,255.0,0.0,128.0]) {
+            assert!((got-want).abs()<0.001,"background must survive a collapsed sprite");
+        }
+    }
+}

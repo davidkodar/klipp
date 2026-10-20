@@ -5433,7 +5433,11 @@ pub fn pose_sprite(
             // Unscaled, the pixel as it is: its colour kept even under no
             // alpha, as the frame it was shifted from had it.
             let straight = plain.then(|| rest.at(x as i64 - dx as i64, y as i64 - dy as i64));
-            let s = if let Some(t) = straight {
+            // A collapsed sprite contributes no pixels. Avoid dividing by zero
+            // and overflowing bilinear tap coordinates; still composite `under`.
+            let s = if scale == 0.0 {
+                [0.0; 4]
+            } else if let Some(t) = straight {
                 let a = t[3] / 255.0;
                 [t[0] * a, t[1] * a, t[2] * a, a]
             } else {
