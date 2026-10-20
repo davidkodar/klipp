@@ -989,6 +989,46 @@ impl GpuEffectsPipeline {
         true
     }
 
+    /// Whole-layer blur motion. The radius uses clipped painted bounds, reduced
+    /// on GPU, and three premultiplied box passes match the byte title painter.
+    pub fn stack_title_motion_blur(&mut self, slot: usize, away: f32) -> bool {
+        if !away.is_finite() || !(0.0..=1.0).contains(&away) {return false;}
+        if away==0.0 {return true;}
+        let Some(temp)=self.stack_title_object_slot(2) else {return false;};
+        if temp==slot || !self.stack_title_alpha(slot,[0.0;4],1.0) {return false;}
+        let Some(to_authored)=inverse(self.authored_to_working) else {return false;};
+        let (w,h)=self.stack_dims;let bytes=u64::from(w)*u64::from(h)*16;
+        if bytes+16>u64::from(self.device.limits().max_storage_buffer_binding_size) {return false;}
+        let buffer=||self.device.create_buffer(&wgpu::BufferDescriptor {
+            label:Some("title blur image and bounds"),size:bytes+16,
+            usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation:false,
+        });
+        if self.title_post_scratch.as_ref().is_none_or(|b|b.size()<bytes+16) {self.title_post_scratch=Some(buffer());}
+        if self.stack_layers[temp].size()<bytes+16 {self.stack_layers[temp]=std::sync::Arc::new(buffer());}
+        if !self.stack_title_alpha_bounds(slot) {return false;}
+        let source=&self.stack_layers[slot];let blurred=&self.stack_layers[temp];
+        let scratch=self.title_post_scratch.as_ref().unwrap();
+        let mut enc=self.encoder(Some("title blur bounds"));
+        enc.copy_buffer_to_buffer(scratch,0,blurred,0,16);self.submit(enc);
+        let params=StyleParams {width:w,height:h,frame_width:w,op:44,x0:0,y0:0,
+            offset_x:0,offset_y:0,color:[away,0.0,0.0,0.0],matrix:to_authored};
+        self.write_params(&params);
+        self.stack_pass(&self.title_style_pipeline,source,blurred,(w*h).div_ceil(WORKGROUP_SIZE),"title motion blur premultiply");
+        for _ in 0..3 {
+            self.write_params(&StyleParams {op:45,offset_y:0,..params});
+            self.stack_pass(&self.title_style_pipeline,blurred,scratch,h.div_ceil(WORKGROUP_SIZE),"title motion blur horizontal");
+            self.write_params(&StyleParams {op:45,offset_y:1,..params});
+            self.stack_pass(&self.title_style_pipeline,scratch,blurred,w.div_ceil(WORKGROUP_SIZE),"title motion blur vertical");
+        }
+        self.write_params(&StyleParams {op:46,..params});
+        self.stack_pass(&self.title_style_pipeline,blurred,source,(w*h).div_ceil(WORKGROUP_SIZE),"title motion blur bytes");
+        self.write_params(&StyleParams {op:11,matrix:self.authored_to_working,..params});
+        self.stack_pass(&self.title_style_pipeline,source,scratch,(w*h).div_ceil(WORKGROUP_SIZE),"title motion blur working space");
+        let mut enc=self.encoder(Some("title motion blur copy"));
+        enc.copy_buffer_to_buffer(scratch,0,source,0,bytes);self.submit(enc);true
+    }
+
     /// Analytic fitted rectangle coverage, using the authored title painter's pixel tests.
     pub fn stack_title_rectangle(&mut self, slot: usize, bounds: [f32;4], pivot: [f32;2], radians: f32, radius: f32, fill: [u8;4], stroke: Option<([u8;4],f32)>, straight: bool, gradient: Option<&TitleFill>) -> bool {
         if !bounds.iter().chain(pivot.iter()).chain([radians,radius].iter()).all(|v|v.is_finite()) || !self.stack_title_alpha(slot,[0.0;4],1.0) {return false;}

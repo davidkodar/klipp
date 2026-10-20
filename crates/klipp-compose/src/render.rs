@@ -2689,7 +2689,11 @@ impl Renderer {
                     let motion=std::mem::take(&mut source_fx.motion);
                     if !source_fx.is_default()
                         || motion.enter.iter().chain(motion.exit.iter())
-                        .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight|klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown)) {return None;}
+                        .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight|klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Blur)) {return None;}
+                    let blurs=motion.enter.iter().chain(motion.exit.iter()).any(|m|m.kind==klipp_timeline::MotionKind::Blur);
+                    // Mixed geometric motion needs the original pre-blur bounds
+                    // for travel/anchors and the expanded bounds for sampling.
+                    if blurs && motion.enter.iter().chain(motion.exit.iter()).any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Blur|klipp_timeline::MotionKind::Fade)) {return None;}
                     // Shapes pose as a whole layer: character/word stagger has
                     // no effect, and both fades use unit zero as on the CPU.
                     let (enter,exit)=motion.progress(clip_time as f32,Some(total),0);
@@ -2720,7 +2724,11 @@ impl Renderer {
                         shape.fill.unwrap_or([0;4]),shape.stroke.map(|s|(s.color,s.width.max(0.0)*scale)),shape_straight,gradient.as_ref()) {return None;}
                     if motion.is_active() {
                         if !gpu.stack_title_precision(slot,true) {return None;}
-                        if scales {
+                        if blurs {
+                            let away=motion.enter.filter(|m|m.kind==klipp_timeline::MotionKind::Blur).map_or(0.0,|_|1.0-enter)
+                                .max(motion.exit.filter(|m|m.kind==klipp_timeline::MotionKind::Blur).map_or(0.0,|_|1.0-exit));
+                            if !gpu.stack_title_motion_blur(slot,away) || !gpu.stack_title_motion_alpha(slot,fade) {return None;}
+                        } else if scales {
                             if !gpu.stack_title_motion_scale(slot,enter_travel,exit_travel,motion_scale,fade,anchor) {return None;}
                         } else if (moves && !gpu.stack_title_motion_translate(slot,enter_travel,exit_travel))
                             || !gpu.stack_title_motion_alpha(slot,fade) {return None;}
