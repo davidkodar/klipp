@@ -221,12 +221,63 @@ fn motion_tap(pos: vec2<i32>) -> vec4<f32> {
 fn motion_premult(pos: vec2<i32>) -> vec4<f32> {
     let v=motion_tap(pos);return vec4<f32>(v.rgb*v.a,v.a);
 }
+// The distance grid is written only by the single reduction invocation.
+fn solid_distance(x:i32,y:i32,gw:u32,gh:u32,base:u32) -> u32 {
+    if x<0 || y<0 || x>=i32(gw) || y>=i32(gh) {return 0u;}
+    return output[base+u32(y)*gw+u32(x)];
+}
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i=gid.x;
     if i>=p.width*p.height { return; }
     let x=i%p.width; let y=i/p.width;
-    if p.op==44u {
+    if p.op==49u {
+        let bw=input[2]-min(input[0],input[2]);let bh=input[3]-min(input[1],input[3]);
+        let cell=max(max(bw,bh)/160u,1u);
+        let gw=(bw+cell-1u)/cell;let gh=(bh+cell-1u)/cell;
+        if i==0u {
+            for(var k=0u;k<4u;k+=1u) {output[k]=input[k];}
+            output[4]=gw;output[5]=gh;output[6]=cell;
+        }
+        if i>=gw*gh {return;}
+        let gx=i%gw;let gy=i/gw;var covered=0u;var count=0u;
+        for(var row=gy*cell;row<min((gy+1u)*cell,bh);row+=1u) {
+            for(var col=gx*cell;col<min((gx+1u)*cell,bw);col+=1u) {
+                let raw=load_rgba((row+input[1])*p.width+col+input[0]+1u);
+                var alpha=round(raw.a*255.0);
+                if p.offset_x==1 {alpha=floor(clamp(raw.a,0.0,255.0)+0.5);}
+                covered+=select(0u,1u,alpha>=128.0);count+=1u;
+            }
+        }
+        output[8u+i]=select(0u,1073741823u,covered*2u>count);
+    } else if p.op==50u {
+        if i!=0u {return;}
+        let gw=input[4];let gh=input[5];let cell=input[6];
+        let anchor_index=4u+p.width*p.height*4u;let base=anchor_index+2u;
+        for(var k=0u;k<gw*gh;k+=1u) {output[base+k]=input[8u+k];}
+        for(var row=0i;row<i32(gh);row+=1i) {
+            for(var col=0i;col<i32(gw);col+=1i) {
+                let index=base+u32(row)*gw+u32(col);
+                let d=min(min(solid_distance(col-1i,row,gw,gh,base)+3u,solid_distance(col,row-1i,gw,gh,base)+3u),
+                    min(solid_distance(col-1i,row-1i,gw,gh,base)+4u,solid_distance(col+1i,row-1i,gw,gh,base)+4u));
+                output[index]=min(output[index],d);
+            }
+        }
+        for(var row=i32(gh)-1i;row>=0i;row-=1i) {
+            for(var col=i32(gw)-1i;col>=0i;col-=1i) {
+                let index=base+u32(row)*gw+u32(col);
+                let d=min(min(solid_distance(col+1i,row,gw,gh,base)+3u,solid_distance(col,row+1i,gw,gh,base)+3u),
+                    min(solid_distance(col+1i,row+1i,gw,gh,base)+4u,solid_distance(col-1i,row+1i,gw,gh,base)+4u));
+                output[index]=min(output[index],d);
+            }
+        }
+        var best=0u;var depth=0u;
+        // Rust max_by_key chooses the last equal maximum.
+        for(var k=0u;k<gw*gh;k+=1u) {if output[base+k]>=depth {depth=output[base+k];best=k;}}
+        var anchor=(vec2<f32>(f32(input[0]),f32(input[1]))+vec2<f32>(f32(input[2]),f32(input[3])))*0.5;
+        if depth>0u {anchor=vec2<f32>(f32(input[0]),f32(input[1]))+(vec2<f32>(f32(best%gw),f32(best/gw))+vec2<f32>(0.5))*f32(cell);}
+        output[anchor_index]=bitcast<u32>(anchor.x);output[anchor_index+1u]=bitcast<u32>(anchor.y);
+    } else if p.op==44u {
         let v=round(authored_at(i32(x),y)*255.0);
         store_rgba(i+1u,vec4<f32>(v.rgb*(v.a/255.0),v.a));
     } else if p.op==45u {
@@ -294,7 +345,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let shift=sign(a+b)*floor(abs(a+b)+vec2<f32>(0.5));
             let lo=vec2<f32>(f32(input[0]),f32(input[1]));
             let hi=vec2<f32>(f32(input[2]),f32(input[3]));
-            let anchor=lo+p.row2.zw*(hi-lo);
+            var anchor=lo+p.row2.zw*(hi-lo);
+            if p.offset_x==1 {
+                let index=4u+p.width*p.height*4u;
+                anchor=vec2<f32>(bitcast<f32>(input[index]),bitcast<f32>(input[index+1u]));
+            }
             if abs(p.row2.x-1.0)<0.000001 {
                 pixel=motion_tap(vec2<i32>(vec2<f32>(f32(x),f32(y))-shift));
                 pixel.a*=p.row2.y;
