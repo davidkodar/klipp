@@ -65,7 +65,11 @@ for full-project playback profiling.
   parent scene while placing glyphs, including path morphs and offset keys.
   Plain rectangles, gradients and strokes use GPU coverage, including keyed transforms.
   Fitted rectangles use bounds-only text layout; hidden or missing targets
-  suppress the panel.
+  suppress the panel. Rectangle edge fades run on GPU after byte-layer
+  quantization and before object opacity, masks and scene blending, including
+  fitted and gradient-filled rectangles. Faded shape matte sources keep their
+  CPU fallback until low-alpha boundary pixels match; other shape styles
+  still fall back.
 - Supported text sources compose styles, glitch and chromatic processing on GPU,
   followed by object rotation, edge/focus fades, authored-colour focus blur, opacity
   and scene blend/mask composition.
