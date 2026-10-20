@@ -67,8 +67,11 @@ for full-project playback profiling.
   Fitted rectangles use bounds-only text layout; hidden or missing targets
   suppress the panel. Rectangle edge fades run on GPU after byte-layer
   quantization and before object opacity, masks and scene blending, including
-  fitted and gradient-filled rectangles. Faded shape matte sources keep their
-  CPU fallback until low-alpha boundary pixels match; other shape styles
+  fitted and gradient-filled rectangles. Rectangle entrance/exit fades also
+  run on GPU after byte-layer quantization and before object opacity and
+  scene blending; non-text stagger is treated as whole-layer motion.
+  Combined motion/edge fades and faded shape matte sources retain CPU fallback
+  until their rounding/boundary pixels match; other shape motion/styles
   still fall back.
 - Supported text sources compose styles, glitch and chromatic processing on GPU,
   followed by object rotation, edge/focus fades, authored-colour focus blur, opacity

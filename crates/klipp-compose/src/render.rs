@@ -2682,11 +2682,20 @@ impl Renderer {
                         transform
                     } else {object.transform.evaluated_at(clip_time)};
                     let klipp_timeline::ShapeKind::Rectangle{corner_radius}=shape.kind else {return None;};
-                    // Edge fades act on the painted byte layer, before object
-                    // opacity and scene masking. Other shape styles still decline.
+                    // Entrance/exit fades act on the painted byte layer before
+                    // edge fades, object opacity and scene masking.
                     let mut source_fx=object.fx().clone();
                     let edges=std::mem::take(&mut source_fx.edge_fade);
-                    if !source_fx.is_default() {return None;}
+                    let motion=std::mem::take(&mut source_fx.motion);
+                    // Combined motion/edge fades retain the CPU route until
+                    // their successive byte-rounding boundaries match.
+                    if !source_fx.is_default() || (motion.is_active() && !edges.is_none())
+                        || motion.enter.iter().chain(motion.exit.iter())
+                        .any(|m|m.kind!=klipp_timeline::MotionKind::Fade) {return None;}
+                    // Shapes pose as a whole layer: character/word stagger has
+                    // no effect, and both fades use unit zero as on the CPU.
+                    let (enter,exit)=motion.progress(clip_time as f32,Some(total),0);
+                    let fade=enter*exit;
                     let gradient=shape.gradient.as_ref().filter(|g|g.enabled).map(title_gradient_fill);
                     let scale=klipp_title::frame_scale(width,height);
                     let gpu=self.executor.gpu_pipeline_or_init()?;
@@ -2694,6 +2703,8 @@ impl Renderer {
                     let (hw,hh)=((transform.size.x*width as f32*0.5).max(0.0),(transform.size.y*height as f32*0.5).max(0.0));
                     if !gpu.stack_title_rectangle(slot,[cx,cy,hw,hh],[cx+(transform.anchor_norm.x-0.5)*hw*2.0,cy+(transform.anchor_norm.y-0.5)*hh*2.0],transform.rotation.to_radians(),corner_radius.max(0.0)*scale,
                         shape.fill.unwrap_or([0;4]),shape.stroke.map(|s|(s.color,s.width.max(0.0)*scale)),shape_straight,gradient.as_ref()) {return None;}
+                    if motion.is_active() && (!gpu.stack_title_precision(slot,true)
+                        || !gpu.stack_title_alpha(slot,[0.0;4],fade)) {return None;}
                     if !edges.is_none() && (!gpu.stack_title_precision(slot,true)
                         || !gpu.stack_title_alpha(slot,[edges.top,edges.bottom,edges.left,edges.right],1.0)) {return None;}
                     // Scene objects arrive with opacity stripped; matte sources retain it.
@@ -2819,7 +2830,7 @@ impl Renderer {
                     // low-alpha scene boundaries. Keep that route on the CPU
                     // until those pixels match as well.
                     if matches!(matte.content,klipp_timeline::TitleObjectContent::Shape(_))
-                        && !matte.fx().edge_fade.is_none() {return None;}
+                        && (!matte.fx().edge_fade.is_none() || matte.fx().motion.is_active()) {return None;}
                     let matte_slot=self.executor.gpu_pipeline_or_init()?.stack_title_object_slot(1)?;
                     let mut mask_title=td.clone();
                     mask_title.objects=vec![matte.clone()];
