@@ -445,17 +445,6 @@ impl TitleRenderer {
         if source.face_incomplete {
             return None;
         }
-        // The CPU subtracts native alpha from the shared face mask before
-        // painting emoji. Separate GPU sprites are equivalent only without
-        // overlapping ink boxes; retain fallback for overlap until mask
-        // subtraction is implemented (including native/native overlap).
-        for (i,a) in source.glyphs.iter().enumerate().filter(|(_,g)|g.native_colour) {
-            if source.glyphs.iter().enumerate().any(|(j,b)|i!=j
-                && i64::from(a.origin[0])<i64::from(b.origin[0])+i64::from(b.pixels.w)
-                && i64::from(b.origin[0])<i64::from(a.origin[0])+i64::from(a.pixels.w)
-                && i64::from(a.origin[1])<i64::from(b.origin[1])+i64::from(b.pixels.h)
-                && i64::from(b.origin[1])<i64::from(a.origin[1])+i64::from(a.pixels.h)) {return None;}
-        }
         // at(time) clears keys on the evaluated layout. Check authored size
         // animation here so continuous resizing cannot become per-frame
         // bitmap preparation disguised as a resident fixed-size source.

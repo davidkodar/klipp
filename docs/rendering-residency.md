@@ -76,9 +76,10 @@ for full-project playback profiling.
   shutter blur retains its fallback route. Plain fixed-size CBDT colour glyphs
   now reuse bounded RGBA sprites during colour loops, tracking and line-spacing
   animation. Their native colour and alpha are independent of the text fill.
-  Bitmap size keys, automatic size fitting, glyph poses, paths, overlapping ink boxes and decorated
-  combinations retain fallback; native-mask subtraction and resampling are
-  separate work.
+  Overlapping native/native and native/text ink uses the CPU's max-coverage
+  mask, saturating subtraction of each native alpha, then ordered RGBA painting
+  on GPU. Bitmap size keys, automatic size fitting, glyph poses, paths and
+  decorated combinations retain fallback; resampling remains separate work.
   Plain rectangles, gradients and strokes use GPU coverage, including keyed transforms.
   Fitted rectangles use bounds-only text layout; hidden or missing targets
   suppress the panel. Rectangle edge fades run on GPU after byte-layer
