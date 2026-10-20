@@ -852,12 +852,14 @@ fn check_rectangle_motion_fades_at_4k(panel: fn(bool,u8,u32,u32)->Sequence) {
 fn rectangle_motion_fades_keep_unsupported_combinations_on_cpu() {
     use klipp_timeline::{MotionKind, TitleObjectContent};
     let (w,h)=(320,180);
-    for case in 0..2 {
+    for case in 0..3 {
         let mut seq=motion_faded_panel(false,if case==0 {2}else{0},w,h);
         let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
         for object in &mut title.objects {
             if matches!(object.content,TitleObjectContent::Shape(_)) {
-                object.fx_mut().motion.enter.as_mut().unwrap().kind=MotionKind::ScaleUp;
+                let enter=object.fx_mut().motion.enter.as_mut().unwrap();
+                enter.kind=if case==2 {MotionKind::ScaleUp}else{MotionKind::Blur};
+                if case==2 {enter.anchor=Some(klipp_core::title_motion::MotionAnchor::Solid);}
             }
         }
         let mut gpu=renderer();gpu.set_gpu_enabled(true);
@@ -1021,4 +1023,51 @@ fn rectangle_slide_translation_matches_cpu_clipped_sprite() {
             gpu.stack_end();
         }
     }
+}
+
+fn add_rectangle_scale(seq: &mut Sequence, mode: u8) {
+    use klipp_timeline::{MotionKind,TitleObjectContent};
+    use klipp_core::title_motion::MotionAnchor;
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    for object in &mut title.objects {
+        if matches!(object.content,TitleObjectContent::Shape(_)) {
+            let motion=&mut object.fx_mut().motion;
+            let enter=motion.enter.as_mut().unwrap();
+            enter.kind=if mode==1 {MotionKind::ScaleDown}else{MotionKind::ScaleUp};
+            if mode>0 {enter.anchor=Some(MotionAnchor::Point{x:0.0,y:1.0});}
+            if mode==2 {enter.amount=Some(0.15);enter.anchor=Some(MotionAnchor::Point{x:1.4,y:-0.5});}
+            let exit=motion.exit.as_mut().unwrap();
+            exit.kind=MotionKind::ScaleDown;
+            exit.anchor=Some(MotionAnchor::Point{x:0.8,y:0.2});
+            if mode==3 {
+                enter.kind=MotionKind::SlideLeft;
+                enter.duration_secs=2.0;exit.duration_secs=2.0;
+            }
+        }
+    }
+}
+
+fn scaling_rectangle_panel(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=combined_faded_panel(fitted,mode%2,w,h);
+    add_rectangle_scale(&mut seq,mode);seq
+}
+
+fn scaling_rectangle_matte(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=faded_rectangle_matte(fitted,mode,w,h);
+    add_rectangle_scale(&mut seq,mode);seq
+}
+
+#[test]
+fn rectangle_scale_matches_cpu_and_stays_resident() {
+    check_rectangle_motion_fade_modes(scaling_rectangle_panel,4);
+}
+
+#[test]
+fn rectangle_scale_mattes_match_cpu_and_stay_resident() {
+    check_rectangle_motion_fade_modes(scaling_rectangle_matte,4);
+}
+
+#[test]
+fn rectangle_scale_stays_resident_at_4k() {
+    check_rectangle_motion_fades_at_4k(scaling_rectangle_panel);
 }
