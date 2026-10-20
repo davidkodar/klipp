@@ -75,7 +75,11 @@ for full-project playback profiling.
   Faded rectangle matte sources also stay resident for alpha/luma masks and
   their inverses. Their completed scene is cropped on GPU to the CPU raster's
   alpha bounding box, preserving faint pixels inside the box. Other shape
-  motion/styles still fall back.
+  styles and scale/blur motions still fall back.
+  Rectangle Rise, Drop, SlideLeft and SlideRight motions use the painted
+  layer's clipped height for travel and move its byte-layer sprite by whole
+  pixels on GPU, before edge fade, object opacity and scene masking. Bounds
+  and source pixels remain on GPU, including for fitted panels and mattes.
 - Supported text sources compose styles, glitch and chromatic processing on GPU,
   followed by object rotation, edge/focus fades, authored-colour focus blur, opacity
   and scene blend/mask composition.

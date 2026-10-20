@@ -217,6 +217,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         output[0]=x0;output[1]=y0;output[2]=x1;output[3]=y1;
     } else if p.op==40u {
         if x<input[0] || y<input[1] || x>=input[2] || y>=input[3] {store_rgba(i,vec4<f32>(0.0));}
+    } else if p.op==41u {
+        var pixel=vec4<f32>(0.0);
+        if input[2]>input[0] && input[3]>input[1] {
+            let height=f32(input[3]-input[1]);
+            let enter=p.row0.x*(height*p.row0.y)*p.row0.zw;
+            let exit=p.row1.x*(height*p.row1.y)*p.row1.zw;
+            let shift=enter+exit;
+            let delta=vec2<i32>(sign(shift)*floor(abs(shift)+vec2<f32>(0.5)));
+            let src=vec2<i32>(i32(x),i32(y))-delta;
+            if all(src>=vec2<i32>(i32(input[0]),i32(input[1]))) && all(src<vec2<i32>(i32(input[2]),i32(input[3]))) {
+                pixel=load_rgba(u32(src.y)*p.width+u32(src.x)+1u);
+            }
+        }
+        store_rgba(i,pixel);
     } else if p.op==35u {
         if p.offset_x!=0 {store_rgba(i,authored_at(i32(x),y));}
         else {

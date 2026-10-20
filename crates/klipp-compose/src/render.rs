@@ -2689,11 +2689,21 @@ impl Renderer {
                     let motion=std::mem::take(&mut source_fx.motion);
                     if !source_fx.is_default()
                         || motion.enter.iter().chain(motion.exit.iter())
-                        .any(|m|m.kind!=klipp_timeline::MotionKind::Fade) {return None;}
+                        .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight)) {return None;}
                     // Shapes pose as a whole layer: character/word stagger has
                     // no effect, and both fades use unit zero as on the CPU.
                     let (enter,exit)=motion.progress(clip_time as f32,Some(total),0);
                     let fade=enter*exit;
+                    let travel=|m:Option<klipp_timeline::Motion>,progress:f32| {
+                        use klipp_timeline::MotionKind;
+                        m.map_or([0.0;4],|m| {
+                            let direction=match m.kind {MotionKind::Rise=>[0.0,1.0],MotionKind::Drop=>[0.0,-1.0],MotionKind::SlideLeft=>[1.5,0.0],MotionKind::SlideRight=>[-1.5,0.0],_=>[0.0,0.0]};
+                            [1.0-progress,m.distance,direction[0],direction[1]]
+                        })
+                    };
+                    let enter_travel=travel(motion.enter,enter);
+                    let exit_travel=travel(motion.exit,exit);
+                    let moves=motion.enter.iter().chain(motion.exit.iter()).any(|m|m.kind!=klipp_timeline::MotionKind::Fade);
                     let gradient=shape.gradient.as_ref().filter(|g|g.enabled).map(title_gradient_fill);
                     let scale=klipp_title::frame_scale(width,height);
                     let gpu=self.executor.gpu_pipeline_or_init()?;
@@ -2702,6 +2712,7 @@ impl Renderer {
                     if !gpu.stack_title_rectangle(slot,[cx,cy,hw,hh],[cx+(transform.anchor_norm.x-0.5)*hw*2.0,cy+(transform.anchor_norm.y-0.5)*hh*2.0],transform.rotation.to_radians(),corner_radius.max(0.0)*scale,
                         shape.fill.unwrap_or([0;4]),shape.stroke.map(|s|(s.color,s.width.max(0.0)*scale)),shape_straight,gradient.as_ref()) {return None;}
                     if motion.is_active() && (!gpu.stack_title_precision(slot,true)
+                        || (moves && !gpu.stack_title_motion_translate(slot,enter_travel,exit_travel))
                         || !gpu.stack_title_motion_alpha(slot,fade)) {return None;}
                     if !edges.is_none() && (!gpu.stack_title_precision(slot,true)
                         || !gpu.stack_title_alpha(slot,[edges.top,edges.bottom,edges.left,edges.right],1.0)) {return None;}
