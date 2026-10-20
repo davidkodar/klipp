@@ -84,7 +84,7 @@ for full-project playback profiling.
   the original painted height and clip destination rows to the original
   painted window without adding their own alpha fade. They stay resident
   when paired with fades, slides, scaling, blur or each other. Other unsupported
-  motion kinds such as Larger, Smaller and Typewriter still fall back.
+  motion kinds such as FlyLeft, FlyBottom and Typewriter still fall back.
   Rectangle ScaleUp/ScaleDown motions use premultiplied authored-colour
   bilinear sampling of the half-float sprite, with centre or explicit-point
   anchors, positive custom scales and combined slide motion. Scaling and
@@ -94,6 +94,9 @@ for full-project playback profiling.
   supported motion pairs, fitted panels and mattes.
   Rectangle Slam also reuses that path with a 2.6-to-1 scale and alpha reaching
   full opacity at 40% of eased progress, including the same supported pairs.
+  Rectangle Larger/Smaller reuse the same GPU scaling with opaque motion alpha,
+  default scales of 4-to-1 / 0-to-1 and nonnegative custom scale amounts, including supported
+  motion pairs, anchors, fitted panels and mattes.
   Rectangle Blur entrances/exits, alone or paired with Fade, use the clipped
   painted height for radius and three premultiplied box-blur rounds on GPU.
   Byte rounding precedes motion alpha, edge fade, opacity and masks. Blur

@@ -2689,7 +2689,7 @@ impl Renderer {
                     let motion=std::mem::take(&mut source_fx.motion);
                     if !source_fx.is_default()
                         || motion.enter.iter().chain(motion.exit.iter())
-                        .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight|klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Blur|klipp_timeline::MotionKind::MaskRise|klipp_timeline::MotionKind::MaskDrop|klipp_timeline::MotionKind::Pop|klipp_timeline::MotionKind::Slam)) {return None;}
+                        .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight|klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Blur|klipp_timeline::MotionKind::MaskRise|klipp_timeline::MotionKind::MaskDrop|klipp_timeline::MotionKind::Pop|klipp_timeline::MotionKind::Slam|klipp_timeline::MotionKind::Larger|klipp_timeline::MotionKind::Smaller)) {return None;}
                     let blurs=motion.enter.iter().chain(motion.exit.iter()).any(|m|m.kind==klipp_timeline::MotionKind::Blur);
                     // Shapes pose as a whole layer: character/word stagger has
                     // no effect, and both fades use unit zero as on the CPU.
@@ -2707,7 +2707,7 @@ impl Renderer {
                     let enter_travel=travel(motion.enter,enter);
                     let exit_travel=travel(motion.exit,exit);
                     let moves=motion.enter.iter().chain(motion.exit.iter()).any(|m|m.kind!=klipp_timeline::MotionKind::Fade);
-                    let scales=motion.enter.iter().chain(motion.exit.iter()).any(|m|matches!(m.kind,klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Pop|klipp_timeline::MotionKind::Slam));
+                    let scales=motion.enter.iter().chain(motion.exit.iter()).any(|m|matches!(m.kind,klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Pop|klipp_timeline::MotionKind::Slam|klipp_timeline::MotionKind::Larger|klipp_timeline::MotionKind::Smaller));
                     let motion_scale=motion.enter.map_or(1.0,|m|m.pose(enter,1.0).3)*motion.exit.map_or(1.0,|m|m.pose(exit,1.0).3);
                     let selected_anchor=motion.anchor_at(enter,exit);
                     let solid=matches!(selected_anchor,Some(klipp_core::title_motion::MotionAnchor::Solid));
@@ -2724,7 +2724,10 @@ impl Renderer {
                         shape.fill.unwrap_or([0;4]),shape.stroke.map(|s|(s.color,s.width.max(0.0)*scale)),shape_straight,gradient.as_ref()) {return None;}
                     if motion.is_active() {
                         if !gpu.stack_title_precision(slot,true) {return None;}
-                        if blurs {
+                        if scales && motion_scale == 0.0 {
+                            // Smaller starts collapsed: there is no sprite to sample.
+                            if !gpu.stack_layer_clear(slot) {return None;}
+                        } else if blurs {
                             let away=motion.enter.filter(|m|m.kind==klipp_timeline::MotionKind::Blur).map_or(0.0,|_|1.0-enter)
                                 .max(motion.exit.filter(|m|m.kind==klipp_timeline::MotionKind::Blur).map_or(0.0,|_|1.0-exit));
                             if scales {
