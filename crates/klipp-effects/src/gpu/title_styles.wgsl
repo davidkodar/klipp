@@ -231,6 +231,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i=gid.x;
     if i>=p.width*p.height { return; }
     let x=i%p.width; let y=i/p.width;
+    // MaskRise clips destination rows to the pre-motion painted window.
+    // The source may have moved, scaled or grown a blur halo beyond it.
+    if p.offset_y==1 && (p.op==41u || p.op==43u || p.op==46u || p.op==47u || p.op==48u)
+        && (y<input[1] || y>=input[3]) {store_rgba(i,vec4<f32>(0.0));return;}
     if p.op==49u {
         let bw=input[2]-min(input[0],input[2]);let bh=input[3]-min(input[1],input[3]);
         let cell=max(max(bw,bh)/160u,1u);
