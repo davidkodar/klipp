@@ -859,7 +859,7 @@ fn rectangle_motion_fades_keep_unsupported_combinations_on_cpu() {
             if matches!(object.content,TitleObjectContent::Shape(_)) {
                 // Unsupported shape motions still explicitly decline.
                 object.fx_mut().motion.enter.as_mut().unwrap().kind=match case {
-                    0=>MotionKind::MaskRise,1=>MotionKind::Pop,_=>MotionKind::Typewriter,
+                    0=>MotionKind::MaskDrop,1=>MotionKind::Pop,_=>MotionKind::Typewriter,
                 };
             }
         }
@@ -999,15 +999,15 @@ fn rectangle_slides_stay_resident_at_4k() {
 
 #[test]
 fn rectangle_slide_translation_matches_cpu_clipped_sprite() {
-    check_rectangle_slide_translation(false);
+    check_rectangle_slide_translation(false,false);
 }
 
 #[test]
 fn rectangle_blur_slide_zero_blur_matches_cpu_translation() {
-    check_rectangle_slide_translation(true);
+    check_rectangle_slide_translation(true,false);
 }
 
-fn check_rectangle_slide_translation(blur: bool) {
+fn check_rectangle_slide_translation(blur: bool, clip_rows: bool) {
     let mut gpu=klipp_effects::gpu::GpuEffectsPipeline::new().expect("GPU required");
     let (w,h)=(7,5);
     for visible in [true,false] {
@@ -1018,13 +1018,13 @@ fn check_rectangle_slide_translation(blur: bool) {
         let sprite=klipp_title::BoxRaster::from_bytes(&bytes,(w,h),(1,4),(0,5));
         for direction in [[0.0,1.0],[0.0,-1.0],[1.5,0.0],[-1.5,0.0]] {
             let offset=direction.map(|d:f32|(0.5*3.0*d).round() as i32);
-            let want=klipp_title::pose_sprite(&sprite,w,h,offset[0],offset[1],1.0,1.0,(0.0,0.0),None,None,(0,h));
+            let want=klipp_title::pose_sprite(&sprite,w,h,offset[0],offset[1],1.0,1.0,(0.0,0.0),None,None,if clip_rows {(1,4)}else{(0,h)});
             assert!(gpu.stack_begin(w,h,1));
             assert!(gpu.stack_layer_from_srgb_u8(0,&bytes));
             let before=gpu.readback_stats();
             let travel=[0.5,1.0,direction[0],direction[1]];
-            assert!(if blur {gpu.stack_title_motion_blur_translate(0,0.0,travel,[0.0;4])}
-                else {gpu.stack_title_motion_translate(0,travel,[0.0;4])});
+            assert!(if blur {gpu.stack_title_motion_blur_translate(0,0.0,travel,[0.0;4],clip_rows)}
+                else {gpu.stack_title_motion_translate(0,travel,[0.0;4],clip_rows)});
             assert_eq!(gpu.readback_stats(),before,"source and bounds remain resident");
             assert!(gpu.stack_blend(0,1.0,0));
             assert!(gpu.stack_finish_into_chain(true));
@@ -1260,7 +1260,7 @@ fn rectangle_solid_anchor_ties_empty_and_translucent_sources() {
         let want=klipp_title::pose_sprite(&sprite,w,h,0,0,0.7,1.7,anchor,None,None,(0,h));
         assert!(gpu.stack_begin(w,h,1));assert!(gpu.stack_layer_from_srgb_u8(0,&bytes));
         let before=gpu.readback_stats();
-        assert!(gpu.stack_title_motion_scale(0,[0.0;4],[0.0;4],1.7,0.7,[0.5;2],true));
+        assert!(gpu.stack_title_motion_scale(0,[0.0;4],[0.0;4],1.7,0.7,[0.5;2],true,false));
         assert_eq!(gpu.readback_stats(),before,"anchor stays on GPU");
         assert!(gpu.stack_blend(0,1.0,0));assert!(gpu.stack_finish_into_chain(true));
         let got=gpu.stack_download_linear();
@@ -1269,4 +1269,44 @@ fn rectangle_solid_anchor_ties_empty_and_translucent_sources() {
         }
         gpu.stack_end();
     }
+}
+
+fn add_rectangle_maskrise(seq: &mut Sequence, mode: u8) {
+    use klipp_timeline::{MotionKind,TitleObjectContent};
+    let pairs=[(MotionKind::MaskRise,MotionKind::Fade),(MotionKind::Fade,MotionKind::MaskRise),
+        (MotionKind::MaskRise,MotionKind::MaskRise),(MotionKind::MaskRise,MotionKind::SlideLeft),
+        (MotionKind::ScaleUp,MotionKind::MaskRise),(MotionKind::MaskRise,MotionKind::ScaleDown),
+        (MotionKind::Blur,MotionKind::MaskRise),(MotionKind::MaskRise,MotionKind::Blur)];
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    for object in &mut title.objects {
+        if matches!(object.content,TitleObjectContent::Shape(_)) {
+            let motion=&mut object.fx_mut().motion;
+            let enter=motion.enter.as_mut().unwrap();let exit=motion.exit.as_mut().unwrap();
+            (enter.kind,exit.kind)=pairs[mode as usize];
+            for m in [enter,exit] {
+                if mode>=2 {m.duration_secs=3.0;}
+                // MaskRise ignores the configurable slide distance on CPU.
+                if m.kind==MotionKind::MaskRise {m.distance=9.0;}
+                if mode==4 {m.anchor=Some(klipp_core::title_motion::MotionAnchor::Solid);}
+                if mode==5 {m.anchor=Some(klipp_core::title_motion::MotionAnchor::Point{x:0.2,y:0.8});}
+            }
+        }
+    }
+}
+fn maskrise_rectangle_panel(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=combined_faded_panel(fitted,mode%2,w,h);add_rectangle_maskrise(&mut seq,mode);seq
+}
+fn maskrise_rectangle_matte(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=faded_rectangle_matte(fitted,mode%4,w,h);add_rectangle_maskrise(&mut seq,mode);seq
+}
+#[test]
+fn rectangle_maskrise_matches_cpu_and_stays_resident() {check_rectangle_motion_fade_modes(maskrise_rectangle_panel,8);}
+#[test]
+fn rectangle_maskrise_mattes_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(maskrise_rectangle_matte,8);}
+#[test]
+fn rectangle_maskrise_stays_resident_at_4k() {check_rectangle_motion_fades_at_4k(maskrise_rectangle_panel);}
+#[test]
+fn rectangle_maskrise_original_rows_clip_translated_and_empty_sources() {
+    check_rectangle_slide_translation(false,true);
+    check_rectangle_slide_translation(true,true);
 }
