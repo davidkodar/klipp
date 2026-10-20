@@ -124,6 +124,7 @@ impl KlippApp {
                 // straight after it: the per-frame mirror had not run yet,
                 // and the project read as saved a moment after an edit.
                 if let Ok(mut project) = self.state.control_shared.project.lock() {
+                    project.recent_projects = self.prefs.general.recent_projects.iter().map(crate::prefs::RecentProject::control_summary).collect();
                     project.path = self.state.project_path.clone();
                     project.dirty = self.state.dirty;
                     project.undo = self.state.undo_label();

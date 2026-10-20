@@ -115,6 +115,10 @@ pub struct RecentProject {
 }
 
 impl RecentProject {
+    pub(crate) fn control_summary(&self) -> klipp_core::RecentProjectSummary {
+        klipp_core::RecentProjectSummary { path: self.path.clone(), name: self.name.clone(), last_saved: self.last_saved.clone(), duration_secs: self.duration_secs, fps: self.fps.clone(), resolution: self.resolution.clone(), missing_media: self.missing_media }
+    }
+
     /// Create a minimal entry from just a path (used for migration from old format).
     pub fn from_path(path: PathBuf) -> Self {
         let name = path

@@ -1439,12 +1439,24 @@ pub enum ControlCommand {
         #[serde(default)]
         path: Option<String>,
     },
-    /// Open the project at `path`, replacing the one that is open.
-    /// Refused while the open one has unsaved changes, unless
-    /// `discard_changes`: nobody is there to answer a dialog, so the
-    /// caller says which it wants.
+    /// Open by exactly one of absolute path or recent-project name.
+    /// Unsaved changes require save or discard_changes, never both.
     OpenProject {
-        path: String,
+        #[serde(default)]
+        path: Option<String>,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        save: bool,
+        #[serde(default)]
+        discard_changes: bool,
+    },
+    /// List the existing recent projects without searching the filesystem.
+    RecentProjects,
+    /// Return to the project page; refuse unsaved changes unless resolved.
+    CloseProject {
+        #[serde(default)]
+        save: bool,
         #[serde(default)]
         discard_changes: bool,
     },

@@ -20,7 +20,9 @@
 //!
 //! Enabled by default; `KLIPP_CONTROL=0` turns it off. The socket lives
 //! in `$XDG_RUNTIME_DIR`, which is user-owned and mode 0700, so it is
-//! reachable by the user running Klipp and nobody else.
+//! reachable by the user running Klipp and nobody else. Socket mode 0600
+//! and peer-credential checks enforce the same boundary for override paths
+//! and the /tmp fallback before any project paths are returned.
 
 pub mod protocol;
 pub mod graph_wire;
@@ -32,6 +34,8 @@ mod graph_request;
 mod envelope;
 mod grading;
 mod plans;
+mod project_access;
+mod local_peer;
 mod cuts;
 mod listening;
 mod looks;
@@ -161,7 +165,13 @@ fn claim_socket(path: &std::path::Path, pid: u32) -> Result<(UnixListener, std::
     };
     // Stale: nobody answered on it (or this pid's own leftover).
     let _ = std::fs::remove_file(&path);
-    UnixListener::bind(&path).map(|l| (l, path.clone())).map_err(|e| format!("{}: {e}", path.display()))
+    let listener = UnixListener::bind(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    use std::os::unix::fs::PermissionsExt;
+    if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
+        let _ = std::fs::remove_file(&path);
+        return Err(format!("could not restrict control socket permissions: {e}"));
+    }
+    Ok((listener, path))
 }
 
 #[cfg(test)]
@@ -181,6 +191,15 @@ mod socket_claim_tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn project_access_socket_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let d=dir();
+        let (_,path)=claim_socket(&d.join("control.sock"),123).unwrap();
+        assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777,0o600);
+        std::fs::remove_dir_all(d).unwrap();
     }
 
     /// #2006: each call is a directory of its own, however close
@@ -232,6 +251,12 @@ mod socket_claim_tests {
 }
 
 fn serve_connection(stream: UnixStream, ctx: ControlContext) {
+    // Also protects override paths and /tmp fallback, including a peer
+    // that connected in the interval between bind and chmod.
+    if !local_peer::same_user(&stream) {
+        tracing::warn!("refused control connection from a different or unverifiable user");
+        return;
+    }
     let reader = BufReader::new(match stream.try_clone() {
         Ok(s) => s,
         Err(e) => {
@@ -778,6 +803,8 @@ fn handle(
             | ControlCommand::ImportTimeline { .. }
             | ControlCommand::SaveProject { .. }
             | ControlCommand::OpenProject { .. }
+            | ControlCommand::CloseProject { .. }
+            | ControlCommand::RecentProjects
             | ControlCommand::FrameStats { .. }
             | ControlCommand::TimelineSheet { .. }
             | ControlCommand::FrameAt { .. }

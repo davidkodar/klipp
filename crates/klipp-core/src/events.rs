@@ -1324,11 +1324,11 @@ pub enum AppCommand {
     /// The folder new projects go in and the welcome screen lists
     /// projects from (#1143).
     SetProjectsFolder { path: PathBuf },
-    /// Open `path` as it is, with no dialog: not the unsaved-changes
-    /// question (the caller has settled that) and not the autosave
-    /// recovery offer. For the control socket, where nobody is there to
-    /// answer one.
-    OpenProjectNow { path: PathBuf },
+    /// Open `path` without a dialog or autosave recovery offer. The UI
+    /// checks identity and save/discard policy immediately before acting.
+    OpenProjectNow { path: PathBuf, save: bool, discard_changes: bool, expected_identity: u64 },
+    /// Close without a dialog, rechecking the dirty state on the UI thread.
+    CloseProjectNow { save: bool, discard_changes: bool, expected_identity: u64 },
     CreateProject {
         name: String,
         location: PathBuf,
@@ -5138,6 +5138,35 @@ pub struct ProjectStatus {
     pub sequences: Vec<SequenceSummary>,
     #[serde(default)]
     pub active_sequence: usize,
+    /// Metadata from the welcome screen, for the same-user control client.
+    #[serde(default)]
+    pub recent_projects: Vec<RecentProjectSummary>,
+}
+
+/// Deliberately limited recent-project metadata: no thumbnail, media paths
+/// or project contents. Paths are data for the local control client.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecentProjectSummary {
+    pub path: PathBuf,
+    pub name: String,
+    pub last_saved: Option<String>,
+    pub duration_secs: Option<f64>,
+    pub fps: Option<String>,
+    pub resolution: Option<String>,
+    pub missing_media: Option<bool>,
+}
+
+impl ProjectStatus {
+    /// Run against the UI's current state before replacing a project.
+    /// A returned path must be saved successfully before replacement.
+    pub fn replacement_save_path(&self, expected_identity: u64, save: bool, discard_changes: bool) -> Result<Option<PathBuf>, String> {
+        if save && discard_changes { return Err("choose save or discard_changes, not both".into()); }
+        if self.identity != expected_identity { return Err("the project changed before the request ran; read status and retry".into()); }
+        if !self.dirty { return Ok(None); }
+        if save { return self.path.clone().map(Some).ok_or_else(|| "the project has never been saved: save_project with a path first".into()); }
+        if discard_changes { return Ok(None); }
+        Err("the open project has unsaved changes: save_project first, or pass save true or discard_changes true".into())
+    }
 }
 
 /// One sequence of the project, as a client lists it.
@@ -5151,7 +5180,7 @@ pub struct SequenceSummary {
 
 impl Default for ProjectStatus {
     fn default() -> Self {
-        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None, undo: None, redo: None, undo_depth: 0, redo_depth: 0, undo_scope: None, redo_scope: None, sequences: Vec::new(), active_sequence: 0, global_lut: None, picture_transform: String::new() }
+        Self { path: None, dirty: false, generation: 0, last_error: None, identity: launch_identity_base(), changed_by: None, undo: None, redo: None, undo_depth: 0, redo_depth: 0, undo_scope: None, redo_scope: None, sequences: Vec::new(), active_sequence: 0, global_lut: None, picture_transform: String::new(), recent_projects: Vec::new() }
     }
 }
 
@@ -5399,4 +5428,24 @@ pub enum WipeClip {
     Previous,
     Next,
     Clip(ClipId),
+}
+
+#[cfg(test)]
+mod project_switch_tests {
+    use super::ProjectStatus;
+    #[test]
+    fn project_switch_preserves_unsaved_work_and_checks_identity() {
+        let mut p = ProjectStatus { path:Some("/tmp/film.klipp".into()), identity:7, ..Default::default() };
+        assert_eq!(p.replacement_save_path(7,false,false).unwrap(),None);
+        p.dirty=true;
+        assert!(p.replacement_save_path(7,false,false).unwrap_err().contains("unsaved"));
+        assert_eq!(p.replacement_save_path(7,true,false).unwrap(),p.path);
+        assert_eq!(p.replacement_save_path(7,false,true).unwrap(),None);
+        assert!(p.replacement_save_path(7,true,true).is_err());
+        assert!(p.replacement_save_path(6,false,true).is_err());
+        p.path=None;
+        assert!(p.replacement_save_path(7,true,false).unwrap_err().contains("never been saved"));
+        p.dirty=false;
+        assert_eq!(p.replacement_save_path(7,false,false).unwrap(),None);
+    }
 }

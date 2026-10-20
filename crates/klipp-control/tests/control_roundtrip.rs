@@ -221,7 +221,7 @@ fn harness() -> Harness {
                         // A save or an open reports back as the UI does: the
                         // path, no unsaved changes, the generation moved. A
                         // path with "broken" in it fails, to see that said.
-                        if let klipp_core::AppCommand::SaveProjectAs { path } | klipp_core::AppCommand::OpenProjectNow { path } = &c {
+                        if let klipp_core::AppCommand::SaveProjectAs { path } | klipp_core::AppCommand::OpenProjectNow { path, .. } = &c {
                             let mut p = shared.project.lock().unwrap();
                             p.generation += 1;
                             if path.to_string_lossy().contains("broken") {
@@ -231,6 +231,16 @@ fn harness() -> Harness {
                                 p.dirty = false;
                                 p.last_error = None;
                             }
+                        }
+                        if let klipp_core::AppCommand::CloseProjectNow { save, discard_changes, expected_identity } = &c {
+                            let mut p = shared.project.lock().unwrap();
+                            let decision = p.replacement_save_path(*expected_identity,*save,*discard_changes);
+                            p.generation += 1;
+                            p.last_error = match decision {
+                                Err(e) => Some(e),
+                                Ok(Some(path)) if path.to_string_lossy().contains("broken") => Some("could not save: the disk said no".into()),
+                                Ok(_) => { p.path=None; p.dirty=false; p.identity+=1; None }
+                            };
                         }
                         let _ = cmd_tx.send(c);
                     }
@@ -2179,6 +2189,37 @@ fn a_project_is_saved_and_opened_without_a_dialog() {
     assert_eq!(r["opened"], json!(true));
     assert!(matches!(h.cmd_rx.try_iter().last(), Some(klipp_core::AppCommand::OpenProjectNow { .. })));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn project_access_recent_open_and_safe_close_over_socket() {
+    let mut h=harness();
+    let root=std::env::temp_dir().join(format!("klipp-project-access-{}",uuid::Uuid::new_v4()));
+    let path=root.join("Example.klipp");
+    std::fs::create_dir_all(&path).unwrap();
+    std::fs::write(path.join("project.json"),"{}").unwrap();
+    h.shared.project.lock().unwrap().recent_projects=vec![klipp_core::RecentProjectSummary {
+        path:path.clone(),name:"Example".into(),last_saved:None,duration_secs:Some(12.0),fps:Some("24".into()),resolution:Some("1920x1080".into()),missing_media:Some(false)
+    }];
+    assert_eq!(h.ok(json!({"method":"status"}))["recent_projects"][0]["name"],"Example");
+    assert_eq!(h.ok(json!({"method":"recent_projects"}))["projects"][0]["duration_secs"],12.0);
+    assert_eq!(h.ok(json!({"method":"open_project","name":"EXAMPLE"}))["opened"],true);
+    assert_eq!(h.ok(json!({"method":"status"}))["recent_projects"],json!([]));
+    h.shared.project.lock().unwrap().dirty=true;
+    let before=h.sent.lock().unwrap().len();
+    assert!(h.call(json!({"method":"close_project"}))["error"].as_str().unwrap().contains("unsaved"));
+    assert_eq!(h.sent.lock().unwrap().len(),before);
+    assert_eq!(h.ok(json!({"method":"close_project","save":true}))["closed"],true);
+    assert!(h.shared.project.lock().unwrap().path.is_none());
+    // A save failure must leave the project and its changes in memory.
+    { let mut p=h.shared.project.lock().unwrap(); p.path=Some(root.join("broken.klipp"));p.dirty=true; }
+    assert!(h.call(json!({"method":"close_project","save":true}))["error"].as_str().unwrap().contains("disk said no"));
+    assert!(h.shared.project.lock().unwrap().dirty);
+    assert_eq!(h.ok(json!({"method":"close_project","discard_changes":true}))["closed"],true);
+    assert_eq!(h.ok(json!({"method":"close_project"}))["closed"],true);
+    h.ok(json!({"method":"open_project","name":"Example"}));
+    assert_eq!(h.ok(json!({"method":"close_project"}))["closed"],true);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 /// The brief is set as a recorded edit and read back, a bad one is

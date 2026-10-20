@@ -221,6 +221,25 @@ impl KlippApp {
         self.sync_media_pool_to_engine();
     }
 
+    pub(super) fn prepare_control_project_switch(&mut self, expected_identity: u64, save: bool, discard_changes: bool) -> bool {
+        let current = {
+            let mut current = self.state.control_shared.project.lock().unwrap_or_else(|e|e.into_inner()).clone();
+            // The published snapshot can lag edits queued before this command.
+            current.dirty = self.state.dirty;
+            current.path = self.state.project_path.clone();
+            current
+        };
+        if save && current.dirty && (crate::project_paths::is_untitled(current.path.as_deref()) || self.unnamed_project.as_ref().is_some_and(|p| Some(p) == current.path.as_ref())) {
+            self.note_project_event(ProjectEvent::Replaced, Some("save_project to a named path before closing or switching this untitled project".into()));
+            return false;
+        }
+        match current.replacement_save_path(expected_identity, save, discard_changes) {
+            Ok(Some(path)) => self.do_save_project(&path),
+            Ok(None) => true,
+            Err(error) => { self.note_project_event(ProjectEvent::Replaced, Some(error)); false }
+        }
+    }
+
     pub(super) fn do_close_project(&mut self) {
         // An Untitled project closed untouched leaves nothing: its staged
         // template media was the cache's copy.
@@ -359,6 +378,7 @@ impl KlippApp {
             if project_identity_moves(event, project.path.as_deref(), self.state.project_path.as_deref(), error.is_some()) {
                 project.identity += 1;
             }
+            project.recent_projects = self.prefs.general.recent_projects.iter().map(crate::prefs::RecentProject::control_summary).collect();
             project.path = self.state.project_path.clone();
             project.dirty = self.state.dirty;
             project.global_lut = self.state.global_lut_path.clone();
