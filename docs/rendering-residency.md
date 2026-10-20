@@ -91,8 +91,7 @@ for full-project playback profiling.
   Rectangle MaskRise/MaskDrop use opposite travel directions at 1.15 times
   the original painted height and clip destination rows to the original
   painted window without adding their own alpha fade. They stay resident
-  when paired with fades, slides, scaling, blur or each other. Other unsupported
-  motion kinds such as SoftRise, FocusIn and Typewriter still fall back.
+  when paired with fades, slides, scaling, blur or each other.
   Rectangle ScaleUp/ScaleDown motions use premultiplied authored-colour
   bilinear sampling of the half-float sprite, with centre or explicit-point
   anchors, positive custom scales and combined slide motion. Scaling and
@@ -105,6 +104,13 @@ for full-project playback profiling.
   Rectangle Larger/Smaller reuse the same GPU scaling with opaque motion alpha,
   default scales of 4-to-1 / 0-to-1 and nonnegative custom scale amounts, including supported
   motion pairs, anchors, fitted panels and mattes.
+  Rectangle Flicker and Typewriter use evaluated whole-layer opacity, including
+  their step boundaries; shapes do not acquire per-glyph stagger. FocusIn combines
+  its 1.25-to-1 scale with blur at 0.14 times remaining progress and painted height;
+  SoftRise combines upward travel with blur at 0.08 times those values. Combined
+  blur takes the maximum entrance/exit radius before translation, scaling and row
+  clipping. All current rectangle motion kinds are admitted; other shape styles
+  and unsupported source effects still fall back.
   Rectangle Blur entrances/exits, alone or paired with Fade, use the clipped
   painted height for radius and three premultiplied box-blur rounds on GPU.
   Byte rounding precedes motion alpha, edge fade, opacity and masks. Blur
