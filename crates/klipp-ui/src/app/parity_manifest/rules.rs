@@ -210,9 +210,6 @@ pub(super) fn entry_exclusion(entry: &CatalogEntry) -> Option<&'static str> {
     }
 }
 
-pub(super) const NARROW_WHEEL_EXCLUSION: &str =
-    "#1351: WheelSatBri parameter controls are exposed in wide bottom wheels, not the narrow inspector";
-
 /// Require each location actually exposed by the production layouts.
 /// Families select fixture variants, but cannot silently omit a panel.
 pub(super) fn surfaces(entry: &CatalogEntry) -> Result<BTreeSet<Surface>, String> {
@@ -263,9 +260,6 @@ pub(super) fn surfaces(entry: &CatalogEntry) -> Result<BTreeSet<Surface>, String
                 | ColorWheels | RGBCurves | HueSatCurves | InputTransform => {
                     required.extend([GradeTabbedRight, GradeBottomTools]);
                 }
-                WheelSatBri => {
-                    required.insert(GradeBottomTools);
-                }
                 // Only their bypass entry remains after the parameter exclusions.
                 MaskCutout | Reroute => {
                     if matches!(entry.value, CatalogValue::Enabled) {
@@ -289,6 +283,9 @@ pub(super) fn surfaces(entry: &CatalogEntry) -> Result<BTreeSet<Surface>, String
             && !matches!(entry.value, CatalogValue::Enabled)
         {
             required.extend([GradeTabbedRight, GradeBottomTools]);
+        }
+        if kind == WheelSatBri {
+            required.insert(GradeBottomTools);
         }
         // The bottom Adjustments bypass strip targets any selected node
         // when a Corrector is present. The right strip is available only
@@ -366,6 +363,21 @@ pub(super) fn is_key(interaction: Interaction) -> bool {
     )
 }
 
+/// A sequence grade uses the same widgets as the page named by its
+/// fixture. Sat/Bri has two forms: numeric rows and wide wheel cells.
+pub(super) fn fixture_interactions(entry: &CatalogEntry, surface: Surface, variant: &str) -> Result<BTreeSet<Interaction>, String> {
+    if surface == Surface::NonClipGrade && sat_bri_cell(entry)
+        && variant.split_once(": ").is_some_and(|(_, page)| page.starts_with("GradePerNode "))
+    {
+        let mut required = interactions(entry, Surface::GradePerNode)?;
+        // Sequence-grade keys are earned through their representatives.
+        required.retain(|i| !is_key(*i));
+        Ok(required)
+    } else {
+        interactions(entry, surface)
+    }
+}
+
 pub(super) fn interactions(
     entry: &CatalogEntry,
     surface: Surface,
@@ -404,10 +416,9 @@ pub(super) fn interactions(
     }
     match &entry.value {
         CatalogValue::Parameter { desc, presentation } => {
-            // A Wheel Sat/Bri node's cells are presented as sliders and
-            // drawn as the cells under the bottom tools' wide wheels: a
-            // wheel part's (`NARROW_WHEEL_EXCLUSION`).
-            let widget = if sat_bri_cell(entry) { Widget::WheelPart("sat_bri") } else { presentation.widget };
+            // Sat/Bri is numeric on its own page, and a wheel cell on
+            // the wide bottom tools. Keep the obligations of both forms.
+            let widget = if sat_bri_cell(entry) && surface != Surface::GradePerNode { Widget::WheelPart("sat_bri") } else { presentation.widget };
             match widget {
                 Widget::Scrub
                 | Widget::Slider

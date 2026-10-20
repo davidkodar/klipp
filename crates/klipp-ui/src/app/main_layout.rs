@@ -1597,6 +1597,8 @@ pub(crate) fn per_node_kind(kind: klipp_nodes::NodeKind) -> bool {
         | klipp_nodes::NodeKind::ColorWarper
         // No tab draws its From and To (#1351).
         | klipp_nodes::NodeKind::PrimariesMatrix
+        // The narrow inspector needs its numeric Sat/Bri rows (#1351).
+        | klipp_nodes::NodeKind::WheelSatBri
         // Source / Output / composite-only nodes:
         // no params, but showing the grade tabs
         // for them misleads users into thinking

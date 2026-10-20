@@ -26,7 +26,7 @@ use klipp_nodes::NodeKind;
 const TYPES: &[(NodeKind, &[Surface])] = &[
     (NodeKind::Corrector, &[Surface::GradeTabbedRight, Surface::GradeBottomTools]),
     (NodeKind::ColorWheels, &[Surface::GradeTabbedRight, Surface::GradeBottomTools]),
-    (NodeKind::WheelSatBri, &[Surface::GradeBottomTools]),
+    (NodeKind::WheelSatBri, &[Surface::GradePerNode, Surface::GradeBottomTools]),
     (NodeKind::ColorWarper, &[Surface::GradePerNode, Surface::GradeTabbedRight, Surface::GradeBottomTools]),
     // The picked zone's wheel (#240): its puck the colour, its Y the
     // exposure.
@@ -74,7 +74,7 @@ fn control(ty: &NodeType, desc: &ParamDesc) -> Option<Control> {
         return Some(Control::Wheel { label: "Colour", axis });
     }
     // A Wheel Sat/Bri node's cells are presented as sliders, and drawn as
-    // the cells under the bottom tools' wide wheels (`NARROW_WHEEL_EXCLUSION`).
+    // cells under wide wheels, or numeric rows on their own narrow page.
     if !matches!(pres.widget, Widget::WheelPart(_)) && ty.kind != NodeKind::WheelSatBri {
         return None;
     }
@@ -520,6 +520,7 @@ pub(super) fn run(report: &mut Report) {
                     }
                 };
                 match control {
+                    _ if *kind == NodeKind::WheelSatBri && *surface == Surface::GradePerNode => row_cases(report, ty, desc, &start, *surface, variant),
                     Control::Range => row_cases(report, ty, desc, &start, *surface, variant),
                     _ => control_cases(report, ty, desc, control, &start, *surface, variant),
                 }
@@ -621,4 +622,41 @@ fn a_zones_preset_picked_from_start_from_sets_every_zone_in_one_step() {
     assert_eq!(g.state.active_history().undo_count(), 1, "one step");
     g.step(false).unwrap();
     assert_eq!(g.picture(), before, "undone whole");
+}
+
+/// #1351: the selected Sat/Bri node earns its numeric page independently
+/// of the wide wheel cells: typing, dragging, reset, keys and exact undo.
+#[test]
+fn wheel_sat_bri_narrow_rows_store_each_edit() {
+    assert!(super::main_layout::per_node_kind(NodeKind::WheelSatBri));
+    let ty = klipp_nodes::registry::node_type(NodeKind::WheelSatBri).unwrap();
+    let mut manifest = Manifest::default();
+    require(&mut manifest);
+    let mut report = Report::default();
+    for (desc, _) in rows(ty) {
+        let surface = Surface::GradePerNode;
+        let start = fixture(ty.kind, desc, surface, false).unwrap();
+        row_cases(&mut report, ty, desc, &start, surface, variant(ty, desc, surface));
+    }
+    report.family_result().unwrap();
+    assert!(!report.passed.is_empty());
+    assert!(report.passed.iter().all(|key| manifest.required.contains(key)));
+}
+
+/// Sequence grades use the same rows through their own document roots;
+/// editing one value must preserve the others and undo/redo exactly.
+#[test]
+fn wheel_sat_bri_narrow_rows_edit_sequence_grades() {
+    let ty = klipp_nodes::registry::node_type(NodeKind::WheelSatBri).unwrap();
+    for root in GradeRoot::SEQUENCE {
+        for (desc, _) in rows(ty) {
+            let mut start = fixture(ty.kind, desc, Surface::GradePerNode, false).unwrap().on_root(root);
+            let before = start.picture();
+            start.drawn();
+            assert_eq!(start.picture(), before, "opening must preserve values");
+            let label = ty.presentation(desc).label.unwrap_or(desc.label);
+            oracle_case(&start, desc, 0.25, |g| super::parity_grade_numeric::type_into(g, label, super::parity_grade_numeric::nth(desc), "0.25"))
+                .unwrap_or_else(|e| panic!("{root:?} {}: {e}", desc.key));
+        }
+    }
 }
