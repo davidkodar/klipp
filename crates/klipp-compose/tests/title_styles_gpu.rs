@@ -1581,3 +1581,37 @@ fn rectangle_opacity_motion_step_boundaries_match_cpu() {
     let times:Vec<_>=frames.into_iter().map(|f|f64::from(f)/30.0).collect();
     check_rectangle_motion_samples(|f,m,w,h|final_motion_rectangle_panel(f,if m<2 {m}else{m+6},w,h),4,&times);
 }
+
+fn add_rectangle_pop_blur_overshoot(seq: &mut Sequence, mode: u8) {
+    use klipp_timeline::{MotionKind,TitleObjectContent};
+    let blur=[MotionKind::Blur,MotionKind::FocusIn,MotionKind::SoftRise][(mode/2) as usize];
+    add_rectangle_scale_fade(seq,6+mode%2,MotionKind::Pop);
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    for object in &mut title.objects {
+        if matches!(object.content,TitleObjectContent::Shape(_)) {
+            let motion=&mut object.fx_mut().motion;
+            for m in motion.enter.iter_mut().chain(motion.exit.iter_mut()) {
+                if m.kind==MotionKind::Blur {m.kind=blur;}
+                if m.kind==MotionKind::Pop {
+                    // Exercise overshoot on either side of the blur pair.
+                    m.easing=klipp_core::title_motion::Easing::OutBack;
+                    assert!(m.pose(m.easing.apply(0.7),1.0).3>1.0);
+                }
+            }
+        }
+    }
+}
+#[test]
+fn rectangle_pop_blur_overshoot_pairs_stay_resident() {
+    check_rectangle_motion_fade_modes(|f,m,w,h| {
+        let mut seq=combined_faded_panel(f,m%2,w,h);
+        add_rectangle_pop_blur_overshoot(&mut seq,m);seq
+    },6);
+}
+#[test]
+fn rectangle_pop_blur_overshoot_mattes_stay_resident() {
+    check_rectangle_motion_fade_modes(|f,m,w,h| {
+        let mut seq=faded_rectangle_matte(f,m%4,w,h);
+        add_rectangle_pop_blur_overshoot(&mut seq,m);seq
+    },6);
+}

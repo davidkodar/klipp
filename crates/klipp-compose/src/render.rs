@@ -2731,7 +2731,9 @@ impl Renderer {
                             let blur_part=|m:Option<klipp_timeline::Motion>,progress:f32| {
                                 use klipp_timeline::MotionKind;
                                 let coefficient=m.map_or(0.0,|m|match m.kind {MotionKind::Blur=>0.12,MotionKind::FocusIn=>0.14,MotionKind::SoftRise=>0.08,_=>0.0});
-                                [1.0-progress,coefficient]
+                                // Non-blur easing may overshoot; its progress must not
+                                // enter blur validation or affect the blur radius.
+                                if coefficient==0.0 {[0.0;2]}else{[1.0-progress,coefficient]}
                             };
                             let a=blur_part(motion.enter,enter);let b=blur_part(motion.exit,exit);
                             let scaled=scales.then_some([motion_scale,fade,anchor[0],anchor[1]]);
