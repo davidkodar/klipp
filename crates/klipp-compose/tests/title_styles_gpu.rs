@@ -859,7 +859,7 @@ fn rectangle_motion_fades_keep_unsupported_combinations_on_cpu() {
             if matches!(object.content,TitleObjectContent::Shape(_)) {
                 // Unsupported shape motions still explicitly decline.
                 object.fx_mut().motion.enter.as_mut().unwrap().kind=match case {
-                    0=>MotionKind::Larger,1=>MotionKind::Pop,_=>MotionKind::Typewriter,
+                    0=>MotionKind::Larger,1=>MotionKind::Slam,_=>MotionKind::Typewriter,
                 };
             }
         }
@@ -1325,3 +1325,47 @@ fn rectangle_maskdrop_matches_cpu_and_stays_resident() {check_rectangle_motion_f
 fn rectangle_maskdrop_mattes_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(maskdrop_rectangle_matte,9);}
 #[test]
 fn rectangle_maskdrop_stays_resident_at_4k() {check_rectangle_motion_fades_at_4k(maskdrop_rectangle_panel);}
+
+fn add_rectangle_pop(seq: &mut Sequence, mode: u8) {
+    use klipp_timeline::{MotionKind,TitleObjectContent};
+    use klipp_core::title_motion::{Easing,MotionAnchor};
+    let pairs=[(MotionKind::Pop,MotionKind::Fade),(MotionKind::Fade,MotionKind::Pop),
+        (MotionKind::Pop,MotionKind::Pop),(MotionKind::Pop,MotionKind::SlideLeft),
+        (MotionKind::ScaleUp,MotionKind::Pop),(MotionKind::Pop,MotionKind::ScaleDown),
+        (MotionKind::Blur,MotionKind::Pop),(MotionKind::Pop,MotionKind::Blur),
+        (MotionKind::Pop,MotionKind::MaskRise),(MotionKind::MaskDrop,MotionKind::Pop)];
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    for object in &mut title.objects {
+        if matches!(object.content,TitleObjectContent::Shape(_)) {
+            let motion=&mut object.fx_mut().motion;
+            let enter=motion.enter.as_mut().unwrap();let exit=motion.exit.as_mut().unwrap();
+            (enter.kind,exit.kind)=pairs[mode as usize];
+            enter.easing=enter.kind.default_easing();
+            exit.easing=exit.kind.default_exit_easing();
+            for m in [enter,exit] {
+                if mode>=2 {m.duration_secs=3.0;}
+                if m.kind==MotionKind::Pop {
+                    // Pop ignores custom scale amounts; its pose fixes 0.4..1.
+                    m.amount=Some(0.05);
+                    if mode<2 {m.duration_secs=0.6;m.easing=Easing::Linear;}
+                }
+                // Linear entrance at 0.2 s reaches the fast fade's 1/3 knee.
+                if mode==3 {m.anchor=Some(MotionAnchor::Point{x:1.4,y:-0.5});}
+                if mode==4 {m.anchor=Some(MotionAnchor::Solid);}
+                if mode==5 {m.anchor=Some(MotionAnchor::Point{x:0.2,y:0.8});}
+            }
+        }
+    }
+}
+fn pop_rectangle_panel(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=combined_faded_panel(fitted,mode%2,w,h);add_rectangle_pop(&mut seq,mode);seq
+}
+fn pop_rectangle_matte(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=faded_rectangle_matte(fitted,mode%4,w,h);add_rectangle_pop(&mut seq,mode);seq
+}
+#[test]
+fn rectangle_pop_matches_cpu_and_stays_resident() {check_rectangle_motion_fade_modes(pop_rectangle_panel,10);}
+#[test]
+fn rectangle_pop_mattes_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(pop_rectangle_matte,10);}
+#[test]
+fn rectangle_pop_stays_resident_at_4k() {check_rectangle_motion_fades_at_4k(pop_rectangle_panel);}
