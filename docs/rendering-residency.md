@@ -66,9 +66,11 @@ for full-project playback profiling.
   Keyed/linked path glyph sources also evaluate Fade, Flicker and Typewriter
   opacity (including stagger) and opacity-only text animators. CPU path raster
   coverage applies the same evaluated opacity, including keyed typography.
-  Static path text retains its existing cached sprite route. Spatial path
-  motion/animators (movement, scale, rotation, blur or colour) remain excluded
-  from the outline source; they need path-aware sampling rather than flat poses.
+  Keyed/linked path sources also apply Rise/Drop, slides, Fly and Bounce
+  translation, plus position/opacity animators, after placement on the path.
+  Offscreen crop bounds are clamped to the frame. Static path text retains its
+  existing cached sprite route. Scale, rotation, clipping, blur and colour
+  path poses remain excluded from the outline source.
   Plain rectangles, gradients and strokes use GPU coverage, including keyed transforms.
   Fitted rectangles use bounds-only text layout; hidden or missing targets
   suppress the panel. Rectangle edge fades run on GPU after byte-layer

@@ -1874,7 +1874,7 @@ impl TitleRenderer {
 
         let fx=title.primary_fx();
         let mut path_alpha=vec![1.0f32;glyphs.len()];
-        if gpu_glyphs::path_opacity_only(fx) {
+        if gpu_glyphs::path_translation_supported(fx) {
             if let Some(time)=time_secs {
                 let window=self.gpu_motion.and_then(|(_,window)|window).or(self.motion_window);
                 let enter_units=motion_units(glyphs,fx.motion.enter.map(|m|m.stagger).unwrap_or_default());
@@ -1884,9 +1884,18 @@ impl TitleRenderer {
                 for i in 0..glyphs.len() {
                     let (enter,_)=fx.motion.progress(time,window,enter_units[i]);
                     let (_,exit)=fx.motion.progress(time,window,exit_units[i]);
-                    let alpha=fx.motion.enter.map_or(1.0,|m|m.pose(enter,1.0).0)
-                        *fx.motion.exit.map_or(1.0,|m|m.pose(exit,1.0).0)*poses.get(i).map_or(1.0,|p|p.alpha);
+                    let rest=(1.0,0.0,0.0,1.0,0.0,false);
+                    let a=fx.motion.enter.map_or(rest,|m|m.pose(enter,tb.font_size*scale));
+                    let b=fx.motion.exit.map_or(rest,|m|m.pose(exit,tb.font_size*scale));
+                    let pose=poses.get(i).copied().unwrap_or_default();
+                    let alpha=a.0*b.0*pose.alpha;
                     path_alpha[i]=if alpha<=0.001 {0.0}else{alpha.clamp(0.0,1.0)};
+                    // Translation is in screen axes, after placement on the path.
+                    // CPU and GPU quantize the final centre in the same way.
+                    if let Some(at)=placed[i].as_mut() {
+                        at.centre[0]+=a.1+b.1+pose.dx;
+                        at.centre[1]+=a.2+b.2+pose.dy;
+                    }
                 }
             }
         }
@@ -1983,10 +1992,10 @@ impl TitleRenderer {
             return TitleLayout::bounds_only([text_min_x,text_min_y,text_max_x,text_max_y],glyphs.len(),scale);
         }
         // Crop the mask to a tight bounding box with padding
-        let crop_x0 = ((text_min_x.floor() as i32) - max_pad).max(0) as usize;
-        let crop_y0 = ((text_min_y.floor() as i32) - max_pad).max(0) as usize;
-        let crop_x1 = ((text_max_x.ceil() as i32) + max_pad + 1).min(w as i32) as usize;
-        let crop_y1 = ((text_max_y.ceil() as i32) + max_pad + 1).min(h as i32) as usize;
+        let crop_x0 = ((text_min_x.floor() as i32) - max_pad).clamp(0,w as i32) as usize;
+        let crop_y0 = ((text_min_y.floor() as i32) - max_pad).clamp(0,h as i32) as usize;
+        let crop_x1 = ((text_max_x.ceil() as i32) + max_pad + 1).clamp(0,w as i32) as usize;
+        let crop_y1 = ((text_max_y.ceil() as i32) + max_pad + 1).clamp(0,h as i32) as usize;
         let crop_w = crop_x1.saturating_sub(crop_x0);
         let crop_h = crop_y1.saturating_sub(crop_y0);
 
