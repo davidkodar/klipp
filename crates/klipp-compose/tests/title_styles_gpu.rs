@@ -860,7 +860,7 @@ fn rectangle_motion_fades_keep_unsupported_combinations_on_cpu() {
                 let enter=object.fx_mut().motion.enter.as_mut().unwrap();
                 enter.kind=if case==2 {MotionKind::ScaleUp}else{MotionKind::Blur};
                 if case==2 {enter.anchor=Some(klipp_core::title_motion::MotionAnchor::Solid);}
-                else {object.fx_mut().motion.exit.as_mut().unwrap().kind=if case==0 {MotionKind::SlideLeft}else{MotionKind::ScaleUp};}
+                else {object.fx_mut().motion.exit.as_mut().unwrap().kind=if case==0 {MotionKind::ScaleDown}else{MotionKind::ScaleUp};}
             }
         }
         let mut gpu=renderer();gpu.set_gpu_enabled(true);
@@ -999,6 +999,15 @@ fn rectangle_slides_stay_resident_at_4k() {
 
 #[test]
 fn rectangle_slide_translation_matches_cpu_clipped_sprite() {
+    check_rectangle_slide_translation(false);
+}
+
+#[test]
+fn rectangle_blur_slide_zero_blur_matches_cpu_translation() {
+    check_rectangle_slide_translation(true);
+}
+
+fn check_rectangle_slide_translation(blur: bool) {
     let mut gpu=klipp_effects::gpu::GpuEffectsPipeline::new().expect("GPU required");
     let (w,h)=(7,5);
     for visible in [true,false] {
@@ -1013,7 +1022,9 @@ fn rectangle_slide_translation_matches_cpu_clipped_sprite() {
             assert!(gpu.stack_begin(w,h,1));
             assert!(gpu.stack_layer_from_srgb_u8(0,&bytes));
             let before=gpu.readback_stats();
-            assert!(gpu.stack_title_motion_translate(0,[0.5,1.0,direction[0],direction[1]],[0.0;4]));
+            let travel=[0.5,1.0,direction[0],direction[1]];
+            assert!(if blur {gpu.stack_title_motion_blur_translate(0,0.0,travel,[0.0;4])}
+                else {gpu.stack_title_motion_translate(0,travel,[0.0;4])});
             assert_eq!(gpu.readback_stats(),before,"source and bounds remain resident");
             assert!(gpu.stack_blend(0,1.0,0));
             assert!(gpu.stack_finish_into_chain(true));
@@ -1125,3 +1136,32 @@ fn rectangle_blur_handles_empty_small_and_threshold_sources() {
         }
     }
 }
+
+
+fn add_rectangle_blur_slide(seq: &mut Sequence, mode: u8) {
+    use klipp_timeline::{MotionKind,TitleObjectContent};
+    let directions=[MotionKind::Rise,MotionKind::Drop,MotionKind::SlideLeft,MotionKind::SlideRight];
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    for object in &mut title.objects {
+        if matches!(object.content,TitleObjectContent::Shape(_)) {
+            let motion=&mut object.fx_mut().motion;
+            let enter=motion.enter.as_mut().unwrap();let exit=motion.exit.as_mut().unwrap();
+            enter.kind=if mode<4 {MotionKind::Blur}else{directions[(mode%4) as usize]};
+            exit.kind=if mode<4 {directions[(mode%4) as usize]}else{MotionKind::Blur};
+            // Both effects are active together at the parity samples.
+            enter.duration_secs=3.0;exit.duration_secs=3.0;
+        }
+    }
+}
+fn blur_sliding_rectangle_panel(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=combined_faded_panel(fitted,mode%2,w,h);add_rectangle_blur_slide(&mut seq,mode);seq
+}
+fn blur_sliding_rectangle_matte(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=faded_rectangle_matte(fitted,mode%4,w,h);add_rectangle_blur_slide(&mut seq,mode);seq
+}
+#[test]
+fn rectangle_blur_slides_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(blur_sliding_rectangle_panel,8);}
+#[test]
+fn rectangle_blur_slide_mattes_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(blur_sliding_rectangle_matte,8);}
+#[test]
+fn rectangle_blur_slides_stay_resident_at_4k() {check_rectangle_motion_fades_at_4k(blur_sliding_rectangle_panel);}

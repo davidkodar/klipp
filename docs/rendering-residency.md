@@ -87,7 +87,9 @@ for full-project playback profiling.
   Rectangle Blur entrances/exits, alone or paired with Fade, use the clipped
   painted height for radius and three premultiplied box-blur rounds on GPU.
   Byte rounding precedes motion alpha, edge fade, opacity and masks. Blur
-  combined with translation or scaling still falls back.
+  combined with Rise/Drop/SlideLeft/SlideRight also stays resident: movement
+  uses the original painted height while sampling includes the blurred halo.
+  Blur combined with scaling still falls back.
 - Supported text sources compose styles, glitch and chromatic processing on GPU,
   followed by object rotation, edge/focus fades, authored-colour focus blur, opacity
   and scene blend/mask composition.

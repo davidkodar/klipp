@@ -214,7 +214,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if i>=p.width*p.height { return; }
     let x=i%p.width; let y=i/p.width;
     if p.op==44u {
-        let v=authored_at(i32(x),y)*255.0;
+        let v=round(authored_at(i32(x),y)*255.0);
         store_rgba(i+1u,vec4<f32>(v.rgb*(v.a/255.0),v.a));
     } else if p.op==45u {
         var lines=p.height;var len=p.width;var step=1u;var stride=p.width;
@@ -222,18 +222,37 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if i>=lines {return;}
         if i==0u {for(var k=0u;k<4u;k+=1u) {output[k]=input[k];}}
         let height=f32(input[3]-min(input[1],input[3]));
-        let sigma=p.color.x*(height*0.12);
+        let sigma=(p.color.x*height)*0.12;
         let radius=select(0u,u32(clamp(floor(sigma/1.7+0.5),1.0,f32(max(p.width,p.height)))),sigma>0.5);
         let base=1u+i*stride;var sum=vec4<f32>(0.0);
         for(var j=0u;j<=min(radius,len-1u);j+=1u) {sum+=load_rgba(base+j*step);}
         var n=f32(min(radius,len-1u)+1u);
         for(var j=0u;j<len;j+=1u) {
-            store_rgba(base+j*step,sum/n);
+            // Correct reciprocal-division error before the next box pass.
+            // A few ulps can otherwise flip the final alpha byte at a tie,
+            // which subsequent edge/object fades can amplify visibly.
+            let quotient=sum/n;
+            let residual=fma(-quotient,vec4<f32>(n),sum);
+            store_rgba(base+j*step,quotient+residual/n);
             if j+radius+1u<len {sum+=load_rgba(base+(j+radius+1u)*step);n+=1.0;}
             if j>=radius {sum-=load_rgba(base+(j-radius)*step);n-=1.0;}
         }
-    } else if p.op==46u {
-        let raw=load_rgba(i+1u);let alpha=raw.a/255.0;
+    } else if p.op==46u || p.op==47u {
+        var src=i;
+        if p.op==47u {
+            // The header retains pre-blur bounds through all six box passes.
+            // Do not crop samples to those bounds: the halo moves as well.
+            let height=f32(input[3]-min(input[1],input[3]));
+            let a=p.row0.x*(height*p.row0.y)*p.row0.zw;
+            let b=p.row1.x*(height*p.row1.y)*p.row1.zw;
+            let shift=sign(a+b)*floor(abs(a+b)+vec2<f32>(0.5));
+            let pos=vec2<f32>(f32(x),f32(y))-shift;
+            if any(pos<vec2<f32>(0.0)) || any(pos>=vec2<f32>(f32(p.width),f32(p.height))) {
+                store_rgba(i,vec4<f32>(0.0));return;
+            }
+            src=u32(pos.y)*p.width+u32(pos.x);
+        }
+        let raw=load_rgba(src+1u);let alpha=raw.a/255.0;
         var soft=vec4<f32>(0.0,0.0,0.0,floor(clamp(raw.a,0.0,255.0)+0.5)/255.0);
         if alpha>0.0 {soft=vec4<f32>(floor(clamp(raw.rgb/alpha,vec3<f32>(0.0),vec3<f32>(255.0))+vec3<f32>(0.5))/255.0,soft.a);}
         store_rgba(i,soft);
