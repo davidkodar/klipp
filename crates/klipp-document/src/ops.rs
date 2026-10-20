@@ -7154,7 +7154,7 @@ fn apply_look(i: usize, target: GradeTarget, lut_path: &str, name: Option<&str>,
         return Ok((what, EditCommand::SetNodeGraph { clip_id: id, old_graph: current, new_graph: graph }, touched));
     }
     if lut_path.is_empty() {
-        return Err(refuse(i, "no LUT given", "give a look to apply"));
+        return Err(refuse(i, "no LUT given", "supply lut_path with an absolute .cube path for the batch look op; name is only a display label. For a bundled name, use klipp_look on an existing clip ID"));
     }
     let op = opacity.unwrap_or(1.0);
     if !op.is_finite() || !(0.0..=1.0).contains(&op) {
@@ -13697,6 +13697,28 @@ mod tests {
         view.apply_forward(&plan.steps[0].edit);
         assert!(view.sequences[0].grade_groups.is_empty());
         assert!(view.sequences[0].all_clips().all(|c| c.grade_group.is_none()));
+    }
+
+    #[test]
+    fn batch_look_explains_name_only_and_accepts_a_placed_clip_reference() {
+        let (seq, pool, media, _, _) = fixture();
+        let mut ops = serde_json::json!([
+            {"op":"place","media_id":media,"track":0,"at":{"secs":8},"source_in":0,"source_out":2,"with_audio":false},
+            {"op":"look","clip_id":"@0","name":"kodak_2383_constlmap","opacity":0.25}
+        ]);
+        let refused = resolve(&seq, &pool, &serde_json::from_value::<Vec<Op>>(ops.clone()).unwrap()).unwrap_err();
+        assert!(refused.why.contains("no LUT"));
+        for guidance in ["lut_path", "display label", "klipp_look", "existing clip ID"] {
+            assert!(refused.hint.contains(guidance), "{}", refused.hint);
+        }
+        ops[1]["lut_path"] = serde_json::json!("/luts/kodak.cube");
+        let plan = resolve(&seq, &pool, &serde_json::from_value::<Vec<Op>>(ops).unwrap()).unwrap();
+        let mut seqs = vec![seq];
+        for step in &plan.steps { applied(&mut seqs, &pool, &step.edit, false); }
+        let placed = seqs[0].tracks[0].clips.iter().find(|c| c.timeline_in == tc(8.0)).unwrap();
+        let lut = placed.grade().nodes.iter().find(|n| n.kind == klipp_nodes::NodeKind::Lut3D).unwrap();
+        assert_eq!(lut.params.lut_path.as_deref(), Some(std::path::Path::new("/luts/kodak.cube")));
+        assert_eq!(lut.params.lut_opacity, Some(0.25));
     }
 
     #[test]

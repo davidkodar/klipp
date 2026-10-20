@@ -375,12 +375,18 @@ exist until the plan runs.
   highlight roll-off, Lift shadows, Deepen blacks, Midtone contrast, Warm
   highlights, cool shadows). Reach for it to calm HDR highlights or open
   shadows without a key.
-- `look` (the `klipp_look` tool): put a creative look — a bundled 3D
-  LUT — on a picture clip, as one node after the grade so it sits on the
-  corrected image. `name` is a look from `klipp_looks` (category/name, or
-  any words that pick one out); `opacity` fades it in; `remove` clears
-  it. Grade for exposure and continuity first, then a look for style.
-  `klipp_looks` lists the library: cinematic and film emulations.
+- `look {clip_id | on, lut_path, name?, opacity?, remove?}`: the batch
+  op in `klipp_plan` / `klipp_apply` needs `lut_path`, the resolved
+  absolute `.cube` file path. `name` is only a display label; it does
+  not resolve a bundled look. `remove: true` clears the look without
+  a path. The LUT sits after the grade; `opacity` (0–1, default 1)
+  fades it in. Grade for exposure and continuity first.
+  The separate `klipp_look` tool resolves `name` from `klipp_looks`
+  (category/name or identifying words), or accepts an absolute `.cube`
+  path in `name`. For example, call `klipp_look` with
+  `{"clip_id":"CLIP_ID","name":"fuji_xtrans_iii_classic_chrome","opacity":0.25}`.
+  Use a real clip ID from the timeline. `@N` references belong to batch
+  ops, not this standalone tool. For a place+look batch, see topic `ops`.
 - `search_music` / `search_sfx` / `add_music` (the `klipp_search_music`,
   `klipp_search_sfx`, `klipp_add_music` tools): find royalty-free music
   (Jamendo, by mood or genre) and sound effects (Freesound, by keyword)
