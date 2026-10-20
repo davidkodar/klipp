@@ -28,6 +28,19 @@ impl NodeGraph {
         self.edges.retain(|e| {
             !(e.from_node == matte && e.to_node == self.output_node_id && e.to_port == 1)
         });
+        // Removing the explicit edge can expose a wireless receiver for
+        // the very same matte. Disconnect that use too, before deciding
+        // whether any other reader still needs the node.
+        if self.input_of(self.output_node_id, 1) == Some(matte) {
+            if let Some(receiver) = self
+                .nodes
+                .iter_mut()
+                .find(|n| n.id == self.output_node_id)
+                .and_then(|n| n.input_links.get_mut(1))
+            {
+                *receiver = None;
+            }
+        }
         let linked = self
             .nodes
             .iter()
@@ -137,6 +150,70 @@ mod tests {
         assert!(g.restore_background());
         assert!(g.nodes.iter().any(|n| n.id == id));
     }
+    #[test]
+    fn restore_background_clears_the_same_mattes_wireless_alpha_fallback() {
+        for shared in [false, true] {
+            let (mut g, id) = cut_out(false);
+            g.nodes.iter_mut().find(|n| n.id == id).unwrap().output_link = Some("subject".into());
+            g.nodes
+                .iter_mut()
+                .find(|n| n.id == g.output_node_id)
+                .unwrap()
+                .input_links = vec![None, Some("subject".into())];
+            let reader = shared.then(|| g.ensure_corrector());
+            if let Some(reader) = reader {
+                g.nodes
+                    .iter_mut()
+                    .find(|n| n.id == reader)
+                    .unwrap()
+                    .input_links = vec![None, Some("subject".into())];
+            }
+            assert_eq!(g.input_of(g.output_node_id, 1), Some(id));
+            assert!(g.restore_background());
+            assert_eq!(g.input_of(g.output_node_id, 1), None);
+            assert!(g
+                .nodes
+                .iter()
+                .find(|n| n.id == g.output_node_id)
+                .unwrap()
+                .input_links[1]
+                .is_none());
+            assert_eq!(g.nodes.iter().any(|n| n.id == id), shared);
+            if let Some(reader) = reader {
+                assert_eq!(
+                    g.input_of(reader, 1),
+                    Some(id),
+                    "other wireless readers survive"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn restore_background_preserves_an_unrelated_wireless_alpha() {
+        let (mut g, _) = cut_out(false);
+        let mut other = node(NodeKind::Mask);
+        other.output_link = Some("manual key".into());
+        let other_id = other.id;
+        g.nodes.push(other);
+        g.nodes
+            .iter_mut()
+            .find(|n| n.id == g.output_node_id)
+            .unwrap()
+            .input_links = vec![None, Some("manual key".into())];
+        assert!(g.restore_background());
+        assert_eq!(g.input_of(g.output_node_id, 1), Some(other_id));
+        assert_eq!(
+            g.nodes
+                .iter()
+                .find(|n| n.id == g.output_node_id)
+                .unwrap()
+                .input_links[1]
+                .as_deref(),
+            Some("manual key")
+        );
+    }
+
     #[test]
     fn restore_background_leaves_hand_wired_keys_alone() {
         for kind in [NodeKind::Mask, NodeKind::KeyMixer, NodeKind::ExternalMatte] {
