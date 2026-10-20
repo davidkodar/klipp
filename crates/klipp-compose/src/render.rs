@@ -2689,8 +2689,8 @@ impl Renderer {
                     let motion=std::mem::take(&mut source_fx.motion);
                     if !source_fx.is_default()
                         || motion.enter.iter().chain(motion.exit.iter())
-                        .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight|klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Blur|klipp_timeline::MotionKind::MaskRise|klipp_timeline::MotionKind::MaskDrop|klipp_timeline::MotionKind::Pop|klipp_timeline::MotionKind::Slam|klipp_timeline::MotionKind::Larger|klipp_timeline::MotionKind::Smaller|klipp_timeline::MotionKind::FlyLeft|klipp_timeline::MotionKind::FlyRight|klipp_timeline::MotionKind::FlyTop|klipp_timeline::MotionKind::FlyBottom|klipp_timeline::MotionKind::Bounce)) {return None;}
-                    let blurs=motion.enter.iter().chain(motion.exit.iter()).any(|m|m.kind==klipp_timeline::MotionKind::Blur);
+                        .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight|klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Blur|klipp_timeline::MotionKind::MaskRise|klipp_timeline::MotionKind::MaskDrop|klipp_timeline::MotionKind::Pop|klipp_timeline::MotionKind::Slam|klipp_timeline::MotionKind::Larger|klipp_timeline::MotionKind::Smaller|klipp_timeline::MotionKind::FlyLeft|klipp_timeline::MotionKind::FlyRight|klipp_timeline::MotionKind::FlyTop|klipp_timeline::MotionKind::FlyBottom|klipp_timeline::MotionKind::Bounce|klipp_timeline::MotionKind::Flicker|klipp_timeline::MotionKind::Typewriter|klipp_timeline::MotionKind::FocusIn|klipp_timeline::MotionKind::SoftRise)) {return None;}
+                    let blurs=motion.enter.iter().chain(motion.exit.iter()).any(|m|matches!(m.kind,klipp_timeline::MotionKind::Blur|klipp_timeline::MotionKind::FocusIn|klipp_timeline::MotionKind::SoftRise));
                     // Shapes pose as a whole layer: character/word stagger has
                     // no effect, and both fades use unit zero as on the CPU.
                     let (enter,exit)=motion.progress(clip_time as f32,Some(total),0);
@@ -2699,15 +2699,15 @@ impl Renderer {
                     let travel=|m:Option<klipp_timeline::Motion>,progress:f32| {
                         use klipp_timeline::MotionKind;
                         m.map_or([0.0;4],|m| {
-                            let direction=match m.kind {MotionKind::MaskRise=>[0.0,1.15],MotionKind::MaskDrop=>[0.0,-1.15],MotionKind::Rise=>[0.0,1.0],MotionKind::Drop=>[0.0,-1.0],MotionKind::SlideLeft=>[1.5,0.0],MotionKind::SlideRight=>[-1.5,0.0],MotionKind::FlyLeft=>[-8.0,0.0],MotionKind::FlyRight=>[8.0,0.0],MotionKind::FlyTop=>[0.0,-6.0],MotionKind::FlyBottom=>[0.0,6.0],MotionKind::Bounce=>[0.0,-2.5],_=>[0.0,0.0]};
+                            let direction=match m.kind {MotionKind::MaskRise=>[0.0,1.15],MotionKind::MaskDrop=>[0.0,-1.15],MotionKind::Rise|MotionKind::SoftRise=>[0.0,1.0],MotionKind::Drop=>[0.0,-1.0],MotionKind::SlideLeft=>[1.5,0.0],MotionKind::SlideRight=>[-1.5,0.0],MotionKind::FlyLeft=>[-8.0,0.0],MotionKind::FlyRight=>[8.0,0.0],MotionKind::FlyTop=>[0.0,-6.0],MotionKind::FlyBottom=>[0.0,6.0],MotionKind::Bounce=>[0.0,-2.5],_=>[0.0,0.0]};
                             [1.0-progress,if matches!(m.kind,MotionKind::MaskRise|MotionKind::MaskDrop) {1.0}else{m.distance},direction[0],direction[1]]
                         })
                     };
                     let clip_rows=motion.enter.iter().chain(motion.exit.iter()).any(|m|matches!(m.kind,klipp_timeline::MotionKind::MaskRise|klipp_timeline::MotionKind::MaskDrop));
                     let enter_travel=travel(motion.enter,enter);
                     let exit_travel=travel(motion.exit,exit);
-                    let moves=motion.enter.iter().chain(motion.exit.iter()).any(|m|m.kind!=klipp_timeline::MotionKind::Fade);
-                    let scales=motion.enter.iter().chain(motion.exit.iter()).any(|m|matches!(m.kind,klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Pop|klipp_timeline::MotionKind::Slam|klipp_timeline::MotionKind::Larger|klipp_timeline::MotionKind::Smaller));
+                    let moves=enter_travel[2..].iter().chain(exit_travel[2..].iter()).any(|v|*v!=0.0);
+                    let scales=motion.enter.iter().chain(motion.exit.iter()).any(|m|matches!(m.kind,klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Pop|klipp_timeline::MotionKind::Slam|klipp_timeline::MotionKind::Larger|klipp_timeline::MotionKind::Smaller|klipp_timeline::MotionKind::FocusIn));
                     let motion_scale=motion.enter.map_or(1.0,|m|m.pose(enter,1.0).3)*motion.exit.map_or(1.0,|m|m.pose(exit,1.0).3);
                     let selected_anchor=motion.anchor_at(enter,exit);
                     let solid=matches!(selected_anchor,Some(klipp_core::title_motion::MotionAnchor::Solid));
@@ -2728,11 +2728,15 @@ impl Renderer {
                             // Smaller starts collapsed: there is no sprite to sample.
                             if !gpu.stack_layer_clear(slot) {return None;}
                         } else if blurs {
-                            let away=motion.enter.filter(|m|m.kind==klipp_timeline::MotionKind::Blur).map_or(0.0,|_|1.0-enter)
-                                .max(motion.exit.filter(|m|m.kind==klipp_timeline::MotionKind::Blur).map_or(0.0,|_|1.0-exit));
-                            if scales {
-                                if !gpu.stack_title_motion_blur_scale(slot,away,motion_scale,fade,anchor,solid) {return None;}
-                            } else if !gpu.stack_title_motion_blur_translate(slot,away,enter_travel,exit_travel,clip_rows) || !gpu.stack_title_motion_alpha(slot,fade) {return None;}
+                            let blur_part=|m:Option<klipp_timeline::Motion>,progress:f32| {
+                                use klipp_timeline::MotionKind;
+                                let coefficient=m.map_or(0.0,|m|match m.kind {MotionKind::Blur=>0.12,MotionKind::FocusIn=>0.14,MotionKind::SoftRise=>0.08,_=>0.0});
+                                [1.0-progress,coefficient]
+                            };
+                            let a=blur_part(motion.enter,enter);let b=blur_part(motion.exit,exit);
+                            let scaled=scales.then_some([motion_scale,fade,anchor[0],anchor[1]]);
+                            if !gpu.stack_title_motion_blur_pose(slot,[a[0],a[1],b[0],b[1]],enter_travel,exit_travel,scaled,solid,clip_rows)
+                                || (!scales && !gpu.stack_title_motion_alpha(slot,fade)) {return None;}
                         } else if scales {
                             if !gpu.stack_title_motion_scale(slot,enter_travel,exit_travel,motion_scale,fade,anchor,solid,clip_rows) {return None;}
                         } else if (moves && !gpu.stack_title_motion_translate(slot,enter_travel,exit_travel,clip_rows))

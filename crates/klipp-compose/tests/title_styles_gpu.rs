@@ -793,6 +793,10 @@ fn check_rectangle_motion_fades(panel: fn(bool,u8,u32,u32)->Sequence) {
 }
 
 fn check_rectangle_motion_fade_modes(panel: fn(bool,u8,u32,u32)->Sequence, modes: u8) {
+    check_rectangle_motion_samples(panel,modes,&[0.0,0.2,0.7,2.6,2.95,0.2]);
+}
+
+fn check_rectangle_motion_samples(panel: fn(bool,u8,u32,u32)->Sequence, modes: u8, times: &[f64]) {
     let (w,h) = (320,180);
     for fitted in [false,true] {
         for mode in 0..modes {
@@ -801,7 +805,7 @@ fn check_rectangle_motion_fade_modes(panel: fn(bool,u8,u32,u32)->Sequence, modes
                 let mut cpu = renderer(); cpu.set_gpu_enabled(false); cpu.set_working_colorspace(ws);
                 let mut gpu = renderer(); gpu.set_gpu_enabled(true); gpu.set_working_colorspace(ws);
                 assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
-                for t in [0.0,0.2,0.7,2.6,2.95,0.2] {
+                for &t in times {
                     let at = RationalTime::from_secs_f64(t,30);
                     let (want,_) = cpu.render_inspected(&seq,at,w,h,&mut NoMedia,RenderOptions::default(),Default::default());
                     let want = klipp_color::display::display_transform_ws_dithered_to(&want,klipp_color::display::ToneMapOp::None,ws,klipp_core::SdrTransfer::Srgb);
@@ -849,7 +853,7 @@ fn check_rectangle_motion_fades_at_4k(panel: fn(bool,u8,u32,u32)->Sequence) {
 
 
 #[test]
-fn rectangle_motion_fades_keep_unsupported_combinations_on_cpu() {
+fn rectangle_motion_fades_keep_unsupported_styles_on_cpu() {
     use klipp_timeline::{MotionKind, TitleObjectContent};
     let (w,h)=(320,180);
     for case in 0..3 {
@@ -857,10 +861,13 @@ fn rectangle_motion_fades_keep_unsupported_combinations_on_cpu() {
         let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
         for object in &mut title.objects {
             if matches!(object.content,TitleObjectContent::Shape(_)) {
-                // Unsupported shape motions still explicitly decline.
-                object.fx_mut().motion.enter.as_mut().unwrap().kind=match case {
-                    0=>MotionKind::SoftRise,1=>MotionKind::FocusIn,_=>MotionKind::Typewriter,
-                };
+                // Motions are supported, but other shape source styles still decline.
+                object.fx_mut().motion.enter.as_mut().unwrap().kind=MotionKind::FocusIn;
+                match case {
+                    0=>object.fx_mut().glows.push(TextGlow {enabled:true,color:[255;4],radius:8.0,radius_keyframes:vec![],intensity:0.8,intensity_keyframes:vec![]}),
+                    1=>object.fx_mut().shadows.push(klipp_timeline::TitleShadow {enabled:true,color:[0,0,0,255],offset_x:4.0,offset_y:3.0,blur:5.0,offset_x_keyframes:vec![],offset_y_keyframes:vec![],blur_keyframes:vec![]}),
+                    _=>object.fx_mut().outlines.push(TextOutline {enabled:true,color:[255;4],width:3.0,width_keyframes:vec![]}),
+                }
             }
         }
         let mut gpu=renderer();gpu.set_gpu_enabled(true);
@@ -1522,3 +1529,55 @@ fn rectangle_bounce_matches_cpu_and_stays_resident() {check_rectangle_motion_fad
 fn rectangle_bounce_mattes_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(bouncing_rectangle_matte,8);}
 #[test]
 fn rectangle_bounce_stays_resident_at_4k() {check_rectangle_motion_fades_at_4k(bouncing_rectangle_panel);}
+
+fn add_rectangle_final_motion(seq: &mut Sequence, mode: u8) {
+    use klipp_timeline::{MotionKind,TitleObjectContent};
+    let kinds=[MotionKind::Flicker,MotionKind::Typewriter,MotionKind::FocusIn,MotionKind::SoftRise];
+    let kind=kinds[(mode/8) as usize];let case=mode%8;
+    add_rectangle_fly(seq,case);
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    for object in &mut title.objects {
+        if matches!(object.content,TitleObjectContent::Shape(_)) {
+            let motion=&mut object.fx_mut().motion;
+            for m in motion.enter.iter_mut().chain(motion.exit.iter_mut()) {
+                if matches!(m.kind,MotionKind::FlyLeft|MotionKind::FlyRight) {m.kind=kind;}
+            }
+            // Explicitly cover simultaneous blur, translation and scaling.
+            if case==7 {motion.enter.as_mut().unwrap().kind=MotionKind::FocusIn;motion.exit.as_mut().unwrap().kind=kind;}
+            let enter=motion.enter.as_mut().unwrap();enter.easing=enter.kind.default_easing();
+            let exit=motion.exit.as_mut().unwrap();exit.easing=exit.kind.default_exit_easing();
+        }
+    }
+}
+fn final_motion_rectangle_panel(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=combined_faded_panel(fitted,mode%2,w,h);add_rectangle_final_motion(&mut seq,mode);seq
+}
+fn final_motion_rectangle_matte(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=faded_rectangle_matte(fitted,mode%4,w,h);add_rectangle_final_motion(&mut seq,mode);seq
+}
+#[test]
+fn rectangle_final_motions_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(final_motion_rectangle_panel,32);}
+#[test]
+fn rectangle_final_motions_mattes_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(final_motion_rectangle_matte,32);}
+#[test]
+fn rectangle_final_motions_stay_resident_at_4k() {
+    for panel in [final_motion_rectangle_panel as fn(bool,u8,u32,u32)->Sequence,
+        |f,m,w,h|final_motion_rectangle_panel(f,m+8,w,h),
+        |f,m,w,h|final_motion_rectangle_panel(f,m+16,w,h),
+        |f,m,w,h|final_motion_rectangle_panel(f,m+24,w,h)] {
+        check_rectangle_motion_fades_at_4k(panel);
+    }
+}
+
+#[test]
+fn rectangle_opacity_motion_step_boundaries_match_cpu() {
+    // RationalTime samples at 30 fps: use actual frames on both sides of each
+    // opacity step, keeping the final sample inside the three-second clip.
+    let mut frames=std::collections::BTreeSet::from([0,1,17,18,72,73,88,89]);
+    for step in 1..14 {
+        let frame=(18.0*f64::from(step)/14.0).floor() as i32;
+        frames.extend([frame,frame+1,89-frame,90-frame]);
+    }
+    let times:Vec<_>=frames.into_iter().map(|f|f64::from(f)/30.0).collect();
+    check_rectangle_motion_samples(|f,m,w,h|final_motion_rectangle_panel(f,if m<2 {m}else{m+6},w,h),4,&times);
+}

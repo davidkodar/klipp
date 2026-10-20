@@ -290,7 +290,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if i>=lines {return;}
         if i==0u {for(var k=0u;k<4u;k+=1u) {output[k]=input[k];}}
         let height=f32(input[3]-min(input[1],input[3]));
-        let sigma=(p.color.x*height)*0.12;
+        let sigma=max((p.color.x*height)*p.color.y,(p.color.z*height)*p.color.w);
         let radius=select(0u,u32(clamp(floor(sigma/1.7+0.5),1.0,f32(max(p.width,p.height)))),sigma>0.5);
         let base=1u+i*stride;var sum=vec4<f32>(0.0);
         for(var j=0u;j<=min(radius,len-1u);j+=1u) {sum+=load_rgba(base+j*step);}
