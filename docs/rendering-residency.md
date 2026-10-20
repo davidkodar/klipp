@@ -89,7 +89,9 @@ for full-project playback profiling.
   Byte rounding precedes motion alpha, edge fade, opacity and masks. Blur
   combined with Rise/Drop/SlideLeft/SlideRight also stays resident: movement
   uses the original painted height while sampling includes the blurred halo.
-  Blur combined with scaling still falls back.
+  Blur combined with ScaleUp/ScaleDown uses the original painted bounds for
+  centre/point anchors and samples the blurred byte sprite in half precision.
+  Solid-interior scaling anchors still fall back.
 - Supported text sources compose styles, glitch and chromatic processing on GPU,
   followed by object rotation, edge/focus fades, authored-colour focus blur, opacity
   and scene blend/mask composition.

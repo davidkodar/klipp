@@ -2691,9 +2691,6 @@ impl Renderer {
                         || motion.enter.iter().chain(motion.exit.iter())
                         .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight|klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Blur)) {return None;}
                     let blurs=motion.enter.iter().chain(motion.exit.iter()).any(|m|m.kind==klipp_timeline::MotionKind::Blur);
-                    // Blur with scaling still needs separate pre-blur anchors
-                    // and expanded sprite bounds for bilinear sampling.
-                    if blurs && motion.enter.iter().chain(motion.exit.iter()).any(|m|matches!(m.kind,klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown)) {return None;}
                     // Shapes pose as a whole layer: character/word stagger has
                     // no effect, and both fades use unit zero as on the CPU.
                     let (enter,exit)=motion.progress(clip_time as f32,Some(total),0);
@@ -2727,7 +2724,9 @@ impl Renderer {
                         if blurs {
                             let away=motion.enter.filter(|m|m.kind==klipp_timeline::MotionKind::Blur).map_or(0.0,|_|1.0-enter)
                                 .max(motion.exit.filter(|m|m.kind==klipp_timeline::MotionKind::Blur).map_or(0.0,|_|1.0-exit));
-                            if !gpu.stack_title_motion_blur_translate(slot,away,enter_travel,exit_travel) || !gpu.stack_title_motion_alpha(slot,fade) {return None;}
+                            if scales {
+                                if !gpu.stack_title_motion_blur_scale(slot,away,motion_scale,fade,anchor) {return None;}
+                            } else if !gpu.stack_title_motion_blur_translate(slot,away,enter_travel,exit_travel) || !gpu.stack_title_motion_alpha(slot,fade) {return None;}
                         } else if scales {
                             if !gpu.stack_title_motion_scale(slot,enter_travel,exit_travel,motion_scale,fade,anchor) {return None;}
                         } else if (moves && !gpu.stack_title_motion_translate(slot,enter_travel,exit_travel))

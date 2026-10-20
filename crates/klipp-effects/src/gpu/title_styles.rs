@@ -998,10 +998,24 @@ impl GpuEffectsPipeline {
     /// Blur before whole-pixel translation. Travel uses the original painted
     /// height; sampling includes the blur halo, not just the original bounds.
     pub fn stack_title_motion_blur_translate(&mut self, slot: usize, away: f32, enter: [f32;4], exit: [f32;4]) -> bool {
+        self.stack_title_motion_blur_pose(slot,away,enter,exit,None)
+    }
+
+    /// Scale the blurred byte sprite around the original painted bounds.
+    /// Motion alpha is applied during sampling, as in the CPU pose operation.
+    pub fn stack_title_motion_blur_scale(&mut self, slot: usize, away: f32, scale: f32, opacity: f32, anchor: [f32;2]) -> bool {
+        if !scale.is_finite() || scale<=0.0 || !opacity.is_finite() || anchor.iter().any(|v|!v.is_finite()) {return false;}
+        self.stack_title_motion_blur_pose(slot,away,[0.0;4],[0.0;4],Some([scale,opacity.clamp(0.0,1.0),anchor[0].clamp(0.0,1.0),anchor[1].clamp(0.0,1.0)]))
+    }
+
+    fn stack_title_motion_blur_pose(&mut self, slot: usize, away: f32, enter: [f32;4], exit: [f32;4], scaled: Option<[f32;4]>) -> bool {
         if !away.is_finite() || !(0.0..=1.0).contains(&away)
             || enter.iter().chain(exit.iter()).any(|v|!v.is_finite()) {return false;}
         let translates=enter[2..].iter().chain(exit[2..].iter()).any(|v|*v!=0.0);
-        if away==0.0 {return !translates || self.stack_title_motion_translate(slot,enter,exit);}
+        if away==0.0 {
+            if let Some([scale,opacity,x,y])=scaled {return self.stack_title_motion_scale(slot,enter,exit,scale,opacity,[x,y]);}
+            return !translates || self.stack_title_motion_translate(slot,enter,exit);
+        }
         let Some(temp)=self.stack_title_object_slot(2) else {return false;};
         if temp==slot || !self.stack_title_alpha(slot,[0.0;4],1.0) {return false;}
         let Some(to_authored)=inverse(self.authored_to_working) else {return false;};
@@ -1029,7 +1043,7 @@ impl GpuEffectsPipeline {
             self.write_params(&StyleParams {op:45,offset_y:1,..params});
             self.stack_pass(&self.title_style_pipeline,scratch,blurred,w.div_ceil(WORKGROUP_SIZE),"title motion blur vertical");
         }
-        self.write_params(&StyleParams {op:if translates {47}else{46},matrix:[enter,exit,[0.0;4]],..params});
+        self.write_params(&StyleParams {op:if scaled.is_some() {48}else if translates {47}else{46},matrix:[enter,exit,scaled.unwrap_or([0.0;4])],..params});
         self.stack_pass(&self.title_style_pipeline,blurred,source,(w*h).div_ceil(WORKGROUP_SIZE),"title motion blur bytes");
         self.write_params(&StyleParams {op:11,matrix:self.authored_to_working,..params});
         self.stack_pass(&self.title_style_pipeline,source,scratch,(w*h).div_ceil(WORKGROUP_SIZE),"title motion blur working space");
