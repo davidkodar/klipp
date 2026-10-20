@@ -63,6 +63,12 @@ for full-project playback profiling.
   blur, rotation and colour use that same route. Fixed arc, circle and wave paths
   reuse outlines when their typography changes. Linked text paths retain the
   parent scene while placing glyphs, including path morphs and offset keys.
+  Keyed/linked path glyph sources also evaluate Fade, Flicker and Typewriter
+  opacity (including stagger) and opacity-only text animators. CPU path raster
+  coverage applies the same evaluated opacity, including keyed typography.
+  Static path text retains its existing cached sprite route. Spatial path
+  motion/animators (movement, scale, rotation, blur or colour) remain excluded
+  from the outline source; they need path-aware sampling rather than flat poses.
   Plain rectangles, gradients and strokes use GPU coverage, including keyed transforms.
   Fitted rectangles use bounds-only text layout; hidden or missing targets
   suppress the panel. Rectangle edge fades run on GPU after byte-layer
