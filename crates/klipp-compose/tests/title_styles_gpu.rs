@@ -771,3 +771,95 @@ fn edge_faded_shape_mattes_keep_the_existing_cpu_fallback() {
         assert!(klipp_effects::residency::last_frame().events.iter().any(|e|e.work==klipp_effects::residency::Work::Fallback),"unsupported source must not claim residency");
     }
 }
+
+fn motion_faded_panel(fitted: bool, mode: u8, width: u32, height: u32) -> Sequence {
+    use klipp_timeline::{Motion, MotionKind, StaggerUnit, TitleMotion, TitleObjectContent};
+    let mut seq=edge_faded_panel(fitted,mode,width,height);
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    for object in &mut title.objects {
+        if matches!(object.content,TitleObjectContent::Shape(_)) {
+            object.fx_mut().motion=TitleMotion::both(
+                Motion::new(MotionKind::Fade).duration(0.8).stagger(StaggerUnit::Char,0.1),
+                Motion::new(MotionKind::Fade).duration(0.8).stagger(StaggerUnit::Word,0.1),
+            );
+            object.fx_mut().edge_fade=Default::default();
+        }
+    }
+    seq
+}
+
+#[test]
+fn rectangle_motion_fades_match_cpu_and_remain_resident() {
+    let (w,h) = (320,180);
+    for fitted in [false,true] {
+        for mode in 0..2 {
+            for ws in [klipp_core::WorkingColorspace::Rec709Linear, klipp_core::WorkingColorspace::AcesCG] {
+                let seq = motion_faded_panel(fitted,mode,w,h);
+                let mut cpu = renderer(); cpu.set_gpu_enabled(false); cpu.set_working_colorspace(ws);
+                let mut gpu = renderer(); gpu.set_gpu_enabled(true); gpu.set_working_colorspace(ws);
+                assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
+                for t in [0.0,0.2,0.7,2.6,2.95,0.2] {
+                    let at = RationalTime::from_secs_f64(t,30);
+                    let (want,_) = cpu.render_inspected(&seq,at,w,h,&mut NoMedia,RenderOptions::default(),Default::default());
+                    let want = klipp_color::display::display_transform_ws_dithered_to(&want,klipp_color::display::ToneMapOp::None,ws,klipp_core::SdrTransfer::Srgb);
+                    let before = klipp_effects::gpu::readback_stats();
+                    let scope = klipp_effects::residency::frame("motion-faded rectangle",t);
+                    let (got,_) = gpu.render_display_u8_on_gpu(&seq,at,w,h,&mut NoMedia,RenderOptions::default()).expect("GPU frame");
+                    drop(scope);
+                    let events = klipp_effects::residency::last_frame().events;
+                    assert!(!events.iter().any(|e|e.work==klipp_effects::residency::Work::Fallback), "{events:?}");
+                    assert_eq!(klipp_effects::gpu::readback_stats().count-before.count,1,"only verification download");
+                    let worst = got.iter().zip(&want).map(|(a,b)|a.abs_diff(*b)).max().unwrap();
+                    if worst>3 {let i=got.iter().zip(&want).position(|(a,b)|a.abs_diff(*b)==worst).unwrap()/4;eprintln!("pixel {},{} got {:?}, want {:?}",i%w as usize,i/w as usize,&got[i*4..i*4+4],&want[i*4..i*4+4]);}
+                    assert!(worst<=3,"fitted={fitted} mode={mode} {ws:?} time={t}: {worst} levels apart");
+                }
+                assert_eq!(gpu.title_renderer().resting_renders(),0,"no full title raster");
+            }
+        }
+    }
+}
+
+#[test]
+fn rectangle_motion_fades_stay_resident_at_4k() {
+    let (w,h)=(3840,2160);
+    let seq=motion_faded_panel(true,1,w,h);
+    let mut gpu=renderer();gpu.set_gpu_enabled(true);
+    assert!(gpu.executor().gpu_pipeline_or_init().is_some(),"GPU required");
+    for (sample,t) in [0.0,0.2,0.7,2.6,2.95,0.2].into_iter().enumerate() {
+        let scope=klipp_effects::residency::frame("4K faded panel",t);
+        let before=klipp_effects::gpu::readback_stats();
+        let started=std::time::Instant::now();
+        gpu.render_display_u8_on_gpu(&seq,RationalTime::from_secs_f64(t,30),w,h,&mut NoMedia,RenderOptions::default()).expect("GPU frame");
+        let elapsed=started.elapsed();drop(scope);
+        let events=klipp_effects::residency::last_frame().events;
+        assert!(!events.iter().any(|e|e.work==klipp_effects::residency::Work::Fallback),"{events:?}");
+        assert_eq!(klipp_effects::gpu::readback_stats().count-before.count,1,"only verification download");
+        if sample>0 {assert!(!events.iter().any(|e|e.work==klipp_effects::residency::Work::Preparation),"warm source: {events:?}");}
+        eprintln!("4K motion-faded fitted rectangle sample {sample}: {elapsed:?}, including verification download");
+    }
+    assert_eq!(gpu.title_renderer().resting_renders(),0);
+}
+
+
+#[test]
+fn rectangle_motion_fades_keep_unsupported_combinations_on_cpu() {
+    use klipp_timeline::{MotionKind, TitleObjectContent};
+    let (w,h)=(320,180);
+    for case in 0..3 {
+        let mut seq=motion_faded_panel(false,if case==0 {2}else{0},w,h);
+        let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+        for object in &mut title.objects {
+            if matches!(object.content,TitleObjectContent::Shape(_)) {
+                if case==1 {object.fx_mut().motion.enter.as_mut().unwrap().kind=MotionKind::Rise;}
+                if case==2 {object.fx_mut().edge_fade.left=0.4;}
+            }
+        }
+        let mut gpu=renderer();gpu.set_gpu_enabled(true);
+        assert!(gpu.executor().gpu_pipeline_or_init().is_some(),"GPU required");
+        let scope=klipp_effects::residency::frame("unsupported rectangle motion",0.7);
+        let (got,_)=gpu.render_display_u8_on_gpu(&seq,RationalTime::from_secs_f64(0.7,30),w,h,&mut NoMedia,RenderOptions::default()).expect("composited fallback");
+        drop(scope);
+        assert_eq!(got.len(),(w*h*4) as usize);
+        assert!(klipp_effects::residency::last_frame().events.iter().any(|e|e.work==klipp_effects::residency::Work::Fallback),"case {case} must not claim residency");
+    }
+}
