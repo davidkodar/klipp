@@ -213,7 +213,31 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i=gid.x;
     if i>=p.width*p.height { return; }
     let x=i%p.width; let y=i/p.width;
-    if p.op==38u {
+    if p.op==44u {
+        let v=authored_at(i32(x),y)*255.0;
+        store_rgba(i+1u,vec4<f32>(v.rgb*(v.a/255.0),v.a));
+    } else if p.op==45u {
+        var lines=p.height;var len=p.width;var step=1u;var stride=p.width;
+        if p.offset_y==1 {lines=p.width;len=p.height;step=p.width;stride=1u;}
+        if i>=lines {return;}
+        if i==0u {for(var k=0u;k<4u;k+=1u) {output[k]=input[k];}}
+        let height=f32(input[3]-min(input[1],input[3]));
+        let sigma=p.color.x*(height*0.12);
+        let radius=select(0u,u32(clamp(floor(sigma/1.7+0.5),1.0,f32(max(p.width,p.height)))),sigma>0.5);
+        let base=1u+i*stride;var sum=vec4<f32>(0.0);
+        for(var j=0u;j<=min(radius,len-1u);j+=1u) {sum+=load_rgba(base+j*step);}
+        var n=f32(min(radius,len-1u)+1u);
+        for(var j=0u;j<len;j+=1u) {
+            store_rgba(base+j*step,sum/n);
+            if j+radius+1u<len {sum+=load_rgba(base+(j+radius+1u)*step);n+=1.0;}
+            if j>=radius {sum-=load_rgba(base+(j-radius)*step);n-=1.0;}
+        }
+    } else if p.op==46u {
+        let raw=load_rgba(i+1u);let alpha=raw.a/255.0;
+        var soft=vec4<f32>(0.0,0.0,0.0,floor(clamp(raw.a,0.0,255.0)+0.5)/255.0);
+        if alpha>0.0 {soft=vec4<f32>(floor(clamp(raw.rgb/alpha,vec3<f32>(0.0),vec3<f32>(255.0))+vec3<f32>(0.5))/255.0,soft.a);}
+        store_rgba(i,soft);
+    } else if p.op==38u {
         if i>=p.height {return;}
         var lo=p.width;var hi=0u;
         for(var col=0u;col<p.width;col+=1u) {

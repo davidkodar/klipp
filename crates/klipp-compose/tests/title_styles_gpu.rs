@@ -860,6 +860,7 @@ fn rectangle_motion_fades_keep_unsupported_combinations_on_cpu() {
                 let enter=object.fx_mut().motion.enter.as_mut().unwrap();
                 enter.kind=if case==2 {MotionKind::ScaleUp}else{MotionKind::Blur};
                 if case==2 {enter.anchor=Some(klipp_core::title_motion::MotionAnchor::Solid);}
+                else {object.fx_mut().motion.exit.as_mut().unwrap().kind=if case==0 {MotionKind::SlideLeft}else{MotionKind::ScaleUp};}
             }
         }
         let mut gpu=renderer();gpu.set_gpu_enabled(true);
@@ -1070,4 +1071,57 @@ fn rectangle_scale_mattes_match_cpu_and_stay_resident() {
 #[test]
 fn rectangle_scale_stays_resident_at_4k() {
     check_rectangle_motion_fades_at_4k(scaling_rectangle_panel);
+}
+
+fn add_rectangle_blur(seq: &mut Sequence, mode: u8) {
+    use klipp_timeline::{MotionKind,TitleObjectContent};
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    for object in &mut title.objects {
+        if matches!(object.content,TitleObjectContent::Shape(_)) {
+            let motion=&mut object.fx_mut().motion;
+            if mode!=1 {motion.enter.as_mut().unwrap().kind=MotionKind::Blur;}
+            if mode!=2 {motion.exit.as_mut().unwrap().kind=MotionKind::Blur;}
+            if mode==3 {motion.enter.as_mut().unwrap().duration_secs=2.0;motion.exit.as_mut().unwrap().duration_secs=2.0;}
+        }
+    }
+}
+fn blurring_rectangle_panel(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=combined_faded_panel(fitted,mode%2,w,h);add_rectangle_blur(&mut seq,mode);seq
+}
+fn blurring_rectangle_matte(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=faded_rectangle_matte(fitted,mode,w,h);add_rectangle_blur(&mut seq,mode);seq
+}
+#[test]
+fn rectangle_blur_matches_cpu_and_stays_resident() {check_rectangle_motion_fade_modes(blurring_rectangle_panel,4);}
+#[test]
+fn rectangle_blur_mattes_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(blurring_rectangle_matte,4);}
+#[test]
+fn rectangle_blur_stays_resident_at_4k() {check_rectangle_motion_fades_at_4k(blurring_rectangle_panel);}
+
+#[test]
+fn rectangle_blur_handles_empty_small_and_threshold_sources() {
+    let mut gpu=klipp_effects::gpu::GpuEffectsPipeline::new().expect("GPU required");
+    for (w,h,visible) in [(1,1,true),(7,7,false),(7,7,true)] {
+        let mut bytes=vec![0u8;(w*h*4) as usize];
+        if visible {for y in 0..h.min(5) {
+            let i=((y*w+w/2)*4) as usize;bytes[i..i+4].copy_from_slice(&[80,140,220,255]);
+        }}
+        for away in [0.0,0.8,0.9,1.0] {
+            assert!(gpu.stack_begin(w,h,1));
+            assert!(gpu.stack_layer_from_srgb_u8(0,&bytes));
+            let before=gpu.readback_stats();
+            assert!(gpu.stack_title_motion_blur(0,away));
+            assert_eq!(gpu.readback_stats(),before,"bounds and blur remain resident");
+            assert!(gpu.stack_blend(0,1.0,0));assert!(gpu.stack_finish_into_chain(true));
+            let got=gpu.stack_download_linear();
+            if !visible || h==1 || away<=0.8 {
+                for (got,want) in got.chunks_exact(4).zip(bytes.chunks_exact(4)) {
+                    assert!((got[3]*255.0-f32::from(want[3])).abs()<0.001,"sigma <= 0.5 preserves coverage");
+                }
+            } else {
+                assert!(got[((w/2-1)*4+3) as usize]>0.0,"sigma > 0.5 spreads coverage");
+            }
+            gpu.stack_end();
+        }
+    }
 }
