@@ -2689,21 +2689,21 @@ impl Renderer {
                     let motion=std::mem::take(&mut source_fx.motion);
                     if !source_fx.is_default()
                         || motion.enter.iter().chain(motion.exit.iter())
-                        .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight|klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Blur|klipp_timeline::MotionKind::MaskRise)) {return None;}
+                        .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight|klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Blur|klipp_timeline::MotionKind::MaskRise|klipp_timeline::MotionKind::MaskDrop)) {return None;}
                     let blurs=motion.enter.iter().chain(motion.exit.iter()).any(|m|m.kind==klipp_timeline::MotionKind::Blur);
                     // Shapes pose as a whole layer: character/word stagger has
                     // no effect, and both fades use unit zero as on the CPU.
                     let (enter,exit)=motion.progress(clip_time as f32,Some(total),0);
-                    // MaskRise reveals by clipping, without fading its alpha.
+                    // Mask reveals clip the source without fading their own alpha.
                     let fade=motion.enter.map_or(1.0,|m|m.pose(enter,1.0).0)*motion.exit.map_or(1.0,|m|m.pose(exit,1.0).0);
                     let travel=|m:Option<klipp_timeline::Motion>,progress:f32| {
                         use klipp_timeline::MotionKind;
                         m.map_or([0.0;4],|m| {
-                            let direction=match m.kind {MotionKind::MaskRise=>[0.0,1.15],MotionKind::Rise=>[0.0,1.0],MotionKind::Drop=>[0.0,-1.0],MotionKind::SlideLeft=>[1.5,0.0],MotionKind::SlideRight=>[-1.5,0.0],_=>[0.0,0.0]};
-                            [1.0-progress,if m.kind==MotionKind::MaskRise {1.0}else{m.distance},direction[0],direction[1]]
+                            let direction=match m.kind {MotionKind::MaskRise=>[0.0,1.15],MotionKind::MaskDrop=>[0.0,-1.15],MotionKind::Rise=>[0.0,1.0],MotionKind::Drop=>[0.0,-1.0],MotionKind::SlideLeft=>[1.5,0.0],MotionKind::SlideRight=>[-1.5,0.0],_=>[0.0,0.0]};
+                            [1.0-progress,if matches!(m.kind,MotionKind::MaskRise|MotionKind::MaskDrop) {1.0}else{m.distance},direction[0],direction[1]]
                         })
                     };
-                    let clip_rows=motion.enter.iter().chain(motion.exit.iter()).any(|m|m.kind==klipp_timeline::MotionKind::MaskRise);
+                    let clip_rows=motion.enter.iter().chain(motion.exit.iter()).any(|m|matches!(m.kind,klipp_timeline::MotionKind::MaskRise|klipp_timeline::MotionKind::MaskDrop));
                     let enter_travel=travel(motion.enter,enter);
                     let exit_travel=travel(motion.exit,exit);
                     let moves=motion.enter.iter().chain(motion.exit.iter()).any(|m|m.kind!=klipp_timeline::MotionKind::Fade);
