@@ -72,8 +72,10 @@ for full-project playback profiling.
   scene blending; non-text stagger is treated as whole-layer motion.
   Combined motion/edge fades preserve the CPU sprite's half-float alpha
   rounding before motion opacity, then apply edge fading to the byte layer.
-  Faded shape matte sources retain CPU fallback until their boundary pixels
-  match; other shape motion/styles still fall back.
+  Faded rectangle matte sources also stay resident for alpha/luma masks and
+  their inverses. Their completed scene is cropped on GPU to the CPU raster's
+  alpha bounding box, preserving faint pixels inside the box. Other shape
+  motion/styles still fall back.
 - Supported text sources compose styles, glitch and chromatic processing on GPU,
   followed by object rotation, edge/focus fades, authored-colour focus blur, opacity
   and scene blend/mask composition.

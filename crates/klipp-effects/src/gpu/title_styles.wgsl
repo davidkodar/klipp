@@ -200,7 +200,24 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i=gid.x;
     if i>=p.width*p.height { return; }
     let x=i%p.width; let y=i/p.width;
-    if p.op==35u {
+    if p.op==38u {
+        if i>=p.height {return;}
+        var lo=p.width;var hi=0u;
+        for(var col=0u;col<p.width;col+=1u) {
+            if load_rgba(i*p.width+col).a*255.0>=0.5 {lo=min(lo,col);hi=col+1u;}
+        }
+        output[i*2u]=lo;output[i*2u+1u]=hi;
+    } else if p.op==39u {
+        if i!=0u {return;}
+        var x0=p.width;var x1=0u;var y0=p.height;var y1=0u;
+        for(var row=0u;row<p.height;row+=1u) {
+            let lo=input[row*2u];let hi=input[row*2u+1u];
+            if hi>lo {x0=min(x0,lo);x1=max(x1,hi);y0=min(y0,row);y1=row+1u;}
+        }
+        output[0]=x0;output[1]=y0;output[2]=x1;output[3]=y1;
+    } else if p.op==40u {
+        if x<input[0] || y<input[1] || x>=input[2] || y>=input[3] {store_rgba(i,vec4<f32>(0.0));}
+    } else if p.op==35u {
         if p.offset_x!=0 {store_rgba(i,authored_at(i32(x),y));}
         else {
             let old=load_rgba(i);let rgb=matrix(old.rgb);

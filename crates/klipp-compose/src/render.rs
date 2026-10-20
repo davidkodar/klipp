@@ -2806,6 +2806,7 @@ impl Renderer {
             };
             if !initialized {return None;}
             let mut backing=matches!(td.background,klipp_timeline::TitleBackground::Color{..}).then(||td.background.clone());
+            let mut crop_faded_matte_scene=false;
             for object in td.objects.iter().filter(|o| o.visible && !td.is_matte(o.id)) {
                 let opacity = object.evaluated_opacity(clip_time).clamp(0.0,1.0);
                 let mut single = td.clone();
@@ -2824,11 +2825,8 @@ impl Renderer {
                 // Apply opacity before the mask, exactly as the authored stack.
                 if !self.executor.gpu_pipeline_or_init()?.stack_title_alpha(object_slot,[0.0;4],opacity) { return None; }
                 if let Some((matte,kind)) = td.mask_of(object) {
-                    // Faded shape mattes still differ from the CPU result at
-                    // low-alpha scene boundaries. Keep that route on the CPU
-                    // until those pixels match as well.
-                    if matches!(matte.content,klipp_timeline::TitleObjectContent::Shape(_))
-                        && (!matte.fx().edge_fade.is_none() || matte.fx().motion.is_active()) {return None;}
+                    crop_faded_matte_scene |= matches!(matte.content,klipp_timeline::TitleObjectContent::Shape(_))
+                        && (!matte.fx().edge_fade.is_none() || matte.fx().motion.is_active());
                     let matte_slot=self.executor.gpu_pipeline_or_init()?.stack_title_object_slot(1)?;
                     let mut mask_title=td.clone();
                     mask_title.objects=vec![matte.clone()];
@@ -2847,7 +2845,11 @@ impl Renderer {
                 let gpu=self.executor.gpu_pipeline_or_init()?;
                 if !(if painted {gpu.stack_title_painted_over(object_slot,slot)} else {gpu.stack_title_over(object_slot,slot,1.0,object.blend)}) {return None;}
             }
-            return self.executor.gpu_pipeline_or_init()?.stack_title_precision(slot,false).then_some(((0,height),Vec::new()));
+            let gpu=self.executor.gpu_pipeline_or_init()?;
+            // The CPU keeps only the final scene's alpha bounding box. Preserve
+            // faint pixels inside that box, but discard its low-alpha fringe.
+            if crop_faded_matte_scene && !gpu.stack_title_crop_to_alpha_bounds(slot) {return None;}
+            return gpu.stack_title_precision(slot,false).then_some(((0,height),Vec::new()));
         }
         let rows;
         let mut lead = Vec::new();

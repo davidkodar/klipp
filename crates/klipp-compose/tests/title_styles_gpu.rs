@@ -758,18 +758,13 @@ fn edge_faded_fitted_rectangle_stays_resident_at_4k() {
 }
 
 #[test]
-fn edge_faded_shape_mattes_keep_the_existing_cpu_fallback() {
-    let (w,h)=(320,180);
-    for fitted in [false,true] {
-        let seq=edge_faded_panel(fitted,2,w,h);
-        let mut gpu=renderer();gpu.set_gpu_enabled(true);
-        assert!(gpu.executor().gpu_pipeline_or_init().is_some(),"GPU required");
-        let scope=klipp_effects::residency::frame("faded shape matte fallback",0.7);
-        let (got,_)=gpu.render_display_u8_on_gpu(&seq,RationalTime::from_secs_f64(0.7,30),w,h,&mut NoMedia,RenderOptions::default()).expect("composited fallback");
-        drop(scope);
-        assert_eq!(got.len(),(w*h*4) as usize);
-        assert!(klipp_effects::residency::last_frame().events.iter().any(|e|e.work==klipp_effects::residency::Work::Fallback),"unsupported source must not claim residency");
-    }
+fn edge_faded_rectangle_mattes_match_cpu_and_stay_resident() {
+    check_rectangle_motion_fades(|fitted,mode,w,h| {
+        let mut seq=faded_rectangle_matte(fitted,mode,w,h);
+        let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+        for object in &mut title.objects {object.fx_mut().motion=Default::default();}
+        seq
+    });
 }
 
 fn motion_faded_panel(fitted: bool, mode: u8, width: u32, height: u32) -> Sequence {
@@ -794,9 +789,13 @@ fn rectangle_motion_fades_match_cpu_and_remain_resident() {
 }
 
 fn check_rectangle_motion_fades(panel: fn(bool,u8,u32,u32)->Sequence) {
+    check_rectangle_motion_fade_modes(panel,2);
+}
+
+fn check_rectangle_motion_fade_modes(panel: fn(bool,u8,u32,u32)->Sequence, modes: u8) {
     let (w,h) = (320,180);
     for fitted in [false,true] {
-        for mode in 0..2 {
+        for mode in 0..modes {
             for ws in [klipp_core::WorkingColorspace::Rec709Linear, klipp_core::WorkingColorspace::AcesCG] {
                 let seq = panel(fitted,mode,w,h);
                 let mut cpu = renderer(); cpu.set_gpu_enabled(false); cpu.set_working_colorspace(ws);
@@ -858,7 +857,7 @@ fn rectangle_motion_fades_keep_unsupported_combinations_on_cpu() {
         let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
         for object in &mut title.objects {
             if matches!(object.content,TitleObjectContent::Shape(_)) {
-                if case==1 {object.fx_mut().motion.enter.as_mut().unwrap().kind=MotionKind::Rise;}
+                object.fx_mut().motion.enter.as_mut().unwrap().kind=MotionKind::Rise;
             }
         }
         let mut gpu=renderer();gpu.set_gpu_enabled(true);
@@ -890,4 +889,62 @@ fn combined_rectangle_fades_match_cpu_and_remain_resident() {
 #[test]
 fn combined_rectangle_fades_stay_resident_at_4k() {
     check_rectangle_motion_fades_at_4k(combined_faded_panel);
+}
+
+fn faded_rectangle_matte(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=combined_faded_panel(fitted,2,w,h);
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    title.objects[0].mask.as_mut().unwrap().kind=match mode {
+        0=>klipp_core::layer_mask::LayerMaskKind::Alpha,
+        1=>klipp_core::layer_mask::LayerMaskKind::Luma,
+        2=>klipp_core::layer_mask::LayerMaskKind::InvertedAlpha,
+        _=>klipp_core::layer_mask::LayerMaskKind::InvertedLuma,
+    };
+    if mode==2 {title.objects[1].fx_mut().edge_fade=Default::default();}
+    if mode==3 {
+        let klipp_timeline::TitleObjectContent::Shape(shape)=&mut title.objects[1].content else {unreachable!()};
+        shape.gradient=Some(klipp_timeline::TextGradient {enabled:true,top_color:[230,30,50,180],bottom_color:[20,180,220,80],kind:klipp_timeline::GradientKind::Linear {angle_deg:35.0},stops:vec![],stop_keyframes:vec![]});
+    }
+    seq
+}
+
+#[test]
+fn faded_rectangle_mattes_match_cpu_and_remain_resident() {
+    check_rectangle_motion_fade_modes(faded_rectangle_matte,4);
+}
+
+#[test]
+fn faded_rectangle_mattes_stay_resident_at_4k() {
+    check_rectangle_motion_fades_at_4k(faded_rectangle_matte);
+}
+
+#[test]
+fn faded_matte_scene_crop_preserves_faint_interior_pixels() {
+    let mut gpu=klipp_effects::gpu::GpuEffectsPipeline::new().expect("GPU required");
+    for (w,h,visible) in [(7u32,5u32,true),(7,5,false),(1,1,true),(1,1,false)] {
+        let mut pixels=vec![0.0;(w*h*4) as usize];
+        for p in pixels.chunks_exact_mut(4) {p.copy_from_slice(&[1.0,1.0,1.0,0.4/255.0]);}
+        let bounds=if !visible {(0,0,0,0)} else if w==1 {
+            pixels[3]=0.5/255.0;(0,0,1,1)
+        } else {
+            pixels[((1*w+1)*4+3) as usize]=0.5/255.0;
+            pixels[((3*w+5)*4+3) as usize]=1.0;
+            (1,1,6,4)
+        };
+        assert!(gpu.stack_begin(w,h,1));
+        assert!(gpu.stack_layer_from_linear(0,&pixels));
+        let before=gpu.readback_stats();
+        assert!(gpu.stack_title_crop_to_alpha_bounds(0));
+        assert_eq!(gpu.readback_stats(),before,"bounds must stay on GPU");
+        assert!(gpu.stack_blend(0,1.0,0));
+        assert!(gpu.stack_finish_into_chain(true));
+        let got=gpu.stack_download_linear();
+        for y in 0..h {for x in 0..w {
+            let i=((y*w+x)*4+3) as usize;
+            let inside=x>=bounds.0 && y>=bounds.1 && x<bounds.2 && y<bounds.3;
+            let want=if inside {pixels[i]}else{0.0};
+            assert!((got[i]-want).abs()<0.000001,"{w}x{h} visible={visible} at {x},{y}: {} vs {want}",got[i]);
+        }}
+        gpu.stack_end();
+    }
 }
