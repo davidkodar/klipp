@@ -75,7 +75,7 @@ for full-project playback profiling.
   Faded rectangle matte sources also stay resident for alpha/luma masks and
   their inverses. Their completed scene is cropped on GPU to the CPU raster's
   alpha bounding box, preserving faint pixels inside the box. Other shape
-  styles and solid-interior scaling anchors still fall back.
+  styles still fall back.
   Rectangle Rise, Drop, SlideLeft and SlideRight motions use the painted
   layer's clipped height for travel and move its byte-layer sprite by whole
   pixels on GPU, before edge fade, object opacity and scene masking. Bounds
@@ -91,7 +91,10 @@ for full-project playback profiling.
   uses the original painted height while sampling includes the blurred halo.
   Blur combined with ScaleUp/ScaleDown uses the original painted bounds for
   centre/point anchors and samples the blurred byte sprite in half precision.
-  Solid-interior scaling anchors still fall back.
+  Solid-interior scaling anchors use GPU coverage cells and the CPU-matching
+  two-pass distance transform, including its last-maximum tie break and centre
+  fallback when no cell is mostly solid. Blur uses the blurred coverage inside
+  the original painted bounds for anchor selection.
 - Supported text sources compose styles, glitch and chromatic processing on GPU,
   followed by object rotation, edge/focus fades, authored-colour focus blur, opacity
   and scene blend/mask composition.

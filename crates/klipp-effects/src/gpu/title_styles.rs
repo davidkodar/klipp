@@ -998,37 +998,40 @@ impl GpuEffectsPipeline {
     /// Blur before whole-pixel translation. Travel uses the original painted
     /// height; sampling includes the blur halo, not just the original bounds.
     pub fn stack_title_motion_blur_translate(&mut self, slot: usize, away: f32, enter: [f32;4], exit: [f32;4]) -> bool {
-        self.stack_title_motion_blur_pose(slot,away,enter,exit,None)
+        self.stack_title_motion_blur_pose(slot,away,enter,exit,None,false)
     }
 
     /// Scale the blurred byte sprite around the original painted bounds.
     /// Motion alpha is applied during sampling, as in the CPU pose operation.
-    pub fn stack_title_motion_blur_scale(&mut self, slot: usize, away: f32, scale: f32, opacity: f32, anchor: [f32;2]) -> bool {
+    /// With `solid`, choose the deepest covered cell instead of the point.
+    pub fn stack_title_motion_blur_scale(&mut self, slot: usize, away: f32, scale: f32, opacity: f32, anchor: [f32;2], solid: bool) -> bool {
         if !scale.is_finite() || scale<=0.0 || !opacity.is_finite() || anchor.iter().any(|v|!v.is_finite()) {return false;}
-        self.stack_title_motion_blur_pose(slot,away,[0.0;4],[0.0;4],Some([scale,opacity.clamp(0.0,1.0),anchor[0].clamp(0.0,1.0),anchor[1].clamp(0.0,1.0)]))
+        self.stack_title_motion_blur_pose(slot,away,[0.0;4],[0.0;4],Some([scale,opacity.clamp(0.0,1.0),anchor[0].clamp(0.0,1.0),anchor[1].clamp(0.0,1.0)]),solid)
     }
 
-    fn stack_title_motion_blur_pose(&mut self, slot: usize, away: f32, enter: [f32;4], exit: [f32;4], scaled: Option<[f32;4]>) -> bool {
+    fn stack_title_motion_blur_pose(&mut self, slot: usize, away: f32, enter: [f32;4], exit: [f32;4], scaled: Option<[f32;4]>, solid: bool) -> bool {
         if !away.is_finite() || !(0.0..=1.0).contains(&away)
             || enter.iter().chain(exit.iter()).any(|v|!v.is_finite()) {return false;}
         let translates=enter[2..].iter().chain(exit[2..].iter()).any(|v|*v!=0.0);
         if away==0.0 {
-            if let Some([scale,opacity,x,y])=scaled {return self.stack_title_motion_scale(slot,enter,exit,scale,opacity,[x,y]);}
+            if let Some([scale,opacity,x,y])=scaled {return self.stack_title_motion_scale(slot,enter,exit,scale,opacity,[x,y],solid);}
             return !translates || self.stack_title_motion_translate(slot,enter,exit);
         }
         let Some(temp)=self.stack_title_object_slot(2) else {return false;};
         if temp==slot || !self.stack_title_alpha(slot,[0.0;4],1.0) {return false;}
         let Some(to_authored)=inverse(self.authored_to_working) else {return false;};
         let (w,h)=self.stack_dims;let bytes=u64::from(w)*u64::from(h)*16;
-        if bytes+16>u64::from(self.device.limits().max_storage_buffer_binding_size) {return false;}
+        let size=bytes+16+if solid {8+u64::from(w.min(319))*u64::from(h.min(319))*4}else{0};
+        if size>u64::from(self.device.limits().max_storage_buffer_binding_size) {return false;}
         let buffer=||self.device.create_buffer(&wgpu::BufferDescriptor {
-            label:Some("title blur image and bounds"),size:bytes+16,
+            label:Some("title blur image and bounds"),size,
             usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,
             mapped_at_creation:false,
         });
-        if self.title_post_scratch.as_ref().is_none_or(|b|b.size()<bytes+16) {self.title_post_scratch=Some(buffer());}
-        if self.stack_layers[temp].size()<bytes+16 {self.stack_layers[temp]=std::sync::Arc::new(buffer());}
+        if self.title_post_scratch.as_ref().is_none_or(|b|b.size()<size) {self.title_post_scratch=Some(buffer());}
+        if self.stack_layers[temp].size()<size {self.stack_layers[temp]=std::sync::Arc::new(buffer());}
         if !self.stack_title_alpha_bounds(slot) {return false;}
+        if solid {self.ensure_title_solid_grid();}
         let source=&self.stack_layers[slot];let blurred=&self.stack_layers[temp];
         let scratch=self.title_post_scratch.as_ref().unwrap();
         let mut enc=self.encoder(Some("title blur bounds"));
@@ -1043,7 +1046,8 @@ impl GpuEffectsPipeline {
             self.write_params(&StyleParams {op:45,offset_y:1,..params});
             self.stack_pass(&self.title_style_pipeline,scratch,blurred,w.div_ceil(WORKGROUP_SIZE),"title motion blur vertical");
         }
-        self.write_params(&StyleParams {op:if scaled.is_some() {48}else if translates {47}else{46},matrix:[enter,exit,scaled.unwrap_or([0.0;4])],..params});
+        if solid {self.stack_title_solid_anchor(blurred,true);}
+        self.write_params(&StyleParams {offset_x:i32::from(solid),op:if scaled.is_some() {48}else if translates {47}else{46},matrix:[enter,exit,scaled.unwrap_or([0.0;4])],..params});
         self.stack_pass(&self.title_style_pipeline,blurred,source,(w*h).div_ceil(WORKGROUP_SIZE),"title motion blur bytes");
         self.write_params(&StyleParams {op:11,matrix:self.authored_to_working,..params});
         self.stack_pass(&self.title_style_pipeline,source,scratch,(w*h).div_ceil(WORKGROUP_SIZE),"title motion blur working space");
@@ -1112,27 +1116,29 @@ impl GpuEffectsPipeline {
     /// Each motion is [away, distance, direction_x, direction_y]; travel uses
     /// the painted layer's clipped height, measured entirely on GPU.
     pub fn stack_title_motion_translate(&mut self, slot: usize, enter: [f32;4], exit: [f32;4]) -> bool {
-        self.stack_title_motion_pose(slot,enter,exit,None)
+        self.stack_title_motion_pose(slot,enter,exit,None,false)
     }
 
     /// Scale around a point in the clipped source bounds, sampling the CPU's
     /// half-float sprite in premultiplied authored colour before byte rounding.
-    pub fn stack_title_motion_scale(&mut self, slot: usize, enter: [f32;4], exit: [f32;4], scale: f32, opacity: f32, anchor: [f32;2]) -> bool {
+    /// With `solid`, choose the deepest covered cell instead of the point.
+    pub fn stack_title_motion_scale(&mut self, slot: usize, enter: [f32;4], exit: [f32;4], scale: f32, opacity: f32, anchor: [f32;2], solid: bool) -> bool {
         if !scale.is_finite() || scale<=0.0 || !opacity.is_finite() || anchor.iter().any(|v|!v.is_finite()) {return false;}
-        self.stack_title_motion_pose(slot,enter,exit,Some([scale,opacity.clamp(0.0,1.0),anchor[0].clamp(0.0,1.0),anchor[1].clamp(0.0,1.0)]))
+        self.stack_title_motion_pose(slot,enter,exit,Some([scale,opacity.clamp(0.0,1.0),anchor[0].clamp(0.0,1.0),anchor[1].clamp(0.0,1.0)]),solid)
     }
 
-    fn stack_title_motion_pose(&mut self, slot: usize, enter: [f32;4], exit: [f32;4], scaled: Option<[f32;4]>) -> bool {
+    fn stack_title_motion_pose(&mut self, slot: usize, enter: [f32;4], exit: [f32;4], scaled: Option<[f32;4]>, solid: bool) -> bool {
         if enter.iter().chain(exit.iter()).any(|v|!v.is_finite())
             || !self.stack_title_alpha(slot,[0.0;4],1.0) {return false;}
         let (w,h)=self.stack_dims;
         let bytes=u64::from(w)*u64::from(h)*16;
-        if bytes+16>u64::from(self.device.limits().max_storage_buffer_binding_size) {return false;}
+        let size=bytes+16+if solid {8+u64::from(w.min(319))*u64::from(h.min(319))*4}else{0};
+        if size>u64::from(self.device.limits().max_storage_buffer_binding_size) {return false;}
         // Four bounds words precede the source image. Keeping both in one
         // read buffer avoids in-place translation races or a CPU bounds read.
-        if self.title_post_scratch.as_ref().is_none_or(|b|b.size()<bytes+16) {
+        if self.title_post_scratch.as_ref().is_none_or(|b|b.size()<size) {
             self.title_post_scratch=Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                label:Some("title motion source and bounds"),size:bytes+16,
+                label:Some("title motion source and bounds"),size,
                 usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation:false,
             }));
@@ -1148,12 +1154,14 @@ impl GpuEffectsPipeline {
             enc.copy_buffer_to_buffer(scratch,0,source,0,bytes);self.submit(enc);
         }
         if !self.stack_title_alpha_bounds(slot) {return false;}
+        if solid {self.ensure_title_solid_grid();}
         let source=&self.stack_layers[slot];
         let scratch=self.title_post_scratch.as_ref().unwrap();
         let mut enc=self.encoder(Some("title motion source copy"));
         enc.copy_buffer_to_buffer(source,0,scratch,16,bytes);self.submit(enc);
+        if solid {self.stack_title_solid_anchor(scratch,false);}
         self.write_params(&StyleParams {width:w,height:h,frame_width:w,op:if scaled.is_some() {43}else{41},x0:0,y0:0,
-            offset_x:0,offset_y:0,color:[0.0;4],matrix:[enter,exit,scaled.unwrap_or([0.0;4])]});
+            offset_x:i32::from(solid),offset_y:0,color:[0.0;4],matrix:[enter,exit,scaled.unwrap_or([0.0;4])]});
         self.stack_pass(&self.title_style_pipeline,scratch,source,(w*h).div_ceil(WORKGROUP_SIZE),"title whole-layer motion");
         if scaled.is_some() {
             self.write_params(&StyleParams {width:w,height:h,frame_width:w,op:11,x0:0,y0:0,
@@ -1163,6 +1171,31 @@ impl GpuEffectsPipeline {
             enc.copy_buffer_to_buffer(scratch,0,source,0,bytes);self.submit(enc);
         }
         true
+    }
+
+    // A floor-sized cell yields at most 319 cells along either axis.
+    // Reuse the bounds scratch for coverage; the distance transform lives
+    // after the prefixed image, leaving source pixels and bounds untouched.
+    fn ensure_title_solid_grid(&mut self) {
+        let (w,h)=self.stack_dims;
+        let size=(8+u64::from(w.min(319))*u64::from(h.min(319)))*4;
+        if self.title_scene_bounds.as_ref().is_none_or(|b|b.size()<size) {
+            self.title_scene_bounds=Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label:Some("title solid anchor grid"),size,
+                usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:false,
+            }));
+        }
+    }
+
+    fn stack_title_solid_anchor(&self, source: &wgpu::Buffer, blurred: bool) {
+        let (w,h)=self.stack_dims;
+        let grid=self.title_scene_bounds.as_ref().unwrap();
+        let params=StyleParams {width:w,height:h,frame_width:w,op:49,x0:0,y0:0,
+            offset_x:i32::from(blurred),offset_y:0,color:[0.0;4],matrix:[[0.0;4];3]};
+        self.write_params(&params);
+        self.stack_pass(&self.title_style_pipeline,source,grid,(w.min(319)*h.min(319)).div_ceil(WORKGROUP_SIZE),"title solid anchor coverage");
+        self.write_params(&StyleParams {op:50,..params});
+        self.stack_pass(&self.title_style_pipeline,grid,source,1,"title solid anchor distance");
     }
 
     /// Leave [x0,y0,x1,y1] in the first four scratch words.

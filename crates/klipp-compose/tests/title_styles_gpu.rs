@@ -857,15 +857,10 @@ fn rectangle_motion_fades_keep_unsupported_combinations_on_cpu() {
         let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
         for object in &mut title.objects {
             if matches!(object.content,TitleObjectContent::Shape(_)) {
-                let enter=object.fx_mut().motion.enter.as_mut().unwrap();
-                enter.kind=if case==2 {MotionKind::ScaleUp}else{MotionKind::Blur};
-                if case==2 {enter.anchor=Some(klipp_core::title_motion::MotionAnchor::Solid);}
-                else {
-                    let exit=object.fx_mut().motion.exit.as_mut().unwrap();
-                    exit.kind=if case==0 {MotionKind::ScaleDown}else{MotionKind::ScaleUp};
-                    exit.anchor=Some(klipp_core::title_motion::MotionAnchor::Solid);
-                    exit.duration_secs=3.0;
-                }
+                // Unsupported shape motions still explicitly decline.
+                object.fx_mut().motion.enter.as_mut().unwrap().kind=match case {
+                    0=>MotionKind::MaskRise,1=>MotionKind::Pop,_=>MotionKind::Typewriter,
+                };
             }
         }
         let mut gpu=renderer();gpu.set_gpu_enabled(true);
@@ -1219,4 +1214,59 @@ fn rectangle_blur_scale_handles_zero_blur_and_unit_scale() {
         }
         seq
     });
+}
+
+fn solid_anchor_rectangle(fitted: bool, mode: u8, w: u32, h: u32, matte: bool) -> Sequence {
+    let mut seq=if matte {faded_rectangle_matte(fitted,mode%4,w,h)}else{combined_faded_panel(fitted,mode%2,w,h)};
+    if mode<4 {add_rectangle_scale(&mut seq,mode);}else {add_rectangle_blur_scale(&mut seq,if mode<6 {mode-4}else{mode-2});}
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    for object in &mut title.objects {
+        if let klipp_timeline::TitleObjectContent::Shape(shape)=&mut object.content {
+            if mode==0 || mode>=4 {shape.gradient=None;shape.fill=Some([40,80,200,255]);}
+            if mode==1 {shape.gradient=None;shape.fill=None;}
+            if mode==2 {shape.gradient=Some(klipp_timeline::TextGradient {
+                enabled:true,top_color:[230,30,50,255],bottom_color:[20,180,220,0],
+                kind:klipp_timeline::GradientKind::Linear{angle_deg:35.0},stops:vec![],stop_keyframes:vec![],
+            });}
+            if mode==3 {
+                shape.gradient=None;shape.fill=Some([40,80,200,127]);
+                if let Some(stroke)=&mut shape.stroke {stroke.color[3]=127;}
+            } else if let Some(stroke)=&mut shape.stroke {stroke.color[3]=255;}
+            let motion=&mut object.fx_mut().motion;
+            for m in motion.enter.iter_mut().chain(motion.exit.iter_mut()) {m.anchor=Some(klipp_core::title_motion::MotionAnchor::Solid);}
+        }
+    }
+    seq
+}
+fn solid_anchor_panel(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {solid_anchor_rectangle(fitted,mode,w,h,false)}
+fn solid_anchor_matte(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {solid_anchor_rectangle(fitted,mode,w,h,true)}
+#[test]
+fn rectangle_solid_anchor_matches_cpu_and_stays_resident() {check_rectangle_motion_fade_modes(solid_anchor_panel,8);}
+#[test]
+fn rectangle_solid_anchor_mattes_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(solid_anchor_matte,8);}
+#[test]
+fn rectangle_solid_anchor_stays_resident_at_4k() {check_rectangle_motion_fades_at_4k(solid_anchor_panel);}
+
+#[test]
+fn rectangle_solid_anchor_ties_empty_and_translucent_sources() {
+    let mut gpu=klipp_effects::gpu::GpuEffectsPipeline::new().expect("GPU required");
+    let (w,h)=(7,5);
+    for alpha in [0u8,127,255] {
+        let mut bytes=vec![0u8;(w*h*4) as usize];
+        for y in 1..4 {for x in 1..6 {let i=((y*w+x)*4) as usize;bytes[i..i+4].copy_from_slice(&[80,140,220,alpha]);}}
+        let sprite=klipp_title::BoxRaster::from_bytes(&bytes,(w,h),(1,4),(1,6));
+        // Last equal maximum is (4,2); no majority-solid cells uses the centre.
+        let anchor=if alpha==255 {(4.5,2.5)}else{(3.5,2.5)};
+        let want=klipp_title::pose_sprite(&sprite,w,h,0,0,0.7,1.7,anchor,None,None,(0,h));
+        assert!(gpu.stack_begin(w,h,1));assert!(gpu.stack_layer_from_srgb_u8(0,&bytes));
+        let before=gpu.readback_stats();
+        assert!(gpu.stack_title_motion_scale(0,[0.0;4],[0.0;4],1.7,0.7,[0.5;2],true));
+        assert_eq!(gpu.readback_stats(),before,"anchor stays on GPU");
+        assert!(gpu.stack_blend(0,1.0,0));assert!(gpu.stack_finish_into_chain(true));
+        let got=gpu.stack_download_linear();
+        for (pixel,(got,want)) in got.chunks_exact(4).zip(want.chunks_exact(4)).enumerate() {
+            assert!((got[3]*255.0-want[3].round()).abs()<0.01,"alpha={alpha} pixel={pixel}");
+        }
+        gpu.stack_end();
+    }
 }

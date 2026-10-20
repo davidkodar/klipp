@@ -2707,9 +2707,10 @@ impl Renderer {
                     let moves=motion.enter.iter().chain(motion.exit.iter()).any(|m|m.kind!=klipp_timeline::MotionKind::Fade);
                     let scales=motion.enter.iter().chain(motion.exit.iter()).any(|m|matches!(m.kind,klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown));
                     let motion_scale=motion.enter.map_or(1.0,|m|m.pose(enter,1.0).3)*motion.exit.map_or(1.0,|m|m.pose(exit,1.0).3);
-                    let anchor=match motion.anchor_at(enter,exit) {
+                    let selected_anchor=motion.anchor_at(enter,exit);
+                    let solid=matches!(selected_anchor,Some(klipp_core::title_motion::MotionAnchor::Solid));
+                    let anchor=match selected_anchor {
                         Some(klipp_core::title_motion::MotionAnchor::Point{x,y})=>[x,y],
-                        Some(klipp_core::title_motion::MotionAnchor::Solid) if scales=>return None,
                         _=>[0.5,0.5],
                     };
                     let gradient=shape.gradient.as_ref().filter(|g|g.enabled).map(title_gradient_fill);
@@ -2725,10 +2726,10 @@ impl Renderer {
                             let away=motion.enter.filter(|m|m.kind==klipp_timeline::MotionKind::Blur).map_or(0.0,|_|1.0-enter)
                                 .max(motion.exit.filter(|m|m.kind==klipp_timeline::MotionKind::Blur).map_or(0.0,|_|1.0-exit));
                             if scales {
-                                if !gpu.stack_title_motion_blur_scale(slot,away,motion_scale,fade,anchor) {return None;}
+                                if !gpu.stack_title_motion_blur_scale(slot,away,motion_scale,fade,anchor,solid) {return None;}
                             } else if !gpu.stack_title_motion_blur_translate(slot,away,enter_travel,exit_travel) || !gpu.stack_title_motion_alpha(slot,fade) {return None;}
                         } else if scales {
-                            if !gpu.stack_title_motion_scale(slot,enter_travel,exit_travel,motion_scale,fade,anchor) {return None;}
+                            if !gpu.stack_title_motion_scale(slot,enter_travel,exit_travel,motion_scale,fade,anchor,solid) {return None;}
                         } else if (moves && !gpu.stack_title_motion_translate(slot,enter_travel,exit_travel))
                             || !gpu.stack_title_motion_alpha(slot,fade) {return None;}
                     }
