@@ -297,7 +297,7 @@ impl Manifest {
             self.exclude(entry.type_id, &entry.parameter, reason);
             return;
         }
-        let interactions = match rules::interactions(entry, surface) {
+        let interactions = match rules::fixture_interactions(entry, surface, variant) {
             Ok(interactions) => interactions,
             Err(error) => {
                 self.registration_failures.push(format!(
@@ -431,7 +431,7 @@ impl Manifest {
             )) {
                 continue;
             }
-            match rules::interactions(entry, key.surface) {
+            match rules::fixture_interactions(entry, key.surface, &key.variant) {
                 Ok(interactions) => {
                     for interaction in interactions {
                         let required = CoverageKey::new(
@@ -842,15 +842,6 @@ impl Report {
         ));
         exclusions.push(format!("excluded surface variant: NonClipGrade track: {}", rules::TRACK_GRADE_EXCLUSION));
         exclusions.push(format!("excluded surface: CurveEditor for grade rows: {}", rules::GRADE_CURVE_EXCLUSION));
-        if entries
-            .iter()
-            .any(|e| e.type_id == "klipp.grade.wheel_sat_bri")
-        {
-            exclusions.push(format!(
-                "excluded surfaces: {}",
-                rules::NARROW_WHEEL_EXCLUSION
-            ));
-        }
         for entry in entries {
             if let Some(reason) = rules::entry_exclusion(entry) {
                 let line = format!(
@@ -1071,7 +1062,7 @@ mod tests {
         let surfaces = rules::surfaces(wheel).unwrap();
         assert!(surfaces.contains(&Surface::GradeBottomTools));
         assert!(!surfaces.contains(&Surface::GradeTabbedRight));
-        assert!(!surfaces.contains(&Surface::GradePerNode));
+        assert!(surfaces.contains(&Surface::GradePerNode));
         // Reachable since #1351: a PrimariesMatrix's From and To on its
         // own page, an InputTransform's bypass in its header on the
         // tabbed page's route.
