@@ -80,11 +80,15 @@ for full-project playback profiling.
   layer's clipped height for travel and move its byte-layer sprite by whole
   pixels on GPU, before edge fade, object opacity and scene masking. Bounds
   and source pixels remain on GPU, including for fitted panels and mattes.
+  Rectangle FlyLeft/FlyRight/FlyTop/FlyBottom use that translation path with
+  horizontal travel of 8 times and vertical travel of 6 times the painted height,
+  multiplied by motion distance. Their alpha reaches one at one third of eased
+  progress, including supported motion pairs, fitted panels and mattes.
   Rectangle MaskRise/MaskDrop use opposite travel directions at 1.15 times
   the original painted height and clip destination rows to the original
   painted window without adding their own alpha fade. They stay resident
   when paired with fades, slides, scaling, blur or each other. Other unsupported
-  motion kinds such as FlyLeft, FlyBottom and Typewriter still fall back.
+  motion kinds such as Bounce, FocusIn and Typewriter still fall back.
   Rectangle ScaleUp/ScaleDown motions use premultiplied authored-colour
   bilinear sampling of the half-float sprite, with centre or explicit-point
   anchors, positive custom scales and combined slide motion. Scaling and

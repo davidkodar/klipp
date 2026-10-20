@@ -859,7 +859,7 @@ fn rectangle_motion_fades_keep_unsupported_combinations_on_cpu() {
             if matches!(object.content,TitleObjectContent::Shape(_)) {
                 // Unsupported shape motions still explicitly decline.
                 object.fx_mut().motion.enter.as_mut().unwrap().kind=match case {
-                    0=>MotionKind::FlyLeft,1=>MotionKind::FlyBottom,_=>MotionKind::Typewriter,
+                    0=>MotionKind::Bounce,1=>MotionKind::FocusIn,_=>MotionKind::Typewriter,
                 };
             }
         }
@@ -1435,5 +1435,56 @@ fn zero_scale_sprite_is_empty_and_preserves_background() {
         for (got,want) in background.iter().zip([0.0,255.0,0.0,128.0]) {
             assert!((got-want).abs()<0.001,"background must survive a collapsed sprite");
         }
+    }
+}
+
+fn add_rectangle_fly(seq: &mut Sequence, mode: u8) {
+    use klipp_timeline::{MotionKind,TitleObjectContent};
+    use klipp_core::title_motion::{Easing,MotionAnchor};
+    let directions=[MotionKind::FlyLeft,MotionKind::FlyRight,MotionKind::FlyTop,MotionKind::FlyBottom];
+    let direction=(mode/8) as usize;let case=mode%8;let kind=directions[direction];
+    let pairs=[(kind,MotionKind::Fade),(MotionKind::Fade,kind),
+        (kind,MotionKind::Blur),(MotionKind::Blur,kind),
+        (kind,MotionKind::Larger),(MotionKind::Smaller,kind),
+        (kind,MotionKind::MaskDrop),(directions[(direction+1)%4],kind)];
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    for object in &mut title.objects {
+        if matches!(object.content,TitleObjectContent::Shape(_)) {
+            let motion=&mut object.fx_mut().motion;
+            let enter=motion.enter.as_mut().unwrap();let exit=motion.exit.as_mut().unwrap();
+            (enter.kind,exit.kind)=pairs[case as usize];
+            enter.easing=enter.kind.default_easing();exit.easing=exit.kind.default_exit_easing();
+            for m in [enter,exit] {
+                m.duration_secs=if case<2 {0.6}else{3.0};
+                m.distance=if case==0 {0.02}else if case==1 {1.0}else{0.13};
+                // Linear progress samples the fast alpha ramp at its knee (0.2s).
+                if case==0 {m.easing=Easing::Linear;}
+                if case==4 {m.anchor=Some(MotionAnchor::Point{x:0.2,y:0.8});}
+                if case==5 {m.anchor=Some(MotionAnchor::Solid);}
+            }
+        }
+    }
+}
+fn flying_rectangle_panel(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=combined_faded_panel(fitted,mode%2,w,h);add_rectangle_fly(&mut seq,mode);seq
+}
+fn flying_rectangle_matte(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=faded_rectangle_matte(fitted,mode%4,w,h);add_rectangle_fly(&mut seq,mode);seq
+}
+#[test]
+fn rectangle_fly_matches_cpu_and_stays_resident() {check_rectangle_motion_fade_modes(flying_rectangle_panel,32);}
+#[test]
+fn rectangle_fly_mattes_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(flying_rectangle_matte,32);}
+#[test]
+fn rectangle_fly_stays_resident_at_4k() {
+    for direction in 0..4 {
+        // The shared 4K helper takes a function pointer; each wrapper selects a direction.
+        let panel:fn(bool,u8,u32,u32)->Sequence=match direction {
+            0=>flying_rectangle_panel,
+            1=>|f,m,w,h|flying_rectangle_panel(f,m+8,w,h),
+            2=>|f,m,w,h|flying_rectangle_panel(f,m+16,w,h),
+            _=>|f,m,w,h|flying_rectangle_panel(f,m+24,w,h),
+        };
+        check_rectangle_motion_fades_at_4k(panel);
     }
 }
