@@ -790,11 +790,15 @@ fn motion_faded_panel(fitted: bool, mode: u8, width: u32, height: u32) -> Sequen
 
 #[test]
 fn rectangle_motion_fades_match_cpu_and_remain_resident() {
+    check_rectangle_motion_fades(motion_faded_panel);
+}
+
+fn check_rectangle_motion_fades(panel: fn(bool,u8,u32,u32)->Sequence) {
     let (w,h) = (320,180);
     for fitted in [false,true] {
         for mode in 0..2 {
             for ws in [klipp_core::WorkingColorspace::Rec709Linear, klipp_core::WorkingColorspace::AcesCG] {
-                let seq = motion_faded_panel(fitted,mode,w,h);
+                let seq = panel(fitted,mode,w,h);
                 let mut cpu = renderer(); cpu.set_gpu_enabled(false); cpu.set_working_colorspace(ws);
                 let mut gpu = renderer(); gpu.set_gpu_enabled(true); gpu.set_working_colorspace(ws);
                 assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
@@ -821,8 +825,12 @@ fn rectangle_motion_fades_match_cpu_and_remain_resident() {
 
 #[test]
 fn rectangle_motion_fades_stay_resident_at_4k() {
+    check_rectangle_motion_fades_at_4k(motion_faded_panel);
+}
+
+fn check_rectangle_motion_fades_at_4k(panel: fn(bool,u8,u32,u32)->Sequence) {
     let (w,h)=(3840,2160);
-    let seq=motion_faded_panel(true,1,w,h);
+    let seq=panel(true,1,w,h);
     let mut gpu=renderer();gpu.set_gpu_enabled(true);
     assert!(gpu.executor().gpu_pipeline_or_init().is_some(),"GPU required");
     for (sample,t) in [0.0,0.2,0.7,2.6,2.95,0.2].into_iter().enumerate() {
@@ -845,13 +853,12 @@ fn rectangle_motion_fades_stay_resident_at_4k() {
 fn rectangle_motion_fades_keep_unsupported_combinations_on_cpu() {
     use klipp_timeline::{MotionKind, TitleObjectContent};
     let (w,h)=(320,180);
-    for case in 0..3 {
+    for case in 0..2 {
         let mut seq=motion_faded_panel(false,if case==0 {2}else{0},w,h);
         let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
         for object in &mut title.objects {
             if matches!(object.content,TitleObjectContent::Shape(_)) {
                 if case==1 {object.fx_mut().motion.enter.as_mut().unwrap().kind=MotionKind::Rise;}
-                if case==2 {object.fx_mut().edge_fade.left=0.4;}
             }
         }
         let mut gpu=renderer();gpu.set_gpu_enabled(true);
@@ -862,4 +869,25 @@ fn rectangle_motion_fades_keep_unsupported_combinations_on_cpu() {
         assert_eq!(got.len(),(w*h*4) as usize);
         assert!(klipp_effects::residency::last_frame().events.iter().any(|e|e.work==klipp_effects::residency::Work::Fallback),"case {case} must not claim residency");
     }
+}
+
+fn combined_faded_panel(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=motion_faded_panel(fitted,mode,w,h);
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    for object in &mut title.objects {
+        if matches!(object.content,klipp_timeline::TitleObjectContent::Shape(_)) {
+            object.fx_mut().edge_fade=klipp_core::title_motion::EdgeFade {left:0.45,right:0.4,top:0.4,bottom:0.4};
+        }
+    }
+    seq
+}
+
+#[test]
+fn combined_rectangle_fades_match_cpu_and_remain_resident() {
+    check_rectangle_motion_fades(combined_faded_panel);
+}
+
+#[test]
+fn combined_rectangle_fades_stay_resident_at_4k() {
+    check_rectangle_motion_fades_at_4k(combined_faded_panel);
 }

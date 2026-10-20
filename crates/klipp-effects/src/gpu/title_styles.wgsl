@@ -446,7 +446,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         var alpha=v.a;
         if a<1.0 { alpha=floor(round(alpha*255.0)*a+0.5)/255.0; }
-        if abs(p.row0.x-1.0)>=0.001 { alpha=floor(alpha*p.row0.x*255.0+0.5)/255.0; }
+        if p.row0.y>0.5 {
+            if abs(p.row0.x-1.0)>=0.000001 {
+                // CPU BoxRaster stores byte/255 as f16 before posing. For
+                // nonzero bytes these are normal f16 values; discard 13 f32
+                // mantissa bits with ties-to-even rounding. Integer rounding
+                // prevents drivers eliding a pack2x16float/unpack round-trip.
+                let bits=bitcast<u32>(round(alpha*255.0)/255.0);
+                let half_alpha=bitcast<f32>((bits+4095u+((bits>>13u)&1u))&0xffffe000u);
+                alpha=floor(half_alpha*p.row0.x*255.0+0.5)/255.0;
+            }
+        } else if abs(p.row0.x-1.0)>=0.001 { alpha=floor(alpha*p.row0.x*255.0+0.5)/255.0; }
         store_rgba(i,vec4<f32>(v.rgb,alpha));
     } else if p.op==10u {
         let s=load_rgba(i); let d=load_dst(i);

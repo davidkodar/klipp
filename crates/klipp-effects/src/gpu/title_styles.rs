@@ -894,6 +894,16 @@ impl GpuEffectsPipeline {
 
     /// Combined edge and focus fade, quantized once as in the authored layer.
     pub fn stack_title_fade(&mut self, slot: usize, edges: [f32; 4], opacity: f32, focus: Option<(bool, f32, f32)>) -> bool {
+        self.stack_title_fade_impl(slot, edges, opacity, focus, false)
+    }
+
+    /// A painted byte layer posed through the CPU's half-float sprite before
+    /// motion opacity, then rounded back to bytes. Edge fades follow separately.
+    pub fn stack_title_motion_alpha(&mut self, slot: usize, opacity: f32) -> bool {
+        self.stack_title_fade_impl(slot, [0.0; 4], opacity, None, true)
+    }
+
+    fn stack_title_fade_impl(&mut self, slot: usize, edges: [f32; 4], opacity: f32, focus: Option<(bool, f32, f32)>, sprite_alpha: bool) -> bool {
         let (w, h) = self.stack_dims;
         let count = u64::from(w) * u64::from(h);
         if self.is_device_lost()
@@ -931,7 +941,7 @@ impl GpuEffectsPipeline {
             offset_x: 0,
             offset_y: 0,
             color: edges.map(|v| v.clamp(0.0, 0.5)),
-            matrix: [[opacity.clamp(0.0, 1.0), 0.0, 0.0, 0.0], focus.map_or([0.0;4], |(vertical,band,edge)| [if vertical {2.0}else{1.0},band.clamp(0.0,0.999),edge.clamp(0.0,1.0),0.0]), [0.0; 4]],
+            matrix: [[opacity.clamp(0.0, 1.0), if sprite_alpha {1.0}else{0.0}, 0.0, 0.0], focus.map_or([0.0;4], |(vertical,band,edge)| [if vertical {2.0}else{1.0},band.clamp(0.0,0.999),edge.clamp(0.0,1.0),0.0]), [0.0; 4]],
         });
         self.stack_pass(
             &self.title_style_pipeline,
