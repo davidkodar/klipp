@@ -1465,6 +1465,16 @@ impl TitleRenderer {
             };
         }
         if self.gpu_layout_only {
+            let bitmap=glyphs.iter().any(|g|fonts[g.font_index].colour_glyph(g.key.glyph_index,g.key.px).is_some());
+            // This cached RGBA route handles fixed-size, unposed, plain text.
+            // Other combinations need native-colour sampling/mask semantics.
+            let bitmap_supported=fit==1.0 && self.gpu_motion.is_none() && self.gpu_wave.is_none()
+                && title.primary_fx().is_default() && tb.style_runs.is_empty()
+                && !tb.underline && !tb.strikethrough && tb.write_on>=1.0
+                && tb.gradient.as_ref().is_none_or(|g|!g.enabled)
+                && (tb.pattern_fill.is_none() || !tb.pattern_fill_enabled)
+                && tb.texture_fill.as_ref().is_none_or(|f|!f.enabled)
+                && glyphs.iter().all(|g|g.key.px>=0.0);
             let rest_glyphs=glyphs;
             let resolved_colors=resolve_glyph_colors(title,glyphs,&tb.style_runs);
             let mut posed=glyphs.to_vec();
@@ -1515,10 +1525,10 @@ impl TitleRenderer {
                 if g.width>0 && g.height>0 {draw_poses.push((origin,alpha,clip,source_size,sigma,radians,colour));}
             }
             let glyphs=posed.as_slice();
-            *self.gpu_layout_capture.borrow_mut() = self.gpu_glyph_cache.borrow_mut().layout(
+            *self.gpu_layout_capture.borrow_mut() = if bitmap && !bitmap_supported {None}else{self.gpu_glyph_cache.borrow_mut().layout(
                 &fonts, glyphs, [offset_x, offset_y],
-                [mask_x0 as u32, mask_y0 as u32, mask_w as u32, mask_h as u32], tb.color, title.primary_fx(), self.gpu_outline_only,
-            );
+                [mask_x0 as u32, mask_y0 as u32, mask_w as u32, mask_h as u32], tb.color, title.primary_fx(), self.gpu_outline_only && !bitmap,
+            )};
             if let Some(source) = self.gpu_layout_capture.borrow_mut().as_mut() {
                 for (draw,(origin,alpha,clip,size,blur,radians,colour)) in source.outlines.iter_mut().zip(&draw_poses) {draw.origin=*origin;draw.alpha=*alpha;draw.clip_y=*clip;draw.source_size=*size;draw.blur=*blur;draw.radians=*radians;draw.color=*colour;}
                 for (draw,(origin,_,_,_,_,_,_)) in source.glyphs.iter_mut().zip(&draw_poses) {draw.origin=*origin;}

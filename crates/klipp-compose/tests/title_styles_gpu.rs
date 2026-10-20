@@ -1795,3 +1795,64 @@ fn path_remaining_poses_preserve_mixed_glyph_sizes() {
         }
     }
 }
+
+fn bitmap_colour_sequence(translucent:bool,mode:u8,w:u32,h:u32)->Sequence {
+    let mut title=TitleData::single_text_fx(TextBox{text:"A 🌈 B".into(),font_size:180.0,
+        color:[190,120,60,if translucent {100}else{255}],..Default::default()},LayerFx::default());
+    match mode {
+        0=>title.objects[0].fx_mut().loops=vec![klipp_timeline::TitleLoop::ColorCycle{rate_hz:0.5}],
+        1=>title.primary_text_mut().unwrap().tracking_keyframes=vec![key(0.0,0.0),key(3.0,10.0)],
+        _=>{
+            let tb=title.primary_text_mut().unwrap();tb.text="A 🌈\nB 🌈".into();
+            tb.line_spacing_keyframes=vec![key(0.0,1.1),key(3.0,1.5)];
+        }
+    }
+    let mut seq=Sequence::new_default();seq.resolution=Resolution{width:w,height:h};
+    let mut track=Track::new("bitmap colour",TrackKind::Video);
+    track.clips.push(Clip{kind:ClipKind::Title(title),..Clip::gap(RationalTime::from_secs_f64(0.0,30),RationalTime::from_secs_f64(3.0,30))});
+    seq.tracks=vec![track];seq
+}
+#[test]
+fn bitmap_colour_glyphs_match_cpu_and_stay_resident() {
+    check_rectangle_motion_fade_modes(bitmap_colour_sequence,3);
+}
+#[test]
+fn bitmap_colour_glyphs_stay_resident_at_4k() {
+    check_rectangle_motion_fades_at_4k(bitmap_colour_sequence);
+}
+#[test]
+fn bitmap_colour_glyph_cache_reuses_native_pixels_and_guards_combinations() {
+    let seq=bitmap_colour_sequence(true,1,320,180);
+    let ClipKind::Title(title)=seq.tracks[0].clips[0].kind.clone() else {unreachable!()};
+    let mut r=klipp_title::TitleRenderer::new();
+    let first=r.glyph_source(&title,320,180,0.0,Some(3.0)).expect("plain bitmap source");
+    let native=first.glyphs.iter().find(|g|g.native_colour).expect("CBDT emoji font required");
+    let native_id=native.id;
+    assert!(first.prepared>0);
+    for t in [0.7,2.6,0.0] {
+        let next=r.glyph_source(&title,320,180,t,Some(3.0)).unwrap();
+        assert_eq!(next.prepared,0,"tracking must reuse the fixed-size glyphs");
+        let g=next.glyphs.iter().find(|g|g.native_colour).unwrap();
+        assert_eq!(g.id,native_id);
+        assert!(std::sync::Arc::ptr_eq(&g.pixels,&native.pixels));
+    }
+    for case in 0..7 {
+        let mut unsupported=title.clone();
+        match case {
+            0=>unsupported.primary_text_mut().unwrap().font_size_keyframes=vec![key(0.0,120.0),key(3.0,220.0)],
+            1=>unsupported.objects[0].fx_mut().motion=klipp_timeline::TitleMotion::enter(klipp_timeline::Motion::new(klipp_timeline::MotionKind::Rise)),
+            2=>unsupported.objects[0].fx_mut().outlines=vec![TextOutline{enabled:true,color:[255;4],width:3.0,width_keyframes:vec![]}],
+            3=>unsupported.primary_text_mut().unwrap().text_path=Some(klipp_timeline::TextPath::Circle{radius:45.0}),
+            4=>unsupported.primary_text_mut().unwrap().write_on=0.5,
+            5=>{
+                let tb=unsupported.primary_text_mut().unwrap();tb.text="🌈🌈".into();
+                tb.tracking_keyframes=vec![key(0.0,-90.0),key(3.0,-90.0)];
+            }
+            _=>{
+                unsupported.primary_text_mut().unwrap().fit=klipp_timeline::TextFit::Shrink{min_size:10.0};
+                unsupported.objects[0].transform.size.x=0.05;
+            }
+        }
+        assert!(r.glyph_source(&unsupported,320,180,0.3,Some(3.0)).is_none(),"case {case} needs its native-colour fallback");
+    }
+}

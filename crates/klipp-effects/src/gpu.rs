@@ -5932,6 +5932,14 @@ impl GpuEffectsPipeline {
         self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],1.0,1.0,(0.0,0.0),Some(color),None,y0,y1,2)
     }
 
+    /// Place a cached native-colour glyph without applying the text fill.
+    pub fn stack_title_colour_glyph(&mut self,slot:usize,id:u64,texels:&[u32],size:[u32;2],origin:[i32;2])->bool {
+        let (_,h)=self.stack_dims;
+        let y0=origin[1].clamp(0,h as i32) as u32;
+        let y1=(i64::from(origin[1])+i64::from(size[1])).clamp(0,i64::from(h)) as u32;
+        self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],1.0,1.0,(0.0,0.0),None,None,y0,y1,1)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn place_sprite(
         &mut self,

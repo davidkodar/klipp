@@ -2932,11 +2932,12 @@ impl Renderer {
                         Some(self.executor.gpu_pipeline_or_init()?.stack_title_object_slot(2)?)
                     }else{None};
                     self.executor.gpu_pipeline_or_init().is_some_and(|p| {
-                        p.stack_layer_clear(slot) && source.glyphs.iter().all(|g| p.stack_title_glyph(slot,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],g.origin,source.color))
+                        p.stack_layer_clear(slot) && source.glyphs.iter().filter(|g|!g.native_colour).all(|g| p.stack_title_glyph(slot,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],g.origin,source.color))
                             && source.outlines.iter().all(|g|p.stack_title_outline(slot,g.id,&g.edges,g.origin,g.size,g.placement,source.color,klipp_effects::gpu::TitleGlyphPose{alpha:g.alpha,clip_y:g.clip_y,source_size:g.source_size,blur:g.blur,radians:g.radians,face:None,path:g.path}))
                             && rich_slot.is_none_or(|rich|p.stack_layer_clear(rich) && source.face_draws.iter().all(|g|p.stack_title_outline(rich,g.id,&g.edges,g.origin,g.size,g.placement,g.color.unwrap_or(source.color),klipp_effects::gpu::TitleGlyphPose{alpha:g.alpha,clip_y:g.clip_y,source_size:g.source_size,blur:g.blur,radians:g.radians,face:Some(source.roi),path:g.path})) && source.face_stripes.iter().all(|(rect,color)|p.stack_title_stripe(rich,*rect,*color,true)))
                             && source.stripes.iter().all(|&rect|p.stack_title_stripe(slot,rect,source.color,false))
                             && (source.roi[2]==0 || source.roi[3]==0 || p.stack_title_styles_with_face(slot,source.roi,&passes,klipp_effects::gpu::TitleFace {alpha:source.color[3] as f32/255.0,outline_cutoff:source.outline_cutoff,write_cutoff:source.write_cutoff,backing:source.backing,fill:title_fill(&source,klipp_title::frame_scale(width,height)),bounds:source.bounds,rich_slot}))
+                            && source.glyphs.iter().filter(|g|g.native_colour).all(|g|p.stack_title_colour_glyph(slot,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],g.origin))
                             && source.texture.as_ref().is_none_or(|t|source.roi[2]==0 || source.roi[3]==0 || p.stack_title_texture(slot,source.roi,klipp_effects::gpu::TitleTexture {
                                 id:t.id,texels:&t.pixels.texels,size:[t.pixels.w,t.pixels.h],bounds:source.bounds,
                                 scale:t.fill.scale,offset:[t.fill.offset_x,t.fill.offset_y],radians:t.fill.rotation.to_radians(),opacity:t.fill.opacity,tint:t.fill.tint,

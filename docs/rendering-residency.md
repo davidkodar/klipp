@@ -73,7 +73,12 @@ for full-project playback profiling.
   entrances/exits, reveal clipping and blur, plus scale/rotation/blur/colour
   animators. CPU path coverage uses the same posed glyph metrics, screen-space
   reveal rows and blur padding; zero scale produces empty coverage. Source
-  shutter blur and bitmap colour glyphs still require their fallback routes.
+  shutter blur retains its fallback route. Plain fixed-size CBDT colour glyphs
+  now reuse bounded RGBA sprites during colour loops, tracking and line-spacing
+  animation. Their native colour and alpha are independent of the text fill.
+  Bitmap size keys, automatic size fitting, glyph poses, paths, overlapping ink boxes and decorated
+  combinations retain fallback; native-mask subtraction and resampling are
+  separate work.
   Plain rectangles, gradients and strokes use GPU coverage, including keyed transforms.
   Fitted rectangles use bounds-only text layout; hidden or missing targets
   suppress the panel. Rectangle edge fades run on GPU after byte-layer
@@ -138,7 +143,8 @@ for full-project playback profiling.
   and scene blend/mask composition.
   Colour backings and full-frame backgrounds keep their authored ordering.
   Eligible animated 3D and tracking retain their existing GPU paths (#2061/#2062).
-- Remaining title fallbacks include bitmap colour glyphs, path-specific glyph motion, styled/vector fitted shapes, unsupported focus-band sources,
+- Remaining title fallbacks include the unsupported bitmap combinations above,
+  styled/vector fitted shapes, unsupported focus-band sources,
   source shutter sampling and unsupported extrusion/3D authoring combinations.
   Cache-size or device limits can also decline a source. These remain explicit
   fallbacks; GPU final composition alone does not establish source residency.
