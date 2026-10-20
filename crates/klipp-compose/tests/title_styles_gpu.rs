@@ -859,7 +859,7 @@ fn rectangle_motion_fades_keep_unsupported_combinations_on_cpu() {
             if matches!(object.content,TitleObjectContent::Shape(_)) {
                 // Unsupported shape motions still explicitly decline.
                 object.fx_mut().motion.enter.as_mut().unwrap().kind=match case {
-                    0=>MotionKind::Larger,1=>MotionKind::Slam,_=>MotionKind::Typewriter,
+                    0=>MotionKind::Larger,1=>MotionKind::Smaller,_=>MotionKind::Typewriter,
                 };
             }
         }
@@ -1326,14 +1326,15 @@ fn rectangle_maskdrop_mattes_match_cpu_and_stay_resident() {check_rectangle_moti
 #[test]
 fn rectangle_maskdrop_stays_resident_at_4k() {check_rectangle_motion_fades_at_4k(maskdrop_rectangle_panel);}
 
-fn add_rectangle_pop(seq: &mut Sequence, mode: u8) {
+fn add_rectangle_scale_fade(seq: &mut Sequence, mode: u8, kind: klipp_timeline::MotionKind) {
     use klipp_timeline::{MotionKind,TitleObjectContent};
     use klipp_core::title_motion::{Easing,MotionAnchor};
-    let pairs=[(MotionKind::Pop,MotionKind::Fade),(MotionKind::Fade,MotionKind::Pop),
-        (MotionKind::Pop,MotionKind::Pop),(MotionKind::Pop,MotionKind::SlideLeft),
-        (MotionKind::ScaleUp,MotionKind::Pop),(MotionKind::Pop,MotionKind::ScaleDown),
-        (MotionKind::Blur,MotionKind::Pop),(MotionKind::Pop,MotionKind::Blur),
-        (MotionKind::Pop,MotionKind::MaskRise),(MotionKind::MaskDrop,MotionKind::Pop)];
+    let pairs=[(kind,MotionKind::Fade),(MotionKind::Fade,kind),
+        (kind,kind),(kind,MotionKind::SlideLeft),
+        (MotionKind::ScaleUp,kind),(kind,MotionKind::ScaleDown),
+        (MotionKind::Blur,kind),(kind,MotionKind::Blur),
+        (kind,MotionKind::MaskRise),(MotionKind::MaskDrop,kind),
+        (MotionKind::Pop,MotionKind::Slam)];
     let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
     for object in &mut title.objects {
         if matches!(object.content,TitleObjectContent::Shape(_)) {
@@ -1344,12 +1345,12 @@ fn add_rectangle_pop(seq: &mut Sequence, mode: u8) {
             exit.easing=exit.kind.default_exit_easing();
             for m in [enter,exit] {
                 if mode>=2 {m.duration_secs=3.0;}
-                if m.kind==MotionKind::Pop {
-                    // Pop ignores custom scale amounts; its pose fixes 0.4..1.
+                if m.kind==kind {
+                    // Both motions ignore custom scale amounts.
                     m.amount=Some(0.05);
-                    if mode<2 {m.duration_secs=0.6;m.easing=Easing::Linear;}
+                    // At 0.2 s, a linear entrance reaches its alpha-ramp knee.
+                    if mode<2 {m.duration_secs=if kind==MotionKind::Slam {0.5}else{0.6};m.easing=Easing::Linear;}
                 }
-                // Linear entrance at 0.2 s reaches the fast fade's 1/3 knee.
                 if mode==3 {m.anchor=Some(MotionAnchor::Point{x:1.4,y:-0.5});}
                 if mode==4 {m.anchor=Some(MotionAnchor::Solid);}
                 if mode==5 {m.anchor=Some(MotionAnchor::Point{x:0.2,y:0.8});}
@@ -1358,10 +1359,10 @@ fn add_rectangle_pop(seq: &mut Sequence, mode: u8) {
     }
 }
 fn pop_rectangle_panel(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
-    let mut seq=combined_faded_panel(fitted,mode%2,w,h);add_rectangle_pop(&mut seq,mode);seq
+    let mut seq=combined_faded_panel(fitted,mode%2,w,h);add_rectangle_scale_fade(&mut seq,mode,klipp_timeline::MotionKind::Pop);seq
 }
 fn pop_rectangle_matte(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
-    let mut seq=faded_rectangle_matte(fitted,mode%4,w,h);add_rectangle_pop(&mut seq,mode);seq
+    let mut seq=faded_rectangle_matte(fitted,mode%4,w,h);add_rectangle_scale_fade(&mut seq,mode,klipp_timeline::MotionKind::Pop);seq
 }
 #[test]
 fn rectangle_pop_matches_cpu_and_stays_resident() {check_rectangle_motion_fade_modes(pop_rectangle_panel,10);}
@@ -1369,3 +1370,16 @@ fn rectangle_pop_matches_cpu_and_stays_resident() {check_rectangle_motion_fade_m
 fn rectangle_pop_mattes_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(pop_rectangle_matte,10);}
 #[test]
 fn rectangle_pop_stays_resident_at_4k() {check_rectangle_motion_fades_at_4k(pop_rectangle_panel);}
+
+fn slam_rectangle_panel(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=combined_faded_panel(fitted,mode%2,w,h);add_rectangle_scale_fade(&mut seq,mode,klipp_timeline::MotionKind::Slam);seq
+}
+fn slam_rectangle_matte(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=faded_rectangle_matte(fitted,mode%4,w,h);add_rectangle_scale_fade(&mut seq,mode,klipp_timeline::MotionKind::Slam);seq
+}
+#[test]
+fn rectangle_slam_matches_cpu_and_stays_resident() {check_rectangle_motion_fade_modes(slam_rectangle_panel,11);}
+#[test]
+fn rectangle_slam_mattes_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(slam_rectangle_matte,11);}
+#[test]
+fn rectangle_slam_stays_resident_at_4k() {check_rectangle_motion_fades_at_4k(slam_rectangle_panel);}

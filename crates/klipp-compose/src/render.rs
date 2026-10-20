@@ -2689,7 +2689,7 @@ impl Renderer {
                     let motion=std::mem::take(&mut source_fx.motion);
                     if !source_fx.is_default()
                         || motion.enter.iter().chain(motion.exit.iter())
-                        .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight|klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Blur|klipp_timeline::MotionKind::MaskRise|klipp_timeline::MotionKind::MaskDrop|klipp_timeline::MotionKind::Pop)) {return None;}
+                        .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight|klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Blur|klipp_timeline::MotionKind::MaskRise|klipp_timeline::MotionKind::MaskDrop|klipp_timeline::MotionKind::Pop|klipp_timeline::MotionKind::Slam)) {return None;}
                     let blurs=motion.enter.iter().chain(motion.exit.iter()).any(|m|m.kind==klipp_timeline::MotionKind::Blur);
                     // Shapes pose as a whole layer: character/word stagger has
                     // no effect, and both fades use unit zero as on the CPU.
@@ -2707,7 +2707,7 @@ impl Renderer {
                     let enter_travel=travel(motion.enter,enter);
                     let exit_travel=travel(motion.exit,exit);
                     let moves=motion.enter.iter().chain(motion.exit.iter()).any(|m|m.kind!=klipp_timeline::MotionKind::Fade);
-                    let scales=motion.enter.iter().chain(motion.exit.iter()).any(|m|matches!(m.kind,klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Pop));
+                    let scales=motion.enter.iter().chain(motion.exit.iter()).any(|m|matches!(m.kind,klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown|klipp_timeline::MotionKind::Pop|klipp_timeline::MotionKind::Slam));
                     let motion_scale=motion.enter.map_or(1.0,|m|m.pose(enter,1.0).3)*motion.exit.map_or(1.0,|m|m.pose(exit,1.0).3);
                     let selected_anchor=motion.anchor_at(enter,exit);
                     let solid=matches!(selected_anchor,Some(klipp_core::title_motion::MotionAnchor::Solid));
