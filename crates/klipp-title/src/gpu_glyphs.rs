@@ -3,6 +3,8 @@ use super::*;
 use std::{collections::VecDeque, sync::Arc};
 
 pub struct GlyphDraw {
+    /// Preserve a CBDT glyph's own RGBA instead of tinting its coverage.
+    pub native_colour: bool,
     pub id: u64,
     pub pixels: Arc<BoxRaster>,
     pub origin: [i32; 2],
@@ -50,6 +52,7 @@ pub struct GlyphSource {
     pub backing: Option<([u32; 4], [u8; 4])>,
 }
 struct CachedGlyph {
+    native_colour: bool,
     key: fontdue::layout::GlyphRasterConfig,
     id: u64,
     pixels: Arc<BoxRaster>,
@@ -114,12 +117,6 @@ impl GlyphCache {
         let mut prepared = 0;
         let mut rerasterized = false;
         for g in glyphs.iter().filter(|g| g.width > 0 && g.height > 0) {
-            if fonts[g.font_index]
-                .colour_glyph(g.key.glyph_index, g.key.px)
-                .is_some()
-            {
-                return None;
-            }
             let cached = if let Some(i) = self.entries.iter().position(|c| c.key == g.key) {
                 self.entries.remove(i)?
             } else {
@@ -128,14 +125,16 @@ impl GlyphCache {
                     self.recent.pop_front();
                 }
                 self.recent.push_back(g.key);
-                let (_, coverage) = fonts[g.font_index].coverage(g.key);
-                if coverage.len() != g.width * g.height {
-                    return None;
-                }
-                let mut bytes = Vec::with_capacity(coverage.len() * 4);
-                for alpha in coverage {
-                    bytes.extend_from_slice(&[255, 255, 255, alpha]);
-                }
+                let native=fonts[g.font_index].colour_glyph(g.key.glyph_index,g.key.px);
+                let native_colour=native.is_some();
+                let bytes=if let Some(bitmap)=native {
+                    if (bitmap.width,bitmap.height)!=(g.width,g.height) {return None;}
+                    bitmap.rgba.as_ref().clone()
+                }else{
+                    let (_,coverage)=fonts[g.font_index].coverage(g.key);
+                    if coverage.len()!=g.width*g.height {return None;}
+                    coverage.into_iter().flat_map(|alpha|[255,255,255,alpha]).collect()
+                };
                 let pixels = Arc::new(BoxRaster::from_bytes(
                     &bytes,
                     (g.width as u32, g.height as u32),
@@ -146,12 +145,14 @@ impl GlyphCache {
                 self.next_id = self.next_id.wrapping_add(1);
                 prepared += 1;
                 CachedGlyph {
+                    native_colour,
                     key: g.key,
                     id,
                     pixels,
                 }
             };
             draws.push(GlyphDraw {
+                native_colour:cached.native_colour,
                 id: cached.id,
                 pixels: cached.pixels.clone(),
                 origin: [(g.x + offset[0]) as i32, (g.y + offset[1]) as i32],
@@ -444,6 +445,25 @@ impl TitleRenderer {
         if source.face_incomplete {
             return None;
         }
+        // The CPU subtracts native alpha from the shared face mask before
+        // painting emoji. Separate GPU sprites are equivalent only without
+        // overlapping ink boxes; retain fallback for overlap until mask
+        // subtraction is implemented (including native/native overlap).
+        for (i,a) in source.glyphs.iter().enumerate().filter(|(_,g)|g.native_colour) {
+            if source.glyphs.iter().enumerate().any(|(j,b)|i!=j
+                && i64::from(a.origin[0])<i64::from(b.origin[0])+i64::from(b.pixels.w)
+                && i64::from(b.origin[0])<i64::from(a.origin[0])+i64::from(a.pixels.w)
+                && i64::from(a.origin[1])<i64::from(b.origin[1])+i64::from(b.pixels.h)
+                && i64::from(b.origin[1])<i64::from(a.origin[1])+i64::from(a.pixels.h)) {return None;}
+        }
+        // at(time) clears keys on the evaluated layout. Check authored size
+        // animation here so continuous resizing cannot become per-frame
+        // bitmap preparation disguised as a resident fixed-size source.
+        if source.glyphs.iter().any(|g|g.native_colour)
+            && (!tb.font_size_keyframes.is_empty()
+                || !o.transform.size_x_keyframes.is_empty()
+                || !o.transform.size_y_keyframes.is_empty()) {return None;}
+
         if let Some(fill) = tb.texture_fill.as_ref().filter(|f| f.enabled) {
             let hit = self
                 .gpu_textures
