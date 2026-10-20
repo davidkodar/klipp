@@ -74,6 +74,8 @@ With into "cut_out" the matte cuts the clip out instead: it is the alpha the cli
 
 With transition_id in place of clip_id, it tracks the subject a piece transition (strips, panels, halves, shatter) cuts round as its own piece (`pieces.subject` on the transition op): only the frames of the subject side the transition shows, by the model the transition's subject names, and nothing is added to a grade. Without the matte the pieces are plain and the viewer says why; an export waits for it.
 
+To undo a subject or single-frame AI cut-out, use `klipp_track_subject` with `clip_id` and `into: "whole"` (Restore Background). It removes only that matte's Output alpha connection, as one undoable step, retaining the matte if another part of the grade still reads it. It starts no tracking pass and downloads no model. Other hand-wired alpha keys are refused, as are transition targets. One Undo restores the cut-out. “Track the rest” on an existing matte card only continues its pass; it never reconnects a removed matte or creates a correction.
+
 ## klipp_transcript
 
 What is said in a media file between two times, with when, in seconds of the file: the segments, and with words true every word with its start and end, and the stretches measured silent in that range. Use it to put a cut on the edge of a word or in a silence (a cut in measured silence is clean), and to read a stretch the analysis text cut short.

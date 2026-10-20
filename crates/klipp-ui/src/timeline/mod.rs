@@ -831,7 +831,7 @@ mod menu_smoke_tests {
         timeline.frame(vec![button(false)]);
         sent.extend(std::mem::take(&mut timeline.sent));
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(sent.iter().any(|c| matches!(c, AppCommand::TrackSubject { clip_id, model, cut_out: false } if *clip_id == id && model == "subject")), "{sent:?}");
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::TrackSubject { clip_id, model, into: Some(klipp_core::SubjectMatteUse::Grade) } if *clip_id == id && model == "subject")), "{sent:?}");
     }
 
     /// #73: the same menu offers Cut Out Subject, which asks for the
@@ -860,7 +860,37 @@ mod menu_smoke_tests {
         timeline.frame(vec![button(false)]);
         sent.extend(std::mem::take(&mut timeline.sent));
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(sent.iter().any(|c| matches!(c, AppCommand::TrackSubject { clip_id, model, cut_out: true } if *clip_id == id && model == "subject")), "{sent:?}");
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::TrackSubject { clip_id, model, into: Some(klipp_core::SubjectMatteUse::CutOut) } if *clip_id == id && model == "subject")), "{sent:?}");
+    }
+
+    #[test]
+    fn restore_background_menu_works_for_an_offline_still_matte() {
+        use klipp_timeline::GradeAccess;
+        let mut timeline = Timeline::new();
+        timeline.height = 1500.0;
+        let v1 = timeline.state.sequences[0].tracks.iter().position(|t| matches!(t.kind, TrackKind::Video)).unwrap();
+        let clip = &mut timeline.state.sequences[0].tracks[v1].clips[0];
+        let id = clip.id;
+        let mut graph = clip.grade().clone();
+        let matte = klipp_nodes::NodeId::new_v4();
+        graph.nodes.push(klipp_nodes::Node {
+            id: matte, kind: klipp_nodes::NodeKind::ExternalMatte, label: "Still matte".into(), enabled: true,
+            params: klipp_nodes::NodeParams { matte_image_path: Some("/offline/matte.png".into()), ..Default::default() },
+            keyframes: Default::default(), output_link: None, input_links: Vec::new(),
+        });
+        graph.edges.push(klipp_nodes::Edge { from_node: matte, from_port: 0, to_node: graph.output_node_id, to_port: 1 });
+        clip.set_grade(graph);
+        let drawn = timeline.frame(Vec::new());
+        let at = drawn.into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
+        timeline.right_click(at);
+        let drawn = timeline.frame(Vec::new());
+        let item = drawn.iter().find(|(t, _)| t == "Restore Background").expect("restore in the menu").1;
+        let button = |pressed| egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        timeline.frame(vec![egui::Event::PointerMoved(item), button(true)]);
+        let mut sent = std::mem::take(&mut timeline.sent);
+        timeline.frame(vec![button(false)]);
+        sent.extend(std::mem::take(&mut timeline.sent));
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::RestoreBackground { clip_id } if *clip_id == id)), "{sent:?}");
     }
 
     /// #1844: double-clicking a multicam clip on the timeline turns

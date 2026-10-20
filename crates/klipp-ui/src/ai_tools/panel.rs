@@ -87,6 +87,9 @@ impl AiToolsPanel {
                 // ── 1. TASK ─────────────────────────────────────────
                 section_step_header(ui, 1, "TASK", state.active_task.is_some(), theme);
                 task_grid(ui, state, registry, theme);
+                if state.can_restore_background && ui.button("Restore Background").on_hover_text("Restore the selected clip's whole picture; keep any matte still used by its grade").clicked() {
+                    state.pending_restore_background = true;
+                }
 
                 ui.add_space(10.0);
                 ui.separator();

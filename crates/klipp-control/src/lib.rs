@@ -690,6 +690,7 @@ fn handle(
         ) => requests::session::respond(ctx, cmd, collect),
         cmd @ (ControlCommand::Analyze { .. }
             | ControlCommand::TrackSubject { .. }
+            | ControlCommand::RestoreBackground { .. }
             | ControlCommand::SearchTranscripts { .. }
             | ControlCommand::ScreenText { .. }
             | ControlCommand::SearchScreenText { .. }

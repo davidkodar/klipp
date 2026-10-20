@@ -34,6 +34,7 @@
 //!   work".
 
 pub mod graph;
+mod restore_background;
 pub mod kinds;
 pub mod params;
 pub mod defaults;

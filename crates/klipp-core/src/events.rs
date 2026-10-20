@@ -2200,10 +2200,11 @@ pub enum AppCommand {
     /// matte that follows the subject, made in the background over every
     /// frame the render reads. `model` is "subject" (one detected person
     /// or thing) or "foreground" (everything in front). The model is
-    /// downloaded only after the person agrees to it. With `cut_out`
-    /// the matte cuts the clip out instead (#73): it becomes the alpha the
-    /// grade leaves with, so the tracks below show round the subject.
-    TrackSubject { clip_id: ClipId, model: String, cut_out: bool },
+    /// downloaded only after the person agrees to it. `into` binds the matte
+    /// to Grade or CutOut; None only continues the existing pass.
+    TrackSubject { clip_id: ClipId, model: String, into: Option<SubjectMatteUse> },
+    /// Restore the whole picture after a subject/image matte cut-out.
+    RestoreBackground { clip_id: ClipId },
     /// Stop tracking the subject through `clip_id`: the frames made so far
     /// are kept (#239).
     CancelTrackSubject { clip_id: ClipId },
@@ -5449,3 +5450,8 @@ mod project_switch_tests {
         assert_eq!(p.replacement_save_path(7,false,false).unwrap(),None);
     }
 }
+
+/// Where an explicitly requested subject matte is bound. None on a
+/// TrackSubject command continues the pass without changing the graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubjectMatteUse { Grade, CutOut }

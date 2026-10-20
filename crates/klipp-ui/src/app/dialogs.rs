@@ -915,6 +915,9 @@ impl KlippApp {
 
         // 4c0. AI Tools side panel — only mounted when toggled on.
         if self.state.ai_tools_state.panel_visible {
+            self.state.ai_tools_state.can_restore_background = self.state.selected_clip
+                .and_then(|id| self.state.sequence().all_clips().find(|c|c.id==id))
+                .is_some_and(|c| klipp_timeline::GradeAccess::grade(c).cut_out_matte().is_some());
             // egui's SidePanel default `width_range.max` is
             // `f32::INFINITY`, which means any single-frame
             // content overflow becomes the new stored width on

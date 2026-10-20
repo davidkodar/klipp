@@ -8,6 +8,27 @@ use klipp_timeline::GradeAccess;
 
 use super::*;
 
+/// None means continue only: no correction or alpha binding is created.
+fn bind_requested_subject(graph: &mut klipp_nodes::NodeGraph, model: klipp_nodes::SubjectMatte, chosen: Option<klipp_nodes::NodeId>, into: Option<klipp_core::SubjectMatteUse>) {
+    if let Some(target) = into {
+        bind_subject(graph, model, chosen, target == klipp_core::SubjectMatteUse::CutOut);
+    }
+}
+
+pub(super) fn restore_clip_background(state: &mut AppState, clip_id: klipp_core::ClipId) -> Result<(), String> {
+    let clip = state.sequence().all_clips().find(|c| c.id == clip_id).ok_or("clip not found")?;
+    let old_graph = clip.grade().clone();
+    let matte = old_graph.cut_out_matte().ok_or("This clip is not cut out by a subject or image matte")?;
+    if !matches!(super::colour::edit_clip_graph(state, clip_id, &[], false, |graph| { graph.restore_background(); }), Some(Ok(()))) {
+        return Err("The clip's grade could not be edited".into());
+    }
+    let new_graph = state.sequence().all_clips().find(|c| c.id==clip_id).unwrap().grade().clone();
+    if state.selected_node_id == Some(matte) && !new_graph.nodes.iter().any(|n|n.id==matte) { state.selected_node_id=None; }
+    state.push_history(crate::history::EditCommand::Named { label:"Restore Background".into(), edit:Box::new(crate::history::EditCommand::SetNodeGraph { clip_id, old_graph, new_graph }) });
+    state.dirty=true;
+    Ok(())
+}
+
 /// How often a running pass is looked at for new frames to show.
 const LOOK_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
 
@@ -18,8 +39,15 @@ fn model_of(name: &str) -> MatteModel {
 impl KlippApp {
     pub(super) fn handle_track_subject_commands(&mut self, cmd: &AppCommand, needs_refresh: &mut bool) -> bool {
         match cmd {
-            AppCommand::TrackSubject { clip_id, model, cut_out } => {
-                self.track_subject(*clip_id, model, *cut_out, needs_refresh);
+            AppCommand::TrackSubject { clip_id, model, into } => {
+                self.track_subject(*clip_id, model, *into, needs_refresh);
+                true
+            }
+            AppCommand::RestoreBackground { clip_id } => {
+                match restore_clip_background(&mut self.state, *clip_id) {
+                    Ok(()) => { *needs_refresh = true; self.refresh_track_cards(); }
+                    Err(why) => self.state.toast.show(why),
+                }
                 true
             }
             AppCommand::TrackTransitionSubject { transition_id } => {
@@ -41,7 +69,7 @@ impl KlippApp {
     /// Start tracking the subject through `clip_id`: the model checked
     /// (its download asked for, never begun, when it isn't there), the
     /// matte added to the grade as one undo step, the pass started.
-    fn track_subject(&mut self, clip_id: klipp_core::ClipId, model_name: &str, cut_out: bool, needs_refresh: &mut bool) {
+    fn track_subject(&mut self, clip_id: klipp_core::ClipId, model_name: &str, into: Option<klipp_core::SubjectMatteUse>, needs_refresh: &mut bool) {
         let model = model_of(model_name);
         let seq = self.state.sequence();
         let Some(clip) = seq.all_clips().find(|c| c.id == clip_id).cloned() else { return };
@@ -59,7 +87,7 @@ impl KlippApp {
         let Some((model_id, weights)) = subject_matte::model_path(model) else {
             // The download is offered, not begun; the track starts once
             // the model is there (`tick_track_subject`).
-            self.state.pending_track_subject = Some((AppCommand::TrackSubject { clip_id, model: model_name.to_string(), cut_out }, model_name.to_string()));
+            self.state.pending_track_subject = Some((AppCommand::TrackSubject { clip_id, model: model_name.to_string(), into }, model_name.to_string()));
             let id = *model.ids().last().expect("a model id");
             self.request_model_download(id);
             return;
@@ -79,17 +107,16 @@ impl KlippApp {
         // Bound by the clip's media and the model, it follows a relink
         // (#1881).
         let subject = if model == MatteModel::Foreground { klipp_nodes::SubjectMatte::Foreground } else { klipp_nodes::SubjectMatte::Subject };
-        // The Output's alpha already taken by another matte (a key mixer,
-        // a window) is refused by name, never replaced (#73).
-        if let Some(why) = cut_out.then(|| alpha_taken(clip.grade(), subject)).flatten() {
-            self.state.toast.show(why);
-            return;
-        }
-        if !subject_bound(clip.grade(), subject, cut_out) {
-            let chosen = self.state.selected_node_id;
-            let edited = super::colour::edit_clip_graph(&mut self.state, clip_id, &[], true, move |graph| bind_subject(graph, subject, chosen, cut_out));
-            if matches!(edited, Some(Ok(()))) {
-                *needs_refresh = true;
+        if let Some(cut_out) = into.map(|target| target == klipp_core::SubjectMatteUse::CutOut) {
+            // Continuing a card's pass never enters this binding path.
+            if let Some(why) = cut_out.then(|| alpha_taken(clip.grade(), subject)).flatten() {
+                self.state.toast.show(why);
+                return;
+            }
+            if !subject_bound(clip.grade(), subject, cut_out) {
+                let chosen = self.state.selected_node_id;
+                let edited = super::colour::edit_clip_graph(&mut self.state, clip_id, &[], true, move |graph| bind_requested_subject(graph, subject, chosen, into));
+                if matches!(edited, Some(Ok(()))) { *needs_refresh = true; }
             }
         }
         self.start_subject_pass(clip_id, &item, model, dir, from, to + 1.0 / fps);
@@ -152,11 +179,14 @@ impl KlippApp {
     /// looked at, their new frames shown and their cards and the status
     /// bar's line brought up to date.
     pub(super) fn tick_track_subject(&mut self, ctx: &egui::Context) {
+        if std::mem::take(&mut self.state.ai_tools_state.pending_restore_background) {
+            if let Some(clip_id) = self.state.selected_clip { self.send_commands(vec![AppCommand::RestoreBackground { clip_id }]); }
+        }
         if std::mem::take(&mut self.state.ai_tools_state.pending_track_subject) {
             // The tile's Cut Out asks for the clip cut out round it (#73).
             let cut_out = std::mem::take(&mut self.state.ai_tools_state.pending_cut_out);
             match self.state.selected_clip {
-                Some(clip_id) => self.send_commands(vec![AppCommand::TrackSubject { clip_id, model: "subject".into(), cut_out }]),
+                Some(clip_id) => self.send_commands(vec![AppCommand::TrackSubject { clip_id, model: "subject".into(), into: Some(if cut_out { klipp_core::SubjectMatteUse::CutOut } else { klipp_core::SubjectMatteUse::Grade }) }]),
                 None => self.state.toast.show("Select a clip to track its subject"),
             }
         }
@@ -415,6 +445,9 @@ pub(super) fn alpha_taken(graph: &klipp_nodes::NodeGraph, model: klipp_nodes::Su
     }
     let node = graph.nodes.iter().find(|n| n.id == there)?;
     let name = if node.label.is_empty() { node.kind.display_name().to_string() } else { node.label.clone() };
+    if graph.cut_out_matte().is_some() {
+        return Some(format!("The grade's alpha already takes \"{name}\": use Restore Background first to cut the clip out by another subject"));
+    }
     Some(format!("The grade's alpha already takes \u{201c}{name}\u{201d}: unwire it from the Output first to cut the clip out by the subject"))
 }
 
@@ -448,6 +481,57 @@ pub(super) fn tracking_line(name: &str, progress: f32, elapsed: std::time::Durat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restore_background_then_continue_does_not_rebind_the_matte() {
+        use klipp_nodes::SubjectMatte::Subject;
+        let mut graph = klipp_nodes::NodeGraph::default();
+        bind_requested_subject(&mut graph, Subject, None, Some(klipp_core::SubjectMatteUse::CutOut));
+        assert!(graph.restore_background());
+        let restored = graph.clone();
+        bind_requested_subject(&mut graph, Subject, None, None);
+        assert_eq!(graph, restored, "continuing adds neither a correction nor an alpha binding");
+        bind_requested_subject(&mut graph, Subject, None, Some(klipp_core::SubjectMatteUse::Grade));
+        assert_ne!(graph, restored, "an explicit Track Subject still binds the grade");
+        assert!(subject_bound(&graph, Subject, false));
+    }
+
+    #[test]
+    fn restore_background_is_one_undoable_edit() {
+        use klipp_nodes::SubjectMatte::Subject;
+        for shared in [false, true] {
+            let mut state = AppState::default();
+            let t = klipp_core::RationalTime::from_secs_f64;
+            let mut clip = klipp_timeline::Clip::gap(t(0.0, 24), t(4.0, 24));
+            let id = clip.id;
+            let mut graph = klipp_nodes::NodeGraph::default();
+            bind_subject(&mut graph, Subject, None, true);
+            if shared { bind_subject(&mut graph, Subject, None, false); }
+            let matte = graph.cut_out_matte().unwrap();
+            clip.set_grade(graph.clone());
+            let mut track = klipp_timeline::Track::new("V1", klipp_timeline::TrackKind::Video);
+            track.clips.push(clip);
+            state.sequences[0].tracks = vec![track];
+            state.selected_node_id = Some(matte);
+            restore_clip_background(&mut state, id).unwrap();
+            assert_eq!(state.undo_depth(), 1);
+            let restored = state.sequence().all_clips().find(|c| c.id == id).unwrap().grade().clone();
+            assert!(restored.cut_out_matte().is_none());
+            assert_eq!(restored.nodes.iter().any(|n| n.id == matte), shared);
+            assert_eq!(state.selected_node_id, shared.then_some(matte));
+            for redo in [false, true] {
+                let entry = if redo { state.take_redo() } else { state.take_undo() }.unwrap();
+                let mut doc = klipp_document::apply::DocumentView {
+                    sequences: &mut state.sequences, active: state.active_sequence_idx,
+                    media_pool: &mut state.media_pool, fps: &mut state.fps,
+                };
+                if redo { doc.apply_forward(&entry.command); } else { doc.apply_inverse(&entry.command); }
+                assert_eq!(state.sequence().all_clips().find(|c| c.id == id).unwrap().grade(), if redo { &restored } else { &graph });
+            }
+            assert!(restore_clip_background(&mut state, id).is_err());
+            assert_eq!(state.undo_depth(), 1);
+        }
+    }
 
     /// The subject matte gates the first correction, replacing a matte
     /// that gated it, as Remove Background's still does.

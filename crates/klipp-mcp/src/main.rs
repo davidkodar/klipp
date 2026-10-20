@@ -1994,13 +1994,13 @@ fn tool_definitions_for(structured: bool) -> Vec<Value> {
              }),
              vec![]),
         tool("klipp_track_subject",
-             "Track the subject through a clip: a matte that follows it, made in the background and added to the clip's grade as one undo step; returns a job_id. The model is fetched only with download_model. Details: klipp_guide topic track_subject.",
+             "Track a clip's subject into grade or cut_out; returns a job_id. into whole restores its background in one undo step, without a job. Models fetched only with download_model. Details: klipp_guide topic track_subject.",
              json!({
                  "clip_id": { "type": "string", "description": "From klipp_list_clips" },
                  "transition_id": { "type": "string", "description": "In place of clip_id: a piece transition whose pieces cut round the subject" },
                  "model": { "type": "string", "enum": ["subject", "foreground"], "description": "subject: one detected subject, followed (default); foreground: the whole foreground" },
                  "download_model": { "type": "boolean", "description": "Fetch the model first when missing (the user should know a download happens)" },
-                 "into": { "type": "string", "enum": ["grade", "cut_out"] },
+                 "into": { "type": "string", "enum": ["grade", "cut_out", "whole"] },
              }),
              vec![]),
         tool("klipp_search_transcripts",
@@ -2912,6 +2912,8 @@ mod wait_tests {
         assert_eq!(cut["into"], "cut_out");
         let request: klipp_control::protocol::Request = serde_json::from_value(json!({ "id": 2, "method": "track_subject", "clip_id": "c1", "into": "cut_out" })).unwrap_or_else(|e| panic!("{e}"));
         assert!(matches!(request.command, klipp_control::protocol::ControlCommand::TrackSubject { into: Some(ref i), .. } if i == "cut_out"));
+        let whole = tool_to_command("klipp_track_subject", &json!({ "clip_id": "c1", "into": "whole" })).unwrap();
+        assert_eq!(whole["into"], "whole");
         let transition = tool_to_command("klipp_track_subject", &json!({ "transition_id": "t1" })).unwrap();
         assert_eq!(transition, json!({ "method": "track_subject", "transition_id": "t1" }));
     }

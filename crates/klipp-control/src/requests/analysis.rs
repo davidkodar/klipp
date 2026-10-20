@@ -2,6 +2,7 @@
 
 #[allow(unused_imports)]
 use crate::*;
+use klipp_timeline::GradeAccess;
 
 pub(crate) fn respond(
     ctx: &ControlContext,
@@ -47,11 +48,27 @@ pub(crate) fn respond(
             Ok(json!({ "items": statuses, "models_downloaded": downloaded, "next": next }))
         }
 
+        ControlCommand::RestoreBackground { clip_id } => {
+            let clip_id = existing_clip_id(ctx, &clip_id)?;
+            {
+                let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
+                let clip = seq.all_clips().find(|c| c.id == clip_id).ok_or("clip not found")?;
+                if clip.grade().cut_out_matte().is_none() { return Err("This clip is not cut out by a subject or image matte".into()); }
+            }
+            let mut send = sender!(ctx, collect);
+            send(AppCommand::RestoreBackground { clip_id })
+        }
+
         ControlCommand::TrackSubject { clip_id, transition_id, model, download_model, into } => {
+            if into.as_deref().map(str::trim) == Some("whole") {
+                if transition_id.is_some() { return Err("into whole is for a clip, not a transition".into()); }
+                let clip_id = clip_id.ok_or("give the clip_id whose background should be restored")?;
+                return respond(ctx, ControlCommand::RestoreBackground { clip_id }, collect);
+            }
             let cut_out = match into.as_deref().map(str::trim) {
                 None | Some("grade") => false,
                 Some("cut_out") => true,
-                Some(other) => return Err(format!("into is \"grade\" or \"cut_out\", not \"{other}\"")),
+                Some(other) => return Err(format!("into is \"grade\", \"cut_out\" or \"whole\", not \"{other}\"")),
             };
             if cut_out && transition_id.is_some() {
                 return Err("a transition's subject is cut round by its pieces: into is for a clip".into());
@@ -106,7 +123,7 @@ pub(crate) fn respond(
             let mut send = sender!(ctx, collect);
             let mut reply = match &transition {
                 Some(ts) => send(AppCommand::TrackTransitionSubject { transition_id: ts.transition })?,
-                None => send(AppCommand::TrackSubject { clip_id: clip, model: name, cut_out })?,
+                None => send(AppCommand::TrackSubject { clip_id: clip, model: name, into: Some(if cut_out { klipp_core::SubjectMatteUse::CutOut } else { klipp_core::SubjectMatteUse::Grade }) })?,
             };
             reply["job_id"] = json!(format!("{}:{}", media.0, klipp_analysis::subject_matte::ID));
             reply["next"] = json!("The matte is made in the background and shows on the clip's grade as it goes. Read job_status with this job_id for its progress; cancel_job stops it and keeps the frames made.");

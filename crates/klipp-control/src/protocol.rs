@@ -494,6 +494,8 @@ pub enum ControlCommand {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+    /// Remove an AI matte from the clip’s Output alpha in one undo step.
+    RestoreBackground { clip_id: String },
     /// Track the subject through a clip (#239): a matte that follows it
     /// frame by frame, made in the background and bound to the clip's
     /// grade (gating its correction) in one undo step. Its job is
@@ -516,7 +518,8 @@ pub enum ControlCommand {
         #[serde(default)]
         download_model: bool,
         /// "grade" (the default: the matte gates the clip's correction) or
-        /// "cut_out" (the clip cut out round the subject, #73). A
+        /// "cut_out" (the clip cut out round the subject, #73), or
+        /// "whole" (restore background without starting/fetching a model). A
         /// transition's subject takes neither.
         #[serde(default)]
         into: Option<String>,
