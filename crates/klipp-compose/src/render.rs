@@ -2689,7 +2689,7 @@ impl Renderer {
                     let motion=std::mem::take(&mut source_fx.motion);
                     if !source_fx.is_default()
                         || motion.enter.iter().chain(motion.exit.iter())
-                        .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight)) {return None;}
+                        .any(|m|!matches!(m.kind,klipp_timeline::MotionKind::Fade|klipp_timeline::MotionKind::Rise|klipp_timeline::MotionKind::Drop|klipp_timeline::MotionKind::SlideLeft|klipp_timeline::MotionKind::SlideRight|klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown)) {return None;}
                     // Shapes pose as a whole layer: character/word stagger has
                     // no effect, and both fades use unit zero as on the CPU.
                     let (enter,exit)=motion.progress(clip_time as f32,Some(total),0);
@@ -2704,6 +2704,13 @@ impl Renderer {
                     let enter_travel=travel(motion.enter,enter);
                     let exit_travel=travel(motion.exit,exit);
                     let moves=motion.enter.iter().chain(motion.exit.iter()).any(|m|m.kind!=klipp_timeline::MotionKind::Fade);
+                    let scales=motion.enter.iter().chain(motion.exit.iter()).any(|m|matches!(m.kind,klipp_timeline::MotionKind::ScaleUp|klipp_timeline::MotionKind::ScaleDown));
+                    let motion_scale=motion.enter.map_or(1.0,|m|m.pose(enter,1.0).3)*motion.exit.map_or(1.0,|m|m.pose(exit,1.0).3);
+                    let anchor=match motion.anchor_at(enter,exit) {
+                        Some(klipp_core::title_motion::MotionAnchor::Point{x,y})=>[x,y],
+                        Some(klipp_core::title_motion::MotionAnchor::Solid) if scales=>return None,
+                        _=>[0.5,0.5],
+                    };
                     let gradient=shape.gradient.as_ref().filter(|g|g.enabled).map(title_gradient_fill);
                     let scale=klipp_title::frame_scale(width,height);
                     let gpu=self.executor.gpu_pipeline_or_init()?;
@@ -2711,9 +2718,13 @@ impl Renderer {
                     let (hw,hh)=((transform.size.x*width as f32*0.5).max(0.0),(transform.size.y*height as f32*0.5).max(0.0));
                     if !gpu.stack_title_rectangle(slot,[cx,cy,hw,hh],[cx+(transform.anchor_norm.x-0.5)*hw*2.0,cy+(transform.anchor_norm.y-0.5)*hh*2.0],transform.rotation.to_radians(),corner_radius.max(0.0)*scale,
                         shape.fill.unwrap_or([0;4]),shape.stroke.map(|s|(s.color,s.width.max(0.0)*scale)),shape_straight,gradient.as_ref()) {return None;}
-                    if motion.is_active() && (!gpu.stack_title_precision(slot,true)
-                        || (moves && !gpu.stack_title_motion_translate(slot,enter_travel,exit_travel))
-                        || !gpu.stack_title_motion_alpha(slot,fade)) {return None;}
+                    if motion.is_active() {
+                        if !gpu.stack_title_precision(slot,true) {return None;}
+                        if scales {
+                            if !gpu.stack_title_motion_scale(slot,enter_travel,exit_travel,motion_scale,fade,anchor) {return None;}
+                        } else if (moves && !gpu.stack_title_motion_translate(slot,enter_travel,exit_travel))
+                            || !gpu.stack_title_motion_alpha(slot,fade) {return None;}
+                    }
                     if !edges.is_none() && (!gpu.stack_title_precision(slot,true)
                         || !gpu.stack_title_alpha(slot,[edges.top,edges.bottom,edges.left,edges.right],1.0)) {return None;}
                     // Scene objects arrive with opacity stripped; matte sources retain it.

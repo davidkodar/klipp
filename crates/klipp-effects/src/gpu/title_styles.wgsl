@@ -195,6 +195,19 @@ fn glyph_store(dst:u32,alpha:f32,px:i32,py:i32) {
         store_rgba(dst,over(vec4<f32>(p.color.rgb,a),load_dst(dst)));
     } else {store_rgba(dst,vec4<f32>(p.color.rgb,max(alpha,load_dst(dst).a)));}
 }
+// Normalized byte channels are zero or normal f16 values. Explicit mantissa
+// rounding keeps the CPU sprite boundary even if pack/unpack is optimized away.
+fn byte_half(v: vec4<f32>) -> vec4<f32> {
+    let bits=bitcast<vec4<u32>>(v);
+    return bitcast<vec4<f32>>((bits+vec4<u32>(4095u)+((bits>>vec4<u32>(13u))&vec4<u32>(1u)))&vec4<u32>(0xffffe000u));
+}
+fn motion_tap(pos: vec2<i32>) -> vec4<f32> {
+    if any(pos<vec2<i32>(i32(input[0]),i32(input[1]))) || any(pos>=vec2<i32>(i32(input[2]),i32(input[3]))) {return vec4<f32>(0.0);}
+    return load_rgba(u32(pos.y)*p.width+u32(pos.x)+1u);
+}
+fn motion_premult(pos: vec2<i32>) -> vec4<f32> {
+    let v=motion_tap(pos);return vec4<f32>(v.rgb*v.a,v.a);
+}
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i=gid.x;
@@ -217,6 +230,34 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         output[0]=x0;output[1]=y0;output[2]=x1;output[3]=y1;
     } else if p.op==40u {
         if x<input[0] || y<input[1] || x>=input[2] || y>=input[3] {store_rgba(i,vec4<f32>(0.0));}
+    } else if p.op==42u {
+        store_rgba(i,byte_half(authored_at(i32(x),y)));
+    } else if p.op==43u {
+        var pixel=vec4<f32>(0.0);
+        if input[2]>input[0] && input[3]>input[1] {
+            let height=f32(input[3]-input[1]);
+            let a=p.row0.x*(height*p.row0.y)*p.row0.zw;
+            let b=p.row1.x*(height*p.row1.y)*p.row1.zw;
+            let shift=sign(a+b)*floor(abs(a+b)+vec2<f32>(0.5));
+            let lo=vec2<f32>(f32(input[0]),f32(input[1]));
+            let hi=vec2<f32>(f32(input[2]),f32(input[3]));
+            let anchor=lo+p.row2.zw*(hi-lo);
+            if abs(p.row2.x-1.0)<0.000001 {
+                pixel=motion_tap(vec2<i32>(vec2<f32>(f32(x),f32(y))-shift));
+                pixel.a*=p.row2.y;
+            } else {
+                let src=(vec2<f32>(f32(x),f32(y))+vec2<f32>(0.5)-shift-anchor)/p.row2.x+anchor-vec2<f32>(0.5);
+                let base=vec2<i32>(floor(src));let t=src-floor(src);
+                var v=motion_premult(base)*((1.0-t.x)*(1.0-t.y));
+                v+=motion_premult(base+vec2<i32>(1,0))*(t.x*(1.0-t.y));
+                v+=motion_premult(base+vec2<i32>(0,1))*((1.0-t.x)*t.y);
+                v+=motion_premult(base+vec2<i32>(1,1))*(t.x*t.y);
+                let alpha=clamp(v.a*p.row2.y,0.0,1.0);
+                pixel.a=alpha;
+                if v.a>0.0 && alpha*255.0>=0.5 {pixel=vec4<f32>(v.rgb/v.a,alpha);}
+            }
+        }
+        store_rgba(i,floor(clamp(pixel,vec4<f32>(0.0),vec4<f32>(1.0))*255.0+0.5)/255.0);
     } else if p.op==41u {
         var pixel=vec4<f32>(0.0);
         if input[2]>input[0] && input[3]>input[1] {

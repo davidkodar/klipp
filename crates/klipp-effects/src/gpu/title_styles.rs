@@ -1050,6 +1050,17 @@ impl GpuEffectsPipeline {
     /// Each motion is [away, distance, direction_x, direction_y]; travel uses
     /// the painted layer's clipped height, measured entirely on GPU.
     pub fn stack_title_motion_translate(&mut self, slot: usize, enter: [f32;4], exit: [f32;4]) -> bool {
+        self.stack_title_motion_pose(slot,enter,exit,None)
+    }
+
+    /// Scale around a point in the clipped source bounds, sampling the CPU's
+    /// half-float sprite in premultiplied authored colour before byte rounding.
+    pub fn stack_title_motion_scale(&mut self, slot: usize, enter: [f32;4], exit: [f32;4], scale: f32, opacity: f32, anchor: [f32;2]) -> bool {
+        if !scale.is_finite() || scale<=0.0 || !opacity.is_finite() || anchor.iter().any(|v|!v.is_finite()) {return false;}
+        self.stack_title_motion_pose(slot,enter,exit,Some([scale,opacity.clamp(0.0,1.0),anchor[0].clamp(0.0,1.0),anchor[1].clamp(0.0,1.0)]))
+    }
+
+    fn stack_title_motion_pose(&mut self, slot: usize, enter: [f32;4], exit: [f32;4], scaled: Option<[f32;4]>) -> bool {
         if enter.iter().chain(exit.iter()).any(|v|!v.is_finite())
             || !self.stack_title_alpha(slot,[0.0;4],1.0) {return false;}
         let (w,h)=self.stack_dims;
@@ -1064,14 +1075,31 @@ impl GpuEffectsPipeline {
                 mapped_at_creation:false,
             }));
         }
+        if scaled.is_some() {
+            let Some(to_authored)=inverse(self.authored_to_working) else {return false;};
+            let params=StyleParams {width:w,height:h,frame_width:w,op:42,x0:0,y0:0,
+                offset_x:0,offset_y:0,color:[0.0;4],matrix:to_authored};
+            self.write_params(&params);
+            let source=&self.stack_layers[slot];let scratch=self.title_post_scratch.as_ref().unwrap();
+            self.stack_pass(&self.title_style_pipeline,source,scratch,(w*h).div_ceil(WORKGROUP_SIZE),"title half-float scale source");
+            let mut enc=self.encoder(Some("title scale source copy"));
+            enc.copy_buffer_to_buffer(scratch,0,source,0,bytes);self.submit(enc);
+        }
         if !self.stack_title_alpha_bounds(slot) {return false;}
         let source=&self.stack_layers[slot];
         let scratch=self.title_post_scratch.as_ref().unwrap();
         let mut enc=self.encoder(Some("title motion source copy"));
         enc.copy_buffer_to_buffer(source,0,scratch,16,bytes);self.submit(enc);
-        self.write_params(&StyleParams {width:w,height:h,frame_width:w,op:41,x0:0,y0:0,
-            offset_x:0,offset_y:0,color:[0.0;4],matrix:[enter,exit,[0.0;4]]});
+        self.write_params(&StyleParams {width:w,height:h,frame_width:w,op:if scaled.is_some() {43}else{41},x0:0,y0:0,
+            offset_x:0,offset_y:0,color:[0.0;4],matrix:[enter,exit,scaled.unwrap_or([0.0;4])]});
         self.stack_pass(&self.title_style_pipeline,scratch,source,(w*h).div_ceil(WORKGROUP_SIZE),"title whole-layer motion");
+        if scaled.is_some() {
+            self.write_params(&StyleParams {width:w,height:h,frame_width:w,op:11,x0:0,y0:0,
+                offset_x:0,offset_y:0,color:[0.0;4],matrix:self.authored_to_working});
+            self.stack_pass(&self.title_style_pipeline,source,scratch,(w*h).div_ceil(WORKGROUP_SIZE),"title scaled working space");
+            let mut enc=self.encoder(Some("title scaled layer copy"));
+            enc.copy_buffer_to_buffer(scratch,0,source,0,bytes);self.submit(enc);
+        }
         true
     }
 
