@@ -181,6 +181,8 @@ pub struct AiToolsState {
     /// With `pending_apply_to_clip` or `pending_track_subject`: the matte
     /// cuts the clip out (its alpha) instead of gating its grade (#73).
     pub pending_cut_out: bool,
+    pub can_restore_background: bool,
+    pub pending_restore_background: bool,
     /// Set by the panel's "Re-run" button. Drained by the
     /// dispatcher to reset inference back to Idle (keeping
     /// prompts captured so the user can tweak + run again).
@@ -314,6 +316,8 @@ impl Default for AiToolsState {
             recent_inferences: std::collections::VecDeque::with_capacity(20),
             pending_apply_to_clip: false,
             pending_cut_out: false,
+            can_restore_background: false,
+            pending_restore_background: false,
             pending_rerun: false,
         }
     }

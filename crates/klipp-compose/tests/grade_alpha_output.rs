@@ -159,3 +159,37 @@ fn a_placed_cut_out_clip_is_cut_where_it_lands_on_the_stack() {
     let worst = cpu.iter().zip(&stack).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
     assert!(worst <= 2, "the stack cut the placed clip elsewhere than the CPU route: {worst} levels apart");
 }
+
+#[test]
+fn restore_background_matches_the_frame_before_cut_out() {
+    let path = std::env::temp_dir().join(format!("restore-background-{}.png", ClipId::new()));
+    image::GrayImage::from_fn(W, H, |x, _| image::Luma([if x < W / 2 { 0 } else { 255 }])).save(&path).unwrap();
+    let mut clip = graded(false);
+    let before = clip.grade().clone();
+    let mut cut = before.clone();
+    let id = klipp_nodes::NodeId::new_v4();
+    cut.nodes.push(klipp_nodes::Node {
+        id, kind: NodeKind::ExternalMatte, label: "Cut out".into(), enabled: true,
+        params: klipp_nodes::NodeParams { matte_image_path: Some(path.clone()), ..Default::default() },
+        keyframes: Default::default(), output_link: None, input_links: Vec::new(),
+    });
+    cut.edges.push(Edge { from_node: id, from_port: 0, to_node: cut.output_node_id, to_port: 1 });
+    let mut restored = cut.clone();
+    assert!(restored.restore_background());
+    let mut renderer = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    renderer.set_gpu_enabled(false);
+    let mut source = Grey::default();
+    source.0.insert(clip.id, 0.18);
+    let frames = [before, cut, restored].map(|graph| {
+        clip.set_grade(graph);
+        let mut seq = Sequence::new_default();
+        seq.resolution = klipp_core::Resolution { width: W, height: H };
+        let mut track = Track::new("V1", TrackKind::Video);
+        track.clips = vec![clip.clone()];
+        seq.tracks = vec![track];
+        renderer.render(&seq, tc(1.0), W, H, &mut source, RenderOptions::default())
+    });
+    std::fs::remove_file(path).unwrap();
+    assert_ne!(frames[0], frames[1], "the matte must visibly cut the frame");
+    assert_eq!(frames[0], frames[2], "restore returns every pixel to the original");
+}

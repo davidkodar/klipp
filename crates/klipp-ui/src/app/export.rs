@@ -599,7 +599,7 @@ pub(super) fn matte_gap_lines(
                     Some(m) => if m == 1 { "foreground" } else { "subject" },
                     None => klipp_nodes::matte_sequence::read_manifest(&gap.folder).map_or("subject", |m| crate::subject_track::model_name(&m.model)),
                 };
-                (AppCommand::TrackSubject { clip_id: gap.clip, model: model.to_string(), cut_out: false }, "")
+                (AppCommand::TrackSubject { clip_id: gap.clip, model: model.to_string(), into: Some(klipp_core::SubjectMatteUse::Grade) }, "")
             }
         };
         out.push((gap.clip, track, format!("{name} at {}{place}: {how}", clip.timeline_in.to_timecode_string())));

@@ -492,6 +492,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetNodeColorMatch { .. }
         | AppCommand::SetExternalMattePath { .. }
         | AppCommand::TrackSubject { .. }
+        | AppCommand::RestoreBackground { .. }
         | AppCommand::SetExternalMatteChannel { .. }
         | AppCommand::SetMatteCombineOp { .. }
         | AppCommand::SetNodeLayerMixerInput { .. }

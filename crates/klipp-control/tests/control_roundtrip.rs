@@ -3697,3 +3697,33 @@ fn timeline_import_returns_the_same_report_and_reports_failures() {
     assert!(!failed["error"].as_str().unwrap().is_empty());
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn restore_background_whole_routes_without_a_model_or_job() {
+    let mut h = harness();
+    let clip_id = h.ids.clip_a.clone();
+    {
+        let mut seq = h.sequence.write().unwrap();
+        let clip = seq.tracks.iter_mut().flat_map(|t| &mut t.clips).find(|c| c.id.to_string() == clip_id).unwrap();
+        let mut graph = clip.grade().clone();
+        let id = klipp_nodes::NodeId::new_v4();
+        graph.nodes.push(klipp_nodes::Node {
+            id, kind: klipp_nodes::NodeKind::ExternalMatte, label: "Subject".into(), enabled: true,
+            params: klipp_nodes::NodeParams { matte_subject: Some(klipp_nodes::SubjectMatte::Subject), ..Default::default() },
+            keyframes: Default::default(), output_link: None, input_links: Vec::new(),
+        });
+        graph.edges.push(klipp_nodes::Edge { from_node: id, from_port: 0, to_node: graph.output_node_id, to_port: 1 });
+        clip.set_grade(graph);
+    }
+    let result = h.ok(json!({"method":"track_subject", "clip_id":clip_id, "into":"whole", "model":"not-a-model", "download_model":true}));
+    assert!(result.get("job_id").is_none());
+    assert!(matches!(h.cmd_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap(), klipp_core::AppCommand::RestoreBackground { clip_id: id } if id.to_string() == clip_id));
+    assert!(h.cmd_rx.try_recv().is_err());
+    let reply = h.call(json!({"method":"track_subject", "transition_id":"not-a-transition", "into":"whole"}));
+    assert_eq!(reply["ok"], false);
+    assert!(reply["error"].as_str().unwrap().contains("not a transition"));
+    let other = h.ids.clip_b.clone();
+    let reply = h.call(json!({"method":"track_subject", "clip_id":other, "into":"whole"}));
+    assert_eq!(reply["ok"], false);
+    assert!(h.cmd_rx.try_recv().is_err());
+}

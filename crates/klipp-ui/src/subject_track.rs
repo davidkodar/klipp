@@ -159,7 +159,7 @@ pub fn card_ui(ui: &mut egui::Ui, card: Option<&TrackCard>, clip_id: klipp_core:
             ui.label(egui::RichText::new(card.line()).small().color(theme.marker_warning));
             if ui.small_button("Track the rest").on_hover_text("Track the subject through the frames this clip shows that have no matte yet").clicked() {
                 // Bound already: the rest tracked, the binding as it is.
-                cmds.push(AppCommand::TrackSubject { clip_id, model: card.model.to_string(), cut_out: card.cuts_out && card.gates.is_none() });
+                cmds.push(AppCommand::TrackSubject { clip_id, model: card.model.to_string(), into: None });
             }
         } else {
             ui.label(egui::RichText::new(card.line()).small().color(theme.text_secondary));
@@ -248,7 +248,7 @@ mod tests {
         };
         let card = |running, covered| TrackCard { running, covered, needed: 290, lost: 0, model: "subject", gates: Some("Corrector".into()), cuts_out: false };
         assert!(matches!(&run(card(Some(0.4), 116), "Cancel")[..], [klipp_core::AppCommand::CancelTrackSubject { clip_id }] if *clip_id == clip));
-        assert!(matches!(&run(card(None, 116), "Track the rest")[..], [klipp_core::AppCommand::TrackSubject { clip_id, model, .. }] if *clip_id == clip && model == "subject"));
+        assert!(matches!(&run(card(None, 116), "Track the rest")[..], [klipp_core::AppCommand::TrackSubject { clip_id, model, into: None }] if *clip_id == clip && model == "subject"));
         assert!(run(card(None, 290), "").is_empty());
     }
 

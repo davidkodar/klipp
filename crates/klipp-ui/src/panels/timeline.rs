@@ -9066,13 +9066,13 @@ impl TimelinePanel {
                         }
                     } else {
                         if ui.button("Track Subject").on_hover_text("A matte that follows the person through the clip, gating its grade. Made in the background.").clicked() {
-                            cmds.push(AppCommand::TrackSubject { clip_id, model: "subject".into(), cut_out: false });
+                            cmds.push(AppCommand::TrackSubject { clip_id, model: "subject".into(), into: Some(klipp_core::SubjectMatteUse::Grade) });
                             ui.close_menu();
                         }
                         // Or the clip cut out round them, over the tracks
                         // below (#73).
                         if ui.button("Cut Out Subject").on_hover_text("The clip cut out round the person, frame by frame: the tracks below show everywhere else. Made in the background.").clicked() {
-                            cmds.push(AppCommand::TrackSubject { clip_id, model: "subject".into(), cut_out: true });
+                            cmds.push(AppCommand::TrackSubject { clip_id, model: "subject".into(), into: Some(klipp_core::SubjectMatteUse::CutOut) });
                             ui.close_menu();
                         }
                     }
@@ -9094,6 +9094,12 @@ impl TimelinePanel {
                             ui.close_menu();
                         }
                     }
+                }
+
+                let can_restore = state.sequence().all_clips().find(|c|c.id==clip_id).is_some_and(|c| c.grade().cut_out_matte().is_some());
+                if can_restore && ui.button("Restore Background").clicked() {
+                    cmds.push(AppCommand::RestoreBackground { clip_id });
+                    ui.close_menu();
                 }
 
                 // Join Through Edit (#683): close a cut that is not one,
