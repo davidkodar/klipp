@@ -859,7 +859,7 @@ fn rectangle_motion_fades_keep_unsupported_combinations_on_cpu() {
             if matches!(object.content,TitleObjectContent::Shape(_)) {
                 // Unsupported shape motions still explicitly decline.
                 object.fx_mut().motion.enter.as_mut().unwrap().kind=match case {
-                    0=>MotionKind::MaskDrop,1=>MotionKind::Pop,_=>MotionKind::Typewriter,
+                    0=>MotionKind::Larger,1=>MotionKind::Pop,_=>MotionKind::Typewriter,
                 };
             }
         }
@@ -1271,12 +1271,14 @@ fn rectangle_solid_anchor_ties_empty_and_translucent_sources() {
     }
 }
 
-fn add_rectangle_maskrise(seq: &mut Sequence, mode: u8) {
+fn add_rectangle_mask_reveal(seq: &mut Sequence, mode: u8, drop: bool) {
     use klipp_timeline::{MotionKind,TitleObjectContent};
-    let pairs=[(MotionKind::MaskRise,MotionKind::Fade),(MotionKind::Fade,MotionKind::MaskRise),
-        (MotionKind::MaskRise,MotionKind::MaskRise),(MotionKind::MaskRise,MotionKind::SlideLeft),
-        (MotionKind::ScaleUp,MotionKind::MaskRise),(MotionKind::MaskRise,MotionKind::ScaleDown),
-        (MotionKind::Blur,MotionKind::MaskRise),(MotionKind::MaskRise,MotionKind::Blur)];
+    let reveal=if drop {MotionKind::MaskDrop}else{MotionKind::MaskRise};
+    let pairs=[(reveal,MotionKind::Fade),(MotionKind::Fade,reveal),
+        (reveal,reveal),(reveal,MotionKind::SlideLeft),
+        (MotionKind::ScaleUp,reveal),(reveal,MotionKind::ScaleDown),
+        (MotionKind::Blur,reveal),(reveal,MotionKind::Blur),
+        (MotionKind::MaskRise,MotionKind::MaskDrop)];
     let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
     for object in &mut title.objects {
         if matches!(object.content,TitleObjectContent::Shape(_)) {
@@ -1285,8 +1287,8 @@ fn add_rectangle_maskrise(seq: &mut Sequence, mode: u8) {
             (enter.kind,exit.kind)=pairs[mode as usize];
             for m in [enter,exit] {
                 if mode>=2 {m.duration_secs=3.0;}
-                // MaskRise ignores the configurable slide distance on CPU.
-                if m.kind==MotionKind::MaskRise {m.distance=9.0;}
+                // Both mask reveals ignore configurable slide distance on CPU.
+                if matches!(m.kind,MotionKind::MaskRise|MotionKind::MaskDrop) {m.distance=9.0;}
                 if mode==4 {m.anchor=Some(klipp_core::title_motion::MotionAnchor::Solid);}
                 if mode==5 {m.anchor=Some(klipp_core::title_motion::MotionAnchor::Point{x:0.2,y:0.8});}
             }
@@ -1294,10 +1296,10 @@ fn add_rectangle_maskrise(seq: &mut Sequence, mode: u8) {
     }
 }
 fn maskrise_rectangle_panel(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
-    let mut seq=combined_faded_panel(fitted,mode%2,w,h);add_rectangle_maskrise(&mut seq,mode);seq
+    let mut seq=combined_faded_panel(fitted,mode%2,w,h);add_rectangle_mask_reveal(&mut seq,mode,false);seq
 }
 fn maskrise_rectangle_matte(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
-    let mut seq=faded_rectangle_matte(fitted,mode%4,w,h);add_rectangle_maskrise(&mut seq,mode);seq
+    let mut seq=faded_rectangle_matte(fitted,mode%4,w,h);add_rectangle_mask_reveal(&mut seq,mode,false);seq
 }
 #[test]
 fn rectangle_maskrise_matches_cpu_and_stays_resident() {check_rectangle_motion_fade_modes(maskrise_rectangle_panel,8);}
@@ -1310,3 +1312,16 @@ fn rectangle_maskrise_original_rows_clip_translated_and_empty_sources() {
     check_rectangle_slide_translation(false,true);
     check_rectangle_slide_translation(true,true);
 }
+
+fn maskdrop_rectangle_panel(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=combined_faded_panel(fitted,mode%2,w,h);add_rectangle_mask_reveal(&mut seq,mode,true);seq
+}
+fn maskdrop_rectangle_matte(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=faded_rectangle_matte(fitted,mode%4,w,h);add_rectangle_mask_reveal(&mut seq,mode,true);seq
+}
+#[test]
+fn rectangle_maskdrop_matches_cpu_and_stays_resident() {check_rectangle_motion_fade_modes(maskdrop_rectangle_panel,9);}
+#[test]
+fn rectangle_maskdrop_mattes_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(maskdrop_rectangle_matte,9);}
+#[test]
+fn rectangle_maskdrop_stays_resident_at_4k() {check_rectangle_motion_fades_at_4k(maskdrop_rectangle_panel);}
