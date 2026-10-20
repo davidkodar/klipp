@@ -2687,9 +2687,7 @@ impl Renderer {
                     let mut source_fx=object.fx().clone();
                     let edges=std::mem::take(&mut source_fx.edge_fade);
                     let motion=std::mem::take(&mut source_fx.motion);
-                    // Combined motion/edge fades retain the CPU route until
-                    // their successive byte-rounding boundaries match.
-                    if !source_fx.is_default() || (motion.is_active() && !edges.is_none())
+                    if !source_fx.is_default()
                         || motion.enter.iter().chain(motion.exit.iter())
                         .any(|m|m.kind!=klipp_timeline::MotionKind::Fade) {return None;}
                     // Shapes pose as a whole layer: character/word stagger has
@@ -2704,7 +2702,7 @@ impl Renderer {
                     if !gpu.stack_title_rectangle(slot,[cx,cy,hw,hh],[cx+(transform.anchor_norm.x-0.5)*hw*2.0,cy+(transform.anchor_norm.y-0.5)*hh*2.0],transform.rotation.to_radians(),corner_radius.max(0.0)*scale,
                         shape.fill.unwrap_or([0;4]),shape.stroke.map(|s|(s.color,s.width.max(0.0)*scale)),shape_straight,gradient.as_ref()) {return None;}
                     if motion.is_active() && (!gpu.stack_title_precision(slot,true)
-                        || !gpu.stack_title_alpha(slot,[0.0;4],fade)) {return None;}
+                        || !gpu.stack_title_motion_alpha(slot,fade)) {return None;}
                     if !edges.is_none() && (!gpu.stack_title_precision(slot,true)
                         || !gpu.stack_title_alpha(slot,[edges.top,edges.bottom,edges.left,edges.right],1.0)) {return None;}
                     // Scene objects arrive with opacity stripped; matte sources retain it.

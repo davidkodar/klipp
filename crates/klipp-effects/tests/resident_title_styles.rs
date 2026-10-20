@@ -137,3 +137,33 @@ fn resident_styles_match_authored_title_composition_without_downloads() {
         );
     }
 }
+
+#[test]
+fn rectangle_motion_alpha_matches_cpu_sprite_rounding_before_edge_fade() {
+    let mut gpu=GpuEffectsPipeline::new().expect("GPU required");
+    let (w,h)=(256,1);
+    let bytes:Vec<u8>=(0..=255u8).flat_map(|a|[180,90,40,a]).collect();
+    let sprite=klipp_title::BoxRaster::from_bytes(&bytes,(w,h),(0,h),(0,w));
+    let edges=klipp_core::title_motion::EdgeFade {left:0.45,right:0.4,top:0.0,bottom:0.0};
+    let fade=klipp_core::title_motion::ScreenFade::new(edges,None).unwrap();
+    for opacity in [0.0,0.2,0.578125,0.9995,1.0] {
+        // Use the actual CPU sprite operation, including f16 storage, rather
+        // than restating the shader's integer rounding in the reference.
+        let posed=klipp_title::pose_sprite(&sprite,w,h,0,0,opacity,1.0,(0.0,0.0),None,None,(0,h));
+        let mut want:Vec<u8>=posed.iter().map(|v|v.round().clamp(0.0,255.0) as u8).collect();
+        fade.apply_rgba8(&mut want,w,h);
+        assert!(gpu.stack_begin(w,h,1));
+        assert!(gpu.stack_layer_from_srgb_u8(0,&bytes));
+        let before=gpu.readback_stats();
+        assert!(gpu.stack_title_motion_alpha(0,opacity));
+        assert!(gpu.stack_title_alpha(0,[0.0,0.0,edges.left,edges.right],1.0));
+        assert_eq!(gpu.readback_stats(),before,"no intermediate download");
+        assert!(gpu.stack_blend(0,1.0,0));
+        assert!(gpu.stack_finish_into_chain(true));
+        let got=gpu.stack_download_linear();
+        for (x,(got,want)) in got.chunks_exact(4).zip(want.chunks_exact(4)).enumerate() {
+            assert!((got[3]*255.0-f32::from(want[3])).abs()<0.001,"alpha={x} opacity={opacity}: {} vs {}",got[3]*255.0,want[3]);
+        }
+        gpu.stack_end();
+    }
+}

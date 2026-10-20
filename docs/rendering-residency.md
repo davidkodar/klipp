@@ -70,9 +70,10 @@ for full-project playback profiling.
   fitted and gradient-filled rectangles. Rectangle entrance/exit fades also
   run on GPU after byte-layer quantization and before object opacity and
   scene blending; non-text stagger is treated as whole-layer motion.
-  Combined motion/edge fades and faded shape matte sources retain CPU fallback
-  until their rounding/boundary pixels match; other shape motion/styles
-  still fall back.
+  Combined motion/edge fades preserve the CPU sprite's half-float alpha
+  rounding before motion opacity, then apply edge fading to the byte layer.
+  Faded shape matte sources retain CPU fallback until their boundary pixels
+  match; other shape motion/styles still fall back.
 - Supported text sources compose styles, glitch and chromatic processing on GPU,
   followed by object rotation, edge/focus fades, authored-colour focus blur, opacity
   and scene blend/mask composition.
