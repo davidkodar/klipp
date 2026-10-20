@@ -768,7 +768,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             }
         }
         // Compare detections and title pixels at the same timeline time,
-        // after both pictures' placement/crop and known foreground occlusion.
+        // after both pictures' placement and known foreground occlusion.
         let faces = crate::qc_geometry::detections(seq, pool, transcripts, a, b, true);
         let mut incomplete = faces.incomplete;
         let mut overlaps = |sample| match crate::qc_geometry::title_overlap(seq, transcripts, c, sample, 0.0) {
@@ -785,7 +785,7 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
             incomplete |= people.incomplete;
         }
         if incomplete {
-            add(Severity::Note, "title_overlap_unchecked", Some(a), format!("Some face/person overlap samples for {} could not be checked in composed coordinates", clip_label(pool, c)), "Inspect the composed frames: masks, warps, transitions and unsupported placement need a visual check");
+            add(Severity::Note, "title_overlap_unchecked", Some(a), format!("Some face/person overlap samples for {} could not be checked in composed coordinates", clip_label(pool, c)), "Inspect the composed frames: crops, masks, warps, transitions and unsupported placement need a visual check");
         }
         let low = td.objects.iter().any(|o| o.visible && o.transform.center.y > 0.72);
         if low {

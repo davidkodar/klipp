@@ -293,9 +293,10 @@ impl klipp_document::ops::Transcripts for AnalysedTranscripts {
         g.opaque = matches!(clip.kind, klipp_timeline::ClipKind::Media { .. });
         for effect in effects {
             match effect {
-                BuiltinEffect::Crop { left, right, top, bottom, feather } if feather == 0.0 => {
-                    g.crop = klipp_document::qc_geometry::intersection(g.crop, [left, top, 1.0-left-right, 1.0-top-bottom]).unwrap_or([0.0;4]);
-                }
+                // Crop operates on the fitted frame and may precede or
+                // follow placement. A flat placement cannot represent
+                // that ordered chain, so request visual inspection.
+                BuiltinEffect::Crop { .. } => return None,
                 BuiltinEffect::Transform { rotation_x: 0.0, rotation_y: 0.0, focal_ref: None, .. }
                 | BuiltinEffect::Opacity { .. }
                 | BuiltinEffect::Lut3D { .. } | BuiltinEffect::ColourSpaceTransform { .. }
@@ -530,6 +531,63 @@ mod template_tests {
 mod qc_geometry_tests {
     use super::AnalysedTranscripts;
     use klipp_document::ops::Transcripts;
+    #[test]
+    fn qc_crop_requests_inspection_for_portrait_fit_and_post_placement() {
+        use klipp_core::{MediaId, Resolution, Timecode};
+        use klipp_document::{ops::SpokenWord, qc, qc_geometry};
+        use klipp_timeline::{Clip, ClipKind, Sequence, Shape, ShapeKind, Track, TrackKind, TitleData, TitleObjectContent, TitlePosition};
+        struct Host;
+        impl Transcripts for Host {
+            fn words(&self, _: &klipp_media::MediaItem) -> Option<Vec<SpokenWord>> { None }
+            fn faces(&self, _: &klipp_media::MediaItem) -> Vec<(f64,[f32;4])> { vec![(1.0,[0.1,0.1,0.1,0.1])] }
+            fn picture_geometry(&self, seq: &Sequence, clip: &Clip, at: f64) -> Option<qc_geometry::Geometry> {
+                AnalysedTranscripts.picture_geometry(seq,clip,at)
+            }
+            fn title_regions(&self, title: &TitleData, frame: Resolution, local: f64, duration: f64) -> Vec<[f32;4]> {
+                AnalysedTranscripts.title_regions(title,frame,local,duration)
+            }
+        }
+        let tc = |s| Timecode::from_secs_f64(s,1000);
+        for portrait in [true,false] {
+            let mut pool = klipp_media::MediaPool::new();
+            let mut item = klipp_media::MediaItem::synthetic_for_test("/tmp/qc-crop.mov".into(),None);
+            item.id = MediaId::new();
+            item.resolution = if portrait { Resolution { width:1080,height:1920 } } else { Resolution { width:1920,height:1080 } };
+            let id = pool.add(item);
+            let mut clip = Clip::media(id,tc(0.0),tc(4.0),tc(0.0),tc(4.0));
+            if !portrait {
+                clip.push_effect(klipp_effects::BuiltinEffect::Transform {
+                    position_x: 400.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5,
+                    rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5,
+                    rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
+                });
+            }
+            let mut video = Track::new("V",TrackKind::Video);
+            video.clips.push(clip);
+            let mut seq = Sequence::new_default();
+            seq.resolution = Resolution { width:1920,height:1080 };
+            seq.tracks = vec![video];
+            let face = qc_geometry::detections(&seq,&pool,&Host,0.0,4.0,true).samples[0].rect;
+            // Both faces lie to the right of frame x=.25. Cropping the
+            // fitted frame there must not silently erase their QC evidence.
+            assert!(face[0]>0.25);
+            let mut title = TitleData::single_text(Default::default());
+            title.objects[0].content = TitleObjectContent::Shape(Shape { kind: ShapeKind::Rectangle { corner_radius:0.0 }, fill:Some([255;4]), gradient:None, stroke:None, fit:None });
+            title.objects[0].transform.center = TitlePosition { x:face[0]+face[2]/2.0,y:face[1]+face[3]/2.0 };
+            title.objects[0].transform.size = TitlePosition { x:face[2],y:face[3] };
+            let mut text = Track::new("T",TrackKind::Text);
+            text.clips.push(Clip { kind:ClipKind::Title(title), ..Clip::gap(tc(0.0),tc(4.0)) });
+            seq.tracks.insert(0,text);
+            let before = qc::check(&seq,&pool,&Host);
+            assert!(before.findings.iter().any(|f|f.rule=="title_over_face"), "{}",before.text());
+            // The second case explicitly appends Crop AFTER Transform.
+            seq.tracks[1].clips[0].push_effect(klipp_effects::BuiltinEffect::Crop { left:0.25,right:0.0,top:0.0,bottom:0.0,feather:0.0 });
+            let after = qc::check(&seq,&pool,&Host);
+            assert!(after.findings.iter().any(|f|f.rule=="title_overlap_unchecked"), "{}",after.text());
+            assert!(!after.findings.iter().any(|f|f.rule=="title_over_face"));
+        }
+    }
+
     #[test]
     fn qc_title_regions_follow_rendered_animation_and_transparency() {
         use klipp_timeline::{Shape, ShapeKind, TitleData, TitleObjectContent, TitlePosition};

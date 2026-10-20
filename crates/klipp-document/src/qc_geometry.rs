@@ -6,17 +6,14 @@ use klipp_timeline::{Clip, Sequence, TrackKind};
 #[derive(Clone, Copy, Debug)]
 pub struct Geometry {
     pub placement: Option<klipp_timeline::surface::Placement>,
-    /// Visible source rectangle after crops, before fitting/placement.
-    pub crop: [f32; 4],
     pub opacity: f32,
-    /// Only true when the entire cropped rectangle is known to be opaque.
+    /// Only true when the entire fitted rectangle is known to be opaque.
     pub opaque: bool,
 }
 impl Default for Geometry {
     fn default() -> Self {
         Self {
             placement: None,
-            crop: [0.0, 0.0, 1.0, 1.0],
             opacity: 1.0,
             opaque: false,
         }
@@ -60,7 +57,7 @@ pub fn placed(rect: [f32; 4], shown: [u32; 2], frame: [u32; 2], g: Geometry) -> 
     if g.opacity <= 0.01 {
         return None;
     }
-    let [x, y, w, h] = intersection(rect, g.crop)?;
+    let [x, y, w, h] = intersection(rect, [0.0, 0.0, 1.0, 1.0])?;
     let q = klipp_timeline::surface::source_quad_in_frame(
         &[[x, y], [x + w, y], [x + w, y + h], [x, y + h]],
         shown,
@@ -321,15 +318,7 @@ mod tests {
         ));
     }
     #[test]
-    fn qc_crop_and_frame_edges_clip_detections() {
-        let (seq, pool, mut host) = scene();
-        host.geometry.crop = [0.15, 0.0, 0.85, 1.0];
-        let found = detections(&seq, &pool, &host, 0.0, 4.0, true);
-        assert!((found.samples[0].rect[2] - 0.05).abs() < 1e-5);
-        host.geometry.crop[0] = 0.3;
-        assert!(detections(&seq, &pool, &host, 0.0, 4.0, true)
-            .samples
-            .is_empty());
+    fn qc_frame_edges_clip_detections() {
         let g = Geometry {
             placement: Some((-288.0, 0.0, 1.0, 1.0, 0.0, 0.5, 0.5)),
             ..Default::default()
