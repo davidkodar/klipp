@@ -1037,7 +1037,46 @@ impl GpuEffectsPipeline {
     /// Match the CPU title raster's bounding box (alpha >= half a byte).
     /// Reduction stays on GPU; sub-threshold pixels inside the box survive.
     pub fn stack_title_crop_to_alpha_bounds(&mut self, slot: usize) -> bool {
-        // Also validates the slot/dimensions and ensures frame-sized scratch.
+        if !self.stack_title_alpha_bounds(slot) {return false;}
+        let (w,h)=self.stack_dims;
+        self.write_params(&StyleParams {width:w,height:h,frame_width:w,op:40,x0:0,y0:0,
+            offset_x:0,offset_y:0,color:[0.0;4],matrix:[[0.0;4];3]});
+        self.stack_pass(&self.title_style_pipeline,self.title_post_scratch.as_ref().unwrap(),
+            &self.stack_layers[slot],(w*h).div_ceil(WORKGROUP_SIZE),"title scene crop");
+        true
+    }
+
+    /// Move a painted byte layer by the CPU shape motion's whole-pixel offset.
+    /// Each motion is [away, distance, direction_x, direction_y]; travel uses
+    /// the painted layer's clipped height, measured entirely on GPU.
+    pub fn stack_title_motion_translate(&mut self, slot: usize, enter: [f32;4], exit: [f32;4]) -> bool {
+        if enter.iter().chain(exit.iter()).any(|v|!v.is_finite())
+            || !self.stack_title_alpha(slot,[0.0;4],1.0) {return false;}
+        let (w,h)=self.stack_dims;
+        let bytes=u64::from(w)*u64::from(h)*16;
+        if bytes+16>u64::from(self.device.limits().max_storage_buffer_binding_size) {return false;}
+        // Four bounds words precede the source image. Keeping both in one
+        // read buffer avoids in-place translation races or a CPU bounds read.
+        if self.title_post_scratch.as_ref().is_none_or(|b|b.size()<bytes+16) {
+            self.title_post_scratch=Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label:Some("title motion source and bounds"),size:bytes+16,
+                usage:wgpu::BufferUsages::STORAGE|wgpu::BufferUsages::COPY_SRC|wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation:false,
+            }));
+        }
+        if !self.stack_title_alpha_bounds(slot) {return false;}
+        let source=&self.stack_layers[slot];
+        let scratch=self.title_post_scratch.as_ref().unwrap();
+        let mut enc=self.encoder(Some("title motion source copy"));
+        enc.copy_buffer_to_buffer(source,0,scratch,16,bytes);self.submit(enc);
+        self.write_params(&StyleParams {width:w,height:h,frame_width:w,op:41,x0:0,y0:0,
+            offset_x:0,offset_y:0,color:[0.0;4],matrix:[enter,exit,[0.0;4]]});
+        self.stack_pass(&self.title_style_pipeline,scratch,source,(w*h).div_ceil(WORKGROUP_SIZE),"title whole-layer motion");
+        true
+    }
+
+    /// Leave [x0,y0,x1,y1] in the first four scratch words.
+    fn stack_title_alpha_bounds(&mut self, slot: usize) -> bool {
         if !self.stack_title_alpha(slot, [0.0; 4], 1.0) { return false; }
         let (w,h)=self.stack_dims;
         let bytes=u64::from(h)*8;
@@ -1056,8 +1095,6 @@ impl GpuEffectsPipeline {
         self.stack_pass(&self.title_style_pipeline,layer,rows,h.div_ceil(WORKGROUP_SIZE),"title scene row bounds");
         self.write_params(&StyleParams {op:39,..params});
         self.stack_pass(&self.title_style_pipeline,rows,scratch,1,"title scene bounds reduction");
-        self.write_params(&StyleParams {op:40,..params});
-        self.stack_pass(&self.title_style_pipeline,scratch,layer,(w*h).div_ceil(WORKGROUP_SIZE),"title scene crop");
         true
     }
 
