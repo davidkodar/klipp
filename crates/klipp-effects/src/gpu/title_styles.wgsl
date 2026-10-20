@@ -201,7 +201,20 @@ fn byte_half(v: vec4<f32>) -> vec4<f32> {
     let bits=bitcast<vec4<u32>>(v);
     return bitcast<vec4<f32>>((bits+vec4<u32>(4095u)+((bits>>vec4<u32>(13u))&vec4<u32>(1u)))&vec4<u32>(0xffffe000u));
 }
+// Undo premultiplication and round the blur to the CPU painter's byte layer.
+fn blurred_byte(raw: vec4<f32>) -> vec4<f32> {
+    let alpha=raw.a/255.0;
+    var soft=vec4<f32>(0.0,0.0,0.0,floor(clamp(raw.a,0.0,255.0)+0.5)/255.0);
+    if alpha>0.0 {soft=vec4<f32>(floor(clamp(raw.rgb/alpha,vec3<f32>(0.0),vec3<f32>(255.0))+vec3<f32>(0.5))/255.0,soft.a);}
+    return soft;
+}
 fn motion_tap(pos: vec2<i32>) -> vec4<f32> {
+    if p.op==48u {
+        // The header is the original anchor box, not the expanded blur box.
+        // Sample the halo too, with the CPU BoxRaster's half-float boundary.
+        if any(pos<vec2<i32>(0)) || any(pos>=vec2<i32>(i32(p.width),i32(p.height))) {return vec4<f32>(0.0);}
+        return byte_half(blurred_byte(load_rgba(u32(pos.y)*p.width+u32(pos.x)+1u)));
+    }
     if any(pos<vec2<i32>(i32(input[0]),i32(input[1]))) || any(pos>=vec2<i32>(i32(input[2]),i32(input[3]))) {return vec4<f32>(0.0);}
     return load_rgba(u32(pos.y)*p.width+u32(pos.x)+1u);
 }
@@ -252,10 +265,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             src=u32(pos.y)*p.width+u32(pos.x);
         }
-        let raw=load_rgba(src+1u);let alpha=raw.a/255.0;
-        var soft=vec4<f32>(0.0,0.0,0.0,floor(clamp(raw.a,0.0,255.0)+0.5)/255.0);
-        if alpha>0.0 {soft=vec4<f32>(floor(clamp(raw.rgb/alpha,vec3<f32>(0.0),vec3<f32>(255.0))+vec3<f32>(0.5))/255.0,soft.a);}
-        store_rgba(i,soft);
+        store_rgba(i,blurred_byte(load_rgba(src+1u)));
     } else if p.op==38u {
         if i>=p.height {return;}
         var lo=p.width;var hi=0u;
@@ -275,7 +285,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if x<input[0] || y<input[1] || x>=input[2] || y>=input[3] {store_rgba(i,vec4<f32>(0.0));}
     } else if p.op==42u {
         store_rgba(i,byte_half(authored_at(i32(x),y)));
-    } else if p.op==43u {
+    } else if p.op==43u || p.op==48u {
         var pixel=vec4<f32>(0.0);
         if input[2]>input[0] && input[3]>input[1] {
             let height=f32(input[3]-input[1]);

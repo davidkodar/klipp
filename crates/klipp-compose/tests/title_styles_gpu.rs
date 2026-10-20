@@ -860,7 +860,12 @@ fn rectangle_motion_fades_keep_unsupported_combinations_on_cpu() {
                 let enter=object.fx_mut().motion.enter.as_mut().unwrap();
                 enter.kind=if case==2 {MotionKind::ScaleUp}else{MotionKind::Blur};
                 if case==2 {enter.anchor=Some(klipp_core::title_motion::MotionAnchor::Solid);}
-                else {object.fx_mut().motion.exit.as_mut().unwrap().kind=if case==0 {MotionKind::ScaleDown}else{MotionKind::ScaleUp};}
+                else {
+                    let exit=object.fx_mut().motion.exit.as_mut().unwrap();
+                    exit.kind=if case==0 {MotionKind::ScaleDown}else{MotionKind::ScaleUp};
+                    exit.anchor=Some(klipp_core::title_motion::MotionAnchor::Solid);
+                    exit.duration_secs=3.0;
+                }
             }
         }
         let mut gpu=renderer();gpu.set_gpu_enabled(true);
@@ -1165,3 +1170,53 @@ fn rectangle_blur_slides_match_cpu_and_stay_resident() {check_rectangle_motion_f
 fn rectangle_blur_slide_mattes_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(blur_sliding_rectangle_matte,8);}
 #[test]
 fn rectangle_blur_slides_stay_resident_at_4k() {check_rectangle_motion_fades_at_4k(blur_sliding_rectangle_panel);}
+
+fn add_rectangle_blur_scale(seq: &mut Sequence, mode: u8) {
+    use klipp_timeline::{MotionKind,TitleObjectContent};
+    use klipp_core::title_motion::MotionAnchor;
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    for object in &mut title.objects {
+        if matches!(object.content,TitleObjectContent::Shape(_)) {
+            let motion=&mut object.fx_mut().motion;
+            let enter=motion.enter.as_mut().unwrap();let exit=motion.exit.as_mut().unwrap();
+            enter.kind=if mode<4 {MotionKind::Blur}else if mode%2==0 {MotionKind::ScaleUp}else{MotionKind::ScaleDown};
+            exit.kind=if mode>=4 {MotionKind::Blur}else if mode%2==0 {MotionKind::ScaleUp}else{MotionKind::ScaleDown};
+            enter.duration_secs=3.0;exit.duration_secs=3.0;
+            let scaling=if mode<4 {exit}else{enter};
+            if mode%4==1 {scaling.anchor=Some(MotionAnchor::Point{x:0.0,y:1.0});}
+            if mode%4==2 {scaling.anchor=Some(MotionAnchor::Point{x:1.4,y:-0.5});scaling.amount=Some(0.15);}
+            if mode%4==3 {scaling.anchor=Some(MotionAnchor::Point{x:0.8,y:0.2});scaling.amount=Some(2.0);}
+        }
+    }
+}
+fn blur_scaling_rectangle_panel(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=combined_faded_panel(fitted,mode%2,w,h);add_rectangle_blur_scale(&mut seq,mode);seq
+}
+fn blur_scaling_rectangle_matte(fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq=faded_rectangle_matte(fitted,mode%4,w,h);add_rectangle_blur_scale(&mut seq,mode);seq
+}
+#[test]
+fn rectangle_blur_scale_matches_cpu_and_stays_resident() {check_rectangle_motion_fade_modes(blur_scaling_rectangle_panel,8);}
+#[test]
+fn rectangle_blur_scale_mattes_match_cpu_and_stay_resident() {check_rectangle_motion_fade_modes(blur_scaling_rectangle_matte,8);}
+#[test]
+fn rectangle_blur_scale_stays_resident_at_4k() {check_rectangle_motion_fades_at_4k(blur_scaling_rectangle_panel);}
+
+#[test]
+fn rectangle_blur_scale_handles_zero_blur_and_unit_scale() {
+    check_rectangle_motion_fades(|fitted,mode,w,h| {
+        let mut seq=blur_scaling_rectangle_panel(fitted,mode+4,w,h);
+        let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+        for object in &mut title.objects {
+            if matches!(object.content,klipp_timeline::TitleObjectContent::Shape(_)) {
+                let motion=&mut object.fx_mut().motion;
+                motion.enter.as_mut().unwrap().duration_secs=0.8;
+                motion.exit.as_mut().unwrap().duration_secs=0.8;
+                // Entrance scales with no blur; exit blurs with scale at one.
+                // Also exercise a custom unit scale throughout the entrance.
+                if mode==1 {motion.enter.as_mut().unwrap().amount=Some(1.0);}
+            }
+        }
+        seq
+    });
+}
