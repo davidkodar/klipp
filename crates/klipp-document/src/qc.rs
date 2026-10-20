@@ -92,13 +92,21 @@ fn secs(t: klipp_core::Timecode) -> f64 {
     t.to_secs_f64()
 }
 
+// Graphics share the title container, but only visible nonblank text is read.
+fn visible_title_text(td: &klipp_timeline::TitleData) -> impl Iterator<Item = &str> {
+    td.objects.iter().filter_map(|o| match &o.content {
+        TitleObjectContent::TextBox(tb) if o.visible && !tb.text.trim().is_empty() => Some(tb.text.trim()),
+        _ => None,
+    })
+}
+
 fn clip_label(pool: &MediaPool, c: &Clip) -> String {
     if let Some(name) = c.name.as_deref().filter(|n| !n.trim().is_empty()) {
         return format!("\"{name}\"");
     }
     match &c.kind {
         ClipKind::Media { media_id } => pool.get(media_id).map(|m| m.filename.clone()).unwrap_or_else(|| "a missing file".into()),
-        ClipKind::Title(td) => format!("title \"{}\"", td.text().lines().next().unwrap_or("")),
+        ClipKind::Title(td) => visible_title_text(td).next().map(|text| format!("title \"{}\"", text.lines().next().unwrap_or(""))).unwrap_or_else(|| "graphics".into()),
         ClipKind::Generator(_) => "a generator".into(),
         _ => "a clip".into(),
     }
@@ -709,29 +717,31 @@ pub fn check(seq: &Sequence, pool: &MediaPool, transcripts: &dyn Transcripts) ->
     for c in &titles {
         let ClipKind::Title(td) = &c.kind else { continue };
         let (a, b) = (secs(c.timeline_in), secs(c.timeline_out));
-        // In and out on the music's beats: text cut to the music.
-        let rhythmic = on_beat(a) && on_beat(b) && beat_cut_round(a, b);
-        let mut crossed: Vec<f64> = cuts.iter().copied().filter(|e| *e > a + frame && *e < b - frame).collect();
-        crossed.sort_by(f64::total_cmp);
-        crossed.dedup_by(|x, y| (*x - *y).abs() < 1e-6);
-        if let Some(&cut) = crossed.first() {
-            if rhythmic && crossed.iter().all(|e| on_beat(*e)) {
-                add(Severity::Note, "title_over_beat_cuts", Some(a), format!("{} is held from {a:.2} to {b:.2} s over {} cut{} on the music's beats: a heading over a cut-to-music run", clip_label(pool, c), crossed.len(), if crossed.len() == 1 { "" } else { "s" }), "Nothing to change if it is meant as one");
-            } else {
-                timing_flagged = true;
-                add(Severity::Warning, "title_across_cut", Some(cut), format!("{} is up from {a:.2} to {b:.2} s and the picture changes at {cut:.2} s", clip_label(pool, c)), "A title does not run across a shot change: move it inside one shot");
+        let words: usize = visible_title_text(td).map(|text| text.split_whitespace().count()).sum();
+        if words > 0 {
+            // In and out on the music's beats: text cut to the music.
+            let rhythmic = on_beat(a) && on_beat(b) && beat_cut_round(a, b);
+            let mut crossed: Vec<f64> = cuts.iter().copied().filter(|e| *e > a + frame && *e < b - frame).collect();
+            crossed.sort_by(f64::total_cmp);
+            crossed.dedup_by(|x, y| (*x - *y).abs() < 1e-6);
+            if let Some(&cut) = crossed.first() {
+                if rhythmic && crossed.iter().all(|e| on_beat(*e)) {
+                    add(Severity::Note, "title_over_beat_cuts", Some(a), format!("{} is held from {a:.2} to {b:.2} s over {} cut{} on the music's beats: a heading over a cut-to-music run", clip_label(pool, c), crossed.len(), if crossed.len() == 1 { "" } else { "s" }), "Nothing to change if it is meant as one");
+                } else {
+                    timing_flagged = true;
+                    add(Severity::Warning, "title_across_cut", Some(cut), format!("{} is up from {a:.2} to {b:.2} s and the picture changes at {cut:.2} s", clip_label(pool, c)), "A title does not run across a shot change: move it inside one shot");
+                }
             }
-        }
-        let words: usize = td.objects.iter().filter_map(|o| match &o.content { TitleObjectContent::TextBox(tb) if o.visible => Some(tb.text.split_whitespace().count()), _ => None }).sum();
-        let montage = in_montage(a, b);
-        let needs = (words as f64 * 0.3).max(if montage { 0.3 } else { 1.5 });
-        let on_the_music = (words as f64 * 0.3).max(0.3);
-        if b - a + 1e-6 < needs {
-            if rhythmic && b - a + 1e-6 >= on_the_music {
-                add(Severity::Note, "title_on_beat", Some(a), format!("{} has {words} word{} and {:.1} s, in and out on the music's beats: rhythmic text, held to a third of a second a word", clip_label(pool, c), if words == 1 { "" } else { "s" }, b - a), "Keep it if it is cut to the music; hold it longer if it has to be read");
-            } else {
-                timing_flagged = true;
-                add(Severity::Warning, "title_short", Some(a), format!("{} has {words} word{} and {:.1} s to be read in", clip_label(pool, c), if words == 1 { "" } else { "s" }, b - a), &format!("Hold it at least {needs:.1} s: about a third of a second a word{}", if montage { " in a montage" } else { ", never under a second and a half" }));
+            let montage = in_montage(a, b);
+            let needs = (words as f64 * 0.3).max(if montage { 0.3 } else { 1.5 });
+            let on_the_music = (words as f64 * 0.3).max(0.3);
+            if b - a + 1e-6 < needs {
+                if rhythmic && b - a + 1e-6 >= on_the_music {
+                    add(Severity::Note, "title_on_beat", Some(a), format!("{} has {words} word{} and {:.1} s, in and out on the music's beats: rhythmic text, held to a third of a second a word", clip_label(pool, c), if words == 1 { "" } else { "s" }, b - a), "Keep it if it is cut to the music; hold it longer if it has to be read");
+                } else {
+                    timing_flagged = true;
+                    add(Severity::Warning, "title_short", Some(a), format!("{} has {words} word{} and {:.1} s to be read in", clip_label(pool, c), if words == 1 { "" } else { "s" }, b - a), &format!("Hold it at least {needs:.1} s: about a third of a second a word{}", if montage { " in a montage" } else { ", never under a second and a half" }));
+                }
             }
         }
         // Over a screen that is changing, a title fights the picture —
@@ -1127,6 +1137,57 @@ mod tests {
         assert_eq!(f.len(), 1, "{}", r.text());
         assert!(f[0].hint.contains("Move it to the"), "{}", f[0].hint);
         assert!((f[0].at_secs.unwrap() - 1.0).abs() < 1e-6);
+    }
+
+    /// #2168: a persistent or brief graphic has no words to time, while
+    /// a mixed text/shape title still needs both editorial warnings.
+    #[test]
+    fn graphics_only_title_timing_requires_visible_words() {
+        use klipp_timeline::{Shape, ShapeKind, TextBox, TitleData};
+        let (mut seq, pool, _) = screencast(&[(0.0, 2.0, 0.0), (2.0, 5.0, 20.0)]);
+        let mut graphic = TitleData::single_text(TextBox::default());
+        graphic.objects[0].content = TitleObjectContent::Shape(Shape {
+            kind: ShapeKind::Rectangle { corner_radius: 0.0 },
+            fill: Some([255, 255, 255, 255]), gradient: None, stroke: None, fit: None,
+        });
+        let mut text = Track::new("Graphics", TrackKind::Text);
+        text.clips.push(Clip { kind: ClipKind::Title(graphic.clone()), ..Clip::gap(tc(1.5), tc(2.5)) });
+        seq.tracks.insert(0, text);
+        for (words, visible, expected) in [("", true, false), (" \n\t", true, false), ("Hidden", false, false), ("Readable", true, true)] {
+            let mut td = graphic.clone();
+            let mut object = TitleData::single_text(TextBox { text: words.into(), ..Default::default() }).objects.remove(0);
+            object.id = klipp_timeline::TitleObjectId(1);
+            object.visible = visible;
+            td.objects.push(object);
+            seq.tracks[0].clips[0].kind = ClipKind::Title(td);
+            let report = check(&seq, &pool, &crate::ops::NoTranscripts);
+            for rule in ["title_short", "title_across_cut"] {
+                assert_eq!(rules(&report).contains(&rule), expected, "{words:?}, visible={visible}: {}", report.text());
+            }
+            let label = clip_label(&pool, &seq.tracks[0].clips[0]);
+            assert_eq!(label, if expected { "title \"Readable\"" } else { "graphics" });
+        }
+    }
+
+    #[test]
+    fn graphics_only_title_keeps_overlap_checks_and_its_own_label() {
+        use klipp_timeline::{Shape, ShapeKind, TextBox, TitleData, TitlePosition};
+        let (mut seq, pool, screen) = screencast(&[(0.0, 10.0, 40.0)]);
+        let mut td = TitleData::single_text(TextBox::default());
+        td.objects[0].content = TitleObjectContent::Shape(Shape {
+            kind: ShapeKind::Rectangle { corner_radius: 0.0 },
+            fill: Some([255, 255, 255, 255]), gradient: None, stroke: None, fit: None,
+        });
+        td.objects[0].transform.center = TitlePosition { x: 0.5, y: 0.15 };
+        td.objects[0].transform.size = TitlePosition { x: 0.2, y: 0.2 };
+        let mut track = Track::new("Graphics", TrackKind::Text);
+        track.clips.push(Clip { kind: ClipKind::Title(td), ..Clip::gap(tc(0.0), tc(4.0)) });
+        seq.tracks.insert(0, track);
+        let report = check(&seq, &pool, &Screen(screen));
+        let finding = report.findings.iter().find(|f| f.rule == "title_over_face").expect("graphics can still obscure faces");
+        assert!(finding.what.starts_with("graphics "), "{}", finding.what);
+        seq.tracks[0].clips[0].name = Some("Corner hexagon".into());
+        assert_eq!(clip_label(&pool, &seq.tracks[0].clips[0]), "\"Corner hexagon\"");
     }
 
     /// #510: a title across someone's body, not their face, is a warning
