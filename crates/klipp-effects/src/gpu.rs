@@ -5932,6 +5932,15 @@ impl GpuEffectsPipeline {
         self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],1.0,1.0,(0.0,0.0),Some(color),None,y0,y1,2)
     }
 
+    /// Subtract native bitmap alpha from the shared glyph face mask, as
+    /// colour_pixels does before the CPU paints the remaining text fill.
+    pub fn stack_title_colour_coverage_subtract(&mut self,slot:usize,id:u64,texels:&[u32],size:[u32;2],origin:[i32;2])->bool {
+        let (_,h)=self.stack_dims;
+        let y0=origin[1].clamp(0,h as i32) as u32;
+        let y1=(i64::from(origin[1])+i64::from(size[1])).clamp(0,i64::from(h)) as u32;
+        self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],1.0,1.0,(0.0,0.0),None,None,y0,y1,3)
+    }
+
     /// Place a cached native-colour glyph without applying the text fill.
     pub fn stack_title_colour_glyph(&mut self,slot:usize,id:u64,texels:&[u32],size:[u32;2],origin:[i32;2])->bool {
         let (_,h)=self.stack_dims;
@@ -11243,6 +11252,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let old=unpack(output[idx]);
         let alpha=max(old.a,a8/255.0);
         output[idx]=pack(vec4<f32>(to_ws(vec3<f32>(params.under_r,params.under_g,params.under_b)),alpha));
+        return;
+    }
+    if params.over == 3u {
+        // Recover byte coverage from half-float sprite storage before the
+        // saturating subtraction. Do not multiply by the text fill alpha.
+        let old=unpack(output[idx]);
+        let alpha=max(round(old.a*255.0)-round(a8),0.0)/255.0;
+        output[idx]=pack(vec4<f32>(old.rgb,alpha));
         return;
     }
     if params.over == 1u {

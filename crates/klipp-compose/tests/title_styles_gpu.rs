@@ -1845,8 +1845,7 @@ fn bitmap_colour_glyph_cache_reuses_native_pixels_and_guards_combinations() {
             3=>unsupported.primary_text_mut().unwrap().text_path=Some(klipp_timeline::TextPath::Circle{radius:45.0}),
             4=>unsupported.primary_text_mut().unwrap().write_on=0.5,
             5=>{
-                let tb=unsupported.primary_text_mut().unwrap();tb.text="🌈🌈".into();
-                tb.tracking_keyframes=vec![key(0.0,-90.0),key(3.0,-90.0)];
+                unsupported.objects[0].transform.size_x_keyframes=vec![key(0.0,0.4),key(3.0,0.8)];
             }
             _=>{
                 unsupported.primary_text_mut().unwrap().fit=klipp_timeline::TextFit::Shrink{min_size:10.0};
@@ -1854,5 +1853,52 @@ fn bitmap_colour_glyph_cache_reuses_native_pixels_and_guards_combinations() {
             }
         }
         assert!(r.glyph_source(&unsupported,320,180,0.3,Some(3.0)).is_none(),"case {case} needs its native-colour fallback");
+    }
+}
+
+
+fn bitmap_colour_overlap_sequence(translucent:bool,mode:u8,w:u32,h:u32)->Sequence {
+    let mut seq=bitmap_colour_sequence(translucent,1,w,h);
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    let tb=title.primary_text_mut().unwrap();
+    tb.text=match mode {0=>"🌈🌈",1=>"W🌈W",2=>"🌈🔥🌈",_=>"W🌈🔥W"}.into();
+    tb.tracking_keyframes=vec![key(0.0,-90.0),key(3.0,-140.0)];
+    if mode==4 {title.objects[0].transform.center.x=0.0;}
+    seq
+}
+#[test]
+fn bitmap_colour_overlap_matches_cpu_and_stays_resident() {
+    check_rectangle_motion_fade_modes(bitmap_colour_overlap_sequence,5);
+}
+#[test]
+fn bitmap_colour_overlap_stays_resident_at_4k() {
+    check_rectangle_motion_fades_at_4k(|t,_,w,h|bitmap_colour_overlap_sequence(t,3,w,h));
+}
+#[test]
+fn bitmap_colour_overlap_reuses_glyphs_with_real_ink_overlap() {
+    for mode in 0..4 {
+        let seq=bitmap_colour_overlap_sequence(true,mode,320,180);
+        let ClipKind::Title(title)=&seq.tracks[0].clips[0].kind else {unreachable!()};
+        let mut r=klipp_title::TitleRenderer::new();
+        let source=r.glyph_source(title,320,180,0.0,Some(3.0)).unwrap();
+        assert!(source.glyphs.iter().any(|g|g.native_colour),"CBDT emoji required");
+        assert!(source.glyphs.iter().enumerate().any(|(i,a)|source.glyphs.iter().skip(i+1).any(|b| {
+            if !a.native_colour && !b.native_colour {return false;}
+            let x0=a.origin[0].max(b.origin[0]);let y0=a.origin[1].max(b.origin[1]);
+            let x1=(a.origin[0]+a.pixels.w as i32).min(b.origin[0]+b.pixels.w as i32);
+            let y1=(a.origin[1]+a.pixels.h as i32).min(b.origin[1]+b.pixels.h as i32);
+            (y0..y1).any(|y|(x0..x1).any(|x| {
+                let alpha=|g:&klipp_title::GlyphDraw| {
+                    let index=((y-g.origin[1]) as u32*g.pixels.w+(x-g.origin[0]) as u32) as usize;
+                    (g.pixels.texels[index*2+1]>>16)!=0
+                };
+                alpha(a)&&alpha(b)
+            }))
+        })),"mode {mode} must exercise overlapping nonzero alpha");
+        for t in [0.7,2.6,0.0] {
+            let next=r.glyph_source(title,320,180,t,Some(3.0)).unwrap();
+            assert_eq!(next.prepared,0);
+            assert_eq!(next.glyphs.iter().map(|g|g.id).collect::<Vec<_>>(),source.glyphs.iter().map(|g|g.id).collect::<Vec<_>>());
+        }
     }
 }
