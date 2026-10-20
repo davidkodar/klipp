@@ -1873,8 +1873,16 @@ impl TitleRenderer {
         }
 
         let fx=title.primary_fx();
+        // 3D solids evaluate scale and rotation later, in render_text3d_solid.
+        let three_d=tb.three_d.as_ref().is_some_and(|t|t.enabled);
         let mut path_alpha=vec![1.0f32;glyphs.len()];
-        if gpu_glyphs::path_translation_supported(fx) {
+        let mut path_blur=vec![0.0f32;glyphs.len()];
+        let mut path_clip=vec![[i32::MIN,i32::MAX];glyphs.len()];
+        let mut posed_glyphs=glyphs.to_vec();
+        let coloured=!three_d && fx.animators.iter().any(|a|a.enabled && a.props.colour.is_some());
+        let base_colours=resolve_glyph_colors(title,glyphs,&tb.style_runs);
+        let mut path_colours=base_colours.clone();
+        {
             if let Some(time)=time_secs {
                 let window=self.gpu_motion.and_then(|(_,window)|window).or(self.motion_window);
                 let enter_units=motion_units(glyphs,fx.motion.enter.map(|m|m.stagger).unwrap_or_default());
@@ -1890,15 +1898,35 @@ impl TitleRenderer {
                     let pose=poses.get(i).copied().unwrap_or_default();
                     let alpha=a.0*b.0*pose.alpha;
                     path_alpha[i]=if alpha<=0.001 {0.0}else{alpha.clamp(0.0,1.0)};
-                    // Translation is in screen axes, after placement on the path.
-                    // CPU and GPU quantize the final centre in the same way.
+                    let factor=if three_d {1.0}else{a.3*b.3*pose.scale};
+                    let g=&mut posed_glyphs[i];
+                    // A collapsed glyph has no coverage, but retain its metrics so
+                    // the outline list keeps the same association with text units.
+                    if factor<=0.0 {path_alpha[i]=0.0;}
+                    else if (factor-1.0).abs()>0.001 && g.width>0 && g.height>0 {
+                        g.key.px=(tb.font_size*scale*factor).max(1.0).copysign(g.key.px);
+                        let m=fonts[g.font_index].font.metrics_indexed(g.key.glyph_index,g.key.px.abs());
+                        (g.width,g.height)=if g.key.px<0.0 {(m.height,m.width)}else{(m.width,m.height)};
+                    }
+                    if !three_d {path_blur[i]=a.4.max(b.4).max(pose.blur);}
+                    if coloured {path_colours[i]=pose.colour_of(base_colours.get(i).copied().unwrap_or(tb.color));}
+                    // Motion is in screen axes after path placement. Reveal clips
+                    // use the unposed, rotated glyph's original screen-space rows.
                     if let Some(at)=placed[i].as_mut() {
+                        if !three_d && (a.5||b.5) {
+                            let(c,sn)=(at.angle.cos().abs(),at.angle.sin().abs());
+                            let extent=glyphs[i].width as f32*0.5*sn+glyphs[i].height as f32*0.5*c;
+                            path_clip[i]=[(at.centre[1]-extent).floor() as i32,(at.centre[1]+extent).ceil() as i32+1];
+                        }
                         at.centre[0]+=a.1+b.1+pose.dx;
                         at.centre[1]+=a.2+b.2+pose.dy;
+                        if !three_d {at.angle+=pose.rotation.to_radians();}
                     }
                 }
             }
         }
+        let glyphs=posed_glyphs.as_slice();
+        let mut path_fills:Vec<(GlyphColorInfo,Vec<u8>)>=Vec::new();
         let max_pad = effect_padding(title, scale);
         // Use the full frame as the mask (path text can go anywhere)
         let mask_w = w;
@@ -1916,7 +1944,6 @@ impl TitleRenderer {
         // A write-on reveals the text in its order along the path.
         let reveal = tb.write_on.clamp(0.0, 1.0) * length;
         // A 3D text's glyphs, each stood where its flat self is (#1735).
-        let three_d = tb.three_d.as_ref().is_some_and(|t| t.enabled);
         let mut placed3d = Vec::new();
 
         for (i, glyph) in glyphs.iter().enumerate() {
@@ -1952,24 +1979,28 @@ impl TitleRenderer {
                     turn: Some(crate::text3d_render::Turn { from, to: [px, py], angle: at.angle }),
                 });
             }
+            let pad=if path_blur[i]>=0.5 {(path_blur[i]*2.5).ceil().max(1.0) as usize}else{0};
+            let (paint_w,paint_h)=(gw+2*pad,gh+2*pad);
             if !self.gpu_layout_only && !self.layout_bounds_only {
-            let (_,coverage)=fonts[glyph.font_index].coverage(glyph.key);
-            let faded:Vec<u8>;
-            let coverage=if path_alpha[i]<1.0 {
-                faded=coverage.iter().map(|a|(*a as f32*path_alpha[i]).round() as u8).collect();
-                faded.as_slice()
-            }else{coverage.as_ref()};
-            blit_rotated(
-                &mut alpha_mask, mask_w, mask_h,
-                &coverage, gw, gh,
-                px, py, at.angle,
-                Some((&mut owner, i as u16)),
-            );
+                let (_,coverage)=fonts[glyph.font_index].coverage(glyph.key);
+                let (coverage,bw,bh)=gaussian_blur_expand(&coverage,gw,gh,path_blur[i]);
+                let faded:Vec<u8>=coverage.iter().map(|a|(*a as f32*path_alpha[i]).round() as u8).collect();
+                blit_rotated(&mut alpha_mask,mask_w,mask_h,&faded,bw,bh,px,py,at.angle,
+                    Some((&mut owner,i as u16)),path_clip[i]);
+                if coloured {
+                    let radius=((bw as f32*0.5).powi(2)+(bh as f32*0.5).powi(2)).sqrt().ceil() as i32;
+                    let side=(2*radius+1) as usize;
+                    let mut coverage=vec![0u8;side*side];
+                    let top=py as i32-radius;
+                    blit_rotated(&mut coverage,side,side,&faded,bw,bh,radius as f32,radius as f32,at.angle,None,
+                        [path_clip[i][0].saturating_sub(top),path_clip[i][1].saturating_sub(top)]);
+                    path_fills.push((GlyphColorInfo{mask_x:px as i32-radius,mask_y:top,width:side,height:side,color:path_colours[i]},coverage));
+                }
             }
             let (c, sn) = (at.angle.cos().abs(), at.angle.sin().abs());
-            let (ex, ey) = (gw as f32 * 0.5 * c + gh as f32 * 0.5 * sn, gw as f32 * 0.5 * sn + gh as f32 * 0.5 * c);
+            let (ex, ey) = (paint_w as f32 * 0.5 * c + paint_h as f32 * 0.5 * sn, paint_w as f32 * 0.5 * sn + paint_h as f32 * 0.5 * c);
             glyph_boxes[i] = [(px - ex).floor() as i32, (py - ey).floor() as i32, (px + ex).ceil() as i32 + 1, (py + ey).ceil() as i32 + 1];
-            let radius = ((gw as f32 / 2.0).powi(2) + (gh as f32 / 2.0).powi(2)).sqrt();
+            let radius = ((paint_w as f32 / 2.0).powi(2) + (paint_h as f32 / 2.0).powi(2)).sqrt();
             text_min_x = text_min_x.min(px - radius);
             text_min_y = text_min_y.min(py - radius);
             text_max_x = text_max_x.max(px + radius);
@@ -2029,11 +2060,15 @@ impl TitleRenderer {
                     let Some((i,g))=visible.next() else {return false;};
                     let Some(at)=placed[i] else {return false;};
                     if tb.write_on<1.0 && laid[i].along>reveal {return false;}
-                    let radius=((g.width as f32*0.5).powi(2)+(g.height as f32*0.5).powi(2)).sqrt().ceil() as i32;
+                    let pad=if path_blur[i]>=0.5 {(path_blur[i]*2.5).ceil().max(1.0)}else{0.0};
+                    let radius=((g.width as f32*0.5+pad).powi(2)+(g.height as f32*0.5+pad).powi(2)).sqrt().ceil() as i32;
                     draw.origin=[at.centre[0] as i32-radius,at.centre[1] as i32-radius];
                     draw.size=[(2*radius+1) as u32;2];draw.radians=at.angle;draw.path=true;draw.alpha=path_alpha[i];
+                    draw.blur=path_blur[i];draw.clip_y=path_clip[i];
+                    if coloured {draw.color=Some(path_colours[i]);}
                     true
                 });
+                if coloured {source.face_draws=source.outlines.clone();}
                 source.bounds=[text_min_x,text_min_y,text_max_x,text_max_y];
                 source.gradient=tb.gradient.clone().filter(|g|g.enabled);
                 source.pattern=tb.pattern_fill.clone().filter(|_|tb.pattern_fill_enabled);
@@ -2051,6 +2086,10 @@ impl TitleRenderer {
                 glyph_colors:Vec::new(),glyph_coverages:Vec::new(),glyph_index:Vec::new(),glyph_boxes:Vec::new(),glyph_parents:Vec::new(),pad:max_pad,
                 colour_glyphs:Vec::new(),path_units:None,tracking_origins:Vec::new()};
         }
+        for (info,_) in &mut path_fills {
+            info.mask_x-=crop_x0 as i32;info.mask_y-=crop_y0 as i32;
+        }
+        let (glyph_colors,glyph_coverages)=path_fills.into_iter().unzip();
         let mut cropped = vec![0u8; crop_w * crop_h];
         let mut glyph_index = vec![GLYPH_NONE; crop_w * crop_h];
         for cy in 0..crop_h {
@@ -2076,8 +2115,8 @@ impl TitleRenderer {
             text_right: text_max_x,
             glyph_count: glyphs.len(),
             scale,
-            glyph_colors: Vec::new(),
-            glyph_coverages: Vec::new(),
+            glyph_colors,
+            glyph_coverages,
             glyph_index,
             glyph_boxes,
             glyph_parents: glyphs.iter().map(|g| g.parent).collect(),
@@ -7616,6 +7655,7 @@ fn blit_rotated(
     cx: f32, cy: f32,
     angle_rad: f32,
     mut owner: Option<(&mut [u16], u16)>,
+    clip_y: [i32;2],
 ) {
     let cos_a = angle_rad.cos();
     let sin_a = angle_rad.sin();
@@ -7628,7 +7668,7 @@ fn blit_rotated(
         for dx in -radius..=radius {
             let dst_x = cx as i32 + dx;
             let dst_y = cy as i32 + dy;
-            if dst_x < 0 || dst_x >= dst_w as i32 || dst_y < 0 || dst_y >= dst_h as i32 {
+            if dst_x < 0 || dst_x >= dst_w as i32 || dst_y < 0 || dst_y >= dst_h as i32 || dst_y<clip_y[0] || dst_y>=clip_y[1] {
                 continue;
             }
 

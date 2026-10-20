@@ -1658,7 +1658,7 @@ fn path_opacity_matches_cpu_and_stays_resident() {check_rectangle_motion_fade_mo
 fn path_opacity_stays_resident_at_4k() {check_rectangle_motion_fades_at_4k(path_opacity_sequence);}
 
 #[test]
-fn path_motion_restrictions_and_cpu_fade() {
+fn path_source_restrictions_and_cpu_fade() {
     let seq=path_opacity_sequence(true,0,320,180);
     let ClipKind::Title(mut title)=seq.tracks[0].clips[0].kind.clone() else {unreachable!()};
     let mut renderer=klipp_title::TitleRenderer::new();
@@ -1666,11 +1666,9 @@ fn path_motion_restrictions_and_cpu_fade() {
     assert!(hidden.chunks_exact(4).all(|p|p[3]==0),"keyed path entrance must start hidden");
     let visible=renderer.render_with_window(&title,320,180,None,1.5,Some(3.0));
     assert!(visible.chunks_exact(4).any(|p|p[3]>0),"settled path text must be visible");
-    title.objects[0].fx_mut().motion.enter.as_mut().unwrap().kind=klipp_timeline::MotionKind::ScaleUp;
-    assert!(renderer.glyph_source(&title,320,180,0.2,Some(3.0)).is_none());
-    title.objects[0].fx_mut().motion=Default::default();
-    title.objects[0].fx_mut().animators=vec![klipp_timeline::Animator{props:klipp_timeline::AnimatorProps{rotation:20.0,..Default::default()},..Default::default()}];
-    assert!(renderer.glyph_source(&title,320,180,0.2,Some(3.0)).is_none());
+    title.objects[0].fx_mut().motion_blur=Some(klipp_timeline::MotionBlur{enabled:true,shutter_angle:180.0,shutter_angle_keyframes:vec![],samples:4});
+    assert!(renderer.glyph_source(&title,320,180,0.2,Some(3.0)).is_none(),"source shutter sampling remains outside glyph poses");
+
 }
 
 fn path_translation_sequence(keyed: bool, mode: u8, w:u32, h:u32) -> Sequence {
@@ -1721,4 +1719,46 @@ fn path_translation_cpu_moves_glyphs() {
         assert!(offscreen.chunks_exact(4).all(|p|p[3]==0),"fully offscreen text must be empty");
     }
 
+}
+
+fn path_remaining_pose_sequence(keyed:bool,mode:u8,w:u32,h:u32)->Sequence {
+    use klipp_timeline::{MotionKind,Animator,AnimatorProps};
+    let mut seq=path_opacity_sequence(keyed,if mode<14 {0}else{12},w,h);
+    let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+    let case=mode%14;
+    let kinds=[MotionKind::ScaleUp,MotionKind::ScaleDown,MotionKind::Pop,MotionKind::Slam,MotionKind::Larger,MotionKind::Smaller,
+        MotionKind::MaskRise,MotionKind::MaskDrop,MotionKind::Blur,MotionKind::FocusIn,MotionKind::SoftRise];
+    if case<11 {
+        let motion=&mut title.objects[0].fx_mut().motion;
+        for m in motion.enter.iter_mut().chain(motion.exit.iter_mut()) {m.kind=kinds[case as usize];}
+        motion.enter.as_mut().unwrap().easing=kinds[case as usize].default_easing();
+        motion.exit.as_mut().unwrap().easing=kinds[case as usize].default_exit_easing();
+    }else{
+        title.objects[0].fx_mut().animators=vec![Animator{props:match case {
+            11=>AnimatorProps{rotation:38.0,..Default::default()},
+            12=>AnimatorProps{colour:Some([30,180,230,150]),opacity:0.6,..Default::default()},
+            _=>AnimatorProps{dx:0.2,dy:-0.3,scale:1.4,rotation:25.0,blur:0.1,colour:Some([30,180,230,150]),opacity:0.7},
+        },..Default::default()}];
+        if case==13 {title.objects[0].fx_mut().motion.enter.as_mut().unwrap().kind=MotionKind::MaskRise;}
+    }
+    seq
+}
+#[test]
+fn path_remaining_poses_match_cpu_and_stay_resident() {
+    check_rectangle_motion_fade_modes(path_remaining_pose_sequence,28);
+}
+#[test]
+fn path_remaining_poses_stay_resident_at_4k() {
+    check_rectangle_motion_fades_at_4k(|f,_,w,h|path_remaining_pose_sequence(f,27,w,h));
+}
+#[test]
+fn path_remaining_poses_zero_scale_is_empty() {
+    let seq=path_remaining_pose_sequence(true,5,320,180);
+    let ClipKind::Title(mut title)=seq.tracks[0].clips[0].kind.clone() else {unreachable!()};
+    title.objects[0].fx_mut().motion.enter.as_mut().unwrap().stagger=klipp_timeline::StaggerUnit::None;
+    let mut r=klipp_title::TitleRenderer::new();
+    let pixels=r.render_with_window(&title,320,180,None,0.0,Some(3.0));
+    assert!(pixels.chunks_exact(4).all(|p|p[3]==0));
+    let pixels=r.render_with_window(&title,320,180,None,1.5,Some(3.0));
+    assert!(pixels.chunks_exact(4).any(|p|p[3]>0));
 }

@@ -69,8 +69,11 @@ for full-project playback profiling.
   Keyed/linked path sources also apply Rise/Drop, slides, Fly and Bounce
   translation, plus position/opacity animators, after placement on the path.
   Offscreen crop bounds are clamped to the frame. Static path text retains its
-  existing cached sprite route. Scale, rotation, clipping, blur and colour
-  path poses remain excluded from the outline source.
+  existing cached sprite route. Keyed/linked path sources also evaluate scale
+  entrances/exits, reveal clipping and blur, plus scale/rotation/blur/colour
+  animators. CPU path coverage uses the same posed glyph metrics, screen-space
+  reveal rows and blur padding; zero scale produces empty coverage. Source
+  shutter blur and bitmap colour glyphs still require their fallback routes.
   Plain rectangles, gradients and strokes use GPU coverage, including keyed transforms.
   Fitted rectangles use bounds-only text layout; hidden or missing targets
   suppress the panel. Rectangle edge fades run on GPU after byte-layer
