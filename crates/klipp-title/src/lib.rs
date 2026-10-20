@@ -1904,7 +1904,8 @@ impl TitleRenderer {
                     // the outline list keeps the same association with text units.
                     if factor<=0.0 {path_alpha[i]=0.0;}
                     else if (factor-1.0).abs()>0.001 && g.width>0 && g.height>0 {
-                        g.key.px=(tb.font_size*scale*factor).max(1.0).copysign(g.key.px);
+                        // Preserve style-run sizes and shaping fit/case factors.
+                        g.key.px=(g.key.px.abs()*factor).max(1.0).copysign(g.key.px);
                         let m=fonts[g.font_index].font.metrics_indexed(g.key.glyph_index,g.key.px.abs());
                         (g.width,g.height)=if g.key.px<0.0 {(m.height,m.width)}else{(m.width,m.height)};
                     }

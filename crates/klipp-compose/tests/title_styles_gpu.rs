@@ -1762,3 +1762,36 @@ fn path_remaining_poses_zero_scale_is_empty() {
     let pixels=r.render_with_window(&title,320,180,None,1.5,Some(3.0));
     assert!(pixels.chunks_exact(4).any(|p|p[3]>0));
 }
+
+#[test]
+fn path_remaining_poses_preserve_mixed_glyph_sizes() {
+    use klipp_timeline::{Animator,AnimatorProps,StyleRun};
+    let seq=path_opacity_sequence(false,0,1920,1080);
+    let ClipKind::Title(mut title)=seq.tracks[0].clips[0].kind.clone() else {unreachable!()};
+    let tb=title.primary_text_mut().unwrap();
+    tb.text="HH".into();
+    tb.font_size=180.0;
+    tb.font_size_keyframes=vec![key(0.0,180.0),key(3.0,180.0)];
+    tb.style_runs=vec![StyleRun{font_size:Some(360.0),..StyleRun::default_for_range(1,2)}];
+    title.objects[0].fx_mut().motion=Default::default();
+    let mut renderer=klipp_title::TitleRenderer::new();
+    let rest=renderer.glyph_source(&title,1920,1080,1.5,Some(3.0)).unwrap();
+    assert_eq!(rest.outlines.len(),2);
+    for axis in 0..2 {
+        assert!(rest.outlines[1].source_size[axis] as f32>1.8*rest.outlines[0].source_size[axis] as f32);
+    }
+    // Check actual dimensions against each glyph's own resting dimensions:
+    // CPU/GPU parity alone misses a shared reset to the base text size.
+    for factor in [0.5,0.99,1.01,1.5] {
+        title.objects[0].fx_mut().animators=vec![Animator{props:AnimatorProps{scale:factor,..Default::default()},..Default::default()}];
+        let posed=renderer.glyph_source(&title,1920,1080,1.5,Some(3.0)).unwrap();
+        assert_eq!(posed.outlines.len(),2);
+        for (glyph,(base,draw)) in rest.outlines.iter().zip(&posed.outlines).enumerate() {
+            for axis in 0..2 {
+                let expected=base.source_size[axis] as f32*factor;
+                assert!((draw.source_size[axis] as f32-expected).abs()<=2.0,
+                    "glyph {glyph}, axis {axis}, scale {factor}: {:?} versus resting {:?}",draw.source_size,base.source_size);
+            }
+        }
+    }
+}
