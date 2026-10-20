@@ -354,11 +354,9 @@ pub(crate) fn respond(
             if in_batch { return Err("close_project is not part of a batch; send it on its own".into()); }
             let before = project_status(ctx)?;
             before.replacement_save_path(before.identity, save, discard_changes)?;
-            send_envelope(ctx, vec![AppCommand::CloseProjectNow { save, discard_changes, expected_identity: before.identity }], false)?;
-            let after = wait_for_project_event(ctx, before.generation, 60_000)?;
-            if let Some(e) = after.last_error { return Err(e); }
-            if after.path.is_some() { return Err("the project did not close; read status before retrying".into()); }
-            Ok(json!({"closed":true,"revision":ctx.shared.revision()}))
+            let result = crate::project_access::switch(ctx, AppCommand::CloseProjectNow { save, discard_changes, expected_identity: before.identity })?;
+            if result["applied"] != true { return Ok(result); }
+            Ok(json!({"closed":true,"operation_id":result["operation_id"],"revision":result["revision"]}))
         }
 
         ControlCommand::OpenProject { path, name, save, discard_changes } => {
@@ -366,15 +364,13 @@ pub(crate) fn respond(
             let before = project_status(ctx)?;
             let p = crate::project_access::resolve(&before, path.as_deref(), name.as_deref())?;
             before.replacement_save_path(before.identity, save, discard_changes)?;
-            send_envelope(ctx, vec![AppCommand::OpenProjectNow { path: p.clone(), save, discard_changes, expected_identity: before.identity }], false)?;
-            let after = wait_for_project_event(ctx, before.generation, 60_000)?;
-            if let Some(e) = after.last_error {
-                return Err(e);
-            }
+            let result = crate::project_access::switch(ctx, AppCommand::OpenProjectNow { path: p.clone(), save, discard_changes, expected_identity: before.identity })?;
+            if result["applied"] != true { return Ok(result); }
             let seq = ctx.sequence.read().map_err(|_| "sequence lock poisoned")?;
             let clips: usize = seq.tracks.iter().map(|t| t.clips.len()).sum();
             Ok(json!({
                 "opened": true,
+                "operation_id": result["operation_id"],
                 "path": p.to_string_lossy(),
                 "sequence": seq.name,
                 "tracks": seq.tracks.len(),

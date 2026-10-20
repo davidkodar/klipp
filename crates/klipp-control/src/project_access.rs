@@ -80,6 +80,48 @@ pub(crate) fn resolve(
     }
 }
 
+/// Wait for this envelope's acknowledgement, never a shared project event.
+/// Saving before replacement can publish several intermediate events.
+pub(crate) fn switch(
+    ctx: &crate::ControlContext,
+    command: klipp_core::AppCommand,
+) -> Result<serde_json::Value, String> {
+    let mut reply = crate::envelope::send_envelope(ctx, vec![command], false)?;
+    if reply["applied"] == true {
+        return Ok(reply);
+    }
+    let id = reply["operation_id"]
+        .as_str()
+        .ok_or("project switch has no operation id")?
+        .to_owned();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let outcome = crate::operations::status(&id)?;
+        match outcome["state"].as_str() {
+            Some("applied") => {
+                reply["applied"] = serde_json::json!(true);
+                reply["revision"] = outcome["revision"].clone();
+                reply.as_object_mut().unwrap().remove("note");
+                return Ok(reply);
+            }
+            Some("refused") => {
+                return Err(format!(
+                    "project switch failed (operation {id}): {}",
+                    outcome["reason"]
+                        .as_str()
+                        .unwrap_or("UI refused the request")
+                ))
+            }
+            _ => {}
+        }
+        if std::time::Instant::now() >= deadline {
+            reply["note"] = serde_json::json!("project switch is still pending; query operation_status with operation_id for its final outcome; do not assume it opened or closed");
+            return Ok(reply);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
