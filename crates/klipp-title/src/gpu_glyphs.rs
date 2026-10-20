@@ -336,8 +336,6 @@ impl TitleRenderer {
             || matches!(title.background, TitleBackground::FullFrame { .. })
             || (!linked && (o.transform.rotation != 0.0 || !o.transform.rotation_keyframes.is_empty()))
             || tb.three_d.as_ref().is_some_and(|d| d.enabled)
-            // Admit only poses that preserve the already turned path coverage.
-            || (tb.text_path.is_some() && !path_translation_supported(fx))
             || tb.extrusion.is_some()
             || tb.glitch_intensity > 0.0
             || tb.chromatic_aberration_px > 0.0
@@ -501,15 +499,4 @@ impl TitleRenderer {
         }
         Some(source)
     }
-}
-
-/// Opacity and translation preserve each path glyph's rotated coverage.
-/// Scale, rotation, clipping, blur and colour require separate sampling.
-pub(crate) fn path_translation_supported(fx: &klipp_timeline::LayerFx) -> bool {
-    use klipp_timeline::MotionKind;
-    fx.motion.enter.iter().chain(fx.motion.exit.iter()).all(|m|matches!(m.kind,MotionKind::Fade|MotionKind::Flicker|MotionKind::Typewriter|MotionKind::Rise|MotionKind::Drop|MotionKind::SlideLeft|MotionKind::SlideRight|MotionKind::FlyLeft|MotionKind::FlyRight|MotionKind::FlyTop|MotionKind::FlyBottom|MotionKind::Bounce))
-        && fx.animators.iter().filter(|a|a.enabled).all(|a| {
-            let p=&a.props;
-            p.scale==1.0 && p.rotation==0.0 && p.blur==0.0 && p.colour.is_none()
-        })
 }
