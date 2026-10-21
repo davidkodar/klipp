@@ -87,8 +87,11 @@ for full-project playback profiling.
   unpremultiplication; ordinary letters in the same title reuse outlines.
   Layout reads bitmap metrics without CPU resizing. Wrap, Grow and Shrink
   fitting, including animated box width/height, feed their evaluated glyph
-  sizes to that retained-strike route. Glyph poses, paths and decorated
-  combinations retain fallback.
+  sizes to that retained-strike route. Outlines, underlines and
+  strikethroughs, and colour and wave loops, now style colour glyphs on that
+  route too. A shadow, glow or inner shadow reads the colour glyph's coverage
+  while the face does not, so those keep the CPU, as do glyph poses (#2203)
+  and paths.
   Plain rectangles, gradients and strokes use GPU coverage, including keyed transforms.
   Fitted rectangles use bounds-only text layout; hidden or missing targets
   suppress the panel. Rectangle edge fades run on GPU after byte-layer

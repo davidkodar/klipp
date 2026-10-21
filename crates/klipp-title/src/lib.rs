@@ -1497,11 +1497,16 @@ impl TitleRenderer {
         }
         if self.gpu_layout_only {
             let bitmap=glyphs.iter().any(|g|fonts[g.font_index].font.colour_source(g.key.glyph_index,g.key.px).is_some());
-            // Cached RGBA and retained-strike resizing handle unposed plain text.
-            // Other combinations need native-colour sampling/mask semantics.
-            let bitmap_supported=self.gpu_motion.is_none() && self.gpu_wave.is_none()
-                && title.primary_fx().is_default() && tb.style_runs.is_empty()
-                && !tb.underline && !tb.strikethrough && tb.write_on>=1.0
+            // Cached RGBA and retained-strike resizing handle unposed text, its
+            // outlines, decorations and colour loops; the rest needs
+            // native-colour sampling or mask semantics.
+            // A shadow, glow or inner shadow reads the colour glyph's coverage
+            // while the face does not; the GPU styles one face mask for both.
+            let fx_mask_styles=title.primary_fx().glows.iter().any(|g|g.enabled)
+                || title.primary_fx().shadows.iter().any(|s|s.enabled)
+                || title.primary_fx().inner_shadows.iter().any(|s|s.enabled);
+            // Colour glyph draws take no pose (#2203): a moving text keeps them on the CPU.
+            let bitmap_supported=self.gpu_motion.is_none() && tb.style_runs.is_empty() && tb.write_on>=1.0 && !fx_mask_styles
                 && tb.gradient.as_ref().is_none_or(|g|!g.enabled)
                 && (tb.pattern_fill.is_none() || !tb.pattern_fill_enabled)
                 && tb.texture_fill.as_ref().is_none_or(|f|!f.enabled)

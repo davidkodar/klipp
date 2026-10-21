@@ -1851,7 +1851,10 @@ fn bitmap_colour_glyph_cache_reuses_native_pixels_and_guards_combinations() {
                 unsupported.primary_text_mut().unwrap().strikethrough=true;
             }
         }
-        assert!(r.glyph_source(&unsupported,320,180,0.3,Some(3.0)).is_none(),"case {case} needs its native-colour fallback");
+        // An outline, an underline and a strikethrough are styled on the
+        // GPU with the colour glyphs' own coverage; the rest falls back.
+        let resident=matches!(case,2|5|6);
+        assert_eq!(r.glyph_source(&unsupported,320,180,0.3,Some(3.0)).is_some(),resident,"case {case}");
     }
 }
 
@@ -2154,6 +2157,36 @@ fn trim_path_sequence(keyed: bool) -> Sequence {
     }), klipp_timeline::ObjectTransform { size: klipp_timeline::TitlePosition { x: 0.6, y: 0.6 }, ..klipp_timeline::default_text_transform() });
     let mut seq = Sequence::new_default(); seq.resolution = Resolution { width: 320, height: 180 };
     let mut track = Track::new("path", TrackKind::Video);
+
+fn colour_glyph_combo_sequence(_fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    // One combination alone, to isolate it locally.
+    let mode = std::env::var("KLIPP_TEST_COMBO").ok().and_then(|m| m.parse::<u8>().ok()).unwrap_or(mode);
+    use klipp_timeline::{Motion, MotionKind, StaggerUnit, TitleMotion, TitleLoop, TitleShadow};
+    let mut fx = LayerFx::default();
+    match mode {
+        0 => { fx.outlines = vec![TextOutline { enabled: true, color: [20, 20, 20, 255], width: 4.0, width_keyframes: vec![] }]; fx.loops = vec![TitleLoop::ColorCycle { rate_hz: 0.5 }]; }
+        1 => fx.loops = vec![TitleLoop::ColorCycle { rate_hz: 0.5 }],
+        2 => fx.motion = TitleMotion::enter(Motion::new(MotionKind::Rise).duration(0.8)),
+        3 => fx.motion = TitleMotion::enter(Motion::new(MotionKind::Blur).duration(0.8).stagger(StaggerUnit::Char, 0.05)),
+        4 => fx.motion = TitleMotion::enter(Motion::new(MotionKind::Rise).duration(0.8)),
+        5 => {}
+        9 => fx.motion = TitleMotion::enter(Motion::new(MotionKind::Rise).duration(0.8).stagger(StaggerUnit::Char, 0.05)),
+        10 => fx.loops = vec![TitleLoop::Wave { amplitude: 0.15, rate_hz: 1.0 }],
+        7 => { fx.glows = vec![klipp_timeline::TextGlow { enabled: true, color: [255, 220, 120, 255], radius: 8.0, radius_keyframes: vec![], intensity: 0.8, intensity_keyframes: vec![] }]; fx.loops = vec![TitleLoop::ColorCycle { rate_hz: 0.5 }]; }
+        8 => { fx.inner_shadows = vec![klipp_timeline::InnerShadow { enabled: true, color: [0, 0, 0, 200], offset_x: 4.0, offset_x_keyframes: vec![], offset_y: 4.0, offset_y_keyframes: vec![], blur: 3.0, blur_keyframes: vec![] }]; fx.loops = vec![TitleLoop::ColorCycle { rate_hz: 0.5 }]; }
+        _ => { fx.shadows = vec![TitleShadow { enabled: true, color: [0, 0, 0, 180], offset_x: 6.0, offset_x_keyframes: vec![], offset_y: 6.0, offset_y_keyframes: vec![], blur: 4.0, blur_keyframes: vec![] }]; fx.loops = vec![TitleLoop::ColorCycle { rate_hz: 0.5 }]; }
+    }
+    let mut title = TitleData::single_text_fx(TextBox { text: "A 🌈 B".into(), font_size: 180.0, color: [190, 120, 60, 255], ..Default::default() }, fx);
+    let tb = title.primary_text_mut().unwrap();
+    match mode {
+        1 => tb.underline = true,
+        4 => tb.font_size_keyframes = vec![key(0.0, 120.0), key(3.0, 220.0)],
+        9 | 10 => tb.tracking_keyframes = vec![key(0.0, 0.0), key(3.0, 10.0)],
+        5 => { tb.text_path = Some(klipp_timeline::TextPath::Circle { radius: 45.0 }); tb.tracking_keyframes = vec![key(0.0, 0.0), key(3.0, 10.0)]; }
+        _ => {}
+    }
+    let mut seq = Sequence::new_default(); seq.resolution = Resolution { width: w, height: h };
+    let mut track = Track::new("colour glyphs", TrackKind::Video);
     track.clips.push(Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) });
     seq.tracks = vec![track]; seq
 }
@@ -2243,6 +2276,16 @@ fn title_motion_blur_stays_on_the_stack_at_4k() {
         assert_eq!(klipp_effects::gpu::thread_readback_stats().count - before.count, 1, "only verification download");
         eprintln!("4K blurred rising title sample {sample}: {elapsed:?}, including verification download");
     }
+
+fn colour_glyph_combinations_match_cpu_and_stay_resident() {
+    // Outline and underline with a colour loop stay resident; moving and
+    // mask-reading combinations keep the CPU.
+    check_rectangle_motion_samples(colour_glyph_combo_sequence, 2, &[0.0, 0.2, 0.7, 2.6]);
+    check_rectangle_motion_samples(|f, _, w, h| colour_glyph_combo_sequence(f, 10, w, h), 1, &[0.0, 0.2, 0.7, 2.6]);
+}
+#[test]
+fn outlined_colour_glyphs_in_a_colour_loop_stay_resident_at_4k() {
+    check_rectangle_motion_fades_at_4k(|f, _, w, h| colour_glyph_combo_sequence(f, 0, w, h));
 }
 
 /// A lone still path moved or faded whole by its motion and loops: rise
