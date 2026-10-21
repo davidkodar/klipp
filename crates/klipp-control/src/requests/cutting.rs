@@ -353,9 +353,7 @@ pub(crate) fn respond(
     }
 }
 
-/// How long a fitted track's join crossfades: short enough to keep the
-/// beat, long enough that a loud bar into a quiet one isn't a click.
-const JOIN_CROSSFADE_SECS: f64 = 0.25;
+use klipp_document::ops::MUSIC_JOIN_CROSSFADE_SECS as JOIN_CROSSFADE_SECS;
 
 /// A music track's sections and energy over its whole length, added to
 /// a beats read (#503), and with `target` a fit to that length by whole
@@ -389,24 +387,11 @@ fn music_shape(v: &mut serde_json::Value, path: &std::path::Path, id: klipp_core
             },
             None => klipp_document::ops::TrackRef::Kind("audio".into()),
         };
-        let mut place_at = at;
-        let mut ops: Vec<serde_json::Value> = fit
-            .segments
-            .iter()
-            .map(|&(a, b)| {
-                let op = klipp_document::ops::Op::Place { media_id: id, track: track_ref.clone(), at: klipp_document::ops::Anchor::Secs(place_at), source_in: Some(a), source_out: Some(b), insert: false, with_audio: true, sync_source_secs: None };
-                place_at += b - a;
-                serde_json::to_value(op).unwrap_or_default()
-            })
+        let ops: Vec<serde_json::Value> = klipp_document::ops::fitted_music_ops(id, track_ref, at, &fit.segments, None)
+            .into_iter()
+            .map(|op| serde_json::to_value(op).unwrap_or_default())
             .collect();
-        // Each join crossfaded (#1575): on an audio track a transition is a
-        // constant-power crossfade into both clips' handles, named by the
-        // clip its place step made ("@N").
         let joins = fit.segments.len().saturating_sub(1);
-        ops.extend((0..joins).map(|n| {
-            let op = klipp_document::ops::Op::Transition { clip_id: klipp_document::ops::ClipRef::Made(klipp_document::ops::StepRef(n)), kind: "cross_dissolve".into(), secs: JOIN_CROSSFADE_SECS, remove: false, pieces: None };
-            serde_json::to_value(op).unwrap_or_default()
-        }));
         let how = match fit.bars_changed {
             0 => "already that long".to_string(),
             n if n < 0 => format!("{} bars taken out", -n),

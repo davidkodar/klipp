@@ -8736,6 +8736,11 @@ impl TimelinePanel {
                     cmds.push(AppCommand::OpenNormalizeDialog { clip_id: Some(clip_id) });
                     ui.close_menu();
                 }
+                // Fit to length (#2210): music cut or repeated by whole bars.
+                if has_sound && ui.button("Fit Music to Length\u{2026}").on_hover_text("Cut or repeat whole bars so the track lasts as long as the picture, a marked range or a length").clicked() {
+                    cmds.push(AppCommand::OpenMusicFitDialog { clip_id });
+                    ui.close_menu();
+                }
                 // Colour match (#CG-CLIP2CLIP-MATCH). Parallel to the
                 // audio-reference pattern: one clip is the reference,
                 // others can match against it. Match result lands on a

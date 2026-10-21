@@ -823,6 +823,30 @@ impl KlippApp {
                     self.normalize_clips(clip_ids, *settings);
                     true
                 }
+                AppCommand::OpenMusicFitDialog { clip_id } => {
+                    match crate::music_fit_dialog::MusicFitDialog::new(self.state.sequence(), *clip_id) {
+                        Some(d) => self.state.music_fit_dialog = Some(d),
+                        None => self.state.toast.show("That clip is no longer in the sequence"),
+                    }
+                    true
+                }
+                AppCommand::PlanMusicFit { clip_id, target_secs, skip_intro } => {
+                    self.plan_music_fit(*clip_id, *target_secs, *skip_intro);
+                    true
+                }
+                AppCommand::MusicFitPlanned { clip_id, target_secs, plan } => {
+                    let result = plan.clone().map(|(segments, length_secs, join_secs, bars_changed)| crate::music_fit_dialog::PlannedFit { target_secs: *target_secs, segments, length_secs, join_secs, bars_changed });
+                    crate::music_fit_dialog::take_result(&mut self.state, *clip_id, result);
+                    true
+                }
+                AppCommand::ApplyMusicFit { clip_id, segments } => {
+                    let seq = self.state.sequence();
+                    match crate::music_fit_dialog::fitted_edit(seq, &self.state.media_pool, *clip_id, segments) {
+                        Ok(edits) => self.apply_edits_as_one(&edits, "Fit Music to Length"),
+                        Err(why) => self.state.toast.show(format!("Fit unchanged: {why}")),
+                    }
+                    true
+                }
                 AppCommand::ApplyClipGains { gains } => {
                     self.apply_clip_gains(gains);
                     true
@@ -931,6 +955,24 @@ impl KlippApp {
             }
             out.push(AppCommand::ShowToast { text });
             out
+        });
+    }
+
+    /// Read a music clip's track and plan its fit off the UI thread, from
+    /// the clip's own source in-point (#2210).
+    fn plan_music_fit(&mut self, clip_id: klipp_core::ClipId, target_secs: f64, skip_intro: bool) {
+        let found = self.state.sequence().all_clips().find(|c| c.id == clip_id).and_then(|clip| {
+            let item = clip.media_id().and_then(|m| self.state.media_pool.get(&m))?;
+            Some((item.path.clone(), item.duration.to_secs_f64(), clip.source_in.to_secs_f64()))
+        });
+        let Some((path, duration, start)) = found else {
+            crate::music_fit_dialog::take_result(&mut self.state, clip_id, Err("the clip has no media to fit".into()));
+            return;
+        };
+        crate::file_dialog::spawn(move || {
+            let plan = klipp_analysis::music_structure::fit_media(std::path::Path::new("ffmpeg"), &path, duration, target_secs, start, skip_intro)
+                .map(|(fit, _)| (fit.segments, fit.length_secs, fit.join_secs, fit.bars_changed));
+            vec![AppCommand::MusicFitPlanned { clip_id, target_secs, plan }]
         });
     }
 

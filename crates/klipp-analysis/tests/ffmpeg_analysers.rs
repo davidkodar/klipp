@@ -201,3 +201,30 @@ fn beats_detect_a_100_bpm_click_track() {
     assert!(b.confidence > 0.4, "a clean click is confident, got {}", b.confidence);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A music file fitted to a length (#2210): a 120 BPM click track of 64 s
+/// comes to within a bar of the 40 s asked, by whole bars.
+#[test]
+fn fit_media_cuts_a_click_track_to_a_length_by_whole_bars() {
+    let ctx = AnalysisCtx::default();
+    if !ctx.ffmpeg_available() {
+        eprintln!("skipping: no ffmpeg");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("klipp-fit-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("click120.wav");
+    let ok = std::process::Command::new(&ctx.ffmpeg)
+        .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+            "-i", "aevalsrc=if(lt(mod(t\\,0.5)\\,0.02)\\,sin(2*PI*1000*t)\\,0):s=22050:d=64", "-ac", "1"])
+        .arg(&wav).status().unwrap().success();
+    assert!(ok, "ffmpeg made the click track");
+    let (fit, start) = klipp_analysis::music_structure::fit_media(&ctx.ffmpeg, &wav, 64.0, 40.0, 0.0, false).expect("a whole-bar fit");
+    assert_eq!(start, 0.0);
+    assert!(fit.bars_changed < 0, "bars taken out: {fit:?}");
+    assert!((fit.length_secs - 40.0).abs() <= 2.0, "within a bar of 40 s: {}", fit.length_secs);
+    let played: f64 = fit.segments.iter().map(|(a, b)| b - a).sum();
+    assert!((played - fit.length_secs).abs() < 1e-6);
+    assert!(klipp_analysis::music_structure::fit_media(&ctx.ffmpeg, &wav, 64.0, 0.0, 0.0, false).is_err(), "no length, no fit");
+    let _ = std::fs::remove_dir_all(&dir);
+}

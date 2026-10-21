@@ -4606,6 +4606,33 @@ pub fn scene_cut_ops(seq: &Sequence, clip_id: ClipId, source_cuts: &[f64], media
         .collect()
 }
 
+/// How long a fitted music track's joins crossfade: short enough to keep
+/// the beat, long enough that a loud bar into a quiet one isn't a click.
+pub const MUSIC_JOIN_CROSSFADE_SECS: f64 = 0.25;
+
+/// A fitted music track as ops (#503, #2210): each of `segments` (source
+/// seconds) placed back to back on `track` from `at`, every join
+/// crossfaded; with `replacing`, that clip removed first, in place.
+pub fn fitted_music_ops(media_id: MediaId, track: TrackRef, at: f64, segments: &[(f64, f64)], replacing: Option<ClipId>) -> Vec<Op> {
+    let mut ops = Vec::new();
+    if let Some(id) = replacing {
+        ops.push(Op::Remove { clip_id: ClipRef::Id(id), ripple: false, linked: true });
+    }
+    let first_place = ops.len();
+    let mut place_at = at;
+    for &(a, b) in segments {
+        ops.push(Op::Place { media_id, track: track.clone(), at: Anchor::Secs(place_at), source_in: Some(a), source_out: Some(b), insert: false, with_audio: true, sync_source_secs: None });
+        place_at += b - a;
+    }
+    // On an audio track a transition is a constant-power crossfade into
+    // both clips' handles, named by the clip its place step made (#1575).
+    for n in 0..segments.len().saturating_sub(1) {
+        ops.push(Op::Transition { clip_id: ClipRef::Made(StepRef(first_place + n)), kind: "cross_dissolve".into(), secs: MUSIC_JOIN_CROSSFADE_SECS, remove: false, pieces: None });
+    }
+    ops
+}
+
+
 /// The ops that place a narration take: on the audio track named Voice,
 /// added when there is none, at `at` seconds, with the dialogue role, so
 /// a duck comes down under it. The socket's `narrate` and the Narrate

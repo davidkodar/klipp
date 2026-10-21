@@ -4238,6 +4238,22 @@ pub enum AppCommand {
     /// UI thread; [`AppCommand::ApplyClipGains`] applies what it finds.
     NormalizeClips { clip_ids: Vec<crate::ClipId>, settings: crate::normalize::NormalizeSettings },
 
+    /// Open the Fit Music to Length dialog for a music clip (#2210).
+    OpenMusicFitDialog { clip_id: crate::ClipId },
+
+    /// Read `clip_id`'s track and fit it to about `target_secs` by whole
+    /// bars, off the UI thread; [`AppCommand::MusicFitPlanned`] brings the
+    /// plan, or why there is none, back to the dialog.
+    PlanMusicFit { clip_id: crate::ClipId, target_secs: f64, skip_intro: bool },
+
+    /// A fit planned for `clip_id`: the source stretches to play back to
+    /// back, or why no whole-bar fit lands near `target_secs`.
+    MusicFitPlanned { clip_id: crate::ClipId, target_secs: f64, plan: Result<(Vec<(f64, f64)>, f64, Option<f64>, i64), String> },
+
+    /// Replace `clip_id` with `segments` of its media, placed back to back
+    /// from where it starts, joins crossfaded, as one undo step.
+    ApplyMusicFit { clip_id: crate::ClipId, segments: Vec<(f64, f64)> },
+
     /// Set each clip's gain (linear), mirrored to a linked partner, as one
     /// undo step.
     ApplyClipGains { gains: Vec<(crate::ClipId, f32)> },

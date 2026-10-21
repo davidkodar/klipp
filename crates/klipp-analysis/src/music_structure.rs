@@ -263,6 +263,27 @@ pub fn fit_from(s: &Structure, target_secs: f64, start_secs: f64) -> Option<Fit>
     Some(f)
 }
 
+/// A media file's music fitted to about `target_secs` (#2210): its beats
+/// (read once and cached), its structure over the decoded sound, and
+/// [`fit_from`] from `start_secs` on, or from the end of its intro with
+/// `skip_intro`. The fit and where it started.
+pub fn fit_media(ffmpeg: &std::path::Path, path: &std::path::Path, duration_secs: f64, target_secs: f64, start_secs: f64, skip_intro: bool) -> Result<(Fit, f64), String> {
+    const SR: u32 = 22_050;
+    if !target_secs.is_finite() || target_secs <= 0.0 {
+        return Err("the length to fit to must be above 0 s".into());
+    }
+    let beats = crate::beats::read_and_cache(ffmpeg, path)?;
+    if beats.confidence < 0.3 {
+        return Err("the track has no clear beat to fit by bars".into());
+    }
+    let pcm = crate::audio_sync::decode_mono_pcm(ffmpeg, path, SR, 0.0, duration_secs.clamp(1.0, 1800.0))?;
+    let shape = analyse(&pcm, SR, &beats).ok_or("the track's bars could not be read")?;
+    let start = if skip_intro { intro_end(&shape).unwrap_or(start_secs).max(start_secs) } else { start_secs };
+    let fitted = if start > 1e-6 { fit_from(&shape, target_secs, start) } else { fit(&shape, target_secs) };
+    let fit = fitted.ok_or_else(|| format!("the track ({:.1} s) cannot be fitted to {target_secs:.1} s by whole bars: it needs a first and last phrase and room between", shape.duration_secs))?;
+    Ok((fit, start))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

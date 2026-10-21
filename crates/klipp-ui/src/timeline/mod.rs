@@ -977,6 +977,25 @@ mod menu_smoke_tests {
         }
     }
 
+    /// A clip with sound offers Fit Music to Length (#2210), which opens
+    /// the dialog for that clip.
+    #[test]
+    fn a_sounding_clips_menu_fits_it_to_a_length() {
+        let mut timeline = Timeline::new();
+        let media = timeline.state.media_pool.all().next().unwrap().id;
+        timeline.state.media_pool.get_mut(&media).unwrap().has_audio = true;
+        let clip_id = timeline.state.sequences[0].all_clips().next().unwrap().id;
+        let at = timeline.frame(Vec::new()).into_iter().find(|(t, _)| t == "smoke.mov").expect("the clip is drawn").1;
+        let menu = timeline.right_click(at);
+        let item = timeline.frame(Vec::new()).into_iter().find(|(t, _)| t == "Fit Music to Length\u{2026}").map(|(_, p)| p).unwrap_or_else(|| panic!("offered: {menu:?}"));
+        let button = |pressed| egui::Event::PointerButton { pos: item, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        timeline.frame(vec![egui::Event::PointerMoved(item), button(true)]);
+        let mut sent = std::mem::take(&mut timeline.sent);
+        timeline.frame(vec![button(false)]);
+        sent.extend(std::mem::take(&mut timeline.sent));
+        assert!(sent.iter().any(|c| matches!(c, AppCommand::OpenMusicFitDialog { clip_id: id } if *id == clip_id)), "{sent:?}");
+    }
+
     /// On the Colour page's strip, a clip's menu flags where its grade
     /// stands (#899): Grade Flag, then a flag, sends that flag for the
     /// clip; a flagged clip shows a pennant in the flag's colour.
