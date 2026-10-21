@@ -26,8 +26,6 @@ pub enum TitleStyle {
     },
 }
 
-/// Fill evaluated in authored pixel coordinates, independently of style coverage.
-
 /// A vector path's geometry for [`GpuEffectsPipeline::stack_title_path`]:
 /// the CPU raster's padded box in frame pixels, its closed contours' edges
 /// and revealed stroke segments (`[a.x, a.y, b.x, b.y]`, offset to that box
@@ -44,6 +42,7 @@ pub struct TitlePath {
     pub glow: Option<(f32, f32)>,
 }
 
+/// Fill evaluated in authored pixel coordinates, independently of style coverage.
 #[derive(Clone, Debug)]
 pub enum TitleFill {
     Pair {
