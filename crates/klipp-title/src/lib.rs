@@ -1505,8 +1505,7 @@ impl TitleRenderer {
             let fx_mask_styles=title.primary_fx().glows.iter().any(|g|g.enabled)
                 || title.primary_fx().shadows.iter().any(|s|s.enabled)
                 || title.primary_fx().inner_shadows.iter().any(|s|s.enabled);
-            // Colour glyph draws take no pose (#2203): a moving text keeps them on the CPU.
-            let bitmap_supported=self.gpu_motion.is_none() && tb.style_runs.is_empty() && tb.write_on>=1.0 && !fx_mask_styles
+            let bitmap_supported=tb.style_runs.is_empty() && tb.write_on>=1.0 && !fx_mask_styles
                 && tb.gradient.as_ref().is_none_or(|g|!g.enabled)
                 && (tb.pattern_fill.is_none() || !tb.pattern_fill_enabled)
                 && tb.texture_fill.as_ref().is_none_or(|f|!f.enabled)
@@ -1560,17 +1559,49 @@ impl TitleRenderer {
                 g.x=origin[0] as f32-offset_x;g.y=origin[1] as f32-offset_y;
                 if g.width>0 && g.height>0 {draw_poses.push((origin,alpha,clip,source_size,sigma,radians,colour));}
             }
+            // Glyphs posed only by a move, a fade or a mask's clip are their
+            // bitmaps placed, as the CPU rasteriser draws them; a blurred,
+            // turned or coloured pose needs the outlines, and a scaled one the
+            // outlines or a resized strike (#2203).
+            let scaled=posed.iter().zip(rest_glyphs).any(|(p,r)|p.key.px!=r.key.px);
+            let reshaped=draw_poses.iter().any(|(_,_,_,_,blur,radians,colour)|*blur>=0.05 || *radians!=0.0 || colour.is_some());
             let glyphs=posed.as_slice();
-            let sized_bitmap=bitmap && (self.gpu_bitmap_size || fit!=1.0);
-            *self.gpu_layout_capture.borrow_mut() = if bitmap && !bitmap_supported {None}
+            // The CPU draws a colour glyph as far as the whole mask reaches,
+            // where an overlapping letter's coverage can outweigh its own
+            // posed alpha; the GPU has only its own, so such a frame keeps
+            // the CPU (#2203).
+            let boxes:Vec<([i32;4],bool,f32)>=glyphs.iter().filter(|g|g.width>0 && g.height>0).zip(&draw_poses).map(|(g,(origin,alpha,..))| {
+                ([origin[0],origin[1],origin[0]+g.width as i32,origin[1]+g.height as i32],fonts[g.font_index].font.colour_source(g.key.glyph_index,g.key.px).is_some(),*alpha)
+            }).collect();
+            let meets=|a:&[i32;4],b:&[i32;4]|a[0]<b[2] && b[0]<a[2] && a[1]<b[3] && b[1]<a[3];
+            let overlapped=boxes.iter().enumerate().any(|(i,(r,colour,alpha))|*colour && *alpha>0.0 && *alpha<1.0
+                && boxes.iter().enumerate().any(|(j,(o,_,a))|i!=j && *a>0.0 && meets(r,o)));
+            let sized_bitmap=bitmap && (self.gpu_bitmap_size || fit!=1.0 || scaled);
+            *self.gpu_layout_capture.borrow_mut() = if bitmap && (!bitmap_supported || reshaped || overlapped) {None}
             else if sized_bitmap {self.gpu_glyph_cache.borrow_mut().bitmap_size_layout(&fonts,glyphs,[offset_x,offset_y],[mask_x0 as u32,mask_y0 as u32,mask_w as u32,mask_h as u32],tb.color,title.primary_fx())}
             else{self.gpu_glyph_cache.borrow_mut().layout(
-                &fonts,glyphs,[offset_x,offset_y],[mask_x0 as u32,mask_y0 as u32,mask_w as u32,mask_h as u32],tb.color,title.primary_fx(),self.gpu_outline_only && !bitmap,
+                &fonts,glyphs,[offset_x,offset_y],[mask_x0 as u32,mask_y0 as u32,mask_w as u32,mask_h as u32],tb.color,title.primary_fx(),
+                (self.gpu_outline_only || (self.gpu_motion.is_some() && (scaled || reshaped))) && !bitmap,
             )};
             if let Some(source) = self.gpu_layout_capture.borrow_mut().as_mut() {
+                let outline_pose=|draw:&mut gpu_glyphs::OutlineDraw,(origin,alpha,clip,size,blur,radians,colour):&([i32;2],f32,[i32;2],[u32;2],f32,f32,Option<[u8;4]>)| {
+                    draw.origin = *origin;draw.alpha = *alpha;draw.clip_y = *clip;draw.source_size = *size;draw.blur = *blur;draw.radians = *radians;draw.color = *colour;
+                };
+                let glyph_pose=|draw:&mut gpu_glyphs::GlyphDraw,(origin,alpha,clip,..):&([i32;2],f32,[i32;2],[u32;2],f32,f32,Option<[u8;4]>)| {
+                    draw.origin = *origin;draw.alpha = *alpha;draw.clip_y = *clip;
+                };
                 if !sized_bitmap {
-                    for (draw,(origin,alpha,clip,size,blur,radians,colour)) in source.outlines.iter_mut().zip(&draw_poses) {draw.origin = *origin;draw.alpha = *alpha;draw.clip_y = *clip;draw.source_size = *size;draw.blur = *blur;draw.radians = *radians;draw.color = *colour;}
-                    for (draw,(origin,_,_,_,_,_,_)) in source.glyphs.iter_mut().zip(&draw_poses) {draw.origin = *origin;}
+                    for (draw,pose) in source.outlines.iter_mut().zip(&draw_poses) {outline_pose(draw,pose);}
+                    for (draw,pose) in source.glyphs.iter_mut().zip(&draw_poses) {glyph_pose(draw,pose);}
+                } else {
+                    // Ordinary glyphs are outlines here and colour ones resized
+                    // strikes, each list in glyph order.
+                    let (mut outlines,mut strikes)=(source.outlines.iter_mut(),source.glyphs.iter_mut());
+                    for (g,pose) in glyphs.iter().filter(|g|g.width>0 && g.height>0).zip(&draw_poses) {
+                        if fonts[g.font_index].font.colour_source(g.key.glyph_index,g.key.px).is_some() {
+                            if let Some(draw)=strikes.next() {glyph_pose(draw,pose);}
+                        } else if let Some(draw)=outlines.next() {outline_pose(draw,pose);}
+                    }
                 }
                 if coloured && draw_poses.iter().any(|pose| pose.1 > 0.0) {
                     source.face_draws=source.outlines.clone();
