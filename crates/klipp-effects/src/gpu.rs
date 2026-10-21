@@ -9637,14 +9637,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if params.mode == 1u || params.mode == 3u {
         let p = placed(0u, x, y);
         var sum = vec4<f32>(0.0);
-        if params.mode == 3u { sum = output[idx]; }
-        output[idx] = sum + vec4<f32>(p.xyz * p.w, p.w);
+        if params.mode == 3u { sum = unpack(output[idx]); }
+        output[idx] = pack(sum + vec4<f32>(p.xyz * p.w, p.w));
         return;
     }
     var rgb = vec3<f32>(0.0);
     var covered = 0.0;
     if params.mode == 2u {
-        let sum = input[idx];
+        let sum = unpack(input[idx]);
         rgb = sum.xyz;
         covered = sum.w;
     } else {

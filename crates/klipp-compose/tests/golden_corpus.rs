@@ -1045,10 +1045,8 @@ fn title_blur_cases() -> Vec<Case> {
         if camera {
             seq.camera.x_keyframes = vec![key(0.0, 0.45), key(2.0, 0.55)];
         }
-        let mut case = Case::new(format!("title blur/{name}"), seq, f);
-        // The GPU stack leaves a title's own blur to the CPU.
-        case.declines = Some(vec![Path::Stack, Path::Export]);
-        out.push(case);
+        // The GPU stack takes a title's own blur, as the CPU does.
+        out.push(Case::new(format!("title blur/{name}"), seq, f));
     }
     // Drawn after a precomposition: the scene's render must leave the
     // card's shutter alone.
@@ -1058,7 +1056,6 @@ fn title_blur_cases() -> Vec<Case> {
     let f = Frames::default().with(&scene_clip, 90);
     let mut case = Case::new("title blur/after a precomposition", sequence(vec![track("T1", TrackKind::Text, vec![card(false)]), track("V1", TrackKind::Video, vec![pre])]), f);
     case.project.push(scene);
-    case.declines = Some(vec![Path::Stack, Path::Export]);
     out.push(case);
     out
 }
