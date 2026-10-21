@@ -2214,7 +2214,7 @@ fn blurred_title(case: u8, w: u32, h: u32) -> Sequence {
     use klipp_timeline::{Motion, MotionBlur, MotionKind, TitleMotion};
     let blur = Some(MotionBlur { enabled: true, shutter_angle: 180.0, shutter_angle_keyframes: vec![], samples: 8 });
     let mut fx = LayerFx { motion_blur: blur, ..Default::default() };
-    if case != 1 { fx.motion = TitleMotion::enter(Motion::new(MotionKind::Rise).duration(0.8)); }
+    if case != 1 { fx.motion = TitleMotion::enter(Motion::new(if case == 4 { MotionKind::FlyLeft } else { MotionKind::Rise }).duration(0.8)); }
     if case == 2 { fx.outlines = vec![TextOutline { enabled: true, color: [20, 30, 40, 255], width: 4.0, width_keyframes: vec![] }]; }
     let mut title = TitleData::single_text_fx(TextBox { text: "Blur".into(), font_size: 180.0, color: [230, 190, 80, 255], ..Default::default() }, fx);
     if case == 3 {
@@ -2233,7 +2233,7 @@ fn blurred_title(case: u8, w: u32, h: u32) -> Sequence {
 #[test]
 fn title_motion_blur_matches_cpu_on_the_stack() {
     let (w, h) = (320, 180);
-    for case in 0..4u8 {
+    for case in 0..5u8 {
         let seq = blurred_title(case, w, h);
         let mut gpu = renderer(); gpu.set_gpu_enabled(true);
         assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
