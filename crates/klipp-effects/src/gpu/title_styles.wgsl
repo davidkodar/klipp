@@ -28,6 +28,14 @@ fn linear(x: f32) -> f32 {
     if x <= 0.04045 { return x/12.92; }
     return pow((x+0.055)/1.055,2.4);
 }
+// Rust's `round`: halves away from zero, where WGSL's rounds them to even.
+fn round_away(x: f32) -> f32 {
+    let f=floor(abs(x));
+    return sign(x)*(f+select(0.0,1.0,abs(x)-f>=0.5));
+}
+fn round_away3(v: vec3<f32>) -> vec3<f32> {
+    return vec3<f32>(round_away(v.x),round_away(v.y),round_away(v.z));
+}
 fn rounded_rect(point:vec2<f32>,lo:vec2<f32>,hi:vec2<f32>,r:f32)->bool {
     if any(point<lo) || any(point>hi) {return false;}
     if r<=0.0 {return true;}
@@ -452,7 +460,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
         }
         if p.op==52u {
-            store_rgba(i,vec4<f32>(0.0,0.0,0.0,round(f32(countOneBits(sbits))*0.25*stroke.a*255.0)));
+            store_rgba(i,vec4<f32>(0.0,0.0,0.0,round_away(f32(countOneBits(sbits))*0.25*stroke.a*255.0)));
             return;
         }
         // Straight sRGB bytes laid over nothing, then the mix over them,
@@ -461,9 +469,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if glow>0.0 {
             let halo=load_dst(i).a;
             if halo>0.0 {
-                let ha=round(halo*glow);
+                let ha=round_away(halo*glow);
                 let sa=ha/255.0;
-                if sa>0.0 {d=vec4<f32>(round(stroke.rgb*255.0)*sa/sa,sa*255.0);}
+                if sa>0.0 {d=vec4<f32>(round_away3(stroke.rgb*255.0)*sa/sa,sa*255.0);}
             }
         }
         let fa=f32(countOneBits(fbits))*0.25*fill.a;
@@ -471,16 +479,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let overlap=f32(countOneBits(fbits&sbits))*0.25*fill.a*stroke.a;
         let alpha=fa+sa-overlap;
         if (fbits!=0u || sbits!=0u) && alpha>0.0 {
-            let src_rgb=round((fill.rgb*(fa-overlap)+stroke.rgb*sa)/alpha*255.0);
-            let s_a=round(alpha*255.0)/255.0;
+            let src_rgb=round_away3((fill.rgb*(fa-overlap)+stroke.rgb*sa)/alpha*255.0);
+            let s_a=round_away(alpha*255.0)/255.0;
             if s_a>0.0 {
                 let inv=1.0-s_a;let da=d.a/255.0;let out_a=s_a+da*inv;
                 if out_a>0.0 {d=vec4<f32>((src_rgb*s_a+d.rgb*da*inv)/out_a,out_a*255.0);}
             }
         }
         if d.a<=0.0 {store_rgba(i,vec4<f32>(0.0));return;}
-        var v=d.rgb;
-        if input[7]==0u {v=d.rgb*d.a/255.0;}
+        // Paths are laid in straight alpha on the CPU, whatever the scene.
+        let v=d.rgb;
         let lin=matrix(vec3<f32>(linear(v.x/255.0),linear(v.y/255.0),linear(v.z/255.0)));
         store_rgba(i,vec4<f32>(lin,d.a/255.0));
     } else if p.op==53u {

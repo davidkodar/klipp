@@ -1123,13 +1123,13 @@ impl GpuEffectsPipeline {
     /// geometry, offset to its padded box as the CPU offsets it. Its glow is
     /// `blur_alpha`'s: three rounds of box passes over the stroke's byte
     /// mask within the box, laid under the fill and stroke.
-    pub fn stack_title_path(&mut self, slot: usize, path: &TitlePath, straight: bool) -> bool {
+    pub fn stack_title_path(&mut self, slot: usize, path: &TitlePath) -> bool {
         let [x0,y0,x1,y1]=path.bounds;
         let (w,h)=self.stack_dims;
         if x1<=x0 || y1<=y0 || x1>w || y1>h
             || !path.fill_edges.iter().chain(path.stroke_segments.iter()).flatten().chain(path.fill.iter()).chain(path.stroke.iter()).chain([path.half].iter()).all(|v|v.is_finite())
             || !self.stack_title_alpha(slot,[0.0;4],1.0) {return false;}
-        let mut words:Vec<u32>=vec![path.fill_edges.len() as u32,path.stroke_segments.len() as u32,x0,y0,x1,y1,path.half.to_bits(),u32::from(straight)];
+        let mut words:Vec<u32>=vec![path.fill_edges.len() as u32,path.stroke_segments.len() as u32,x0,y0,x1,y1,path.half.to_bits(),0];
         words.extend(path.fill.iter().chain(path.stroke.iter()).map(|v|v.to_bits()));
         let glow=path.glow.filter(|(radius,strength)|radius.round()>=1.0 && *strength>0.0 && radius.is_finite() && strength.is_finite());
         words.extend([glow.map_or(0.0,|g|g.1).to_bits(),0,0,0]);
