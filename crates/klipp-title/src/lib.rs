@@ -54,6 +54,7 @@ pub use gpu_styles::{StyleFaceWork, StyleSource};
 mod tracking;
 pub mod variable;
 mod vector_path;
+pub use vector_path::keys_path_geometry;
 use fontdue::layout::{HorizontalAlign, LayoutSettings, VerticalAlign, WrapStyle};
 use fontdue::Font;
 use shaping::{Face, LoadedFont, ShapedLayout};
@@ -3986,8 +3987,8 @@ impl TitleRenderer {
     }
 
     /// How many resting renders this renderer made rather than took from
-    /// its cache (#2069). For tests.
-    #[doc(hidden)]
+    /// its cache (#2069). The compositor reads it to report keyed path
+    /// geometry rasterised again (#2201).
     pub fn resting_renders(&self) -> u64 {
         self.resting_renders
     }

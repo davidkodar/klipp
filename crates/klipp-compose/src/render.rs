@@ -3005,7 +3005,14 @@ impl Renderer {
         // A title that is its resting render moved and faded
         // keeps that render on the GPU: no raster, no upload, one
         // pass. Anything else is rendered here and goes up as rows.
-        let placed = match self.titles.frame_with_window(td, width, height, gpu, clip_time as f32, Some(total)) {
+        let resting = self.titles.resting_renders();
+        let frame = self.titles.frame_with_window(td, width, height, gpu, clip_time as f32, Some(total));
+        // Keyed path geometry is rasterised again at each new pose; the
+        // cache only serves a pose seen before (#2201).
+        if self.titles.resting_renders() > resting && klipp_title::keys_path_geometry(td) {
+            residency::record("title.path_geometry", "Keyed vector path geometry rasterized on CPU", Work::Fallback);
+        }
+        let placed = match frame {
             klipp_title::TitleFrame::Placed { sprite, dx, dy, opacity, scale, anchor, under, blur, shape, rows: r } => {
                 rows = r;
                 // The blur entrance, and a roll's focus band going

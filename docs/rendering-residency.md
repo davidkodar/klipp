@@ -95,7 +95,10 @@ for full-project playback profiling.
   Combined motion/edge fades preserve the CPU sprite's half-float alpha
   rounding before motion opacity, then apply edge fading to the byte layer.
   Faded rectangle matte sources also stay resident for alpha/luma masks and
-  their inverses. Their completed scene is cropped on GPU to the CPU raster's
+  their inverses. Paths with morph or trim keys rasterize their resting
+  sprite on CPU at each newly evaluated pose (a pose seen before is cached);
+  each such render records a `title.path_geometry` fallback until GPU path
+  coverage lands (#2201). Their completed scene is cropped on GPU to the CPU raster's
   alpha bounding box, preserving faint pixels inside the box. Other shape
   styles still fall back.
   Rectangle Rise, Drop, SlideLeft and SlideRight motions use the painted

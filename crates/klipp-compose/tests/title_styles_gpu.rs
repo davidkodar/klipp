@@ -2135,6 +2135,50 @@ fn bitmap_colour_fit_changes_dimensions_without_cpu_resizing() {
     }
 }
 
+fn trim_path_sequence(keyed: bool) -> Sequence {
+    let contour = serde_json::json!([{"closed":true,"vertices":[
+        {"point":[0.8,0.5],"incoming":[0.8,0.33],"outgoing":[0.8,0.67]},
+        {"point":[0.5,0.8],"incoming":[0.67,0.8],"outgoing":[0.33,0.8]},
+        {"point":[0.2,0.5],"incoming":[0.2,0.67],"outgoing":[0.2,0.33]},
+        {"point":[0.5,0.2],"incoming":[0.33,0.2],"outgoing":[0.67,0.2]}]}]);
+    let mut path = serde_json::json!({"pose":{"contours":contour,"fill":[0.9,0.4,0.2,1.0],"stroke":[1,1,1,1],"stroke_width":4}});
+    if keyed {
+        path["trim"] = serde_json::json!({"range":{"start":0,"end":1,"offset":0},"keyframes":[
+            {"time_secs":0,"range":{"start":0,"end":0,"offset":0},"easing":"Linear"},
+            {"time_secs":3,"range":{"start":0,"end":1,"offset":0},"easing":"Linear"}]});
+    }
+    let mut title = TitleData::default();
+    title.objects.clear();
+    title.add_object(klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape {
+        kind: klipp_timeline::ShapeKind::Path(serde_json::from_value(path).unwrap()), fill: None, gradient: None, stroke: None, fit: None,
+    }), klipp_timeline::ObjectTransform { size: klipp_timeline::TitlePosition { x: 0.6, y: 0.6 }, ..klipp_timeline::default_text_transform() });
+    let mut seq = Sequence::new_default(); seq.resolution = Resolution { width: 320, height: 180 };
+    let mut track = Track::new("path", TrackKind::Video);
+    track.clips.push(Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) });
+    seq.tracks = vec![track]; seq
+}
+#[test]
+fn keyed_path_geometry_rasterized_again_records_a_fallback() {
+    let path_fallback = |seq: &Sequence, gpu: &mut Renderer, t: f64| {
+        let scope = klipp_effects::residency::frame("keyed path", t);
+        gpu.render_display_u8_on_gpu(seq, RationalTime::from_secs_f64(t, 30), 320, 180, &mut NoMedia, RenderOptions::default()).expect("placed path");
+        drop(scope);
+        klipp_effects::residency::last_frame().events.iter().any(|e| e.feature == "title.path_geometry" && e.work == klipp_effects::residency::Work::Fallback)
+    };
+    let mut gpu = renderer(); gpu.set_gpu_enabled(true);
+    assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
+    let keyed = trim_path_sequence(true);
+    for t in [0.5, 1.5, 2.5] {
+        assert!(path_fallback(&keyed, &mut gpu, t), "a new trim pose at {t} is a CPU raster");
+    }
+    assert!(!path_fallback(&keyed, &mut gpu, 1.5), "a pose seen before is cached");
+    let mut gpu = renderer(); gpu.set_gpu_enabled(true);
+    let still = trim_path_sequence(false);
+    for t in [0.5, 1.5, 2.5] {
+        assert!(!path_fallback(&still, &mut gpu, t), "static geometry rasterizes once and is not a path-geometry fallback");
+    }
+}
+
 /// A lone still path moved or faded whole by its motion and loops: rise
 /// and fly, bounce and pulse, shake and blink.
 fn still_path_motion_sequence(mode: u8, w: u32, h: u32) -> Sequence {
