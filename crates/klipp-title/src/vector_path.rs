@@ -141,7 +141,7 @@ pub(crate) fn paint<C: super::Channel>(
 ) {
     paint_filled(buf, pose, transform, width, height, trim, None, gpu)
 }
-/// A path's coverage as [`paint_filled`] scans it (#2201): the padded box
+/// A path's coverage as `paint_filled` scans it (#2201): the padded box
 /// it paints, in frame pixels, and the closed contours' edges and the
 /// revealed stroke segments in that box's pixels, so another rasteriser
 /// given the same points covers the same samples.
