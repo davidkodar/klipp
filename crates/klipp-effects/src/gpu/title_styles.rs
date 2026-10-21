@@ -26,6 +26,22 @@ pub enum TitleStyle {
     },
 }
 
+/// A vector path's geometry for [`GpuEffectsPipeline::stack_title_path`]:
+/// the CPU raster's padded box in frame pixels, its closed contours' edges
+/// and revealed stroke segments (`[a.x, a.y, b.x, b.y]`, offset to that box
+/// as the CPU offsets them), the stroke's half width, the pose's colours
+/// (0..1) and its glow (radius in pixels, strength).
+#[derive(Clone, Debug, Default)]
+pub struct TitlePath {
+    pub bounds: [u32; 4],
+    pub fill_edges: Vec<[f32; 4]>,
+    pub stroke_segments: Vec<[f32; 4]>,
+    pub half: f32,
+    pub fill: [f32; 4],
+    pub stroke: [f32; 4],
+    pub glow: Option<(f32, f32)>,
+}
+
 /// Fill evaluated in authored pixel coordinates, independently of style coverage.
 #[derive(Clone, Debug)]
 pub enum TitleFill {
@@ -1099,6 +1115,69 @@ impl GpuEffectsPipeline {
             return true;
         }
         let mut enc=self.encoder(Some("title rectangle copy"));enc.copy_buffer_to_buffer(scratch,0,layer,0,u64::from(w)*u64::from(h)*16);self.submit(enc);true
+    }
+
+    /// A vector path's painted layer drawn into `slot` on the GPU, as the
+    /// CPU's `paint_filled` draws it (#2201): `path` holds its flattened
+    /// geometry, offset to its padded box as the CPU offsets it. Its glow is
+    /// `blur_alpha`'s: three rounds of box passes over the stroke's byte
+    /// mask within the box, laid under the fill and stroke.
+    pub fn stack_title_path(&mut self, slot: usize, path: &TitlePath) -> bool {
+        let [x0,y0,x1,y1]=path.bounds;
+        let (w,h)=self.stack_dims;
+        if x1<=x0 || y1<=y0 || x1>w || y1>h
+            || !path.fill_edges.iter().chain(path.stroke_segments.iter()).flatten().chain(path.fill.iter()).chain(path.stroke.iter()).chain([path.half].iter()).all(|v|v.is_finite())
+            || !self.stack_title_alpha(slot,[0.0;4],1.0) {return false;}
+        let mut words:Vec<u32>=vec![path.fill_edges.len() as u32,path.stroke_segments.len() as u32,x0,y0,x1,y1,path.half.to_bits(),0];
+        words.extend(path.fill.iter().chain(path.stroke.iter()).map(|v|v.to_bits()));
+        let glow=path.glow.filter(|(radius,strength)|radius.round()>=1.0 && *strength>0.0 && radius.is_finite() && strength.is_finite());
+        // Each sample row's segments, a row either side to spare: the pass
+        // still tests each one exactly, but only near its own rows.
+        let rows=2*(y1-y0) as usize;
+        let span=|lo:f32,hi:f32|-> (usize,usize) {
+            let first=((lo*2.0-0.5).ceil()-1.0).max(0.0);let last=((hi*2.0-0.5).ceil()+1.0).max(0.0);
+            ((first as usize).min(rows),(last as usize).min(rows))
+        };
+        let bins=|segments:&[[f32;4]],r:f32| {
+            let mut counts=vec![0u32;rows+1];
+            let spans:Vec<(usize,usize)>=segments.iter().map(|s|span(s[1].min(s[3])-r,s[1].max(s[3])+r)).collect();
+            for &(a,b) in &spans {for c in &mut counts[a..b] {*c+=1;}}
+            let mut offsets=vec![0u32;rows+1];
+            for i in 0..rows {offsets[i+1]=offsets[i]+counts[i];}
+            let mut index=vec![0u32;offsets[rows] as usize];let mut fill=offsets.clone();
+            for (e,&(a,b)) in spans.iter().enumerate() {for row in a..b {index[fill[row] as usize]=e as u32;fill[row]+=1;}}
+            (offsets,index)
+        };
+        let (fill_offsets,fill_index)=bins(&path.fill_edges,0.0);
+        let (stroke_offsets,stroke_index)=bins(&path.stroke_segments,path.half);
+        let segments=20+4*(path.fill_edges.len()+path.stroke_segments.len());
+        let fo=segments;let so=fo+rows+1;let fi=so+rows+1;let si=fi+fill_index.len();
+        words.extend([glow.map_or(0.0,|g|g.1).to_bits(),rows as u32,fo as u32,so as u32]);
+        words.extend(path.fill_edges.iter().chain(path.stroke_segments.iter()).flatten().map(|v|v.to_bits()));
+        words.extend(fill_offsets.iter().map(|o|o+fi as u32));
+        words.extend(stroke_offsets.iter().map(|o|o+si as u32));
+        words.extend(fill_index);
+        words.extend(stroke_index);
+        let geometry=self.device.create_buffer(&wgpu::BufferDescriptor{label:Some("title path geometry"),size:(words.len()*4) as u64,usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:true});
+        geometry.slice(..).get_mapped_range_mut().copy_from_slice(bytemuck::cast_slice(&words));
+        geometry.unmap();
+        let layer=&self.stack_layers[slot];let scratch=self.title_post_scratch.as_ref().unwrap();
+        let groups=(w*h).div_ceil(WORKGROUP_SIZE);
+        if let Some((radius,_))=glow {
+            // The stroke's mask into the scratch, then each box pass between
+            // the scratch and the slot, ending in the scratch.
+            self.write_params(&StyleParams{width:w,height:h,frame_width:w,op:52,x0:0,y0:0,offset_x:0,offset_y:0,color:[0.0;4],matrix:self.authored_to_working});
+            self.stack_pass(&self.title_style_pipeline,&geometry,scratch,groups,"title path glow mask");
+            for _ in 0..3 {
+                for (axis,(from,to)) in [(scratch,layer.as_ref()),(layer.as_ref(),scratch)].into_iter().enumerate() {
+                    self.write_params(&StyleParams{width:w,height:h,frame_width:w,op:53,x0,y0,offset_x:radius.round() as i32,offset_y:axis as i32,color:[x1 as f32,y1 as f32,0.0,0.0],matrix:self.authored_to_working});
+                    self.stack_pass(&self.title_style_pipeline,from,to,groups,"title path glow blur");
+                }
+            }
+        }
+        self.write_params(&StyleParams{width:w,height:h,frame_width:w,op:51,x0:0,y0:0,offset_x:0,offset_y:0,color:[0.0;4],matrix:self.authored_to_working});
+        self.stack_pass(&self.title_style_pipeline,&geometry,scratch,groups,"title vector path");
+        let mut enc=self.encoder(Some("title path copy"));enc.copy_buffer_to_buffer(scratch,0,layer,0,u64::from(w)*u64::from(h)*16);self.submit(enc);true
     }
 
     /// Match byte layers or the completed scene's packed-half source boundary.
