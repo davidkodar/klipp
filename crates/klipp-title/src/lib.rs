@@ -1442,6 +1442,33 @@ impl TitleRenderer {
         let mask_x1 = ((text_max_x + offset_x).ceil() as i32 + max_pad + 1).clamp(0, w as i32) as usize;
         let mask_y1 = ((text_max_y + offset_y).ceil() as i32 + max_pad + underline_pad + 1)
             .clamp(0, h as i32) as usize;
+        // Glyphs a motion or an animator moves, scales, turns or blurs at a
+        // time reach out of the resting box: rastered here, they are kept to
+        // the frame, as the placed sprite and the GPU's posed glyphs are, not
+        // cut at it. A fade, a flicker or a typewriter stays inside, and so
+        // does a motion at rest: its frame is the resting one, to the byte.
+        let posed_fx = title.primary_fx();
+        let (posed_t, posed_window) = match self.gpu_motion {
+            Some((t, window)) => (Some(t), window.or(self.motion_window)),
+            None => (time_secs, self.motion_window),
+        };
+        let moves = |m: &Option<klipp_timeline::Motion>| m.is_some_and(|m| !matches!(m.kind, klipp_timeline::MotionKind::Fade | klipp_timeline::MotionKind::Flicker | klipp_timeline::MotionKind::Typewriter));
+        let posed = posed_t.is_some_and(|t| {
+            // The first unit and the last bound a staggered motion's span,
+            // counted as `frame_at` counts a motion's units.
+            let last = |m: &Option<klipp_timeline::Motion>| match m.map(|m| m.stagger).unwrap_or_default() {
+                klipp_timeline::StaggerUnit::None => 0,
+                klipp_timeline::StaggerUnit::Line => tb.text.lines().count().max(1) - 1,
+                klipp_timeline::StaggerUnit::Word => tb.text.split_whitespace().count().max(1) - 1,
+                klipp_timeline::StaggerUnit::Char => tb.text.chars().filter(|c| !c.is_whitespace()).count().max(1) - 1,
+            };
+            let in_motion = [0, last(&posed_fx.motion.enter), last(&posed_fx.motion.exit)].into_iter().any(|unit| {
+                let (enter, exit) = posed_fx.motion.progress(t, posed_window, unit);
+                (moves(&posed_fx.motion.enter) && (enter - 1.0).abs() > 1e-6) || (moves(&posed_fx.motion.exit) && (exit - 1.0).abs() > 1e-6)
+            });
+            in_motion || posed_fx.animators.iter().any(|a| a.enabled && (a.props.dx != 0.0 || a.props.dy != 0.0 || a.props.scale != 1.0 || a.props.rotation != 0.0 || a.props.blur != 0.0))
+        });
+        let (mask_x0, mask_y0, mask_x1, mask_y1) = if posed { (0, 0, w, h) } else { (mask_x0, mask_y0, mask_x1, mask_y1) };
         let mask_w = mask_x1.saturating_sub(mask_x0);
         let mask_h = mask_y1.saturating_sub(mask_y0);
 
@@ -1536,8 +1563,8 @@ impl TitleRenderer {
             )};
             if let Some(source) = self.gpu_layout_capture.borrow_mut().as_mut() {
                 if !sized_bitmap {
-                    for (draw,(origin,alpha,clip,size,blur,radians,colour)) in source.outlines.iter_mut().zip(&draw_poses) {draw.origin=*origin;draw.alpha=*alpha;draw.clip_y=*clip;draw.source_size=*size;draw.blur=*blur;draw.radians=*radians;draw.color=*colour;}
-                    for (draw,(origin,_,_,_,_,_,_)) in source.glyphs.iter_mut().zip(&draw_poses) {draw.origin=*origin;}
+                    for (draw,(origin,alpha,clip,size,blur,radians,colour)) in source.outlines.iter_mut().zip(&draw_poses) {draw.origin = *origin;draw.alpha = *alpha;draw.clip_y = *clip;draw.source_size = *size;draw.blur = *blur;draw.radians = *radians;draw.color = *colour;}
+                    for (draw,(origin,_,_,_,_,_,_)) in source.glyphs.iter_mut().zip(&draw_poses) {draw.origin = *origin;}
                 }
                 if coloured && draw_poses.iter().any(|pose| pose.1 > 0.0) {
                     source.face_draws=source.outlines.clone();
@@ -1578,7 +1605,7 @@ impl TitleRenderer {
                 }
                 source.bounds=[text_min_x+offset_x,text_min_y+offset_y,text_max_x+offset_x,text_max_y+offset_y];
                 source.gradient=tb.gradient.clone().filter(|g|g.enabled);
-                source.pattern=tb.pattern_fill.clone().filter(|_|tb.pattern_fill_enabled);
+                source.pattern=tb.pattern_fill.filter(|_|tb.pattern_fill_enabled);
                 if let TitleBackground::Color{color,padding}=title.background {
                     let pad=padding*scale;
                     let x0=((text_min_x+offset_x-pad) as i32).max(0) as u32;
@@ -2089,7 +2116,7 @@ impl TitleRenderer {
                 if coloured {source.face_draws=source.outlines.clone();}
                 source.bounds=[text_min_x,text_min_y,text_max_x,text_max_y];
                 source.gradient=tb.gradient.clone().filter(|g|g.enabled);
-                source.pattern=tb.pattern_fill.clone().filter(|_|tb.pattern_fill_enabled);
+                source.pattern=tb.pattern_fill.filter(|_|tb.pattern_fill_enabled);
                 if tb.outline_write_on<1.0 {source.outline_cutoff=(text_min_x+(text_max_x-text_min_x)*tb.outline_write_on.clamp(0.0,1.0)).floor() as i32;}
                 if let TitleBackground::Color{color,padding}=title.background {
                     let pad=padding*scale;

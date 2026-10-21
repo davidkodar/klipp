@@ -28,6 +28,17 @@ pub fn readback_stats() -> ReadbackStats {
     TOTAL.snapshot()
 }
 
+thread_local! {
+    static THREAD: Counters = Counters::default();
+}
+
+/// [`readback_stats`] for the calling thread alone. Blocking downloads run
+/// on the thread that asks for them, so tests running side by side can
+/// count their own without seeing each other's.
+pub fn thread_readback_stats() -> ReadbackStats {
+    THREAD.with(Counters::snapshot)
+}
+
 impl Counters {
     pub(super) fn snapshot(&self) -> ReadbackStats {
         *self.0.lock().unwrap_or_else(|e| e.into_inner())
@@ -63,6 +74,7 @@ impl Drop for Attempt<'_> {
         let us = self.start.elapsed().as_micros().min(u64::MAX as u128) as u64;
         self.counters.record(self.bytes, us, self.succeeded);
         TOTAL.record(self.bytes, us, self.succeeded);
+        THREAD.with(|t| t.record(self.bytes, us, self.succeeded));
     }
 }
 

@@ -47,10 +47,12 @@ pub(crate) struct ColourSource {
     pub(crate) xmin: f32,
     pub(crate) ymin: f32,
 }
-static RASTERIZATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// Diagnostic count of CPU colour-bitmap size preparations, including cache misses.
+thread_local! { static RASTERIZATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
+/// Diagnostic count of CPU colour-bitmap size preparations, including cache
+/// misses, on the calling thread: they are made on the thread that draws the
+/// title, so tests running side by side count only their own.
 pub fn colour_bitmap_rasterizations() -> u64 {
-    RASTERIZATIONS.load(std::sync::atomic::Ordering::Relaxed)
+    RASTERIZATIONS.with(std::cell::Cell::get)
 }
 
 /// A font's colour bitmaps (CBDT with CBLC), drawn as they are asked
@@ -164,7 +166,7 @@ impl ColourBitmaps {
 }
 
 fn draw(source: ColourSource) -> ColourBitmap {
-    RASTERIZATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    RASTERIZATIONS.with(|n| n.set(n.get() + 1));
     let pre = image::RgbaImage::from_raw(
         source.strike.width as u32,
         source.strike.height as u32,

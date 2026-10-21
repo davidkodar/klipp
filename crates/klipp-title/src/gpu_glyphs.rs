@@ -453,7 +453,25 @@ impl TitleRenderer {
         }
         let raster_animator = fx.animators.iter().any(|a| a.enabled && (a.props.blur != 0.0 || a.props.colour.is_some()));
         let stagger_blur = fx.motion.enter.iter().chain(fx.motion.exit.iter()).any(|m|m.kind.blurs() && m.stagger!=klipp_timeline::StaggerUnit::None);
-        let changes = linked || raster_animator || stagger_blur || tb.gradient.as_ref().is_some_and(|g| g.has_keyframes())
+        // Text on a still linked path that only moves is the resting sprite
+        // posed glyph by glyph, as the CPU draws it; translating it in the
+        // path layout would round each glyph's centre another way.
+        let still_link = match &tb.text_path {
+            Some(klipp_timeline::TextPath::Layer { layer, offset_keyframes, .. }) => offset_keyframes.is_empty()
+                && scene.unwrap_or(title).object(*layer).is_some_and(|l| {
+                    let t = &l.transform;
+                    t.center_x_keyframes.is_empty() && t.center_y_keyframes.is_empty() && t.size_x_keyframes.is_empty()
+                        && t.size_y_keyframes.is_empty() && t.rotation_keyframes.is_empty()
+                        && t.anchor_x_keyframes.is_empty() && t.anchor_y_keyframes.is_empty()
+                        && !matches!(&l.content, TitleObjectContent::Shape(s) if matches!(&s.kind,
+                            klipp_timeline::ShapeKind::Path(p) if !p.keyframes.is_empty() || p.trim.as_ref().is_some_and(|t| !t.keyframes.is_empty())))
+                }),
+            _ => false,
+        };
+        let translates = fx.motion.enter.iter().chain(fx.motion.exit.iter())
+            .any(|m| !matches!(m.kind, klipp_timeline::MotionKind::Fade | klipp_timeline::MotionKind::Flicker | klipp_timeline::MotionKind::Typewriter))
+            || fx.animators.iter().any(|a| a.enabled && (a.props.dx != 0.0 || a.props.dy != 0.0));
+        let changes = (linked && !(still_link && translates)) || raster_animator || stagger_blur || tb.gradient.as_ref().is_some_and(|g| g.has_keyframes())
             || !o.transform.size_x_keyframes.is_empty()
             || !o.transform.size_y_keyframes.is_empty()
             || !tb.font_size_keyframes.is_empty()

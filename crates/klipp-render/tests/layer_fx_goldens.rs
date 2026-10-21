@@ -66,7 +66,11 @@ fn a_project_from_before_the_stacks_moved_renders_the_same() {
     // levels before the frame's own rounding (#190): against the frames
     // before, at most 1 level premultiplied, on 131 to 234 of 129,600
     // pixels.
-    let goldens = [(0.1f32, 0xc4a78c449354acbau64), (0.5, 0xf255e760b78eeba6), (2.0, 0x0ea2e8e8569d4ee0)];
+    // Re-pinned at 0.1 s and 0.5 s when a rising text stopped being cut
+    // at its resting box (#2069): against the frames before, 1,336 and
+    // 621 pixels of the moved words and their glow and shadow, at most 6
+    // and 3 levels; the frame at rest is the same to the byte.
+    let goldens = [(0.1f32, 0x60210d7d009cb142u64), (0.5, 0x564557caeeb1ab82), (2.0, 0x0ea2e8e8569d4ee0)];
     for (t, want) in goldens {
         let px = r.render_with_window(td, 480, 270, None, t, Some(4.0));
         assert_eq!(fnv(&px), want, "frame at {t} s differs from the build before the move");

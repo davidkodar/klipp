@@ -556,11 +556,11 @@ mod qc_geometry_tests {
             let id = pool.add(item);
             let mut clip = Clip::media(id,tc(0.0),tc(4.0),tc(0.0),tc(4.0));
             if !portrait {
-                clip.push_effect(klipp_effects::BuiltinEffect::Transform {
+                clip = klipp_timeline::test_clip::TestClip::of(clip).effect(klipp_effects::BuiltinEffect::Transform {
                     position_x: 400.0, position_y: 0.0, scale_x: 0.5, scale_y: 0.5,
                     rotation: 0.0, anchor_x: 0.5, anchor_y: 0.5,
                     rotation_x: 0.0, rotation_y: 0.0, perspective: 0.0, focal_ref: None,
-                });
+                }).build();
             }
             let mut video = Track::new("V",TrackKind::Video);
             video.clips.push(clip);
@@ -581,7 +581,8 @@ mod qc_geometry_tests {
             let before = qc::check(&seq,&pool,&Host);
             assert!(before.findings.iter().any(|f|f.rule=="title_over_face"), "{}",before.text());
             // The second case explicitly appends Crop AFTER Transform.
-            seq.tracks[1].clips[0].push_effect(klipp_effects::BuiltinEffect::Crop { left:0.25,right:0.0,top:0.0,bottom:0.0,feather:0.0 });
+            let cropped = std::mem::replace(&mut seq.tracks[1].clips[0], Clip::gap(tc(0.0),tc(4.0)));
+            seq.tracks[1].clips[0] = klipp_timeline::test_clip::TestClip::of(cropped).effect(klipp_effects::BuiltinEffect::Crop { left:0.25,right:0.0,top:0.0,bottom:0.0,feather:0.0 }).build();
             let after = qc::check(&seq,&pool,&Host);
             assert!(after.findings.iter().any(|f|f.rule=="title_overlap_unchecked"), "{}",after.text());
             assert!(!after.findings.iter().any(|f|f.rule=="title_over_face"));

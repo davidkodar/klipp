@@ -187,7 +187,10 @@ mod socket_claim_tests {
     fn dir() -> std::path::PathBuf {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let d = std::env::temp_dir().join(format!("klipp-claim-{}-{n}", std::process::id()));
+        // A socket's path must fit in sun_path (108 bytes); a build's scratch
+        // TMPDIR can be longer, the runtime directory sockets live in is not.
+        let base = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from).filter(|d| d.is_dir()).unwrap_or_else(std::env::temp_dir);
+        let d = base.join(format!("klipp-claim-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d

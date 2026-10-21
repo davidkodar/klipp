@@ -142,12 +142,14 @@ mod tests {
     #[test]
     fn project_access_matches_only_existing_recent_names() {
         let root = std::env::temp_dir().join(format!("klipp-recents-{}", uuid::Uuid::new_v4()));
-        let mut p = ProjectStatus::default();
-        p.recent_projects = vec![
-            entry(&root, "Film"),
-            entry(&root, "Film final"),
-            entry(&root, "Interview"),
-        ];
+        let p = ProjectStatus {
+            recent_projects: vec![
+                entry(&root, "Film"),
+                entry(&root, "Film final"),
+                entry(&root, "Interview"),
+            ],
+            ..Default::default()
+        };
         assert_eq!(
             resolve(&p, None, Some("fILm")).unwrap(),
             p.recent_projects[0].path
@@ -175,8 +177,10 @@ mod tests {
     #[test]
     fn project_access_status_recents_are_bounded_and_only_on_project_page() {
         let root = std::env::temp_dir().join(format!("klipp-recents-{}", uuid::Uuid::new_v4()));
-        let mut p = ProjectStatus::default();
-        p.recent_projects = (0..7).map(|i| entry(&root, &format!("Film{i}"))).collect();
+        let mut p = ProjectStatus {
+            recent_projects: (0..7).map(|i| entry(&root, &format!("Film{i}"))).collect(),
+            ..Default::default()
+        };
         let shown = status_recents(&p);
         assert_eq!(shown.len(), 5);
         assert_eq!(shown[0]["name"], "Film0");
