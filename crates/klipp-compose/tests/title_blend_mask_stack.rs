@@ -74,6 +74,15 @@ fn title() -> TitleData {
     td
 }
 
+/// How far the viewer may be from the export at `t` for the rising word
+/// here. While it moves, the GPU draws the posed glyphs' coverage from
+/// their outlines and the CPU scene from their bitmaps; at a partial alpha
+/// the two land a code apart, which shows as two levels on a few pixels
+/// over the picture. At rest both draw the bitmaps (#2203).
+fn rising_or_rest(t: f64) -> i32 {
+    if t < 0.8 { 2 } else { 1 }
+}
+
 #[test]
 fn a_blended_masked_title_is_the_same_in_the_viewer_and_the_export() {
     let mut seq = Sequence::new_default();
@@ -97,7 +106,7 @@ fn a_blended_masked_title_is_the_same_in_the_viewer_and_the_export() {
         };
         let cpu = display(&r.render(&seq, tc(t), W, H, &mut src, RenderOptions::default()));
         let d = worst(&cpu, &gpu);
-        assert!(d <= 1, "at {t} s the viewer differs from the export by {d} levels");
+        assert!(d <= rising_or_rest(t), "at {t} s the viewer differs from the export by {d} levels");
         // And the frame is the mixed one, not the layers laid flat.
         let mut flat = seq.clone();
         if let ClipKind::Title(td) = &mut flat.tracks[0].clips[0].kind {
@@ -108,5 +117,50 @@ fn a_blended_masked_title_is_the_same_in_the_viewer_and_the_export() {
         }
         let flat = display(&r.render(&flat, tc(t), W, H, &mut src, RenderOptions::default()));
         assert!(worst(&cpu, &flat) > 40, "at {t} s the blends and the mask show");
+    }
+}
+
+/// A word screened over a band as it rises in, with no mask: the same in
+/// the viewer and the export, and not cut at its resting box on the way
+/// up — a lone screened word, over nothing of its title, is the same
+/// word laid normally, which is placed whole.
+#[test]
+fn a_screened_word_rising_over_a_band_is_whole_in_the_viewer_and_the_export() {
+    let scene = |band: bool, blend: BlendMode| {
+        let mut td = title();
+        td.objects.remove(2);
+        if !band {
+            td.objects.remove(0);
+        }
+        td.objects.iter_mut().find(|o| matches!(o.content, TitleObjectContent::TextBox(_))).unwrap().blend = blend;
+        let mut seq = Sequence::new_default();
+        seq.resolution = klipp_core::Resolution { width: W, height: H };
+        let mut text = Track::new("Text", TrackKind::Text);
+        text.clips = vec![clip(ClipKind::Title(td), 0.0, 4.0)];
+        let mut base = Track::new("V1", TrackKind::Video);
+        let b = clip(ClipKind::Media { media_id: klipp_core::MediaId::new() }, 0.0, 4.0);
+        let mut src = Flat::default();
+        src.0.insert(b.id, picture());
+        base.clips = vec![b];
+        seq.tracks = vec![text, base];
+        (seq, src)
+    };
+    let mut r = Renderer::new(klipp_plugin::OfxHost::new(), klipp_title::TitleRenderer::new());
+    r.set_gpu_enabled(true);
+    for t in [0.2, 0.5, 2.0] {
+        let (seq, mut src) = scene(true, BlendMode::Screen);
+        let Some((gpu, _)) = r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut src, RenderOptions::default()) else {
+            eprintln!("skipping: the GPU stack declined (no usable GPU?)");
+            return;
+        };
+        let cpu = display(&r.render(&seq, tc(t), W, H, &mut src, RenderOptions::default()));
+        let d = worst(&cpu, &gpu);
+        assert!(d <= rising_or_rest(t), "at {t} s the viewer differs from the export by {d} levels");
+        let (screened, mut src) = scene(false, BlendMode::Screen);
+        let screened = display(&r.render(&screened, tc(t), W, H, &mut src, RenderOptions::default()));
+        let (normal, mut src) = scene(false, BlendMode::Normal);
+        let normal = display(&r.render(&normal, tc(t), W, H, &mut src, RenderOptions::default()));
+        let d = worst(&screened, &normal);
+        assert!(d <= 1, "at {t} s the rising word screened over nothing differs from it laid normally by {d} levels");
     }
 }

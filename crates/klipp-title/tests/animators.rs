@@ -199,9 +199,12 @@ fn a_title_without_animators_draws_as_before() {
 /// frames moved when posed glyphs stopped being rounded to whole levels
 /// before the frame's own rounding (#190): measured against the frames
 /// before, at most 1 level premultiplied, on 5 to 17 pixels of each.
+/// The focus-in frames grew where the blur reaches past the words'
+/// resting box, which their raster had cut it at: 646 and 848 pixels,
+/// each one empty before, the rest the same byte for byte.
 const PINNED: [u64; 8] = [
     8183618076000127518, 8183618076000127518,
     7048149134191800083, 16027533902423877051,
     3315793853365973377, 9774031115400215890,
-    12440695226491045076, 9925683632799315884,
+    10981212073083227338, 10630925023139708698,
 ];

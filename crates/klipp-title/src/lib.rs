@@ -1442,6 +1442,33 @@ impl TitleRenderer {
         let mask_x1 = ((text_max_x + offset_x).ceil() as i32 + max_pad + 1).clamp(0, w as i32) as usize;
         let mask_y1 = ((text_max_y + offset_y).ceil() as i32 + max_pad + underline_pad + 1)
             .clamp(0, h as i32) as usize;
+        // Glyphs a motion or an animator moves, scales, turns or blurs at a
+        // time reach out of the resting box: rastered here, they are kept to
+        // the frame, as the placed sprite and the GPU's posed glyphs are, not
+        // cut at it. A fade, a flicker or a typewriter stays inside, and so
+        // does a motion at rest: its frame is the resting one, to the byte.
+        let posed_fx = title.primary_fx();
+        let (posed_t, posed_window) = match self.gpu_motion {
+            Some((t, window)) => (Some(t), window.or(self.motion_window)),
+            None => (time_secs, self.motion_window),
+        };
+        let moves = |m: &Option<klipp_timeline::Motion>| m.is_some_and(|m| !matches!(m.kind, klipp_timeline::MotionKind::Fade | klipp_timeline::MotionKind::Flicker | klipp_timeline::MotionKind::Typewriter));
+        let posed = posed_t.is_some_and(|t| {
+            // The first unit and the last bound a staggered motion's span,
+            // counted as `frame_at` counts a motion's units.
+            let last = |m: &Option<klipp_timeline::Motion>| match m.map(|m| m.stagger).unwrap_or_default() {
+                klipp_timeline::StaggerUnit::None => 0,
+                klipp_timeline::StaggerUnit::Line => tb.text.lines().count().max(1) - 1,
+                klipp_timeline::StaggerUnit::Word => tb.text.split_whitespace().count().max(1) - 1,
+                klipp_timeline::StaggerUnit::Char => tb.text.chars().filter(|c| !c.is_whitespace()).count().max(1) - 1,
+            };
+            let in_motion = [0, last(&posed_fx.motion.enter), last(&posed_fx.motion.exit)].into_iter().any(|unit| {
+                let (enter, exit) = posed_fx.motion.progress(t, posed_window, unit);
+                (moves(&posed_fx.motion.enter) && (enter - 1.0).abs() > 1e-6) || (moves(&posed_fx.motion.exit) && (exit - 1.0).abs() > 1e-6)
+            });
+            in_motion || posed_fx.animators.iter().any(|a| a.enabled && (a.props.dx != 0.0 || a.props.dy != 0.0 || a.props.scale != 1.0 || a.props.rotation != 0.0 || a.props.blur != 0.0))
+        });
+        let (mask_x0, mask_y0, mask_x1, mask_y1) = if posed { (0, 0, w, h) } else { (mask_x0, mask_y0, mask_x1, mask_y1) };
         let mask_w = mask_x1.saturating_sub(mask_x0);
         let mask_h = mask_y1.saturating_sub(mask_y0);
 
