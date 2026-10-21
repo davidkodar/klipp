@@ -141,28 +141,45 @@ pub(crate) fn paint<C: super::Channel>(
 ) {
     paint_filled(buf, pose, transform, width, height, trim, None, gpu)
 }
-/// [`paint`], with the fill taken from a gradient over the object's box
-/// in place of the pose's fill colour when one is given (#1509).
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn paint_filled<C: super::Channel>(
-    buf: &mut [C],
+/// A path's coverage as [`paint_filled`] scans it (#2201): the padded box
+/// it paints, in frame pixels, and the closed contours' edges and the
+/// revealed stroke segments in that box's pixels, so another rasteriser
+/// given the same points covers the same samples.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PathCoverage {
+    /// x0, y0, x1, y1.
+    pub bounds: [u32; 4],
+    /// a.x, a.y, b.x, b.y; empty when the fill is not drawn.
+    pub fill_edges: Vec<[f32; 4]>,
+    /// a.x, a.y, b.x, b.y; empty when the stroke is not drawn.
+    pub stroke_segments: Vec<[f32; 4]>,
+    /// The stroke's half width in pixels.
+    pub half: f32,
+    /// The pose's colours, 0 to 1.
+    pub fill: [f32; 4],
+    pub stroke: [f32; 4],
+    /// The stroke glow's radius in whole pixels and its strength.
+    pub glow: Option<(f32, f32)>,
+}
+
+/// What [`paint_filled`] paints of `pose`, or `None` when it paints
+/// nothing. A `gradient` fill is drawn whatever the pose's fill alpha.
+pub(crate) fn coverage(
     pose: &PathPose,
     transform: &ObjectTransform,
     width: u32,
     height: u32,
     trim: Option<TrimRange>,
-    gradient: Option<&(GradientRamp, GradientKind)>,
-    gpu: Option<&mut dyn super::AlphaMaskProcessor>,
-) {
+    gradient: bool,
+) -> Option<PathCoverage> {
     if width == 0 || height == 0 {
-        return;
+        return None;
     }
     let empty = trim.is_some_and(|r| r.end <= r.start);
-    let fill_alpha = if gradient.is_some() { 1.0 } else { pose.fill[3] };
+    let fill_alpha = if gradient { 1.0 } else { pose.fill[3] };
     if fill_alpha <= 0.0 && (pose.stroke_width <= 0.0 || pose.stroke[3] <= 0.0 || empty) {
-        return;
+        return None;
     }
-    let (unmap, box_size) = box_fractions(transform, width, height);
     let mut contours = contours(pose, transform, width, height);
     let half = pose.stroke_width * crate::frame_scale(width, height) * 0.5;
     let glow_radius = pose
@@ -176,7 +193,7 @@ pub(crate) fn paint_filled<C: super::Channel>(
     for p in contours.iter().flat_map(|(_, p)| p) {
         for axis in 0..2 {
             if !p[axis].is_finite() {
-                return;
+                return None;
             }
             lo[axis] = lo[axis].min(p[axis]);
             hi[axis] = hi[axis].max(p[axis]);
@@ -197,28 +214,70 @@ pub(crate) fn paint_filled<C: super::Channel>(
     let x1 = (hi[0] + pad).ceil().clamp(0.0, width as f32) as u32;
     let y1 = (hi[1] + pad).ceil().clamp(0.0, height as f32) as u32;
     if x1 <= x0 || y1 <= y0 {
-        return;
+        return None;
     }
-    let frame_width = width;
-    let (width, height) = (x1 - x0, y1 - y0);
     for p in contours.iter_mut().flat_map(|(_, p)| p) {
         p[0] -= x0 as f32;
         p[1] -= y0 as f32;
     }
+    let fill_edges = if fill_alpha > 0.0 {
+        contours.iter().filter(|(closed, _)| *closed)
+            .flat_map(|(_, points)| points.windows(2).map(|s| [s[0][0], s[0][1], s[1][0], s[1][1]]))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let stroked = half > 0.0 && pose.stroke[3] > 0.0;
+    let stroke_segments = if stroked {
+        contours.iter()
+            .flat_map(|(closed, points)| revealed_segments(points, *closed, trim.unwrap_or_default()))
+            .map(|[a, b]| [a[0], a[1], b[0], b[1]])
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let glow = (stroked && glow_radius >= 1.0 && glow_strength > 0.0).then_some((glow_radius, glow_strength));
+    Some(PathCoverage { bounds: [x0, y0, x1, y1], fill_edges, stroke_segments, half, fill: pose.fill, stroke: pose.stroke, glow })
+}
+
+/// What the title renderer paints of `path` in `transform` at `time`
+/// without a gradient (#2201), or `None` when it paints nothing. The time
+/// is the renderer's own, single precision, so the keys land alike.
+pub fn path_coverage(path: &klipp_timeline::VectorPath, transform: &ObjectTransform, width: u32, height: u32, time: f32) -> Option<PathCoverage> {
+    coverage(&path.at(time as f64), transform, width, height, path.trim.as_ref().map(|t| t.at(time as f64)), false)
+}
+
+/// [`paint`], with the fill taken from a gradient over the object's box
+/// in place of the pose's fill colour when one is given (#1509).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn paint_filled<C: super::Channel>(
+    buf: &mut [C],
+    pose: &PathPose,
+    transform: &ObjectTransform,
+    width: u32,
+    height: u32,
+    trim: Option<TrimRange>,
+    gradient: Option<&(GradientRamp, GradientKind)>,
+    gpu: Option<&mut dyn super::AlphaMaskProcessor>,
+) {
+    let Some(cov) = coverage(pose, transform, width, height, trim, gradient.is_some()) else {
+        return;
+    };
+    let (unmap, box_size) = box_fractions(transform, width, height);
+    let [x0, y0, x1, y1] = cov.bounds;
+    let frame_width = width;
+    let (width, height) = (x1 - x0, y1 - y0);
     let count = width as usize * height as usize;
     let mut fill = vec![0u8; count];
     let mut stroke = vec![0u8; count];
     // Two-by-two coverage, scan-converted in output space. Fill work is
     // proportional to painted area + scanlines × edges, not pixels × edges.
-    for sy in 0..if fill_alpha > 0.0 { height * 2 } else { 0 } {
+    for sy in 0..if cov.fill_edges.is_empty() { 0 } else { height * 2 } {
         let y = (sy as f32 + 0.5) * 0.5;
         let mut crossings = Vec::new();
-        for (_, points) in contours.iter().filter(|(closed, _)| *closed) {
-            for seg in points.windows(2) {
-                let (a, b) = (seg[0], seg[1]);
-                if (a[1] > y) != (b[1] > y) {
-                    crossings.push(a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
-                }
+        for &[ax, ay, bx, by] in &cov.fill_edges {
+            if (ay > y) != (by > y) {
+                crossings.push(ax + (y - ay) * (bx - ax) / (by - ay));
             }
         }
         crossings.sort_by(f32::total_cmp);
@@ -233,23 +292,12 @@ pub(crate) fn paint_filled<C: super::Channel>(
             }
         }
     }
-    if half > 0.0 && pose.stroke[3] > 0.0 {
-        let revealed: Vec<_> = contours
-            .iter()
-            .flat_map(|(closed, points)| {
-                revealed_segments(points, *closed, trim.unwrap_or_default())
-                    .into_iter()
-                    .map(|s| (false, s.to_vec()))
-            })
-            .collect();
-        stroke = stroke_coverage(&revealed, width, height, half);
+    if !cov.stroke_segments.is_empty() {
+        let segments: Vec<_> = cov.stroke_segments.iter().map(|&[ax, ay, bx, by]| [[ax, ay], [bx, by]]).collect();
+        stroke = stroke_coverage(&segments, width, height, cov.half);
     }
-    let halo = if half > 0.0
-        && pose.stroke[3] > 0.0
-        && glow_radius >= 1.0
-        && glow_strength > 0.0
-        && stroke.iter().any(|bits| *bits != 0)
-    {
+    let (glow_radius, glow_strength) = cov.glow.unwrap_or_default();
+    let halo = if cov.glow.is_some() && stroke.iter().any(|bits| *bits != 0) {
         let mask: Vec<u8> = stroke.iter()
             .map(|bits| (bits.count_ones() as f32 * 0.25 * pose.stroke[3] * 255.0).round() as u8)
             .collect();
@@ -306,55 +354,52 @@ pub(crate) fn paint_filled<C: super::Channel>(
 /// Scan-convert the union of round-capped segments. Each scanline merges
 /// analytic capsule intervals before filling coverage, so overlapping wide
 /// segment boxes do not each visit every covered sample.
-fn stroke_coverage(contours: &[(bool, Vec<[f32; 2]>)], w: u32, h: u32, r: f32) -> Vec<u8> {
+fn stroke_coverage(segments: &[[[f32; 2]; 2]], w: u32, h: u32, r: f32) -> Vec<u8> {
     let mut rows = vec![Vec::<(f32, f32)>::new(); (h * 2) as usize];
-    for (_, points) in contours {
-        for seg in points.windows(2) {
-            let (a, b) = (seg[0], seg[1]);
-            let dx = b[0] - a[0];
-            let dy = b[1] - a[1];
-            let len = dx.hypot(dy);
-            let (nx, ny) = if len > 1e-6 {
-                (-dy / len * r, dx / len * r)
-            } else {
-                (0.0, 0.0)
-            };
-            let corners = [
-                [a[0] + nx, a[1] + ny],
-                [b[0] + nx, b[1] + ny],
-                [b[0] - nx, b[1] - ny],
-                [a[0] - nx, a[1] - ny],
-            ];
-            let y0 = ((a[1].min(b[1]) - r) * 2.0 - 0.5)
-                .ceil()
-                .clamp(0.0, (h * 2) as f32) as usize;
-            let y1 = ((a[1].max(b[1]) + r) * 2.0 - 0.5)
-                .ceil()
-                .clamp(0.0, (h * 2) as f32) as usize;
-            for (sy, row) in rows.iter_mut().enumerate().take(y1).skip(y0) {
-                let y = (sy as f32 + 0.5) * 0.5;
-                let mut lo = f32::INFINITY;
-                let mut hi = f32::NEG_INFINITY;
-                for c in [a, b] {
-                    let d = y - c[1];
-                    if d.abs() <= r {
-                        let x = (r * r - d * d).max(0.0).sqrt();
-                        lo = lo.min(c[0] - x);
-                        hi = hi.max(c[0] + x);
-                    }
+    for &[a, b] in segments {
+        let dx = b[0] - a[0];
+        let dy = b[1] - a[1];
+        let len = dx.hypot(dy);
+        let (nx, ny) = if len > 1e-6 {
+            (-dy / len * r, dx / len * r)
+        } else {
+            (0.0, 0.0)
+        };
+        let corners = [
+            [a[0] + nx, a[1] + ny],
+            [b[0] + nx, b[1] + ny],
+            [b[0] - nx, b[1] - ny],
+            [a[0] - nx, a[1] - ny],
+        ];
+        let y0 = ((a[1].min(b[1]) - r) * 2.0 - 0.5)
+            .ceil()
+            .clamp(0.0, (h * 2) as f32) as usize;
+        let y1 = ((a[1].max(b[1]) + r) * 2.0 - 0.5)
+            .ceil()
+            .clamp(0.0, (h * 2) as f32) as usize;
+        for (sy, row) in rows.iter_mut().enumerate().take(y1).skip(y0) {
+            let y = (sy as f32 + 0.5) * 0.5;
+            let mut lo = f32::INFINITY;
+            let mut hi = f32::NEG_INFINITY;
+            for c in [a, b] {
+                let d = y - c[1];
+                if d.abs() <= r {
+                    let x = (r * r - d * d).max(0.0).sqrt();
+                    lo = lo.min(c[0] - x);
+                    hi = hi.max(c[0] + x);
                 }
-                for i in 0..4 {
-                    let p = corners[i];
-                    let q = corners[(i + 1) % 4];
-                    if (p[1] > y) != (q[1] > y) {
-                        let x = p[0] + (y - p[1]) * (q[0] - p[0]) / (q[1] - p[1]);
-                        lo = lo.min(x);
-                        hi = hi.max(x);
-                    }
+            }
+            for i in 0..4 {
+                let p = corners[i];
+                let q = corners[(i + 1) % 4];
+                if (p[1] > y) != (q[1] > y) {
+                    let x = p[0] + (y - p[1]) * (q[0] - p[0]) / (q[1] - p[1]);
+                    lo = lo.min(x);
+                    hi = hi.max(x);
                 }
-                if lo <= hi {
-                    row.push((lo, hi));
-                }
+            }
+            if lo <= hi {
+                row.push((lo, hi));
             }
         }
     }
@@ -468,7 +513,8 @@ mod tests {
             vec![[8.3, 9.1], [30.4, 18.2], [12.1, 23.6]],
             vec![[20.3, 20.7], [20.3, 20.7]],
         ] {
-            let mask = stroke_coverage(&[(false, points.clone())], 40, 40, 4.2);
+            let segments: Vec<_> = points.windows(2).map(|s| [s[0], s[1]]).collect();
+            let mask = stroke_coverage(&segments, 40, 40, 4.2);
             for y in 0..40 {
                 for x in 0..40 {
                     let mut bits = 0;

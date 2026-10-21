@@ -102,10 +102,16 @@ for full-project playback profiling.
   Combined motion/edge fades preserve the CPU sprite's half-float alpha
   rounding before motion opacity, then apply edge fading to the byte layer.
   Faded rectangle matte sources also stay resident for alpha/luma masks and
-  their inverses. Paths with morph or trim keys rasterize their resting
-  sprite on CPU at each newly evaluated pose (a pose seen before is cached);
-  each such render records a `title.path_geometry` fallback until GPU path
-  coverage lands (#2201). Their completed scene is cropped on GPU to the CPU raster's
+  their inverses. A vector path is scanned on GPU from the CPU raster's
+  own points (#2201): `klipp_title::path_coverage` gives the padded box, the
+  closed contours' edges and the trimmed stroke segments, and the stack covers
+  the same two-by-two samples (even-odd fill, round-capped stroke capsules),
+  mixes fill and stroke to bytes and draws the stroke glow with the CPU's three
+  truncating box passes. Morph and trim keys, keyed centre and rotation stay
+  resident at every pose. A still path moved or faded whole keeps its placed
+  resting sprite. A gradient-filled path still rasterizes on CPU at each newly
+  evaluated pose (a pose seen before is cached) and records a
+  `title.path_geometry` fallback. Their completed scene is cropped on GPU to the CPU raster's
   alpha bounding box, preserving faint pixels inside the box. Other shape
   styles still fall back.
   Rectangle Rise, Drop, SlideLeft and SlideRight motions use the painted

@@ -2162,7 +2162,7 @@ fn trim_path_sequence(keyed: bool) -> Sequence {
     seq.tracks = vec![track]; seq
 }
 #[test]
-fn keyed_path_geometry_rasterized_again_records_a_fallback() {
+fn keyed_path_geometry_is_drawn_on_the_stack_and_a_gradient_one_records_a_fallback() {
     let path_fallback = |seq: &Sequence, gpu: &mut Renderer, t: f64| {
         let scope = klipp_effects::residency::frame("keyed path", t);
         gpu.render_display_u8_on_gpu(seq, RationalTime::from_secs_f64(t, 30), 320, 180, &mut NoMedia, RenderOptions::default()).expect("placed path");
@@ -2171,16 +2171,22 @@ fn keyed_path_geometry_rasterized_again_records_a_fallback() {
     };
     let mut gpu = renderer(); gpu.set_gpu_enabled(true);
     assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
+    // Solid geometry is scanned on the GPU at every pose (#2201).
     let keyed = trim_path_sequence(true);
     for t in [0.5, 1.5, 2.5] {
-        assert!(path_fallback(&keyed, &mut gpu, t), "a new trim pose at {t} is a CPU raster");
+        assert!(!path_fallback(&keyed, &mut gpu, t), "a new trim pose at {t} is drawn on the stack");
     }
-    assert!(!path_fallback(&keyed, &mut gpu, 1.5), "a pose seen before is cached");
+    assert_eq!(gpu.title_renderer().resting_renders(), 0, "no title raster");
+    // A gradient fill is rastered again at each new pose.
+    let mut gradient = trim_path_sequence(true);
+    let ClipKind::Title(title) = &mut gradient.tracks[0].clips[0].kind else { unreachable!() };
+    let klipp_timeline::TitleObjectContent::Shape(shape) = &mut title.objects[0].content else { unreachable!() };
+    shape.gradient = Some(klipp_timeline::TextGradient { enabled: true, top_color: [230, 30, 50, 255], bottom_color: [20, 180, 220, 255], kind: klipp_timeline::GradientKind::Linear { angle_deg: 35.0 }, stops: vec![], stop_keyframes: vec![] });
     let mut gpu = renderer(); gpu.set_gpu_enabled(true);
-    let still = trim_path_sequence(false);
     for t in [0.5, 1.5, 2.5] {
-        assert!(!path_fallback(&still, &mut gpu, t), "static geometry rasterizes once and is not a path-geometry fallback");
+        assert!(path_fallback(&gradient, &mut gpu, t), "a new gradient trim pose at {t} is a CPU raster");
     }
+    assert!(!path_fallback(&gradient, &mut gpu, 1.5), "a pose seen before is cached");
 }
 
 fn blurred_title(case: u8, w: u32, h: u32) -> Sequence {
@@ -2402,5 +2408,120 @@ fn overlapping_colour_glyphs_rising_apart_keep_the_cpu() {
             let worst=got.iter().zip(&want).map(|(a,b)|a.abs_diff(*b)).max().unwrap();
             assert!(worst<=1,"mode {mode} at {t}: {worst} levels from the CPU");
         }
+    }
+}
+
+/// A lone vector path whose geometry or placement changes over the clip
+/// (#2201): morph keys, trim keys on a closed path wrapping its offset and
+/// on an open one, a trim with a stroke glow, a self-crossing even-odd
+/// fill, an open stroke alone, keyed centre and rotation, a keyed trim
+/// with a glow rising in, and a still glowing path rising in.
+fn gpu_path_sequence(case: u8, w: u32, h: u32) -> Sequence {
+    use serde_json::json;
+    let v = |p: [f32; 2]| json!({"point": p, "incoming": p, "outgoing": p});
+    let blob = json!([{"closed": true, "vertices": [
+        {"point": [0.8, 0.5], "incoming": [0.8, 0.33], "outgoing": [0.8, 0.67]},
+        {"point": [0.5, 0.8], "incoming": [0.67, 0.8], "outgoing": [0.33, 0.8]},
+        {"point": [0.2, 0.5], "incoming": [0.2, 0.67], "outgoing": [0.2, 0.33]},
+        {"point": [0.5, 0.2], "incoming": [0.33, 0.2], "outgoing": [0.67, 0.2]}]}]);
+    let bowtie = json!([{"closed": true, "vertices": [v([0.2, 0.2]), v([0.8, 0.8]), v([0.8, 0.2]), v([0.2, 0.8])]}]);
+    let open = json!([{"closed": false, "vertices": [
+        {"point": [0.1, 0.7], "incoming": [0.1, 0.7], "outgoing": [0.3, 0.1]},
+        {"point": [0.9, 0.4], "incoming": [0.6, 0.9], "outgoing": [0.9, 0.4]}]}]);
+    let pose = |contours: &serde_json::Value, fill: [f32; 4]| json!({"contours": contours, "fill": fill, "stroke": [1.0, 0.95, 0.7, 1.0], "stroke_width": 5});
+    let fill = [0.9, 0.4, 0.2, 1.0];
+    let none = [0.0; 4];
+    let trim = |range: [f32; 3], keyed: [f32; 3]| json!({"range": {"start": range[0], "end": range[1], "offset": range[2]}, "keyframes": [
+        {"time_secs": 0, "range": {"start": range[0], "end": range[1], "offset": range[2]}, "easing": "Linear"},
+        {"time_secs": 3, "range": {"start": keyed[0], "end": keyed[1], "offset": keyed[2]}, "easing": "Linear"}]});
+    let mut path = match case {
+        0 => json!({"pose": pose(&blob, fill), "keyframes": [
+            {"time_secs": 0, "pose": pose(&blob, fill), "easing": "Linear"},
+            {"time_secs": 3, "pose": pose(&bowtie, fill), "easing": "Linear"}]}),
+        1 | 3 | 8 => json!({"pose": pose(&blob, fill), "trim": trim([0.0, 0.6, 0.7], [0.0, 0.6, 1.6])}),
+        2 => json!({"pose": pose(&open, none), "trim": trim([0.0, 0.0, 0.2], [0.0, 1.0, 0.2])}),
+        4 => json!({"pose": pose(&bowtie, fill)}),
+        5 => json!({"pose": pose(&open, none)}),
+        _ => json!({"pose": pose(&blob, fill)}),
+    };
+    if matches!(case, 3 | 8 | 9) {
+        path["pose"]["stroke_glow"] = json!({"radius": 6.0, "strength": 0.8});
+    }
+    let mut transform = klipp_timeline::ObjectTransform { size: klipp_timeline::TitlePosition { x: 0.6, y: 0.6 }, ..klipp_timeline::default_text_transform() };
+    match case {
+        6 => transform.center_x_keyframes = vec![key(0.0, 0.3), key(3.0, 0.7)],
+        7 => transform.rotation_keyframes = vec![key(0.0, 0.0), key(3.0, 90.0)],
+        _ => {}
+    }
+    let mut title = TitleData::default();
+    title.objects.clear();
+    let id = title.add_object(klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape {
+        kind: klipp_timeline::ShapeKind::Path(serde_json::from_value(path).unwrap()), fill: None, gradient: None, stroke: None, fit: None,
+    }), transform);
+    if matches!(case, 8 | 9) {
+        title.object_mut(id).unwrap().fx_mut().motion = klipp_timeline::TitleMotion::enter(klipp_timeline::Motion::new(klipp_timeline::MotionKind::Rise).duration(0.8));
+    }
+    let mut seq = Sequence::new_default(); seq.resolution = Resolution { width: w, height: h };
+    let mut track = Track::new("path", TrackKind::Video);
+    track.clips.push(Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) });
+    seq.tracks = vec![track]; seq
+}
+#[test]
+fn vector_paths_are_drawn_on_the_stack_as_the_cpu_paints_them() {
+    let (w, h) = (320, 180);
+    for case in 0..10u8 {
+        let seq = gpu_path_sequence(case, w, h);
+        for ws in [klipp_core::WorkingColorspace::Rec709Linear, klipp_core::WorkingColorspace::AcesCG] {
+            let mut cpu = renderer(); cpu.set_gpu_enabled(false); cpu.set_working_colorspace(ws);
+            let mut gpu = renderer(); gpu.set_gpu_enabled(true); gpu.set_working_colorspace(ws);
+            assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
+            for t in [0.0, 0.4, 1.1, 2.3] {
+                let at = RationalTime::from_secs_f64(t, 30);
+                let (want, _) = cpu.render_inspected(&seq, at, w, h, &mut NoMedia, RenderOptions::default(), Default::default());
+                let want = klipp_color::display::display_transform_ws_dithered_to(&want, klipp_color::display::ToneMapOp::None, ws, klipp_core::SdrTransfer::Srgb);
+                let before = klipp_effects::gpu::thread_readback_stats();
+                let scope = klipp_effects::residency::frame("vector path", t);
+                let (got, _) = gpu.render_display_u8_on_gpu(&seq, at, w, h, &mut NoMedia, RenderOptions::default()).expect("GPU frame");
+                drop(scope);
+                let events = klipp_effects::residency::last_frame().events;
+                assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Fallback), "case {case} at {t}: {events:?}");
+                assert_eq!(klipp_effects::gpu::thread_readback_stats().count - before.count, 1, "only verification download");
+                let worst = got.iter().zip(&want).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+                if worst > 1 {
+                    let i = got.iter().zip(&want).position(|(a, b)| a.abs_diff(*b) > 1).unwrap() / 4;
+                    eprintln!("case {case} {ws:?} at {t}: first pixel {},{} got {:?}, want {:?}", i % w as usize, i / w as usize, &got[i * 4..i * 4 + 4], &want[i * 4..i * 4 + 4]);
+                }
+                // Keyed geometry rising in is quantised, moved and faded as
+                // the stack moves a rectangle, which lands dim glow pixels up
+                // to three levels from the CPU's posed byte sprite mid-fade,
+                // as the rectangle motion tests allow; at rest it is exact.
+                let tolerance = if case == 8 && t < 0.8 { 3 } else { 1 };
+                assert!(worst <= tolerance, "case {case} {ws:?} at {t}: {worst} levels from the CPU");
+            }
+            // The still path rising in is its resting render posed (#2204).
+            assert_eq!(gpu.title_renderer().resting_renders(), u64::from(case == 9), "case {case}: title rasters");
+        }
+    }
+}
+#[test]
+fn vector_paths_changing_shape_stay_resident_at_4k() {
+    let (w, h) = (3840, 2160);
+    for case in [0u8, 3] {
+        let seq = gpu_path_sequence(case, w, h);
+        let mut gpu = renderer(); gpu.set_gpu_enabled(true);
+        assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
+        // Every time is a new pose: the geometry is scanned again each frame.
+        for t in [0.3, 0.9, 1.6, 2.4] {
+            let scope = klipp_effects::residency::frame("4K vector path", t);
+            let before = klipp_effects::gpu::thread_readback_stats();
+            let started = std::time::Instant::now();
+            gpu.render_display_u8_on_gpu(&seq, RationalTime::from_secs_f64(t, 30), w, h, &mut NoMedia, RenderOptions::default()).expect("the stack takes a path");
+            let elapsed = started.elapsed(); drop(scope);
+            let events = klipp_effects::residency::last_frame().events;
+            assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Fallback), "case {case} at {t}: {events:?}");
+            assert_eq!(klipp_effects::gpu::thread_readback_stats().count - before.count, 1, "only verification download");
+            eprintln!("4K path case {case} at {t}: {elapsed:?}, including verification download");
+        }
+        assert_eq!(gpu.title_renderer().resting_renders(), 0, "case {case}: no title raster");
     }
 }

@@ -54,7 +54,7 @@ pub use gpu_styles::{StyleFaceWork, StyleSource};
 mod tracking;
 pub mod variable;
 mod vector_path;
-pub use vector_path::keys_path_geometry;
+pub use vector_path::{keys_path_geometry, path_coverage, PathCoverage};
 use fontdue::layout::{HorizontalAlign, LayoutSettings, VerticalAlign, WrapStyle};
 use fontdue::Font;
 use shaping::{Face, LoadedFont, ShapedLayout};

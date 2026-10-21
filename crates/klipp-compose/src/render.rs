@@ -2720,7 +2720,12 @@ impl Renderer {
                         };
                         transform
                     } else {object.transform.evaluated_at(clip_time)};
-                    let klipp_timeline::ShapeKind::Rectangle{corner_radius}=shape.kind else {return None;};
+                    // A path's gradient fill keeps the CPU. A still path moved or
+                    // faded whole is its resting render posed, which the CPU's
+                    // byte layer rounds exactly; only changing geometry is
+                    // scanned here at each pose (#2201).
+                    if matches!(shape.kind,klipp_timeline::ShapeKind::Path(_))
+                        && (shape.gradient.as_ref().is_some_and(|g|g.enabled) || (object.fx().motion.is_active() && !klipp_title::keys_path_geometry(td))) {return None;}
                     // Entrance/exit fades act on the painted byte layer before
                     // edge fades, object opacity and scene masking.
                     let mut source_fx=object.fx().clone();
@@ -2759,8 +2764,21 @@ impl Renderer {
                     let gpu=self.executor.gpu_pipeline_or_init()?;
                     let (cx,cy)=(transform.center.x*width as f32,transform.center.y*height as f32);
                     let (hw,hh)=((transform.size.x*width as f32*0.5).max(0.0),(transform.size.y*height as f32*0.5).max(0.0));
-                    if !gpu.stack_title_rectangle(slot,[cx,cy,hw,hh],[cx+(transform.anchor_norm.x-0.5)*hw*2.0,cy+(transform.anchor_norm.y-0.5)*hh*2.0],transform.rotation.to_radians(),corner_radius.max(0.0)*scale,
-                        shape.fill.unwrap_or([0;4]),shape.stroke.map(|s|(s.color,s.width.max(0.0)*scale)),shape_straight,gradient.as_ref()) {return None;}
+                    let painted=match &shape.kind {
+                        klipp_timeline::ShapeKind::Rectangle{corner_radius}=>gpu.stack_title_rectangle(slot,[cx,cy,hw,hh],[cx+(transform.anchor_norm.x-0.5)*hw*2.0,cy+(transform.anchor_norm.y-0.5)*hh*2.0],transform.rotation.to_radians(),corner_radius.max(0.0)*scale,
+                            shape.fill.unwrap_or([0;4]),shape.stroke.map(|s|(s.color,s.width.max(0.0)*scale)),shape_straight,gradient.as_ref()),
+                        klipp_timeline::ShapeKind::Path(path)=>{
+                            // Scanned from the CPU's own points, its keys and
+                            // transform taken at the CPU's single-precision time
+                            // (#2201); a path that paints nothing leaves no layer.
+                            let transform=if shape.fit.is_some() {transform.clone()} else {object.transform.evaluated_at(clip_time as f32 as f64)};
+                            match klipp_title::path_coverage(path,&transform,width,height,clip_time as f32) {
+                                Some(c)=>gpu.stack_title_path(slot,&klipp_effects::gpu::TitlePath {bounds:c.bounds,fill_edges:c.fill_edges,stroke_segments:c.stroke_segments,half:c.half,fill:c.fill,stroke:c.stroke,glow:c.glow}),
+                                None=>gpu.stack_layer_clear(slot),
+                            }
+                        }
+                    };
+                    if !painted {return None;}
                     if motion.is_active() {
                         if !gpu.stack_title_precision(slot,true) {return None;}
                         if scales && motion_scale == 0.0 {
@@ -2927,7 +2945,10 @@ impl Renderer {
                     let invert=matches!(kind,LayerMaskKind::InvertedAlpha|LayerMaskKind::InvertedLuma);
                     if !self.executor.gpu_pipeline_or_init()?.stack_title_mask(matte_slot,object_slot,luma,invert) { return None; }
                 }
-                let painted=plain_shape && (opacity-1.0).abs()<0.001 && object.blend==klipp_core::BlendMode::Normal && td.mask_of(object).is_none();
+                // A path is laid in straight alpha on the CPU, never painted
+                // into what is under it as a rectangle's colour is (#2201).
+                let path=matches!(&object.content,klipp_timeline::TitleObjectContent::Shape(s) if matches!(s.kind,klipp_timeline::ShapeKind::Path(_)));
+                let painted=plain_shape && !path && (opacity-1.0).abs()<0.001 && object.blend==klipp_core::BlendMode::Normal && td.mask_of(object).is_none();
                 let gpu=self.executor.gpu_pipeline_or_init()?;
                 if !(if painted {gpu.stack_title_painted_over(object_slot,slot)} else {gpu.stack_title_over(object_slot,slot,1.0,object.blend)}) {return None;}
             }
