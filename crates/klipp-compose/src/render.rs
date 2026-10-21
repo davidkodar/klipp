@@ -2621,15 +2621,25 @@ impl Renderer {
             let pixels = self.grade_on_stack(c, GradeInput::Gpu(seed), time, drawn_time(c, time), fps, width, height, src);
             stats.grade_ms += ms_since(started);
             if !self.grade_ran || !pixels.is_empty() || (effects_done && !self.finish_spliced()) {
+                // A grade the chain cannot run (a lone key node runs per
+                // node): the layer as the CPU renders it, graded and with
+                // its effects, up once, as before the title was seeded.
                 self.clear_queued_run();
-                return Err("title grade/effects could not remain on GPU");
+                residency::record("title.layer", "Title grade has no GPU chain; layer rendered on CPU", Work::Fallback);
+                let Some((pixels, _)) = self.render_clip(c, time, fps, width, height, src, transforms) else { return Ok(None) };
+                stats.cpu_layers += 1;
+                if !self.executor.gpu_pipeline_or_init().is_some_and(|p| p.stack_layer_from_linear(slot, &pixels)) {
+                    return Err("a layer could not be placed on the GPU");
+                }
+                effects_done = true;
+            } else {
+                let slot_a = self.executor.last_chain_final_slot().unwrap_or(true);
+                if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_layer_from_chain(slot, slot_a)) {
+                    return Err("title grade output could not be placed");
+                }
+                stats.effects_followed_grade += u32::from(effects_done);
+                PLAN_EFFECT_CLIPS.fetch_add(u64::from(effects_done), std::sync::atomic::Ordering::Relaxed);
             }
-            let slot_a = self.executor.last_chain_final_slot().unwrap_or(true);
-            if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_layer_from_chain(slot, slot_a)) {
-                return Err("title grade output could not be placed");
-            }
-            stats.effects_followed_grade += u32::from(effects_done);
-            PLAN_EFFECT_CLIPS.fetch_add(u64::from(effects_done), std::sync::atomic::Ordering::Relaxed);
             rows = (0, height);
         }
         if !effects_done && has_active_effects(&fx) {
