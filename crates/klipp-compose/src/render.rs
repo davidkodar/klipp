@@ -2773,7 +2773,13 @@ impl Renderer {
                     let font_px=text.font_size*klipp_title::frame_scale(width,height);
                     let (text_w,text_h)=text.loop_extent(font_px);
                     let pose=klipp_core::title_motion::eval_loops(&loops,clip_time as f32,Some(total),klipp_timeline::LoopGeometry {frame_w:width as f32,frame_h:height as f32,text_w,text_h,font_px},text.color);
-                    if let Some((axis,focus))=pose.focus {
+                    // A lone layer the CPU places from its resting render is
+                    // softened there by the placed frame's linear `FocusBlur`,
+                    // which `place_title_frame` matches; only a layer rastered
+                    // afresh is faded and blurred as the authored layer is.
+                    let whole=klipp_core::title_motion::eval_loops(&object.fx().loops,clip_time as f32,Some(total),klipp_timeline::LoopGeometry {frame_w:width as f32,frame_h:height as f32,text_w,text_h,font_px},text.color);
+                    let placed_on_cpu=scene.objects.iter().filter(|o|o.visible).count()==1 && !scene.mixes_layers() && !title_rasters_each_frame(scene,&text,&whole);
+                    if let Some((axis,focus))=pose.focus.filter(|_|!placed_on_cpu) {
                         let mut source=td.clone();let target=&mut source.objects[0];
                         target.fx_mut().loops.retain(|l|title_source_loops(std::slice::from_ref(l)));
                         let edges=target.fx().edge_fade;target.fx_mut().edge_fade=Default::default();
@@ -6524,6 +6530,34 @@ fn title_fill(source:&klipp_title::GlyphSource,scale:f32)->Option<klipp_effects:
 
 // These loops alter glyph content/placement before title post-processing.
 // Focus and whole-layer opacity loops need their own later ordering stages.
+// Whether klipp-title's `frame_at` rasters a lone layer afresh rather than
+// placing its resting render, given its loops' `pose` and its `text` now: a
+// subset of its render-time overrides, the ones that take no other early path
+// there. Anything not named here falls back to the CPU's own frame.
+fn title_rasters_each_frame(title: &klipp_timeline::TitleData, text: &klipp_timeline::TextBox, pose: &klipp_timeline::LoopPose) -> bool {
+    // A changed colour or text is rastered; a wave with a focus band is too,
+    // when its glyphs could be posed one by one.
+    let posed_glyphs = |o: &klipp_timeline::TitleObject| text.three_d.as_ref().is_none_or(|t| !t.enabled)
+        && o.fx().motion.enter.is_none_or(|m| !m.kind.blurs()) && o.fx().motion.exit.is_none_or(|m| !m.kind.blurs())
+        && !o.fx().animators.iter().any(|a| a.enabled && (a.props.blur != 0.0 || a.props.colour.is_some()));
+    pose.color.is_some_and(|c| c != text.color) || pose.text.is_some()
+        || title.objects.iter().any(|o| {
+        let fx = o.fx();
+        let keyed = match &o.content {
+            klipp_timeline::TitleObjectContent::TextBox(tb) => tb.glitch_intensity > 0.0
+                // Keyed tracking alone takes the tracking path.
+                || (tb.has_keyframes() && tb.tracking_keyframes.is_empty())
+                || tb.extrusion.as_ref().is_some_and(|e| !e.depth_keyframes.is_empty() || !e.angle_keyframes.is_empty() || !e.lighting_keyframes.is_empty()),
+            _ => false,
+        };
+        o.visible && (keyed || (pose.wave.is_some() && posed_glyphs(o))
+            || fx.glows.iter().any(|g| !g.radius_keyframes.is_empty() || !g.intensity_keyframes.is_empty())
+            || fx.shadows.iter().any(|s| !s.offset_x_keyframes.is_empty() || !s.offset_y_keyframes.is_empty() || !s.blur_keyframes.is_empty())
+            || fx.inner_shadows.iter().any(|s| !s.offset_x_keyframes.is_empty() || !s.offset_y_keyframes.is_empty() || !s.blur_keyframes.is_empty())
+            || fx.outlines.iter().any(|ol| !ol.width_keyframes.is_empty()))
+    })
+}
+
 fn title_source_loops(loops:&[klipp_timeline::TitleLoop])->bool {
     loops.iter().all(|l|matches!(l,klipp_timeline::TitleLoop::ColorCycle{..}|klipp_timeline::TitleLoop::ColorBlend{..}|klipp_timeline::TitleLoop::Counter{..}|klipp_timeline::TitleLoop::Wave{..}))
 }
