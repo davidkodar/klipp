@@ -1132,8 +1132,33 @@ impl GpuEffectsPipeline {
         let mut words:Vec<u32>=vec![path.fill_edges.len() as u32,path.stroke_segments.len() as u32,x0,y0,x1,y1,path.half.to_bits(),0];
         words.extend(path.fill.iter().chain(path.stroke.iter()).map(|v|v.to_bits()));
         let glow=path.glow.filter(|(radius,strength)|radius.round()>=1.0 && *strength>0.0 && radius.is_finite() && strength.is_finite());
-        words.extend([glow.map_or(0.0,|g|g.1).to_bits(),0,0,0]);
+        // Each sample row's segments, a row either side to spare: the pass
+        // still tests each one exactly, but only near its own rows.
+        let rows=2*(y1-y0) as usize;
+        let span=|lo:f32,hi:f32|-> (usize,usize) {
+            let first=((lo*2.0-0.5).ceil()-1.0).max(0.0);let last=((hi*2.0-0.5).ceil()+1.0).max(0.0);
+            ((first as usize).min(rows),(last as usize).min(rows))
+        };
+        let bins=|segments:&[[f32;4]],r:f32| {
+            let mut counts=vec![0u32;rows+1];
+            let spans:Vec<(usize,usize)>=segments.iter().map(|s|span(s[1].min(s[3])-r,s[1].max(s[3])+r)).collect();
+            for &(a,b) in &spans {for c in &mut counts[a..b] {*c+=1;}}
+            let mut offsets=vec![0u32;rows+1];
+            for i in 0..rows {offsets[i+1]=offsets[i]+counts[i];}
+            let mut index=vec![0u32;offsets[rows] as usize];let mut fill=offsets.clone();
+            for (e,&(a,b)) in spans.iter().enumerate() {for row in a..b {index[fill[row] as usize]=e as u32;fill[row]+=1;}}
+            (offsets,index)
+        };
+        let (fill_offsets,fill_index)=bins(&path.fill_edges,0.0);
+        let (stroke_offsets,stroke_index)=bins(&path.stroke_segments,path.half);
+        let segments=20+4*(path.fill_edges.len()+path.stroke_segments.len());
+        let fo=segments;let so=fo+rows+1;let fi=so+rows+1;let si=fi+fill_index.len();
+        words.extend([glow.map_or(0.0,|g|g.1).to_bits(),rows as u32,fo as u32,so as u32]);
         words.extend(path.fill_edges.iter().chain(path.stroke_segments.iter()).flatten().map(|v|v.to_bits()));
+        words.extend(fill_offsets.iter().map(|o|o+fi as u32));
+        words.extend(stroke_offsets.iter().map(|o|o+si as u32));
+        words.extend(fill_index);
+        words.extend(stroke_index);
         let geometry=self.device.create_buffer(&wgpu::BufferDescriptor{label:Some("title path geometry"),size:(words.len()*4) as u64,usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:true});
         geometry.slice(..).get_mapped_range_mut().copy_from_slice(bytemuck::cast_slice(&words));
         geometry.unmap();

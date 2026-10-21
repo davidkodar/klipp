@@ -424,8 +424,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let ys=(f32(sy)+0.5)*0.5;
             if fill.a>0.0 && p.op==51u {
                 var odd=false;
-                for (var e=0u;e<n_fill;e+=1u) {
-                    let o=20u+4u*e;
+                for (var t=input[input[18]+sy];t<input[input[18]+sy+1u];t+=1u) {
+                    let o=20u+4u*input[t];
                     let a=vec2<f32>(bitcast<f32>(input[o]),bitcast<f32>(input[o+1u]));
                     let b=vec2<f32>(bitcast<f32>(input[o+2u]),bitcast<f32>(input[o+3u]));
                     if (a.y>ys)!=(b.y>ys) {
@@ -436,8 +436,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 if odd {fbits|=1u<<k;}
             }
             if r>0.0 && stroke.a>0.0 {
-                for (var e=0u;e<n_stroke;e+=1u) {
-                    let o=20u+4u*(n_fill+e);
+                for (var t=input[input[19]+sy];t<input[input[19]+sy+1u];t+=1u) {
+                    let o=20u+4u*(n_fill+input[t]);
                     let a=vec2<f32>(bitcast<f32>(input[o]),bitcast<f32>(input[o+1u]));
                     let b=vec2<f32>(bitcast<f32>(input[o+2u]),bitcast<f32>(input[o+3u]));
                     let row0=ceil((min(a.y,b.y)-r)*2.0-0.5);let row1=ceil((max(a.y,b.y)+r)*2.0-0.5);
