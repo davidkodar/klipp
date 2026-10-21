@@ -1851,7 +1851,10 @@ fn bitmap_colour_glyph_cache_reuses_native_pixels_and_guards_combinations() {
                 unsupported.primary_text_mut().unwrap().strikethrough=true;
             }
         }
-        assert!(r.glyph_source(&unsupported,320,180,0.3,Some(3.0)).is_none(),"case {case} needs its native-colour fallback");
+        // An outline, an underline and a strikethrough are styled on the
+        // GPU with the colour glyphs' own coverage; the rest falls back.
+        let resident=matches!(case,2|5|6);
+        assert_eq!(r.glyph_source(&unsupported,320,180,0.3,Some(3.0)).is_some(),resident,"case {case}");
     }
 }
 
@@ -2133,6 +2136,162 @@ fn bitmap_colour_fit_changes_dimensions_without_cpu_resizing() {
             "mode {mode}: no CPU bitmap resize"
         );
     }
+}
+
+fn trim_path_sequence(keyed: bool) -> Sequence {
+    let contour = serde_json::json!([{"closed":true,"vertices":[
+        {"point":[0.8,0.5],"incoming":[0.8,0.33],"outgoing":[0.8,0.67]},
+        {"point":[0.5,0.8],"incoming":[0.67,0.8],"outgoing":[0.33,0.8]},
+        {"point":[0.2,0.5],"incoming":[0.2,0.67],"outgoing":[0.2,0.33]},
+        {"point":[0.5,0.2],"incoming":[0.33,0.2],"outgoing":[0.67,0.2]}]}]);
+    let mut path = serde_json::json!({"pose":{"contours":contour,"fill":[0.9,0.4,0.2,1.0],"stroke":[1,1,1,1],"stroke_width":4}});
+    if keyed {
+        path["trim"] = serde_json::json!({"range":{"start":0,"end":1,"offset":0},"keyframes":[
+            {"time_secs":0,"range":{"start":0,"end":0,"offset":0},"easing":"Linear"},
+            {"time_secs":3,"range":{"start":0,"end":1,"offset":0},"easing":"Linear"}]});
+    }
+    let mut title = TitleData::default();
+    title.objects.clear();
+    title.add_object(klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape {
+        kind: klipp_timeline::ShapeKind::Path(serde_json::from_value(path).unwrap()), fill: None, gradient: None, stroke: None, fit: None,
+    }), klipp_timeline::ObjectTransform { size: klipp_timeline::TitlePosition { x: 0.6, y: 0.6 }, ..klipp_timeline::default_text_transform() });
+    let mut seq = Sequence::new_default(); seq.resolution = Resolution { width: 320, height: 180 };
+    let mut track = Track::new("path", TrackKind::Video);
+    track.clips.push(Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) });
+    seq.tracks = vec![track]; seq
+}
+#[test]
+fn keyed_path_geometry_rasterized_again_records_a_fallback() {
+    let path_fallback = |seq: &Sequence, gpu: &mut Renderer, t: f64| {
+        let scope = klipp_effects::residency::frame("keyed path", t);
+        gpu.render_display_u8_on_gpu(seq, RationalTime::from_secs_f64(t, 30), 320, 180, &mut NoMedia, RenderOptions::default()).expect("placed path");
+        drop(scope);
+        klipp_effects::residency::last_frame().events.iter().any(|e| e.feature == "title.path_geometry" && e.work == klipp_effects::residency::Work::Fallback)
+    };
+    let mut gpu = renderer(); gpu.set_gpu_enabled(true);
+    assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
+    let keyed = trim_path_sequence(true);
+    for t in [0.5, 1.5, 2.5] {
+        assert!(path_fallback(&keyed, &mut gpu, t), "a new trim pose at {t} is a CPU raster");
+    }
+    assert!(!path_fallback(&keyed, &mut gpu, 1.5), "a pose seen before is cached");
+    let mut gpu = renderer(); gpu.set_gpu_enabled(true);
+    let still = trim_path_sequence(false);
+    for t in [0.5, 1.5, 2.5] {
+        assert!(!path_fallback(&still, &mut gpu, t), "static geometry rasterizes once and is not a path-geometry fallback");
+    }
+}
+
+fn blurred_title(case: u8, w: u32, h: u32) -> Sequence {
+    use klipp_timeline::{Motion, MotionBlur, MotionKind, TitleMotion};
+    let blur = Some(MotionBlur { enabled: true, shutter_angle: 180.0, shutter_angle_keyframes: vec![], samples: 8 });
+    let mut fx = LayerFx { motion_blur: blur, ..Default::default() };
+    if case != 1 { fx.motion = TitleMotion::enter(Motion::new(if case == 4 { MotionKind::FlyLeft } else { MotionKind::Rise }).duration(0.8)); }
+    if case == 2 { fx.outlines = vec![TextOutline { enabled: true, color: [20, 30, 40, 255], width: 4.0, width_keyframes: vec![] }]; }
+    let mut title = TitleData::single_text_fx(TextBox { text: "Blur".into(), font_size: 180.0, color: [230, 190, 80, 255], ..Default::default() }, fx);
+    if case == 3 {
+        title.add_object(klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([40, 80, 200, 160]), gradient: None, stroke: None, fit: None }),
+            klipp_timeline::ObjectTransform { size: klipp_timeline::TitlePosition { x: 0.8, y: 0.3 }, ..klipp_timeline::default_text_transform() });
+        title.objects.swap(0, 1);
+    }
+    let mut seq = Sequence::new_default(); seq.resolution = Resolution { width: w, height: h };
+    let mut track = Track::new("blur", TrackKind::Video);
+    let mut clip = Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) };
+    // The clip moving, its drawing still: drawn once, placed at each sample.
+    if case == 1 { clip = klipp_timeline::test_clip::TestClip::of(clip).lane("pos_x", 0.0, -400.0).lane("pos_x", 3.0, 400.0).build(); }
+    track.clips.push(clip);
+    seq.tracks = vec![track]; seq
+}
+#[test]
+fn title_motion_blur_matches_cpu_on_the_stack() {
+    let (w, h) = (320, 180);
+    for case in 0..5u8 {
+        let seq = blurred_title(case, w, h);
+        let mut gpu = renderer(); gpu.set_gpu_enabled(true);
+        assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
+        let mut cpu = renderer(); cpu.set_gpu_enabled(false);
+        for t in [0.1, 0.35, 0.7, 2.0] {
+            let at = RationalTime::from_secs_f64(t, 30);
+            let (want, _) = cpu.render_inspected(&seq, at, w, h, &mut NoMedia, RenderOptions::default(), Default::default());
+            let want = klipp_color::display::display_transform_ws_dithered_to(&want, klipp_color::display::ToneMapOp::None, klipp_core::WorkingColorspace::Rec709Linear, klipp_core::SdrTransfer::Srgb);
+            let before = klipp_effects::gpu::thread_readback_stats();
+            let scope = klipp_effects::residency::frame("title motion blur", t);
+            let (got, _) = gpu.render_display_u8_on_gpu(&seq, at, w, h, &mut NoMedia, RenderOptions::default()).expect("the stack takes a blurred title");
+            drop(scope);
+            let events = klipp_effects::residency::last_frame().events;
+            // A text moving in a several-layer scene is drawn on the CPU and
+            // uploaded while it moves (#2069 follow-up); the blur stays on the stack.
+            if case != 3 {
+                assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Fallback), "case {case} at {t}: {events:?}");
+                assert_eq!(klipp_effects::gpu::thread_readback_stats().count - before.count, 1, "only verification download");
+            }
+            assert!(!events.iter().any(|e| e.feature.starts_with("composition.")), "case {case} at {t}: the frame left the stack: {events:?}");
+            let worst = got.iter().zip(&want).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+            assert!(worst <= 3, "case {case} at {t}: {worst} levels from the CPU");
+        }
+    }
+}
+#[test]
+fn title_motion_blur_stays_on_the_stack_at_4k() {
+    let (w, h) = (3840, 2160);
+    let seq = blurred_title(0, w, h);
+    let mut gpu = renderer(); gpu.set_gpu_enabled(true);
+    assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
+    for (sample, t) in [0.1, 0.25, 0.4, 0.25].into_iter().enumerate() {
+        let scope = klipp_effects::residency::frame("4K title motion blur", t);
+        let before = klipp_effects::gpu::thread_readback_stats();
+        let started = std::time::Instant::now();
+        gpu.render_display_u8_on_gpu(&seq, RationalTime::from_secs_f64(t, 30), w, h, &mut NoMedia, RenderOptions::default()).expect("the stack takes a blurred title");
+        let elapsed = started.elapsed(); drop(scope);
+        let events = klipp_effects::residency::last_frame().events;
+        assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Fallback), "{events:?}");
+        assert_eq!(klipp_effects::gpu::thread_readback_stats().count - before.count, 1, "only verification download");
+        eprintln!("4K blurred rising title sample {sample}: {elapsed:?}, including verification download");
+    }
+}
+
+fn colour_glyph_combo_sequence(_fitted: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    // One combination alone, to isolate it locally.
+    let mode = std::env::var("KLIPP_TEST_COMBO").ok().and_then(|m| m.parse::<u8>().ok()).unwrap_or(mode);
+    use klipp_timeline::{Motion, MotionKind, StaggerUnit, TitleMotion, TitleLoop, TitleShadow};
+    let mut fx = LayerFx::default();
+    match mode {
+        0 => { fx.outlines = vec![TextOutline { enabled: true, color: [20, 20, 20, 255], width: 4.0, width_keyframes: vec![] }]; fx.loops = vec![TitleLoop::ColorCycle { rate_hz: 0.5 }]; }
+        1 => fx.loops = vec![TitleLoop::ColorCycle { rate_hz: 0.5 }],
+        2 => fx.motion = TitleMotion::enter(Motion::new(MotionKind::Rise).duration(0.8)),
+        3 => fx.motion = TitleMotion::enter(Motion::new(MotionKind::Blur).duration(0.8).stagger(StaggerUnit::Char, 0.05)),
+        4 => fx.motion = TitleMotion::enter(Motion::new(MotionKind::Rise).duration(0.8)),
+        5 => {}
+        9 => fx.motion = TitleMotion::enter(Motion::new(MotionKind::Rise).duration(0.8).stagger(StaggerUnit::Char, 0.05)),
+        10 => fx.loops = vec![TitleLoop::Wave { amplitude: 0.15, rate_hz: 1.0 }],
+        7 => { fx.glows = vec![klipp_timeline::TextGlow { enabled: true, color: [255, 220, 120, 255], radius: 8.0, radius_keyframes: vec![], intensity: 0.8, intensity_keyframes: vec![] }]; fx.loops = vec![TitleLoop::ColorCycle { rate_hz: 0.5 }]; }
+        8 => { fx.inner_shadows = vec![klipp_timeline::InnerShadow { enabled: true, color: [0, 0, 0, 200], offset_x: 4.0, offset_x_keyframes: vec![], offset_y: 4.0, offset_y_keyframes: vec![], blur: 3.0, blur_keyframes: vec![] }]; fx.loops = vec![TitleLoop::ColorCycle { rate_hz: 0.5 }]; }
+        _ => { fx.shadows = vec![TitleShadow { enabled: true, color: [0, 0, 0, 180], offset_x: 6.0, offset_x_keyframes: vec![], offset_y: 6.0, offset_y_keyframes: vec![], blur: 4.0, blur_keyframes: vec![] }]; fx.loops = vec![TitleLoop::ColorCycle { rate_hz: 0.5 }]; }
+    }
+    let mut title = TitleData::single_text_fx(TextBox { text: "A 🌈 B".into(), font_size: 180.0, color: [190, 120, 60, 255], ..Default::default() }, fx);
+    let tb = title.primary_text_mut().unwrap();
+    match mode {
+        1 => tb.underline = true,
+        4 => tb.font_size_keyframes = vec![key(0.0, 120.0), key(3.0, 220.0)],
+        9 | 10 => tb.tracking_keyframes = vec![key(0.0, 0.0), key(3.0, 10.0)],
+        5 => { tb.text_path = Some(klipp_timeline::TextPath::Circle { radius: 45.0 }); tb.tracking_keyframes = vec![key(0.0, 0.0), key(3.0, 10.0)]; }
+        _ => {}
+    }
+    let mut seq = Sequence::new_default(); seq.resolution = Resolution { width: w, height: h };
+    let mut track = Track::new("colour glyphs", TrackKind::Video);
+    track.clips.push(Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) });
+    seq.tracks = vec![track]; seq
+}
+#[test]
+fn colour_glyph_combinations_match_cpu_and_stay_resident() {
+    // Outline and underline with a colour loop stay resident; moving and
+    // mask-reading combinations keep the CPU.
+    check_rectangle_motion_samples(colour_glyph_combo_sequence, 2, &[0.0, 0.2, 0.7, 2.6]);
+    check_rectangle_motion_samples(|f, _, w, h| colour_glyph_combo_sequence(f, 10, w, h), 1, &[0.0, 0.2, 0.7, 2.6]);
+}
+#[test]
+fn outlined_colour_glyphs_in_a_colour_loop_stay_resident_at_4k() {
+    check_rectangle_motion_fades_at_4k(|f, _, w, h| colour_glyph_combo_sequence(f, 0, w, h));
 }
 
 /// A lone still path moved or faded whole by its motion and loops: rise

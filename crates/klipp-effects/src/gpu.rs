@@ -483,6 +483,8 @@ pub struct GpuEffectsPipeline {
     buf_a: Option<wgpu::Buffer>,
     buf_b: Option<wgpu::Buffer>,
     buf_c: Option<wgpu::Buffer>,  // third buffer for transition "to" frame
+    /// The running premultiplied sum of a redrawn picture's shutter samples.
+    shutter_sum: Option<wgpu::Buffer>,
     /// Dedicated buffer for GPU-resident mask matte. Written by
     /// `generate_mask_gpu_to_matte_buf`, read by
     /// `apply_mask_cutout_chain`. Independent of buf_a/buf_b/buf_c so a
@@ -1790,6 +1792,7 @@ impl GpuEffectsPipeline {
             buf_a: None,
             buf_b: None,
             buf_c: None,
+            shutter_sum: None,
             matte_buf: None,
             mask_records_buf: None,
             mask_points_buf: None,
@@ -7600,23 +7603,73 @@ impl GpuEffectsPipeline {
         let (width, height) = self.stack_dims;
         let rows: Option<Vec<[f32; 16]>> = placements.iter().map(|e| TransformParams::of(e, width, height).map(|p| p.shutter_row())).collect();
         let (Some(rows), Some(out)) = (rows, self.buf_c.as_ref()) else { return false };
+        let layer = &self.stack_layers[i];
+        let mut enc = self.shutter_pass(layer, &rows, out, rows.len() as u32, 0);
+        enc.copy_buffer_to_buffer(out, 0, layer, 0, self.stack_pixel_count() * 16);
+        self.submit(enc);
+        true
+    }
+
+    /// Layer `i` as `placement` (a Transform) places it, added premultiplied
+    /// to the shutter's running sum, which `first` starts afresh: one sample
+    /// of a picture that is drawn anew at each instant the shutter is open,
+    /// as the CPU's `motion_blurred` adds a title redrawn at each.
+    /// [`Self::stack_shutter_finish`] gives the average back.
+    pub fn stack_shutter_add(&mut self, i: usize, placement: &BuiltinEffect, first: bool) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() {
+            return false;
+        }
+        let (width, height) = self.stack_dims;
+        let Some(row) = TransformParams::of(placement, width, height).map(|p| p.shutter_row()) else { return false };
+        let size = self.stack_pixel_count() * 16;
+        if self.shutter_sum.as_ref().is_none_or(|b| b.size() != size) {
+            self.shutter_sum = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("shutter_sum"),
+                size,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: false,
+            }));
+        }
+        let Some(sum) = self.shutter_sum.as_ref() else { return false };
+        let enc = self.shutter_pass(&self.stack_layers[i], &[row], sum, 1, if first { 1 } else { 3 });
+        self.submit(enc);
+        true
+    }
+
+    /// The shutter's running sum of `n` samples into layer `i`, averaged
+    /// premultiplied and given back straight, as `stack_shutter` gives its
+    /// own.
+    pub fn stack_shutter_finish(&mut self, i: usize, n: u32) -> bool {
+        if self.is_device_lost() || i >= self.stack_layers.len() || n == 0 {
+            return false;
+        }
+        let Some(sum) = self.shutter_sum.as_ref() else { return false };
+        // The pass reads no placement in this mode, but its binding wants one.
+        let enc = self.shutter_pass(sum, &[[0.0; 16]], &self.stack_layers[i], n, 2);
+        self.submit(enc);
+        true
+    }
+
+    /// One shutter pass over the frame, `input` to `output`, in `mode`
+    /// (the shader's), with `rows` as its samples: the encoder, unsubmitted.
+    fn shutter_pass(&self, input: &wgpu::Buffer, rows: &[[f32; 16]], output: &wgpu::Buffer, n: u32, mode: u32) -> wgpu::CommandEncoder {
+        let (width, height) = self.stack_dims;
         let samples = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("shutter_samples"),
             size: (rows.len() * 64) as u64,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: true,
         });
-        samples.slice(..).get_mapped_range_mut().copy_from_slice(bytemuck::cast_slice(&rows));
+        samples.slice(..).get_mapped_range_mut().copy_from_slice(bytemuck::cast_slice(rows));
         samples.unmap();
-        self.write_params(&ShutterParams { width, height, n: rows.len() as u32, _pad: 0 });
-        let layer = std::sync::Arc::clone(&self.stack_layers[i]);
+        self.write_params(&ShutterParams { width, height, n, mode });
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stack_shutter"),
             layout: &self.transition_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: layer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 0, resource: input.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: samples.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: out.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: output.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: self.params_binding() },
             ],
         });
@@ -7627,9 +7680,7 @@ impl GpuEffectsPipeline {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups((self.stack_pixel_count() as u32).div_ceil(WORKGROUP_SIZE), 1, 1);
         }
-        enc.copy_buffer_to_buffer(out, 0, &layer, 0, self.stack_pixel_count() * 16);
-        self.submit(enc);
-        true
+        enc
     }
 
     /// Posed piece transitions (#985) on the stack: layers `from` and `to`
@@ -8280,7 +8331,7 @@ struct ShutterParams {
     width: u32,
     height: u32,
     n: u32,
-    _pad: u32,
+    mode: u32,
 }
 
 /// The corner pin's inverse map, nine coefficients row-major, from
@@ -9497,7 +9548,10 @@ macro_rules! unpremultiply_min_alpha_wgsl {
 const SHADER_SHUTTER: &str = concat!(
     shader_pixel_storage_wgsl!(),
     "
-struct Params { width: u32, height: u32, n: u32, _pad: u32 }
+// `mode`: 0 averages all `n` samples of `input`; 1 and 3 place sample 0
+// of `input` and add it, premultiplied, to `output` (1 starting it afresh);
+// 2 gives `input`, such a sum of `n` samples, back averaged and straight.
+struct Params { width: u32, height: u32, n: u32, mode: u32 }
 // A sample's placement: anchor and position; rotation and inverse scale;
 // tilt; focal length. Numbers, not pixels.
 struct Sample { place: vec4<f32>, turn: vec4<f32>, tilt: vec4<f32>, lens: vec4<f32> }
@@ -9580,12 +9634,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if idx >= params.width * params.height { return; }
     let x = f32(idx % params.width);
     let y = f32(idx / params.width);
+    if params.mode == 1u || params.mode == 3u {
+        let p = placed(0u, x, y);
+        var sum = vec4<f32>(0.0);
+        if params.mode == 3u { sum = unpack(output[idx]); }
+        output[idx] = pack(sum + vec4<f32>(p.xyz * p.w, p.w));
+        return;
+    }
     var rgb = vec3<f32>(0.0);
     var covered = 0.0;
-    for (var k = 0u; k < params.n; k = k + 1u) {
-        let p = placed(k, x, y);
-        rgb = rgb + p.xyz * p.w;
-        covered = covered + p.w;
+    if params.mode == 2u {
+        let sum = unpack(input[idx]);
+        rgb = sum.xyz;
+        covered = sum.w;
+    } else {
+        for (var k = 0u; k < params.n; k = k + 1u) {
+            let p = placed(k, x, y);
+            rgb = rgb + p.xyz * p.w;
+            covered = covered + p.w;
+        }
     }
     var colour = vec3<f32>(0.0);
     if covered > ", unpremultiply_min_alpha_wgsl!(), " { colour = rgb / covered; }

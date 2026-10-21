@@ -7,10 +7,7 @@ use klipp_timeline::{ObjectTransform, PathPose, TrimRange};
 /// closed contour is independent of trim offset; open or mixed contours are not.
 pub(crate) fn evaluated_title(title: &klipp_timeline::TitleData, time: f64) -> Option<klipp_timeline::TitleData> {
     use klipp_timeline::{TitleObjectContent, ShapeKind};
-    let keyed = |p: &klipp_timeline::VectorPath| !p.keyframes.is_empty()
-        || p.trim.as_ref().is_some_and(|t| !t.keyframes.is_empty());
-    if !title.objects.iter().any(|o| matches!(&o.content,
-        TitleObjectContent::Shape(s) if matches!(&s.kind, ShapeKind::Path(p) if keyed(p)))) {
+    if !keys_path_geometry(title) {
         return None;
     }
     let mut evaluated = title.clone();
@@ -29,6 +26,16 @@ pub(crate) fn evaluated_title(title: &klipp_timeline::TitleData, time: f64) -> O
         }
     }
     Some(evaluated)
+}
+
+/// Whether a path in `title` has morph or trim keys, so its geometry, and
+/// with it the resting raster, changes over the clip (#2201).
+pub fn keys_path_geometry(title: &klipp_timeline::TitleData) -> bool {
+    use klipp_timeline::{TitleObjectContent, ShapeKind};
+    let keyed = |p: &klipp_timeline::VectorPath| !p.keyframes.is_empty()
+        || p.trim.as_ref().is_some_and(|t| !t.keyframes.is_empty());
+    title.objects.iter().any(|o| matches!(&o.content,
+        TitleObjectContent::Shape(s) if matches!(&s.kind, ShapeKind::Path(p) if keyed(p))))
 }
 
 fn midpoint(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
