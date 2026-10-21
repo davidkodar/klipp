@@ -503,7 +503,8 @@ impl TitleRenderer {
         let bound_path = if linked { Some(self.bound_path_line(scene?, &evaluated, Some(time), width, height)?) } else { None };
         self.bound_path = bound_path;
         self.gpu_layout_only = true;
-        self.gpu_bitmap_size = !tb.font_size_keyframes.is_empty();
+        self.gpu_bitmap_size = !tb.font_size_keyframes.is_empty()
+            || !o.transform.size_x_keyframes.is_empty() || !o.transform.size_y_keyframes.is_empty();
         self.gpu_motion = (fx.motion.is_active() || fx.animators.iter().any(|a| a.enabled))
             .then_some((time, window));
         self.gpu_wave = pose.wave.map(|(amp, rate)| (time, amp, rate));
@@ -552,13 +553,6 @@ impl TitleRenderer {
         if source.face_incomplete {
             return None;
         }
-        // at(time) clears keys on the evaluated layout. Check authored size
-        // animation here: font-size keys have retained-strike sampling,
-        // but transform-driven fitting remains outside that route.
-        if source.glyphs.iter().any(|g|g.native_colour)
-            && (!o.transform.size_x_keyframes.is_empty()
-                || !o.transform.size_y_keyframes.is_empty()) {return None;}
-
         if let Some(fill) = tb.texture_fill.as_ref().filter(|f| f.enabled) {
             let hit = self
                 .gpu_textures

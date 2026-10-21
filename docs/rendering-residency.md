@@ -73,7 +73,7 @@ for full-project playback profiling.
   entrances/exits, reveal clipping and blur, plus scale/rotation/blur/colour
   animators. CPU path coverage uses the same posed glyph metrics, screen-space
   reveal rows and blur padding; zero scale produces empty coverage. Source
-  shutter blur retains its fallback route. Plain fixed-size CBDT colour glyphs
+  shutter blur retains its fallback route. Plain CBDT colour glyphs
   now reuse bounded RGBA sprites during colour loops, tracking and line-spacing
   animation. Their native colour and alpha are independent of the text fill.
   Overlapping native/native and native/text ink uses the CPU's max-coverage
@@ -81,9 +81,10 @@ for full-project playback profiling.
   on GPU. Bitmap font-size keys retain decoded font strikes and apply the
   CPU triangle filter on GPU, including premultiplied-byte rounding and
   unpremultiplication; ordinary letters in the same title reuse outlines.
-  Layout reads bitmap metrics without CPU resizing. Automatic size fitting,
-  transform size keys, glyph poses, paths and decorated combinations retain
-  fallback.
+  Layout reads bitmap metrics without CPU resizing. Wrap, Grow and Shrink
+  fitting, including animated box width/height, feed their evaluated glyph
+  sizes to that retained-strike route. Glyph poses, paths and decorated
+  combinations retain fallback.
   Plain rectangles, gradients and strokes use GPU coverage, including keyed transforms.
   Fitted rectangles use bounds-only text layout; hidden or missing targets
   suppress the panel. Rectangle edge fades run on GPU after byte-layer

@@ -1471,7 +1471,7 @@ impl TitleRenderer {
             let bitmap=glyphs.iter().any(|g|fonts[g.font_index].font.colour_source(g.key.glyph_index,g.key.px).is_some());
             // Cached RGBA and retained-strike resizing handle unposed plain text.
             // Other combinations need native-colour sampling/mask semantics.
-            let bitmap_supported=fit==1.0 && self.gpu_motion.is_none() && self.gpu_wave.is_none()
+            let bitmap_supported=self.gpu_motion.is_none() && self.gpu_wave.is_none()
                 && title.primary_fx().is_default() && tb.style_runs.is_empty()
                 && !tb.underline && !tb.strikethrough && tb.write_on>=1.0
                 && tb.gradient.as_ref().is_none_or(|g|!g.enabled)
@@ -1528,7 +1528,7 @@ impl TitleRenderer {
                 if g.width>0 && g.height>0 {draw_poses.push((origin,alpha,clip,source_size,sigma,radians,colour));}
             }
             let glyphs=posed.as_slice();
-            let sized_bitmap=bitmap && self.gpu_bitmap_size;
+            let sized_bitmap=bitmap && (self.gpu_bitmap_size || fit!=1.0);
             *self.gpu_layout_capture.borrow_mut() = if bitmap && !bitmap_supported {None}
             else if sized_bitmap {self.gpu_glyph_cache.borrow_mut().bitmap_size_layout(&fonts,glyphs,[offset_x,offset_y],[mask_x0 as u32,mask_y0 as u32,mask_w as u32,mask_h as u32],tb.color,title.primary_fx())}
             else{self.gpu_glyph_cache.borrow_mut().layout(

@@ -1845,11 +1845,10 @@ fn bitmap_colour_glyph_cache_reuses_native_pixels_and_guards_combinations() {
             3=>unsupported.primary_text_mut().unwrap().text_path=Some(klipp_timeline::TextPath::Circle{radius:45.0}),
             4=>unsupported.primary_text_mut().unwrap().write_on=0.5,
             5=>{
-                unsupported.objects[0].transform.size_x_keyframes=vec![key(0.0,0.4),key(3.0,0.8)];
+                unsupported.primary_text_mut().unwrap().underline=true;
             }
             _=>{
-                unsupported.primary_text_mut().unwrap().fit=klipp_timeline::TextFit::Shrink{min_size:10.0};
-                unsupported.objects[0].transform.size.x=0.05;
+                unsupported.primary_text_mut().unwrap().strikethrough=true;
             }
         }
         assert!(r.glyph_source(&unsupported,320,180,0.3,Some(3.0)).is_none(),"case {case} needs its native-colour fallback");
@@ -2052,5 +2051,86 @@ fn bitmap_colour_size_upscale_matches_cpu() {
                 assert!(worst <= 3, "{ws:?} time {t}: {worst} levels apart");
             }
         }
+    }
+}
+
+
+fn bitmap_colour_fit_sequence(translucent: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq = bitmap_colour_sequence(translucent, 0, w, h);
+    let ClipKind::Title(title) = &mut seq.tracks[0].clips[0].kind else {
+        unreachable!()
+    };
+    let tb = title.primary_text_mut().unwrap();
+    tb.text = if mode < 3 {
+        "W🌈W🌈"
+    } else {
+        "W 🌈\nW 🌈"
+    }
+    .into();
+    tb.font_size = 220.0;
+    tb.fit = match mode % 3 {
+        0 => klipp_timeline::TextFit::Wrap,
+        1 => klipp_timeline::TextFit::Grow,
+        _ => klipp_timeline::TextFit::Shrink { min_size: 48.0 },
+    };
+    let transform = &mut title.objects[0].transform;
+    if mode < 3 {
+        transform.size.y = 0.9;
+        transform.size_x_keyframes = vec![key(0.0, 0.12), key(3.0, 0.9)];
+    } else if mode < 6 {
+        transform.size.x = 0.45;
+        transform.size_y_keyframes = vec![key(0.0, 0.08), key(3.0, 0.9)];
+    } else {
+        transform.size.x = 0.12;
+        transform.size.y = 0.12;
+    }
+    seq
+}
+#[test]
+fn bitmap_colour_fit_matches_cpu_and_stays_resident() {
+    check_rectangle_motion_fade_modes(bitmap_colour_fit_sequence, 9);
+}
+#[test]
+fn bitmap_colour_fit_stays_resident_at_4k() {
+    check_rectangle_motion_fades_at_4k(|t, _, w, h| bitmap_colour_fit_sequence(t, 2, w, h));
+}
+#[test]
+fn bitmap_colour_fit_changes_dimensions_without_cpu_resizing() {
+    for mode in [0, 1, 2, 3, 5, 6, 7, 8] {
+        let seq = bitmap_colour_fit_sequence(true, mode, 640, 360);
+        let ClipKind::Title(title) = &seq.tracks[0].clips[0].kind else {
+            unreachable!()
+        };
+        let mut r = klipp_title::TitleRenderer::new();
+        let before = klipp_title::colour_bitmap_rasterizations();
+        let first = r.glyph_source(title, 640, 360, 0.0, Some(3.0)).unwrap();
+        assert_eq!(
+            first.glyphs.len(),
+            2,
+            "native glyphs use the retained-strike route"
+        );
+        assert!(first
+            .glyphs
+            .iter()
+            .all(|g| g.native_colour && g.target_size.is_some()));
+        for t in [0.7, 2.95, 0.0] {
+            let next = r.glyph_source(title, 640, 360, t, Some(3.0)).unwrap();
+            assert_eq!(next.prepared, 0, "mode {mode}: reuse strikes and outlines");
+            for (a, b) in first.glyphs.iter().zip(&next.glyphs) {
+                assert_eq!(a.id, b.id);
+                assert!(std::sync::Arc::ptr_eq(&a.pixels, &b.pixels));
+                if t == 2.95 && mode < 6 {
+                    assert!(
+                        b.target_size.unwrap()[1] > a.target_size.unwrap()[1],
+                        "mode {mode}: fitting should enlarge glyphs as the box opens"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            klipp_title::colour_bitmap_rasterizations(),
+            before,
+            "mode {mode}: no CPU bitmap resize"
+        );
     }
 }
