@@ -352,7 +352,10 @@ mod tests {
     /// missing file doesn't drag; New names a collection.
     #[test]
     fn the_shared_view_brings_files_in_and_shows_missing_ones() {
-        let root = std::env::temp_dir().join(format!("klipp-shared-tab-{}", uuid::Uuid::new_v4()));
+        // The rows lay out by the files' path length, and a build's scratch
+        // TMPDIR can be long enough to move the buttons: a short folder.
+        let base = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from).filter(|d| d.is_dir()).unwrap_or_else(std::env::temp_dir);
+        let root = base.join(format!("klipp-shared-tab-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
         let (logo, gone) = (root.join("logo.png"), root.join("interview.mov"));
         std::fs::write(&logo, b"png").unwrap();
