@@ -1120,23 +1120,39 @@ impl GpuEffectsPipeline {
 
     /// A vector path's painted layer drawn into `slot` on the GPU, as the
     /// CPU's `paint_filled` draws it (#2201): `path` holds its flattened
-    /// geometry, offset to its padded box as the CPU offsets it. A glow is
-    /// not drawn here yet; such a path is refused.
+    /// geometry, offset to its padded box as the CPU offsets it. Its glow is
+    /// `blur_alpha`'s: three rounds of box passes over the stroke's byte
+    /// mask within the box, laid under the fill and stroke.
     pub fn stack_title_path(&mut self, slot: usize, path: &TitlePath, straight: bool) -> bool {
         let [x0,y0,x1,y1]=path.bounds;
         let (w,h)=self.stack_dims;
-        if path.glow.is_some() || x1<=x0 || y1<=y0 || x1>w || y1>h
+        if x1<=x0 || y1<=y0 || x1>w || y1>h
             || !path.fill_edges.iter().chain(path.stroke_segments.iter()).flatten().chain(path.fill.iter()).chain(path.stroke.iter()).chain([path.half].iter()).all(|v|v.is_finite())
             || !self.stack_title_alpha(slot,[0.0;4],1.0) {return false;}
         let mut words:Vec<u32>=vec![path.fill_edges.len() as u32,path.stroke_segments.len() as u32,x0,y0,x1,y1,path.half.to_bits(),u32::from(straight)];
         words.extend(path.fill.iter().chain(path.stroke.iter()).map(|v|v.to_bits()));
+        let glow=path.glow.filter(|(radius,strength)|radius.round()>=1.0 && *strength>0.0 && radius.is_finite() && strength.is_finite());
+        words.extend([glow.map_or(0.0,|g|g.1).to_bits(),0,0,0]);
         words.extend(path.fill_edges.iter().chain(path.stroke_segments.iter()).flatten().map(|v|v.to_bits()));
         let geometry=self.device.create_buffer(&wgpu::BufferDescriptor{label:Some("title path geometry"),size:(words.len()*4) as u64,usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:true});
         geometry.slice(..).get_mapped_range_mut().copy_from_slice(bytemuck::cast_slice(&words));
         geometry.unmap();
-        self.write_params(&StyleParams{width:w,height:h,frame_width:w,op:51,x0:0,y0:0,offset_x:0,offset_y:0,color:[0.0;4],matrix:self.authored_to_working});
         let layer=&self.stack_layers[slot];let scratch=self.title_post_scratch.as_ref().unwrap();
-        self.stack_pass(&self.title_style_pipeline,&geometry,scratch,(w*h).div_ceil(WORKGROUP_SIZE),"title vector path");
+        let groups=(w*h).div_ceil(WORKGROUP_SIZE);
+        if let Some((radius,_))=glow {
+            // The stroke's mask into the scratch, then each box pass between
+            // the scratch and the slot, ending in the scratch.
+            self.write_params(&StyleParams{width:w,height:h,frame_width:w,op:52,x0:0,y0:0,offset_x:0,offset_y:0,color:[0.0;4],matrix:self.authored_to_working});
+            self.stack_pass(&self.title_style_pipeline,&geometry,scratch,groups,"title path glow mask");
+            for _ in 0..3 {
+                for (axis,(from,to)) in [(scratch,layer.as_ref()),(layer.as_ref(),scratch)].into_iter().enumerate() {
+                    self.write_params(&StyleParams{width:w,height:h,frame_width:w,op:53,x0,y0,offset_x:radius.round() as i32,offset_y:axis as i32,color:[x1 as f32,y1 as f32,0.0,0.0],matrix:self.authored_to_working});
+                    self.stack_pass(&self.title_style_pipeline,from,to,groups,"title path glow blur");
+                }
+            }
+        }
+        self.write_params(&StyleParams{width:w,height:h,frame_width:w,op:51,x0:0,y0:0,offset_x:0,offset_y:0,color:[0.0;4],matrix:self.authored_to_working});
+        self.stack_pass(&self.title_style_pipeline,&geometry,scratch,groups,"title vector path");
         let mut enc=self.encoder(Some("title path copy"));enc.copy_buffer_to_buffer(scratch,0,layer,0,u64::from(w)*u64::from(h)*16);self.submit(enc);true
     }
 

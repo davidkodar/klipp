@@ -395,26 +395,29 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let src=load_rgba(i);let dst=load_dst(i);let sc=matrix(src.rgb);let dc=matrix(dst.rgb);
         let s=vec3<f32>(encoded(sc.x),encoded(sc.y),encoded(sc.z));let d=vec3<f32>(encoded(dc.x),encoded(dc.y),encoded(dc.z));
         store_rgba(i,vec4<f32>(s+d*(1.0-src.a),src.a+dst.a*(1.0-src.a)));
-    } else if p.op==51u {
+    } else if p.op==51u || p.op==52u {
         // A vector path's painted layer, as `vector_path::paint_filled`
         // draws it: two-by-two samples, even-odd fill and round-capped
         // stroke capsules, each with the CPU's ceil(2x - 0.5) sample rule,
         // then the fill/stroke mix rounded to bytes. The input holds a
         // header and the segments, offset to the painted box as on the CPU.
+        // 52 writes the stroke's byte mask for the glow; 51 lays the glow
+        // already in `output` (its alpha, blurred) under the mix.
         let bx0=input[2];let by0=input[3];let bx1=input[4];let by1=input[5];
         if x<bx0 || x>=bx1 || y<by0 || y>=by1 {store_rgba(i,vec4<f32>(0.0));return;}
         let n_fill=input[0];let n_stroke=input[1];let r=bitcast<f32>(input[6]);
         let fill=vec4<f32>(bitcast<f32>(input[8]),bitcast<f32>(input[9]),bitcast<f32>(input[10]),bitcast<f32>(input[11]));
         let stroke=vec4<f32>(bitcast<f32>(input[12]),bitcast<f32>(input[13]),bitcast<f32>(input[14]),bitcast<f32>(input[15]));
+        let glow=bitcast<f32>(input[16]);
         let lx=x-bx0;let ly=y-by0;
         var fbits=0u;var sbits=0u;
         for (var k=0u;k<4u;k+=1u) {
             let sy=2u*ly+k/2u;let sx=f32(2u*lx+k%2u);
             let ys=(f32(sy)+0.5)*0.5;
-            if fill.a>0.0 {
+            if fill.a>0.0 && p.op==51u {
                 var odd=false;
                 for (var e=0u;e<n_fill;e+=1u) {
-                    let o=16u+4u*e;
+                    let o=20u+4u*e;
                     let a=vec2<f32>(bitcast<f32>(input[o]),bitcast<f32>(input[o+1u]));
                     let b=vec2<f32>(bitcast<f32>(input[o+2u]),bitcast<f32>(input[o+3u]));
                     if (a.y>ys)!=(b.y>ys) {
@@ -426,7 +429,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             if r>0.0 && stroke.a>0.0 {
                 for (var e=0u;e<n_stroke;e+=1u) {
-                    let o=16u+4u*(n_fill+e);
+                    let o=20u+4u*(n_fill+e);
                     let a=vec2<f32>(bitcast<f32>(input[o]),bitcast<f32>(input[o+1u]));
                     let b=vec2<f32>(bitcast<f32>(input[o+2u]),bitcast<f32>(input[o+3u]));
                     let row0=ceil((min(a.y,b.y)-r)*2.0-0.5);let row1=ceil((max(a.y,b.y)+r)*2.0-0.5);
@@ -448,22 +451,57 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
             }
         }
-        if fbits==0u && sbits==0u {store_rgba(i,vec4<f32>(0.0));return;}
+        if p.op==52u {
+            store_rgba(i,vec4<f32>(0.0,0.0,0.0,round(f32(countOneBits(sbits))*0.25*stroke.a*255.0)));
+            return;
+        }
+        // Straight sRGB bytes laid over nothing, then the mix over them,
+        // with over_blend_chunk's arithmetic.
+        var d=vec4<f32>(0.0);
+        if glow>0.0 {
+            let halo=load_dst(i).a;
+            if halo>0.0 {
+                let ha=round(halo*glow);
+                let sa=ha/255.0;
+                if sa>0.0 {d=vec4<f32>(round(stroke.rgb*255.0)*sa/sa,sa*255.0);}
+            }
+        }
         let fa=f32(countOneBits(fbits))*0.25*fill.a;
         let sa=f32(countOneBits(sbits))*0.25*stroke.a;
         let overlap=f32(countOneBits(fbits&sbits))*0.25*fill.a*stroke.a;
         let alpha=fa+sa-overlap;
-        if alpha<=0.0 {store_rgba(i,vec4<f32>(0.0));return;}
-        let src_rgb=round((fill.rgb*(fa-overlap)+stroke.rgb*sa)/alpha*255.0);
-        let src_a=round(alpha*255.0);
-        // Over nothing, as over_blend_chunk computes it.
-        let s_a=src_a/255.0;
-        let rgb=src_rgb*s_a/s_a;
-        let a=s_a*255.0;
-        var v=rgb;
-        if input[7]==0u {v=rgb*a/255.0;}
+        if (fbits!=0u || sbits!=0u) && alpha>0.0 {
+            let src_rgb=round((fill.rgb*(fa-overlap)+stroke.rgb*sa)/alpha*255.0);
+            let s_a=round(alpha*255.0)/255.0;
+            if s_a>0.0 {
+                let inv=1.0-s_a;let da=d.a/255.0;let out_a=s_a+da*inv;
+                if out_a>0.0 {d=vec4<f32>((src_rgb*s_a+d.rgb*da*inv)/out_a,out_a*255.0);}
+            }
+        }
+        if d.a<=0.0 {store_rgba(i,vec4<f32>(0.0));return;}
+        var v=d.rgb;
+        if input[7]==0u {v=d.rgb*d.a/255.0;}
         let lin=matrix(vec3<f32>(linear(v.x/255.0),linear(v.y/255.0),linear(v.z/255.0)));
-        store_rgba(i,vec4<f32>(lin,a/255.0));
+        store_rgba(i,vec4<f32>(lin,d.a/255.0));
+    } else if p.op==53u {
+        // One box pass of `blur_alpha` over the path's box, on alpha bytes:
+        // the window clipped to the box, the sum truncated by its count.
+        let bx1=u32(p.color.x);let by1=u32(p.color.y);
+        if x<p.x0 || x>=bx1 || y<p.y0 || y>=by1 {store_rgba(i,vec4<f32>(0.0));return;}
+        let r=u32(p.offset_x);
+        var sum=0u;var count=0u;
+        if p.offset_y==0 {
+            let lo=max(x,p.x0+r)-r;let hi=min(x+r+1u,bx1);
+            for (var j=lo;j<hi;j+=1u) {sum+=u32(load_rgba(y*p.width+j).a);}
+            count=hi-lo;
+        } else {
+            let lo=max(y,p.y0+r)-r;let hi=min(y+r+1u,by1);
+            for (var j=lo;j<hi;j+=1u) {sum+=u32(load_rgba(j*p.width+x).a);}
+            count=hi-lo;
+        }
+        var out=0u;
+        if sum>0u {out=sum/count;}
+        store_rgba(i,vec4<f32>(0.0,0.0,0.0,f32(out)));
     } else if p.op==34u || p.op==37u {
         let d=vec2<f32>(f32(x)+0.5,f32(y)+0.5)-p.row1.xy;
         let q=p.row1.xy+vec2<f32>(p.row1.z*d.x+p.row1.w*d.y,-p.row1.w*d.x+p.row1.z*d.y);
