@@ -425,7 +425,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             if fill.a>0.0 && p.op==51u {
                 var odd=false;
                 for (var t=input[input[18]+sy];t<input[input[18]+sy+1u];t+=1u) {
-                    let o=20u+4u*input[t];
+                    let o=32u+4u*input[t];
                     let a=vec2<f32>(bitcast<f32>(input[o]),bitcast<f32>(input[o+1u]));
                     let b=vec2<f32>(bitcast<f32>(input[o+2u]),bitcast<f32>(input[o+3u]));
                     if (a.y>ys)!=(b.y>ys) {
@@ -437,7 +437,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
             if r>0.0 && stroke.a>0.0 {
                 for (var t=input[input[19]+sy];t<input[input[19]+sy+1u];t+=1u) {
-                    let o=20u+4u*(n_fill+input[t]);
+                    let o=32u+4u*(n_fill+input[t]);
                     let a=vec2<f32>(bitcast<f32>(input[o]),bitcast<f32>(input[o+1u]));
                     let b=vec2<f32>(bitcast<f32>(input[o+2u]),bitcast<f32>(input[o+3u]));
                     let row0=ceil((min(a.y,b.y)-r)*2.0-0.5);let row1=ceil((max(a.y,b.y)+r)*2.0-0.5);
@@ -474,12 +474,36 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 if sa>0.0 {d=vec4<f32>(round_away3(stroke.rgb*255.0)*sa/sa,sa*255.0);}
             }
         }
-        let fa=f32(countOneBits(fbits))*0.25*fill.a;
+        // A gradient fill's colour at the pixel's box fractions, as
+        // `GradientKind::position_at` and the ramp give it (#2208).
+        var face=fill;
+        if p.offset_x>0 && fbits!=0u {
+            let g=vec4<f32>(bitcast<f32>(input[20]),bitcast<f32>(input[21]),bitcast<f32>(input[22]),bitcast<f32>(input[23]));
+            let pivot=vec2<f32>(bitcast<f32>(input[24]),bitcast<f32>(input[25]));
+            let cs=vec2<f32>(bitcast<f32>(input[26]),bitcast<f32>(input[27]));
+            let size=vec2<f32>(bitcast<f32>(input[28]),bitcast<f32>(input[29]));
+            let anchor=vec2<f32>(bitcast<f32>(input[30]),bitcast<f32>(input[31]));
+            let dd=vec2<f32>(f32(x)+0.5,f32(y)+0.5)-pivot;
+            let u=(cs.x*dd.x+cs.y*dd.y)/size.x+anchor.x;
+            let v=(cs.x*dd.y-cs.y*dd.x)/size.y+anchor.y;
+            var t=0.0;
+            if g.w>0.5 {
+                let a=(u-g.x)/g.z;let b=(v-g.y)/g.z;
+                t=sqrt(a*a+b*b);
+            } else {
+                let half=abs(g.x)*size.x*0.5+abs(g.y)*size.y*0.5;
+                if half>0.0 {t=((u-0.5)*size.x*g.x+(v-0.5)*size.y*g.y)/(2.0*half)+0.5;}
+            }
+            // Non-finite positions read the first stop, as on the CPU.
+            if !(t==t) || abs(t)>3.0e38 {t=0.0;}
+            face=gradient_colour(clamp(t,0.0,1.0),u32(p.offset_x));
+        }
+        let fa=f32(countOneBits(fbits))*0.25*face.a;
         let sa=f32(countOneBits(sbits))*0.25*stroke.a;
-        let overlap=f32(countOneBits(fbits&sbits))*0.25*fill.a*stroke.a;
+        let overlap=f32(countOneBits(fbits&sbits))*0.25*face.a*stroke.a;
         let alpha=fa+sa-overlap;
         if (fbits!=0u || sbits!=0u) && alpha>0.0 {
-            let src_rgb=round_away3((fill.rgb*(fa-overlap)+stroke.rgb*sa)/alpha*255.0);
+            let src_rgb=round_away3((face.rgb*(fa-overlap)+stroke.rgb*sa)/alpha*255.0);
             let s_a=round_away(alpha*255.0)/255.0;
             if s_a>0.0 {
                 let inv=1.0-s_a;let da=d.a/255.0;let out_a=s_a+da*inv;

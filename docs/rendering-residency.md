@@ -112,9 +112,9 @@ for full-project playback profiling.
   mixes fill and stroke to bytes and draws the stroke glow with the CPU's three
   truncating box passes. Morph and trim keys, keyed centre and rotation stay
   resident at every pose. A still path moved or faded whole keeps its placed
-  resting sprite. A gradient-filled path still rasterizes on CPU at each newly
-  evaluated pose (a pose seen before is cached) and records a
-  `title.path_geometry` fallback.
+  resting sprite. A gradient fill is evaluated per covered pixel at its box
+  fractions, with `GradientKind::position_at` and the rectangle gradient's
+  stop table (#2208).
   Rectangle Rise, Drop, SlideLeft and SlideRight motions use the painted
   layer's clipped height for travel and move its byte-layer sprite by whole
   pixels on GPU, before edge fade, object opacity and scene masking. Bounds

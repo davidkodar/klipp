@@ -2162,7 +2162,7 @@ fn trim_path_sequence(keyed: bool) -> Sequence {
     seq.tracks = vec![track]; seq
 }
 #[test]
-fn keyed_path_geometry_is_drawn_on_the_stack_and_a_gradient_one_records_a_fallback() {
+fn keyed_path_geometry_is_drawn_on_the_stack_with_or_without_a_gradient() {
     let path_fallback = |seq: &Sequence, gpu: &mut Renderer, t: f64| {
         let scope = klipp_effects::residency::frame("keyed path", t);
         gpu.render_display_u8_on_gpu(seq, RationalTime::from_secs_f64(t, 30), 320, 180, &mut NoMedia, RenderOptions::default()).expect("placed path");
@@ -2177,16 +2177,16 @@ fn keyed_path_geometry_is_drawn_on_the_stack_and_a_gradient_one_records_a_fallba
         assert!(!path_fallback(&keyed, &mut gpu, t), "a new trim pose at {t} is drawn on the stack");
     }
     assert_eq!(gpu.title_renderer().resting_renders(), 0, "no title raster");
-    // A gradient fill is rastered again at each new pose.
+    // A gradient fill too, at its box fractions (#2208).
     let mut gradient = trim_path_sequence(true);
     let ClipKind::Title(title) = &mut gradient.tracks[0].clips[0].kind else { unreachable!() };
     let klipp_timeline::TitleObjectContent::Shape(shape) = &mut title.objects[0].content else { unreachable!() };
     shape.gradient = Some(klipp_timeline::TextGradient { enabled: true, top_color: [230, 30, 50, 255], bottom_color: [20, 180, 220, 255], kind: klipp_timeline::GradientKind::Linear { angle_deg: 35.0 }, stops: vec![], stop_keyframes: vec![] });
     let mut gpu = renderer(); gpu.set_gpu_enabled(true);
     for t in [0.5, 1.5, 2.5] {
-        assert!(path_fallback(&gradient, &mut gpu, t), "a new gradient trim pose at {t} is a CPU raster");
+        assert!(!path_fallback(&gradient, &mut gpu, t), "a new gradient trim pose at {t} is drawn on the stack");
     }
-    assert!(!path_fallback(&gradient, &mut gpu, 1.5), "a pose seen before is cached");
+    assert_eq!(gpu.title_renderer().resting_renders(), 0, "no title raster");
 }
 
 fn blurred_title(case: u8, w: u32, h: u32) -> Sequence {
@@ -2435,10 +2435,10 @@ fn gpu_path_sequence(case: u8, w: u32, h: u32) -> Sequence {
         {"time_secs": 0, "range": {"start": range[0], "end": range[1], "offset": range[2]}, "easing": "Linear"},
         {"time_secs": 3, "range": {"start": keyed[0], "end": keyed[1], "offset": keyed[2]}, "easing": "Linear"}]});
     let mut path = match case {
-        0 => json!({"pose": pose(&blob, fill), "keyframes": [
+        0 | 11 => json!({"pose": pose(&blob, fill), "keyframes": [
             {"time_secs": 0, "pose": pose(&blob, fill), "easing": "Linear"},
             {"time_secs": 3, "pose": pose(&bowtie, fill), "easing": "Linear"}]}),
-        1 | 3 | 8 => json!({"pose": pose(&blob, fill), "trim": trim([0.0, 0.6, 0.7], [0.0, 0.6, 1.6])}),
+        1 | 3 | 8 | 10 => json!({"pose": pose(&blob, fill), "trim": trim([0.0, 0.6, 0.7], [0.0, 0.6, 1.6])}),
         2 => json!({"pose": pose(&open, none), "trim": trim([0.0, 0.0, 0.2], [0.0, 1.0, 0.2])}),
         4 => json!({"pose": pose(&bowtie, fill)}),
         5 => json!({"pose": pose(&open, none)}),
@@ -2450,7 +2450,7 @@ fn gpu_path_sequence(case: u8, w: u32, h: u32) -> Sequence {
     let mut transform = klipp_timeline::ObjectTransform { size: klipp_timeline::TitlePosition { x: 0.6, y: 0.6 }, ..klipp_timeline::default_text_transform() };
     match case {
         6 => transform.center_x_keyframes = vec![key(0.0, 0.3), key(3.0, 0.7)],
-        7 => transform.rotation_keyframes = vec![key(0.0, 0.0), key(3.0, 90.0)],
+        7 | 12 => transform.rotation_keyframes = vec![key(0.0, 0.0), key(3.0, 90.0)],
         _ => {}
     }
     let mut title = TitleData::default();
@@ -2458,6 +2458,15 @@ fn gpu_path_sequence(case: u8, w: u32, h: u32) -> Sequence {
     let id = title.add_object(klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape {
         kind: klipp_timeline::ShapeKind::Path(serde_json::from_value(path).unwrap()), fill: None, gradient: None, stroke: None, fit: None,
     }), transform);
+    // Gradient fills over the box, evaluated per pixel (#2208).
+    if case >= 10 {
+        let klipp_timeline::TitleObjectContent::Shape(shape) = &mut title.object_mut(id).unwrap().content else { unreachable!() };
+        let stop = |position: f32, color: [u8; 4]| klipp_timeline::GradientStop { position, color };
+        shape.gradient = Some(klipp_timeline::TextGradient { enabled: true, top_color: [230, 30, 50, 255], bottom_color: [20, 180, 220, 255],
+            kind: if case == 11 { klipp_timeline::GradientKind::Radial { centre: [0.4, 0.55], radius: 0.6 } } else { klipp_timeline::GradientKind::Linear { angle_deg: 35.0 } },
+            stops: if case == 11 { vec![stop(0.0, [250, 220, 60, 255]), stop(0.5, [200, 40, 120, 140]), stop(1.0, [30, 60, 200, 255])] } else { vec![] },
+            stop_keyframes: vec![] });
+    }
     if matches!(case, 8 | 9) {
         title.object_mut(id).unwrap().fx_mut().motion = klipp_timeline::TitleMotion::enter(klipp_timeline::Motion::new(klipp_timeline::MotionKind::Rise).duration(0.8));
     }
@@ -2469,7 +2478,7 @@ fn gpu_path_sequence(case: u8, w: u32, h: u32) -> Sequence {
 #[test]
 fn vector_paths_are_drawn_on_the_stack_as_the_cpu_paints_them() {
     let (w, h) = (320, 180);
-    for case in 0..10u8 {
+    for case in 0..13u8 {
         let seq = gpu_path_sequence(case, w, h);
         for ws in [klipp_core::WorkingColorspace::Rec709Linear, klipp_core::WorkingColorspace::AcesCG] {
             let mut cpu = renderer(); cpu.set_gpu_enabled(false); cpu.set_working_colorspace(ws);

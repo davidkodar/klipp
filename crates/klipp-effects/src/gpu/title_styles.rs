@@ -40,6 +40,10 @@ pub struct TitlePath {
     pub fill: [f32; 4],
     pub stroke: [f32; 4],
     pub glow: Option<(f32, f32)>,
+    /// A gradient fill (#2208): the stops and geometry as a rectangle's
+    /// gradient takes them, and how a frame pixel maps to the object's box
+    /// (pivot x, y, cosine, sine, box size, anchor fractions).
+    pub gradient: Option<(TitleFill, [f32; 8])>,
 }
 
 /// Fill evaluated in authored pixel coordinates, independently of style coverage.
@@ -1150,9 +1154,20 @@ impl GpuEffectsPipeline {
         };
         let (fill_offsets,fill_index)=bins(&path.fill_edges,0.0);
         let (stroke_offsets,stroke_index)=bins(&path.stroke_segments,path.half);
-        let segments=20+4*(path.fill_edges.len()+path.stroke_segments.len());
+        let segments=32+4*(path.fill_edges.len()+path.stroke_segments.len());
         let fo=segments;let so=fo+rows+1;let fi=so+rows+1;let si=fi+fill_index.len();
         words.extend([glow.map_or(0.0,|g|g.1).to_bits(),rows as u32,fo as u32,so as u32]);
+        let mut stops=[[0u32;4];8];let mut stop_count=0;
+        let mut gradient_words=[0u32;12];
+        if let Some((fill,unmap))=&path.gradient {
+            let TitleFill::Gradient{geometry,stops:gradient_stops}=fill else {return false;};
+            if geometry.iter().chain(unmap.iter()).any(|v|!v.is_finite()) || gradient_stops.is_empty() || gradient_stops.len()>16 || gradient_stops.iter().any(|s|!s.0.is_finite()) {return false;}
+            let mut sorted=gradient_stops.clone();sorted.sort_by(|a,b|a.0.total_cmp(&b.0));
+            for (i,stop) in sorted.iter().enumerate() {stops[i/2][i%2*2]=stop.0.to_bits();stops[i/2][i%2*2+1]=u32::from_le_bytes(stop.1);}
+            stop_count=sorted.len() as i32;
+            for (w,v) in gradient_words.iter_mut().zip(geometry.iter().chain(unmap.iter())) {*w=v.to_bits();}
+        }
+        words.extend(gradient_words);
         words.extend(path.fill_edges.iter().chain(path.stroke_segments.iter()).flatten().map(|v|v.to_bits()));
         words.extend(fill_offsets.iter().map(|o|o+fi as u32));
         words.extend(stroke_offsets.iter().map(|o|o+si as u32));
@@ -1175,7 +1190,7 @@ impl GpuEffectsPipeline {
                 }
             }
         }
-        self.write_params(&StyleParams{width:w,height:h,frame_width:w,op:51,x0:0,y0:0,offset_x:0,offset_y:0,color:[0.0;4],matrix:self.authored_to_working});
+        self.write_params(&FillParams{base:StyleParams{width:w,height:h,frame_width:w,op:51,x0:0,y0:0,offset_x:stop_count,offset_y:0,color:[0.0;4],matrix:self.authored_to_working},stops});
         self.stack_pass(&self.title_style_pipeline,&geometry,scratch,groups,"title vector path");
         let mut enc=self.encoder(Some("title path copy"));enc.copy_buffer_to_buffer(scratch,0,layer,0,u64::from(w)*u64::from(h)*16);self.submit(enc);true
     }
