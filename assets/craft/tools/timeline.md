@@ -28,6 +28,31 @@ The `data` argument:
 
 Preview a native generator clip; apply true places it as one undo step. Give at_secs, secs (positive, at most one day), optional video track index, and data in the native generator format: {SolidColor:{color:[r,g,b,a]}}, {Gradient:{top:[r,g,b,a],bottom:[r,g,b,a],angle_deg:0}}, {LivingGradient:{a:[r,g,b,a],b:[r,g,b,a],angle_deg:20,drift_deg_per_sec:4,glow:0.35}}, {Grain:{color:[r,g,b,a],amount:0.35,size_px:2,speed:24}}, {Polygon:{sides:24,color:[r,g,b,a],fill:true}} for a circle, {Placeholder:{label:missing,color:[r,g,b,a]}}, or the string Countdown. Colour channels are bytes 0..255. Omit track to use/create a bottom Background video track. Overlaps and locked tracks are refused.
 
+## klipp_import_timeline
+
+Import a timeline and inspect its report.
+
+Call `klipp_import_timeline` with an absolute `path` ending in `.otio`, `.fcpxml` (also `.xml`),
+`.kdenlive`, `.mlt` or `.edl`. It appends a sequence to the current project and
+switches to it. It does not replace or save the current project. Other formats
+and converter installation are not supported by this operation.
+
+The response includes the same `report` shown in the app: imported sequence,
+track, clip, transition, marker and title counts; warnings grouped by kind with
+up to three original examples; all warning details; and missing media ids,
+names and paths. Warning counts count notices, not individual effects: one
+notice may describe several dropped items. Preserve this distinction when
+summarising the import.
+
+If the UI has not finished before the reply, read `klipp_import_timeline` without
+`path` until its `request_id` matches the returned id. It then contains `report`
+or `error`. Do not submit the import again. A read without `path` never imports.
+
+The report opens after import. File → Last Import Report reopens it, and its
+Relink… button opens the existing relink flow for offline media. It records the
+state at import; subsequent relinking does not rewrite that historical report.
+Saving the project keeps the report for reopening, including Save As.
+
 ## klipp_list_clips
 
 Every track and its clips, one line a clip: clip id, kind, range in seconds, name (file, title text or generator) and media id, with speed, off, graded and effects only where set. Narrow it to a track, a stretch of time or one media item; full adds source ranges, frames, blend, grade group and paths. Each track lists its transitions too: kind, length, the stretch they cover and their two clips. Clip ids from here are what the grade tools take.

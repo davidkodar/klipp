@@ -1353,7 +1353,6 @@ fn guide_topic(topic: &str) -> Result<String, String> {
     Ok(match topic {
         "guide" => GUIDE.to_string(),
         "graph" => GRAPH_GUIDE.to_string(),
-        "import_timeline" | "klipp_import_timeline" => include_str!("../../../assets/craft/import_timeline.md").to_string(),
         "craft" => CRAFT.to_string(),
         "recipes" => RECIPES.to_string(),
         "abilities" => ABILITIES.to_string(),
