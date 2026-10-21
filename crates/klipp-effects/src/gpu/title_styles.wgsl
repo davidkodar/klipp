@@ -395,6 +395,75 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let src=load_rgba(i);let dst=load_dst(i);let sc=matrix(src.rgb);let dc=matrix(dst.rgb);
         let s=vec3<f32>(encoded(sc.x),encoded(sc.y),encoded(sc.z));let d=vec3<f32>(encoded(dc.x),encoded(dc.y),encoded(dc.z));
         store_rgba(i,vec4<f32>(s+d*(1.0-src.a),src.a+dst.a*(1.0-src.a)));
+    } else if p.op==51u {
+        // A vector path's painted layer, as `vector_path::paint_filled`
+        // draws it: two-by-two samples, even-odd fill and round-capped
+        // stroke capsules, each with the CPU's ceil(2x - 0.5) sample rule,
+        // then the fill/stroke mix rounded to bytes. The input holds a
+        // header and the segments, offset to the painted box as on the CPU.
+        let bx0=input[2];let by0=input[3];let bx1=input[4];let by1=input[5];
+        if x<bx0 || x>=bx1 || y<by0 || y>=by1 {store_rgba(i,vec4<f32>(0.0));return;}
+        let n_fill=input[0];let n_stroke=input[1];let r=bitcast<f32>(input[6]);
+        let fill=vec4<f32>(bitcast<f32>(input[8]),bitcast<f32>(input[9]),bitcast<f32>(input[10]),bitcast<f32>(input[11]));
+        let stroke=vec4<f32>(bitcast<f32>(input[12]),bitcast<f32>(input[13]),bitcast<f32>(input[14]),bitcast<f32>(input[15]));
+        let lx=x-bx0;let ly=y-by0;
+        var fbits=0u;var sbits=0u;
+        for (var k=0u;k<4u;k+=1u) {
+            let sy=2u*ly+k/2u;let sx=f32(2u*lx+k%2u);
+            let ys=(f32(sy)+0.5)*0.5;
+            if fill.a>0.0 {
+                var odd=false;
+                for (var e=0u;e<n_fill;e+=1u) {
+                    let o=16u+4u*e;
+                    let a=vec2<f32>(bitcast<f32>(input[o]),bitcast<f32>(input[o+1u]));
+                    let b=vec2<f32>(bitcast<f32>(input[o+2u]),bitcast<f32>(input[o+3u]));
+                    if (a.y>ys)!=(b.y>ys) {
+                        let c=a.x+(ys-a.y)*(b.x-a.x)/(b.y-a.y);
+                        if ceil(c*2.0-0.5)<=sx {odd=!odd;}
+                    }
+                }
+                if odd {fbits|=1u<<k;}
+            }
+            if r>0.0 && stroke.a>0.0 {
+                for (var e=0u;e<n_stroke;e+=1u) {
+                    let o=16u+4u*(n_fill+e);
+                    let a=vec2<f32>(bitcast<f32>(input[o]),bitcast<f32>(input[o+1u]));
+                    let b=vec2<f32>(bitcast<f32>(input[o+2u]),bitcast<f32>(input[o+3u]));
+                    let row0=ceil((min(a.y,b.y)-r)*2.0-0.5);let row1=ceil((max(a.y,b.y)+r)*2.0-0.5);
+                    if f32(sy)<row0 || f32(sy)>=row1 {continue;}
+                    let dx=b.x-a.x;let dy=b.y-a.y;let len=sqrt(dx*dx+dy*dy);
+                    var n=vec2<f32>(0.0);
+                    if len>1e-6 {n=vec2<f32>(-dy/len*r,dx/len*r);}
+                    var lo=1e30;var hi=-1e30;
+                    for (var q=0u;q<2u;q+=1u) {
+                        let c=select(a,b,q==1u);let d=ys-c.y;
+                        if abs(d)<=r {let w=sqrt(max(r*r-d*d,0.0));lo=min(lo,c.x-w);hi=max(hi,c.x+w);}
+                    }
+                    var corners=array<vec2<f32>,4>(a+n,b+n,b-n,a-n);
+                    for (var q=0u;q<4u;q+=1u) {
+                        let u=corners[q];let v=corners[(q+1u)%4u];
+                        if (u.y>ys)!=(v.y>ys) {let cx=u.x+(ys-u.y)*(v.x-u.x)/(v.y-u.y);lo=min(lo,cx);hi=max(hi,cx);}
+                    }
+                    if lo<=hi && ceil(lo*2.0-0.5)<=sx && sx<ceil(hi*2.0-0.5) {sbits|=1u<<k;break;}
+                }
+            }
+        }
+        if fbits==0u && sbits==0u {store_rgba(i,vec4<f32>(0.0));return;}
+        let fa=f32(countOneBits(fbits))*0.25*fill.a;
+        let sa=f32(countOneBits(sbits))*0.25*stroke.a;
+        let overlap=f32(countOneBits(fbits&sbits))*0.25*fill.a*stroke.a;
+        let alpha=fa+sa-overlap;
+        if alpha<=0.0 {store_rgba(i,vec4<f32>(0.0));return;}
+        let src_rgb=round((fill.rgb*(fa-overlap)+stroke.rgb*sa)/alpha*255.0);
+        let src_a=round(alpha*255.0);
+        // Over nothing, as over_blend_chunk computes it.
+        let s_a=src_a/255.0;
+        let rgb=src_rgb*s_a/s_a;
+        let a=s_a*255.0;
+        var v=rgb;
+        if input[7]==0u {v=rgb*a/255.0;}
+        let lin=matrix(vec3<f32>(linear(v.x/255.0),linear(v.y/255.0),linear(v.z/255.0)));
+        store_rgba(i,vec4<f32>(lin,a/255.0));
     } else if p.op==34u || p.op==37u {
         let d=vec2<f32>(f32(x)+0.5,f32(y)+0.5)-p.row1.xy;
         let q=p.row1.xy+vec2<f32>(p.row1.z*d.x+p.row1.w*d.y,-p.row1.w*d.x+p.row1.z*d.y);

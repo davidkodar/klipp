@@ -27,6 +27,23 @@ pub enum TitleStyle {
 }
 
 /// Fill evaluated in authored pixel coordinates, independently of style coverage.
+
+/// A vector path's geometry for [`GpuEffectsPipeline::stack_title_path`]:
+/// the CPU raster's padded box in frame pixels, its closed contours' edges
+/// and revealed stroke segments (`[a.x, a.y, b.x, b.y]`, offset to that box
+/// as the CPU offsets them), the stroke's half width, the pose's colours
+/// (0..1) and its glow (radius in pixels, strength).
+#[derive(Clone, Debug, Default)]
+pub struct TitlePath {
+    pub bounds: [u32; 4],
+    pub fill_edges: Vec<[f32; 4]>,
+    pub stroke_segments: Vec<[f32; 4]>,
+    pub half: f32,
+    pub fill: [f32; 4],
+    pub stroke: [f32; 4],
+    pub glow: Option<(f32, f32)>,
+}
+
 #[derive(Clone, Debug)]
 pub enum TitleFill {
     Pair {
@@ -1099,6 +1116,28 @@ impl GpuEffectsPipeline {
             return true;
         }
         let mut enc=self.encoder(Some("title rectangle copy"));enc.copy_buffer_to_buffer(scratch,0,layer,0,u64::from(w)*u64::from(h)*16);self.submit(enc);true
+    }
+
+    /// A vector path's painted layer drawn into `slot` on the GPU, as the
+    /// CPU's `paint_filled` draws it (#2201): `path` holds its flattened
+    /// geometry, offset to its padded box as the CPU offsets it. A glow is
+    /// not drawn here yet; such a path is refused.
+    pub fn stack_title_path(&mut self, slot: usize, path: &TitlePath, straight: bool) -> bool {
+        let [x0,y0,x1,y1]=path.bounds;
+        let (w,h)=self.stack_dims;
+        if path.glow.is_some() || x1<=x0 || y1<=y0 || x1>w || y1>h
+            || !path.fill_edges.iter().chain(path.stroke_segments.iter()).flatten().chain(path.fill.iter()).chain(path.stroke.iter()).chain([path.half].iter()).all(|v|v.is_finite())
+            || !self.stack_title_alpha(slot,[0.0;4],1.0) {return false;}
+        let mut words:Vec<u32>=vec![path.fill_edges.len() as u32,path.stroke_segments.len() as u32,x0,y0,x1,y1,path.half.to_bits(),u32::from(straight)];
+        words.extend(path.fill.iter().chain(path.stroke.iter()).map(|v|v.to_bits()));
+        words.extend(path.fill_edges.iter().chain(path.stroke_segments.iter()).flatten().map(|v|v.to_bits()));
+        let geometry=self.device.create_buffer(&wgpu::BufferDescriptor{label:Some("title path geometry"),size:(words.len()*4) as u64,usage:wgpu::BufferUsages::STORAGE,mapped_at_creation:true});
+        geometry.slice(..).get_mapped_range_mut().copy_from_slice(bytemuck::cast_slice(&words));
+        geometry.unmap();
+        self.write_params(&StyleParams{width:w,height:h,frame_width:w,op:51,x0:0,y0:0,offset_x:0,offset_y:0,color:[0.0;4],matrix:self.authored_to_working});
+        let layer=&self.stack_layers[slot];let scratch=self.title_post_scratch.as_ref().unwrap();
+        self.stack_pass(&self.title_style_pipeline,&geometry,scratch,(w*h).div_ceil(WORKGROUP_SIZE),"title vector path");
+        let mut enc=self.encoder(Some("title path copy"));enc.copy_buffer_to_buffer(scratch,0,layer,0,u64::from(w)*u64::from(h)*16);self.submit(enc);true
     }
 
     /// Match byte layers or the completed scene's packed-half source boundary.
