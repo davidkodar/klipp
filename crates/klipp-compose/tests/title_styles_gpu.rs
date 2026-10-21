@@ -2134,3 +2134,82 @@ fn bitmap_colour_fit_changes_dimensions_without_cpu_resizing() {
         );
     }
 }
+
+/// A lone still path moved or faded whole by its motion and loops: rise
+/// and fly, bounce and pulse, shake and blink.
+fn still_path_motion_sequence(mode: u8, w: u32, h: u32) -> Sequence {
+    use klipp_core::vector_path::{PathContour, PathPose, PathVertex};
+    use klipp_timeline::{Motion, MotionKind, TitleLoop, TitleMotion};
+    let path = klipp_timeline::VectorPath { trim: None, keyframes: vec![], pose: PathPose {
+        stroke_glow: None, fill: [0.2, 0.6, 1.0, 1.0], stroke: [1.0, 0.9, 0.3, 1.0], stroke_width: 6.0,
+        contours: vec![PathContour { closed: true, vertices: vec![
+            PathVertex { point: [0.3, 0.3], incoming: [0.25, 0.4], outgoing: [0.4, 0.2] },
+            PathVertex { point: [0.7, 0.35], incoming: [0.6, 0.2], outgoing: [0.8, 0.5] },
+            PathVertex { point: [0.5, 0.75], incoming: [0.7, 0.7], outgoing: [0.3, 0.8] },
+        ]}],
+    }};
+    let mut title = TitleData::single_text_fx(TextBox::default(), LayerFx::default());
+    title.objects.clear();
+    title.add_object(klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Path(path), fill: None, gradient: None, stroke: None, fit: None }),
+        klipp_timeline::ObjectTransform { size: klipp_timeline::TitlePosition { x: 1.0, y: 1.0 }, ..klipp_timeline::default_text_transform() });
+    let fx = title.objects[0].fx_mut();
+    match mode {
+        0 => fx.motion = TitleMotion::both(Motion::new(MotionKind::Rise).duration(0.8), Motion::exit(MotionKind::FlyRight).duration(0.8)),
+        1 => { fx.motion = TitleMotion::enter(Motion::new(MotionKind::Bounce).duration(1.0)); fx.loops = vec![TitleLoop::Pulse { rate_hz: 1.0, min_opacity: 0.4 }]; }
+        _ => fx.loops = vec![TitleLoop::Shake { amplitude: 0.05, rate_hz: 12.0 }, TitleLoop::Blink { rate_hz: 2.0, duty: 0.7 }],
+    }
+    let mut seq = Sequence::new_default(); seq.resolution = Resolution { width: w, height: h };
+    let mut track = Track::new("path", TrackKind::Video);
+    track.clips.push(Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) });
+    seq.tracks = vec![track]; seq
+}
+
+/// Its resting render posed on the GPU (#2069): the export's frame, no
+/// fallback, one raster for the whole clip, no preparation once warm.
+#[test]
+fn a_still_path_moved_whole_stays_resident() {
+    let (w, h) = (320, 180);
+    for mode in 0..3 {
+        for ws in [klipp_core::WorkingColorspace::Rec709Linear, klipp_core::WorkingColorspace::AcesCG] {
+            let seq = still_path_motion_sequence(mode, w, h);
+            let mut cpu = renderer(); cpu.set_gpu_enabled(false); cpu.set_working_colorspace(ws);
+            let mut gpu = renderer(); gpu.set_gpu_enabled(true); gpu.set_working_colorspace(ws);
+            assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
+            for (sample, t) in [0.1, 0.35, 0.6, 1.4, 2.4, 2.75, 0.35].into_iter().enumerate() {
+                let at = RationalTime::from_secs_f64(t, 30);
+                let (want, _) = cpu.render_inspected(&seq, at, w, h, &mut NoMedia, RenderOptions::default(), Default::default());
+                let want = klipp_color::display::display_transform_ws_dithered_to(&want, klipp_color::display::ToneMapOp::None, ws, klipp_core::SdrTransfer::Srgb);
+                let before = klipp_effects::gpu::thread_readback_stats();
+                let scope = klipp_effects::residency::frame("posed still path", t);
+                let (got, _) = gpu.render_display_u8_on_gpu(&seq, at, w, h, &mut NoMedia, RenderOptions::default()).expect("GPU frame");
+                drop(scope);
+                let events = klipp_effects::residency::last_frame().events;
+                assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Fallback), "mode={mode} t={t}: {events:?}");
+                assert_eq!(klipp_effects::gpu::thread_readback_stats().count - before.count, 1, "only verification download");
+                if sample > 0 { assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Preparation), "mode={mode} t={t} warm: {events:?}"); }
+                let worst = got.iter().zip(&want).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+                assert!(worst <= 1, "mode={mode} {ws:?} t={t}: {worst} levels apart");
+            }
+            assert_eq!(gpu.title_renderer().resting_renders(), 1, "mode={mode}: one resting raster for the clip");
+        }
+    }
+}
+
+#[test]
+fn a_still_path_moved_whole_stays_resident_at_4k() {
+    let (w, h) = (3840, 2160);
+    for mode in 0..3 {
+        let seq = still_path_motion_sequence(mode, w, h);
+        let mut gpu = renderer(); gpu.set_gpu_enabled(true);
+        assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
+        for (sample, t) in [0.1, 0.35, 0.6, 1.4, 2.4, 2.75].into_iter().enumerate() {
+            let scope = klipp_effects::residency::frame("4K posed still path", t);
+            let started = std::time::Instant::now();
+            gpu.render_display_u8_on_gpu(&seq, RationalTime::from_secs_f64(t, 30), w, h, &mut NoMedia, RenderOptions::default()).expect("GPU frame");
+            let elapsed = started.elapsed(); drop(scope);
+            let events = klipp_effects::residency::last_frame().events;
+            assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Fallback), "{events:?}");
+            eprintln!("4K posed still path mode {mode} sample {sample}: {elapsed:?}, including verification download");
+        }
+    }
+}
