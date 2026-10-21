@@ -1500,12 +1500,7 @@ impl TitleRenderer {
             // Cached RGBA and retained-strike resizing handle unposed text, its
             // outlines, decorations and colour loops; the rest needs
             // native-colour sampling or mask semantics.
-            // A shadow, glow or inner shadow reads the colour glyph's coverage
-            // while the face does not; the GPU styles one face mask for both.
-            let fx_mask_styles=title.primary_fx().glows.iter().any(|g|g.enabled)
-                || title.primary_fx().shadows.iter().any(|s|s.enabled)
-                || title.primary_fx().inner_shadows.iter().any(|s|s.enabled);
-            let bitmap_supported=tb.style_runs.is_empty() && tb.write_on>=1.0 && !fx_mask_styles
+            let bitmap_supported=tb.style_runs.is_empty() && tb.write_on>=1.0
                 && tb.gradient.as_ref().is_none_or(|g|!g.enabled)
                 && (tb.pattern_fill.is_none() || !tb.pattern_fill_enabled)
                 && tb.texture_fill.as_ref().is_none_or(|f|!f.enabled)

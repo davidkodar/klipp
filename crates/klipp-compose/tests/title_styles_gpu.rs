@@ -2293,8 +2293,12 @@ fn colour_glyph_combo_sequence(_fitted: bool, mode: u8, w: u32, h: u32) -> Seque
 fn colour_glyph_combinations_match_cpu_and_stay_resident() {
     // Outline and underline with a colour loop stay resident, and so do
     // colour glyphs that rise with keyed size or rise letter by letter
-    // with keyed tracking (#2203); mask-reading styles keep the CPU.
+    // with keyed tracking (#2203). Shadow, glow and inner shadow read the
+    // colour glyphs' coverage, which the face leaves out (#2209).
     check_rectangle_motion_samples(colour_glyph_combo_sequence, 2, &[0.0, 0.2, 0.7, 2.6]);
+    check_rectangle_motion_samples(|f, _, w, h| colour_glyph_combo_sequence(f, 6, w, h), 1, &[0.0, 0.7, 2.6]);
+    check_rectangle_motion_samples(|f, _, w, h| colour_glyph_combo_sequence(f, 7, w, h), 1, &[0.0, 0.7, 2.6]);
+    check_rectangle_motion_samples(|f, _, w, h| colour_glyph_combo_sequence(f, 8, w, h), 1, &[0.0, 0.7, 2.6]);
     check_rectangle_motion_samples(|f, _, w, h| colour_glyph_combo_sequence(f, 10, w, h), 1, &[0.0, 0.2, 0.7, 2.6]);
     check_rectangle_motion_samples(|f, _, w, h| colour_glyph_combo_sequence(f, 4, w, h), 1, &[0.0, 0.2, 0.5, 0.7, 2.6]);
     check_rectangle_motion_samples(|f, _, w, h| colour_glyph_combo_sequence(f, 9, w, h), 1, &[0.0, 0.2, 0.5, 0.7, 1.0, 2.6]);
@@ -2302,6 +2306,11 @@ fn colour_glyph_combinations_match_cpu_and_stay_resident() {
 #[test]
 fn outlined_colour_glyphs_in_a_colour_loop_stay_resident_at_4k() {
     check_rectangle_motion_fades_at_4k(|f, _, w, h| colour_glyph_combo_sequence(f, 0, w, h));
+}
+#[test]
+fn colour_glyphs_under_shadows_and_inner_shadows_stay_resident_at_4k() {
+    check_rectangle_motion_fades_at_4k(|f, _, w, h| colour_glyph_combo_sequence(f, 6, w, h));
+    check_rectangle_motion_fades_at_4k(|f, _, w, h| colour_glyph_combo_sequence(f, 8, w, h));
 }
 
 /// A lone still path moved or faded whole by its motion and loops: rise

@@ -96,6 +96,13 @@ pub struct TitleFace {
     pub backing: Option<([u32; 4], [u8; 4])>,
     pub fill: Option<TitleFill>,
     pub rich_slot: Option<usize>,
+    /// A layer holding the face's own coverage, when it differs from the
+    /// slot's: colour glyphs leave the face but still cast shadow, glow,
+    /// outline and inner shadow, as on the CPU.
+    pub face_slot: Option<usize>,
+    /// A layer holding colour glyphs, laid over the face before the inner
+    /// shadows.
+    pub colour_slot: Option<usize>,
     pub bounds: [f32; 4],
 }
 impl Default for TitleFace {
@@ -107,6 +114,8 @@ impl Default for TitleFace {
             backing: None,
             fill: None,
             rich_slot: None,
+            face_slot: None,
+            colour_slot: None,
             bounds: [0.0; 4],
         }
     }
@@ -1487,9 +1496,14 @@ impl GpuEffectsPipeline {
             backing,
             fill,
             rich_slot,
+            face_slot,
+            colour_slot,
             bounds,
         } = face;
-        if rich_slot.is_some_and(|i| i >= self.stack_layers.len() || i == slot) {
+        if rich_slot.is_some_and(|i| i >= self.stack_layers.len() || i == slot)
+            || face_slot.is_some_and(|i| i >= self.stack_layers.len() || i == slot || Some(i) == rich_slot)
+            || colour_slot.is_some_and(|i| i >= self.stack_layers.len() || i == slot || Some(i) == rich_slot || Some(i) == face_slot)
+        {
             return false;
         }
         if !fill_alpha.is_finite() || (fill.is_some() && bounds.iter().any(|v| !v.is_finite())) {
@@ -1556,6 +1570,7 @@ impl GpuEffectsPipeline {
         }
         let s = self.title_style_scratch.as_ref().unwrap();
         let layer = &self.stack_layers[slot];
+        let face_layer = &self.stack_layers[face_slot.unwrap_or(slot)];
         let base = StyleParams {
             width: w,
             height: h,
@@ -1659,14 +1674,12 @@ impl GpuEffectsPipeline {
                         self.write_params(&params);
                         self.stack_pass(
                             &self.title_style_pipeline,
-                            layer,
+                            face_layer,
                             &s.composite,
                             (count as u32).div_ceil(WORKGROUP_SIZE),
                             "title procedural fill",
                         );
-                        continue;
-                    }
-                    if let Some(rich) = rich_slot {
+                    } else if let Some(rich) = rich_slot {
                         pass(
                             30,
                             &self.stack_layers[rich],
@@ -1675,16 +1688,28 @@ impl GpuEffectsPipeline {
                             [0.0; 4],
                             to_authored,
                         );
-                        continue;
+                    } else {
+                        pass(
+                            6,
+                            face_layer,
+                            &s.composite,
+                            [write_cutoff, 0],
+                            [0.0, 0.0, 0.0, fill_alpha],
+                            to_authored,
+                        );
                     }
-                    pass(
-                        6,
-                        layer,
-                        &s.composite,
-                        [write_cutoff, 0],
-                        [0.0, 0.0, 0.0, fill_alpha],
-                        to_authored,
-                    );
+                    // Colour glyphs in their own colours, over the face and
+                    // under the inner shadows, as the CPU paints them.
+                    if let Some(colour) = colour_slot {
+                        pass(
+                            6,
+                            &self.stack_layers[colour],
+                            &s.composite,
+                            [i32::MAX, 0],
+                            [0.0, 0.0, 0.0, 1.0],
+                            to_authored,
+                        );
+                    }
                     continue;
                 }
                 TitleStyle::Glow {

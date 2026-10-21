@@ -2998,6 +2998,17 @@ impl Renderer {
                     let rich_slot=if source.pattern.is_none() && source.gradient.is_none() && (!source.face_draws.is_empty() || !source.face_stripes.is_empty()) {
                         Some(self.executor.gpu_pipeline_or_init()?.stack_title_object_slot(2)?)
                     }else{None};
+                    // Shadows, glows, outlines and inner shadows read colour
+                    // glyphs' coverage, the face does not: the face is a copy
+                    // with that coverage taken out (#2209).
+                    let face_slot=if rich_slot.is_none() && source.glyphs.iter().any(|g|g.native_colour)
+                        && passes.iter().any(|s|!matches!(s,klipp_effects::gpu::TitleStyle::Face)) {
+                        Some(self.executor.gpu_pipeline_or_init()?.stack_title_object_slot(2)?)
+                    }else{None};
+                    let coverage=face_slot.unwrap_or(slot);
+                    // The colour glyphs then lie between the face and the
+                    // inner shadows, as on the CPU.
+                    let colour_slot=match face_slot {Some(_)=>Some(self.executor.gpu_pipeline_or_init()?.stack_title_object_slot(3)?),None=>None};
                     // A bitmap glyph's pose: its alpha and its rows (#2203).
                     let place=|g:&klipp_title::GlyphDraw| klipp_effects::gpu::GlyphPlace {alpha:g.alpha,clip_y:g.clip_y};
                     self.executor.gpu_pipeline_or_init().is_some_and(|p| {
@@ -3008,9 +3019,11 @@ impl Renderer {
                             // Native RGBA is painted after the text fill, but its
                             // coverage first contributes to the max mask, then is
                             // subtracted from that face exactly as on the CPU.
-                            && source.glyphs.iter().filter(|g|g.native_colour).all(|g|match g.target_size {None=>p.stack_title_colour_coverage_subtract(slot,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],g.origin,place(g)),Some(size)=>p.stack_title_resized_colour_glyph(slot,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],size,g.origin,source.color,3,place(g))})
-                            && (source.roi[2]==0 || source.roi[3]==0 || p.stack_title_styles_with_face(slot,source.roi,&passes,klipp_effects::gpu::TitleFace {alpha:source.color[3] as f32/255.0,outline_cutoff:source.outline_cutoff,write_cutoff:source.write_cutoff,backing:source.backing,fill:title_fill(&source,klipp_title::frame_scale(width,height)),bounds:source.bounds,rich_slot}))
-                            && source.glyphs.iter().filter(|g|g.native_colour).all(|g|match g.target_size {None=>p.stack_title_colour_glyph(slot,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],g.origin,place(g)),Some(size)=>p.stack_title_resized_colour_glyph(slot,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],size,g.origin,source.color,1,place(g))})
+                            && face_slot.is_none_or(|face|p.stack_layer_copy(slot,face))
+                            && source.glyphs.iter().filter(|g|g.native_colour).all(|g|match g.target_size {None=>p.stack_title_colour_coverage_subtract(coverage,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],g.origin,place(g)),Some(size)=>p.stack_title_resized_colour_glyph(coverage,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],size,g.origin,source.color,3,place(g))})
+                            && colour_slot.is_none_or(|c|p.stack_layer_clear(c) && source.glyphs.iter().filter(|g|g.native_colour).all(|g|match g.target_size {None=>p.stack_title_colour_glyph(c,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],g.origin,place(g)),Some(size)=>p.stack_title_resized_colour_glyph(c,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],size,g.origin,source.color,1,place(g))}))
+                            && (source.roi[2]==0 || source.roi[3]==0 || p.stack_title_styles_with_face(slot,source.roi,&passes,klipp_effects::gpu::TitleFace {alpha:source.color[3] as f32/255.0,outline_cutoff:source.outline_cutoff,write_cutoff:source.write_cutoff,backing:source.backing,fill:title_fill(&source,klipp_title::frame_scale(width,height)),bounds:source.bounds,rich_slot,face_slot,colour_slot}))
+                            && (colour_slot.is_some() || source.glyphs.iter().filter(|g|g.native_colour).all(|g|match g.target_size {None=>p.stack_title_colour_glyph(slot,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],g.origin,place(g)),Some(size)=>p.stack_title_resized_colour_glyph(slot,g.id,&g.pixels.texels,[g.pixels.w,g.pixels.h],size,g.origin,source.color,1,place(g))}))
                             && source.texture.as_ref().is_none_or(|t|source.roi[2]==0 || source.roi[3]==0 || p.stack_title_texture(slot,source.roi,klipp_effects::gpu::TitleTexture {
                                 id:t.id,texels:&t.pixels.texels,size:[t.pixels.w,t.pixels.h],bounds:source.bounds,
                                 scale:t.fill.scale,offset:[t.fill.offset_x,t.fill.offset_y],radians:t.fill.rotation.to_radians(),opacity:t.fill.opacity,tint:t.fill.tint,
