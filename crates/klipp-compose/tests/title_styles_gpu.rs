@@ -116,11 +116,11 @@ fn animated_styles_match_cpu_when_scrubbing_flat_and_3d_titles() {
                 klipp_core::WorkingColorspace::Rec709Linear,
                 klipp_core::SdrTransfer::Srgb,
             );
-            let before = klipp_effects::gpu::readback_stats();
+            let before = klipp_effects::gpu::thread_readback_stats();
             let (actual, _) = gpu
                 .render_display_u8_on_gpu(&seq, at, w, h, &mut NoMedia, RenderOptions::default())
                 .expect("GPU route");
-            let after = klipp_effects::gpu::readback_stats();
+            let after = klipp_effects::gpu::thread_readback_stats();
             assert_eq!(
                 after.count - before.count,
                 1,
@@ -281,7 +281,7 @@ fn title_styles_4k_timing() {
                 .gpu_pipeline_or_init()
                 .expect("timing needs GPU");
             r.gpu_pipeline().expect("baseline GPU mask callbacks");
-            let before = klipp_effects::gpu::readback_stats();
+            let before = klipp_effects::gpu::thread_readback_stats();
             let mut samples = Vec::new();
             for frame in 0..21 {
                 let start = Instant::now();
@@ -304,7 +304,7 @@ fn title_styles_4k_timing() {
                     samples.push(start.elapsed().as_secs_f64() * 1000.0);
                 }
             }
-            let after = klipp_effects::gpu::readback_stats();
+            let after = klipp_effects::gpu::thread_readback_stats();
             if solid && resident {
                 assert_eq!(r.title_3d_geometry_uploads(), 1);
             }
@@ -410,7 +410,7 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                 ..Default::default()
             });
             if variant==6 { title.objects[0].fx_mut().edge_fade=klipp_core::title_motion::EdgeFade { left:0.45,right:0.4,top:0.4,bottom:0.4 }; }
-            if variant>=9 && variant<12 { let text=title.primary_text_mut().unwrap(); text.glitch_intensity=0.0; text.chromatic_aberration_px=0.0; text.font_size_keyframes=vec![key(0.0,120.0),key(1.0,220.0)]; text.vertical_layout=variant==10; }
+            if (9..12).contains(&variant) { let text=title.primary_text_mut().unwrap(); text.glitch_intensity=0.0; text.chromatic_aberration_px=0.0; text.font_size_keyframes=vec![key(0.0,120.0),key(1.0,220.0)]; text.vertical_layout=variant==10; }
             if variant>0 && variant!=6 && variant<9 {
                 let text=title.primary_text_mut().unwrap();
                 text.glitch_intensity=0.0; text.chromatic_aberration_px=0.0;
@@ -619,13 +619,13 @@ fn title_post_and_grade_stay_resident_in_working_spaces() {
                 let at = RationalTime::from_secs_f64(t,30);
                 let (want, _) = cpu.render_inspected(&seq, at, w, h, &mut NoMedia, RenderOptions::default(), Default::default());
                 let want = klipp_color::display::display_transform_ws_dithered_to(&want, klipp_color::display::ToneMapOp::None, ws, klipp_core::SdrTransfer::Srgb);
-                let before = klipp_effects::gpu::readback_stats();
+                let before = klipp_effects::gpu::thread_readback_stats();
                 let scope = klipp_effects::residency::frame("test", t);
                 let (got, _) = gpu.render_display_u8_on_gpu(&seq, at, w, h, &mut NoMedia, RenderOptions::default()).expect("resident title");
                 drop(scope);
                 let events = klipp_effects::residency::last_frame().events;
                 assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Fallback), "{events:?}");
-                assert_eq!(klipp_effects::gpu::readback_stats().count-before.count,1,"only verification download");
+                assert_eq!(klipp_effects::gpu::thread_readback_stats().count-before.count,1,"only verification download");
                 let worst = got.iter().zip(&want).map(|(a,b)| a.abs_diff(*b)).max().unwrap();
                 if worst>3 {let i=got.iter().zip(&want).position(|(a,b)|a.abs_diff(*b)==worst).unwrap()/4; eprintln!("worst pixel {},{} got {:?} want {:?}",i%w as usize,i/w as usize,&got[i*4..i*4+4],&want[i*4..i*4+4]);}
                 assert!(worst<=3,"{ws:?} graded={graded} variant={variant} at{t}: {worst}");
@@ -719,13 +719,13 @@ fn edge_faded_rectangles_match_cpu_and_remain_resident() {
                     let at = RationalTime::from_secs_f64(t,30);
                     let (want,_) = cpu.render_inspected(&seq,at,w,h,&mut NoMedia,RenderOptions::default(),Default::default());
                     let want = klipp_color::display::display_transform_ws_dithered_to(&want,klipp_color::display::ToneMapOp::None,ws,klipp_core::SdrTransfer::Srgb);
-                    let before = klipp_effects::gpu::readback_stats();
+                    let before = klipp_effects::gpu::thread_readback_stats();
                     let scope = klipp_effects::residency::frame("edge-faded rectangle",t);
                     let (got,_) = gpu.render_display_u8_on_gpu(&seq,at,w,h,&mut NoMedia,RenderOptions::default()).expect("GPU frame");
                     drop(scope);
                     let events = klipp_effects::residency::last_frame().events;
                     assert!(!events.iter().any(|e|e.work==klipp_effects::residency::Work::Fallback), "{events:?}");
-                    assert_eq!(klipp_effects::gpu::readback_stats().count-before.count,1,"only verification download");
+                    assert_eq!(klipp_effects::gpu::thread_readback_stats().count-before.count,1,"only verification download");
                     let worst = got.iter().zip(&want).map(|(a,b)|a.abs_diff(*b)).max().unwrap();
                     if worst>3 {let i=got.iter().zip(&want).position(|(a,b)|a.abs_diff(*b)==worst).unwrap()/4;eprintln!("pixel {},{} got {:?}, want {:?}",i%w as usize,i/w as usize,&got[i*4..i*4+4],&want[i*4..i*4+4]);}
                     assert!(worst<=3,"fitted={fitted} mode={mode} {ws:?} time={t}: {worst} levels apart");
@@ -744,13 +744,13 @@ fn edge_faded_fitted_rectangle_stays_resident_at_4k() {
     assert!(gpu.executor().gpu_pipeline_or_init().is_some(),"GPU required");
     for (sample,t) in [0.2,0.7,0.2].into_iter().enumerate() {
         let scope=klipp_effects::residency::frame("4K faded panel",t);
-        let before=klipp_effects::gpu::readback_stats();
+        let before=klipp_effects::gpu::thread_readback_stats();
         let started=std::time::Instant::now();
         gpu.render_display_u8_on_gpu(&seq,RationalTime::from_secs_f64(t,30),w,h,&mut NoMedia,RenderOptions::default()).expect("GPU frame");
         let elapsed=started.elapsed();drop(scope);
         let events=klipp_effects::residency::last_frame().events;
         assert!(!events.iter().any(|e|e.work==klipp_effects::residency::Work::Fallback),"{events:?}");
-        assert_eq!(klipp_effects::gpu::readback_stats().count-before.count,1,"only verification download");
+        assert_eq!(klipp_effects::gpu::thread_readback_stats().count-before.count,1,"only verification download");
         if sample>0 {assert!(!events.iter().any(|e|e.work==klipp_effects::residency::Work::Preparation),"warm source: {events:?}");}
         eprintln!("4K edge-faded fitted rectangle sample {sample}: {elapsed:?}, including verification download");
     }
@@ -809,13 +809,13 @@ fn check_rectangle_motion_samples(panel: fn(bool,u8,u32,u32)->Sequence, modes: u
                     let at = RationalTime::from_secs_f64(t,30);
                     let (want,_) = cpu.render_inspected(&seq,at,w,h,&mut NoMedia,RenderOptions::default(),Default::default());
                     let want = klipp_color::display::display_transform_ws_dithered_to(&want,klipp_color::display::ToneMapOp::None,ws,klipp_core::SdrTransfer::Srgb);
-                    let before = klipp_effects::gpu::readback_stats();
+                    let before = klipp_effects::gpu::thread_readback_stats();
                     let scope = klipp_effects::residency::frame("motion-faded rectangle",t);
                     let (got,_) = gpu.render_display_u8_on_gpu(&seq,at,w,h,&mut NoMedia,RenderOptions::default()).expect("GPU frame");
                     drop(scope);
                     let events = klipp_effects::residency::last_frame().events;
                     assert!(!events.iter().any(|e|e.work==klipp_effects::residency::Work::Fallback), "{events:?}");
-                    assert_eq!(klipp_effects::gpu::readback_stats().count-before.count,1,"only verification download");
+                    assert_eq!(klipp_effects::gpu::thread_readback_stats().count-before.count,1,"only verification download");
                     let worst = got.iter().zip(&want).map(|(a,b)|a.abs_diff(*b)).max().unwrap();
                     if worst>3 {let i=got.iter().zip(&want).position(|(a,b)|a.abs_diff(*b)==worst).unwrap()/4;eprintln!("pixel {},{} got {:?}, want {:?}",i%w as usize,i/w as usize,&got[i*4..i*4+4],&want[i*4..i*4+4]);}
                     assert!(worst<=3,"fitted={fitted} mode={mode} {ws:?} time={t}: {worst} levels apart");
@@ -838,13 +838,13 @@ fn check_rectangle_motion_fades_at_4k(panel: fn(bool,u8,u32,u32)->Sequence) {
     assert!(gpu.executor().gpu_pipeline_or_init().is_some(),"GPU required");
     for (sample,t) in [0.0,0.2,0.7,2.6,2.95,0.2].into_iter().enumerate() {
         let scope=klipp_effects::residency::frame("4K faded panel",t);
-        let before=klipp_effects::gpu::readback_stats();
+        let before=klipp_effects::gpu::thread_readback_stats();
         let started=std::time::Instant::now();
         gpu.render_display_u8_on_gpu(&seq,RationalTime::from_secs_f64(t,30),w,h,&mut NoMedia,RenderOptions::default()).expect("GPU frame");
         let elapsed=started.elapsed();drop(scope);
         let events=klipp_effects::residency::last_frame().events;
         assert!(!events.iter().any(|e|e.work==klipp_effects::residency::Work::Fallback),"{events:?}");
-        assert_eq!(klipp_effects::gpu::readback_stats().count-before.count,1,"only verification download");
+        assert_eq!(klipp_effects::gpu::thread_readback_stats().count-before.count,1,"only verification download");
         if sample>0 {assert!(!events.iter().any(|e|e.work==klipp_effects::residency::Work::Preparation),"warm source: {events:?}");}
         eprintln!("4K motion-faded fitted rectangle sample {sample}: {elapsed:?}, including verification download");
     }
@@ -1181,8 +1181,8 @@ fn add_rectangle_blur_scale(seq: &mut Sequence, mode: u8) {
         if matches!(object.content,TitleObjectContent::Shape(_)) {
             let motion=&mut object.fx_mut().motion;
             let enter=motion.enter.as_mut().unwrap();let exit=motion.exit.as_mut().unwrap();
-            enter.kind=if mode<4 {MotionKind::Blur}else if mode%2==0 {MotionKind::ScaleUp}else{MotionKind::ScaleDown};
-            exit.kind=if mode>=4 {MotionKind::Blur}else if mode%2==0 {MotionKind::ScaleUp}else{MotionKind::ScaleDown};
+            enter.kind=if mode<4 {MotionKind::Blur}else if mode.is_multiple_of(2) {MotionKind::ScaleUp}else{MotionKind::ScaleDown};
+            exit.kind=if mode>=4 {MotionKind::Blur}else if mode.is_multiple_of(2) {MotionKind::ScaleUp}else{MotionKind::ScaleDown};
             enter.duration_secs=3.0;exit.duration_secs=3.0;
             let scaling=if mode<4 {exit}else{enter};
             if mode%4==1 {scaling.anchor=Some(MotionAnchor::Point{x:0.0,y:1.0});}
