@@ -78,8 +78,12 @@ for full-project playback profiling.
   animation. Their native colour and alpha are independent of the text fill.
   Overlapping native/native and native/text ink uses the CPU's max-coverage
   mask, saturating subtraction of each native alpha, then ordered RGBA painting
-  on GPU. Bitmap size keys, automatic size fitting, glyph poses, paths and
-  decorated combinations retain fallback; resampling remains separate work.
+  on GPU. Bitmap font-size keys retain decoded font strikes and apply the
+  CPU triangle filter on GPU, including premultiplied-byte rounding and
+  unpremultiplication; ordinary letters in the same title reuse outlines.
+  Layout reads bitmap metrics without CPU resizing. Automatic size fitting,
+  transform size keys, glyph poses, paths and decorated combinations retain
+  fallback.
   Plain rectangles, gradients and strokes use GPU coverage, including keyed transforms.
   Fitted rectangles use bounds-only text layout; hidden or missing targets
   suppress the panel. Rectangle edge fades run on GPU after byte-layer

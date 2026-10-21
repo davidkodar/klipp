@@ -1839,7 +1839,7 @@ fn bitmap_colour_glyph_cache_reuses_native_pixels_and_guards_combinations() {
     for case in 0..7 {
         let mut unsupported=title.clone();
         match case {
-            0=>unsupported.primary_text_mut().unwrap().font_size_keyframes=vec![key(0.0,120.0),key(3.0,220.0)],
+            0=>unsupported.primary_text_mut().unwrap().style_runs=vec![klipp_timeline::StyleRun{color:Some([255,0,0,255]),..klipp_timeline::StyleRun::default_for_range(0,1)}],
             1=>unsupported.objects[0].fx_mut().motion=klipp_timeline::TitleMotion::enter(klipp_timeline::Motion::new(klipp_timeline::MotionKind::Rise)),
             2=>unsupported.objects[0].fx_mut().outlines=vec![TextOutline{enabled:true,color:[255;4],width:3.0,width_keyframes:vec![]}],
             3=>unsupported.primary_text_mut().unwrap().text_path=Some(klipp_timeline::TextPath::Circle{radius:45.0}),
@@ -1899,6 +1899,158 @@ fn bitmap_colour_overlap_reuses_glyphs_with_real_ink_overlap() {
             let next=r.glyph_source(title,320,180,t,Some(3.0)).unwrap();
             assert_eq!(next.prepared,0);
             assert_eq!(next.glyphs.iter().map(|g|g.id).collect::<Vec<_>>(),source.glyphs.iter().map(|g|g.id).collect::<Vec<_>>());
+        }
+    }
+}
+
+
+fn bitmap_colour_size_sequence(translucent: bool, mode: u8, w: u32, h: u32) -> Sequence {
+    let mut seq = bitmap_colour_sequence(translucent, 1, w, h);
+    let ClipKind::Title(title) = &mut seq.tracks[0].clips[0].kind else {
+        unreachable!()
+    };
+    let tb = title.primary_text_mut().unwrap();
+    tb.font_size_keyframes = vec![key(0.0, 80.0), key(3.0, 240.0)];
+    tb.text = match mode {
+        0 => "🌈",
+        1 => "W 🌈 W",
+        2 => "🌈🔥",
+        _ => "W🌈🔥W",
+    }
+    .into();
+    tb.tracking_keyframes = vec![
+        key(0.0, if mode >= 2 { -45.0 } else { 0.0 }),
+        key(3.0, if mode >= 2 { -120.0 } else { 10.0 }),
+    ];
+    title.objects[0].transform.size.x = 1.0;
+    title.objects[0].transform.size.y = 1.0;
+    seq
+}
+#[test]
+fn bitmap_colour_size_matches_cpu_and_stays_resident() {
+    check_rectangle_motion_fade_modes(bitmap_colour_size_sequence, 4);
+}
+#[test]
+fn bitmap_colour_size_stays_resident_at_4k() {
+    check_rectangle_motion_fades_at_4k(|t, _, w, h| bitmap_colour_size_sequence(t, 3, w, h));
+}
+#[test]
+fn bitmap_colour_size_reuses_strikes_without_cpu_resizing() {
+    let seq = bitmap_colour_size_sequence(true, 3, 640, 360);
+    let ClipKind::Title(title) = &seq.tracks[0].clips[0].kind else {
+        unreachable!()
+    };
+    let mut r = klipp_title::TitleRenderer::new();
+    let before = klipp_title::colour_bitmap_rasterizations();
+    let first = r.glyph_source(title, 640, 360, 0.0, Some(3.0)).unwrap();
+    assert_eq!(first.glyphs.len(), 2, "two native colour glyphs required");
+    assert_eq!(
+        first.outlines.len(),
+        2,
+        "ordinary letters must use scalable outlines"
+    );
+    for t in [0.7, 2.95, 1.2, 0.0] {
+        let next = r.glyph_source(title, 640, 360, t, Some(3.0)).unwrap();
+        assert_eq!(
+            next.prepared, 0,
+            "retain strikes and outlines across size changes"
+        );
+        for (a, b) in first.glyphs.iter().zip(&next.glyphs) {
+            assert_eq!(a.id, b.id);
+            assert!(std::sync::Arc::ptr_eq(&a.pixels, &b.pixels));
+            if t > 0.0 {
+                assert_ne!(
+                    a.target_size, b.target_size,
+                    "draw dimensions must follow font size"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        klipp_title::colour_bitmap_rasterizations(),
+        before,
+        "GPU layout must not resize colour pixels on CPU"
+    );
+}
+
+#[test]
+fn bitmap_colour_size_upscale_matches_cpu() {
+    for (w, h) in [(640, 360), (160, 90)] {
+        let mut seq = bitmap_colour_size_sequence(true, 0, w, h);
+        let ClipKind::Title(title) = &mut seq.tracks[0].clips[0].kind else {
+            unreachable!()
+        };
+        title.primary_text_mut().unwrap().font_size_keyframes =
+            vec![key(0.0, 360.0), key(3.0, 720.0)];
+        let mut layout = klipp_title::TitleRenderer::new();
+        let source = layout.glyph_source(title, w, h, 2.95, Some(3.0)).unwrap();
+        if w == 640 {
+            assert!(
+                source
+                    .glyphs
+                    .iter()
+                    .all(|g| g.target_size.unwrap()[0] > g.pixels.w),
+                "exercise enlargement beyond the source strike"
+            );
+        } else {
+            assert!(
+                source.glyphs.iter().all(|g| g.pixels.h > h),
+                "source strike must exceed small preview dimensions"
+            );
+        }
+        for ws in [
+            klipp_core::WorkingColorspace::Rec709Linear,
+            klipp_core::WorkingColorspace::AcesCG,
+        ] {
+            let mut cpu = renderer();
+            cpu.set_gpu_enabled(false);
+            cpu.set_working_colorspace(ws);
+            let mut gpu = renderer();
+            gpu.set_gpu_enabled(true);
+            gpu.set_working_colorspace(ws);
+            for t in [0.0, 0.7, 2.95, 0.7] {
+                let at = RationalTime::from_secs_f64(t, 30);
+                let (want, _) = cpu.render_inspected(
+                    &seq,
+                    at,
+                    w,
+                    h,
+                    &mut NoMedia,
+                    RenderOptions::default(),
+                    Default::default(),
+                );
+                let want = klipp_color::display::display_transform_ws_dithered_to(
+                    &want,
+                    klipp_color::display::ToneMapOp::None,
+                    ws,
+                    klipp_core::SdrTransfer::Srgb,
+                );
+                let resized = klipp_title::colour_bitmap_rasterizations();
+                let scope = klipp_effects::residency::frame("upscaled colour glyph", t);
+                let (got, _) = gpu
+                    .render_display_u8_on_gpu(
+                        &seq,
+                        at,
+                        w,
+                        h,
+                        &mut NoMedia,
+                        RenderOptions::default(),
+                    )
+                    .unwrap();
+                drop(scope);
+                assert_eq!(klipp_title::colour_bitmap_rasterizations(), resized);
+                assert!(!klipp_effects::residency::last_frame()
+                    .events
+                    .iter()
+                    .any(|e| e.work == klipp_effects::residency::Work::Fallback));
+                let worst = got
+                    .iter()
+                    .zip(&want)
+                    .map(|(a, b)| a.abs_diff(*b))
+                    .max()
+                    .unwrap();
+                assert!(worst <= 3, "{ws:?} time {t}: {worst} levels apart");
+            }
         }
     }
 }
