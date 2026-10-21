@@ -2861,7 +2861,28 @@ impl TitleRenderer {
             None
         };
         let any_path_motion = title.objects.iter().any(|o| o.visible && matches!(&o.content, TitleObjectContent::Shape(Shape {kind:ShapeKind::Path(p),..}) if !p.keyframes.is_empty() || p.trim.as_ref().is_some_and(|t|!t.keyframes.is_empty())));
-        let any_char_anim = (any_motion_live && motion_pose.is_none() && staggered.is_none()) || (!poses.is_empty() && translate_only.is_none())
+        // A lone drawn path whose geometry stays put, moved or faded whole
+        // by its motion or loops: the resting render posed as `dress_layer`
+        // poses the painted layer — the same `pose_sprite`, the same rounded
+        // offset — so it is placed, on the GPU, not rastered each frame.
+        // Nothing here scales, blurs or clips it, and nothing rounds between
+        // the pose and the frame: no stack, no edge fade, no opacity.
+        let lone_shape = if single && title.background == TitleBackground::None {
+            title.objects.iter().find(|o| o.visible).filter(|o| {
+                use klipp_timeline::MotionKind as K;
+                let TitleObjectContent::Shape(Shape { kind: ShapeKind::Path(path), fit: None, .. }) = &o.content else { return false };
+                let fx = o.fx();
+                let whole = |m: &Option<klipp_timeline::Motion>| m.is_none_or(|m| matches!(m.kind,
+                    K::Fade | K::Rise | K::Drop | K::SlideLeft | K::SlideRight | K::FlyLeft | K::FlyRight | K::FlyTop | K::FlyBottom | K::Bounce | K::Flicker | K::Typewriter));
+                path.keyframes.is_empty() && path.trim.as_ref().is_none_or(|t| t.keyframes.is_empty())
+                    && o.opacity == 1.0 && o.opacity_keyframes.is_empty() && fx.edge_fade.is_none() && !stack_draws(fx)
+                    && fx.motion_blur.is_none() && whole(&fx.motion.enter) && whole(&fx.motion.exit)
+                    && fx.loops.iter().all(|l| matches!(l, klipp_timeline::TitleLoop::Blink { .. } | klipp_timeline::TitleLoop::Pulse { .. } | klipp_timeline::TitleLoop::Shake { .. }))
+            })
+        } else {
+            None
+        };
+        let any_char_anim = (any_motion_live && motion_pose.is_none() && staggered.is_none() && lone_shape.is_none()) || (!poses.is_empty() && translate_only.is_none())
             || (any_animating && staggered.is_none());
 
         // Glitch is per-frame (deterministic seed bound to clip
@@ -2931,6 +2952,7 @@ impl TitleRenderer {
         // time's and the resting render cannot stand in for it.
         let any_dressed_motion = title.objects.iter().any(|o| {
             o.visible && !matches!(o.content, TitleObjectContent::TextBox(_)) && (motion_live(o) || !o.fx().loops.is_empty())
+                && !lone_shape.is_some_and(|l| std::ptr::eq(l, o))
         });
         // A text travelling along a drawn path (#1508); the path's own
         // morph and its layer's keys are counted above.
@@ -3045,6 +3067,29 @@ impl TitleRenderer {
                 scale *= ms;
                 blur = b;
                 clip = c;
+            }
+            if let Some(o) = lone_shape {
+                // `dress_layer`'s pose: the layer's own height the unit its
+                // motion travels in, its loops on top.
+                let fx = o.fx();
+                let unit_px = sprite.rows.1.saturating_sub(sprite.rows.0) as f32;
+                let motion = whole_layer_motion(&fx.motion);
+                if motion.is_active() {
+                    let (pe, px) = motion.progress(time_secs, window, 0);
+                    let rest = (1.0, 0.0, 0.0, 1.0, 0.0, false);
+                    let a = motion.enter.map(|m| m.pose(pe, unit_px)).unwrap_or(rest);
+                    let b = motion.exit.map(|m| m.pose(px, unit_px)).unwrap_or(rest);
+                    opacity *= a.0 * b.0;
+                    dx += a.1 + b.1;
+                    dy += a.2 + b.2;
+                }
+                if !fx.loops.is_empty() {
+                    let geo = klipp_timeline::LoopGeometry { frame_w: width as f32, frame_h: height as f32, text_w: sprite.cols.1.saturating_sub(sprite.cols.0) as f32, text_h: unit_px, font_px: unit_px };
+                    let lp = klipp_core::title_motion::eval_loops(&fx.loops, time_secs, window, geo, [255, 255, 255, 255]);
+                    opacity *= lp.opacity;
+                    dx += lp.dx;
+                    dy += lp.dy;
+                }
             }
             let (dx, dy, opacity) = (dx.round() as i32, dy.round() as i32, opacity.clamp(0.0, 1.0));
             let anchor = match motion_anchor.filter(|_| motion_pose.is_some()) {

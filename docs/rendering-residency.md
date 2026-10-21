@@ -144,6 +144,12 @@ for full-project playback profiling.
   two-pass distance transform, including its last-maximum tie break and centre
   fallback when no cell is mostly solid. Blur uses the blurred coverage inside
   the original painted bounds for anchor selection.
+- A lone vector path with still geometry (no path or trim keys, no fit),
+  moved or faded whole by Fade, Rise, Drop, the slides, Fly, Bounce, Flicker or
+  Typewriter and by Blink, Pulse or Shake loops, is its cached resting sprite
+  posed on GPU, as the CPU poses the painted layer, byte for byte (#2069). Its
+  stack, edge fade or opacity, and keyed centre or rotation, which the CPU
+  paints at subpixel placement, still raster on CPU (#2201).
 - Supported text sources compose styles, glitch and chromatic processing on GPU,
   followed by object rotation, edge/focus fades, authored-colour focus blur, opacity
   and scene blend/mask composition.

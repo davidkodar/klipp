@@ -144,3 +144,44 @@ fn untrimmed_dots_survive_and_subpixel_glow_does_not_thicken_edges() {
         original
     );
 }
+
+/// A still path moved or faded whole — risen in, flown out, pulsed,
+/// shaken — is its resting render posed: one raster for every frame,
+/// and the frames the same to the byte as the path rastered afresh at
+/// each time (#2069), which a constant opacity key asks for.
+#[test]
+fn a_still_path_moved_whole_is_its_resting_render_posed() {
+    use klipp_timeline::{Motion, MotionKind, TitleLoop, TitleMotion};
+    let mut path = VectorPath::default();
+    path.pose.fill = [0.2, 0.6, 1.0, 1.0];
+    path.pose.stroke_width = 6.0;
+    let cases = [
+        (TitleMotion::both(Motion::new(MotionKind::Rise).duration(1.0), Motion::exit(MotionKind::FlyRight).duration(0.8)), vec![]),
+        (TitleMotion::enter(Motion::new(MotionKind::Bounce).duration(1.2)), vec![TitleLoop::Pulse { rate_hz: 1.0, min_opacity: 0.4 }]),
+        (TitleMotion::default(), vec![TitleLoop::Shake { amplitude: 0.05, rate_hz: 12.0 }, TitleLoop::Blink { rate_hz: 2.0, duty: 0.7 }]),
+    ];
+    for (motion, loops) in cases {
+        let mut td = title(path.clone());
+        let fx = td.objects[0].fx_mut();
+        fx.motion = motion;
+        fx.loops = loops;
+        let mut keyed = td.clone();
+        keyed.objects[0].opacity_keyframes = vec![klipp_core::Keyframe {
+            time_secs: 0.0,
+            value: 1.0,
+            interpolation: klipp_core::Interpolation::Linear,
+            tangent_out: (0.0, 0.0),
+            tangent_in: (0.0, 0.0),
+        }];
+        let mut placed = TitleRenderer::new();
+        let mut rastered = TitleRenderer::new();
+        for t in [0.0f32, 0.15, 0.4, 0.7, 1.1, 2.0, 3.5, 3.9] {
+            assert!(matches!(placed.frame_with_window(&td, 320, 180, None, t, Some(4.0)), klipp_title::TitleFrame::Placed { .. }), "at {t} s the path is placed");
+            let got = placed.render_with_window(&td, 320, 180, None, t, Some(4.0));
+            let want = rastered.render_with_window(&keyed, 320, 180, None, t, Some(4.0));
+            let off = got.iter().zip(&want).filter(|(a, b)| a != b).count();
+            assert_eq!(off, 0, "at {t} s the posed path differs from its raster in {off} bytes");
+        }
+        assert_eq!(placed.resting_renders(), 1, "one resting render posed at every time");
+    }
+}
