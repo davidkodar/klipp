@@ -5468,7 +5468,7 @@ impl GpuEffectsPipeline {
     /// The caller reuses the returned index for every object in this title.
     pub fn stack_title_object_slot(&mut self, offset: usize) -> Option<usize> {
         if self.stack_buf_size == 0 || self.is_device_lost() { return None; }
-        if offset > 2 { return None; }
+        if offset > 3 { return None; }
         let index = self.stack_title_slot + offset;
         while self.stack_layers.len() <= index {
             self.stack_layers.push(std::sync::Arc::new(self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -5644,6 +5644,17 @@ impl GpuEffectsPipeline {
         }
         let mut enc = self.encoder(Some("stack_layer_clear"));
         enc.clear_buffer(&self.stack_layers[i], 0, Some(self.stack_pixel_count() * 16));
+        self.submit(enc);
+        true
+    }
+
+    /// Layer `dst` becomes a copy of layer `src`, every pixel.
+    pub fn stack_layer_copy(&mut self, src: usize, dst: usize) -> bool {
+        if self.is_device_lost() || src >= self.stack_layers.len() || dst >= self.stack_layers.len() || src == dst {
+            return false;
+        }
+        let mut enc = self.encoder(Some("stack_layer_copy"));
+        enc.copy_buffer_to_buffer(&self.stack_layers[src], 0, &self.stack_layers[dst], 0, self.stack_pixel_count() * 16);
         self.submit(enc);
         true
     }
