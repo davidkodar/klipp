@@ -6550,7 +6550,6 @@ fn title_post_source(td: &klipp_timeline::TitleData) -> Option<(klipp_timeline::
 /// here is "can this move", which the data answers, and not "is it
 /// moving now", which is the rasteriser's own cache-bypass decision and
 /// belongs to it.
-
 fn title_raster_moves(td: &klipp_timeline::TitleData) -> Option<&klipp_timeline::TitleData> {
     // Any layer's own motion: the stack is the object's, whatever the
     // object is, and a character animation is a text's alone.

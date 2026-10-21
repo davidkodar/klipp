@@ -429,7 +429,7 @@ impl GpuEffectsPipeline {
         );
         let mut current = &s.work;
         let mut next = &s.blur;
-        if sigma >= 0.5 && sigma <= 8.0 {
+        if (0.5..=8.0).contains(&sigma) {
             let inv = 1.0 / (2.0 * sigma * sigma);
             let weights: Vec<_> = (0..=2 * pad)
                 .map(|i| {
@@ -1085,7 +1085,7 @@ impl GpuEffectsPipeline {
         if let Some(gradient)=gradient {
             let TitleFill::Gradient{geometry,stops:gradient_stops}=gradient else {return false;};
             if geometry.iter().any(|v|!v.is_finite()) || gradient_stops.is_empty() || gradient_stops.len()>16 || gradient_stops.iter().any(|s|!s.0.is_finite()) {return false;}
-            params.op=37;params.color=*geometry;params.offset_x=gradient_stops.len() as i32;params.offset_y=i32::from(straight);
+            params.op=37;params.color = *geometry;params.offset_x=gradient_stops.len() as i32;params.offset_y=i32::from(straight);
             params.frame_width=u32::from_le_bytes(stroke.map_or([0;4],|s|s.0));
             stops=[[0;4];8];let mut sorted=gradient_stops.clone();sorted.sort_by(|a,b|a.0.total_cmp(&b.0));
             for (i,stop) in sorted.iter().enumerate() {stops[i/2][i%2*2]=stop.0.to_bits();stops[i/2][i%2*2+1]=u32::from_le_bytes(stop.1);}

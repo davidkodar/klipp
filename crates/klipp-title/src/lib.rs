@@ -1536,8 +1536,8 @@ impl TitleRenderer {
             )};
             if let Some(source) = self.gpu_layout_capture.borrow_mut().as_mut() {
                 if !sized_bitmap {
-                    for (draw,(origin,alpha,clip,size,blur,radians,colour)) in source.outlines.iter_mut().zip(&draw_poses) {draw.origin=*origin;draw.alpha=*alpha;draw.clip_y=*clip;draw.source_size=*size;draw.blur=*blur;draw.radians=*radians;draw.color=*colour;}
-                    for (draw,(origin,_,_,_,_,_,_)) in source.glyphs.iter_mut().zip(&draw_poses) {draw.origin=*origin;}
+                    for (draw,(origin,alpha,clip,size,blur,radians,colour)) in source.outlines.iter_mut().zip(&draw_poses) {draw.origin = *origin;draw.alpha = *alpha;draw.clip_y = *clip;draw.source_size = *size;draw.blur = *blur;draw.radians = *radians;draw.color = *colour;}
+                    for (draw,(origin,_,_,_,_,_,_)) in source.glyphs.iter_mut().zip(&draw_poses) {draw.origin = *origin;}
                 }
                 if coloured && draw_poses.iter().any(|pose| pose.1 > 0.0) {
                     source.face_draws=source.outlines.clone();
@@ -1578,7 +1578,7 @@ impl TitleRenderer {
                 }
                 source.bounds=[text_min_x+offset_x,text_min_y+offset_y,text_max_x+offset_x,text_max_y+offset_y];
                 source.gradient=tb.gradient.clone().filter(|g|g.enabled);
-                source.pattern=tb.pattern_fill.clone().filter(|_|tb.pattern_fill_enabled);
+                source.pattern=tb.pattern_fill.filter(|_|tb.pattern_fill_enabled);
                 if let TitleBackground::Color{color,padding}=title.background {
                     let pad=padding*scale;
                     let x0=((text_min_x+offset_x-pad) as i32).max(0) as u32;
@@ -2089,7 +2089,7 @@ impl TitleRenderer {
                 if coloured {source.face_draws=source.outlines.clone();}
                 source.bounds=[text_min_x,text_min_y,text_max_x,text_max_y];
                 source.gradient=tb.gradient.clone().filter(|g|g.enabled);
-                source.pattern=tb.pattern_fill.clone().filter(|_|tb.pattern_fill_enabled);
+                source.pattern=tb.pattern_fill.filter(|_|tb.pattern_fill_enabled);
                 if tb.outline_write_on<1.0 {source.outline_cutoff=(text_min_x+(text_max_x-text_min_x)*tb.outline_write_on.clamp(0.0,1.0)).floor() as i32;}
                 if let TitleBackground::Color{color,padding}=title.background {
                     let pad=padding*scale;
