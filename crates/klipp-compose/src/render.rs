@@ -2537,6 +2537,11 @@ impl Renderer {
                     return Err("title motion blur");
                 }
                 for (k, (&t, placement)) in times.iter().zip(placements).enumerate() {
+                    // Some routes write only the rows they cover: each sample
+                    // starts from an empty layer, not the one before it.
+                    if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_layer_clear(slot)) {
+                        return Err("title motion blur");
+                    }
                     let Some((_, soft)) = self.place_title_source(td, slot, width, height, t, total) else { return Err("title motion blur") };
                     let gpu = self.executor.gpu_pipeline_or_init().ok_or("title motion blur")?;
                     if !gpu.stack_title_source_effects(slot, &soft) || !gpu.stack_shutter_add(slot, placement, k == 0) {
@@ -6645,6 +6650,8 @@ fn title_raster_moves(td: &klipp_timeline::TitleData) -> Option<&klipp_timeline:
 /// grade and no effect before it, as `motion_blurred` would apply to each.
 fn title_blur_on_stack(c: &Clip, time: Timecode, fps: f64) -> bool {
     let ClipKind::Title(td) = &c.kind else { return false };
+    // Drawn once, its grade and effects before the move run as any shuttered
+    // layer's do on the stack.
     if title_raster_moves(td).is_none() {
         return true;
     }
