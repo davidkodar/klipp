@@ -73,7 +73,11 @@ for full-project playback profiling.
   entrances/exits, reveal clipping and blur, plus scale/rotation/blur/colour
   animators. CPU path coverage uses the same posed glyph metrics, screen-space
   reveal rows and blur padding; zero scale produces empty coverage. Source
-  shutter blur retains its fallback route. Plain CBDT colour glyphs
+  shutter blur runs on the GPU stack: a title whose drawing holds
+  still takes its own samples through the camera shutter's pass, and one
+  whose drawing moves is drawn at each sample and averaged premultiplied on
+  the GPU. A graded title, or one with effects before its transform, keeps
+  the CPU. Plain CBDT colour glyphs
   now reuse bounded RGBA sprites during colour loops, tracking and line-spacing
   animation. Their native colour and alpha are independent of the text fill.
   Overlapping native/native and native/text ink uses the CPU's max-coverage
