@@ -88,8 +88,15 @@ fn playing_empties_the_held_outputs() {
     parked.settle();
     let (hits, _) = held_counts(&parked);
     assert!(hits >= 1, "the drag hit: {:#?}", parked.trail());
+    let before = parked.frame_number();
     parked.send(klipp_core::AppCommand::Play);
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    // Until playback has really left the parked frame, however busy the
+    // machine: a play that never presents another frame holds on to it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while parked.frame_number() == before && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
     parked.send(klipp_core::AppCommand::Pause);
     parked.settle();
     let (_, misses) = held_counts(&parked);
