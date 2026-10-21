@@ -279,6 +279,10 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::ShowToast { .. }
         | AppCommand::OpenNormalizeDialog { .. }
         | AppCommand::NormalizeClips { .. }
+        // The fit dialog's own steps; Apply is the edit.
+        | AppCommand::OpenMusicFitDialog { .. }
+        | AppCommand::PlanMusicFit { .. }
+        | AppCommand::MusicFitPlanned { .. }
         // A template is kept outside the project (#618).
         | AppCommand::SaveProjectTemplate { .. }
         | AppCommand::DeleteProjectTemplate { .. }
@@ -801,6 +805,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::SetSourceRotation { .. }
         | AppCommand::UpdateClipAudio { .. }
         | AppCommand::ApplyClipGains { .. }
+        | AppCommand::ApplyMusicFit { .. }
         | AppCommand::BeginAudioDrag { .. }
         | AppCommand::EndAudioDrag { .. }
         | AppCommand::ScaleAudioKeyframeTiming { .. }
