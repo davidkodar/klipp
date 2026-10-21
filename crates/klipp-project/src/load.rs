@@ -1055,7 +1055,7 @@ fn load_sequence_from_json(
                 _ => klipp_core::MarkerColor::Blue,
             };
             let kind = parse_marker_kind(&m.kind);
-            Some(klipp_timeline::Marker {
+            Some(klipp_timeline::Marker { review: m.review.clone(),
                 id,
                 position: RationalTime { value: m.position.value, rate: m.position.rate },
                 label: m.label.clone(),
@@ -1114,6 +1114,7 @@ fn parse_marker_kind(s: &str) -> klipp_core::MarkerKind {
         "Comment" => klipp_core::MarkerKind::Comment,
         "BestTake" => klipp_core::MarkerKind::BestTake,
         "Section" => klipp_core::MarkerKind::Section,
+        "Review" => klipp_core::MarkerKind::Review,
         _ => klipp_core::MarkerKind::None,
     }
 }

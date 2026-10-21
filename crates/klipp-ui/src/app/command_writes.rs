@@ -281,6 +281,9 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::NormalizeClips { .. }
         // The fit dialog's own steps; Apply is the edit.
         | AppCommand::OpenMusicFitDialog { .. }
+        // A review copy and list are files, not edits (#2214).
+        | AppCommand::ExportReviewCopy { .. }
+        | AppCommand::ExportReviewList { .. }
         | AppCommand::PlanMusicFit { .. }
         | AppCommand::MusicFitPlanned { .. }
         // A template is kept outside the project (#618).
@@ -674,6 +677,8 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::UpdateMarkerComment { .. }
         | AppCommand::UpdateMarkerKind { .. }
         | AppCommand::SetMarkerDuration { .. }
+        | AppCommand::SetReviewStatus { .. }
+        | AppCommand::ImportReviewComments { .. }
         | AppCommand::MoveMarker { .. }
         | AppCommand::ConnectToPrimary { .. }
         | AppCommand::DisconnectFromPrimary { .. }

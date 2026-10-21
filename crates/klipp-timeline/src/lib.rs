@@ -114,7 +114,7 @@ pub use clip_kind::{
 pub use brief::{Brief, CastMember, Feature, MotionAnchorSpec, ShadowSpec, TitleMotionSpec, TypeStyle};
 pub use review::{FindingReview, ReviewDecision};
 pub use edit_plan::{EditPlan, LayerMotion, PlanBackground, PlanLayer, PlanMusic, PlanPlacement, PlanSegment, PlanSfx, PlanTitle, PlanZoom, LAYER_MOTIONS};
-pub use marker::Marker;
+pub use marker::{Marker, ReviewNote};
 pub use klipp_core::MulticamSound;
 pub use klipp_core::fill_gradient::{GradientKind, GradientStop, MAX_GRADIENT_STOPS};
 pub use sequence::{

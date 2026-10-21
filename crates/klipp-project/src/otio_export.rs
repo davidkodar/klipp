@@ -578,7 +578,7 @@ mod tests {
     fn markers_and_their_colours_survive() {
         let fps = Fps::new(25, 1);
         let mut seq = seq_with(fps, vec![Track::new("Video 1", TrackKind::Video)]);
-        seq.markers.push(Marker {
+        seq.markers.push(Marker { review: None,
             id: MarkerId::new(),
             position: Timecode::from_secs_f64(1.0, fps.rate()),
             label: "Check the grade".into(),

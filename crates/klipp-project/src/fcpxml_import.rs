@@ -713,7 +713,7 @@ fn collect_sequence_markers(
             .and_then(|c| c.text())
             .unwrap_or("")
             .to_string();
-        out.push(Marker {
+        out.push(Marker { review: None,
             id: MarkerId::new(),
             position,
             label,

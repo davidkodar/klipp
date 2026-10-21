@@ -761,7 +761,7 @@ pub fn load_otio(path: &Path) -> Result<ImportResult, OtioImportError> {
         // as a range marker; zero-duration stays a point marker.
         let duration = rt_from_otio(&rm.marked_range.duration, fps_rate);
         let duration = if duration.value > 0 { Some(duration) } else { None };
-        sequence_markers.push(Marker {
+        sequence_markers.push(Marker { review: None,
             id: MarkerId::new(),
             position,
             label: rm.name.unwrap_or_default(),

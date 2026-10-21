@@ -2880,7 +2880,7 @@ mod tests {
     #[test]
     fn test_snap_to_marker() {
         let mut seq = make_sequence(&[(0, 48)]);
-        seq.markers.push(crate::marker::Marker {
+        seq.markers.push(crate::marker::Marker { review: None,
             id: MarkerId::new(),
             position: tc(36),
             label: "Mark".to_string(),
