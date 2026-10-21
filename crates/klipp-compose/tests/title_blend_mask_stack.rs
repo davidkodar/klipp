@@ -97,12 +97,7 @@ fn a_blended_masked_title_is_the_same_in_the_viewer_and_the_export() {
         };
         let cpu = display(&r.render(&seq, tc(t), W, H, &mut src, RenderOptions::default()));
         let d = worst(&cpu, &gpu);
-        { let mut n=0; for (i,(a,b)) in cpu.chunks(4).zip(gpu.chunks(4)).enumerate() { if a.iter().zip(b).any(|(x,y)|(*x as i32-*y as i32).abs()>1) { if n<6 {eprintln!("DIFF t={t} x={} y={} cpu={a:?} gpu={b:?}", i as u32%W, i as u32/W);} n+=1; } } eprintln!("DIFF t={t} count={n}"); }
-        let scope = klipp_effects::residency::frame("blend", t); let _ = r.render_display_u8_on_gpu(&seq, tc(t), W, H, &mut src, RenderOptions::default()); drop(scope); eprintln!("EVENTS t={t} {:?}", klipp_effects::residency::last_frame().events.iter().map(|e|(e.feature,e.reason)).collect::<Vec<_>>());
-        // The viewer composes the objects on the GPU and the export blends
-        // them on the CPU (#2148); they round apart by up to two levels at
-        // a rising glyph's edge.
-        assert!(d <= 2, "at {t} s the viewer differs from the export by {d} levels");
+        assert!(d <= 1, "at {t} s the viewer differs from the export by {d} levels");
         // And the frame is the mixed one, not the layers laid flat.
         let mut flat = seq.clone();
         if let ClipKind::Title(td) = &mut flat.tracks[0].clips[0].kind {
