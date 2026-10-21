@@ -2004,7 +2004,7 @@ impl Renderer {
                 Some("grade compound")
             } else if frame_blends(c, time) {
                 Some("frame blending")
-            } else if title_motion_blur(c).is_some() {
+            } else if title_motion_blur(c).is_some() && !title_blur_on_stack(c, time, fps) {
                 Some("title motion blur")
             } else if temporal_denoise_of(c, time, fps).is_some() {
                 // Run on the CPU-decoded source and its neighbours, and
@@ -2323,7 +2323,9 @@ impl Renderer {
         // the move run once on the average (#2090), as `shuttered` does on
         // the CPU.
         let mut after_move: Vec<BuiltinEffect> = Vec::new();
-        let shutter: Option<Vec<BuiltinEffect>> = match self.shutter.get(&c.id) {
+        // A title's own motion blur takes its own samples, as on the CPU.
+        let samples = if title_motion_blur(c).is_some() { self.title_shutter.get(&c.id) } else { self.shutter.get(&c.id) };
+        let shutter: Option<Vec<BuiltinEffect>> = match samples {
             Some(samples) => {
                 let cut = shutter_cut(&fx);
                 after_move = fx[cut..].iter().filter(|e| !matches!(e, BuiltinEffect::Transform { .. })).cloned().collect();
@@ -2343,6 +2345,7 @@ impl Renderer {
         // Its media sources' frames, for its plan (#1746).
         self.read_media_frames(c, clip_time, width, height, src);
         let mut rows = (0, height);
+        let mut redrawn = false;
         let mut effects_done = false;
         // A title's entrance and focus blur, put before its effects: they
         // are the title's own, not in its picture's list.
@@ -2523,6 +2526,27 @@ impl Renderer {
                     }
                 }
             }
+            ClipKind::Title(td) if fx_on_gpu && title_motion_blur(c).is_some() && title_raster_moves(td).is_some() && shutter.is_some() => {
+                // Its drawing moves while the shutter is open: drawn at
+                // each sample's instant and placed as that sample places
+                // it, the sum averaged, as `motion_blurred` does.
+                let total = (c.timeline_out - c.timeline_in).to_secs_f64() as f32;
+                let times: Vec<f64> = self.title_shutter.get(&c.id).map(|s| s.iter().map(|&(_, t)| t).collect()).unwrap_or_default();
+                let placements = shutter.as_deref().unwrap_or_default();
+                if times.len() != placements.len() || has_active_effects(&fx) || !c.grade_is_identity() {
+                    return Err("title motion blur");
+                }
+                for (k, (&t, placement)) in times.iter().zip(placements).enumerate() {
+                    let Some((_, soft)) = self.place_title_source(td, slot, width, height, t, total) else { return Err("title motion blur") };
+                    let gpu = self.executor.gpu_pipeline_or_init().ok_or("title motion blur")?;
+                    if !gpu.stack_title_source_effects(slot, &soft) || !gpu.stack_shutter_add(slot, placement, k == 0) {
+                        return Err("title motion blur");
+                    }
+                }
+                redrawn = true;
+                rows = (0, height);
+                self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_shutter_finish(slot, times.len() as u32))
+            }
             ClipKind::Title(td) if fx_on_gpu => {
                 let total = (c.timeline_out - c.timeline_in).to_secs_f64() as f32;
                 if let Some((r, soft)) = self.place_title_source(td, slot, width, height, drawn_time(c,time), total) {
@@ -2655,7 +2679,7 @@ impl Renderer {
         }
         if let Some(placements) = shutter {
             let t = Instant::now();
-            if !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_shutter(slot, &placements)) {
+            if !redrawn && !self.executor.gpu_pipeline_or_init().is_some_and(|g| g.stack_shutter(slot, &placements)) {
                 return Err("the shutter pass failed");
             }
             stats.composite_ms += ms_since(t);
@@ -6612,6 +6636,20 @@ fn title_raster_moves(td: &klipp_timeline::TitleData) -> Option<&klipp_timeline:
             || matches!(&o.content, klipp_timeline::TitleObjectContent::TextBox(tb) if tb.char_animation.as_ref().is_some_and(|c| c.enabled))
     });
     moves.then_some(td)
+}
+
+/// Whether a title's own motion blur runs on the stack. A title whose
+/// drawing holds still is placed at each sample as the camera's shutter
+/// places a picture; one whose drawing moves is drawn at each sample, which
+/// the stack does when nothing runs between its drawing and the move: no
+/// grade and no effect before it, as `motion_blurred` would apply to each.
+fn title_blur_on_stack(c: &Clip, time: Timecode, fps: f64) -> bool {
+    let ClipKind::Title(td) = &c.kind else { return false };
+    if title_raster_moves(td).is_none() {
+        return true;
+    }
+    let (fx, _) = clip_effects(c, time, fps, None, None);
+    c.grade_is_identity() && !has_active_effects(&fx[..shutter_cut(&fx)])
 }
 
 /// A title's motion blur, when on and not overridden by a transform

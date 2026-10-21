@@ -2176,6 +2176,72 @@ fn keyed_path_geometry_rasterized_again_records_a_fallback() {
     let still = trim_path_sequence(false);
     for t in [0.5, 1.5, 2.5] {
         assert!(!path_fallback(&still, &mut gpu, t), "static geometry rasterizes once and is not a path-geometry fallback");
+
+fn blurred_title(case: u8, w: u32, h: u32) -> Sequence {
+    use klipp_timeline::{Motion, MotionBlur, MotionKind, TitleMotion};
+    let blur = Some(MotionBlur { enabled: true, shutter_angle: 180.0, shutter_angle_keyframes: vec![], samples: 8 });
+    let mut fx = LayerFx { motion_blur: blur, ..Default::default() };
+    if case != 1 { fx.motion = TitleMotion::enter(Motion::new(MotionKind::Rise).duration(0.8)); }
+    if case == 2 { fx.outlines = vec![TextOutline { enabled: true, color: [20, 30, 40, 255], width: 4.0, width_keyframes: vec![] }]; }
+    let mut title = TitleData::single_text_fx(TextBox { text: "Blur".into(), font_size: 180.0, color: [230, 190, 80, 255], ..Default::default() }, fx);
+    if case == 3 {
+        title.add_object(klipp_timeline::TitleObjectContent::Shape(klipp_timeline::Shape { kind: klipp_timeline::ShapeKind::Rectangle { corner_radius: 0.0 }, fill: Some([40, 80, 200, 160]), gradient: None, stroke: None, fit: None }),
+            klipp_timeline::ObjectTransform { size: klipp_timeline::TitlePosition { x: 0.8, y: 0.3 }, ..klipp_timeline::default_text_transform() });
+        title.objects.swap(0, 1);
+    }
+    let mut seq = Sequence::new_default(); seq.resolution = Resolution { width: w, height: h };
+    let mut track = Track::new("blur", TrackKind::Video);
+    let mut clip = Clip { kind: ClipKind::Title(title), ..Clip::gap(RationalTime::from_secs_f64(0.0, 30), RationalTime::from_secs_f64(3.0, 30)) };
+    // The clip moving, its drawing still: drawn once, placed at each sample.
+    if case == 1 { clip = klipp_timeline::test_clip::TestClip::of(clip).lane("pos_x", 0.0, -400.0).lane("pos_x", 3.0, 400.0).build(); }
+    track.clips.push(clip);
+    seq.tracks = vec![track]; seq
+}
+#[test]
+fn title_motion_blur_matches_cpu_on_the_stack() {
+    let (w, h) = (320, 180);
+    for case in 0..4u8 {
+        let seq = blurred_title(case, w, h);
+        let mut gpu = renderer(); gpu.set_gpu_enabled(true);
+        assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
+        let mut cpu = renderer(); cpu.set_gpu_enabled(false);
+        for t in [0.1, 0.35, 0.7, 2.0] {
+            let at = RationalTime::from_secs_f64(t, 30);
+            let (want, _) = cpu.render_inspected(&seq, at, w, h, &mut NoMedia, RenderOptions::default(), Default::default());
+            let want = klipp_color::display::display_transform_ws_dithered_to(&want, klipp_color::display::ToneMapOp::None, klipp_core::WorkingColorspace::Rec709Linear, klipp_core::SdrTransfer::Srgb);
+            let before = klipp_effects::gpu::thread_readback_stats();
+            let scope = klipp_effects::residency::frame("title motion blur", t);
+            let (got, _) = gpu.render_display_u8_on_gpu(&seq, at, w, h, &mut NoMedia, RenderOptions::default()).expect("the stack takes a blurred title");
+            drop(scope);
+            let events = klipp_effects::residency::last_frame().events;
+            // A text moving in a several-layer scene is drawn on the CPU and
+            // uploaded while it moves (#2069 follow-up); the blur stays on the stack.
+            if case != 3 {
+                assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Fallback), "case {case} at {t}: {events:?}");
+                assert_eq!(klipp_effects::gpu::thread_readback_stats().count - before.count, 1, "only verification download");
+            }
+            assert!(!events.iter().any(|e| e.feature.starts_with("composition.")), "case {case} at {t}: the frame left the stack: {events:?}");
+            let worst = got.iter().zip(&want).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+            assert!(worst <= 3, "case {case} at {t}: {worst} levels from the CPU");
+        }
+    }
+}
+#[test]
+fn title_motion_blur_stays_on_the_stack_at_4k() {
+    let (w, h) = (3840, 2160);
+    let seq = blurred_title(0, w, h);
+    let mut gpu = renderer(); gpu.set_gpu_enabled(true);
+    assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
+    for (sample, t) in [0.1, 0.25, 0.4, 0.25].into_iter().enumerate() {
+        let scope = klipp_effects::residency::frame("4K title motion blur", t);
+        let before = klipp_effects::gpu::thread_readback_stats();
+        let started = std::time::Instant::now();
+        gpu.render_display_u8_on_gpu(&seq, RationalTime::from_secs_f64(t, 30), w, h, &mut NoMedia, RenderOptions::default()).expect("the stack takes a blurred title");
+        let elapsed = started.elapsed(); drop(scope);
+        let events = klipp_effects::residency::last_frame().events;
+        assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Fallback), "{events:?}");
+        assert_eq!(klipp_effects::gpu::thread_readback_stats().count - before.count, 1, "only verification download");
+        eprintln!("4K blurred rising title sample {sample}: {elapsed:?}, including verification download");
     }
 }
 
