@@ -160,6 +160,10 @@ pub struct PathCoverage {
     pub stroke: [f32; 4],
     /// The stroke glow's radius in whole pixels and its strength.
     pub glow: Option<(f32, f32)>,
+    /// How a frame pixel maps to the object's box, as the gradient fill
+    /// reads it: pivot x, y, rotation's cosine and sine, the box's size in
+    /// pixels (at least one) and the anchor's box fractions.
+    pub unmap: [f32; 8],
 }
 
 /// What [`paint_filled`] paints of `pose`, or `None` when it paints
@@ -237,14 +241,24 @@ pub(crate) fn coverage(
         Vec::new()
     };
     let glow = (stroked && glow_radius >= 1.0 && glow_strength > 0.0).then_some((glow_radius, glow_strength));
-    Some(PathCoverage { bounds: [x0, y0, x1, y1], fill_edges, stroke_segments, half, fill: pose.fill, stroke: pose.stroke, glow })
+    let size = [(transform.size.x * width as f32).max(1.0), (transform.size.y * height as f32).max(1.0)];
+    let anchor = [transform.anchor_norm.x, transform.anchor_norm.y];
+    let pivot = [
+        transform.center.x * width as f32 + (anchor[0] - 0.5) * size[0],
+        transform.center.y * height as f32 + (anchor[1] - 0.5) * size[1],
+    ];
+    let (sin, cos) = transform.rotation.to_radians().sin_cos();
+    let fill = if gradient { [0.0, 0.0, 0.0, 1.0] } else { pose.fill };
+    Some(PathCoverage { bounds: [x0, y0, x1, y1], fill_edges, stroke_segments, half, fill, stroke: pose.stroke, glow, unmap: [pivot[0], pivot[1], cos, sin, size[0], size[1], anchor[0], anchor[1]] })
 }
 
 /// What the title renderer paints of `path` in `transform` at `time`
-/// without a gradient (#2201), or `None` when it paints nothing. The time
-/// is the renderer's own, single precision, so the keys land alike.
-pub fn path_coverage(path: &klipp_timeline::VectorPath, transform: &ObjectTransform, width: u32, height: u32, time: f32) -> Option<PathCoverage> {
-    coverage(&path.at(time as f64), transform, width, height, path.trim.as_ref().map(|t| t.at(time as f64)), false)
+/// (#2201), or `None` when it paints nothing. The time is the renderer's
+/// own, single precision, so the keys land alike. With `gradient` the
+/// fill is drawn whatever the pose's fill alpha, its colour the gradient's
+/// at each pixel (#2208), and `fill` is opaque black.
+pub fn path_coverage(path: &klipp_timeline::VectorPath, transform: &ObjectTransform, width: u32, height: u32, time: f32, gradient: bool) -> Option<PathCoverage> {
+    coverage(&path.at(time as f64), transform, width, height, path.trim.as_ref().map(|t| t.at(time as f64)), gradient)
 }
 
 /// [`paint`], with the fill taken from a gradient over the object's box

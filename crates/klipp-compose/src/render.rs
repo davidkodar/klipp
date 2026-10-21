@@ -2720,12 +2720,11 @@ impl Renderer {
                         };
                         transform
                     } else {object.transform.evaluated_at(clip_time)};
-                    // A path's gradient fill keeps the CPU. A still path moved or
-                    // faded whole is its resting render posed, which the CPU's
-                    // byte layer rounds exactly; only changing geometry is
-                    // scanned here at each pose (#2201).
+                    // A still path moved or faded whole is its resting render
+                    // posed, which the CPU's byte layer rounds exactly; only
+                    // changing geometry is scanned here at each pose (#2201).
                     if matches!(shape.kind,klipp_timeline::ShapeKind::Path(_))
-                        && (shape.gradient.as_ref().is_some_and(|g|g.enabled) || (object.fx().motion.is_active() && !klipp_title::keys_path_geometry(td))) {return None;}
+                        && object.fx().motion.is_active() && !klipp_title::keys_path_geometry(td) {return None;}
                     // Entrance/exit fades act on the painted byte layer before
                     // edge fades, object opacity and scene masking.
                     let mut source_fx=object.fx().clone();
@@ -2772,8 +2771,10 @@ impl Renderer {
                             // transform taken at the CPU's single-precision time
                             // (#2201); a path that paints nothing leaves no layer.
                             let transform=if shape.fit.is_some() {transform.clone()} else {object.transform.evaluated_at(clip_time as f32 as f64)};
-                            match klipp_title::path_coverage(path,&transform,width,height,clip_time as f32) {
-                                Some(c)=>gpu.stack_title_path(slot,&klipp_effects::gpu::TitlePath {bounds:c.bounds,fill_edges:c.fill_edges,stroke_segments:c.stroke_segments,half:c.half,fill:c.fill,stroke:c.stroke,glow:c.glow}),
+                            // A gradient fill is evaluated per pixel at its box
+                            // fractions (#2208).
+                            match klipp_title::path_coverage(path,&transform,width,height,clip_time as f32,gradient.is_some()) {
+                                Some(c)=>gpu.stack_title_path(slot,&klipp_effects::gpu::TitlePath {bounds:c.bounds,fill_edges:c.fill_edges,stroke_segments:c.stroke_segments,half:c.half,fill:c.fill,stroke:c.stroke,glow:c.glow,gradient:gradient.clone().map(|g|(g,c.unmap))}),
                                 None=>gpu.stack_layer_clear(slot),
                             }
                         }
