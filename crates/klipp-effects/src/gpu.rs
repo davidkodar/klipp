@@ -5928,39 +5928,40 @@ impl GpuEffectsPipeline {
 
     /// Assemble cached glyph coverage with the CPU mask's max operation.
     /// Fill is a frame parameter; changing colour does not replace the source.
-    pub fn stack_title_glyph(&mut self, slot: usize, id: u64, texels: &[u32], size: [u32;2], origin: [i32;2], color: [u8;4]) -> bool {
-        let (_,h)=self.stack_dims;
-        let y0=origin[1].clamp(0,h as i32) as u32;
-        let y1=(i64::from(origin[1])+i64::from(size[1])).clamp(0,i64::from(h)) as u32;
-        self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],1.0,1.0,(0.0,0.0),Some(color),None,y0,y1,2,None)
+    pub fn stack_title_glyph(&mut self, slot: usize, id: u64, texels: &[u32], size: [u32;2], origin: [i32;2], color: [u8;4], place: GlyphPlace) -> bool {
+        let (y0,y1)=self.glyph_rows(origin,size[1],place);
+        self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],place.alpha,1.0,(0.0,0.0),Some(color),None,y0,y1,2,None)
     }
 
     /// Subtract native bitmap alpha from the shared glyph face mask, as
     /// colour_pixels does before the CPU paints the remaining text fill.
-    pub fn stack_title_colour_coverage_subtract(&mut self,slot:usize,id:u64,texels:&[u32],size:[u32;2],origin:[i32;2])->bool {
-        let (_,h)=self.stack_dims;
-        let y0=origin[1].clamp(0,h as i32) as u32;
-        let y1=(i64::from(origin[1])+i64::from(size[1])).clamp(0,i64::from(h)) as u32;
-        self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],1.0,1.0,(0.0,0.0),None,None,y0,y1,3,None)
+    pub fn stack_title_colour_coverage_subtract(&mut self,slot:usize,id:u64,texels:&[u32],size:[u32;2],origin:[i32;2],place:GlyphPlace)->bool {
+        let (y0,y1)=self.glyph_rows(origin,size[1],place);
+        self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],place.alpha,1.0,(0.0,0.0),None,None,y0,y1,3,None)
     }
 
     /// Place a cached native-colour glyph without applying the text fill.
-    pub fn stack_title_colour_glyph(&mut self,slot:usize,id:u64,texels:&[u32],size:[u32;2],origin:[i32;2])->bool {
-        let (_,h)=self.stack_dims;
-        let y0=origin[1].clamp(0,h as i32) as u32;
-        let y1=(i64::from(origin[1])+i64::from(size[1])).clamp(0,i64::from(h)) as u32;
-        self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],1.0,1.0,(0.0,0.0),None,None,y0,y1,1,None)
+    pub fn stack_title_colour_glyph(&mut self,slot:usize,id:u64,texels:&[u32],size:[u32;2],origin:[i32;2],place:GlyphPlace)->bool {
+        let (y0,y1)=self.glyph_rows(origin,size[1],place);
+        self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],place.alpha,1.0,(0.0,0.0),None,None,y0,y1,4,None)
     }
 
     /// Resize a retained byte-premultiplied font strike with the CPU triangle
     /// filter. mode: 2=max coverage, 3=subtract coverage, 1=native RGBA over.
     #[allow(clippy::too_many_arguments)]
-    pub fn stack_title_resized_colour_glyph(&mut self,slot:usize,id:u64,texels:&[u32],size:[u32;2],target:[u32;2],origin:[i32;2],color:[u8;4],mode:u32)->bool {
+    pub fn stack_title_resized_colour_glyph(&mut self,slot:usize,id:u64,texels:&[u32],size:[u32;2],target:[u32;2],origin:[i32;2],color:[u8;4],mode:u32,place:GlyphPlace)->bool {
         if target.contains(&0) || size.contains(&0) || !matches!(mode,1..=3) {return false;}
+        let (y0,y1)=self.glyph_rows(origin,target[1],place);
+        // Native RGBA over takes a posed glyph's alpha rounded, as the glyph modes do.
+        self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],place.alpha,1.0,(0.0,0.0),Some(color),None,y0,y1,if mode==1 {4} else {mode},Some(target))
+    }
+
+    /// The frame rows a glyph `height` tall at `origin` covers, inside its pose's clip.
+    fn glyph_rows(&self,origin:[i32;2],height:u32,place:GlyphPlace)->(u32,u32) {
         let (_,h)=self.stack_dims;
-        let y0=origin[1].clamp(0,h as i32) as u32;
-        let y1=(i64::from(origin[1])+i64::from(target[1])).clamp(0,i64::from(h)) as u32;
-        self.place_sprite(slot,id,texels,SpriteBox{x0:0,y0:0,w:size[0],h:size[1]},origin[0],origin[1],1.0,1.0,(0.0,0.0),Some(color),None,y0,y1,mode,Some(target))
+        let top=origin[1].max(place.clip_y[0]);
+        let bottom=(i64::from(origin[1])+i64::from(height)).min(i64::from(place.clip_y[1]));
+        (top.clamp(0,h as i32) as u32,bottom.clamp(0,i64::from(h)) as u32)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -7796,6 +7797,20 @@ struct SpriteRowsParams {
     to_working: [[f32; 4]; 3],
 }
 
+/// A bitmap glyph's pose on the title stack (#2203): its alpha, and the
+/// frame rows it may cover.
+#[derive(Clone, Copy, Debug)]
+pub struct GlyphPlace {
+    pub alpha: f32,
+    pub clip_y: [i32; 2],
+}
+
+impl Default for GlyphPlace {
+    fn default() -> Self {
+        Self { alpha: 1.0, clip_y: [i32::MIN, i32::MAX] }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct SpritePlaceParams {
@@ -7830,7 +7845,9 @@ struct SpritePlaceParams {
     bw: u32,
     bh: u32,
     /// 1: laid over what the layer holds, as the title renderer lays one
-    /// text layer over another (#2069); 0: the layer is the sprite.
+    /// text layer over another (#2069); 0: the layer is the sprite. A
+    /// glyph's: 2 its coverage into the face mask, 3 taken out of it, 4 its
+    /// native colour laid over; a posed one's alpha rounds to a byte (#2203).
     over: u32,
     _pad1: u32,
     _pad2: u32,
@@ -11354,9 +11371,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         a8 = s.w * 255.0;
     }
+    // A posed glyph's byte coverage scaled by its alpha and rounded half
+    // away from zero, as the CPU rasteriser scales it (#2203): the byte
+    // recovered first, so 4/255 read back as 3.9999998 still scales from 4.
+    let posed = params.over >= 2u && params.opacity < 1.0;
+    if posed {
+        a8 = round(a8);
+    }
     // Unrounded (#190), as the CPU twin: the opacity and the fade
     // applied; scaled, no colour under an alpha that rounds to nothing.
     a8 = clamp(a8 * params.opacity * shape_alpha(x, y), 0.0, 255.0);
+    if posed {
+        let whole = floor(a8);
+        a8 = whole + select(0.0, 1.0, a8 - whole >= 0.5);
+    }
     if params.scale != 1.0 && a8 < 0.5 {
         rgb = vec3<f32>(0.0);
     }
@@ -11374,7 +11402,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         output[idx]=pack(vec4<f32>(old.rgb,alpha));
         return;
     }
-    if params.over == 1u {
+    if params.over == 1u || params.over == 4u {
         // Over what the layer holds, as the title renderer lays its
         // layers (`over_blend`): straight alpha, in sRGB-encoded units.
         // Undo the working-space matrix before authored-space blending.

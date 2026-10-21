@@ -10,6 +10,10 @@ pub struct GlyphDraw {
     pub id: u64,
     pub pixels: Arc<BoxRaster>,
     pub origin: [i32; 2],
+    /// The glyph's posed alpha, as an outline draw's (#2203).
+    pub alpha: f32,
+    /// The frame rows the posed glyph may cover; a mask motion's resting box.
+    pub clip_y: [i32; 2],
 }
 #[derive(Clone)]
 pub struct OutlineDraw {
@@ -165,6 +169,8 @@ impl GlyphCache {
                 id: cached.id,
                 pixels: cached.pixels.clone(),
                 origin: [(g.x + offset[0]) as i32, (g.y + offset[1]) as i32],
+                alpha: 1.0,
+                clip_y: [i32::MIN, i32::MAX],
             });
             let bytes = cached.pixels.byte_size();
             if bytes <= 64 << 20 {
@@ -284,6 +290,8 @@ impl GlyphCache {
                 id: cached.id,
                 pixels: Arc::clone(&cached.pixels),
                 origin: [(g.x + offset[0]) as i32, (g.y + offset[1]) as i32],
+                alpha: 1.0,
+                clip_y: [i32::MIN, i32::MAX],
             });
             while self.strikes.len() >= 512
                 || self
@@ -526,7 +534,9 @@ impl TitleRenderer {
         self.gpu_motion = (fx.motion.is_active() || fx.animators.iter().any(|a| a.enabled))
             .then_some((time, window));
         self.gpu_wave = pose.wave.map(|(amp, rate)| (time, amp, rate));
-        self.gpu_outline_only = tb.text_path.is_some() || self.gpu_motion.is_some()
+        // Moving glyphs take outlines only where their poses need them,
+        // which the layout decides (#2203).
+        self.gpu_outline_only = tb.text_path.is_some()
             || !tb.font_size_keyframes.is_empty()
             || !tb.line_spacing_keyframes.is_empty()
             || !tb.tracking_keyframes.is_empty()

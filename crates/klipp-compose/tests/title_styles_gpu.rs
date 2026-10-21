@@ -1851,9 +1851,10 @@ fn bitmap_colour_glyph_cache_reuses_native_pixels_and_guards_combinations() {
                 unsupported.primary_text_mut().unwrap().strikethrough=true;
             }
         }
-        // An outline, an underline and a strikethrough are styled on the
-        // GPU with the colour glyphs' own coverage; the rest falls back.
-        let resident=matches!(case,2|5|6);
+        // A rise poses the colour glyphs (#2203), and an outline, an
+        // underline and a strikethrough are styled on the GPU with their
+        // own coverage; the rest falls back.
+        let resident=matches!(case,1|2|5|6);
         assert_eq!(r.glyph_source(&unsupported,320,180,0.3,Some(3.0)).is_some(),resident,"case {case}");
     }
 }
@@ -2284,10 +2285,13 @@ fn colour_glyph_combo_sequence(_fitted: bool, mode: u8, w: u32, h: u32) -> Seque
 }
 #[test]
 fn colour_glyph_combinations_match_cpu_and_stay_resident() {
-    // Outline and underline with a colour loop stay resident; moving and
-    // mask-reading combinations keep the CPU.
+    // Outline and underline with a colour loop stay resident, and so do
+    // colour glyphs that rise with keyed size or rise letter by letter
+    // with keyed tracking (#2203); mask-reading styles keep the CPU.
     check_rectangle_motion_samples(colour_glyph_combo_sequence, 2, &[0.0, 0.2, 0.7, 2.6]);
     check_rectangle_motion_samples(|f, _, w, h| colour_glyph_combo_sequence(f, 10, w, h), 1, &[0.0, 0.2, 0.7, 2.6]);
+    check_rectangle_motion_samples(|f, _, w, h| colour_glyph_combo_sequence(f, 4, w, h), 1, &[0.0, 0.2, 0.5, 0.7, 2.6]);
+    check_rectangle_motion_samples(|f, _, w, h| colour_glyph_combo_sequence(f, 9, w, h), 1, &[0.0, 0.2, 0.5, 0.7, 1.0, 2.6]);
 }
 #[test]
 fn outlined_colour_glyphs_in_a_colour_loop_stay_resident_at_4k() {
@@ -2369,6 +2373,34 @@ fn a_still_path_moved_whole_stays_resident_at_4k() {
             let events = klipp_effects::residency::last_frame().events;
             assert!(!events.iter().any(|e| e.work == klipp_effects::residency::Work::Fallback), "{events:?}");
             eprintln!("4K posed still path mode {mode} sample {sample}: {elapsed:?}, including verification download");
+        }
+    }
+}
+#[test]
+fn overlapping_colour_glyphs_rising_apart_keep_the_cpu() {
+    // A colour glyph is drawn as far as the whole mask reaches, so where a
+    // letter rising at another alpha overlaps it the GPU's own posed alpha
+    // is not enough: those frames keep the CPU, and the rest stay resident.
+    use klipp_timeline::{Motion, MotionKind, StaggerUnit, TitleMotion};
+    let (w,h)=(320,180);
+    for mode in [1u8,3] {
+        let mut seq=bitmap_colour_overlap_sequence(false,mode,w,h);
+        let ClipKind::Title(title)=&mut seq.tracks[0].clips[0].kind else {unreachable!()};
+        title.objects[0].fx_mut().motion=TitleMotion::enter(Motion::new(MotionKind::Rise).duration(0.8).stagger(StaggerUnit::Char,0.15));
+        let mut cpu=renderer(); cpu.set_gpu_enabled(false);
+        let mut gpu=renderer(); gpu.set_gpu_enabled(true);
+        assert!(gpu.executor().gpu_pipeline_or_init().is_some(), "GPU required");
+        for (t,staggered) in [(0.3,true),(0.5,true),(2.0,false)] {
+            let at=RationalTime::from_secs_f64(t,30);
+            let (want,_)=cpu.render_inspected(&seq,at,w,h,&mut NoMedia,RenderOptions::default(),Default::default());
+            let want=klipp_color::display::display_transform_ws_dithered_to(&want,klipp_color::display::ToneMapOp::None,klipp_core::WorkingColorspace::Rec709Linear,klipp_core::SdrTransfer::Srgb);
+            let scope=klipp_effects::residency::frame("overlapping colour glyphs",t);
+            let (got,_)=gpu.render_display_u8_on_gpu(&seq,at,w,h,&mut NoMedia,RenderOptions::default()).expect("GPU frame");
+            drop(scope);
+            let fallback=klipp_effects::residency::last_frame().events.iter().any(|e|e.work==klipp_effects::residency::Work::Fallback);
+            assert_eq!(fallback,staggered,"mode {mode} at {t}");
+            let worst=got.iter().zip(&want).map(|(a,b)|a.abs_diff(*b)).max().unwrap();
+            assert!(worst<=1,"mode {mode} at {t}: {worst} levels from the CPU");
         }
     }
 }
