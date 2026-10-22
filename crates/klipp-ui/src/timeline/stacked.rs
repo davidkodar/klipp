@@ -176,11 +176,15 @@ fn header_row(ui: &mut egui::Ui, state: &mut AppState, theme: &KlippTheme, rect:
     done
 }
 
-/// A Ctrl-drag begun on clip `hit` with the selects stacked: it, or the
-/// selection it is in, carried as a copy to the other timeline, not moved.
-/// Whether it began one (a plain drag, or nothing stacked, does not).
+/// A Ctrl-drag begun on clip `hit` with the selects stacked and the
+/// Select tool armed: it, or the selection it is in, carried as a copy to
+/// the other timeline, not moved. Whether it began one (a plain drag,
+/// another tool, or nothing stacked, does not).
 pub fn start_carry(state: &mut AppState, hit: klipp_core::ClipId, ctrl: bool) -> bool {
-    if !ctrl || !stacked_edit(state) {
+    // Only the Select tool's drag moves clips (the Text and Mask tools'
+    // too, as the timeline treats them as Select); another tool's
+    // Ctrl-drag stays that tool's (#2318).
+    if !ctrl || !stacked_edit(state) || !matches!(state.active_tool, klipp_core::Tool::Select | klipp_core::Tool::Text | klipp_core::Tool::Mask) {
         return false;
     }
     let mut ids = state.selected_clips.clone();
@@ -637,5 +641,22 @@ mod tests {
         let selects_clip = texts.iter().find(|(t, p)| t.contains("stack.mov") && p.y < 280.0).expect("the selects' clip").1;
         let (sent, _) = s.drag(selects_clip, egui::pos2(700.0, lane_y), egui::Modifiers::COMMAND);
         assert!(sent.iter().any(|c| matches!(c, AppCommand::PasteClipsFrom { track: Some(0), linked: false, .. })), "{sent:?}");
+    }
+
+    /// With any tool but Select, a Ctrl-drag on a clip is that tool's,
+    /// never a carry.
+    #[test]
+    fn only_the_select_tool_carries() {
+        for tool in [klipp_core::Tool::Blade, klipp_core::Tool::Trim, klipp_core::Tool::Range] {
+            let mut s = Stack::new();
+            s.state.active_tool = tool;
+            let at = s.cut_clip();
+            let (sent, _) = s.drag(at, egui::pos2(700.0, 34.0 + 24.0 + HEADER + 60.0), egui::Modifiers::COMMAND);
+            assert!(!sent.iter().any(|c| matches!(c, AppCommand::PasteClipsFrom { .. })), "{tool:?}: {sent:?}");
+            assert!(s.state.clip_carry.is_none());
+        }
+        let mut s = Stack::new();
+        let clip = s.state.sequences[0].all_clips().next().unwrap().id;
+        assert!(start_carry(&mut s.state, clip, true), "Select carries");
     }
 }
