@@ -710,30 +710,7 @@ impl KlippApp {
                                 klipp_core::AudioParam::Pan => &mut clip.pan_keyframes,
                                 klipp_core::AudioParam::Gain => &mut clip.gain_keyframes,
                             };
-                            let ki = *keyframe_index;
-                            let len = keyframes.len();
-                            if ki < len {
-                                keyframes[ki].interpolation = *interpolation;
-                            }
-                            if ki > 0 {
-                                keyframes[ki - 1].interpolation = *interpolation;
-                            }
-                            if *interpolation == klipp_core::Interpolation::Bezier {
-                                for idx in [ki.saturating_sub(1), ki] {
-                                    if idx >= len { continue; }
-                                    let prev_t = if idx > 0 { keyframes[idx - 1].time_secs } else { keyframes[idx].time_secs - 1.0 };
-                                    let next_t = if idx + 1 < len { keyframes[idx + 1].time_secs } else { keyframes[idx].time_secs + 1.0 };
-                                    let span_out = (next_t - keyframes[idx].time_secs).abs() * 0.33;
-                                    let span_in = (keyframes[idx].time_secs - prev_t).abs() * 0.33;
-                                    let kf = &mut keyframes[idx];
-                                    if kf.tangent_out == (0.0, 0.0) || kf.tangent_out.0.abs() < 0.5 {
-                                        kf.tangent_out = (span_out, 0.0);
-                                    }
-                                    if kf.tangent_in == (0.0, 0.0) || kf.tangent_in.0.abs() < 0.5 {
-                                        kf.tangent_in = (-span_in, 0.0);
-                                    }
-                                }
-                            }
+                            klipp_core::keyframe::set_interpolation_at(keyframes, *keyframe_index, *interpolation);
                             break;
                         }
                     }

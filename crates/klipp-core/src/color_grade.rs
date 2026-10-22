@@ -1287,7 +1287,7 @@ impl Mask {
                 k.ease = match interpolation {
                     keyframe::Interpolation::Linear => crate::mask_path::PathEase::Linear,
                     keyframe::Interpolation::Step => crate::mask_path::PathEase::Hold,
-                    keyframe::Interpolation::Bezier => crate::mask_path::PathEase::Ease,
+                    keyframe::Interpolation::Bezier | keyframe::Interpolation::Eased(_) => crate::mask_path::PathEase::Ease,
                 };
             }
         } else if let Some(k) = self.keyframes.track_mut(param).and_then(|t| t.iter_mut().find(|k| (k.time_secs - time_secs).abs() < epsilon)) {

@@ -55,7 +55,8 @@ impl Action {
             Self::Interpolate(i) => Interaction::Interpolation(match i {
                 Interpolation::Linear => KeyInterpolation::Linear,
                 Interpolation::Step => KeyInterpolation::Step,
-                Interpolation::Bezier => KeyInterpolation::Bezier,
+                // The parity runs pick no eased curve; it is shaped as a Bezier is.
+                Interpolation::Bezier | Interpolation::Eased(_) => KeyInterpolation::Bezier,
             }),
         }
     }
@@ -135,6 +136,7 @@ fn interpolate(g: &mut Grade, r: &Row, want: Interpolation) -> Result<(), String
         Interpolation::Linear => "Linear",
         Interpolation::Step => "Step (Hold)",
         Interpolation::Bezier => "Bezier (Custom)",
+        Interpolation::Eased(_) => return Err("an eased curve is picked from its family's submenu".into()),
     };
     // The menu is drawn last.
     let item = g.frame(Vec::new()).into_iter().rev().find(|(t, _)| t.trim().trim_start_matches('*').trim() == name).map(|(_, p)| p).ok_or_else(|| format!("no interpolation menu item {name}"))?;

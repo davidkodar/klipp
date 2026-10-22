@@ -543,6 +543,9 @@ fn hash_speed_keyframes(keyframes: &[klipp_core::Keyframe], h: &mut impl std::ha
         k.time_secs.to_bits().hash(h);
         k.value.to_bits().hash(h);
         std::mem::discriminant(&k.interpolation).hash(h);
+        if let klipp_core::Interpolation::Eased(ease) = k.interpolation {
+            ease.hash(h);
+        }
         (k.tangent_out.0.to_bits(), k.tangent_out.1.to_bits()).hash(h);
         (k.tangent_in.0.to_bits(), k.tangent_in.1.to_bits()).hash(h);
         // Only a kind other than Broken, so a ramp's hash is as it was
@@ -4649,7 +4652,7 @@ pub(crate) fn audio_chain_fingerprint_for(
         for kf in kfs {
             fp = fp.wrapping_mul(31).wrapping_add(kf.time_secs.to_bits());
             fp = fp.wrapping_mul(31).wrapping_add(kf.value.to_bits() as u64);
-            fp = fp.wrapping_mul(31).wrapping_add(kf.interpolation as u64);
+            fp = fp.wrapping_mul(31).wrapping_add(kf.interpolation.code());
         }
     }
     fp

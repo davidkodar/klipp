@@ -2561,6 +2561,30 @@ impl TimelinePanel {
                                 }
                             }
 
+                            // The named curves (#2274), each family's In, Out
+                            // and In-Out, on the segment leaving each target key.
+                            if !matches!(ctx_menu.param_kind, crate::state::KeyframeParamKind::Mask(_)) {
+                                for (family, eases) in klipp_core::keyframe::Ease::PRESETS {
+                                    let current_family = matches!(current_interp, Some(klipp_core::Interpolation::Eased(e)) if eases.contains(&e));
+                                    let title = if current_family { egui::RichText::new(format!("  {family}")).strong() } else { egui::RichText::new(format!("  {family}")) };
+                                    ui.menu_button(title, |ui| {
+                                        for (ease, label) in eases.into_iter().zip(["In", "Out", "In-Out"]) {
+                                            let want = klipp_core::Interpolation::Eased(ease);
+                                            let text = if current_interp == Some(want) { egui::RichText::new(label).strong() } else { egui::RichText::new(label) };
+                                            if ui.add(egui::Button::new(text).frame(false)).clicked() {
+                                                cmds.push(AppCommand::BeginHistoryBatch);
+                                                for m in &targets {
+                                                    emit_interp(cmds, m, want);
+                                                }
+                                                cmds.push(AppCommand::EndHistoryBatch);
+                                                close_menu = true;
+                                                ui.close_menu();
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+
                             // Step (Hold)
                             {
                                 let is_current = current_interp == Some(klipp_core::Interpolation::Step);

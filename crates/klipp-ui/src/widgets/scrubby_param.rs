@@ -157,6 +157,16 @@ pub fn key_menu(ui: &mut egui::Ui, current: Option<klipp_core::Interpolation>) -
                 pick = Some(KeyMenuPick::Ease(preset));
             }
         }
+        // The named curves (#2274), on the segment leaving the key.
+        for (family, eases) in klipp_core::keyframe::Ease::PRESETS {
+            ui.menu_button(family, |ui| {
+                for (ease, label) in eases.into_iter().zip(["In", "Out", "In-Out"]) {
+                    if super::menu::menu_choice(ui, label, "", current == Some(Interpolation::Eased(ease))).clicked() {
+                        pick = Some(KeyMenuPick::Interpolation(Interpolation::Eased(ease)));
+                    }
+                }
+            });
+        }
         if super::menu::menu_choice(ui, "Bezier (Custom)", "", current == Some(Interpolation::Bezier)).clicked() {
             pick = Some(KeyMenuPick::Interpolation(Interpolation::Bezier));
         }
