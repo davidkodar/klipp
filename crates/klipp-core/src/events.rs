@@ -1662,6 +1662,16 @@ pub enum AppCommand {
     /// ("H:MM:SS Label" per line, with a synthetic "Intro" at 0:00 when
     /// the first marker is after the start).
     ExportYouTubeChapters { path: PathBuf },
+    /// Render a review copy of the active sequence to `path`, its round
+    /// and timecode burned in, with a comment template beside it (#2214).
+    ExportReviewCopy { path: PathBuf },
+    /// Read reviewers' comments from `path` and add them as open review
+    /// markers, as one undo step (#2214).
+    ImportReviewComments { path: PathBuf },
+    /// Write the sequence's review markers to `path` as a table (#2214).
+    ExportReviewList { path: PathBuf },
+    /// Set where a review comment stands (#2214).
+    SetReviewStatus { marker_id: crate::MarkerId, status: crate::ReviewStatus },
     /// Open the export dialog with the range pre-set to "Selected
     /// clips" mode. Dispatched by the timeline clip-context-menu
     /// "Export This Clip…" entry and the matching palette command —
@@ -4352,6 +4362,31 @@ pub enum MarkerKind {
     BestTake,
     /// Section / act / scene boundary.
     Section,
+    /// A reviewer's comment brought back from a review round (#2214).
+    Review,
+}
+
+/// Where a review comment stands (#2214).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum ReviewStatus {
+    #[default]
+    Open,
+    Done,
+    WontDo,
+}
+
+impl ReviewStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            ReviewStatus::Open => "Open",
+            ReviewStatus::Done => "Done",
+            ReviewStatus::WontDo => "Won't do",
+        }
+    }
+
+    pub fn all() -> &'static [ReviewStatus] {
+        &[ReviewStatus::Open, ReviewStatus::Done, ReviewStatus::WontDo]
+    }
 }
 
 impl MarkerKind {
@@ -4363,6 +4398,7 @@ impl MarkerKind {
             MarkerKind::Comment => "Comment",
             MarkerKind::BestTake => "Best Take",
             MarkerKind::Section => "Section",
+            MarkerKind::Review => "Review",
         }
     }
 
@@ -4376,6 +4412,7 @@ impl MarkerKind {
             MarkerKind::Comment => "✱",
             MarkerKind::BestTake => "★",
             MarkerKind::Section => "§",
+            MarkerKind::Review => "R",
         }
     }
 
@@ -4387,6 +4424,7 @@ impl MarkerKind {
             MarkerKind::Comment,
             MarkerKind::BestTake,
             MarkerKind::Section,
+            MarkerKind::Review,
         ]
     }
 }

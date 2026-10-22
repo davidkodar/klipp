@@ -2718,7 +2718,7 @@ fn refuse(step: usize, why: impl Into<String>, hint: impl Into<String>) -> Refus
 }
 
 /// `secs` on the nearest frame at `fps`, as ticks at the sequence's rate.
-fn snap(secs: f64, fps: Fps) -> Timecode {
+pub(crate) fn snap(secs: f64, fps: Fps) -> Timecode {
     let frames = (secs * fps.as_f64()).round() as i64;
     frame_tc(frames, fps)
 }
@@ -5284,7 +5284,7 @@ fn wrap_lines(text: &str, max_chars: usize, max_lines: usize) -> String {
 /// frame. The backing is what keeps it readable over a picture with
 /// writing of its own down there (a name plate, a ticker); an outline
 /// alone is lost in it.
-fn caption_title(text: &str) -> klipp_timeline::TitleData {
+pub(crate) fn caption_title(text: &str) -> klipp_timeline::TitleData {
     let tb = klipp_timeline::TextBox {
         text: text.to_string(),
         font_size: 40.0,
@@ -5324,7 +5324,7 @@ pub fn apply_caption_style(td: &klipp_timeline::TitleData, s: &klipp_timeline::C
     restyle(td, &look, 1.0).unwrap_or_else(|_| td.clone())
 }
 
-fn title_clip(td: klipp_timeline::TitleData, tl_in: Timecode, tl_out: Timecode, fps: Fps) -> Clip {
+pub(crate) fn title_clip(td: klipp_timeline::TitleData, tl_in: Timecode, tl_out: Timecode, fps: Fps) -> Clip {
     Clip {
         id: ClipId::new(),
         kind: ClipKind::Title(td),
@@ -11274,7 +11274,7 @@ mod tests {
         audio.clips = vec![aa, ab];
         v.clips = vec![a, b];
         seq.tracks = vec![v, audio];
-        seq.markers.push(klipp_timeline::Marker {
+        seq.markers.push(klipp_timeline::Marker { review: None,
             id: klipp_core::MarkerId::new(),
             position: tc(6.0),
             label: "Intro".into(),
@@ -14909,7 +14909,7 @@ mod tests {
     }
 
     fn marker(secs: f64, label: &str, duration: Option<f64>) -> klipp_timeline::Marker {
-        klipp_timeline::Marker {
+        klipp_timeline::Marker { review: None,
             id: klipp_core::MarkerId::new(),
             position: tc(secs),
             label: label.into(),

@@ -19230,7 +19230,7 @@ mod snap_tests {
     fn snap_legend_marker_label_includes_user_label() {
         let mut state = AppState::default();
         let pos = klipp_core::RationalTime::from_secs_f64(2.0, state.fps.rate());
-        state.sequence_mut().markers.push(klipp_timeline::Marker {
+        state.sequence_mut().markers.push(klipp_timeline::Marker { review: None,
             id: klipp_core::MarkerId::new(),
             position: pos,
             label: "Hero shot".to_string(),

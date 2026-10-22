@@ -1,4 +1,4 @@
-use klipp_core::{MarkerColor, MarkerId, MarkerKind, Timecode};
+use klipp_core::{MarkerColor, MarkerId, MarkerKind, ReviewStatus, Timecode};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -22,6 +22,20 @@ pub struct Marker {
     /// projects deserialise to `MarkerKind::None`.
     #[serde(default)]
     pub kind: MarkerKind,
+    /// A review comment's author, status and round (#2214): set on
+    /// markers of [`MarkerKind::Review`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<ReviewNote>,
+}
+
+/// Who left a review comment, where it stands, and in which round.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ReviewNote {
+    pub author: String,
+    #[serde(default)]
+    pub status: ReviewStatus,
+    #[serde(default)]
+    pub round: u32,
 }
 
 fn default_marker_color() -> MarkerColor {
@@ -64,7 +78,7 @@ mod tests {
 
     #[test]
     fn range_marker_serializes_round_trip() {
-        let m = Marker {
+        let m = Marker { review: None,
             id: MarkerId::new(),
             position: Timecode { value: 48, rate: 24 },
             label: "Act 1".into(),
@@ -86,7 +100,7 @@ mod tests {
 
     #[test]
     fn marker_with_comment_and_kind_round_trips() {
-        let m = Marker {
+        let m = Marker { review: None,
             id: MarkerId::new(),
             position: Timecode { value: 24, rate: 24 },
             label: "Cut on action".into(),

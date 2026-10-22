@@ -26,7 +26,8 @@ pub(crate) fn marker_kind(s: &str) -> Result<klipp_core::MarkerKind, String> {
         "comment" => Comment,
         "best_take" => BestTake,
         "section" => Section,
-        other => return Err(format!("no marker kind \"{other}\": chapter, todo, comment, best_take or section")),
+        "review" => Review,
+        other => return Err(format!("no marker kind \"{other}\": chapter, todo, comment, best_take, section or review")),
     })
 }
 
@@ -39,6 +40,7 @@ pub(crate) fn marker_kind_name(k: klipp_core::MarkerKind) -> &'static str {
         Comment => "comment",
         BestTake => "best_take",
         Section => "section",
+        Review => "review",
     }
 }
 

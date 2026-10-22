@@ -387,6 +387,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                 duration: m.duration.as_ref().map(timecode_to_json),
                 comment: m.comment.clone(),
                 kind: format!("{:?}", m.kind),
+                review: m.review.clone(),
             }
         }).collect(),
         tracks: seq.tracks.iter().map(|t| {

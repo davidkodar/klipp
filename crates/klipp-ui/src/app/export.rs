@@ -2331,7 +2331,7 @@ mod range_marker_segment_tests {
     use klipp_core::{MarkerColor, MarkerId, RationalTime};
 
     fn mk(position_secs: f64, dur_secs: Option<f64>, label: &str) -> klipp_timeline::Marker {
-        klipp_timeline::Marker {
+        klipp_timeline::Marker { review: None,
             id: MarkerId::new(),
             position: RationalTime::from_secs_f64(position_secs, 24),
             label: label.into(),
@@ -3473,6 +3473,38 @@ impl KlippApp {
                 match std::fs::write(&path, &content) {
                     Ok(_) => self.state.toast.show(format!("Exported {} subtitles to {}", subs.len(), path.display())),
                     Err(e) => self.state.toast.show(format!("Failed to write: {e}")),
+                }
+                true
+            }
+            AppCommand::ExportReviewCopy { path } => {
+                // The sequence with its review line burned in, rendered as
+                // any export is, and the comment file beside it (#2214).
+                let seq = &self.state.sequences[self.state.active_sequence_idx];
+                let round = klipp_document::review::next_round(seq);
+                let review = klipp_document::review::overlay(seq, round);
+                let template = klipp_document::review::comment_template(seq, round);
+                let settings = klipp_core::ExportSettings { output_path: path.clone(), burn_in_subtitles: true, embed_subtitles: false, ..Default::default() };
+                let snapshot = klipp_export::RenderSnapshot::from_sequence_with_all(
+                    &review,
+                    &self.state.sequences,
+                    &self.state.media_pool,
+                    &settings,
+                    self.state.global_lut_path.clone().filter(|_| self.state.global_lut_enabled),
+                    false,
+                    self.state.project_working_colorspace,
+                );
+                match snapshot {
+                    Ok(snap) => {
+                        let label = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Review copy".into());
+                        self.queue_job(path.clone(), settings, label, snap);
+                        self.state.show_render_queue = true;
+                        let comments = path.with_file_name(format!("{}-comments.csv", path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()));
+                        match std::fs::write(&comments, template) {
+                            Ok(()) => self.state.toast.show(format!("Review copy, round {round}, queued; comments go in {}", comments.display())),
+                            Err(e) => self.state.toast.show(format!("Review copy queued, but the comment file could not be written: {e}")),
+                        }
+                    }
+                    Err(e) => self.state.toast.show(format!("Review copy not made: {e}")),
                 }
                 true
             }

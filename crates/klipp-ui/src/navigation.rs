@@ -111,7 +111,7 @@ mod tests {
     }
 
     fn marker(at: i64) -> Marker {
-        Marker {
+        Marker { review: None,
             id: klipp_core::MarkerId::new(),
             position: t(at),
             label: String::new(),

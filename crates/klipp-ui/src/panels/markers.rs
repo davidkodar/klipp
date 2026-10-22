@@ -16,6 +16,8 @@ pub struct MarkersPanel {
     /// to matches; pressing Enter while focused jumps the playhead
     /// to the first match.
     search_query: String,
+    /// Only open review comments listed (#2214).
+    open_reviews_only: bool,
 }
 
 /// Case-insensitive substring match against a marker's label, comment,
@@ -101,6 +103,32 @@ impl MarkersPanel {
                     ui.with_layout(
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| {
+                            ui.menu_button("Review", |ui| {
+                                if ui.button("Export Review Copy\u{2026}").on_hover_text("Render the sequence with its timecode and review round burned in, and a comment file beside it").clicked() {
+                                    let name = format!("{}-review.mp4", state.sequence().name.replace(['/', '\\'], "-"));
+                                    crate::file_dialog::spawn(move || {
+                                        rfd::FileDialog::new().set_title("Export Review Copy").add_filter("MP4 video", &["mp4"]).set_file_name(&name).save_file()
+                                            .map(|path| vec![AppCommand::ExportReviewCopy { path }]).unwrap_or_default()
+                                    });
+                                    ui.close_menu();
+                                }
+                                if ui.button("Import Review Comments\u{2026}").on_hover_text("Add a reviewer's comments, with their timecodes, as review markers").clicked() {
+                                    crate::file_dialog::spawn(move || {
+                                        rfd::FileDialog::new().set_title("Import Review Comments").add_filter("Comments", &["csv", "tsv", "txt"]).pick_file()
+                                            .map(|path| vec![AppCommand::ImportReviewComments { path }]).unwrap_or_default()
+                                    });
+                                    ui.close_menu();
+                                }
+                                if ui.button("Export Review List\u{2026}").on_hover_text("Write the review comments and where each stands, for the next round").clicked() {
+                                    crate::file_dialog::spawn(move || {
+                                        rfd::FileDialog::new().set_title("Export Review List").add_filter("CSV", &["csv"]).set_file_name("review-list.csv").save_file()
+                                            .map(|path| vec![AppCommand::ExportReviewList { path }]).unwrap_or_default()
+                                    });
+                                    ui.close_menu();
+                                }
+                                ui.separator();
+                                ui.checkbox(&mut self.open_reviews_only, "Show only open review comments");
+                            });
                             if ui
                                 .small_button("\u{2B07} YouTube Chapters")
                                 .on_hover_text("Export markers as YouTube chapter timestamps")
@@ -127,12 +155,14 @@ impl MarkersPanel {
                     let mut remove_id = None;
                     let fps_rate = state.sequence().fps.rate();
                     let query = self.search_query.clone();
+                    let open_only = self.open_reviews_only;
                     let markers: Vec<_> = state.sequence().markers.iter()
                         .filter(|m| marker_matches(&m.label, &m.comment, m.kind, &query))
-                        .map(|m| (m.id, m.position, m.label.clone(), m.color, m.duration, m.comment.clone(), m.kind))
+                        .filter(|m| !open_only || m.review.as_ref().is_some_and(|r| r.status == klipp_core::ReviewStatus::Open))
+                        .map(|m| (m.id, m.position, m.label.clone(), m.color, m.duration, m.comment.clone(), m.kind, m.review.clone()))
                         .collect();
 
-                    for (id, position, label, color, duration, comment, kind) in &markers {
+                    for (id, position, label, color, duration, comment, kind, review) in &markers {
                         // Outer vertical group so the optional comment
                         // sub-row stacks under the main row for the
                         // same marker without competing with siblings.
@@ -223,6 +253,22 @@ impl MarkersPanel {
                                     self.editing_label = Some(*id);
                                     self.label_buf = label.clone();
                                 }
+                            }
+
+                            // A review comment's round and where it stands (#2214).
+                            if let Some(r) = review {
+                                egui::ComboBox::from_id_salt(("review_status", *id))
+                                    .selected_text(egui::RichText::new(r.status.label()).size(11.0))
+                                    .width(64.0)
+                                    .show_ui(ui, |ui| {
+                                        for s in klipp_core::ReviewStatus::all() {
+                                            if ui.selectable_label(r.status == *s, s.label()).clicked() {
+                                                cmds.push(AppCommand::SetReviewStatus { marker_id: *id, status: *s });
+                                            }
+                                        }
+                                    })
+                                    .response
+                                    .on_hover_text(format!("Review round {}", r.round));
                             }
 
                             // Right-side controls: delete, duration editor.

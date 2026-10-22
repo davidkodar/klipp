@@ -886,6 +886,10 @@ pub struct MarkerJson {
     /// serialise; legacy files without this field deserialise to "None".
     #[serde(default = "default_marker_kind_str", skip_serializing_if = "is_none_kind")]
     pub kind: String,
+    /// A review comment's author, status and round (#2214); absent on
+    /// every other marker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<klipp_timeline::ReviewNote>,
 }
 
 fn default_marker_kind_str() -> String {

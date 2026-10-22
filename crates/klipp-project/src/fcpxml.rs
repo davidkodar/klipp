@@ -822,7 +822,7 @@ mod tests {
         let mut seq = empty_sequence(fps);
         let pool = MediaPool::new();
 
-        seq.markers.push(Marker {
+        seq.markers.push(Marker { review: None,
             id: MarkerId::new(),
             position: RationalTime { value: 48, rate: 24 },
             label: "Scene 2".into(),
@@ -831,7 +831,7 @@ mod tests {
             comment: String::new(),
             kind: klipp_core::MarkerKind::None,
         });
-        seq.markers.push(Marker {
+        seq.markers.push(Marker { review: None,
             id: MarkerId::new(),
             position: RationalTime { value: 120, rate: 24 },
             label: "End".into(),
@@ -1346,7 +1346,7 @@ mod tests {
         let mut seq = empty_sequence(fps);
         let pool = MediaPool::new();
 
-        seq.markers.push(Marker {
+        seq.markers.push(Marker { review: None,
             id: MarkerId::new(),
             position: RationalTime { value: 24, rate: 24 },
             label: "Cut on action".into(),
@@ -1355,7 +1355,7 @@ mod tests {
             comment: "Trim two frames off the head".into(),
             kind: klipp_core::MarkerKind::ToDo,
         });
-        seq.markers.push(Marker {
+        seq.markers.push(Marker { review: None,
             id: MarkerId::new(),
             position: RationalTime { value: 48, rate: 24 },
             label: "Plain".into(),

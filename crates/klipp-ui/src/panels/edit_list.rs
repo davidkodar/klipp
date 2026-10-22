@@ -294,7 +294,7 @@ mod tests {
             alignment: klipp_core::TransitionAlignment::Center,
         });
         seq.tracks[a].clips.push(Clip::media(media, tc(1), tc(3), tc(0), tc(2)));
-        seq.markers.push(Marker {
+        seq.markers.push(Marker { review: None,
             id: MarkerId::new(),
             position: tc(7),
             label: "Laugh".into(),

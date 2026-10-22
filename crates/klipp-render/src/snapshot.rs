@@ -960,7 +960,7 @@ mod tests {
         // helper produces Chapter-kind markers (the only kind that
         // gets baked into chapter atoms). The non-Chapter exclusion
         // test below uses an inline construction with a different kind.
-        klipp_timeline::Marker {
+        klipp_timeline::Marker { review: None,
             id: klipp_core::MarkerId::new(),
             position: klipp_core::Timecode {
                 value: (secs * 24.0).round() as i64,
@@ -1198,7 +1198,7 @@ mod tests {
             (20.0, "section break", klipp_core::MarkerKind::Section),
             (25.0, "untyped", klipp_core::MarkerKind::None),
         ] {
-            seq.markers.push(klipp_timeline::Marker {
+            seq.markers.push(klipp_timeline::Marker { review: None,
                 id: klipp_core::MarkerId::new(),
                 position: klipp_core::Timecode {
                     value: (secs * 24.0).round() as i64,
