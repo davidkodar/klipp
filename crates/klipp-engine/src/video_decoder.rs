@@ -2617,9 +2617,10 @@ fn decode_thread_main(
     // The GPU open, and its first frame, within a time limit; software
     // when it runs out (#2394).
     let hw_opened = if hw_enabled && !still { open_hardware_in_time(&path, try_cuvid) } else { None };
-    // A still opens as it always did; a GPU open out of time, or no GPU
-    // wanted, goes on in software.
-    let opened = match hw_opened.unwrap_or_else(|| open_video_decoder(&video_stream, hw_enabled && still, try_cuvid && still, sw_threads)) {
+    let hw_opened = hw_opened.and_then(|opened| opened.map_err(|e| warn!("decode_thread: the GPU decoder would not open ({e}); decoding in software")).ok());
+    // A still opens as it always did; a GPU open that failed or ran out
+    // of time, or no GPU wanted, goes on in software.
+    let opened = match hw_opened.map_or_else(|| open_video_decoder(&video_stream, hw_enabled && still, try_cuvid && still, sw_threads), Ok) {
         Ok(o) => o,
         Err(e) => {
             warn!("decode_thread: video decoder error: {e}");

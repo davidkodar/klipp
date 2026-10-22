@@ -1934,12 +1934,11 @@ impl GpuEffectsPipeline {
         self.luma_coefs
     }
 
-    /// True once wgpu has reported a device-lost or uncaptured error,
-    /// and for a moment after the device runs out of memory (#2394).
-    /// While it holds, every frame-processing entry passes the input
+    /// True once wgpu has reported a device-lost or uncaptured error.
+    /// After this flips, every frame-processing entry passes the input
     /// through unchanged so compositing doesn't stall on a dead GPU.
     pub fn is_device_lost(&self) -> bool {
-        self.device_lost.load(Ordering::SeqCst) || crate::gpu_context::out_of_memory_recently()
+        self.device_lost.load(Ordering::SeqCst)
     }
 
     /// Mark the pipeline dead. Intended for internal call sites that
@@ -19467,6 +19466,27 @@ mod bridge_u8_tests {
         }
         // Print stats for debugging perf regressions.
         eprintln!("bridge_u8: max_delta={max_delta}, delta_pixels={delta_pixels} of {}", cpu.len());
+    }
+
+    /// An out-of-memory error is counted, and the next frame is still
+    /// graded on the GPU: it used to switch GPU effects off, every later
+    /// frame passed through ungraded, in an export too (#2394).
+    #[test]
+    fn a_frame_after_out_of_memory_is_still_graded() {
+        let Some(mut gpu) = GpuEffectsPipeline::new() else {
+            assert!(std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_none(), "GPU required");
+            eprintln!("skipping a_frame_after_out_of_memory_is_still_graded: no GPU");
+            return;
+        };
+        let (w, h) = (32u32, 32u32);
+        let linear = gradient_linear_frame(w, h);
+        let before = crate::gpu_context::out_of_memory_errors();
+        crate::gpu_context::note_out_of_memory();
+        assert_eq!(crate::gpu_context::out_of_memory_errors(), before + 1, "the error is counted");
+        assert!(!gpu.is_device_lost(), "out of memory does not take the GPU away");
+        let graded = gpu.apply_vibrance_gpu(&linear, w, h, 0.8);
+        assert_eq!(graded.len(), linear.len());
+        assert!(graded != linear, "the frame after out of memory came out ungraded");
     }
 
     #[test]

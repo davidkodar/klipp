@@ -302,33 +302,9 @@ pub fn validation_errors() -> u64 {
 /// Out-of-memory errors the device reported this session (#2394).
 static OUT_OF_MEMORY_ERRORS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// When the newest out-of-memory error came, in milliseconds after
-/// [`since_start`]'s start, plus one; 0 for none.
-static OUT_OF_MEMORY_AT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// How long GPU work stands aside after the device runs out of memory,
-/// before the next frame tries it again. It used to stand aside for the
-/// rest of the session: once a driver out of memory recovered, nothing
-/// went back to the GPU (#2394).
-const OUT_OF_MEMORY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
-
-fn since_start() -> std::time::Duration {
-    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    START.get_or_init(std::time::Instant::now).elapsed()
-}
-
 /// How many out-of-memory errors the device has reported this session.
 pub fn out_of_memory_errors() -> u64 {
     OUT_OF_MEMORY_ERRORS.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Whether the device ran out of memory in the last
-/// [`OUT_OF_MEMORY_BACKOFF`]: GPU work stands aside until it has passed.
-pub fn out_of_memory_recently() -> bool {
-    match OUT_OF_MEMORY_AT_MS.load(std::sync::atomic::Ordering::Relaxed) {
-        0 => false,
-        at => since_start().as_millis() as u64 + 1 < at + OUT_OF_MEMORY_BACKOFF.as_millis() as u64,
-    }
 }
 
 /// Count an out-of-memory error, as the device reports one. Public for
@@ -336,7 +312,6 @@ pub fn out_of_memory_recently() -> bool {
 #[doc(hidden)]
 pub fn note_out_of_memory() {
     OUT_OF_MEMORY_ERRORS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    OUT_OF_MEMORY_AT_MS.store(since_start().as_millis() as u64 + 1, std::sync::atomic::Ordering::Relaxed);
 }
 
 fn register_device_callbacks(
@@ -363,10 +338,14 @@ fn register_device_callbacks(
                 }
                 tracing::error!("WGPU_UNCAPTURED: {err} — the {n}th validation error, disabling GPU effects");
             } else if matches!(err, wgpu::Error::OutOfMemory { .. }) {
-                // Out of memory stands GPU work aside for a moment, then
-                // the next frame tries again (#2394).
+                // Out of memory is this frame's: it is counted and said,
+                // and the next frame tries the GPU again (#2394). It used
+                // to switch GPU effects off for the session, every later
+                // frame passed through ungraded, in an export too. GPU
+                // work never stands aside for it: the entries that pass a
+                // frame through would put ungraded frames in an export.
                 note_out_of_memory();
-                tracing::error!("WGPU_UNCAPTURED: {err} — out of GPU memory ({} this session), GPU effects stand aside for {OUT_OF_MEMORY_BACKOFF:?}", out_of_memory_errors());
+                tracing::error!("WGPU_UNCAPTURED: {err} — out of GPU memory ({} this session); the next frame tries the GPU again", out_of_memory_errors());
                 return;
             } else {
                 tracing::error!("WGPU_UNCAPTURED: {err} — disabling GPU effects");
@@ -390,19 +369,3 @@ fn register_device_callbacks(
     device_lost
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Out of memory stands GPU work aside for the back-off only, then
-    /// lets it try again; it used to for the rest of the session (#2394).
-    #[test]
-    fn out_of_memory_stands_aside_for_a_moment() {
-        let before = out_of_memory_errors();
-        note_out_of_memory();
-        assert!(out_of_memory_recently(), "GPU work stands aside right after");
-        assert_eq!(out_of_memory_errors(), before + 1, "and the error is counted");
-        std::thread::sleep(OUT_OF_MEMORY_BACKOFF + std::time::Duration::from_millis(50));
-        assert!(!out_of_memory_recently(), "after the back-off the GPU is tried again");
-    }
-}
