@@ -21,19 +21,20 @@ Klipp is under active development. Expect rough edges and breaking changes; broa
 
 ## Create, finish, deliver
 
-- **Edit:** magnetic multitrack editing, ripple and insert edits, synced multicam, titles, transitions, subtitles, speed ramps, and transcript-based cuts.
-- **Grade:** a scene-linear ACEScg pipeline, camera-log decoding, node-based grades, colour wheels and curves, LUTs, GPU scopes, and SDR/HDR delivery.
-- **Mix:** multitrack audio, EQ and dynamics, voice isolation, loudness metering, and dual-system sound sync.
-- **Automate:** analyse footage, propose an edit plan, assemble a sequence, check it, and export through the control socket and MCP server.
-- **Exchange:** import OTIO, FCPXML, and MLT timelines, and save your work as a `.klipp` project.
+- **Edit:** magnetic multitrack editing, ripple and insert edits, synced multicam, a selects timeline, transitions, speed ramps and optical-flow slow motion, a curve editor for keyframes, and transcript-based cuts.
+- **Picture:** one node graph per clip for effects, mattes, keys, transforms, LUTs and OFX/frei0r plug-ins, composited on the GPU.
+- **Grade:** a scene-linear ACEScg pipeline, camera-log decoding, colour wheels and curves, RGB and 3D qualifiers, a grade library shared across projects, GPU scopes, and SDR/HDR delivery including HDR10+.
+- **Titles:** OpenType text with complex scripts, vertical text, variable and colour fonts, animators and per-glyph motions, extruded 3D text, rolling credits, and a template library.
+- **Mix:** multitrack audio with recorded track automation, EQ and dynamics, voice isolation, loudness and true-peak delivery, and dual-system sound sync.
+- **Captions:** SRT, VTT, ASS, IMSC/TTML, SCC and EBU-STL in and out, captions embedded as CEA-608, and on-device translation.
+- **Automate:** analyse footage, propose an edit plan, assemble a sequence, check it, and export through the control socket and an MCP server with over 120 tools.
+- **Exchange:** import and export OTIO, FCPXML, EDL and AAF (through OpenTimelineIO), import FCP7 XML and MLT, export Kdenlive, and save your work as a `.klipp` project.
 
 Explore the [feature reference](docs/project-reference.md#features) and [user guide](docs/src/SUMMARY.md).
 
 ## Try Klipp
 
 The primary target is **x86_64 Arch Linux / Omarchy with a working Vulkan driver**. A Vulkan 1.1 GPU is required; integrated GPUs are supported in principle, with broader hardware validation ongoing. Other distributions are less tested.
-
-The repository is currently private: your GitHub account needs access, and Git must be authenticated before cloning.
 
 ```bash
 sudo pacman -Syu --needed base-devel git
@@ -74,7 +75,7 @@ Compatibility depends on the plugin and the host features it requires. These hos
 
 The documentation is an mdBook: run `mdbook serve docs --open` to read it locally.
 
-Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Open an issue before non-trivial work and sign off commits under your own name. Install the local pre-push gate with `scripts/install-hooks.sh`; it runs the checks, including the GPU tests, on your machine.
+Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Open an issue before non-trivial work and sign off commits under your own name. `scripts/install-hooks.sh` installs a pre-push hook that checks sign-offs and runs clippy and the affected crates' tests on your machine; GPU tests need a working GPU to mean anything.
 
 Report security concerns through [SECURITY.md](SECURITY.md).
 

@@ -241,13 +241,9 @@ fi
 printf '\n  pre-push: sign-off, clippy, rustdoc, then the workspace tests (~75 s warm).\n'
 printf '            KLIPP_SKIP_TESTS=1 git push   to bypass.\n\n'
 
-# Direct pushes to main, refused here because GitHub will not refuse
-# them for us: branch protection and rulesets are both gated behind
-# GitHub Pro on a private repository. The same trade as the CI one —
-# while the repo is private everyone pushing to it has this hook, so
-# local enforcement covers everybody; when it goes public, server-side
-# protection becomes available free and should be turned on, at which
-# point this block is belt-and-braces rather than the only belt.
+# Direct pushes to main, refused here as well as by GitHub's ruleset on
+# main (scripts/protect-main.sh): this catches the mistake on the
+# machine, before the push, rather than in GitHub's rejection.
 #
 # CONTRIBUTING.md: main is the only long-lived branch, and everything
 # reaches it through a pull request.

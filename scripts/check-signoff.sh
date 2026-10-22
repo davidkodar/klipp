@@ -1,8 +1,8 @@
 #!/bin/sh
 # Who signed these commits, and is it a person?
 #
-# Three rules from CONTRIBUTING.md, checked here rather than in CI
-# because CI on a private repo costs minutes and this costs nothing:
+# Three rules from CONTRIBUTING.md, checked here rather than in CI,
+# where it would cost a runner and this costs nothing:
 #
 #   1. every commit carries a Signed-off-by (the DCO);
 #   2. no AI agent is the author or the committer;
@@ -20,10 +20,9 @@
 #     scripts/check-signoff.sh HEAD~5..HEAD
 #
 # This is the only thing enforcing them. There is no CI — see
-# CONTRIBUTING.md — which is fine while the repo is private, because
-# everyone who can push has this hook. It stops being true the day a
-# fork sends a pull request, so the maintainer runs this against a
-# fork's branch by hand before merging it.
+# CONTRIBUTING.md. Everyone who pushes here has this hook, but a fork
+# does not, so the maintainer runs this against a fork's branch by hand
+# before merging it.
 
 set -e
 
