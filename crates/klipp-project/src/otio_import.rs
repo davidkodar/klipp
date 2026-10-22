@@ -333,6 +333,14 @@ fn make_otio_media_item(path: PathBuf, filename: String, fps: Fps, offline: bool
     }
 }
 
+/// An OTIO time as a timecode, `HH:MM:SS:FF`, counted at its own rate.
+fn otio_timecode(t: &RawRationalTime) -> String {
+    let rate = t.rate.round().max(1.0) as i64;
+    let frames = (t.value * rate as f64 / t.rate).round() as i64;
+    let (h, m, sec, f) = (frames / (3600 * rate), frames / (60 * rate) % 60, frames / rate % 60, frames % rate);
+    format!("{h:02}:{m:02}:{sec:02}:{f:02}")
+}
+
 /// Register a media reference into the pool and return its `MediaId`.
 ///
 /// - `ExternalReference` whose file exists on disk: dedupe via `find_by_path`,
@@ -350,6 +358,18 @@ fn register_otio_media_ref(
     warnings: &mut Vec<String>,
 ) -> MediaId {
     let schema = child_schema(media_ref);
+    // What the reference says of the file, kept on a missing one so the
+    // relink can tell the right file by its length and timecode (#2086).
+    let known = media_ref.get("available_range").and_then(|v| serde_json::from_value::<RawTimeRange>(v.clone()).ok());
+    let with_range = |mut item: MediaItem| {
+        if let Some(range) = known {
+            item.duration = rt_from_otio(&range.duration, fps.rate());
+            if range.start_time.value > 0.0 && range.start_time.rate > 0.0 {
+                item.shot.start_timecode = Some(otio_timecode(&range.start_time));
+            }
+        }
+        item
+    };
     if schema.starts_with("ExternalReference.") {
         let target_url = media_ref.get("target_url").and_then(|v| v.as_str()).unwrap_or("");
         if target_url.is_empty() {
@@ -388,11 +408,11 @@ fn register_otio_media_ref(
                 .and_then(|s| s.to_str())
                 .unwrap_or(clip_name.unwrap_or("<missing>"))
                 .to_string();
-            media_pool.add(make_otio_media_item(path, filename, fps, true))
+            media_pool.add(with_range(make_otio_media_item(path, filename, fps, true)))
         }
     } else if schema.starts_with("MissingReference.") {
         let name = clip_name.unwrap_or("<missing>").to_string();
-        media_pool.add(make_otio_media_item(PathBuf::new(), name, fps, true))
+        media_pool.add(with_range(make_otio_media_item(PathBuf::new(), name, fps, true)))
     } else {
         warnings.push(format!(
             "Media reference schema '{schema}' not supported — clip '{}' treated as offline",
@@ -1451,6 +1471,31 @@ mod tests {
         assert!((clips[0].source_in.to_secs_f64() - 1.0).abs() < 1e-9 && (clips[0].source_out.to_secs_f64() - 2.0).abs() < 1e-9);
         assert_eq!(clips[1].speed, 3.0);
         assert!(((clips[1].source_out - clips[1].source_in).to_secs_f64() - 3.0).abs() < 1e-9);
+    }
+
+    /// A missing file keeps what the reference says of it: its length and
+    /// start timecode, for the relink to tell it by (#2086).
+    #[test]
+    fn a_missing_files_range_is_kept_on_its_item() {
+        let json = timeline_with_track_children(
+            serde_json::json!([{
+                "OTIO_SCHEMA": "Clip.1", "name": "a001",
+                "source_range": { "OTIO_SCHEMA": "TimeRange.1",
+                    "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 86400.0 },
+                    "duration": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 24.0 } },
+                "media_reference": { "OTIO_SCHEMA": "ExternalReference.1", "target_url": "file:///nowhere/a001.mov",
+                    "available_range": { "OTIO_SCHEMA": "TimeRange.1",
+                        "start_time": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 86400.0 },
+                        "duration": { "OTIO_SCHEMA": "RationalTime.1", "rate": 24.0, "value": 240.0 } },
+                    "metadata": {} }
+            }]),
+            serde_json::json!([]),
+        );
+        let result = load_inline(&json, "missing_range");
+        let item = result.media_pool.all().next().unwrap();
+        assert!(item.offline);
+        assert!((item.duration.to_secs_f64() - 10.0).abs() < 1e-9);
+        assert_eq!(item.shot.start_timecode.as_deref(), Some("01:00:00:00"));
     }
 
     /// A freeze is played at normal speed, said so; a clip's metadata is

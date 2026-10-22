@@ -480,6 +480,15 @@ pub enum EditCommand {
         old_label: u8,
         new_label: u8,
     },
+    /// A media item pointed at another file (#2086): its path, and whether
+    /// that file was there, before and after.
+    RelinkMedia {
+        media_id: MediaId,
+        old_path: std::path::PathBuf,
+        old_offline: bool,
+        new_path: std::path::PathBuf,
+        new_offline: bool,
+    },
     RenameBin {
         old_name: String,
         new_name: String,
@@ -853,6 +862,7 @@ impl EditCommand {
             | EditCommand::SetMediaTags { .. }
             | EditCommand::SetMediaRating { .. }
             | EditCommand::SetMediaColorLabel { .. }
+            | EditCommand::RelinkMedia { .. }
             | EditCommand::RenameBin { .. }
             | EditCommand::BatchRenameMediaItems { .. } => Scope::Project,
             EditCommand::Named { edit, .. } => edit.scope(),
@@ -923,6 +933,7 @@ impl EditCommand {
             EditCommand::SetMediaTags { .. } => "Set Tags",
             EditCommand::SetMediaRating { .. } => "Set Rating",
             EditCommand::SetMediaColorLabel { .. } => "Set Color Label",
+            EditCommand::RelinkMedia { .. } => "Relink Media",
             EditCommand::RenameBin { .. } => "Rename Bin",
             EditCommand::BatchRenameMediaItems { changes } => {
                 if changes.len() == 1 { "Rename Media Item" } else { "Batch Rename Media Items" }

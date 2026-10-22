@@ -3875,6 +3875,14 @@ impl super::KlippApp {
                 self.state.show_import_report = true;
                 self.state.last_import_report = Some(report.clone());
                 self.state.offline_media_ids = self.state.media_pool.all().filter(|m| m.offline).map(|m| m.id).collect();
+                // Media it names that isn't here: the relink flow opened at
+                // once, already searching beside the imported file (#2086).
+                if !report.missing_media.is_empty() {
+                    if let Some(dir) = klipp_project::import_report::relink_search_dir(path) {
+                        self.relink_panel.request_scan(dir);
+                    }
+                    self.state.show_relink_dialog = true;
+                }
                 self.sync_media_pool_to_engine();
                 self.sync_sequence_to_engine();
                 serde_json::json!({"request_id":request_id,"report":report})
