@@ -2777,6 +2777,9 @@ pub struct AppState {
     pub automation_lane_param_menu: Option<AutomationLaneParamMenu>,
     /// Keyframe clipboard for copy/paste between clips/params
     pub keyframe_clipboard: Option<KeyframeClipboard>,
+    /// Keys copied in the Curve Editor (#2278), their times from the
+    /// first one's, to paste at the playhead on any curve.
+    pub curve_key_clipboard: Vec<klipp_core::Keyframe>,
     /// Currently selected keyframe on timeline (click to select, right-click for menu)
     pub selected_keyframe: Option<SelectedKeyframe>,
     /// The keys selected together, `selected_keyframe` the primary among
@@ -4883,6 +4886,7 @@ impl Default for AppState {
             keyframe_context_menu: None,
             automation_lane_param_menu: None,
             keyframe_clipboard: None,
+            curve_key_clipboard: Vec::new(),
             selected_keyframe: None,
             key_selection: Default::default(),
             multi_key_drag: None,

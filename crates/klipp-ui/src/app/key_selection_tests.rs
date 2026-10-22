@@ -630,3 +630,33 @@ fn a_dragged_key_snaps_to_the_playhead_and_to_frames() {
     let moved = keys(&e.state, e.clip, &pos_x).into_iter().map(|(t, _)| t).find(|t| (t - 3.13).abs() < 0.05).expect("the key near 3.13 s");
     assert!(((moved * fps) - (moved * fps).round()).abs() < 1e-6, "on a frame: {moved}");
 }
+
+/// #2278: the key tools. A key at the playhead takes the curve's value
+/// there; a selected key copied and pasted at the playhead lands there
+/// with its value.
+#[test]
+fn the_key_tools_add_a_key_at_the_playhead_and_paste_copied_keys() {
+    let (state, clip, node) = state();
+    let mut e = Editor::showing(state, clip, node, CurveParam::Video(VideoParam::PositionX));
+    let pos_x = KeyframeParamKind::Video(VideoParam::PositionX);
+    let rate = e.state.sequence().fps.rate();
+    let button = |e: &mut Editor, label: &str| -> egui::Pos2 {
+        let drawn = e.frame(Vec::new(), egui::Modifiers::NONE);
+        drawn.iter().find(|(t, _)| t == label).unwrap_or_else(|| panic!("a {label} button: {:?}", e.texts)).1
+    };
+    // A key at the playhead, 3 s: the curve holds 20 there.
+    e.state.playhead = klipp_core::Timecode::from_secs_f64(3.0, rate);
+    let add = button(&mut e, "\u{25C6}");
+    e.press(add, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    assert_eq!(keys(&e.state, e.clip, &pos_x), vec![(1.0, 10.0), (2.0, 20.0), (3.0, 20.0)]);
+    // The key at 1 s selected, copied, and pasted at 3.5 s.
+    let first = e.at(1.0, 10.0);
+    e.press(first, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    let copy = button(&mut e, "Copy");
+    e.press(copy, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    e.state.playhead = klipp_core::Timecode::from_secs_f64(3.5, rate);
+    let paste = button(&mut e, "Paste");
+    e.press(paste, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    // (A click on a key nudges its value by the pointer's rounding: #2285.)
+    assert!(keys(&e.state, e.clip, &pos_x).iter().any(|(t, v)| (t - 3.5).abs() < 1e-9 && (v - 10.0).abs() < 1e-2), "{:?}", keys(&e.state, e.clip, &pos_x));
+}

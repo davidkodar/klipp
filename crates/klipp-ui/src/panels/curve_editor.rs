@@ -32,6 +32,30 @@ pub enum CurveParam {
     Mask { track: crate::mask_tracks::MaskTrack, name: String },
 }
 
+/// The commands that put a key of `value` at `t` on `param`'s curve of
+/// `clip_id`: what a double-click on the graph does, and the key tools'
+/// key at the playhead and paste (#2278). None for a curve with no keys
+/// of its own here (speed, the camera).
+fn add_key_commands(param: &CurveParam, clip_id: klipp_core::ClipId, t: f64, v: f32) -> Vec<AppCommand> {
+    match param {
+        CurveParam::Title { object_id, param } => vec![param.add(clip_id, *object_id, t, v)],
+        CurveParam::Audio(p) => vec![AppCommand::AddAudioKeyframe { clip_id, param: *p, time_secs: t, value: v }],
+        CurveParam::Video(p) => vec![AppCommand::AddVideoKeyframe { clip_id, param: *p, time_secs: t, value: v }],
+        CurveParam::Node { path, key, .. } => {
+            let keyframe = klipp_core::keyframe::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+            serde_json::to_value(keyframe).map(|keyframe| vec![AppCommand::AddKeyAt { addr: path.clone(), key: key.clone(), keyframe }]).unwrap_or_default()
+        }
+        CurveParam::AudioEffect(key) => key
+            .split_once(':')
+            .and_then(|(i, name)| i.parse::<usize>().ok().map(|effect_index| AppCommand::AddAudioEffectKeyframe { clip_id, effect_index, param_name: name.to_string(), time_secs: t, value: v }))
+            .into_iter()
+            .collect(),
+        // A mask's key there; the shape's is the shape as it is then (#1947).
+        CurveParam::Mask { track, .. } => vec![AppCommand::AddMaskKeyframe { clip_id, node_id: track.node, mask_index: track.mask, param: track.param.clone(), time_secs: t, value: v }],
+        CurveParam::Speed | CurveParam::Camera(_) => Vec::new(),
+    }
+}
+
 /// How near, in points, a dragged key snaps to the playhead or another
 /// key (#2279).
 const SNAP_PX: f32 = 6.0;
@@ -319,6 +343,10 @@ pub struct CurveEditorPanel {
     /// A box being drawn on empty graph, where it began, and whether
     /// Shift adds what it holds to the selection (#1958).
     box_from: Option<(egui::Pos2, bool)>,
+    /// The Scale tool's time factor, in percent, and whether it scales
+    /// about the playhead (#2278).
+    scale_pct: f32,
+    scale_about_playhead: bool,
     /// Showing the dope sheet (#2240) in place of the curves.
     dope: bool,
     sheet: super::dope_sheet::Sheet,
@@ -344,6 +372,8 @@ impl Default for CurveEditorPanel {
             multi_key_time: 0.0,
             snapped_to: None,
             box_from: None,
+            scale_pct: 100.0,
+            scale_about_playhead: false,
             dope: false,
             sheet: Default::default(),
             #[cfg(test)]
@@ -650,6 +680,15 @@ impl CurveEditorPanel {
                         scope.as_ref().map(CurveScope::duration).unwrap_or(1.0),
                     );
                 }
+
+                // The shown curve's key tools (#2278).
+                if let Some(CurveScope::Clip { id, .. }) = &scope {
+                    if !matches!(self.param(), CurveParam::Speed | CurveParam::Camera(_)) {
+                        ui.add_space(4.0);
+                        ui.separator();
+                        self.key_tools(ui, state, *id, &mut cmds);
+                    }
+                }
             });
         });
 
@@ -795,59 +834,7 @@ impl CurveEditorPanel {
                         cmds.push(AppCommand::SetSequenceCameraKey { sequence_idx: state.active_sequence_idx, param: *param, time_secs: t, value: v });
                         state.selected_camera_key = Some(CameraKeyRef { param: *param, time_secs: t });
                     } else if let Some(clip_id) = clip_id {
-                        match self.param() {
-                            CurveParam::Title { object_id, param } => cmds.push(param.add(clip_id, *object_id, t, v)),
-                            CurveParam::Audio(p) => {
-                                cmds.push(AppCommand::AddAudioKeyframe {
-                                    clip_id,
-                                    param: *p,
-                                    time_secs: t,
-                                    value: v,
-                                });
-                            }
-                            CurveParam::Video(p) => {
-                                cmds.push(AppCommand::AddVideoKeyframe {
-                                    clip_id,
-                                    param: *p,
-                                    time_secs: t,
-                                    value: v,
-                                });
-                            }
-                            CurveParam::Speed => {
-                                // Speed keyframes: directly modify clip
-                                // (no dedicated AppCommand yet — add inline)
-                            }
-                            CurveParam::Node { path, key, .. } => {
-                                let keyframe = klipp_core::keyframe::Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
-                                if let Ok(keyframe) = serde_json::to_value(keyframe) {
-                                    cmds.push(AppCommand::AddKeyAt { addr: path.clone(), key: key.clone(), keyframe });
-                                }
-                            }
-                            CurveParam::AudioEffect(key) => {
-                                if let Some((idx_str, param_name)) = key.split_once(':') {
-                                    if let Ok(effect_index) = idx_str.parse::<usize>() {
-                                        cmds.push(AppCommand::AddAudioEffectKeyframe {
-                                            clip_id,
-                                            effect_index,
-                                            param_name: param_name.to_string(),
-                                            time_secs: t,
-                                            value: v,
-                                        });
-                                    }
-                                }
-                            }
-                            CurveParam::Camera(_) => {}
-                            // A mask's key there; the shape's is the shape as
-                            // it is then (#1947).
-                            CurveParam::Mask { track, .. } => cmds.push(AppCommand::AddMaskKeyframe {
-                                clip_id,
-                                node_id: track.node,
-                                mask_index: track.mask,
-                                param: track.param.clone(),
-                                time_secs: t,
-                                value: v,
-                            }),
-                        }
+                        cmds.extend(add_key_commands(self.param(), clip_id, t, v));
                     }
                 }
             }
@@ -1290,6 +1277,98 @@ impl CurveEditorPanel {
 
         // ── Border ──
         painter.rect_stroke(clip_rect, 0.0, Stroke::new(0.5_f32, theme.border));
+    }
+
+    /// The shown curve's key tools (#2278): the previous key, a key at
+    /// the playhead, the next key; the selected keys copied, and pasted
+    /// at the playhead; the selected keys scaled in time.
+    fn key_tools(&mut self, ui: &mut egui::Ui, state: &mut AppState, clip_id: klipp_core::ClipId, cmds: &mut Vec<AppCommand>) {
+        let Some(clip) = state.sequence().all_clips().find(|c| c.id == clip_id).cloned() else { return };
+        let kind = self.param_to_kind();
+        let keys = crate::key_selection::track_keys(&clip, &kind);
+        let rate = state.sequence().fps.rate();
+        let duration = clip.duration().to_secs_f64();
+        let local = (state.playhead - clip.timeline_in).to_secs_f64();
+        let at = |t: f64| klipp_core::Timecode::from_secs_f64(clip.timeline_in.to_secs_f64() + t, rate);
+        let prev = keys.iter().rev().find(|k| k.time_secs < local - 1e-6).map(|k| k.time_secs);
+        let next = keys.iter().find(|k| k.time_secs > local + 1e-6).map(|k| k.time_secs);
+        let small = |t: &str| egui::Button::new(egui::RichText::new(t).size(10.0)).small();
+        if ui.add_enabled(prev.is_some(), small("\u{25C0}")).on_hover_text("Previous key").clicked() {
+            cmds.push(AppCommand::SeekTo(at(prev.unwrap_or_default())));
+        }
+        let inside = (0.0..=duration).contains(&local);
+        if ui.add_enabled(inside, small("\u{25C6}")).on_hover_text("A key at the playhead, at the curve's value there").clicked() {
+            let value = klipp_core::keyframe::evaluate(&keys, local, self.param().range().2);
+            cmds.extend(add_key_commands(self.param(), clip_id, local, value));
+        }
+        if ui.add_enabled(next.is_some(), small("\u{25B6}")).on_hover_text("Next key").clicked() {
+            cmds.push(AppCommand::SeekTo(at(next.unwrap_or_default())));
+        }
+        // The keys selected on this curve, by time.
+        let selected: Vec<klipp_core::Keyframe> = keys
+            .iter()
+            .filter(|k| state.key_selection.holds(clip_id, &kind, k.time_secs) || state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == clip_id && sk.param_kind == kind && keys.get(sk.keyframe_index).is_some_and(|s| (s.time_secs - k.time_secs).abs() < 1e-9)))
+            .cloned()
+            .collect();
+        if ui.add_enabled(!selected.is_empty(), small("Copy")).on_hover_text("Copy the selected keys").clicked() {
+            let first = selected[0].time_secs;
+            state.curve_key_clipboard = selected.iter().map(|k| klipp_core::Keyframe { time_secs: k.time_secs - first, ..k.clone() }).collect();
+        }
+        if ui.add_enabled(!state.curve_key_clipboard.is_empty() && inside, small("Paste")).on_hover_text("Paste the copied keys at the playhead, on this curve").clicked() {
+            cmds.push(AppCommand::BeginHistoryBatch);
+            for k in &state.curve_key_clipboard {
+                let t = local + k.time_secs;
+                if t <= duration + 1e-9 {
+                    cmds.extend(add_key_commands(self.param(), clip_id, t, k.value));
+                }
+            }
+            cmds.push(AppCommand::EndHistoryBatch);
+        }
+        // The selected keys stretched or squeezed in time, about the first
+        // of them or the playhead.
+        ui.add_enabled_ui(selected.len() >= 2, |ui| {
+            ui.menu_button(egui::RichText::new("Scale\u{2026}").size(10.0), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Time");
+                    ui.add(egui::DragValue::new(&mut self.scale_pct).range(5.0..=1000.0).suffix(" %").speed(1.0));
+                });
+                ui.checkbox(&mut self.scale_about_playhead, "About the playhead (else the first key)");
+                if ui.button("Apply").clicked() {
+                    let pivot = if self.scale_about_playhead { local } else { selected[0].time_secs };
+                    let factor = (self.scale_pct / 100.0) as f64;
+                    let moves: Vec<(f64, f64)> = selected.iter().map(|k| (k.time_secs, (pivot + (k.time_secs - pivot) * factor).clamp(0.0, duration))).collect();
+                    let landed: Vec<f64> = moves.iter().map(|m| m.1).collect();
+                    let clash = landed.windows(2).any(|w| (w[1] - w[0]).abs() < 1e-6) || keys.iter().any(|k| !moves.iter().any(|m| (m.0 - k.time_secs).abs() < 1e-9) && landed.iter().any(|t| (t - k.time_secs).abs() < 1e-6));
+                    if clash {
+                        state.toast.show("Scaled that far, two keys would land on one time");
+                    } else {
+                        // Outward first when stretching, inward first when
+                        // squeezing, so no key passes over one not yet moved.
+                        let mut order = moves.clone();
+                        let away = |m: &(f64, f64)| (m.0 - pivot).abs();
+                        order.sort_by(|a, b| if factor >= 1.0 { away(b).total_cmp(&away(a)) } else { away(a).total_cmp(&away(b)) });
+                        let held = matches!(kind, KeyframeParamKind::Audio(_) | KeyframeParamKind::AudioEffect { .. });
+                        let drag_key = format!("kf:keys:{}", clip_id.0);
+                        cmds.push(AppCommand::BeginHistoryBatch);
+                        if held {
+                            cmds.push(AppCommand::BeginKeyframeDrag { key: drag_key.clone(), clip_id });
+                        }
+                        // Scaling keeps the keys' order, so each index read
+                        // from the clip as it is stays its key's.
+                        for (from, to) in order {
+                            cmds.extend(crate::key_selection::move_command(&clip, &kind, from, to, None));
+                        }
+                        if held {
+                            cmds.push(AppCommand::EndKeyframeDrag { key: drag_key, clip_id });
+                        }
+                        cmds.push(AppCommand::EndHistoryBatch);
+                        state.key_selection.keys = landed.iter().map(|t| crate::key_selection::KeyRef { param_kind: kind.clone(), time_secs: *t }).collect();
+                        state.key_selection.clip_id = Some(clip_id);
+                    }
+                    ui.close_menu();
+                }
+            });
+        });
     }
 
     /// Where a key dragged to `t` lands (#2279): on the playhead or

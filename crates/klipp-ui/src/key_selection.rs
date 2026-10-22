@@ -242,7 +242,7 @@ pub fn end_drag(state: &mut AppState) -> Vec<AppCommand> {
 
 /// The command moving the key of `kind` at `from` on `clip` to `to`, its
 /// value to `value` when given, else kept.
-fn move_command(clip: &Clip, kind: &KeyframeParamKind, from: f64, to: f64, value: Option<f32>) -> Option<AppCommand> {
+pub(crate) fn move_command(clip: &Clip, kind: &KeyframeParamKind, from: f64, to: f64, value: Option<f32>) -> Option<AppCommand> {
     let keys = track_keys(clip, kind);
     let index = keys.iter().position(|k| same_time(k.time_secs, from))?;
     let new_value = value.unwrap_or(keys[index].value);
