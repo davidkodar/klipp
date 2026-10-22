@@ -34,6 +34,8 @@ mod effect_definitions;
 mod effects_hdr_behaviour;
 #[path = "../equalize_and_huesat_share_nothing.rs"]
 mod equalize_and_huesat_share_nothing;
+#[path = "../equalize_gpu.rs"]
+mod equalize_gpu;
 #[path = "../frame_upload_count.rs"]
 mod frame_upload_count;
 #[path = "../gpu_pipelines_build.rs"]

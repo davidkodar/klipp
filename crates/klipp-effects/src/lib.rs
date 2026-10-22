@@ -46,7 +46,7 @@ pub mod node_analysis;
 mod cpu_transition;
 mod wgsl;
 pub use cpu_transition::render_transition_linear;
-pub use cpu::{apply_3d_lut, apply_3d_lut_bracketed, equalize_cdf, EQUALIZE_CDF_LEN};
+pub use cpu::{apply_3d_lut, apply_3d_lut_bracketed, equalize_cdf, equalize_cdf_of, equalize_histogram, EQUALIZE_CDF_LEN};
 pub mod color_fade;
 pub mod color_wgsl;
 pub mod colour_transform;

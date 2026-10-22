@@ -206,6 +206,8 @@ const SHADERS: &[(&str, Cover)] = &[
     ("SHADER_RADIAL_BLUR", EVERY_EFFECT),
     ("SHADER_LEVELS", EVERY_EFFECT),
     ("SHADER_EQUALIZE", EVERY_EFFECT),
+    ("SHADER_EQUALIZE_HISTOGRAM", Test("klipp-effects/tests/equalize_gpu.rs", "the_gpu_histogram_and_cdf_are_the_cpus")),
+    ("SHADER_EQUALIZE_CDF", Test("klipp-effects/tests/equalize_gpu.rs", "the_gpu_histogram_and_cdf_are_the_cpus")),
     ("SHADER_LETTERBOX", EVERY_EFFECT),
     ("SHADER_CHROMATIC_ABERRATION", EVERY_EFFECT),
     ("SHADER_ROLLING_SHUTTER", MOTION),

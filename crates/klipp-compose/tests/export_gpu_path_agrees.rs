@@ -406,6 +406,39 @@ fn a_grained_gradient_exports_its_grain_as_the_renderer_draws_it() {
     assert!(apart > planes_at[0].len() / 10, "the control: the grain is in only {apart} of the export's luma samples");
 }
 
+/// Equalize builds its histogram on the GPU in the chain (#1215): the
+/// export's GPU path draws an equalised gradient as the renderer draws it,
+/// and visibly equalised (the control).
+///
+/// Unequalised, the two are within a level everywhere. Equalising
+/// stretches the picture's levels apart, so on this small frame (its 512
+/// pixels a few to a bin) a sample a level apart before can land a bin
+/// over and come out a few levels apart: a handful of samples, bounded
+/// here, the same with the CDF built on the CPU.
+#[test]
+fn an_equalised_gradient_exports_as_the_renderer_draws_it() {
+    let gradient = clip(ClipKind::Generator(GeneratorData::LivingGradient { a: [12, 23, 32, 255], b: [120, 160, 90, 255], angle_deg: 25.0, drift_deg_per_sec: 0.0, glow: 0.0, grain: 0.0 }), 0.0, 4.0);
+    let mut luma = Vec::new();
+    for fx in [vec![], vec![BuiltinEffect::Equalize { strength: 1.0 }]] {
+        let seq = sequence(vec![vec![TestClip::of(gradient.clone()).effects(fx.clone()).build()]]);
+        let mut src = Flat::default();
+        let Some(planes) = gpu_planes(&seq, 1.0, &mut src) else {
+            assert_ne!(std::env::var("KLIPP_TEST_REQUIRE_GPU").as_deref(), Ok("1"), "the GPU path refused an equalised generator");
+            eprintln!("skipping: the GPU path refused (no usable GPU)");
+            return;
+        };
+        let want = cpu_luma(&seq, 1.0, &mut src);
+        let got = &planes[..want.len()];
+        let worst = got.iter().zip(&want).map(|(g, w)| g.abs_diff(*w)).max().unwrap_or(0);
+        let over_a_level = got.iter().zip(&want).filter(|(g, w)| g.abs_diff(**w) > 1).count();
+        let (most_off, most_samples) = if fx.is_empty() { (1, 0) } else { (4, want.len() / 50) };
+        assert!(worst <= most_off && over_a_level <= most_samples, "{fx:?}: the export's luma is up to {worst} levels from the renderer's, {over_a_level} samples over a level");
+        luma.push(got.to_vec());
+    }
+    let apart = luma[0].iter().zip(&luma[1]).filter(|(a, b)| a.abs_diff(**b) > 2).count();
+    assert!(apart > luma[0].len() / 4, "the control: equalising changed only {apart} of the export's luma samples");
+}
+
 /// A grade keyed over the shot (#891) exports the frame it is at: its
 /// exposure keyed from 0 to 2 stops, the GPU path's luma at two times is
 /// the renderer's own at each, and the two times differ, so the export

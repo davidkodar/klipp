@@ -43,11 +43,6 @@ const EXEMPT: &[(&str, &str)] = &[
     ("grade_compound", "a marker for a grade compound, which the plan runs as a compound node (#1746)"),
 ];
 
-/// A2's one named exemption: Equalize builds its histogram from a
-/// read-back, so it breaks the chain (R21). Its counts are pinned, so a
-/// GPU histogram later shows up as a change on purpose.
-const EQUALIZE: &str = "equalize";
-
 /// The patterned linear frame of `cpu_gpu_effect_parity`, with an alpha
 /// ramp across x.
 fn frame() -> Vec<f32> {
@@ -181,11 +176,9 @@ fn every_effect_node_matches_the_legacy_chain_on_the_gpu() {
         let stats = ex.last_run_chain_stats();
         let want = legacy.apply_effects(std::slice::from_ref(effect), &frame(), W, H);
         assert_eq!(bits(&got), bits(&want), "{tag} {effect:?}: native GPU against the legacy GPU chain");
-        if *tag == EQUALIZE {
-            assert_eq!((stats.cpu_nodes, stats.effect_breaks), (source_only, 1), "{tag}: the histogram's break, pinned: {stats:?}");
-        } else {
-            assert_eq!((stats.cpu_nodes, stats.flushes, stats.submits, stats.effect_breaks), (source_only, 1, 1, 0), "{tag}: one segment: {stats:?}");
-        }
+        // Every effect one segment, Equalize too since its histogram is
+        // built on the GPU (#1215; it was A2's one pinned break).
+        assert_eq!((stats.cpu_nodes, stats.flushes, stats.submits, stats.effect_breaks), (source_only, 1, 1, 0), "{tag}: one segment: {stats:?}");
     }
 }
 

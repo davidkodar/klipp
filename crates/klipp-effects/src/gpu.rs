@@ -250,6 +250,12 @@ pub struct GpuEffectsPipeline {
     radial_blur_pipeline: wgpu::ComputePipeline,
     levels_pipeline: wgpu::ComputePipeline,
     equalize_pipeline: wgpu::ComputePipeline,
+    /// Equalize's histogram and CDF, built on the GPU in the chain
+    /// (#1215): the frame's display-luma counts into `equalize_hist_buf`,
+    /// then the CDF from them into `equalize_cdf_buf`, which the map pass
+    /// reads.
+    equalize_histogram_pipeline: wgpu::ComputePipeline,
+    equalize_cdf_pipeline: wgpu::ComputePipeline,
     letterbox_pipeline: wgpu::ComputePipeline,
     chromatic_aberration_pipeline: wgpu::ComputePipeline,
     binocular_vignette_pipeline: wgpu::ComputePipeline,
@@ -285,6 +291,9 @@ pub struct GpuEffectsPipeline {
     ///
     /// 1 KiB is not worth that.
     equalize_cdf_buf: wgpu::Buffer,
+    /// Equalize's histogram, 256 counts, cleared in the encoder before
+    /// each Equalize records its count into it (#1215).
+    equalize_hist_buf: wgpu::Buffer,
     // Compute pipeline — 3D LUT (reuses huesat_bgl: input, output, params, lut storage)
     lut3d_pipeline: wgpu::ComputePipeline,
     lut3d_buf: Option<wgpu::Buffer>,
@@ -1279,6 +1288,8 @@ impl GpuEffectsPipeline {
         let posterize_pipeline = create_pipeline(&device, &huesat_pl, "posterize", SHADER_POSTERIZE);
         let cst_pipeline = create_pipeline(&device, &huesat_pl, "colour_space_transform", SHADER_CST);
         let equalize_pipeline = create_pipeline(&device, &huesat_pl, "equalize", SHADER_EQUALIZE);
+        let equalize_histogram_pipeline = create_pipeline(&device, &huesat_pl, "equalize_histogram", SHADER_EQUALIZE_HISTOGRAM);
+        let equalize_cdf_pipeline = create_pipeline(&device, &huesat_pl, "equalize_cdf", SHADER_EQUALIZE_CDF);
         let rsc_pipeline = create_pipeline(&device, &huesat_pl, "rolling_shutter", SHADER_ROLLING_SHUTTER);
         let stabilization_pipeline = create_pipeline(&device, &huesat_pl, "stabilization", SHADER_STABILIZATION);
         let vibrance_pipeline = create_pipeline(&device, &pipeline_layout, "vibrance", SHADER_VIBRANCE);
@@ -1326,7 +1337,14 @@ impl GpuEffectsPipeline {
         let equalize_cdf_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("equalize_cdf"),
             size: EQUALIZE_CDF_LEN as u64 * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        let equalize_hist_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("equalize_histogram"),
+            size: EQUALIZE_CDF_LEN as u64 * 4,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
 
@@ -1676,6 +1694,8 @@ impl GpuEffectsPipeline {
             radial_blur_pipeline,
             levels_pipeline,
             equalize_pipeline,
+            equalize_histogram_pipeline,
+            equalize_cdf_pipeline,
             letterbox_pipeline,
             chromatic_aberration_pipeline,
             binocular_vignette_pipeline,
@@ -1692,6 +1712,7 @@ impl GpuEffectsPipeline {
             apply_matte_bgl,
             huesat_lut_buf,
             equalize_cdf_buf,
+            equalize_hist_buf,
             lut3d_pipeline,
             lut3d_buf: None,
             lut3d_buf_size: 0,
@@ -6568,15 +6589,51 @@ impl GpuEffectsPipeline {
         self.download_linear_rgba_f32(final_buf, (width * height) as usize)
     }
 
+    /// Equalize's histogram and CDF of `linear` (straight RGBA, `width` ×
+    /// `height`) as the chain builds them on the GPU (#1215), read back:
+    /// for the tests that hold them to `crate::equalize_cdf`. `None` on a
+    /// lost device.
+    #[doc(hidden)]
+    pub fn equalize_histogram_and_cdf(&mut self, linear: &[f32], width: u32, height: u32) -> Option<([u32; EQUALIZE_CDF_LEN], [f32; EQUALIZE_CDF_LEN])> {
+        if self.is_device_lost() {
+            return None;
+        }
+        self.ensure_recording_buffers(width, height);
+        let frame = self.buf_a.as_ref()?;
+        self.upload(frame, 0, bytemuck::cast_slice(linear));
+        self.write_params(&EqualizeParams { width, height, strength: 1.0, _pad0: 0, luma: [self.luma_coefs[0], self.luma_coefs[1], self.luma_coefs[2], 0.0] });
+        let (hist, cdf) = (&self.equalize_hist_buf, &self.equalize_cdf_buf);
+        let bind = |a: &wgpu::Buffer, b: &wgpu::Buffer, c: &wgpu::Buffer| {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("equalize_probe"),
+                layout: &self.huesat_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: a.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: b.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: self.params_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: c.as_entire_binding() },
+                ],
+            })
+        };
+        let mut encoder = self.encoder(None);
+        encoder.clear_buffer(hist, 0, None);
+        Self::record_compute_dispatch(&mut encoder, &self.equalize_histogram_pipeline, &bind(frame, hist, cdf), (width * height).div_ceil(WORKGROUP_SIZE));
+        Self::record_compute_dispatch(&mut encoder, &self.equalize_cdf_pipeline, &bind(hist, cdf, hist), 1);
+        self.submit(encoder);
+        let counts: Vec<u32> = bytemuck::cast_slice(&self.download(hist, EQUALIZE_CDF_LEN as u64 * 4)).to_vec();
+        let ramp: Vec<f32> = bytemuck::cast_slice(&self.download(cdf, EQUALIZE_CDF_LEN as u64 * 4)).to_vec();
+        Some((counts.try_into().ok()?, ramp.try_into().ok()?))
+    }
+
     /// One break of a chain ([`Self::chain_run_effects`]): an effect, or a
     /// run of spills, the chain couldn't record, run in passes of its own
     /// on the chain buffers, on the frame in slot A (`in_a`) or B. Returns
-    /// whether the result sits in slot A. Equalize builds its histogram on
-    /// the CPU, and a run of spills too long for the slots runs unrecorded.
-    /// Any other effect is only ever recorded (the chain makes the layer
-    /// passes' buffers before it records), so one that couldn't be is
-    /// missing from the picture, and [`Self::last_effects_complete`] says
-    /// so.
+    /// whether the result sits in slot A. Equalize comes here only when
+    /// recording is refused (#1215), and builds its histogram on the CPU;
+    /// a run of spills too long for the slots runs unrecorded. Any other
+    /// effect is only ever recorded (the chain makes the layer passes'
+    /// buffers before it records), so one that couldn't be is missing from
+    /// the picture, and [`Self::last_effects_complete`] says so.
     fn run_break_pass(&mut self, part: &[BuiltinEffect], in_a: bool, width: u32, height: u32) -> bool {
         // A lost device runs none of them, so every effect is missing;
         // set before the early return, or a caller would read the last
@@ -17785,9 +17842,102 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 "
 );
 
+// Equalize's histogram (#1215), as `crate::equalize_cdf` counts it: each
+// pixel's display luma, `yw · encode(rgb)` summed in that order and
+// clamped to 0–1, in bin `floor(l × 255)`. Each workgroup counts into its
+// own bins, then adds them into the frame's; integer atomics, so the
+// counts don't depend on order.
+const SHADER_EQUALIZE_HISTOGRAM: &str = concat!(
+    "
+struct Params {
+    width: u32,
+    height: u32,
+    strength: f32,
+    _pad0: u32,
+    luma: vec4<f32>,
+}
+
+@group(0) @binding(0) var<storage, read> input: array<vec4<f32>>;
+@group(0) @binding(1) var<storage, read_write> hist: array<atomic<u32>>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+var<workgroup> local: array<atomic<u32>, 256>;
+",
+    shader_linear_helpers_wgsl!(),
+    "
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) li: u32) {
+    atomicStore(&local[li], 0u);
+    workgroupBarrier();
+    let idx = gid.x;
+    if idx < params.width * params.height {
+        let c = unpack(input[idx]);
+        let l = params.luma.x * linear_to_srgb_component(c.x)
+            + params.luma.y * linear_to_srgb_component(c.y)
+            + params.luma.z * linear_to_srgb_component(c.z);
+        // A NaN counts in bin 0, as the CPU's cast puts it.
+        var bin = 0u;
+        if l == l {
+            bin = min(u32(clamp(l, 0.0, 1.0) * 255.0), 255u);
+        }
+        atomicAdd(&local[bin], 1u);
+    }
+    workgroupBarrier();
+    let n = atomicLoad(&local[li]);
+    if n > 0u {
+        atomicAdd(&hist[li], n);
+    }
+}
+"
+);
+
+// Equalize's CDF from its histogram (#1215), `crate::equalize_cdf`'s
+// arithmetic in its order: from the first occupied bin, the share of the
+// pixels at or below each bin past it, or the identity ramp for a frame of
+// one bin. 256 bins: one thread walks them.
+const SHADER_EQUALIZE_CDF: &str = "
+struct Params {
+    width: u32,
+    height: u32,
+    strength: f32,
+    _pad0: u32,
+    luma: vec4<f32>,
+}
+
+@group(0) @binding(0) var<storage, read> hist: array<u32>;
+@group(0) @binding(1) var<storage, read_write> cdf: array<f32>;
+@group(0) @binding(2) var<uniform> params: Params;
+
+@compute @workgroup_size(1)
+fn main() {
+    let total = f32(params.width * params.height);
+    var first = 0u;
+    for (var i = 0u; i < 256u; i = i + 1u) {
+        if hist[i] > 0u {
+            first = i;
+            break;
+        }
+    }
+    var min_cum = 0u;
+    for (var i = 0u; i <= first; i = i + 1u) {
+        min_cum = min_cum + hist[i];
+    }
+    var cum = 0u;
+    for (var i = 0u; i < 256u; i = i + 1u) {
+        cum = cum + hist[i];
+        if total > f32(min_cum) {
+            let above = select(cum - min_cum, 0u, cum < min_cum);
+            cdf[i] = clamp(f32(above) / (total - f32(min_cum)), 0.0, 1.0);
+        } else {
+            cdf[i] = f32(i) / 255.0;
+        }
+    }
+}
+";
+
 // Histogram equalisation — flatten the distribution of display-encoded
-// luma, the brightness the user sees. The CDF is built on the CPU by
-// `crate::equalize_cdf`.
+// luma, the brightness the user sees. The CDF is the histogram passes'
+// (or `crate::equalize_cdf`'s, on the break path).
 const SHADER_EQUALIZE: &str = concat!(
     "
 struct Params {
@@ -19284,6 +19434,8 @@ pub fn shader_sources() -> Vec<(&'static str, &'static str)> {
         ("SHADER_RADIAL_BLUR", SHADER_RADIAL_BLUR),
         ("SHADER_LEVELS", SHADER_LEVELS),
         ("SHADER_EQUALIZE", SHADER_EQUALIZE),
+        ("SHADER_EQUALIZE_HISTOGRAM", SHADER_EQUALIZE_HISTOGRAM),
+        ("SHADER_EQUALIZE_CDF", SHADER_EQUALIZE_CDF),
         ("SHADER_LETTERBOX", SHADER_LETTERBOX),
         ("SHADER_CHROMATIC_ABERRATION", SHADER_CHROMATIC_ABERRATION),
         ("SHADER_BINOCULAR_VIGNETTE", SHADER_BINOCULAR_VIGNETTE),
