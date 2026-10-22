@@ -258,8 +258,11 @@ pub(crate) fn run_analyser_in(exe: &Path, a: &dyn crate::Analyser, item: &klipp_
     let started = Instant::now();
     let what = format!("the {} analysis", a.id());
     let job = Job { flag: ANALYSIS_FLAG, spec, input: Input::Hold, deadline: analysis_deadline(item.duration.to_secs_f64()), what: &what };
-    let reply = run::<serde_json::Value>(exe, job).unwrap_or_else(|died| Err(format!("{what} stopped in its worker ({died})")));
+    let mut reply = run::<serde_json::Value>(exe, job).unwrap_or_else(|died| Err(format!("{what} stopped in its worker ({died})")));
     tracing::debug!("{what} of {} in a worker: {:.2} s", item.filename, started.elapsed().as_secs_f64());
+    if let Some(used) = reply.as_mut().ok().and_then(|v| v.as_object_mut()).and_then(|o| o.remove(PROVIDERS_KEY)) {
+        crate::providers::record_json(&used);
+    }
     reply
 }
 
@@ -293,8 +296,21 @@ fn analysis_main(spec: &str) -> i32 {
         let a = crate::native_analysers().into_iter().find(|a| a.id() == job.analyser).ok_or_else(|| format!("no analyser {} in this build", job.analyser))?;
         a.run(&job.item, &crate::AnalysisCtx { ffmpeg: job.ffmpeg })
     })();
+    // What the worker's models ran on goes back with the result, for the
+    // editor to show (#2250).
+    let reply = reply.map(|mut v| {
+        let used = crate::providers::to_json();
+        if let (Some(o), false) = (v.as_object_mut(), used.is_empty()) {
+            o.insert(PROVIDERS_KEY.into(), serde_json::Value::Array(used));
+        }
+        v
+    });
     answer(reply)
 }
+
+/// The key a worker's reply carries its models' providers under, taken
+/// out before the result is kept.
+const PROVIDERS_KEY: &str = "_execution_providers";
 
 #[cfg(all(test, unix))]
 mod tests {

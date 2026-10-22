@@ -48,12 +48,9 @@ mod real {
                 .map_err(|e| format!("set optimisation: {e}"))?
                 .with_intra_threads(crate::ppocr::SESSION_THREADS)
                 .map_err(|e| format!("set threads: {e}"))?;
-            #[cfg(feature = "cuda")]
-            {
-                builder = builder
-                    .with_execution_providers([ort::execution_providers::CUDAExecutionProvider::default().build()])
-                    .map_err(|e| format!("register CUDA EP: {e}"))?;
-            }
+            // On the GPU where it loads, what it got recorded (#2250).
+            let name = model.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            builder = crate::provider::on_device(builder, klipp_ml::DevicePreference::GpuPreferCpu, &name)?;
             let session = builder.commit_from_file(model).map_err(|e| format!("load {}: {e}", model.display()))?;
             Ok(Self { session })
         }

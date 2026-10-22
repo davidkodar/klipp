@@ -23,11 +23,11 @@ default = ["transcript", "framing", "ocr", "subject_matte", "audio_role", "visua
 transcript = ["dep:whisper-rs", "dep:klipp-ml"]
 # The framing analyser: RF-DETR through ONNX Runtime (`load-dynamic`:
 # the library is found at run time, never downloaded at build time).
-framing = ["dep:klipp-ml-ort", "klipp-ml-ort/ort", "dep:klipp-ml"]
-ocr = ["dep:klipp-ml-ort", "klipp-ml-ort/ort", "dep:klipp-ml"]
+framing = ["dep:klipp-ml-ort", "klipp-ml-ort/ort", "dep:klipp-ml", "ort-models"]
+ocr = ["dep:klipp-ml-ort", "klipp-ml-ort/ort", "dep:klipp-ml", "ort-models"]
 # The subject matte pass (#239): a segmentation model over every frame
 # of a range, kept as a matte sequence an ExternalMatte reads.
-subject_matte = ["dep:klipp-ml-ort", "klipp-ml-ort/ort", "dep:klipp-ml", "dep:klipp-nodes"]
+subject_matte = ["dep:klipp-ml-ort", "klipp-ml-ort/ort", "dep:klipp-ml", "dep:klipp-nodes", "ort-models"]
 # NVIDIA acceleration for the framing and screen-text models through
 # ONNX Runtime's CUDA provider; needs a GPU build of libonnxruntime
 # with CUDA 12 and cuDNN 9 on the machine at run time, else the
@@ -36,6 +36,9 @@ subject_matte = ["dep:klipp-ml-ort", "klipp-ml-ort/ort", "dep:klipp-ml", "dep:kl
 audio_role = ["dep:klipp-ml-candle", "klipp-ml-candle/candle", "dep:klipp-ml"]
 # What is in the picture (#2212): CLIP in candle, pure Rust.
 visual = ["dep:klipp-ml-candle", "klipp-ml-candle/candle", "dep:klipp-ml"]
+# Any of the ONNX Runtime analysers: their models' providers are
+# reported (#2250).
+ort-models = ["dep:klipp-ml-ort", "klipp-ml-ort/ort"]
 cuda = ["klipp-ml-ort/cuda"]
 
 [target.'cfg(unix)'.dependencies]

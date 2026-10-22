@@ -765,6 +765,9 @@ fn inference_device_label() -> String {
         RuntimeStatus::GpuVendorUnsupported(v) => {
             format!("CPU ({} GPU not yet supported)", v.display_label())
         }
+        RuntimeStatus::GpuRuntimeCpuOnly(v) => {
+            format!("CPU ({} detected, onnxruntime is a CPU-only build)", v.display_label())
+        }
         _ => "CPU".into(),
     }
 }

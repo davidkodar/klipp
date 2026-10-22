@@ -56,11 +56,15 @@ pub struct Status {
     /// What it made: the matte sequence's folder.
     #[serde(default)]
     pub artifact: Option<String>,
+    /// What each model the analysis opened runs on, a line each: "on
+    /// CPU" says why, so a GPU left unused shows (#2250).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub execution_providers: Vec<String>,
 }
 
 impl Status {
     fn new(item: &MediaItem, state: State, kind: &'static str) -> Self {
-        Status { media_id: item.id.0.to_string(), filename: item.filename.clone(), state, done: Vec::new(), failed: Vec::new(), current: None, current_for_secs: None, current_since: None, kind, progress: None, artifact: None }
+        Status { media_id: item.id.0.to_string(), filename: item.filename.clone(), state, done: Vec::new(), failed: Vec::new(), current: None, current_for_secs: None, current_since: None, kind, progress: None, artifact: None, execution_providers: Vec::new() }
     }
 }
 
@@ -230,7 +234,16 @@ fn run_all(item: &MediaItem, ctx: &AnalysisCtx, force_transcript: bool) -> (Vec<
         }
         crate::hold::wait();
         let t = std::time::Instant::now();
-        match crate::worker::run_analyser(a.as_ref(), item, ctx) {
+        let run = crate::worker::run_analyser(a.as_ref(), item, ctx);
+        let used = crate::providers::lines();
+        if !used.is_empty() {
+            if let Ok(mut s) = service().lock() {
+                if let Some(st) = s.statuses.get_mut(&item.id) {
+                    st.execution_providers = used;
+                }
+            }
+        }
+        match run {
             Ok(v) => match crate::store::save(&key, a.id(), a.schema_version(), &v) {
                 Ok(()) => {
                     tracing::info!("analysis {} of {} in {:.1} s", a.id(), item.filename, t.elapsed().as_secs_f64());

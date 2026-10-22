@@ -53,6 +53,7 @@ pub mod kokoro;
 pub mod postprocess;
 pub mod ppocr;
 pub mod preprocess;
+pub mod provider;
 pub mod rf_detr_seg;
 pub mod yunet;
 pub mod runtime_resolve;

@@ -506,6 +506,9 @@ pub(crate) fn respond(
                 "speech": klipp_analysis::transcript::installed_model().map(|(id, _)| id),
                 "detection": klipp_analysis::framing::model_path().map(|(id, _)| id),
             });
+            // What each model opened runs on; a line on the CPU says why,
+            // a GPU left unused among them (#2250).
+            reply["execution_providers"] = json!(klipp_analysis::providers::lines());
             reply["note"] = json!("current is the analyser at work and current_for_secs how long it has been; a transcript takes about a third of the file's length");
             Ok(reply)
         }
