@@ -39,9 +39,12 @@ fn inspector_scope_banner(ui: &mut egui::Ui, theme: &KlippTheme, scope: &str, de
         .inner_margin(egui::Margin::symmetric(8.0, 5.0))
         .outer_margin(egui::Margin::symmetric(0.0, 4.0))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
+            // Wrapped, so a narrow column takes it on more lines rather
+            // than widening to fit it and pushing every row after it off
+            // the edge.
+            ui.horizontal_wrapped(|ui| {
                 ui.label(egui::RichText::new(scope).size(10.0).strong().color(theme.accent));
-                ui.label(egui::RichText::new(detail).size(10.0).color(theme.text_secondary));
+                ui.add(egui::Label::new(egui::RichText::new(detail).size(10.0).color(theme.text_secondary)).wrap());
             });
         });
 }
@@ -8487,7 +8490,7 @@ fn show_clip_name_row(
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Name").size(11.0).color(theme.text_secondary));
-        let field = ui.add(egui::TextEdit::singleline(buf).id(field_id).hint_text("The media's name").desired_width(ui.available_width() - 4.0));
+        let field = ui.add(egui::TextEdit::singleline(buf).id(field_id).hint_text("The media's name").desired_width(f32::INFINITY));
         if field.lost_focus() && buf.trim() != clip.name.as_deref().unwrap_or("").trim() {
             cmds.push(AppCommand::RenameClips { clip_ids: targets.to_vec(), name: Some(buf.clone()) });
         }
@@ -8909,3 +8912,80 @@ mod title_row_style_tests {
     }
 }
 
+/// The Inspector fits its column at every width it can be given: nothing
+/// it draws runs past the column's right edge, where it would be cut off
+/// (a long line that won't wrap widened the whole column, and every
+/// right-aligned row after it went off the edge).
+#[cfg(test)]
+mod fits_its_column_tests {
+    use super::*;
+    use crate::layout_state::InspectorTab;
+
+    /// The right-most point drawn by one frame of the Inspector in a
+    /// column `width` wide, on `tab`, with `clip` selected.
+    fn rightmost(width: f32, clip: klipp_timeline::Clip, tab: InspectorTab) -> (f32, f32, Vec<String>) {
+        let mut state = AppState::default();
+        let v = state.sequences[0].tracks.iter().position(|t| t.kind == klipp_timeline::TrackKind::Video).unwrap();
+        state.selected_clip = Some(clip.id);
+        state.sequences[0].tracks[v].clips.push(clip);
+        let prefs = crate::prefs::Preferences::default();
+        let ctx = egui::Context::default();
+        crate::icons::install(&ctx);
+        let mut panel = NewInspectorPanel::default();
+        let mut right = 0.0_f32;
+        let mut edge = 0.0_f32;
+        let mut over = Vec::new();
+        // Twice: the first frame settles the layout's memory.
+        for _ in 0..2 {
+            let mut active = tab;
+            let out = ctx.run(egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 1600.0))), ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::none()).show(ctx, |ui| {
+                    edge = ui.max_rect().right();
+                    let _ = panel.show(ui, &state, &prefs, &KlippTheme::default(), &mut active);
+                });
+            });
+            right = out.shapes.iter().map(|s| s.shape.visual_bounding_rect()).filter(|r| r.is_finite()).map(|r| r.right()).fold(0.0, f32::max);
+            // What runs over, by its text where it has one.
+            over = out.shapes.iter().filter(|s| s.shape.visual_bounding_rect().right() > edge + 1.0).map(|s| match &s.shape {
+                egui::Shape::Text(t) => format!("text {:?} to {:.0}", t.galley.text(), s.shape.visual_bounding_rect().right()),
+                other => format!("{} to {:.0}", match other { egui::Shape::Rect(_) => "rect", egui::Shape::LineSegment { points, .. } => return format!("line {points:?}"), egui::Shape::Path(_) => "path", _ => "shape" }, s.shape.visual_bounding_rect().right()),
+            }).collect();
+        }
+        (right, edge, over)
+    }
+
+    #[test]
+    fn nothing_runs_past_the_column_at_its_narrowest() {
+        let tc = |s: f64| klipp_core::Timecode::from_secs_f64(s, 24);
+        let td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Hello".into(), ..Default::default() });
+        let title = klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(tc(0.0), tc(4.0)) };
+        let media = klipp_timeline::Clip::media(klipp_core::MediaId::new(), tc(0.0), tc(4.0), tc(0.0), tc(4.0));
+        // With an effect on it, and a title of several layers, as the
+        // Inspector most often shows them.
+        let with_effect = klipp_timeline::test_clip::TestClip::of(media.clone()).effect(klipp_effects::BuiltinEffect::GaussianBlur { radius: 3.0 }).build();
+        let layered = {
+            let mut td = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "A long line of title text".into(), ..Default::default() });
+            let mut more = klipp_timeline::TitleData::single_text(klipp_timeline::TextBox { text: "Second".into(), ..Default::default() });
+            // Its own id, as a second layer has.
+            more.objects[0].id = klipp_timeline::TitleObjectId(td.objects.iter().map(|o| o.id.0).max().unwrap_or(0) + 1);
+            td.objects.append(&mut more.objects);
+            klipp_timeline::Clip { kind: klipp_timeline::ClipKind::Title(td), ..klipp_timeline::Clip::gap(tc(0.0), tc(4.0)) }
+        };
+        for width in [crate::theme::INSPECTOR_MIN_W, 300.0, 360.0] {
+            for tab in [InspectorTab::Title, InspectorTab::Video, InspectorTab::Effects, InspectorTab::Info] {
+                let (right, edge, over) = rightmost(width, title.clone(), tab);
+                assert!(right <= edge + 1.0, "a title clip's {tab:?} tab at {width}: drawn to {right}, the column ends at {edge}: {over:#?}");
+            }
+            for tab in [InspectorTab::Video, InspectorTab::Audio, InspectorTab::Color, InspectorTab::Effects, InspectorTab::Info] {
+                for (what, clip) in [("media", &media), ("effected", &with_effect)] {
+                    let (right, edge, over) = rightmost(width, clip.clone(), tab);
+                    assert!(right <= edge + 1.0, "a {what} clip's {tab:?} tab at {width}: drawn to {right}, the column ends at {edge}: {over:#?}");
+                }
+            }
+            for tab in [InspectorTab::Title, InspectorTab::Video] {
+                let (right, edge, over) = rightmost(width, layered.clone(), tab);
+                assert!(right <= edge + 1.0, "a layered title's {tab:?} tab at {width}: drawn to {right}, the column ends at {edge}: {over:#?}");
+            }
+        }
+    }
+}
