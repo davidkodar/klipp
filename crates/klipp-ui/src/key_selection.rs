@@ -245,16 +245,38 @@ pub fn end_drag(state: &mut AppState) -> Vec<AppCommand> {
 pub(crate) fn move_command(clip: &Clip, kind: &KeyframeParamKind, from: f64, to: f64, value: Option<f32>) -> Option<AppCommand> {
     let keys = track_keys(clip, kind);
     let index = keys.iter().position(|k| same_time(k.time_secs, from))?;
-    let new_value = value.unwrap_or(keys[index].value);
-    let clip_id = clip.id;
-    Some(match kind {
+    Some(move_at(clip.id, kind, index, from, to, value.unwrap_or(keys[index].value)))
+}
+
+/// The commands moving several keys of `kind` on `clip`, each `(from,
+/// to, value)` in the order given (its value kept where `None`): a key
+/// named by its index is named as the moves before it left the keys, so
+/// a key that passes another is still the one meant.
+pub(crate) fn move_commands(clip: &Clip, kind: &KeyframeParamKind, moves: &[(f64, f64, Option<f32>)]) -> Vec<AppCommand> {
+    let mut keys = track_keys(clip, kind);
+    let mut out = Vec::new();
+    for &(from, to, value) in moves {
+        let Some(index) = keys.iter().position(|k| same_time(k.time_secs, from)) else { continue };
+        let new_value = value.unwrap_or(keys[index].value);
+        out.push(move_at(clip.id, kind, index, from, to, new_value));
+        keys[index].time_secs = to;
+        keys[index].value = new_value;
+        keys.sort_by(|a, b| a.time_secs.total_cmp(&b.time_secs));
+    }
+    out
+}
+
+/// The command moving the key of `kind` at `index` (its time `from`) to
+/// `to` with `new_value`.
+fn move_at(clip_id: klipp_core::ClipId, kind: &KeyframeParamKind, index: usize, from: f64, to: f64, new_value: f32) -> AppCommand {
+    match kind {
         KeyframeParamKind::Video(param) => AppCommand::MoveVideoKeyframe { clip_id, param: *param, index, new_time_secs: to, new_value },
         KeyframeParamKind::Audio(param) => AppCommand::MoveAudioKeyframe { clip_id, param: *param, index, new_time_secs: to, new_value },
         KeyframeParamKind::AudioEffect { effect_index, param_name } => AppCommand::MoveAudioEffectKeyframe { clip_id, effect_index: *effect_index, param_name: param_name.clone(), keyframe_index: index, new_time_secs: to, new_value },
         KeyframeParamKind::Title { object_id, param } => param.move_keyframe(clip_id, *object_id, index, to, new_value),
         KeyframeParamKind::Node { path, key } => AppCommand::MoveKeyAt { addr: path.clone(), key: key.clone(), time_secs: from, new_time_secs: to, value: new_value },
         KeyframeParamKind::Mask(track) => AppCommand::MoveMaskKeyframe { clip_id, node_id: track.node, mask_index: track.mask, param: track.param.clone(), time_secs: from, new_time_secs: to, value: (!track.is_shape()).then_some(new_value) },
-    })
+    }
 }
 
 /// The keys a key menu opened on `menu`'s key acts on: every selected key

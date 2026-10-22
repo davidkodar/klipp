@@ -393,6 +393,9 @@ pub struct CurveEditorPanel {
     /// about the playhead (#2278).
     scale_pct: f32,
     scale_about_playhead: bool,
+    /// The selected keys' time and value as being typed (#2272).
+    time_entry: String,
+    value_entry: String,
     /// Showing the dope sheet (#2240) in place of the curves.
     dope: bool,
     sheet: super::dope_sheet::Sheet,
@@ -423,6 +426,8 @@ impl Default for CurveEditorPanel {
             box_from: None,
             scale_pct: 100.0,
             scale_about_playhead: false,
+            time_entry: String::new(),
+            value_entry: String::new(),
             dope: false,
             sheet: Default::default(),
             #[cfg(test)]
@@ -871,6 +876,9 @@ impl CurveEditorPanel {
                     if !matches!(self.param(), CurveParam::Speed | CurveParam::Camera(_)) {
                         ui.add_space(4.0);
                         ui.separator();
+                        if self.key_entry(ui, state, *id, &mut cmds) {
+                            ui.separator();
+                        }
                         self.key_tools(ui, state, *id, &mut cmds);
                     }
                 }
@@ -1487,6 +1495,182 @@ impl CurveEditorPanel {
         painter.rect_stroke(clip_rect, 0.0, Stroke::new(0.5_f32, theme.border));
     }
 
+    /// The selected keys' exact time and value, typed (#2272), and their
+    /// interpolation and handle kind. One key's time reads as the
+    /// sequence's timecode (its frame on hover); a timecode or frame typed
+    /// puts it there, and `+`/`-` with an amount moves every selected key
+    /// by it. A number typed as the value sets every selected key's; with
+    /// several selected, `+`/`-` with an amount moves them all by it.
+    /// Each edit is one step. The inspector's value fields are the other
+    /// way in: they key the value at the playhead. Shown only while a key
+    /// is selected; whether it was.
+    fn key_entry(&mut self, ui: &mut egui::Ui, state: &mut AppState, clip_id: klipp_core::ClipId, cmds: &mut Vec<AppCommand>) -> bool {
+        let Some(clip) = state.sequence().all_clips().find(|c| c.id == clip_id).cloned() else { return false };
+        let kind = self.param_to_kind();
+        let keys = crate::key_selection::track_keys(&clip, &kind);
+        let selected = selected_keys(state, clip_id, &kind, &keys);
+        if selected.is_empty() {
+            return false;
+        }
+        let tc = state.timecode_display();
+        let start = clip.timeline_in.to_secs_f64();
+        let duration = clip.duration().to_secs_f64();
+        let fps = state.sequence().fps.as_f64();
+        let one = (selected.len() == 1).then(|| selected[0].clone());
+        let field = |ui: &mut egui::Ui, text: &mut String, shown: String, hint: &str, enabled: bool, name: &str| {
+            let id = ui.make_persistent_id(name);
+            if !ui.memory(|m| m.has_focus(id)) {
+                *text = shown;
+            }
+            ui.add_enabled(enabled, egui::TextEdit::singleline(text).id(id).desired_width(68.0).hint_text(hint).font(egui::TextStyle::Small))
+        };
+        let entered = |ui: &egui::Ui, r: &egui::Response| r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let shown = one.as_ref().map(|k| tc.position_secs(start + k.time_secs)).unwrap_or_default();
+        let mut time_entry = std::mem::take(&mut self.time_entry);
+        let r = field(ui, &mut time_entry, shown, if selected.len() > 1 { "+/- to move" } else { "time" }, !selected.is_empty(), "curve_key_time");
+        let typed = entered(ui, &r);
+        match &one {
+            Some(k) => r.on_hover_text(format!("Frame {} of the clip. Type a timecode or frame, or + or - and an amount", (k.time_secs * fps).round() as i64)),
+            None => r.on_hover_text("Type + or - and an amount to move the selected keys"),
+        };
+        if typed {
+            let entry = time_entry.trim().replace('\u{2212}', "-");
+            let offset = |rest: &str| crate::panels::transport::parse_timecode_input_pub(rest, tc).map(|t| t.to_secs_f64());
+            let moves: Option<Vec<(f64, f64)>> = match (entry.strip_prefix('+'), entry.strip_prefix('-')) {
+                (Some(rest), _) => offset(rest).map(|d| selected.iter().map(|k| (k.time_secs, k.time_secs + d)).collect()),
+                (_, Some(rest)) => offset(rest).map(|d| selected.iter().map(|k| (k.time_secs, k.time_secs - d)).collect()),
+                _ => match &one {
+                    Some(k) => crate::panels::transport::parse_timecode_input_pub(&entry, tc).map(|t| vec![(k.time_secs, t.to_secs_f64() - start)]),
+                    None => {
+                        state.toast.show("Several keys move by an amount: type + or - before it");
+                        None
+                    }
+                },
+            };
+            match moves {
+                None if !entry.is_empty() => state.toast.show(format!("{entry:?} isn't a time")),
+                None => {}
+                Some(moves) => self.move_keys(state, &clip, &kind, &keys, moves, duration, cmds),
+            }
+        }
+        self.time_entry = time_entry;
+
+        let shown = match &one {
+            Some(k) => format!("{:.3}", k.value).trim_end_matches('0').trim_end_matches('.').to_string(),
+            None => String::new(),
+        };
+        let mut value_entry = std::mem::take(&mut self.value_entry);
+        let r = field(ui, &mut value_entry, shown, if selected.len() > 1 { "a value, or +/-" } else { "value" }, !selected.is_empty(), "curve_key_value");
+        if entered(ui, &r) {
+            let entry = value_entry.trim().replace('\u{2212}', "-");
+            let several = selected.len() > 1;
+            let new: Option<Vec<f32>> = match (entry.strip_prefix('+'), entry.strip_prefix('-')) {
+                (Some(rest), _) => rest.trim().parse::<f32>().ok().map(|d| selected.iter().map(|k| k.value + d).collect()),
+                (_, Some(rest)) if several => rest.trim().parse::<f32>().ok().map(|d| selected.iter().map(|k| k.value - d).collect()),
+                _ => entry.parse::<f32>().ok().map(|v| vec![v; selected.len()]),
+            };
+            match new {
+                Some(values) => {
+                    let (lo, hi, _) = self.param().range();
+                    let moves: Vec<(f64, f64, Option<f32>)> = selected.iter().zip(values).map(|(k, v)| (k.time_secs, k.time_secs, Some(v.clamp(lo.min(hi), hi.max(lo))))).collect();
+                    held_step(&kind, clip_id, cmds, crate::key_selection::move_commands(&clip, &kind, &moves));
+                }
+                None if !entry.is_empty() => state.toast.show(format!("{entry:?} isn't a number")),
+                None => {}
+            }
+        }
+        self.value_entry = value_entry;
+
+        // The selected keys' interpolation and handle kind, every one of them.
+        let menus: Vec<crate::state::KeyframeContextMenu> = selected
+            .iter()
+            .filter_map(|k| keys.iter().position(|kf| (kf.time_secs - k.time_secs).abs() < 1e-9))
+            .map(|keyframe_index| crate::state::KeyframeContextMenu { clip_id, param_kind: kind.clone(), keyframe_index, screen_pos: egui::Pos2::ZERO })
+            .collect();
+        let masked = matches!(kind, KeyframeParamKind::Mask(_));
+        ui.add_enabled_ui(!menus.is_empty(), |ui| {
+            ui.menu_button(egui::RichText::new("Curve \u{25BE}").size(10.0), |ui| {
+                use klipp_core::Interpolation as I;
+                let current = one.as_ref().map(|k| k.interpolation);
+                let mut pick = None;
+                for (label, i) in [("Linear", I::Linear), ("Bezier", I::Bezier), ("Step (Hold)", I::Step)] {
+                    if ui.selectable_label(current == Some(i), label).clicked() {
+                        pick = Some(i);
+                    }
+                }
+                if !masked {
+                    for (family, eases) in klipp_core::keyframe::Ease::PRESETS {
+                        ui.menu_button(family, |ui| {
+                            for (ease, label) in eases.into_iter().zip(["In", "Out", "In-Out"]) {
+                                if ui.selectable_label(current == Some(I::Eased(ease)), label).clicked() {
+                                    pick = Some(I::Eased(ease));
+                                }
+                            }
+                        });
+                    }
+                }
+                if let Some(i) = pick {
+                    cmds.push(AppCommand::BeginHistoryBatch);
+                    for m in &menus {
+                        cmds.extend(crate::panels::timeline::key_interpolation_commands(state, m, i));
+                    }
+                    cmds.push(AppCommand::EndHistoryBatch);
+                    ui.close_menu();
+                }
+            });
+            if !masked {
+                ui.menu_button(egui::RichText::new("Handles \u{25BE}").size(10.0), |ui| {
+                    let current = one.as_ref().map(|k| k.handles);
+                    for (handles, label) in klipp_core::Handles::ALL {
+                        if ui.selectable_label(current == Some(handles), label).clicked() {
+                            cmds.push(AppCommand::BeginHistoryBatch);
+                            for m in &menus {
+                                cmds.extend(crate::panels::timeline::key_handles_commands(state, m, handles));
+                            }
+                            cmds.push(AppCommand::EndHistoryBatch);
+                            ui.close_menu();
+                        }
+                    }
+                });
+            }
+        });
+        true
+    }
+
+    /// The selected keys moved in time, each `(from, to)`, as one step:
+    /// refused with a word when one would leave the clip or land on
+    /// another key's time; else moved in an order that never puts one on
+    /// a key not yet moved, and the selection follows them.
+    #[allow(clippy::too_many_arguments)]
+    fn move_keys(&mut self, state: &mut AppState, clip: &klipp_timeline::Clip, kind: &KeyframeParamKind, keys: &[Keyframe], mut moves: Vec<(f64, f64)>, duration: f64, cmds: &mut Vec<AppCommand>) {
+        let landed: Vec<f64> = moves.iter().map(|m| m.1).collect();
+        if landed.iter().any(|t| *t < -1e-9 || *t > duration + 1e-9) {
+            state.toast.show("That would put a key outside the clip");
+            return;
+        }
+        let mut sorted = landed.clone();
+        sorted.sort_by(f64::total_cmp);
+        let staying: Vec<f64> = keys.iter().map(|k| k.time_secs).filter(|t| !moves.iter().any(|m| (m.0 - t).abs() < 1e-9)).collect();
+        if sorted.windows(2).any(|w| (w[1] - w[0]).abs() < 1e-6) || staying.iter().any(|k| landed.iter().any(|t| (t - k).abs() < 1e-6)) {
+            state.toast.show("Two keys would land on one time");
+            return;
+        }
+        // Later first when moving later, earlier first when moving earlier.
+        let later = moves.first().is_some_and(|m| m.1 > m.0);
+        moves.sort_by(|a, b| if later { b.0.total_cmp(&a.0) } else { a.0.total_cmp(&b.0) });
+        let moves: Vec<(f64, f64, Option<f32>)> = moves.into_iter().map(|(from, to)| (from, to, None)).collect();
+        held_step(kind, clip.id, cmds, crate::key_selection::move_commands(clip, kind, &moves));
+        state.key_selection.keys = landed.iter().map(|t| crate::key_selection::KeyRef { param_kind: kind.clone(), time_secs: *t }).collect();
+        state.key_selection.clip_id = Some(clip.id);
+        if let Some(sk) = state.selected_keyframe.as_mut().filter(|sk| sk.clip_id == clip.id && sk.param_kind == *kind) {
+            let mut after: Vec<f64> = staying.iter().chain(landed.iter()).copied().collect();
+            after.sort_by(f64::total_cmp);
+            if let Some(i) = landed.first().and_then(|t| after.iter().position(|a| (a - t).abs() < 1e-9)) {
+                sk.keyframe_index = i;
+            }
+        }
+    }
+
     /// The shown curve's key tools (#2278): the previous key, a key at
     /// the playhead, the next key; the selected keys copied, and pasted
     /// at the playhead; the selected keys scaled in time.
@@ -1512,12 +1696,7 @@ impl CurveEditorPanel {
         if ui.add_enabled(next.is_some(), small("\u{25B6}")).on_hover_text("Next key").clicked() {
             cmds.push(AppCommand::SeekTo(at(next.unwrap_or_default())));
         }
-        // The keys selected on this curve, by time.
-        let selected: Vec<klipp_core::Keyframe> = keys
-            .iter()
-            .filter(|k| state.key_selection.holds(clip_id, &kind, k.time_secs) || state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == clip_id && sk.param_kind == kind && keys.get(sk.keyframe_index).is_some_and(|s| (s.time_secs - k.time_secs).abs() < 1e-9)))
-            .cloned()
-            .collect();
+        let selected = selected_keys(state, clip_id, &kind, &keys);
         if ui.add_enabled(!selected.is_empty(), small("Copy")).on_hover_text("Copy the selected keys").clicked() {
             let first = selected[0].time_secs;
             state.curve_key_clipboard = selected.iter().map(|k| klipp_core::Keyframe { time_secs: k.time_secs - first, ..k.clone() }).collect();
@@ -2346,6 +2525,34 @@ fn dragged_handles(kf: &Keyframe, is_out: bool, to: (f64, f32)) -> (Option<(f64,
             if is_out { (Some(other), Some(to), Some(Handles::Aligned)) } else { (Some(to), Some(other), Some(Handles::Aligned)) }
         }
     }
+}
+
+/// The keys of `kind` selected on `clip_id`'s curve, by time: those the
+/// key selection holds, and the one key selected.
+fn selected_keys(state: &AppState, clip_id: klipp_core::ClipId, kind: &KeyframeParamKind, keys: &[Keyframe]) -> Vec<Keyframe> {
+    keys.iter()
+        .filter(|k| state.key_selection.holds(clip_id, kind, k.time_secs) || state.selected_keyframe.as_ref().is_some_and(|sk| sk.clip_id == clip_id && sk.param_kind == *kind && keys.get(sk.keyframe_index).is_some_and(|s| (s.time_secs - k.time_secs).abs() < 1e-9)))
+        .cloned()
+        .collect()
+}
+
+/// `edit` as one step: in a history batch, and for a sound lane, whose
+/// key writes record no step of their own, held as a key drag is.
+fn held_step(kind: &KeyframeParamKind, clip_id: klipp_core::ClipId, cmds: &mut Vec<AppCommand>, edit: Vec<AppCommand>) {
+    if edit.is_empty() {
+        return;
+    }
+    let held = matches!(kind, KeyframeParamKind::Audio(_) | KeyframeParamKind::AudioEffect { .. });
+    let key = format!("kf:keys:{}", clip_id.0);
+    cmds.push(AppCommand::BeginHistoryBatch);
+    if held {
+        cmds.push(AppCommand::BeginKeyframeDrag { key: key.clone(), clip_id });
+    }
+    cmds.extend(edit);
+    if held {
+        cmds.push(AppCommand::EndKeyframeDrag { key, clip_id });
+    }
+    cmds.push(AppCommand::EndHistoryBatch);
 }
 
 /// The history drag a clip lane's key drag is held under.
