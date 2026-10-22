@@ -256,6 +256,9 @@ pub struct TrackJson {
     /// A subtitle track's caption style (#70).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caption_style: Option<klipp_timeline::CaptionStyle>,
+    /// A subtitle track's language, BCP 47 (#2223).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
     /// Imported subtitle source, relative to the project when possible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_file: Option<String>,
@@ -1197,6 +1200,7 @@ mod tests {
                 source_patch: false,
                 source_file: None,
                 caption_style: None,
+                language: None,
                 custom_height: None,
                 colour_label: 0,
                 channel_waveforms: false,
@@ -1248,6 +1252,7 @@ mod tests {
             source_patch: false,
             source_file: None,
             caption_style: None,
+            language: None,
             custom_height: None,
             colour_label: 0,
             channel_waveforms: false,
@@ -1286,6 +1291,7 @@ mod tests {
             source_patch: false,
             source_file: None,
             caption_style: None,
+            language: None,
             custom_height: None,
             colour_label: 0,
             channel_waveforms: false,

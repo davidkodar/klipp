@@ -124,7 +124,12 @@ frames.
    reads the state at once, its first line in words; a finished render
    stays readable for an hour even after the person clears it from the
    render queue. `klipp_status` also shows active work.
-   `klipp_export_subtitles` writes caption sidecars.
+   `klipp_export_subtitles` writes caption sidecars, tagged with
+   each subtitle track's language; with several subtitle tracks (a
+   translation beside its source) it writes a file each,
+   `name.<language>.ext`, listed in `files`.
+   `klipp_import_subtitles` sets the new track's language from the
+   file where its format names one (`language` in the reply).
 8. **Save.** `klipp_rename_sequence` so the timeline is called what
    the piece is, then `klipp_save_project` with a path the first time,
    without one after. The user carries on from your project, and an unsaved one

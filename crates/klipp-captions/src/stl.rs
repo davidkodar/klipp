@@ -65,6 +65,17 @@ const LANGUAGES: &[(&str, u8)] = &[
     ("sr", 0x24), ("sk", 0x25), ("sl", 0x26), ("fi", 0x27), ("sv", 0x28), ("tr", 0x29),
 ];
 
+/// The language an EBU-STL file's general subject block names in its
+/// language code (LC), as an ISO 639-1 tag; `None` when it isn't an STL
+/// file or the code is unset or not one this writes (#2223).
+pub fn stl_language(bytes: &[u8]) -> Option<String> {
+    if bytes.len() < GSI_LEN || !bytes[3..6].eq_ignore_ascii_case(b"STL") {
+        return None;
+    }
+    let lc = u8::from_str_radix(std::str::from_utf8(&bytes[14..16]).ok()?.trim(), 16).ok().filter(|lc| *lc != 0)?;
+    LANGUAGES.iter().find(|l| l.1 == lc).map(|l| l.0.to_string())
+}
+
 /// A character as ISO 6937 bytes: one, or a diacritic and a letter; `?`
 /// for one it has no form for. `$` goes as 0x24, as readers take it.
 fn encode_char(c: char, out: &mut Vec<u8>) {

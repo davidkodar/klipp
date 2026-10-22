@@ -122,6 +122,8 @@ mod texture_fill_path;
 mod title_nits_round_trip;
 #[path = "../track_effects_round_trip.rs"]
 mod track_effects_round_trip;
+#[path = "../track_language_round_trip.rs"]
+mod track_language_round_trip;
 #[path = "../unknown_effect_refused.rs"]
 mod unknown_effect_refused;
 #[path = "../unknown_node_refused.rs"]

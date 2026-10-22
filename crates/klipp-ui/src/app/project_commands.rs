@@ -1048,6 +1048,13 @@ impl KlippApp {
                 }
                 true
             }
+            AppCommand::SetTrackLanguage { track_id, language } => {
+                if let Some(t) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id) {
+                    t.language = language.clone();
+                    self.state.dirty = true;
+                }
+                true
+            }
             AppCommand::SetTrackSyncLock { track_id, on } => {
                 if let Some(t) = self.state.sequences[self.state.active_sequence_idx].tracks.iter_mut().find(|t| t.id == *track_id) {
                     t.sync_lock = *on;

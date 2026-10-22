@@ -411,6 +411,7 @@ fn sequence_to_json(seq: &Sequence, color: &ColorSettings, project_dir: &Path) -
                 targeted: t.targeted,
                 source_patch: t.source_patch,
                 caption_style: t.caption_style.clone(),
+                language: t.language.clone(),
                 source_file: t.source_file.as_ref().map(|p| to_project_relative(project_dir, p).to_string_lossy().into_owned()),
                 custom_height: t.custom_height,
                 colour_label: t.colour_label,

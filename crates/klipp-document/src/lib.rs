@@ -35,4 +35,5 @@ pub mod qc_review;
 pub mod review;
 pub mod sound_design;
 pub mod subject_path;
+pub mod subtitle_export;
 pub mod title_style;

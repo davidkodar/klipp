@@ -14,6 +14,8 @@ pub(super) struct Pending {
     job_id: String,
     track_id: klipp_core::TrackId,
     language: String,
+    /// The target language's tag, for the new track (#2223).
+    code: String,
     sentences: Vec<ct::Sentence>,
     rx: std::sync::mpsc::Receiver<Result<Vec<tr::Line>, String>>,
 }
@@ -43,7 +45,7 @@ impl KlippApp {
         match tr::start(job_id.to_string(), source, target, lines) {
             Ok(rx) => {
                 self.state.toast.show(format!("Translating {} captions into {language}…", captions.len()));
-                self.translation = Some(Pending { job_id: job_id.to_string(), track_id, language, sentences, rx });
+                self.translation = Some(Pending { job_id: job_id.to_string(), track_id, language, code: target.to_string(), sentences, rx });
             }
             Err(why) => refuse(self, &why),
         }
@@ -96,7 +98,7 @@ impl KlippApp {
             self.state.toast.show("The caption track is gone");
             return;
         };
-        match ct::translated_track(seq, index, &translations, &cut, &pending.language) {
+        match ct::translated_track(seq, index, &translations, &cut, &pending.language, &pending.code) {
             Ok(out) => {
                 self.apply_edits_as_one(std::slice::from_ref(&out.edit), "Translate Captions");
                 let rate = self.state.sequence().fps.rate();

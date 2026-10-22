@@ -142,6 +142,9 @@ pub struct TemplateTrack {
     pub colour_label: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caption_style: Option<CaptionStyle>,
+    /// A subtitle track's language (#2223).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// An empty bin, under the bin at `parent` in the template's list.
@@ -260,6 +263,7 @@ impl ProjectTemplate {
                         custom_height: t.custom_height,
                         colour_label: t.colour_label,
                         caption_style: t.caption_style.clone(),
+                        language: t.language.clone(),
                     })
                     .collect(),
             })
@@ -415,6 +419,7 @@ impl ProjectTemplate {
                         track.custom_height = t.custom_height;
                         track.colour_label = t.colour_label;
                         track.caption_style = t.caption_style.clone();
+                        track.language = t.language.clone();
                         track
                     })
                     .collect();

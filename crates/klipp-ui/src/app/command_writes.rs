@@ -706,6 +706,7 @@ pub(crate) fn writes(cmd: &AppCommand) -> bool {
         | AppCommand::RemoveTrack { .. }
         | AppCommand::RenameTrack { .. }
         | AppCommand::SetTrackSyncLock { .. }
+        | AppCommand::SetTrackLanguage { .. }
         | AppCommand::SetTrackTargeted { .. }
         | AppCommand::SetTrackSourcePatch { .. }
         | AppCommand::PasteTrackAttributes { .. }

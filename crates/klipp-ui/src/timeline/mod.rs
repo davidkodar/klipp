@@ -780,6 +780,33 @@ mod menu_smoke_tests {
         assert!(!menu.iter().any(|t| t.starts_with("Translate Captions")), "a video track has no captions: {menu:?}");
     }
 
+    /// A subtitle track header's Language menu sets the track's language
+    /// (#2223); a video track's has none.
+    #[test]
+    fn a_subtitle_tracks_menu_sets_its_language() {
+        let mut timeline = Timeline::new();
+        let track = klipp_timeline::Track::new("Subtitle 1", TrackKind::Subtitle);
+        let track_id = track.id;
+        timeline.state.sequences[0].tracks.push(track);
+        let at = timeline.header(TrackKind::Subtitle);
+        let menu = timeline.right_click(at);
+        let item = timeline.frame(Vec::new()).into_iter().find(|(t, _)| t.starts_with("Language")).unwrap_or_else(|| panic!("the subtitle track's menu has its language: {menu:?}")).1;
+        timeline.frame(vec![egui::Event::PointerMoved(item)]);
+        let drawn = timeline.frame(vec![egui::Event::PointerMoved(item)]);
+        let at = drawn.iter().find(|(t, _)| t.trim_start() == "German (de)").unwrap_or_else(|| panic!("a language to pick: {drawn:?}")).1;
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        timeline.frame(vec![egui::Event::PointerMoved(at)]);
+        timeline.frame(vec![egui::Event::PointerMoved(at), button(true)]);
+        timeline.frame(vec![button(false)]);
+        assert!(timeline.sent.iter().any(|c| matches!(c, AppCommand::SetTrackLanguage { track_id: t, language: Some(l) } if *t == track_id && l == "de")), "{:?}", timeline.sent);
+        for _ in 0..2 {
+            timeline.frame(vec![egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        }
+        let at = timeline.header(TrackKind::Video);
+        let menu = timeline.right_click(at);
+        assert!(!menu.iter().any(|t| t.starts_with("Language")), "a video track has no language: {menu:?}");
+    }
+
     /// A video track header's Track Effects menu offers Grade in Colour,
     /// and a click on it sends the track's command (#1408); an audio
     /// track's doesn't offer it.
