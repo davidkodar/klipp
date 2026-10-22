@@ -416,6 +416,15 @@ impl GlyphCache {
     }
 }
 
+/// Whether any of a layer's glows, shadows, outlines or inner shadows
+/// has a keyed value.
+fn styles_keyed(fx: &klipp_timeline::LayerFx) -> bool {
+    fx.glows.iter().any(|g| !g.radius_keyframes.is_empty() || !g.intensity_keyframes.is_empty())
+        || fx.shadows.iter().any(|s| !s.offset_x_keyframes.is_empty() || !s.offset_y_keyframes.is_empty() || !s.blur_keyframes.is_empty())
+        || fx.outlines.iter().any(|o| !o.width_keyframes.is_empty())
+        || fx.inner_shadows.iter().any(|s| !s.offset_x_keyframes.is_empty() || !s.offset_y_keyframes.is_empty() || !s.blur_keyframes.is_empty())
+}
+
 impl TitleRenderer {
     /// Layout changes reuse each font glyph's coverage. Layout/shaping runs on
     /// CPU; the frame mask, fill and styles are assembled on GPU.
@@ -486,6 +495,10 @@ impl TitleRenderer {
             // as the CPU raster does (#2335).
             || !o.transform.center_x_keyframes.is_empty()
             || !o.transform.center_y_keyframes.is_empty()
+            // Keyed styles under a live motion: the glyphs posed and the
+            // styles drawn from them at this time, as the CPU raster
+            // does; still, `style_source` keeps them (#2335).
+            || (fx.motion.is_active() && styles_keyed(fx))
             || !tb.font_size_keyframes.is_empty()
             || !tb.color_keyframes.is_empty()
             || !tb.line_spacing_keyframes.is_empty()
