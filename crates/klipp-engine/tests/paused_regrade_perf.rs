@@ -175,3 +175,40 @@ fn split_temporal_nr(src: &std::path::Path) {
     );
 }
 
+
+/// A slider step on a parked 4K frame with a title over the clip (#2351):
+/// the frame takes the GPU stack, which grades the clip and composites
+/// the title, against the parked regrade with no title. Each with an SDR
+/// and a PQ source.
+#[test]
+#[ignore = "perf probe: run explicitly"]
+fn paused_4k_regrade_under_a_title() {
+    klipp_engine::video_decoder::set_max_playback_height(2160);
+    let title = || klipp_timeline::TitleData::single_text_fx(
+        klipp_timeline::TextBox { text: "Over the grade".into(), font_size: 90.0, color: [240, 220, 120, 255], ..Default::default() },
+        klipp_timeline::LayerFx { glows: vec![klipp_timeline::TextGlow { enabled: true, color: [80, 150, 255, 220], radius: 10.0, radius_keyframes: vec![], intensity: 0.8, intensity_keyframes: vec![] }], ..Default::default() },
+    );
+    for (label, tags) in [("sdr", common::SDR_TAGS), ("pq", common::PQ_TAGS)] {
+        let Some(src) = common::source(label, 3840, 2160, tags) else {
+            eprintln!("skipping: no ffmpeg");
+            return;
+        };
+        for titled in [false, true] {
+            let parked = if titled { common::Parked::start_under_title(src.clone(), 3840, 2160, title()) } else { common::Parked::start(src.clone(), 3840, 2160) };
+            parked.begin_drag_seen(0.25);
+            let steps: Vec<f64> = (0..16).filter_map(|i| parked.step(0.5 + i as f32 * 0.05)).collect();
+            parked.end_drag();
+            parked.settle();
+            for p in parked.perf().iter().rev().skip(1).take(2) {
+                eprintln!("PROBE   engine: total {:5.1} | decode {:4.1} grade {:5.1} fx {:4.1} lut {:4.1} composite {:5.1} encode {:5.1} scope {:4.1}", p.total_ms, p.decode_ms, p.grade_ms, p.builtin_ms, p.lut_ms, p.composite_ms, p.reencode_ms, p.scope_ms);
+            }
+            let mut sorted = steps[1..].to_vec();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            eprintln!(
+                "PROBE {label} {}: slider step median {:.1} ms (best {:.1}, worst {:.1})",
+                if titled { "under a title (GPU stack)" } else { "no title (parked regrade)" },
+                sorted[sorted.len() / 2], sorted[0], sorted[sorted.len() - 1],
+            );
+        }
+    }
+}
