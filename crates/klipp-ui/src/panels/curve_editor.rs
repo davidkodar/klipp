@@ -297,6 +297,13 @@ impl CurveScope {
     }
 }
 
+/// How fast the curve of `keys` changes at `t`, in its units a second
+/// (#2275): its slope, measured across a 240th of a second either side.
+fn curve_speed(keys: &[Keyframe], default: f32, t: f64) -> f32 {
+    let h = 1.0 / 240.0;
+    (klipp_core::keyframe::evaluate(keys, t + h, default) - klipp_core::keyframe::evaluate(keys, t - h, default)) / (2.0 * h as f32)
+}
+
 /// A curve in the editor's list (#2271): its parameter, and whether it
 /// is drawn.
 #[derive(Clone, Debug, PartialEq)]
@@ -328,6 +335,12 @@ pub struct CurveEditorPanel {
     /// Every shown curve drawn on its own range, 0 to 1 (#2271), not on
     /// the active curve's values.
     normalised: bool,
+    /// The Speed view (#2275): how fast each shown curve changes, in its
+    /// units a second, in place of its value.
+    speed_view: bool,
+    /// In the Speed view, Position X and Y shown together drawn as one
+    /// spatial speed.
+    spatial: bool,
     selected_clip: Option<klipp_core::ClipId>,
     /// Active keyframe drag
     drag: Option<CurveDrag>,
@@ -365,6 +378,8 @@ impl Default for CurveEditorPanel {
             curves: vec![ShownCurve { param: CurveParam::Video(VideoParam::Opacity), visible: true }],
             active: 0,
             normalised: false,
+            speed_view: false,
+            spatial: true,
             selected_clip: None,
             drag: None,
             needs_fit: true,
@@ -457,6 +472,62 @@ impl CurveEditorPanel {
         if let Some(i) = remove {
             self.remove_curve(i);
             self.needs_fit = true;
+        }
+    }
+
+    /// The indexes of Position X and Y among the curves drawn, when both
+    /// are (#2275).
+    fn spatial_pair(&self) -> Option<(usize, usize)> {
+        let at = |p: VideoParam| self.curves.iter().position(|c| c.visible && c.param == CurveParam::Video(p));
+        Some((at(VideoParam::PositionX)?, at(VideoParam::PositionY)?))
+    }
+
+    /// The Speed view (#2275): each drawn curve's rate of change, in its
+    /// units a second, sampled across the graph in its colour; Position X
+    /// and Y as one speed along the path when `spatial`. The value axis is
+    /// the speeds' own, zero to the fastest (or the slowest below zero).
+    fn draw_speed(&self, ui: &mut egui::Ui, state: &AppState, graph_rect: &Rect, clip_id: Option<klipp_core::ClipId>, clip_duration: f64, theme: &KlippTheme) {
+        let t0 = self.x_to_time(graph_rect.left(), graph_rect, clip_duration).max(0.0);
+        let t1 = self.x_to_time(graph_rect.right(), graph_rect, clip_duration).min(clip_duration);
+        if t1 <= t0 {
+            return;
+        }
+        let samples = (graph_rect.width() as usize).clamp(100, 800);
+        let times: Vec<f64> = (0..=samples).map(|i| t0 + (t1 - t0) * i as f64 / samples as f64).collect();
+        let rate = curve_speed;
+        let pair = self.spatial_pair().filter(|_| self.spatial);
+        let keys_of = |i: usize| Self::keyframes_of(&self.curves[i].param, state, clip_id);
+        let mut series: Vec<(usize, Vec<f32>)> = Vec::new();
+        for (i, curve) in self.curves.iter().enumerate().filter(|(_, c)| c.visible) {
+            match pair {
+                Some((x, y)) if i == x => {
+                    let (kx, ky) = (keys_of(x), keys_of(y));
+                    let (dx, dy) = (self.curves[x].param.range().2, self.curves[y].param.range().2);
+                    series.push((x, times.iter().map(|&t| rate(&kx, dx, t).hypot(rate(&ky, dy, t))).collect()));
+                }
+                Some((_, y)) if i == y => {}
+                _ => {
+                    let keys = keys_of(i);
+                    let default = curve.param.range().2;
+                    series.push((i, times.iter().map(|&t| rate(&keys, default, t)).collect()));
+                }
+            }
+        }
+        let lo = series.iter().flat_map(|(_, v)| v.iter().copied()).fold(0.0_f32, f32::min);
+        let hi = series.iter().flat_map(|(_, v)| v.iter().copied()).fold(0.0_f32, f32::max);
+        let span = (hi - lo).max(1e-6);
+        let y_of = |v: f32| graph_rect.bottom() - 6.0 - (v - lo) / span * (graph_rect.height() - 12.0);
+        let painter = ui.painter_at(*graph_rect);
+        painter.hline(graph_rect.x_range(), y_of(0.0), Stroke::new(1.0_f32, theme.border));
+        for (i, values) in &series {
+            let colour = Self::curve_colour(*i, theme);
+            let points: Vec<egui::Pos2> = times.iter().zip(values).map(|(&t, &v)| pos2(self.time_to_x(t, graph_rect, clip_duration), y_of(v))).collect();
+            painter.add(egui::Shape::line(points, Stroke::new(1.8_f32, colour)));
+        }
+        for (v, align) in [(hi, egui::Align2::LEFT_TOP), (lo, egui::Align2::LEFT_BOTTOM)] {
+            if v != 0.0 {
+                painter.text(pos2(graph_rect.left() + 4.0, y_of(v)), align, format!("{v:.2}/s"), egui::FontId::proportional(9.0), theme.text_dim);
+            }
         }
     }
 
@@ -662,9 +733,16 @@ impl CurveEditorPanel {
                     .on_hover_text("Show another of the clip's curves beside this one, in its own colour");
                 }
                 if self.curves.len() > 1
+                    && !self.speed_view
                     && ui.selectable_label(self.normalised, egui::RichText::new("Normalised").size(10.0)).on_hover_text("Every curve on its own range, 0 to 1").clicked()
                 {
                     self.normalised = !self.normalised;
+                }
+                if ui.selectable_label(self.speed_view, egui::RichText::new("Speed").size(10.0)).on_hover_text("How fast each curve changes, in its units a second, in place of its value").clicked() {
+                    self.speed_view = !self.speed_view;
+                }
+                if self.speed_view && self.spatial_pair().is_some() {
+                    ui.checkbox(&mut self.spatial, egui::RichText::new("X and Y as one").size(10.0)).on_hover_text("Position X and Y as one speed along the path");
                 }
 
                 ui.add_space(8.0);
@@ -753,6 +831,13 @@ impl CurveEditorPanel {
         // ── Interaction (scroll/zoom) ──
         let graph_response = ui.allocate_rect(graph_rect, egui::Sense::click_and_drag());
         self.handle_zoom_pan(ui, &graph_response, &graph_rect);
+
+        // The Speed view draws in place of the values (#2275).
+        if self.speed_view {
+            self.draw_speed(ui, state, &graph_rect, clip_id, clip_duration, theme);
+            self.draw_playhead(ui, state, &graph_rect, clip_id, clip_duration, theme);
+            return cmds;
+        }
 
         // ── Draw grid ──
         self.draw_grid(ui, &graph_rect, clip_duration, v_min, v_max, theme);
@@ -2270,5 +2355,17 @@ mod curve_param_tests {
         panel.remove_curve(0);
         assert_eq!(panel.shown_curves().len(), 1, "never the last");
         assert_eq!(*panel.param(), y);
+    }
+
+    /// #2275: a curve's speed is its slope, in its units a second, and
+    /// Position X and Y together make the speed along the path.
+    #[test]
+    fn a_curves_speed_is_its_slope() {
+        let key = |t: f64, v: f32| Keyframe { time_secs: t, value: v, interpolation: Default::default(), tangent_out: (0.0, 0.0), tangent_in: (0.0, 0.0), handles: Default::default() };
+        let x = [key(0.0, 0.0), key(1.0, 3.0)];
+        let y = [key(0.0, 0.0), key(1.0, 4.0)];
+        assert!((curve_speed(&x, 0.0, 0.5) - 3.0).abs() < 1e-3);
+        assert!((curve_speed(&x, 0.0, 0.5).hypot(curve_speed(&y, 0.0, 0.5)) - 5.0).abs() < 1e-3, "along the path");
+        assert!(curve_speed(&x, 0.0, 2.0).abs() < 1e-3, "held past its last key");
     }
 }
