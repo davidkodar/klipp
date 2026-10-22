@@ -99,6 +99,11 @@ fn stop(r: Running) {
 /// Each piece's picture, parked on its first frame, on an engine of its
 /// own; `None` without ffmpeg.
 fn references(video: &std::path::Path) -> Vec<u8> {
+    // The gaps are the GPU stack's frames: with no device (a driver
+    // refusing new ones), this would test the CPU route and pass.
+    if std::env::var_os("KLIPP_TEST_REQUIRE_GPU").is_some() {
+        assert!(klipp_effects::gpu_context::GpuContext::shared().is_some(), "GPU required");
+    }
     let tc = |f: i64| common::frame_tc(f, Fps::new(common::FPS, 1));
     let r = start(video, true);
     let mut want = Vec::new();
